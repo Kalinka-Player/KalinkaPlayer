@@ -209,6 +209,60 @@ def test_smb_removal_is_applied_by_the_next_scan_after_a_restart(kalinka, plante
     assert kalinka.raw("GET", f"{CONTENT}/{restored['id']}").content == track.content
 
 
+def test_a_share_that_goes_down_keeps_its_tracks(kalinka, samba, planted, library):
+    """A share nobody can reach is not a library someone emptied.
+
+    Every file under it looks gone, and none of them may be purged for it —
+    that is the whole difference between a NAS that is switched off and a
+    library that was deleted. The deletion the library really did owe is
+    applied once the share answers again, which is what says the sweep
+    deferred the work rather than forgot it.
+    """
+    track = planted.smb[-1]
+    row = library[track.library_path]
+    smb_paths = {planted_track.library_path for planted_track in planted.smb}
+
+    # Gone for real — but only the share can testify to that, and it is
+    # about to stop being able to.
+    track.remove()
+    samba.stop()
+    try:
+        kalinka.restart()
+        blind = kalinka.tracks()
+        assert smb_paths <= set(blind), "an unreachable share lost tracks"
+        assert len(blind) == len(library)
+
+        # A renderer retries a 5xx and abandons the track on a 4xx, so a
+        # share that is down must not read as a track that is missing.
+        assert kalinka.raw("GET", f"{CONTENT}/{row['id']}").status_code == 503
+
+        modules = kalinka.get("/server/modules")["input_modules"]
+        localfiles = next(module for module in modules if module["name"] == SOURCE)
+        assert localfiles["state"] == "warning"
+        assert "Music folder access" in localfiles["error_message"]
+    finally:
+        samba.start()
+
+    kalinka.restart()
+    wait_until(
+        lambda: track.library_path not in kalinka.tracks(),
+        timeout=CHANGE_TIMEOUT_S,
+        what="the deletion owed from while the share was unreachable",
+    )
+    tracks = kalinka.tracks()
+    assert smb_paths - {track.library_path} <= set(tracks)
+    assert len(tracks) == len(library) - 1
+
+    track.restore()
+    kalinka.restart()
+    wait_until(
+        lambda: track.library_path in kalinka.tracks(),
+        timeout=CHANGE_TIMEOUT_S,
+        what="the restored share track to be indexed again",
+    )
+    assert len(kalinka.tracks()) == len(library)
+
+
 @pytest.mark.xfail(
     strict=True,
     reason="guest logon fails against Samba: an empty password is refused by "
