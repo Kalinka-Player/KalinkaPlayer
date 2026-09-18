@@ -1,6 +1,6 @@
 ## KalinkaPlayer Development Makefile
 
-.PHONY: clean test help venv-env kalinka-server-deb kalinka-server-rpm kalinka-plugins-deb build-all-deb copy-debs build-env dev-setup dev-run renderer-build renderer-clean renderer-deb renderer-rpm proto image-rpi4 image-amd64 image-test
+.PHONY: clean test system-test help venv-env kalinka-server-deb kalinka-server-rpm kalinka-plugins-deb build-all-deb copy-debs build-env dev-setup dev-run renderer-build renderer-clean renderer-deb renderer-rpm proto image-rpi4 image-amd64 image-test
 
 ## --- Local-from-source dev environment (no root, no systemd) ------------------
 ## Everything lands in a per-user fakeroot under $(KALINKA_PREFIX) instead of the
@@ -143,7 +143,14 @@ clean:
 test:
 	@echo "Running tests..."
 	@cd packages/kalinka-plugin-sdk && python -m pytest tests/ -v
-	@cd packages/kalinka-server && python -m pytest ../../tests/ -v
+	@cd packages/kalinka-server && python -m pytest tests/ -v
+
+## Full-stack system test (tests/system): fakeroot + Samba in podman + real
+## indexing, enrichment and AI search over downloaded recordings. Opt-in
+## because it is slow and needs podman and the network. Extra pytest args via
+## ARGS, e.g. make system-test ARGS=-x
+system-test:
+	@KALINKA_SYSTEM_TEST=1 $(PY) -m pytest tests/system -o log_cli=true --log-cli-level=INFO $(ARGS)
 
 ## Catch names that do not exist before a user does
 lint:
@@ -229,6 +236,7 @@ help:
 	@echo "  dev-setup         One-shot local setup: venv + editable installs + native build + ~/kalinka fakeroot"
 	@echo "  dev-run           Run the server in the foreground against the fakeroot (Ctrl-C to stop)"
 	@echo "  dev-rebuild-native  Rebuild the native C++ extension, then restart to load it"
+	@echo "  system-test       Full-stack indexing test: fakeroot + Samba in podman + real enrichment/AI search"
 	@echo ""
 	@echo "  build-native      Build the native player C++ extension"
 	@echo "  venv-env          Create the venv (if missing) with the wheel-build toolchain"

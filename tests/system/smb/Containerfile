@@ -1,0 +1,7 @@
+FROM registry.fedoraproject.org/fedora:44
+RUN dnf -y install samba && dnf clean all \
+    && useradd -M -s /sbin/nologin kalinka \
+    && printf 'kalinka-pass\nkalinka-pass\n' | smbpasswd -a -s kalinka
+COPY smb.conf /etc/samba/smb.conf
+EXPOSE 445
+CMD ["/usr/sbin/smbd", "--foreground", "--no-process-group", "--debug-stdout"]
