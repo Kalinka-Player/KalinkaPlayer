@@ -140,7 +140,6 @@ def probe_root(root: str, mounts: Optional[list[Mount]] = None) -> RootStatus:
         return RootStatus(
             root=root,
             available=False,
-            empty=True,
             reason="the automounter has not mounted it",
             fs_type=fs_type,
             is_network=is_network,
@@ -151,7 +150,6 @@ def probe_root(root: str, mounts: Optional[list[Mount]] = None) -> RootStatus:
         return RootStatus(
             root=root,
             available=False,
-            empty=True,
             reason="the folder is missing or not readable",
             fs_type=fs_type,
             is_network=is_network,
@@ -159,13 +157,14 @@ def probe_root(root: str, mounts: Optional[list[Mount]] = None) -> RootStatus:
             identity=identity,
         )
     try:
+        # Listed for the failure, not for the contents: the access bits can
+        # say yes where the filesystem underneath still refuses.
         with os.scandir(root) as entries:
-            empty = next(iter(entries), None) is None
+            next(iter(entries), None)
     except OSError:
         return RootStatus(
             root=root,
             available=False,
-            empty=True,
             reason="the folder could not be listed",
             fs_type=fs_type,
             is_network=is_network,
@@ -175,7 +174,6 @@ def probe_root(root: str, mounts: Optional[list[Mount]] = None) -> RootStatus:
     return RootStatus(
         root=root,
         available=True,
-        empty=empty,
         reason="",
         fs_type=fs_type,
         is_network=is_network,

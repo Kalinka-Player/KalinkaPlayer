@@ -165,20 +165,17 @@ class SmbStorage(FileStorage):
         unc = self._unc(locator)
         try:
             with self._as_os_error():
-                session = self._logon(locator)
-                info = smbclient.stat(unc, **session)
+                info = smbclient.stat(unc, **self._logon(locator))
                 if not S_ISDIR(info.st_mode):
                     return self.unavailable(
                         root, "it names a file rather than a folder"
                     )
-                empty = next(iter(smbclient.scandir(unc, **session)), None) is None
         except OSError as e:
             return self.unavailable(root, self._reason(locator, e))
 
         return RootStatus(
             root=root,
             available=True,
-            empty=empty,
             reason="",
             fs_type=SMB_SCHEME,
             is_network=True,

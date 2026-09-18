@@ -7,6 +7,7 @@ allowed to know the concrete classes.
 """
 
 from .base import (
+    PROBE_TIMEOUT_S,
     ChangeKind,
     ChangeWatcher,
     DirEntry,
@@ -31,6 +32,7 @@ from .resolver import StorageResolver, build_resolver
 from .unavailable import UnavailableStorage
 
 __all__ = [
+    "PROBE_TIMEOUT_S",
     "ChangeKind",
     "ChangeWatcher",
     "DirEntry",

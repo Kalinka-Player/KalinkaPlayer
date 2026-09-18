@@ -500,15 +500,31 @@ class TestAvailability:
         assert status.is_network
         assert not status.is_autofs
         assert status.fs_type == "smb"
-        assert not status.empty
         assert status.identity == "smb //nas/music 305419896"
 
     @pytest.mark.asyncio
-    async def test_an_empty_share_is_reported_separately(self, fake_client):
-        fake_client(listings={r"\\nas\music": []})
+    async def test_a_reachable_share_is_not_listed_to_say_so(self, fake_client):
+        """Every playback asks whether the folder is available, and a
+        listing to find out whether it also happens to be empty would be a
+        round trip per track served."""
+        client = fake_client(listings={r"\\nas\music": []})
         status = await _storage().probe_root("smb://nas/music")
+
         assert status.available
-        assert status.empty
+        assert [unc for unc, _ in client.calls] == [r"\\nas\music"]
+
+    @pytest.mark.asyncio
+    async def test_an_empty_share_answers_the_purge_guard(self, fake_client):
+        fake_client(listings={r"\\nas\music": []})
+        assert _storage().is_empty("smb://nas/music")
+
+    @pytest.mark.asyncio
+    async def test_a_share_that_will_not_list_does_not_read_as_empty(
+        self, fake_client
+    ):
+        fake_client(listings={})
+        with pytest.raises(OSError):
+            _storage().is_empty("smb://nas/music")
 
     @pytest.mark.asyncio
     async def test_a_wrong_password_says_so(self, fake_client):

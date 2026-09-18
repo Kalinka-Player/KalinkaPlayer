@@ -112,7 +112,6 @@ def _offline(monkeypatch):
         return RootStatus(
             root=root,
             available=False,
-            empty=True,
             reason="the automounter has not mounted it",
             fs_type="autofs",
             is_network=False,
@@ -148,7 +147,6 @@ async def test_source_retriever_recovers_when_mount_appears(tmp_path, monkeypatc
         return RootStatus(
             root=root,
             available=True,
-            empty=False,
             reason="",
             fs_type="nfs4",
             is_network=True,

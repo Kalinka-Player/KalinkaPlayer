@@ -144,7 +144,6 @@ class VaultStorage(FileStorage):
         return RootStatus(
             root=root,
             available=True,
-            empty=not self.nodes,
             reason="",
             fs_type=SCHEME,
             is_network=True,

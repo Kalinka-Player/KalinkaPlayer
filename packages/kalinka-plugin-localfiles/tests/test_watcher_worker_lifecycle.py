@@ -85,7 +85,6 @@ class _Storage(FileStorage):
         return RootStatus(
             root=root,
             available=True,
-            empty=False,
             reason="",
             fs_type=self._scheme,
             is_network=False,

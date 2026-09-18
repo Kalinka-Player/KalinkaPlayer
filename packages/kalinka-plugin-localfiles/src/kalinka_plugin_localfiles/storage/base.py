@@ -119,11 +119,12 @@ class RootStatus:
     """Availability verdict for one configured music folder.
 
     ``available`` means the folder exists, is readable, and is not hidden
-    behind a pending automount. ``empty`` is reported separately because an
-    empty folder that the library expects files under may be a mountpoint
-    with nothing mounted on it — whether that blocks purging is the
-    caller's call, weighed against the recorded mount identity. ``reason``
-    is a user-presentable phrase, non-empty when unavailable.
+    behind a pending automount. ``reason`` is a user-presentable phrase,
+    non-empty when unavailable.
+
+    Whether the folder holds anything is not part of the verdict: only the
+    purge guard needs that, every playback needs this, and over a share it
+    is a round trip of its own (:meth:`FileStorage.is_empty`).
 
     ``identity`` names the storage the folder currently lives on
     ("nfs4 192.168.1.5:/export", "ext4 /dev/sda1", "smb //nas/music 1a2b3c4d").
@@ -134,7 +135,6 @@ class RootStatus:
 
     root: str
     available: bool
-    empty: bool
     reason: str
     fs_type: Optional[str]
     is_network: bool
@@ -325,6 +325,19 @@ class FileStorage(ABC):
         except OSError:
             return 0
 
+    def is_empty(self, root: str) -> bool:
+        """Whether ``root`` holds nothing at all.
+
+        Kept out of the availability probe on purpose: an empty folder the
+        library expects files under may be a mountpoint with nothing mounted
+        on it, which only the purge guard cares about, and the listing it
+        costs is a round trip every playback would otherwise pay for.
+
+        @raise OSError If the root cannot be listed, which is not the same
+            answer as "empty" and is not this method's to interpret.
+        """
+        return not self.listdir(root)
+
     def local_path(self, path: str) -> Optional[str]:
         """Where a process on this machine can read the file directly, or
         None when only this storage can reach it. What lets the server hand
@@ -506,7 +519,6 @@ class FileStorage(ABC):
         return RootStatus(
             root=root,
             available=False,
-            empty=True,
             reason=reason,
             fs_type=self.scheme,
             is_network=self.is_network,

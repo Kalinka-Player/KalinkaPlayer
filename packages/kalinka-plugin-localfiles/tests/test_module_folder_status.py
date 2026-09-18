@@ -183,7 +183,6 @@ class TestWhatItReports:
 
         [(status, stored)] = await made._music_folder_statuses()
         assert status.available
-        assert not status.empty
         assert stored is None
 
     @pytest.mark.asyncio

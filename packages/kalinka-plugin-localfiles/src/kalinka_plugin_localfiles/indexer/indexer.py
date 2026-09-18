@@ -42,6 +42,7 @@ from ..utils.artwork_store import save_artwork_from_file, save_artwork_images
 from ..utils.folder_art import FolderCover, find_folder_cover
 from ..worker_utils import nudge
 from ..storage import (
+    PROBE_TIMEOUT_S,
     ChangeKind,
     ChangeWatcher,
     FileStorage,
@@ -1728,9 +1729,8 @@ class FileIndexer:
         )
         return dict(zip(roots, statuses))
 
-    @staticmethod
-    def _blocked_reason(
-        status: RootStatus, stored_signature: Optional[str]
+    async def _blocked_reason(
+        self, status: RootStatus, stored_signature: Optional[str]
     ) -> Optional[str]:
         """Why nothing under this root may be purged right now, or None.
 
@@ -1740,6 +1740,10 @@ class FileIndexer:
         the directory underneath it); or the root is empty with no recorded
         identity to vouch for it. An empty root whose identity still matches
         is a genuinely emptied library and purges normally.
+
+        Emptiness is asked here rather than carried on the verdict because
+        this is the only caller that needs it, and the listing it costs is a
+        round trip on a share.
         """
         if not status.available:
             return status.reason
@@ -1752,9 +1756,25 @@ class FileIndexer:
                 f"the mount changed (indexed from {stored_signature}, "
                 f"now {status.identity})"
             )
-        if status.empty and not stored_signature:
+        if not stored_signature and await self._holds_nothing(status.root):
             return "the folder is empty while the library expects files there"
         return None
+
+    async def _holds_nothing(self, root: str) -> bool:
+        """Whether the root offers nothing to index, or will not say.
+
+        A listing that fails or never comes back is not evidence that the
+        library was emptied, so it weighs the same way an empty folder does:
+        as a reason to keep the rows.
+        """
+        storage = self.storage.for_path(root)
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(storage.is_empty, root), PROBE_TIMEOUT_S
+            )
+        except (asyncio.TimeoutError, TimeoutError, OSError) as e:
+            logger.warning("Could not list %s: %s", root, e)
+            return True
 
     async def cleanup_stale_tracks(self) -> Dict[str, int]:
         """Remove entries that are no longer valid for the file system.
@@ -1780,7 +1800,7 @@ class FileIndexer:
         }
         blocked_reasons = {}
         for root, status in root_status.items():
-            reason = self._blocked_reason(status, signatures[root])
+            reason = await self._blocked_reason(status, signatures[root])
             if reason is not None:
                 blocked_reasons[root] = reason
         blocked = set(blocked_reasons)
@@ -1837,9 +1857,10 @@ class FileIndexer:
             file_path = track["file_path"]
             if root is not None:
                 status = recheck[root]
-                if self._blocked_reason(
+                blocked_now = await self._blocked_reason(
                     status, signatures.get(root)
-                ) is not None or not await self._path_gone(file_path):
+                )
+                if blocked_now is not None or not await self._path_gone(file_path):
                     continue
                 logger.info(
                     f"File no longer exists, removing from database: {file_path}"

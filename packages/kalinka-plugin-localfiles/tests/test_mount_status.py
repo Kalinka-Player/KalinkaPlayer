@@ -9,6 +9,7 @@ that lives with the storage interface and is covered by
 """
 
 from kalinka_plugin_localfiles.storage import RootStatus, root_of
+from kalinka_plugin_localfiles.storage.local import LocalStorage
 from kalinka_plugin_localfiles.utils.mount_status import (
     Mount,
     autofs_pending,
@@ -78,14 +79,13 @@ def test_probe_available_nonempty_folder(tmp_path):
     (tmp_path / "a.mp3").write_bytes(b"x")
     status = probe_root(str(tmp_path))
     assert status.available
-    assert not status.empty
     assert status.reason == ""
 
 
 def test_probe_available_but_empty_folder(tmp_path):
     status = probe_root(str(tmp_path))
     assert status.available
-    assert status.empty
+    assert LocalStorage().is_empty(str(tmp_path))
 
 
 def test_probe_missing_folder_is_unavailable(tmp_path):
@@ -127,7 +127,6 @@ def test_format_root_status_recommends_for_autofs_share():
     status = RootStatus(
         root="/mnt/nas/music",
         available=True,
-        empty=False,
         reason="",
         fs_type="nfs4",
         is_network=True,
@@ -146,7 +145,6 @@ def test_format_root_status_names_the_reason_when_unavailable():
     status = RootStatus(
         root="/mnt/nas/music",
         available=False,
-        empty=True,
         reason="the automounter has not mounted it",
         fs_type="autofs",
         is_network=False,
@@ -165,7 +163,6 @@ def test_format_root_status_flags_a_mount_identity_mismatch():
     status = RootStatus(
         root="/mnt/nas/music",
         available=True,
-        empty=False,
         reason="",
         fs_type="ext4",
         is_network=False,

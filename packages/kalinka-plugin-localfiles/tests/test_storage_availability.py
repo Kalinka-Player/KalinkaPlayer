@@ -61,7 +61,6 @@ class _CountingStorage(FileStorage):
         return RootStatus(
             root=root,
             available=True,
-            empty=False,
             reason="",
             fs_type="counting",
             is_network=True,

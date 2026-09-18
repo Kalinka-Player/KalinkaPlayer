@@ -9,9 +9,11 @@ caught by the pre-delete re-probe.
 """
 
 import os
+import time
 
 import pytest
 
+import kalinka_plugin_localfiles.indexer.indexer as indexer_mod
 from kalinka_plugin_localfiles.config_model import LocalFilesConfig
 from kalinka_plugin_localfiles.db_schema import init_db
 from kalinka_plugin_localfiles.indexer.indexer import FileIndexer
@@ -51,7 +53,6 @@ def _unavailable(root):
     return RootStatus(
         root=root,
         available=False,
-        empty=True,
         reason="the automounter has not mounted it",
         fs_type="autofs",
         is_network=False,
@@ -247,3 +248,53 @@ async def test_failure_cache_rows_under_offline_root_are_kept(
 
     remaining = await fi.db_manager.get_failure_paths()
     assert remaining == [str(offline / "unreachable.mp3")]
+
+
+@pytest.mark.asyncio
+async def test_a_root_that_will_not_say_whether_it_is_empty_keeps_its_rows(
+    tmp_path, fast_probe, monkeypatch
+):
+    """Emptiness is asked separately from availability, so it has its own way
+    of going wrong. A listing that fails is not evidence the library was
+    emptied."""
+    music = tmp_path / "music"
+    fi = _make_indexer(tmp_path, [music])
+    await init_db(fi.db_manager.db_path)
+    await _index_file(fi, music / "a.mp3", artist="A", album="AA", title="a")
+    await _index_file(fi, music / "b.mp3", artist="B", album="BB", title="b")
+
+    os.remove(music / "a.mp3")
+
+    def refuse(self, root):
+        raise OSError("the share stopped answering")
+
+    monkeypatch.setattr(LocalStorage, "is_empty", refuse)
+    removed = await fi.cleanup_stale_tracks()
+
+    assert removed["tracks"] == 0
+    assert len(await fi.db_manager.get_all_tracks()) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_root_that_hangs_on_the_listing_keeps_its_rows(
+    tmp_path, fast_probe, monkeypatch
+):
+    """Bounded like every other call on storage that may never answer."""
+    music = tmp_path / "music"
+    fi = _make_indexer(tmp_path, [music])
+    await init_db(fi.db_manager.db_path)
+    await _index_file(fi, music / "a.mp3", artist="A", album="AA", title="a")
+    await _index_file(fi, music / "b.mp3", artist="B", album="BB", title="b")
+
+    os.remove(music / "a.mp3")
+
+    def hang(self, root):
+        time.sleep(5)
+        return False
+
+    monkeypatch.setattr(indexer_mod, "PROBE_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(LocalStorage, "is_empty", hang)
+    removed = await fi.cleanup_stale_tracks()
+
+    assert removed["tracks"] == 0
+    assert len(await fi.db_manager.get_all_tracks()) == 2
