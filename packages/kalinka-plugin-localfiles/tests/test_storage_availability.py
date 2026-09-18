@@ -151,3 +151,48 @@ async def test_a_local_folder_that_never_appears(tmp_path):
         str(tmp_path / "never"), deadline_s=0.2
     )
     assert not status.available
+
+
+class _RaisingStorage(_CountingStorage):
+    """A storage whose probe fails rather than reporting a verdict."""
+
+    def probe_root_blocking(self, root):
+        self.probes += 1
+        self.gate.wait(timeout=5)
+        raise RuntimeError("the probe itself is broken")
+
+
+@pytest.mark.asyncio
+async def test_a_probe_that_fails_after_its_waiter_gave_up(caplog):
+    """The waiter is gone by the time the probe raises, so nobody would read
+    the exception and asyncio would report it from the garbage collector,
+    detached from the request that caused it."""
+    storage = _RaisingStorage([])
+    storage.gate.clear()
+
+    status = await storage.probe_root("/root", timeout=0.05)
+    assert not status.available
+
+    with caplog.at_level("DEBUG"):
+        storage.gate.set()
+        task = storage._inflight["/root"][1]
+        with pytest.raises(RuntimeError):
+            await task
+
+    assert task.exception() is not None
+    assert "/root" not in storage._inflight
+    assert any("the probe itself is broken" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_a_second_probe_after_a_failed_one_starts_afresh():
+    """The registry holds in-flight probes, not finished ones: a root whose
+    probe failed must be probeable again."""
+    storage = _RaisingStorage([])
+
+    for _ in range(2):
+        status = await storage.probe_root("/root", timeout=5)
+        assert not status.available
+
+    assert storage.probes == 2
+    assert not storage._inflight

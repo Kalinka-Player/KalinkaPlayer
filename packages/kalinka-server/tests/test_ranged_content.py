@@ -11,6 +11,8 @@ are exercised here against the pieces directly.
 
 import asyncio
 import io
+import threading
+import time
 
 import pytest
 
@@ -35,6 +37,20 @@ class _Handle(io.BytesIO):
     def close(self):
         self.was_closed = True
         super().close()
+
+
+async def _closed(handle, timeout=5.0) -> bool:
+    """Whether the handle is closed, given a moment to become so.
+
+    Closing is handed to a worker thread and nobody waits for it, because on
+    a share it is a round trip that the event loop must not sit through.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if handle.was_closed:
+            return True
+        await asyncio.sleep(0.01)
+    return handle.was_closed
 
 
 async def _drive(response, *, disconnect_after=None):
@@ -72,7 +88,7 @@ class TestWhoClosesTheStream:
             )
         )
         assert body == AUDIO
-        assert handle.was_closed
+        assert await _closed(handle)
 
     @pytest.mark.asyncio
     async def test_a_client_that_goes_away_mid_track(self):
@@ -92,7 +108,35 @@ class TestWhoClosesTheStream:
             ),
             disconnect_after=1,
         )
-        assert handle.was_closed
+        assert await _closed(handle)
+
+
+    @pytest.mark.asyncio
+    async def test_a_close_the_storage_sits_on_does_not_hold_the_loop(self):
+        """An SMB close waits for the server to answer it. A share that went
+        quiet would otherwise freeze every other request for as long as the
+        client's own timeout, because the close runs where the response
+        ends."""
+        released = threading.Event()
+
+        class _SlowToClose(_Handle):
+            def close(self):
+                released.wait(5.0)
+                super().close()
+
+        handle = _SlowToClose()
+        started = time.monotonic()
+        await _drive(
+            stream_response(
+                handle, span=None, size=len(AUDIO), mime_type="audio/flac"
+            )
+        )
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 1.0
+        assert not handle.was_closed
+        released.set()
+        assert await _closed(handle)
 
 
 class TestOpeningTheStream:
@@ -109,8 +153,7 @@ class TestOpeningTheStream:
         with pytest.raises((asyncio.TimeoutError, TimeoutError)):
             await open_reader(slow, 0.05)
 
-        await asyncio.sleep(0.5)
-        assert handle.was_closed
+        assert await _closed(handle)
 
     @pytest.mark.asyncio
     async def test_a_request_cancelled_while_the_storage_is_opening(self):
@@ -132,8 +175,7 @@ class TestOpeningTheStream:
         with pytest.raises(asyncio.CancelledError):
             await task
 
-        await asyncio.sleep(0.5)
-        assert handle.was_closed
+        assert await _closed(handle)
 
     @pytest.mark.asyncio
     async def test_an_open_that_fails_reports_its_own_error(self):
@@ -176,10 +218,18 @@ class TestWhatARangeMeans:
         renderer asks for several spans at once."""
         assert resolve_range(header, 2000) is None
 
-    @pytest.mark.parametrize("header", ["bytes=2000-", "bytes=99-5", "bytes=-0"])
+    @pytest.mark.parametrize("header", ["bytes=2000-", "bytes=-0"])
     def test_a_span_outside_the_asset_is_refused(self, header):
         with pytest.raises(UnsatisfiableRange):
             resolve_range(header, 2000)
+
+    @pytest.mark.parametrize("header", ["bytes=99-5", "bytes=2001-2000"])
+    def test_a_range_that_ends_before_it_starts_is_ignored(self, header):
+        """RFC 9110 §14.1.1: a last byte before the first makes the whole
+        header invalid, and an invalid one is ignored rather than refused —
+        416 belongs to a well-formed span the asset cannot meet. A client
+        that mis-forms a range gets the track instead of a hard failure."""
+        assert resolve_range(header, 2000) is None
 
     @pytest.mark.parametrize("header", ["bytes=0-", "bytes=-500"])
     def test_a_zero_length_asset_satisfies_no_range(self, header):

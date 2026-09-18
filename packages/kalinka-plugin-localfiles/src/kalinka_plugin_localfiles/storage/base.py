@@ -43,7 +43,9 @@ _RETRY_DELAYS_S = (0.5, 1.0, 2.0)
 
 _SPILL_CHUNK = 1024 * 1024
 
-_SPILL_PREFIX = "kalinka-"
+#: Specific to a spilled copy, because the sweep below deletes by name and
+#: the default spill directory is the one every other program shares.
+_SPILL_PREFIX = "kalinka-spill-"
 
 #: Room a spilled copy must leave behind it. The library database and its
 #: artwork share the filesystem, and filling it costs more than one
@@ -385,6 +387,9 @@ class FileStorage(ABC):
         Every copy is removed by the block that made it, so anything older
         than :data:`_SPILL_STALE_S` was orphaned by a kill or a power cut.
         Once per process is enough: nothing else leaves one behind.
+
+        @note Only :data:`_SPILL_PREFIX` names are touched, which is the
+            whole of what keeps a shared temporary directory safe here.
         """
         if self._swept:
             return
@@ -430,7 +435,9 @@ class FileStorage(ABC):
         if entry is None or entry[0] is not loop or entry[1].done():
             task = loop.create_task(asyncio.to_thread(self.probe_root_blocking, root))
             self._inflight[root] = (loop, task)
-            task.add_done_callback(lambda _, key=root: self._forget_probe(key))
+            task.add_done_callback(
+                lambda finished, key=root: self._forget_probe(key, finished)
+            )
         else:
             task = entry[1]
         try:
@@ -446,12 +453,21 @@ class FileStorage(ABC):
             logger.exception("Probing %s failed", root)
             return self.unavailable(root, f"it could not be checked ({e})")
 
-    def _forget_probe(self, root: str) -> None:
+    def _forget_probe(
+        self, root: str, task: "asyncio.Task[RootStatus]"
+    ) -> None:
         """Drop a finished probe so the registry does not accumulate roots
-        that have since left the configuration."""
-        entry = self._inflight.get(root)
-        if entry is not None and entry[1].done():
+        that have since left the configuration.
+
+        Reads the exception too: a probe that raises after its waiter timed
+        out has nobody left to receive it, and asyncio would report it from
+        the garbage collector instead. Debug, because a waiter that is still
+        there logs it for itself.
+        """
+        if self._inflight.get(root, (None, None))[1] is task:
             del self._inflight[root]
+        if not task.cancelled() and task.exception() is not None:
+            logger.debug("Probing %s failed: %s", root, task.exception())
 
     def should_defer_probe(self, root: str) -> bool:
         """Whether probing ``root`` right now would do harm rather than good.

@@ -71,6 +71,23 @@ class TestWhatIsAdmissible:
         )
         assert find_folder_cover(LOCAL, str(tmp_path)) is None
 
+    def test_an_image_that_cannot_be_measured_is_not_opened(
+        self, tmp_path, monkeypatch
+    ):
+        """A storage reports zero for a file it could not measure — gone
+        since the listing, or unreadable — and opening one is a wasted round
+        trip on a share."""
+        import kalinka_plugin_localfiles.utils.folder_art as folder_art
+
+        _image(str(tmp_path / "cover.jpg"))
+        monkeypatch.setattr(LocalStorage, "size_of", lambda self, entry: 0)
+        monkeypatch.setattr(
+            folder_art,
+            "_measure",
+            lambda _storage, _path: pytest.fail("file was opened"),
+        )
+        assert find_folder_cover(LOCAL, str(tmp_path)) is None
+
     def test_an_oversized_image_is_skipped_from_its_header(
         self, tmp_path, monkeypatch
     ):

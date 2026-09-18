@@ -67,6 +67,17 @@ def _format_subfeature_status(sf: "_SubfeatureBookkeeping") -> str:
     return sf.message or ""
 
 
+def _quiet_share_protocol_logs() -> None:
+    """Keep ``smbprotocol``'s narration out of an ordinary service log.
+
+    It reports every negotiate, tree connect and file open at INFO, which is
+    most of the log once a share is indexed. A debug run is left alone, since
+    that is where the detail is wanted.
+    """
+    if not logging.getLogger().isEnabledFor(logging.DEBUG):
+        logging.getLogger("smbprotocol").setLevel(logging.WARNING)
+
+
 def _mount_mismatch(status: RootStatus, stored_signature: Optional[str]) -> bool:
     """True when the folder's current mount is not the one the library was
     indexed from — a static share silently gave way to the local directory
@@ -213,6 +224,7 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
         self._context = context
         config = LocalFilesConfig(**context.config.model_dump())
         logger.info("Setting up localfiles input module")
+        _quiet_share_protocol_logs()
 
         input_module_db = LocalFilesInputModuleDb(config)
 
@@ -235,11 +247,14 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
             else (None, None)
         )
 
-        # The LocalFilesInputModule will use its own specialized DB
+        # The LocalFilesInputModule will use its own specialized DB, and
+        # takes its storage from here so playback and the settings page
+        # cannot end up on different credentials.
         self._inputmodule = LocalFilesInputModule(
             config,
             input_module_db,
             *search_queues,
+            storage_source=self._current_resolver,
         )
 
         # Forward subprocess log records into the main logging pipeline so the
@@ -452,6 +467,20 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
             self._resolver = build_resolver(config)
             self._resolver_key = key
         return self._resolver
+
+    def _current_resolver(self) -> StorageResolver:
+        """The resolver for the configuration as it stands right now.
+
+        Where the input module reads its storage from, so an edited share
+        password reaches playback and the folder-status probe together. The
+        workers in the other processes keep the credentials they started
+        with until the module is restarted.
+        """
+        if self._context is None:
+            raise RuntimeError("the localfiles plugin has not been set up")
+        return self._resolver_for(
+            LocalFilesConfig(**self._context.config.model_dump())
+        )
 
     async def _music_folder_statuses(
         self,

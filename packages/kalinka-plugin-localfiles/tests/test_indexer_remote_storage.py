@@ -62,6 +62,7 @@ class VaultStorage(FileStorage):
         self.available = True
         self.identify = True
         self._inodes = itertools.count(1)
+        self.trips: list[tuple[str, str]] = []
 
 
     def add(self, path: str, data: bytes) -> str:
@@ -92,6 +93,7 @@ class VaultStorage(FileStorage):
         return any(is_within(path, root) for root in roots)
 
     def listdir(self, path: str) -> list[DirEntry]:
+        self.trips.append(("listdir", path))
         self._require_online()
         prefix = path.rstrip("/") + "/"
         children: dict[str, bool] = {}
@@ -108,6 +110,7 @@ class VaultStorage(FileStorage):
         ]
 
     def stat(self, path: str) -> FileStat:
+        self.trips.append(("stat", path))
         self._require_online()
         node = self.nodes.get(path)
         if node is None:
@@ -127,6 +130,7 @@ class VaultStorage(FileStorage):
         )
 
     def open(self, path: str) -> BinaryIO:
+        self.trips.append(("open", path))
         self._require_online()
         node = self.nodes.get(path)
         if node is None:
@@ -134,6 +138,7 @@ class VaultStorage(FileStorage):
         return io.BytesIO(node.data)
 
     def probe_root_blocking(self, root: str) -> RootStatus:
+        self.trips.append(("probe", root))
         if not self.available:
             return self.unavailable(root, "the vault is offline")
         return RootStatus(
@@ -232,11 +237,31 @@ class TestScanning:
         vault.add(f"{ROOT}/a/b/c/d/deep.flac", data)
         vault.add(f"{ROOT}/shallow.flac", data)
 
-        counts = await indexer._count_supported_files([ROOT])
+        listed = await indexer._audio_files_by_folder([ROOT])
         await indexer.run_scan()
 
-        assert counts == {ROOT: 2}
+        assert len(listed[ROOT]) == 2
         assert len(await indexer.db_manager.get_all_tracks()) == 2
+
+    @pytest.mark.asyncio
+    async def test_the_library_is_walked_once_per_scan(self, library, tmp_path):
+        """Every directory in the walk is a round trip, so walking once to
+        count the work and again to do it would pay for the whole library
+        twice — and the count is what the progress bar is made of."""
+        indexer, vault, _ = library
+        data = _flac(tmp_path, {"title": "T", "artist": "A", "album": "B"})
+        for folder in ("Avalon", "Manifesto", "Siren"):
+            vault.add(f"{ROOT}/{folder}/01 track.flac", data)
+
+        walks = []
+        walk = indexer._iter_audio_files
+        indexer._iter_audio_files = lambda folder: walks.append(folder) or walk(folder)
+
+        await indexer.run_scan()
+
+        assert walks == [ROOT]
+        progress = await indexer.db_manager.get_scan_progress()
+        assert (progress["total"], progress["processed"]) == (3, 3)
 
     @pytest.mark.asyncio
     async def test_files_of_other_kinds_are_left_alone(self, library, tmp_path):
@@ -398,6 +423,16 @@ class TestChangeNotification:
         await indexer_mod._file_watcher_worker(config)
 
 
+def _module_over(config, vault) -> LocalFilesInputModule:
+    """The input module reading through the vault and nothing else."""
+    resolver = StorageResolver([vault])
+    module = LocalFilesInputModule(
+        config, LocalFilesInputModuleDb(config), storage_source=lambda: resolver
+    )
+    module._music_folders = [ROOT]
+    return module
+
+
 class TestServingATrack:
     @pytest.mark.asyncio
     async def test_the_server_is_handed_a_stream_and_a_length(
@@ -410,9 +445,7 @@ class TestServingATrack:
         path = vault.add(f"{ROOT}/01 track.flac", data)
         changes = await indexer.process_file(path)
 
-        module = LocalFilesInputModule(config, LocalFilesInputModuleDb(config))
-        module._storage = StorageResolver([vault])
-        module._music_folders = [ROOT]
+        module = _module_over(config, vault)
 
         info = await module.get_content_info(changes["tracks"])
 
@@ -423,6 +456,61 @@ class TestServingATrack:
             assert stream.read() == data
 
     @pytest.mark.asyncio
+    async def test_serving_costs_one_measurement_and_the_open(
+        self, library, tmp_path
+    ):
+        """A renderer seeks by asking for byte ranges, so this runs per
+        request. Establishing that the file is there, how long it is and
+        whether it can be read is one round trip, not three: the open the
+        server makes next is what answers the last of them."""
+        indexer, vault, config = library
+        path = vault.add(
+            f"{ROOT}/01 track.flac",
+            _flac(tmp_path, {"title": "T", "artist": "A", "album": "B"}),
+        )
+        changes = await indexer.process_file(path)
+        module = _module_over(config, vault)
+
+        vault.trips.clear()
+        info = await module.get_content_info(changes["tracks"])
+
+        assert [kind for kind, _ in vault.trips] == ["probe", "stat"]
+        assert info.size is not None
+        with info.reader():
+            pass
+
+    @pytest.mark.asyncio
+    async def test_a_track_that_went_away_is_absent(self, library, tmp_path):
+        """The measurement is the existence check too, so a deleted file has
+        to still read as absent rather than as a broken stream."""
+        indexer, vault, config = library
+        path = vault.add(
+            f"{ROOT}/01 track.flac",
+            _flac(tmp_path, {"title": "T", "artist": "A", "album": "B"}),
+        )
+        changes = await indexer.process_file(path)
+        module = _module_over(config, vault)
+        vault.remove(path)
+
+        assert await module.get_content_info(changes["tracks"]) is None
+
+    @pytest.mark.asyncio
+    async def test_a_track_outside_the_folders_is_absent(self, library, tmp_path):
+        """The boundary check is the one thing the measurement does not
+        replace: a folder can leave the configuration between queueing a
+        track and serving it."""
+        indexer, vault, config = library
+        path = vault.add(
+            f"{ROOT}/01 track.flac",
+            _flac(tmp_path, {"title": "T", "artist": "A", "album": "B"}),
+        )
+        changes = await indexer.process_file(path)
+        module = _module_over(config, vault)
+        module._music_folders = [f"{SCHEME}://box/elsewhere"]
+
+        assert await module.get_content_info(changes["tracks"]) is None
+
+    @pytest.mark.asyncio
     async def test_an_offline_vault_refuses_to_serve(self, library, tmp_path):
         indexer, vault, config = library
         path = vault.add(
@@ -431,9 +519,7 @@ class TestServingATrack:
         )
         changes = await indexer.process_file(path)
 
-        module = LocalFilesInputModule(config, LocalFilesInputModuleDb(config))
-        module._storage = StorageResolver([vault])
-        module._music_folders = [ROOT]
+        module = _module_over(config, vault)
         vault.available = False
 
         from kalinka_plugin_sdk.inputmodule import SourceUnavailableError

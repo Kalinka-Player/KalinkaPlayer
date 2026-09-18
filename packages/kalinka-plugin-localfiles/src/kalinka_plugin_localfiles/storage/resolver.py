@@ -38,6 +38,7 @@ class StorageResolver:
 
     def __init__(self, storages: Sequence[FileStorage]) -> None:
         self._storages = tuple(storages)
+        self._unhandled: dict[str, FileStorage] = {}
 
     @property
     def storages(self) -> tuple[FileStorage, ...]:
@@ -45,15 +46,23 @@ class StorageResolver:
 
     def for_path(self, path: str) -> FileStorage:
         """The storage that speaks for ``path``. Never raises and never
-        returns None."""
+        returns None.
+
+        @note One instance per unhandled scheme, not one per call: callers
+            group paths by storage object, and the registry that holds a
+            hung root to a single probe lives on the instance.
+        """
         for storage in self._storages:
             if storage.handles(path):
                 return storage
         scheme = scheme_of(path)
-        return UnavailableStorage(
+        return self._unhandled.setdefault(
             scheme,
-            f"'{scheme}://' is not a protocol this module can read; use a "
-            "local path or smb://host/share",
+            UnavailableStorage(
+                scheme,
+                f"'{scheme}://' is not a protocol this module can read; use a "
+                "local path or smb://host/share",
+            ),
         )
 
     def canonical_roots(self, folders: Iterable[str]) -> list[str]:

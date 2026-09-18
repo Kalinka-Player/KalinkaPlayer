@@ -13,12 +13,18 @@ thread never sees a second caller.
 """
 
 import asyncio
+import logging
 import threading
 
 import pytest
 
 from kalinka_plugin_localfiles.config_model import LocalFilesConfig
-from kalinka_plugin_localfiles.module_setup import KalinkaPluginLocalFiles
+from kalinka_plugin_localfiles.input_module_db import LocalFilesInputModuleDb
+from kalinka_plugin_localfiles.localfiles import LocalFilesInputModule
+from kalinka_plugin_localfiles.module_setup import (
+    KalinkaPluginLocalFiles,
+    _quiet_share_protocol_logs,
+)
 from kalinka_plugin_localfiles.storage.local import LocalStorage
 
 
@@ -92,6 +98,81 @@ class TestTheResolverIsKept:
         finally:
             release.set()
             await asyncio.sleep(0.1)
+
+
+class TestPlaybackAndTheStatusPageAgree:
+    """The settings page probes with whatever credentials the config now
+    carries. Playback reading a resolver captured at setup is how a folder
+    comes to read "Available" while every track behind it fails to open."""
+
+    def test_the_module_reads_the_plugin_s_resolver(self, plugin):
+        made, _ = plugin
+        config = LocalFilesConfig(**made._context.config.model_dump())
+        module = LocalFilesInputModule(
+            config,
+            LocalFilesInputModuleDb(config),
+            storage_source=made._current_resolver,
+        )
+
+        assert module._storage is made._current_resolver()
+
+    def test_new_credentials_reach_playback_too(self, plugin):
+        made, _ = plugin
+        config = LocalFilesConfig(**made._context.config.model_dump())
+        module = LocalFilesInputModule(
+            config,
+            LocalFilesInputModuleDb(config),
+            storage_source=made._current_resolver,
+        )
+        before = module._storage
+
+        made._context.config.smb.username = "media"
+
+        assert module._storage is not before
+        assert module._storage is made._current_resolver()
+
+    def test_a_module_of_its_own_still_builds_one(self, tmp_path):
+        """Nothing outside the plugin has a resolver to lend, and the
+        subprocess entry points build the module for themselves."""
+        config = LocalFilesConfig(
+            music_folders=[str(tmp_path)],
+            db_path=str(tmp_path / "localfiles.db"),
+            artwork_path=str(tmp_path / "artwork"),
+        )
+        module = LocalFilesInputModule(config, LocalFilesInputModuleDb(config))
+
+        assert module._storage is not None
+
+
+@pytest.fixture
+def share_protocol_log():
+    """The two levels the quieting reads and writes, put back afterwards."""
+    root, protocol = logging.getLogger(), logging.getLogger("smbprotocol")
+    before = (root.level, protocol.level)
+    protocol.setLevel(logging.NOTSET)
+    yield root, protocol
+    root.setLevel(before[0])
+    protocol.setLevel(before[1])
+
+
+class TestTheShareProtocolIsNotAllowedToNarrate:
+    def test_an_ordinary_run_is_spared_the_narration(self, share_protocol_log):
+        root, protocol = share_protocol_log
+        root.setLevel(logging.INFO)
+
+        _quiet_share_protocol_logs()
+
+        assert not protocol.isEnabledFor(logging.INFO)
+
+    def test_a_debug_run_keeps_the_detail(self, share_protocol_log):
+        """Whoever asked for debug logging is the one person who wants to see
+        a tree connect."""
+        root, protocol = share_protocol_log
+        root.setLevel(logging.DEBUG)
+
+        _quiet_share_protocol_logs()
+
+        assert protocol.isEnabledFor(logging.DEBUG)
 
 
 class TestWhatItReports:

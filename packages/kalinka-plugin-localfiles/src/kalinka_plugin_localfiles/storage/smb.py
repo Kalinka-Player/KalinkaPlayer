@@ -16,6 +16,7 @@ the password.
 
 from __future__ import annotations
 
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from stat import S_ISDIR
@@ -100,6 +101,8 @@ class SmbStorage(FileStorage):
     ) -> None:
         super().__init__(spill_dir=spill_dir)
         self._credentials = credentials or SmbCredentials()
+        self._logon_locks: dict[tuple[str, Optional[int]], threading.Lock] = {}
+        self._logon_locks_guard = threading.Lock()
 
     @property
     def scheme(self) -> str:
@@ -127,14 +130,14 @@ class SmbStorage(FileStorage):
             return [
                 self._entry(locator, child)
                 for child in smbclient.scandir(
-                    self._unc(locator), **self._session(locator)
+                    self._unc(locator), **self._logon(locator)
                 )
             ]
 
     def stat(self, path: str) -> FileStat:
         locator = parse(path)
         with self._as_os_error():
-            info = smbclient.stat(self._unc(locator), **self._session(locator))
+            info = smbclient.stat(self._unc(locator), **self._logon(locator))
         return FileStat(
             size=info.st_size,
             mtime_ns=info.st_mtime_ns,
@@ -150,7 +153,7 @@ class SmbStorage(FileStorage):
                 mode="rb",
                 buffering=_READ_BUFFER,
                 share_access=_SHARE_ACCESS,
-                **self._session(locator),
+                **self._logon(locator),
             )
 
     def probe_root_blocking(self, root: str) -> RootStatus:
@@ -160,9 +163,9 @@ class SmbStorage(FileStorage):
             return self.unavailable(root, str(e))
 
         unc = self._unc(locator)
-        session = self._session(locator)
         try:
             with self._as_os_error():
+                session = self._logon(locator)
                 info = smbclient.stat(unc, **session)
                 if not S_ISDIR(info.st_mode):
                     return self.unavailable(
@@ -221,6 +224,32 @@ class SmbStorage(FileStorage):
         not part of it; it rides in the session arguments instead."""
         host = locator.host.strip("[]")
         return "\\\\" + "\\".join([host, *locator.components])
+
+    def _logon(self, locator: StorageLocator) -> dict[str, Any]:
+        """Session arguments for one location, with the logon already made.
+
+        ``smbclient`` fills its process-global connection and session pools
+        with an unsynchronised check-then-create, so two threads reaching one
+        server at once each build a connection and the loser's socket and
+        reader thread leak. Logging in under a lock per server leaves the
+        pool to one thread at a time.
+
+        Before every operation, not once: registering an existing session is
+        a pair of dictionary lookups, and it is also what rebuilds a pooled
+        connection the server has since dropped.
+
+        @note The lock is per server, not per account: the race is for the
+            connection underneath the session.
+        """
+        session = self._session(locator)
+        server = locator.host.strip("[]")
+        with self._logon_locks_guard:
+            lock = self._logon_locks.setdefault(
+                (server, locator.port), threading.Lock()
+            )
+        with lock:
+            smbclient.register_session(server, **session)
+        return session
 
     def _session(self, locator: StorageLocator) -> dict[str, Any]:
         """Connection and credential arguments for one location.

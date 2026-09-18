@@ -41,6 +41,11 @@ def _opted_in() -> bool:
     return os.environ.get("KALINKA_SYSTEM_TEST") == "1"
 
 
+# Not collected rather than collected and skipped: a skip mark lands after
+# the modules have been imported, and importing them costs the whole server.
+collect_ignore_glob = [] if _opted_in() else ["test_*.py"]
+
+
 def pytest_configure(config: pytest.Config) -> None:
     if _opted_in():
         # A bare SIGTERM has no default cleanup; make it unwind fixtures the
@@ -48,12 +53,10 @@ def pytest_configure(config: pytest.Config) -> None:
         signal.signal(signal.SIGTERM, signal.default_int_handler)
 
 
-def pytest_collection_modifyitems(config, items):
+def pytest_report_collectionfinish(config) -> list[str]:
     if _opted_in():
-        return
-    skip = pytest.mark.skip(reason="system test; set KALINKA_SYSTEM_TEST=1 to run it")
-    for item in items:
-        item.add_marker(skip)
+        return []
+    return ["system tests not collected; set KALINKA_SYSTEM_TEST=1 to run them"]
 
 
 @pytest.hookimpl(hookwrapper=True)

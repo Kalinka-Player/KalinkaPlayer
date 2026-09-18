@@ -12,6 +12,8 @@ unreachable share.
 import io
 import os
 import stat
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -50,6 +52,14 @@ class _FakeSmbClient:
         self.stats = stats or {}
         self.failure = failure
         self.calls = []
+        self.logons = []
+
+    def register_session(self, server, **kwargs):
+        """What the real client pools a connection and a session under. It is
+        also where a logon fails, so a configured failure surfaces here."""
+        self.logons.append((server, kwargs))
+        if self.failure is not None:
+            raise self.failure
 
     def _record(self, unc, kwargs):
         self.calls.append((unc, kwargs))
@@ -206,6 +216,87 @@ class TestCredentials:
         assert client.calls[0][1]["connection_timeout"] > 0
 
 
+class TestTheLogon:
+    """``smbclient`` pools connections and sessions in process-global
+    dictionaries and fills them with an unsynchronised check-then-create, so
+    the storage logs in explicitly and serialises the logons per server."""
+
+    def test_the_session_is_registered_before_the_share_is_read(
+        self, fake_client
+    ):
+        client = fake_client(listings={r"\\nas\music": []})
+        _storage(username="media", password="hunter2").listdir("smb://nas/music")
+
+        assert client.logons[0][0] == "nas"
+        assert client.logons[0][1]["username"] == "media"
+        assert client.logons[0][1]["password"] == "hunter2"
+
+    def test_the_port_travels_with_the_logon(self, fake_client):
+        client = fake_client(listings={r"\\nas\music": []})
+        _storage().listdir("smb://nas:4450/music")
+
+        assert client.logons[0][1]["port"] == 4450
+
+    def test_two_shares_on_one_server_do_not_log_in_at_once(self, fake_client):
+        """The loser of that race leaves a connected socket and a reader
+        thread behind for the life of the process, because only the winner
+        is in the cache to be closed."""
+        client = fake_client(
+            listings={r"\\nas\music": [], r"\\nas\classical": []}
+        )
+        overlapped = []
+        registering = threading.Lock()
+
+        def slow_register(server, **kwargs):
+            if not registering.acquire(blocking=False):
+                overlapped.append(server)
+            else:
+                time.sleep(0.2)
+                registering.release()
+            client.logons.append((server, kwargs))
+
+        client.register_session = slow_register
+        storage = _storage()
+        threads = [
+            threading.Thread(target=storage.listdir, args=(url,))
+            for url in ("smb://nas/music", "smb://nas/classical")
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+
+        assert overlapped == []
+        assert len(client.logons) == 2
+
+    def test_a_second_server_is_not_held_up_by_the_first(self, fake_client):
+        """One lock for every server would make an unreachable NAS delay the
+        shares that answer."""
+        client = fake_client(
+            listings={r"\\nas\music": [], r"\\vault\music": []}
+        )
+        entered = threading.Event()
+        release = threading.Event()
+
+        def blocking_register(server, **kwargs):
+            if server == "nas":
+                entered.set()
+                assert release.wait(timeout=5)
+            client.logons.append((server, kwargs))
+
+        client.register_session = blocking_register
+        storage = _storage()
+        held = threading.Thread(target=storage.listdir, args=("smb://nas/music",))
+        held.start()
+        assert entered.wait(timeout=5)
+
+        storage.listdir("smb://vault/music")
+
+        release.set()
+        held.join(timeout=5)
+        assert [server for server, _ in client.logons] == ["vault", "nas"]
+
+
 class TestListing:
     def test_children_come_back_as_share_urls(self, fake_client):
         fake_client(
@@ -339,6 +430,38 @@ class TestReading:
             spilled = local
 
         assert not os.path.exists(spilled)
+
+    def test_a_copy_left_by_a_killed_run_is_swept(self, fake_client, tmp_path):
+        fake_client(files={r"\\nas\music\a.flac": b"audio bytes"})
+        spill = tmp_path / "spill"
+        spill.mkdir()
+        orphan = spill / "kalinka-spill-old.flac"
+        orphan.write_bytes(b"left behind")
+        os.utime(orphan, (0, 0))
+
+        with SmbStorage(spill_dir=str(spill)).materialize("smb://nas/music/a.flac"):
+            pass
+
+        assert not orphan.exists()
+
+    def test_the_sweep_leaves_alone_what_it_did_not_spill(
+        self, fake_client, tmp_path
+    ):
+        """The default spill directory is the shared system one, where a
+        stranger's file — another program's, another user's — is not this
+        class's to delete however old it is."""
+        fake_client(files={r"\\nas\music\a.flac": b"audio bytes"})
+        spill = tmp_path / "spill"
+        spill.mkdir()
+        strangers = [spill / "kalinka-server.sock", spill / "kalinka-9.log"]
+        for stranger in strangers:
+            stranger.write_bytes(b"not ours")
+            os.utime(stranger, (0, 0))
+
+        with SmbStorage(spill_dir=str(spill)).materialize("smb://nas/music/a.flac"):
+            pass
+
+        assert all(stranger.exists() for stranger in strangers)
 
 
 class TestFailuresArriveAsOsErrors:

@@ -274,23 +274,24 @@ class FileIndexer:
         self._scan_active = True
         await self._publish_scan_progress(force=True)
 
-        # Pre-count pass: a directory-listing-only walk (no stat, no reads)
-        # so the per-file loop below can report real percentage progress.
-        folder_counts = await self._count_supported_files(available_folders)
-        self._scan_total = sum(folder_counts.values())
+        # Listed once and kept, not counted and listed again: every listing
+        # is a round trip on a share, and the count is what the per-file loop
+        # below reports progress against.
+        files_by_folder = await self._audio_files_by_folder(available_folders)
+        self._scan_total = sum(len(files) for files in files_by_folder.values())
         await self._publish_scan_progress(force=True)
 
         # Record the identity only where music was found, so a bare
         # mountpoint never overwrites the mark the purge guard trusts.
         for folder in available_folders:
             identity = root_status[folder].identity
-            if folder_counts.get(folder, 0) > 0 and identity:
+            if files_by_folder.get(folder) and identity:
                 await self.db_manager.set_root_signature(folder, identity)
 
         try:
             for folder in available_folders:
                 logger.debug(f"Scanning folder: {folder}")
-                await self.scan_folder(folder, changed_items)
+                await self._index_files(files_by_folder[folder], changed_items)
         finally:
             # Mark the scan inactive even on failure so the status reader
             # never shows a stuck "indexing" stage.
@@ -465,7 +466,16 @@ class FileIndexer:
 
     async def scan_folder(self, folder: str, changed_items: Dict[str, Set[str]]):
         """Recursively scan a folder for music files"""
-        async for file_path in self._iter_audio_files(folder):
+        await self._index_files(
+            [path async for path in self._iter_audio_files(folder)], changed_items
+        )
+
+    async def _index_files(
+        self, files: List[str], changed_items: Dict[str, Set[str]]
+    ):
+        """Index files a walk has already listed, reporting progress as they
+        go."""
+        for file_path in files:
             try:
                 result_changes = await self.process_file(file_path)
                 if result_changes:
@@ -478,19 +488,20 @@ class FileIndexer:
                 self._scan_processed += 1
                 await self._publish_scan_progress()
 
-    async def _count_supported_files(self, folders: List[str]) -> Dict[str, int]:
-        """Count supported audio files per folder. Directory listings only —
-        no per-file measurement — so it stays cheap even for large
-        libraries. Walks only the folders given: touching an unavailable
-        root here would re-trigger a failed automount or hang on a dead
-        mount."""
-        counts: Dict[str, int] = {}
+    async def _audio_files_by_folder(
+        self, folders: List[str]
+    ) -> Dict[str, List[str]]:
+        """The supported audio files under each folder.
+
+        Directory listings only — no per-file measurement — so the cost is
+        one round trip per directory and nothing per file. Walks only the
+        folders given: touching an unavailable root here would re-trigger a
+        failed automount or hang on a dead mount.
+        """
+        found: Dict[str, List[str]] = {}
         for folder in folders:
-            total = 0
-            async for _ in self._iter_audio_files(folder):
-                total += 1
-            counts[folder] = total
-        return counts
+            found[folder] = [path async for path in self._iter_audio_files(folder)]
+        return found
 
     async def _publish_scan_progress(self, force: bool = False):
         """Write scan progress to the database, throttled to one write per
@@ -1989,6 +2000,9 @@ async def _watch_roots(
     Owns the policy around the watcher: which roots are armed, when a lost
     one is tried again, and which changes are worth waking the indexer for.
     The watcher itself only reports what the protocol told it.
+
+    @note Closes the watcher on every way out, arming included: an armed
+        watch nobody retires holds its descriptors until the process ends.
     """
     db = AsyncIndexerDb(config)
     # Roots without watches (never armed, unmounted, or deleted), re-armed by
@@ -1997,35 +2011,37 @@ async def _watch_roots(
     lost_roots: Dict[str, bool] = {}
     next_rearm_check = 0.0
 
-    # Probed together: an unreachable root costs the probe timeout, and three
-    # of them in a row would delay watching the folders that are there.
-    statuses = await asyncio.gather(
-        *(storage.probe_root(root) for root in roots)
-    )
-    for root, status in zip(roots, statuses):
-        if not status.available:
-            lost_roots[root] = False
-            logger.warning(
-                f"Music folder is not available yet, deferring watches: "
-                f"{root} ({status.reason})"
-            )
-            continue
-        # Reachable but unwatchable is its own case — inotify watches are a
-        # finite per-user resource, and a large library can exhaust them.
-        # The root stays in lost_roots so it is armed if they free up.
-        if not await asyncio.to_thread(watcher.watch, root):
-            lost_roots[root] = False
-            logger.warning(
-                f"Music folder cannot be watched for changes, leaving it to "
-                f"the periodic scan: {root}"
-            )
-
-    logger.info(
-        f"Watching {len(roots) - len(lost_roots)} of {len(roots)} "
-        f"{storage.scheme} music folder(s)"
-    )
-
     try:
+        # Probed together: an unreachable root costs the probe timeout, and
+        # three of them in a row would delay watching the folders that are
+        # there.
+        statuses = await asyncio.gather(
+            *(storage.probe_root(root) for root in roots)
+        )
+        for root, status in zip(roots, statuses):
+            if not status.available:
+                lost_roots[root] = False
+                logger.warning(
+                    f"Music folder is not available yet, deferring watches: "
+                    f"{root} ({status.reason})"
+                )
+                continue
+            # Reachable but unwatchable is its own case — inotify watches are
+            # a finite per-user resource, and a large library can exhaust
+            # them. The root stays in lost_roots so it is armed if they free
+            # up.
+            if not await asyncio.to_thread(watcher.watch, root):
+                lost_roots[root] = False
+                logger.warning(
+                    f"Music folder cannot be watched for changes, leaving it "
+                    f"to the periodic scan: {root}"
+                )
+
+        logger.info(
+            f"Watching {len(roots) - len(lost_roots)} of {len(roots)} "
+            f"{storage.scheme} music folder(s)"
+        )
+
         while not _file_watcher_stop_event.is_set():
             try:
                 result = await asyncio.to_thread(
@@ -2064,6 +2080,26 @@ async def _watch_roots(
         watcher.close()
 
 
+async def _watch_one_storage(
+    config: LocalFilesConfig,
+    storage: FileStorage,
+    watcher: ChangeWatcher,
+    roots: List[str],
+) -> None:
+    """One storage's watch loop, whose failure is its own.
+
+    Logged where it happens and raised no further: the loops run together,
+    and one giving up would otherwise leave its siblings polling with nobody
+    left to close them.
+    """
+    try:
+        await _watch_roots(config, storage, watcher, roots)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("Watching %s music folders stopped", storage.scheme)
+
+
 async def _file_watcher_worker(config: LocalFilesConfig):
     """Background worker for real-time monitoring of the music folders.
 
@@ -2076,13 +2112,13 @@ async def _file_watcher_worker(config: LocalFilesConfig):
     cannot are left to the periodic scan, and when no root can be watched
     the worker returns rather than idling.
     """
-    try:
-        resolver = build_resolver(config)
-        roots_by_storage: Dict[FileStorage, List[str]] = {}
-        for root in resolver.canonical_roots(config.music_folders):
-            roots_by_storage.setdefault(resolver.for_path(root), []).append(root)
+    resolver = build_resolver(config)
+    roots_by_storage: Dict[FileStorage, List[str]] = {}
+    for root in resolver.canonical_roots(config.music_folders):
+        roots_by_storage.setdefault(resolver.for_path(root), []).append(root)
 
-        loops = []
+    watched: List[Tuple[FileStorage, ChangeWatcher]] = []
+    try:
         for storage, roots in roots_by_storage.items():
             watcher = storage.watcher()
             if watcher is None:
@@ -2091,24 +2127,31 @@ async def _file_watcher_worker(config: LocalFilesConfig):
                     f"{', '.join(roots)} rely on the periodic scan"
                 )
                 continue
-            loops.append(_watch_roots(config, storage, watcher, roots))
+            watched.append((storage, watcher))
 
-        if not loops:
+        if not watched:
             logger.info(
                 "No music folder can report changes; the periodic scan is "
                 "what picks new files up"
             )
             return
 
-        try:
-            await asyncio.gather(*loops)
-        except asyncio.CancelledError:
-            logger.info("File watcher worker cancelled.")
-        finally:
-            logger.info("File watcher task exited")
-    except Exception as e:
-        logger.exception(f"Fatal error in file watcher worker: {str(e)}")
+        await asyncio.gather(
+            *(
+                _watch_one_storage(
+                    config, storage, watcher, roots_by_storage[storage]
+                )
+                for storage, watcher in watched
+            )
+        )
+    except asyncio.CancelledError:
+        logger.info("File watcher worker cancelled.")
         raise
+    finally:
+        # Idempotent, so this also covers a loop that never started.
+        for _, watcher in watched:
+            watcher.close()
+        logger.info("File watcher task exited")
 
 
 def start_indexer(

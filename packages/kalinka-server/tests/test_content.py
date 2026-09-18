@@ -181,6 +181,15 @@ def test_a_malformed_range_is_ignored(stream_client):
     assert r.content == AUDIO
 
 
+def test_a_range_that_ends_before_it_starts_is_ignored(stream_client):
+    """An invalid header, which the specification has the server ignore —
+    416 is for a well-formed span the asset cannot meet, and a client that
+    mis-forms one still gets the track."""
+    r = stream_client.get(_url(), headers={"Range": "bytes=100-50"})
+    assert r.status_code == 200
+    assert r.content == AUDIO
+
+
 def test_head_reports_the_range_a_get_would_serve(client):
     """HEAD must not say one thing where GET says another."""
     r = client.head(_url(), headers={"Range": "bytes=0-511"})
@@ -266,6 +275,10 @@ def test_a_stream_is_closed_once_the_response_ends():
     assert client.get(_url(), headers={"Range": "bytes=0-99"}).status_code == 206
 
     assert len(streams) == 1
+    # Closing is handed to a worker thread, so it lands just after the reply.
+    deadline = time.monotonic() + 5.0
+    while not streams[0].closed and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert streams[0].closed
 
 

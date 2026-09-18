@@ -156,7 +156,7 @@ class TestSearchQueueWiring:
         )
         captured = {}
 
-        def fake_module(cfg, db, req=None, resp=None):
+        def fake_module(cfg, db, req=None, resp=None, storage_source=None):
             captured["queues"] = (req, resp)
             return Mock()
 

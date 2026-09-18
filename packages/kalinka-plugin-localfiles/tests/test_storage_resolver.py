@@ -41,6 +41,18 @@ class TestWhichStorageAnswers:
         assert isinstance(storage, UnavailableStorage)
         assert storage.scheme == "ftp"
 
+    def test_an_unknown_protocol_answers_with_one_storage(self):
+        """Callers group paths by the storage object to make one call per
+        storage rather than per path, and the registry that keeps a hung root
+        to a single probe lives on the instance. A fresh object per call
+        quietly defeats both."""
+        resolver = _resolver([])
+        first = resolver.for_path("ftp://host/music/a.flac")
+        second = resolver.for_path("ftp://host/music/b.flac")
+
+        assert first is second
+        assert resolver.for_path("gopher://host/music") is not first
+
     @pytest.mark.asyncio
     async def test_an_unknown_protocol_names_itself_in_the_reason(self):
         storage = _resolver([]).for_path("ftp://host/music")

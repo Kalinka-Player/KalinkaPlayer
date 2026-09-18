@@ -34,9 +34,9 @@ def resolve_range(
 ) -> Optional[tuple[int, int]]:
     """The inclusive byte span a ``Range`` header asks for, or None.
 
-    None means the header is not one to honour — absent, in units this
-    server does not speak, or asking for several spans at once — and the
-    whole asset is the answer. A multipart reply is not something a renderer
+    None means the header is not one to honour — absent, malformed, in
+    units this server does not speak, or asking for several spans at once —
+    and the whole asset is the answer. A multipart reply is not something a renderer
     ever asks for, and ignoring an unhonourable range is what the HTTP
     specification calls for.
 
@@ -66,7 +66,11 @@ def resolve_range(
         return None
     start = int(first)
     end = int(last) if last else size - 1
-    if start >= size or end < start:
+    if last and end < start:
+        # A malformed spec, which the specification has the server ignore;
+        # 416 is for a well-formed span the asset cannot meet.
+        return None
+    if start >= size:
         raise UnsatisfiableRange(header)
     return start, min(end, size - 1)
 
@@ -123,8 +127,9 @@ class _ClosingStreamingResponse(StreamingResponse):
     and that does not work: a client going away mid-track cancels the
     consumer, leaving the generator suspended at its ``yield`` until the loop
     finalizes async generators at shutdown. Closing here instead runs on
-    every exit, and runs synchronously, so cancellation cannot interrupt it
-    and strand a handle on the storage.
+    every exit, and is handed to a worker thread nobody awaits, so
+    cancellation cannot interrupt it and a storage that stopped answering
+    cannot hold the loop while its close times out.
     """
 
     def __init__(self, reader: BinaryIO, *args, **kwargs) -> None:
@@ -135,7 +140,7 @@ class _ClosingStreamingResponse(StreamingResponse):
         try:
             await super().__call__(scope, receive, send)
         finally:
-            _close(self._reader)
+            _close_detached(self._reader)
 
 
 def _headers(
@@ -170,10 +175,24 @@ async def _chunks(reader: BinaryIO, start: int, length: int) -> AsyncIterator[by
         yield chunk
 
 
+def _close_detached(reader: BinaryIO) -> None:
+    """Close ``reader`` off the loop, without waiting for it.
+
+    A close is a round trip on a share, and an SMB one waits for its reply,
+    so closing inline would hold the loop for as long as a storage that went
+    quiet takes to time out.
+    """
+    try:
+        asyncio.get_running_loop().run_in_executor(None, _close, reader)
+    except RuntimeError:
+        # No loop to hand it to, so there is nothing left to hold up either.
+        _close(reader)
+
+
 def _close(reader: BinaryIO) -> None:
     try:
         reader.close()
-    except OSError as e:
+    except Exception as e:
         logger.debug("Closing the content stream failed: %s", e)
 
 
@@ -206,4 +225,4 @@ async def open_reader(
 
 def _close_if_opened(opening: "asyncio.Future[BinaryIO]") -> None:
     if not opening.cancelled() and opening.exception() is None:
-        _close(opening.result())
+        _close_detached(opening.result())

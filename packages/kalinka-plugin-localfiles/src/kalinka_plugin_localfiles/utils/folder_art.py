@@ -171,7 +171,10 @@ def _image_entries(storage: FileStorage, folder: str) -> List[DirEntry]:
         for entry in children:
             if entry.is_dir or not entry.name.lower().endswith(_EXTENSIONS):
                 continue
-            if storage.size_of(entry) > _MAX_BYTES:
+            size = storage.size_of(entry)
+            # Zero is an empty file or one the storage could not measure;
+            # neither is worth a round trip to open.
+            if not size or size > _MAX_BYTES:
                 continue
             entries.append(entry)
     return entries

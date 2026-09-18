@@ -8,7 +8,7 @@ It is opt-in because it is slow and needs the outside world: podman, network acc
 make system-test
 ```
 
-Equivalent to `KALINKA_SYSTEM_TEST=1 .venv/bin/python -m pytest tests/system -o log_cli=true --log-cli-level=INFO`. Without the variable every test is skipped, so `pytest tests/` stays cheap.
+Equivalent to `KALINKA_SYSTEM_TEST=1 .venv/bin/python -m pytest tests/system -o log_cli=true --log-cli-level=INFO`. Without the variable nothing here is collected — not even imported — so `pytest tests/` stays cheap.
 
 Downloads land in `~/.cache/kalinka-system-test` (override with `KALINKA_SYSTEM_TEST_CACHE`). Point that directory's `models/` at, or copy in, an existing set of CLAP models to skip the model download; the server's model directory is a symlink to it.
 

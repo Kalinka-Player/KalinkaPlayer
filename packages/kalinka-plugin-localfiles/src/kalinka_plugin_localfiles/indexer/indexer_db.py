@@ -508,7 +508,7 @@ class AsyncIndexerDb(ProvenanceDb):
     ) -> None:
         """Publish scan progress for get_indexer_status().
 
-        ``total`` comes from the pre-count walk, ``processed`` is the number
+        ``total`` comes from the listing walk, ``processed`` is the number
         of files handled so far. ``updated_at`` lets the reader treat a row
         left behind by a crashed scan as inactive.
         """
