@@ -1,20 +1,22 @@
-"""Mount awareness for the configured music folders.
+"""Mount awareness for music folders on the local filesystem.
 
 A music folder is often a mounted network share (NFS/CIFS, possibly managed
 by autofs), and an unmounted share is indistinguishable from a deleted
 library by plain ``os.path`` checks. This module reads
-``/proc/self/mountinfo`` to tell the two apart, and offers probes that give
-a pending automount a bounded chance to complete — the stat inside a probe
-is itself what triggers an autofs mount.
+``/proc/self/mountinfo`` to tell the two apart.
+
+It is what :class:`~..storage.local.LocalStorage` answers availability
+questions with; the bounding and retrying around :func:`probe_root` belong
+to every storage alike and live in :class:`~..storage.base.FileStorage`.
 """
 
 from __future__ import annotations
 
-import asyncio
 import os
-import time
 from dataclasses import dataclass
-from typing import Iterable, Optional
+from typing import Optional
+
+from ..storage.base import RootStatus
 
 _NETWORK_FS = {
     "cifs",
@@ -32,9 +34,6 @@ _NETWORK_FS = {
     "afpfs",
 }
 
-_PROBE_TIMEOUT_S = 5.0
-_RETRY_DELAYS_S = (0.5, 1.0, 2.0)
-
 
 @dataclass(frozen=True)
 class Mount:
@@ -43,33 +42,6 @@ class Mount:
     mount_point: str
     fs_type: str
     source: str
-
-
-@dataclass(frozen=True)
-class RootStatus:
-    """Availability verdict for one configured music folder.
-
-    ``available`` means the folder exists, is readable, and is not hidden
-    behind a pending automount. ``empty`` is reported separately because an
-    empty folder that the library expects files under may be a mountpoint
-    with nothing mounted on it — whether that blocks purging is the
-    caller's call, weighed against the recorded mount identity. ``reason``
-    is a user-presentable phrase, non-empty when unavailable.
-
-    ``identity`` names the mounted filesystem the folder currently lives on
-    ("nfs4 192.168.1.5:/export", "ext4 /dev/sda1"). Stable across reboots,
-    it lets callers detect that a static mount silently gave way to the
-    local directory underneath it — which availability alone cannot see.
-    """
-
-    root: str
-    available: bool
-    empty: bool
-    reason: str
-    fs_type: Optional[str]
-    is_network: bool
-    is_autofs: bool
-    identity: Optional[str] = None
 
 
 def _unescape(field: str) -> str:
@@ -148,19 +120,11 @@ def autofs_pending(root: str, mounts: Optional[list[Mount]] = None) -> bool:
     return cov is not None and cov.fs_type == "autofs"
 
 
-def root_of(path: str, roots: Iterable[str]) -> Optional[str]:
-    """The configured root ``path`` lies under, matched textually — indexed
-    paths are derived from these canonical roots, so no stat is needed."""
-    for root in roots:
-        if root and (path == root or path.startswith(root + os.sep)):
-            return root
-    return None
-
-
 def probe_root(root: str, mounts: Optional[list[Mount]] = None) -> RootStatus:
     """Blocking availability probe. The stat deliberately touches ``root`` so
-    a pending automount is triggered; run it off the event loop — over a hung
-    network mount it can block for a long time."""
+    a pending automount is triggered. Blocks for as long as a hung mount
+    takes, which is why every caller reaches it through
+    :meth:`~..storage.base.FileStorage.probe_root`."""
     try:
         accessible = os.path.isdir(root) and os.access(root, os.R_OK | os.X_OK)
     except OSError:
@@ -218,52 +182,3 @@ def probe_root(root: str, mounts: Optional[list[Mount]] = None) -> RootStatus:
         is_autofs=is_autofs,
         identity=identity,
     )
-
-
-# One in-flight probe per root (per event loop): repeated status or content
-# requests against a hung mount must pile onto the same blocked worker
-# thread, not claim a fresh one each and exhaust the executor.
-_inflight_probes: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Task]] = {}
-
-
-async def probe_root_async(root: str, timeout: float = _PROBE_TIMEOUT_S) -> RootStatus:
-    """`probe_root` off the event loop, bounded. On timeout the shared worker
-    thread is left to its blocked stat — later probes of the same root reuse
-    it — and the root is reported unavailable."""
-    loop = asyncio.get_running_loop()
-    entry = _inflight_probes.get(root)
-    if entry is None or entry[0] is not loop or entry[1].done():
-        task = loop.create_task(asyncio.to_thread(probe_root, root))
-        _inflight_probes[root] = (loop, task)
-    else:
-        task = entry[1]
-    try:
-        return await asyncio.wait_for(asyncio.shield(task), timeout)
-    except (asyncio.TimeoutError, TimeoutError):
-        return RootStatus(
-            root=root,
-            available=False,
-            empty=True,
-            reason="it did not respond (hung network mount?)",
-            fs_type=None,
-            is_network=False,
-            is_autofs=False,
-        )
-
-
-async def await_root_available(root: str, deadline_s: float = 6.0) -> RootStatus:
-    """Probe until ``root`` is available or the deadline passes. The probes
-    themselves trigger a pending automount; the retries are what give a slow
-    mount its chance."""
-    start = time.monotonic()
-    status = await probe_root_async(root, timeout=deadline_s)
-    for delay in _RETRY_DELAYS_S:
-        if status.available:
-            break
-        remaining = deadline_s - (time.monotonic() - start)
-        if remaining <= delay:
-            break
-        await asyncio.sleep(delay)
-        remaining = deadline_s - (time.monotonic() - start)
-        status = await probe_root_async(root, timeout=max(0.5, remaining))
-    return status

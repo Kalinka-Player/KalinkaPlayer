@@ -1,0 +1,272 @@
+"""Files on an SMB share, read over the protocol rather than through a mount.
+
+Mounting a share needs privileges this service does not have and will not be
+given: the unit runs with ``NoNewPrivileges``, which is exactly what stops
+the setuid helper every FUSE filesystem needs. Speaking SMB2/3 from inside
+the process needs nothing but a socket, and a share added this way needs no
+root, no ``fstab`` entry and no packages on the appliance.
+
+Shares the kernel *has* mounted are not this storage's business — they are
+ordinary paths, and :class:`~.local.LocalStorage` reads them.
+
+Locations are written ``smb://[user@]host[:port]/share/path``. Credentials
+come from the module's configuration; the URL may name the user but never
+the password.
+"""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+from dataclasses import dataclass
+from stat import S_ISDIR
+from typing import Any, BinaryIO, Iterable, Iterator, Optional
+
+import smbclient
+
+from .base import (
+    DirEntry,
+    FileIdentity,
+    FileStat,
+    FileStorage,
+    RootStatus,
+)
+from .locator import (
+    SMB_SCHEME,
+    LocatorError,
+    StorageLocator,
+    is_within,
+    parse,
+    scheme_of,
+)
+
+#: Read-ahead per request. A tag read walks a file's header and the audio
+#: embedder seeks to a few fragments, so the win is in asking for a chunk
+#: worth having rather than a block at a time over the network.
+_READ_BUFFER = 1024 * 1024
+
+#: Long enough for a NAS that has spun its disks down, short enough that an
+#: address with nothing behind it fails a scan rather than stalling it.
+_CONNECT_TIMEOUT_S = 15
+
+#: Who an unconfigured share logs in as. A username is not optional: the
+#: session pool matches sessions on it, and omitting it would both fail to
+#: authenticate and silently adopt whichever session a differently
+#: credentialed share had already opened to the same server.
+GUEST_USERNAME = "guest"
+
+#: Readers must not lock each other out. The server holds a stream open for
+#: the length of a response while the indexer may be reading the same track,
+#: and ``smbclient`` defaults to a deny-all open.
+_SHARE_ACCESS = "rwd"
+
+
+@dataclass(frozen=True)
+class SmbCredentials:
+    """How to log in to the shares this module reads.
+
+    One set for every server, because the settings page has no editor for a
+    list of secrets. A share that wants a different account can name it in
+    its own URL, which overrides :attr:`username` for that root alone.
+
+    Empty credentials mean the guest access most NAS boxes offer for a media
+    share. That is still a logon under the name :data:`GUEST_USERNAME`, not an
+    anonymous one — ``spnego`` cannot build a context without a username at
+    all, and a server configured for guests maps an unknown name onto its
+    guest account.
+    """
+
+    username: str = ""
+    password: str = ""
+    encrypt: bool = False
+
+
+class SmbStorage(FileStorage):
+    """An SMB client presented as a filesystem.
+
+    Connections and sessions are pooled by ``smbclient`` per server and
+    credential, so repeated calls cost one round trip rather than a new
+    logon, and nothing here needs to be closed between files.
+
+    @note Every operation translates backend failures into ``OSError``,
+        including authentication and transport ones, because that is what
+        this interface promises and what each caller's ``except OSError``
+        already handles.
+    """
+
+    def __init__(
+        self,
+        credentials: Optional[SmbCredentials] = None,
+        spill_dir: Optional[str] = None,
+    ) -> None:
+        super().__init__(spill_dir=spill_dir)
+        self._credentials = credentials or SmbCredentials()
+
+    @property
+    def scheme(self) -> str:
+        return SMB_SCHEME
+
+    def handles(self, path: str) -> bool:
+        return scheme_of(path) == SMB_SCHEME
+
+    def canonical(self, path: str) -> str:
+        return str(parse(path))
+
+    def contains(self, path: str, roots: Iterable[str]) -> bool:
+        """Textual, on canonical URLs. There is no symlink to resolve: this
+        storage never follows a reparse point, and ``..`` is refused when the
+        location is parsed."""
+        try:
+            canonical = str(parse(path))
+        except LocatorError:
+            return False
+        return any(is_within(canonical, root) for root in roots)
+
+    def listdir(self, path: str) -> list[DirEntry]:
+        locator = parse(path)
+        with self._as_os_error():
+            return [
+                self._entry(locator, child)
+                for child in smbclient.scandir(
+                    self._unc(locator), **self._session(locator)
+                )
+            ]
+
+    def stat(self, path: str) -> FileStat:
+        locator = parse(path)
+        with self._as_os_error():
+            info = smbclient.stat(self._unc(locator), **self._session(locator))
+        return FileStat(
+            size=info.st_size,
+            mtime_ns=info.st_mtime_ns,
+            is_dir=S_ISDIR(info.st_mode),
+            identity=self._identity(info),
+        )
+
+    def open(self, path: str) -> BinaryIO:
+        locator = parse(path)
+        with self._as_os_error():
+            return smbclient.open_file(
+                self._unc(locator),
+                mode="rb",
+                buffering=_READ_BUFFER,
+                share_access=_SHARE_ACCESS,
+                **self._session(locator),
+            )
+
+    def probe_root_blocking(self, root: str) -> RootStatus:
+        try:
+            locator = parse(root)
+        except LocatorError as e:
+            return self.unavailable(root, str(e))
+
+        unc = self._unc(locator)
+        session = self._session(locator)
+        try:
+            with self._as_os_error():
+                info = smbclient.stat(unc, **session)
+                if not S_ISDIR(info.st_mode):
+                    return self.unavailable(
+                        root, "it names a file rather than a folder"
+                    )
+                empty = next(iter(smbclient.scandir(unc, **session)), None) is None
+        except OSError as e:
+            return self.unavailable(root, self._reason(locator, e))
+
+        return RootStatus(
+            root=root,
+            available=True,
+            empty=empty,
+            reason="",
+            fs_type=SMB_SCHEME,
+            is_network=True,
+            is_autofs=False,
+            identity=f"smb //{locator.authority}/{locator.share} {info.st_dev}",
+        )
+
+    def _identity(self, info) -> Optional[FileIdentity]:
+        """The volume serial and the server's file index, or None.
+
+        A rename inside a share keeps both, which is what lets a moved file
+        keep its library identity. Servers that supply no file index report
+        zero for every file, so a zero has to read as "no identity" — shared
+        between files it would make each one look like a rename of the last.
+        The scheme prefix keeps a volume serial from colliding with a local
+        ``st_dev``, since the library looks identities up in one table.
+        """
+        if not info.st_dev or not info.st_ino:
+            return None
+        return FileIdentity(
+            device=f"{SMB_SCHEME}:{info.st_dev}", inode=str(info.st_ino)
+        )
+
+    def _entry(self, locator: StorageLocator, child) -> DirEntry:
+        """A listing row, built from what the directory query already
+        returned — no stat per entry, which is what keeps a folder of
+        artwork to one round trip.
+
+        @note ``follow_symlinks=False`` is the contract, and here it also
+            keeps the listing to that one round trip: resolving a reparse
+            point costs a further query that can fail on its own and take
+            the whole directory's music down with it.
+        """
+        return DirEntry(
+            name=child.name,
+            path=f"{locator}/{child.name}",
+            is_dir=child.is_dir(follow_symlinks=False),
+            size=child.smb_info.end_of_file,
+        )
+
+    def _unc(self, locator: StorageLocator) -> str:
+        r"""The ``\\host\share\path`` form ``smbclient`` takes. The port is
+        not part of it; it rides in the session arguments instead."""
+        host = locator.host.strip("[]")
+        return "\\\\" + "\\".join([host, *locator.components])
+
+    def _session(self, locator: StorageLocator) -> dict[str, Any]:
+        """Connection and credential arguments for one location.
+
+        A username in the URL wins over the configured one, and one is always
+        sent: ``smbclient`` pools sessions per server and picks the first one
+        when asked for no particular user, so a share left to the guest
+        default would read as whoever logged in first.
+
+        ``encrypt`` is only sent when it is wanted. It is tri-state in
+        ``smbclient``, where an explicit False means *force encryption off*
+        and is refused on a session a server has already encrypted.
+        """
+        session: dict[str, Any] = {
+            "connection_timeout": _CONNECT_TIMEOUT_S,
+            "username": (
+                locator.username or self._credentials.username or GUEST_USERNAME
+            ),
+            "password": self._credentials.password,
+        }
+        if self._credentials.encrypt:
+            session["encrypt"] = True
+        if locator.port is not None:
+            session["port"] = locator.port
+        return session
+
+    def _reason(self, locator: StorageLocator, error: OSError) -> str:
+        """Why a root is unavailable, in words a user can act on."""
+        return (
+            f"{locator.host} did not answer for share "
+            f"'{locator.share}' ({error})"
+        )
+
+    @contextmanager
+    def _as_os_error(self) -> Iterator[None]:
+        """Present every backend failure as an ``OSError``.
+
+        ``smbclient`` raises ``OSError`` for what a filesystem would, but
+        authentication, negotiation and transport failures come out as its
+        own exception types, and one of those escaping would abort a scan
+        over a single unreachable share. Only the cause is carried over:
+        every caller already names the path it was reading.
+        """
+        try:
+            yield
+        except OSError:
+            raise
+        except Exception as e:
+            raise OSError(str(e)) from e

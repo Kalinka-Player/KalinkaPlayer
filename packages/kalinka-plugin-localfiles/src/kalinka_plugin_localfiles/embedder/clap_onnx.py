@@ -32,7 +32,7 @@ import gc
 import logging
 import os
 import urllib.request
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, BinaryIO, Optional
 
 import numpy as np
 
@@ -248,13 +248,22 @@ def _read_fragment(
     return _pad_or_crop(chunk)
 
 
-def _load_audio_fragments(file_path: str):
-    """Yield 10 s mono/48 kHz fragments from *file_path*, one at a time.
+def _describe(audio: BinaryIO) -> str:
+    """What to call a stream in a log line. File-backed streams carry the
+    name they were opened with; the rest have only their type."""
+    return getattr(audio, "name", None) or type(audio).__name__
+
+
+def _load_audio_fragments(audio: BinaryIO):
+    """Yield 10 s mono/48 kHz fragments from an open audio stream.
 
     Generator — never holds more than one fragment in memory at once,
     so the embedder can run inference and discard each waveform
-    before the next read. For files we can't open the generator
+    before the next read. For streams we can't read the generator
     yields nothing and the caller treats that as a failed embedding.
+
+    @param audio A seekable binary stream, which is what lets a track on a
+        share cost the fragments sampled rather than the whole file.
     """
     try:
         import soundfile as sf
@@ -263,12 +272,12 @@ def _load_audio_fragments(file_path: str):
         return
 
     try:
-        with sf.SoundFile(file_path) as f:
+        with sf.SoundFile(audio) as f:
             src_sr = f.samplerate
             n_frames = len(f)
             duration_s = n_frames / src_sr if src_sr else 0.0
             if duration_s <= 0.0:
-                logger.warning("Audio %s has zero duration", file_path)
+                logger.warning("Audio %s has zero duration", _describe(audio))
                 return
 
             starts = _fragment_starts_s(duration_s)
@@ -288,7 +297,7 @@ def _load_audio_fragments(file_path: str):
                             "Skipping %s: libsndfile cannot read first "
                             "fragment (file may be malformed or use a "
                             "FLAC/MP3 variant libsndfile doesn't support)",
-                            file_path,
+                            _describe(audio),
                         )
                         return
                     continue
@@ -303,7 +312,7 @@ def _load_audio_fragments(file_path: str):
             # partial embeddings still get produced from the fragments
             # that did work, so this isn't a track-level failure.
     except Exception as e:
-        logger.warning("Failed to open audio %s: %s", file_path, e)
+        logger.warning("Failed to open audio %s: %s", _describe(audio), e)
         return
 
 
@@ -468,12 +477,15 @@ class ClapOnnxModel:
         self._tokenizer = None
         self._va_head_session = None
 
-    def get_audio_embedding(self, file_path: str) -> Optional[np.ndarray]:
+    def get_audio_embedding(self, audio: BinaryIO) -> Optional[np.ndarray]:
         """Compute 512-dim audio embedding. Returns None on failure.
 
         Long enough tracks are sampled at multiple fragments and the
         per-fragment embeddings are averaged before returning. The
         caller is expected to L2-normalise the result.
+
+        @param audio A seekable binary stream of the track, opened by
+            whichever storage holds it.
 
         We only accumulate the 512-float embedding vectors (≈ 2 KB
         each), never the raw fragment waveforms — the audio loader
@@ -485,7 +497,7 @@ class ClapOnnxModel:
         accum: Optional[np.ndarray] = None
         n_fragments = 0
 
-        for waveform in _load_audio_fragments(file_path):
+        for waveform in _load_audio_fragments(audio):
             try:
                 result = self._audio_session.run(
                     None, {"waveform": waveform[np.newaxis, :]}
@@ -495,7 +507,7 @@ class ClapOnnxModel:
             except Exception as e:
                 logger.warning(
                     "ONNX audio inference failed for %s (fragment %d): %s",
-                    file_path, n_fragments, e,
+                    _describe(audio), n_fragments, e,
                 )
                 continue
             finally:

@@ -15,6 +15,7 @@ from mutagen.flac import FLAC, Picture
 from PIL import Image
 
 from kalinka_plugin_localfiles.config_model import LocalFilesConfig
+from kalinka_plugin_localfiles.storage.local import LocalStorage
 from kalinka_plugin_localfiles.db_schema import init_db
 from kalinka_plugin_localfiles.indexer.indexer import FileIndexer
 from kalinka_plugin_localfiles.indexer.indexer_db import AsyncIndexerDb
@@ -34,6 +35,9 @@ async def indexer(tmp_path):
     await init_db(config.db_path)
     db = AsyncIndexerDb(config)
     return FileIndexer(config, db), db, music_dir, config
+
+
+LOCAL = LocalStorage()
 
 
 def _cover_png(color):
@@ -187,9 +191,9 @@ async def test_embedded_art_reads_mp3_apic(indexer):
                  data=_cover_png((90, 10, 130))))
     id3.save(str(path))
 
-    art = fi._embedded_art(str(path))
+    art = fi._embedded_art(LOCAL, str(path))
     assert art == _cover_png((90, 10, 130))
-    assert fi._embedded_art(str(music_dir / "missing.mp3")) is None
+    assert fi._embedded_art(LOCAL, str(music_dir / "missing.mp3")) is None
 
 
 @pytest.mark.asyncio
@@ -197,11 +201,11 @@ async def test_embedded_art_reads_flac_front_cover(indexer):
     fi, db, music_dir, config = indexer
     path = music_dir / "single.flac"
     _write_flac(path, {"title": "T"}, cover=_cover_png((0, 200, 40)))
-    assert fi._embedded_art(str(path)) == _cover_png((0, 200, 40))
+    assert fi._embedded_art(LOCAL, str(path)) == _cover_png((0, 200, 40))
 
     artless = music_dir / "plain.flac"
     _write_flac(artless, {"title": "P"})
-    assert fi._embedded_art(str(artless)) is None
+    assert fi._embedded_art(LOCAL, str(artless)) is None
 
 
 class _FakeDb:

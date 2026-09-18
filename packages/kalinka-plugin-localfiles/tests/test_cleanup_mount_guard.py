@@ -12,12 +12,12 @@ import os
 
 import pytest
 
-import kalinka_plugin_localfiles.indexer.indexer as indexer_mod
 from kalinka_plugin_localfiles.config_model import LocalFilesConfig
 from kalinka_plugin_localfiles.db_schema import init_db
 from kalinka_plugin_localfiles.indexer.indexer import FileIndexer
 from kalinka_plugin_localfiles.indexer.indexer_db import AsyncIndexerDb
-from kalinka_plugin_localfiles.utils.mount_status import RootStatus
+from kalinka_plugin_localfiles.storage import RootStatus
+from kalinka_plugin_localfiles.storage.local import LocalStorage
 
 
 def _meta(**over):
@@ -29,7 +29,7 @@ def _meta(**over):
 async def _index_file(fi, path, **meta):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"x")
-    fi._extract_metadata = lambda _p, m=meta: _meta(**m)
+    fi._extract_metadata = lambda _s, _p, m=meta: _meta(**m)
     await fi.process_file(str(path))
 
 
@@ -63,10 +63,10 @@ def _unavailable(root):
 def fast_probe(monkeypatch):
     """Skip the automount retry window: probe once, immediately."""
 
-    async def probe_once(root, deadline_s=None):
-        return await indexer_mod.probe_root_async(root)
+    async def probe_once(self, root, deadline_s=None):
+        return await self.probe_root(root)
 
-    monkeypatch.setattr(indexer_mod, "await_root_available", probe_once)
+    monkeypatch.setattr(LocalStorage, "await_root_available", probe_once)
 
 
 @pytest.mark.asyncio
@@ -130,16 +130,16 @@ async def test_root_going_offline_mid_sweep_blocks_the_deletes(
 
     # First probe (the sweep's) sees the live root; the pre-delete re-probe
     # sees the share gone. The candidate must survive.
-    real_probe = indexer_mod.probe_root_async
+    real_probe = LocalStorage.probe_root
     calls = {"n": 0}
 
-    async def probe(root, timeout=None):
+    async def probe(self, root, timeout=None):
         calls["n"] += 1
         if calls["n"] >= 2:
             return _unavailable(root)
-        return await real_probe(root)
+        return await real_probe(self, root)
 
-    monkeypatch.setattr(indexer_mod, "probe_root_async", probe)
+    monkeypatch.setattr(LocalStorage, "probe_root", probe)
     removed = await fi.cleanup_stale_tracks()
 
     assert calls["n"] >= 2
@@ -161,9 +161,9 @@ async def test_out_of_config_tracks_purge_even_with_root_offline(
     # Restart with "dropped" out of config while "music" is also offline:
     # the config-scope purge must still run, the mount guard must still hold.
     monkeypatch.setattr(
-        indexer_mod,
-        "probe_root_async",
-        lambda root, timeout=None: _async(_unavailable(root)),
+        LocalStorage,
+        "probe_root",
+        lambda self, root, timeout=None: _async(_unavailable(root)),
     )
     os.remove(music / "a.mp3")
     os.rmdir(music)
@@ -184,7 +184,7 @@ async def test_run_scan_records_the_mount_identity(tmp_path, fast_probe):
 
     fi = _make_indexer(tmp_path, [music])
     await init_db(fi.db_manager.db_path)
-    fi._extract_metadata = lambda _p: _meta(artist="A", album="AA", title="a")
+    fi._extract_metadata = lambda _s, _p: _meta(artist="A", album="AA", title="a")
     await fi.run_scan()
 
     signature = await fi.db_manager.get_root_signature(str(music))
@@ -219,7 +219,7 @@ async def test_empty_root_with_matching_identity_purges(tmp_path, fast_probe):
     fi = _make_indexer(tmp_path, [music])
     await init_db(fi.db_manager.db_path)
     await _index_file(fi, music / "a.mp3", artist="A", album="AA", title="a")
-    current = await indexer_mod.probe_root_async(str(music))
+    current = await LocalStorage().probe_root(str(music))
     await fi.db_manager.set_root_signature(str(music), current.identity)
 
     os.remove(music / "a.mp3")  # root is now empty, identity unchanged

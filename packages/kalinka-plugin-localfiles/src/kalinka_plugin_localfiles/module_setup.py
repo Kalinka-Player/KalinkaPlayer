@@ -3,7 +3,6 @@ import importlib.util
 import logging
 import logging.handlers
 import multiprocessing
-import os
 import shutil
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Optional
@@ -19,7 +18,7 @@ from kalinka_plugin_sdk.inputmodule import InputModule
 
 from .config_model import LocalFilesConfig
 from .db_schema import init_db
-from .utils.mount_status import RootStatus, probe_root_async
+from .storage import RootStatus, StorageResolver, build_resolver
 from .input_module_db import LocalFilesInputModuleDb
 from .localfiles import LocalFilesInputModule
 from .optional_packages import OPTIONAL_PACKAGES
@@ -119,7 +118,7 @@ def _format_root_status(
 
 
 class KalinkaPluginLocalFiles(InputModulePlugin):
-    REQUIRES_SDK = ">=3,<4"
+    REQUIRES_SDK = ">=3.2,<4"
     PLUGIN_ID = "localfiles"
     CONFIG_MODEL = LocalFilesConfig
     OPTIONAL_PACKAGES: ClassVar[dict[str, OptionalPackageSpec]] = OPTIONAL_PACKAGES
@@ -179,6 +178,13 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
         # can read the *current* in-memory config — which the server
         # mutates via PUT /server/config without re-invoking setup.
         self._context: Optional[InputPluginContext] = None
+
+        # One resolver per credential set rather than one per call. The
+        # registry that keeps a hung folder to a single blocked worker thread
+        # lives on the storage instances, so a resolver built per status poll
+        # would strand a thread on every poll.
+        self._resolver: Optional[StorageResolver] = None
+        self._resolver_key: Optional[str] = None
 
         # Per-sub-feature state used by get_state() and resolve_dynamic_field().
         # Populated during setup() based on actual subprocess start outcomes
@@ -435,6 +441,18 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
                 ai.state = ModuleHealthState.READY
                 ai.message = ""
 
+    def _resolver_for(self, config: LocalFilesConfig) -> StorageResolver:
+        """The storage resolver for this configuration, kept across calls.
+
+        Rebuilt only when the credentials change, because ``setup`` is not
+        re-run when the server mutates the config in place.
+        """
+        key = config.smb.model_dump_json()
+        if self._resolver is None or key != self._resolver_key:
+            self._resolver = build_resolver(config)
+            self._resolver_key = key
+        return self._resolver
+
     async def _music_folder_statuses(
         self,
     ) -> list[tuple[RootStatus, Optional[str]]]:
@@ -442,17 +460,27 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
         mount identity the indexer recorded for it (None when unrecorded).
 
         Evaluated on demand (module status, dynamic status field) rather than
-        once at setup, so an unmounted share shows up — and clears — without
-        a restart. Probing stats the folder, which also nudges a pending
-        automount. Runs inside the service sandbox, so it also catches paths
-        hidden by systemd hardening.
+        once at setup, so an unreachable share shows up — and clears —
+        without a restart. Probing a local folder stats it, which also
+        nudges a pending automount, and runs inside the service sandbox, so
+        it catches paths hidden by systemd hardening too. Probing a share
+        asks the server, so a wrong address or password surfaces here rather
+        than as an empty library.
         """
         if self._context is None:
             return []
         config = LocalFilesConfig(**self._context.config.model_dump())
-        folders = [os.path.expanduser(f) for f in config.music_folders if f]
+        resolver = self._resolver_for(config)
+        # Off the loop: canonicalising a local folder resolves it, and a
+        # folder on a hung mount would hold up every request behind it.
+        folders = await asyncio.to_thread(
+            resolver.canonical_roots, config.music_folders
+        )
         statuses = await asyncio.gather(
-            *(probe_root_async(folder, timeout=2.0) for folder in folders)
+            *(
+                resolver.for_path(folder).probe_root(folder, timeout=2.0)
+                for folder in folders
+            )
         )
         module = self._inputmodule
         if module is None or not module.db_manager.is_good():

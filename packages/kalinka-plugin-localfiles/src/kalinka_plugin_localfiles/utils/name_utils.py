@@ -37,8 +37,6 @@ import unicodedata
 import ftfy
 from rapidfuzz import fuzz
 
-from collections.abc import Iterable
-from pathlib import Path
 from typing import Optional
 
 _LEADING_TRAILING_PUNCT_RE = re.compile(r"^[\-_.,/ \t]+|[\-_.,/ \t]+$")
@@ -183,52 +181,6 @@ def album_folder_for_path(file_path: str) -> str:
     if _DISC_SUBDIR_RE.match(name):
         return os.path.dirname(parent)
     return parent
-
-
-def expand_music_folders(folders: Iterable[str]) -> list[str]:
-    """Expand ``~`` and resolve each configured music folder to a canonical
-    absolute path. The indexer stores file paths derived from these (so they
-    are already canonical); resolving the roots the same way lets
-    :func:`path_within_roots` compare them directly.
-    """
-    resolved: list[str] = []
-    for folder in folders:
-        if not folder:
-            continue
-        try:
-            resolved.append(str(Path(folder).expanduser().resolve()))
-        except (OSError, RuntimeError, ValueError):
-            continue
-    return resolved
-
-
-def path_within_roots(file_path: str, roots: Iterable[str]) -> bool:
-    """Return True if ``file_path`` lives inside one of ``roots``.
-
-    ``roots`` are expected to be canonical absolute paths (see
-    :func:`expand_music_folders`). Membership is tested per path component,
-    so ``/Music`` does not match a sibling ``/Music2``. A path equal to a
-    root is considered inside it.
-
-    This is the access boundary for the local-files module: only files under
-    a configured music folder may be indexed or played. When the folder
-    config changes, entries that fall outside the new roots are no longer
-    accessible and must be purged / refused.
-    """
-    if not file_path:
-        return False
-    try:
-        target = Path(file_path).expanduser().resolve()
-    except (OSError, RuntimeError, ValueError):
-        return False
-    for root in roots:
-        try:
-            root_path = Path(root)
-        except (OSError, ValueError):
-            continue
-        if target == root_path or root_path in target.parents:
-            return True
-    return False
 
 
 def fold_diacritics(name: str) -> str:

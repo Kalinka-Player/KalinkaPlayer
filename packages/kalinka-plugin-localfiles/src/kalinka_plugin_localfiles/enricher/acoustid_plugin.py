@@ -2,7 +2,6 @@ import asyncio
 import logging
 import math
 import time
-import os
 import json
 import shutil
 import subprocess
@@ -12,6 +11,7 @@ from typing import Dict, Optional, List, Tuple
 
 from ..config_model import LocalFilesConfig
 from ..resolution.resolver import GUESSED
+from ..storage import build_resolver
 from ..utils.name_utils import clean_display_name
 from ..utils.tracklist_names import name_carries_title
 from .enricher_plugin import (
@@ -48,6 +48,7 @@ class AcoustIdPlugin(EnricherPlugin):
         self.config = config
         self.db_manager = db_manager
         self.api_key = config.enricher.plugins.acoustid.api_key
+        self.storage = build_resolver(config)
         # Probed once: a missing binary is a property of the installation, not
         # of the track, and shelling out per file turned one broken install
         # into one error line per file in the library.
@@ -117,27 +118,34 @@ class AcoustIdPlugin(EnricherPlugin):
         """
         Generate audio fingerprint using chromaprint (fpcalc)
 
+        ``fpcalc`` opens a file by name and reports the duration it decoded,
+        neither of which survives being handed a pipe, so a track on storage
+        this process cannot hand to another one is copied out for the length
+        of the call.
+
         Returns:
             Tuple of (fingerprint, duration)
         """
+        storage = self.storage.for_path(file_path)
         try:
-            # Check if file exists
-            if not os.path.isfile(file_path):
+            if not storage.is_file(file_path):
                 logger.error(f"File not found: {file_path}")
                 return None, None
 
-            # Run fpcalc tool to generate fingerprint
-            cmd = ["fpcalc", "-json", file_path]
-            logger.debug(f"Running command: {' '.join(cmd)}")
+            with storage.materialize(file_path) as readable_path:
+                # Run fpcalc tool to generate fingerprint
+                cmd = ["fpcalc", "-json", readable_path]
+                logger.debug(f"Running command: {' '.join(cmd)}")
 
-            # A damaged file makes fpcalc exit non-zero after it has already
-            # printed the fingerprint it built, and that is worth keeping.
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=30,  # Timeout after 30 seconds
-            )
+                # A damaged file makes fpcalc exit non-zero after it has
+                # already printed the fingerprint it built, and that is
+                # worth keeping.
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,  # Timeout after 30 seconds
+                )
 
             # Parse JSON output
             data = json.loads(result.stdout)

@@ -5,6 +5,9 @@ Avalon) whose .cue is UTF-16.
 """
 
 from kalinka_plugin_localfiles.indexer.cue import find_cue_for, parse_cue
+from kalinka_plugin_localfiles.storage.local import LocalStorage
+
+LOCAL = LocalStorage()
 
 CUE = """REM GENRE "Pop Rock, Synth-pop"
 REM DATE "1982"
@@ -35,7 +38,7 @@ def _write(path, text, encoding):
 
 def test_disc_level_metadata(tmp_path):
     p = _write(tmp_path / "a.cue", CUE, "utf-8")
-    sheet = parse_cue(p)
+    sheet = parse_cue(LOCAL, p)
     assert sheet.performer == "Roxy Music"
     assert sheet.title == "Avalon"
     assert sheet.genre == "Pop Rock, Synth-pop"
@@ -44,7 +47,7 @@ def test_disc_level_metadata(tmp_path):
 
 def test_per_track_titles_and_offsets(tmp_path):
     p = _write(tmp_path / "a.cue", CUE, "utf-8")
-    tracks = parse_cue(p).files[0].tracks
+    tracks = parse_cue(LOCAL, p).files[0].tracks
     assert [t.number for t in tracks] == [1, 2, 3]
     assert [t.title for t in tracks] == [
         "More Than This",
@@ -60,7 +63,7 @@ def test_per_track_titles_and_offsets(tmp_path):
 def test_utf16_encoding(tmp_path):
     # The real Avalon.cue is UTF-16; decoding must not fall back to mojibake.
     p = _write(tmp_path / "a.cue", CUE, "utf-16")
-    sheet = parse_cue(p)
+    sheet = parse_cue(LOCAL, p)
     assert sheet.performer == "Roxy Music"
     assert sheet.files[0].tracks[1].title == "The Space Between"
 
@@ -69,14 +72,14 @@ def test_cyrillic_cp1251(tmp_path):
     cyr = 'PERFORMER "Кино"\nTITLE "Группа крови"\nFILE "x.flac" WAVE\n' \
           '  TRACK 01 AUDIO\n    TITLE "Война"\n    INDEX 01 00:00:00\n'
     p = _write(tmp_path / "a.cue", cyr, "cp1251")
-    sheet = parse_cue(p)
+    sheet = parse_cue(LOCAL, p)
     assert sheet.performer == "Кино"
     assert sheet.files[0].tracks[0].title == "Война"
 
 
 def test_tracks_for_single_file(tmp_path):
     p = _write(tmp_path / "a.cue", CUE, "utf-8")
-    sheet = parse_cue(p)
+    sheet = parse_cue(LOCAL, p)
     # Exact filename match and the single-file implicit match both work.
     assert len(sheet.tracks_for("1982 - Roxy Music - Avalon.flac")) == 3
     assert len(sheet.tracks_for("anything-else.flac")) == 3
@@ -84,14 +87,14 @@ def test_tracks_for_single_file(tmp_path):
 
 def test_no_tracks_returns_none(tmp_path):
     p = _write(tmp_path / "a.cue", 'PERFORMER "X"\nTITLE "Y"\n', "utf-8")
-    assert parse_cue(p) is None
+    assert parse_cue(LOCAL, p) is None
 
 
 def test_find_cue_same_stem(tmp_path):
     audio = tmp_path / "1982 - Roxy Music - Avalon.flac"
     audio.write_bytes(b"x")
     _write(tmp_path / "1982 - Roxy Music - Avalon.cue", CUE, "utf-8")
-    assert find_cue_for(str(audio)) == str(
+    assert find_cue_for(LOCAL, str(audio)) == str(
         tmp_path / "1982 - Roxy Music - Avalon.cue"
     )
 
@@ -101,10 +104,10 @@ def test_find_cue_by_file_reference(tmp_path):
     audio = tmp_path / "1982 - Roxy Music - Avalon.flac"
     audio.write_bytes(b"x")
     _write(tmp_path / "disc.cue", CUE, "utf-8")
-    assert find_cue_for(str(audio)) == str(tmp_path / "disc.cue")
+    assert find_cue_for(LOCAL, str(audio)) == str(tmp_path / "disc.cue")
 
 
 def test_find_cue_none_when_absent(tmp_path):
     audio = tmp_path / "track.flac"
     audio.write_bytes(b"x")
-    assert find_cue_for(str(audio)) is None
+    assert find_cue_for(LOCAL, str(audio)) is None

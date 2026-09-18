@@ -54,8 +54,7 @@ from kalinka_plugin_sdk.filters import (
 )
 from .utils.id_generator import generate_playlist_id
 from .utils.image_utils import create_playlist_cover_collage
-from .utils.mount_status import await_root_available, root_of
-from .utils.name_utils import expand_music_folders, path_within_roots
+from .storage import build_resolver, media_type_of
 from .input_module_db import (
     ListingFilter,
     LocalFilesInputModuleDb,
@@ -258,7 +257,8 @@ class LocalFilesInputModule(InputModule):
         # does not re-run setup(), so the new boundary only takes effect on the
         # next restart / re-setup (at which point the indexer also purges the
         # now-out-of-scope rows).
-        self._music_folders = expand_music_folders(config.music_folders)
+        self._storage = build_resolver(config)
+        self._music_folders = self._storage.canonical_roots(config.music_folders)
         self._search_request_queue = search_request_queue
         self._search_response_queue = search_response_queue
         self._search_lock = asyncio.Lock()
@@ -728,13 +728,14 @@ class LocalFilesInputModule(InputModule):
     def _require_readable(self, track_path: str) -> None:
         """Raise unless the file may still be served: inside a configured music
         folder, present, and readable."""
-        if not path_within_roots(track_path, self._music_folders):
+        if not self._storage.within_roots(track_path, self._music_folders):
             raise PermissionError(
                 f"Track path is outside the configured music folders: {track_path}"
             )
-        if not os.path.exists(track_path):
+        storage = self._storage.for_path(track_path)
+        if not storage.exists(track_path):
             raise FileNotFoundError(f"Track file no longer exists: {track_path}")
-        if not os.access(track_path, os.R_OK):
+        if not storage.readable(track_path):
             raise PermissionError(f"Track file is not readable: {track_path}")
 
     async def _require_readable_bounded(self, track_path: str) -> None:
@@ -763,12 +764,12 @@ class LocalFilesInputModule(InputModule):
         file in the empty directory behind a lost mount reads as perfectly
         available. Probing goes through the shared per-root worker, so a hung
         mount costs one blocked thread however many tracks ask."""
-        root = root_of(track_path, self._music_folders)
+        root = self._storage.root_of(track_path, self._music_folders)
         if root is None:
             await self._require_readable_bounded(track_path)
             return
 
-        status = await await_root_available(root)
+        status = await self._storage.for_path(root).await_root_available(root)
         if not status.available:
             raise SourceUnavailableError(
                 f"Music folder {root} is not available: {status.reason}"
@@ -802,10 +803,36 @@ class LocalFilesInputModule(InputModule):
             logger.warning("Refusing content for track %s: %s", asset_id, e)
             return None
 
+        mime_type = media_type_of(track_path) or "application/octet-stream"
+        storage = self._storage.for_path(track_path)
+        local_path = storage.local_path(track_path)
+        if local_path is not None:
+            return ContentInfo(
+                mime_type=mime_type, local_path=local_path, cacheable=True
+            )
+
+        # Storage only this module can reach: the server streams it instead,
+        # and needs the length up front because a renderer seeks by byte
+        # range and reads the stream size out of Content-Range.
+        try:
+            measured = await asyncio.wait_for(
+                asyncio.to_thread(storage.stat, track_path), STAT_TIMEOUT_S
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            # Bounded like every other stat on this path: an SMB client waits
+            # ten minutes for a quiet server by default, which would pin the
+            # request and its worker for as long.
+            raise SourceUnavailableError(
+                "Music storage did not respond while measuring the track"
+            )
+        except OSError as e:
+            logger.warning("Could not measure track %s: %s", asset_id, e)
+            return None
+        size = measured.size
         return ContentInfo(
-            mime_type=mimetypes.guess_type(track_path)[0]
-            or "application/octet-stream",
-            local_path=track_path,
+            mime_type=mime_type,
+            reader=lambda: storage.open(track_path),
+            size=size,
             cacheable=True,
         )
 

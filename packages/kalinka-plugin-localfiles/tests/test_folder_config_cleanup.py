@@ -18,10 +18,7 @@ from kalinka_plugin_localfiles.config_model import LocalFilesConfig
 from kalinka_plugin_localfiles.db_schema import init_db
 from kalinka_plugin_localfiles.indexer.indexer import FileIndexer
 from kalinka_plugin_localfiles.indexer.indexer_db import AsyncIndexerDb
-from kalinka_plugin_localfiles.utils.name_utils import (
-    expand_music_folders,
-    path_within_roots,
-)
+from kalinka_plugin_localfiles.storage import build_resolver
 
 
 def _meta(**over):
@@ -33,7 +30,7 @@ def _meta(**over):
 async def _index_file(fi, path, **meta):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"x")
-    fi._extract_metadata = lambda _p, m=meta: _meta(**m)
+    fi._extract_metadata = lambda _s, _p, m=meta: _meta(**m)
     await fi.process_file(str(path))
 
 
@@ -47,22 +44,23 @@ def _make_indexer(tmp_path, folders):
     return FileIndexer(config, AsyncIndexerDb(config)), config
 
 
-# --- path_within_roots unit coverage ---------------------------------------
+# --- access-boundary unit coverage ----------------------------------------
 
 
-def test_path_within_roots_matches_by_component(tmp_path):
+def test_within_roots_matches_by_component(tmp_path):
     root = tmp_path / "Music"
     sibling = tmp_path / "Music2"
     root.mkdir()
     sibling.mkdir()
-    roots = expand_music_folders([str(root)])
+    resolver = build_resolver(LocalFilesConfig(music_folders=[str(root)]))
+    roots = resolver.canonical_roots([str(root)])
 
-    assert path_within_roots(str(root / "a" / "song.mp3"), roots)
-    assert path_within_roots(str(root), roots)  # the root itself
+    assert resolver.within_roots(str(root / "a" / "song.mp3"), roots)
+    assert resolver.within_roots(str(root), roots)  # the root itself
     # A sibling that merely shares a name prefix must NOT match.
-    assert not path_within_roots(str(sibling / "song.mp3"), roots)
-    assert not path_within_roots(str(tmp_path / "elsewhere.mp3"), roots)
-    assert not path_within_roots("", roots)
+    assert not resolver.within_roots(str(sibling / "song.mp3"), roots)
+    assert not resolver.within_roots(str(tmp_path / "elsewhere.mp3"), roots)
+    assert not resolver.within_roots("", roots)
 
 
 # --- indexer cleanup on a changed folder config ------------------------------
@@ -132,7 +130,7 @@ async def test_symlink_escaping_roots_is_not_indexed(tmp_path):
 
     fi, _ = _make_indexer(tmp_path, [music])
     await init_db(fi.db_manager.db_path)
-    fi._extract_metadata = lambda _p: _meta(artist="A", album="AA", title="a")
+    fi._extract_metadata = lambda _s, _p: _meta(artist="A", album="AA", title="a")
     result = await fi.process_file(str(link))
 
     assert result is None

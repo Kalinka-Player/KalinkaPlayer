@@ -15,7 +15,7 @@ from __future__ import annotations
 import io
 import logging
 import os
-from typing import Optional, Tuple, Union
+from typing import BinaryIO, Optional, Tuple, Union
 
 from PIL import Image
 
@@ -44,14 +44,18 @@ def save_artwork_images(
         return False
 
 
-def save_artwork_from_path(
+def save_artwork_from_file(
     artwork_path: Union[str, os.PathLike],
-    source_path: Union[str, os.PathLike],
+    source: Union[str, os.PathLike, BinaryIO],
     entity_id: str,
     entity_type: str,
     box: Optional[Tuple[float, float, float, float]] = None,
 ) -> bool:
     """As :func:`save_artwork_images`, for a cover that is already a file.
+
+    @param source The image, as a local path or an open binary file — which
+        is how a cover on a share arrives, since only its storage can read
+        it.
 
     A sleeve scan can be far larger than anything downloaded, so the JPEG
     decoder is asked for a reduced scale up front: nothing here needs more
@@ -63,7 +67,7 @@ def save_artwork_from_path(
         because ``draft`` has already changed what the pixels measure.
     """
     try:
-        with Image.open(source_path) as img:
+        with Image.open(source) as img:
             img.draft("RGB", (_LARGEST, _LARGEST))
             return _save_resized(
                 _cropped(img, box), artwork_path, entity_id, entity_type

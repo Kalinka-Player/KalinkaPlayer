@@ -16,6 +16,7 @@ import pytest
 
 from kalinka_plugin_localfiles.config_model import LocalFilesConfig
 from kalinka_plugin_localfiles.enricher.acoustid_plugin import AcoustIdPlugin
+from kalinka_plugin_localfiles.storage.local import LocalStorage
 
 TRUNCATED_MP3 = "/music/Dolphin Smiles/06 - The Farthest Shore.mp3"
 DECODE_ERROR = "ERROR: Error reading from the audio source (Invalid data found)"
@@ -41,7 +42,9 @@ def _completed(returncode, stdout, stderr=""):
 
 
 def _run(plugin, completed):
-    with patch("os.path.isfile", return_value=True), patch(
+    # The track is a stand-in for a real one, so its storage is told it is
+    # there; a local file is handed to fpcalc by name and never read here.
+    with patch.object(LocalStorage, "is_file", return_value=True), patch(
         "subprocess.run", return_value=completed
     ):
         return plugin._generate_fingerprint(TRUNCATED_MP3)
@@ -87,7 +90,7 @@ class TestAFailureThatYieldsNothing:
 
 class TestWhenFpcalcCannotRun:
     def test_a_missing_binary_is_reported(self, plugin, caplog):
-        with patch("os.path.isfile", return_value=True), patch(
+        with patch.object(LocalStorage, "is_file", return_value=True), patch(
             "subprocess.run", side_effect=FileNotFoundError()
         ):
             assert plugin._generate_fingerprint(TRUNCATED_MP3) == (None, None)
@@ -95,14 +98,14 @@ class TestWhenFpcalcCannotRun:
 
     def test_a_timeout_is_still_caught(self, plugin):
         """Dropping ``check`` must not stop a hung fpcalc being handled."""
-        with patch("os.path.isfile", return_value=True), patch(
+        with patch.object(LocalStorage, "is_file", return_value=True), patch(
             "subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="fpcalc", timeout=30),
         ):
             assert plugin._generate_fingerprint(TRUNCATED_MP3) == (None, None)
 
     def test_a_missing_file_is_not_run_at_all(self, plugin):
-        with patch("os.path.isfile", return_value=False), patch(
+        with patch.object(LocalStorage, "is_file", return_value=False), patch(
             "subprocess.run"
         ) as run:
             assert plugin._generate_fingerprint(TRUNCATED_MP3) == (None, None)

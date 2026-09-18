@@ -123,7 +123,7 @@ async def test_evidence_written_via_process_file_write_path(indexer):
     fi, music_dir, config = indexer
     path = music_dir / "03 - track.mp3"
     path.write_bytes(b"x")
-    fi._extract_metadata = lambda _p: {
+    fi._extract_metadata = lambda _s, _p: {
         "format": "audio/mpeg",
         "duration": 100,
         "title": "Stub",

@@ -35,6 +35,7 @@ from ..embedding_utils import (
     normalise,
 )
 from ..pip_utils import ensure_package
+from ..storage import build_resolver
 from ..worker_utils import set_proc_title, sleep_interruptible
 from .embedder_db import AsyncEmbedderDb
 
@@ -88,6 +89,7 @@ class EmbeddingWorker:
     def __init__(self, config: LocalFilesConfig, db: AsyncEmbedderDb):
         self.config = config
         self.db = db
+        self.storage = build_resolver(config)
         self._clap = None
         # The two CLAP towers load and unload independently. Text serves
         # search queries and stays resident; audio is indexing-only and
@@ -199,12 +201,20 @@ class EmbeddingWorker:
     # ------------------------------------------------------------------
 
     def _compute_clap_audio(self, file_path: str) -> Optional[bytes]:
-        """Compute 512-dim CLAP audio embedding for file_path."""
+        """Compute 512-dim CLAP audio embedding for file_path.
+
+        The file is opened through its storage and the stream handed to the
+        encoder, which seeks to the fragments it samples — so a track on a
+        share costs the few fragments it reads rather than a copy of the
+        whole file.
+        """
         if not self._audio_available:
             return None
         try:
             t0 = time.monotonic()
-            vec = self._clap.get_audio_embedding(file_path)
+            storage = self.storage.for_path(file_path)
+            with storage.open(file_path) as audio:
+                vec = self._clap.get_audio_embedding(audio)
             # Keep the idle timer measuring from the last real embed, not
             # just from load, so an active backlog never idles out mid-run.
             self._audio_last_used_at = time.monotonic()

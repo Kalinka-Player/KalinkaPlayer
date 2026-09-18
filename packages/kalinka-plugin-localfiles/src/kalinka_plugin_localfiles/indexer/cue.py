@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from ..storage import FileStorage
+
 # cp1251 before latin-1 keeps Cyrillic titles readable; see _decode.
 _ENCODINGS = ("utf-8-sig", "utf-16", "cp1251", "latin-1")
 
@@ -77,10 +79,10 @@ def _quoted(line: str, keyword: str) -> Optional[str]:
     return m.group(1).strip() if m else rest.strip('"').strip()
 
 
-def parse_cue(path: str) -> Optional[CueSheet]:
+def parse_cue(storage: FileStorage, path: str) -> Optional[CueSheet]:
     """Parse a .cue file. Returns None if it can't be read or has no tracks."""
     try:
-        with open(path, "rb") as fh:
+        with storage.open(path) as fh:
             text = _decode(fh.read())
     except OSError:
         return None
@@ -142,33 +144,35 @@ def parse_cue(path: str) -> Optional[CueSheet]:
     return sheet
 
 
-def find_cue_for(audio_path: str) -> Optional[str]:
+def find_cue_for(storage: FileStorage, audio_path: str) -> Optional[str]:
     """Locate a sibling .cue describing this audio file.
 
     Prefers a same-stem .cue (the common single-file-rip layout); otherwise
     scans the directory for a .cue whose FILE line references this file.
+    One directory listing either way, which is what keeps it affordable
+    over a share.
     """
     directory = os.path.dirname(audio_path)
     base = os.path.basename(audio_path)
     stem = os.path.splitext(base)[0]
 
-    same_stem = os.path.join(directory, stem + ".cue")
-    if os.path.isfile(same_stem):
-        return same_stem
-
     try:
-        entries = os.listdir(directory)
+        entries = storage.listdir(directory)
     except OSError:
         return None
-    # sorted() so several cue files resolve deterministically (listdir order
-    # is filesystem-defined).
-    for entry in sorted(entries):
-        if not entry.lower().endswith(".cue"):
-            continue
-        cue_path = os.path.join(directory, entry)
-        sheet = parse_cue(cue_path)
+
+    same_stem = stem.lower() + ".cue"
+    candidates = [entry for entry in entries if entry.name.lower().endswith(".cue")]
+    for entry in candidates:
+        if entry.name.lower() == same_stem:
+            return entry.path
+
+    # sorted() so several cue files resolve deterministically (listing order
+    # is storage-defined).
+    for entry in sorted(candidates, key=lambda e: e.name):
+        sheet = parse_cue(storage, entry.path)
         if sheet and any(
             os.path.basename(f.name).lower() == base.lower() for f in sheet.files
         ):
-            return cue_path
+            return entry.path
     return None

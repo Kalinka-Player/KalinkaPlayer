@@ -250,6 +250,40 @@ class EnricherConfig(BaseModel):
     )
 
 
+class SmbConfig(BaseModel):
+    """How to log in to SMB shares added as ``smb://`` music folders.
+
+    One account for every server, because the settings page has no editor
+    for a list of secrets; a share needing a different login names its user
+    in its own URL (``smb://user@host/share``). Leave both empty for the
+    guest access most NAS boxes offer a media share.
+    """
+
+    username: str = Field(
+        default="",
+        title="SMB username",
+        json_schema_extra={
+            "help": "Leave empty to connect as a guest",
+            **_SIMPLE,
+        },
+    )
+    password: str = Field(
+        default="",
+        title="SMB password",
+        json_schema_extra={"widget": "password", **_SIMPLE},
+    )
+    encrypt: bool = Field(
+        default=False,
+        title="Require SMB encryption",
+        json_schema_extra={
+            "help": (
+                "Encrypt share traffic. Needs SMB3 on the server and costs "
+                "CPU on this device."
+            ),
+        },
+    )
+
+
 class LocalFilesConfig(ModuleConfig):
     __module_icon__: ClassVar[str] = "folder_outlined"
     __preview_fields__: ClassVar[list[str]] = [
@@ -261,7 +295,7 @@ class LocalFilesConfig(ModuleConfig):
         default="localfiles",
         title=DISPLAY_NAME,
         description=(
-            "Music on this device or a mounted share, indexed into a browsable "
+            "Music on this device or a network share, indexed into a browsable "
             "library with artwork and metadata filled in online."
         ),
         frozen=True,
@@ -276,7 +310,15 @@ class LocalFilesConfig(ModuleConfig):
         # /home (kalusr has none) nor the kalusr-only state dir. See media_dir().
         default_factory=lambda: [paths.media_dir()],
         title="Music folders",
-        json_schema_extra={"widget": "folder_list", **_SIMPLE, **_PROMPT},
+        json_schema_extra={
+            "help": (
+                "A folder on this device, or an SMB share as "
+                "`smb://192.168.1.1/music` — a share needs no mounting."
+            ),
+            "widget": "folder_list",
+            **_SIMPLE,
+            **_PROMPT,
+        },
     )
     db_path: str = Field(
         default_factory=lambda: os.path.join(paths.state_dir(), "localfiles.db"),
@@ -350,6 +392,7 @@ class LocalFilesConfig(ModuleConfig):
             **_SIMPLE,
         },
     )
+    smb: SmbConfig = Field(default_factory=SmbConfig, title="SMB shares")
     ai_search: AiSearchConfig = Field(
         default_factory=AiSearchConfig, title="AI search"
     )

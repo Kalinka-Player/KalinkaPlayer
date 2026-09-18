@@ -7,9 +7,18 @@ import json
 import time
 import logging
 import asyncio
-import mimetypes
 import multiprocessing
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import (
+    Any,
+    AsyncIterator,
+    BinaryIO,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Set,
+    Tuple,
+)
 
 from pathlib import Path
 
@@ -17,14 +26,7 @@ from PIL import Image
 
 from mutagen.mp3 import MP3
 from mutagen.flac import FLAC
-from mutagen.id3 import ID3, ID3NoHeaderError
-
-try:
-    from inotify_simple import INotify, flags
-
-    HAS_INOTIFY = True
-except ImportError:
-    HAS_INOTIFY = False
+from mutagen.id3 import ID3
 
 from ..config_model import LocalFilesConfig
 from ..filename_model import get_parser, names_a_vinyl_side, parse_music_path
@@ -36,21 +38,21 @@ from ..resolution.resolver import (
     OBSERVED,
     TAG_CONSENSUS,
 )
-from ..utils.artwork_store import save_artwork_from_path, save_artwork_images
-from ..utils.folder_art import find_folder_cover
+from ..utils.artwork_store import save_artwork_from_file, save_artwork_images
+from ..utils.folder_art import FolderCover, find_folder_cover
 from ..worker_utils import nudge
-from ..utils.mount_status import (
+from ..storage import (
+    ChangeKind,
+    ChangeWatcher,
+    FileStorage,
     RootStatus,
-    autofs_pending,
-    await_root_available,
-    probe_root_async,
-    root_of,
+    StorageResolver,
+    build_resolver,
+    media_type_of,
 )
 from ..utils.name_utils import (
     album_folder_for_path,
     clean_display_name,
-    expand_music_folders,
-    path_within_roots,
     repair_tag_text,
 )
 from .cue import find_cue_for, parse_cue
@@ -78,6 +80,11 @@ SUPPORTED_AUDIO_EXTENSIONS = {".mp3", ".flac"}
 
 # How often the file watcher checks whether a lost root came back.
 REARM_CHECK_INTERVAL_S = 15.0
+
+# How long a watcher blocks for a batch of changes. Long enough that the
+# wait sits in the kernel rather than spinning, short enough that a stop
+# signal is noticed promptly.
+WATCH_POLL_INTERVAL_S = 1.0
 
 def rearm_needs_rescan(
     unmount_seen: bool,
@@ -187,13 +194,23 @@ def _tags_leave_a_gap(metadata: Dict, file_path: str) -> bool:
 
 
 class FileIndexer:
-    def __init__(self, config: LocalFilesConfig, db_manager: AsyncIndexerDb):
+    def __init__(
+        self,
+        config: LocalFilesConfig,
+        db_manager: AsyncIndexerDb,
+        storage: Optional[StorageResolver] = None,
+    ):
         self.config = config
         self.db_manager = db_manager
-        # Expand user (~) and resolve absolute paths for music folders. This is
-        # the access boundary: only files under one of these are indexed, and
-        # cleanup_stale_tracks purges anything that falls outside them.
-        self.music_folders = expand_music_folders(config.music_folders)
+        # Every file this class reads goes through the resolver, so a music
+        # folder may be a path on this machine or a share it talks to
+        # itself. Injectable so a test can drive the indexer over storage
+        # that is neither.
+        self.storage = storage or build_resolver(config)
+        # Canonical form of each music folder. This is the access boundary:
+        # only files under one of these are indexed, and cleanup_stale_tracks
+        # purges anything that falls outside them.
+        self.music_folders = self.storage.canonical_roots(config.music_folders)
         self.artwork_path = Path(config.artwork_path).expanduser().resolve()
         self.running = False
         self.lock = asyncio.Lock()
@@ -374,10 +391,10 @@ class FileIndexer:
                     )
                     continue
 
-            if change_type == "path_removed":
+            if change_type in (ChangeKind.PATH_REMOVED, ChangeKind.DIR_REMOVED):
                 # No per-path work: the cleanup_stale_tracks() pass at the
-                # end of this batch drops database rows for files that no
-                # longer exist on disk.
+                # end of this batch drops database rows for files that are
+                # no longer there.
                 logger.info(f"Path removed, cleanup scheduled: {file_path}")
                 continue
 
@@ -422,40 +439,58 @@ class FileIndexer:
             )
             await trigger_enricher_update("enrich")
 
+    async def _iter_audio_files(self, folder: str) -> AsyncIterator[str]:
+        """Supported audio files under ``folder``, depth first.
+
+        One directory listing at a time and each off the event loop, because
+        a listing is a round trip on a share and never returns at all on a
+        hung mount. Symbolic links to directories are not descended, which
+        is what ``os.walk`` does by default and what keeps a link loop from
+        walking forever.
+        """
+        storage = self.storage.for_path(folder)
+        pending = [folder]
+        while pending:
+            directory = pending.pop()
+            try:
+                entries = await asyncio.to_thread(storage.listdir, directory)
+            except OSError as e:
+                logger.warning(f"Could not list {directory}: {e}")
+                continue
+            for entry in entries:
+                if entry.is_dir:
+                    pending.append(entry.path)
+                elif self._is_supported_audio_file(entry.name):
+                    yield entry.path
+
     async def scan_folder(self, folder: str, changed_items: Dict[str, Set[str]]):
         """Recursively scan a folder for music files"""
-        for root, _, files in os.walk(folder):
-            for file in files:
-                if self._is_supported_audio_file(file):
-                    file_path = os.path.join(root, file)
-                    try:
-                        result_changes = await self.process_file(file_path)
-                        if result_changes:
-                            for key, value in result_changes.items():
-                                if value:
-                                    changed_items[key].add(value)
-                    except Exception as e:
-                        logger.exception(f"Error processing file {file_path}: {str(e)}")
-                    if self._scan_active:
-                        self._scan_processed += 1
-                        await self._publish_scan_progress()
+        async for file_path in self._iter_audio_files(folder):
+            try:
+                result_changes = await self.process_file(file_path)
+                if result_changes:
+                    for key, value in result_changes.items():
+                        if value:
+                            changed_items[key].add(value)
+            except Exception as e:
+                logger.exception(f"Error processing file {file_path}: {str(e)}")
+            if self._scan_active:
+                self._scan_processed += 1
+                await self._publish_scan_progress()
 
     async def _count_supported_files(self, folders: List[str]) -> Dict[str, int]:
-        """Count supported audio files per folder. Directory listing only —
-        no per-file stat — so it stays cheap even for large libraries. Walks
-        only the folders given: touching an unavailable root here would
-        re-trigger a failed automount or hang on a dead mount."""
-
-        def _count() -> Dict[str, int]:
-            counts: Dict[str, int] = {}
-            for folder in folders:
-                n = 0
-                for _, _, files in os.walk(folder):
-                    n += sum(1 for f in files if self._is_supported_audio_file(f))
-                counts[folder] = n
-            return counts
-
-        return await asyncio.get_running_loop().run_in_executor(None, _count)
+        """Count supported audio files per folder. Directory listings only —
+        no per-file measurement — so it stays cheap even for large
+        libraries. Walks only the folders given: touching an unavailable
+        root here would re-trigger a failed automount or hang on a dead
+        mount."""
+        counts: Dict[str, int] = {}
+        for folder in folders:
+            total = 0
+            async for _ in self._iter_audio_files(folder):
+                total += 1
+            counts[folder] = total
+        return counts
 
     async def _publish_scan_progress(self, force: bool = False):
         """Write scan progress to the database, throttled to one write per
@@ -475,6 +510,30 @@ class FileIndexer:
         """Check if the file is a supported audio format."""
         return is_supported_audio_file(filename)
 
+    async def _path_gone(self, path: str) -> bool:
+        """Whether one path no longer exists, asked off the event loop."""
+        storage = self.storage.for_path(path)
+        return not await asyncio.to_thread(storage.exists, path)
+
+    async def _missing_paths(self, paths: Iterable[str]) -> Set[str]:
+        """Which of ``paths`` no longer exist.
+
+        Grouped into one call per storage rather than one per path: the
+        cleanup sweep asks about every row in the library, and a thread hop
+        each would cost more than the checks themselves.
+        """
+        grouped: Dict[FileStorage, List[str]] = {}
+        for path in paths:
+            grouped.setdefault(self.storage.for_path(path), []).append(path)
+
+        def absent(storage: FileStorage, batch: List[str]) -> Set[str]:
+            return {path for path in batch if not storage.exists(path)}
+
+        missing: Set[str] = set()
+        for storage, batch in grouped.items():
+            missing |= await asyncio.to_thread(absent, storage, batch)
+        return missing
+
     async def process_file(
         self, file_path: str, force: bool = False
     ) -> Optional[Dict[str, Optional[str]]]:
@@ -485,56 +544,63 @@ class FileIndexer:
         # symlink-resolving check as cleanup_stale_tracks, so the scan and the
         # cleanup agree on what is in scope; otherwise such a file would be
         # indexed on every scan and purged again, churning the database.
-        if not path_within_roots(file_path, self.music_folders):
+        if not self.storage.within_roots(file_path, self.music_folders):
             logger.debug(f"Skipping file outside configured folders: {file_path}")
             return None
 
+        storage = self.storage.for_path(file_path)
         try:
-            stat = os.stat(file_path)
-        except FileNotFoundError:
-            logger.debug(f"File disappeared before processing: {file_path}")
+            stat = await asyncio.to_thread(storage.stat, file_path)
+        except OSError as e:
+            logger.debug(f"File disappeared before processing: {file_path} ({e})")
             return None
 
         # Quiescence guard: skip files that may still be in mid-upload.
         # POSIX has no "upload complete" signal, so we infer it from mtime/size
         # stability over a short window. If the file is still changing, defer —
         # the next CLOSE_WRITE/MOVED_TO event or scheduled rescan will retry it.
+        # A negative age means the mtime came from a clock ahead of ours, as an
+        # unsynchronised NAS reports; waiting out the skew would stall the scan
+        # for hours per file, and the heuristic cannot say anything either way.
         quiescence_seconds = self.config.quiescence_seconds
         if quiescence_seconds > 0:
-            age = time.time() - stat.st_mtime
-            if age < quiescence_seconds:
+            age = time.time() - stat.mtime
+            if 0 <= age < quiescence_seconds:
                 await asyncio.sleep(quiescence_seconds - age)
                 try:
-                    stat_after = os.stat(file_path)
-                except FileNotFoundError:
+                    stat_after = await asyncio.to_thread(storage.stat, file_path)
+                except OSError:
                     logger.debug(
                         f"File disappeared during quiescence wait: {file_path}"
                     )
                     return None
                 if (
-                    stat_after.st_size != stat.st_size
-                    or stat_after.st_mtime != stat.st_mtime
+                    stat_after.size != stat.size
+                    or stat_after.mtime_ns != stat.mtime_ns
                 ):
                     logger.info(
                         f"File still being written, deferring: {file_path} "
-                        f"(size {stat.st_size}->{stat_after.st_size}, "
-                        f"mtime {stat.st_mtime}->{stat_after.st_mtime})"
+                        f"(size {stat.size}->{stat_after.size}, "
+                        f"mtime {stat.mtime}->{stat_after.mtime})"
                     )
                     return None
                 stat = stat_after
 
-        file_size = stat.st_size
-        modified_time = int(stat.st_mtime)
-        device_id = str(stat.st_dev)
-        inode = str(stat.st_ino)
+        file_size = stat.size
+        modified_time = stat.mtime
+        identity = stat.identity
+        device_id = identity.device if identity else None
+        inode = identity.inode if identity else None
         # Nanosecond mtime for the failure-cache key. With second resolution a
         # broken file that gets fixed within the same integer second and keeps
         # the same size would collide on the key and never be retried. The
         # tracks table stays on second-resolution modified_time.
-        mtime_ns = stat.st_mtime_ns
+        mtime_ns = stat.mtime_ns
 
         existing_track = await self.db_manager.get_track_by_path(file_path)
-        if existing_track is None:
+        # Storage that will not identify a file cannot have a move detected
+        # on it; such a rename reads as a new file plus a stale row.
+        if existing_track is None and identity is not None:
             # Move/rename detection: an unknown path whose (device, inode)
             # matches a known file — with the same size and the old path gone —
             # is that file after a rename, not a new one. Re-point the paths
@@ -549,7 +615,7 @@ class FileIndexer:
                 known
                 and known["current_path"] != file_path
                 and known["size_bytes"] == file_size
-                and not os.path.exists(known["current_path"])
+                and await self._path_gone(known["current_path"])
             ):
                 logger.info(
                     f"File moved: {known['current_path']} -> {file_path}"
@@ -587,7 +653,9 @@ class FileIndexer:
             )
             return None
 
-        metadata = await asyncio.to_thread(self._extract_metadata, file_path)
+        metadata = await asyncio.to_thread(
+            self._extract_metadata, storage, file_path
+        )
         if not metadata:
             attempts = await self.db_manager.record_failure(
                 file_path, file_size, mtime_ns, "metadata extraction failed"
@@ -612,7 +680,9 @@ class FileIndexer:
         # Read once per file rather than per field, and only when the tags
         # left something for it to answer.
         from_path = (
-            parse_music_path(file_path, root_of(file_path, self.music_folders))
+            parse_music_path(
+                file_path, self.storage.root_of(file_path, self.music_folders)
+            )
             if _tags_leave_a_gap(metadata, file_path)
             else None
         )
@@ -805,7 +875,7 @@ class FileIndexer:
             path = track.get("file_path")
             if not path:
                 continue
-            if root_of(path, available_folders) is None:
+            if self.storage.root_of(path, available_folders) is None:
                 unreached = True
                 continue
             try:
@@ -878,7 +948,9 @@ class FileIndexer:
             path = track.get("file_path")
             if not path:
                 continue
-            parsed = parse_music_path(path, root_of(path, self.music_folders))
+            parsed = parse_music_path(
+                path, self.storage.root_of(path, self.music_folders)
+            )
             if parsed and parsed.album:
                 return {
                     "path_album_title": parsed.album,
@@ -891,10 +963,12 @@ class FileIndexer:
         string ("Â.Öîé" / "&amp;" / "В.Цой" all read right afterwards)."""
         return repair_tag_text(text, self.config.legacy_tag_encoding)
 
-    def _extract_metadata(self, file_path: str) -> Optional[Dict]:
+    def _extract_metadata(
+        self, storage: FileStorage, file_path: str
+    ) -> Optional[Dict]:
         """Extract metadata from a music file"""
         try:
-            mime_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+            mime_type = media_type_of(file_path) or "application/octet-stream"
             if mime_type == "audio/x-flac":
                 mime_type = "audio/flac"
 
@@ -902,29 +976,33 @@ class FileIndexer:
                 "format": mime_type,
             }
             if "audio/mpeg" in mime_type:
-                metadata = self._extract_mp3_metadata(file_path, metadata)
+                with storage.open(file_path) as audio:
+                    metadata = self._extract_mp3_metadata(audio, metadata)
             elif "audio/flac" in mime_type:
-                metadata = self._extract_flac_metadata(file_path, metadata)
+                with storage.open(file_path) as audio:
+                    metadata = self._extract_flac_metadata(audio, metadata)
             else:
                 logger.warning(
                     f"Unsupported file format: {file_path}, format: {mime_type}"
                 )
                 return None
             if metadata is not None:
-                self._augment_with_cue(file_path, metadata)
+                self._augment_with_cue(storage, file_path, metadata)
             return metadata
         except Exception as e:
             logger.exception(f"Error extracting metadata from {file_path}: {str(e)}")
             return None
 
-    def _augment_with_cue(self, file_path: str, metadata: Dict) -> None:
+    def _augment_with_cue(
+        self, storage: FileStorage, file_path: str, metadata: Dict
+    ) -> None:
         """Fill blank fields from a sibling .cue (embedded tags still win) and
         stash the tracklist as evidence. Untagged single-file rips carry their
         real metadata in the .cue, not the folder name."""
-        cue_path = find_cue_for(file_path)
+        cue_path = find_cue_for(storage, file_path)
         if not cue_path:
             return
-        sheet = parse_cue(cue_path)
+        sheet = parse_cue(storage, cue_path)
         if sheet is None:
             return
 
@@ -967,20 +1045,19 @@ class FileIndexer:
             if m:
                 metadata["year"] = int(m.group())
 
-    def _extract_mp3_metadata(self, file_path: str, metadata: Dict) -> Dict:
-        """Extract metadata from an MP3 file.
+    def _extract_mp3_metadata(self, audio: BinaryIO, metadata: Dict) -> Dict:
+        """Extract metadata from an open MP3 file.
 
         Errors propagate to ``_extract_metadata``, which logs them once.
         """
-        mp3 = MP3(file_path)
-        # A missing ID3 header is a valid, fully supported case — the
-        # audio plays fine, it just has no tags. Fall back to an empty
-        # tag set so the track still gets indexed (title derived from
-        # the filename, Unknown Artist/Album) instead of failing.
-        try:
-            id3 = ID3(file_path)
-        except ID3NoHeaderError:
-            id3 = ID3()
+        mp3 = MP3(audio)
+        # MP3 has already read the frames, and re-reading them would mean a
+        # second pass over the file — a second network read once the file is
+        # on a share. A missing ID3 header is a valid, fully supported case,
+        # reported as no tags at all: the audio plays fine, so fall back to
+        # an empty set and let the track be indexed from its filename rather
+        # than failing.
+        id3 = mp3.tags if mp3.tags is not None else ID3()
         metadata["duration"] = int(mp3.info.length)
         if "TIT2" in id3:
             metadata["title"] = str(id3["TIT2"])
@@ -1044,12 +1121,12 @@ class FileIndexer:
         }
         return metadata
 
-    def _extract_flac_metadata(self, file_path: str, metadata: Dict) -> Dict:
-        """Extract metadata from a FLAC file.
+    def _extract_flac_metadata(self, audio: BinaryIO, metadata: Dict) -> Dict:
+        """Extract metadata from an open FLAC file.
 
         Errors propagate to ``_extract_metadata``, which logs them once.
         """
-        flac = FLAC(file_path)
+        flac = FLAC(audio)
         metadata["duration"] = int(flac.info.length)
         if "title" in flac:
             metadata["title"] = flac["title"][0]
@@ -1127,14 +1204,18 @@ class FileIndexer:
                 return pic.data
         return pictures[0].data if pictures else None
 
-    def _embedded_art(self, file_path: str) -> Optional[bytes]:
+    def _embedded_art(
+        self, storage: FileStorage, file_path: str
+    ) -> Optional[bytes]:
         """Read just the embedded cover from a file, or None."""
         try:
-            mime_type = mimetypes.guess_type(file_path)[0] or ""
+            mime_type = media_type_of(file_path) or ""
             if "audio/mpeg" in mime_type:
-                return self._mp3_cover(ID3(file_path))
+                with storage.open(file_path) as audio:
+                    return self._mp3_cover(ID3(audio))
             if mime_type in ("audio/flac", "audio/x-flac"):
-                return self._flac_cover(FLAC(file_path))
+                with storage.open(file_path) as audio:
+                    return self._flac_cover(FLAC(audio))
         except Exception as e:
             logger.debug("Could not read embedded art from %s: %s", file_path, e)
         return None
@@ -1221,19 +1302,15 @@ class FileIndexer:
         """
         counts = {"albums": 0}
         for album_id, file_path in await self.db_manager.get_albums_without_cover():
-            if root_of(file_path, available_folders) is None:
+            if self.storage.root_of(file_path, available_folders) is None:
                 continue
+            storage = self.storage.for_path(file_path)
             folder = album_folder_for_path(file_path)
-            cover = await asyncio.to_thread(find_folder_cover, folder)
+            cover = await asyncio.to_thread(find_folder_cover, storage, folder)
             if not cover:
                 continue
             if not await asyncio.to_thread(
-                save_artwork_from_path,
-                self.artwork_path,
-                cover.path,
-                album_id,
-                "album",
-                cover.box,
+                self._save_folder_cover, storage, cover, album_id
             ):
                 continue
             await self.db_manager.update_album(
@@ -1244,6 +1321,19 @@ class FileIndexer:
             logger.info(f"Cover for album {album_id} taken from {cover.path}{panel}")
         return counts
 
+    def _save_folder_cover(
+        self, storage: FileStorage, cover: FolderCover, album_id: str
+    ) -> bool:
+        """Store an album's cover from an image file beside its audio."""
+        try:
+            with storage.open(cover.path) as image:
+                return save_artwork_from_file(
+                    self.artwork_path, image, album_id, "album", cover.box
+                )
+        except OSError as e:
+            logger.debug(f"Could not read folder cover {cover.path}: {e}")
+            return False
+
     async def _restore_embedded_art(
         self,
         entity_id: str,
@@ -1251,9 +1341,10 @@ class FileIndexer:
         entity_type: str,
         available_folders: List[str],
     ) -> bool:
-        if root_of(file_path, available_folders) is None:
+        if self.storage.root_of(file_path, available_folders) is None:
             return False
-        art = await asyncio.to_thread(self._embedded_art, file_path)
+        storage = self.storage.for_path(file_path)
+        art = await asyncio.to_thread(self._embedded_art, storage, file_path)
         if not art:
             return False
         return await asyncio.to_thread(self._save_images, art, entity_id, entity_type)
@@ -1612,8 +1703,19 @@ class FileIndexer:
 
     async def _probe_music_roots(self) -> Dict[str, RootStatus]:
         """Availability of each configured root, giving a pending automount a
-        bounded chance to complete before the root is called unavailable."""
-        return {root: await await_root_available(root) for root in self.music_folders}
+        bounded chance to complete before the root is called unavailable.
+
+        Together rather than in turn: each root that is not there costs the
+        whole retry window, and a scan should not pay for them end to end.
+        """
+        roots = list(self.music_folders)
+        statuses = await asyncio.gather(
+            *(
+                self.storage.for_path(root).await_root_available(root)
+                for root in roots
+            )
+        )
+        return dict(zip(roots, statuses))
 
     @staticmethod
     def _blocked_reason(
@@ -1674,19 +1776,29 @@ class FileIndexer:
 
         all_tracks = await self.db_manager.get_all_tracks()
         candidates: List[Tuple[Dict[str, Any], Optional[str]]] = []
+        under_live_root: List[Tuple[Dict[str, Any], str]] = []
         kept_per_root: Dict[str, int] = {}
         for track in all_tracks:
             file_path = track["file_path"]
-            root = root_of(file_path, self.music_folders)
+            root = self.storage.root_of(file_path, self.music_folders)
             if root in blocked:
                 kept_per_root[root] = kept_per_root.get(root, 0) + 1
             elif root is None:
-                # A file the symlink-aware check also puts outside the roots
+                # A file the boundary check also puts outside the roots —
                 # left by config change, not by unmount.
-                if not path_within_roots(file_path, self.music_folders):
+                if not self.storage.within_roots(file_path, self.music_folders):
                     candidates.append((track, None))
-            elif not os.path.exists(file_path):
-                candidates.append((track, root))
+            else:
+                under_live_root.append((track, root))
+
+        gone = await self._missing_paths(
+            track["file_path"] for track, _ in under_live_root
+        )
+        candidates.extend(
+            (track, root)
+            for track, root in under_live_root
+            if track["file_path"] in gone
+        )
 
         for root, count in kept_per_root.items():
             logger.warning(
@@ -1698,17 +1810,25 @@ class FileIndexer:
         removed_tracks = 0
         # Fresh probe and stat at delete time: the share may have gone
         # offline during the sweep.
-        recheck = {
-            root: await probe_root_async(root)
-            for root in {r for _, r in candidates if r is not None}
-        }
+        rechecked = sorted({r for _, r in candidates if r is not None})
+        recheck = dict(
+            zip(
+                rechecked,
+                await asyncio.gather(
+                    *(
+                        self.storage.for_path(root).probe_root(root)
+                        for root in rechecked
+                    )
+                ),
+            )
+        )
         for track, root in candidates:
             file_path = track["file_path"]
             if root is not None:
                 status = recheck[root]
                 if self._blocked_reason(
                     status, signatures.get(root)
-                ) is not None or os.path.exists(file_path):
+                ) is not None or not await self._path_gone(file_path):
                     continue
                 logger.info(
                     f"File no longer exists, removing from database: {file_path}"
@@ -1725,10 +1845,14 @@ class FileIndexer:
         # moved out of the configured folders, so the cache doesn't accumulate
         # entries for files this module no longer manages. Rows under a
         # blocked root are kept for the same reason their tracks are.
-        for failed_path in await self.db_manager.get_failure_paths():
-            if root_of(failed_path, self.music_folders) in blocked:
-                continue
-            if not os.path.exists(failed_path) or not path_within_roots(
+        checkable = [
+            path
+            for path in await self.db_manager.get_failure_paths()
+            if self.storage.root_of(path, self.music_folders) not in blocked
+        ]
+        gone_failures = await self._missing_paths(checkable)
+        for failed_path in checkable:
+            if failed_path in gone_failures or not self.storage.within_roots(
                 failed_path, self.music_folders
             ):
                 await self.db_manager.clear_failure(failed_path)
@@ -1806,228 +1930,178 @@ async def _indexer_worker(config: LocalFilesConfig, db_manager: AsyncIndexerDb):
         raise
 
 
+def _worth_indexing(kind: ChangeKind, path: str) -> bool:
+    """Whether a reported change is one the library acts on.
+
+    A directory event always is — a tree may have arrived whole, or taken
+    tracks with it. A file event only matters for a format this module
+    indexes, so tidying up a folder of artwork does not cost a database
+    sweep.
+    """
+    if kind in (ChangeKind.DIR_ADDED, ChangeKind.DIR_REMOVED):
+        return True
+    return is_supported_audio_file(path)
+
+
+async def _rearm_lost_roots(
+    storage: FileStorage,
+    watcher: ChangeWatcher,
+    lost_roots: Dict[str, bool],
+    db: AsyncIndexerDb,
+) -> None:
+    """Watch the roots that have come back, and rescan the ones that owe it."""
+    candidates = [
+        root for root in sorted(lost_roots) if not storage.should_defer_probe(root)
+    ]
+    statuses = await asyncio.gather(
+        *(storage.probe_root(root) for root in candidates)
+    )
+    for root, status in zip(candidates, statuses):
+        if not status.available:
+            continue
+        # Only a root that is actually armed leaves the lost set; one that is
+        # back but still unwatchable is retried on the next pass instead of
+        # being dropped and never watched again.
+        if not await asyncio.to_thread(watcher.watch, root):
+            logger.debug("Music folder is back but still unwatchable: %s", root)
+            continue
+        unmount_seen = lost_roots.pop(root)
+        stored = await db.get_root_signature(root)
+        if not rearm_needs_rescan(unmount_seen, status.identity, stored):
+            logger.info(
+                f"Music folder is back (same storage), watching it again: {root}"
+            )
+            continue
+        logger.info(f"Music folder is back, watching it again and rescanning: {root}")
+        await _indexer_queue.put(
+            {"incremental_changes": {(ChangeKind.DIR_ADDED, root)}}
+        )
+
+
+async def _watch_roots(
+    config: LocalFilesConfig,
+    storage: FileStorage,
+    watcher: ChangeWatcher,
+    roots: List[str],
+) -> None:
+    """Feed one storage's change notifications into the indexer queue.
+
+    Owns the policy around the watcher: which roots are armed, when a lost
+    one is tried again, and which changes are worth waking the indexer for.
+    The watcher itself only reports what the protocol told it.
+    """
+    db = AsyncIndexerDb(config)
+    # Roots without watches (never armed, unmounted, or deleted), re-armed by
+    # the loop below once they come back. True when an unmount lost the root;
+    # False when a rescan is owed unconditionally.
+    lost_roots: Dict[str, bool] = {}
+    next_rearm_check = 0.0
+
+    # Probed together: an unreachable root costs the probe timeout, and three
+    # of them in a row would delay watching the folders that are there.
+    statuses = await asyncio.gather(
+        *(storage.probe_root(root) for root in roots)
+    )
+    for root, status in zip(roots, statuses):
+        if not status.available:
+            lost_roots[root] = False
+            logger.warning(
+                f"Music folder is not available yet, deferring watches: "
+                f"{root} ({status.reason})"
+            )
+            continue
+        # Reachable but unwatchable is its own case — inotify watches are a
+        # finite per-user resource, and a large library can exhaust them.
+        # The root stays in lost_roots so it is armed if they free up.
+        if not await asyncio.to_thread(watcher.watch, root):
+            lost_roots[root] = False
+            logger.warning(
+                f"Music folder cannot be watched for changes, leaving it to "
+                f"the periodic scan: {root}"
+            )
+
+    logger.info(
+        f"Watching {len(roots) - len(lost_roots)} of {len(roots)} "
+        f"{storage.scheme} music folder(s)"
+    )
+
+    try:
+        while not _file_watcher_stop_event.is_set():
+            try:
+                result = await asyncio.to_thread(
+                    watcher.poll, WATCH_POLL_INTERVAL_S
+                )
+
+                if lost_roots and time.monotonic() >= next_rearm_check:
+                    next_rearm_check = time.monotonic() + REARM_CHECK_INTERVAL_S
+                    await _rearm_lost_roots(storage, watcher, lost_roots, db)
+
+                for root in result.unmounted:
+                    lost_roots[root] = True
+                    logger.warning(
+                        f"Storage went away under {root}; "
+                        "suspending watches until it returns"
+                    )
+                for root in result.vanished:
+                    lost_roots[root] = False
+
+                changes = {
+                    change for change in result.changes if _worth_indexing(*change)
+                }
+                if changes:
+                    logger.info(
+                        f"File watcher detected {len(changes)} relevant events "
+                        "(added/changed/removed)."
+                    )
+                    await _indexer_queue.put({"incremental_changes": changes})
+                    logger.info("Changes added to indexer queue for processing.")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.exception(f"Error reading change events: {e}")
+                await asyncio.sleep(1)
+    finally:
+        watcher.close()
+
+
 async def _file_watcher_worker(config: LocalFilesConfig):
-    """Background worker task for real-time filesystem monitoring via inotify.
+    """Background worker for real-time monitoring of the music folders.
 
     Watches for content arriving (files written or moved in, directories
     created or moved in — a moved-in tree emits no per-file events, so it
-    is scanned as a unit) and content leaving (files/directories deleted
+    is scanned as a unit) and content leaving (files or directories deleted
     or moved out, which schedules the stale-track cleanup).
+
+    Only some protocols can report changes at all. Roots on storage that
+    cannot are left to the periodic scan, and when no root can be watched
+    the worker returns rather than idling.
     """
-    global _indexer_queue, _file_watcher_stop_event
-
-    if not HAS_INOTIFY:
-        logger.warning(
-            "inotify_simple not available, file watcher disabled. "
-            "Install with: pip install inotify_simple"
-        )
-        return
-
     try:
-        music_folders = expand_music_folders(config.music_folders)
-        logger.info(f"Starting file watcher for folders: {music_folders}")
+        resolver = build_resolver(config)
+        roots_by_storage: Dict[FileStorage, List[str]] = {}
+        for root in resolver.canonical_roots(config.music_folders):
+            roots_by_storage.setdefault(resolver.for_path(root), []).append(root)
+
+        loops = []
+        for storage, roots in roots_by_storage.items():
+            watcher = storage.watcher()
+            if watcher is None:
+                logger.info(
+                    f"{storage.scheme} storage cannot report changes; "
+                    f"{', '.join(roots)} rely on the periodic scan"
+                )
+                continue
+            loops.append(_watch_roots(config, storage, watcher, roots))
+
+        if not loops:
+            logger.info(
+                "No music folder can report changes; the periodic scan is "
+                "what picks new files up"
+            )
+            return
 
         try:
-            inotify = INotify()
-            watched_dirs = {}
-
-            # Watch mask: CLOSE_WRITE (file closed after write), MOVED_TO
-            # (files/dirs renamed or moved in), CREATE (new files/dirs),
-            # DELETE + MOVED_FROM (files/dirs deleted or moved out),
-            # DELETE_SELF (watched dir removed), UNMOUNT (fs unmounted)
-            watch_mask = (
-                flags.CLOSE_WRITE
-                | flags.MOVED_TO
-                | flags.CREATE
-                | flags.DELETE
-                | flags.MOVED_FROM
-                | flags.DELETE_SELF
-                | flags.UNMOUNT
-            )
-
-            def _add_watches(path: str):
-                """Recursively add watches to all directories."""
-                try:
-                    wd = inotify.add_watch(path, watch_mask)
-                    watched_dirs[wd] = path
-                    logger.debug(f"Watching directory: {path}")
-                    for entry in os.listdir(path):
-                        subpath = os.path.join(path, entry)
-                        if os.path.isdir(subpath) and not os.path.islink(subpath):
-                            _add_watches(subpath)
-                except (OSError, PermissionError) as e:
-                    logger.debug(f"Could not watch {path}: {e}")
-
-            # Roots without watches (never armed, unmounted, or deleted),
-            # re-armed by the loop below once they come back. True when an
-            # unmount lost the root; False when a rescan is owed
-            # unconditionally on return.
-            lost_roots: Dict[str, bool] = {}
-            next_rearm_check = 0.0
-            db = AsyncIndexerDb(config)
-
-            for folder in music_folders:
-                status = await probe_root_async(folder)
-                if status.available:
-                    _add_watches(folder)
-                else:
-                    lost_roots[folder] = False
-                    logger.warning(
-                        f"Music folder not available yet, deferring watches: "
-                        f"{folder} ({status.reason})"
-                    )
-
-            logger.info(
-                f"File watcher initialized with {len(watched_dirs)} directories"
-            )
-
-            async def _rearm_lost_roots():
-                for root, unmount_seen in sorted(lost_roots.items()):
-                    # A stat here would re-trigger the automount whose idle
-                    # expiry just unmounted the root; mountinfo alone doesn't.
-                    if autofs_pending(root):
-                        continue
-                    status = await probe_root_async(root)
-                    if not status.available:
-                        continue
-                    del lost_roots[root]
-                    _add_watches(root)
-                    stored = await db.get_root_signature(root)
-                    if not rearm_needs_rescan(
-                        unmount_seen, status.identity, stored
-                    ):
-                        logger.info(
-                            f"Music folder is back (same mount), watching "
-                            f"it again: {root}"
-                        )
-                        continue
-                    logger.info(
-                        f"Music folder is back, watching it again and "
-                        f"rescanning: {root}"
-                    )
-                    await _indexer_queue.put(
-                        {"incremental_changes": {("dir_added", root)}}
-                    )
-
-            while not _file_watcher_stop_event.is_set():
-                try:
-                    # inotify_simple's timeout follows select.poll() —
-                    # MILLISECONDS, not seconds. timeout=1 was a busy-spin
-                    # at ~1000 reads/sec (the ThreadPoolExecutor worker
-                    # processing each submit() showed up as 27% CPU at
-                    # idle in py-spy). 1000 ms = 1 s gives a check
-                    # cadence consistent with how often shutdown needs
-                    # to be observed while still letting the read block
-                    # in-kernel for almost all of the time.
-                    events = await asyncio.get_running_loop().run_in_executor(
-                        None, lambda: inotify.read(timeout=1000)
-                    )
-
-                    if lost_roots and time.monotonic() >= next_rearm_check:
-                        next_rearm_check = time.monotonic() + REARM_CHECK_INTERVAL_S
-                        await _rearm_lost_roots()
-
-                    if not events:
-                        continue
-
-                    relevant_changes: Set[Tuple[str, str]] = set()  # (event_type, path)
-
-                    for event in events:
-                        dir_path = watched_dirs.get(event.wd, "")
-                        if not dir_path:
-                            continue
-
-                        file_path = (
-                            os.path.join(dir_path, event.name)
-                            if event.name
-                            else dir_path
-                        )
-
-                        # Unmount: the kernel already dropped every watch on
-                        # the filesystem and no per-file DELETE events follow,
-                        # so retire the whole root for the re-arm loop.
-                        if event.mask & flags.UNMOUNT:
-                            root = root_of(dir_path, music_folders) or dir_path
-                            prefix = root + os.sep
-                            for wd, path in list(watched_dirs.items()):
-                                if path == root or path.startswith(prefix):
-                                    del watched_dirs[wd]
-                            lost_roots[root] = True
-                            logger.warning(
-                                f"Filesystem unmounted under {root}; "
-                                "suspending watches until it returns"
-                            )
-
-                        # A directory appeared — created in place (mkdir,
-                        # cp -r) or moved in whole (mv). A moved-in tree is
-                        # already populated and emits no per-file events, so
-                        # it must be watched AND queued for scanning as a
-                        # unit. Same handling for a rename within the tree:
-                        # re-adding the watches refreshes the wd -> path
-                        # mapping for the new location.
-                        elif event.mask & (
-                            flags.CREATE | flags.MOVED_TO
-                        ) and os.path.isdir(file_path):
-                            relevant_changes.add(("dir_added", file_path))
-                            _add_watches(file_path)
-                            logger.debug(f"New directory detected: {file_path}")
-
-                        # Handle file close after write (primary trigger for files)
-                        elif event.mask & flags.CLOSE_WRITE:
-                            if is_supported_audio_file(file_path):
-                                relevant_changes.add(("file_closed", file_path))
-                                logger.debug(f"File closed after write: {file_path}")
-
-                        # Handle file renames (uploaded as .tmp then renamed to .mp3/.flac)
-                        elif event.mask & flags.MOVED_TO:
-                            if is_supported_audio_file(file_path):
-                                relevant_changes.add(("file_moved", file_path))
-                                logger.debug(f"File moved (atomic rename): {file_path}")
-
-                        # A file or directory left the tree (deleted or
-                        # moved out). Queue the batch so the stale-track
-                        # cleanup drops its database rows; for a directory,
-                        # also retire the subtree's now-stale watches.
-                        elif event.mask & (flags.DELETE | flags.MOVED_FROM):
-                            if event.mask & flags.ISDIR:
-                                prefix = file_path + os.sep
-                                for wd, path in list(watched_dirs.items()):
-                                    if path == file_path or path.startswith(prefix):
-                                        del watched_dirs[wd]
-                                        try:
-                                            inotify.rm_watch(wd)
-                                        except OSError:
-                                            pass  # watch already gone
-                                relevant_changes.add(("path_removed", file_path))
-                                logger.debug(f"Directory removed/moved out: {file_path}")
-                            elif is_supported_audio_file(file_path):
-                                relevant_changes.add(("path_removed", file_path))
-                                logger.debug(f"File removed/moved out: {file_path}")
-
-                        # Handle watched directory removal; a deleted root
-                        # re-arms when it reappears.
-                        elif event.mask & flags.DELETE_SELF:
-                            if event.wd in watched_dirs:
-                                del watched_dirs[event.wd]
-                                logger.debug(f"Directory removed: {dir_path}")
-                            if dir_path in music_folders:
-                                lost_roots[dir_path] = False
-
-                    if relevant_changes:
-                        logger.info(
-                            f"File watcher detected {len(relevant_changes)} relevant events (added/changed/removed)."
-                        )
-                        await _indexer_queue.put(
-                            {"incremental_changes": relevant_changes}
-                        )
-                        logger.info("Changes added to indexer queue for processing.")
-
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    logger.exception(f"Error reading inotify events: {e}")
-                    await asyncio.sleep(1)
-
+            await asyncio.gather(*loops)
         except asyncio.CancelledError:
             logger.info("File watcher worker cancelled.")
         finally:

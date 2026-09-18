@@ -18,6 +18,8 @@ from typing import List, NamedTuple, Optional, Tuple
 
 from PIL import Image
 
+from ..storage import DirEntry, FileStorage
+
 #: A cheap pre-filter on the *name*, so most files are ruled out without
 #: being opened; the real format is whatever the header turns out to say,
 #: and rips do misname things (a "pic.gif" holding a JPEG). Archival
@@ -108,17 +110,18 @@ def _stem(path: str) -> str:
     return os.path.splitext(os.path.basename(path))[0]
 
 
-def _holds_audio(directory: str) -> bool:
+def _holds_audio(storage: FileStorage, directory: str) -> bool:
     """Whether a directory has music of its own directly in it."""
     try:
         return any(
-            name.lower().endswith(_AUDIO_EXTENSIONS) for name in os.listdir(directory)
+            entry.name.lower().endswith(_AUDIO_EXTENSIONS)
+            for entry in storage.listdir(directory)
         )
     except OSError:
         return False
 
 
-def _directories(folder: str) -> List[str]:
+def _directories(storage: FileStorage, folder: str) -> List[str]:
     """``folder`` and the subdirectories that hold artwork rather than music.
 
     Scans are often filed under PIC/, Artwork/ or Scans/ rather than beside
@@ -129,42 +132,55 @@ def _directories(folder: str) -> List[str]:
     sleeve.
     """
     try:
-        children = sorted(os.listdir(folder))
+        children = sorted(storage.listdir(folder), key=lambda e: e.name)
     except OSError:
         return []
-    subdirectories = (os.path.join(folder, name) for name in children)
     return [folder] + [
-        path
-        for path in subdirectories
-        if os.path.isdir(path) and not _holds_audio(path)
+        entry.path
+        for entry in children
+        if _searchable_directory(storage, entry)
+        and not _holds_audio(storage, entry.path)
     ]
 
 
-def _image_paths(folder: str) -> List[str]:
+def _searchable_directory(storage: FileStorage, entry: DirEntry) -> bool:
+    """Whether ``entry`` is a directory worth searching for artwork.
+
+    A listing reports a link to a directory as a file, because a scan must
+    not descend through one. Artwork is the other question: a ``Scans``
+    folder kept as a link is ordinary, and this looks exactly one level
+    down rather than walking, so following it cannot loop. The extra stat
+    that costs is spent only on entries that could be one — anything
+    carrying a file extension is a file.
+    """
+    if entry.is_dir:
+        return True
+    if os.path.splitext(entry.name)[1]:
+        return False
+    return storage.is_dir(entry.path)
+
+
+def _image_entries(storage: FileStorage, folder: str) -> List[DirEntry]:
     """Admissible image files, cheaply filtered — no file is opened here."""
-    paths: List[str] = []
-    for directory in _directories(folder):
+    entries: List[DirEntry] = []
+    for directory in _directories(storage, folder):
         try:
-            entries = sorted(os.listdir(directory))
+            children = sorted(storage.listdir(directory), key=lambda e: e.name)
         except OSError:
             continue
-        for name in entries:
-            if not name.lower().endswith(_EXTENSIONS):
+        for entry in children:
+            if entry.is_dir or not entry.name.lower().endswith(_EXTENSIONS):
                 continue
-            path = os.path.join(directory, name)
-            try:
-                if not os.path.isfile(path) or os.path.getsize(path) > _MAX_BYTES:
-                    continue
-            except OSError:
+            if storage.size_of(entry) > _MAX_BYTES:
                 continue
-            paths.append(path)
-    return paths
+            entries.append(entry)
+    return entries
 
 
-def _measure(path: str) -> Optional[_Candidate]:
+def _measure(storage: FileStorage, path: str) -> Optional[_Candidate]:
     """Dimensions read from the header, or None when the file is unusable."""
     try:
-        with Image.open(path) as image:
+        with storage.open(path) as handle, Image.open(handle) as image:
             width, height = image.size
     except Exception:
         return None
@@ -173,9 +189,13 @@ def _measure(path: str) -> Optional[_Candidate]:
     return _Candidate(path, width, height)
 
 
-def find_folder_cover(folder: str) -> Optional[FolderCover]:
+def find_folder_cover(
+    storage: FileStorage, folder: str
+) -> Optional[FolderCover]:
     """The image in ``folder`` most likely to be its front cover, or None.
 
+    @param storage Where the folder lives; the same call serves a local
+        album folder and one on a share.
     @param folder The album's directory; its immediate subdirectories are
         searched too.
     @return Which file holds the cover and which part of it is the front,
@@ -183,7 +203,8 @@ def find_folder_cover(folder: str) -> Optional[FolderCover]:
     """
     if not folder:
         return None
-    candidates = [c for c in map(_measure, _image_paths(folder)) if c is not None]
+    measured = (_measure(storage, e.path) for e in _image_entries(storage, folder))
+    candidates = [c for c in measured if c is not None]
 
     # A name that says "cover" settles it, whatever the shape — and a scan
     # that is already the front beats one the front must be cut out of.

@@ -52,7 +52,7 @@ async def _index_folder(fi, folder, artists):
     for i, artist in enumerate(artists):
         fpath = folder / f"{i:02d} - {artist} - Song {i}.mp3"
         fpath.write_bytes(b"x")
-        fi._extract_metadata = lambda _p, a=artist, n=i: _meta(
+        fi._extract_metadata = lambda _s, _p, a=artist, n=i: _meta(
             artist=a, title=f"Song {n}"
         )
         await fi.process_file(str(fpath))

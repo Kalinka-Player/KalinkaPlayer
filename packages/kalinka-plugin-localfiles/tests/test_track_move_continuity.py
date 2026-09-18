@@ -123,3 +123,83 @@ async def test_copy_mints_new_identity(indexer):
     assert id_b != id_a
     n = await _row(config, "SELECT COUNT(*) c FROM tracks")
     assert n["c"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_storage_without_file_identity_never_re_points_a_row(indexer):
+    """Move detection needs an identity it can trust. A storage that reports
+    none — a share whose server supplies no file index — must fall back to
+    minting a new track rather than matching on whatever the lookup returns.
+
+    Reported as a zero, the identity was shared by every file on the share:
+    deleting one track and adding another of the same size handed the new
+    file the old one's id, history and enrichment, and lost the old row.
+    """
+    from kalinka_plugin_localfiles.storage.base import FileStat
+    from kalinka_plugin_localfiles.storage.local import LocalStorage
+
+    fi, music, config = indexer
+    first = music / "Album" / "first.flac"
+    _flac(first, title="First", artist="A", album="X")
+
+    real_stat = LocalStorage.stat
+
+    def anonymous(self, path):
+        measured = real_stat(self, path)
+        return FileStat(
+            size=measured.size,
+            mtime_ns=measured.mtime_ns,
+            is_dir=measured.is_dir,
+            identity=None,
+        )
+
+    LocalStorage.stat = anonymous
+    try:
+        id_first = (await fi.process_file(str(first)))["tracks"]
+        await _enrich(config, id_first)
+
+        second = music / "Album" / "second.flac"
+        _flac(second, title="Second", artist="A", album="X")
+        os.remove(first)
+        id_second = (await fi.process_file(str(second)))["tracks"]
+    finally:
+        LocalStorage.stat = real_stat
+
+    assert id_second != id_first
+    kept = await _row(config, "SELECT * FROM tracks WHERE id=?", (id_first,))
+    assert kept["mbid"] == "rec-1"
+    fresh = await _row(config, "SELECT * FROM tracks WHERE id=?", (id_second,))
+    assert fresh["mbid"] is None
+    assert fresh["file_path"] == str(second)
+
+
+@pytest.mark.asyncio
+async def test_a_file_dated_in_the_future_is_indexed_without_waiting(tmp_path):
+    """The quiescence window compares a file's mtime against this clock. A
+    NAS an hour ahead — or a Pi that has not reached an NTP server yet —
+    produces a negative age, and subtracting it from the window made the
+    indexer sleep out the whole skew, per file, forever.
+    """
+    import asyncio
+    import time
+
+    music = tmp_path / "music"
+    music.mkdir()
+    config = LocalFilesConfig(
+        music_folders=[str(music)],
+        db_path=str(tmp_path / "localfiles.db"),
+        artwork_path=str(tmp_path / "artwork"),
+        quiescence_seconds=5,
+    )
+    await init_db(config.db_path)
+    fi = FileIndexer(config, AsyncIndexerDb(config))
+
+    path = music / "Album" / "ahead.flac"
+    _flac(path, title="T", artist="A", album="X")
+    ahead = time.time() + 3600
+    os.utime(path, (ahead, ahead))
+
+    started = time.monotonic()
+    result = await asyncio.wait_for(fi.process_file(str(path)), 10)
+    assert result is not None
+    assert time.monotonic() - started < 5
