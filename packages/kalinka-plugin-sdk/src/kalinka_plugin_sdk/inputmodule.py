@@ -2,7 +2,15 @@ import asyncio
 
 from pydantic import BaseModel, PositiveInt, ConfigDict
 from enum import Enum
-from typing import Awaitable, Callable, List, Optional, Protocol, runtime_checkable
+from typing import (
+    Awaitable,
+    BinaryIO,
+    Callable,
+    List,
+    Optional,
+    Protocol,
+    runtime_checkable,
+)
 
 from .datamodel import (
     BrowseItem,
@@ -82,19 +90,29 @@ class ContentInfo(BaseModel):
     """
     What the server needs to serve one asset of a module's content.
 
+    The module says how the bytes can be reached, in one of two ways, and
+    the server answers byte-range requests either way. ``local_path`` is
+    preferred where it applies: the kernel serves the file and nothing is
+    copied through this process. ``reader`` is for content only the module
+    can reach — a share it speaks to itself, an object store — and needs
+    ``size``, because a renderer reads the stream length out of
+    ``Content-Range`` and cannot seek without it.
+
     Attributes:
         mime_type (str): Content-Type to serve the asset as
-        local_path (Optional[str]): A file the server may read directly. Serving
-            a file is the only way to answer a fetch today — an asset the module
-            can only stream itself is not servable yet.
-        size (Optional[int]): Byte length where the module knows it. The server
-            measures a local file for itself, so this is for content it cannot
-            stat.
+        local_path (Optional[str]): A file the server may read directly.
+        reader (Optional[Callable[[], BinaryIO]]): Opens the asset for
+            reading. Called once per request and given back a fresh,
+            seekable, binary stream each time; the server closes it. Ignored
+            when ``local_path`` is set.
+        size (Optional[int]): Byte length. Required alongside ``reader``;
+            the server measures a local file for itself.
         cacheable (bool): Whether the server may hold on to these bytes.
     """
 
     mime_type: str
     local_path: Optional[str] = None
+    reader: Optional[Callable[[], BinaryIO]] = None
     size: Optional[int] = None
     cacheable: bool = False
 
