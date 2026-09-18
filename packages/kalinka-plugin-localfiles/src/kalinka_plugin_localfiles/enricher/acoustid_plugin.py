@@ -133,19 +133,9 @@ class AcoustIdPlugin(EnricherPlugin):
                 return None, None
 
             with storage.materialize(file_path) as readable_path:
-                # Run fpcalc tool to generate fingerprint
-                cmd = ["fpcalc", "-json", readable_path]
-                logger.debug(f"Running command: {' '.join(cmd)}")
-
-                # A damaged file makes fpcalc exit non-zero after it has
-                # already printed the fingerprint it built, and that is
-                # worth keeping.
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=30,  # Timeout after 30 seconds
-                )
+                result = self._run_fpcalc(readable_path)
+            if result is None:
+                return None, None
 
             # Parse JSON output
             data = json.loads(result.stdout)
@@ -157,8 +147,10 @@ class AcoustIdPlugin(EnricherPlugin):
                 )
                 return None, None
 
-        except FileNotFoundError:
-            logger.error("fpcalc (chromaprint) not found. Please install chromaprint.")
+        except OSError as e:
+            # A track that left between the check above and the read of it —
+            # a share drops one mid-pass — which says nothing about fpcalc.
+            logger.error(f"Could not read {file_path} to fingerprint it: {e}")
             return None, None
         except subprocess.SubprocessError as e:
             logger.error(f"Error running fpcalc on {file_path}: {str(e)}")
@@ -174,6 +166,35 @@ class AcoustIdPlugin(EnricherPlugin):
                 f"Unexpected error generating fingerprint for {file_path}: {str(e)}"
             )
             return None, None
+
+    def _run_fpcalc(self, readable_path: str) -> Optional[subprocess.CompletedProcess]:
+        """What fpcalc printed for a file on this filesystem, or None when the
+        binary has gone since it was probed at startup.
+
+        Its own method so that the ``FileNotFoundError`` a missing binary
+        raises is never mistaken for the one a missing track raises: they
+        arrive at the same handler and mean opposite things.
+        """
+        cmd = [self.fpcalc or "fpcalc", "-json", readable_path]
+        logger.debug(f"Running command: {' '.join(cmd)}")
+        try:
+            # A damaged file makes fpcalc exit non-zero after it has already
+            # printed the fingerprint it built, and that is worth keeping.
+            return subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,  # Timeout after 30 seconds
+            )
+        except FileNotFoundError:
+            logger.error("fpcalc (chromaprint) not found. Please install chromaprint.")
+            return None
+        except OSError as e:
+            # Present but unrunnable — the wrong architecture, or not
+            # executable. Named here so the caller's handler is left meaning
+            # one thing: the track could not be read.
+            logger.error(f"Could not run fpcalc: {e}")
+            return None
 
     def _lookup_fingerprint(
         self, fingerprint: str, duration: int
