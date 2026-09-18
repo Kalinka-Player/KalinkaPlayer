@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import signal
 import socket
 import sys
 from dataclasses import dataclass
@@ -38,6 +39,13 @@ _INSTANCE = pytest.StashKey[KalinkaInstance]()
 
 def _opted_in() -> bool:
     return os.environ.get("KALINKA_SYSTEM_TEST") == "1"
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    if _opted_in():
+        # A bare SIGTERM has no default cleanup; make it unwind fixtures the
+        # same way Ctrl-C does, so instance.stop()/share.stop() still run.
+        signal.signal(signal.SIGTERM, signal.default_int_handler)
 
 
 def pytest_collection_modifyitems(config, items):
@@ -109,7 +117,8 @@ class PlantedLibrary:
 @pytest.fixture(scope="session")
 def kalinka(workspace: Path, cache_dir: Path, samba: SambaShare, request) -> KalinkaInstance:
     instance = KalinkaInstance(
-        REPO_ROOT, workspace / "prefix", _free_port(), Path(sys.prefix)
+        REPO_ROOT, workspace / "prefix", _free_port(), Path(sys.prefix),
+        cache_dir / "server.pid",
     )
     instance.install(
         {

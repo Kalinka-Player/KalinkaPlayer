@@ -27,7 +27,7 @@ class SambaShare:
     def __init__(self, share_dir: Path, port: int) -> None:
         self.share_dir = share_dir
         self.port = port
-        self._name = f"kalinka-system-test-smb-{port}"
+        self._name = "kalinka-system-test-smb"
 
     @property
     def url(self) -> str:
@@ -56,8 +56,8 @@ class SambaShare:
                     )
                 time.sleep(0.5)
         except BaseException:
-            # Nothing else will: the fixture only takes ownership once start()
-            # returns, and the name carries a port no later run will guess.
+            # Nothing else will: the fixture only takes ownership once
+            # start() returns.
             self.stop()
             raise
 

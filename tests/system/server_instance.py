@@ -8,6 +8,7 @@ too — including the in-app restart it implements by relaunching the server.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import signal
 import sqlite3
@@ -19,13 +20,17 @@ import httpx
 
 from waiting import wait_until
 
+logger = logging.getLogger("system-test")
+
 _START_TIMEOUT_S = 240.0
 _STOP_TIMEOUT_S = 60.0
 _HTTP_TIMEOUT_S = 60.0
 
 
 class KalinkaInstance:
-    def __init__(self, repo_root: Path, prefix: Path, port: int, venv: Path) -> None:
+    def __init__(
+        self, repo_root: Path, prefix: Path, port: int, venv: Path, pid_file: Path
+    ) -> None:
         self.repo_root = repo_root
         self.prefix = prefix
         self.port = port
@@ -38,6 +43,7 @@ class KalinkaInstance:
         self.music_dir = prefix / "srv/kalinka/music"
         self.log_path = prefix / "var/log/kalinka/server.log"
         self.launcher_log = prefix / "dev_run.out"
+        self._pid_file = pid_file
         self._proc: Optional[subprocess.Popen] = None
         self._launcher_out = None
         self._http = httpx.Client(base_url=self.base_url, timeout=_HTTP_TIMEOUT_S)
@@ -73,6 +79,7 @@ class KalinkaInstance:
         self.models_dir.symlink_to(models_cache, target_is_directory=True)
 
     def start(self) -> None:
+        self._reap_stale()
         self._launcher_out = open(self.launcher_log, "ab")
         self._proc = subprocess.Popen(
             [str(self.repo_root / "scripts/dev_run.sh")],
@@ -82,6 +89,7 @@ class KalinkaInstance:
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
+        self._pid_file.write_text(str(self._proc.pid))
         self._wait_reachable()
 
     def stop(self) -> None:
@@ -96,6 +104,29 @@ class KalinkaInstance:
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.wait()
         self._launcher_out.close()
+        self._pid_file.unlink(missing_ok=True)
+
+    def _reap_stale(self) -> None:
+        """A run that never reached stop() — pytest killed outright, a crash
+        that skipped fixture teardown — leaves its process group behind.
+        Unlike its fakeroot, this file survives that run, so the next one can
+        find and clear it before starting its own."""
+        try:
+            pgid = int(self._pid_file.read_text())
+        except (OSError, ValueError):
+            return
+        try:
+            cmdline = Path(f"/proc/{pgid}/cmdline").read_bytes()
+        except OSError:
+            cmdline = b""
+        if b"dev_run.sh" in cmdline:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            else:
+                logger.warning("killed a stale kalinka test server (pgid %d)", pgid)
+        self._pid_file.unlink(missing_ok=True)
 
     def restart(self) -> None:
         """The in-app restart: the server asks for one, the launcher relaunches it."""
