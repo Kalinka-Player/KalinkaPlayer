@@ -35,6 +35,10 @@ class _FakeModule:
     async def get_content_info(self, asset_id):
         if asset_id == "offline":
             raise SourceUnavailableError("Music folder /mnt/nas is not available")
+        if asset_id == "overran":
+            # What TimeLimitedInputModule raises once the per-call budget is
+            # spent; the module never gets to say why for itself.
+            raise TimeoutError("localfiles.get_content_info exceeded the 3s budget")
         return self._assets.get(asset_id)
 
 
@@ -202,6 +206,16 @@ def test_transiently_unreachable_storage_is_a_503(client):
     """An unmounted share must not read as a missing file: renderers retry
     5xx but abort on 4xx, so 503 is what keeps the stream alive."""
     r = client.get(_url(asset="offline"))
+    assert r.status_code == 503
+    assert r.headers["retry-after"] == "2"
+
+
+def test_a_module_cut_off_by_its_budget_is_a_503(client):
+    """A module reaching storage that went quiet is cancelled by the per-call
+    budget before it can report the outage itself. What escaped was a bare
+    TimeoutError, which the framework served as a 500 — an unhandled error,
+    on the one path that had promised a retryable answer."""
+    r = client.get(_url(asset="overran"))
     assert r.status_code == 503
     assert r.headers["retry-after"] == "2"
 

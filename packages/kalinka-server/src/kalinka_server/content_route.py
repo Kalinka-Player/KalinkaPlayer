@@ -67,6 +67,21 @@ def register_content_route(
             raise HTTPException(
                 status_code=503, detail=str(e), headers={"Retry-After": "2"}
             )
+        except (asyncio.TimeoutError, TimeoutError):
+            # The per-call budget cancelled the module before it could answer.
+            # On this path that means its storage went quiet, which is the
+            # transient the module reports for itself when it gets that far —
+            # not the unhandled error a 500 would advertise.
+            logger.warning(
+                "%s did not resolve asset %s within its call budget",
+                module_name,
+                asset_id,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Content storage did not respond",
+                headers={"Retry-After": "2"},
+            )
         if info is None:
             raise HTTPException(status_code=404, detail="Content not found")
         if not info.local_path:
