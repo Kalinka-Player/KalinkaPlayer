@@ -280,20 +280,38 @@ def test_a_stream_whose_file_vanished_is_absent():
 
 
 def test_a_stream_that_will_not_open_is_transient(monkeypatch):
-    """Opening is bounded the same way the file stat is: a share that stops
-    answering reads as transient rather than as a missing track."""
+    """Opening is bounded like the file stat is: a share that stops answering
+    reads as transient rather than as a missing track."""
     import kalinka_server.content_route as content_route
 
     def hang():
         time.sleep(5)
         return io.BytesIO(AUDIO)
 
-    monkeypatch.setattr(content_route, "_STAT_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(content_route, "_OPEN_TIMEOUT_S", 0.05)
     client = _client_for(_reader_backed(reader=hang))
 
     r = client.get(_url())
     assert r.status_code == 503
     assert r.headers["retry-after"] == "2"
+
+
+def test_a_slow_open_is_not_held_to_the_stat_budget(monkeypatch):
+    """Opening a stream may have to connect and log in first, which takes
+    longer than a stat is ever given. Sharing one budget failed a healthy
+    share whose pooled session had dropped."""
+    import kalinka_server.content_route as content_route
+
+    def unhurried():
+        time.sleep(0.2)
+        return io.BytesIO(AUDIO)
+
+    monkeypatch.setattr(content_route, "_STAT_TIMEOUT_S", 0.05)
+    client = _client_for(_reader_backed(reader=unhurried))
+
+    r = client.get(_url())
+    assert r.status_code == 200
+    assert r.content == AUDIO
 
 
 def test_content_url_is_built_on_the_address_the_fetcher_reached():

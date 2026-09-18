@@ -34,6 +34,12 @@ logger = logging.getLogger(__name__)
 # bounded, and this last one before FileResponse must be too.
 _STAT_TIMEOUT_S = 3.0
 
+# Opening a module's stream is not a stat: the first read of a track may have
+# to build a connection and log in before it can answer, which an SMB client
+# alone gives 15 seconds to. Cutting that off at the stat budget would fail a
+# healthy share whenever its pooled session had dropped.
+_OPEN_TIMEOUT_S = 20.0
+
 
 def register_content_route(
     app: FastAPI, resolve_module: Callable[[str], InputModule]
@@ -116,7 +122,7 @@ async def _serve_stream(
         return ranged_content.head_response(span, info.size, info.mime_type)
 
     try:
-        reader = await ranged_content.open_reader(info.reader, _STAT_TIMEOUT_S)
+        reader = await ranged_content.open_reader(info.reader, _OPEN_TIMEOUT_S)
     except (asyncio.TimeoutError, TimeoutError):
         raise HTTPException(
             status_code=503,
