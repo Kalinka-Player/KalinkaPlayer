@@ -338,6 +338,21 @@ class FileStorage(ABC):
         """
         return not self.listdir(root)
 
+    def close(self) -> None:
+        """Release what this storage holds open.
+
+        A storage that only reads the local filesystem holds nothing and
+        need not implement this. One that speaks a protocol holds a
+        connection per server, and a connection holds a socket and the
+        thread reading it — so a storage that is replaced rather than
+        reused has to be told, or both survive it.
+
+        @note Blocking, and it may take as long as the protocol takes to
+            close a connection the server has stopped answering. Callers on
+            an event loop run it elsewhere.
+        @note Idempotent. The storage is not used again afterwards.
+        """
+
     def local_path(self, path: str) -> Optional[str]:
         """Where a process on this machine can read the file directly, or
         None when only this storage can reach it. What lets the server hand

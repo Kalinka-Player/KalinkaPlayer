@@ -108,7 +108,9 @@ def covering_mount(path: str, mounts: Optional[list[Mount]] = None) -> Optional[
     return best
 
 
-def _is_network_fs(fs_type: str) -> bool:
+def is_network_fs(fs_type: str) -> bool:
+    """Whether a server, rather than a disk on this machine, answers for a
+    filesystem of this type."""
     return fs_type.startswith("nfs") or fs_type in _NETWORK_FS
 
 
@@ -135,7 +137,7 @@ def probe_root(root: str, mounts: Optional[list[Mount]] = None) -> RootStatus:
     fs_type = cov.fs_type if cov else None
     identity = f"{cov.fs_type} {cov.source}" if cov else None
     is_autofs = any(m.fs_type == "autofs" and _covers(m.mount_point, root) for m in mounts)
-    is_network = fs_type is not None and _is_network_fs(fs_type)
+    is_network = fs_type is not None and is_network_fs(fs_type)
     if fs_type == "autofs":
         return RootStatus(
             root=root,

@@ -316,6 +316,7 @@ class LocalFilesConfig(ModuleConfig):
                 "`smb://192.168.1.1/music` — a share needs no mounting."
             ),
             "widget": "folder_list",
+            "dynamic_options": True,
             **_SIMPLE,
             **_PROMPT,
         },

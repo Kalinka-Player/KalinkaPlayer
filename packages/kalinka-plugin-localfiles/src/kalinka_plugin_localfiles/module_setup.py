@@ -4,11 +4,16 @@ import logging
 import logging.handlers
 import multiprocessing
 import shutil
+import threading
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Optional
 
 from kalinka_plugin_sdk import (
+    ConfigIssue,
+    ConfigOption,
     DynamicFieldDecl,
+    IssueSeverity,
+    ModuleConfig,
     ModuleHealthState,
     ModuleState,
     OptionalPackageSpec,
@@ -18,7 +23,19 @@ from kalinka_plugin_sdk.inputmodule import InputModule
 
 from .config_model import LocalFilesConfig
 from .db_schema import init_db
-from .storage import RootStatus, StorageResolver, build_resolver
+from .storage import (
+    LocatorError,
+    RootStatus,
+    StorageResolver,
+    build_resolver,
+    parse,
+)
+from .suggest import (
+    LocalMountSuggester,
+    RootSuggester,
+    SmbHostDiscovery,
+    SmbHostSuggester,
+)
 from .input_module_db import LocalFilesInputModuleDb
 from .localfiles import LocalFilesInputModule
 from .optional_packages import OPTIONAL_PACKAGES
@@ -28,6 +45,11 @@ from . import searcher
 
 
 logger = logging.getLogger(__name__.split(".")[-1])
+
+#: How long one music folder may take to answer before the settings page
+#: gives up on it. Short, because every folder is probed on every poll and
+#: the page waits for the slowest of them.
+_PROBE_TIMEOUT_S = 2.0
 
 
 @dataclass
@@ -128,8 +150,122 @@ def _format_root_status(
     return text
 
 
+async def _probe_roots(
+    resolver: StorageResolver, roots: list[str]
+) -> list[RootStatus]:
+    """Every root's availability, asked for at once.
+
+    Serially would make the page wait for the sum of the timeouts, and an
+    unreachable share is exactly the case where that is worst.
+    """
+    return await asyncio.gather(
+        *(
+            resolver.for_path(root).probe_root(root, timeout=_PROBE_TIMEOUT_S)
+            for root in roots
+        )
+    )
+
+
+def _judge_spelling(
+    folders: list[str], report: bool
+) -> tuple[list[ConfigIssue], list[tuple[int, str]]]:
+    """Each folder's canonical form, and what is wrong with how it is written.
+
+    Off the event loop, because canonicalising a local folder resolves it and
+    one on a hung mount would hold up every request behind it.
+
+    @param report Whether a misspelling is worth saying anything about. It is
+        only when the user is editing the list; otherwise a folder that was
+        already wrong would refuse a save that has nothing to do with it.
+    @return The issues, and the ``(index, root)`` pairs worth probing.
+    """
+    issues: list[ConfigIssue] = []
+    first_written_at: dict[str, int] = {}
+    probing: list[tuple[int, str]] = []
+
+    for index, folder in enumerate(folders):
+        try:
+            root = str(parse(folder))
+        except LocatorError as e:
+            if report:
+                issues.append(
+                    ConfigIssue(path="music_folders", index=index, message=str(e))
+                )
+            continue
+        first = first_written_at.get(root)
+        if first is not None:
+            if report:
+                issues.append(
+                    ConfigIssue(
+                        path="music_folders",
+                        index=index,
+                        message=f"the same folder as entry {first + 1}",
+                    )
+                )
+            continue
+        first_written_at[root] = index
+        probing.append((index, root))
+    return issues, probing
+
+
+class _ResolverCache:
+    """One storage resolver per credential set, kept rather than rebuilt.
+
+    The registry that holds a hung folder to a single blocked worker thread
+    lives on the storage instances, so a resolver built per call brings an
+    empty one with it and strands a thread on every poll.
+
+    @note One cache per purpose, never one shared: the resolver playback
+        reads must not be swapped for one built from credentials the user
+        has typed but not saved. Each keeps its own logins, so neither can
+        answer for the other's password.
+
+    @param release_replaced Whether a resolver being swapped out can have
+        its connections taken away at once. True where nothing reads
+        through it — each password typed into the settings page is a
+        credential set of its own, and every one of them would otherwise
+        leave a connection and the thread reading it behind. False where a
+        track may still be streaming from it: a saved credential change is
+        followed by a restart within seconds, which is a cheaper way to
+        release those than closing a file somebody is reading.
+    """
+
+    def __init__(self, release_replaced: bool) -> None:
+        self._release_replaced = release_replaced
+        self._resolver: Optional[StorageResolver] = None
+        self._key: Optional[str] = None
+
+    def get(self, config: LocalFilesConfig) -> StorageResolver:
+        key = config.smb.model_dump_json()
+        if self._resolver is None or key != self._key:
+            if self._release_replaced:
+                self._release(self._resolver)
+            self._resolver = build_resolver(config)
+            self._key = key
+        return self._resolver
+
+    def close(self) -> None:
+        self._release(self._resolver)
+        self._resolver = None
+        self._key = None
+
+    @staticmethod
+    def _release(resolver: Optional[StorageResolver]) -> None:
+        """Hand a replaced resolver's connections back.
+
+        On a thread of its own: this is reached from the event loop while
+        the user edits a password, and disconnecting from a server that has
+        stopped answering takes as long as the protocol allows.
+        """
+        if resolver is None:
+            return
+        threading.Thread(
+            target=resolver.close, name="storage-release", daemon=True
+        ).start()
+
+
 class KalinkaPluginLocalFiles(InputModulePlugin):
-    REQUIRES_SDK = ">=3.2,<4"
+    REQUIRES_SDK = ">=3.3,<4"
     PLUGIN_ID = "localfiles"
     CONFIG_MODEL = LocalFilesConfig
     OPTIONAL_PACKAGES: ClassVar[dict[str, OptionalPackageSpec]] = OPTIONAL_PACKAGES
@@ -190,12 +326,17 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
         # mutates via PUT /server/config without re-invoking setup.
         self._context: Optional[InputPluginContext] = None
 
-        # One resolver per credential set rather than one per call. The
-        # registry that keeps a hung folder to a single blocked worker thread
-        # lives on the storage instances, so a resolver built per status poll
-        # would strand a thread on every poll.
-        self._resolver: Optional[StorageResolver] = None
-        self._resolver_key: Optional[str] = None
+        # What playback and the status page read, and — separately — what
+        # folders the user has typed but not saved are judged with.
+        self._live_resolvers = _ResolverCache(release_replaced=False)
+        self._staged_resolvers = _ResolverCache(release_replaced=True)
+
+        # Where the settings page's folder suggestions come from. The
+        # discovery listens on the network for as long as the module is
+        # loaded; the storages cannot hold it, because they are rebuilt in
+        # every worker process and this belongs in one.
+        self._discovery = SmbHostDiscovery()
+        self._suggesters: list[RootSuggester] = []
 
         # Per-sub-feature state used by get_state() and resolve_dynamic_field().
         # Populated during setup() based on actual subprocess start outcomes
@@ -328,6 +469,15 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
                 ),
             )
             self._embedder_proc.start()
+
+        # Off the loop both ways: joining a multicast group and leaving it
+        # again are socket work, and zeroconf refuses to do the leaving at
+        # all when it is asked for it from inside an event loop.
+        await asyncio.to_thread(self._discovery.start)
+        self._suggesters = [
+            LocalMountSuggester(),
+            SmbHostSuggester(self._discovery),
+        ]
 
         # Populate sub-feature state from what was (or wasn't) just started
         # and from import probing. This runs in the main process — it
@@ -462,11 +612,7 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
         Rebuilt only when the credentials change, because ``setup`` is not
         re-run when the server mutates the config in place.
         """
-        key = config.smb.model_dump_json()
-        if self._resolver is None or key != self._resolver_key:
-            self._resolver = build_resolver(config)
-            self._resolver_key = key
-        return self._resolver
+        return self._live_resolvers.get(config)
 
     def _current_resolver(self) -> StorageResolver:
         """The resolver for the configuration as it stands right now.
@@ -505,12 +651,7 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
         folders = await asyncio.to_thread(
             resolver.canonical_roots, config.music_folders
         )
-        statuses = await asyncio.gather(
-            *(
-                resolver.for_path(folder).probe_root(folder, timeout=2.0)
-                for folder in folders
-            )
-        )
+        statuses = await _probe_roots(resolver, folders)
         module = self._inputmodule
         if module is None or not module.db_manager.is_good():
             return [(status, None) for status in statuses]
@@ -610,6 +751,78 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
             return _format_subfeature_status(sf)
         raise KeyError(path)
 
+    async def resolve_options(self, path: str) -> list[ConfigOption]:
+        """Places the user could point a music folder at.
+
+        Offers what each source already knows and asks it for more in the
+        same breath, so a NAS that answers late is on the list the next
+        time the page is read rather than making this call wait for it.
+        """
+        if path != "music_folders":
+            raise KeyError(path)
+        options: list[ConfigOption] = []
+        for suggester in self._suggesters:
+            suggester.refresh()
+            options.extend(suggester.options())
+        return options
+
+    def _resolver_for_candidate(self, candidate: LocalFilesConfig) -> StorageResolver:
+        """The resolver to judge ``candidate``'s folders with.
+
+        Credentials the user has only staged must not reach the resolver
+        playback reads, so they get a cache of their own. Unchanged
+        credentials are judged with the live resolver instead, which is
+        worth reaching for: it already knows which folders are hung.
+        """
+        if self._context is not None and candidate.smb == self._context.config.smb:
+            return self._current_resolver()
+        return self._staged_resolvers.get(candidate)
+
+    async def validate_config(
+        self, candidate: ModuleConfig, changed: frozenset[str]
+    ) -> list[ConfigIssue]:
+        """What is wrong with the folders the user has typed.
+
+        How a folder is written is the user's mistake to fix, so it refuses
+        the save. Whether it answers right now is not: a NAS that is switched
+        off tonight is still the right folder to have configured, and the
+        library keeps what it indexed under a root it cannot currently see.
+
+        @note Only a folder list the user has just edited can be refused. A
+            credential change re-asks whether the shares answer, but an entry
+            that was already misspelled before this save is not the user's
+            mistake to fix *now*, and refusing the batch over it would leave
+            the password unsaveable.
+        """
+        folders_edited = "music_folders" in changed
+        if not folders_edited and not any(
+            path == "smb" or path.startswith("smb.") for path in changed
+        ):
+            return []
+
+        config = LocalFilesConfig(**candidate.model_dump())
+        issues, probing = await asyncio.to_thread(
+            _judge_spelling, config.music_folders, folders_edited
+        )
+
+        resolver = self._resolver_for_candidate(config)
+        statuses = await _probe_roots(resolver, [root for _index, root in probing])
+        for (index, _root), status in zip(probing, statuses):
+            if status.available:
+                continue
+            issues.append(
+                ConfigIssue(
+                    path="music_folders",
+                    index=index,
+                    severity=IssueSeverity.WARNING,
+                    message=(
+                        f"{status.reason}; it can be saved, but nothing is "
+                        "indexed under it until it can be read"
+                    ),
+                )
+            )
+        return issues
+
     async def required_packages(self) -> list[str]:
         """Optional-package keys this plugin would need given the *current*
         in-memory config.
@@ -678,6 +891,10 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
 
     async def shutdown(self) -> None:
         logger.info("Shutting down localfiles input module")
+
+        await asyncio.to_thread(self._discovery.stop)
+        for resolvers in (self._live_resolvers, self._staged_resolvers):
+            resolvers.close()
 
         self._shutdown_process(self._librarian_proc)
         self._shutdown_process(self._searcher_proc)

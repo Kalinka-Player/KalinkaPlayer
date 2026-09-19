@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, ClassVar, Generic, Optional, TypeVar
 from .api import EventEmitter, EventListener, LoggerAPI, PlayQueueController
+from .config_feedback import ConfigIssue, ConfigOption
 from .dynamic_fields import DynamicFieldDecl
 from .embedding import TextEmbedder
 from .events import PlayQueueEventType, PlayQueueEvent, PlayQueueState
@@ -120,6 +121,56 @@ class PluginBase(ABC, Generic[PLUGIN_CLASS, CTX_TYPE]):
         as a 404 for the caller.
         """
         raise KeyError(path)
+
+    async def resolve_options(self, path: str) -> list[ConfigOption]:
+        """Values to suggest for the config field at ``path``.
+
+        Declared on the field itself with
+        ``json_schema_extra={"dynamic_options": True}``; ``path`` is that
+        field's path inside this plugin's config model (e.g.
+        "music_folders"). For a list field the options are suggestions for
+        one item of it.
+
+        Suggestions, not a closed set: the user may pick one or type
+        something else entirely, so returning nothing is an ordinary
+        answer and never an error.
+
+        @note Called on every read of the settings page, so it must answer
+            from state the plugin already holds. A plugin whose answer needs
+            the network starts that work in the background and returns what
+            it knows now; the next read picks up the rest.
+        @raise KeyError If ``path`` is not a field this plugin offers
+            suggestions for. Raise it carrying ``path`` and nothing else —
+            that is what tells the refusal apart from a lookup that failed
+            inside the resolver, which is reported as the fault it is.
+        """
+        raise KeyError(path)
+
+    async def validate_config(
+        self, candidate: ModuleConfig, changed: frozenset[str]
+    ) -> list[ConfigIssue]:
+        """Judge configuration the user has staged but not yet saved.
+
+        For what the type system cannot say: that a folder exists, that a
+        share names more than its server, that two entries are the same
+        place written twice. An ERROR issue refuses the save; a WARNING is
+        shown beside the field and saved regardless.
+
+        @param candidate This plugin's config with the staged changes
+            applied — a copy, and never the live configuration. The plugin
+            reads it and lets it go: it is not the configuration it is
+            running under, and acting on it would apply changes the user
+            may still discard.
+        @param changed Paths within ``candidate`` the user actually edited,
+            so a plugin can skip checks nothing touched. Probing costs
+            network round trips, which the settings page pays for while the
+            user types.
+        @return One issue per problem, empty when there is nothing to say.
+
+        @note Called for a dry run as the user edits and again before the
+            save. It must be free of side effects and bounded in time.
+        """
+        return []
 
     async def required_packages(self) -> list[str]:
         """Return optional-package keys the plugin would need to install

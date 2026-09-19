@@ -17,9 +17,15 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from smbprotocol.exceptions import (
+    AccessDenied,
+    LogonFailure,
+    PasswordExpired,
+    SMBAuthenticationError,
+)
 
 import kalinka_plugin_localfiles.storage.smb as smb_mod
-from kalinka_plugin_localfiles.storage.locator import LocatorError
+from kalinka_plugin_localfiles.storage.locator import LocatorError, parse
 from kalinka_plugin_localfiles.storage.smb import SmbCredentials, SmbStorage
 
 
@@ -565,3 +571,47 @@ class TestChangeNotification:
         for, so these roots are left to the periodic scan — and saying so is
         what keeps the watcher from pretending otherwise."""
         assert _storage().watcher() is None
+
+
+class TestTellingARefusalFromSilence:
+    """The one failure the person reading it can act on. A server that is
+    switched off and a password that is wrong are the same OSError to every
+    caller, and nothing like each other to the user."""
+
+    @pytest.mark.parametrize(
+        "raised",
+        [
+            SMBAuthenticationError("bad credentials"),
+            LogonFailure(),
+            PasswordExpired(),
+            AccessDenied(),
+        ],
+    )
+    def test_a_refused_login_is_a_permission_error(self, raised):
+        storage = SmbStorage()
+        with pytest.raises(PermissionError):
+            with storage._as_os_error():
+                raise raised
+
+    def test_a_refused_login_is_still_an_os_error(self):
+        """Every caller guards with ``except OSError`` and none of them
+        should have to learn a second type."""
+        storage = SmbStorage()
+        with pytest.raises(OSError):
+            with storage._as_os_error():
+                raise LogonFailure()
+
+    def test_a_server_that_does_not_answer_stays_a_plain_os_error(self):
+        storage = SmbStorage()
+        with pytest.raises(OSError) as caught:
+            with storage._as_os_error():
+                raise ValueError("the socket went away")
+        assert not isinstance(caught.value, PermissionError)
+
+    def test_the_two_read_differently(self):
+        storage = SmbStorage()
+        locator = parse("smb://nas/music")
+        assert "refused the login" in storage._reason(
+            locator, PermissionError("bad password")
+        )
+        assert "did not answer" in storage._reason(locator, OSError("timed out"))

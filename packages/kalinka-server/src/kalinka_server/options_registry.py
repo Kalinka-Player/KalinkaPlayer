@@ -18,18 +18,28 @@ so a broken enumerator can't take the whole values blob down with it.
 
 Parallel to ``dynamic_field_registry``: that one is for *value*
 resolution of read-only status views; this one is for *option*
-resolution of writable enum fields. They never overlap.
+resolution of writable fields. They never overlap.
+
+Plugins reach the registry through their config model rather than
+through a registration call: a field tagged
+``json_schema_extra={"dynamic_options": True}`` is bound to its
+plugin's ``resolve_options`` by :func:`register_plugin_options` at
+startup.
 """
 
 from __future__ import annotations
 
 import inspect
 import logging
+from functools import partial
 from typing import Any, Awaitable, Callable, Union
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
-from .presentation_schema import OptionSpec
+from kalinka_plugin_sdk.plugin import PluginBase
+
+from .player_setup import PreparedPlugin
+from .presentation_schema import OptionSpec, PresentationSchema
 
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -91,6 +101,10 @@ def _coerce_options(raw: Any) -> list[OptionSpec]:
         if isinstance(entry, OptionSpec):
             out.append(entry)
             continue
+        # A plugin answers in the SDK's own option type, which carries the
+        # same three fields under a class the server does not import.
+        if isinstance(entry, BaseModel):
+            entry = entry.model_dump()
         # A malformed entry (e.g. dict missing the required value/label)
         # makes OptionSpec(...) raise ValidationError. Skip just that
         # entry rather than letting one bad option take the whole
@@ -112,3 +126,70 @@ def _coerce_options(raw: Any) -> list[OptionSpec]:
                 exc,
             )
     return out
+
+
+def _owner_of(
+    path: str,
+    input_modules: dict[str, PreparedPlugin],
+    devices: dict[str, PreparedPlugin],
+) -> tuple[PluginBase, str, str] | None:
+    """The plugin that answers for a dotted config path, its id, and the
+    path as that plugin spells it. None when no loaded plugin owns it."""
+    parts = path.split(".")
+    if len(parts) < 3:
+        return None
+    prepared = {"input_modules": input_modules, "devices": devices}.get(parts[0])
+    if prepared is None:
+        return None
+    plugin = prepared.get(parts[1])
+    if plugin is None or plugin.plugin_instance is None:
+        return None
+    return plugin.plugin_instance, parts[1], ".".join(parts[2:])
+
+
+async def _resolve_options(
+    instance: PluginBase, plugin_id: str, subpath: str
+) -> list[Any]:
+    """One field's suggestions, asked of the plugin that owns it."""
+    try:
+        return list(await instance.resolve_options(subpath))
+    except KeyError as exc:
+        # Only the refusal the SDK documents — KeyError(path) — is the
+        # plugin saying it does not own the field. A KeyError from a dict
+        # inside the resolver means something else entirely, and blaming
+        # the declaration for it hides the real fault.
+        if exc.args != (subpath,):
+            raise
+        logger.warning(
+            "Plugin %s declares suggestions for %r but does not resolve it",
+            plugin_id,
+            subpath,
+        )
+        return []
+
+
+def register_plugin_options(
+    registry: OptionsRegistry,
+    schema: PresentationSchema,
+    input_modules: dict[str, PreparedPlugin],
+    devices: dict[str, PreparedPlugin],
+) -> None:
+    """Bind every field tagged ``dynamic_options`` to its plugin's resolver.
+
+    Reads the built schema rather than walking the config models again, so
+    a field is offered suggestions on exactly the terms the settings page
+    renders it — including the widget guard that drops the tag where a
+    suggestion could not be shown.
+    """
+    for field in schema.expert_fields:
+        if not field.dynamic_options:
+            continue
+        owner = _owner_of(field.path, input_modules, devices)
+        if owner is None:
+            logger.warning(
+                "Field %s is tagged dynamic_options but no loaded plugin owns "
+                "it; no suggestions will be offered",
+                field.path,
+            )
+            continue
+        registry.register(field.path, partial(_resolve_options, *owner))

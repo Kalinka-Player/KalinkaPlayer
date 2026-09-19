@@ -23,6 +23,12 @@ from stat import S_ISDIR
 from typing import Any, BinaryIO, Iterable, Iterator, Optional
 
 import smbclient
+from smbprotocol.exceptions import (
+    AccessDenied,
+    LogonFailure,
+    PasswordExpired,
+    SMBAuthenticationError,
+)
 
 from .base import (
     DirEntry,
@@ -48,6 +54,16 @@ _READ_BUFFER = 1024 * 1024
 #: Long enough for a NAS that has spun its disks down, short enough that an
 #: address with nothing behind it fails a scan rather than stalling it.
 _CONNECT_TIMEOUT_S = 15
+
+#: What the backend raises when a server answers and turns the login down.
+#: Separated from the transport failures because the two read nothing alike
+#: to someone who has just typed a password.
+_REFUSED_LOGIN = (
+    SMBAuthenticationError,
+    LogonFailure,
+    PasswordExpired,
+    AccessDenied,
+)
 
 #: Who an unconfigured share logs in as. A username is not optional: the
 #: session pool matches sessions on it, and omitting it would both fail to
@@ -84,10 +100,20 @@ class SmbCredentials:
 class SmbStorage(FileStorage):
     """An SMB client presented as a filesystem.
 
-    Connections and sessions are pooled by ``smbclient`` per server and
-    credential, so repeated calls cost one round trip rather than a new
-    logon, and nothing here needs to be closed between files.
+    Connections and sessions are pooled per server and credential, so
+    repeated calls cost one round trip rather than a new logon, and nothing
+    here needs to be closed between files.
 
+    The pool is this instance's own rather than ``smbclient``'s global one,
+    because the global one is keyed on server and username and hands back a
+    matching session without re-checking the password. Two storages built
+    from different credentials would then answer for each other: a password
+    the user has typed but not saved would be judged against the session
+    playback is already using and pronounced good whatever was typed, and
+    asking one of them for encryption would turn it on for the other, which
+    the protocol does not allow turning back off.
+
+    @note Holding a pool is what makes :meth:`close` necessary — see there.
     @note Every operation translates backend failures into ``OSError``,
         including authentication and transport ones, because that is what
         this interface promises and what each caller's ``except OSError``
@@ -101,8 +127,20 @@ class SmbStorage(FileStorage):
     ) -> None:
         super().__init__(spill_dir=spill_dir)
         self._credentials = credentials or SmbCredentials()
+        self._connections: dict[str, Any] = {}
         self._logon_locks: dict[tuple[str, Optional[int]], threading.Lock] = {}
         self._logon_locks_guard = threading.Lock()
+
+    def close(self) -> None:
+        """Disconnect every server this storage logged in to.
+
+        Each connection owns a socket and the thread reading it, so a
+        storage replaced when the credentials changed takes them with it
+        rather than leaving one set behind per password typed.
+        """
+        smbclient.reset_connection_cache(
+            connection_cache=self._connections, fail_on_error=False
+        )
 
     @property
     def scheme(self) -> str:
@@ -225,11 +263,11 @@ class SmbStorage(FileStorage):
     def _logon(self, locator: StorageLocator) -> dict[str, Any]:
         """Session arguments for one location, with the logon already made.
 
-        ``smbclient`` fills its process-global connection and session pools
-        with an unsynchronised check-then-create, so two threads reaching one
-        server at once each build a connection and the loser's socket and
-        reader thread leak. Logging in under a lock per server leaves the
-        pool to one thread at a time.
+        ``smbclient`` fills a connection and session pool with an
+        unsynchronised check-then-create, so two threads reaching one server
+        at once each build a connection and the loser's socket and reader
+        thread leak. Logging in under a lock per server leaves the pool to
+        one thread at a time.
 
         Before every operation, not once: registering an existing session is
         a pair of dictionary lookups, and it is also what rebuilds a pooled
@@ -261,6 +299,7 @@ class SmbStorage(FileStorage):
         and is refused on a session a server has already encrypted.
         """
         session: dict[str, Any] = {
+            "connection_cache": self._connections,
             "connection_timeout": _CONNECT_TIMEOUT_S,
             "username": (
                 locator.username or self._credentials.username or GUEST_USERNAME
@@ -275,6 +314,11 @@ class SmbStorage(FileStorage):
 
     def _reason(self, locator: StorageLocator, error: OSError) -> str:
         """Why a root is unavailable, in words a user can act on."""
+        if isinstance(error, PermissionError):
+            return (
+                f"{locator.host} refused the login for share "
+                f"'{locator.share}' ({error})"
+            )
         return (
             f"{locator.host} did not answer for share "
             f"'{locator.share}' ({error})"
@@ -289,10 +333,17 @@ class SmbStorage(FileStorage):
         own exception types, and one of those escaping would abort a scan
         over a single unreachable share. Only the cause is carried over:
         every caller already names the path it was reading.
+
+        A refused login becomes ``PermissionError`` rather than a plain
+        ``OSError``, because it is the one failure here the user can do
+        something about and it reads nothing like a server that is off.
+        It is still an ``OSError``, so no caller has to know that.
         """
         try:
             yield
         except OSError:
             raise
+        except _REFUSED_LOGIN as e:
+            raise PermissionError(str(e)) from e
         except Exception as e:
             raise OSError(str(e)) from e

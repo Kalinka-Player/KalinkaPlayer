@@ -15,33 +15,60 @@ import json
 import logging
 import os
 import tempfile
-from typing import Any, Dict, List, Mapping, get_args
+from typing import Annotated, Any, Dict, List, Mapping, get_args
 
 from pydantic import BaseModel, TypeAdapter
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
 
-def _set_by_path(model: BaseModel, attrs: List[str], value: Any) -> None:
-    # Mirrors config_schema_processor.set_field_value; inlined to avoid a
-    # circular import (config_schema_processor pulls in player_setup,
-    # which now imports this module).
+def coerce_field_value(owner: BaseModel, field: str, value: Any) -> Any:
+    """``value`` as the declared type of ``owner.field``, constraints and all.
+
+    A plain setattr would silently store a type-invalid value (e.g.
+    port="abc") as the wrong type and blow it up later in unrelated code.
+    Coercion also normalises JSON-decoded values ("9001" -> 9001), which is
+    what every value arriving from the overrides file or the config PUT has
+    been through.
+
+    @note The bounds declared with ``Field(ge=..., max_length=...)`` live
+        beside the annotation rather than in it, so they are put back before
+        validating — no config model sets ``validate_assignment``, which
+        makes this the only thing standing between a PUT and an
+        out-of-range value on the live configuration.
+
+    @raise pydantic.ValidationError If the value is not that type and
+        cannot be made into it.
+    """
+    fields = getattr(type(owner), "model_fields", None)
+    if fields is None or field not in fields:
+        return value
+    info = fields[field]
+    if info.annotation is None:
+        return value
+    declared = (
+        Annotated[tuple([info.annotation, *info.metadata])]
+        if info.metadata
+        else info.annotation
+    )
+    return TypeAdapter(declared).validate_python(value)
+
+
+def set_by_path(model: BaseModel, attrs: List[str], value: Any) -> None:
+    """Write ``value`` at a dotted path, as the declared type of the field it
+    lands on.
+
+    @raise pydantic.ValidationError If the value is not that type.
+    @raise AttributeError If a component of the path names no attribute.
+    @raise ValueError If the last component names no field on the model it
+        lands on — which is what pydantic raises for that, not
+        ``AttributeError``.
+    """
     current: Any = model
     for part in attrs[:-1]:
         current = getattr(current, part)
     field = attrs[-1]
-    # Validate/coerce the value against the target field's declared type
-    # before assigning. A plain setattr would silently store a
-    # type-invalid override (e.g. port="abc") as the wrong type and blow
-    # up later in unrelated code; instead let the resulting ValidationError
-    # (a ValueError) propagate so the caller logs and skips it. Coercion
-    # also normalizes JSON-decoded values (e.g. "9001" -> 9001).
-    fields = getattr(type(current), "model_fields", None)
-    if fields is not None and field in fields:
-        annotation = fields[field].annotation
-        if annotation is not None:
-            value = TypeAdapter(annotation).validate_python(value)
-    setattr(current, field, value)
+    setattr(current, field, coerce_field_value(current, field, value))
 
 
 def load_overrides(path: str) -> Dict[str, Any]:
@@ -177,7 +204,7 @@ def apply_overrides_with_prefix(
             continue
         attrs = suffix.split(".")
         try:
-            _set_by_path(model, attrs, value)
+            set_by_path(model, attrs, value)
         except (AttributeError, IndexError, TypeError, ValueError) as exc:
             logger.warning(
                 "Ignoring override '%s' (cannot apply): %s", key, exc

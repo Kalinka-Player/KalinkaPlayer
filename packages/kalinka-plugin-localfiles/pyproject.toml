@@ -24,8 +24,9 @@ classifiers = [
 ]
 
 dependencies = [
-    # >=3.2: ContentInfo.reader, which is how a track on a share is served.
-    "kalinka-plugin-sdk>=3.2,<4",
+    # >=3.3: resolve_options and validate_config, which is how the settings
+    # page offers shares it found and refuses folders it cannot read.
+    "kalinka-plugin-sdk>=3.3,<4",
     "rapidfuzz>=2.0.0",
     "musicbrainzngs>=0.7.1",
     "inotify_simple>=1.3.5",
@@ -34,6 +35,9 @@ dependencies = [
     # Pure-Python SMB2/3 client. Shares are read over the protocol rather
     # than mounted: mounting needs privileges the unit denies itself.
     "smbprotocol>=1.10,<2",
+    # Listens for the shares that announce themselves, so a NAS can be
+    # picked from a list rather than typed from memory.
+    "zeroconf>=0.47.0",
     "sqlite-vec>=0.1.6,<0.2",
     "ftfy>=6.0",
     # CRF runtime for the bundled filename parser; imports as "pycrfsuite".

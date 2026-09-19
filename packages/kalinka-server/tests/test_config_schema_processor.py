@@ -8,7 +8,8 @@ import pytest
 from enum import Enum
 from pydantic import BaseModel, Field
 
-from kalinka_server.config_schema_processor import get_field_value, set_field_value
+from kalinka_server.config_overrides import set_by_path as set_field_value
+from kalinka_server.config_schema_processor import get_field_value
 
 
 class AudioFormat(Enum):

@@ -148,9 +148,15 @@ class FieldSpec(BaseModel):
     ``enum_options[path]`` — fresh on every GET /server/config so
     hot-plug is reflected without churning schema_version. Clients
     rendering an enum widget prefer envelope options when present,
-    else fall back to ``enum_values``. This keeps the schema stable
-    and lets the same widget render both fixed enums and live ones
-    without a per-field flag.
+    else fall back to ``enum_values``.
+
+    ``dynamic_options=True`` says the same options may arrive for a
+    field the user can also type into freely (a folder, an address).
+    An enum has nowhere else to get its choices, so envelope presence
+    speaks for itself there; an open text field does not, and without
+    the flag a client could not tell "nothing to suggest yet" from
+    "nothing to suggest, ever" and would have to hide the control the
+    moment a resolver came back empty.
 
     ``dynamic=True`` is a different concept — it marks fields whose
     *value* is plugin-resolved (status views). Those are read-only
@@ -165,6 +171,7 @@ class FieldSpec(BaseModel):
     default: Any = None
     readonly: bool = False
     dynamic: bool = False           # Value is resolved by the owning module at request time
+    dynamic_options: bool = False   # Options are resolved by the owning module at request time
     importance: Importance = Importance.EXPERT
     setup: Setup = Setup.HIDDEN
     enum_values: Optional[list[str]] = None

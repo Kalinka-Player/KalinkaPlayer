@@ -6,4 +6,4 @@ re-exports it. Bump the major only for a breaking API change, then move the
 consumers' ``>=N,<N+1`` pins onto the new major. See RELEASING.md.
 """
 
-__version__ = "3.2.0"
+__version__ = "3.3.0"

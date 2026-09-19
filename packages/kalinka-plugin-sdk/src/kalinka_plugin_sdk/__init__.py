@@ -73,6 +73,7 @@ from .plugin import (
 from .embedding import TextEmbedder
 from .module_config import ModuleConfig
 from .module_health import ModuleHealthState, ModuleState
+from .config_feedback import ConfigIssue, ConfigOption, IssueSeverity
 from .dynamic_fields import DynamicFieldDecl
 from .optional_packages import OptionalPackageSpec
 
@@ -137,5 +138,8 @@ __all__ = [
     "ModuleHealthState",
     "ModuleState",
     "DynamicFieldDecl",
+    "ConfigOption",
+    "ConfigIssue",
+    "IssueSeverity",
     "OptionalPackageSpec",
 ]

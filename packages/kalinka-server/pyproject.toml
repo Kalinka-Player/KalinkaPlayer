@@ -51,9 +51,9 @@ dependencies = [
     # Renderer protocol (renderer_ws_handler.py). The committed generated
     # bindings (renderer_proto/) pin the runtime floor; `make proto` regenerates.
     "protobuf>=7.35,<8",
-    # >=3.2: ContentInfo may carry a reader instead of a local path, which
-    # is how the content route serves bytes only a module can reach.
-    "kalinka-plugin-sdk>=3.2,<4",
+    # >=3.3: ConfigIssue and ConfigOption, the vocabulary a plugin answers
+    # the settings page's suggestion and validation calls in.
+    "kalinka-plugin-sdk>=3.3,<4",
 ]
 dynamic = ["version"]
 

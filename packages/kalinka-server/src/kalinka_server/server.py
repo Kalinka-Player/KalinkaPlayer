@@ -16,7 +16,7 @@ from fastapi import (
     Request,
     WebSocket,
 )
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
 
 from kalinka_plugin_sdk.datamodel import (
@@ -37,7 +37,7 @@ from kalinka_plugin_sdk.events import (
     PlayQueueEventType,
     RenderersChangedEvent,
 )
-from kalinka_plugin_sdk import paths
+from kalinka_plugin_sdk import ConfigIssue, paths
 
 from .config_model import KalinkaConfig
 from .config_overrides import save_overrides
@@ -46,7 +46,6 @@ from .config_schema_processor import (
     build_presentation,
     build_values,
     get_field_value,
-    set_field_value,
 )
 from .catalog_art_service import CatalogArtService
 from .browse_route import register_browse_routes
@@ -59,8 +58,16 @@ from .queue_add import track_infos_for
 from .search_route import register_search_routes
 from .suggestions import SuggestionEngine, SuggestionList
 from .merge_utils import get_favorite_ids_merged, k_way_merge_browse_items
+from .config_validation import (
+    ConfigTargets,
+    ConfigWriteError,
+    apply_change,
+    blocking,
+    changes_from_payload,
+    validate_changes,
+)
 from .dynamic_field_registry import build_dynamic_field_registry
-from .options_registry import OptionsRegistry
+from .options_registry import OptionsRegistry, register_plugin_options
 from .web_ui import WebUiStaticFiles
 from .optional_packages_registry import (
     build_catalog as build_optional_packages_catalog,
@@ -579,10 +586,11 @@ async def create_app(
     app.state.dynamic_field_registry = build_dynamic_field_registry(
         modules.prepared_input_modules, modules.prepared_devices,
     )
-    # Options registry — resolvers for writable enum fields whose
-    # choice list depends on live system state (ALSA devices today,
-    # network interfaces / COM ports tomorrow). Sits alongside the
-    # dynamic-field registry but for *choices* rather than *values*.
+    # Options registry — resolvers for writable fields whose choices
+    # depend on live system state (shares on the network, drives plugged
+    # into the box). Sits alongside the dynamic-field registry but for
+    # *choices* rather than *values*; bound to the plugins below, once
+    # the schema that declares which fields want them exists.
     app.state.options_registry = OptionsRegistry()
     _initial_ok_in = {
         name: m.plugin_context.config
@@ -604,14 +612,21 @@ async def create_app(
         for name, d in modules.prepared_devices.items()
         if d.health_state == ModuleHealthState.ERROR
     }
-    app.state.schema_version = build_presentation(
+    _initial_schema = build_presentation(
         base_config=config,
         input_modules=_initial_ok_in,
         devices=_initial_ok_dev,
         input_modules_with_errors=_initial_err_in,
         devices_with_errors=_initial_err_dev,
         dynamic_field_registry=app.state.dynamic_field_registry,
-    ).schema_version
+    )
+    app.state.schema_version = _initial_schema.schema_version
+    register_plugin_options(
+        app.state.options_registry,
+        _initial_schema,
+        modules.prepared_input_modules,
+        modules.prepared_devices,
+    )
     app.state.dynamic_paths = frozenset(app.state.dynamic_field_registry.keys())
     # Volume and power are answered by whichever module owns the *active*
     # renderer, so the target is resolved per request rather than bound here.
@@ -1407,6 +1422,42 @@ async def create_app(
             "devices": device_entries,
         }
 
+    def _config_targets() -> ConfigTargets:
+        return ConfigTargets(
+            base_config=app.state.config,
+            input_modules=modules.prepared_input_modules,
+            devices=modules.prepared_devices,
+        )
+
+    async def _judge(
+        payload: Dict[str, Any],
+    ) -> tuple[Dict[str, Any], list[ConfigIssue]]:
+        """The changes in a config write body and everything wrong with them.
+
+        The dry run and the save ask exactly this, so neither can accept
+        what the other would refuse.
+        """
+        try:
+            changes = changes_from_payload(
+                payload, app.state.schema_version, app.state.dynamic_paths
+            )
+            return changes, await validate_changes(changes, _config_targets())
+        except ConfigWriteError as exc:
+            raise HTTPException(
+                status_code=exc.status_code, detail=str(exc)
+            ) from exc
+
+    @app.post("/server/config/validate")
+    async def validate_config_fields(payload: Dict[str, Any]):
+        """Judge staged changes without keeping any of them.
+
+        Body is the one `PUT /server/config` takes. The answer is what the
+        save would say, so the settings page can show it while the user is
+        still typing.
+        """
+        _changes, issues = await _judge(payload)
+        return {"issues": [issue.model_dump(mode="json") for issue in issues]}
+
     @app.put("/server/config")
     async def set_config_fields(payload: Dict[str, Any]):
         """Apply staged changes.
@@ -1415,86 +1466,51 @@ async def create_app(
         Paths are relative to one of the three roots: `base_config.*`,
         `input_modules.<name>.*`, or `devices.<name>.*`. No `root.` or
         `.fields.` wrappers.
+
+        Refused whole when any change draws an error, so a batch the user
+        staged together never lands in halves. What was only warned about is
+        applied and reported, because a client that saved without a dry run
+        has nowhere else to learn of it.
         """
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=400, detail="Body must be a JSON object")
-
-        client_version = payload.get("schema_version")
-        if client_version and client_version != app.state.schema_version:
-            raise HTTPException(
-                status_code=409,
-                detail="Stale schema_version; refetch /server/config/schema and retry.",
+        changes, issues = await _judge(payload)
+        refused = blocking(issues)
+        if refused:
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": refused[0].message,
+                    "issues": [issue.model_dump(mode="json") for issue in issues],
+                },
             )
 
-        changes = payload.get("changes", payload)
-        if not isinstance(changes, dict):
-            raise HTTPException(
-                status_code=400, detail="'changes' must be a JSON object"
-            )
-
-        dynamic_paths = app.state.dynamic_paths
         applied: Dict[str, Any] = {}
-
+        targets = _config_targets()
         try:
             for key, value in changes.items():
                 logger.info("Setting config field %s to %r", key, value)
-                attrs = key.split(".") if isinstance(key, str) else []
-                if not attrs or any(p == "" for p in attrs):
-                    raise HTTPException(status_code=400, detail="Invalid config key")
-                if key in dynamic_paths:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"'{key}' is a dynamic (plugin-resolved) field and "
-                        "cannot be written via /server/config",
-                    )
-
-                target_config = None
-                if attrs[0] == "base_config":
-                    target_config = app.state.config
-                    attrs = attrs[1:]
-                elif attrs[0] == "input_modules":
-                    if len(attrs) < 3:
-                        raise HTTPException(status_code=400, detail="Invalid config key")
-                    module_name = attrs[1]
-                    if module_name in modules.prepared_input_modules:
-                        target_config = modules.prepared_input_modules[
-                            module_name
-                        ].plugin_context.config
-                        attrs = attrs[2:]
-                elif attrs[0] == "devices":
-                    if len(attrs) < 3:
-                        raise HTTPException(status_code=400, detail="Invalid config key")
-                    device_name = attrs[1]
-                    if device_name in modules.prepared_devices:
-                        target_config = modules.prepared_devices[
-                            device_name
-                        ].plugin_context.config
-                        attrs = attrs[2:]
-
-                if target_config is None or not attrs:
-                    raise HTTPException(status_code=400, detail="Invalid config key")
-                if attrs[0] == "name":
-                    raise HTTPException(
-                        status_code=400, detail="Cannot modify 'name' field"
-                    )
-
                 try:
-                    set_field_value(target_config, attrs, value)
-                except (AttributeError, IndexError, TypeError, ValueError) as exc:
+                    target = targets.resolve(key)
+                    reason = apply_change(target.model, target.attrs, value)
+                except ConfigWriteError as exc:
                     logger.warning("Invalid config key '%s': %s", key, exc)
                     raise HTTPException(
-                        status_code=400, detail="Invalid config key"
+                        status_code=exc.status_code, detail=str(exc)
                     ) from exc
+                if reason is not None:
+                    raise HTTPException(status_code=400, detail=reason)
                 applied[key] = value
                 logger.info(
                     "Set %s to %r, saved: %r",
-                    ".".join(attrs),
+                    key,
                     value,
-                    get_field_value(target_config, attrs),
+                    get_field_value(target.model, target.attrs),
                 )
         finally:
-            # Persist whatever stuck in memory so a restart matches the
-            # live state, even if a later change in the batch was rejected.
+            # A batch that draws an error is refused above, before anything
+            # is written. Past that point a change can still fail only for a
+            # reason the check could not reach, and what already went into
+            # memory cannot be taken back out — so it is persisted, and a
+            # restart matches what is running.
             if applied:
                 app.state.overrides.update(applied)
                 try:
@@ -1506,7 +1522,11 @@ async def create_app(
                         exc,
                     )
 
-        return {"message": "Ok", "schema_version": app.state.schema_version}
+        return {
+            "message": "Ok",
+            "schema_version": app.state.schema_version,
+            "issues": [issue.model_dump(mode="json") for issue in issues],
+        }
 
     @app.get("/resource/{file_name:path}")
     async def get_resource(file_name: str):

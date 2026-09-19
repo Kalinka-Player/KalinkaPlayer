@@ -65,6 +65,14 @@ class StorageResolver:
             ),
         )
 
+    def close(self) -> None:
+        """Release every storage behind it. See :meth:`FileStorage.close`."""
+        for storage in (*self._storages, *self._unhandled.values()):
+            try:
+                storage.close()
+            except Exception as e:  # noqa: BLE001 — teardown, never fatal
+                logger.warning("Releasing %s storage failed: %s", storage.scheme, e)
+
     def canonical_roots(self, folders: Iterable[str]) -> list[str]:
         """The configured music folders in the one spelling everything else
         compares against.

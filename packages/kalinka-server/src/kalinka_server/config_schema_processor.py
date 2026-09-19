@@ -158,6 +158,38 @@ _LEGACY_IMPORTANCE_ALIASES = {
 }
 
 
+#: Widgets a suggestion list can be rendered on. The dropdown takes its
+#: choices from one; the open inputs offer them beside what the user types.
+#: The rest have no room for a suggestion and no use for one — pills among
+#: them, which lay out a fixed set and have nowhere to put a late arrival.
+_SUGGESTIBLE_WIDGETS = frozenset(
+    {
+        Widget.TEXT,
+        Widget.PATH,
+        Widget.URL,
+        Widget.LIST_EDITOR,
+        Widget.FOLDER_LIST,
+        Widget.ENUM_DROPDOWN,
+    }
+)
+
+
+def _dynamic_options_from_extras(
+    extras: dict[str, Any], widget: Widget, path: str
+) -> bool:
+    if not extras.get("dynamic_options"):
+        return False
+    if widget not in _SUGGESTIBLE_WIDGETS:
+        logger.warning(
+            "Field %s is tagged dynamic_options but renders as %s, which "
+            "cannot show suggestions; ignoring the tag",
+            path,
+            widget.value,
+        )
+        return False
+    return True
+
+
 def _importance_from_extras(
     extras: dict[str, Any], default: Importance = Importance.EXPERT
 ) -> Importance:
@@ -250,14 +282,16 @@ def _build_field_spec(
     setup = _setup_from_extras(extras)
     if setup is Setup.REQUIRED:
         _warn_if_required_has_default(path, field)
+    widget = _infer_widget(wire_type, field_name, extras)
     return FieldSpec(
         path=path,
         label=field.title or field_name,
         help=extras.get("help") or field.description or None,
-        widget=_infer_widget(wire_type, field_name, extras),
+        widget=widget,
         type=wire_type,
         default=field.default if field.default is not None else None,
         readonly=bool(field.frozen),
+        dynamic_options=_dynamic_options_from_extras(extras, widget, path),
         importance=_importance_from_extras(extras),
         setup=setup,
         enum_values=_enum_values(field) if wire_type == "enum" else None,
@@ -702,13 +736,6 @@ async def build_enum_options(
 # ---------------------------------------------------------------------------
 # Set/get by dotted path (no "root." / ".fields." prefixes)
 # ---------------------------------------------------------------------------
-
-
-def set_field_value(model: BaseModel, field_path: List[str], value: Any) -> None:
-    current = model
-    for part in field_path[:-1]:
-        current = getattr(current, part)
-    setattr(current, field_path[-1], value)
 
 
 def get_field_value(model: BaseModel, field_path: List[str]) -> Any:
