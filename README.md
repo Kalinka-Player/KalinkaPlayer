@@ -17,6 +17,8 @@ Bit-perfect playback from your own library, on your own hardware — with on-dev
 
 **[💿 Flash an image](https://github.com/Kalinka-Player/KalinkaPlayer/releases?q=kalinka-image-v&expanded=true) · [📦 Releases](https://github.com/Kalinka-Player/KalinkaPlayer/releases/latest) · [📱 Control app](https://github.com/Kalinka-Player/KalinkaAI) · [🌐 kalinkaplayer.com](https://kalinkaplayer.com)**
 
+<img src="docs/images/app-screenshot.png" alt="Kalinka playing a track through a network renderer, with semantic search and collections" width="820">
+
 </div>
 
 ---
