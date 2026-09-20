@@ -1,0 +1,32 @@
+Kalinka Asset License (Private)
+
+Copyright (c) MadEnvel.
+All rights reserved.
+
+This license applies only to visual and branding resources in this repository,
+including icons, logos, images, and related artwork assets.
+
+Covered locations include (non-exhaustive):
+- assets/images/
+- android/app/src/main/res/mipmap-*/
+- android/app/src/main/res/drawable*/
+- ios/Runner/Assets.xcassets/
+- web/icons/
+
+1. Scope
+This license does not apply to source code files. Source code licensing is
+defined separately in the LICENSE file.
+
+2. Permission Required
+You may not use, copy, modify, distribute, publish, sublicense, or create
+derivative works of covered visual assets without prior written permission from
+the author.
+
+Permission contact:
+MadEnvel <support@kalinkaplayer.com>
+
+3. No Trademark Rights
+No trademark, trade dress, or branding rights are granted by this license.
+
+4. Reservation of Rights
+All rights not expressly granted are reserved.

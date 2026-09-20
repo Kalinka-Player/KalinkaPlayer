@@ -88,7 +88,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for how to send a change, and for the pro
 
 ## License
 
-GPL-3.0-or-later — see [LICENSE](LICENSE). Third-party components and their terms are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+Source code is **GPL-3.0-or-later** — see [LICENSE](LICENSE).
+
+The visual assets are not. The Kalinka logo, icon and related artwork under `docs/images/` are covered by the [Kalinka Asset License](LICENSE-ASSETS) and need the author's permission to use. Fork the code freely; put your own branding on it.
+
+Third-party components and their terms are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 ---
 

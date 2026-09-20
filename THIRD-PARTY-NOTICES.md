@@ -2,6 +2,10 @@
 
 Kalinka is licensed GPL-3.0-or-later (see [LICENSE](LICENSE)). It bundles, links against, or downloads at runtime the components below, each under its own terms. This list covers third-party material; it is not a dependency manifest.
 
+## Project branding
+
+The Kalinka logo, icon and related artwork under `docs/images/` are **not** under the GPL that covers the source. They are licensed separately — see [LICENSE-ASSETS](LICENSE-ASSETS) — and require the author's permission to use or redistribute.
+
 ## Bundled source
 
 | Component | Where | License |
