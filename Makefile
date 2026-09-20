@@ -1,6 +1,6 @@
 ## KalinkaPlayer Development Makefile
 
-.PHONY: clean test system-test help venv-env kalinka-server-deb kalinka-server-rpm kalinka-plugins-deb build-all-deb copy-debs build-env dev-setup dev-run renderer-build renderer-clean renderer-deb renderer-rpm proto image-rpi4 image-amd64 image-test
+.PHONY: clean test system-test bench-sdd help venv-env kalinka-server-deb kalinka-server-rpm kalinka-plugins-deb build-all-deb copy-debs build-env dev-setup dev-run renderer-build renderer-clean renderer-deb renderer-rpm proto image-rpi4 image-amd64 image-test
 
 ## --- Local-from-source dev environment (no root, no systemd) ------------------
 ## Everything lands in a per-user fakeroot under $(KALINKA_PREFIX) instead of the
@@ -144,6 +144,14 @@ test:
 	@echo "Running tests..."
 	@cd packages/kalinka-plugin-sdk && python -m pytest tests/ -v
 	@cd packages/kalinka-server && python -m pytest tests/ -v
+	@python -m pytest benchmarks/sdd/tests -v
+
+## Retrieval-quality benchmark (benchmarks/sdd): indexes the Song Describer
+## Dataset through the shipped pipeline and scores the search endpoint against
+## its captions. Long-running and needs the network; artifacts land under
+## tmp/sdd_bench. Extra args via ARGS, e.g. make bench-sdd ARGS="--runs mood_on"
+bench-sdd:
+	@$(PY) benchmarks/sdd/run.py $(ARGS)
 
 ## Full-stack system test (tests/system): fakeroot + Samba in podman + real
 ## indexing, enrichment and AI search over downloaded recordings. Opt-in
@@ -237,6 +245,7 @@ help:
 	@echo "  dev-run           Run the server in the foreground against the fakeroot (Ctrl-C to stop)"
 	@echo "  dev-rebuild-native  Rebuild the native C++ extension, then restart to load it"
 	@echo "  system-test       Full-stack indexing test: fakeroot + Samba in podman + real enrichment/AI search"
+	@echo "  bench-sdd         Retrieval-quality benchmark on the Song Describer Dataset (benchmarks/sdd)"
 	@echo ""
 	@echo "  build-native      Build the native player C++ extension"
 	@echo "  venv-env          Create the venv (if missing) with the wheel-build toolchain"

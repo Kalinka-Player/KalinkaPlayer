@@ -92,3 +92,5 @@ make test
 ```
 Runs the SDK and server Python test suites. Most packages also include their own `tests/` directory; the renderer has its own C++ test set under `packages/kalinka-renderer/tests` (built when GoogleTest is installed).
 
+Two larger checks are opt-in because they are slow and need the outside world. `make system-test` runs the full-stack indexing test (a server of its own, a Samba share in podman, real enrichment and embedding) — see [tests/system/README.md](../tests/system/README.md). `make bench-sdd` measures what semantic search actually retrieves: it indexes the 706 recordings of the Song Describer Dataset through the shipped pipeline and scores the `/ai_search` endpoint against the 1106 human captions that came with them, reporting retrieval quality and a per-stage timing breakdown — see [benchmarks/sdd/RUNBOOK.md](../benchmarks/sdd/RUNBOOK.md). That directory also holds `device_probe.py`, a single file to copy onto a Raspberry Pi (or any target) to find out what one track costs it to embed and where those seconds go; the reference measurement is [benchmarks/sdd/results_device.md](../benchmarks/sdd/results_device.md).
+
