@@ -41,6 +41,8 @@ curl -fsSL https://kalinkaplayer.com/install.sh | sudo bash
 
 **Then pick a client.** The [Kalinka app](https://github.com/Kalinka-Player/KalinkaAI/releases/latest) (Android, Linux, Windows) finds the server on its own — or just open `http://<server-ip>:8000` in any browser, which plays audio itself with nothing installed.
 
+Whichever you open walks you through first-time setup — naming the server, pointing it at your music, choosing where the sound comes out. There are no config files to edit; the server has nothing to hand-edit on it.
+
 Full walkthrough, troubleshooting and adding renderers on other machines: **[docs/installation.md](docs/installation.md)**.
 
 ## ✨ What it does
@@ -53,7 +55,9 @@ Full walkthrough, troubleshooting and adding renderers on other machines: **[doc
 | 🏠 **Renderers anywhere** | Put a renderer on any box on your network and it appears as an output. They find the server over mDNS and upgrade themselves. |
 | 🌐 **Browser player** | The server serves a web player, so any browser is both a remote control and an output. |
 | 🧩 **Plugins** | Sources, enrichers and device integrations are ordinary Python packages discovered at runtime. Local Library and Jamendo ship in the box; MusicCast handles Yamaha volume and power. |
-| ⚙️ **Live configuration** | Everything is editable from the app's Settings, with a simple tier and an `about:config`-style search for the rest. Nothing to hand-edit on the server. |
+| 🪄 **Guided first run** | A setup wizard runs in the app and in the browser alike — name the server, point it at your music, pick an output, done. Nothing to edit on the server itself. |
+| ⚙️ **Live configuration** | Everything stays editable afterwards from Settings, with a simple tier of common fields and an `about:config`-style search for the rest. |
+| 🔄 **Updates itself** | With auto-upgrade on, the server checks published releases hourly and installs during quiet hours while playback is stopped; otherwise the app offers a button. Server, plugins, browser player and renderers move together — renderers first, so the pair never lands on a combination that cannot play. |
 
 ## 💻 Requirements
 
