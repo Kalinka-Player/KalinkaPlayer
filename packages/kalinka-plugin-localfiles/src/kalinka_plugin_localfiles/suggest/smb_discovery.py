@@ -14,6 +14,7 @@ is not yet a music folder, because the share on it still has to be named.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import socket
 import struct
@@ -207,6 +208,23 @@ def broadcast_addresses() -> list[str]:
     return found or ["255.255.255.255"]
 
 
+def _is_connectable(address: str) -> bool:
+    """Whether an SMB client on this machine could reach a share there.
+
+    Loopback is this machine answering its own announcement — the shares
+    behind it are its own folders, which it has already offered as folders.
+    An IPv6 link-local address needs the interface zone that an
+    announcement does not carry.
+    """
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return not parsed.is_loopback and not (
+        parsed.version == 6 and parsed.is_link_local
+    )
+
+
 class MdnsWatch(Protocol):
     """A running subscription to the network's ``_smb._tcp`` announcements."""
 
@@ -270,13 +288,9 @@ class _ZeroconfWatch:
         if info is None:
             return
         # parsed_addresses(), not addresses: the latter is IPv4 only, so a
-        # server that answers over v6 alone would never be offered. A
-        # link-local one still is not — connecting to it needs the zone the
-        # announcement does not carry.
+        # server that answers over v6 alone would never be offered.
         addresses = [
-            address
-            for address in info.parsed_addresses()
-            if not address.lower().startswith("fe80:")
+            address for address in info.parsed_addresses() if _is_connectable(address)
         ]
         if addresses:
             self._on_seen(name, name.split(".")[0], addresses)

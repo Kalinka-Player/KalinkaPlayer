@@ -335,8 +335,16 @@ class TestAnAnnouncementThatArrives:
         seen = self._seen(_Announcement(["fe80::1", "192.168.1.20"]))
         assert seen[0][2] == ["192.168.1.20"]
 
+    @pytest.mark.parametrize("address", ["127.0.0.1", "::1"])
+    def test_this_machine_answering_itself_is_left_out(self, address):
+        """Samba on the box announces the shares of the very disks the
+        folder list has already offered as folders."""
+        seen = self._seen(_Announcement([address, "192.168.1.20"]))
+        assert seen[0][2] == ["192.168.1.20"]
+
     def test_a_service_with_nowhere_to_connect_is_not_reported(self):
         assert self._seen(_Announcement(["fe80::1"])) == []
+        assert self._seen(_Announcement(["127.0.0.1"])) == []
 
     def test_a_service_that_cannot_be_resolved_is_not_reported(self):
         assert self._seen(None) == []
