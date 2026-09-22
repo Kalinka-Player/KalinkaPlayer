@@ -208,16 +208,30 @@ def broadcast_addresses() -> list[str]:
     return found or ["255.255.255.255"]
 
 
-def _belongs_to_this_machine(address: str) -> bool:
-    """Whether this address is one of this machine's own.
+#: Reserved for documentation (RFC 5737), so assigned to no machine
+#: anywhere. One that binds it binds anything.
+_ASSIGNED_NOWHERE = "192.0.2.1"
 
-    Put to the kernel rather than worked out from an interface list: a
-    socket binds to an address only where that address is assigned here,
-    which is the same question in one syscall, for every interface and
-    both families alike. Asked afresh every time, because an address a
-    machine holds is a thing that changes.
+
+def _as_address(address: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(address)
+    except ValueError:
+        return None
+
+
+def _belongs_to_this_machine(address: str) -> bool:
+    """Whether a literal address is one this machine holds.
+
+    Put to the kernel: a socket binds to an address only where that address
+    is assigned here, whatever the interface or family. A name is refused
+    rather than resolved — that is a different question, and a broken
+    resolver answers it slowly.
     """
-    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    parsed = _as_address(address)
+    if parsed is None:
+        return False
+    family = socket.AF_INET6 if parsed.version == 6 else socket.AF_INET
     try:
         with socket.socket(family, socket.SOCK_STREAM) as probe:
             probe.bind((address, 0))
@@ -226,25 +240,22 @@ def _belongs_to_this_machine(address: str) -> bool:
     return True
 
 
-def _is_another_server(address: str) -> bool:
-    """Whether a share at this address is worth offering as a music folder.
+def _is_a_server_address(address: str) -> bool:
+    """Whether an SMB client here could be pointed at this address at all.
 
-    This machine's own shares are not. Samba answers on every address the
-    box holds — loopback, each LAN interface, each global v6 — and the
-    folders behind them are the local folders that have already been
-    offered as local folders. An IPv6 link-local address is left out for a
-    different reason: reaching one needs the interface zone that an
-    announcement does not carry.
+    Out go the ones that name no single host — a name, the unspecified
+    address, multicast, broadcast — and loopback, which is always this
+    machine. An IPv6 link-local address goes too: the zone that makes one
+    reachable would have to survive the smb:// URL, and does not.
     """
-    try:
-        parsed = ipaddress.ip_address(address)
-    except ValueError:
+    parsed = _as_address(address)
+    if parsed is None:
+        return False
+    if parsed.is_unspecified or parsed.is_multicast or parsed.is_reserved:
         return False
     if parsed.is_loopback:
         return False
-    if parsed.version == 6 and parsed.is_link_local:
-        return False
-    return not _belongs_to_this_machine(address)
+    return not (parsed.version == 6 and parsed.is_link_local)
 
 
 class MdnsWatch(Protocol):
@@ -311,9 +322,7 @@ class _ZeroconfWatch:
             return
         # parsed_addresses(), not addresses: the latter is IPv4 only, so a
         # server that answers over v6 alone would never be offered.
-        addresses = info.parsed_addresses()
-        if addresses:
-            self._on_seen(name, name.split(".")[0], addresses)
+        self._on_seen(name, name.split(".")[0], info.parsed_addresses())
 
     def update_service(self, zeroconf, service_type: str, name: str) -> None:
         self.add_service(zeroconf, service_type, name)
@@ -354,6 +363,7 @@ class SmbHostDiscovery:
         self._answered: dict[str, tuple[DiscoveredHost, float]] = {}
 
         self._mdns: Optional[MdnsWatch] = None
+        self._warned_of_nonlocal_bind = False
         self._stopping = threading.Event()
         self._scanning = threading.Lock()
         self._last_scan: Optional[float] = None
@@ -406,10 +416,13 @@ class SmbHostDiscovery:
             logger.warning("No thread to scan for shares on: %s", exc)
 
     def hosts(self) -> list[DiscoveredHost]:
-        """Every server seen recently, by address.
+        """Every server worth offering that was seen recently, by address.
 
         A host found both ways is reported once, keeping whichever sighting
-        carried a name.
+        carried a name. This machine is left out on every address it holds —
+        Samba answers on all of them, and the shares behind them are folders
+        already offered as folders. Whose an address is gets asked here
+        rather than on arrival, because it changes.
         """
         cutoff = self._now() - self._stale_after
         merged: dict[str, DiscoveredHost] = {}
@@ -423,25 +436,47 @@ class SmbHostDiscovery:
                     merged[host.address] = (
                         host if host.name or known is None else known
                     )
-        return sorted(merged.values(), key=lambda h: (h.name or h.address))
+        ours_are_knowable = self._can_tell_whose_address_it_is()
+        return sorted(
+            (
+                host
+                for host in merged.values()
+                if _is_a_server_address(host.address)
+                and not (ours_are_knowable and _belongs_to_this_machine(host.address))
+            ),
+            key=lambda h: (h.name or h.address),
+        )
+
+    def _can_tell_whose_address_it_is(self) -> bool:
+        """Whether binding an address still says anything about who holds it.
+
+        Where ``ip_nonlocal_bind`` is set every address binds, every server
+        looks like this one and the list empties. One server too many beats
+        none, so the rule stands down — saying so, because an empty list
+        looks exactly like a quiet network.
+        """
+        if not _belongs_to_this_machine(_ASSIGNED_NOWHERE):
+            return True
+        if not self._warned_of_nonlocal_bind:
+            self._warned_of_nonlocal_bind = True
+            logger.warning(
+                "This machine binds addresses it does not hold, so its own "
+                "shares cannot be told from anyone else's and are offered too"
+            )
+        return False
 
     def _mdns_seen(self, key: str, name: str, addresses: list[str]) -> None:
-        announced = [
-            DiscoveredHost(address=address, name=name, source="mDNS")
-            for address in addresses
-            if _is_another_server(address)
-        ]
         with self._lock:
-            self._announced[key] = announced
+            self._announced[key] = [
+                DiscoveredHost(address=address, name=name, source="mDNS")
+                for address in addresses
+            ]
 
     def _mdns_lost(self, key: str) -> None:
         with self._lock:
             self._announced.pop(key, None)
 
     def _netbios_seen(self, address: str, name: str) -> None:
-        # This machine's own nmbd answers the broadcast this machine sent.
-        if not _is_another_server(address):
-            return
         with self._lock:
             self._answered[address] = (
                 DiscoveredHost(address=address, name=name, source="NetBIOS"),

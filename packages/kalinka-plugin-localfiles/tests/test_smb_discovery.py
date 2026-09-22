@@ -13,6 +13,7 @@ not the caller's patience.
 
 from __future__ import annotations
 
+import logging
 import struct
 import threading
 import time
@@ -22,20 +23,24 @@ import pytest
 from kalinka_plugin_localfiles.suggest import smb_discovery
 from kalinka_plugin_localfiles.suggest.smb_discovery import (
     SmbHostDiscovery,
-    _belongs_to_this_machine as ask_the_kernel,
     encode_netbios_name,
     file_server_name,
     nbstat_query,
     parse_nbstat_reply,
 )
 
+#: Reserved for documentation (RFC 5737), so the machine running the tests
+#: cannot hold one and the kernel is left free to answer for itself.
+NAS = "198.51.100.20"
+OTHER_NAS = "203.0.113.7"
 
-@pytest.fixture(autouse=True)
-def _nothing_is_this_machine(monkeypatch):
-    """Which addresses are this machine's is a property of the machine the
-    tests run on, and 192.168.1.x is somebody's home network. Answer no by
-    default; the tests about that rule say otherwise for themselves."""
-    monkeypatch.setattr(smb_discovery, "_belongs_to_this_machine", lambda _: False)
+
+def _ours(monkeypatch, *addresses):
+    """Make these look like this machine's own, and nothing else."""
+    held = set(addresses)
+    monkeypatch.setattr(
+        smb_discovery, "_belongs_to_this_machine", lambda a: a in held
+    )
 
 
 def _reply(names, *, flags=0x8400, answers=1, rr_type=0x0021, claimed=None):
@@ -164,26 +169,26 @@ class TestTheReply:
 class TestWhatHasBeenSeen:
     def test_a_host_is_reported_once_however_many_ways_it_was_found(self):
         made = _discovery()
-        made._netbios_seen("192.168.1.20", "NAS")
-        made._mdns_seen("NAS._smb._tcp.local.", "NAS", ["192.168.1.20"])
-        assert [h.address for h in made.hosts()] == ["192.168.1.20"]
+        made._netbios_seen("198.51.100.20", "NAS")
+        made._mdns_seen("NAS._smb._tcp.local.", "NAS", ["198.51.100.20"])
+        assert [h.address for h in made.hosts()] == ["198.51.100.20"]
 
     def test_an_announcement_that_names_the_host_wins_over_one_that_does_not(self):
         made = _discovery()
-        made._netbios_seen("192.168.1.20", "")
-        made._mdns_seen("NAS._smb._tcp.local.", "NAS", ["192.168.1.20"])
+        made._netbios_seen("198.51.100.20", "")
+        made._mdns_seen("NAS._smb._tcp.local.", "NAS", ["198.51.100.20"])
         assert made.hosts()[0].name == "NAS"
 
     def test_a_service_that_is_withdrawn_takes_its_addresses_with_it(self):
         made = _discovery()
-        made._mdns_seen("NAS._smb._tcp.local.", "NAS", ["192.168.1.20", "fe80::1"])
+        made._mdns_seen("NAS._smb._tcp.local.", "NAS", ["198.51.100.20", "fe80::1"])
         made._mdns_lost("NAS._smb._tcp.local.")
         assert made.hosts() == []
 
     def test_a_host_that_stops_answering_broadcasts_stops_being_offered(self):
         clock = _Clock()
         made = _discovery(now=clock, stale_after=600.0)
-        made._netbios_seen("192.168.1.20", "NAS")
+        made._netbios_seen("198.51.100.20", "NAS")
         clock.now += 599
         assert made.hosts()
         clock.now += 2
@@ -194,74 +199,114 @@ class TestWhatHasBeenSeen:
         that is present and simply quiet."""
         clock = _Clock()
         made = _discovery(now=clock)
-        made._mdns_seen("NAS._smb._tcp.local.", "NAS", ["192.168.1.20"])
+        made._mdns_seen("NAS._smb._tcp.local.", "NAS", ["198.51.100.20"])
         clock.now += 86400
         assert len(made.hosts()) == 1
 
     def test_hosts_are_ordered_by_what_the_user_reads(self):
         made = _discovery()
-        made._netbios_seen("192.168.1.30", "ZULU")
-        made._netbios_seen("192.168.1.10", "ALPHA")
+        made._netbios_seen("198.51.100.30", "ZULU")
+        made._netbios_seen("198.51.100.10", "ALPHA")
         assert [h.name for h in made.hosts()] == ["ALPHA", "ZULU"]
 
 
 class TestWhichAddressesAreWorthOffering:
-    """A host is offered only where an SMB client here could usefully mount
-    it — which rules out this machine, whichever way it was found."""
+    """A host is offered only where an SMB client here could usefully be
+    pointed at it, whichever way it was found."""
 
     def test_a_link_local_address_is_left_out(self):
-        """Reaching one needs the interface it was heard on, which the
-        announcement does not carry."""
+        """Reaching one needs a zone, which the smb:// URL cannot carry."""
         made = _discovery()
-        made._mdns_seen("NAS._smb._tcp.local.", "NAS", ["fe80::1", "192.168.1.20"])
-        assert [h.address for h in made.hosts()] == ["192.168.1.20"]
+        made._mdns_seen("NAS._smb._tcp.local.", "NAS", ["fe80::1", NAS])
+        assert [h.address for h in made.hosts()] == [NAS]
 
-    @pytest.mark.parametrize("address", ["127.0.0.1", "::1"])
-    def test_loopback_is_left_out(self, address):
+    @pytest.mark.parametrize(
+        "address", ["127.0.0.1", "::1", "0.0.0.0", "224.0.0.1", "255.255.255.255"]
+    )
+    def test_an_address_that_names_no_one_host_is_left_out(self, address):
         made = _discovery()
-        made._mdns_seen("NAS._smb._tcp.local.", "NAS", [address, "192.168.1.20"])
-        assert [h.address for h in made.hosts()] == ["192.168.1.20"]
+        made._mdns_seen("NAS._smb._tcp.local.", "NAS", [address, NAS])
+        assert [h.address for h in made.hosts()] == [NAS]
 
     def test_an_address_this_machine_holds_is_left_out(self, monkeypatch):
         """Samba answers on every address the box has, so the box announces
-        itself on each of them — and the shares behind them are the local
-        folders already offered as local folders."""
-        mine = {"10.10.10.1", "192.168.50.248", "2a01:4b00:b8fe:3100::1"}
-        monkeypatch.setattr(
-            smb_discovery, "_belongs_to_this_machine", lambda a: a in mine
-        )
+        itself on each of them."""
+        mine = ["10.10.10.1", OTHER_NAS, "2a01:4b00:b8fe:3100::1"]
+        _ours(monkeypatch, *mine)
         made = _discovery()
-        made._mdns_seen("PI._smb._tcp.local.", "PI", sorted(mine) + ["192.168.1.20"])
-        assert [h.address for h in made.hosts()] == ["192.168.1.20"]
+        made._mdns_seen("PI._smb._tcp.local.", "PI", mine + [NAS])
+        assert [h.address for h in made.hosts()] == [NAS]
 
     def test_this_machine_answering_its_own_broadcast_is_left_out(self, monkeypatch):
-        """nmbd on this box replies to the node-status request this box
-        sent, which no amount of mDNS filtering would have caught."""
-        monkeypatch.setattr(
-            smb_discovery, "_belongs_to_this_machine", lambda a: a == "192.168.50.248"
-        )
+        """nmbd here replies to the node-status request sent from here,
+        which no amount of mDNS filtering would have caught."""
+        _ours(monkeypatch, OTHER_NAS)
         made = _discovery()
-        made._netbios_seen("192.168.50.248", "RASPBERRYPI")
-        made._netbios_seen("192.168.1.20", "NAS")
-        assert [h.address for h in made.hosts()] == ["192.168.1.20"]
+        made._netbios_seen(OTHER_NAS, "RASPBERRYPI")
+        made._netbios_seen(NAS, "NAS")
+        assert [h.address for h in made.hosts()] == [NAS]
+
+    def test_whose_an_address_is_gets_asked_again_on_every_read(self, monkeypatch):
+        """One can arrive before DHCP has answered, or while duplicate-address
+        detection is still running, and be this machine's a moment later."""
+        made = _discovery()
+        made._mdns_seen("PI._smb._tcp.local.", "PI", [OTHER_NAS])
+        assert [h.address for h in made.hosts()] == [OTHER_NAS]
+        _ours(monkeypatch, OTHER_NAS)
+        assert made.hosts() == []
 
     def test_an_announcement_with_nothing_worth_offering_leaves_no_host(self):
         made = _discovery()
         made._mdns_seen("SELF._smb._tcp.local.", "SELF", ["127.0.0.1", "fe80::1"])
         assert made.hosts() == []
 
+    def test_a_server_that_gives_up_its_addresses_takes_them_off_the_list(self):
+        made = _discovery()
+        made._mdns_seen("NAS._smb._tcp.local.", "NAS", [NAS])
+        made._mdns_seen("NAS._smb._tcp.local.", "NAS", [])
+        assert made.hosts() == []
+
+
+class TestAMachineThatWouldBindAnything:
+    """Where ip_nonlocal_bind is set the kernel stops being an oracle: every
+    address binds, so every server would look like this one."""
+
+    def test_the_rule_stands_down_rather_than_empty_the_list(self, monkeypatch):
+        monkeypatch.setattr(smb_discovery, "_belongs_to_this_machine", lambda _: True)
+        made = _discovery()
+        made._netbios_seen(NAS, "NAS")
+        assert [h.address for h in made.hosts()] == [NAS]
+
+    def test_it_says_so_once_rather_than_on_every_read(self, monkeypatch, caplog):
+        monkeypatch.setattr(smb_discovery, "_belongs_to_this_machine", lambda _: True)
+        made = _discovery()
+        made._netbios_seen(NAS, "NAS")
+        with caplog.at_level(logging.WARNING):
+            made.hosts()
+            made.hosts()
+        assert sum("binds addresses it does not hold" in r.message
+                   for r in caplog.records) == 1
+
+    def test_the_rules_that_never_needed_the_kernel_still_hold(self, monkeypatch):
+        monkeypatch.setattr(smb_discovery, "_belongs_to_this_machine", lambda _: True)
+        made = _discovery()
+        made._netbios_seen("127.0.0.1", "SELF")
+        assert made.hosts() == []
+
 
 class TestAskingTheKernelWhoseAddressItIs:
     def test_loopback_is_this_machine(self):
-        assert ask_the_kernel("127.0.0.1")
+        assert smb_discovery._belongs_to_this_machine("127.0.0.1")
 
     def test_an_address_assigned_nowhere_is_not(self):
         """192.0.2.0/24 is TEST-NET-1, reserved for documentation, so no
         machine running this test can hold it."""
-        assert not ask_the_kernel("192.0.2.1")
+        assert not smb_discovery._belongs_to_this_machine("192.0.2.1")
 
-    def test_something_that_is_not_an_address_is_not(self):
-        assert not ask_the_kernel("nas.local")
+    def test_a_name_is_refused_rather_than_resolved(self):
+        """Resolving it would answer a different question, and a broken
+        resolver would make the settings page wait out its timeouts."""
+        assert not smb_discovery._belongs_to_this_machine("nas.local")
 
 
 class TestAskingTheNetworkAgain:
@@ -391,8 +436,8 @@ class TestAnAnnouncementThatArrives:
         return seen
 
     def test_a_server_is_taken_under_the_name_it_announced(self):
-        seen = self._seen(_Announcement(["192.168.1.20"]))
-        assert seen == [("NAS._smb._tcp.local.", "NAS", ["192.168.1.20"])]
+        seen = self._seen(_Announcement(["198.51.100.20"]))
+        assert seen == [("NAS._smb._tcp.local.", "NAS", ["198.51.100.20"])]
 
     def test_a_server_that_answers_only_over_ipv6_is_still_offered(self):
         seen = self._seen(_Announcement(["2001:db8::5"]))
@@ -401,8 +446,15 @@ class TestAnAnnouncementThatArrives:
     def test_every_address_announced_is_handed_on_to_be_judged(self):
         """The adapter translates; which addresses are worth offering is
         the discovery's rule, so that it holds for NetBIOS too."""
-        seen = self._seen(_Announcement(["fe80::1", "192.168.1.20"]))
-        assert seen[0][2] == ["fe80::1", "192.168.1.20"]
+        seen = self._seen(_Announcement(["fe80::1", "198.51.100.20"]))
+        assert seen[0][2] == ["fe80::1", "198.51.100.20"]
+
+    def test_a_service_that_has_lost_its_addresses_is_still_reported(self):
+        """Its previous addresses are on the list, and only this says to
+        take them off — the records expired rather than being withdrawn,
+        so remove_service may never come."""
+        seen = self._seen(_Announcement([]))
+        assert seen == [("NAS._smb._tcp.local.", "NAS", [])]
 
     def test_a_service_that_cannot_be_resolved_is_not_reported(self):
         assert self._seen(None) == []
