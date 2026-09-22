@@ -15,9 +15,9 @@ Bit-perfect playback from your own library, on your own hardware — with on-dev
 [![License](https://img.shields.io/badge/license-GPL--3.0--or--later-2ea043)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-arm64%20%7C%20amd64-2ea043)](#-requirements)
 
-**[💿 Flash an image](https://github.com/Kalinka-Player/KalinkaPlayer/releases?q=kalinka-image-v&expanded=true) · [📦 Releases](https://github.com/Kalinka-Player/KalinkaPlayer/releases/latest) · [📱 Control app](https://github.com/Kalinka-Player/KalinkaAI) · [🌐 kalinkaplayer.com](https://kalinkaplayer.com)**
+**[💿 Flash an image](https://github.com/Kalinka-Player/KalinkaPlayer/releases?q=kalinka-image-v&expanded=true) · [📦 Releases](https://github.com/Kalinka-Player/KalinkaPlayer/releases/latest) · [📱 Control app](https://github.com/Kalinka-Player/KalinkaAI) · [🌐 kalinkaplayer.com](https://kalinkaplayer.com) · [💬 Help test it](https://github.com/Kalinka-Player/KalinkaPlayer/discussions/133)**
 
-<img src="docs/images/app-screenshot.png" alt="Kalinka playing a track through a network renderer, with semantic search and collections" width="820">
+<img src="docs/images/app-screenshot.png" alt="Kalinka playing a bit-perfect FLAC through a network renderer, with the play queue alongside" width="820">
 
 </div>
 
@@ -27,7 +27,7 @@ Bit-perfect playback from your own library, on your own hardware — with on-dev
 
 Kalinka turns a Raspberry Pi or any Linux box into a music player you control from your phone, desktop or a browser. The server holds your library; a separate **renderer** does the playing, talking to ALSA directly — so it can sit on the same machine, or on a Pi next to each amplifier in the house.
 
-Your files stay yours. Nothing is uploaded, nothing phones home, and the semantic search runs on the device.
+Your files stay yours — nothing is uploaded, there is no account and no telemetry, and the semantic search runs on the device. Two things do reach the internet, both switchable: the metadata lookups that repair your tags (MusicBrainz, Wikidata, Deezer, Cover Art Archive), and an hourly check for a published release.
 
 ## 🚀 Get started
 
@@ -49,7 +49,7 @@ Full walkthrough, troubleshooting and adding renderers on other machines: **[doc
 
 | | |
 |---|---|
-| 🎵 **Your library** | Indexes your directories, watches them for changes, and repairs the metadata — AcoustID fingerprinting plus MusicBrainz, Wikidata and Deezer, falling back to filename heuristics. Artwork is extracted, cached, and generated when there is none. |
+| 🎵 **Your library** | Indexes your directories, watches them for changes, and repairs the metadata — MusicBrainz, Wikidata and Deezer, plus AcoustID fingerprinting once you add a key of your own, falling back to filename heuristics. Artwork is extracted, cached, and generated when there is none. |
 | 🔍 **Smart Search** | Ask for *"dreamy ambient guitar"* and get matching tracks. The Local Library analyses the audio itself with a CLAP model; Jamendo matches a prebuilt index of track descriptions. Opt-in per plugin. |
 | 🔊 **Bit-perfect playback** | A C++ renderer with direct ALSA access. FLAC and MP3 up to 192 kHz / 24-bit, gapless between tracks of the same format, and the samples are not altered unless you turn on software volume. |
 | 🏠 **Renderers anywhere** | Put a renderer on any box on your network and it appears as an output. They find the server over mDNS and upgrade themselves. |
@@ -57,7 +57,7 @@ Full walkthrough, troubleshooting and adding renderers on other machines: **[doc
 | 🧩 **Plugins** | Sources, enrichers and device integrations are ordinary Python packages discovered at runtime. Local Library and Jamendo ship in the box; MusicCast handles Yamaha volume and power. |
 | 🪄 **Guided first run** | A setup wizard runs in the app and in the browser alike — name the server, point it at your music, pick an output, done. Nothing to edit on the server itself. |
 | ⚙️ **Live configuration** | Everything stays editable afterwards from Settings, with a simple tier of common fields and an `about:config`-style search for the rest. |
-| 🔄 **Updates itself** | With auto-upgrade on, the server checks published releases hourly and installs during quiet hours while playback is stopped; otherwise the app offers a button. Server, plugins, browser player and renderers move together — renderers first, so the pair never lands on a combination that cannot play. |
+| 🔄 **Updates itself** | The server checks published releases hourly; with auto-upgrade on it installs during quiet hours while playback is stopped, otherwise the app offers a button. Server, plugins, browser player and renderers move together — renderers first, so the pair never lands on a combination that cannot play. |
 
 ## 💻 Requirements
 
@@ -66,7 +66,7 @@ A **64-bit OS is required** — packages are built for arm64 and amd64 only. On 
 | Configuration | Minimum hardware | Notes |
 |---|---|---|
 | Playback + library | Raspberry Pi 3 / Zero 2 W, or any arm64/amd64 box with **512 MB RAM** | Headless OS recommended at 512 MB; enable swap for the first install and large scans. 1 GB is comfortable. |
-| With Smart Search | Raspberry Pi 4B with **4 GB RAM**, or any amd64 machine with 4 GB+ | The embedding model (~285 MB) stays resident; the first pass is CPU-heavy and runs in the background. Allow ~1 GB extra disk. |
+| With Smart Search | Raspberry Pi 4B with **2 GB RAM**, or any arm64/amd64 box with 2 GB+ | Measured on a 4 GB Pi 4B: ~1.15 GB resident with the library indexed and idle, and ~1.5 GB at the peak — the embedding pass, which loads a second model on top and is CPU-heavy. 2 GB should therefore work; 4 GB is what has actually been tested end to end. Allow ~1 GB extra disk. |
 
 Smart Search can be toggled per install, so you can start small and enable it after moving the library to a bigger board.
 
@@ -87,6 +87,10 @@ In-browser playback goes through the browser's audio stack, so there is no gaple
 | [Development](docs/development.md) | Building the Debian packages, running from source, tests |
 | [Renderer design](docs/native-renderer-design.md) | The contract a renderer implements |
 | [Releasing](RELEASING.md) | Version model and release procedure |
+
+## 🙋 Help test it
+
+Kalinka is young, and the interesting problems are the ones that only happen on someone else's hardware, with someone else's music. If you try it, say how it went in [the testing thread](https://github.com/Kalinka-Player/KalinkaPlayer/discussions/133) — what you ran it on, where your music lives, what you played it through, and where you got stuck. Setup questions belong there too; something you can reproduce is easier to act on as an [issue](https://github.com/Kalinka-Player/KalinkaPlayer/issues).
 
 ## Contributing
 
