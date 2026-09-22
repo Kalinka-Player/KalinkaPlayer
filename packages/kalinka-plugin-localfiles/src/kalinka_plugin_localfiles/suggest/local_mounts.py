@@ -23,9 +23,10 @@ _MEDIA_ROOTS = ("/media", "/mnt", "/run/media")
 #: device-mapper nodes that back containers and snaps.
 _DISK_SOURCES = ("/dev/sd", "/dev/nvme", "/dev/mmcblk", "/dev/hd")
 
-#: This machine's own filesystems. Offering them would suggest indexing the
-#: operating system.
-_SYSTEM_MOUNTS = ("/", "/boot")
+#: This machine's own filesystems, by path. The volume ``/`` is on is
+#: recognised by its device instead, so that it is still recognised where a
+#: sandboxed service sees it bind-mounted under another name.
+_SYSTEM_MOUNTS = ("/boot",)
 
 
 def _under_media_root(mount_point: str) -> bool:
@@ -37,8 +38,22 @@ def _under_media_root(mount_point: str) -> bool:
 def _is_system_mount(mount_point: str) -> bool:
     return mount_point == "/" or any(
         mount_point == m or mount_point.startswith(m + os.sep)
-        for m in _SYSTEM_MOUNTS[1:]
+        for m in _SYSTEM_MOUNTS
     )
+
+
+def _system_volume(mounts: list[Mount]) -> str:
+    """The device ``/`` is on, empty where mountinfo did not say.
+
+    systemd hands a sandboxed service its own mount namespace, in which
+    ``/etc``, ``/usr``, ``/home`` and the service's state directories are
+    bind mounts of that one volume — each carrying the source of the disk
+    underneath, and so indistinguishable from a drive by source alone.
+    """
+    for mount in reversed(mounts):
+        if mount.mount_point == "/":
+            return mount.device
+    return ""
 
 
 def _has_real_backing(mount: Mount) -> bool:
@@ -52,7 +67,9 @@ def _has_real_backing(mount: Mount) -> bool:
     )
 
 
-def _is_offerable(mount: Mount) -> bool:
+def _is_offerable(mount: Mount, system_volume: str) -> bool:
+    if mount.device and mount.device == system_volume:
+        return False
     if _is_system_mount(mount.mount_point):
         return False
     if _under_media_root(mount.mount_point):
@@ -75,9 +92,10 @@ def mount_options(mounts: list[Mount] | None = None) -> list[ConfigOption]:
     """
     if mounts is None:
         mounts = list_mounts()
+    system_volume = _system_volume(mounts)
     described: dict[str, str] = {}
     for mount in mounts:
-        if _is_offerable(mount):
+        if _is_offerable(mount, system_volume):
             described[mount.mount_point] = _describe(mount)
     return [
         ConfigOption(value=point, label=point, description=description)

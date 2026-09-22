@@ -37,11 +37,17 @@ _NETWORK_FS = {
 
 @dataclass(frozen=True)
 class Mount:
-    """One mountinfo row: where a filesystem is mounted, its type and source."""
+    """One mountinfo row: where a filesystem is mounted, its type and source.
+
+    @param device The kernel's ``major:minor`` for the filesystem, empty
+        where it was not read. Two rows sharing it are two views of one
+        filesystem — a bind mount and the volume it was taken from.
+    """
 
     mount_point: str
     fs_type: str
     source: str
+    device: str = ""
 
 
 def _unescape(field: str) -> str:
@@ -81,6 +87,7 @@ def list_mounts(text: Optional[str] = None) -> list[Mount]:
                 mount_point=_unescape(head_fields[4]),
                 fs_type=tail_fields[0],
                 source=_unescape(tail_fields[1]),
+                device=head_fields[2],
             )
         )
     return mounts

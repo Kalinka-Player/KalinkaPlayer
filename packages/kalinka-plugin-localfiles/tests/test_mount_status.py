@@ -38,9 +38,17 @@ def _mounts():
 
 def test_list_mounts_parses_type_source_and_escapes():
     mounts = _mounts()
-    assert Mount(mount_point="/", fs_type="ext4", source="/dev/sda1") in mounts
     assert (
-        Mount(mount_point="/mnt/nas", fs_type="nfs4", source="192.168.1.5:/export")
+        Mount(mount_point="/", fs_type="ext4", source="/dev/sda1", device="0:32")
+        in mounts
+    )
+    assert (
+        Mount(
+            mount_point="/mnt/nas",
+            fs_type="nfs4",
+            source="192.168.1.5:/export",
+            device="0:44",
+        )
         in mounts
     )
     assert any(m.mount_point == "/path with space" for m in mounts)

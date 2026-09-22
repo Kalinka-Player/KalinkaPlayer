@@ -34,6 +34,9 @@ MOUNTINFO = """
 31 25 8:17 / /srv/library rw,relatime shared:7 - ext4 /dev/sdb1 rw
 32 25 0:50 / /run/media/envel/MUSIC\\040DISK rw - exfat /dev/sdc1 rw
 33 25 0:60 / /mnt/snap rw,relatime shared:8 - squashfs /dev/loop0 rw
+34 25 179:2 /etc /etc rw,relatime - ext4 /dev/mmcblk0p2 rw
+35 25 179:2 /home /home rw,relatime - ext4 /dev/mmcblk0p2 rw
+36 25 179:2 /var/log/kalinka /var/log/kalinka rw,relatime - ext4 /dev/mmcblk0p2 rw
 """
 
 
@@ -72,6 +75,15 @@ class TestDrivesOnThisMachine:
         "mount_point", ["/", "/boot/firmware", "/mnt/scratch", "/mnt/snap"]
     )
     def test_what_is_not_somewhere_to_keep_music_is_not_offered(self, mount_point):
+        assert mount_point not in _offered()
+
+    @pytest.mark.parametrize("mount_point", ["/etc", "/home", "/var/log/kalinka"])
+    def test_the_volume_the_system_is_on_is_not_offered_under_any_name(
+        self, mount_point
+    ):
+        """systemd gives a sandboxed service bind mounts of the directories
+        it may write to, each carrying the source of the disk under `/`. The
+        device is what tells them apart from a drive."""
         assert mount_point not in _offered()
 
     def test_a_mount_point_with_a_space_in_it_is_offered_as_it_reads(self):
