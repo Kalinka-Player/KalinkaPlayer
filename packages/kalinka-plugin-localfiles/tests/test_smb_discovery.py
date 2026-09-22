@@ -19,13 +19,23 @@ import time
 
 import pytest
 
+from kalinka_plugin_localfiles.suggest import smb_discovery
 from kalinka_plugin_localfiles.suggest.smb_discovery import (
     SmbHostDiscovery,
+    _belongs_to_this_machine as ask_the_kernel,
     encode_netbios_name,
     file_server_name,
     nbstat_query,
     parse_nbstat_reply,
 )
+
+
+@pytest.fixture(autouse=True)
+def _nothing_is_this_machine(monkeypatch):
+    """Which addresses are this machine's is a property of the machine the
+    tests run on, and 192.168.1.x is somebody's home network. Answer no by
+    default; the tests about that rule say otherwise for themselves."""
+    monkeypatch.setattr(smb_discovery, "_belongs_to_this_machine", lambda _: False)
 
 
 def _reply(names, *, flags=0x8400, answers=1, rr_type=0x0021, claimed=None):
@@ -195,6 +205,65 @@ class TestWhatHasBeenSeen:
         assert [h.name for h in made.hosts()] == ["ALPHA", "ZULU"]
 
 
+class TestWhichAddressesAreWorthOffering:
+    """A host is offered only where an SMB client here could usefully mount
+    it — which rules out this machine, whichever way it was found."""
+
+    def test_a_link_local_address_is_left_out(self):
+        """Reaching one needs the interface it was heard on, which the
+        announcement does not carry."""
+        made = _discovery()
+        made._mdns_seen("NAS._smb._tcp.local.", "NAS", ["fe80::1", "192.168.1.20"])
+        assert [h.address for h in made.hosts()] == ["192.168.1.20"]
+
+    @pytest.mark.parametrize("address", ["127.0.0.1", "::1"])
+    def test_loopback_is_left_out(self, address):
+        made = _discovery()
+        made._mdns_seen("NAS._smb._tcp.local.", "NAS", [address, "192.168.1.20"])
+        assert [h.address for h in made.hosts()] == ["192.168.1.20"]
+
+    def test_an_address_this_machine_holds_is_left_out(self, monkeypatch):
+        """Samba answers on every address the box has, so the box announces
+        itself on each of them — and the shares behind them are the local
+        folders already offered as local folders."""
+        mine = {"10.10.10.1", "192.168.50.248", "2a01:4b00:b8fe:3100::1"}
+        monkeypatch.setattr(
+            smb_discovery, "_belongs_to_this_machine", lambda a: a in mine
+        )
+        made = _discovery()
+        made._mdns_seen("PI._smb._tcp.local.", "PI", sorted(mine) + ["192.168.1.20"])
+        assert [h.address for h in made.hosts()] == ["192.168.1.20"]
+
+    def test_this_machine_answering_its_own_broadcast_is_left_out(self, monkeypatch):
+        """nmbd on this box replies to the node-status request this box
+        sent, which no amount of mDNS filtering would have caught."""
+        monkeypatch.setattr(
+            smb_discovery, "_belongs_to_this_machine", lambda a: a == "192.168.50.248"
+        )
+        made = _discovery()
+        made._netbios_seen("192.168.50.248", "RASPBERRYPI")
+        made._netbios_seen("192.168.1.20", "NAS")
+        assert [h.address for h in made.hosts()] == ["192.168.1.20"]
+
+    def test_an_announcement_with_nothing_worth_offering_leaves_no_host(self):
+        made = _discovery()
+        made._mdns_seen("SELF._smb._tcp.local.", "SELF", ["127.0.0.1", "fe80::1"])
+        assert made.hosts() == []
+
+
+class TestAskingTheKernelWhoseAddressItIs:
+    def test_loopback_is_this_machine(self):
+        assert ask_the_kernel("127.0.0.1")
+
+    def test_an_address_assigned_nowhere_is_not(self):
+        """192.0.2.0/24 is TEST-NET-1, reserved for documentation, so no
+        machine running this test can hold it."""
+        assert not ask_the_kernel("192.0.2.1")
+
+    def test_something_that_is_not_an_address_is_not(self):
+        assert not ask_the_kernel("nas.local")
+
+
 class TestAskingTheNetworkAgain:
     def test_starting_listens_and_asks_once(self):
         made = _discovery()
@@ -329,22 +398,11 @@ class TestAnAnnouncementThatArrives:
         seen = self._seen(_Announcement(["2001:db8::5"]))
         assert seen[0][2] == ["2001:db8::5"]
 
-    def test_a_link_local_address_is_left_out(self):
-        """Reaching one needs the interface it was heard on, which the
-        announcement does not carry."""
+    def test_every_address_announced_is_handed_on_to_be_judged(self):
+        """The adapter translates; which addresses are worth offering is
+        the discovery's rule, so that it holds for NetBIOS too."""
         seen = self._seen(_Announcement(["fe80::1", "192.168.1.20"]))
-        assert seen[0][2] == ["192.168.1.20"]
-
-    @pytest.mark.parametrize("address", ["127.0.0.1", "::1"])
-    def test_this_machine_answering_itself_is_left_out(self, address):
-        """Samba on the box announces the shares of the very disks the
-        folder list has already offered as folders."""
-        seen = self._seen(_Announcement([address, "192.168.1.20"]))
-        assert seen[0][2] == ["192.168.1.20"]
-
-    def test_a_service_with_nowhere_to_connect_is_not_reported(self):
-        assert self._seen(_Announcement(["fe80::1"])) == []
-        assert self._seen(_Announcement(["127.0.0.1"])) == []
+        assert seen[0][2] == ["fe80::1", "192.168.1.20"]
 
     def test_a_service_that_cannot_be_resolved_is_not_reported(self):
         assert self._seen(None) == []

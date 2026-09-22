@@ -208,21 +208,43 @@ def broadcast_addresses() -> list[str]:
     return found or ["255.255.255.255"]
 
 
-def _is_connectable(address: str) -> bool:
-    """Whether an SMB client on this machine could reach a share there.
+def _belongs_to_this_machine(address: str) -> bool:
+    """Whether this address is one of this machine's own.
 
-    Loopback is this machine answering its own announcement — the shares
-    behind it are its own folders, which it has already offered as folders.
-    An IPv6 link-local address needs the interface zone that an
+    Put to the kernel rather than worked out from an interface list: a
+    socket binds to an address only where that address is assigned here,
+    which is the same question in one syscall, for every interface and
+    both families alike. Asked afresh every time, because an address a
+    machine holds is a thing that changes.
+    """
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.bind((address, 0))
+    except OSError:
+        return False
+    return True
+
+
+def _is_another_server(address: str) -> bool:
+    """Whether a share at this address is worth offering as a music folder.
+
+    This machine's own shares are not. Samba answers on every address the
+    box holds — loopback, each LAN interface, each global v6 — and the
+    folders behind them are the local folders that have already been
+    offered as local folders. An IPv6 link-local address is left out for a
+    different reason: reaching one needs the interface zone that an
     announcement does not carry.
     """
     try:
         parsed = ipaddress.ip_address(address)
     except ValueError:
         return False
-    return not parsed.is_loopback and not (
-        parsed.version == 6 and parsed.is_link_local
-    )
+    if parsed.is_loopback:
+        return False
+    if parsed.version == 6 and parsed.is_link_local:
+        return False
+    return not _belongs_to_this_machine(address)
 
 
 class MdnsWatch(Protocol):
@@ -289,9 +311,7 @@ class _ZeroconfWatch:
             return
         # parsed_addresses(), not addresses: the latter is IPv4 only, so a
         # server that answers over v6 alone would never be offered.
-        addresses = [
-            address for address in info.parsed_addresses() if _is_connectable(address)
-        ]
+        addresses = info.parsed_addresses()
         if addresses:
             self._on_seen(name, name.split(".")[0], addresses)
 
@@ -406,17 +426,22 @@ class SmbHostDiscovery:
         return sorted(merged.values(), key=lambda h: (h.name or h.address))
 
     def _mdns_seen(self, key: str, name: str, addresses: list[str]) -> None:
+        announced = [
+            DiscoveredHost(address=address, name=name, source="mDNS")
+            for address in addresses
+            if _is_another_server(address)
+        ]
         with self._lock:
-            self._announced[key] = [
-                DiscoveredHost(address=address, name=name, source="mDNS")
-                for address in addresses
-            ]
+            self._announced[key] = announced
 
     def _mdns_lost(self, key: str) -> None:
         with self._lock:
             self._announced.pop(key, None)
 
     def _netbios_seen(self, address: str, name: str) -> None:
+        # This machine's own nmbd answers the broadcast this machine sent.
+        if not _is_another_server(address):
+            return
         with self._lock:
             self._answered[address] = (
                 DiscoveredHost(address=address, name=name, source="NetBIOS"),
