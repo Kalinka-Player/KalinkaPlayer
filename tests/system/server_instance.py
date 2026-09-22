@@ -55,7 +55,13 @@ class KalinkaInstance:
     def install(self, overrides: dict[str, Any], models_cache: Path) -> None:
         """Seed the fakeroot: config first (dev-setup keeps an existing one),
         then the editable installs, then the model cache in place of the
-        model directory so downloads survive between runs."""
+        model directory so downloads survive between runs.
+
+        Runnable again over a prefix a previous attempt left half-built: a
+        caller that reuses its fakeroot should not have to delete one by hand
+        because the first attempt died after the symlink and before the
+        database.
+        """
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
         config = {
             "base_config.server.interface": "lo",
@@ -76,6 +82,8 @@ class KalinkaInstance:
             raise RuntimeError(f"make dev-setup failed:\n{result.stdout}{result.stderr}")
         models_cache.mkdir(parents=True, exist_ok=True)
         self.models_dir.parent.mkdir(parents=True, exist_ok=True)
+        if self.models_dir.is_symlink():
+            self.models_dir.unlink()
         self.models_dir.symlink_to(models_cache, target_is_directory=True)
 
     def start(self) -> None:

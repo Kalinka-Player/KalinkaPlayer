@@ -13,7 +13,6 @@ import argparse
 import json
 import logging
 import sys
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -22,7 +21,7 @@ from sddbench import (
     dataset, fingerprint, indexing, judge, metrics, mood, report, retrieval,
 )
 from sddbench.clock import Clock
-from sddbench.instance import build, set_mood
+from sddbench.instance import MoodAblation, build
 from sddbench.paths import Layout
 
 logging.basicConfig(
@@ -32,7 +31,10 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("sdd-bench").info
 
-RUNS = ("mood_on", "mood_off")
+#: Each ranking configuration, and the valence/arousal setting it is named
+#: for. The runner applies it per run, so a run measures what it says
+#: whichever order the runs are asked in.
+RUNS = {"mood_on": True, "mood_off": False}
 
 
 def prepare(layout: Layout, clock: Clock, force: bool) -> dict:
@@ -53,65 +55,52 @@ def index_library(layout: Layout, clock: Clock, top_k: int):
 
 
 def retrieve(instance, layout: Layout, clock: Clock, queries, tracks, run_name: str,
-             id_column: str = "caption_id"):
-    mark = instance.log_path.stat().st_size
-    with clock.span(f"retrieval_{run_name}"):
-        answers = retrieval.run(
-            instance, queries, tracks, layout, run_name, log=log
-        )
-    time.sleep(3)  # let the log queue drain before the slice is read back
-    slice_path = layout.server_log(run_name)
-    with instance.log_path.open("rb") as handle:
-        handle.seek(mark)
-        slice_path.write_bytes(handle.read())
-    coverage = retrieval.attach_scores(
-        answers, list(queries), slice_path, layout, tracks
+             depth: int):
+    queries = list(queries)
+    measured = retrieval.measure(
+        instance, clock, queries, tracks, layout, run_name, log=log
     )
-    timings = retrieval.query_timings(slice_path, list(queries))
-    retrieval.write_results(answers, timings, layout, run_name, id_column)
+    coverage = retrieval.attach_scores(
+        measured.answers, queries, measured.log_slice, layout, tracks
+    )
+    retrieval.write_results(
+        measured.answers, measured.timings, layout, run_name, depth
+    )
     (layout.out / f"coverage_{run_name}.json").write_text(json.dumps(coverage, indent=2))
     log(f"{run_name}: {json.dumps(coverage)}")
     log(f"{run_name}: wrote {layout.results(run_name).name}")
-    return answers
+    return measured.answers
 
 
-def score(layout: Layout, clock: Clock, captions, run_names) -> dict:
-    caption_ids = [c.caption_id for c in captions]
+def score(layout: Layout, clock: Clock, captions, run_names, depth: int) -> dict:
+    cached = layout.caption_similarity.exists()
     with clock.span("judge_embedding"):
-        if layout.caption_similarity.exists():
-            log("caption similarity: cached")
-            similarity = judge.read_matrix(layout.caption_similarity)
-        else:
-            judging = judge.Judge(layout.judge_model)
-            matrix = judge.similarity_matrix(
-                judging, caption_ids, [c.text for c in captions]
-            )
-            judge.write_matrix(matrix, caption_ids, layout.caption_similarity)
-            similarity = {
-                caption_ids[i]: {
-                    caption_ids[j]: float(matrix[i][j]) for j in range(len(caption_ids))
-                }
-                for i in range(len(caption_ids))
-            }
+        similarity = judge.similarity(
+            layout.judge_model,
+            [c.caption_id for c in captions],
+            [c.text for c in captions],
+            layout.caption_similarity,
+        )
+    log(f"caption similarity: {'cached' if cached else 'computed'}")
 
     captions_by_track: dict[str, list[str]] = {}
     for caption in captions:
         captions_by_track.setdefault(caption.track_id, []).append(caption.caption_id)
-    relevance = metrics.Relevance.from_similarity(similarity, captions_by_track)
+    relevance = metrics.Relevance(similarity, captions_by_track)
 
     valid = {c.caption_id for c in captions if c.is_valid_subset}
     all_metrics = {}
     with clock.span("metrics"):
         for run_name in run_names:
             answers = retrieval.read_results(layout, run_name)
-            subset = [a for a in answers if a.caption_id in valid]
+            subset = [a for a in answers if a.query_id in valid]
             all_metrics[run_name] = {
                 "all": {
-                    "strict": metrics.strict(answers).as_dict(),
+                    "strict": metrics.strict(answers, depth).as_dict(),
                     "graded": metrics.graded(answers, relevance).as_dict(),
                 },
                 "valid_subset": {
-                    "strict": metrics.strict(subset).as_dict(),
+                    "strict": metrics.strict(subset, depth).as_dict(),
                     "graded": metrics.graded(subset, relevance).as_dict(),
                 },
                 "latency_ms": _latency(answers),
@@ -141,7 +130,12 @@ def main() -> int:
         help="Where this run's artifacts go (default: tmp/sdd_bench/latest)",
     )
     parser.add_argument(
-        "--top-k", type=int, default=50, help="Ranked depth to ask for (default: 50)",
+        "--top-k", type=int, default=50,
+        help=(
+            "Ranked depth to ask for (default: 50). It names the metrics "
+            "and the result rows, so a resumed run must be given the same "
+            "value as the retrieval it is scoring"
+        ),
     )
     parser.add_argument(
         "--runs", nargs="*", default=list(RUNS), choices=RUNS,
@@ -188,11 +182,13 @@ def main() -> int:
             caption_queries = [
                 retrieval.Query(c.caption_id, c.text, c.track_id) for c in captions
             ]
+            ablation = MoodAblation(instance, clock, RUNS)
             for run_name in args.runs:
-                if run_name == "mood_off":
-                    with clock.span("ablation_restart"):
-                        set_mood(instance, False)
-                retrieve(instance, layout, clock, caption_queries, tracks, run_name)
+                ablation.prepare(run_name)
+                retrieve(
+                    instance, layout, clock, caption_queries, tracks, run_name,
+                    args.top_k,
+                )
 
     finally:
         if instance is not None:
@@ -202,7 +198,7 @@ def main() -> int:
         mood.run_suite(layout, clock, tracks, log=log)
 
     if "score" in args.stages:
-        score(layout, clock, captions, args.runs)
+        score(layout, clock, captions, args.runs, args.top_k)
 
     if "report" in args.stages:
         with clock.span("report"):

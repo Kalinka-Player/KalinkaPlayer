@@ -16,15 +16,17 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
-from typing import Sequence
+from typing import Iterable, Sequence
 
 from . import metrics, retrieval, tags
 from .clock import Clock
 from .dataset import Track
-from .instance import KalinkaInstance, build, set_mood
+from .instance import KalinkaInstance, MoodAblation, build
 from .paths import Layout
 
-RUNS = ("tags_fusion", "tags_clap")
+#: Each ranking configuration, and the valence/arousal setting it is named
+#: for — see ``run.RUNS``.
+RUNS = {"tags_fusion": True, "tags_clap": False}
 RUN_TITLES = {
     "tags_fusion": "CLAP + valence/arousal fusion (shipped default)",
     "tags_clap": "CLAP only (mood ranking off)",
@@ -76,7 +78,7 @@ def run_suite(
     layout: Layout,
     clock: Clock,
     tracks: dict[str, Track],
-    runs: Sequence[str] = RUNS,
+    runs: Iterable[str] = RUNS,
     log=print,
 ) -> dict:
     """Ask every mood query under each ranking configuration.
@@ -97,24 +99,17 @@ def run_suite(
     results: dict = {"judged_tracks": len(corpus), "queries": len(query_set)}
     try:
         instance.start()
+        ablation = MoodAblation(instance, clock, RUNS)
         for run_name in runs:
-            if run_name == "tags_clap":
-                with clock.span("mood_ablation_restart"):
-                    set_mood(instance, False)
-            mark = instance.log_path.stat().st_size
-            with clock.span(f"retrieval_{run_name}"):
-                answers = retrieval.run(
-                    instance, asked, tracks, layout, run_name, log=log
-                )
-            slice_path = layout.server_log(run_name)
-            with instance.log_path.open("rb") as handle:
-                handle.seek(mark)
-                slice_path.write_bytes(handle.read())
-            timings = retrieval.query_timings(slice_path, asked)
-            retrieval.write_results(
-                answers, timings, layout, run_name, id_column="query_id"
+            ablation.prepare(run_name)
+            measured = retrieval.measure(
+                instance, clock, asked, tracks, layout, run_name, log=log
             )
-            scores = score(answers, query_set, corpus)
+            retrieval.write_results(
+                measured.answers, measured.timings, layout, run_name,
+                len(tracks), id_column="query_id",
+            )
+            scores = score(measured.answers, query_set, corpus)
             write_scores(scores, layout.out / f"mood_scores_{run_name}.csv")
             results[run_name] = {
                 "aggregate": metrics.aggregate(scores),

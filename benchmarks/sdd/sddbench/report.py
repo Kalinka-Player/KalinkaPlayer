@@ -37,13 +37,19 @@ def write(layout: Layout, clock: Clock, runs: Sequence[str]) -> Path:
     stats = json.loads(layout.dataset_stats.read_text())
     summary = json.loads(layout.index_summary.read_text())
     print_fp = json.loads(layout.fingerprint.read_text())
-    metrics = {
-        run: json.loads(layout.metrics(run).read_text())
-        for run in runs
-        if layout.metrics(run).exists()
-    }
+    mood_path = layout.out / "mood_metrics.json"
+    mood = json.loads(mood_path.read_text()) if mood_path.exists() else {}
+    # An interrupted run leaves no metrics: report the ones that finished.
+    scored = [run for run in runs if layout.metrics(run).exists()]
+    if not scored:
+        raise FileNotFoundError(
+            f"no metrics under {layout.out}: run the score stage first"
+        )
+    asked = [run for run in runs if layout.results(run).exists()]
+    metrics = {run: json.loads(layout.metrics(run).read_text()) for run in scored}
+    depth = metrics[scored[0]]["all"]["strict"]["depth"]
     captions = ds.read_captions(layout.captions_csv)
-    rows, end_to_end = _timeline(layout, clock, summary, runs)
+    rows, end_to_end = _timeline(layout, clock, summary, asked)
     clock.write_csv(
         layout.timeline, [(r.label, r.seconds, r.group) for r in rows], end_to_end
     )
@@ -57,17 +63,17 @@ def write(layout: Layout, clock: Clock, runs: Sequence[str]) -> Path:
         f"Code {print_fp['code']['describe']}, "
         f"{print_fp['host']['cpu_count']} CPU threads.\n"
     )
-    out.append(_quality(metrics, stats, runs))
-    out.append(_examples(layout, captions, runs[0]))
-    out.append(_timeline_section(rows, end_to_end))
-    out.append(_latency_note(layout, metrics, runs))
+    out.append(_quality(metrics, stats, scored, depth, mood))
+    out.append(_examples(layout, captions, asked))
+    out.append(_timeline_section(rows, end_to_end, summary, stats))
+    out.append(_latency_note(metrics, scored))
     out.append(_dataset_section(stats))
     out.append(_fingerprint_section(print_fp, summary))
     out.append(_leakage_section(stats))
-    out.append(_integrity_section(layout, runs))
+    out.append(_integrity_section(layout, asked))
     out.append(_instrumentation_section(print_fp))
-    out.append(_caveats(stats, metrics, runs, print_fp))
-    out.append(_findings(layout, summary, stats, runs))
+    out.append(_caveats(stats, metrics, scored, print_fp, depth))
+    out.append(_findings(layout, summary, stats, asked, print_fp, depth))
     layout.report.write_text("\n".join(out))
     return layout.report
 
@@ -77,9 +83,12 @@ def write(layout: Layout, clock: Clock, runs: Sequence[str]) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _quality(metrics: dict, stats: dict, runs: Sequence[str]) -> str:
+def _quality(
+    metrics: dict, stats: dict, runs: Sequence[str], depth: int, mood: dict
+) -> str:
     n_tracks = stats["tracks"]
-    baseline = metrics_mod.random_baseline(n_tracks)
+    ks = metrics_mod.recall_ks(depth)
+    baseline = metrics_mod.random_baseline(n_tracks, depth)
     lines = ["## Quality\n"]
     lines.append(
         "Strict scoring counts one recording per caption: the one the caption "
@@ -88,9 +97,11 @@ def _quality(metrics: dict, stats: dict, runs: Sequence[str]) -> str:
     )
     lines.append("### Strict — the captioned recording only\n")
     lines.append(
-        "| Configuration | Captions | R@1 | R@5 | R@10 | R@50 | MRR | Median rank |"
+        "| Configuration | Captions "
+        + "".join(f"| R@{k} " for k in ks)
+        + "| MRR | Median rank |"
     )
-    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+    lines.append("|---|---:" + "|---:" * len(ks) + "|---:|---:|")
     for run in runs:
         for scope in ("all", "valid_subset"):
             strict = metrics[run][scope]["strict"]
@@ -99,16 +110,16 @@ def _quality(metrics: dict, stats: dict, runs: Sequence[str]) -> str:
                 f"{'' if scope == 'all' else ' — validated subset'} "
                 f"| {strict['queries']} "
                 + "".join(
-                    f"| {100 * strict['recall_at'][str(k)]:.1f}% " for k in (1, 5, 10, 50)
+                    f"| {100 * strict['recall_at'][str(k)]:.1f}% " for k in ks
                 )
-                + f"| {strict['mrr']:.3f} | {_rank(strict['median_rank'])} |"
+                + f"| {strict['mrr']:.3f} | {_rank(strict['median_rank'], depth)} |"
             )
     lines.append(
         f"| Random ranking of {n_tracks} tracks | — "
         + "".join(
-            f"| {100 * baseline['recall_at'][str(k)]:.1f}% " for k in (1, 5, 10, 50)
+            f"| {100 * baseline['recall_at'][str(k)]:.1f}% " for k in ks
         )
-        + f"| {baseline['mrr_top_50']:.3f} | > 50 |"
+        + f"| {baseline['mrr']:.3f} | > {depth} |"
     )
     lines.append("")
     lines.append(
@@ -138,11 +149,11 @@ def _quality(metrics: dict, stats: dict, runs: Sequence[str]) -> str:
             )
     lines.append("")
     if len(runs) > 1:
-        lines.append(_ablation(metrics, runs))
+        lines.append(_ablation(metrics, mood))
     return "\n".join(lines)
 
 
-def _ablation(metrics: dict, runs: Sequence[str]) -> str:
+def _ablation(metrics: dict, mood: dict) -> str:
     on, off = metrics.get("mood_on"), metrics.get("mood_off")
     if not (on and off):
         return ""
@@ -156,20 +167,22 @@ def _ablation(metrics: dict, runs: Sequence[str]) -> str:
             f"{100 * strict_on['recall_at'][key]:.1f}% ({100 * delta:+.1f} pts)"
         )
 
+    depth = strict_on["depth"]
     return (
         "### Ablation — what valence/arousal fusion costs or buys\n\n"
         "Both configurations are the same index queried twice: the ablation "
         "is a settings change and a restart, not a re-embedding.\n\n"
-        f"Turning fusion on moves R@1 {move('1')}, R@10 {move('10')} and R@50 "
-        f"{move('50')}, with MRR "
+        f"Turning fusion on moves R@1 {move('1')}, R@10 {move('10')} and "
+        f"R@{depth} {move(str(depth))}, with MRR "
         f"{strict_off['mrr']:.3f} → {strict_on['mrr']:.3f} and nDCG@10 "
         f"{off['all']['graded']['ndcg_at_10']:.3f} → "
         f"{on['all']['graded']['ndcg_at_10']:.3f}.\n\n"
         "So the top of the list is unchanged and the depth of it is worse: "
         "the mood leg unions its own candidates into the pool, and with the "
-        "list capped at 50 those candidates displace CLAP hits that would "
-        "otherwise have been in it. It is not free, either — median latency "
-        f"{latency_off['median']:.0f} ms → {latency_on['median']:.0f} ms and "
+        f"list capped at {depth} those candidates displace CLAP hits that "
+        "would otherwise have been in it. It is not free, either — median "
+        f"latency {latency_off['median']:.0f} ms → "
+        f"{latency_on['median']:.0f} ms and "
         f"p95 {latency_off['p95']:.0f} ms → {latency_on['p95']:.0f} ms.\n\n"
         "What this does not say is that mood ranking is useless. These "
         "queries are descriptions of recordings, which is what CLAP is "
@@ -177,18 +190,30 @@ def _ablation(metrics: dict, runs: Sequence[str]) -> str:
         "at (\"something melancholy\"), and a caption benchmark contains "
         "almost none of those. The other kind is measured separately, in "
         "[results_mood.md](results_mood.md), over the same index and the "
-        "MTG-Jamendo mood tags — and there fusion wins: on affective tags "
-        "CLAP alone ranks barely better than shuffling, and fusion raises "
-        "P@10 from 0.050 to 0.087. Read the two together: this is what the "
-        "blend costs where CLAP is strong, that is what it buys where CLAP "
-        "is weak.\n"
+        f"MTG-Jamendo mood tags — and {_affective_move(mood)}. Read the two "
+        "together: this is what the blend costs where CLAP is strong, that "
+        "is what it buys where CLAP is weak.\n"
     )
 
 
-def _rank(value) -> str:
+def _affective_move(mood: dict) -> str:
+    """The one claim this report borrows from the mood suite, taken from that
+    suite's own numbers when they are in the same output directory."""
+    on = mood.get("tags_fusion", {}).get("aggregate", {}).get("affective")
+    off = mood.get("tags_clap", {}).get("aggregate", {}).get("affective")
+    if not (on and off):
+        return "that is where the blend is measured on its own terms"
+    return (
+        "there fusion wins: on affective tags CLAP alone ranks barely better "
+        f"than shuffling, and fusion moves P@10 from {off['mean_p_at_10']:.3f} "
+        f"to {on['mean_p_at_10']:.3f}"
+    )
+
+
+def _rank(value, depth: int = metrics_mod.DEFAULT_DEPTH) -> str:
     if value is None:
         return "—"
-    return "> 50" if value >= metrics_mod.MISS else f"{value:.0f}"
+    return f"> {depth}" if value >= metrics_mod.MISS else f"{value:.0f}"
 
 
 # ---------------------------------------------------------------------------
@@ -196,8 +221,11 @@ def _rank(value) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _examples(layout: Layout, captions, run: str) -> str:
+def _examples(layout: Layout, captions, runs: Sequence[str]) -> str:
     """Five queries drawn by a fixed seed — not picked for how they did."""
+    if not runs:
+        return ""
+    run = runs[0]
     by_caption = {c.caption_id: c for c in captions}
     per_track: dict[str, list[str]] = {}
     for caption in captions:
@@ -276,7 +304,7 @@ def _timeline(layout: Layout, clock: Clock, summary: dict, runs: Sequence[str]):
         rows.append(Row("— mood mapping and blend", query["mood_map_s"], f"retrieval_{run}"))
         rows.append(Row("— HTTP, serialisation, database fetch of hits",
                         max(total - query["server_total_s"], 0.0), f"retrieval_{run}"))
-    restart = clock.spans.get("ablation_restart", 0.0)
+    restart = sum(clock.spans.get(f"ablation_{run}", 0.0) for run in runs)
     if restart:
         rows.append(Row("Ablation settings change and restart", restart, "retrieval"))
 
@@ -306,7 +334,9 @@ def _query_totals(layout: Layout, run: str) -> dict:
     return totals
 
 
-def _timeline_section(rows: Sequence[Row], end_to_end: float) -> str:
+def _timeline_section(
+    rows: Sequence[Row], end_to_end: float, summary: dict, stats: dict
+) -> str:
     lines = ["## Timeline\n"]
     lines.append(
         f"End to end: **{_hms(end_to_end)}**. Bold rows are the phases and sum "
@@ -321,14 +351,16 @@ def _timeline_section(rows: Sequence[Row], end_to_end: float) -> str:
         share = 100.0 * row.seconds / end_to_end if end_to_end else 0.0
         lines.append(f"| {row.label} | {row.seconds:,.1f} | {share:.1f}% |")
     lines.append("")
-    lines.append(
-        "The mood backfill reads as no time at all because it does not have "
-        "any of its own: the embedder drains its audio queue, backfills "
-        "(V,A) from the vectors it just stored, and loops, so the mood work "
-        "happened inside the embedding row — 0.13 s of it, for all 706 "
-        "tracks, the whole of it a 512→2 head over a vector already in "
-        "memory.\n"
-    )
+    if summary["spans"].get("mood_backfill", 0.0) < 1.0:
+        lines.append(
+            "The mood backfill reads as no time at all because it does not "
+            "have any of its own: the embedder drains its audio queue, "
+            "backfills (V,A) from the vectors it just stored, and loops, so "
+            "the mood work happened inside the embedding row — "
+            f"{summary['timings'].get('va_head_s', 0.0):.2f} s of it, for "
+            f"all {stats['tracks']} tracks, the whole of it a 512→2 head "
+            "over a vector already in memory.\n"
+        )
     return "\n".join(lines)
 
 
@@ -340,7 +372,7 @@ def _hms(seconds: float) -> str:
     return f"{minutes}m {secs}s" if minutes else f"{secs}s"
 
 
-def _latency_note(layout: Layout, metrics: dict, runs: Sequence[str]) -> str:
+def _latency_note(metrics: dict, runs: Sequence[str]) -> str:
     """Per-query latency, kept out of the quality tables on purpose: it is a
     property of this host under this load, not of the retrieval."""
     lines = ["Per-query latency, measured at the client:\n"]
@@ -537,15 +569,17 @@ def _instrumentation_section(fp: dict) -> str:
     return "\n".join(lines)
 
 
-def _caveats(stats: dict, metrics: dict, runs: Sequence[str], fp: dict) -> str:
-    run = runs[0]
-    empty = metrics[run]["all"]["strict"]["empty_answers"]
+def _caveats(
+    stats: dict, metrics: dict, runs: Sequence[str], fp: dict, depth: int
+) -> str:
+    empty = metrics[runs[0]]["all"]["strict"]["empty_answers"]
+    candidates = _candidate_limit(fp)
     return (
         "## Caveats\n\n"
         "- **Strict scoring is pessimistic by construction.** One track is "
-        "correct per caption. A library of 706 recordings holds many that "
-        "match \"acoustic guitar solo with a relaxed feel\" equally well, and "
-        "every one of them counts against the score.\n"
+        f"correct per caption. A library of {stats['tracks']} recordings "
+        "holds many that match \"acoustic guitar solo with a relaxed feel\" "
+        "equally well, and every one of them counts against the score.\n"
         "- **Graded scoring is lenient, and biased toward the judge's habits.** "
         "It rewards captions that sound alike, which is not the same as music "
         "that sounds alike: two tracks described with the same vocabulary score "
@@ -558,10 +592,8 @@ def _caveats(stats: dict, metrics: dict, runs: Sequence[str], fp: dict) -> str:
         "dataset wrote them, and they count as misses.\n"
         "- **Long captions are truncated** to 77 tokens by CLAP's tokenizer, "
         "which is a fifth of the longest caption in the set.\n"
-        "- **Top-50 is the whole candidate pool.** The KNN leg's candidate "
-        "limit is 50, so R@50 is the recall of the retrieval step itself and "
-        "ranks below 50 are the whole list, not a prefix of a deeper one.\n"
-        f"- **One host, one run.** Timings are this machine's "
+        + _pool_caveat(depth, candidates)
+        + f"- **One host, one run.** Timings are this machine's "
         f"({fp['host']['cpu_count']} threads, {fp['host']['platform']}) and a "
         "single run at that: they say where the time goes, not what the "
         "variance is. What the same split looks like on the hardware the "
@@ -571,15 +603,38 @@ def _caveats(stats: dict, metrics: dict, runs: Sequence[str], fp: dict) -> str:
     )
 
 
-def _findings(layout: Layout, summary: dict, stats: dict, runs: Sequence[str]) -> str:
+def _candidate_limit(fp: dict):
+    return _settings(fp["server_config"]).get(
+        "input_modules.localfiles.ai_search.knn_candidate_limit"
+    )
+
+
+def _pool_caveat(depth: int, candidates) -> str:
+    """Whether the ranked list is the whole candidate pool or a prefix of it
+    is the difference between R@k being retrieval's recall and being a cut."""
+    if candidates and candidates <= depth:
+        return (
+            f"- **Top-{depth} is the whole candidate pool.** The KNN leg's "
+            f"candidate limit is {candidates}, so R@{depth} is the recall of "
+            f"the retrieval step itself and ranks below {depth} are the whole "
+            "list, not a prefix of a deeper one.\n"
+        )
+    return (
+        f"- **The list is cut at {depth}, and the KNN leg retrieves "
+        f"{candidates} candidates.** R@{depth} is a prefix of a deeper "
+        "ranking rather than the recall of the retrieval step.\n"
+    )
+
+
+def _findings(
+    layout: Layout, summary: dict, stats: dict, runs: Sequence[str],
+    fp: dict, depth: int,
+) -> str:
     """What the run turned up about the code. Nothing here was changed for the
     benchmark; it is written down so it can be decided on separately."""
     timings = summary["timings"]
-    infer_share = (
-        100.0 * timings["embed_infer_s"] / timings["embed_total_s"]
-        if timings["embed_total_s"]
-        else 0.0
-    )
+    embed_total = timings["embed_total_s"]
+    candidates = _candidate_limit(fp)
     per_run = {}
     for run in runs:
         path = layout.results(run)
@@ -615,10 +670,10 @@ def _findings(layout: Layout, summary: dict, stats: dict, runs: Sequence[str]) -
         "`ai_search.max_results`. Raising the server's setting alone changes "
         "nothing for the local library.\n"
         "3. **The ranked list cannot be deeper than the candidate pool.** "
-        "`knn_candidate_limit` (50) bounds what the KNN leg retrieves, so a "
-        "`max_results` above it silently returns fewer tracks than asked "
-        "for. The two settings want to move together, or the second wants to "
-        "be derived from the first.\n"
+        f"`knn_candidate_limit` ({candidates}) bounds what the KNN leg "
+        "retrieves, so a `max_results` above it silently returns fewer "
+        "tracks than asked for. The two settings want to move together, or "
+        "the second wants to be derived from the first.\n"
         "4. **The per-call budget can outlive the call it cancelled.** A "
         "query that overruns the server's 3 s budget is cancelled at the "
         "`await`, but the executor thread stays blocked on the searcher's "
@@ -628,8 +683,9 @@ def _findings(layout: Layout, summary: dict, stats: dict, runs: Sequence[str]) -
         "earlier query's tracks. This run checks for exactly that (the "
         f"integrity table above). Per run — {counts}.\n"
         f"5. **Embedding is inference-bound, one fragment at a time.** "
-        f"{infer_share:.0f}% of a track's embedding is ONNX inference and "
-        f"only {100.0 * timings['embed_decode_s'] / timings['embed_total_s']:.0f}% "
+        f"{_share(timings['embed_infer_s'], embed_total)}% of a track's "
+        "embedding is ONNX inference and only "
+        f"{_share(timings['embed_decode_s'], embed_total)}% "
         "is decoding. The encoder is run once per 10 s fragment, so a track "
         "costs three separate single-sample sessions; batching a track's "
         "fragments into one call is the obvious thing to measure next. On a "
@@ -638,14 +694,20 @@ def _findings(layout: Layout, summary: dict, stats: dict, runs: Sequence[str]) -
         "for, the win has to come out of the tower rather than out of the "
         "call count.\n"
         "6. **Mood fusion, as configured, only costs on this kind of query.** "
-        "It leaves the top ten where it was, takes several points off R@50 by "
-        "unioning its own candidates into a list capped at 50, and doubles "
-        "p95 latency. The ablation section says why that is not the same as "
-        "\"turn it off\": these captions describe recordings, and the mood "
-        "axis exists for the queries that do not. Measuring it needs mood "
-        "queries with mood ground truth, which this dataset does not "
-        "have.\n"
+        "It leaves the top ten where it was, takes points off "
+        f"R@{depth} by unioning its own candidates into a list capped at "
+        f"{depth}, and costs latency — the ablation section above has the "
+        "sizes, and says why that is not the same as \"turn it off\": these "
+        "captions describe recordings, and the mood axis exists for the "
+        "queries that do not. Measuring it needs mood queries with mood "
+        "ground truth, which the captions alone do not carry.\n"
     )
+
+
+def _share(part: float, whole: float) -> str:
+    """A percentage of a total the run may not have measured: a resumed run
+    embeds nothing, so every one of these totals can be zero."""
+    return f"{100.0 * part / whole:.0f}" if whole else "—"
 
 
 # ---------------------------------------------------------------------------
@@ -660,6 +722,10 @@ def write_mood(layout: Layout, runs: Sequence[str]) -> Path:
 
     data = json.loads((layout.out / "mood_metrics.json").read_text())
     present = [run for run in runs if run in data]
+    if not present:
+        raise FileNotFoundError(
+            f"{layout.out / 'mood_metrics.json'} holds none of {list(runs)}"
+        )
     families = ["affective", "compound", "contextual"]
     out = ["# Mood retrieval on MTG-Jamendo tags\n"]
     out.append(
@@ -733,7 +799,7 @@ def _mood_verdict(data: dict, present: Sequence[str], families: Sequence[str]) -
 
 
 def _mood_spread(data: dict, present: Sequence[str]) -> str:
-    """Where the mean came from. A family average over sixteen queries can be
+    """Where the mean came from. A family average over a dozen queries can be
     one query moving a long way, and that is a different claim."""
     if not {"tags_fusion", "tags_clap"} <= set(present):
         return ""
@@ -752,6 +818,7 @@ def _mood_spread(data: dict, present: Sequence[str]) -> str:
         if fusion[q]["p_at_10"] == 0 and clap[q]["p_at_10"] == 0
     ]
     biggest = max(deltas, key=deltas.get) if deltas else ""
+    affective = sum(1 for row in fusion.values() if row["family"] == "affective")
     return (
         "## What this run can and cannot say\n\n"
         f"Of {len(deltas)} queries, fusion improved P@10 on {len(better)}, "
@@ -764,10 +831,11 @@ def _mood_spread(data: dict, present: Sequence[str]) -> str:
         f"The family means are therefore carried by a few queries: the "
         f"largest single move is `{biggest}`, "
         f"{clap[biggest]['p_at_10']:.2f} → {fusion[biggest]['p_at_10']:.2f}. "
-        "With sixteen affective queries over 352 recordings, this run says "
-        "the direction is real and the mechanism works — it does not measure "
-        "the size of the effect. The full MTG-Jamendo mood/theme subset "
-        "(18,486 tracks, 56 tags) is what would.\n"
+        f"With {affective} affective quer{'y' if affective == 1 else 'ies'} "
+        f"over {data['judged_tracks']} recordings, this run says the "
+        "direction is real and the mechanism works — it does not measure the "
+        "size of the effect. The full MTG-Jamendo mood/theme subset (18,486 "
+        "tracks, 56 tags) is what would.\n"
     )
 
 
@@ -794,6 +862,8 @@ def _mood_per_query(data: dict, present: Sequence[str]) -> str:
 
 
 def _mood_method(data: dict, present: Sequence[str]) -> str:
+    support = [row["support"] for row in data[present[0]]["per_query"]]
+    spread = f"{min(support)}-{max(support)}" if support else "—"
     return (
         "## How this was measured\n\n"
         "- **Ground truth**: the MTG-Jamendo tag row for each recording, "
@@ -819,8 +889,9 @@ def _mood_method(data: dict, present: Sequence[str]) -> str:
         "apart from the affective tags, because fusion has no reason to help "
         "on them and averaging the two would hide whether it helped at all.\n\n"
         "### Caveats\n\n"
-        "- **The corpus is small.** 352 judged recordings and 10-45 relevant "
-        "tracks per query: enough to rank configurations against each other, "
+        f"- **The corpus is small.** {data['judged_tracks']} judged "
+        f"recordings and {spread} relevant tracks per query: enough to rank "
+        "configurations against each other, "
         "not enough to publish an absolute number. The full MTG-Jamendo "
         "mood/theme subset is 18,486 tracks and 56 tags, and is what this "
         "harness should be pointed at next.\n"

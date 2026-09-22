@@ -163,7 +163,7 @@ def build_queries(
             continue
         queries.append(
             TagQuery(
-                query_id=f"compound:{mood}+{other}",
+                query_id=f"compound:{mood}+{category}:{other}",
                 text=COMPOUND.format(mood=mood, other=other),
                 family="compound",
                 relevant=_relevant(

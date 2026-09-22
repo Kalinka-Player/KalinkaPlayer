@@ -108,8 +108,32 @@ def test_every_symbol_the_report_lists_is_actually_patched():
         unwrapped = [name for name, func in wrapped.items() if not hasattr(func, "__wrapped__")]
         assert not unwrapped
     finally:
-        sys.meta_path[:] = [
-            finder
-            for finder in sys.meta_path
-            if not isinstance(finder, bench_timing._PatchingFinder)
-        ]
+        bench_timing.uninstall()
+
+
+def test_uninstalling_puts_the_pipeline_back():
+    pytest.importorskip("kalinka_plugin_localfiles")
+    from kalinka_plugin_localfiles.searcher import searcher
+
+    original = searcher.SearchWorker._do_search
+    bench_timing.install()
+    try:
+        assert searcher.SearchWorker._do_search is not original
+    finally:
+        bench_timing.uninstall()
+    assert searcher.SearchWorker._do_search is original
+
+
+def test_installing_twice_does_not_wrap_anything_twice():
+    """A second install over a module already patched would log every call
+    twice and double every bucket the report adds up."""
+    pytest.importorskip("kalinka_plugin_localfiles")
+    from kalinka_plugin_localfiles.searcher import searcher
+
+    bench_timing.install()
+    try:
+        wrapped = searcher.SearchWorker._do_search
+        bench_timing.install()
+        assert searcher.SearchWorker._do_search is wrapped
+    finally:
+        bench_timing.uninstall()
