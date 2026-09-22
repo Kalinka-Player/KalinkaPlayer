@@ -78,20 +78,47 @@ class TestDrivesOnThisMachine:
         assert mount_point not in _offered()
 
     @pytest.mark.parametrize("mount_point", ["/etc", "/home", "/var/log/kalinka"])
-    def test_the_volume_the_system_is_on_is_not_offered_under_any_name(
+    def test_a_bind_mount_of_the_system_is_not_offered_under_any_name(
         self, mount_point
     ):
         """systemd gives a sandboxed service bind mounts of the directories
-        it may write to, each carrying the source of the disk under `/`. The
-        device is what tells them apart from a drive."""
+        it may write to, each carrying the source of the disk it came off."""
         assert mount_point not in _offered()
+
+    def test_a_service_directory_bound_off_its_own_partition_is_not_offered(self):
+        """The disk under it need not be the one `/` is on: /var is often a
+        partition of its own, and the state directory is bound off that."""
+        own_var = "\n".join(
+            [
+                "25 1 8:2 / / rw - ext4 /dev/sda2 rw",
+                "30 25 8:3 / /var rw - ext4 /dev/sda3 rw",
+                "31 25 8:3 /lib/kalinka /var/lib/kalinka rw - ext4 /dev/sda3 rw",
+                "32 25 8:1 / /media/usb0 rw - vfat /dev/sdb1 rw",
+            ]
+        )
+        assert "/var/lib/kalinka" not in _offered(own_var)
+        assert "/media/usb0" in _offered(own_var)
+
+    def test_a_subvolume_mounted_in_its_own_right_is_still_offered(self):
+        """On btrfs every subvolume shares one device, so sharing a device
+        with `/` cannot be what disqualifies a mount: what does is being a
+        view of a subtree that is already mounted elsewhere."""
+        subvolumes = "\n".join(
+            [
+                "25 1 0:37 /root / rw - btrfs /dev/sda2 rw",
+                "26 25 0:37 /music /media/music rw - btrfs /dev/sda2 rw",
+                "27 25 0:37 /music/live /srv/bound rw - btrfs /dev/sda2 rw",
+            ]
+        )
+        assert "/media/music" in _offered(subvolumes)
+        assert "/srv/bound" not in _offered(subvolumes)
 
     def test_a_mount_point_with_a_space_in_it_is_offered_as_it_reads(self):
         assert "/run/media/envel/MUSIC DISK" in _offered()
 
     def test_the_same_point_mounted_over_is_offered_once(self):
         doubled = MOUNTINFO + (
-            "34 25 8:33 / /media/usb0 rw,relatime shared:9 - ext4 /dev/sdd1 rw\n"
+            "37 25 8:33 / /media/usb0 rw,relatime shared:9 - ext4 /dev/sdd1 rw\n"
         )
         assert list(_offered(doubled)).count("/media/usb0") == 1
 

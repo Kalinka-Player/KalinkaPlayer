@@ -39,7 +39,13 @@ def _mounts():
 def test_list_mounts_parses_type_source_and_escapes():
     mounts = _mounts()
     assert (
-        Mount(mount_point="/", fs_type="ext4", source="/dev/sda1", device="0:32")
+        Mount(
+            mount_point="/",
+            fs_type="ext4",
+            source="/dev/sda1",
+            device="0:32",
+            fs_root="/",
+        )
         in mounts
     )
     assert (
@@ -48,6 +54,7 @@ def test_list_mounts_parses_type_source_and_escapes():
             fs_type="nfs4",
             source="192.168.1.5:/export",
             device="0:44",
+            fs_root="/",
         )
         in mounts
     )

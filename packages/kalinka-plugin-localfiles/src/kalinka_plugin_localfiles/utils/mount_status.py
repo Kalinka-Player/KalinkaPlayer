@@ -39,15 +39,19 @@ _NETWORK_FS = {
 class Mount:
     """One mountinfo row: where a filesystem is mounted, its type and source.
 
-    @param device The kernel's ``major:minor`` for the filesystem, empty
-        where it was not read. Two rows sharing it are two views of one
-        filesystem — a bind mount and the volume it was taken from.
+    @param device The kernel's ``major:minor``. Rows sharing it are views
+        of one filesystem.
+    @param fs_root Which part of that filesystem is mounted: ``/`` for the
+        whole of it, a directory for a bind mount, a subvolume for btrfs.
+    @note Both default to empty, as they are for a Mount built by hand
+        rather than read from mountinfo.
     """
 
     mount_point: str
     fs_type: str
     source: str
     device: str = ""
+    fs_root: str = ""
 
 
 def _unescape(field: str) -> str:
@@ -88,6 +92,7 @@ def list_mounts(text: Optional[str] = None) -> list[Mount]:
                 fs_type=tail_fields[0],
                 source=_unescape(tail_fields[1]),
                 device=head_fields[2],
+                fs_root=_unescape(head_fields[3]),
             )
         )
     return mounts

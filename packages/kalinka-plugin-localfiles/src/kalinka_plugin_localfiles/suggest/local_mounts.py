@@ -23,9 +23,9 @@ _MEDIA_ROOTS = ("/media", "/mnt", "/run/media")
 #: device-mapper nodes that back containers and snaps.
 _DISK_SOURCES = ("/dev/sd", "/dev/nvme", "/dev/mmcblk", "/dev/hd")
 
-#: This machine's own filesystems, by path. The volume ``/`` is on is
-#: recognised by its device instead, so that it is still recognised where a
-#: sandboxed service sees it bind-mounted under another name.
+#: Paths that are the operating system's own, with everything below them.
+#: ``/`` is not among them: it is system property itself, but what is
+#: mounted below it is exactly what this module is looking for.
 _SYSTEM_MOUNTS = ("/boot",)
 
 
@@ -36,24 +36,31 @@ def _under_media_root(mount_point: str) -> bool:
 
 
 def _is_system_mount(mount_point: str) -> bool:
-    return mount_point == "/" or any(
+    return mount_point == os.sep or any(
         mount_point == m or mount_point.startswith(m + os.sep)
         for m in _SYSTEM_MOUNTS
     )
 
 
-def _system_volume(mounts: list[Mount]) -> str:
-    """The device ``/`` is on, empty where mountinfo did not say.
+def _is_within(path: str, ancestor: str) -> bool:
+    return path != ancestor and (
+        ancestor == os.sep or path.startswith(ancestor.rstrip(os.sep) + os.sep)
+    )
 
-    systemd hands a sandboxed service its own mount namespace, in which
-    ``/etc``, ``/usr``, ``/home`` and the service's state directories are
-    bind mounts of that one volume — each carrying the source of the disk
-    underneath, and so indistinguishable from a drive by source alone.
+
+def _is_bind_mount(mount: Mount, mounts: list[Mount]) -> bool:
+    """Whether this is a second way in to a subtree already mounted.
+
+    systemd hands a sandboxed service a namespace full of them — ``/etc``,
+    ``/usr``, its own state directories — each carrying the source of the
+    disk it came off, and so indistinguishable from a drive by source
+    alone. A drive is nobody's subtree, and neither is a btrfs subvolume
+    mounted in its own right.
     """
-    for mount in reversed(mounts):
-        if mount.mount_point == "/":
-            return mount.device
-    return ""
+    return any(
+        other.device == mount.device and _is_within(mount.fs_root, other.fs_root)
+        for other in mounts
+    )
 
 
 def _has_real_backing(mount: Mount) -> bool:
@@ -67,10 +74,10 @@ def _has_real_backing(mount: Mount) -> bool:
     )
 
 
-def _is_offerable(mount: Mount, system_volume: str) -> bool:
-    if mount.device and mount.device == system_volume:
-        return False
+def _is_offerable(mount: Mount, mounts: list[Mount]) -> bool:
     if _is_system_mount(mount.mount_point):
+        return False
+    if _is_bind_mount(mount, mounts):
         return False
     if _under_media_root(mount.mount_point):
         return _has_real_backing(mount)
@@ -92,10 +99,9 @@ def mount_options(mounts: list[Mount] | None = None) -> list[ConfigOption]:
     """
     if mounts is None:
         mounts = list_mounts()
-    system_volume = _system_volume(mounts)
     described: dict[str, str] = {}
     for mount in mounts:
-        if _is_offerable(mount, system_volume):
+        if _is_offerable(mount, mounts):
             described[mount.mount_point] = _describe(mount)
     return [
         ConfigOption(value=point, label=point, description=description)
