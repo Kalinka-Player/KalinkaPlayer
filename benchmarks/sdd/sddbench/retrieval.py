@@ -14,16 +14,20 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Iterator, Optional
 
 import httpx
 
 from . import logparse
+from .clock import Clock
 from .dataset import Track, kalinka_track_id
 from .instance import KalinkaInstance
 from .paths import Layout
 
 MISS = 10**6  # rank standing for "not in the returned list at all"
+#: The server writes its log from a queue of its own, so the tail of a run is
+#: not on disk the moment the last answer arrives.
+LOG_DRAIN_S = 3.0
 
 
 @dataclass(frozen=True)
@@ -151,6 +155,43 @@ def run(
     return answers
 
 
+@dataclass(frozen=True)
+class Measured:
+    """One run's answers, the server log it produced, and its server-side
+    split — everything a suite needs before it scores its own way."""
+
+    answers: list[Answer]
+    log_slice: Path
+    timings: list[QueryTiming]
+
+
+def measure(
+    instance: KalinkaInstance,
+    clock: Clock,
+    queries: Iterable[Query],
+    tracks: dict[str, Track],
+    layout: Layout,
+    run_name: str,
+    log=print,
+) -> Measured:
+    """Ask a run's queries and cut its own slice out of the server log.
+
+    Both suites go through here so that neither can drift from the other on
+    the part that is easy to get subtly wrong: where the slice starts, and
+    waiting for the log queue to drain before it is read back.
+    """
+    queries = list(queries)
+    mark = instance.log_path.stat().st_size
+    with clock.span(f"retrieval_{run_name}"):
+        answers = run(instance, queries, tracks, layout, run_name, log=log)
+    time.sleep(LOG_DRAIN_S)
+    slice_path = layout.server_log(run_name)
+    with instance.log_path.open("rb") as handle:
+        handle.seek(mark)
+        slice_path.write_bytes(handle.read())
+    return Measured(answers, slice_path, query_timings(slice_path, queries))
+
+
 def _digest(text: str) -> str:
     """How a query is named in the log: the same short hash the searcher
     wrapper writes, so a line can be tied to the query that caused it."""
@@ -185,14 +226,8 @@ def attach_scores(
             per_digest.setdefault(entry.fields.get("q", ""), []).append(pending)
             pending = {}
 
-    used: dict[str, int] = {}
     matched = 0
-    for answer, query in zip(answers, queries):
-        digest = _digest(query.text)
-        seen = used.get(digest, 0)
-        options = per_digest.get(digest, [])
-        distances = options[seen] if seen < len(options) else {}
-        used[digest] = seen + 1
+    for answer, distances in zip(answers, _aligned(per_digest, queries)):
         if distances:
             matched += 1
         answer.scores = [
@@ -211,6 +246,21 @@ def attach_scores(
         # query's hits — worth failing the run over, not rounding away.
         "share_with_clap_distance": round(scored / returned, 4) if returned else 0.0,
     }
+
+
+def _aligned(
+    per_digest: dict[str, list[dict[str, float]]], queries: list[Query]
+) -> Iterator[dict[str, float]]:
+    """Each query's own log lines: the nth occurrence of a digest belongs to
+    the nth query with that text, and a query the log has nothing for gets
+    nothing rather than another query's numbers."""
+    used: dict[str, int] = {}
+    for query in queries:
+        digest = _digest(query.text)
+        seen = used.get(digest, 0)
+        used[digest] = seen + 1
+        options = per_digest.get(digest, [])
+        yield options[seen] if seen < len(options) else {}
 
 
 def _kalinka_of(track_id: str, tracks: dict[str, Track], layout: Layout) -> str:
@@ -249,14 +299,8 @@ def query_timings(log_path: Path, queries: list[Query]) -> list[QueryTiming]:
             per_digest.setdefault(entry.fields.get("q", ""), []).append(current)
             current = {}
 
-    used: dict[str, int] = {}
     timings: list[QueryTiming] = []
-    for query in queries:
-        digest = _digest(query.text)
-        seen = used.get(digest, 0)
-        options = per_digest.get(digest, [])
-        found = options[seen] if seen < len(options) else {}
-        used[digest] = seen + 1
+    for query, found in zip(queries, _aligned(per_digest, queries)):
         timings.append(
             QueryTiming(
                 query_id=query.query_id,
@@ -272,7 +316,7 @@ def query_timings(log_path: Path, queries: list[Query]) -> list[QueryTiming]:
 
 def write_results(
     answers: list[Answer], timings: list[QueryTiming], layout: Layout,
-    run_name: str, id_column: str = "caption_id",
+    run_name: str, depth: int, id_column: str = "caption_id",
 ) -> None:
     with layout.results(run_name).open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
@@ -285,7 +329,7 @@ def write_results(
             writer.writerow([
                 answer.query_id,
                 answer.target_track_id,
-                answer.rank if answer.rank != MISS else ">50",
+                answer.rank if answer.rank != MISS else f">{depth}",
                 len(answer.ranked),
                 round(answer.latency_ms, 2),
                 round(timing.server_total_s, 4),

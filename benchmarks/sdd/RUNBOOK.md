@@ -27,7 +27,8 @@ That is the whole thing: download, prepare, index, query twice, judge, report. T
 `make bench-sdd` forwards `ARGS` to `benchmarks/sdd/run.py`, which can equally be run directly with the venv's interpreter. Useful variations:
 
 ```
-# stages are resumable; earlier artifacts are reused
+# stages are resumable; earlier artifacts are reused. --top-k names the metrics
+# and the result rows, so a resumed run repeats the value it was retrieved at
 python benchmarks/sdd/run.py --out tmp/sdd_bench/run1 --stages retrieve score report
 
 # one ranking configuration only
@@ -57,7 +58,7 @@ ssh <device> '/opt/kalinka/venv/bin/python /tmp/device_probe.py \
 
 Any track will do; the reference run used one of the benchmark's own. Several locations can be given at once (`usb=/mnt/usb/Probe sd=/home/pi/probe`) and are visited round-robin rather than one after another, which is the only way to tell a slow disk apart from a hot SoC. `--rounds` is the axis that matters — one round cannot show thermal drift — and `--tracks` caps how many files per location. A run of 8 rounds over 3 locations takes about 8 minutes on a Pi 4.
 
-`--threads 1,2,3,4` adds a sweep of the audio session's `intra_op_num_threads` after the main measurement, which is the one tuning knob the split leaves open. It reloads the encoder once per value and reuses `--rounds`, so keep that small for a sweep. The values are visited in order on a board that is already warm, so one sweep confounds the setting with the heat: run it twice, ascending and descending, and take the mean of the two, which is what the reference measurement did. Start it on a cooled board — the probe prints the die temperature and the firmware's throttling word before and after the run, and on a Pi those two lines are what tell you whether you measured the code or the heatsink.
+`--threads 1,2,3,4` adds a sweep of the audio session's `intra_op_num_threads` after the main measurement, which is the one tuning knob the split leaves open. It reloads the encoder once per value and reuses `--rounds`, so keep that small for a sweep. The shipped value is measured whether or not it is in the list, because the ratio column is against it. The values are visited in order on a board that is already warm, so one sweep confounds the setting with the heat: run it twice, ascending and descending, and take the mean of the two, which is what the reference measurement did. Start it on a cooled board — the probe prints the die temperature and the firmware's throttling word before and after the run, and on a Pi those two lines are what tell you whether you measured the code or the heatsink.
 
 If the device has no model directory yet, fetch just the audio tower into a throwaway one, and delete it afterwards along with the tracks:
 
@@ -140,7 +141,7 @@ Suspicious, in the order worth checking:
 
 **A new mood vocabulary or query phrasing.** `sddbench/tags.py` holds the support floors, the affective/contextual split and the two phrasings. The query set follows from the corpus and those floors — it is not a hand-picked list, so pointing the suite at more audio widens it automatically.
 
-**A new ranking configuration.** Add a name to `RUNS` in `run.py` and a title in `report.RUN_TITLES`, and set whatever configuration it needs through `/server/config` the way `instance.set_mood` does. Anything reachable as a setting can be ablated without re-indexing; anything that changes the vectors needs a fresh `<out>` directory.
+**A new ranking configuration.** `RUNS` in `run.py` maps each run name to the valence/arousal setting it is asked under, and `report.RUN_TITLES` gives it a title; `instance.MoodAblation` applies the setting a run is named for and restarts only when it changes, so runs can be given in any order. Anything reachable as a setting can be ablated without re-indexing; anything that changes the vectors needs a fresh `<out>` directory.
 
 ## Instrumentation
 

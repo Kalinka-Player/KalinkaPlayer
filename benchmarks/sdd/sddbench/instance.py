@@ -14,8 +14,9 @@ import os
 import socket
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
+from .clock import Clock
 from .paths import REPO_ROOT, Layout
 
 sys.path.insert(0, str(REPO_ROOT / "tests" / "system"))
@@ -122,6 +123,36 @@ def set_mood(instance: KalinkaInstance, enabled: bool) -> None:
     instance.restart()
 
 
+class MoodAblation:
+    """Puts the instance into the ranking configuration a run is named for.
+
+    It restarts only when the setting actually changes, and it knows what the
+    instance was built with — so the order the runs are asked in cannot
+    decide what a run measured. Each restart is timed under a span of its
+    own, because a run list may ask for more than one.
+    """
+
+    def __init__(
+        self,
+        instance: KalinkaInstance,
+        clock: Clock,
+        wanted: Mapping[str, bool],
+        applied: bool = True,
+    ):
+        self._instance = instance
+        self._clock = clock
+        self._wanted = wanted
+        self._applied = applied
+
+    def prepare(self, run_name: str) -> None:
+        enabled = self._wanted[run_name]
+        if enabled == self._applied:
+            return
+        with self._clock.span(f"ablation_{run_name}"):
+            set_mood(self._instance, enabled)
+        self._applied = enabled
+
+
 def stage(instance: KalinkaInstance, name: str) -> dict | None:
     return instance.indexer_status().get(name)
 
@@ -145,6 +176,7 @@ def describe(stage_status: dict | None) -> str:
 
 __all__ = [
     "KalinkaInstance",
+    "MoodAblation",
     "build",
     "describe",
     "free_port",

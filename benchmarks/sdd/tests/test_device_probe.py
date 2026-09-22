@@ -251,3 +251,35 @@ def test_a_swept_thread_count_reaches_the_session(track: Path):
 
     with probe.Probe(Path("/models"), clap=fake_clap()) as measured:
         assert measured.intra_op == 2
+
+
+def test_the_sweep_measures_the_shipped_thread_count_even_when_unasked(
+    monkeypatch, capsys
+):
+    """The ratio column reads "vs shipped", so the shipped value has to be
+    one of the measurements — on a board whose shipped count is not in the
+    list the operator typed, a ratio against the first value would invert
+    the conclusion."""
+    seen: list[int] = []
+
+    class _Stub:
+        def __init__(self, model_dir, intra_op=None):
+            seen.append(intra_op)
+            self._intra_op = intra_op
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def embed(self, track, cache, number, label):
+            return types.SimpleNamespace(total_s=float(self._intra_op))
+
+    monkeypatch.setattr(probe, "Probe", _Stub)
+    probe.sweep(Path("/models"), Path("probe.mp3"), [1, 2], shipped=6, rounds=1)
+
+    assert seen == [1, 2, 6]
+    printed = capsys.readouterr().out
+    assert "0.17x" in printed  # 1 thread against the shipped 6, not against itself
+    assert "1.00x" in printed and "(shipped)" in printed

@@ -13,18 +13,26 @@ from __future__ import annotations
 import math
 import statistics
 from dataclasses import dataclass
-from typing import Collection, Iterable, Optional, Sequence
+from typing import Collection, Iterable, Mapping, Optional, Sequence
 
 from .retrieval import MISS, Answer
 
-STRICT_KS = (1, 5, 10, 50)
+DEFAULT_DEPTH = 50
+SHALLOW_KS = (1, 5, 10)
 SOFT_THRESHOLDS = (0.5, 0.6, 0.7)
 NDCG_K = 10
+
+
+def recall_ks(depth: int) -> tuple[int, ...]:
+    """The cut-offs a list this deep can be scored at. The deepest one is the
+    depth itself, so a shorter list is never reported as an R@50."""
+    return (*(k for k in SHALLOW_KS if k < depth), depth)
 
 
 @dataclass
 class Strict:
     n: int
+    depth: int
     recall: dict[int, float]
     mrr: float
     median_rank: Optional[float]
@@ -35,22 +43,25 @@ class Strict:
     def as_dict(self) -> dict:
         return {
             "queries": self.n,
+            "depth": self.depth,
             "recall_at": {str(k): round(v, 4) for k, v in self.recall.items()},
             "mrr": round(self.mrr, 4),
             "median_rank": self.median_rank,
             "median_rank_of_found": self.median_rank_hits,
-            "found_in_top_50": self.found,
+            "found_in_list": self.found,
             "empty_answers": self.empty,
         }
 
 
-def strict(answers: Sequence[Answer], ks: Iterable[int] = STRICT_KS) -> Strict:
+def strict(answers: Sequence[Answer], depth: int = DEFAULT_DEPTH) -> Strict:
+    ks = recall_ks(depth)
     ranks = [answer.rank for answer in answers]
     if not ranks:
-        return Strict(0, {k: 0.0 for k in ks}, 0.0, None, None, 0, 0)
+        return Strict(0, depth, {k: 0.0 for k in ks}, 0.0, None, None, 0, 0)
     found = [rank for rank in ranks if rank != MISS]
     return Strict(
         n=len(ranks),
+        depth=depth,
         recall={k: sum(1 for r in ranks if r <= k) / len(ranks) for k in ks},
         mrr=sum(0.0 if r == MISS else 1.0 / r for r in ranks) / len(ranks),
         median_rank=statistics.median(ranks) if ranks else None,
@@ -60,15 +71,17 @@ def strict(answers: Sequence[Answer], ks: Iterable[int] = STRICT_KS) -> Strict:
     )
 
 
-def random_baseline(n_tracks: int, ks: Iterable[int] = STRICT_KS) -> dict:
+def random_baseline(n_tracks: int, depth: int = DEFAULT_DEPTH) -> dict:
     """A shuffled library's expectation: the target is one of ``n_tracks``,
     so it lands in the top k with probability k/n, and the MRR is the mean of
-    1/rank over a uniform rank."""
-    ks = list(ks)
+    1/rank over a uniform rank down to the depth the run asked for."""
     return {
-        "recall_at": {str(k): round(min(1.0, k / n_tracks), 4) for k in ks},
-        "mrr_top_50": round(
-            sum(1.0 / rank for rank in range(1, 51)) / n_tracks, 4
+        "depth": depth,
+        "recall_at": {
+            str(k): round(min(1.0, k / n_tracks), 4) for k in recall_ks(depth)
+        },
+        "mrr": round(
+            sum(1.0 / rank for rank in range(1, depth + 1)) / n_tracks, 4
         ),
     }
 
@@ -138,32 +151,41 @@ def graded(
 class Relevance:
     """caption -> track relevance, as the max cosine over that track's captions.
 
-    Holds one row per query caption over all tracks, so ``all_for`` can hand
-    the ideal ranking to nDCG without recomputing anything.
+    One row is derived at a time and the last one is kept, which is all the
+    scoring ever asks for: a caption is scored, then left. Holding the whole
+    caption-by-track table instead would cost an order of magnitude more
+    memory for nothing.
     """
 
-    def __init__(self, rows: dict[str, dict[str, float]]):
-        self._rows = rows
+    def __init__(
+        self,
+        similarity: Mapping[str, Mapping[str, float]],
+        captions_by_track: Mapping[str, Sequence[str]],
+    ):
+        self._similarity = similarity
+        self._captions_by_track = captions_by_track
+        self._cached: tuple[Optional[str], dict[str, float]] = (None, {})
 
-    @classmethod
-    def from_similarity(
-        cls,
-        similarity: dict[str, dict[str, float]],
-        captions_by_track: dict[str, list[str]],
-    ) -> "Relevance":
-        rows: dict[str, dict[str, float]] = {}
-        for caption_id, per_caption in similarity.items():
-            rows[caption_id] = {
-                track: max(per_caption.get(other, 0.0) for other in others)
-                for track, others in captions_by_track.items()
-            }
-        return cls(rows)
+    def _row(self, caption_id: str) -> dict[str, float]:
+        if self._cached[0] != caption_id:
+            per_caption = self._similarity.get(caption_id) or {}
+            self._cached = (
+                caption_id,
+                {
+                    track: max(
+                        (per_caption.get(other, 0.0) for other in others),
+                        default=0.0,
+                    )
+                    for track, others in self._captions_by_track.items()
+                },
+            )
+        return self._cached[1]
 
     def of(self, caption_id: str, track_id: str) -> float:
-        return self._rows.get(caption_id, {}).get(track_id, 0.0)
+        return self._row(caption_id).get(track_id, 0.0)
 
     def all_for(self, caption_id: str) -> list[float]:
-        return list(self._rows.get(caption_id, {}).values())
+        return list(self._row(caption_id).values())
 
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,8 @@ fingerprint rather than a silent shift.
 from __future__ import annotations
 
 import csv
+from array import array
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -87,9 +89,44 @@ class Judge:
         return np.concatenate(vectors, axis=0) if vectors else np.zeros((0, 768))
 
 
-def similarity_matrix(
-    judge: Judge, caption_ids: Sequence[str], texts: Sequence[str]
-):
+class Similarity(Mapping):
+    """Every caption's cosine against every caption, addressed by caption id.
+
+    A row is built when it is asked for rather than all of them up front: the
+    matrix is n² values and the scoring reads one row at a time.
+    """
+
+    def __init__(
+        self, caption_ids: Sequence[str], rows: Mapping[str, Sequence[float]]
+    ):
+        self._caption_ids = list(caption_ids)
+        self._rows = rows
+
+    def __getitem__(self, caption_id: str) -> dict[str, float]:
+        return dict(zip(self._caption_ids, self._rows[caption_id]))
+
+    def __iter__(self):
+        return iter(self._rows)
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+
+def similarity(
+    model_dir: Path, caption_ids: Sequence[str], texts: Sequence[str], cache: Path
+) -> Similarity:
+    """The caption-by-caption cosine matrix, always read back from the cache.
+
+    Including on the run that computed it: the cache holds four decimals, and
+    a run that scored the full-precision matrix would publish numbers a
+    resumed run cannot reproduce.
+    """
+    if not cache.exists():
+        write_matrix(similarity_matrix(Judge(model_dir), texts), caption_ids, cache)
+    return read_matrix(cache)
+
+
+def similarity_matrix(judge: Judge, texts: Sequence[str]):
     """Cosine similarity of every caption against every caption."""
     vectors = judge.encode(texts)
     return vectors @ vectors.T
@@ -103,14 +140,15 @@ def write_matrix(matrix, caption_ids: Sequence[str], path: Path) -> None:
             writer.writerow([row_id, *(f"{value:.4f}" for value in row)])
 
 
-def read_matrix(path: Path) -> dict[str, dict[str, float]]:
+def read_matrix(path: Path) -> Similarity:
     with path.open(newline="", encoding="utf-8") as handle:
         reader = csv.reader(handle)
-        header = next(reader)[1:]
-        return {
-            row[0]: {other: float(value) for other, value in zip(header, row[1:])}
+        caption_ids = next(reader)[1:]
+        rows = {
+            row[0]: array("f", (float(value) for value in row[1:]))
             for row in reader
         }
+    return Similarity(caption_ids, rows)
 
 
 def fingerprint(model_dir: Path) -> dict:

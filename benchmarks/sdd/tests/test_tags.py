@@ -58,6 +58,24 @@ def test_a_compound_query_needs_both_tags(tmp_path):
     assert compound["sad piano"] == {"3"}
 
 
+def test_a_compound_query_id_names_the_category_it_came_from(tmp_path):
+    """An instrument and a genre can share a name; two queries with the same
+    id would score one of them against the other's relevance set."""
+    path = tmp_path / tags.TAG_FILE
+    path.write_text(
+        "track_1\ta\tb\t01/1.mp3\t120.0\tmood/theme---happy"
+        "\tinstrument---jazz\tgenre---jazz\n"
+        "track_2\ta\tb\t02/2.mp3\t120.0\tmood/theme---happy\tgenre---jazz\n"
+    )
+    rows = tags.load_tags(path)
+    built = tags.build_queries(_tracks(), rows, min_support=2, min_compound=1)
+    compound = [q for q in built if q.family == "compound"]
+    assert len({q.query_id for q in compound}) == len(compound)
+    by_id = {q.query_id: q for q in compound}
+    assert by_id["compound:happy+instrument:jazz"].relevant == {"1"}
+    assert by_id["compound:happy+genre:jazz"].relevant == {"1", "2"}
+
+
 def test_contextual_tags_are_separated_from_affective():
     assert "commercial" in tags.CONTEXTUAL
     assert "documentary" in tags.CONTEXTUAL

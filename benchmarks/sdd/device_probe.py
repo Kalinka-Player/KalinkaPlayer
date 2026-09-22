@@ -472,7 +472,12 @@ def sweep(model_dir: Path, track: Path, values: Sequence[int], shipped: int, rou
     One model load per value, so the values are visited in order on a board
     that is warming up — read the shape, not the last digit, and read a gain
     at a higher thread count as a floor rather than a ceiling.
+
+    The shipped setting is always one of them, whether or not it was asked
+    for: the column is a ratio against it, and a ratio against some other
+    value under that heading would read as the opposite of what it is.
     """
+    values = list(values) if shipped in values else [*values, shipped]
     print(f"\nintra_op_num_threads sweep, warm cache, {track.name[:12]}")
     measured: dict[int, float] = {}
     for value in values:
@@ -481,7 +486,7 @@ def sweep(model_dir: Path, track: Path, values: Sequence[int], shipped: int, rou
                 probe.embed(track, "warm", number, f"intra{value}").total_s
                 for number in range(1, rounds + 1)
             )
-    baseline = measured.get(shipped) or next(iter(measured.values()))
+    baseline = measured[shipped]
     print(f"{'threads':>7} {'median':>9} {'vs shipped':>11}")
     for value, median in measured.items():
         print(

@@ -129,7 +129,9 @@ def _outcome(instance: KalinkaInstance, layout: Layout, status: dict) -> dict:
         "indexed": len(indexed_names & expected_names),
         "embedded": len(embedded & expected_names),
         "missing_from_index": sorted(expected_names - indexed_names),
-        "indexed_but_not_embedded": sorted(expected_names - embedded),
+        "indexed_but_not_embedded": sorted(
+            (indexed_names & expected_names) - embedded
+        ),
         "clap_audio_failed": status.get("clap_audio", {}).get("failed", 0),
     }
 

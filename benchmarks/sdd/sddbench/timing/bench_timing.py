@@ -105,9 +105,19 @@ def _accumulate(func, bucket: str):
 # Per-module patches
 # ---------------------------------------------------------------------------
 
+#: What each patch replaced, newest last, so it can all be put back. A wrapper
+#: installed twice would log every call twice and double every bucket, so
+#: nothing here is applied without being recorded.
+_replaced: list[tuple[object, str, object]] = []
+
+
+def _set(owner, attribute: str, value) -> None:
+    _replaced.append((owner, attribute, getattr(owner, attribute)))
+    setattr(owner, attribute, value)
+
 
 def _patch_clap_onnx(module) -> None:
-    module._read_fragment = _accumulate(module._read_fragment, "decode_s")
+    _set(module, "_read_fragment", _accumulate(module._read_fragment, "decode_s"))
 
     model = module.ClapOnnxModel
     original_embed = model.get_audio_embedding
@@ -129,9 +139,9 @@ def _patch_clap_onnx(module) -> None:
         )
         return result
 
-    model.get_audio_embedding = get_audio_embedding
-    model.get_text_embedding = _timed(model.get_text_embedding, "encode_text")
-    model.get_valence_arousal = _timed(model.get_valence_arousal, "va_head")
+    _set(model, "get_audio_embedding", get_audio_embedding)
+    _set(model, "get_text_embedding", _timed(model.get_text_embedding, "encode_text"))
+    _set(model, "get_valence_arousal", _timed(model.get_valence_arousal, "va_head"))
 
     # An ONNX session exists only once its loader has run, so the loader is
     # what wraps it. Separate buckets per tower: the text tower serves query
@@ -154,51 +164,52 @@ def _patch_clap_onnx(module) -> None:
 
             return load
 
-        setattr(model, loader_name, make(timed_loader))
+        _set(model, loader_name, make(timed_loader))
 
 
 def _patch_embedder_db(module) -> None:
     db = module.AsyncEmbedderDb
-    db.complete_clap_job = _timed(db.complete_clap_job, "db_write_embedding")
-    db.store_mood_va = _timed(
+    _set(db, "complete_clap_job", _timed(db.complete_clap_job, "db_write_embedding"))
+    _set(db, "store_mood_va", _timed(
         db.store_mood_va, "db_write_mood",
         fields=lambda result, args, kwargs: {"n": len(args[1])},
-    )
-    db.claim_batch = _timed(db.claim_batch, "db_claim_batch")
-    db.schedule_new_jobs = _timed(db.schedule_new_jobs, "db_schedule_jobs")
+    ))
+    _set(db, "claim_batch", _timed(db.claim_batch, "db_claim_batch"))
+    _set(db, "schedule_new_jobs", _timed(db.schedule_new_jobs, "db_schedule_jobs"))
 
 
 def _patch_embedder(module) -> None:
     worker = module.EmbeddingWorker
-    worker._process_clap_batch = _timed(worker._process_clap_batch, "embed_batch")
-    worker._process_va_backfill = _timed(worker._process_va_backfill, "va_backfill")
+    _set(worker, "_process_clap_batch",
+         _timed(worker._process_clap_batch, "embed_batch"))
+    _set(worker, "_process_va_backfill",
+         _timed(worker._process_va_backfill, "va_backfill"))
 
 
 def _patch_indexer(module) -> None:
     indexer = module.FileIndexer
-    indexer._audio_files_by_folder = _timed(
-        indexer._audio_files_by_folder, "scan_listing"
-    )
-    indexer._index_files = _timed(indexer._index_files, "scan_index_files")
-    indexer.cleanup_stale_tracks = _timed(
-        indexer.cleanup_stale_tracks, "scan_cleanup"
-    )
+    _set(indexer, "_audio_files_by_folder",
+         _timed(indexer._audio_files_by_folder, "scan_listing"))
+    _set(indexer, "_index_files", _timed(indexer._index_files, "scan_index_files"))
+    _set(indexer, "cleanup_stale_tracks",
+         _timed(indexer.cleanup_stale_tracks, "scan_cleanup"))
 
 
 def _patch_searcher(module) -> None:
     worker = module.SearchWorker
-    worker._encode_query_blob = _timed(worker._encode_query_blob, "query_encode")
-    worker._knn_leg = _timed(
+    _set(worker, "_encode_query_blob",
+         _timed(worker._encode_query_blob, "query_encode"))
+    _set(worker, "_knn_leg", _timed(
         worker._knn_leg, "query_knn",
         fields=lambda result, args, kwargs: {"hits": len(result)},
-    )
-    worker._query_to_va = _timed(worker._query_to_va, "query_mood_map")
-    worker._do_search = _timed(
+    ))
+    _set(worker, "_query_to_va", _timed(worker._query_to_va, "query_mood_map"))
+    _set(worker, "_do_search", _timed(
         worker._do_search, "query_total",
         fields=lambda result, args, kwargs: {
             "q": _tag(args[1]), "n": len(result.get("tracks", []))
         },
-    )
+    ))
 
 
 def _patch_searcher_db(module) -> None:
@@ -208,8 +219,10 @@ def _patch_searcher_db(module) -> None:
         pairs = ";".join(f"{hit['track_id']}:{hit['distance']:.6f}" for hit in result)
         return {"hits": len(result), "dist": pairs or "-"}
 
-    db.knn_search_audio = _timed(db.knn_search_audio, "knn_audio", fields=distances)
-    db.knn_search_mood = _timed(db.knn_search_mood, "knn_mood", fields=distances)
+    _set(db, "knn_search_audio",
+         _timed(db.knn_search_audio, "knn_audio", fields=distances))
+    _set(db, "knn_search_mood",
+         _timed(db.knn_search_mood, "knn_mood", fields=distances))
 
 
 def _tag(query: str) -> str:
@@ -265,6 +278,24 @@ _PATCHES = {
 # ---------------------------------------------------------------------------
 
 
+#: The modules this process has tried to patch. The finder is not that
+#: record: it can be gone while the wrappers are still installed, and
+#: patching a module twice would double every timing it reports — including
+#: a module whose patch failed halfway, which is why an attempt counts.
+_patched: set[str] = set()
+
+
+def _apply(name: str, patch, module) -> None:
+    if name in _patched:
+        return
+    _patched.add(name)
+    try:
+        patch(module)
+        logger.info("BENCH patched %s", name)
+    except Exception:
+        logger.exception("BENCH could not patch %s", name)
+
+
 class _PatchingLoader(importlib.abc.Loader):
     """Delegates to the real loader, then patches the module it produced."""
 
@@ -277,11 +308,7 @@ class _PatchingLoader(importlib.abc.Loader):
 
     def exec_module(self, module):
         self._loader.exec_module(module)
-        try:
-            self._patch(module)
-            logger.info("BENCH patched %s", module.__name__)
-        except Exception:
-            logger.exception("BENCH could not patch %s", module.__name__)
+        _apply(module.__name__, self._patch, module)
 
 
 class _PatchingFinder(importlib.abc.MetaPathFinder):
@@ -308,10 +335,24 @@ class _PatchingFinder(importlib.abc.MetaPathFinder):
 
 def install() -> None:
     """Arm the hook. Modules already imported are patched in place."""
-    if any(isinstance(finder, _PatchingFinder) for finder in sys.meta_path):
-        return
-    sys.meta_path.insert(0, _PatchingFinder(_PATCHES))
+    if not any(isinstance(finder, _PatchingFinder) for finder in sys.meta_path):
+        sys.meta_path.insert(0, _PatchingFinder(_PATCHES))
     for name, patch in _PATCHES.items():
         module = sys.modules.get(name)
         if module is not None:
-            patch(module)
+            _apply(name, patch, module)
+
+
+def uninstall() -> None:
+    """Put the pipeline back as it was: the hook goes, and so does every
+    wrapper it installed on the shipped classes. For a process that has to
+    keep running afterwards — a test suite — rather than for the benchmark,
+    which exits."""
+    sys.meta_path[:] = [
+        finder for finder in sys.meta_path
+        if not isinstance(finder, _PatchingFinder)
+    ]
+    for owner, attribute, original in reversed(_replaced):
+        setattr(owner, attribute, original)
+    _replaced.clear()
+    _patched.clear()
