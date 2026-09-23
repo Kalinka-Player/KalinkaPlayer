@@ -254,9 +254,9 @@ class SmbConfig(BaseModel):
     """How to log in to SMB shares added as ``smb://`` music folders.
 
     One account for every server, because the settings page has no editor
-    for a list of secrets; a share needing a different login names its user
-    in its own URL (``smb://user@host/share``). Leave both empty for the
-    guest access most NAS boxes offer a media share.
+    for a list of secrets, and for now a folder URL may not name its user
+    either: validation refuses ``smb://user@host/share``. Leave both empty
+    for the guest access most NAS boxes offer a media share.
     """
 
     username: str = Field(

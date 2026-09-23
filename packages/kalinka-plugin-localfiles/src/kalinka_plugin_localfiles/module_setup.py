@@ -5,7 +5,7 @@ import logging.handlers
 import multiprocessing
 import shutil
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, ClassVar, Optional
 
 from kalinka_plugin_sdk import (
@@ -185,13 +185,29 @@ def _judge_spelling(
 
     for index, folder in enumerate(folders):
         try:
-            root = str(parse(folder))
+            locator = parse(folder)
         except LocatorError as e:
             if report:
                 issues.append(
                     ConfigIssue(path="music_folders", index=index, message=str(e))
                 )
             continue
+        # A share logs in with the SMB credentials alone for now; a folder
+        # already naming its user keeps working, it just cannot be added.
+        if locator.username is not None and report:
+            issues.append(
+                ConfigIssue(
+                    path="music_folders",
+                    index=index,
+                    message=(
+                        "a user name does not belong in a folder URL; write "
+                        f"{replace(locator, username=None)} and set the user "
+                        "in the SMB credentials"
+                    ),
+                )
+            )
+            continue
+        root = str(locator)
         first = first_written_at.get(root)
         if first is not None:
             if report:

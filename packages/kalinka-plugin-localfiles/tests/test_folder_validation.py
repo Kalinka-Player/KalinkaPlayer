@@ -85,6 +85,20 @@ class TestHowAFolderIsWritten:
         ]
         assert said in issues[0].message
 
+    def test_a_user_named_in_the_url_is_refused_with_the_url_to_write(self, plugin):
+        issues = _judge(plugin, ["smb://alice@nas:4450/music"])
+
+        assert [(i.index, i.severity) for i in issues] == [(0, IssueSeverity.ERROR)]
+        assert "smb://nas:4450/music" in issues[0].message
+        assert "alice" not in issues[0].message
+
+    def test_a_user_already_in_a_url_does_not_refuse_an_unrelated_save(self, plugin):
+        issues = _judge(
+            plugin, ["smb://alice@nas/music"], changed=frozenset({"smb.password"})
+        )
+
+        assert all(i.severity == IssueSeverity.WARNING for i in issues)
+
     def test_the_same_folder_twice_is_refused_against_the_second_of_them(
         self, plugin
     ):

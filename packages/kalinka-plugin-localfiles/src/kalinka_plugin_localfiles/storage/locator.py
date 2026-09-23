@@ -186,7 +186,7 @@ def _parse_smb(rest: str) -> StorageLocator:
         if ":" in userinfo:
             raise LocatorError(
                 "a password does not belong in a folder URL; write "
-                "smb://user@host/share and set the password in the SMB "
+                "smb://host/share and set the user and password in the SMB "
                 "credentials"
             )
         username = userinfo or None
