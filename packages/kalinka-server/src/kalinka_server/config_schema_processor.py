@@ -5,7 +5,8 @@ The old nested "{type, title, fields}" wire format has been replaced by two
 independent payloads:
 
     GET /server/config/schema  → PresentationSchema (pages + expert_fields)
-    GET /server/config         → {"schema_version", "values": flat dotted-path dict}
+    GET /server/config         → {"schema_version", "values": flat dotted-path dict,
+                                  "secrets_set": credential paths holding a value}
     PUT /server/config         → {"schema_version", "changes": {path: value}}
 
 ``PresentationSchema`` carries two parallel views:
@@ -33,6 +34,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, Iterable, List, Union, get_origin, get_args
 
@@ -41,6 +43,7 @@ from pydantic.fields import FieldInfo
 
 from kalinka_plugin_sdk.module_config import ModuleConfig
 
+from .config_secrets import is_secret, loggable
 from .dynamic_field_registry import DynamicFieldEntry, resolve_value
 from .options_registry import OptionsRegistry
 from .presentation_schema import (
@@ -134,10 +137,6 @@ def _infer_widget(wire_type: str, field_name: str, extras: dict[str, Any]) -> Wi
             return Widget(widget_hint)
         except ValueError:
             logger.warning("Unknown widget %r on field %s", widget_hint, field_name)
-
-    # Back-compat: `password: True` extra used by qobuz config today
-    if extras.get("password") is True:
-        return Widget.PASSWORD
 
     if wire_type == "bool":
         return Widget.TOGGLE
@@ -246,10 +245,10 @@ def _warn_if_required_has_default(path: str, field: FieldInfo) -> None:
         return
     if default:
         logger.warning(
-            "Field %s is tagged setup=required but defaults to %r; a "
+            "Field %s is tagged setup=required but defaults to %s; a "
             "required field must default to the empty value for its type",
             path,
-            default,
+            loggable(default, is_secret(field)),
         )
 
 
@@ -289,7 +288,7 @@ def _build_field_spec(
         help=extras.get("help") or field.description or None,
         widget=widget,
         type=wire_type,
-        default=field.default if field.default is not None else None,
+        default=None if is_secret(field) else field.default,
         readonly=bool(field.frozen),
         dynamic_options=_dynamic_options_from_extras(extras, widget, path),
         importance=_importance_from_extras(extras),
@@ -668,14 +667,31 @@ def _collect_fields_from_pages(pages: list[PageSpec]) -> list[FieldSpec]:
 # ---------------------------------------------------------------------------
 
 
-def _flatten_values(model: BaseModel, prefix: str, out: dict[str, Any]) -> None:
+@dataclass(frozen=True)
+class ConfigValues:
+    """What a client may know of the configuration.
+
+    @note A credential is never among ``values``; ``secrets_set`` names the
+        ones that hold something, which is all a client can learn of them.
+    """
+
+    values: dict[str, Any]
+    secrets_set: frozenset[str]
+
+
+def _flatten_values(
+    model: BaseModel, prefix: str, out: dict[str, Any], secrets_set: set[str]
+) -> None:
     for field_name, field in model.__class__.model_fields.items():
         if field.exclude:
             continue
         path = f"{prefix}.{field_name}" if prefix else field_name
         value = getattr(model, field_name, None)
         if isinstance(value, BaseModel):
-            _flatten_values(value, path, out)
+            _flatten_values(value, path, out, secrets_set)
+        elif is_secret(field):
+            if value:
+                secrets_set.add(path)
         elif isinstance(value, Enum):
             out[path] = value.value
         else:
@@ -687,8 +703,9 @@ async def build_values(
     input_modules: dict[str, ModuleConfig],
     devices: dict[str, ModuleConfig],
     dynamic_entries: Iterable[DynamicFieldEntry] = (),
-) -> dict[str, Any]:
-    """Return flat `{dotted_path: value}` for every settable + dynamic field.
+) -> ConfigValues:
+    """Flat `{dotted_path: value}` for every settable + dynamic field bar the
+    credentials, and which credentials are set.
 
     Static values come from the in-memory Pydantic config models.
     Dynamic values are resolved sequentially via the registry. All
@@ -698,17 +715,18 @@ async def build_values(
     whole request).
     """
     out: dict[str, Any] = {}
-    _flatten_values(base_config, "base_config", out)
+    secrets_set: set[str] = set()
+    _flatten_values(base_config, "base_config", out, secrets_set)
     for name, module in input_modules.items():
-        _flatten_values(module, f"input_modules.{name}", out)
+        _flatten_values(module, f"input_modules.{name}", out, secrets_set)
     for name, device in devices.items():
-        _flatten_values(device, f"devices.{name}", out)
+        _flatten_values(device, f"devices.{name}", out, secrets_set)
 
     for entry in dynamic_entries:
         value = await resolve_value(entry)
         if value is not None:
             out[entry.full_path] = value
-    return out
+    return ConfigValues(values=out, secrets_set=frozenset(secrets_set))
 
 
 async def build_enum_options(

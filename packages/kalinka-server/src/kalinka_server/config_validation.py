@@ -23,6 +23,8 @@ from kalinka_plugin_sdk import ConfigIssue, IssueSeverity
 from pydantic import BaseModel, ValidationError
 
 from .config_overrides import set_by_path
+from .config_schema_processor import get_field_value
+from .config_secrets import is_secret_path, loggable
 from .player_setup import PreparedPlugin
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -148,10 +150,10 @@ class ConfigTargets:
 
 
 def _first_message(exc: ValidationError) -> str:
-    errors = exc.errors()
-    if not errors:
-        return "the value is not valid for this setting"
-    return str(errors[0].get("msg") or exc)
+    errors = exc.errors(include_input=False)
+    if errors and errors[0].get("msg"):
+        return str(errors[0]["msg"])
+    return "the value is not valid for this setting"
 
 
 def apply_change(model: BaseModel, attrs: list[str], value: Any) -> str | None:
@@ -172,6 +174,26 @@ def apply_change(model: BaseModel, attrs: list[str], value: Any) -> str | None:
     except (AttributeError, IndexError, TypeError, ValueError) as exc:
         raise ConfigKeyError("Invalid config key") from exc
     return None
+
+
+def commit_change(target: _Target, key: str, value: Any) -> str | None:
+    """Write one change onto the live configuration and log it, showing a
+    credential only as redacted.
+
+    @return As :func:`apply_change`.
+    @raise ConfigKeyError As :func:`apply_change`.
+    """
+    secret = is_secret_path(type(target.model), target.attrs)
+    logger.info("Setting config field %s to %s", key, loggable(value, secret))
+    reason = apply_change(target.model, target.attrs, value)
+    if reason is None:
+        logger.info(
+            "Set %s to %s, saved: %s",
+            key,
+            loggable(value, secret),
+            loggable(get_field_value(target.model, target.attrs), secret),
+        )
+    return reason
 
 
 async def _plugin_issues(

@@ -17,7 +17,8 @@ import os
 import tempfile
 from typing import Annotated, Any, Dict, List, Mapping, get_args
 
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic.fields import FieldInfo
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
@@ -52,6 +53,17 @@ def coerce_field_value(owner: BaseModel, field: str, value: Any) -> Any:
         else info.annotation
     )
     return TypeAdapter(declared).validate_python(value)
+
+
+def describe_failure(exc: Exception) -> str:
+    """Why a value could not be stored, in words that never quote the value.
+
+    A ValidationError's own text does quote it, and the value may be a
+    credential.
+    """
+    if isinstance(exc, ValidationError):
+        return "; ".join(e["msg"] for e in exc.errors(include_input=False))
+    return str(exc)
 
 
 def set_by_path(model: BaseModel, attrs: List[str], value: Any) -> None:
@@ -120,7 +132,7 @@ def _read_path(model: BaseModel, attrs: List[str]) -> Any:
     return current
 
 
-def _model_from_annotation(annotation: Any) -> type[BaseModel] | None:
+def model_from_annotation(annotation: Any) -> type[BaseModel] | None:
     """Resolve a field annotation to its BaseModel class, unwrapping
     Optional/Union (e.g. ``SubModel | None`` → ``SubModel``). None if the
     annotation isn't (or doesn't wrap) a BaseModel."""
@@ -132,23 +144,30 @@ def _model_from_annotation(annotation: Any) -> type[BaseModel] | None:
     return None
 
 
+def field_info(model_cls: type[BaseModel], attrs: List[str]) -> FieldInfo | None:
+    """The declaration of the field at dotted ``attrs`` on ``model_cls``, or
+    None when the path names no field. Walks nested pydantic models
+    (including Optional ones) so ``sub.flag`` works too."""
+    cls: Any = model_cls
+    info = None
+    for part in attrs:
+        fields = getattr(cls, "model_fields", None)
+        if not fields or part not in fields:
+            return None
+        info = fields[part]
+        cls = model_from_annotation(info.annotation)
+    return info
+
+
 def is_one_shot_field(model_cls: type[BaseModel], attrs: List[str]) -> bool:
     """True if the field at dotted ``attrs`` on ``model_cls`` is declared a
     one-shot trigger via ``json_schema_extra={"one_shot": True}``.
 
     A one-shot field is a "do X once on the next restart" toggle: set via the
     normal config PUT, acted on a single time at startup, then reset by the
-    framework. Walks nested pydantic models (including Optional ones) so
-    ``sub.flag`` works too.
+    framework.
     """
-    cls: Any = model_cls
-    info = None
-    for part in attrs:
-        fields = getattr(cls, "model_fields", None)
-        if not fields or part not in fields:
-            return False
-        info = fields[part]
-        cls = _model_from_annotation(info.annotation)
+    info = field_info(model_cls, attrs)
     if info is None:
         return False
     extra = info.json_schema_extra
@@ -207,5 +226,7 @@ def apply_overrides_with_prefix(
             set_by_path(model, attrs, value)
         except (AttributeError, IndexError, TypeError, ValueError) as exc:
             logger.warning(
-                "Ignoring override '%s' (cannot apply): %s", key, exc
+                "Ignoring override '%s' (cannot apply): %s",
+                key,
+                describe_failure(exc),
             )

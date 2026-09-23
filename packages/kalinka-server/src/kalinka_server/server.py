@@ -45,7 +45,6 @@ from .config_schema_processor import (
     build_enum_options,
     build_presentation,
     build_values,
-    get_field_value,
 )
 from .catalog_art_service import CatalogArtService
 from .browse_route import register_browse_routes
@@ -61,9 +60,9 @@ from .merge_utils import get_favorite_ids_merged, k_way_merge_browse_items
 from .config_validation import (
     ConfigTargets,
     ConfigWriteError,
-    apply_change,
     blocking,
     changes_from_payload,
+    commit_change,
     validate_changes,
 )
 from .dynamic_field_registry import build_dynamic_field_registry
@@ -1048,7 +1047,7 @@ async def create_app(
     @app.get("/server/config")
     async def get_config():
         ok_in, _err_in, ok_dev, _err_dev = _partition_modules_and_devices()
-        values = await build_values(
+        known = await build_values(
             base_config=config,
             input_modules=ok_in,
             devices=ok_dev,
@@ -1060,7 +1059,8 @@ async def create_app(
         enum_options = await build_enum_options(app.state.options_registry)
         return {
             "schema_version": app.state.schema_version,
-            "values": values,
+            "values": known.values,
+            "secrets_set": sorted(known.secrets_set),
             "enum_options": {
                 path: [opt.model_dump(mode="json") for opt in opts]
                 for path, opts in enum_options.items()
@@ -1487,10 +1487,8 @@ async def create_app(
         targets = _config_targets()
         try:
             for key, value in changes.items():
-                logger.info("Setting config field %s to %r", key, value)
                 try:
-                    target = targets.resolve(key)
-                    reason = apply_change(target.model, target.attrs, value)
+                    reason = commit_change(targets.resolve(key), key, value)
                 except ConfigWriteError as exc:
                     logger.warning("Invalid config key '%s': %s", key, exc)
                     raise HTTPException(
@@ -1499,12 +1497,6 @@ async def create_app(
                 if reason is not None:
                     raise HTTPException(status_code=400, detail=reason)
                 applied[key] = value
-                logger.info(
-                    "Set %s to %r, saved: %r",
-                    key,
-                    value,
-                    get_field_value(target.model, target.attrs),
-                )
         finally:
             # A batch that draws an error is refused above, before anything
             # is written. Past that point a change can still fail only for a

@@ -15,6 +15,15 @@ paragraph and PR bodies at their last content section — no
 at the repository level in [CONTRIBUTING.md](CONTRIBUTING.md), not per
 commit.
 
+## Credentials
+
+**A credential never reaches a log in plain text** — at no level, not
+through an exception's text, a model's repr, a URL carrying a key, or a
+library logger. A config field holding one takes the `password` widget: the
+server then never sends it to a client (only whether it is set) and logs it
+as `<secret>` (`kalinka_server/config_secrets.py`). Code that handles a
+credential anywhere else redacts it itself.
+
 ## Comments
 
 No AI slop. The default is **no comment**: code that needs a comment to be
