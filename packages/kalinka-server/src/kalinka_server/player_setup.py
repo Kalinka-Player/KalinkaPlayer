@@ -39,7 +39,7 @@ from .config_overrides import (
     is_one_shot_field,
     save_overrides,
 )
-from .config_secrets import is_secret_path, loggable
+from .config_secrets import is_private_path, loggable
 from .module_timeout import TimeLimitedInputModule
 from .output_device_router import OutputDeviceRouter
 from .playqueue import PlayQueueImpl
@@ -407,14 +407,17 @@ class PreparedModuleCollection:
             else:
                 overrides[key] = current
             changed += 1
-            secret = is_secret_path(plugin_class.CONFIG_MODEL, attrs)
-            logger.info(
-                "Reconciled override %s: %s → %s%s",
-                key,
-                loggable(stored, secret),
-                loggable(current, secret),
-                " (dropped, matches default)" if current == default else "",
-            )
+            dropped = " (dropped, matches default)" if current == default else ""
+            if is_private_path(plugin_class.CONFIG_MODEL, attrs):
+                logger.info("Reconciled override %s%s", key, dropped)
+            else:
+                logger.info(
+                    "Reconciled override %s: %s → %s%s",
+                    key,
+                    loggable(stored),
+                    loggable(current),
+                    dropped,
+                )
         return changed
 
     async def _scan_and_setup_plugins_from_entry_points(

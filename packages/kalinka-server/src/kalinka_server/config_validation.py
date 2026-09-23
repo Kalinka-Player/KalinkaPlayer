@@ -24,7 +24,7 @@ from pydantic import BaseModel, ValidationError
 
 from .config_overrides import set_by_path
 from .config_schema_processor import get_field_value
-from .config_secrets import is_secret_path, loggable
+from .config_secrets import is_private_path, loggable
 from .player_setup import PreparedPlugin
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -177,22 +177,26 @@ def apply_change(model: BaseModel, attrs: list[str], value: Any) -> str | None:
 
 
 def commit_change(target: _Target, key: str, value: Any) -> str | None:
-    """Write one change onto the live configuration and log it, showing a
-    credential only as redacted.
+    """Write one change onto the live configuration and log it. A private
+    field's log line names it and says it was updated, never its value.
 
     @return As :func:`apply_change`.
     @raise ConfigKeyError As :func:`apply_change`.
     """
-    secret = is_secret_path(type(target.model), target.attrs)
-    logger.info("Setting config field %s to %s", key, loggable(value, secret))
+    private = is_private_path(type(target.model), target.attrs)
+    if not private:
+        logger.info("Setting config field %s to %s", key, loggable(value))
     reason = apply_change(target.model, target.attrs, value)
     if reason is None:
-        logger.info(
-            "Set %s to %s, saved: %s",
-            key,
-            loggable(value, secret),
-            loggable(get_field_value(target.model, target.attrs), secret),
-        )
+        if private:
+            logger.info("Updated config field %s", key)
+        else:
+            logger.info(
+                "Set %s to %s, saved: %s",
+                key,
+                loggable(value),
+                loggable(get_field_value(target.model, target.attrs)),
+            )
     return reason
 
 

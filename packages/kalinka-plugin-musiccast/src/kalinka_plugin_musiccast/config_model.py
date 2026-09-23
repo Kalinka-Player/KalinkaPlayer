@@ -35,6 +35,7 @@ class KalinkaPluginMusiccastConfig(ModuleConfig):
         title="Device IP address",
         json_schema_extra={
             "help": "IP address of your MusicCast device — leave empty to find it automatically",
+            "private": True,
             **_SIMPLE,
         },
     )

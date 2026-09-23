@@ -5,6 +5,8 @@
 3. Run `make test` (and any package-specific tests for the area you touched).
 4. Open a pull request describing the change and which plugin or server area it affects.
 
+A pull request runs [scripts/check_credential_logging.py](scripts/check_credential_logging.py), which flags code that could write a credential to a log — a credential-named value passed to a log call or a raised exception — as an annotation on the line. Log without the value; keep a false positive the review agrees on with `# log-safe: <why>` on the flagged call.
+
 ## AI-assisted development
 
 Kalinka's server, renderer and bundled plugins are built with **substantial AI assistance**. The original core and architecture were developed manually. Much of the more recent implementation, refactoring and maintenance work has been produced with AI assistance, working from maintainer-defined requirements. Architecture, technical direction, review, testing and acceptance of changes remain the responsibility of the maintainer.

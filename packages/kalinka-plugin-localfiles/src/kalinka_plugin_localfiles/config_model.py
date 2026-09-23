@@ -14,6 +14,9 @@ _SIMPLE: dict[str, Any] = {"importance": "simple"}
 # Independent of the tier: what the app's first-run wizard asks for.
 _PROMPT: dict[str, Any] = {"setup": "prompt"}
 
+# A personal value: the server's logs name the field, never what it holds.
+_PRIVATE: dict[str, Any] = {"private": True}
+
 # What this source is called wherever it is named — the settings page, a
 # search heading, a track's attribution.
 DISPLAY_NAME = "Local Library"
@@ -265,6 +268,7 @@ class SmbConfig(BaseModel):
         json_schema_extra={
             "help": "Leave empty to connect as a guest",
             **_SIMPLE,
+            **_PRIVATE,
         },
     )
     password: str = Field(
@@ -319,6 +323,7 @@ class LocalFilesConfig(ModuleConfig):
             "dynamic_options": True,
             **_SIMPLE,
             **_PROMPT,
+            **_PRIVATE,
         },
     )
     smb: SmbConfig = Field(

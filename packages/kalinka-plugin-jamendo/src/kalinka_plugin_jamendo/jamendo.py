@@ -462,7 +462,7 @@ class JamendoClient:
             logger.warning(
                 "Jamendo %s error: %s",
                 path,
-                headers.get("error_message") or headers,
+                headers.get("error_message") or headers,  # log-safe: Jamendo's JSON status block, not HTTP headers
             )
             return None
 

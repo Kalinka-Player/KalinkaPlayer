@@ -52,7 +52,9 @@ def get_version() -> str:
 # 0.7: GET /server/config never carries a credential (a password-widget
 # field): `values` omits it, `secrets_set` names the ones holding a value,
 # and the schema gives such a field no default.
-REST_API_VERSION = "0.7"
+# 0.8: /server/logs/export prepares an archive of the server's recent logs,
+# which /server/logs/export/download serves.
+REST_API_VERSION = "0.8"
 
 
 def get_rest_api_version() -> str:

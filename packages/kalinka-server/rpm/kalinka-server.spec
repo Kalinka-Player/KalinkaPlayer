@@ -40,6 +40,8 @@ install -m 644 LICENSE %{buildroot}/opt/kalinka/LICENSE
 install -D -m 644 scripts/kalinka.service %{buildroot}%{_unitdir}/kalinka.service
 install -D -m 644 scripts/kalinka-restart.path %{buildroot}%{_unitdir}/kalinka-restart.path
 install -D -m 644 scripts/kalinka-restart.service %{buildroot}%{_unitdir}/kalinka-restart.service
+install -D -m 644 scripts/kalinka-journal-reader.socket %{buildroot}%{_unitdir}/kalinka-journal-reader.socket
+install -D -m 644 scripts/kalinka-journal-reader@.service %{buildroot}%{_unitdir}/kalinka-journal-reader@.service
 install -D -m 644 scripts/kalinka.tmpfiles.conf %{buildroot}%{_tmpfilesdir}/kalinka.conf
 install -D -m 644 rpm/kalinka-server.sysusers %{buildroot}%{_sysusersdir}/kalinka-server.conf
 
@@ -70,11 +72,12 @@ if [ ! -d /srv/kalinka/music ]; then
     install -d -m 3777 -o root -g kalusr /srv/kalinka/music
 fi
 systemctl enable --now kalinka-restart.path >/dev/null 2>&1 || :
+systemctl enable --now kalinka-journal-reader.socket >/dev/null 2>&1 || :
 systemctl enable kalinka.service >/dev/null 2>&1 || :
 systemctl restart kalinka.service >/dev/null 2>&1 || :
 
 %preun
-%systemd_preun kalinka.service kalinka-restart.path
+%systemd_preun kalinka.service kalinka-restart.path kalinka-journal-reader.socket
 
 %postun
 %systemd_postun_with_restart kalinka.service
@@ -88,6 +91,8 @@ systemctl restart kalinka.service >/dev/null 2>&1 || :
 %{_unitdir}/kalinka.service
 %{_unitdir}/kalinka-restart.path
 %{_unitdir}/kalinka-restart.service
+%{_unitdir}/kalinka-journal-reader.socket
+%{_unitdir}/kalinka-journal-reader@.service
 %{_tmpfilesdir}/kalinka.conf
 %{_sysusersdir}/kalinka-server.conf
 

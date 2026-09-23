@@ -25,6 +25,12 @@ A second, independent tag drives the app's first-run wizard:
 to ``hidden``. It rides on every emitted FieldSpec and does not move a
 field between the simple and expert views.
 
+A third, ``Field(json_schema_extra={"private": True})``, keeps a personal value
+— a host, a path, a user name — out of every log line the server writes about
+the configuration, which then names the field and says it was updated.
+Clients still get the value; a credential is private without the tag. See
+:mod:`config_secrets`.
+
 A monotonic ``schema_version`` string lets the client detect staleness
 after plugin reloads.
 """
@@ -43,7 +49,7 @@ from pydantic.fields import FieldInfo
 
 from kalinka_plugin_sdk.module_config import ModuleConfig
 
-from .config_secrets import is_secret, loggable
+from .config_secrets import is_private, is_secret, loggable
 from .dynamic_field_registry import DynamicFieldEntry, resolve_value
 from .options_registry import OptionsRegistry
 from .presentation_schema import (
@@ -243,12 +249,20 @@ def _warn_if_required_has_default(path: str, field: FieldInfo) -> None:
         # Factory wants the other fields' values; a diagnostic isn't worth
         # building them.
         return
-    if default:
+    if not default:
+        return
+    if is_private(field):
+        logger.warning(
+            "Field %s is tagged setup=required but has a default; a required "
+            "field must default to the empty value for its type",
+            path,
+        )
+    else:
         logger.warning(
             "Field %s is tagged setup=required but defaults to %s; a "
             "required field must default to the empty value for its type",
             path,
-            loggable(default, is_secret(field)),
+            loggable(default),
         )
 
 

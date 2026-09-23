@@ -1,0 +1,32 @@
+[Unit]
+Description=Read Kalinka's logs from the journal for an export
+CollectMode=inactive-or-failed
+
+[Service]
+ExecStart=/opt/kalinka/venv/bin/python3 -I -m kalinka_server.journal_reader
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+DynamicUser=yes
+SupplementaryGroups=systemd-journal
+# Just above the server's 60 s preparation deadline.
+RuntimeMaxSec=75
+
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+CapabilityBoundingSet=
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077

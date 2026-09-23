@@ -59,7 +59,13 @@ Optional extras live in **Settings**: a free [AcoustID](https://acoustid.org/) k
 
 **Music doesn't show up.** Check permissions first (step 2 above), then the indexer status in the app. Files still being copied are deliberately ignored until they stop changing, so a large upload appears only once it lands.
 
-**Logs.** Server: `journalctl -u kalinka` or `/var/log/kalinka/`. Renderer: `journalctl -u kalinka-renderer`. Raise the server's verbosity with `log_level` in **Settings**.
+**Logs.** In the app, **Settings → Support → Download server logs** prepares a ZIP of the server's recent logs to attach to an issue. The server leaves out every line holding a credential it knows of or anything that looks like one, but skim the file before posting it: it also holds file and track names and network addresses. It needs a running server; when the server fails to start, read the journal directly. Both log to the journal: `journalctl -u kalinka` for the server, `journalctl -u kalinka-renderer` for the renderer. An upgrade and the restart after it log under units of their own, so after a failed upgrade ask for those too (`kalinka-renderer-upgrade` for the renderer's). This saves the last day of all three server units to a file you can attach to an issue:
+
+```bash
+sudo journalctl -u kalinka -u kalinka-upgrade -u kalinka-restart --since "1 day ago" > kalinka.log
+```
+
+Raise the server's verbosity with `log_level` in **Settings**.
 
 ## Renderers on other machines
 

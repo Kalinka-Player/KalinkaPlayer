@@ -11,6 +11,8 @@ RESTART_PATH_UNIT="kalinka-restart.path"
 RESTART_PATH_UNIT_PATH="/etc/systemd/system/${RESTART_PATH_UNIT}"
 UPGRADE_PATH_UNIT="kalinka-upgrade.path"
 UPGRADE_PATH_UNIT_PATH="/etc/systemd/system/${UPGRADE_PATH_UNIT}"
+JOURNAL_READER_SOCKET="kalinka-journal-reader.socket"
+JOURNAL_READER_SOCKET_PATH="/etc/systemd/system/${JOURNAL_READER_SOCKET}"
 
 case "$1" in
   configure)
@@ -70,6 +72,11 @@ case "$1" in
       systemctl enable --now "$UPGRADE_PATH_UNIT"
     else
       echo "Note: $UPGRADE_PATH_UNIT not found at $UPGRADE_PATH_UNIT_PATH. Skipping."
+    fi
+    if [ -f "$JOURNAL_READER_SOCKET_PATH" ]; then
+      systemctl enable --now "$JOURNAL_READER_SOCKET"
+    else
+      echo "Note: $JOURNAL_READER_SOCKET not found at $JOURNAL_READER_SOCKET_PATH. Skipping."
     fi
     if [ -f "$UNIT_PATH" ]; then
       systemctl enable "$UNIT_NAME"
