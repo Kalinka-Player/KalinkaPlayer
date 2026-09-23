@@ -3,7 +3,7 @@
 import logging
 import os
 import sys
-from typing import IO, Optional
+from typing import IO, Any, Dict, Optional
 
 
 LOG_FORMAT = "%(asctime)s.%(msecs)03d %(levelname)s %(thread)d %(name)s: %(message)s"
@@ -24,6 +24,43 @@ def quiet_credential_carrying_loggers() -> None:
     """
     for name in CREDENTIAL_CARRYING_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
+
+
+def uvicorn_log_config(debug: bool) -> Dict[str, Any]:
+    """uvicorn's logging configuration, through the server's own handler.
+
+    A request line is written only in a debug run: a renderer streaming a
+    track makes one per range read, which buries everything else.
+    """
+    access_level = "INFO" if debug else "WARNING"
+    return {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "handlers": {
+            "default": {
+                "()": "kalinka_server.logging_setup.make_handler",
+                "level": "INFO",
+                "stream": "ext://sys.stdout",
+            }
+        },
+        "loggers": {
+            "uvicorn": {
+                "handlers": ["default"],
+                "level": "INFO",
+                "propagate": False,
+            },
+            "uvicorn.error": {
+                "level": "INFO",
+                "handlers": ["default"],
+                "propagate": False,
+            },
+            "uvicorn.access": {
+                "level": access_level,
+                "handlers": ["default"],
+                "propagate": False,
+            },
+        },
+    }
 
 
 def _syslog_priority(levelno: int) -> int:

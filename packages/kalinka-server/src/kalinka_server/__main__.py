@@ -12,41 +12,16 @@ from kalinka_plugin_sdk import paths
 
 from .config_model import KalinkaConfig
 from .config_overrides import apply_overrides_with_prefix, load_overrides
-from .logging_setup import make_handler, quiet_credential_carrying_loggers
+from .logging_setup import (
+    make_handler,
+    quiet_credential_carrying_loggers,
+    uvicorn_log_config,
+)
 from .netutils import get_ip_address
 from .sdk_compat import IncompatibleSDKError, check_sdk_compatibility
 from .server import create_app
 from .state_keeper import set_state_file
 
-
-uvicorn_log_config = {
-    "version": 1,
-    "disable_existing_loggers": False,
-    "handlers": {
-        "default": {
-            "()": "kalinka_server.logging_setup.make_handler",
-            "level": "INFO",
-            "stream": "ext://sys.stdout",
-        }
-    },
-    "loggers": {
-        "uvicorn": {
-            "handlers": ["default"],
-            "level": "INFO",
-            "propagate": False,
-        },
-        "uvicorn.error": {
-            "level": "INFO",
-            "handlers": ["default"],
-            "propagate": False,
-        },
-        "uvicorn.access": {
-            "level": "INFO",
-            "handlers": ["default"],
-            "propagate": False,
-        },
-    },
-}
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
@@ -109,7 +84,7 @@ async def main():
             port=port,
             reload=False,
             timeout_graceful_shutdown=5,
-            log_config=uvicorn_log_config,
+            log_config=uvicorn_log_config(args.debug),
         )
         server = uvicorn.Server(uvicorn_config)
         await server.serve()
