@@ -1,5 +1,6 @@
 import io
 import logging
+import logging.config
 import os
 import re
 import sys
@@ -13,6 +14,7 @@ from kalinka_server.logging_setup import (
     make_handler,
     quiet_credential_carrying_loggers,
     stream_is_journal,
+    uvicorn_log_config,
 )
 
 
@@ -165,3 +167,25 @@ def test_a_debug_run_does_not_open_the_libraries_that_log_credentials(
     target = logging.getLogger(name)
     assert not target.isEnabledFor(logging.INFO)
     assert target.isEnabledFor(logging.WARNING)
+
+
+@pytest.fixture
+def uvicorn_loggers():
+    names = ("uvicorn", "uvicorn.error", "uvicorn.access")
+    saved = [
+        (lg, lg.level, list(lg.handlers), lg.propagate)
+        for lg in map(logging.getLogger, names)
+    ]
+    yield
+    for lg, level, handlers, propagate in saved:
+        lg.setLevel(level)
+        lg.handlers[:] = handlers
+        lg.propagate = propagate
+
+
+@pytest.mark.parametrize("debug", [False, True])
+def test_a_request_line_is_logged_only_in_a_debug_run(uvicorn_loggers, debug):
+    logging.config.dictConfig(uvicorn_log_config(debug))
+
+    assert logging.getLogger("uvicorn.access").isEnabledFor(logging.INFO) is debug
+    assert logging.getLogger("uvicorn.error").isEnabledFor(logging.INFO)
