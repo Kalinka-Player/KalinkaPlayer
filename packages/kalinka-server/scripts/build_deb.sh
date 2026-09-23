@@ -62,6 +62,8 @@ cp scripts/kalinka-restart.path "$TARGET_DIR/etc/systemd/system/"
 cp scripts/kalinka-restart.service "$TARGET_DIR/etc/systemd/system/"
 cp scripts/kalinka-upgrade.path "$TARGET_DIR/etc/systemd/system/"
 cp scripts/kalinka-upgrade.service "$TARGET_DIR/etc/systemd/system/"
+cp scripts/kalinka-journal-reader.socket "$TARGET_DIR/etc/systemd/system/"
+cp scripts/kalinka-journal-reader@.service "$TARGET_DIR/etc/systemd/system/"
 # In-place upgrade support: kalinka-upgrade.service runs this wrapper, which
 # fetches the current published installer from kalinkaplayer.com at upgrade
 # time (never a stale deb-shipped copy).

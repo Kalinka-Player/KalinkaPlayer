@@ -160,10 +160,13 @@ bench-sdd:
 system-test:
 	@KALINKA_SYSTEM_TEST=1 $(PY) -m pytest tests/system -o log_cli=true --log-cli-level=INFO $(ARGS)
 
-## Catch names that do not exist before a user does
+## Catch names that do not exist before a user does, and code that could log a
+## credential (the same check every pull request runs)
 lint:
 	@echo "Checking for undefined names..."
 	@python -m flake8 --select=F821,F822 packages/*/src
+	@echo "Checking for credentials in logs..."
+	@python scripts/check_credential_logging.py
 
 ## Helper function to move debs to debs directory
 copy-debs:

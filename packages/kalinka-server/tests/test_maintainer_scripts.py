@@ -68,7 +68,10 @@ def test_prerm_still_reports_a_real_removal(tmp_path):
     result = _run(script, "remove", env=env)
 
     assert "Removing Kalinka Server..." in result.stdout
-    assert systemctl_log.read_text().strip() == "disable --now kalinka-restart.path"
+    assert systemctl_log.read_text().splitlines() == [
+        "disable --now kalinka-restart.path",
+        "disable --now kalinka-journal-reader.socket",
+    ]
 
 
 # ---------------------------------------------------------------- renderer

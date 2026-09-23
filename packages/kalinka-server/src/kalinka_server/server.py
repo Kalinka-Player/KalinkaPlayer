@@ -3,6 +3,7 @@ import json
 import logging
 import mimetypes
 import os
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from functools import partial
@@ -52,7 +53,12 @@ from .browse_source import BrowseSource, BrowseSourceRegistry, RegisteredSource
 from .collections.route import register_collection_routes
 from .collections.source import CollectionsSource
 from .collections.store import CollectionStore
+from .config_secrets import secret_values
 from .content_route import register_content_route
+from .log_export_route import register_log_export_routes
+from .log_export_service import ExportManager
+from .log_sources import FileCatalog, JournalCatalog
+from .logging_setup import stream_is_journal
 from .queue_add import track_infos_for
 from .search_route import register_search_routes
 from .suggestions import SuggestionEngine, SuggestionList
@@ -125,6 +131,7 @@ async def lifespan(app: FastAPI):
     sd = None
     try:
         await app.state.collections.open()
+        app.state.log_export.open()
 
         sd = ServiceDiscovery(app.state.config, bind_host=app.state.bind_host)
         await sd.register_service()
@@ -170,6 +177,9 @@ async def lifespan(app: FastAPI):
         collections = getattr(app.state, "collections", None)
         if collections is not None:
             await collections.close()
+        log_export = getattr(app.state, "log_export", None)
+        if log_export is not None:
+            await log_export.close()
         # Finalize sessions and fire their close callbacks. uvicorn has already
         # closed the renderer sockets by now, so the renderer itself only
         # learns the session is gone from the STALE reconciliation at its next
@@ -1543,6 +1553,26 @@ async def create_app(
         return FileResponse(resolved_path, media_type=mime_type)
 
     register_content_route(app, enabled_input_module)
+
+    def _configured_secrets() -> List[str]:
+        configs = [app.state.config] + [
+            plugin.plugin_context.config
+            for plugin in (
+                *modules.prepared_input_modules.values(),
+                *modules.prepared_devices.values(),
+            )
+        ]
+        return [secret for config in configs for secret in secret_values(config)]
+
+    # Production reads the journal; the developer launcher tees into a file.
+    app.state.log_export = ExportManager(
+        os.path.join(paths.cache_dir(), "log-export"),
+        JournalCatalog()
+        if stream_is_journal(sys.stderr)
+        else FileCatalog(os.path.join(paths.log_dir(), "server.log")),
+        _configured_secrets,
+    )
+    register_log_export_routes(app, app.state.log_export)
 
     @app.websocket("/queue/ws")
     async def queue_websocket_endpoint(websocket: WebSocket):

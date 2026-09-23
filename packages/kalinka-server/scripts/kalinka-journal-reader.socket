@@ -1,0 +1,15 @@
+[Unit]
+Description=Kalinka journal reader socket
+
+[Socket]
+# Outside /run/kalinka, which systemd removes whenever the server stops. The
+# socket's group and mode are the only check on who may connect.
+ListenStream=/run/kalinka-journal-reader.sock
+SocketUser=root
+SocketGroup=kalusr
+SocketMode=0660
+Accept=yes
+MaxConnections=4
+
+[Install]
+WantedBy=sockets.target
