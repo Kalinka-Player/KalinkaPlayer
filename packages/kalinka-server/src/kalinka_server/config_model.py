@@ -3,7 +3,9 @@
 Per-field UI metadata is carried in `Field(json_schema_extra=...)` with keys
 recognized by the presentation emitter:
 
-    widget       — one of the values of presentation_schema.Widget
+    widget       — one of the values of presentation_schema.Widget.
+                   "password" marks a credential: the server never sends
+                   it to a client nor writes it to a log (config_secrets)
     help         — inline sublabel / help text shown under the label
     importance   — "simple" | "expert" (default: "expert")
     setup        — "required" | "prompt" | "hidden" (default: "hidden")

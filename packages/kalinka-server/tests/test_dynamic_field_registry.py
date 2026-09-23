@@ -156,7 +156,7 @@ def test_build_values_includes_resolved_dynamic_values():
     )
     values = asyncio.run(
         build_values(KalinkaConfig(), {}, {}, registry.values())
-    )
+    ).values
     assert (
         values["input_modules.localfiles.ai_search.status_view"] == "**Ready**"
     )
@@ -170,7 +170,7 @@ def test_build_values_omits_failed_dynamic_paths():
     )
     values = asyncio.run(
         build_values(KalinkaConfig(), {}, {}, registry.values())
-    )
+    ).values
     # The failed path should not appear in values.
     assert "input_modules.p.x" not in values
 

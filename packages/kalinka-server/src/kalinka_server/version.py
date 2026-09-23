@@ -49,7 +49,10 @@ def get_version() -> str:
 # /search/matches and /ai_search, /ai_search takes a single source and no
 # longer pages, and module records name the optional calls they answer
 # (capabilities).
-REST_API_VERSION = "0.6"
+# 0.7: GET /server/config never carries a credential (a password-widget
+# field): `values` omits it, `secrets_set` names the ones holding a value,
+# and the schema gives such a field no default.
+REST_API_VERSION = "0.7"
 
 
 def get_rest_api_version() -> str:
