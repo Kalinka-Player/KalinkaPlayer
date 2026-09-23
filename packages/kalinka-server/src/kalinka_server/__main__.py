@@ -12,7 +12,7 @@ from kalinka_plugin_sdk import paths
 
 from .config_model import KalinkaConfig
 from .config_overrides import apply_overrides_with_prefix, load_overrides
-from .logging_setup import make_handler
+from .logging_setup import make_handler, quiet_credential_carrying_loggers
 from .netutils import get_ip_address
 from .sdk_compat import IncompatibleSDKError, check_sdk_compatibility
 from .server import create_app
@@ -82,8 +82,7 @@ async def main():
         handlers=[make_handler()],
     )
 
-    # Reduce logging level for httpx - it's too verbose
-    logging.getLogger("httpx").setLevel(logging.WARNING)
+    quiet_credential_carrying_loggers()
 
     # Refuse to run against an incompatible plugin SDK (see sdk_compat.py).
     try:

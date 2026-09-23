@@ -21,7 +21,13 @@ from kalinka_plugin_sdk import paths
 from ..config_model import LocalFilesConfig
 from .base import FileStorage
 from .local import LocalStorage
-from .locator import SMB_SCHEME, LocatorError, root_of, scheme_of
+from .locator import (
+    SMB_SCHEME,
+    LocatorError,
+    root_of,
+    scheme_of,
+    without_password,
+)
 from .unavailable import UnavailableStorage
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -77,10 +83,10 @@ class StorageResolver:
         """The configured music folders in the one spelling everything else
         compares against.
 
-        A folder that cannot be parsed is kept as written rather than
-        dropped: it still has to appear as a root so the settings page can
-        say what is wrong with it, and so nothing indexed under it is
-        purged in the meantime.
+        A folder that cannot be parsed is kept as written, bar any password,
+        rather than dropped: it still has to appear as a root so the settings
+        page can say what is wrong with it, and so nothing indexed under it
+        is purged in the meantime.
         """
         roots: list[str] = []
         for raw in folders:
@@ -89,8 +95,11 @@ class StorageResolver:
             try:
                 roots.append(self.for_path(raw).canonical(raw))
             except LocatorError as e:
-                logger.warning("Music folder %s cannot be used: %s", raw, e)
-                roots.append(raw.strip())
+                shown = without_password(raw)
+                # The error may quote what it misread, password included.
+                reason = e if shown == raw else "a password is written into it"
+                logger.warning("Music folder %s cannot be used: %s", shown, reason)
+                roots.append(shown.strip())
         return roots
 
     def root_of(self, path: str, roots: Iterable[str]) -> Optional[str]:
