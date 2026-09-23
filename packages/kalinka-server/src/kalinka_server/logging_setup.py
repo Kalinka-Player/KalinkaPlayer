@@ -9,6 +9,22 @@ from typing import IO, Optional
 LOG_FORMAT = "%(asctime)s.%(msecs)03d %(levelname)s %(thread)d %(name)s: %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
+#: Libraries that log request URLs, headers or authentication exchanges, where
+#: API keys, tokens and NTLM responses ride.
+CREDENTIAL_CARRYING_LOGGERS = ("httpx", "httpcore", "hpack", "urllib3", "spnego")
+
+
+def quiet_credential_carrying_loggers() -> None:
+    """Hold the libraries that would log a credential at WARNING, whatever the
+    server's own level, ``--debug`` included.
+
+    @note Set in the main process, this covers the plugin subprocesses too:
+        their records are re-emitted only where the main process's logger of
+        the same name is enabled for them.
+    """
+    for name in CREDENTIAL_CARRYING_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
+
 
 def _syslog_priority(levelno: int) -> int:
     if levelno >= logging.CRITICAL:

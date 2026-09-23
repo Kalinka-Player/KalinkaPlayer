@@ -221,7 +221,8 @@ class AcoustIdPlugin(EnricherPlugin):
                 "duration": math.floor(duration),
             }
 
-            response = requests.get(url, params=params, timeout=_LOOKUP_TIMEOUT_S)
+            # POSTed: a URL, key and all, turns up in exceptions and debug logs.
+            response = requests.post(url, data=params, timeout=_LOOKUP_TIMEOUT_S)
             raise_if_service_unavailable(response.status_code, "AcoustID")
             if response.status_code != 200:
                 logger.error(

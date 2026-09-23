@@ -7,9 +7,11 @@ import sys
 import pytest
 
 from kalinka_server.logging_setup import (
+    CREDENTIAL_CARRYING_LOGGERS,
     JournalFormatter,
     make_formatter,
     make_handler,
+    quiet_credential_carrying_loggers,
     stream_is_journal,
 )
 
@@ -133,3 +135,33 @@ def test_make_handler_defaults_to_stderr(monkeypatch):
     handler = make_handler()
     assert handler.stream is sys.stderr
     assert not isinstance(handler.formatter, JournalFormatter)
+
+
+@pytest.fixture
+def debug_run():
+    names = ["", *CREDENTIAL_CARRYING_LOGGERS]
+    saved = {name: logging.getLogger(name).level for name in names}
+    logging.getLogger().setLevel(logging.DEBUG)
+    yield
+    for name, level in saved.items():
+        logging.getLogger(name).setLevel(level)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "httpx",
+        "httpcore.http2",
+        "hpack.hpack",
+        "urllib3.connectionpool",
+        "spnego._negotiate",
+    ],
+)
+def test_a_debug_run_does_not_open_the_libraries_that_log_credentials(
+    debug_run, name
+):
+    quiet_credential_carrying_loggers()
+
+    target = logging.getLogger(name)
+    assert not target.isEnabledFor(logging.INFO)
+    assert target.isEnabledFor(logging.WARNING)

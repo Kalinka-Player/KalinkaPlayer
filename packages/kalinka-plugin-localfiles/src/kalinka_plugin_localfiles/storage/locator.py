@@ -32,6 +32,9 @@ _DEFAULT_SMB_PORT = 445
 
 _SCHEME_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.\-]*)://")
 
+# To the last "@": over-masking is safe, stopping at a "/" in a password is not.
+_URL_PASSWORD_RE = re.compile(r"^(\s*[A-Za-z][A-Za-z0-9+.\-]*://[^/:@]*):.*@")
+
 #: A protocol written with one slash instead of two. Worth catching by name,
 #: because it otherwise reads as a relative path and a music folder silently
 #: becomes a directory beside the service's working directory.
@@ -103,6 +106,13 @@ class StorageLocator:
             return self.path
         userinfo = f"{self.username}@" if self.username else ""
         return f"{self.scheme}://{userinfo}{self.authority}{self.path}"
+
+
+def without_password(raw: str) -> str:
+    """``raw`` fit for a log: a password written into its userinfo, which
+    :func:`parse` refuses but a hand-edited config can still carry, is masked.
+    """
+    return _URL_PASSWORD_RE.sub(r"\1:<secret>@", raw)
 
 
 def scheme_of(raw: str) -> str:

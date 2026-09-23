@@ -78,6 +78,15 @@ class TestCanonicalRoots:
         assert roots == ["smb://nas"]
         assert "share" in caplog.text
 
+    def test_a_password_in_a_folder_url_is_not_logged(self, caplog):
+        """The URL is refused, but a hand-edited config can still carry one
+        to here, and the warning repeats on every status poll."""
+        roots = _resolver([]).canonical_roots(["smb://alice:hunter2/x@nas/music"])
+        assert "alice" in caplog.text
+        assert "hunter2" not in caplog.text
+        # The root is logged again by every scan that skips it.
+        assert not any("hunter2" in root for root in roots)
+
     @pytest.mark.asyncio
     async def test_a_misspelt_share_says_what_is_wrong_with_it(self):
         resolver = _resolver([])
