@@ -321,6 +321,11 @@ class LocalFilesConfig(ModuleConfig):
             **_PROMPT,
         },
     )
+    smb: SmbConfig = Field(
+        default_factory=SmbConfig,
+        title="SMB shares",
+        json_schema_extra={"inline": True},
+    )
     db_path: str = Field(
         default_factory=lambda: os.path.join(paths.state_dir(), "localfiles.db"),
         title="Database path",
@@ -393,7 +398,6 @@ class LocalFilesConfig(ModuleConfig):
             **_SIMPLE,
         },
     )
-    smb: SmbConfig = Field(default_factory=SmbConfig, title="SMB shares")
     ai_search: AiSearchConfig = Field(
         default_factory=AiSearchConfig, title="AI search"
     )

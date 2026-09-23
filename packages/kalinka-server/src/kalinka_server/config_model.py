@@ -9,6 +9,10 @@ recognized by the presentation emitter:
     setup        — "required" | "prompt" | "hidden" (default: "hidden")
     constraints  — dict with slider_min/slider_max/step/unit (merges with
                    Pydantic's own ge/le/etc.)
+    inline       — on a nested model: no section of its own; its fields
+                   render among the parent's, where it is declared. For a
+                   group without its own ``enabled`` toggle, whose field
+                   titles read on their own.
 
 The default tier for unmarked fields is EXPERT — they're reachable only
 through the about:config-style search. To put a field on the main

@@ -22,7 +22,8 @@ Authoring entry points:
       the *only* source of fields for that subtree — a leaf it forgets to
       list is settable nowhere, expert search included — so prefer the
       auto-derived layout (one section per nested model, in declaration
-      order) unless the grouping genuinely can't be expressed that way.
+      order, or none for a model tagged ``inline``) unless the grouping
+      genuinely can't be expressed that way.
 """
 
 from __future__ import annotations
