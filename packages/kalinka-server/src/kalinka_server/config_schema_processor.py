@@ -304,9 +304,27 @@ def _build_field_spec(
 # ---------------------------------------------------------------------------
 
 
+def _split_general(
+    sections: list[SectionSpec], prefix: str
+) -> tuple[list[FieldSpec], list[SectionSpec]]:
+    """Split off ``prefix``'s auto "General" section so its fields sit on
+    whatever wraps them, not under a redundant heading."""
+    general_id = f"{prefix}.general"
+    fields: list[FieldSpec] = []
+    rest: list[SectionSpec] = []
+    for s in sections:
+        if s.id == general_id and not s.sections:
+            fields = s.fields
+        else:
+            rest.append(s)
+    return fields, rest
+
+
 def _auto_sections(model: BaseModel, prefix: str) -> list[SectionSpec]:
     """Default layout: scalars of this model go into a single 'General' section;
-    each nested BaseModel becomes its own section (recursively).
+    each nested BaseModel becomes its own section (recursively), unless it is
+    tagged ``inline``, in which case its scalars join this model's own at the
+    point it is declared.
     """
     scalar_fields: list[FieldSpec] = []
     nested_sections: list[SectionSpec] = []
@@ -316,30 +334,20 @@ def _auto_sections(model: BaseModel, prefix: str) -> list[SectionSpec]:
         child_path = f"{prefix}.{field_name}" if prefix else field_name
 
         if wire_type == "section":
-            nested_model = getattr(model, field_name)
-            sub_sections = _sections_for(nested_model, child_path)
             extras = _json_extra(field)
-            section_importance = _importance_from_extras(
-                extras, Importance.SIMPLE
+            promoted_fields, kept_sections = _split_general(
+                _sections_for(getattr(model, field_name), child_path), child_path
             )
-
-            # Absorb the child's "General" auto-section (if any) onto the parent
-            # wrapper so a BaseModel with both scalars and nested models renders
-            # as: <title>{scalars...} + <sub-sections> rather than adding a
-            # redundant "General" wrapper just for the scalars.
-            promoted_fields: list[FieldSpec] = []
-            kept_sections: list[SectionSpec] = []
-            for s in sub_sections:
-                if s.id == f"{child_path}.general" and not s.sections:
-                    promoted_fields = s.fields
-                else:
-                    kept_sections.append(s)
+            if extras.get("inline"):
+                scalar_fields.extend(promoted_fields)
+                nested_sections.extend(kept_sections)
+                continue
 
             nested_sections.append(
                 SectionSpec(
                     id=child_path,
                     title=field.title or field_name,
-                    importance=section_importance,
+                    importance=_importance_from_extras(extras, Importance.SIMPLE),
                     fields=promoted_fields,
                     sections=kept_sections,
                 )
@@ -501,18 +509,8 @@ def _module_spec(
 
     _inject_dynamic_fields(sections, prefix, dynamic_entries)
 
-    # Promote the module-level auto-general fields onto the ModuleSpec
-    # so they render flat under the header. We run this AFTER dynamic-field
-    # injection so plugins can target the general section by id if they
-    # ever need to (current plugins target named sub-sections only).
-    module_fields: list[FieldSpec] = []
-    general_id = f"{prefix}.general"
-    kept_sections: list[SectionSpec] = []
-    for s in sections:
-        if s.id == general_id and not s.sections:
-            module_fields = s.fields
-        else:
-            kept_sections.append(s)
+    # After injection, so a dynamic field can target the general section.
+    module_fields, kept_sections = _split_general(sections, prefix)
 
     name_field = cls.model_fields["name"]
     title = name_field.title or config.name
