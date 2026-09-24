@@ -51,22 +51,22 @@ def get_version() -> str:
 # (capabilities).
 # 0.7: GET /server/config never carries a credential (a password-widget
 # field): `values` omits it, `secrets_set` names the ones holding a value,
-# and the schema gives such a field no default.
-# 0.8: /server/logs/export prepares an archive of the server's recent logs,
-# which /server/logs/export/download serves. A config value may be a list of
-# records (localfiles' music_sources), described in a module's or section's
-# `collections`: its credentials are left out of `values` and named in
-# `secrets_set` by the entry's id (`<path>.<id>.<field>`), and writing the
-# list back without one keeps it while the entry is for the same server and
-# user. An entry that now names another server or user, or is of another
-# kind, draws an error at the credential it left out, in the dry run and the
-# save alike, and must send it again. A successful PUT /server/config returns
-# the resulting `secrets_set`. A collection's `replaces` names the older
-# fields it stands for, which a client showing it hides. localfiles'
-# music_folders is its local sources' folders; writing either list updates
-# the other. A /server/modules entry carries the module's `icon` (a material
-# icon name, or null), which a client draws in place of its letter badge.
-REST_API_VERSION = "0.8"
+# and the schema gives such a field no default. /server/logs/export prepares
+# an archive of the server's recent logs, which /server/logs/export/download
+# serves. A config value may be a list of records (localfiles'
+# music_sources), described in a module's or section's `collections`: its
+# credentials are left out of `values` and named in `secrets_set` by the
+# entry's id (`<path>.<id>.<field>`), and writing the list back without one
+# keeps it while the entry is for the same server and user. An entry that now
+# names another server or user, or is of another kind, draws an error at the
+# credential it left out, in the dry run and the save alike, and must send it
+# again. A successful PUT /server/config returns the resulting `secrets_set`.
+# A collection's `replaces` names the older fields it stands for, which a
+# client showing it hides. localfiles' music_folders is its local sources'
+# folders; writing either list updates the other. A /server/modules entry
+# carries the module's `icon` (a material icon name, or null), which a client
+# draws in place of its letter badge.
+REST_API_VERSION = "0.7"
 
 
 def get_rest_api_version() -> str:
