@@ -97,6 +97,12 @@ class TestWhatASavedPasswordIsFor:
     def test_another_server_or_account_does_not(self, fields):
         assert self._scope(**fields) != self._scope()
 
+    def test_it_is_never_part_of_how_a_source_prints(self):
+        [share] = _sources(
+            _share(authentication={**self._ACCOUNT, "password": "hunter2"})
+        )
+        assert "hunter2" not in repr(share)
+
 
 def _local(path, id=None):
     return {"kind": "local", "location": {"path": path}, **({"id": id} if id else {})}
