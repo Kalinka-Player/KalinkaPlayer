@@ -13,6 +13,7 @@ Authoring entry points:
       both are read out of band.
     * Per-config-class by declaring class attributes:
           __module_icon__: str          — material icon name for module cards
+                                          and source badges
           __module_icon_color__: str    — hex color for icon tile
           __preview_fields__: list[str] — field names to compose the card subtitle
       Or by implementing::

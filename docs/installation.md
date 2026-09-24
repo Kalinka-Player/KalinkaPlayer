@@ -33,7 +33,7 @@ Whichever you open walks you through first-time setup: naming the server, pointi
 scp -r ~/my-albums/* you@<server-ip>:/srv/kalinka/music/
 ```
 
-Already have a music folder elsewhere? Leave that directory alone and set **Settings → Local Library → music folders** to your path instead. The server reads your files as the `kalusr` user, so make sure it can: a directory it cannot enter, or files dropped with a `0600` umask, simply stay invisible.
+Already have a music folder elsewhere? Leave that directory alone and add your path under **Settings → My Library → Music sources** instead. The server reads your files as the `kalusr` user, so make sure it can: a directory it cannot enter, or files dropped with a `0600` umask, simply stay invisible.
 
 **3. Wait for the library.** Indexing starts on its own and metadata enrichment follows — the app shows progress, and a large collection on a Pi takes a while the first time. Nothing needs restarting.
 

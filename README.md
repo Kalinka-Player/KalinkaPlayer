@@ -50,11 +50,11 @@ Full walkthrough, troubleshooting and adding renderers on other machines: **[doc
 | | |
 |---|---|
 | 🎵 **Your library** | Indexes your directories, watches them for changes, and repairs the metadata — MusicBrainz, Wikidata and Deezer, plus AcoustID fingerprinting once you add a key of your own, falling back to filename heuristics. Artwork is extracted, cached, and generated when there is none. |
-| 🔍 **Smart Search** | Ask for *"dreamy ambient guitar"* and get matching tracks. The Local Library analyses the audio itself with a CLAP model; Jamendo matches a prebuilt index of track descriptions. Opt-in per plugin. |
+| 🔍 **Smart Search** | Ask for *"dreamy ambient guitar"* and get matching tracks. My Library analyses the audio itself with a CLAP model; Jamendo matches a prebuilt index of track descriptions. Opt-in per plugin. |
 | 🔊 **Bit-perfect playback** | A C++ renderer with direct ALSA access. FLAC and MP3 up to 192 kHz / 24-bit, gapless between tracks of the same format, and the samples are not altered unless you turn on software volume. |
 | 🏠 **Renderers anywhere** | Put a renderer on any box on your network and it appears as an output. They find the server over mDNS and upgrade themselves. |
 | 🌐 **Browser player** | The server serves a web player, so any browser is both a remote control and an output. |
-| 🧩 **Plugins** | Sources, enrichers and device integrations are ordinary Python packages discovered at runtime. Local Library and Jamendo ship in the box; MusicCast handles Yamaha volume and power. |
+| 🧩 **Plugins** | Sources, enrichers and device integrations are ordinary Python packages discovered at runtime. My Library and Jamendo ship in the box; MusicCast handles Yamaha volume and power. |
 | 🪄 **Guided first run** | A setup wizard runs in the app and in the browser alike — name the server, point it at your music, pick an output, done. Nothing to edit on the server itself. |
 | ⚙️ **Live configuration** | Everything stays editable afterwards from Settings, with a simple tier of common fields and an `about:config`-style search for the rest. |
 | 🔄 **Updates itself** | The server checks published releases hourly; with auto-upgrade on it installs during quiet hours while playback is stopped, otherwise the app offers a button. Server, plugins, browser player and renderers move together — renderers first, so the pair never lands on a combination that cannot play. |

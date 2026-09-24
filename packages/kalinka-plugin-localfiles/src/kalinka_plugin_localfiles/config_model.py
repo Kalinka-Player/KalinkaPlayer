@@ -19,7 +19,7 @@ _PRIVATE: dict[str, Any] = {"private": True}
 
 # What this source is called wherever it is named — the settings page, a
 # search heading, a track's attribution.
-DISPLAY_NAME = "Local Library"
+DISPLAY_NAME = "My Library"
 
 
 class MoodConfig(BaseModel):
@@ -412,7 +412,7 @@ class LocalFilesConfig(ModuleConfig):
         default="localfiles",
         title=DISPLAY_NAME,
         description=(
-            "Music on this device or a network share, indexed into a browsable "
+            "Music on the server or a network share, indexed into a browsable "
             "library with artwork and metadata filled in online."
         ),
         frozen=True,

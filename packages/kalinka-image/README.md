@@ -19,7 +19,7 @@ Flash the `.img.xz` as downloaded — [Raspberry Pi Imager](https://www.raspberr
 xzcat kalinka-*.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
 ```
 
-Boot it, and open `http://<its-ip>:8000` in any browser on the network. The Kalinka app finds it over mDNS on its own. Drop music into `/srv/kalinka/music`, or point the Local Library at a NAS from the app's Settings screen.
+Boot it, and open `http://<its-ip>:8000` in any browser on the network. The Kalinka app finds it over mDNS on its own. Drop music into `/srv/kalinka/music`, or point My Library at a NAS from the app's Settings screen.
 
 The root filesystem grows to fill the media on every boot, so the card you flash onto is the size you get — and moving to a bigger card later is a reboot, not a re-flash.
 
