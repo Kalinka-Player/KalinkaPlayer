@@ -209,6 +209,13 @@ class TestWhatHasBeenSeen:
         made._netbios_seen("198.51.100.10", "ALPHA")
         assert [h.name for h in made.hosts()] == ["ALPHA", "ZULU"]
 
+    def test_the_order_ignores_case(self):
+        """NetBIOS names arrive in capitals and mDNS ones as typed."""
+        made = _discovery()
+        made._netbios_seen("198.51.100.30", "ZULU")
+        made._mdns_seen("alpha._smb._tcp.local.", "alpha", ["198.51.100.10"])
+        assert [h.name for h in made.hosts()] == ["alpha", "ZULU"]
+
 
 class TestWhichAddressesAreWorthOffering:
     """A host is offered only where an SMB client here could usefully be
@@ -265,6 +272,49 @@ class TestWhichAddressesAreWorthOffering:
         made._mdns_seen("NAS._smb._tcp.local.", "NAS", [NAS])
         made._mdns_seen("NAS._smb._tcp.local.", "NAS", [])
         assert made.hosts() == []
+
+
+class TestOneHostOnBothAddressFamilies:
+    """The same shares offered again under an IPv6 address are noise."""
+
+    @pytest.fixture(autouse=True)
+    def _nothing_is_ours(self, monkeypatch):
+        """Whether IPv6 addresses bind here is the host's sysctl, not this rule."""
+        _ours(monkeypatch)
+
+    def test_a_host_announced_on_both_is_offered_on_ipv4_alone(self):
+        made = _discovery()
+        made._mdns_seen("NAS._smb._tcp.local.", "NAS", ["2001:db8::5", NAS])
+        assert [h.address for h in made.hosts()] == [NAS]
+
+    def test_a_netbios_reply_and_an_announcement_by_one_name_are_one_host(self):
+        made = _discovery()
+        made._netbios_seen(NAS, "MYLIB")
+        made._mdns_seen("mylib._smb._tcp.local.", "mylib", ["2001:db8::5"])
+        assert [h.address for h in made.hosts()] == [NAS]
+
+    def test_a_host_on_ipv6_alone_is_still_offered(self):
+        made = _discovery()
+        made._mdns_seen("NAS._smb._tcp.local.", "NAS", ["2001:db8::5"])
+        assert [h.address for h in made.hosts()] == ["2001:db8::5"]
+
+    def test_another_host_on_ipv4_does_not_hide_one_on_ipv6(self):
+        made = _discovery()
+        made._netbios_seen(NAS, "ALPHA")
+        made._mdns_seen("ZULU._smb._tcp.local.", "ZULU", ["2001:db8::5"])
+        assert [h.address for h in made.hosts()] == [NAS, "2001:db8::5"]
+
+    def test_an_ipv4_address_left_out_does_not_take_the_ipv6_one_with_it(self):
+        made = _discovery()
+        made._mdns_seen("NAS._smb._tcp.local.", "NAS", ["127.0.0.1", "2001:db8::5"])
+        assert [h.address for h in made.hosts()] == ["2001:db8::5"]
+
+    def test_a_self_assigned_ipv4_address_does_not_hide_a_routed_ipv6_one(self):
+        """169.254 is what a box gets when DHCP never answered, and no router
+        forwards it."""
+        made = _discovery()
+        made._mdns_seen("NAS._smb._tcp.local.", "NAS", ["169.254.7.9", "2001:db8::5"])
+        assert {h.address for h in made.hosts()} == {"169.254.7.9", "2001:db8::5"}
 
 
 class TestAMachineThatWouldBindAnything:
@@ -424,7 +474,7 @@ class _Zeroconf:
 
 
 class TestAnAnnouncementThatArrives:
-    def _seen(self, info):
+    def _seen(self, info, name="NAS._smb._tcp.local."):
         from kalinka_plugin_localfiles.suggest.smb_discovery import _ZeroconfWatch
 
         seen = []
@@ -432,12 +482,20 @@ class TestAnAnnouncementThatArrives:
             lambda key, name, addresses: seen.append((key, name, addresses)),
             lambda key: None,
         )
-        watch.add_service(_Zeroconf(info), "_smb._tcp.local.", "NAS._smb._tcp.local.")
+        watch.add_service(_Zeroconf(info), "_smb._tcp.local.", name)
         return seen
 
     def test_a_server_is_taken_under_the_name_it_announced(self):
         seen = self._seen(_Announcement(["198.51.100.20"]))
         assert seen == [("NAS._smb._tcp.local.", "NAS", ["198.51.100.20"])]
+
+    def test_a_dot_in_the_name_it_announced_does_not_cut_the_name_short(self):
+        """The name is what ties its IPv6 addresses to its IPv4 ones, so two
+        boxes cut down to one prefix would pass for one host."""
+        seen = self._seen(
+            _Announcement(["198.51.100.20"]), name="Vol.2 Music._smb._tcp.local."
+        )
+        assert seen[0][1] == "Vol.2 Music"
 
     def test_a_server_that_answers_only_over_ipv6_is_still_offered(self):
         seen = self._seen(_Announcement(["2001:db8::5"]))
