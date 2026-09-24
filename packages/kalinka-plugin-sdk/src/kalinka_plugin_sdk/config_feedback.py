@@ -52,7 +52,11 @@ class ConfigIssue(BaseModel):
     """Something wrong with a configuration value, in words a user can act on.
 
     @param path The field, relative to the plugin's own config model
-        (``music_folders``, ``smb.password``). The server prefixes it.
+        (``music_folders``, ``enricher.plugins.acoustid.api_key``). The
+        server prefixes it. An entry of a
+        :data:`~kalinka_plugin_sdk.config_records.Records` collection is
+        named by its id, and a part of it by the path within it:
+        ``music_sources.<id>.location.host``.
     @param message Shown under the field. Says what to write instead, not
         what the code found.
     @param index Which item of a list field the issue is about; None when it

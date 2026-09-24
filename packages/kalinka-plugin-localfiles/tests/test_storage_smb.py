@@ -176,19 +176,19 @@ class TestCredentials:
         client = fake_client(
             listings={r"\\nas\music": [], r"\\nas\private": []}
         )
-        storage = _storage(username="alice", password="hunter2")
-        storage.listdir("smb://nas/private")
-        storage.listdir("smb://guest@nas/music")
+        _storage(username="alice", password="hunter2").listdir("smb://nas/private")
+        _storage().listdir("smb://nas/music")
 
         assert [c[1]["username"] for c in client.calls] == ["alice", "guest"]
 
-    def test_a_user_in_the_url_overrides_the_configured_one(self, fake_client):
+    def test_a_user_in_the_url_signs_in_as_nobody(self, fake_client):
+        """The login is the source's; a path cannot name another."""
         client = fake_client(listings={r"\\nas\music": []})
-        _storage(username="media", password="hunter2").listdir(
-            "smb://guest@nas/music"
-        )
-        _, kwargs = client.calls[0]
-        assert kwargs["username"] == "guest"
+        with pytest.raises(OSError):
+            _storage(username="media", password="hunter2").listdir(
+                "smb://guest@nas/music"
+            )
+        assert client.calls == []
 
     def test_a_non_default_port_travels_with_the_request(self, fake_client):
         client = fake_client(listings={r"\\nas\music": []})

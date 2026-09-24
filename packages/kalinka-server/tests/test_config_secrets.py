@@ -19,6 +19,7 @@ Contract:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -27,7 +28,12 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, Field
 
-from kalinka_plugin_localfiles.config_model import LocalFilesConfig
+from kalinka_plugin_localfiles.config_model import (
+    AccountSignIn,
+    LocalFilesConfig,
+    SmbLocation,
+    SmbSource,
+)
 from kalinka_plugin_sdk.module_config import ModuleConfig
 from kalinka_plugin_sdk.plugin import PluginBase, PluginType
 from kalinka_server.config_model import KalinkaConfig
@@ -125,15 +131,22 @@ def test_the_rest_of_the_configuration_is_still_sent():
 
 
 def test_the_shipped_credentials_are_treated_as_such():
-    config = LocalFilesConfig()
-    config.smb.password = SECRET
+    config = LocalFilesConfig(
+        music_sources=[
+            SmbSource(
+                id="nas",
+                location=SmbLocation(host="nas", path="music"),
+                authentication=AccountSignIn(username="media", password=SECRET),
+            )
+        ]
+    )
     config.enricher.plugins.acoustid.api_key = SECRET
 
     known = _values(localfiles=config)
 
-    assert SECRET not in known.values.values()
+    assert SECRET not in json.dumps(known.values)
     assert {
-        "input_modules.localfiles.smb.password",
+        "input_modules.localfiles.music_sources.nas.authentication.password",
         "input_modules.localfiles.enricher.plugins.acoustid.api_key",
     } <= known.secrets_set
 

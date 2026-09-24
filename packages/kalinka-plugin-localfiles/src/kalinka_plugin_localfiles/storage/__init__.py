@@ -28,7 +28,9 @@ from .locator import (
     root_of,
     scheme_of,
 )
+from .credentials import SmbCredentials
 from .resolver import StorageResolver, build_resolver
+from .sources import library_locations, library_roots, share_logins, source_location
 from .unavailable import UnavailableStorage
 
 __all__ = [
@@ -43,14 +45,19 @@ __all__ = [
     "LocatorError",
     "RootStatus",
     "SMB_SCHEME",
+    "SmbCredentials",
     "StorageLocator",
     "StorageResolver",
     "UnavailableStorage",
     "WatchResult",
     "build_resolver",
     "is_within",
+    "library_locations",
+    "library_roots",
     "media_type_of",
     "parse",
     "root_of",
     "scheme_of",
+    "share_logins",
+    "source_location",
 ]

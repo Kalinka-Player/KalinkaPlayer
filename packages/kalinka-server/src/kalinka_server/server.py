@@ -41,7 +41,7 @@ from kalinka_plugin_sdk.events import (
 from kalinka_plugin_sdk import ConfigIssue, paths
 
 from .config_model import KalinkaConfig
-from .config_overrides import save_overrides
+from .config_overrides import save_overrides, store_override
 from .config_schema_processor import (
     build_enum_options,
     build_presentation,
@@ -69,6 +69,8 @@ from .config_validation import (
     blocking,
     changes_from_payload,
     commit_change,
+    reconcile_written,
+    stored_value,
     validate_changes,
 )
 from .dynamic_field_registry import build_dynamic_field_registry
@@ -1494,11 +1496,13 @@ async def create_app(
             )
 
         applied: Dict[str, Any] = {}
+        committed = []
         targets = _config_targets()
         try:
             for key, value in changes.items():
                 try:
-                    reason = commit_change(targets.resolve(key), key, value)
+                    target = targets.resolve(key)
+                    reason = commit_change(target, key, value)
                 except ConfigWriteError as exc:
                     logger.warning("Invalid config key '%s': %s", key, exc)
                     raise HTTPException(
@@ -1506,15 +1510,18 @@ async def create_app(
                     ) from exc
                 if reason is not None:
                     raise HTTPException(status_code=400, detail=reason)
-                applied[key] = value
+                applied[key] = stored_value(target)
+                committed.append(target)
         finally:
             # A batch that draws an error is refused above, before anything
             # is written. Past that point a change can still fail only for a
             # reason the check could not reach, and what already went into
             # memory cannot be taken back out — so it is persisted, and a
             # restart matches what is running.
+            applied.update(reconcile_written(committed))
             if applied:
-                app.state.overrides.update(applied)
+                for key, value in applied.items():
+                    store_override(app.state.overrides, key, value)
                 try:
                     save_overrides(app.state.overrides_file, app.state.overrides)
                 except OSError as exc:

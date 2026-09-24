@@ -125,10 +125,24 @@ def kalinka(workspace: Path, cache_dir: Path, samba: SambaShare, request) -> Kal
     )
     instance.install(
         {
-            "input_modules.localfiles.music_folders": [str(instance.music_dir), samba.url],
+            "input_modules.localfiles.music_folders": [str(instance.music_dir)],
+            "input_modules.localfiles.music_sources": [
+                {
+                    "id": "samba",
+                    "kind": "smb",
+                    "location": {
+                        "host": "127.0.0.1",
+                        "port": samba.port,
+                        "path": "music",
+                    },
+                    "authentication": {
+                        "mode": "account",
+                        "username": samba.USERNAME,
+                        "password": samba.PASSWORD,
+                    },
+                }
+            ],
             "input_modules.localfiles.scan_interval_minutes": 60,
-            "input_modules.localfiles.smb.username": samba.USERNAME,
-            "input_modules.localfiles.smb.password": samba.PASSWORD,
             "input_modules.localfiles.ai_search.enabled": True,
         },
         cache_dir / "models",

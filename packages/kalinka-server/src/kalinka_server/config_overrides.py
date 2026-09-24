@@ -11,12 +11,24 @@ state. Atomic-write via tempfile + ``os.replace`` so a crash mid-write
 cannot leave a half-written file in place.
 """
 
+import enum
 import json
 import logging
 import os
 import tempfile
-from typing import Annotated, Any, Dict, List, Mapping, get_args
+from typing import (
+    Annotated,
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    MutableMapping,
+    get_args,
+    get_origin,
+)
 
+from kalinka_plugin_sdk.module_config import ModuleConfig
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from pydantic.fields import FieldInfo
 
@@ -125,11 +137,76 @@ def save_overrides(path: str, overrides: Mapping[str, Any]) -> None:
         raise
 
 
+def store_override(
+    overrides: MutableMapping[str, Any], key: str, value: Any
+) -> None:
+    """Keep ``value`` at ``key``, and nothing kept beneath it: a whole value
+    supersedes its parts, and a part applied after it would undo it."""
+    for stale in [k for k in overrides if k.startswith(f"{key}.")]:
+        del overrides[stale]
+    overrides[key] = value
+
+
+def reconcile_config(config: ModuleConfig, written: Iterable[str]) -> Dict[str, Any]:
+    """Let a plugin's configuration bring its dependent fields back in line
+    after ``written`` were set (``ModuleConfig.reconcile``).
+
+    @return Each top-level field that changed, as the overrides file keeps
+        it, for the caller to keep alongside what was written.
+    """
+    before = _top_level_values(config)
+    config.reconcile(frozenset(written))
+    return {
+        name: value
+        for name, value in _top_level_values(config).items()
+        if value != before[name]
+    }
+
+
+def _top_level_values(model: BaseModel) -> Dict[str, Any]:
+    return {
+        name: to_override_value(getattr(model, name))
+        for name in type(model).model_fields
+    }
+
+
 def _read_path(model: BaseModel, attrs: List[str]) -> Any:
     current: Any = model
     for part in attrs:
         current = getattr(current, part)
     return current
+
+
+def to_override_value(value: Any) -> Any:
+    """``value`` as the overrides file stores it: plain JSON, an enum as its
+    token and a model as its fields."""
+    if isinstance(value, enum.Enum):
+        return value.value
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, (list, tuple)):
+        return [to_override_value(v) for v in value]
+    if isinstance(value, dict):
+        return {k: to_override_value(v) for k, v in value.items()}
+    return value
+
+
+def models_in(annotation: Any) -> tuple[type[BaseModel], ...]:
+    """Every model class an annotation can hold, through ``Optional``,
+    unions, ``Annotated`` and containers."""
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return (annotation,)
+    found: list[type[BaseModel]] = []
+    for arg in get_args(annotation):
+        for model in models_in(arg):
+            if model not in found:
+                found.append(model)
+    return tuple(found)
+
+
+def is_record_list(annotation: Any) -> bool:
+    """Whether a field is a list of models rather than of plain values."""
+    return get_origin(annotation) is list and bool(models_in(annotation))
 
 
 def model_from_annotation(annotation: Any) -> type[BaseModel] | None:

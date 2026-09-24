@@ -1,9 +1,9 @@
-"""Where a music folder is, expressed as a protocol plus a location.
+"""Where music is, expressed as a protocol plus a location.
 
-A configured music folder is either a path on this machine — including
-anything the kernel has mounted there, an NFS or CIFS share as much as a
-local disk — or a URL naming a service to talk to directly. The URL form is
-``smb://[user@]host[:port]/share[/path]``, the spelling file managers and
+A location is either a path on this machine — including anything the kernel
+has mounted there, an NFS or CIFS share as much as a local disk — or a URL
+naming a service to talk to directly. The URL form is
+``smb://host[:port]/share[/path]``, the spelling file managers and
 ``smbclient`` use; ``cifs://`` is accepted as the older name for it.
 
 Locations are compared and joined as ordinary POSIX strings everywhere else
@@ -63,15 +63,12 @@ class StorageLocator:
         percent-decoded, so a folder really named ``100%`` still resolves.
     @param host Empty for a local path.
     @param port None when the protocol's default applies.
-    @param username Taken from the URL when it carries one; the module's
-        configured credentials supply it otherwise.
     """
 
     scheme: str
     path: str
     host: str = ""
     port: Optional[int] = None
-    username: Optional[str] = None
 
     @property
     def is_local(self) -> bool:
@@ -104,8 +101,7 @@ class StorageLocator:
         """The canonical form, which is what gets stored and compared."""
         if self.is_local:
             return self.path
-        userinfo = f"{self.username}@" if self.username else ""
-        return f"{self.scheme}://{userinfo}{self.authority}{self.path}"
+        return f"{self.scheme}://{self.authority}{self.path}"
 
 
 def without_password(raw: str) -> str:
@@ -125,11 +121,11 @@ def scheme_of(raw: str) -> str:
 
 
 def parse(raw: str) -> StorageLocator:
-    """Parse a configured folder or an indexed file path.
+    """Parse a configured location or an indexed file path.
 
     @raise LocatorError If it is empty, malformed, names a protocol this
-        module does not speak, or carries a password (which belongs in the
-        module's credential setting, not in a folder list the UI displays).
+        module does not speak, or names a user or password (which belong to
+        the music source, not to a location the UI displays).
     """
     raw = (raw or "").strip()
     if not raw:
@@ -180,16 +176,11 @@ def _parse_local(raw: str) -> StorageLocator:
 
 def _parse_smb(rest: str) -> StorageLocator:
     authority, _, path = rest.partition("/")
-    username = None
     if "@" in authority:
-        userinfo, _, authority = authority.rpartition("@")
-        if ":" in userinfo:
-            raise LocatorError(
-                "a password does not belong in a folder URL; write "
-                "smb://host/share and set the user and password in the SMB "
-                "credentials"
-            )
-        username = userinfo or None
+        raise LocatorError(
+            "a user name or password does not belong in a share URL; write "
+            "smb://host/share and sign in on the music source"
+        )
 
     host, port = _split_host_port(authority)
     if not host:
@@ -216,7 +207,6 @@ def _parse_smb(rest: str) -> StorageLocator:
         path="/" + "/".join(components),
         host=host,
         port=port,
-        username=username,
     )
 
 

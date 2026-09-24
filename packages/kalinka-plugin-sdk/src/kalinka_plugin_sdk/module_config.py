@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 import uuid
 
 
@@ -29,3 +29,22 @@ class ModuleConfig(BaseModel):
         title="Module enabled",
         json_schema_extra={"importance": "simple"},
     )
+
+    def reconcile(self, written: frozenset[str]) -> None:
+        """Bring the fields that follow others back in line with them.
+
+        One field can mirror another in a shape an older app still edits.
+        Whichever of the two a client writes, this makes the other agree, so
+        every client reads them in agreement.
+
+        @param written The dotted paths just set: by the server after it
+            applies the overrides or a client's changes, or the fields given
+            on construction.
+        @note Runs on the copy a dry run judges as well, so it computes only.
+            The server stores what it changes as it stores what was written.
+        """
+
+    @model_validator(mode="after")
+    def _reconcile_given(self) -> "ModuleConfig":
+        self.reconcile(frozenset(self.model_fields_set))
+        return self

@@ -8,16 +8,21 @@ and never writes it to a log. A client learns only whether one is set.
 A field declared ``private`` — and every credential — is shown to clients as
 usual but never written to a log: a log line names the field and says it was
 updated, and nothing about its value.
+
+The same holds inside a list of records. A credential on an entry is left out
+of what a client is sent and named by the entry's id in ``secrets_set``; a
+client writing the list back leaves it out in turn, and it is kept.
 """
 
 import re
 from typing import Any, Callable, Iterable, Iterator, List
 from urllib.parse import quote, quote_plus
 
+from kalinka_plugin_sdk import ConfigRecord
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 
-from .config_overrides import model_from_annotation
+from .config_overrides import model_from_annotation, models_in, to_override_value
 from .credential_names import is_credential_name
 from .presentation_schema import Widget
 
@@ -95,9 +100,10 @@ def is_private(field: FieldInfo) -> bool:
 def _holds_private(field: FieldInfo) -> bool:
     if is_private(field):
         return True
-    model = model_from_annotation(field.annotation)
-    return model is not None and any(
-        _holds_private(child) for child in model.model_fields.values()
+    return any(
+        _holds_private(child)
+        for model in models_in(field.annotation)
+        for child in model.model_fields.values()
     )
 
 
@@ -128,14 +134,106 @@ def loggable(value: Any) -> str:
     return _mask_url_passwords(repr(value))
 
 
+def _models_of(value: Any) -> list[BaseModel]:
+    if isinstance(value, BaseModel):
+        return [value]
+    if isinstance(value, (list, tuple)):
+        return [item for item in value if isinstance(item, BaseModel)]
+    return []
+
+
 def secret_values(model: BaseModel) -> Iterator[str]:
-    """The credentials ``model`` currently holds, nested groups included."""
+    """The credentials ``model`` currently holds, nested groups and records
+    included."""
     for name, field in type(model).model_fields.items():
         value = getattr(model, name, None)
-        if isinstance(value, BaseModel):
-            yield from secret_values(value)
-        elif is_secret(field) and value:
-            yield str(value)
+        if is_secret(field):
+            if value:
+                yield str(value)
+            continue
+        for nested in _models_of(value):
+            yield from secret_values(nested)
+
+
+def record_key(record: BaseModel, index: int) -> str:
+    """How a path names one entry of a list of models: its id when it is a
+    :class:`ConfigRecord`, its position otherwise."""
+    return record.id if isinstance(record, ConfigRecord) else str(index)
+
+
+def public_records(
+    records: List[BaseModel], path: str, secrets_set: set[str]
+) -> list[dict[str, Any]]:
+    """A list of models as a client may see it: every credential left out,
+    and each one that holds something named in ``secrets_set``."""
+    return [
+        _public_record(record, f"{path}.{record_key(record, index)}", secrets_set)
+        for index, record in enumerate(records)
+    ]
+
+
+def _public_record(
+    record: BaseModel, path: str, secrets_set: set[str]
+) -> dict[str, Any]:
+    public: dict[str, Any] = {}
+    for name, field in type(record).model_fields.items():
+        if field.exclude:
+            continue
+        value = getattr(record, name, None)
+        child = f"{path}.{name}"
+        if is_secret(field):
+            if value:
+                secrets_set.add(child)
+        elif isinstance(value, BaseModel):
+            public[name] = _public_record(value, child, secrets_set)
+        elif _models_of(value):
+            public[name] = public_records(value, child, secrets_set)
+        else:
+            public[name] = to_override_value(value)
+    return public
+
+
+def keep_unsent_secrets(previous: Any, sent: Any, stored: Any) -> None:
+    """Carry over each credential a client left out of the records it wrote.
+
+    It was never sent one, so a list it writes back holds only the
+    credentials it replaced. An entry keeps a saved credential when the
+    entry it replaces has the same id, the same type and the same
+    :meth:`ConfigRecord.credential_scope`; a credential sent explicitly,
+    even as an empty string, is what the client asked for.
+
+    @param previous The list as it was before the write.
+    @param sent The list as the client sent it, before validation.
+    @param stored The list validated from ``sent``, updated in place.
+    """
+    if not all(isinstance(v, list) for v in (previous, sent, stored)):
+        return
+    saved = {r.id: r for r in previous if isinstance(r, ConfigRecord)}
+    for record, raw in zip(stored, sent):
+        if not isinstance(record, ConfigRecord) or not isinstance(raw, dict):
+            continue
+        old = saved.get(record.id)
+        if (
+            old is not None
+            and type(old) is type(record)
+            and old.credential_scope() == record.credential_scope()
+        ):
+            _carry_secrets(old, record, raw)
+
+
+def _carry_secrets(old: BaseModel, new: BaseModel, raw: dict[str, Any]) -> None:
+    for name, field in type(new).model_fields.items():
+        if is_secret(field):
+            if name not in raw:
+                setattr(new, name, getattr(old, name))
+            continue
+        old_value, new_value = getattr(old, name, None), getattr(new, name, None)
+        if (
+            isinstance(new_value, BaseModel)
+            and type(old_value) is type(new_value)
+            and isinstance(raw.get(name), dict)
+        ):
+            _carry_secrets(old_value, new_value, raw[name])
 
 
 def credential_detector(secrets: Iterable[str]) -> Callable[[str], bool]:

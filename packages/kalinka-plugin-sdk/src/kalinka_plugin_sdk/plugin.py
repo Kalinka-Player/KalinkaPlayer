@@ -129,7 +129,10 @@ class PluginBase(ABC, Generic[PLUGIN_CLASS, CTX_TYPE]):
         ``json_schema_extra={"dynamic_options": True}``; ``path`` is that
         field's path inside this plugin's config model (e.g.
         "music_folders"). For a list field the options are suggestions for
-        one item of it.
+        one item of it. A field inside the entries of a
+        :data:`~kalinka_plugin_sdk.config_records.Records` collection is
+        named by the collection and its path within an entry
+        ("music_sources.location.host"), whichever entry is being edited.
 
         Suggestions, not a closed set: the user may pick one or type
         something else entirely, so returning nothing is an ordinary

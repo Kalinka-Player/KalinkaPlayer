@@ -49,6 +49,7 @@ from ..storage import (
     RootStatus,
     StorageResolver,
     build_resolver,
+    library_roots,
     media_type_of,
 )
 from ..utils.name_utils import (
@@ -208,10 +209,10 @@ class FileIndexer:
         # itself. Injectable so a test can drive the indexer over storage
         # that is neither.
         self.storage = storage or build_resolver(config)
-        # Canonical form of each music folder. This is the access boundary:
-        # only files under one of these are indexed, and cleanup_stale_tracks
-        # purges anything that falls outside them.
-        self.music_folders = self.storage.canonical_roots(config.music_folders)
+        # Canonical form of each music folder and source. This is the access
+        # boundary: only files under one of these are indexed, and
+        # cleanup_stale_tracks purges anything that falls outside them.
+        self.music_folders = library_roots(config, self.storage)
         self.artwork_path = Path(config.artwork_path).expanduser().resolve()
         self.running = False
         self.lock = asyncio.Lock()
@@ -2135,7 +2136,7 @@ async def _file_watcher_worker(config: LocalFilesConfig):
     """
     resolver = build_resolver(config)
     roots_by_storage: Dict[FileStorage, List[str]] = {}
-    for root in resolver.canonical_roots(config.music_folders):
+    for root in library_roots(config, resolver):
         roots_by_storage.setdefault(resolver.for_path(root), []).append(root)
 
     watched: List[Tuple[FileStorage, ChangeWatcher]] = []

@@ -32,14 +32,22 @@ from __future__ import annotations
 import inspect
 import logging
 from functools import partial
-from typing import Any, Awaitable, Callable, Union
+from typing import Any, Awaitable, Callable, Iterator, Union
 
 from pydantic import BaseModel, ValidationError
 
 from kalinka_plugin_sdk.plugin import PluginBase
 
 from .player_setup import PreparedPlugin
-from .presentation_schema import OptionSpec, PresentationSchema
+from .presentation_schema import (
+    CollectionSpec,
+    FieldSpec,
+    GroupSpec,
+    OptionSpec,
+    PresentationSchema,
+    SectionSpec,
+    VariantSpec,
+)
 
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -179,17 +187,49 @@ def register_plugin_options(
     Reads the built schema rather than walking the config models again, so
     a field is offered suggestions on exactly the terms the settings page
     renders it — including the widget guard that drops the tag where a
-    suggestion could not be shown.
+    suggestion could not be shown. A field inside the entries of a
+    collection is offered them under ``<collection path>.<field path>``,
+    whichever entry it is edited in.
     """
-    for field in schema.expert_fields:
-        if not field.dynamic_options:
-            continue
-        owner = _owner_of(field.path, input_modules, devices)
+    paths = [field.path for field in schema.expert_fields if field.dynamic_options]
+    paths += [
+        f"{collection.path}.{field.path}"
+        for collection in _collections(schema)
+        for field in _entry_fields(collection.variants)
+        if field.dynamic_options
+    ]
+    for path in dict.fromkeys(paths):
+        owner = _owner_of(path, input_modules, devices)
         if owner is None:
             logger.warning(
                 "Field %s is tagged dynamic_options but no loaded plugin owns "
                 "it; no suggestions will be offered",
-                field.path,
+                path,
             )
             continue
-        registry.register(field.path, partial(_resolve_options, *owner))
+        registry.register(path, partial(_resolve_options, *owner))
+
+
+def _collections(schema: PresentationSchema) -> Iterator[CollectionSpec]:
+    def within(sections: list[SectionSpec]) -> Iterator[CollectionSpec]:
+        for section in sections:
+            yield from section.collections
+            yield from within(section.sections)
+
+    for page in schema.pages:
+        yield from within(page.sections)
+        for module in page.modules:
+            yield from module.collections
+            yield from within(module.sections)
+
+
+def _entry_fields(variants: list[VariantSpec]) -> Iterator[FieldSpec]:
+    def within(groups: list[GroupSpec]) -> Iterator[FieldSpec]:
+        for group in groups:
+            yield from group.fields
+            yield from within(group.groups)
+            yield from _entry_fields(group.variants)
+
+    for variant in variants:
+        yield from variant.fields
+        yield from within(variant.groups)

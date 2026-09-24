@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from kalinka_plugin_localfiles.config_model import LocalFilesConfig
 from kalinka_plugin_sdk.module_config import ModuleConfig
 from kalinka_server.config_model import KalinkaConfig
 from kalinka_server.config_schema_processor import build_presentation
@@ -103,15 +102,3 @@ def test_inline_fields_stay_in_the_expert_list():
 
     assert "input_modules.mod.login.user" in paths
     assert "input_modules.mod.login.tuning.depth" in paths
-
-
-def test_smb_credentials_follow_the_music_folders():
-    module = _module(_schema({"localfiles": LocalFilesConfig()}), "localfiles")
-    paths = [f.path for f in module.fields]
-
-    folders = paths.index("input_modules.localfiles.music_folders")
-    assert paths[folders + 1 : folders + 3] == [
-        "input_modules.localfiles.smb.username",
-        "input_modules.localfiles.smb.password",
-    ]
-    assert "input_modules.localfiles.smb" not in {s.id for s in module.sections}
