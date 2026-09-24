@@ -223,10 +223,13 @@ class CollectionSpec(BaseModel):
     A client shows every entry as a card and opens one in a dialog to edit
     it; adding one asks which variant it is when there is more than one.
     The whole list is written back as one value, and a credential an entry
-    leaves out keeps what was saved. Paths inside the variants are relative
-    to an entry: suggestions for one ride ``enum_options`` under
-    ``<path>.<relative path>``, and issues and set credentials name the entry
-    by its id, as ``<path>.<id>.<relative path>``.
+    leaves out keeps what was saved, unless the entry now names another
+    server or user: that draws an issue at the credential instead. Paths
+    inside the variants are relative to an entry: suggestions for one ride
+    ``enum_options`` under ``<path>.<relative path>``, and issues and set
+    credentials name the entry by its id, as ``<path>.<id>.<relative
+    path>``. An issue names the collection, an entry or a field inside one,
+    never a group.
 
     Old clients ignore it, which is why it rides lists of its own rather
     than a new field widget.

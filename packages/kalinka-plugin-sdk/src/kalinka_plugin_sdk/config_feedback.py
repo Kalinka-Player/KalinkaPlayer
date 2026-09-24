@@ -53,10 +53,14 @@ class ConfigIssue(BaseModel):
 
     @param path The field, relative to the plugin's own config model
         (``music_folders``, ``enricher.plugins.acoustid.api_key``). The
-        server prefixes it. An entry of a
-        :data:`~kalinka_plugin_sdk.config_records.Records` collection is
-        named by its id, and a part of it by the path within it:
-        ``music_sources.<id>.location.host``.
+        server prefixes it. Within a
+        :data:`~kalinka_plugin_sdk.config_records.Records` collection it
+        names one of three things, and a client shows it nowhere else: the
+        collection (``music_sources``), an entry by its id
+        (``music_sources.<id>``), or a field of an entry by its path within
+        it (``music_sources.<id>.location.host``). A group inside an entry
+        (``music_sources.<id>.location``) is not shown; name the field that
+        is wrong, or the entry.
     @param message Shown under the field. Says what to write instead, not
         what the code found.
     @param index Which item of a list field the issue is about; None when it
