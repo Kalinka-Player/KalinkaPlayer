@@ -312,6 +312,7 @@ class AccountSignIn(BaseModel):
     password: str = Field(
         default="",
         title="Password",
+        repr=False,
         json_schema_extra={"widget": "password", **_SIMPLE},
     )
 

@@ -7,7 +7,7 @@ import multiprocessing
 import shutil
 import threading
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Optional
+from typing import Any, Callable, ClassVar, Mapping, Optional
 
 from kalinka_plugin_sdk import (
     ConfigIssue,
@@ -26,6 +26,7 @@ from .config_model import AccountSignIn, LocalFilesConfig, LocalSource, MusicSou
 from .db_schema import init_db
 from .storage import (
     FILE_SCHEME,
+    FileStorage,
     LocatorError,
     RootStatus,
     StorageResolver,
@@ -163,7 +164,7 @@ def _format_root_status(
 
 
 async def _probe_roots(
-    resolver: StorageResolver, roots: list[str]
+    roots: list[str], storage_of: Callable[[str], FileStorage]
 ) -> list[RootStatus]:
     """Every root's availability, asked for at once.
 
@@ -172,7 +173,7 @@ async def _probe_roots(
     """
     return await asyncio.gather(
         *(
-            resolver.for_path(root).probe_root(root, timeout=_PROBE_TIMEOUT_S)
+            storage_of(root).probe_root(root, timeout=_PROBE_TIMEOUT_S)
             for root in roots
         )
     )
@@ -248,7 +249,8 @@ def _misspelling(
     host = location.host.strip()
     if not host:
         return "location.host", "name the server"
-    if any(c in host for c in "/\\@"):
+    # One colon is a port, not an IPv6 address: that has two at least.
+    if any(c in host for c in "/\\@") or host.count(":") == 1:
         return "location.host", "a server is a name or an address, nothing more"
     parts = location.parts()
     if not parts:
@@ -268,7 +270,10 @@ def _misspelling(
 
 
 def _judge_locations(
-    config: LocalFilesConfig, folders_edited: bool, sources_edited: bool
+    config: LocalFilesConfig,
+    folders_edited: bool,
+    sources_edited: bool,
+    saved: Mapping[str, MusicSource],
 ) -> tuple[list[ConfigIssue], list[tuple[str, _Where]]]:
     """What is wrong with how each source is written, and the roots to probe.
 
@@ -280,6 +285,9 @@ def _judge_locations(
         said against its folder, and the shares that app cannot see are
         left out.
     @param sources_edited Whether the sources were just written as they are.
+    @param saved The sources as they are saved, by id. One written back as it
+        was is only warned about, however it is spelt, so an entry already
+        wrong never keeps the rest of the list from being saved.
     @note A source nobody has just written is left alone: one that was
         already wrong would refuse a save that has nothing to do with it.
     """
@@ -293,15 +301,20 @@ def _judge_locations(
         where = _where(source, folder, folders_edited, sources_edited)
         if where is None:
             continue
-        misspelt = _misspelling(source, as_folder=where.folder is not None)
-        if misspelt is not None:
-            part, message = misspelt
-            issues.append(where.issue(message, part))
-            continue
-        try:
-            root = str(parse(source_location(source)))
-        except LocatorError as e:
-            issues.append(where.issue(str(e)))
+        refusal = _misspelling(source, as_folder=where.folder is not None)
+        if refusal is None:
+            try:
+                root = str(parse(source_location(source)))
+            except LocatorError as e:
+                refusal = "", str(e)
+        if refusal is not None:
+            part, message = refusal
+            severity = (
+                IssueSeverity.WARNING
+                if saved.get(source.id) == source
+                else IssueSeverity.ERROR
+            )
+            issues.append(where.issue(message, part, severity))
             continue
         if root in first:
             issues.append(where.repeating(first[root]))
@@ -756,7 +769,7 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
         folders = await asyncio.to_thread(
             resolver.canonical_roots, library_locations(config)
         )
-        statuses = await _probe_roots(resolver, folders)
+        statuses = await _probe_roots(folders, resolver.for_path)
         module = self._inputmodule
         if module is None or not module.db_manager.is_good():
             return [(status, None) for status in statuses]
@@ -886,6 +899,24 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
             return self._current_resolver()
         return self._staged_resolvers.get(candidate)
 
+    def _storage_for_candidate(
+        self, candidate: LocalFilesConfig
+    ) -> Callable[[str], FileStorage]:
+        """Where to probe each of ``candidate``'s roots.
+
+        A share goes through :meth:`_resolver_for_candidate`. A folder has no
+        login to stage, so it always goes through the live resolver, whose
+        registry holds a hung one to a single thread however many shares are
+        typed beside it.
+        """
+        staged = self._resolver_for_candidate(candidate)
+        if self._context is None:
+            return staged.for_path
+        live = self._current_resolver()
+        return lambda root: (
+            live if scheme_of(root) == FILE_SCHEME else staged
+        ).for_path(root)
+
     async def validate_config(
         self, candidate: ModuleConfig, changed: frozenset[str]
     ) -> list[ConfigIssue]:
@@ -908,12 +939,18 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
             return []
 
         config = LocalFilesConfig(**candidate.model_dump())
+        saved = (
+            {}
+            if self._context is None
+            else {source.id: source for source in self._context.config.music_sources}
+        )
         issues, places = await asyncio.to_thread(
-            _judge_locations, config, folders_edited, sources_edited
+            _judge_locations, config, folders_edited, sources_edited, saved
         )
 
-        resolver = self._resolver_for_candidate(config)
-        statuses = await _probe_roots(resolver, [root for root, _where in places])
+        statuses = await _probe_roots(
+            [root for root, _where in places], self._storage_for_candidate(config)
+        )
         for (_root, where), status in zip(places, statuses):
             if status.available:
                 continue

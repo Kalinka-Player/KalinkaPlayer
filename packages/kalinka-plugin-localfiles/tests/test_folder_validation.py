@@ -128,6 +128,14 @@ def _judge(plugin, folders=None, sources=None, changed=None):
     )
 
 
+def _saved(plugin, *sources):
+    """The live configuration as a save of ``sources`` leaves it."""
+    made, _music = plugin
+    live = made._context.config
+    live.music_sources = LocalFilesConfig(music_sources=list(sources)).music_sources
+    live.reconcile(frozenset({"music_sources"}))
+
+
 def _with_password(config, password):
     typed = config.model_copy(deep=True)
     typed.music_sources[0].authentication.password = password
@@ -191,6 +199,7 @@ class TestHowASourceIsWritten:
         [
             (_share(host=""), "location.host", "name the server"),
             (_share(host="alice@nas"), "location.host", "nothing more"),
+            (_share(host="nas:4450"), "location.host", "nothing more"),
             (_share(path=""), "location.path", "name the share"),
             (_share(path="/ / "), "location.path", "name the share"),
             (_share(path="music/a/../b"), "location.path", "'..'"),
@@ -234,6 +243,25 @@ class TestHowASourceIsWritten:
             music_sources=[_share(path="")]
         ).music_sources
         assert _judge(plugin, [str(music)]) == []
+
+    def test_an_entry_already_wrong_does_not_refuse_the_rest_of_the_list(
+        self, plugin, shares
+    ):
+        """Otherwise it has to be repaired before a password for the share
+        beside it can be saved at all."""
+        left_over = _local("smb://nas/music", id="old")
+        _saved(plugin, left_over, _share(username="media", password="saved"))
+        issues = _judge(
+            plugin, sources=[left_over, _share(username="media", password="typed")]
+        )
+        assert [(i.path, i.severity) for i in issues] == [
+            ("music_sources.old.location.path", IssueSeverity.WARNING)
+        ]
+
+    def test_an_entry_already_wrong_is_refused_once_it_is_edited(self, plugin):
+        _saved(plugin, _local("smb://nas/music", id="old"))
+        issues = _judge(plugin, sources=[_local("smb://nas/films", id="old")])
+        assert [i.path for i in issues] == ["music_sources.old.location.path"]
 
 
 class TestAnOlderAppsFolders:
@@ -331,6 +359,27 @@ class TestWhatTheLiveConfigurationKeeps:
         )
 
         assert made._resolver_for(live) is before
+
+    def test_a_folder_is_asked_through_the_storage_playback_reads(
+        self, plugin, shares, monkeypatch
+    ):
+        """Its registry holds a hung folder to one blocked thread. A storage
+        of its own for every keystroke in a share's server would claim a
+        thread for each, from the executor every request shares."""
+        made, music = plugin
+        reading = made._current_resolver().for_path(str(music))
+        asked = []
+        monkeypatch.setattr(
+            LocalStorage,
+            "probe_root_blocking",
+            lambda self, root: asked.append(self) or _answered(root),
+        )
+
+        for host in ("n", "na", "nas2"):
+            _judge(plugin, sources=[_local(music, id="music"), _share(host=host)])
+
+        assert len(asked) == 3
+        assert all(storage is reading for storage in asked)
 
     def test_judging_unchanged_logins_reuses_the_resolver_playback_has(self, plugin):
         """Its probe registry is what holds a hung share to one blocked
