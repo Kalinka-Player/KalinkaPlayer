@@ -287,15 +287,18 @@ class AsyncIndexerDb(ProvenanceDb):
             await conn.commit()
 
     async def get_library_file_by_inode(
-        self, device_id: str, inode: str
+        self, device_id: str, inode: str, path: str
     ) -> Optional[Dict]:
         """The library_file row for a (device, inode) pair, if any — the
-        move-detection lookup."""
+        move-detection lookup. The row already at ``path`` comes first: a
+        share read under two spellings has a row at each for the same file,
+        and the file is not moved onto a path it already holds."""
         async with self._open() as conn:
             conn.row_factory = aiosqlite.Row
             cur = await conn.execute(
-                "SELECT * FROM library_file WHERE device_id = ? AND inode = ?",
-                (device_id, inode),
+                "SELECT * FROM library_file WHERE device_id = ? AND inode = ? "
+                "ORDER BY current_path = ? DESC",
+                (device_id, inode, path),
             )
             row = await cur.fetchone()
             return dict(row) if row else None
