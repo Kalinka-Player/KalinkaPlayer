@@ -22,9 +22,9 @@ from typing import Any, Iterable, Mapping
 from kalinka_plugin_sdk import ConfigIssue, IssueSeverity
 from pydantic import BaseModel, ValidationError
 
-from .config_overrides import set_by_path
+from .config_overrides import reconcile_config, set_by_path, to_override_value
 from .config_schema_processor import get_field_value
-from .config_secrets import is_private_path, loggable
+from .config_secrets import is_private_path, keep_unsent_secrets, loggable
 from .player_setup import PreparedPlugin
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -161,18 +161,20 @@ def apply_change(model: BaseModel, attrs: list[str], value: Any) -> str | None:
 
     The same call serves the dry run and the save: the dry run writes to a
     copy, the save to the live configuration, and neither may accept what
-    the other would refuse.
+    the other would refuse — nor keep a different saved credential.
 
     @return The reason the value cannot be stored, in words for the user,
         or None when it was written.
     @raise ConfigKeyError If the path names no field.
     """
     try:
+        previous = get_field_value(model, attrs)
         set_by_path(model, attrs, value)
     except ValidationError as exc:
         return _first_message(exc)
     except (AttributeError, IndexError, TypeError, ValueError) as exc:
         raise ConfigKeyError("Invalid config key") from exc
+    keep_unsent_secrets(previous, value, get_field_value(model, attrs))
     return None
 
 
@@ -198,6 +200,31 @@ def commit_change(target: _Target, key: str, value: Any) -> str | None:
                 loggable(get_field_value(target.model, target.attrs)),
             )
     return reason
+
+
+def reconcile_written(targets: Iterable[_Target]) -> dict[str, Any]:
+    """Let every plugin configuration a save wrote to bring its dependent
+    fields back in line (``ModuleConfig.reconcile``).
+
+    @return What the overrides file now keeps differently, by full path.
+    """
+    written: dict[str, tuple[Any, set[str]]] = {}
+    for target in targets:
+        if target.plugin is not None:
+            _model, paths = written.setdefault(target.prefix, (target.model, set()))
+            paths.add(".".join(target.attrs))
+    reconciled: dict[str, Any] = {}
+    for prefix, (model, paths) in written.items():
+        for name, value in reconcile_config(model, paths).items():
+            logger.info("Updated config field %s.%s to follow the change", prefix, name)
+            reconciled[f"{prefix}.{name}"] = value
+    return reconciled
+
+
+def stored_value(target: _Target) -> Any:
+    """What the overrides file keeps for ``target``: the value as stored, not
+    as sent, so a list of records keeps the credentials the write left out."""
+    return to_override_value(get_field_value(target.model, target.attrs))
 
 
 async def _plugin_issues(
@@ -263,6 +290,7 @@ async def validate_changes(
     for prefix, (target, candidate, changed) in groups.items():
         if target.plugin is None or not changed:
             continue
+        candidate.reconcile(frozenset(changed))
         issues.extend(
             await _plugin_issues(target.plugin, candidate, frozenset(changed), prefix)
         )

@@ -54,7 +54,13 @@ from kalinka_plugin_sdk.filters import (
 )
 from .utils.id_generator import generate_playlist_id
 from .utils.image_utils import create_playlist_cover_collage
-from .storage import FileStat, StorageResolver, build_resolver, media_type_of
+from .storage import (
+    FileStat,
+    StorageResolver,
+    build_resolver,
+    library_roots,
+    media_type_of,
+)
 from .input_module_db import (
     ListingFilter,
     LocalFilesInputModuleDb,
@@ -253,13 +259,13 @@ class LocalFilesInputModule(InputModule):
         self.db_manager = db_manager
         self.artwork_path = Path(config.artwork_path).expanduser().resolve()
         self._storage_source = storage_source or (lambda: build_resolver(config))
-        # Access boundary: only files under a configured music folder may be
-        # served / played. Captured once here, so it is fixed for the lifetime
-        # of this module instance — a live config edit via PUT /server/config
-        # does not re-run setup(), so the new boundary only takes effect on the
-        # next restart / re-setup (at which point the indexer also purges the
-        # now-out-of-scope rows).
-        self._music_folders = self._storage.canonical_roots(config.music_folders)
+        # Access boundary: only files under a configured music folder or
+        # source may be served / played. Captured once here, so it is fixed
+        # for the lifetime of this module instance — a live config edit via
+        # PUT /server/config does not re-run setup(), so the new boundary only
+        # takes effect on the next restart / re-setup (at which point the
+        # indexer also purges the now-out-of-scope rows).
+        self._music_folders = library_roots(config, self._storage)
         self._search_request_queue = search_request_queue
         self._search_response_queue = search_response_queue
         self._search_lock = asyncio.Lock()

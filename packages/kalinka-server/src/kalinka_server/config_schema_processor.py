@@ -31,6 +31,12 @@ the configuration, which then names the field and says it was updated.
 Clients still get the value; a credential is private without the tag. See
 :mod:`config_secrets`.
 
+A list of records (``Records[...]`` of the SDK) is described as a
+collection: cards a client opens one at a time, each entry laid out by the
+shape its discriminator names. Collections ride lists of their own, which old
+clients ignore, and never the expert list, which has no editor for one. A
+list of models that are not records is not described at all.
+
 A monotonic ``schema_version`` string lets the client detect staleness
 after plugin reloads.
 """
@@ -42,20 +48,24 @@ import json
 import logging
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, Iterable, List, Union, get_origin, get_args
+from typing import Annotated, Any, Dict, Iterable, List, Union, get_origin, get_args
 
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 
+from kalinka_plugin_sdk import ConfigRecord
 from kalinka_plugin_sdk.module_config import ModuleConfig
 
-from .config_secrets import is_private, is_secret, loggable
+from .config_overrides import is_record_list, models_in
+from .config_secrets import is_private, is_secret, loggable, public_records
 from .dynamic_field_registry import DynamicFieldEntry, resolve_value
 from .options_registry import OptionsRegistry
 from .presentation_schema import (
     Banner,
+    CollectionSpec,
     Constraints,
     FieldSpec,
+    GroupSpec,
     Importance,
     ModuleSpec,
     OptionSpec,
@@ -64,6 +74,7 @@ from .presentation_schema import (
     SectionSpec,
     Setup,
     Severity,
+    VariantSpec,
     Widget,
 )
 
@@ -312,6 +323,135 @@ def _build_field_spec(
     )
 
 
+def _is_record_collection(annotation: Any) -> bool:
+    return is_record_list(annotation) and all(
+        issubclass(model, ConfigRecord) for model in models_in(annotation)
+    )
+
+
+def _discriminator(annotation: Any, field: FieldInfo | None = None) -> str | None:
+    """The field that tells the shapes of a union apart, where one is declared
+    — on the field, or on the ``Annotated`` union a list holds."""
+    declared = getattr(field, "discriminator", None)
+    if isinstance(declared, str):
+        return declared
+    if get_origin(annotation) is Annotated:
+        for meta in get_args(annotation)[1:]:
+            declared = getattr(meta, "discriminator", None)
+            if isinstance(declared, str):
+                return declared
+    return None
+
+
+def _record_parts(
+    model: type[BaseModel], prefix: str, skip: frozenset[str]
+) -> tuple[list[FieldSpec], list[GroupSpec]]:
+    fields: list[FieldSpec] = []
+    groups: list[GroupSpec] = []
+    for name, field in model.model_fields.items():
+        if name in skip or field.exclude or is_record_list(field.annotation):
+            continue
+        path = f"{prefix}{name}"
+        models = models_in(field.annotation)
+        if models:
+            groups.append(_group_spec(path, name, field, models))
+        else:
+            spec = _build_field_spec(path, name, field)
+            if spec is not None:
+                fields.append(spec)
+    return fields, groups
+
+
+def _variant_spec(
+    model: type[BaseModel],
+    discriminator: str | None,
+    prefix: str,
+    fallback_label: str,
+) -> VariantSpec:
+    """One shape, labelled by the declaration of its discriminator field."""
+    tag = model.model_fields.get(discriminator) if discriminator else None
+    skip = {discriminator} if discriminator else set()
+    if issubclass(model, ConfigRecord):
+        skip.add("id")
+    fields, groups = _record_parts(model, prefix, frozenset(skip))
+    return VariantSpec(
+        key="" if tag is None else str(tag.default),
+        label=(tag.title if tag is not None and tag.title else fallback_label),
+        icon=None if tag is None else _json_extra(tag).get("icon"),
+        description=None if tag is None else tag.description,
+        summary=list(getattr(model, "__preview_fields__", [])),
+        fields=fields,
+        groups=groups,
+    )
+
+
+def _group_spec(
+    path: str, name: str, field: FieldInfo, models: tuple[type[BaseModel], ...]
+) -> GroupSpec:
+    title = field.title or name
+    discriminator = _discriminator(field.annotation, field)
+    if discriminator is None:
+        fields, groups = _record_parts(models[0], f"{path}.", frozenset())
+        return GroupSpec(path=path, title=title, fields=fields, groups=groups)
+    try:
+        default = field.get_default(call_default_factory=True)
+    except ValueError:
+        default = None
+    return GroupSpec(
+        path=path,
+        title=title,
+        discriminator=discriminator,
+        default=getattr(default, discriminator, None),
+        variants=[
+            _variant_spec(model, discriminator, f"{path}.", model.__name__)
+            for model in models
+        ],
+    )
+
+
+def _collection_spec(
+    path: str, field: FieldInfo, after: str | None
+) -> CollectionSpec:
+    item = get_args(field.annotation)[0]
+    discriminator = _discriminator(item)
+    extras = _json_extra(field)
+    parent, _, name = path.rpartition(".")
+    title = field.title or name
+    return CollectionSpec(
+        path=path,
+        title=title,
+        help=extras.get("help") or field.description or None,
+        discriminator=discriminator,
+        variants=[
+            _variant_spec(model, discriminator, "", title)
+            for model in models_in(item)
+        ],
+        after=after,
+        replaces=[f"{parent}.{other}" for other in extras.get("replaces", [])],
+    )
+
+
+def _reanchor(
+    collections: list[CollectionSpec],
+    fields: list[FieldSpec],
+    shown: list[FieldSpec],
+) -> list[CollectionSpec]:
+    """``collections`` placed after the nearest field a pruned view still
+    shows, so dropping the one a collection followed does not move it to the
+    end."""
+    order = [f.path for f in fields]
+    kept = {f.path for f in shown}
+    placed: list[CollectionSpec] = []
+    for collection in collections:
+        at = order.index(collection.after) if collection.after in order else -1
+        while at >= 0 and order[at] not in kept:
+            at -= 1
+        placed.append(
+            collection.model_copy(update={"after": order[at] if at >= 0 else None})
+        )
+    return placed
+
+
 # ---------------------------------------------------------------------------
 # Auto-derived section layout (when a config class does not override)
 # ---------------------------------------------------------------------------
@@ -319,18 +459,20 @@ def _build_field_spec(
 
 def _split_general(
     sections: list[SectionSpec], prefix: str
-) -> tuple[list[FieldSpec], list[SectionSpec]]:
-    """Split off ``prefix``'s auto "General" section so its fields sit on
-    whatever wraps them, not under a redundant heading."""
+) -> tuple[list[FieldSpec], list[CollectionSpec], list[SectionSpec]]:
+    """Split off ``prefix``'s auto "General" section so its fields and
+    collections sit on whatever wraps them, not under a redundant heading."""
     general_id = f"{prefix}.general"
     fields: list[FieldSpec] = []
+    collections: list[CollectionSpec] = []
     rest: list[SectionSpec] = []
     for s in sections:
         if s.id == general_id and not s.sections:
             fields = s.fields
+            collections = s.collections
         else:
             rest.append(s)
-    return fields, rest
+    return fields, collections, rest
 
 
 def _auto_sections(model: BaseModel, prefix: str) -> list[SectionSpec]:
@@ -340,19 +482,29 @@ def _auto_sections(model: BaseModel, prefix: str) -> list[SectionSpec]:
     point it is declared.
     """
     scalar_fields: list[FieldSpec] = []
+    collections: list[CollectionSpec] = []
     nested_sections: list[SectionSpec] = []
 
     for field_name, field in model.__class__.model_fields.items():
-        wire_type = annotation_to_type(field.annotation)
         child_path = f"{prefix}.{field_name}" if prefix else field_name
+        last_field = scalar_fields[-1].path if scalar_fields else None
+        if is_record_list(field.annotation):
+            if _is_record_collection(field.annotation):
+                collections.append(_collection_spec(child_path, field, last_field))
+            continue
+        wire_type = annotation_to_type(field.annotation)
 
         if wire_type == "section":
             extras = _json_extra(field)
-            promoted_fields, kept_sections = _split_general(
+            promoted_fields, promoted_collections, kept_sections = _split_general(
                 _sections_for(getattr(model, field_name), child_path), child_path
             )
             if extras.get("inline"):
                 scalar_fields.extend(promoted_fields)
+                collections.extend(
+                    c if c.after else c.model_copy(update={"after": last_field})
+                    for c in promoted_collections
+                )
                 nested_sections.extend(kept_sections)
                 continue
 
@@ -362,6 +514,7 @@ def _auto_sections(model: BaseModel, prefix: str) -> list[SectionSpec]:
                     title=field.title or field_name,
                     importance=_importance_from_extras(extras, Importance.SIMPLE),
                     fields=promoted_fields,
+                    collections=promoted_collections,
                     sections=kept_sections,
                 )
             )
@@ -371,12 +524,13 @@ def _auto_sections(model: BaseModel, prefix: str) -> list[SectionSpec]:
                 scalar_fields.append(spec)
 
     result: list[SectionSpec] = []
-    if scalar_fields:
+    if scalar_fields or collections:
         result.append(
             SectionSpec(
                 id=f"{prefix}.general" if prefix else "general",
                 title="General",
                 fields=scalar_fields,
+                collections=collections,
             )
         )
     result.extend(nested_sections)
@@ -523,7 +677,9 @@ def _module_spec(
     _inject_dynamic_fields(sections, prefix, dynamic_entries)
 
     # After injection, so a dynamic field can target the general section.
-    module_fields, kept_sections = _split_general(sections, prefix)
+    module_fields, module_collections, kept_sections = _split_general(
+        sections, prefix
+    )
 
     name_field = cls.model_fields["name"]
     title = name_field.title or config.name
@@ -540,6 +696,7 @@ def _module_spec(
         preview_fields=list(getattr(cls, "__preview_fields__", [])),
         banners=banners,
         fields=module_fields,
+        collections=module_collections,
         sections=kept_sections,
     )
 
@@ -557,8 +714,11 @@ def _prune_sections_to_simple(sections: list[SectionSpec]) -> list[SectionSpec]:
     * it is itself tagged ``importance=EXPERT`` (developer explicitly
       marked the entire group as expert-only — e.g. the "Buffers &
       decoders" section), OR
-    * *all* its fields are EXPERT *and* every sub-section recursively
-      prunes empty.
+    * *all* its fields are EXPERT, it holds no collection, *and* every
+      sub-section recursively prunes empty.
+
+    A collection is always kept: the expert list has no editor for one, so
+    this view is the only place it can be reached.
 
     Field order is preserved. The returned tree is fully new — callers
     retain ownership of the original (used to build the expert flat
@@ -570,7 +730,7 @@ def _prune_sections_to_simple(sections: list[SectionSpec]) -> list[SectionSpec]:
             continue
         simple_fields = [f for f in s.fields if f.importance == Importance.SIMPLE]
         pruned_children = _prune_sections_to_simple(s.sections)
-        if not simple_fields and not pruned_children:
+        if not simple_fields and not s.collections and not pruned_children:
             continue
         kept.append(
             SectionSpec(
@@ -580,6 +740,7 @@ def _prune_sections_to_simple(sections: list[SectionSpec]) -> list[SectionSpec]:
                 importance=s.importance,
                 banners=list(s.banners),
                 fields=simple_fields,
+                collections=_reanchor(s.collections, s.fields, simple_fields),
                 sections=pruned_children,
             )
         )
@@ -617,6 +778,7 @@ def _prune_module_to_simple(module: ModuleSpec) -> ModuleSpec:
         preview_fields=list(module.preview_fields),
         banners=list(module.banners),
         fields=kept_fields,
+        collections=_reanchor(module.collections, module.fields, kept_fields),
         sections=_prune_sections_to_simple(module.sections),
     )
 
@@ -706,6 +868,8 @@ def _flatten_values(
         elif is_secret(field):
             if value:
                 secrets_set.add(path)
+        elif is_record_list(field.annotation):
+            out[path] = public_records(value, path, secrets_set)
         elif isinstance(value, Enum):
             out[path] = value.value
         else:

@@ -179,6 +179,73 @@ class FieldSpec(BaseModel):
     constraints: Optional[Constraints] = None
 
 
+class VariantSpec(BaseModel):
+    """One shape an entry of a collection, or a part of one, can take.
+
+    Built from one class of a discriminated union: ``key`` is the value its
+    discriminator field holds, and the label, icon and description come from
+    that field's declaration. Paths are relative to the entry.
+    """
+
+    key: str
+    label: str
+    icon: Optional[str] = None
+    description: Optional[str] = None
+    # Fields whose values make up the card's second line.
+    summary: list[str] = Field(default_factory=list)
+    fields: list[FieldSpec] = Field(default_factory=list)
+    groups: list["GroupSpec"] = Field(default_factory=list)
+
+
+class GroupSpec(BaseModel):
+    """A nested part of an entry, in the order it is declared.
+
+    Either a plain group, with ``fields`` and ``groups`` of its own, or — with
+    ``discriminator`` set — a part that takes one of several shapes, one per
+    ``variants`` entry. Writing a variant's key into the discriminator is
+    what switches the part to it; ``default`` is the shape it takes unset.
+    """
+
+    path: str
+    title: str
+    fields: list[FieldSpec] = Field(default_factory=list)
+    groups: list["GroupSpec"] = Field(default_factory=list)
+    discriminator: Optional[str] = None
+    default: Optional[str] = None
+    variants: list[VariantSpec] = Field(default_factory=list)
+
+
+class CollectionSpec(BaseModel):
+    """A list of records, edited one entry at a time.
+
+    The value at ``path`` is a list of objects, each with a stable ``id``.
+    A client shows every entry as a card and opens one in a dialog to edit
+    it; adding one asks which variant it is when there is more than one.
+    The whole list is written back as one value, and a credential an entry
+    leaves out keeps what was saved. Paths inside the variants are relative
+    to an entry: suggestions for one ride ``enum_options`` under
+    ``<path>.<relative path>``, and issues and set credentials name the entry
+    by its id, as ``<path>.<id>.<relative path>``.
+
+    Old clients ignore it, which is why it rides lists of its own rather
+    than a new field widget.
+    """
+
+    path: str
+    title: str
+    help: Optional[str] = None
+    # Written with the entry's shape when there is more than one.
+    discriminator: Optional[str] = None
+    variants: list[VariantSpec] = Field(default_factory=list)
+    # Path of the field the collection follows among its siblings; None when
+    # it comes before all of them.
+    after: Optional[str] = None
+    # Paths of fields that hold part of the same value in an older shape. A
+    # client showing the collection hides them; one that cannot, ignores this
+    # and shows them as before.
+    replaces: list[str] = Field(default_factory=list)
+
+
 class SectionSpec(BaseModel):
     """A labelled group of fields (and optionally nested sub-sections)."""
 
@@ -193,6 +260,7 @@ class SectionSpec(BaseModel):
     importance: Importance = Importance.SIMPLE
     banners: list[Banner] = Field(default_factory=list)
     fields: list[FieldSpec] = Field(default_factory=list)
+    collections: list[CollectionSpec] = Field(default_factory=list)
     sections: list["SectionSpec"] = Field(default_factory=list)
 
 
@@ -224,6 +292,7 @@ class ModuleSpec(BaseModel):
     preview_fields: list[str] = Field(default_factory=list)
     banners: list[Banner] = Field(default_factory=list)
     fields: list[FieldSpec] = Field(default_factory=list)
+    collections: list[CollectionSpec] = Field(default_factory=list)
     sections: list[SectionSpec] = Field(default_factory=list)
 
 
@@ -266,4 +335,6 @@ class PresentationSchema(BaseModel):
     expert_fields: list[FieldSpec] = Field(default_factory=list)
 
 
+VariantSpec.model_rebuild()
+GroupSpec.model_rebuild()
 SectionSpec.model_rebuild()

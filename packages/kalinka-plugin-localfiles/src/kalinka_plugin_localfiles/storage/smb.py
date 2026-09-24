@@ -9,16 +9,14 @@ root, no ``fstab`` entry and no packages on the appliance.
 Shares the kernel *has* mounted are not this storage's business — they are
 ordinary paths, and :class:`~.local.LocalStorage` reads them.
 
-Locations are written ``smb://[user@]host[:port]/share/path``. Credentials
-come from the module's configuration; the URL may name the user but never
-the password.
+Locations are written ``smb://host[:port]/share/path``. How to sign in comes
+from the music source that names the share, never from the URL.
 """
 
 from __future__ import annotations
 
 import threading
 from contextlib import contextmanager
-from dataclasses import dataclass
 from stat import S_ISDIR
 from typing import Any, BinaryIO, Iterable, Iterator, Optional
 
@@ -37,6 +35,7 @@ from .base import (
     FileStorage,
     RootStatus,
 )
+from .credentials import SmbCredentials
 from .locator import (
     SMB_SCHEME,
     LocatorError,
@@ -75,26 +74,6 @@ GUEST_USERNAME = "guest"
 #: the length of a response while the indexer may be reading the same track,
 #: and ``smbclient`` defaults to a deny-all open.
 _SHARE_ACCESS = "rwd"
-
-
-@dataclass(frozen=True)
-class SmbCredentials:
-    """How to log in to the shares this module reads.
-
-    One set for every server, because the settings page has no editor for a
-    list of secrets. A share that wants a different account can name it in
-    its own URL, which overrides :attr:`username` for that root alone.
-
-    Empty credentials mean the guest access most NAS boxes offer for a media
-    share. That is still a logon under the name :data:`GUEST_USERNAME`, not an
-    anonymous one — ``spnego`` cannot build a context without a username at
-    all, and a server configured for guests maps an unknown name onto its
-    guest account.
-    """
-
-    username: str = ""
-    password: str = ""
-    encrypt: bool = False
 
 
 class SmbStorage(FileStorage):
@@ -289,10 +268,10 @@ class SmbStorage(FileStorage):
     def _session(self, locator: StorageLocator) -> dict[str, Any]:
         """Connection and credential arguments for one location.
 
-        A username in the URL wins over the configured one, and one is always
-        sent: ``smbclient`` pools sessions per server and picks the first one
-        when asked for no particular user, so a share left to the guest
-        default would read as whoever logged in first.
+        A username is always sent: ``smbclient`` pools sessions per server
+        and picks the first one when asked for no particular user, so a
+        share left to the guest default would read as whoever logged in
+        first.
 
         ``encrypt`` is only sent when it is wanted. It is tri-state in
         ``smbclient``, where an explicit False means *force encryption off*
@@ -301,9 +280,7 @@ class SmbStorage(FileStorage):
         session: dict[str, Any] = {
             "connection_cache": self._connections,
             "connection_timeout": _CONNECT_TIMEOUT_S,
-            "username": (
-                locator.username or self._credentials.username or GUEST_USERNAME
-            ),
+            "username": self._credentials.username or GUEST_USERNAME,
             "password": self._credentials.password,
         }
         if self._credentials.encrypt:

@@ -74,6 +74,7 @@ from .embedding import TextEmbedder
 from .module_config import ModuleConfig
 from .module_health import ModuleHealthState, ModuleState
 from .config_feedback import ConfigIssue, ConfigOption, IssueSeverity
+from .config_records import ConfigRecord, Records
 from .dynamic_fields import DynamicFieldDecl
 from .optional_packages import OptionalPackageSpec
 
@@ -141,5 +142,7 @@ __all__ = [
     "ConfigOption",
     "ConfigIssue",
     "IssueSeverity",
+    "ConfigRecord",
+    "Records",
     "OptionalPackageSpec",
 ]

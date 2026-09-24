@@ -64,11 +64,6 @@ class TestWhatAShareUrlMeans:
         assert locator.port is None
         assert str(locator) == "smb://[fe80::1]/music"
 
-    def test_a_user_may_be_named_in_the_url(self):
-        locator = parse("smb://media@nas/music")
-        assert locator.username == "media"
-        assert str(locator) == "smb://media@nas/music"
-
     def test_a_space_is_a_space(self):
         """Folders are named as the server spells them. Percent-decoding
         would break a folder genuinely called ``100%``, and a settings field
@@ -80,9 +75,14 @@ class TestWhatAShareUrlMeans:
 
 
 class TestWhatIsRefused:
-    def test_a_password_belongs_in_the_settings(self):
-        with pytest.raises(LocatorError, match="password"):
+    def test_a_password_belongs_to_the_music_source(self):
+        with pytest.raises(LocatorError, match="music source"):
             parse("smb://media:secret@nas/music")
+
+    def test_so_does_a_user_and_it_is_not_repeated(self):
+        with pytest.raises(LocatorError, match="music source") as refused:
+            parse("smb://alice@nas/music")
+        assert "alice" not in str(refused.value)
 
     def test_an_address_with_no_share(self):
         with pytest.raises(LocatorError, match="share"):

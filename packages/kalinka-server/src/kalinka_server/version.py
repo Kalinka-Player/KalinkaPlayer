@@ -53,7 +53,14 @@ def get_version() -> str:
 # field): `values` omits it, `secrets_set` names the ones holding a value,
 # and the schema gives such a field no default.
 # 0.8: /server/logs/export prepares an archive of the server's recent logs,
-# which /server/logs/export/download serves.
+# which /server/logs/export/download serves. A config value may be a list of
+# records (localfiles' music_sources), described in a module's or section's
+# `collections`: its credentials are left out of `values` and named in
+# `secrets_set` by the entry's id (`<path>.<id>.<field>`), and writing the
+# list back without one keeps it. A collection's `replaces` names the older
+# fields it stands for, which a client showing it hides. localfiles'
+# music_folders is its local sources' folders; writing either list updates
+# the other.
 REST_API_VERSION = "0.8"
 
 

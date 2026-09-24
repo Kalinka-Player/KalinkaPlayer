@@ -18,7 +18,14 @@ import threading
 
 import pytest
 
-from kalinka_plugin_localfiles.config_model import LocalFilesConfig
+from kalinka_plugin_localfiles.config_model import (
+    AccountSignIn,
+    LocalFilesConfig,
+    LocalLocation,
+    LocalSource,
+    SmbLocation,
+    SmbSource,
+)
 from kalinka_plugin_localfiles.input_module_db import LocalFilesInputModuleDb
 from kalinka_plugin_localfiles.localfiles import LocalFilesInputModule
 from kalinka_plugin_localfiles.module_setup import (
@@ -50,6 +57,21 @@ def plugin(tmp_path):
     return made, music
 
 
+def _write(config, **fields):
+    """As the server writes a change: set, then reconcile."""
+    for name, value in fields.items():
+        setattr(config, name, value)
+    config.reconcile(frozenset(fields))
+
+
+def _share(**location):
+    return SmbSource(
+        id="nas",
+        location=SmbLocation(**{"host": "nas", "path": "music", **location}),
+        authentication=AccountSignIn(username="media", password="p"),
+    )
+
+
 class TestTheResolverIsKept:
     def test_repeated_polls_share_one_resolver(self, plugin):
         made, _ = plugin
@@ -62,7 +84,7 @@ class TestTheResolverIsKept:
         first = made._resolver_for(config)
 
         changed = config.model_copy(deep=True)
-        changed.smb.username = "media"
+        changed.music_sources = [_share()]
         assert made._resolver_for(changed) is not first
 
     @pytest.mark.asyncio
@@ -126,7 +148,7 @@ class TestPlaybackAndTheStatusPageAgree:
         )
         before = module._storage
 
-        made._context.config.smb.username = "media"
+        _write(made._context.config, music_sources=[_share()])
 
         assert module._storage is not before
         assert module._storage is made._current_resolver()
@@ -188,7 +210,7 @@ class TestWhatItReports:
     @pytest.mark.asyncio
     async def test_a_folder_that_is_not(self, plugin, tmp_path):
         made, _ = plugin
-        made._context.config.music_folders = [str(tmp_path / "absent")]
+        _write(made._context.config, music_folders=[str(tmp_path / "absent")])
 
         [(status, _)] = await made._music_folder_statuses()
         assert not status.available
@@ -200,17 +222,46 @@ class TestWhatItReports:
         because this is what the settings page renders — an exception here
         would blank the whole module's status."""
         made, _ = plugin
-        made._context.config.music_folders = ["webdav://nas/music"]
+        _write(made._context.config, music_folders=["webdav://nas/music"])
 
         [(status, _)] = await made._music_folder_statuses()
         assert not status.available
         assert "webdav" in status.reason
 
     @pytest.mark.asyncio
-    async def test_a_misspelt_share_url(self, plugin):
+    async def test_a_share_among_the_folders_is_not_read(self, plugin):
+        """Only a music source says how to sign in to a share."""
         made, _ = plugin
-        made._context.config.music_folders = ["smb://nas"]
+        _write(made._context.config, music_folders=["smb://nas/music"])
+
+        [(status, _)] = await made._music_folder_statuses()
+        assert not status.available
+        assert "music source" in status.reason
+
+    @pytest.mark.asyncio
+    async def test_a_misspelt_share_source(self, plugin):
+        made, _ = plugin
+        _write(made._context.config, music_sources=[_share(path="")])
 
         [(status, _)] = await made._music_folder_statuses()
         assert not status.available
         assert "share" in status.reason
+
+    @pytest.mark.asyncio
+    async def test_each_place_is_reported_once_in_the_order_of_the_sources(
+        self, plugin, tmp_path
+    ):
+        made, music = plugin
+        disk = tmp_path / "disk"
+        disk.mkdir()
+        _write(
+            made._context.config,
+            music_sources=[
+                LocalSource(id="disk", location=LocalLocation(path=str(disk))),
+                LocalSource(id="music", location=LocalLocation(path=str(music))),
+                LocalSource(id="again", location=LocalLocation(path=str(music))),
+            ],
+        )
+
+        statuses = await made._music_folder_statuses()
+        assert [status.root for status, _ in statuses] == [str(disk), str(music)]

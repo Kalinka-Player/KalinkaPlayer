@@ -1,5 +1,4 @@
 import asyncio
-import enum
 import logging
 import os
 from dataclasses import dataclass, field
@@ -37,7 +36,10 @@ from .config_overrides import (
     apply_overrides_with_prefix,
     find_one_shot_overrides,
     is_one_shot_field,
+    reconcile_config,
     save_overrides,
+    store_override,
+    to_override_value,
 )
 from .config_secrets import is_private_path, loggable
 from .module_timeout import TimeLimitedInputModule
@@ -51,22 +53,6 @@ from .text_embedder import SharedTextEmbedder
 from kalinka_plugin_sdk.api import PlayQueueController
 
 logger = logging.getLogger(__name__.split(".")[-1])
-
-
-def _to_jsonable(value: Any) -> Any:
-    """Coerce a model value into the JSON-friendly form the overrides
-    file stores. Enum-typed fields read back off the model as Enum
-    instances, but the on-disk override is the raw scalar (``.value``):
-    without this the ``==`` comparison would always miss and the Enum
-    would be written straight into the dict, crashing the later
-    ``json.dumps`` in ``save_overrides``. Recurses through lists/dicts."""
-    if isinstance(value, enum.Enum):
-        return value.value
-    if isinstance(value, (list, tuple)):
-        return [_to_jsonable(v) for v in value]
-    if isinstance(value, dict):
-        return {k: _to_jsonable(v) for k, v in value.items()}
-    return value
 
 
 @dataclass
@@ -199,16 +185,26 @@ class PreparedModuleCollection:
         self,
         plugin_name: str,
         plugin_class: type[PluginBase],
-        overrides: Mapping[str, Any],
+        overrides: MutableMapping[str, Any],
     ) -> ModuleConfig:
-        """Instantiate a plugin's default config, then apply matching overrides."""
+        """Instantiate a plugin's default config, then apply matching overrides.
+
+        What the config then brings in line with them is kept as overrides
+        too — the local sources an older app's music folders stand for — so
+        it is not built afresh, under new ids, on every start.
+        """
         config = plugin_class.CONFIG_MODEL()
         prefix = (
             "input_modules."
             if plugin_class.PLUGIN_TYPE == PluginType.INPUT_MODULE
             else "devices."
-        )
-        apply_overrides_with_prefix(config, overrides, f"{prefix}{plugin_name}.")
+        ) + f"{plugin_name}."
+        apply_overrides_with_prefix(config, overrides, prefix)
+        written = [key[len(prefix):] for key in overrides if key.startswith(prefix)]
+        for name, value in reconcile_config(config, written).items():
+            store_override(overrides, prefix + name, value)
+            self.overrides_dirty = True
+            logger.info("Reconciled override %s%s", prefix, name)
         return config
 
     def _consume_one_shot_overrides(
@@ -390,8 +386,8 @@ class PreparedModuleCollection:
             if is_one_shot_field(plugin_class.CONFIG_MODEL, attrs):
                 continue
             try:
-                current = _to_jsonable(_read(plugin_config, attrs))
-                default = _to_jsonable(_read(default_config, attrs))
+                current = to_override_value(_read(plugin_config, attrs))
+                default = to_override_value(_read(default_config, attrs))
             except (AttributeError, IndexError, TypeError, ValueError):
                 # The override targets a field that no longer exists or
                 # is unreachable on the current model. Leave it alone —
@@ -599,7 +595,7 @@ class PreparedModuleCollection:
     async def _setup_renderer_output_device(
         self,
         devices: dict[str, PreparedPlugin],
-        overrides: Mapping[str, Any],
+        overrides: MutableMapping[str, Any],
         renderer_registry: RendererRegistry,
         renderer_sessions: SessionPool,
     ) -> dict[str, PreparedPlugin]:

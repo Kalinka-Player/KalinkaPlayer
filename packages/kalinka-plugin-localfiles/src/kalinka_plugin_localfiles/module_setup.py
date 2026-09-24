@@ -1,11 +1,12 @@
 import asyncio
 import importlib.util
+import itertools
 import logging
 import logging.handlers
 import multiprocessing
 import shutil
 import threading
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any, ClassVar, Optional
 
 from kalinka_plugin_sdk import (
@@ -21,14 +22,19 @@ from kalinka_plugin_sdk import (
 from kalinka_plugin_sdk.plugin import InputPluginContext, InputModulePlugin
 from kalinka_plugin_sdk.inputmodule import InputModule
 
-from .config_model import LocalFilesConfig
+from .config_model import AccountSignIn, LocalFilesConfig, LocalSource, MusicSource
 from .db_schema import init_db
 from .storage import (
+    FILE_SCHEME,
     LocatorError,
     RootStatus,
     StorageResolver,
     build_resolver,
+    library_locations,
     parse,
+    scheme_of,
+    share_logins,
+    source_location,
 )
 from .suggest import (
     LocalMountSuggester,
@@ -45,6 +51,12 @@ from . import searcher
 
 
 logger = logging.getLogger(__name__.split(".")[-1])
+
+_SUGGESTED_FIELDS = (
+    "music_folders",
+    "music_sources.location.path",
+    "music_sources.location.host",
+)
 
 #: How long one music folder may take to answer before the settings page
 #: gives up on it. Short, because every folder is probed on every poll and
@@ -166,66 +178,141 @@ async def _probe_roots(
     )
 
 
-def _judge_spelling(
-    folders: list[str], report: bool
-) -> tuple[list[ConfigIssue], list[tuple[int, str]]]:
-    """Each folder's canonical form, and what is wrong with how it is written.
+_NOT_A_FOLDER = (
+    "only folders on the server go here; add a network share as a music "
+    "source in an up-to-date Kalinka app"
+)
+
+
+@dataclass(frozen=True)
+class _Where:
+    """Where to say something about one music source.
+
+    An app that wrote the music folders knows a local source only as its
+    folder, so it hears about one against that folder: ``folder`` is then
+    its index in the list, and a part of the source is not named.
+    """
+
+    path: str
+    folder: Optional[int] = None
+
+    def issue(
+        self,
+        message: str,
+        part: str = "",
+        severity: IssueSeverity = IssueSeverity.ERROR,
+    ) -> ConfigIssue:
+        if self.folder is not None:
+            return ConfigIssue(
+                path=self.path, index=self.folder, message=message, severity=severity
+            )
+        path = f"{self.path}.{part}" if part else self.path
+        return ConfigIssue(path=path, message=message, severity=severity)
+
+    def repeating(self, first: "_Where") -> ConfigIssue:
+        if self.folder is not None and first.folder is not None:
+            return self.issue(f"the same folder as entry {first.folder + 1}")
+        return self.issue("the same place as another source")
+
+
+def _where(
+    source: MusicSource,
+    folder: Optional[int],
+    folders_edited: bool,
+    sources_edited: bool,
+) -> Optional[_Where]:
+    if folders_edited and folder is not None:
+        return _Where("music_folders", folder)
+    if sources_edited:
+        return _Where(f"music_sources.{source.id}")
+    return None
+
+
+def _misspelling(
+    source: MusicSource, as_folder: bool
+) -> Optional[tuple[str, str]]:
+    """The part of ``source`` that cannot be right as written, and why."""
+    if isinstance(source, LocalSource):
+        path = source.location.path.strip()
+        if not path:
+            return "location.path", "name the folder"
+        if scheme_of(path) != FILE_SCHEME or path.startswith("\\\\"):
+            return "location.path", (
+                _NOT_A_FOLDER
+                if as_folder
+                else "a local source is a folder on the server"
+            )
+        return None
+
+    location = source.location
+    host = location.host.strip()
+    if not host:
+        return "location.host", "name the server"
+    if any(c in host for c in "/\\@"):
+        return "location.host", "a server is a name or an address, nothing more"
+    parts = location.parts()
+    if not parts:
+        return "location.path", "name the share, then any folder inside it"
+    if ".." in parts:
+        return (
+            "location.path",
+            "'..' does not belong in a share path; name the folder directly",
+        )
+    sign_in = source.authentication
+    if isinstance(sign_in, AccountSignIn) and not sign_in.username.strip():
+        return (
+            "authentication.username",
+            "name the account, or sign in as a guest",
+        )
+    return None
+
+
+def _judge_locations(
+    config: LocalFilesConfig, folders_edited: bool, sources_edited: bool
+) -> tuple[list[ConfigIssue], list[tuple[str, _Where]]]:
+    """What is wrong with how each source is written, and the roots to probe.
 
     Off the event loop, because canonicalising a local folder resolves it and
     one on a hung mount would hold up every request behind it.
 
-    @param report Whether a misspelling is worth saying anything about. It is
-        only when the user is editing the list; otherwise a folder that was
+    @param folders_edited Whether the local sources were just written as the
+        music folders an older app edits. What is wrong with one is then
+        said against its folder, and the shares that app cannot see are
+        left out.
+    @param sources_edited Whether the sources were just written as they are.
+    @note A source nobody has just written is left alone: one that was
         already wrong would refuse a save that has nothing to do with it.
-    @return The issues, and the ``(index, root)`` pairs worth probing.
     """
     issues: list[ConfigIssue] = []
-    first_written_at: dict[str, int] = {}
-    probing: list[tuple[int, str]] = []
+    places: list[tuple[str, _Where]] = []
+    first: dict[str, _Where] = {}
+    folders = itertools.count()
 
-    for index, folder in enumerate(folders):
+    for source in config.music_sources:
+        folder = next(folders) if isinstance(source, LocalSource) else None
+        where = _where(source, folder, folders_edited, sources_edited)
+        if where is None:
+            continue
+        misspelt = _misspelling(source, as_folder=where.folder is not None)
+        if misspelt is not None:
+            part, message = misspelt
+            issues.append(where.issue(message, part))
+            continue
         try:
-            locator = parse(folder)
+            root = str(parse(source_location(source)))
         except LocatorError as e:
-            if report:
-                issues.append(
-                    ConfigIssue(path="music_folders", index=index, message=str(e))
-                )
+            issues.append(where.issue(str(e)))
             continue
-        # A share logs in with the SMB credentials alone for now; a folder
-        # already naming its user keeps working, it just cannot be added.
-        if locator.username is not None and report:
-            issues.append(
-                ConfigIssue(
-                    path="music_folders",
-                    index=index,
-                    message=(
-                        "a user name does not belong in a folder URL; write "
-                        f"{replace(locator, username=None)} and set the user "
-                        "in the SMB credentials"
-                    ),
-                )
-            )
+        if root in first:
+            issues.append(where.repeating(first[root]))
             continue
-        root = str(locator)
-        first = first_written_at.get(root)
-        if first is not None:
-            if report:
-                issues.append(
-                    ConfigIssue(
-                        path="music_folders",
-                        index=index,
-                        message=f"the same folder as entry {first + 1}",
-                    )
-                )
-            continue
-        first_written_at[root] = index
-        probing.append((index, root))
-    return issues, probing
+        first[root] = where
+        places.append((root, where))
+    return issues, places
 
 
 class _ResolverCache:
-    """One storage resolver per credential set, kept rather than rebuilt.
+    """One storage resolver per set of share logins, kept rather than rebuilt.
 
     The registry that holds a hung folder to a single blocked worker thread
     lives on the storage instances, so a resolver built per call brings an
@@ -249,10 +336,10 @@ class _ResolverCache:
     def __init__(self, release_replaced: bool) -> None:
         self._release_replaced = release_replaced
         self._resolver: Optional[StorageResolver] = None
-        self._key: Optional[str] = None
+        self._key: Optional[dict] = None
 
     def get(self, config: LocalFilesConfig) -> StorageResolver:
-        key = config.smb.model_dump_json()
+        key = share_logins(config)
         if self._resolver is None or key != self._key:
             if self._release_replaced:
                 self._release(self._resolver)
@@ -347,12 +434,12 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
         self._live_resolvers = _ResolverCache(release_replaced=False)
         self._staged_resolvers = _ResolverCache(release_replaced=True)
 
-        # Where the settings page's folder suggestions come from. The
+        # Where the settings page's suggestions come from, per field. The
         # discovery listens on the network for as long as the module is
         # loaded; the storages cannot hold it, because they are rebuilt in
         # every worker process and this belongs in one.
         self._discovery = SmbHostDiscovery()
-        self._suggesters: list[RootSuggester] = []
+        self._suggesters: dict[str, list[RootSuggester]] = {}
 
         # Per-sub-feature state used by get_state() and resolve_dynamic_field().
         # Populated during setup() based on actual subprocess start outcomes
@@ -490,10 +577,12 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
         # again are socket work, and zeroconf refuses to do the leaving at
         # all when it is asked for it from inside an event loop.
         await asyncio.to_thread(self._discovery.start)
-        self._suggesters = [
-            LocalMountSuggester(),
-            SmbHostSuggester(self._discovery),
-        ]
+        mounts = LocalMountSuggester()
+        self._suggesters = {
+            "music_folders": [mounts],
+            "music_sources.location.path": [mounts],
+            "music_sources.location.host": [SmbHostSuggester(self._discovery)],
+        }
 
         # Populate sub-feature state from what was (or wasn't) just started
         # and from import probing. This runs in the main process — it
@@ -625,8 +714,8 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
     def _resolver_for(self, config: LocalFilesConfig) -> StorageResolver:
         """The storage resolver for this configuration, kept across calls.
 
-        Rebuilt only when the credentials change, because ``setup`` is not
-        re-run when the server mutates the config in place.
+        Rebuilt only when a share or its login changes, because ``setup`` is
+        not re-run when the server mutates the config in place.
         """
         return self._live_resolvers.get(config)
 
@@ -647,7 +736,7 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
     async def _music_folder_statuses(
         self,
     ) -> list[tuple[RootStatus, Optional[str]]]:
-        """Live availability of each configured music folder, paired with the
+        """Live availability of each music folder and source, paired with the
         mount identity the indexer recorded for it (None when unrecorded).
 
         Evaluated on demand (module status, dynamic status field) rather than
@@ -665,7 +754,7 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
         # Off the loop: canonicalising a local folder resolves it, and a
         # folder on a hung mount would hold up every request behind it.
         folders = await asyncio.to_thread(
-            resolver.canonical_roots, config.music_folders
+            resolver.canonical_roots, library_locations(config)
         )
         statuses = await _probe_roots(resolver, folders)
         module = self._inputmodule
@@ -768,73 +857,71 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
         raise KeyError(path)
 
     async def resolve_options(self, path: str) -> list[ConfigOption]:
-        """Places the user could point a music folder at.
+        """Places the user could point a music folder or source at: mounted
+        disks for a folder, file servers on the network for a share's server.
 
-        Offers what each source already knows and asks it for more in the
+        Offers what each suggester already knows and asks it for more in the
         same breath, so a NAS that answers late is on the list the next
         time the page is read rather than making this call wait for it.
         """
-        if path != "music_folders":
+        if path not in _SUGGESTED_FIELDS:
             raise KeyError(path)
         options: list[ConfigOption] = []
-        for suggester in self._suggesters:
+        for suggester in self._suggesters.get(path, ()):
             suggester.refresh()
             options.extend(suggester.options())
         return options
 
     def _resolver_for_candidate(self, candidate: LocalFilesConfig) -> StorageResolver:
-        """The resolver to judge ``candidate``'s folders with.
+        """The resolver to judge ``candidate``'s locations with.
 
-        Credentials the user has only staged must not reach the resolver
-        playback reads, so they get a cache of their own. Unchanged
-        credentials are judged with the live resolver instead, which is
-        worth reaching for: it already knows which folders are hung.
+        Shares and logins the user has only staged must not reach the
+        resolver playback reads, so they get a cache of their own. Unchanged
+        ones are judged with the live resolver instead, which is worth
+        reaching for: it already knows which folders are hung.
         """
-        if self._context is not None and candidate.smb == self._context.config.smb:
+        if self._context is not None and share_logins(candidate) == share_logins(
+            self._context.config
+        ):
             return self._current_resolver()
         return self._staged_resolvers.get(candidate)
 
     async def validate_config(
         self, candidate: ModuleConfig, changed: frozenset[str]
     ) -> list[ConfigIssue]:
-        """What is wrong with the folders the user has typed.
+        """What is wrong with the folders and sources the user has typed.
 
-        How a folder is written is the user's mistake to fix, so it refuses
-        the save. Whether it answers right now is not: a NAS that is switched
-        off tonight is still the right folder to have configured, and the
+        How one is written is the user's mistake to fix, so it refuses the
+        save. Whether it answers right now is not: a NAS that is switched
+        off tonight is still the right source to have configured, and the
         library keeps what it indexed under a root it cannot currently see.
 
-        @note Only a folder list the user has just edited can be refused. A
-            credential change re-asks whether the shares answer, but an entry
-            that was already misspelled before this save is not the user's
-            mistake to fix *now*, and refusing the batch over it would leave
-            the password unsaveable.
+        @note Only what the user has just written is judged. An older app
+            writes the music folders, which are the local sources alone, so
+            a share it cannot see never refuses its save. A source's login is
+            part of the source, so a new password re-asks whether its share
+            answers.
         """
         folders_edited = "music_folders" in changed
-        if not folders_edited and not any(
-            path == "smb" or path.startswith("smb.") for path in changed
-        ):
+        sources_edited = "music_sources" in changed
+        if not (folders_edited or sources_edited):
             return []
 
         config = LocalFilesConfig(**candidate.model_dump())
-        issues, probing = await asyncio.to_thread(
-            _judge_spelling, config.music_folders, folders_edited
+        issues, places = await asyncio.to_thread(
+            _judge_locations, config, folders_edited, sources_edited
         )
 
         resolver = self._resolver_for_candidate(config)
-        statuses = await _probe_roots(resolver, [root for _index, root in probing])
-        for (index, _root), status in zip(probing, statuses):
+        statuses = await _probe_roots(resolver, [root for root, _where in places])
+        for (_root, where), status in zip(places, statuses):
             if status.available:
                 continue
             issues.append(
-                ConfigIssue(
-                    path="music_folders",
-                    index=index,
+                where.issue(
+                    f"{status.reason}; it can be saved, but nothing is "
+                    "indexed under it until it can be read",
                     severity=IssueSeverity.WARNING,
-                    message=(
-                        f"{status.reason}; it can be saved, but nothing is "
-                        "indexed under it until it can be read"
-                    ),
                 )
             )
         return issues

@@ -13,7 +13,11 @@ import asyncio
 
 import pytest
 
-from kalinka_plugin_localfiles.config_model import LocalFilesConfig
+from kalinka_plugin_localfiles.config_model import (
+    LocalFilesConfig,
+    LocalLocation,
+    SmbLocation,
+)
 from kalinka_plugin_localfiles.module_setup import KalinkaPluginLocalFiles
 from kalinka_plugin_localfiles.suggest import (
     DiscoveredHost,
@@ -128,9 +132,9 @@ class TestDrivesOnThisMachine:
 
 
 class TestServersOnTheNetwork:
-    def test_a_host_is_offered_with_the_share_still_to_be_named(self):
+    def test_a_host_is_offered_as_the_server_of_a_source(self):
         option = host_option(DiscoveredHost("192.168.1.20", "NAS", "mDNS"))
-        assert option.value == "smb://192.168.1.20/"
+        assert option.value == "192.168.1.20"
 
     def test_what_is_stored_is_the_address_and_what_is_read_is_the_name(self):
         """A name learned over mDNS or NetBIOS is not one this machine's
@@ -144,9 +148,11 @@ class TestServersOnTheNetwork:
         assert option.label == "10.0.0.5"
         assert option.description == "found over NetBIOS"
 
-    def test_an_ipv6_host_is_bracketed_so_its_colons_are_not_a_port(self):
+    def test_an_ipv6_host_is_offered_bare(self):
+        """The server field holds an address; brackets belong to the URL the
+        source is read through, which adds them."""
         option = host_option(DiscoveredHost("fe80::1", "MAC", "mDNS"))
-        assert option.value == "smb://[fe80::1]/"
+        assert option.value == "fe80::1"
 
     def test_asking_for_suggestions_asks_the_network_for_more(self):
         discovery = _Discovery([DiscoveredHost("192.168.1.20", "NAS", "mDNS")])
@@ -159,34 +165,65 @@ class TestServersOnTheNetwork:
 class TestWhatThePluginAnswers:
     def _plugin(self, discovery=None):
         made = KalinkaPluginLocalFiles()
-        made._suggesters = [
-            LocalMountSuggester(),
-            SmbHostSuggester(discovery or _Discovery()),
-        ]
+        mounts = LocalMountSuggester()
+        servers = SmbHostSuggester(discovery or _Discovery())
+        made._suggesters = {
+            "music_folders": [mounts],
+            "music_sources.location.path": [mounts],
+            "music_sources.location.host": [servers],
+        }
         return made
 
-    def test_both_sources_are_offered_together(self):
-        discovery = _Discovery([DiscoveredHost("192.168.1.20", "NAS", "mDNS")])
-        options = asyncio.run(self._plugin(discovery).resolve_options("music_folders"))
-        assert "smb://192.168.1.20/" in [o.value for o in options]
+    def _values(self, path, discovery=None):
+        options = asyncio.run(self._plugin(discovery).resolve_options(path))
+        return [o.value for o in options]
 
-    def test_every_source_is_asked_for_something_fresher(self):
+    def test_a_share_s_server_is_offered_the_servers_found(self):
+        discovery = _Discovery([DiscoveredHost("192.168.1.20", "NAS", "mDNS")])
+        assert self._values("music_sources.location.host", discovery) == [
+            "192.168.1.20"
+        ]
+
+    @pytest.mark.parametrize(
+        "path", ["music_folders", "music_sources.location.path"]
+    )
+    def test_a_folder_is_offered_no_server(self, path):
+        """A server offered there could only be refused once picked."""
+        discovery = _Discovery([DiscoveredHost("192.168.1.20", "NAS", "mDNS")])
+        assert "192.168.1.20" not in self._values(path, discovery)
+
+    def test_every_suggester_is_asked_for_something_fresher(self):
         discovery = _Discovery()
-        asyncio.run(self._plugin(discovery).resolve_options("music_folders"))
+        self._values("music_sources.location.host", discovery)
         assert discovery.refreshed == 1
 
-    def test_a_field_it_offers_nothing_for_says_so(self):
+    @pytest.mark.parametrize("path", ["db_path", "music_sources"])
+    def test_a_field_it_offers_nothing_for_says_so(self, path):
         with pytest.raises(KeyError):
-            asyncio.run(self._plugin().resolve_options("db_path"))
+            asyncio.run(self._plugin().resolve_options(path))
 
-    def test_a_plugin_that_was_never_set_up_offers_nothing_rather_than_failing(self):
+    @pytest.mark.parametrize(
+        "path",
+        ["music_folders", "music_sources.location.path", "music_sources.location.host"],
+    )
+    def test_a_plugin_that_was_never_set_up_offers_nothing_rather_than_failing(
+        self, path
+    ):
         """The settings page reads a module that failed to start too."""
         made = KalinkaPluginLocalFiles()
-        assert asyncio.run(made.resolve_options("music_folders")) == []
+        assert asyncio.run(made.resolve_options(path)) == []
 
 
-def test_the_field_asks_for_suggestions():
+@pytest.mark.parametrize(
+    "model, field",
+    [
+        (LocalFilesConfig, "music_folders"),
+        (LocalLocation, "path"),
+        (SmbLocation, "host"),
+    ],
+)
+def test_the_field_asks_for_suggestions(model, field):
     """The tag on the field is the whole declaration; without it the server
     never binds the plugin's resolver to it."""
-    extra = LocalFilesConfig.model_fields["music_folders"].json_schema_extra
+    extra = model.model_fields[field].json_schema_extra
     assert extra["dynamic_options"] is True

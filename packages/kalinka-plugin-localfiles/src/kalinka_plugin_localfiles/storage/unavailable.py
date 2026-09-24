@@ -9,7 +9,7 @@ reason is shown on the module's settings page.
 
 from __future__ import annotations
 
-from typing import BinaryIO, Iterable, Optional
+from typing import BinaryIO, Callable, Iterable, Optional
 
 from .base import DirEntry, FileStat, FileStorage, RootStatus
 from .locator import is_within, scheme_of
@@ -21,12 +21,22 @@ class UnavailableStorage(FileStorage):
     @param scheme The protocol it stands in for, so the resolver matches it
         the way it matches a working one.
     @param reason What to tell the user, phrased for the settings page.
+    @param canonicalize How to spell a location of this protocol, where that
+        needs no connection. A location that cannot be spelt so raises
+        :class:`.LocatorError` rather than become a root carrying whatever
+        it was written with, a password included.
     """
 
-    def __init__(self, scheme: str, reason: str) -> None:
+    def __init__(
+        self,
+        scheme: str,
+        reason: str,
+        canonicalize: Optional[Callable[[str], str]] = None,
+    ) -> None:
         super().__init__()
         self._scheme = scheme
         self._reason = reason
+        self._canonicalize = canonicalize
 
     @property
     def scheme(self) -> str:
@@ -36,9 +46,11 @@ class UnavailableStorage(FileStorage):
         return scheme_of(path) == self._scheme
 
     def canonical(self, path: str) -> str:
-        """The location unchanged: it cannot be canonicalised without the
-        protocol, and keeping it is what lets it appear as a broken root
-        rather than silently vanish from the configuration."""
+        """Without a way to spell it, the location unchanged: keeping it is
+        what lets it appear as a broken root rather than silently vanish
+        from the configuration."""
+        if self._canonicalize is not None:
+            return self._canonicalize(path)
         return (path or "").strip()
 
     def contains(self, path: str, roots: Iterable[str]) -> bool:

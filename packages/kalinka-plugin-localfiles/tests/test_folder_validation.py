@@ -1,14 +1,19 @@
-"""Telling the user a music folder is wrong, while they can still fix it.
+"""Telling the user a music folder or source is wrong, while they can still fix it.
 
-Two kinds of wrong, answered differently. How a folder is written is the
+Two kinds of wrong, answered differently. How a location is written is the
 user's mistake and refuses the save, because nothing about it will improve
 by keeping it. Whether it answers right now is not: a NAS switched off
-tonight is still the right folder to have configured, and the library holds
+tonight is still the right source to have configured, and the library holds
 what it indexed under a root it cannot currently see.
 
-The credentials are the trap here. A password the user has typed but not
-saved must reach the probe that judges the share, and must not reach the
-resolver playback reads.
+The music folders are the local sources again, as an older app edits them.
+What that app wrote is judged against its folders, and the shares it cannot
+see are left out of it; a newer app writes the sources and hears about each
+by its id.
+
+The logins are the trap here. A password the user has typed but not saved
+must reach the probe that judges the share, and must not reach the resolver
+playback reads.
 """
 
 from __future__ import annotations
@@ -34,6 +39,24 @@ class _Context:
         self.config = config
 
 
+def _share(id="nas", host="nas", path="music", username=None, password=""):
+    authentication = (
+        {"mode": "account", "username": username, "password": password}
+        if username is not None
+        else {"mode": "guest"}
+    )
+    return {
+        "id": id,
+        "kind": "smb",
+        "location": {"host": host, "port": 445, "path": path},
+        "authentication": authentication,
+    }
+
+
+def _local(path, id="usb"):
+    return {"id": id, "kind": "local", "location": {"path": str(path)}}
+
+
 @pytest.fixture
 def plugin(tmp_path):
     music = tmp_path / "music"
@@ -42,6 +65,7 @@ def plugin(tmp_path):
     made._context = _Context(
         LocalFilesConfig(
             music_folders=[str(music)],
+            music_sources=[_share(username="media", password="saved")],
             db_path=str(tmp_path / "localfiles.db"),
             artwork_path=str(tmp_path / "artwork"),
         )
@@ -49,31 +73,81 @@ def plugin(tmp_path):
     return made, music
 
 
-def _judge(plugin, folders=None, changed=frozenset({"music_folders"}), **fields):
-    made, _music = plugin
-    values = made._context.config.model_dump()
-    if folders is not None:
-        values["music_folders"] = folders
-    values.update(fields)
-    return asyncio.run(
-        made.validate_config(LocalFilesConfig(**values), changed)
+def _answered(root: str) -> RootStatus:
+    return RootStatus(
+        root=root,
+        available=True,
+        reason="",
+        fs_type=None,
+        is_network=False,
+        is_autofs=False,
     )
+
+
+@pytest.fixture
+def shares(monkeypatch):
+    """Every share answers, and says with whose login it was asked."""
+    asked = []
+
+    def probe(self, root):
+        asked.append((root, self._credentials))
+        return _answered(root)
+
+    monkeypatch.setattr(SmbStorage, "probe_root_blocking", probe)
+    return asked
+
+
+@pytest.fixture
+def folders(monkeypatch):
+    """Every local folder answers, and says it was asked."""
+    asked = []
+
+    def probe(self, root):
+        asked.append(root)
+        return _answered(root)
+
+    monkeypatch.setattr(LocalStorage, "probe_root_blocking", probe)
+    return asked
+
+
+def _judge(plugin, folders=None, sources=None, changed=None):
+    """What the dry run says: the change written onto a copy of the live
+    configuration and reconciled, as the server does."""
+    made, _music = plugin
+    candidate = made._context.config.model_copy(deep=True)
+    written = set()
+    if folders is not None:
+        candidate.music_folders = folders
+        written.add("music_folders")
+    if sources is not None:
+        candidate.music_sources = LocalFilesConfig(music_sources=sources).music_sources
+        written.add("music_sources")
+    candidate.reconcile(frozenset(written))
+    return asyncio.run(
+        made.validate_config(candidate, frozenset(changed or written))
+    )
+
+
+def _with_password(config, password):
+    typed = config.model_copy(deep=True)
+    typed.music_sources[0].authentication.password = password
+    return typed
 
 
 class TestHowAFolderIsWritten:
     def test_a_folder_that_is_there_draws_nothing(self, plugin):
-        assert _judge(plugin) == []
+        _made, music = plugin
+        assert _judge(plugin, [str(music)]) == []
 
     @pytest.mark.parametrize(
         "folder, said",
         [
-            ("smb://nas", "name the share"),
+            ("smb://nas/music", "music source"),
+            ("cifs://nas/music", "music source"),
+            (r"\\nas\music", "music source"),
+            ("ftp://nas/music", "music source"),
             ("smb:/nas/music", "needs two slashes"),
-            (r"\\nas\music", "not a Windows path"),
-            ("ftp://nas/music", "not a protocol this module can read"),
-            ("smb://user:secret@nas/music", "password does not belong"),
-            ("smb://nas/../music", "does not belong in a share path"),
-            ("", "the music folder is empty"),
+            ("", "name the folder"),
         ],
     )
     def test_what_cannot_be_read_as_written_refuses_the_save(
@@ -85,19 +159,9 @@ class TestHowAFolderIsWritten:
         ]
         assert said in issues[0].message
 
-    def test_a_user_named_in_the_url_is_refused_with_the_url_to_write(self, plugin):
-        issues = _judge(plugin, ["smb://alice@nas:4450/music"])
-
-        assert [(i.index, i.severity) for i in issues] == [(0, IssueSeverity.ERROR)]
-        assert "smb://nas:4450/music" in issues[0].message
-        assert "alice" not in issues[0].message
-
-    def test_a_user_already_in_a_url_does_not_refuse_an_unrelated_save(self, plugin):
-        issues = _judge(
-            plugin, ["smb://alice@nas/music"], changed=frozenset({"smb.password"})
-        )
-
-        assert all(i.severity == IssueSeverity.WARNING for i in issues)
+    def test_a_share_is_refused_without_being_asked_about(self, plugin, shares):
+        _judge(plugin, ["smb://nas/music"])
+        assert shares == []
 
     def test_the_same_folder_twice_is_refused_against_the_second_of_them(
         self, plugin
@@ -113,105 +177,189 @@ class TestHowAFolderIsWritten:
         assert [i.index for i in issues] == [1, 2]
 
 
-class TestWhetherAFolderAnswers:
-    def test_one_that_does_not_is_said_so_and_saved_anyway(self, plugin, tmp_path):
+class TestHowASourceIsWritten:
+    def test_a_share_that_answers_draws_nothing(self, plugin, shares):
+        assert _judge(plugin, sources=[_share()]) == []
+
+    def test_a_local_source_that_is_there_draws_nothing(self, plugin, tmp_path):
+        disk = tmp_path / "disk"
+        disk.mkdir()
+        assert _judge(plugin, sources=[_local(disk)]) == []
+
+    @pytest.mark.parametrize(
+        "source, part, said",
+        [
+            (_share(host=""), "location.host", "name the server"),
+            (_share(host="alice@nas"), "location.host", "nothing more"),
+            (_share(path=""), "location.path", "name the share"),
+            (_share(path="/ / "), "location.path", "name the share"),
+            (_share(path="music/a/../b"), "location.path", "'..'"),
+            (_share(username=""), "authentication.username", "name the account"),
+            (_local(""), "location.path", "name the folder"),
+            (_local("smb://nas/music"), "location.path", "on the server"),
+            (_local(r"\\nas\music"), "location.path", "on the server"),
+        ],
+    )
+    def test_a_part_that_cannot_be_right_is_refused_by_name(
+        self, plugin, shares, source, part, said
+    ):
+        issues = _judge(plugin, sources=[source])
+        assert [(i.path, i.index, i.severity) for i in issues] == [
+            (f"music_sources.{source['id']}.{part}", None, IssueSeverity.ERROR)
+        ]
+        assert said in issues[0].message
+
+    def test_an_issue_follows_its_source_wherever_it_moves(self, plugin, shares):
+        """Addressed by id, so reordering the list cannot move an error onto
+        a neighbour."""
+        broken = _share(id="broken", path="")
+        for sources in ([_share(), broken], [broken, _share()]):
+            issues = _judge(plugin, sources=sources)
+            assert [i.path for i in issues] == ["music_sources.broken.location.path"]
+
+    def test_the_same_share_twice_is_refused_against_the_second(self, plugin, shares):
+        issues = _judge(
+            plugin,
+            sources=[_share(id="a"), _share(id="b", host="NAS", path="//music/")],
+        )
+        assert [(i.path, i.severity) for i in issues] == [
+            ("music_sources.b", IssueSeverity.ERROR)
+        ]
+        assert issues[0].message == "the same place as another source"
+
+    def test_a_misspelt_source_does_not_refuse_an_edit_of_the_folders(self, plugin):
+        """The app editing the folders may not know the sources exist."""
+        made, music = plugin
+        made._context.config.music_sources = LocalFilesConfig(
+            music_sources=[_share(path="")]
+        ).music_sources
+        assert _judge(plugin, [str(music)]) == []
+
+
+class TestAnOlderAppsFolders:
+    def test_a_folder_is_judged_as_the_local_source_it_is(self, plugin):
+        """Said against the folder, in the words of the list that app shows."""
+        issues = _judge(plugin, ["", "smb://nas/music"])
+        assert [(i.path, i.index) for i in issues] == [
+            ("music_folders", 0),
+            ("music_folders", 1),
+        ]
+        assert "up-to-date Kalinka app" in issues[1].message
+
+    def test_a_folder_already_a_local_source_is_told_by_its_place(
+        self, plugin, tmp_path
+    ):
+        _made, music = plugin
+        issues = _judge(plugin, [str(music), str(music)])
+        assert [(i.path, i.index, i.message) for i in issues] == [
+            ("music_folders", 1, "the same folder as entry 1")
+        ]
+
+
+class TestWhetherItAnswers:
+    def test_a_folder_that_does_not_is_said_so_and_saved_anyway(self, plugin, tmp_path):
         issues = _judge(plugin, [str(tmp_path / "gone")])
         assert [(i.index, i.severity) for i in issues] == [(0, IssueSeverity.WARNING)]
         assert "until it can be read" in issues[0].message
 
-    def test_a_folder_that_cannot_be_parsed_is_not_probed(self, plugin, monkeypatch):
-        probed = []
+    def test_a_share_that_does_not_is_said_so_against_its_source(
+        self, plugin, monkeypatch
+    ):
         monkeypatch.setattr(
-            LocalStorage,
+            SmbStorage,
             "probe_root_blocking",
-            lambda self, root: probed.append(root) or RootStatus(root=root, available=True),
+            lambda self, root: self.unavailable(root, "nas did not answer"),
         )
+        issues = _judge(plugin, sources=[_share()])
+        assert [(i.path, i.severity) for i in issues] == [
+            ("music_sources.nas", IssueSeverity.WARNING)
+        ]
+        assert "nas did not answer" in issues[0].message
+
+    def test_a_folder_that_cannot_be_parsed_is_not_probed(self, plugin, folders):
         _judge(plugin, ["smb://nas"])
-        assert probed == []
+        assert folders == []
+
+    def test_a_share_is_asked_with_the_login_its_source_names(self, plugin, shares):
+        _judge(
+            plugin,
+            sources=[
+                _share(id="a", path="music", username="alice", password="one"),
+                _share(id="b", path="films"),
+            ],
+        )
+        assert sorted((root, c.username, c.password) for root, c in shares) == [
+            ("smb://nas/films", "", ""),
+            ("smb://nas/music", "alice", "one"),
+        ]
 
 
 class TestWhenToBother:
-    def test_a_change_touching_no_folder_is_not_probed(self, plugin, monkeypatch):
-        probed = []
-        monkeypatch.setattr(
-            LocalStorage,
-            "probe_root_blocking",
-            lambda self, root: probed.append(root) or RootStatus(root=root, available=True),
-        )
-        assert _judge(plugin, changed=frozenset({"scan_interval_minutes"})) == []
-        assert probed == []
-
-    def test_a_credential_change_re_judges_the_folders_it_would_open(self, plugin):
-        """The password is not part of any folder, but every share is read
-        with it."""
-        issues = _judge(
-            plugin,
-            ["smb://nas/music"],
-            changed=frozenset({"smb.password"}),
-        )
-        assert [(i.index, i.severity) for i in issues] == [(0, IssueSeverity.WARNING)]
-
-    def test_the_whole_credential_block_counts_as_a_credential_change(self, plugin):
-        """A client may write ``smb`` outright rather than its leaves."""
-        issues = _judge(
-            plugin,
-            ["smb://nas/music"],
-            changed=frozenset({"smb"}),
-        )
-        assert [(i.index, i.severity) for i in issues] == [(0, IssueSeverity.WARNING)]
-
-    def test_a_folder_that_was_already_wrong_does_not_refuse_a_password(
-        self, plugin
+    def test_a_change_touching_neither_list_is_not_probed(
+        self, plugin, folders, shares
     ):
-        """Otherwise the entry has to be repaired before the credential that
-        would make its neighbours readable can be saved at all."""
+        assert _judge(plugin, changed={"scan_interval_minutes"}) == []
+        assert folders == [] and shares == []
+
+    def test_editing_the_folders_asks_nothing_of_the_shares(self, plugin, shares):
         _made, music = plugin
-        issues = _judge(
-            plugin,
-            [str(music), "smb://nas"],
-            changed=frozenset({"smb.password"}),
-        )
-        assert [i.severity for i in issues] == []
+        _judge(plugin, [str(music)])
+        assert shares == []
+
+    def test_editing_the_sources_asks_nothing_of_the_folders(
+        self, plugin, folders, shares
+    ):
+        _judge(plugin, sources=[_share()])
+        assert folders == []
+
+    def test_a_new_password_re_asks_its_share(self, plugin, shares):
+        """The login is part of the source, so typing it edits the list."""
+        _judge(plugin, sources=[_share(username="media", password="typed")])
+        assert [c.password for _root, c in shares] == ["typed"]
 
 
 class TestWhatTheLiveConfigurationKeeps:
-    def test_judging_does_not_move_playback_onto_unsaved_credentials(self, plugin):
-        made, music = plugin
+    def test_judging_does_not_move_playback_onto_unsaved_credentials(
+        self, plugin, shares
+    ):
+        made, _music = plugin
         live = LocalFilesConfig(**made._context.config.model_dump())
         before = made._resolver_for(live)
 
-        _judge(plugin, [str(music)], changed=frozenset({"smb.password"}), smb={
-            "username": "media", "password": "typed-but-not-saved", "encrypt": False
-        })
+        _judge(
+            plugin, sources=[_share(username="media", password="typed-but-not-saved")]
+        )
 
         assert made._resolver_for(live) is before
 
-    def test_judging_unchanged_credentials_reuses_the_resolver_playback_has(
-        self, plugin
-    ):
+    def test_judging_unchanged_logins_reuses_the_resolver_playback_has(self, plugin):
         """Its probe registry is what holds a hung share to one blocked
         worker thread, however often the page asks."""
-        made, music = plugin
+        made, _music = plugin
         live = LocalFilesConfig(**made._context.config.model_dump())
         assert made._resolver_for_candidate(live) is made._resolver_for(live)
 
-    def test_judging_changed_credentials_uses_a_resolver_of_its_own(
-        self, plugin
-    ):
+    def test_judging_a_changed_login_uses_a_resolver_of_its_own(self, plugin):
         made, _music = plugin
         live = LocalFilesConfig(**made._context.config.model_dump())
-        staged = live.model_copy(deep=True)
-        staged.smb.password = "typed-but-not-saved"
+        staged = _with_password(live, "typed-but-not-saved")
         assert made._resolver_for_candidate(staged) is not made._resolver_for(live)
 
-    def test_judging_the_same_staged_credentials_twice_reuses_that_resolver(
-        self, plugin
-    ):
+    def test_judging_a_new_share_uses_a_resolver_of_its_own(self, plugin):
+        """The live one has no login for a share it was not built with."""
+        made, _music = plugin
+        live = LocalFilesConfig(**made._context.config.model_dump())
+        staged = LocalFilesConfig(
+            **{**live.model_dump(), "music_sources": [_share(path="films")]}
+        )
+        assert made._resolver_for_candidate(staged) is not made._resolver_for(live)
+
+    def test_judging_the_same_staged_login_twice_reuses_that_resolver(self, plugin):
         """Every keystroke of a password is judged; a resolver per keystroke
         would strand a worker thread on each one when a share is hung."""
         made, _music = plugin
-        staged = LocalFilesConfig(**made._context.config.model_dump())
-        staged.smb.password = "typed-but-not-saved"
+        live = LocalFilesConfig(**made._context.config.model_dump())
+        staged = _with_password(live, "typed-but-not-saved")
         assert made._resolver_for_candidate(staged) is made._resolver_for_candidate(
             staged
         )
@@ -249,6 +397,9 @@ class TestKeepingStagedCredentialsApart:
             assert session["connection_cache"] is storage._connections
         finally:
             storage.close()
+
+    def test_a_password_is_never_part_of_how_a_login_prints(self):
+        assert "hunter2" not in repr(SmbCredentials("media", "hunter2"))
 
     def test_a_storage_that_holds_nothing_releases_cleanly(self):
         SmbStorage().close()
@@ -297,9 +448,12 @@ class TestKeepingStagedCredentialsApart:
             def close(self):
                 released.append(self._scheme)
 
-        resolver = StorageResolver([_Holding("a"), _Holding("b")])
+        routed = _Holding("c")
+        resolver = StorageResolver(
+            [_Holding("a"), _Holding("b")], {"smb://x/1": routed, "smb://x/2": routed}
+        )
         resolver.close()
-        assert released == ["a", "b"]
+        assert released == ["a", "b", "c"]
 
     def test_one_storage_that_will_not_release_does_not_strand_the_others(self):
         released = []
@@ -332,8 +486,7 @@ class TestLettingGoOfAReplacedResolver:
         made, _music = plugin
         live = LocalFilesConfig(**made._context.config.model_dump())
         first = made._staged_resolvers.get(live)
-        typed = live.model_copy(deep=True)
-        typed.smb.password = "one-more-character"
+        typed = _with_password(live, "one-more-character")
 
         released = threading.Event()
         object.__setattr__(first, "close", released.set)
@@ -345,8 +498,7 @@ class TestLettingGoOfAReplacedResolver:
         made, _music = plugin
         live = LocalFilesConfig(**made._context.config.model_dump())
         first = made._staged_resolvers.get(live)
-        typed = live.model_copy(deep=True)
-        typed.smb.password = "one-more-character"
+        typed = _with_password(live, "one-more-character")
 
         object.__setattr__(first, "close", lambda: time.sleep(1.0))
         started = time.monotonic()
@@ -357,14 +509,13 @@ class TestLettingGoOfAReplacedResolver:
     def test_the_resolver_playback_reads_is_not_taken_away_mid_track(
         self, plugin
     ):
-        """A saved credential change is followed by a restart within
-        seconds; closing the connection a track is streaming from is a
-        worse way to release it."""
+        """A saved login change is followed by a restart within seconds;
+        closing the connection a track is streaming from is a worse way to
+        release it."""
         made, _music = plugin
         live = LocalFilesConfig(**made._context.config.model_dump())
         reading = made._live_resolvers.get(live)
-        saved = live.model_copy(deep=True)
-        saved.smb.password = "just-saved"
+        saved = _with_password(live, "just-saved")
 
         released = threading.Event()
         object.__setattr__(reading, "close", released.set)

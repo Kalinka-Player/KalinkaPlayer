@@ -1,7 +1,7 @@
 import os
-from typing import Any, ClassVar
+from typing import Annotated, Any, ClassVar, Hashable, Literal, Union
 from pydantic import BaseModel, Field
-from kalinka_plugin_sdk import paths
+from kalinka_plugin_sdk import ConfigRecord, Records, paths
 from kalinka_plugin_sdk.module_config import ModuleConfig
 
 
@@ -253,39 +253,152 @@ class EnricherConfig(BaseModel):
     )
 
 
-class SmbConfig(BaseModel):
-    """How to log in to SMB shares added as ``smb://`` music folders.
-
-    One account for every server, because the settings page has no editor
-    for a list of secrets, and for now a folder URL may not name its user
-    either: validation refuses ``smb://user@host/share``. Leave both empty
-    for the guest access most NAS boxes offer a media share.
-    """
-
-    username: str = Field(
+class LocalLocation(BaseModel):
+    path: str = Field(
         default="",
-        title="SMB username",
-        json_schema_extra={
-            "help": "Leave empty to connect as a guest",
-            **_SIMPLE,
-            **_PRIVATE,
-        },
-    )
-    password: str = Field(
-        default="",
-        title="SMB password",
-        json_schema_extra={"widget": "password", **_SIMPLE},
-    )
-    encrypt: bool = Field(
-        default=False,
-        title="Require SMB encryption",
+        title="Folder",
         json_schema_extra={
             "help": (
-                "Encrypt share traffic. Needs SMB3 on the server and costs "
-                "CPU on this device."
+                "Use the path on the server, even when you control Kalinka "
+                "from another device."
             ),
+            "widget": "path",
+            "dynamic_options": True,
+            **_SIMPLE,
         },
     )
+
+
+class SmbLocation(BaseModel):
+    host: str = Field(
+        default="",
+        title="Server",
+        json_schema_extra={
+            "help": "A name or an address, e.g. 192.168.1.20",
+            "dynamic_options": True,
+            **_SIMPLE,
+        },
+    )
+    port: int = Field(default=445, ge=1, le=65535, title="Port")
+    path: str = Field(
+        default="",
+        title="Folder",
+        json_schema_extra={
+            "help": "The share, then any folder inside it, e.g. Music/Jazz",
+            **_SIMPLE,
+        },
+    )
+
+    def parts(self) -> list[str]:
+        """The share, then each folder inside it; either slash separates them."""
+        return [
+            part.strip()
+            for part in self.path.replace("\\", "/").split("/")
+            if part.strip()
+        ]
+
+
+class GuestSignIn(BaseModel):
+    mode: Literal["guest"] = Field(
+        default="guest",
+        title="Guest",
+        description="The guest access most NAS boxes offer a media share.",
+    )
+
+
+class AccountSignIn(BaseModel):
+    mode: Literal["account"] = Field(default="account", title="Account")
+    username: str = Field(default="", title="User name", json_schema_extra=_SIMPLE)
+    password: str = Field(
+        default="",
+        title="Password",
+        json_schema_extra={"widget": "password", **_SIMPLE},
+    )
+
+
+class SmbOptions(BaseModel):
+    require_encryption: bool = Field(
+        default=False,
+        title="Require encryption",
+        description=(
+            "Encrypt share traffic. Needs SMB3 on the server and costs CPU on "
+            "this device."
+        ),
+    )
+
+
+class LocalSource(ConfigRecord):
+    __preview_fields__: ClassVar[list[str]] = ["location.path"]
+
+    kind: Literal["local"] = Field(
+        default="local",
+        title="Folder on the server",
+        description="A disk, or a share mounted on the server",
+        json_schema_extra={"icon": "folder_outlined"},
+    )
+    location: LocalLocation = Field(default_factory=LocalLocation, title="Location")
+
+
+class SmbSource(ConfigRecord):
+    __preview_fields__: ClassVar[list[str]] = ["location.host", "location.path"]
+
+    kind: Literal["smb"] = Field(
+        default="smb",
+        title="Network share",
+        description="An SMB share on a NAS or a computer, no mount needed",
+        json_schema_extra={"icon": "lan_outlined"},
+    )
+    location: SmbLocation = Field(default_factory=SmbLocation, title="Location")
+    authentication: Union[GuestSignIn, AccountSignIn] = Field(
+        default_factory=GuestSignIn, discriminator="mode", title="Sign in"
+    )
+    options: SmbOptions = Field(default_factory=SmbOptions, title="Options")
+
+    def credential_scope(self) -> Hashable:
+        """A saved password is for one account on one server."""
+        return (
+            self.location.host.strip().lower(),
+            self.location.port,
+            getattr(self.authentication, "username", ""),
+        )
+
+
+MusicSource = Annotated[Union[LocalSource, SmbSource], Field(discriminator="kind")]
+
+
+def _starter_folder() -> LocalSource:
+    # Under /srv (world-writable drop-off, provisioned by the deb postinst) —
+    # not /home (kalusr has none) nor the kalusr-only state dir.
+    return LocalSource(id="media", location=LocalLocation(path=paths.media_dir()))
+
+
+def _following(sources: list[MusicSource], folders: list[str]) -> list[MusicSource]:
+    """``sources`` with the local ones made ``folders``, in their order.
+
+    A folder that is already a local source keeps its record, id and all; a
+    new one gets a record of its own. Shares keep their places.
+    """
+    unused = [source for source in sources if isinstance(source, LocalSource)]
+    local: list[MusicSource] = []
+    for folder in folders:
+        at = next(
+            (i for i, source in enumerate(unused) if source.location.path == folder),
+            None,
+        )
+        local.append(
+            unused.pop(at)
+            if at is not None
+            else LocalSource(location=LocalLocation(path=folder))
+        )
+    fresh = iter(local)
+    rebuilt: list[MusicSource] = []
+    for source in sources:
+        if not isinstance(source, LocalSource):
+            rebuilt.append(source)
+        elif (replacement := next(fresh, None)) is not None:
+            rebuilt.append(replacement)
+    rebuilt.extend(fresh)
+    return rebuilt
 
 
 class LocalFilesConfig(ModuleConfig):
@@ -308,16 +421,15 @@ class LocalFilesConfig(ModuleConfig):
     enabled: bool = Field(
         default=True, title="Module enabled", json_schema_extra=_SIMPLE,
     )
+    # The local sources' folders, for apps that predate music_sources.
     music_folders: list[str] = Field(
-        # Starter placeholder; users repoint this at their real library. Under
-        # /srv (world-writable drop-off, provisioned by the deb postinst) — not
-        # /home (kalusr has none) nor the kalusr-only state dir. See media_dir().
-        default_factory=lambda: [paths.media_dir()],
+        default_factory=lambda: [_starter_folder().location.path],
         title="Music folders",
         json_schema_extra={
             "help": (
-                "A folder on this device, or an SMB share as "
-                "`smb://192.168.1.1/music` — a share needs no mounting."
+                "A folder on the server, including a disk or share mounted "
+                "on it. Network shares are added as music sources in an "
+                "up-to-date Kalinka app."
             ),
             "widget": "folder_list",
             "dynamic_options": True,
@@ -326,10 +438,15 @@ class LocalFilesConfig(ModuleConfig):
             **_PRIVATE,
         },
     )
-    smb: SmbConfig = Field(
-        default_factory=SmbConfig,
-        title="SMB shares",
-        json_schema_extra={"inline": True},
+    music_sources: Records[MusicSource] = Field(
+        # Starter placeholder; users repoint this at their real library.
+        default_factory=lambda: [_starter_folder()],
+        title="Music sources",
+        json_schema_extra={
+            "help": "Folders on the server and shares on the network",
+            "replaces": ["music_folders"],
+            **_PRIVATE,
+        },
     )
     db_path: str = Field(
         default_factory=lambda: os.path.join(paths.state_dir(), "localfiles.db"),
@@ -406,3 +523,14 @@ class LocalFilesConfig(ModuleConfig):
     ai_search: AiSearchConfig = Field(
         default_factory=AiSearchConfig, title="AI search"
     )
+
+    def reconcile(self, written: frozenset[str]) -> None:
+        """Keep the music folders the local sources' folders. An app that
+        writes the folders makes the local sources follow them instead."""
+        if "music_folders" in {path.split(".")[0] for path in written}:
+            self.music_sources = _following(self.music_sources, self.music_folders)
+        self.music_folders = [
+            source.location.path
+            for source in self.music_sources
+            if isinstance(source, LocalSource)
+        ]
