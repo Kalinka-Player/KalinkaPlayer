@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import logging.handlers
 import math
 import multiprocessing
 import os
@@ -30,7 +29,7 @@ from typing import Optional
 from ..config_model import LocalFilesConfig
 from ..embedding_utils import decode_embedding
 from ..pip_utils import ensure_package
-from ..worker_utils import set_proc_title
+from ..worker_utils import configure_worker_logging, set_proc_title
 from .searcher_db import AsyncSearcherDb
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -469,11 +468,7 @@ def main(
     """Entry point for the searcher subprocess."""
     set_proc_title("kal-searcher")
 
-    root = logging.getLogger()
-    for handler in root.handlers[:]:
-        root.removeHandler(handler)
-    root.setLevel(logging.DEBUG)
-    root.addHandler(logging.handlers.QueueHandler(logger_queue))
+    configure_worker_logging(logger_queue)
 
     asyncio.run(
         async_main(

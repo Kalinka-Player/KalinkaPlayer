@@ -7,6 +7,7 @@ import ctypes
 import functools
 import inspect
 import logging
+import logging.handlers
 import multiprocessing
 import queue
 import random
@@ -14,6 +15,24 @@ import sqlite3
 from typing import Optional
 
 logger = logging.getLogger(__name__.split(".")[-1])
+
+
+def configure_worker_logging(logger_queue: multiprocessing.Queue) -> None:
+    """Forward worker logs, suppressing SMB packet dumps at their source.
+
+    QueueHandler formats records before sending them. Filtering only in the
+    parent is too late: SMB DEBUG records render entire audio packets as hex
+    while holding the handler lock, blocking unrelated metadata requests.
+    Spawned workers must set these levels themselves, even when the parent's
+    loggers already suppress the protocol chatter.
+    """
+    root = logging.getLogger()
+    for handler in root.handlers[:]:
+        root.removeHandler(handler)
+    root.setLevel(logging.DEBUG)
+    for name in ("smbprotocol", "smbclient"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+    root.addHandler(logging.handlers.QueueHandler(logger_queue))
 
 
 # ---------------------------------------------------------------------------

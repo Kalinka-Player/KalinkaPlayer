@@ -11,13 +11,12 @@ queue.
 
 import asyncio
 import logging
-import logging.handlers
 import multiprocessing
 import signal
 from typing import Optional
 
 from .config_model import LocalFilesConfig
-from .worker_utils import set_proc_title
+from .worker_utils import configure_worker_logging, set_proc_title
 from .indexer import indexer as indexer_mod
 from .indexer.indexer_db import AsyncIndexerDb
 from .enricher import enricher as enricher_mod
@@ -95,11 +94,7 @@ def main(
     """Main entry point for the librarian daemon."""
     set_proc_title("kal-librarian")
 
-    root = logging.getLogger()
-    for handler in root.handlers[:]:
-        root.removeHandler(handler)
-    root.setLevel(logging.DEBUG)
-    root.addHandler(logging.handlers.QueueHandler(logger_queue))
+    configure_worker_logging(logger_queue)
 
     try:
         asyncio.run(async_main(config, searcher_nudge_queue, embedder_nudge_queue))

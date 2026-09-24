@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import logging.handlers
 import multiprocessing
 import queue
 import signal
@@ -36,7 +35,7 @@ from ..embedding_utils import (
 )
 from ..pip_utils import ensure_package
 from ..storage import build_resolver
-from ..worker_utils import set_proc_title, sleep_interruptible
+from ..worker_utils import configure_worker_logging, set_proc_title, sleep_interruptible
 from .embedder_db import AsyncEmbedderDb
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -719,11 +718,7 @@ def main(
     """Entry point for the embedder subprocess."""
     set_proc_title("kal-embedder")
 
-    root = logging.getLogger()
-    for handler in root.handlers[:]:
-        root.removeHandler(handler)
-    root.setLevel(logging.DEBUG)
-    root.addHandler(logging.handlers.QueueHandler(logger_queue))
+    configure_worker_logging(logger_queue)
 
     asyncio.run(
         async_main(
