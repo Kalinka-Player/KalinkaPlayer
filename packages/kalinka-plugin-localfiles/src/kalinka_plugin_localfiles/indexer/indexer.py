@@ -621,7 +621,7 @@ class FileIndexer:
             # inode) legitimately mints a new identity. Works for both inotify
             # moves and rescans, because stale-row cleanup runs after this.
             known = await self.db_manager.get_library_file_by_inode(
-                device_id, inode
+                device_id, inode, file_path
             )
             if (
                 known

@@ -126,6 +126,34 @@ async def test_copy_mints_new_identity(indexer):
 
 
 @pytest.mark.asyncio
+async def test_a_file_known_at_two_paths_is_not_moved_onto_itself(indexer):
+    """One share read under two spellings — a host name, then its address —
+    is indexed twice while both answer: one identity per path, the same file
+    underneath. Once the old spelling is gone, the file must take back the
+    identity it already has at its path, not have the old one re-pointed onto
+    a path that is taken.
+    """
+    fi, music, config = indexer
+    old = music / "Album" / "song.flac"
+    _flac(old, title="T", artist="A", album="X")
+    await fi.process_file(str(old))
+    new = music / "Also" / "song.flac"
+    new.parent.mkdir()
+    os.link(old, new)
+    id_new = (await fi.process_file(str(new)))["tracks"]
+
+    os.remove(old)
+    async with aiosqlite.connect(config.db_path) as conn:
+        await conn.execute("DELETE FROM tracks")
+        await conn.commit()
+    result = await fi.process_file(str(new))
+
+    assert result["tracks"] == id_new
+    t = await _row(config, "SELECT * FROM tracks WHERE id=?", (id_new,))
+    assert t["file_path"] == str(new)
+
+
+@pytest.mark.asyncio
 async def test_a_storage_without_file_identity_never_re_points_a_row(indexer):
     """Move detection needs an identity it can trust. A storage that reports
     none — a share whose server supplies no file index — must fall back to
