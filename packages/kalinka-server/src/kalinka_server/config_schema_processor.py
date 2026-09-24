@@ -898,6 +898,21 @@ async def build_values(
     omitted (the field appears with no value rather than failing the
     whole request).
     """
+    known = build_static_values(base_config, input_modules, devices)
+    for entry in dynamic_entries:
+        value = await resolve_value(entry)
+        if value is not None:
+            known.values[entry.full_path] = value
+    return known
+
+
+def build_static_values(
+    base_config: BaseModel,
+    input_modules: dict[str, ModuleConfig],
+    devices: dict[str, ModuleConfig],
+) -> ConfigValues:
+    """:func:`build_values` without the dynamic fields, which hold no
+    credential: enough for ``secrets_set``, without asking any plugin."""
     out: dict[str, Any] = {}
     secrets_set: set[str] = set()
     _flatten_values(base_config, "base_config", out, secrets_set)
@@ -905,11 +920,6 @@ async def build_values(
         _flatten_values(module, f"input_modules.{name}", out, secrets_set)
     for name, device in devices.items():
         _flatten_values(device, f"devices.{name}", out, secrets_set)
-
-    for entry in dynamic_entries:
-        value = await resolve_value(entry)
-        if value is not None:
-            out[entry.full_path] = value
     return ConfigValues(values=out, secrets_set=frozenset(secrets_set))
 
 

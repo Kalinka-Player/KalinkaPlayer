@@ -24,7 +24,12 @@ from pydantic import BaseModel, ValidationError
 
 from .config_overrides import reconcile_config, set_by_path, to_override_value
 from .config_schema_processor import get_field_value
-from .config_secrets import is_private_path, keep_unsent_secrets, loggable
+from .config_secrets import (
+    LostCredential,
+    is_private_path,
+    keep_unsent_secrets,
+    loggable,
+)
 from .player_setup import PreparedPlugin
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -156,39 +161,74 @@ def _first_message(exc: ValidationError) -> str:
     return "the value is not valid for this setting"
 
 
-def apply_change(model: BaseModel, attrs: list[str], value: Any) -> str | None:
+@dataclass(frozen=True)
+class Applied:
+    """What writing one value came to.
+
+    @param refused Why the value could not be stored, in words for the user;
+        None when it was written.
+    @param lost The saved credentials it left out and could not keep. Empty
+        when it was refused, since nothing was written.
+    """
+
+    refused: str | None = None
+    lost: tuple[LostCredential, ...] = ()
+
+    def issues(self, key: str) -> list[ConfigIssue]:
+        """Both, as issues against the change at ``key``. Each refuses the
+        save: a lost credential would leave its entry unable to sign in,
+        while the client still shows one as saved."""
+        if self.refused is not None:
+            return [
+                ConfigIssue(
+                    path=key, message=self.refused, severity=IssueSeverity.ERROR
+                )
+            ]
+        return [
+            ConfigIssue(
+                path=f"{key}.{lost.path}",
+                message=lost.message,
+                severity=IssueSeverity.ERROR,
+            )
+            for lost in self.lost
+        ]
+
+
+def apply_change(model: BaseModel, attrs: list[str], value: Any) -> Applied:
     """Write one value onto ``model``, as its declared type.
 
     The same call serves the dry run and the save: the dry run writes to a
     copy, the save to the live configuration, and neither may accept what
     the other would refuse — nor keep a different saved credential.
 
-    @return The reason the value cannot be stored, in words for the user,
-        or None when it was written.
     @raise ConfigKeyError If the path names no field.
     """
     try:
         previous = get_field_value(model, attrs)
         set_by_path(model, attrs, value)
     except ValidationError as exc:
-        return _first_message(exc)
+        return Applied(refused=_first_message(exc))
     except (AttributeError, IndexError, TypeError, ValueError) as exc:
         raise ConfigKeyError("Invalid config key") from exc
-    keep_unsent_secrets(previous, value, get_field_value(model, attrs))
-    return None
+    lost = keep_unsent_secrets(previous, value, get_field_value(model, attrs))
+    return Applied(lost=tuple(lost))
 
 
 def commit_change(target: _Target, key: str, value: Any) -> str | None:
     """Write one change onto the live configuration and log it. A private
     field's log line names it and says it was updated, never its value.
 
-    @return As :func:`apply_change`.
+    @return Why the value could not be stored, in words for the user, or
+        None when it was written.
     @raise ConfigKeyError As :func:`apply_change`.
     """
     private = is_private_path(type(target.model), target.attrs)
     if not private:
         logger.info("Setting config field %s to %s", key, loggable(value))
-    reason = apply_change(target.model, target.attrs, value)
+    applied = apply_change(target.model, target.attrs, value)
+    for lost in applied.lost:
+        logger.warning("Saved credential %s.%s was not kept", key, lost.path)
+    reason = applied.refused
     if reason is None:
         if private:
             logger.info("Updated config field %s", key)
@@ -279,13 +319,10 @@ async def validate_changes(
                 set(),
             )
         _, candidate, changed = groups[target.prefix]
-        reason = apply_change(candidate, target.attrs, value)
-        if reason is not None:
-            issues.append(
-                ConfigIssue(path=key, message=reason, severity=IssueSeverity.ERROR)
-            )
-            continue
-        changed.add(".".join(target.attrs))
+        applied = apply_change(candidate, target.attrs, value)
+        issues.extend(applied.issues(key))
+        if applied.refused is None:
+            changed.add(".".join(target.attrs))
 
     for prefix, (target, candidate, changed) in groups.items():
         if target.plugin is None or not changed:

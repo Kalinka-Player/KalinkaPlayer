@@ -11,10 +11,13 @@ updated, and nothing about its value.
 
 The same holds inside a list of records. A credential on an entry is left out
 of what a client is sent and named by the entry's id in ``secrets_set``; a
-client writing the list back leaves it out in turn, and it is kept.
+client writing the list back leaves it out in turn, and it is kept while the
+entry is still for the same server and user. One it can no longer keep is
+reported, since the client cannot tell.
 """
 
 import re
+from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Iterator, List
 from urllib.parse import quote, quote_plus
 
@@ -193,7 +196,20 @@ def _public_record(
     return public
 
 
-def keep_unsent_secrets(previous: Any, sent: Any, stored: Any) -> None:
+@dataclass(frozen=True)
+class LostCredential:
+    """A saved credential that a written entry left out and could not keep.
+
+    The client was never sent it, so it goes on showing one as saved unless
+    it is told otherwise.
+    """
+
+    # Within the list: ``<id>.<field path>``.
+    path: str
+    message: str
+
+
+def keep_unsent_secrets(previous: Any, sent: Any, stored: Any) -> list[LostCredential]:
     """Carry over each credential a client left out of the records it wrote.
 
     It was never sent one, so a list it writes back holds only the
@@ -205,20 +221,51 @@ def keep_unsent_secrets(previous: Any, sent: Any, stored: Any) -> None:
     @param previous The list as it was before the write.
     @param sent The list as the client sent it, before validation.
     @param stored The list validated from ``sent``, updated in place.
+    @return Each saved credential an entry left out and did not keep.
     """
     if not all(isinstance(v, list) for v in (previous, sent, stored)):
-        return
+        return []
     saved = {r.id: r for r in previous if isinstance(r, ConfigRecord)}
+    lost: list[LostCredential] = []
     for record, raw in zip(stored, sent):
         if not isinstance(record, ConfigRecord) or not isinstance(raw, dict):
             continue
         old = saved.get(record.id)
+        if old is None:
+            continue
         if (
-            old is not None
-            and type(old) is type(record)
+            type(old) is type(record)
             and old.credential_scope() == record.credential_scope()
         ):
             _carry_secrets(old, record, raw)
+        lost.extend(
+            LostCredential(f"{record.id}.{path}", message)
+            for path, message in _left_behind(old, record, raw)
+        )
+    return lost
+
+
+def _left_behind(
+    old: BaseModel, new: BaseModel, raw: dict[str, Any], retyped: bool = False
+) -> Iterator[tuple[str, str]]:
+    """Each credential ``raw`` left out that ``old`` holds and ``new`` did not
+    keep, by its path within ``new``, with what to tell the user."""
+    retyped = retyped or type(old) is not type(new)
+    for name, field in type(new).model_fields.items():
+        old_value, new_value = getattr(old, name, None), getattr(new, name, None)
+        if is_secret(field):
+            if name not in raw and old_value and new_value != old_value:
+                was_for = (
+                    "another kind of entry" if retyped else "another server or user"
+                )
+                title = (field.title or name).lower()
+                yield name, f"enter the {title} again: the saved one was for {was_for}"
+        elif isinstance(new_value, BaseModel) and isinstance(old_value, BaseModel):
+            sent = raw.get(name)
+            for path, message in _left_behind(
+                old_value, new_value, sent if isinstance(sent, dict) else {}, retyped
+            ):
+                yield f"{name}.{path}", message
 
 
 def _carry_secrets(old: BaseModel, new: BaseModel, raw: dict[str, Any]) -> None:

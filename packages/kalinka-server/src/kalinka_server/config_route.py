@@ -17,6 +17,7 @@ from .config_overrides import save_overrides, store_override
 from .config_schema_processor import (
     build_enum_options,
     build_presentation,
+    build_static_values,
     build_values,
 )
 from .config_validation import (
@@ -157,6 +158,10 @@ def register_config_routes(
         staged together never lands in halves. What was only warned about is
         applied and reported, because a client that saved without a dry run
         has nowhere else to learn of it.
+
+        The answer names the credentials now set, as `GET /server/config`
+        does, so a client can show which are saved without reading the whole
+        configuration again.
         """
         changes, issues = await _judge(payload)
         refused = blocking(issues)
@@ -205,8 +210,11 @@ def register_config_routes(
                         exc,
                     )
 
+        ok_in, _err_in, ok_dev, _err_dev = _partition_modules_and_devices()
+        known = build_static_values(config, ok_in, ok_dev)
         return {
             "message": "Ok",
             "schema_version": app.state.schema_version,
             "issues": [issue.model_dump(mode="json") for issue in issues],
+            "secrets_set": sorted(known.secrets_set),
         }

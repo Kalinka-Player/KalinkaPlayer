@@ -11,6 +11,9 @@ Contract:
   out keeps the saved one while it keeps its id, its type and its credential
   scope; an empty credential clears it and a new one replaces it. The dry
   run and the save keep the same one, and the overrides file keeps it too.
+* A saved credential an entry leaves out but cannot keep, because the entry
+  now names another server or user or is of another kind, is an error at
+  that credential's path, in the dry run as in the save.
 * Two entries with one id are refused; an entry without one is given one.
 """
 
@@ -25,7 +28,7 @@ from typing import Annotated, Any, Literal, Union
 import pytest
 from pydantic import BaseModel, Field
 
-from kalinka_plugin_sdk import ConfigRecord, Records
+from kalinka_plugin_sdk import ConfigRecord, IssueSeverity, Records
 from kalinka_plugin_sdk.module_config import ModuleConfig
 from kalinka_plugin_sdk.plugin import PluginBase, PluginType
 from kalinka_server.config_model import KalinkaConfig
@@ -64,13 +67,22 @@ class _Server(ConfigRecord):
         return self.host
 
 
+class _Mirror(ConfigRecord):
+    kind: Literal["mirror"] = "mirror"
+    host: str = ""
+    login: Union[_Guest, _Account] = Field(default_factory=_Guest, discriminator="mode")
+
+    def credential_scope(self):
+        return self.host
+
+
 class _Folder(ConfigRecord):
     kind: Literal["folder"] = "folder"
     path: str = ""
     password: str = Field(default="", json_schema_extra=_PASSWORD)
 
 
-_Entry = Annotated[Union[_Server, _Folder], Field(discriminator="kind")]
+_Entry = Annotated[Union[_Server, _Mirror, _Folder], Field(discriminator="kind")]
 
 
 class _Config(ModuleConfig):
@@ -130,7 +142,7 @@ def _password(config: _Config, index=0) -> str:
 
 
 def _write(config: _Config, entries) -> str | None:
-    return apply_change(config, ["entries"], entries)
+    return apply_change(config, ["entries"], entries).refused
 
 
 def _targets(config, plugin=None) -> ConfigTargets:
@@ -257,6 +269,57 @@ class TestWritingTheListBack:
         )
         assert _password(restarted) == SECRET
         assert restarted.entries[0].id == "nas"
+
+
+class TestACredentialThatCannotBeKept:
+    """The client was never sent it, so it cannot tell it is gone."""
+
+    _PATH = "input_modules.mod.entries.nas.login.password"
+
+    def _issues(self, entries, config=None):
+        return asyncio.run(
+            validate_changes(
+                {"input_modules.mod.entries": entries},
+                _targets(config or _saved(), _Judge()),
+            )
+        )
+
+    def test_it_is_refused_where_the_credential_is(self):
+        [issue] = self._issues([_server(host="elsewhere")])
+        assert issue.path == self._PATH
+        assert issue.severity == IssueSeverity.ERROR
+        assert issue.message == (
+            "enter the password again: the saved one was for another server or user"
+        )
+
+    def test_an_entry_of_another_kind_says_so(self):
+        [issue] = self._issues([{**_server(), "kind": "mirror"}])
+        assert issue.path == self._PATH
+        assert "another kind of entry" in issue.message
+
+    @pytest.mark.parametrize("password", ["new", ""])
+    def test_one_sent_again_is_what_was_asked_for(self, password):
+        assert self._issues([_server(host="elsewhere", password=password)]) == []
+
+    def test_one_that_is_kept_is_not_reported(self):
+        assert self._issues([_server()]) == []
+
+    def test_an_entry_switched_to_a_guest_needs_none(self):
+        guest = {**_server(host="elsewhere"), "login": {"mode": "guest"}}
+        assert self._issues([guest]) == []
+
+    def test_a_new_entry_had_none_to_lose(self):
+        assert self._issues([_server(id="other", host="elsewhere")]) == []
+
+    def test_an_entry_that_had_none_saved_loses_none(self):
+        config = _Config(entries=[_server()])
+        assert self._issues([_server(host="elsewhere")], config) == []
+
+    def test_the_save_finds_the_same_one(self):
+        config = _saved()
+        applied = apply_change(config, ["entries"], [_server(host="elsewhere")])
+        issues = applied.issues("input_modules.mod.entries")
+        assert [issue.path for issue in issues] == [self._PATH]
 
 
 class TestLogs:

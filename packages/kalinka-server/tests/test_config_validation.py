@@ -288,12 +288,12 @@ class TestWhatRefusesTheSave:
 class TestWritingWhatPassed:
     def test_the_value_stored_is_the_declared_type_not_what_was_sent(self):
         config = _ServerConfig()
-        assert apply_change(config, ["port"], "9001") is None
+        assert apply_change(config, ["port"], "9001").refused is None
         assert config.port == 9001
 
     def test_a_refused_value_is_reported_rather_than_written(self):
         config = _ServerConfig()
-        assert apply_change(config, ["port"], "nope") is not None
+        assert apply_change(config, ["port"], "nope").refused is not None
         assert config.port == 8000
 
     def test_a_path_that_names_no_field_is_not_a_value_problem(self):
