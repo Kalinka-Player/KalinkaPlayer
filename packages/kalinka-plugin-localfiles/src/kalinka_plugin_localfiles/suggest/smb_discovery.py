@@ -258,6 +258,28 @@ def _is_a_server_address(address: str) -> bool:
     return not (parsed.version == 6 and parsed.is_link_local)
 
 
+def _is_ipv4(host: DiscoveredHost) -> bool:
+    parsed = _as_address(host.address)
+    return parsed is not None and parsed.version == 4
+
+
+def _is_routed_ipv4(host: DiscoveredHost) -> bool:
+    parsed = _as_address(host.address)
+    return parsed is not None and parsed.version == 4 and not parsed.is_link_local
+
+
+def _without_ipv6_aliases(hosts: list[DiscoveredHost]) -> list[DiscoveredHost]:
+    """The name is what ties an mDNS sighting to a NetBIOS one from the same box."""
+    named_on_ipv4 = {
+        h.name.casefold() for h in hosts if h.name and _is_routed_ipv4(h)
+    }
+    return [
+        h
+        for h in hosts
+        if _is_ipv4(h) or not h.name or h.name.casefold() not in named_on_ipv4
+    ]
+
+
 class MdnsWatch(Protocol):
     """A running subscription to the network's ``_smb._tcp`` announcements."""
 
@@ -322,7 +344,10 @@ class _ZeroconfWatch:
             return
         # parsed_addresses(), not addresses: the latter is IPv4 only, so a
         # server that answers over v6 alone would never be offered.
-        self._on_seen(name, name.split(".")[0], info.parsed_addresses())
+        # An instance name is free text and may hold a dot of its own.
+        self._on_seen(
+            name, name.removesuffix(f".{service_type}"), info.parsed_addresses()
+        )
 
     def update_service(self, zeroconf, service_type: str, name: str) -> None:
         self.add_service(zeroconf, service_type, name)
@@ -419,10 +444,12 @@ class SmbHostDiscovery:
         """Every server worth offering that was seen recently, by address.
 
         A host found both ways is reported once, keeping whichever sighting
-        carried a name. This machine is left out on every address it holds —
-        Samba answers on all of them, and the shares behind them are folders
-        already offered as folders. Whose an address is gets asked here
-        rather than on arrival, because it changes.
+        carried a name, and a host with a routed IPv4 address is offered on
+        IPv4 alone — the same shares under an IPv6 address are noise. This
+        machine is left out on every address it holds — Samba answers
+        on all of them, and the shares behind them are folders already
+        offered as folders. Whose an address is gets asked here rather than
+        on arrival, because it changes.
         """
         cutoff = self._now() - self._stale_after
         merged: dict[str, DiscoveredHost] = {}
@@ -437,14 +464,15 @@ class SmbHostDiscovery:
                         host if host.name or known is None else known
                     )
         ours_are_knowable = self._can_tell_whose_address_it_is()
+        offered = [
+            host
+            for host in merged.values()
+            if _is_a_server_address(host.address)
+            and not (ours_are_knowable and _belongs_to_this_machine(host.address))
+        ]
         return sorted(
-            (
-                host
-                for host in merged.values()
-                if _is_a_server_address(host.address)
-                and not (ours_are_knowable and _belongs_to_this_machine(host.address))
-            ),
-            key=lambda h: (h.name or h.address),
+            _without_ipv6_aliases(offered),
+            key=lambda h: (h.name or h.address).casefold(),
         )
 
     def _can_tell_whose_address_it_is(self) -> bool:
