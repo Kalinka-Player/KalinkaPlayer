@@ -44,7 +44,7 @@ Not shipped with the packages. Fetched on first use when the corresponding featu
 
 ## Services
 
-The Local Library enricher talks to [AcoustID](https://acoustid.org/), [MusicBrainz](https://musicbrainz.org/), Wikidata and Deezer; the Jamendo plugin talks to the [Jamendo API](https://developer.jamendo.com/). Each requires you to supply your own API key where one is needed, and use is subject to those services' terms rather than this project's license.
+My Library's enricher talks to [AcoustID](https://acoustid.org/), [MusicBrainz](https://musicbrainz.org/), Wikidata and Deezer; the Jamendo plugin talks to the [Jamendo API](https://developer.jamendo.com/). Each requires you to supply your own API key where one is needed, and use is subject to those services' terms rather than this project's license.
 
 ## Appliance images
 

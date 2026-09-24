@@ -60,7 +60,8 @@ def get_version() -> str:
 # list back without one keeps it. A collection's `replaces` names the older
 # fields it stands for, which a client showing it hides. localfiles'
 # music_folders is its local sources' folders; writing either list updates
-# the other.
+# the other. A /server/modules entry carries the module's `icon` (a material
+# icon name, or null), which a client draws in place of its letter badge.
 REST_API_VERSION = "0.8"
 
 

@@ -649,6 +649,12 @@ def _inject_dynamic_fields(
         _insert_after_enabled(target, _dynamic_field_spec(entry))
 
 
+def module_icon(config_cls: type) -> str | None:
+    """The material icon name a module's config declares for it, if any: its
+    settings card, and its badge wherever music from it is shown."""
+    return getattr(config_cls, "__module_icon__", None)
+
+
 def _module_spec(
     config: ModuleConfig,
     kind: str,
@@ -691,7 +697,7 @@ def _module_spec(
         kind=kind,  # type: ignore[arg-type]
         title=title,
         description=name_field.description,
-        icon=getattr(cls, "__module_icon__", None),
+        icon=module_icon(cls),
         icon_color=getattr(cls, "__module_icon_color__", None),
         preview_fields=list(getattr(cls, "__preview_fields__", [])),
         banners=banners,

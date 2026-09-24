@@ -46,6 +46,7 @@ from .config_schema_processor import (
     build_enum_options,
     build_presentation,
     build_values,
+    module_icon,
 )
 from .catalog_art_service import CatalogArtService
 from .browse_route import register_browse_routes
@@ -1367,6 +1368,7 @@ async def create_app(
         entry: Dict[str, Any] = {
             "name": cfg.name,
             "title": cfg.__class__.model_fields["name"].title or cfg.name,
+            "icon": module_icon(type(cfg)),
             "enabled": cfg.enabled,
             "state": prepared.health_state.value,
             "error_message": prepared.error_message,
@@ -1407,6 +1409,7 @@ async def create_app(
             {
                 "name": entry.name,
                 "title": entry.title,
+                "icon": None,
                 "enabled": True,
                 "state": ModuleHealthState.READY.value,
                 "error_message": None,

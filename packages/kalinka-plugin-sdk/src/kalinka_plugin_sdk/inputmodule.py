@@ -192,7 +192,7 @@ class InputModule(Protocol):
     def display_name(self) -> str:
         """
         Return a short, human-friendly name for this source, shown in section
-        headers (e.g. "Local Library", "Jamendo"). Defaults to module_name().
+        headers (e.g. "My Library", "Jamendo"). Defaults to module_name().
 
         Returns:
             str: The display name for this source

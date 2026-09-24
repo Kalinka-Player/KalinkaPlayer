@@ -7,7 +7,7 @@ packages/
 ├── kalinka-server            # Core server, REST/WS API, queue, config (pure Python)
 ├── kalinka-renderer          # Network audio renderer: native ALSA player (C++)
 ├── kalinka-plugin-sdk        # Shared plugin interface & helpers (mandatory dependency)
-├── kalinka-plugin-localfiles # Local Library: indexer, enricher, embedder, searcher (most complete)
+├── kalinka-plugin-localfiles # My Library: indexer, enricher, embedder, searcher (most complete)
 ├── kalinka-plugin-jamendo    # Jamendo streaming source (Creative-Commons catalog)
 ├── kalinka-plugin-musiccast  # Yamaha MusicCast volume/power control
 └── kalinka-plugin-dummydevice# Mock playback device for development/CI
@@ -32,6 +32,6 @@ The server exposes a REST API (FastAPI) plus WebSocket channels for live state. 
 ## Configuration & tuning
 
 - Most settings are editable live from the app's **Settings** screen and persisted to the `.cfg` files. The server exposes its config schema at `GET /server/config/schema` so the app can render forms.
-- **Smart Search** is opt-in. For the Local Library, turn on **AI search** in the localfiles module config — one switch covers both indexing the library and answering queries. On first run it downloads the CLAP ONNX models to the model directory (default `/var/lib/kalinka/models`, or `$KALINKA_PREFIX/var/lib/kalinka/models` when running from source) and embeds tracks in the background; watch progress via `GET /indexer/status`.
+- **Smart Search** is opt-in. For My Library, turn on **AI search** in the localfiles module config — one switch covers both indexing the library and answering queries. On first run it downloads the CLAP ONNX models to the model directory (default `/var/lib/kalinka/models`, or `$KALINKA_PREFIX/var/lib/kalinka/models` when running from source) and embeds tracks in the background; watch progress via `GET /indexer/status`.
 - **AcoustID** enrichment needs a free API key from the [AcoustID website](https://acoustid.org/) — set it in the localfiles enricher config. The key is the only switch: no key means the plugin isn't loaded.
 - Re-embedding is driven by `CLAP_MODEL_VERSION` in `embedding_utils.py`, not by config; bumping it in code forces a rebuild after a model change. See [`clap_onnx_release.md`](../scripts/clap_onnx_release.md).

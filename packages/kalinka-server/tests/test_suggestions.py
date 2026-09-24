@@ -161,12 +161,12 @@ def _card(items: list[BrowseItem]) -> BrowseItemList:
     cat = EntityId(id="ai_search:tracks", type=EntityType.CATALOG, source="localfiles")
     card = BrowseItem(
         id=cat,
-        name="FROM LOCAL LIBRARY",
+        name="FROM MY LIBRARY",
         can_browse=False,
         can_add=False,
         catalog=Catalog(
             id=cat,
-            title="FROM LOCAL LIBRARY",
+            title="FROM MY LIBRARY",
             sources=["localfiles"],
             preview_config=Preview(
                 type=PreviewType.CARD,
