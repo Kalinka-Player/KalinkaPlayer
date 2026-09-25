@@ -118,7 +118,7 @@ Remove the live stick and restart. Kalinka grows to fill the whole disk on its f
 
 The PC image also runs as a virtual machine. This suits a home server that is on all the time anyway. Read these four points first, because they are where VMs usually go wrong:
 
-- **Use a bridged network, not NAT.** Your phone has to reach the VM directly, and the app finds the server by listening on the local network. Choose **Bridged Adapter** in VirtualBox, a **bridge** device in virt-manager, **vmbr0** in Proxmox (the default), or an **External** switch in Hyper-V. If the VM's screen shows an address starting with `10.0.2.`, it is on NAT.
+- **Use a bridged network, not NAT.** Your phone has to reach the VM directly, and the app finds the server by listening on the local network. Choose **Bridged Adapter** in VirtualBox, a **bridge** device in virt-manager, **vmbr0** in Proxmox (the default), or an **External** switch in Hyper-V. If the VM's screen shows an address starting with `10.0.2.` (VirtualBox, QEMU) or `192.168.122.` (virt-manager), or the VM uses Hyper-V's **Default Switch**, it is on NAT.
 - **Sound needs a plan.** A VM usually cannot reach your DAC. The usual setup is to let the VM be the server and [add an output](#add-more-outputs) on a small box next to your amplifier. You can also pass a USB DAC through to the VM. The VM's virtual sound card does appear as an output, but it plays through the host's sound system, so it is not bit-perfect.
 - **Make the disk bigger before the first start.** The image is only 4 GB. Enlarge the virtual disk to 16 GB or more, or more again if you will keep music inside the VM. Kalinka grows into the extra space every time it starts, so you can enlarge the disk again later.
 - **Give it 2 CPU cores and 2 GB of memory,** or 4 GB for AI search. UEFI and BIOS both work, and so does Secure Boot.
@@ -145,7 +145,7 @@ A VM has no memory card to take out, so add the [settings file](#the-settings-fi
 mcopy -i kalinka.img@@2097152 kalinka-firstboot.conf ::/kalinka-firstboot.conf
 ```
 
-On macOS, double-click the `.img` file, or run `hdiutil attach -imagekey diskimage-class=CRawDiskImage kalinka.img`. A **KALINKA-BT** drive appears; copy the file onto it and eject it.
+On macOS, install mtools with `brew install mtools` and run the same command. The boot partition is an EFI partition, which macOS does not mount by itself.
 
 </details>
 
@@ -184,7 +184,7 @@ You only need these in special cases.
 | You want | Run |
 |---|---|
 | To read the script before running it | `curl -fsSL https://kalinkaplayer.com/install.sh -o install.sh`, read it, then `sudo bash install.sh` |
-| A particular version | `curl -fsSL https://kalinkaplayer.com/install.sh \| sudo bash -s -- 5.0.0` |
+| A particular version of the server and its plugins (the output and the browser player still come from their latest releases) | `curl -fsSL https://kalinkaplayer.com/install.sh \| sudo bash -s -- 5.0.0` |
 | A server with no output on this machine, for example a NAS whose sound nobody hears | `curl -fsSL https://kalinkaplayer.com/install.sh \| sudo KALINKA_RENDERER=0 bash` |
 | No browser player | `curl -fsSL https://kalinkaplayer.com/install.sh \| sudo KALINKA_WEB=0 bash` |
 
@@ -224,12 +224,12 @@ The Kalinka images come with **no login and no Wi-Fi**. A published image cannot
 
 To set them, put a small text file called `kalinka-firstboot.conf` on the card before its first start:
 
-1. After writing the card, unplug it and plug it back in. A drive called **KALINKA-BT** appears.
+1. After writing the card, unplug it and plug it back in. A drive called **KALINKA-BT** appears. On the PC image it stays hidden; see *PC image: the drive does not appear* below.
 
    > **Windows may say the disk needs formatting. Click Cancel.** That message is about the part of the card that Windows cannot read, and formatting would erase the image. macOS may say a disk is not readable: click **Ignore**.
 
 2. The drive holds a file called `kalinka-firstboot.conf.example`. **Copy it** and name the copy exactly `kalinka-firstboot.conf`. Windows hides file extensions by default, so check the name does not end in `.txt`. Edit the copy rather than starting a new file, so the file keeps the right format.
-3. Open the copy in a text editor. Every line in it is explained. Fill in what you need, for example:
+3. Open the copy in a text editor. Every line in it is explained. A line that starts with `#` is ignored, so remove the `#` from each line you fill in and leave the rest alone. Keep `PASSWORD_HASH` commented out unless you put a real hash in it, because a set `PASSWORD_HASH` wins over `PASSWORD`. For example:
 
    ```sh
    USERNAME=kalinka
@@ -239,7 +239,7 @@ To set them, put a small text file called `kalinka-firstboot.conf` on the card b
    WIFI_COUNTRY=GB
    ```
 
-   `WIFI_COUNTRY` is your two-letter country code: GB, US, DE, FR and so on. Leave out whatever you do not need. With a network cable, the two Wi-Fi lines can go.
+   `WIFI_COUNTRY` is your two-letter country code: GB, US, DE, FR and so on. Leave out whatever you do not need. With a network cable, the three Wi-Fi lines can go. `TIMEZONE`, for example `TIMEZONE=Europe/London`, sets the player's clock; without it the player runs on UTC.
 
 4. Save the file, eject the card safely, and start the player.
 
@@ -248,9 +248,22 @@ The player reads the file on its first start, applies it, and then **deletes it*
 The same file also works later. Put it back on a player that is already in use and restart it.
 
 <details>
-<summary>PC image on Windows: the drive does not appear</summary>
+<summary>PC image: the drive does not appear</summary>
 
-On the PC image, **KALINKA-BT** is a boot partition, and Windows hides those. The simplest fix is to add the file from a Mac or a Linux computer. To do it from Windows, open a Command Prompt **as administrator** and run `diskpart`, then:
+On the PC image, **KALINKA-BT** is an EFI boot partition. Windows, macOS and Linux desktops all keep those hidden, so mount it by hand.
+
+**Linux:** `lsblk -o NAME,LABEL` shows which partition is labelled KALINKA-BT, for example `sdb2`. Then:
+
+```bash
+sudo mount /dev/sdb2 /mnt
+sudo cp /mnt/kalinka-firstboot.conf.example /mnt/kalinka-firstboot.conf
+sudo nano /mnt/kalinka-firstboot.conf
+sudo umount /mnt
+```
+
+**macOS:** `diskutil list` shows the partition labelled KALINKA-BT, for example `disk4s2`. `sudo diskutil mount disk4s2` mounts it at `/Volumes/KALINKA-BT`; copy and edit the file there with `sudo cp` and `sudo nano`, then `diskutil unmount disk4s2`.
+
+**Windows:** open a Command Prompt **as administrator** and run `diskpart`, then:
 
 ```text
 list volume
@@ -298,7 +311,7 @@ Whichever remote you open, the **setup wizard** starts. It asks where your music
 
 Pick whichever of these matches where your music is. You can combine them: Kalinka treats each one as a **music source** of **My Library**.
 
-**On a NAS or another computer.** No copying is needed. In the wizard, or later under **Server settings → Input modules → My Library → Music sources**, add a **Network share**. Enter the address of the NAS or computer, the shared folder, and a user name and password if the share asks for one. The server reads the share itself, so there is nothing to set up on the player.
+**On a NAS or another computer.** No copying is needed. In the wizard, or later under **Server settings → Input modules → My Library → Music sources**, add a **Network share**. Enter the address of the NAS or computer, the shared folder, and the user name and password for the share. Guest access to a share with no password does not work yet. The server reads the share itself, so there is nothing to set up on the player.
 
 **Copied onto the player.** Every Kalinka installation has a music folder, `/srv/kalinka/music`, that anyone may write to, and Kalinka reads it from the start. On the images, copying music there needs the login from the [settings file](#the-settings-file-wi-fi-and-a-login). Use a file-transfer program that speaks **SFTP**:
 
@@ -372,7 +385,7 @@ A few things to know:
 
 ## Keeping it up to date
 
-Kalinka checks for a new release every hour. When there is one, the app offers an **upgrade** button. To have it upgrade by itself, turn on **Auto upgrade** in the server settings: it then installs between 3 and 6 in the morning, while nothing is playing.
+Kalinka checks for a new release every hour. When there is one, the app offers an **upgrade** button. To have it upgrade by itself, turn on **Auto upgrade** in the server settings: it then installs between 3 and 6 in the morning, while nothing is playing. That is the player's own clock, which on the images is UTC unless the [settings file](#the-settings-file-wi-fi-and-a-login) sets `TIMEZONE`.
 
 The server, its plugins, the browser player and every renderer move together, and renderers go first, so that a renderer is never left too old to play for its server. A renderer that has fallen too far behind shows an upgrade button in the app's output list.
 
@@ -392,11 +405,11 @@ On the images, the operating system under Kalinka is an ordinary Debian. If you 
 
 **The Pi does not start.** Write the card again, and try another card if that fails. Use the official power supply. The image starts only on a Pi 4, Pi 400 or CM4.
 
-**Wi-Fi or the login does not work.** Look at the card in your computer again. If `kalinka-firstboot.conf` is still there, the player could not apply it. Check that the file name is exactly right, with no hidden `.txt` on the end, and that any value containing spaces is inside quotes. Then start the player again.
+**Wi-Fi or the login does not work.** Look at the card in your computer again. If `kalinka-firstboot.conf` is still there, the player could not apply it. Check that the file name is exactly right, with no hidden `.txt` on the end, and that any value containing spaces is inside quotes. Then start the player again. If the file is gone but the login still fails, a line was left starting with `#`, or `PASSWORD_HASH` held the example's placeholder: write the file again with those fixed.
 
-**No outputs in the list, or no sound.** The output runs as a service of its own. On the player, `systemctl status kalinka-renderer` should say `active (running)`. If there is no sound, open the output's gear and try another sound device: HDMI, the headphone socket and a USB DAC are separate devices. Until an output works, you can listen in the browser.
+**No outputs in the list, or no sound.** The output runs as a service of its own. On the player, `systemctl status kalinka-renderer` should say `active (running)`. If it says the unit could not be found, no output is installed on that machine: run the renderer command from [Add more outputs](#add-more-outputs) there. If there is no sound, open the output's gear and try another sound device: HDMI, the headphone socket and a USB DAC are separate devices. Until an output works, you can listen in the browser.
 
-**An output on another machine does not appear.** On that machine, run `journalctl -u kalinka-renderer -f`. A line containing `[Discovery] Found` means it has seen the server. No such line means the network is blocking discovery, and a line about `renderer_proto` means that server does not accept renderers at all. Put both machines on the same network, or point the renderer at the server's address directly:
+**An output on another machine does not appear.** On that machine, run `sudo journalctl -u kalinka-renderer -f`. A line containing `[Discovery] Found` means it has seen the server. No such line means the network is blocking discovery, and a line about `renderer_proto` means that server does not accept renderers at all. Put both machines on the same network, or point the renderer at the server's address directly:
 
 ```bash
 sudo systemctl edit kalinka-renderer
@@ -412,12 +425,12 @@ ExecStart=/usr/bin/kalinka-renderer --server 192.168.1.50:8000
 
 **The library stays empty.** The music folder is wrong, or the `kalusr` user cannot read it; see [Put your music on it](#put-your-music-on-it). A network share also needs the right user name and password.
 
-**Logs.** In the app, **Server settings → General → Support → Download server logs** prepares a ZIP of the server's recent logs to attach to an issue. Kalinka removes passwords and keys from it, but it still contains file names and network addresses, so look through it before you post it. It needs a running server. When the server does not start, read the journal directly: `journalctl -u kalinka` for the server and `journalctl -u kalinka-renderer` for the renderer. Upgrades log under units of their own, so after a failed upgrade include those too. This saves the last day of all the server's units to a file you can attach:
+**Logs.** In the app, **Server settings → General → Support → Download server logs** prepares a ZIP of the server's recent logs to attach to an issue. Kalinka removes passwords and keys from it, but it still contains file names and network addresses, so look through it before you post it. It needs a running server. When the server does not start, read the journal directly: `sudo journalctl -u kalinka` for the server and `sudo journalctl -u kalinka-renderer` for the renderer. Upgrades log under units of their own, so after a failed upgrade include those too; a renderer's is `kalinka-renderer-upgrade`. This saves the last day of all the server's units to a file you can attach:
 
 ```bash
 sudo journalctl -u kalinka -u kalinka-upgrade -u kalinka-restart --since "1 day ago" > kalinka.log
 ```
 
-For more detail in the logs, raise the `log_level` setting (search for it in the server settings).
+For more detail in the logs, turn on **Expert** in the server settings, search for `log_level` and raise it.
 
 **Asking for help.** Questions and reports are welcome in [the testing thread](https://github.com/Kalinka-Player/KalinkaPlayer/discussions/133). Something you can reproduce is easier to act on as an [issue](https://github.com/Kalinka-Player/KalinkaPlayer/issues).
