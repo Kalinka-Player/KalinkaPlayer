@@ -1,6 +1,6 @@
 ## KalinkaPlayer Development Makefile
 
-.PHONY: clean test system-test bench-sdd help venv-env kalinka-server-deb kalinka-server-rpm kalinka-plugins-deb build-all-deb copy-debs build-env dev-setup dev-run renderer-build renderer-clean renderer-deb renderer-rpm proto image-rpi234 image-rpi5 image-amd64 image-test
+.PHONY: clean test test-playqueue system-test bench-sdd help venv-env kalinka-server-deb kalinka-server-rpm kalinka-plugins-deb build-all-deb copy-debs build-env dev-setup dev-run renderer-build renderer-clean renderer-deb renderer-rpm proto image-rpi234 image-rpi5 image-amd64 image-test
 
 ## --- Local-from-source dev environment (no root, no systemd) ------------------
 ## Everything lands in a per-user fakeroot under $(KALINKA_PREFIX) instead of the
@@ -137,12 +137,26 @@ clean:
 	@find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 	@find . -name "*.egg-info" -type d -exec rm -rf {} + 2>/dev/null || true
 
-## Run tests
+## Run the SDK, server and plugin suites, each from its own package so its
+## conftest.py applies. The play queue suite is slow and flaky, so it runs on
+## its own (make test-playqueue) when the play queue changes. Extra pytest
+## args via ARGS, e.g. make test ARGS="-q -rfE"
+PLUGIN_TEST_DIRS := $(filter-out packages/kalinka-plugin-sdk,$(patsubst %/tests/,%,$(wildcard packages/kalinka-plugin-*/tests/)))
+
 test:
 	@echo "Running tests..."
-	@cd packages/kalinka-plugin-sdk && python -m pytest tests/ -v
-	@cd packages/kalinka-server && python -m pytest tests/ -v
-	@python -m pytest benchmarks/sdd/tests -v
+	@cd packages/kalinka-plugin-sdk && python -m pytest tests/ -v $(ARGS)
+	@cd packages/kalinka-server && python -m pytest tests/ -v --ignore=tests/test_playqueue.py $(ARGS)
+	@for dir in $(PLUGIN_TEST_DIRS); do \
+		echo "Testing $$dir..."; \
+		(cd $$dir && python -m pytest tests/ -v $(ARGS)) || exit 1; \
+	done
+	@python -m pytest benchmarks/sdd/tests -v $(ARGS)
+
+## The server's play queue suite. Extra pytest args via ARGS, e.g.
+## make test-playqueue ARGS=--last-failed
+test-playqueue:
+	@cd packages/kalinka-server && python -m pytest tests/test_playqueue.py -v $(ARGS)
 
 ## Retrieval-quality benchmark (benchmarks/sdd): indexes the Song Describer
 ## Dataset through the shipped pipeline and scores the search endpoint against
@@ -263,7 +277,8 @@ help:
 	@echo "  image-amd64       Build the x86-64 appliance image (needs root)"
 	@echo "  image-test        Run the appliance image tests"
 	@echo "  copy-debs         Move built deb packages to debs/ directory"
-	@echo "  test              Run all tests"
+	@echo "  test              Run the SDK, server and plugin tests (not the play queue)"
+	@echo "  test-playqueue    Run the server's slow play queue tests"
 	@echo "  lint              Check for undefined names (F821)"
 	@echo "  clean             Clean build artifacts"
 	@echo "  help              Show this help message"
