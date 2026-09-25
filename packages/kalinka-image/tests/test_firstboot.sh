@@ -12,8 +12,8 @@ PKG_DIR="$(dirname "$TESTS_DIR")"
 
 needs_disposable_system
 
-FIRSTBOOT="$PKG_DIR/rootfs/usr/lib/kalinka-image/firstboot.sh"
-BOOT=/boot/firmware
+FIRSTBOOT="$PKG_DIR/overlays/debootstrap/usr/lib/kalinka-image/firstboot.sh"
+BOOT=/boot/efi
 CONF="$BOOT/kalinka-firstboot.conf"
 STAMP=/var/lib/kalinka-image/firstboot-done
 
@@ -26,10 +26,13 @@ _run_firstboot() {
   mkdir -p "$BOOT" /etc/NetworkManager/system-connections /etc/ssh
   rm -f /etc/modprobe.d/kalinka-regdom.conf
   rm -f /etc/NetworkManager/system-connections/kalinka-wifi.nmconnection
+  ln -sfn /usr/share/zoneinfo/Etc/UTC /etc/localtime
+  echo Etc/UTC > /etc/timezone
   echo "KALINKA_IMAGE_BOOT=$BOOT" > /etc/default/kalinka-image
 
   local saved_path="$PATH"
   make_recorders hostnamectl timedatectl systemctl nmcli iw
+  [ -z "${FAILING:-}" ] || make_failing_recorders $FAILING
   bash "$FIRSTBOOT" >/dev/null 2>&1
   RUN_STATUS=$?
   CALLS="$(calls)"
@@ -77,7 +80,9 @@ CONFIG
 assert_eq "succeeds" "$RUN_STATUS" 0
 assert_contains "sets the hostname" "$CALLS" "hostnamectl set-hostname listening-room"
 assert_contains "points 127.0.1.1 at it" "$(cat /etc/hosts)" "listening-room"
-assert_contains "sets the timezone" "$CALLS" "timedatectl set-timezone Europe/London"
+assert_eq "sets the timezone" "$(readlink /etc/localtime)" /usr/share/zoneinfo/Europe/London
+assert_eq "and names it for Debian" "$(cat /etc/timezone)" Europe/London
+assert_not_contains "without timedated, which refuses it this early" "$CALLS" "timedatectl"
 
 getent passwd dmitry >/dev/null || fail "creates the account"
 assert_contains "puts it in sudo" "$(id -nG dmitry)" "sudo"
@@ -101,6 +106,42 @@ assert_contains "and applies it now" "$CALLS" "iw reg set GB"
 
 assert_no_file "takes the secrets off the boot partition" "$CONF"
 assert_file "marks itself done" "$STAMP"
+
+echo "  -- a configuration saved on Windows"
+run_firstboot < <(printf 'USERNAME=crlf\r\nPASSWORD=x\r\nHOSTNAME=crlf-host\r\n')
+assert_eq "succeeds" "$RUN_STATUS" 0
+assert_eq "reads the name without the carriage return" "$(getent passwd crlf | cut -d: -f1)" "crlf"
+assert_not_contains "and passes no carriage return on" "$CALLS" $'\r'
+assert_contains "names the machine" "$CALLS" "hostnamectl set-hostname crlf-host"
+
+echo "  -- a configuration that starts with a byte-order mark"
+run_firstboot < <(printf '\xEF\xBB\xBFUSERNAME=bom\nPASSWORD=x\n')
+assert_eq "succeeds" "$RUN_STATUS" 0
+assert_eq "still reads the first line" "$(getent passwd bom | cut -d: -f1)" "bom"
+
+echo "  -- a setting that cannot be applied"
+run_firstboot <<'CONFIG'
+USERNAME=badzone
+PASSWORD='x'
+TIMEZONE=Nowhere/Atlantis
+WIFI_SSID='Studio'
+WIFI_PASSWORD='sekrit'
+CONFIG
+assert_eq "reports the failure" "$RUN_STATUS" 1
+assert_eq "leaves the time zone alone" "$(readlink /etc/localtime)" /usr/share/zoneinfo/Etc/UTC
+assert_eq "still creates the account" "$(getent passwd badzone | cut -d: -f1)" "badzone"
+assert_file "still writes the wifi profile" /etc/NetworkManager/system-connections/kalinka-wifi.nmconnection
+assert_no_file "and still takes the file away" "$CONF"
+
+echo "  -- a command that fails"
+FAILING=hostnamectl run_firstboot <<'CONFIG'
+USERNAME=nohostname
+PASSWORD='x'
+HOSTNAME=unreachable
+CONFIG
+assert_eq "reports the failure" "$RUN_STATUS" 1
+assert_eq "still creates the account" "$(getent passwd nohostname | cut -d: -f1)" "nohostname"
+assert_no_file "and still takes the file away" "$CONF"
 
 echo "  -- a hash instead of a plaintext password"
 run_firstboot <<'CONFIG'

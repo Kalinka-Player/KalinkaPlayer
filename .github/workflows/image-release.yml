@@ -1,12 +1,14 @@
 name: Image release
 
 # Builds and publishes the ready-to-flash appliance images for a
-# `kalinka-image-vX.Y.Z` tag: a minimal Debian 13 with the server, every
-# first-party plugin, the browser player and the renderer already installed.
+# `kalinka-image-vX.Y.Z` tag, with the server, every first-party plugin, the
+# browser player and the renderer already installed: two for the Raspberry Pi
+# on DietPi, one for x86-64 on a minimal Debian 13.
 #
 # The images have their own release train because they change for reasons the
-# app bundle does not — a Debian point release, a first-boot fix — and because
-# two of them are a gigabyte of assets nobody wants on every patch release.
+# app bundle does not — a Debian point release, a new DietPi, a first-boot fix —
+# and because they are over a gigabyte of assets nobody wants on every patch
+# release.
 # Which Kalinka release goes inside is a separate choice: `kalinka_version`,
 # or the latest published one when that is left empty.
 #
@@ -40,7 +42,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: rpi4
+          - target: rpi234
+            runner: ubuntu-24.04-arm
+          - target: rpi5
             runner: ubuntu-24.04-arm
           - target: amd64
             runner: ubuntu-24.04
@@ -57,7 +61,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            debootstrap dosfstools e2fsprogs xz-utils
+            debootstrap dosfstools e2fsprogs fdisk xz-utils curl gpg gpgv
           # Ubuntu's debootstrap carries no script for a Debian release younger
           # than itself, and every Debian suite script is the same file.
           [ -e /usr/share/debootstrap/scripts/trixie ] \
@@ -117,42 +121,43 @@ jobs:
           echo "Publishing $TAG"
 
           cat > notes.md <<'EOF'
-          Ready-to-flash images of Kalinka Player: a minimal Debian 13 with the
-          server, every first-party plugin, the browser player and the renderer
-          already installed and enabled. Power one on, open
-          `http://<its-ip>:8000` in a browser, and it plays — no install step,
-          no login needed.
+          Ready-to-flash images of Kalinka Player with the server, every first-party plugin, the browser player and the renderer already installed and enabled. Power one on, open `http://<its-ip>:8000` in a browser, and it plays — no install step, no login needed.
 
-          | Image | For |
-          |---|---|
-          | `…-rpi4-arm64.img.xz` | Raspberry Pi 4, Pi 400 and CM4, from an SD card or USB disk |
-          | `…-amd64.img.xz` | Any x86-64 PC or virtual machine, UEFI or BIOS |
+          | Image | For | Built on |
+          |---|---|---|
+          | `…-rpi234-arm64.img.xz` | Raspberry Pi 3, 4, 400, Zero 2 W, CM3 and CM4 | DietPi (Debian 13) |
+          | `…-rpi5-arm64.img.xz` | Raspberry Pi 5, 500 and CM5 | DietPi (Debian 13) |
+          | `…-amd64.img.xz` | Any x86-64 PC or virtual machine, UEFI or BIOS | Debian 13 |
+
+          The Raspberry Pi images play through DAC HATs as well as USB DACs. A HAT with an ID EEPROM is set up by itself; for one without, see below.
 
           ## Flash it
 
-          Use [Raspberry Pi Imager](https://www.raspberrypi.com/software/) or
-          [balenaEtcher](https://etcher.balena.io/) and point them at the
-          `.img.xz` as downloaded — both read it compressed. From a shell:
+          Use [Raspberry Pi Imager](https://www.raspberrypi.com/software/) or [balenaEtcher](https://etcher.balena.io/) and point them at the `.img.xz` as downloaded — both read it compressed. From a shell:
 
           ```sh
           xzcat kalinka-*.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
           ```
 
-          The root filesystem grows into the card on first boot, so the size of
-          the card is the size you get.
+          The root filesystem grows into the card on first boot, so the size of the card is the size you get.
 
-          ## Before the first boot, if you want a shell on it
+          ## Before the first boot, if you want Wi-Fi, a login or a DAC HAT
 
-          The image ships no login account, no password and no SSH host keys —
-          nothing a published image could hand to everyone who flashes it. To
-          get shell access, or to put the machine on Wi-Fi, write
-          `kalinka-firstboot.conf` to the FAT partition that appears when the
-          media is plugged into another computer. `kalinka-firstboot.conf.example`
-          sits beside it with every setting explained. It is read once, applied,
-          and shredded.
+          None of this is needed just to play music: the player and the browser UI come up on their own. The images ship no password — a published image cannot carry one without handing it to everybody.
 
-          None of that is needed just to play music: the player and the browser
-          UI come up on their own.
+          **Raspberry Pi.** Edit DietPi's files on the KALINKA-BT drive that appears when the card is plugged into another computer:
+
+          - a login: `AUTO_SETUP_GLOBAL_PASSWORD=` in `dietpi.txt`, or an SSH key in `AUTO_SETUP_SSH_PUBKEY=`;
+          - Wi-Fi: `AUTO_SETUP_NET_WIFI_ENABLED=1` and your country code in `AUTO_SETUP_NET_WIFI_COUNTRY_CODE=`, then the network name and password in `dietpi-wifi.txt`;
+          - a DAC HAT without an ID EEPROM: `CONFIG_SOUNDCARD=`, for example `hifiberry-digi`. Kalinka applies it and restarts once.
+
+          DietPi reads these files on the first boot and removes them from the card. Raspberry Pi Imager's own OS customisation does not apply to these images. Leave `AUTO_SETUP_AUTOMATED` at 0.
+
+          **PC.** Write `kalinka-firstboot.conf` to the FAT partition; `kalinka-firstboot.conf.example` sits beside it with every setting explained. It is read once, applied, and shredded.
+
+          ## On the Raspberry Pi images
+
+          Logging in for the first time starts DietPi's own first-run setup, which updates the system and may restart it; Kalinka does not need it. DietPi's update notices stay on and its survey is off, and logs are kept on disk rather than in memory.
 
           Verify downloads with `sha256sum -c SHA256SUMS --ignore-missing`.
 

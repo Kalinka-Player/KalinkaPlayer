@@ -31,7 +31,7 @@ Your files stay yours — nothing is uploaded, there is no account and no teleme
 
 ## Installation
 
-1. **Install the server.** On a Raspberry Pi 4 or a spare PC, [flash a ready-made image](docs/installation.md#install-the-server): Kalinka is already on it and plays as soon as the machine starts. On a machine that already runs Debian 13, Raspberry Pi OS (64-bit) or Ubuntu 24.04, one command installs everything:
+1. **Install the server.** On a Raspberry Pi or a spare PC, [flash a ready-made image](docs/installation.md#install-the-server): Kalinka is already on it and plays as soon as the machine starts. On a machine that already runs Debian 13, Raspberry Pi OS (64-bit) or Ubuntu 24.04, one command installs everything:
 
    ```bash
    curl -fsSL https://kalinkaplayer.com/install.sh | sudo bash
@@ -61,7 +61,7 @@ Your files stay yours — nothing is uploaded, there is no account and no teleme
 
 ## 💻 Requirements
 
-A **64-bit OS is required** — packages are built for arm64 and amd64 only. On Raspberry Pi that means Raspberry Pi OS (64-bit); the Pi 2, Pi 1 and original Pi Zero are not supported.
+A **64-bit OS is required** — packages are built for arm64 and amd64 only. On Raspberry Pi that means the Kalinka image, Raspberry Pi OS (64-bit) or DietPi (64-bit); the Pi 2, Pi 1 and original Pi Zero are not supported.
 
 | Configuration | Minimum hardware | Notes |
 |---|---|---|

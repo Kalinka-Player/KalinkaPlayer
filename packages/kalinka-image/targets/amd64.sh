@@ -7,6 +7,7 @@
 # upgrade and there is only ever one boot menu to reason about.
 
 # shellcheck shell=bash disable=SC2034  # build-image.sh reads these after sourcing
+TARGET_BASE=debootstrap
 TARGET_ARCH=amd64
 TARGET_PARTITION_LAYOUT='label: gpt
 unit: sectors

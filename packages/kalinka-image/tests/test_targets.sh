@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
-# Every target's partition table, checked by writing it. An index pointing at
-# the wrong partition produces an image that builds and does not boot, and
-# sfdisk needs no privileges to say so.
+# Every target names a base that exists, and every debootstrap target's
+# partition table is checked by writing it. An index pointing at the wrong
+# partition produces an image that builds and does not boot, and sfdisk needs
+# no privileges to say so.
 set -uo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,8 +11,8 @@ PKG_DIR="$(dirname "$TESTS_DIR")"
 # shellcheck source=helpers.sh
 . "$TESTS_DIR/helpers.sh"
 
-CONTRACT=(TARGET_ARCH TARGET_PARTITION_LAYOUT TARGET_BOOT_PART TARGET_ROOT_PART
-          TARGET_BOOT_MOUNT TARGET_BOOT_FSTAB_OPTS TARGET_PACKAGES)
+DEBOOTSTRAP_CONTRACT=(TARGET_PARTITION_LAYOUT TARGET_BOOT_PART TARGET_ROOT_PART
+                     TARGET_BOOT_MOUNT TARGET_BOOT_FSTAB_OPTS TARGET_PACKAGES)
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -23,7 +24,14 @@ for target_file in "$PKG_DIR"/targets/*.sh; do
     # shellcheck source=/dev/null
     . "$target_file"
 
-    for var in "${CONTRACT[@]}"; do
+    for var in TARGET_BASE TARGET_ARCH; do
+      [ -n "${!var:-}" ] || fail "$target: does not set $var"
+    done
+    [ -r "$PKG_DIR/lib/base-${TARGET_BASE:-}.sh" ] \
+      || fail "$target: names a base with no lib/base-${TARGET_BASE:-}.sh"
+    [ "${TARGET_BASE:-}" = debootstrap ] || exit "$FAILURES"
+
+    for var in "${DEBOOTSTRAP_CONTRACT[@]}"; do
       [ -n "${!var:-}" ] || fail "$target: does not set $var"
     done
     declare -F target_install_bootloader >/dev/null \

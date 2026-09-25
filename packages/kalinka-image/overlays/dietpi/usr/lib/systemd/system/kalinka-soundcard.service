@@ -1,0 +1,13 @@
+[Unit]
+Description=Apply the sound card chosen in dietpi.txt
+After=dietpi-preboot.service dietpi-firstboot.service
+Before=kalinka-renderer.service
+ConditionPathExists=/boot/dietpi/func/dietpi-set_hardware
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/kalinka-image/soundcard.sh
+
+[Install]
+WantedBy=multi-user.target

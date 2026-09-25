@@ -7,7 +7,7 @@ set -uo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PKG_DIR="$(dirname "$TESTS_DIR")"
-GROWROOT="$PKG_DIR/rootfs/usr/lib/kalinka-image/growroot.sh"
+GROWROOT="$PKG_DIR/overlays/debootstrap/usr/lib/kalinka-image/growroot.sh"
 # shellcheck source=helpers.sh
 . "$TESTS_DIR/helpers.sh"
 
