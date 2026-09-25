@@ -266,6 +266,11 @@ def _misspelling(
             "authentication.username",
             "name the account, or sign in as a guest",
         )
+    if not isinstance(sign_in, AccountSignIn) and source.options.require_encryption:
+        return (
+            "options.require_encryption",
+            "a guest cannot encrypt; sign in with an account, or turn this off",
+        )
     return None
 
 

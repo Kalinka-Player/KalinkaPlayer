@@ -50,8 +50,15 @@ class TestTheShape:
         assert isinstance(local, LocalSource)
         assert isinstance(share, SmbSource)
 
-    def test_a_share_signs_in_as_a_guest_unless_told_otherwise(self):
+    def test_a_share_signs_in_with_an_account_unless_told_otherwise(self):
+        """Most NAS boxes keep guest access off, so a guest default fails
+        the first share most people add."""
         [share] = _sources(_share())
+        assert isinstance(share.authentication, AccountSignIn)
+        assert share.authentication.username == ""
+
+    def test_a_guest_share_says_so(self):
+        [share] = _sources(_share(authentication={"mode": "guest"}))
         assert isinstance(share.authentication, GuestSignIn)
         assert share.location.port == 445
         assert share.options.require_encryption is False

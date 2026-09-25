@@ -302,7 +302,10 @@ class GuestSignIn(BaseModel):
     mode: Literal["guest"] = Field(
         default="guest",
         title="Guest",
-        description="The guest access most NAS boxes offer a media share.",
+        description=(
+            "For a share open to guests. Most NAS boxes keep guest access off "
+            "until it is turned on for a share."
+        ),
     )
 
 
@@ -351,7 +354,7 @@ class SmbSource(ConfigRecord):
     )
     location: SmbLocation = Field(default_factory=SmbLocation, title="Location")
     authentication: Union[GuestSignIn, AccountSignIn] = Field(
-        default_factory=GuestSignIn, discriminator="mode", title="Sign in"
+        default_factory=AccountSignIn, discriminator="mode", title="Sign in"
     )
     options: SmbOptions = Field(default_factory=SmbOptions, title="Options")
 

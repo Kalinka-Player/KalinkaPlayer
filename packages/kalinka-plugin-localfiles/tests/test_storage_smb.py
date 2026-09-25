@@ -59,6 +59,7 @@ class _FakeSmbClient:
         self.failure = failure
         self.calls = []
         self.logons = []
+        self.session = SimpleNamespace(tree_connect_table={})
 
     def register_session(self, server, **kwargs):
         """What the real client pools a connection and a session under. It is
@@ -66,6 +67,7 @@ class _FakeSmbClient:
         self.logons.append((server, kwargs))
         if self.failure is not None:
             raise self.failure
+        return self.session
 
     def _record(self, unc, kwargs):
         self.calls.append((unc, kwargs))
@@ -113,6 +115,28 @@ def _stat_result(is_dir=False, size=0, mtime_ns=1_700_000_000_000_000_000,
         st_dev=dev,
         st_ino=ino,
     )
+
+
+class _FakeTreeConnect:
+    """A share connected by hand, as the storage does for a guest."""
+
+    connected = []
+
+    def __init__(self, session, share_name):
+        self.session = session
+        self.share_name = share_name
+
+    def connect(self, require_secure_negotiate=True):
+        _FakeTreeConnect.connected.append((self.share_name, require_secure_negotiate))
+        self.session.tree_connect_table[len(self.session.tree_connect_table)] = self
+
+
+@pytest.fixture(autouse=True)
+def fresh_refusals(monkeypatch):
+    """Refusals are remembered process-wide; each test starts with none."""
+    monkeypatch.setattr(smb_mod, "_REFUSALS", smb_mod._RefusedLogins())
+    monkeypatch.setattr(smb_mod, "TreeConnect", _FakeTreeConnect)
+    _FakeTreeConnect.connected = []
 
 
 @pytest.fixture
@@ -260,6 +284,7 @@ class TestTheLogon:
                 time.sleep(0.2)
                 registering.release()
             client.logons.append((server, kwargs))
+            return client.session
 
         client.register_session = slow_register
         storage = _storage()
@@ -289,6 +314,7 @@ class TestTheLogon:
                 entered.set()
                 assert release.wait(timeout=5)
             client.logons.append((server, kwargs))
+            return client.session
 
         client.register_session = blocking_register
         storage = _storage()
@@ -590,7 +616,7 @@ class TestTellingARefusalFromSilence:
     def test_a_refused_login_is_a_permission_error(self, raised):
         storage = SmbStorage()
         with pytest.raises(PermissionError):
-            with storage._as_os_error():
+            with storage._as_os_error(parse("smb://nas/music")):
                 raise raised
 
     def test_a_refused_login_is_still_an_os_error(self):
@@ -598,20 +624,312 @@ class TestTellingARefusalFromSilence:
         should have to learn a second type."""
         storage = SmbStorage()
         with pytest.raises(OSError):
-            with storage._as_os_error():
+            with storage._as_os_error(parse("smb://nas/music")):
                 raise LogonFailure()
 
     def test_a_server_that_does_not_answer_stays_a_plain_os_error(self):
         storage = SmbStorage()
         with pytest.raises(OSError) as caught:
-            with storage._as_os_error():
+            with storage._as_os_error(parse("smb://nas/music")):
                 raise ValueError("the socket went away")
         assert not isinstance(caught.value, PermissionError)
 
-    def test_the_two_read_differently(self):
-        storage = SmbStorage()
-        locator = parse("smb://nas/music")
-        assert "refused the login" in storage._reason(
-            locator, PermissionError("bad password")
+    def test_the_two_read_differently(self, fake_client):
+        fake_client(failure=LogonFailure())
+        refused = _storage(username="media", password="x").probe_root_blocking(
+            "smb://nas/music"
         )
-        assert "did not answer" in storage._reason(locator, OSError("timed out"))
+        fake_client(failure=ValueError("Failed to connect to 'nas:445'"))
+        silent = _storage().probe_root_blocking("smb://nas/music")
+        assert "refused the login" in refused.reason
+        assert "did not answer" in silent.reason
+
+
+def _response(status):
+    """A server's answer carrying ``status``, for statuses ``smbprotocol``
+    has no exception class of its own for."""
+    from smbprotocol.exceptions import SMB2ErrorResponse, SMBResponseException
+    from smbprotocol.header import SMB2HeaderResponse
+
+    header = SMB2HeaderResponse()
+    header["status"] = status
+    header["data"] = SMB2ErrorResponse().pack()
+    return SMBResponseException(header)
+
+
+class TestGuestSessions:
+    """A guest has no key to sign with, and ``smbprotocol`` insists on signing
+    unless told otherwise — so every guest share failed to open."""
+
+    def test_a_guest_session_is_not_signed(self, fake_client):
+        client = fake_client(listings={r"\\nas\music": []})
+        _storage().listdir("smb://nas/music")
+        assert client.logons[0][1]["require_signing"] is False
+
+    def test_a_signed_in_session_keeps_signing(self, fake_client):
+        client = fake_client(listings={r"\\nas\music": []})
+        _storage(username="media", password="hunter2").listdir("smb://nas/music")
+        assert "require_signing" not in client.logons[0][1]
+
+    def test_a_guest_connects_its_share_without_the_signed_check(
+        self, fake_client
+    ):
+        """The SMB 3.0 negotiation check needs a signature a guest cannot
+        make, and ``smbclient`` only offers turning it off for the whole
+        process — so the share is connected here instead."""
+        fake_client(listings={r"\\nas\music": []})
+        _storage().listdir("smb://nas/music")
+        assert _FakeTreeConnect.connected == [(r"\\nas\music", False)]
+
+    def test_the_share_is_connected_once_per_session(self, fake_client):
+        fake_client(listings={r"\\nas\music": []})
+        storage = _storage()
+        storage.listdir("smb://nas/music")
+        storage.listdir("smb://nas/music")
+        assert len(_FakeTreeConnect.connected) == 1
+
+    def test_a_signed_in_share_is_left_to_the_client(self, fake_client):
+        fake_client(listings={r"\\nas\music": []})
+        _storage(username="media", password="hunter2").listdir("smb://nas/music")
+        assert _FakeTreeConnect.connected == []
+
+
+class TestSayingWhatWentWrong:
+    """Most of these reach whoever typed the share and the login, where "did
+    not answer" for a NAS that answered sends them after the wrong thing."""
+
+    @pytest.mark.parametrize(
+        "raised, expected",
+        [
+            (LogonFailure(), "the user name or password is wrong"),
+            (_response(0xC0000234), "locked after too many failed logins"),
+            (_response(0xC0000072), "the account is disabled"),
+            (_response(0xC0000071), "the password has expired"),
+        ],
+    )
+    def test_a_refused_login_says_why(self, fake_client, raised, expected):
+        fake_client(failure=raised)
+        with pytest.raises(PermissionError) as caught:
+            _storage(username="media", password="x").listdir("smb://nas/music")
+        assert expected in str(caught.value)
+        assert "'media'" in str(caught.value)
+        assert "'music'" in str(caught.value)
+
+    def test_a_share_that_is_not_there_is_named(self, fake_client):
+        from smbprotocol.exceptions import BadNetworkName
+
+        fake_client(failure=BadNetworkName())
+        with pytest.raises(OSError, match="has no share named 'music'") as caught:
+            _storage(username="media", password="x").listdir("smb://nas/music")
+        assert not isinstance(caught.value, PermissionError)
+
+    def test_a_path_that_is_not_there_is_a_missing_file(self, fake_client):
+        """The indexer tells a deleted file from a share that went away by
+        this type."""
+        from smbprotocol.exceptions import SMBOSError
+
+        client = fake_client()
+
+        def missing(unc, **kwargs):
+            raise SMBOSError(0xC0000034, unc)
+
+        client.stat = missing
+        with pytest.raises(FileNotFoundError, match="'Album/a.flac' in share 'music'"):
+            _storage().stat("smb://nas/music/Album/a.flac")
+
+    def test_an_unknown_user_mapped_to_guest_is_said_to_be_unknown(
+        self, fake_client
+    ):
+        """A NAS set to map unknown users to guest accepts a mistyped name
+        as a guest, which a signed session then refuses."""
+        from smbprotocol.exceptions import SMBException
+
+        fake_client(
+            failure=SMBException(
+                "SMB encryption or signing was required but session was "
+                "authenticated as a guest which does not support encryption "
+                "or signing"
+            )
+        )
+        with pytest.raises(PermissionError, match="does not know that user name"):
+            _storage(username="kalinka@WORKGROUP", password="x").listdir(
+                "smb://nas/music"
+            )
+
+    def test_a_server_insisting_on_signing_turns_a_guest_away(self, fake_client):
+        from smbprotocol.exceptions import SMBException
+
+        fake_client(failure=SMBException("session was authenticated as a guest"))
+        with pytest.raises(PermissionError, match="sign in with an account"):
+            _storage().listdir("smb://nas/music")
+
+    def test_a_guest_asked_to_encrypt_is_told_it_cannot(self, fake_client):
+        from smbprotocol.exceptions import SMBException
+
+        fake_client(failure=SMBException("session was authenticated as a guest"))
+        with pytest.raises(PermissionError, match="a guest cannot encrypt"):
+            _storage(encrypt=True).listdir("smb://nas/music")
+
+    def test_a_server_that_hangs_up_on_the_negotiation_may_only_speak_smb1(
+        self, fake_client
+    ):
+        from smbprotocol.exceptions import SMBConnectionClosed
+
+        fake_client(failure=SMBConnectionClosed("SMB socket was closed"))
+        with pytest.raises(OSError, match="SMB2 or later"):
+            _storage().listdir("smb://nas/music")
+
+    def test_a_server_that_is_not_there_did_not_answer(self, fake_client):
+        fake_client(failure=ValueError("Failed to connect to 'nas:445'"))
+        with pytest.raises(OSError, match="did not answer"):
+            _storage().listdir("smb://nas/music")
+
+
+class TestRefusedLoginsAreNotRepeated:
+    """Scans, playback and the renderer all retry. Each retry of a wrong
+    password counts against the account, which a NAS or Windows locks — or
+    whose address it blocks — after about ten."""
+
+    def test_a_refused_password_is_not_sent_again(self, fake_client):
+        client = fake_client(failure=LogonFailure())
+        storage = _storage(username="media", password="wrong")
+        with pytest.raises(PermissionError):
+            storage.listdir("smb://nas/music")
+        with pytest.raises(PermissionError, match="not tried again before"):
+            storage.listdir("smb://nas/music")
+        assert len(client.logons) == 1
+
+    def test_another_storage_with_the_same_login_remembers_it(self, fake_client):
+        """The indexer, the server's stream and a settings check each hold a
+        storage of their own."""
+        client = fake_client(failure=LogonFailure())
+        with pytest.raises(PermissionError):
+            _storage(username="media", password="wrong").listdir("smb://nas/music")
+        with pytest.raises(PermissionError):
+            _storage(username="media", password="wrong").stat("smb://nas/music/a.flac")
+        assert len(client.logons) == 1
+
+    def test_a_password_typed_anew_is_tried(self, fake_client):
+        client = fake_client(failure=LogonFailure())
+        with pytest.raises(PermissionError):
+            _storage(username="media", password="wrong").listdir("smb://nas/music")
+        client.failure = None
+        client.listings = {r"\\nas\music": []}
+        _storage(username="media", password="right").listdir("smb://nas/music")
+        assert len(client.logons) == 2
+
+    def test_a_refusal_is_forgotten_once_it_expires(self, fake_client, monkeypatch):
+        monkeypatch.setattr(smb_mod, "_REFUSALS", smb_mod._RefusedLogins(memory_s=0))
+        client = fake_client(failure=LogonFailure())
+        storage = _storage(username="media", password="wrong")
+        for _ in range(2):
+            with pytest.raises(PermissionError):
+                storage.listdir("smb://nas/music")
+        assert len(client.logons) == 2
+
+    def test_a_server_that_did_not_answer_is_asked_again(self, fake_client):
+        """Silence says nothing about the password."""
+        client = fake_client(failure=ValueError("Failed to connect"))
+        storage = _storage(username="media", password="hunter2")
+        for _ in range(2):
+            with pytest.raises(OSError):
+                storage.listdir("smb://nas/music")
+        assert len(client.logons) == 2
+
+    def test_the_password_is_not_kept(self):
+        refusals = smb_mod._RefusedLogins()
+        assert b"hunter2" not in refusals.digest("hunter2")
+        assert refusals.digest("hunter2") != smb_mod._RefusedLogins().digest("hunter2")
+
+
+class _DroppingFile(io.BytesIO):
+    """A handle whose connection goes away after the open."""
+
+    def __init__(self, error):
+        super().__init__(b"audio")
+        self.error = error
+
+    def read(self, size=-1):
+        raise self.error
+
+    def readinto(self, buffer):
+        raise self.error
+
+    def seek(self, offset, whence=0):
+        raise self.error
+
+    def close(self):
+        raise self.error
+
+
+class TestReadsFailAsOsErrors:
+    """The open was translated, but a read or a seek long after it raised the
+    protocol's own exception — which the tag reader and the embedder took for
+    a broken file, parking it for good."""
+
+    @pytest.fixture
+    def dropping(self, fake_client):
+        from smbprotocol.exceptions import SMBConnectionClosed
+
+        client = fake_client()
+        client.open_file = lambda unc, **kwargs: _DroppingFile(
+            SMBConnectionClosed("SMB socket was closed")
+        )
+        return client
+
+    def test_a_read(self, dropping):
+        with _storage().open("smb://nas/music/a.flac") as handle:
+            with pytest.raises(OSError, match="dropped the connection"):
+                handle.read(4)
+
+    def test_a_read_into_a_buffer(self, dropping):
+        with _storage().open("smb://nas/music/a.flac") as handle:
+            with pytest.raises(OSError):
+                handle.readinto(bytearray(4))
+
+    def test_a_seek(self, dropping):
+        with _storage().open("smb://nas/music/a.flac") as handle:
+            with pytest.raises(OSError):
+                handle.seek(10)
+
+    def test_closing_after_the_connection_went_is_quiet(self, dropping):
+        """The server dropped the handle with the connection, and a close
+        failing would turn a read that had finished into an error."""
+        handle = _storage().open("smb://nas/music/a.flac")
+        handle.close()
+        assert handle.closed
+
+
+class TestHangsAreBounded:
+    def test_a_connection_gives_up_on_a_silent_server_within_seconds(self):
+        """``smbprotocol`` waits ten minutes for a silent server before an
+        echo and ten more for the echo, which stalled a scan or a stream for
+        twenty on a NAS that had been switched off. It takes the wait from
+        its environment as each connection is made — if that knob goes, this
+        is what notices."""
+        import uuid
+
+        from smbprotocol.connection import Connection
+
+        connection = Connection(uuid.uuid4(), "nas", 445)
+        assert connection._receive_timeout <= 30
+
+
+class TestOnlyTheLoginIsRemembered:
+    def test_a_share_that_turns_a_guest_away_is_asked_again(
+        self, fake_client, monkeypatch
+    ):
+        """No account to lock: the login worked and the share said no."""
+        from smbprotocol.exceptions import AccessDenied
+
+        class _RefusingTree(_FakeTreeConnect):
+            def connect(self, require_secure_negotiate=True):
+                raise AccessDenied()
+
+        client = fake_client(listings={r"\\nas\music": []})
+        monkeypatch.setattr(smb_mod, "TreeConnect", _RefusingTree)
+        storage = _storage()
+        for _ in range(2):
+            with pytest.raises(PermissionError, match="may not read"):
+                storage.listdir("smb://nas/music")
+        assert len(client.logons) == 2
