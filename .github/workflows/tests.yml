@@ -1,0 +1,117 @@
+name: Tests
+
+# The suites a change could break, on every pull request, and all of them on
+# main. The main ruleset requires these jobs by name, so keep the names
+# stable. A job skipped because its code is untouched counts as passed.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: What changed
+    runs-on: ubuntu-24.04
+    outputs:
+      renderer: ${{ steps.diff.outputs.renderer }}
+      playqueue: ${{ steps.diff.outputs.playqueue }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != pull_request ]; then
+            echo renderer=true >> "$GITHUB_OUTPUT"
+            echo playqueue=true >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed="$(git diff --name-only "origin/$BASE_REF...HEAD")"
+          touched() { grep -qE "$1" <<<"$changed" && echo true || echo false; }
+          echo "renderer=$(touched '^packages/kalinka-renderer/')" >> "$GITHUB_OUTPUT"
+          echo "playqueue=$(touched '^packages/kalinka-server/(src/kalinka_server/playqueue|tests/test_playqueue)')" >> "$GITHUB_OUTPUT"
+
+  python:
+    name: Python tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # setuptools-scm versions the packages from the tags.
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            packages/*/pyproject.toml
+            requirements-dev.txt
+      - name: Install the SDK, server and plugins
+        run: |
+          make dev-setup KALINKA_PREFIX="$RUNNER_TEMP/kalinka"
+          .venv/bin/pip install --quiet -r requirements-dev.txt
+      - name: Lint
+        run: . .venv/bin/activate && make lint
+      - name: SDK, server and plugin tests
+        run: . .venv/bin/activate && make test ARGS=-rfE
+
+  playqueue:
+    name: Play queue tests
+    needs: changes
+    if: needs.changes.outputs.playqueue == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            packages/*/pyproject.toml
+            requirements-dev.txt
+      - name: Install the SDK, server and plugins
+        run: |
+          make dev-setup KALINKA_PREFIX="$RUNNER_TEMP/kalinka"
+          .venv/bin/pip install --quiet -r requirements-dev.txt
+      - name: Play queue
+        # The suite is known to be flaky: one retry of just the failures.
+        run: . .venv/bin/activate && (make test-playqueue ARGS=-rfE || make test-playqueue ARGS="-rfE --last-failed")
+
+  renderer:
+    name: Renderer tests
+    needs: changes
+    if: needs.changes.outputs.renderer == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build pkg-config libboost-dev libcurlpp-dev libcurl4-openssl-dev \
+            libflac++-dev libasound2-dev libspdlog-dev libfmt-dev protobuf-compiler libprotobuf-dev \
+            libgtest-dev libgmock-dev
+      - name: Build the tests
+        run: |
+          cmake -S packages/kalinka-renderer -B build/tests -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build/tests --target kalinka-renderer-tests
+      - name: Run the tests
+        run: ctest --test-dir build/tests --output-on-failure
