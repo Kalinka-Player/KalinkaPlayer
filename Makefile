@@ -83,8 +83,6 @@ dev-setup: venv-env
 		$(KALINKA_PREFIX)/run/kalinka \
 		$(KALINKA_PREFIX)/var/cache/kalinka/numba \
 		$(KALINKA_PREFIX)/var/cache/kalinka/artwork
-	@test -f $(KALINKA_PREFIX)/etc/kalinka/kalinka_conf.cfg \
-		|| cp kalinka_conf.cfg $(KALINKA_PREFIX)/etc/kalinka/kalinka_conf.cfg
 	@echo ""
 	@echo "Dev environment ready. Start the server with:  make dev-run"
 	@echo "  config: $(KALINKA_PREFIX)/etc/kalinka/kalinka_conf.cfg"
