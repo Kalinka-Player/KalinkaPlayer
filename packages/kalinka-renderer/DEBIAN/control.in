@@ -5,7 +5,7 @@ Priority: optional
 Architecture: @ARCH@
 Maintainer: Dmitry Savin <envelsavinds@gmail.com>
 Homepage: https://github.com/madenvel/KalinkaPlayer
-Depends: @SHLIBDEPS@
+Depends: adduser, @SHLIBDEPS@
 Description: Kalinka Music Player (renderer)
  Network audio renderer for the Kalinka Music Player. Discovers a Kalinka
  server over mDNS, accepts a playback session and plays audio through the
