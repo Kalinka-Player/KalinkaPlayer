@@ -7,7 +7,8 @@ Homepage: https://github.com/madenvel/KalinkaPlayer
 Package: kalinka-server
 Version: @VERSION@
 Architecture: all
-Depends: python3 (>= 3.11),
+Depends: adduser,
+    python3 (>= 3.11),
     python3-venv,
     python3-pip,
     python3-setuptools,

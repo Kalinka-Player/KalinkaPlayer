@@ -227,7 +227,8 @@ echo ">> Installing ${#URLS[@]} package(s) with apt ..."
 # apt resolves install order among the bundle packages (server depends on the
 # SDK) and pulls system dependencies from the configured repos. A leading ./ or
 # absolute path tells apt these are local files, not repo package names.
-if ! $SUDO apt-get "${APT_OPTS[@]}" install -y "$TMPDIR_DL"/*.deb; then
+# Recommends bring fpcalc and Smart Search's build tools even where apt skips them, as on DietPi.
+if ! $SUDO apt-get "${APT_OPTS[@]}" install -y --install-recommends "$TMPDIR_DL"/*.deb; then
   echo ">> apt-get install failed; falling back to dpkg -i + apt-get -f install"
   $SUDO dpkg -i "$TMPDIR_DL"/*.deb || true
   $SUDO apt-get "${APT_OPTS[@]}" -f install -y
