@@ -26,7 +26,7 @@ On first run `make build-all-deb` creates a `.venv` with the wheel-build toolcha
 
 You can also build pieces individually: `make kalinka-server-deb`, `make kalinka-plugins-deb`, or `make renderer-deb`; `make build-env` just provisions the venv without building anything. Run `make help` to list all targets.
 
-The app bundle — the server and the first-party plugins — shares one version, derived from a single `kalinka-vX.Y.Z` git tag via setuptools-scm (one tag per release). The plugin SDK is versioned independently by its own SemVer; plugins pin it `>=1,<2`, so backwards-compatible minor/patch SDK bumps don't break them — only a major bump is breaking. See [RELEASING.md](../RELEASING.md) for the full release and version-bump procedure.
+The app bundle — the server and the first-party plugins — shares one version, derived from a single `kalinka-vX.Y.Z` git tag via setuptools-scm (one tag per release). The plugin SDK is versioned independently by its own SemVer; plugins pin its major version (currently `>=3,<4`), so backwards-compatible minor/patch SDK bumps don't break them — only a major bump is breaking. See [RELEASING.md](../RELEASING.md) for the full release and version-bump procedure.
 
 #### Cleaning build artifacts
 ```bash
@@ -41,7 +41,7 @@ sudo dpkg -i debs/kalinka-server_*.deb
 sudo dpkg -i debs/kalinka-plugin-*.deb
 sudo apt install -f   # install any missing dependencies
 ```
-The renderer is not part of that bundle — build and install it separately (`make renderer-deb`, then `sudo apt install ./packages/kalinka-renderer/kalinka-renderer-*.deb`) if this machine should play audio itself.
+The renderer is not part of that bundle — build and install it separately (`make renderer-deb`, then `sudo apt install ./packages/kalinka-renderer/kalinka-renderer-*.deb`), or take a published one with `./scripts/install-renderer.sh`, if this machine should play audio itself. The server runs as the `kalusr` system user and the renderer as `kalrndr`, the only one of the two in the `audio` group.
 
 At startup `kalinka.service` runs `/opt/kalinka/bootstrap.sh`, which creates `/opt/kalinka/venv` and pip-installs every wheel found under `/opt/kalinka/wheels/`. Plugins ship their wheel there and trigger a server restart, so they're picked up automatically (see [`docs/plugin-deb-packaging.md`](plugin-deb-packaging.md)).
 
@@ -83,7 +83,7 @@ make dev-run
    Logs here carry the full `date time LEVEL thread name: message` format. Under systemd both the server and the renderer switch to the terser format journald expects — no timestamp or level of their own, since journald records those itself — and `KALINKA_LOG_FORMAT=journal make dev-run` shows you that format from a source checkout (`full` forces the other direction). It is not auto-detected here because `dev-run` pipes output through `tee`.
 4. **Restart to pick up changes.** Python edits go live on restart — either click **Restart** in the app (this works without systemd: `dev-run` watches the restart trigger in the fakeroot and relaunches) or Ctrl-C and re-run `make dev-run`. After editing renderer C++, rebuild with `make renderer-build` and restart the renderer binary.
    Enabling an optional feature (Smart Search) in **Settings** and hitting **Restart** also just works: `dev-run` installs the requested optional packages into the venv before relaunching — the same flow `kalinka.service` runs at boot in production.
-5. In the Kalinka Music App, go to **Settings → Connection**; the service should appear under the name you configured. Pick it and tap **Connect**.
+5. Open the Kalinka app: the server appears in its list under the name you configured. Pick it and tap **Connect**, or use **Enter Address Manually** with `<host>:8000`.
 
 # Testing
 

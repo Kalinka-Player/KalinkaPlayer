@@ -29,21 +29,21 @@ Kalinka turns a Raspberry Pi or any Linux box into a music player you control fr
 
 Your files stay yours — nothing is uploaded, there is no account and no telemetry, and the semantic search runs on the device. Two things do reach the internet, both switchable: the metadata lookups that repair your tags (MusicBrainz, Wikidata, Deezer, Cover Art Archive), and an hourly check for a published release.
 
-## 🚀 Get started
+## Installation
 
-**The easy way — flash a card.** [Ready-to-flash images](https://github.com/Kalinka-Player/KalinkaPlayer/releases?q=kalinka-image-v&expanded=true) carry a minimal Debian 13 with everything already installed — one for the Raspberry Pi 4 / 400 / CM4, one for any x86-64 PC or VM. Write it, boot it, open `http://<its-ip>:8000` and it plays. The filesystem grows into the card by itself and a file on the boot partition sets up a login and Wi-Fi.
+1. **Install the server.** On a Raspberry Pi 4 or a spare PC, [flash a ready-made image](docs/installation.md#install-the-server): Kalinka is already on it and plays as soon as the machine starts. On a machine that already runs Debian 13, Raspberry Pi OS (64-bit) or Ubuntu 24.04, one command installs everything:
 
-**On a machine you already run**, one command installs the server, the plugins, the browser player and a local renderer:
+   ```bash
+   curl -fsSL https://kalinkaplayer.com/install.sh | sudo bash
+   ```
 
-```bash
-curl -fsSL https://kalinkaplayer.com/install.sh | sudo bash
-```
+   It runs in a [virtual machine](docs/installation.md#c-virtual-machine) too.
 
-**Then pick a client.** The [Kalinka app](https://github.com/Kalinka-Player/KalinkaAI/releases/latest) (Android, Linux, Windows) finds the server on its own — or just open `http://<server-ip>:8000` in any browser, which plays audio itself with nothing installed.
+2. **Open a remote.** Install the [Kalinka app](https://github.com/Kalinka-Player/KalinkaAI#-install) (Android, Windows, Linux), which finds the server by itself, or open `http://<server-address>:8000` in any browser.
+3. **Follow the setup wizard.** It asks where your music is and where the sound should come out. There are no config files to edit. [What each step asks](https://github.com/Kalinka-Player/KalinkaAI/blob/main/docs/first-run-setup.md).
+4. **Add your music, and more outputs if you like.** [Copy music onto it or point it at a NAS](docs/installation.md#put-your-music-on-it), and [put a renderer on any Linux box next to an amplifier, or play in a browser tab](docs/installation.md#add-more-outputs).
 
-Whichever you open walks you through first-time setup — naming the server, pointing it at your music, choosing where the sound comes out. There are no config files to edit; the server has nothing to hand-edit on it.
-
-Full walkthrough, troubleshooting and adding renderers on other machines: **[docs/installation.md](docs/installation.md)**.
+**[Full installation guide →](docs/installation.md)** It covers the images, virtual machines, Wi-Fi and logins, updates and troubleshooting.
 
 ## ✨ What it does
 
@@ -82,19 +82,25 @@ In-browser playback goes through the browser's audio stack, so there is no gaple
 
 | | |
 |---|---|
-| [Installation](docs/installation.md) | Images, quick install, first-run setup, troubleshooting, renderers elsewhere, updating |
-| [Architecture](docs/architecture.md) | How the pieces fit, the package layout, the REST/WS API, configuration and tuning |
-| [Development](docs/development.md) | Building the Debian packages, running from source, tests |
-| [Renderer design](docs/native-renderer-design.md) | The contract a renderer implements |
-| [Releasing](RELEASING.md) | Version model and release procedure |
+| [Installation](docs/installation.md) | Installing the server, connecting a remote, adding music and more outputs, updates, troubleshooting |
+| [First-run setup](https://github.com/Kalinka-Player/KalinkaAI/blob/main/docs/first-run-setup.md) | Every step of the setup wizard, in the app and in the browser |
+| [App manual](https://github.com/Kalinka-Player/KalinkaAI/blob/main/docs/app-manual.md) | An illustrated tour of the app |
 
 ## 🙋 Help test it
 
 Kalinka is young, and the interesting problems are the ones that only happen on someone else's hardware, with someone else's music. If you try it, say how it went in [the testing thread](https://github.com/Kalinka-Player/KalinkaPlayer/discussions/133) — what you ran it on, where your music lives, what you played it through, and where you got stuck. Setup questions belong there too; something you can reproduce is easier to act on as an [issue](https://github.com/Kalinka-Player/KalinkaPlayer/issues).
 
-## Contributing
+## 🛠️ For developers
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how to send a change, and for the project's disclosure on AI-assisted development.
+
+| | |
+|---|---|
+| [Architecture](docs/architecture.md) | How the pieces fit, the package layout, the REST/WS API, configuration and tuning |
+| [Development](docs/development.md) | Building the Debian packages, running from source, tests |
+| [Renderer design](docs/native-renderer-design.md) | The contract a renderer implements |
+| [Appliance images](packages/kalinka-image/README.md) | How the ready-to-flash images are built |
+| [Releasing](RELEASING.md) | Version model and release procedure |
 
 ## License
 
