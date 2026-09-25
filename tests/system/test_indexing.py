@@ -263,12 +263,6 @@ def test_a_share_that_goes_down_keeps_its_tracks(kalinka, samba, planted, librar
     assert len(kalinka.tracks()) == len(library)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="guest logon fails against Samba: an empty password is refused by "
-    "the SPNEGO layer and a guest session cannot sign, which smbprotocol "
-    "requires by default",
-)
 def test_guest_share_is_readable_without_credentials(samba):
     from kalinka_plugin_localfiles.storage.smb import SmbCredentials, SmbStorage
 

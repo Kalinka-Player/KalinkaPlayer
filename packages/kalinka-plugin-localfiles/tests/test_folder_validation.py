@@ -39,7 +39,9 @@ class _Context:
         self.config = config
 
 
-def _share(id="nas", host="nas", path="music", username=None, password=""):
+def _share(
+    id="nas", host="nas", path="music", username=None, password="", encrypt=False
+):
     authentication = (
         {"mode": "account", "username": username, "password": password}
         if username is not None
@@ -50,6 +52,7 @@ def _share(id="nas", host="nas", path="music", username=None, password=""):
         "kind": "smb",
         "location": {"host": host, "port": 445, "path": path},
         "authentication": authentication,
+        "options": {"require_encryption": encrypt},
     }
 
 
@@ -204,6 +207,7 @@ class TestHowASourceIsWritten:
             (_share(path="/ / "), "location.path", "name the share"),
             (_share(path="music/a/../b"), "location.path", "'..'"),
             (_share(username=""), "authentication.username", "name the account"),
+            (_share(encrypt=True), "options.require_encryption", "a guest cannot"),
             (_local(""), "location.path", "name the folder"),
             (_local("smb://nas/music"), "location.path", "on the server"),
             (_local(r"\\nas\music"), "location.path", "on the server"),

@@ -15,18 +15,26 @@ from the music source that names the share, never from the URL.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import io
+import os
+import secrets
 import threading
+import time
 from contextlib import contextmanager
 from stat import S_ISDIR
-from typing import Any, BinaryIO, Iterable, Iterator, Optional
+from typing import Any, BinaryIO, Callable, Iterable, Iterator, Optional
 
 import smbclient
 from smbprotocol.exceptions import (
-    AccessDenied,
-    LogonFailure,
-    PasswordExpired,
     SMBAuthenticationError,
+    SMBConnectionClosed,
+    SMBException,
+    SMBOSError,
+    SMBResponseException,
 )
+from smbprotocol.tree import TreeConnect
 
 from .base import (
     DirEntry,
@@ -45,6 +53,16 @@ from .locator import (
     scheme_of,
 )
 
+#: How long a connection waits on a silent server before sending it an echo,
+#: and how long the echo then has. ``smbprotocol`` reads it as each
+#: connection is made; its own ten minutes would stall a scan or a stream for
+#: twenty on a NAS that has gone, where this fails them within thirty seconds
+#: and still gives one spinning its disks up time to answer.
+_RECEIVE_TIMEOUT_S = 15
+os.environ.setdefault(
+    "SMB_EXPERIMENTAL_TRANSPORT_RECEIVE_TIMEOUT", str(_RECEIVE_TIMEOUT_S)
+)
+
 #: Read-ahead per request. A tag read walks a file's header and the audio
 #: embedder seeks to a few fragments, so the win is in asking for a chunk
 #: worth having rather than a block at a time over the network.
@@ -53,16 +71,6 @@ _READ_BUFFER = 1024 * 1024
 #: Long enough for a NAS that has spun its disks down, short enough that an
 #: address with nothing behind it fails a scan rather than stalling it.
 _CONNECT_TIMEOUT_S = 15
-
-#: What the backend raises when a server answers and turns the login down.
-#: Separated from the transport failures because the two read nothing alike
-#: to someone who has just typed a password.
-_REFUSED_LOGIN = (
-    SMBAuthenticationError,
-    LogonFailure,
-    PasswordExpired,
-    AccessDenied,
-)
 
 #: Who an unconfigured share logs in as. A username is not optional: the
 #: session pool matches sessions on it, and omitting it would both fail to
@@ -74,6 +82,34 @@ GUEST_USERNAME = "guest"
 #: the length of a response while the indexer may be reading the same track,
 #: and ``smbclient`` defaults to a deny-all open.
 _SHARE_ACCESS = "rwd"
+
+#: How long a refused login is answered from memory instead of being sent
+#: again. Windows locks an account, and a Synology blocks the address, after
+#: about ten failures in this long.
+_REFUSAL_MEMORY_S = 600
+
+#: Statuses a server turns a login down with, and what each means to the
+#: person who typed it.
+_LOGIN_REFUSALS = {
+    0xC000006D: "the user name or password is wrong",
+    0xC0000234: "the account is locked after too many failed logins",
+    0xC0000072: "the account is disabled",
+    0xC0000193: "the account has expired",
+    0xC0000071: "the password has expired",
+    0xC0000224: "the password has to be changed first",
+    0xC000006E: "the account may not sign in from here",
+    0xC000006F: "the account may not sign in at this time of day",
+    0xC0000070: "the account may not sign in from this device",
+    0xC000015B: "the account may not sign in over the network",
+}
+_STATUS_ACCESS_DENIED = 0xC0000022
+_STATUS_OBJECT_NAME_INVALID = 0xC0000033
+_MISSING_SHARE = {0xC00000CC, 0xC0000225}
+_MISSING_PATH = {0xC0000034, 0xC000003A, 0xC000000F}
+
+#: What ``smbprotocol`` says when a server hands out a guest session where
+#: signing or encryption is required, which a guest has no key for.
+_GUEST_SESSION = "authenticated as a guest"
 
 
 class SmbStorage(FileStorage):
@@ -93,10 +129,11 @@ class SmbStorage(FileStorage):
     the protocol does not allow turning back off.
 
     @note Holding a pool is what makes :meth:`close` necessary — see there.
-    @note Every operation translates backend failures into ``OSError``,
-        including authentication and transport ones, because that is what
-        this interface promises and what each caller's ``except OSError``
-        already handles.
+    @note Every operation, and every read from a file it opened, translates
+        backend failures into ``OSError`` worded for the person reading it:
+        ``PermissionError`` for a refused login or access, and
+        ``FileNotFoundError`` for a path the share does not have. Each
+        caller's ``except OSError`` then already handles them.
     """
 
     def __init__(
@@ -143,7 +180,7 @@ class SmbStorage(FileStorage):
 
     def listdir(self, path: str) -> list[DirEntry]:
         locator = parse(path)
-        with self._as_os_error():
+        with self._as_os_error(locator):
             return [
                 self._entry(locator, child)
                 for child in smbclient.scandir(
@@ -153,7 +190,7 @@ class SmbStorage(FileStorage):
 
     def stat(self, path: str) -> FileStat:
         locator = parse(path)
-        with self._as_os_error():
+        with self._as_os_error(locator):
             info = smbclient.stat(self._unc(locator), **self._logon(locator))
         return FileStat(
             size=info.st_size,
@@ -164,14 +201,15 @@ class SmbStorage(FileStorage):
 
     def open(self, path: str) -> BinaryIO:
         locator = parse(path)
-        with self._as_os_error():
-            return smbclient.open_file(
+        with self._as_os_error(locator):
+            handle = smbclient.open_file(
                 self._unc(locator),
                 mode="rb",
                 buffering=_READ_BUFFER,
                 share_access=_SHARE_ACCESS,
                 **self._logon(locator),
             )
+        return _SmbFile(handle, lambda: self._as_os_error(locator))
 
     def probe_root_blocking(self, root: str) -> RootStatus:
         try:
@@ -181,14 +219,14 @@ class SmbStorage(FileStorage):
 
         unc = self._unc(locator)
         try:
-            with self._as_os_error():
+            with self._as_os_error(locator):
                 info = smbclient.stat(unc, **self._logon(locator))
                 if not S_ISDIR(info.st_mode):
                     return self.unavailable(
                         root, "it names a file rather than a folder"
                     )
         except OSError as e:
-            return self.unavailable(root, self._reason(locator, e))
+            return self.unavailable(root, str(e))
 
         return RootStatus(
             root=root,
@@ -239,6 +277,10 @@ class SmbStorage(FileStorage):
         host = locator.host.strip("[]")
         return "\\\\" + "\\".join([host, *locator.components])
 
+    @property
+    def _guest(self) -> bool:
+        return not self._credentials.username
+
     def _logon(self, locator: StorageLocator) -> dict[str, Any]:
         """Session arguments for one location, with the logon already made.
 
@@ -252,17 +294,30 @@ class SmbStorage(FileStorage):
         a pair of dictionary lookups, and it is also what rebuilds a pooled
         connection the server has since dropped.
 
+        A login the server has lately refused is not sent again (see
+        :class:`_RefusedLogins`): the scan, playback and the renderer all
+        retry, and each retry would count against the account.
+
         @note The lock is per server, not per account: the race is for the
             connection underneath the session.
         """
         session = self._session(locator)
         server = locator.host.strip("[]")
+        refusal = (
+            server.lower(),
+            locator.port,
+            session["username"].casefold(),
+            _REFUSALS.digest(session["password"]),
+        )
+        _REFUSALS.check(refusal)
         with self._logon_locks_guard:
             lock = self._logon_locks.setdefault(
                 (server, locator.port), threading.Lock()
             )
-        with lock:
-            smbclient.register_session(server, **session)
+        with lock, self._as_os_error(locator, logon=True, refusal=refusal):
+            registered = smbclient.register_session(server, **session)
+            if self._guest:
+                self._connect_guest_tree(registered, server, locator.share)
         return session
 
     def _session(self, locator: StorageLocator) -> dict[str, Any]:
@@ -272,6 +327,9 @@ class SmbStorage(FileStorage):
         and picks the first one when asked for no particular user, so a
         share left to the guest default would read as whoever logged in
         first.
+
+        A guest session is not signed: the server gives a guest no key to
+        sign with, and one that insists on signing refuses guests outright.
 
         ``encrypt`` is only sent when it is wanted. It is tri-state in
         ``smbclient``, where an explicit False means *force encryption off*
@@ -283,44 +341,269 @@ class SmbStorage(FileStorage):
             "username": self._credentials.username or GUEST_USERNAME,
             "password": self._credentials.password,
         }
+        if self._guest:
+            session["require_signing"] = False
         if self._credentials.encrypt:
             session["encrypt"] = True
         if locator.port is not None:
             session["port"] = locator.port
         return session
 
-    def _reason(self, locator: StorageLocator, error: OSError) -> str:
-        """Why a root is unavailable, in words a user can act on."""
-        if isinstance(error, PermissionError):
-            return (
-                f"{locator.host} refused the login for share "
-                f"'{locator.share}' ({error})"
+    @staticmethod
+    def _connect_guest_tree(session, server: str, share: str) -> None:
+        r"""Connect a guest session to its share, unverified.
+
+        ``smbclient`` checks an SMB 3.0 negotiation against a signature, which
+        a guest session cannot make, and only offers turning that off for the
+        whole process. Connecting the share here, once per session, leaves
+        the check on for every signed-in one: ``smbclient`` reuses a tree
+        already connected for ``\\server\share``.
+        """
+        name = rf"\\{server}\{share}"
+        if any(t.share_name == name for t in session.tree_connect_table.values()):
+            return
+        TreeConnect(session, name).connect(require_secure_negotiate=False)
+
+    def _explain(
+        self, locator: StorageLocator, error: BaseException, logon: bool
+    ) -> OSError:
+        """``error`` as the ``OSError`` a caller gets, worded for the person
+        who will read it — most of these end up in front of whoever typed the
+        share and the login."""
+        host, share = locator.host, locator.share
+        user = self._credentials.username or GUEST_USERNAME
+        status = _status_of(error)
+        if status in _LOGIN_REFUSALS:
+            return PermissionError(
+                f"{host} refused the login as '{user}' for share '{share}': "
+                f"{_LOGIN_REFUSALS[status]}"
             )
-        return (
-            f"{locator.host} did not answer for share "
-            f"'{locator.share}' ({error})"
-        )
+        text = _text(error)
+        if _GUEST_SESSION in text:
+            if not self._guest:
+                return PermissionError(
+                    f"{host} signed in as a guest instead of as '{user}', "
+                    "so it does not know that user name"
+                )
+            if self._credentials.encrypt:
+                return PermissionError(
+                    f"a guest cannot encrypt: turn Require encryption off for "
+                    f"{host}, or sign in with an account"
+                )
+            return PermissionError(
+                f"{host} requires signed traffic, which a guest cannot send: "
+                "sign in with an account"
+            )
+        if isinstance(error, SMBAuthenticationError):
+            return PermissionError(
+                f"{host} refused the login as '{user}' for share '{share}' ({text})"
+            )
+        if status == _STATUS_ACCESS_DENIED:
+            return PermissionError(
+                f"'{user}' may not read {self._inside(locator)} on {host}"
+            )
+        if status in _MISSING_SHARE:
+            return OSError(f"{host} has no share named '{share}'")
+        if status in _MISSING_PATH:
+            return FileNotFoundError(f"{host} has no {self._inside(locator)}")
+        if status == _STATUS_OBJECT_NAME_INVALID:
+            return OSError(
+                f"{host} will not open {self._inside(locator)}: the name holds "
+                "a character it does not allow"
+            )
+        if logon and _connection_closed(error, text):
+            return OSError(
+                f"{host} closed the connection when asked for SMB2 or later; "
+                "if it only offers SMB1, turn SMB2 or SMB3 on in its settings"
+            )
+        if _connection_closed(error, text):
+            return OSError(f"{host} dropped the connection ({text})")
+        if status is not None:
+            return OSError(
+                f"{host} turned down a request for share '{share}' ({text})"
+            )
+        return OSError(f"{host} did not answer for share '{share}' ({text})")
+
+    @staticmethod
+    def _inside(locator: StorageLocator) -> str:
+        """What a location names within its share, for a message."""
+        folders = locator.components[1:]
+        if not folders:
+            return f"share '{locator.share}'"
+        return f"'{'/'.join(folders)}' in share '{locator.share}'"
 
     @contextmanager
-    def _as_os_error(self) -> Iterator[None]:
-        """Present every backend failure as an ``OSError``.
+    def _as_os_error(
+        self,
+        locator: StorageLocator,
+        logon: bool = False,
+        refusal: Optional[tuple] = None,
+    ) -> Iterator[None]:
+        """Present every backend failure as an ``OSError`` (see the class).
 
         ``smbclient`` raises ``OSError`` for what a filesystem would, but
         authentication, negotiation and transport failures come out as its
         own exception types, and one of those escaping would abort a scan
-        over a single unreachable share. Only the cause is carried over:
-        every caller already names the path it was reading.
+        over a single unreachable share.
 
-        A refused login becomes ``PermissionError`` rather than a plain
-        ``OSError``, because it is the one failure here the user can do
-        something about and it reads nothing like a server that is off.
-        It is still an ``OSError``, so no caller has to know that.
+        @param logon Whether the failure was in making the session, where a
+            closed connection means a server that will not speak SMB2.
+        @param refusal The login to remember as refused, if this was one.
         """
         try:
             yield
-        except OSError:
+        except OSError as e:
+            if isinstance(e, SMBOSError):
+                raise self._explain(locator, e, logon) from e
             raise
-        except _REFUSED_LOGIN as e:
-            raise PermissionError(str(e)) from e
+        except SMBException as e:
+            explained = self._explain(locator, e, logon)
+            if refusal is not None and _refuses_login(e):
+                _REFUSALS.refused(refusal, str(explained))
+            raise explained from e
         except Exception as e:
-            raise OSError(str(e)) from e
+            raise self._explain(locator, e, logon) from e
+        else:
+            if refusal is not None:
+                _REFUSALS.forget(refusal)
+
+
+class _SmbFile(io.RawIOBase):
+    """A file opened on a share, whose reads fail as ``OSError`` too.
+
+    The file ``smbclient`` hands back raises the protocol's own exceptions
+    from ``read`` and ``seek``, long after the open that was translated. Tag
+    readers, the audio embedder and the server's stream all catch
+    ``OSError``, and one of those escaping as anything else reads as a
+    broken file rather than a share that went away.
+    """
+
+    def __init__(
+        self, handle: BinaryIO, translate: Callable[[], Any]
+    ) -> None:
+        super().__init__()
+        self._handle = handle
+        self._translate = translate
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def read(self, size: int = -1) -> bytes:
+        with self._translate():
+            return self._handle.read(size)
+
+    def readinto(self, buffer) -> int:
+        with self._translate():
+            return self._handle.readinto(buffer)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        with self._translate():
+            return self._handle.seek(offset, whence)
+
+    def tell(self) -> int:
+        with self._translate():
+            return self._handle.tell()
+
+    def close(self) -> None:
+        """Closing a handle on a connection that has gone cannot fail the
+        read that already finished: the server dropped the handle with it."""
+        if self.closed:
+            return
+        try:
+            self._handle.close()
+        except Exception:
+            pass
+        finally:
+            super().close()
+
+
+class _RefusedLogins:
+    """Logins a server has lately turned down, so they are not sent again.
+
+    Each attempt with a wrong password counts against the account, and a NAS
+    or a Windows host locks it, or blocks this address, after about ten. The
+    library retries by design — a scan probes its roots again, a track that
+    cannot be read is asked for again, the renderer retries a stream — so a
+    refusal is remembered and answered without the network until it expires
+    or a login with the same credential works. A password typed anew is a
+    different credential and is always tried.
+
+    @note Process-wide, because each storage holds one login but several may
+        hold the same one. Thread-safe. Passwords are kept only as a keyed
+        digest, with a key that dies with the process.
+    """
+
+    def __init__(self, memory_s: float = _REFUSAL_MEMORY_S) -> None:
+        self._memory_s = memory_s
+        self._key = secrets.token_bytes(16)
+        self._refused: dict[tuple, tuple[float, float, str]] = {}
+        self._lock = threading.Lock()
+
+    def digest(self, password: str) -> bytes:
+        return hmac.new(self._key, password.encode(), hashlib.sha256).digest()
+
+    def check(self, login: tuple) -> None:
+        """@raise PermissionError If ``login`` was refused lately."""
+        with self._lock:
+            entry = self._refused.get(login)
+            if entry is None:
+                return
+            expires, retry_at, reason = entry
+            if time.monotonic() >= expires:
+                del self._refused[login]
+                return
+        raise PermissionError(
+            f"{reason}; not tried again before "
+            f"{time.strftime('%H:%M', time.localtime(retry_at))}, so that the "
+            "account is not locked out"
+        )
+
+    def refused(self, login: tuple, reason: str) -> None:
+        with self._lock:
+            self._refused[login] = (
+                time.monotonic() + self._memory_s,
+                time.time() + self._memory_s,
+                reason,
+            )
+
+    def forget(self, login: tuple) -> None:
+        with self._lock:
+            self._refused.pop(login, None)
+
+
+_REFUSALS = _RefusedLogins()
+
+
+def _status_of(error: BaseException) -> Optional[int]:
+    """The NT status behind ``error``, wherever the backend put it."""
+    if isinstance(error, SMBOSError):
+        return error.ntstatus
+    if isinstance(error, SMBResponseException):
+        return error.status
+    return None
+
+
+def _refuses_login(error: BaseException) -> bool:
+    """Whether the server turned the login itself down, as opposed to the
+    share it leads to — only the first counts against the account."""
+    return (
+        _status_of(error) in _LOGIN_REFUSALS
+        or isinstance(error, SMBAuthenticationError)
+        or _GUEST_SESSION in _text(error)
+    )
+
+
+def _connection_closed(error: BaseException, text: str) -> bool:
+    return isinstance(error, SMBConnectionClosed) or "socket was closed" in text
+
+
+def _text(error: BaseException) -> str:
+    """What ``error`` says. A response error renders the body the server
+    sent, and one that arrived without a usable body cannot render at all."""
+    try:
+        return str(error)
+    except Exception:
+        return type(error).__name__
