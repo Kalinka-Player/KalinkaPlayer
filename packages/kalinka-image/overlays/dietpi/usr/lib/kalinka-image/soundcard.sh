@@ -16,9 +16,9 @@ boot_fingerprint() {
 }
 
 wanted="$(dietpi_conf_get /boot/dietpi.txt CONFIG_SOUNDCARD)"
-# DietPi's "none" also purges alsa-utils, which Kalinka keeps.
+# DietPi's "none" also purges alsa-utils, which Kalinka keeps; a card named again later is applied again.
 case "$wanted" in
-  ''|none) exit 0 ;;
+  ''|none) rm -f "$STATE"; exit 0 ;;
 esac
 [ "$wanted" != "$(cat "$STATE" 2>/dev/null)" ] || exit 0
 

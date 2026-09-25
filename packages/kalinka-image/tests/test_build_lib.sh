@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # The pieces of the build shared by every base that can be checked without
-# root: the published file name, putting the image's own resolv.conf back, and
-# telling what this build installed from what the base already had.
+# root: the published file name, putting the image's own resolv.conf back, the
+# overlay's modes, reading unit links, and telling what this build installed
+# from what the base already had.
 set -uo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,6 +64,32 @@ if [ "$(id -u)" -eq 0 ]; then
 else
   echo "    SKIP: ownership needs root"
 fi
+
+echo "  -- the overlay's modes"
+SCRIPT_DIR="$WORK/modes"
+mkdir -p "$SCRIPT_DIR/overlays/test/etc/new" "$WORK/moded/etc"
+printf '#!/bin/sh\n' > "$SCRIPT_DIR/overlays/test/etc/new/hook.sh"
+chmod 775 "$SCRIPT_DIR/overlays/test" "$SCRIPT_DIR/overlays/test/etc"
+chmod 755 "$SCRIPT_DIR/overlays/test/etc/new/hook.sh" "$WORK/moded" "$WORK/moded/etc"
+ROOTFS="$WORK/moded"
+install_overlay test
+assert_mode "a group-writable checkout leaves the image root as it was" "$ROOTFS" 755
+assert_mode "and /etc" "$ROOTFS/etc" 755
+[ -x "$ROOTFS/etc/new/hook.sh" ] || fail "a script loses its execute bit"
+ROOTFS="$WORK/rootfs"
+
+echo "  -- enabled units, whose links are absolute"
+ROOTFS="$WORK/units"
+mkdir -p "$ROOTFS/etc/systemd/system/multi-user.target.wants"
+ln -s /etc/systemd/system/kalinka-test-absent.service \
+  "$ROOTFS/etc/systemd/system/multi-user.target.wants/kalinka-test-absent.service"
+( require_enabled multi-user.target kalinka-test-absent.service ) 2>/dev/null \
+  || fail "missed an enabled unit whose link does not resolve on the build host"
+( require_disabled multi-user.target kalinka-test-absent.service ) 2>/dev/null \
+  && fail "took a unit whose link does not resolve on the build host for disabled"
+( require_disabled multi-user.target never-enabled.service ) \
+  || fail "refused a unit that is not enabled"
+ROOTFS="$WORK/rootfs"
 
 echo "  -- which refused packages this build brought in"
 printf 'bash\nbash-completion\ncoreutils\n' > "$WORK/before"

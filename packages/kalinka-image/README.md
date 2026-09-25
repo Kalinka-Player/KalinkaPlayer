@@ -64,7 +64,7 @@ A minimal Debian has no first-boot provisioning of its own, so [`overlays/deboot
 
 [`lib/base-dietpi.sh`](lib/base-dietpi.sh) starts from DietPi's published image instead. It checks the image's signature against the key in [`keys/dietpi.asc`](keys/dietpi.asc) and insists the signing key is the one pinned in `DIETPI_SIGNER`. It then grows the image to `IMAGE_SIZE` without changing the disk id, which is how the Pi's `cmdline.txt` finds the root partition, and names the FAT partition KALINKA-BT.
 
-The packages are brought up to date, but the kernel stays the one DietPi shipped and tested. APT would otherwise move it as a side effect: the toolchain brings `linux-libc-dev`, which is built from the same source as the kernel, and APT upgrades a source's packages together. The build turns that off for its own installs and fails if a new kernel lands anyway; DietPi's own updates move the kernel later.
+The packages are brought up to date, but the kernel stays the one DietPi shipped and tested. APT would otherwise move it as a side effect: the toolchain brings `linux-libc-dev`, which is built from the same source as the kernel, and APT upgrades a source's packages together. The build turns that off for its own installs, and holds the kernel packages while it upgrades, since a rebuilt kernel keeps its package name; it fails if the kernel moved anyway. The hold is lifted before the image is sealed, so DietPi's own updates move the kernel later.
 
 DietPi does its own first boot, so the build leaves identity, growth, Wi-Fi and accounts to it and only sets what Kalinka needs in `dietpi.txt`:
 
@@ -82,19 +82,19 @@ To refresh the key when DietPi rotates it, fetch it by fingerprint (`https://key
 
 ### Sound cards on the Pi images
 
-ALSA is installed, and marked installed for DietPi's own tools, so choosing a sound card never needs a network. A DAC HAT with an ID EEPROM needs nothing: the Pi firmware loads its overlay at boot, and with onboard audio off in DietPi's `config.txt` it becomes the default card. For a HAT without one, `CONFIG_SOUNDCARD=` in `dietpi.txt` names it, and `kalinka-soundcard.service` hands it to DietPi's `dietpi-set_hardware` before the renderer starts, restarting once if the boot configuration changed. `none` is ignored, since DietPi's handling of it removes ALSA. The values that download something — `allo-piano*` firmware, the `-eq` variants — need a network the first time. The Pi 5 has no 3.5 mm output.
+ALSA is installed, and marked installed for DietPi's own tools, so choosing a sound card never needs a network. A DAC HAT with an ID EEPROM needs nothing: the Pi firmware loads its overlay at boot, and with onboard audio off in DietPi's `config.txt` it becomes the default card. For a HAT without one, `CONFIG_SOUNDCARD=` in `dietpi.txt` names it, and `kalinka-soundcard.service` hands it to DietPi's `dietpi-set_hardware` before the renderer starts, restarting once if the boot configuration changed. `none` is not handed on, since DietPi's handling of it removes ALSA, but it does make the hook forget the last card, so naming that card again applies it again. The values that download something — `allo-piano*` firmware, the `-eq` variants — need a network the first time, so the hook waits for one. The Pi 5 has no 3.5 mm output.
 
 ## Tests
 
 [`tests/`](tests) covers the parts that are cheap to get wrong and expensive to discover on real hardware:
 
-- **`test_targets.sh`** checks that every target names a base that exists, applies each Debian target's partition table, and checks that `TARGET_BOOT_PART` really is the FAT partition, that `TARGET_ROOT_PART` really is the Linux one and is last (nothing after it could grow), and that the target fills in the whole contract. Needs no privileges.
-- **`test_build_lib.sh`** checks the published file names, that the image's own `resolv.conf` — file, symlink or none — comes back exactly as it was, and that only packages this build brought in count against it.
+- **`test_targets.sh`** checks that every target names a base that exists and sets what that base needs, applies each Debian target's partition table, and checks that `TARGET_BOOT_PART` really is the FAT partition, that `TARGET_ROOT_PART` really is the Linux one and is last (nothing after it could grow), and that the target fills in the whole contract. Needs no privileges.
+- **`test_build_lib.sh`** checks the published file names, that the image's own `resolv.conf` — file, symlink or none — comes back exactly as it was, that an overlay leaves the image's own directory modes alone, that unit links are read as links rather than resolved on the build host, and that only packages this build brought in count against it.
 - **`test_dietpi_conf.sh`** checks reading and writing `dietpi.txt` the way DietPi does, and every change the build makes to DietPi's files, on a copy shaped like the real ones.
-- **`test_dietpi_image.sh`** grows a partition table without losing the disk id, refuses anything but a two-partition MBR image, and accepts a signature only from the pinned key — not from a second key in the same keyring.
+- **`test_dietpi_image.sh`** grows a partition table without losing the disk id, refuses anything but a two-partition MBR image, accepts a signature only from the pinned key — not from a second key in the same keyring — and holds exactly the installed kernel packages, by name and version.
 - **`test_growroot.sh`** runs the grow step against faked SD, SATA and NVMe device names, and against media the image already fills.
 - **`test_systemctl_shim.sh`** pins down which verbs reach the real `systemctl` and which are swallowed.
 - **`test_firstboot.sh`** runs the Debian image's first boot for real — a real `useradd`, a real `ssh-keygen` — and checks the account, the key, the Wi-Fi profile and its permissions, that two machines get different host keys, that a file saved on Windows or holding a setting that fails is still applied as far as it can be, and that the configuration file does not survive being read.
-- **`test_soundcard.sh`** runs the sound-card hook against a stand-in for DietPi's tool: applied once, one restart only when the boot configuration changed, and nothing for `none`.
+- **`test_soundcard.sh`** runs the sound-card hook against a stand-in for DietPi's tool: applied once, one restart only when the boot configuration changed, nothing for `none` beyond forgetting the last card, and ordered after the network.
 
 The last three edit `/etc`, so they skip themselves unless `KALINKA_IMAGE_TEST_DISPOSABLE=1` says the system is throwaway. `make image-test` supplies that by running them in a container.

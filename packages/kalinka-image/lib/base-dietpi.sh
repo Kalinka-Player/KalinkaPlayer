@@ -43,15 +43,19 @@ fetch_dietpi_image() {
   mkdir -p "$DIETPI_CACHE"
   log "Fetching $DIETPI_IMAGE"
   [ -e "$file" ] && since=(-z "$file")
-  code="$(curl -fL --retry 3 -R "${since[@]}" -o "$file.part" -w '%{http_code}' "$url")"
+  code="$(curl -L --retry 3 -R "${since[@]}" -o "$file.part" -w '%{http_code}' "$url")" || true
   case "$code" in
     200) mv "$file.part" "$file" ;;
     304) rm -f "$file.part" ;;
-    *) rm -f "$file.part"; die "$url answered $code" ;;
+    *) rm -f "$file.part"; die "$url answered ${code:-nothing}" ;;
   esac
   curl -fL --retry 3 -o "$file.asc" "$url.asc"
 
-  verify_signature "$DIETPI_KEY" "$DIETPI_SIGNER" "$file" "$file.asc"
+  # A rejected image left cached would answer every later download with 304.
+  if ! ( verify_signature "$DIETPI_KEY" "$DIETPI_SIGNER" "$file" "$file.asc" ); then
+    rm -f "$file" "$file.asc"
+    die "removed the rejected $DIETPI_IMAGE.img.xz from $DIETPI_CACHE"
+  fi
   local sum
   sum="$(sha256sum "$file" | cut -d' ' -f1)"
   [ -z "${DIETPI_SHA256:-}" ] || [ "$sum" = "$DIETPI_SHA256" ] \
@@ -114,7 +118,21 @@ base_create_image() {
 
 base_configure_system() { :; }
 
+kernel_packages() {
+  in_chroot dpkg-query -W -f='${Package} ${Version} ${Status}\n' 'linux-image-*' \
+    | awk '$5 == "installed" { print $1, $2 }'
+}
+
+# A rebuilt kernel keeps its package name, so only a hold stops apt-get upgrade replacing it.
+mark_kernel() {
+  local -a kernel
+  mapfile -t kernel < <(cut -d' ' -f1 "$WORK/kernel.before")
+  [ "${#kernel[@]}" -eq 0 ] || in_chroot apt-mark "$1" "${kernel[@]}" >/dev/null
+}
+
 base_install_packages() {
+  kernel_packages > "$WORK/kernel.before"
+  mark_kernel hold
   log "Bringing DietPi's packages up to date"
   in_chroot apt-get -y upgrade
   log "Installing what Kalinka needs beyond DietPi"
@@ -152,6 +170,7 @@ configure_dietpi_files() {
 
 base_finish() {
   log "Setting DietPi up for Kalinka"
+  mark_kernel unhold
   install_overlay dietpi
   in_chroot systemctl enable kalinka-soundcard.service
   in_chroot systemctl disable dietpi-ramlog.service
@@ -183,9 +202,8 @@ verify_dietpi_setup() {
   require_enabled local-fs.target dietpi-fs_partition_resize.service
   require_enabled multi-user.target dietpi-firstboot.service kalinka-soundcard.service
   [ -x "$ROOTFS/usr/lib/sftp-server" ] || die "no /usr/lib/sftp-server, where Dropbear looks for SFTP"
-  [ ! -e "$ROOTFS/etc/systemd/system/multi-user.target.wants/dietpi-ramlog.service" ] \
-    || die "dietpi-ramlog is still enabled"
-  [ -z "$(packages_landed "$WORK/packages.before" <(installed_packages) 'linux-image-*')" ] \
+  require_disabled multi-user.target dietpi-ramlog.service
+  [ "$(kernel_packages)" = "$(cat "$WORK/kernel.before")" ] \
     || die "the build moved DietPi's kernel; it ships the one DietPi tested"
   if in_chroot dpkg-query -W -f='${Status}' openssh-server 2>/dev/null | grep -q ' installed$'; then
     die "openssh-server came in; DietPi's first boot does not renew its host keys"

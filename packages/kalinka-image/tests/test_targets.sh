@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# Every target names a base that exists, and every debootstrap target's
-# partition table is checked by writing it. An index pointing at the wrong
-# partition produces an image that builds and does not boot, and sfdisk needs
-# no privileges to say so.
+# Every target names a base that exists and fills in that base's contract, and
+# every debootstrap target's partition table is checked by writing it. An index
+# pointing at the wrong partition produces an image that builds and does not
+# boot, and sfdisk needs no privileges to say so.
 set -uo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,6 +29,9 @@ for target_file in "$PKG_DIR"/targets/*.sh; do
     done
     [ -r "$PKG_DIR/lib/base-${TARGET_BASE:-}.sh" ] \
       || fail "$target: names a base with no lib/base-${TARGET_BASE:-}.sh"
+    if [ "${TARGET_BASE:-}" = dietpi ]; then
+      [ -n "${DIETPI_IMAGE:-}" ] || fail "$target: does not set DIETPI_IMAGE"
+    fi
     [ "${TARGET_BASE:-}" = debootstrap ] || exit "$FAILURES"
 
     for var in "${DEBOOTSTRAP_CONTRACT[@]}"; do

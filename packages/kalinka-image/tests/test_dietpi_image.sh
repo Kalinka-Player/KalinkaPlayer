@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
-# The two steps that take a downloaded DietPi image as trustworthy and make
-# room in it: a signature from the pinned key and nobody else, and a grown root
-# partition the Pi's boot chain still finds by the same disk id.
+# The steps that take a downloaded DietPi image as trustworthy and keep it
+# what DietPi tested: a signature from the pinned key and nobody else, a grown
+# root partition the Pi's boot chain still finds by the same disk id, and the
+# kernel held where DietPi left it.
 set -uo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -42,6 +43,27 @@ printf 'label: gpt\n,16MiB,U\n,,L\n' | sfdisk --quiet "$WORK/gpt.img"
 truncate -s 64MiB "$WORK/three.img"
 printf 'label: dos\n,8MiB,c\n,8MiB,83\n,,83\n' | sfdisk --quiet "$WORK/three.img"
 ( grow_root_partition "$WORK/three.img" 128MiB ) 2>/dev/null && fail "grew an image with three partitions"
+
+echo "  -- the kernel it ships"
+in_chroot() {
+  printf '%s\n' \
+    'linux-image-6.18.39+rpt-rpi-v8 1:6.18.39-1+rpt1 install ok installed' \
+    'linux-image-6.12.25+rpt-rpi-v8 1:6.12.25-1+rpt1 deinstall ok config-files' \
+    'linux-image-rpi-v8 1:6.18.39-1+rpt1 install ok installed'
+}
+assert_eq "names each installed kernel package with its version, since a rebuild keeps the name" \
+  "$(kernel_packages | tr '\n' ';')" \
+  "linux-image-6.18.39+rpt-rpi-v8 1:6.18.39-1+rpt1;linux-image-rpi-v8 1:6.18.39-1+rpt1;"
+kernel_packages > "$WORK/kernel.before"
+in_chroot() { echo "$*" >> "$WORK/marked"; }
+mark_kernel hold
+assert_eq "holds exactly those while the build upgrades" \
+  "$(cat "$WORK/marked")" "apt-mark hold linux-image-6.18.39+rpt-rpi-v8 linux-image-rpi-v8"
+: > "$WORK/kernel.before"
+: > "$WORK/marked"
+mark_kernel hold
+assert_eq "and asks apt nothing when there is no kernel package" "$(cat "$WORK/marked")" ""
+unset -f in_chroot
 
 echo "  -- the signature"
 if ! command -v gpg >/dev/null || ! command -v gpgv >/dev/null; then
