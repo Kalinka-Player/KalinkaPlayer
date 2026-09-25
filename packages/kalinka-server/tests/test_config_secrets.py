@@ -337,6 +337,15 @@ def test_an_ordinary_line_is_not_flagged(line):
         "a" * 65536 + "=",
         "?" + "a" * 65536,
     ],
+    ids=[
+        "one-long-word",
+        "dotted-run",
+        "dotted-run-then-url-login",
+        "repeated-schemes",
+        "at-then-repeated-logins",
+        "long-key-then-equals",
+        "query-mark-then-long-word",
+    ],
 )
 def test_a_record_at_the_size_cap_is_checked_without_rescanning_it(line):
     carries_credential = credential_detector([SECRET])
