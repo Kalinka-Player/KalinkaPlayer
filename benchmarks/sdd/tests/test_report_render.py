@@ -37,7 +37,7 @@ def _metrics(depth: int, recall: dict[str, float]) -> dict:
 
 
 def _seed(tmp_path, runs=RUNS, depth=50, embedded_seconds=120.0) -> Layout:
-    layout = Layout(out=tmp_path)
+    layout = Layout(out=tmp_path).ensure()
     recall = {str(k): 0.1 * n for n, k in enumerate(report.metrics_mod.recall_ks(depth), 1)}
     layout.dataset_stats.write_text(json.dumps({
         "captions": 6, "tracks": 3, "audio_files": 3,
