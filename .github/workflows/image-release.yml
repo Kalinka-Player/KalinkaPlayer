@@ -156,7 +156,7 @@ jobs:
 
           Verify downloads with `sha256sum -c SHA256SUMS --ignore-missing`.
 
-          Full documentation: [packages/kalinka-image/README.md](https://github.com/madenvel/KalinkaPlayer/blob/main/packages/kalinka-image/README.md)
+          Full instructions: [docs/installation.md](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md)
           EOF
 
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then

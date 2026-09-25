@@ -9,42 +9,13 @@ Two targets, built from the same script:
 | `rpi4` | Raspberry Pi 4, Pi 400, CM4 — SD card or USB disk | the Pi's own firmware, from a FAT partition |
 | `amd64` | any x86-64 PC or virtual machine | GRUB, UEFI or BIOS, from one image |
 
-Published images live on the [`kalinka-image-v*` releases](https://github.com/madenvel/KalinkaPlayer/releases?q=kalinka-image-v&expanded=true).
+Published images live on the [`kalinka-image-v*` releases](https://github.com/Kalinka-Player/KalinkaPlayer/releases?q=kalinka-image-v&expanded=true).
 
 ## Using an image
 
-Flash the `.img.xz` as downloaded — [Raspberry Pi Imager](https://www.raspberrypi.com/software/) and [balenaEtcher](https://etcher.balena.io/) both read it compressed — or from a shell:
+Flashing an image, the first-boot settings file and everything else a user needs are in the [installation guide](../../docs/installation.md#install-the-server).
 
-```sh
-xzcat kalinka-*.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
-```
-
-Boot it, and open `http://<its-ip>:8000` in any browser on the network. The Kalinka app finds it over mDNS on its own. Drop music into `/srv/kalinka/music`, or point My Library at a NAS from the app's Settings screen.
-
-The root filesystem grows to fill the media on every boot, so the card you flash onto is the size you get — and moving to a bigger card later is a reboot, not a re-flash.
-
-### First-boot configuration
-
-The image ships **no login account, no password and no SSH host keys**. A published image cannot carry credentials without handing the same ones to everybody who flashes it, so it carries none, and the first boot generates this machine's own host keys.
-
-To get a shell, or to put the machine on Wi-Fi, write `kalinka-firstboot.conf` to the FAT partition that appears when the media is plugged into another computer. [`boot/kalinka-firstboot.conf.example`](boot/kalinka-firstboot.conf.example) ships beside it with every setting explained:
-
-```sh
-HOSTNAME=kalinka
-USERNAME=dmitry
-PASSWORD_HASH='$6$...'        # mkpasswd -m sha512crypt
-SSH_AUTHORIZED_KEY='ssh-ed25519 AAAA... you@yourmachine'
-WIFI_SSID='MyNetwork'
-WIFI_PASSWORD='...'
-WIFI_COUNTRY=GB
-TIMEZONE=Europe/London
-```
-
-It is read once, applied, and shredded — a FAT partition has no permissions to keep a Wi-Fi passphrase behind. Everything in it is optional, including the file itself: without it the machine still boots and still plays, you just have no shell on it. A console with no account says so on its login screen.
-
-On the `rpi4` image that partition is an ordinary FAT32 volume, so every desktop mounts it. On `amd64` it is the EFI System Partition: Linux and macOS mount it, **Windows hides it**. From Windows, either prepare the media on another machine or use `diskpart` to assign it a letter.
-
-The same file works after the fact: put it back on the boot partition of a machine already in service and reboot, and it is applied again.
+Two things about a running image matter when working on it. The root filesystem grows to fill the media on every boot (`growroot.sh`), so moving to a bigger card later is a reboot, not a re-flash. And the image ships no login account, no password and no SSH host keys: `firstboot.sh` generates the host keys on the first boot, and applies `kalinka-firstboot.conf` from the boot partition whenever one is there, then shreds it. [`boot/kalinka-firstboot.conf.example`](boot/kalinka-firstboot.conf.example) documents every setting.
 
 ## Building an image
 

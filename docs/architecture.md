@@ -31,6 +31,7 @@ The server exposes a REST API (FastAPI) plus WebSocket channels for live state. 
 
 ## Configuration & tuning
 
+- The server reads `kalinka_conf.cfg` (JSON): `/etc/kalinka/kalinka_conf.cfg` in production, `$KALINKA_PREFIX/etc/kalinka/kalinka_conf.cfg` from a source checkout. Plugin settings live in the same file; example configs sit in the repository root.
 - Most settings are editable live from the app's **Settings** screen and persisted to the `.cfg` files. The server exposes its config schema at `GET /server/config/schema` so the app can render forms.
 - **Smart Search** is opt-in. For My Library, turn on **AI search** in the localfiles module config — one switch covers both indexing the library and answering queries. On first run it downloads the CLAP ONNX models to the model directory (default `/var/lib/kalinka/models`, or `$KALINKA_PREFIX/var/lib/kalinka/models` when running from source) and embeds tracks in the background; watch progress via `GET /indexer/status`.
 - **AcoustID** enrichment needs a free API key from the [AcoustID website](https://acoustid.org/) — set it in the localfiles enricher config. The key is the only switch: no key means the plugin isn't loaded.
