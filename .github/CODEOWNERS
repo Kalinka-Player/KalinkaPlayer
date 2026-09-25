@@ -1,0 +1,8 @@
+/.github/                             @madenvel
+/scripts/install-release.sh           @madenvel
+/scripts/install-renderer.sh          @madenvel
+/scripts/pin-latest-release.sh        @madenvel
+/scripts/check_credential_logging.py  @madenvel
+/packages/kalinka-image/              @madenvel
+/packages/*/scripts/                  @madenvel
+/LICENSE*                             @madenvel
