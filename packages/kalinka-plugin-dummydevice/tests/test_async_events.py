@@ -3,10 +3,21 @@ Tests for async event handling in DummyDevice
 """
 
 import asyncio
+import contextlib
 import pytest
 from unittest.mock import Mock
 from kalinka_plugin_dummydevice.dummydevice import DummyDevice
 from kalinka_plugin_sdk.ext_device_events import VolumeChangedEvent
+
+
+@contextlib.asynccontextmanager
+async def running(device):
+    """The lifecycle the server gives a device: start(), then shutdown() however the test ends."""
+    await device.start()
+    try:
+        yield device
+    finally:
+        await device.shutdown()
 
 
 @pytest.mark.asyncio
@@ -15,7 +26,7 @@ async def test_volume_change_event_emitted():
     emitter = Mock()
     device = DummyDevice(emitter)
 
-    async with device:
+    async with running(device):
         # Set volume
         await device.set_volume(75)
 
@@ -35,7 +46,7 @@ async def test_volume_change_debouncing():
     emitter = Mock()
     device = DummyDevice(emitter)
 
-    async with device:
+    async with running(device):
         # Make multiple rapid volume changes
         await device.set_volume(10)
         await device.set_volume(20)
@@ -60,7 +71,7 @@ async def test_get_volume():
     emitter = Mock()
     device = DummyDevice(emitter)
 
-    async with device:
+    async with running(device):
         # Default volume should be 50
         volume = await device.get_volume()
         assert volume.current_volume == 50
@@ -78,7 +89,7 @@ async def test_power_control():
     emitter = Mock()
     device = DummyDevice(emitter)
 
-    async with device:
+    async with running(device):
         # Initially off
         assert not await device.is_power_on()
 
@@ -97,7 +108,7 @@ async def test_volume_validation():
     emitter = Mock()
     device = DummyDevice(emitter)
 
-    async with device:
+    async with running(device):
         # Valid values should work
         await device.set_volume(0)
         await device.set_volume(100)
@@ -112,16 +123,16 @@ async def test_volume_validation():
 
 @pytest.mark.asyncio
 async def test_cleanup_on_exit():
-    """Test that async context manager cleanup works"""
+    """Test that shutdown stops the event sender"""
     emitter = Mock()
     device = DummyDevice(emitter)
 
-    async with device:
+    async with running(device):
         await device.set_volume(50)
         # Task should be running
         assert device._event_sender_task is not None
         assert not device._event_sender_task.done()
 
-    # After exiting context, task should be cancelled
+    # After shutdown, the task should be finished
     assert device._event_sender_task.done()
     assert device._shutdown
