@@ -12,7 +12,7 @@ Depends: adduser,
     python3-venv,
     python3-pip,
     python3-setuptools,
-    kalinka-plugin-sdk (>= 3.0.0), kalinka-plugin-sdk (<< 4)
+    kalinka-plugin-sdk (>= 3.3), kalinka-plugin-sdk (<< 4)
 Recommends: kalinka-web
 Description: Kalinka Music Player (server)
   Kalinka Music Player service used in a pair with Kalinka App.
