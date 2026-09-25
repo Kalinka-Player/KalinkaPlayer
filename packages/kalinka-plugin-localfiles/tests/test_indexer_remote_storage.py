@@ -526,3 +526,80 @@ class TestServingATrack:
         [info] = await module.get_track_info([changes["tracks"]])
         with pytest.raises(SourceUnavailableError):
             await info.source_retriever()
+
+
+class TestHousekeepingFolders:
+    """What a NAS, a desktop or a filesystem keeps for itself is not the
+    library, however much of it is named like music."""
+
+    @pytest.mark.asyncio
+    async def test_bins_snapshots_and_forks_are_not_indexed(self, library, tmp_path):
+        indexer, vault, _ = library
+        data = _flac(tmp_path, {"title": "Aria", "artist": "Bach", "album": "Goldberg"})
+        vault.add(f"{ROOT}/Bach/Goldberg/01 Aria.flac", data)
+        for junk in (
+            "#recycle/Goldberg/01 Aria.flac",
+            "#snapshot/GMT+01_2026-09-01/Bach/Goldberg/01 Aria.flac",
+            "@Recycle/01 Aria.flac",
+            "$RECYCLE.BIN/S-1-5-21/$R8ABC12.flac",
+            ".Trash-1000/files/01 Aria.flac",
+            ".snapshot/hourly.0/Bach/Goldberg/01 Aria.flac",
+            "Bach/Goldberg/@eaDir/01 Aria.flac/SYNOINDEX_MEDIA_INFO.flac",
+            "Bach/Goldberg/._01 Aria.flac",
+        ):
+            vault.add(f"{ROOT}/{junk}", data)
+
+        await indexer.run_scan()
+
+        paths = [t["file_path"] for t in await indexer.db_manager.get_all_tracks()]
+        assert paths == [f"{ROOT}/Bach/Goldberg/01 Aria.flac"]
+
+    @pytest.mark.asyncio
+    async def test_a_bin_is_not_even_walked(self, library, tmp_path):
+        """A Synology folder of artwork carries an ``@eaDir`` beside it, which
+        multiplied the listings a rescan costs a NAS by twelve."""
+        indexer, vault, _ = library
+        data = _flac(tmp_path, {"title": "A"})
+        vault.add(f"{ROOT}/a.flac", data)
+        vault.add(f"{ROOT}/#recycle/deep/down/b.flac", data)
+
+        await indexer.run_scan()
+
+        listed = [path for op, path in vault.trips if op == "listdir"]
+        assert not any("#recycle" in path for path in listed)
+
+    @pytest.mark.asyncio
+    async def test_an_album_deleted_into_the_bin_leaves_the_library(
+        self, library, tmp_path
+    ):
+        """A NAS deletes by moving the file into its bin, keeping its
+        identity — which move detection would otherwise follow there."""
+        indexer, vault, _ = library
+        track = f"{ROOT}/Bach/Goldberg/01 Aria.flac"
+        vault.add(track, _flac(tmp_path, {"title": "Aria"}))
+        await indexer.run_scan()
+
+        vault.rename(track, f"{ROOT}/#recycle/Goldberg/01 Aria.flac")
+        await indexer.run_scan()
+
+        assert await indexer.db_manager.get_all_tracks() == []
+
+    @pytest.mark.asyncio
+    async def test_junk_indexed_before_is_removed_by_the_next_scan(
+        self, library, tmp_path, monkeypatch
+    ):
+        indexer, vault, _ = library
+        vault.add(f"{ROOT}/a.flac", _flac(tmp_path, {"title": "A"}))
+        vault.add(f"{ROOT}/#recycle/b.flac", _flac(tmp_path, {"title": "B"}))
+        import kalinka_plugin_localfiles.indexer.indexer as indexer_module
+
+        with monkeypatch.context() as earlier:
+            earlier.setattr(indexer_module, "is_housekeeping_dir", lambda name: False)
+            earlier.setattr(indexer_module, "in_housekeeping", lambda *a, **k: False)
+            await indexer.run_scan()
+        assert len(await indexer.db_manager.get_all_tracks()) == 2
+
+        await indexer.run_scan()
+
+        titles = [t["title"] for t in await indexer.db_manager.get_all_tracks()]
+        assert titles == ["A"]
