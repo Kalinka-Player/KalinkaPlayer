@@ -174,6 +174,20 @@ class TestSubdirectories:
         _image(str(tmp_path / "extras" / "scans" / "front.jpg"))
         assert find_folder_cover(LOCAL, str(tmp_path)) is None
 
+    def test_a_nas_thumbnail_cache_is_not_a_scan_folder(self, tmp_path):
+        """A Synology keeps an ``@eaDir`` of thumbnails beside every folder
+        of images, and a bin holds whatever was thrown away."""
+        _image(str(tmp_path / "@eaDir" / "SYNOPHOTO_THUMB_XL.jpg"), (3000, 3000))
+        _image(str(tmp_path / "#recycle" / "front.jpg"), (3000, 3000))
+        assert find_folder_cover(LOCAL, str(tmp_path)) is None
+
+    def test_a_hidden_image_is_never_the_cover(self, tmp_path):
+        """macOS writes a ``._`` fork beside every file it copies to a share;
+        hidden files are nobody's sleeve, however large."""
+        _image(str(tmp_path / "cover.jpg"), (1000, 1000))
+        _image(str(tmp_path / "._cover.jpg"), (3000, 3000))
+        assert _name(find_folder_cover(LOCAL, str(tmp_path))) == "cover.jpg"
+
 
 class TestAFoldedInlay:
     """A CD inlay is often scanned unfolded in one pass: back panel on the

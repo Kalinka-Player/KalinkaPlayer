@@ -18,6 +18,7 @@ from typing import List, NamedTuple, Optional, Tuple
 
 from PIL import Image
 
+from ..housekeeping import is_hidden_file, is_housekeeping_dir
 from ..storage import DirEntry, FileStorage
 
 #: A cheap pre-filter on the *name*, so most files are ruled out without
@@ -151,8 +152,11 @@ def _searchable_directory(storage: FileStorage, entry: DirEntry) -> bool:
     folder kept as a link is ordinary, and this looks exactly one level
     down rather than walking, so following it cannot loop. The extra stat
     that costs is spent only on entries that could be one — anything
-    carrying a file extension is a file.
+    carrying a file extension is a file. A NAS's thumbnail cache or bin is
+    somebody's housekeeping, whatever images it holds.
     """
+    if is_housekeeping_dir(entry.name):
+        return False
     if entry.is_dir:
         return True
     if os.path.splitext(entry.name)[1]:
@@ -169,7 +173,11 @@ def _image_entries(storage: FileStorage, folder: str) -> List[DirEntry]:
         except OSError:
             continue
         for entry in children:
-            if entry.is_dir or not entry.name.lower().endswith(_EXTENSIONS):
+            if (
+                entry.is_dir
+                or is_hidden_file(entry.name)
+                or not entry.name.lower().endswith(_EXTENSIONS)
+            ):
                 continue
             size = storage.size_of(entry)
             # Zero is an empty file or one the storage could not measure;

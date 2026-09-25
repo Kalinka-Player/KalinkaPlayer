@@ -30,6 +30,7 @@ from mutagen.id3 import ID3
 
 from ..config_model import LocalFilesConfig
 from ..filename_model import get_parser, names_a_vinyl_side, parse_music_path
+from ..housekeeping import in_housekeeping, is_hidden_file, is_housekeeping_dir
 from ..resolution.resolver import (
     FILENAME,
     FOLDER_NAME,
@@ -148,7 +149,11 @@ async def trigger_enricher_update(data):
 
 
 def is_supported_audio_file(filename: str) -> bool:
-    """Check if the file is a supported audio format."""
+    """Whether a file is music this module indexes. A hidden one never is,
+    whatever it is called: the ``._`` forks macOS leaves beside a copied
+    track carry its name and extension and no audio."""
+    if is_hidden_file(os.path.basename(filename)):
+        return False
     ext = os.path.splitext(filename.lower())[1]
     return ext in SUPPORTED_AUDIO_EXTENSIONS
 
@@ -449,8 +454,11 @@ class FileIndexer:
         a listing is a round trip on a share and never returns at all on a
         hung mount. Symbolic links to directories are not descended, which
         is what ``os.walk`` does by default and what keeps a link loop from
-        walking forever.
+        walking forever. Housekeeping folders — a NAS's recycle bin and
+        snapshots, trash, thumbnail caches — are not walked at all.
         """
+        if self._in_housekeeping(folder, is_dir=True):
+            return
         storage = self.storage.for_path(folder)
         pending = [folder]
         while pending:
@@ -462,7 +470,8 @@ class FileIndexer:
                 continue
             for entry in entries:
                 if entry.is_dir:
-                    pending.append(entry.path)
+                    if not is_housekeeping_dir(entry.name):
+                        pending.append(entry.path)
                 elif self._is_supported_audio_file(entry.name):
                     yield entry.path
 
@@ -489,6 +498,12 @@ class FileIndexer:
             if self._scan_active:
                 self._scan_processed += 1
                 await self._publish_scan_progress()
+
+    def _in_housekeeping(self, path: str, is_dir: bool = False) -> bool:
+        """Whether ``path`` lies in a folder a NAS, desktop or filesystem keeps
+        for itself (see :mod:`.housekeeping`)."""
+        root = self.storage.root_of(path, self.music_folders)
+        return root is not None and in_housekeeping(path, root, is_dir)
 
     async def _audio_files_by_folder(
         self, folders: List[str]
@@ -559,6 +574,9 @@ class FileIndexer:
         # indexed on every scan and purged again, churning the database.
         if not self.storage.within_roots(file_path, self.music_folders):
             logger.debug(f"Skipping file outside configured folders: {file_path}")
+            return None
+        if self._in_housekeeping(file_path):
+            logger.debug(f"Skipping file in a housekeeping folder: {file_path}")
             return None
 
         storage = self.storage.for_path(file_path)
@@ -1786,7 +1804,9 @@ class FileIndexer:
         config, its files are no longer accessible to this module and must be
         purged so they aren't served or played. Because ``run_scan`` (and thus
         this method) runs on startup, the cleanup happens immediately after a
-        restart with the new config.
+        restart with the new config. A track an earlier version indexed from a
+        housekeeping folder — a NAS's recycle bin or snapshots — is dropped
+        too, however reachable its share is.
 
         Guarded against unmounted storage: rows under a root that
         :meth:`_blocked_reason` rejects are never purged, and each
@@ -1809,11 +1829,14 @@ class FileIndexer:
         all_tracks = await self.db_manager.get_all_tracks()
         candidates: List[Tuple[Dict[str, Any], Optional[str]]] = []
         under_live_root: List[Tuple[Dict[str, Any], str]] = []
+        housekeeping: List[Dict[str, Any]] = []
         kept_per_root: Dict[str, int] = {}
         for track in all_tracks:
             file_path = track["file_path"]
             root = self.storage.root_of(file_path, self.music_folders)
-            if root in blocked:
+            if root is not None and in_housekeeping(file_path, root):
+                housekeeping.append(track)
+            elif root in blocked:
                 kept_per_root[root] = kept_per_root.get(root, 0) + 1
             elif root is None:
                 # A file the boundary check also puts outside the roots —
@@ -1840,6 +1863,14 @@ class FileIndexer:
             )
 
         removed_tracks = 0
+        for track in housekeeping:
+            logger.info(
+                "File is in a housekeeping folder, removing from database: "
+                f"{track['file_path']}"
+            )
+            await self.db_manager.delete_track(track["id"])
+            removed_tracks += 1
+
         # Fresh probe and stat at delete time: the share may have gone
         # offline during the sweep.
         rechecked = sorted({r for _, r in candidates if r is not None})
@@ -1885,8 +1916,10 @@ class FileIndexer:
         ]
         gone_failures = await self._missing_paths(checkable)
         for failed_path in checkable:
-            if failed_path in gone_failures or not self.storage.within_roots(
-                failed_path, self.music_folders
+            if (
+                failed_path in gone_failures
+                or not self.storage.within_roots(failed_path, self.music_folders)
+                or self._in_housekeeping(failed_path)
             ):
                 await self.db_manager.clear_failure(failed_path)
 
