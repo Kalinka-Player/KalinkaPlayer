@@ -363,7 +363,13 @@ Whichever remote you open, the **setup wizard** starts. It asks where your music
 
 Pick whichever of these matches where your music is. You can combine them: Kalinka treats each one as a **music source** of **My Library**.
 
-**On a NAS or another computer.** No copying is needed. In the wizard, or later under **Server settings → Input modules → My Library → Music sources**, add a **Network share**. Enter the address of the NAS or computer, the shared folder, and the user name and password for the share. Guest access to a share with no password does not work yet. The server reads the share itself, so there is nothing to set up on the player.
+**On a NAS or another computer.** No copying is needed. In the wizard, or later under **Server settings → Input modules → My Library → Music sources**, add a **Network share**. Enter the address of the NAS or computer, then the name of the share as the NAS shows it, followed by any folder inside it, for example `music/Albums`. Kalinka cannot list a NAS's shares for you, so the name has to be typed. Sign in with the user name and password of an account on the NAS, or choose **Guest** for a share that is open to guests. The server reads the share itself, so there is nothing to set up on the player.
+
+A few things to know about shares:
+
+- The NAS must offer SMB2 or later. A very old NAS, or a router that shares a USB disk, may offer only SMB1: turn on SMB2 or SMB3 in its settings if it has them.
+- New and changed music on a share shows up at the next scan, every 15 minutes, rather than straight away.
+- Kalinka leaves out the folders a NAS or a computer keeps for itself: recycle bins such as `#recycle` and `@Recycle`, snapshots, thumbnail folders such as `@eaDir`, and any hidden folder.
 
 **Copied onto the player.** Every Kalinka installation has a music folder, `/srv/kalinka/music`, that anyone may write to, and Kalinka reads it from the start. On the images, copying music there needs a login, which you [set on the card](#settings-on-the-card). Use a file-transfer program that speaks **SFTP**:
 
@@ -475,7 +481,7 @@ ExecStart=
 ExecStart=/usr/bin/kalinka-renderer --server 192.168.1.50:8000
 ```
 
-**The library stays empty.** The music folder is wrong, or the `kalusr` user cannot read it; see [Put your music on it](#put-your-music-on-it). A network share also needs the right user name and password.
+**The library stays empty.** The music folder is wrong, or the `kalusr` user cannot read it; see [Put your music on it](#put-your-music-on-it). For a network share, **Music folders status** in the My Library settings says what the NAS answered: a wrong password, a share name it does not have, or a connection it closed because it offers only SMB1.
 
 **Logs.** In the app, **Server settings → General → Support → Download server logs** prepares a ZIP of the server's recent logs to attach to an issue. Kalinka removes passwords and keys from it, but it still contains file names and network addresses, so look through it before you post it. It needs a running server. When the server does not start, read the journal directly: `sudo journalctl -u kalinka` for the server and `sudo journalctl -u kalinka-renderer` for the renderer. Upgrades log under units of their own, so after a failed upgrade include those too; a renderer's is `kalinka-renderer-upgrade`. This saves the last day of all the server's units to a file you can attach:
 
