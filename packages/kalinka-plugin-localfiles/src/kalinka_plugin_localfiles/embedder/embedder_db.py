@@ -403,6 +403,45 @@ class AsyncEmbedderDb:
             )
             await conn.commit()
 
+    async def defer_jobs(self, job_ids: list[int]) -> None:
+        """Set claimed jobs aside until :meth:`resume_deferred_jobs`, as
+        though they had not been tried.
+
+        For work that could not be attempted at all — the file's storage did
+        not answer — which must neither spend the attempts that decide when a
+        job is given up on for good, nor be claimed again straight away: the
+        claim takes the oldest jobs first, and a share's jobs handed back as
+        pending would head every batch while it is down, holding up the rest
+        of the library behind them.
+        """
+        if not job_ids:
+            return
+        placeholders = ",".join("?" * len(job_ids))
+        async with self._open() as conn:
+            await conn.execute(
+                f"""
+                UPDATE embedding_jobs
+                SET status = 'deferred',
+                    attempts = MAX(attempts - 1, 0),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id IN ({placeholders}) AND status = 'in_progress'
+                """,
+                job_ids,
+            )
+            await conn.commit()
+
+    async def resume_deferred_jobs(self) -> None:
+        """Make every deferred job claimable again."""
+        async with self._open() as conn:
+            await conn.execute(
+                """
+                UPDATE embedding_jobs
+                SET status = 'pending', updated_at = CURRENT_TIMESTAMP
+                WHERE status = 'deferred'
+                """
+            )
+            await conn.commit()
+
     async def fail_job(self, job_id: int, error: str, max_attempts: int) -> None:
         """Mark job 'failed' if at/above max_attempts, otherwise reset to 'pending' for retry."""
         async with self._open() as conn:

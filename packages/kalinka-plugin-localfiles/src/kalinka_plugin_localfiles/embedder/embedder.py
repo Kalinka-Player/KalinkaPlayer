@@ -34,7 +34,7 @@ from ..embedding_utils import (
     normalise,
 )
 from ..pip_utils import ensure_package
-from ..storage import build_resolver
+from ..storage import build_resolver, library_roots, storage_failure
 from ..worker_utils import configure_worker_logging, set_proc_title, sleep_interruptible
 from .embedder_db import AsyncEmbedderDb
 
@@ -98,6 +98,8 @@ class EmbeddingWorker:
         self._text_load_attempted_at: float = 0.0
         self._audio_load_attempted_at: float = 0.0
         self._audio_last_used_at: float = 0.0
+        # Roots found not answering this pass, whose tracks wait for the next.
+        self._unreachable: dict[str, str] = {}
         # Guards session creation: the text-encode handler (executor thread)
         # and the main work loop can both trigger a load concurrently.
         self._model_lock = threading.Lock()
@@ -206,6 +208,10 @@ class EmbeddingWorker:
         encoder, which seeks to the fragments it samples — so a track on a
         share costs the few fragments it reads rather than a copy of the
         whole file.
+
+        @return None when the audio cannot be embedded.
+        @raise OSError If the bytes could not be read, which is the storage's
+            failure and not the track's.
         """
         if not self._audio_available:
             return None
@@ -223,6 +229,9 @@ class EmbeddingWorker:
             logger.info("CLAP audio embedding: %.3fs", time.monotonic() - t0)
             return encode_embedding(vec)
         except Exception as e:
+            failure = storage_failure(e)
+            if failure is not None:
+                raise failure
             logger.warning("CLAP embedding failed for %s: %s", file_path, e)
             return None
 
@@ -278,6 +287,12 @@ class EmbeddingWorker:
     # ------------------------------------------------------------------
 
     async def _process_clap_batch(self) -> bool:
+        """Embed one claimed batch.
+
+        @return Whether any job in it was settled, done or failed. A batch
+            that was only set aside, because its storage is not answering,
+            is not progress: the pass ends rather than asking again at once.
+        """
         cfg = self.config.ai_search
         batch = await self.db.claim_batch("clap_audio", cfg.audio_batch_size)
         if not batch:
@@ -285,6 +300,7 @@ class EmbeddingWorker:
 
         loop = asyncio.get_running_loop()
         completed_track_ids = []
+        deferred = 0
         for job in batch:
             track_id = job["entity_id"]
             file_path = await self.db.get_file_path_for_track(track_id)
@@ -293,10 +309,27 @@ class EmbeddingWorker:
                     job["id"], "track not found", cfg.max_job_attempts
                 )
                 continue
+            if self._unreachable and self.storage.root_of(
+                file_path, self._unreachable
+            ):
+                await self.db.defer_jobs([job["id"]])
+                deferred += 1
+                continue
 
-            blob = await loop.run_in_executor(
-                None, self._compute_clap_audio, file_path
-            )
+            try:
+                blob = await loop.run_in_executor(
+                    None, self._compute_clap_audio, file_path
+                )
+            except OSError as e:
+                root = await self._unreachable_root(file_path)
+                if root is not None:
+                    await self.db.defer_jobs([job["id"]])
+                    deferred += 1
+                    continue
+                await self.db.fail_job(
+                    job["id"], f"unreadable: {e}", cfg.max_job_attempts
+                )
+                continue
             if blob is None:
                 await self.db.fail_job(
                     job["id"], "clap returned None", cfg.max_job_attempts
@@ -319,7 +352,31 @@ class EmbeddingWorker:
             settled = await self.db.filter_enriched_tracks(completed_track_ids)
             if settled:
                 await self._update_aggregate_embeddings(settled)
-        return True
+        return deferred < len(batch)
+
+    async def _unreachable_root(self, file_path: str) -> Optional[str]:
+        """The configured folder holding ``file_path`` if it is not answering
+        right now, remembered for the rest of this pass; None if it answers.
+
+        What tells a track that cannot be read from a NAS that is asleep or
+        switched off. The one fails its job; the other must not, or a Pi
+        embedding a large library for days gives up on every track the
+        outage touched.
+        """
+        roots = await asyncio.to_thread(library_roots, self.config, self.storage)
+        root = self.storage.root_of(file_path, roots)
+        if root is None:
+            return None
+        status = await self.storage.for_path(root).probe_root(root)
+        if status.available:
+            return None
+        logger.warning(
+            "%s is not answering (%s); its tracks wait for the next pass",
+            root,
+            status.reason,
+        )
+        self._unreachable[root] = status.reason
+        return root
 
     async def _process_va_backfill(self) -> bool:
         """Fill mood (V,A) for embedded tracks that lack it, from the stored int8
@@ -596,6 +653,8 @@ class EmbeddingWorker:
                 await self.db.backfill_missing_vec_rows()
 
             await self.db.schedule_new_jobs(CLAP_MODEL_VERSION)
+            await self.db.resume_deferred_jobs()
+            self._unreachable.clear()
 
             did_work = False
             retry_gap = poll
