@@ -1142,7 +1142,7 @@ class TestEnrichAlbumStageB:
 # ---------------------------------------------------------------------------
 
 
-def _two_disc_release() -> Dict:
+def _two_disc_release() -> dict:
     """Build an MB release shaped like Pink Floyd's The Wall — two
     media of 13 tracks each, with continuous within-medium numbering.
     The user's vinyl rip will have ``B3`` etc. in titles but
