@@ -24,13 +24,15 @@ def configure_worker_logging(logger_queue: multiprocessing.Queue) -> None:
     parent is too late: SMB DEBUG records render entire audio packets as hex
     while holding the handler lock, blocking unrelated metadata requests.
     Spawned workers must set these levels themselves, even when the parent's
-    loggers already suppress the protocol chatter.
+    loggers already suppress the protocol chatter. ``spnego`` is held back
+    for a harder reason: its DEBUG records carry the share login exchange,
+    which must not be formatted anywhere, dropped later or not.
     """
     root = logging.getLogger()
     for handler in root.handlers[:]:
         root.removeHandler(handler)
     root.setLevel(logging.DEBUG)
-    for name in ("smbprotocol", "smbclient"):
+    for name in ("smbprotocol", "smbclient", "spnego"):
         logging.getLogger(name).setLevel(logging.WARNING)
     root.addHandler(logging.handlers.QueueHandler(logger_queue))
 

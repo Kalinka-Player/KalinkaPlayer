@@ -16,7 +16,7 @@ def test_workers_skip_packet_formatting_but_forward_warnings(
     worker = importlib.import_module(f"kalinka_plugin_localfiles.{worker_name}")
     names = (
         "smbprotocol", "smbprotocol.open", "smbclient", "smbclient._io",
-        "kalinka_worker_logging_test",
+        "spnego", "spnego._ntlm", "kalinka_worker_logging_test",
     )
     loggers = [logging.getLogger(name) for name in names]
     previous_levels = [logger.level for logger in loggers]
@@ -32,6 +32,7 @@ def test_workers_skip_packet_formatting_but_forward_warnings(
             return "expensive audio packet dump"
 
     packet = Packet()
+    login = Packet()
 
     async def probe(*args):
         for name in ("smbprotocol.open", "smbclient._io"):
@@ -40,6 +41,7 @@ def test_workers_skip_packet_formatting_but_forward_warnings(
             logger.info(packet)
             logger.warning("share unavailable")
             logger.error("read failed")
+        logging.getLogger("spnego._ntlm").debug(login)
         logging.getLogger("kalinka_worker_logging_test").debug("worker diagnostic")
 
     monkeypatch.setattr(worker, "async_main", probe)
@@ -50,6 +52,7 @@ def test_workers_skip_packet_formatting_but_forward_warnings(
             logger.setLevel(logging.NOTSET)
         worker.main(None, records, None, None)
         assert packet.formatted == 0
+        assert login.formatted == 0, "the share login exchange was formatted"
         forwarded = []
         while not records.empty():
             forwarded.append(records.get_nowait().getMessage())

@@ -106,11 +106,14 @@ def _quiet_share_protocol_logs() -> None:
     """Keep ``smbprotocol``'s narration out of an ordinary service log.
 
     It reports every negotiate, tree connect and file open at INFO, which is
-    most of the log once a share is indexed. A debug run is left alone, since
-    that is where the detail is wanted.
+    most of the log once a share is indexed. ``smbclient`` warns, with a
+    traceback, about each connection it fails to close — and the only ones
+    it closes here are a replaced login's, whose server may already be gone.
+    A debug run is left alone, since that is where the detail is wanted.
     """
     if not logging.getLogger().isEnabledFor(logging.DEBUG):
         logging.getLogger("smbprotocol").setLevel(logging.WARNING)
+        logging.getLogger("smbclient").setLevel(logging.ERROR)
 
 
 def _mount_mismatch(status: RootStatus, stored_signature: Optional[str]) -> bool:
