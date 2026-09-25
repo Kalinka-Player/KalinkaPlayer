@@ -48,4 +48,6 @@ My Library's enricher talks to [AcoustID](https://acoustid.org/), [MusicBrainz](
 
 ## Appliance images
 
-The `kalinka-image-v*` releases are Debian 13 systems with Kalinka installed. Everything outside this repository in those images is Debian-packaged software under its own license; `/usr/share/doc/<package>/copyright` inside a running image is authoritative.
+The `kalinka-image-v*` releases are Debian 13 systems with Kalinka installed. Everything outside this repository in those images is packaged software under its own license; `/usr/share/doc/<package>/copyright` inside a running image is authoritative.
+
+The Raspberry Pi images are built on [DietPi](https://github.com/MichaIng/DietPi) (GPL-2.0), whose scripts ship unmodified under `/boot/dietpi` and `/var/lib/dietpi`. They carry the Raspberry Pi kernel (GPL-2.0, source at [raspberrypi/linux](https://github.com/raspberrypi/linux) and in `archive.raspberrypi.com`) and the Raspberry Pi firmware, under the Broadcom redistribution licence in `/boot/firmware/LICENCE.broadcom`. The rest comes from Debian, as on the x86-64 image.

@@ -39,15 +39,23 @@ make_recorders() {
   CALL_LOG="$RECORDER_BIN/calls"
   : > "$CALL_LOG"
   local name
-  for name in "$@"; do
-    cat > "$RECORDER_BIN/$name" <<RECORDER
-#!/bin/sh
-echo "$name \$*" >> "$CALL_LOG"
-exit 0
-RECORDER
-    chmod 755 "$RECORDER_BIN/$name"
-  done
+  for name in "$@"; do _write_recorder "$name" 0; done
   PATH="$RECORDER_BIN:$PATH"
+}
+
+# Turns recorders make_recorders already made into ones that also fail.
+make_failing_recorders() {
+  local name
+  for name in "$@"; do _write_recorder "$name" 1; done
+}
+
+_write_recorder() {
+  cat > "$RECORDER_BIN/$1" <<RECORDER
+#!/bin/sh
+echo "$1 \$*" >> "$CALL_LOG"
+exit $2
+RECORDER
+  chmod 755 "$RECORDER_BIN/$1"
 }
 
 calls() { cat "$CALL_LOG"; }

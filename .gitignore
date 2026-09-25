@@ -38,7 +38,7 @@ _version.py
 *.o
 *.d
 # ... but *.d also matches every drop-in directory the image ships.
-!packages/kalinka-image/rootfs/**/*.d/
+!packages/kalinka-image/overlays/**/*.d/
 *.so
 *.a
 *.lib
@@ -129,3 +129,4 @@ build-rpm-stage/
 
 # Appliance image build output
 packages/kalinka-image/out/
+packages/kalinka-image/cache/
