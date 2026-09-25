@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import tempfile
+import types
 from typing import (
     Annotated,
     Any,
@@ -24,12 +25,13 @@ from typing import (
     List,
     Mapping,
     MutableMapping,
+    Union,
     get_args,
     get_origin,
 )
 
 from kalinka_plugin_sdk.module_config import ModuleConfig
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from pydantic.fields import FieldInfo
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -44,11 +46,13 @@ def coerce_field_value(owner: BaseModel, field: str, value: Any) -> Any:
     what every value arriving from the overrides file or the config PUT has
     been through.
 
-    @note The bounds declared with ``Field(ge=..., max_length=...)`` live
-        beside the annotation rather than in it, so they are put back before
-        validating — no config model sets ``validate_assignment``, which
-        makes this the only thing standing between a PUT and an
-        out-of-range value on the live configuration.
+    @note The bounds declared with ``Field(ge=..., max_length=...)`` and a
+        union's discriminator live beside the annotation rather than in it,
+        so they are put back before validating — no config model sets
+        ``validate_assignment``, which makes this the only thing standing
+        between a PUT and an out-of-range value on the live configuration.
+    @note A part written without its discriminator takes the shape its field
+        defaults to (:func:`with_default_variants`).
 
     @raise pydantic.ValidationError If the value is not that type and
         cannot be made into it.
@@ -59,12 +63,124 @@ def coerce_field_value(owner: BaseModel, field: str, value: Any) -> Any:
     info = fields[field]
     if info.annotation is None:
         return value
+    metadata = list(info.metadata)
+    if info.discriminator is not None:
+        metadata.append(Field(discriminator=info.discriminator))
     declared = (
-        Annotated[tuple([info.annotation, *info.metadata])]
-        if info.metadata
+        Annotated[tuple([info.annotation, *metadata])]
+        if metadata
         else info.annotation
     )
-    return TypeAdapter(declared).validate_python(value)
+    return TypeAdapter(declared).validate_python(
+        with_default_variants(info.annotation, value, info)
+    )
+
+
+def discriminator_of(annotation: Any, field: FieldInfo | None = None) -> str | None:
+    """The field that tells the shapes of a union apart, where one is declared
+    — on the field, or on the ``Annotated`` union a list holds."""
+    declared = getattr(field, "discriminator", None)
+    if isinstance(declared, str):
+        return declared
+    if get_origin(annotation) is Annotated:
+        for meta in get_args(annotation)[1:]:
+            declared = getattr(meta, "discriminator", None)
+            if isinstance(declared, str):
+                return declared
+    return None
+
+
+def default_variant(field: FieldInfo, discriminator: str) -> Any:
+    """The shape a part declared by ``field`` takes while its discriminator is
+    unset: the one its default holds, or None where it has no default."""
+    try:
+        default = field.get_default(call_default_factory=True)
+    except ValueError:
+        return None
+    return getattr(default, discriminator, None)
+
+
+def with_default_variants(
+    annotation: Any, value: Any, field: FieldInfo | None = None
+) -> Any:
+    """``value`` with each part whose discriminator is left out or null given
+    the shape its field defaults to.
+
+    The schema tells a client that is the shape such a part takes
+    (``GroupSpec.default``), so a client may leave the discriminator out,
+    which validation alone would refuse. Only where a default is declared:
+    an entry of a list has none, and still has to say what it is.
+
+    @note Never changes ``value`` itself: what the client sent is read again
+        after the write, to see which credentials it left out.
+    """
+    if isinstance(value, list):
+        item = _list_item(annotation)
+        if item is None:
+            return value
+        return [with_default_variants(item, v) for v in value]
+    if not isinstance(value, dict):
+        return value
+    discriminator = discriminator_of(annotation, field)
+    if (
+        discriminator is not None
+        and value.get(discriminator) is None
+        and field is not None
+    ):
+        default = default_variant(field, discriminator)
+        if default is not None:
+            value = {**value, discriminator: default}
+    model = _shape_named(annotation, discriminator, value)
+    if model is None:
+        return value
+    fields = model.model_fields
+    return {
+        name: (
+            with_default_variants(fields[name].annotation, v, fields[name])
+            if name in fields
+            else v
+        )
+        for name, v in value.items()
+    }
+
+
+def _list_item(annotation: Any) -> Any:
+    """What a list ``annotation`` holds, still wrapped as declared, or None
+    for anything but a list."""
+    while get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    if get_origin(annotation) is not list:
+        return None
+    return get_args(annotation)[0]
+
+
+def _shape_named(
+    annotation: Any, discriminator: str | None, value: Mapping[str, Any]
+) -> type[BaseModel] | None:
+    """The model ``value`` is written as: the one its discriminator names, or
+    the only one ``annotation`` can hold."""
+    shapes = _shapes(annotation)
+    if discriminator is None:
+        return shapes[0] if len(shapes) == 1 else None
+    named = value.get(discriminator)
+    for shape in shapes:
+        tag = shape.model_fields.get(discriminator)
+        if tag is not None and named in get_args(tag.annotation):
+            return shape
+    return None
+
+
+def _shapes(annotation: Any) -> tuple[type[BaseModel], ...]:
+    """The models one value of ``annotation`` can be, through ``Optional``,
+    unions and ``Annotated`` but never into a container."""
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return (annotation,)
+    origin = get_origin(annotation)
+    if origin is Annotated:
+        return _shapes(get_args(annotation)[0])
+    if origin in (Union, types.UnionType):
+        return tuple(shape for arg in get_args(annotation) for shape in _shapes(arg))
+    return ()
 
 
 def describe_failure(exc: Exception) -> str:

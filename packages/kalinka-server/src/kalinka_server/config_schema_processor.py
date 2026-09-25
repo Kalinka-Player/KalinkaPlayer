@@ -48,7 +48,7 @@ import json
 import logging
 from dataclasses import dataclass
 from enum import Enum
-from typing import Annotated, Any, Dict, Iterable, List, Union, get_origin, get_args
+from typing import Any, Iterable, List, Union, get_origin, get_args
 
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
@@ -56,7 +56,12 @@ from pydantic.fields import FieldInfo
 from kalinka_plugin_sdk import ConfigRecord
 from kalinka_plugin_sdk.module_config import ModuleConfig
 
-from .config_overrides import is_record_list, models_in
+from .config_overrides import (
+    default_variant,
+    discriminator_of,
+    is_record_list,
+    models_in,
+)
 from .config_secrets import is_private, is_secret, loggable, public_records
 from .dynamic_field_registry import DynamicFieldEntry, resolve_value
 from .options_registry import OptionsRegistry
@@ -329,20 +334,6 @@ def _is_record_collection(annotation: Any) -> bool:
     )
 
 
-def _discriminator(annotation: Any, field: FieldInfo | None = None) -> str | None:
-    """The field that tells the shapes of a union apart, where one is declared
-    — on the field, or on the ``Annotated`` union a list holds."""
-    declared = getattr(field, "discriminator", None)
-    if isinstance(declared, str):
-        return declared
-    if get_origin(annotation) is Annotated:
-        for meta in get_args(annotation)[1:]:
-            declared = getattr(meta, "discriminator", None)
-            if isinstance(declared, str):
-                return declared
-    return None
-
-
 def _record_parts(
     model: type[BaseModel], prefix: str, skip: frozenset[str]
 ) -> tuple[list[FieldSpec], list[GroupSpec]]:
@@ -389,19 +380,15 @@ def _group_spec(
     path: str, name: str, field: FieldInfo, models: tuple[type[BaseModel], ...]
 ) -> GroupSpec:
     title = field.title or name
-    discriminator = _discriminator(field.annotation, field)
+    discriminator = discriminator_of(field.annotation, field)
     if discriminator is None:
         fields, groups = _record_parts(models[0], f"{path}.", frozenset())
         return GroupSpec(path=path, title=title, fields=fields, groups=groups)
-    try:
-        default = field.get_default(call_default_factory=True)
-    except ValueError:
-        default = None
     return GroupSpec(
         path=path,
         title=title,
         discriminator=discriminator,
-        default=getattr(default, discriminator, None),
+        default=default_variant(field, discriminator),
         variants=[
             _variant_spec(model, discriminator, f"{path}.", model.__name__)
             for model in models
@@ -413,7 +400,7 @@ def _collection_spec(
     path: str, field: FieldInfo, after: str | None
 ) -> CollectionSpec:
     item = get_args(field.annotation)[0]
-    discriminator = _discriminator(item)
+    discriminator = discriminator_of(item)
     extras = _json_extra(field)
     parent, _, name = path.rpartition(".")
     title = field.title or name
