@@ -63,6 +63,8 @@ class VaultStorage(FileStorage):
         self.identify = True
         self._inodes = itertools.count(1)
         self.trips: list[tuple[str, str]] = []
+        #: ``(operation, path)`` pairs that fail as a share does mid-drop.
+        self.failing: dict[tuple[str, str], OSError] = {}
 
 
     def add(self, path: str, data: bytes) -> str:
@@ -103,7 +105,7 @@ class VaultStorage(FileStorage):
             name, separator, _ = key[len(prefix):].partition("/")
             children[name] = bool(separator)
         if not children and path not in self._directories():
-            raise OSError(f"no such directory: {path}")
+            raise FileNotFoundError(f"no such directory: {path}")
         return [
             DirEntry(name=name, path=prefix + name, is_dir=is_dir)
             for name, is_dir in sorted(children.items())
@@ -112,11 +114,12 @@ class VaultStorage(FileStorage):
     def stat(self, path: str) -> FileStat:
         self.trips.append(("stat", path))
         self._require_online()
+        self._fail_if_asked("stat", path)
         node = self.nodes.get(path)
         if node is None:
             if path in self._directories():
                 return FileStat(size=0, mtime_ns=0, is_dir=True)
-            raise OSError(f"no such path: {path}")
+            raise FileNotFoundError(f"no such path: {path}")
         identity = (
             FileIdentity(device="vault", inode=node.inode)
             if self.identify
@@ -132,9 +135,10 @@ class VaultStorage(FileStorage):
     def open(self, path: str) -> BinaryIO:
         self.trips.append(("open", path))
         self._require_online()
+        self._fail_if_asked("open", path)
         node = self.nodes.get(path)
         if node is None:
-            raise OSError(f"no such file: {path}")
+            raise FileNotFoundError(f"no such file: {path}")
         return io.BytesIO(node.data)
 
     def probe_root_blocking(self, root: str) -> RootStatus:
@@ -158,6 +162,11 @@ class VaultStorage(FileStorage):
     def _require_online(self) -> None:
         if not self.available:
             raise OSError("the vault is offline")
+
+    def _fail_if_asked(self, operation: str, path: str) -> None:
+        error = self.failing.get((operation, path))
+        if error is not None:
+            raise error
 
     def _directories(self) -> set[str]:
         dirs = {ROOT}
@@ -603,3 +612,81 @@ class TestHousekeepingFolders:
 
         titles = [t["title"] for t in await indexer.db_manager.get_all_tracks()]
         assert titles == ["A"]
+
+
+class TestReadingThroughOutages:
+    """A share that drops for a moment is not a broken file, and one that
+    goes away for good is not an emptied library."""
+
+    @pytest.mark.asyncio
+    async def test_a_dropped_read_is_tried_again_on_the_next_scan(
+        self, library, tmp_path
+    ):
+        """Recorded as a broken file, it stayed out of the library until the
+        file itself changed."""
+        indexer, vault, _ = library
+        track = vault.add(f"{ROOT}/a.flac", _flac(tmp_path, {"title": "A"}))
+        vault.failing[("open", track)] = ConnectionResetError("the NAS restarted")
+
+        await indexer.run_scan()
+        assert await indexer.db_manager.get_all_tracks() == []
+        assert await indexer.db_manager.get_failure(track) is None
+
+        del vault.failing[("open", track)]
+        await indexer.run_scan()
+
+        assert [t["title"] for t in await indexer.db_manager.get_all_tracks()] == ["A"]
+
+    @pytest.mark.asyncio
+    async def test_a_file_that_will_not_parse_is_still_parked(
+        self, library, tmp_path
+    ):
+        indexer, vault, _ = library
+        track = vault.add(f"{ROOT}/broken.flac", b"not audio at all")
+
+        await indexer.run_scan()
+
+        assert await indexer.db_manager.get_failure(track) is not None
+
+    @pytest.mark.asyncio
+    async def test_a_vault_that_goes_away_mid_scan_stops_the_scan(
+        self, library, tmp_path
+    ):
+        """Each file after it would otherwise pay for a connection that does
+        not come — fifteen seconds apiece on a share."""
+        indexer, vault, _ = library
+        data = _flac(tmp_path, {"title": "T"})
+        paths = [vault.add(f"{ROOT}/{n:02d}.flac", data) for n in range(6)]
+        process = indexer.process_file
+        processed = []
+
+        async def then_switch_off(path, force=False):
+            processed.append(path)
+            if len(processed) == 2:
+                vault.available = False
+            return await process(path, force=force)
+
+        indexer.process_file = then_switch_off
+        await indexer.run_scan()
+
+        assert len(processed) == 2
+        vault.available = True
+        indexer.process_file = process
+        await indexer.run_scan()
+        assert len(await indexer.db_manager.get_all_tracks()) == len(paths)
+
+    @pytest.mark.asyncio
+    async def test_a_file_that_cannot_be_measured_is_not_purged(
+        self, library, tmp_path
+    ):
+        """Only a file the storage says is not there is gone. Deleting on any
+        failure lost a track, and all that was learnt about it, to one
+        dropped packet during the sweep."""
+        indexer, vault, _ = library
+        track = vault.add(f"{ROOT}/a.flac", _flac(tmp_path, {"title": "A"}))
+        await indexer.run_scan()
+        vault.failing[("stat", track)] = TimeoutError("no answer in time")
+
+        await indexer.cleanup_stale_tracks()
+
+        assert len(await indexer.db_manager.get_all_tracks()) == 1

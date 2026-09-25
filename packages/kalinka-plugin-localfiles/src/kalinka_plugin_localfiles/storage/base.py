@@ -57,6 +57,23 @@ _SPILL_HEADROOM = 256 * 1024 * 1024
 _SPILL_STALE_S = 3600.0
 
 
+def storage_failure(error: BaseException) -> Optional[OSError]:
+    """The storage error behind ``error``, if reading the bytes is what failed.
+
+    A decoder or tag reader wraps a failed read in its own exception, and one
+    of those reads like a broken file, which is parked or given up on. The
+    difference matters on a share: the file is fine and the network is not,
+    so it deserves another try once the storage answers again.
+    """
+    seen: set[int] = set()
+    while error is not None and id(error) not in seen:
+        if isinstance(error, OSError):
+            return error
+        seen.add(id(error))
+        error = error.__cause__ or error.__context__
+    return None
+
+
 @dataclass(frozen=True)
 class FileIdentity:
     """What makes a file the same file after it is renamed.
@@ -273,7 +290,9 @@ class FileStorage(ABC):
     def stat(self, path: str) -> FileStat:
         """Measure one file or directory.
 
-        @raise OSError If it is absent or cannot be measured.
+        @raise FileNotFoundError If it is not there.
+        @raise OSError If it cannot be measured, which is not the same answer:
+            a share that did not respond has not lost the file.
         """
 
     @abstractmethod
@@ -281,8 +300,10 @@ class FileStorage(ABC):
         """Open a file for reading bytes.
 
         The object is seekable: tag readers and the audio embedder both
-        jump around inside a file rather than reading it through.
+        jump around inside a file rather than reading it through. Its reads
+        fail as ``OSError`` too, however the protocol reports them.
 
+        @raise FileNotFoundError If it is not there.
         @raise OSError If it cannot be opened.
         """
 
@@ -292,6 +313,21 @@ class FileStorage(ABC):
         except OSError:
             return False
         return True
+
+    def is_gone(self, path: str) -> bool:
+        """Whether ``path`` is certainly not there.
+
+        Not ``not exists()``: a storage that cannot be asked right now has not
+        lost the file, and this is what decides whether a library row, with
+        everything learnt about the track, may be deleted.
+        """
+        try:
+            self.stat(path)
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        return False
 
     def is_dir(self, path: str) -> bool:
         try:

@@ -52,6 +52,7 @@ from ..storage import (
     build_resolver,
     library_roots,
     media_type_of,
+    storage_failure,
 )
 from ..utils.name_utils import (
     album_folder_for_path,
@@ -433,6 +434,13 @@ class FileIndexer:
                         for key, value in result_changes.items():
                             if value:
                                 changed_items[key].add(value)
+                except OSError as e:
+                    logger.warning(
+                        "Could not read changed file %s (%s); it is tried "
+                        "again on the next scan",
+                        file_path,
+                        e,
+                    )
                 except Exception as e:
                     logger.exception(
                         f"Error processing changed file {file_path}: {str(e)}"
@@ -485,19 +493,58 @@ class FileIndexer:
         self, files: List[str], changed_items: Dict[str, Set[str]]
     ):
         """Index files a walk has already listed, reporting progress as they
-        go."""
-        for file_path in files:
+        go.
+
+        A file that cannot be read is tried again on the next scan, and said
+        once per call rather than once per file: a folder the service cannot
+        read would otherwise fill the log every scan. If its folder has
+        stopped answering altogether, so have the files after it: they wait
+        for the next scan too, rather than each paying for a connection that
+        will not come.
+        """
+        unreadable: List[Tuple[str, OSError]] = []
+        for position, file_path in enumerate(files):
             try:
                 result_changes = await self.process_file(file_path)
                 if result_changes:
                     for key, value in result_changes.items():
                         if value:
                             changed_items[key].add(value)
+            except OSError as e:
+                status = await self._root_status_of(file_path)
+                if status is not None and not status.available:
+                    logger.warning(
+                        "%s stopped answering during the scan (%s); %d "
+                        "file(s) wait for the next scan",
+                        status.root,
+                        status.reason,
+                        len(files) - position,
+                    )
+                    break
+                logger.debug("Could not read %s: %s", file_path, e)
+                unreadable.append((file_path, e))
             except Exception as e:
                 logger.exception(f"Error processing file {file_path}: {str(e)}")
             if self._scan_active:
                 self._scan_processed += 1
                 await self._publish_scan_progress()
+        if unreadable:
+            first, error = unreadable[0]
+            logger.warning(
+                "Could not read %d file(s), which are tried again on the next "
+                "scan; the first is %s (%s)",
+                len(unreadable),
+                first,
+                error,
+            )
+
+    async def _root_status_of(self, path: str) -> Optional[RootStatus]:
+        """Whether the configured folder holding ``path`` answers right now,
+        or None for a path outside every one."""
+        root = self.storage.root_of(path, self.music_folders)
+        if root is None:
+            return None
+        return await self.storage.for_path(root).probe_root(root)
 
     def _in_housekeeping(self, path: str, is_dir: bool = False) -> bool:
         """Whether ``path`` lies in a folder a NAS, desktop or filesystem keeps
@@ -539,12 +586,13 @@ class FileIndexer:
         return is_supported_audio_file(filename)
 
     async def _path_gone(self, path: str) -> bool:
-        """Whether one path no longer exists, asked off the event loop."""
+        """Whether one path is certainly gone, asked off the event loop."""
         storage = self.storage.for_path(path)
-        return not await asyncio.to_thread(storage.exists, path)
+        return await asyncio.to_thread(storage.is_gone, path)
 
     async def _missing_paths(self, paths: Iterable[str]) -> Set[str]:
-        """Which of ``paths`` no longer exist.
+        """Which of ``paths`` are certainly gone. One the storage cannot
+        answer for right now is not among them.
 
         Grouped into one call per storage rather than one per path: the
         cleanup sweep asks about every row in the library, and a thread hop
@@ -555,7 +603,7 @@ class FileIndexer:
             grouped.setdefault(self.storage.for_path(path), []).append(path)
 
         def absent(storage: FileStorage, batch: List[str]) -> Set[str]:
-            return {path for path in batch if not storage.exists(path)}
+            return {path for path in batch if storage.is_gone(path)}
 
         missing: Set[str] = set()
         for storage, batch in grouped.items():
@@ -579,10 +627,12 @@ class FileIndexer:
             logger.debug(f"Skipping file in a housekeeping folder: {file_path}")
             return None
 
+        # A file that is gone is nothing to index. Any other failure to
+        # measure it is the storage's, and the caller decides what that means.
         storage = self.storage.for_path(file_path)
         try:
             stat = await asyncio.to_thread(storage.stat, file_path)
-        except OSError as e:
+        except FileNotFoundError as e:
             logger.debug(f"File disappeared before processing: {file_path} ({e})")
             return None
 
@@ -600,7 +650,7 @@ class FileIndexer:
                 await asyncio.sleep(quiescence_seconds - age)
                 try:
                     stat_after = await asyncio.to_thread(storage.stat, file_path)
-                except OSError:
+                except FileNotFoundError:
                     logger.debug(
                         f"File disappeared during quiescence wait: {file_path}"
                     )
@@ -997,7 +1047,13 @@ class FileIndexer:
     def _extract_metadata(
         self, storage: FileStorage, file_path: str
     ) -> Optional[Dict]:
-        """Extract metadata from a music file"""
+        """Extract metadata from a music file, or None when it cannot be
+        parsed.
+
+        @raise OSError If the bytes could not be read, which says nothing
+            about the file: a share that dropped mid-read must not park a
+            track until the file itself changes.
+        """
         try:
             mime_type = media_type_of(file_path) or "application/octet-stream"
             if mime_type == "audio/x-flac":
@@ -1021,6 +1077,9 @@ class FileIndexer:
                 self._augment_with_cue(storage, file_path, metadata)
             return metadata
         except Exception as e:
+            failure = storage_failure(e)
+            if failure is not None:
+                raise failure
             logger.exception(f"Error extracting metadata from {file_path}: {str(e)}")
             return None
 

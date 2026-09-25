@@ -16,6 +16,7 @@ from .base import (
     FileStorage,
     RootStatus,
     WatchResult,
+    storage_failure,
 )
 from .locator import (
     FILE_SCHEME,
@@ -51,6 +52,7 @@ __all__ = [
     "UnavailableStorage",
     "WatchResult",
     "build_resolver",
+    "storage_failure",
     "is_within",
     "library_locations",
     "library_roots",
