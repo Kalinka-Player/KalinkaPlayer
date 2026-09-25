@@ -71,8 +71,10 @@ w.close()"
     *) die "fpcalc cannot fingerprint audio in this image" ;;
   esac
 
+  # A file, not <(...): a dpkg-query that failed there would read as nothing landed.
+  installed_packages > "$WORK/packages.after"
   local landed
-  landed="$(packages_landed "$WORK/packages.before" <(installed_packages) "${EXCLUDED_PACKAGES[@]}")"
+  landed="$(packages_landed "$WORK/packages.before" "$WORK/packages.after" "${EXCLUDED_PACKAGES[@]}")"
   [ -z "$landed" ] \
     || die "packages this image refuses landed anyway: $(echo "$landed" | tr '\n' ' ')"
 

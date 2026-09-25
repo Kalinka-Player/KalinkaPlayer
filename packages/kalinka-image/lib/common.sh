@@ -90,16 +90,26 @@ apt_install() {
   in_chroot apt-get install -y "$@"
 }
 
-# The checkout is the build user's; in the image the overlay and its directories are root's.
+# The checkout's owner and directory modes must not reach the image's /, /etc or /usr.
 install_overlay() {
-  cp -a --no-preserve=ownership "$SCRIPT_DIR/overlays/$1/." "$ROOTFS/"
+  cp -RP "$SCRIPT_DIR/overlays/$1/." "$ROOTFS/"
 }
 
+# -L, not -e: enable links are absolute, so -e would resolve them against the build host.
 require_enabled() {
   local wants="$1" unit
   shift
   for unit in "$@"; do
     [ -L "$ROOTFS/etc/systemd/system/$wants.wants/$unit" ] \
       || die "$unit is not enabled in $wants"
+  done
+}
+
+require_disabled() {
+  local wants="$1" unit
+  shift
+  for unit in "$@"; do
+    [ ! -L "$ROOTFS/etc/systemd/system/$wants.wants/$unit" ] \
+      || die "$unit is still enabled in $wants"
   done
 }

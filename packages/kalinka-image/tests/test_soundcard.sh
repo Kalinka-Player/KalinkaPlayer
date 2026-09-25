@@ -84,9 +84,18 @@ STUB_FAIL=1 run_soundcard <<< 'CONFIG_SOUNDCARD=allo-boss-dac-pcm512x-audio'
 assert_eq "keeps the last card that worked" "$(cat "$STATE")" iqaudio-dacplus
 assert_not_contains "and does not restart into it" "$CALLS" "reboot"
 
+echo "  -- none, then the card it had before"
+run_soundcard <<< 'CONFIG_SOUNDCARD=none'
+assert_no_file "forgets the card" "$STATE"
+run_soundcard <<< 'CONFIG_SOUNDCARD=iqaudio-dacplus'
+assert_contains "so naming it again applies it again" "$CALLS" "soundcard iqaudio-dacplus"
+
 echo "  -- the unit's place in the boot"
 assert_contains "waits for DietPi to know the hardware and import dietpi.txt" \
   "$(cat "$UNIT")" "After=dietpi-preboot.service dietpi-firstboot.service"
+assert_contains "and for the network, which some cards fetch firmware over" \
+  "$(cat "$UNIT")" "After=network-online.target"
+assert_contains "pulling it in" "$(cat "$UNIT")" "Wants=network-online.target"
 assert_contains "and runs before the renderer opens a sound card" \
   "$(cat "$UNIT")" "Before=kalinka-renderer.service"
 

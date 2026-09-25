@@ -1,6 +1,9 @@
 [Unit]
 Description=Apply the sound card chosen in dietpi.txt
 After=dietpi-preboot.service dietpi-firstboot.service
+# Some cards fetch firmware or an ALSA plugin; the renderer waits for the network anyway.
+Wants=network-online.target
+After=network-online.target
 Before=kalinka-renderer.service
 ConditionPathExists=/boot/dietpi/func/dietpi-set_hardware
 
