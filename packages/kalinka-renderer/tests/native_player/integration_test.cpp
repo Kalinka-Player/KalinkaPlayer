@@ -9,6 +9,7 @@
 #include <memory>
 
 #include "Config.h"
+#include "LocalHttpServer.h"
 #include "TestHelpers.h"
 #include <Mp3StreamDecoder.h>
 #include <thread>
@@ -47,8 +48,9 @@ TEST_F(IntegrationTest, fileInputIntegration) {
 }
 
 TEST_F(IntegrationTest, httpInputIntegration) {
+  LocalHttpServer server(filename);
   auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(1, 
-      "https://getsamplefiles.com/download/flac/sample-3.flac", 16384);
+      server.url("/ranged"), 16384);
   flacStreamDecoder->connectTo(audioGraphHttpStream);
   EXPECT_EQ(flacStreamDecoder->getState().state,
             AudioGraphNodeState::PREPARING);
@@ -137,8 +139,9 @@ TEST_F(IntegrationTest, fileInputSearchBackward) {
 }
 
 TEST_F(IntegrationTest, httpInputSearchForward) {
+  LocalHttpServer server(filename);
   auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(1, 
-      "https://getsamplefiles.com/download/flac/sample-3.flac", 16384);
+      server.url("/ranged"), 16384);
   flacStreamDecoder->connectTo(audioGraphHttpStream);
   auto state =
       waitForStatus(*flacStreamDecoder, AudioGraphNodeState::STREAMING);

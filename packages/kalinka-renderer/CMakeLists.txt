@@ -182,6 +182,7 @@ if(GTest_FOUND)
     tests/native_player/Buffer_test.cpp
     tests/native_player/FileInputNode_test.cpp
     tests/native_player/FlacStreamDecoder_test.cpp
+    tests/native_player/LocalHttpServer.cpp
     tests/native_player/Log_test.cpp
     tests/native_player/Mp3StreamDecoder_test.cpp
     tests/native_player/SineWaveNode_test.cpp

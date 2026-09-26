@@ -4,14 +4,15 @@
 #include <memory>
 #include <vector>
 
+#include "LocalHttpServer.h"
 #include "TestHelpers.h"
 
 class AudioGraphHttpStreamTest : public ::testing::Test {
 protected:
-  const std::string url =
-      "https://getsamplefiles.com/download/flac/sample-2.flac";
-  const std::string urlNoRanges =
-      "https://filesamples.com/samples/audio/flac/sample1.flac";
+  // Several buffers long, so seeking past what is buffered asks for a range.
+  LocalHttpServer server{testFile("tone880.flac")};
+  const std::string url = server.url("/ranged");
+  const std::string urlNoRanges = server.url("/whole");
   const size_t bufferSize = 32768;
 
   void SetUp() override {}
@@ -76,7 +77,7 @@ TEST_F(AudioGraphHttpStreamTest, read_no_ranges) {
 
 TEST_F(AudioGraphHttpStreamTest, test_broken_url_set_error_status) {
   auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(1, 
-      "http://httpstat.us/404", bufferSize);
+      server.url("/missing"), bufferSize);
   std::vector<uint8_t> data(bufferSize);
   size_t bytesToRead = 0;
   size_t totalBytesRead = 0;

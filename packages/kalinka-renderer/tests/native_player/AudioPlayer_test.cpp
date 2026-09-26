@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include "LocalHttpServer.h"
 #include "TestHelpers.h"
 
 class AudioPlayerTest : public ::testing::Test {
@@ -21,8 +22,8 @@ protected:
   const std::string url3 = "file://" + testFile("silence30.flac");
   const std::string url4 = "file://" + testFile("silence30.mp3");
   const std::string url5 = "file://" + testFile("silence30.mp3");
-  const std::string httpUrl =
-      "https://getsamplefiles.com/download/flac/sample-3.flac";
+  LocalHttpServer server{testFile("tone880.flac")};
+  const std::string httpUrl = server.url("/ranged");
 
   Config config = {{"input.http.buffer_size", "768000"},
                    {"input.http.chunk_size", "384000"},
