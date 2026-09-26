@@ -1,32 +1,49 @@
 """Finding the file servers on the network.
 
-The wire format is the part worth pinning: a node-status request is built by
+The wire format is the part worth pinning: NetBIOS questions are built by
 hand out of a name encoding nothing else in this repo uses, and a reply is
 parsed from a table whose length the sender declares. A packet that lies
-about that length must be refused rather than read past.
+about that length must be refused rather than read past. A WS-Discovery
+reply names its types by prefixes the sender chooses.
+
+A scan finds hosts two ways and asks each one found for its name on its own
+address: Windows and Samba leave a node-status request sent by broadcast
+unanswered. Who gets asked, and what is offered, is pinned against a
+network made up for the test.
 
 The rest is about not making the settings page wait. Discovery is asked for
 suggestions on every read of the page, and every one of those asks is
-allowed to start a broadcast — so what stops it is a floor between scans,
-not the caller's patience.
+allowed to start a scan — so what stops it is a floor between scans, not
+the caller's patience.
 """
 
 from __future__ import annotations
 
 import logging
+import socket
 import struct
 import threading
 import time
+import xml.etree.ElementTree as ElementTree
 
 import pytest
 
 from kalinka_plugin_localfiles.suggest import smb_discovery
 from kalinka_plugin_localfiles.suggest.smb_discovery import (
+    NETBIOS,
+    WS_DISCOVERY,
+    DiscoveredHost,
+    Heard,
     SmbHostDiscovery,
+    answers_name_query,
     encode_netbios_name,
     file_server_name,
+    is_computer_match,
+    multicast_interfaces,
+    name_query,
     nbstat_query,
     parse_nbstat_reply,
+    wsd_probe,
 )
 
 #: Reserved for documentation (RFC 5737), so the machine running the tests
@@ -55,6 +72,45 @@ def _reply(names, *, flags=0x8400, answers=1, rr_type=0x0021, claimed=None):
         )
     body = struct.pack(">HHIH", rr_type, 1, 0, len(table)) + table
     return header + bytes([len(question)]) + question + b"\x00" + body
+
+
+def _name_answer(address, rcode=0):
+    question = encode_netbios_name("*")
+    header = struct.pack(">HHHHHH", 1, 0x8500 | rcode, 0, 1, 0, 0)
+    rdata = struct.pack(">H", 0) + socket.inet_aton(address)
+    record = struct.pack(">HHIH", 0x0020, 1, 0, len(rdata)) + rdata
+    return header + bytes([len(question)]) + question + b"\x00" + record
+
+
+def _probe_match(types, namespaces='xmlns:pub="{pub}" xmlns:wsdp="{wsdp}"'):
+    """A probe match as Windows sends one, trimmed to what is read."""
+    declared = namespaces.format(
+        pub="http://schemas.microsoft.com/windows/pub/2005/07",
+        wsdp="http://schemas.xmlsoap.org/ws/2006/02/devprof",
+    )
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope"'
+        ' xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing"'
+        f' xmlns:wsd="http://schemas.xmlsoap.org/ws/2005/04/discovery" {declared}>'
+        "<soap:Header><wsa:Action>"
+        "http://schemas.xmlsoap.org/ws/2005/04/discovery/ProbeMatches"
+        "</wsa:Action></soap:Header>"
+        "<soap:Body><wsd:ProbeMatches><wsd:ProbeMatch>"
+        "<wsa:EndpointReference><wsa:Address>"
+        "urn:uuid:5e8cde11-17a6-4e69-9a6a-ddd8cb6e249d"
+        "</wsa:Address></wsa:EndpointReference>"
+        f"<wsd:Types>{types}</wsd:Types>"
+        "<wsd:XAddrs>http://198.51.100.20:5357/</wsd:XAddrs>"
+        "</wsd:ProbeMatch></wsd:ProbeMatches></soap:Body></soap:Envelope>"
+    ).encode()
+
+
+COMPUTER = _probe_match("pub:Computer wsdp:Device")
+PRINTER = _probe_match(
+    "wsdp:Device wprt:PrintDeviceType",
+    namespaces='xmlns:wsdp="{wsdp}" xmlns:wprt="urn:print"',
+)
 
 
 class _Clock:
@@ -109,18 +165,39 @@ class TestTheNameOnTheWire:
         assert len(encode_netbios_name("A" * 40)) == 32
 
 
-class TestTheRequest:
-    def test_it_asks_one_question_about_every_name(self):
+class TestTheRequests:
+    def test_a_node_status_asks_one_host_about_every_name(self):
         query = nbstat_query()
         _id, flags, questions, answers, _ns, _ar = struct.unpack(">HHHHHH", query[:12])
         assert (questions, answers) == (1, 0)
-        assert flags & 0x0010  # broadcast
+        assert not flags & 0x0010  # sent to one host, not broadcast
         assert query[-4:] == struct.pack(">HH", 0x0021, 0x0001)
+
+    def test_a_name_query_asks_everyone_for_every_name(self):
+        query = name_query()
+        _id, flags, questions, _an, _ns, _ar = struct.unpack(">HHHHHH", query[:12])
+        assert questions == 1
+        assert flags & 0x0010  # broadcast
+        assert query[13:45] == encode_netbios_name("*")
+        assert query[-4:] == struct.pack(">HH", 0x0020, 0x0001)
 
     def test_the_name_it_asks_about_carries_its_own_length(self):
         query = nbstat_query()
         assert query[12] == 32
         assert query[45] == 0
+
+    def test_the_probe_asks_for_computers_under_its_message_id(self):
+        root = ElementTree.fromstring(wsd_probe("urn:uuid:1234"))
+        wsd = "{http://schemas.xmlsoap.org/ws/2005/04/discovery}"
+        wsa = "{http://schemas.xmlsoap.org/ws/2004/08/addressing}"
+        assert root.find(f".//{wsd}Probe/{wsd}Types").text == "pub:Computer"
+        assert root.find(f".//{wsa}MessageID").text == "urn:uuid:1234"
+        assert root.find(f".//{wsa}Action").text.endswith("/Probe")
+
+    def test_the_probe_binds_the_prefix_it_asks_with(self):
+        assert b'xmlns:pub="http://schemas.microsoft.com/windows/pub/2005/07"' in (
+            wsd_probe("urn:uuid:1234")
+        )
 
 
 class TestTheReply:
@@ -165,6 +242,77 @@ class TestTheReply:
         with pytest.raises(ValueError):
             parse_nbstat_reply(packet)
 
+    def test_a_name_query_answer_gives_an_address_and_no_names(self):
+        assert answers_name_query(_name_answer(NAS))
+        with pytest.raises(ValueError):
+            parse_nbstat_reply(_name_answer(NAS))
+
+    def test_a_negative_answer_to_a_name_query_is_no_answer(self):
+        assert not answers_name_query(_name_answer(NAS, rcode=3))
+
+    def test_a_node_status_is_not_a_name_query_answer(self):
+        assert not answers_name_query(_reply([("NAS", 0x20, False)]))
+
+    def test_a_packet_too_short_to_be_anything_answers_nothing(self):
+        assert not answers_name_query(b"\x00" * 4)
+
+
+class TestTheWsDiscoveryReply:
+    def test_a_computer_s_probe_match_is_one(self):
+        assert is_computer_match(COMPUTER)
+
+    def test_the_prefix_is_whichever_the_reply_binds(self):
+        rebound = _probe_match("w:Computer", namespaces='xmlns:w="{pub}"')
+        assert is_computer_match(rebound)
+
+    def test_a_prefix_bound_to_another_namespace_is_not_one(self):
+        elsewhere = _probe_match("pub:Computer", namespaces='xmlns:pub="urn:other"')
+        assert not is_computer_match(elsewhere)
+
+    def test_a_printer_is_not_one(self):
+        assert not is_computer_match(PRINTER)
+
+    def test_a_probe_is_not_a_match(self):
+        """Its types are what is asked for, not what anyone is."""
+        assert not is_computer_match(wsd_probe("urn:uuid:1234"))
+
+    def test_a_reply_that_is_not_xml_is_not_one(self):
+        assert not is_computer_match(b"\x00\x01 not xml")
+
+    @pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
+    def test_a_reply_carrying_a_dtd_is_refused(self, encoding):
+        """WS-Discovery has no use for one, and a DTD is how entities that
+        expand without end get in — in any encoding the parser reads."""
+        envelope = COMPUTER.decode()[COMPUTER.decode().index("<soap:Envelope"):]
+        bomb = (
+            f'<?xml version="1.0" encoding="{encoding}"?>'
+            '<!DOCTYPE x [<!ENTITY a "aaaaaaaaaa">'
+            '<!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">]>'
+            + envelope
+        ).encode(encoding)
+        assert not is_computer_match(bomb)
+
+    def test_a_reply_in_another_encoding_is_read_all_the_same(self):
+        declared = COMPUTER.decode().replace('encoding="utf-8"', 'encoding="utf-16"')
+        assert is_computer_match(declared.encode("utf-16"))
+
+    @pytest.mark.parametrize("encoding", ["no-such-encoding", "rot13"])
+    def test_a_reply_in_an_encoding_nobody_reads_is_not_one(self, encoding):
+        declared = COMPUTER.decode().replace('encoding="utf-8"', f'encoding="{encoding}"')
+        assert not is_computer_match(declared.encode())
+
+
+class TestTheInterfacesAProbeGoesOutOf:
+    def test_each_is_an_address_this_machine_holds_and_none_is_loopback(self):
+        interfaces = multicast_interfaces()
+        if not interfaces or smb_discovery._belongs_to_this_machine(
+            smb_discovery._ASSIGNED_NOWHERE
+        ):
+            pytest.skip("no interface here whose address the kernel can vouch for")
+        for address in interfaces:
+            assert not address.startswith("127.")
+            assert smb_discovery._belongs_to_this_machine(address)
+
 
 class TestWhatHasBeenSeen:
     def test_a_host_is_reported_once_however_many_ways_it_was_found(self):
@@ -185,7 +333,7 @@ class TestWhatHasBeenSeen:
         made._mdns_lost("NAS._smb._tcp.local.")
         assert made.hosts() == []
 
-    def test_a_host_that_stops_answering_broadcasts_stops_being_offered(self):
+    def test_a_host_that_stops_answering_scans_stops_being_offered(self):
         clock = _Clock()
         made = _discovery(now=clock, stale_after=600.0)
         made._netbios_seen("198.51.100.20", "NAS")
@@ -244,9 +392,9 @@ class TestWhichAddressesAreWorthOffering:
         made._mdns_seen("PI._smb._tcp.local.", "PI", mine + [NAS])
         assert [h.address for h in made.hosts()] == [NAS]
 
-    def test_this_machine_answering_its_own_broadcast_is_left_out(self, monkeypatch):
-        """nmbd here replies to the node-status request sent from here,
-        which no amount of mDNS filtering would have caught."""
+    def test_this_machine_answering_its_own_scan_is_left_out(self, monkeypatch):
+        """nmbd here answers the name query sent from here, which no amount
+        of mDNS filtering would have caught."""
         _ours(monkeypatch, OTHER_NAS)
         made = _discovery()
         made._netbios_seen(OTHER_NAS, "RASPBERRYPI")
@@ -368,7 +516,7 @@ class TestAskingTheNetworkAgain:
         _join_scan()
         assert _Watch.started == 1 and len(scans) == 1
 
-    def test_asking_again_too_soon_does_not_broadcast_again(self):
+    def test_asking_again_too_soon_does_not_scan_again(self):
         clock = _Clock()
         made = _discovery(now=clock, min_scan_interval=10.0)
         scans = []
@@ -395,7 +543,7 @@ class TestAskingTheNetworkAgain:
         self, monkeypatch, caplog
     ):
         """A lock held by a thread that never started would retire the
-        broadcast for the life of the process."""
+        scan for the life of the process."""
         made = _discovery(min_scan_interval=0.0)
         scans = []
         made._scan_once = lambda: scans.append(1)
@@ -453,6 +601,199 @@ class TestAskingTheNetworkAgain:
         _join_scan()
         assert len(scans) == 1
         assert "will not be suggested" in caplog.text
+
+
+class _Network:
+    """What a scan hears: who answers the probe and the name query, and what
+    each host says when asked on its own address."""
+
+    def __init__(self, everyone=(), named=None, refuse=False):
+        self._everyone = list(everyone)
+        self._named = dict(named or {})
+        self._refuse = refuse
+        self._pending = []
+        self.asked = []
+        self.closed = False
+
+    def ask_everyone(self, transaction_id):
+        if self._refuse:
+            raise OSError("the network is down")
+        self._pending.extend(self._everyone)
+
+    def ask_host(self, address, transaction_id):
+        self.asked.append(address)
+        if address in self._named:
+            self._pending.append(Heard(NETBIOS, address, self._named[address]))
+
+    def receive(self, timeout):
+        if self._pending:
+            return self._pending.pop(0)
+        time.sleep(timeout)
+        return None
+
+    def close(self):
+        self.closed = True
+
+
+def _serving(name):
+    return _reply([(name, 0x00, False), (name, 0x20, False)])
+
+
+def _scanned(network):
+    made = SmbHostDiscovery(
+        mdns_factory=_Watch, scan_factory=lambda: network, scan_seconds=0.05
+    )
+    made._scan_once()
+    return made
+
+
+class TestAScan:
+    def test_a_computer_answering_the_probe_is_offered_under_its_server_name(self):
+        network = _Network(
+            everyone=[Heard(WS_DISCOVERY, NAS, COMPUTER)],
+            named={NAS: _serving("DESKTOP-ANKB6AE")},
+        )
+        assert _scanned(network).hosts() == [
+            DiscoveredHost(NAS, "DESKTOP-ANKB6AE", WS_DISCOVERY)
+        ]
+
+    def test_samba_answering_the_name_query_is_offered_too(self):
+        network = _Network(
+            everyone=[Heard(NETBIOS, NAS, _name_answer(NAS))],
+            named={NAS: _serving("RASPBERRYPI")},
+        )
+        assert _scanned(network).hosts() == [
+            DiscoveredHost(NAS, "RASPBERRYPI", NETBIOS)
+        ]
+
+    def test_a_host_that_serves_no_shares_is_asked_and_not_offered(self):
+        network = _Network(
+            everyone=[Heard(WS_DISCOVERY, NAS, COMPUTER)],
+            named={NAS: _reply([("DESKTOP", 0x00, False)])},
+        )
+        made = _scanned(network)
+        assert network.asked == [NAS]
+        assert made.hosts() == []
+
+    def test_a_printer_answering_the_probe_is_not_asked(self):
+        network = _Network(everyone=[Heard(WS_DISCOVERY, NAS, PRINTER)])
+        assert _scanned(network).hosts() == []
+        assert network.asked == []
+
+    def test_a_reply_that_cannot_be_read_does_not_end_the_scan(self):
+        unreadable = b'<?xml version="1.0" encoding="no-such-encoding"?><a/>'
+        network = _Network(
+            everyone=[
+                Heard(WS_DISCOVERY, OTHER_NAS, unreadable),
+                Heard(WS_DISCOVERY, NAS, COMPUTER),
+            ],
+            named={NAS: _serving("NAS")},
+        )
+        assert [h.address for h in _scanned(network).hosts()] == [NAS]
+
+    def test_a_host_found_both_ways_is_asked_once(self):
+        """WS-Discovery repeats itself over UDP, and a host may answer both
+        questions."""
+        network = _Network(
+            everyone=[
+                Heard(WS_DISCOVERY, NAS, COMPUTER),
+                Heard(WS_DISCOVERY, NAS, COMPUTER),
+                Heard(NETBIOS, NAS, _name_answer(NAS)),
+            ],
+            named={NAS: _serving("NAS")},
+        )
+        made = _scanned(network)
+        assert network.asked == [NAS]
+        assert made.hosts()[0].source == WS_DISCOVERY
+
+    def test_each_host_found_is_asked_on_its_own_address(self):
+        network = _Network(
+            everyone=[
+                Heard(WS_DISCOVERY, NAS, COMPUTER),
+                Heard(NETBIOS, OTHER_NAS, _name_answer(OTHER_NAS)),
+            ],
+            named={NAS: _serving("ALPHA"), OTHER_NAS: _serving("ZULU")},
+        )
+        made = _scanned(network)
+        assert network.asked == [NAS, OTHER_NAS]
+        assert [h.name for h in made.hosts()] == ["ALPHA", "ZULU"]
+
+    def test_a_name_nobody_asked_for_is_not_taken(self):
+        network = _Network(everyone=[Heard(NETBIOS, NAS, _serving("NAS"))])
+        assert _scanned(network).hosts() == []
+
+    def test_a_node_status_on_the_probe_s_port_is_not_taken(self):
+        network = _Network(
+            everyone=[
+                Heard(WS_DISCOVERY, NAS, COMPUTER),
+                Heard(WS_DISCOVERY, NAS, _serving("NAS")),
+            ]
+        )
+        assert _scanned(network).hosts() == []
+
+    def test_what_it_opened_is_closed_when_it_cannot_ask(self):
+        network = _Network(refuse=True)
+        with pytest.raises(OSError):
+            _scanned(network)
+        assert network.closed
+
+    def test_what_it_opened_is_closed_when_it_is_done(self):
+        network = _Network()
+        _scanned(network)
+        assert network.closed
+
+
+class TestTheChannelOnTheWire:
+    """The one part that touches sockets, pointed at stand-ins on loopback
+    for the NetBIOS port and the WS-Discovery group."""
+
+    @pytest.fixture
+    def responders(self, monkeypatch):
+        netbios = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        wsd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        for responder in (netbios, wsd):
+            responder.bind(("127.0.0.1", 0))
+            responder.settimeout(2)
+        monkeypatch.setattr(smb_discovery, "_NBNS_PORT", netbios.getsockname()[1])
+        monkeypatch.setattr(smb_discovery, "_WSD_GROUP", "127.0.0.1")
+        monkeypatch.setattr(smb_discovery, "_WSD_PORT", wsd.getsockname()[1])
+        monkeypatch.setattr(smb_discovery, "broadcast_addresses", lambda: ["127.0.0.1"])
+        monkeypatch.setattr(smb_discovery, "multicast_interfaces", lambda: [])
+        channel = smb_discovery._UdpScan()
+        yield channel, netbios, wsd
+        channel.close()
+        netbios.close()
+        wsd.close()
+
+    def test_everyone_is_asked_both_questions(self, responders):
+        channel, netbios, wsd = responders
+        channel.ask_everyone(7)
+        query, _asker = netbios.recvfrom(4096)
+        probe, _prober = wsd.recvfrom(65535)
+        assert query == name_query(7)
+        assert b"<wsd:Types>pub:Computer</wsd:Types>" in probe
+
+    def test_a_reply_is_told_apart_by_the_question_it_answers(self, responders):
+        channel, netbios, wsd = responders
+        channel.ask_everyone(7)
+        _query, asker = netbios.recvfrom(4096)
+        _probe, prober = wsd.recvfrom(65535)
+        netbios.sendto(b"netbios", asker)
+        wsd.sendto(b"wsd", prober)
+        assert {channel.receive(2), channel.receive(2)} == {
+            Heard(NETBIOS, "127.0.0.1", b"netbios"),
+            Heard(WS_DISCOVERY, "127.0.0.1", b"wsd"),
+        }
+
+    def test_one_host_is_asked_on_its_own_address(self, responders):
+        channel, netbios, _wsd = responders
+        channel.ask_host("127.0.0.1", 7)
+        query, _asker = netbios.recvfrom(4096)
+        assert query == nbstat_query(7)
+
+    def test_a_quiet_network_is_heard_as_nothing(self, responders):
+        channel, _netbios, _wsd = responders
+        assert channel.receive(0.01) is None
 
 
 class _Announcement:
