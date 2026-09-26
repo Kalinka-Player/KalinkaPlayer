@@ -117,6 +117,7 @@ async def test_audio_completion_pools_aggregates_only_for_settled_tracks():
     worker.db = Db()
     worker.config = LocalFilesConfig(db_path="unused")
     worker._unreachable = {}
+    worker._audio_available = True
     worker._compute_clap_audio = lambda path: b"\x01"
     worker._update_aggregate_embeddings = record
 

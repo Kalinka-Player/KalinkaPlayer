@@ -4,6 +4,7 @@ network (the mood index is injected as a fixture)."""
 
 import os
 import tempfile
+from types import SimpleNamespace
 
 import aiosqlite
 import numpy as np
@@ -158,6 +159,28 @@ class TestEmbedderBackfill:
         assert [tid for tid, _ in need] == ["t0"]  # only embedded + missing VA
         await db.store_mood_va([("t0", 4.2, 5.5)])
         assert await db.get_tracks_needing_va(100) == []
+
+
+class TestMoodIndexLoad:
+    def test_loads_on_a_freshly_booted_pi(self, tmp_path, monkeypatch):
+        """Monotonic time starts at boot; the index must not wait out its
+        retry gap before the first attempt."""
+        words, va, emb = _fixture_index()
+        path = tmp_path / "mood_index.npz"
+        np.savez(path, words=np.array(words), va=va, text_emb=emb)
+        monkeypatch.setattr(
+            "kalinka_plugin_localfiles.embedder.clap_onnx._ensure_model_file",
+            lambda _name, _model_dir: str(path),
+        )
+        monkeypatch.setattr(
+            searcher_mod, "time", SimpleNamespace(monotonic=lambda: 175.0)
+        )
+        config = LocalFilesConfig(db_path=_db_path())
+        w = SearchWorker(config, AsyncSearcherDb(config))
+
+        index = w._load_mood_index()
+
+        assert index is not None and index[0] == words
 
 
 class TestQueryToVa:
