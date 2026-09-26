@@ -76,6 +76,15 @@ SemVer picks the digit, the calendar picks the date. Keep those two decisions ap
    release's artifacts. Every app package will be named `…0.2.0…`; the bundled
    SDK keeps its own SemVer version (e.g. `kalinka-plugin-sdk_1.0.0_all.deb`).
 
+4. Write the release notes. The tag push has `release.yml` publish the release with install instructions and a folded commit log, and nothing that says what changed. Once the workflow has finished, put that above them by hand:
+   ```bash
+   gh release view kalinka-vX.Y.Z --json body -q .body > generated.md
+   $EDITOR highlights.md
+   cat highlights.md generated.md > notes.md
+   gh release edit kalinka-vX.Y.Z --notes-file notes.md
+   ```
+   Follow the previous release: a one-line summary, then `## What's new` or `## Fixes` with one bold lead per item telling users what they will notice, then `## Before you upgrade` saying which app and renderer versions it works with. Leave out what users cannot see, such as test-only commits; the commit log already lists them.
+
 > The version comes from `git describe`, so **build from the tagged commit with
 > a clean tree**. Between tags you'll get dev versions like `0.2.1.dev3+g<sha>.dYYYYMMDD`,
 > which is expected for development builds but not for a release.
@@ -242,6 +251,7 @@ against. The check lives in
 # Cut an app release
 git tag kalinka-vX.Y.Z && git push origin kalinka-vX.Y.Z
 make build-all-deb                       # -> debs/
+gh release edit kalinka-vX.Y.Z --notes-file notes.md   # what changed, above the generated notes
 
 # Bump the SDK (minor/patch): edit one line, then rebuild
 $EDITOR packages/kalinka-plugin-sdk/src/kalinka_plugin_sdk/_version.py   # __version__
