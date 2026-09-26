@@ -95,8 +95,9 @@ class EmbeddingWorker:
         # idles out (see _maybe_unload_audio).
         self._text_available = False
         self._audio_available = False
-        self._text_load_attempted_at: float = 0.0
-        self._audio_load_attempted_at: float = 0.0
+        # -inf: monotonic time starts at boot, so 0.0 reads as "just tried".
+        self._text_load_attempted_at: float = float("-inf")
+        self._audio_load_attempted_at: float = float("-inf")
         self._audio_last_used_at: float = 0.0
         # Roots found not answering this pass, whose tracks wait for the next.
         self._unreachable: dict[str, str] = {}
@@ -194,7 +195,7 @@ class EmbeddingWorker:
             self._audio_available = False
             # Reset the retry gate so the next batch reloads immediately
             # instead of waiting out a poll interval.
-            self._audio_load_attempted_at = 0.0
+            self._audio_load_attempted_at = float("-inf")
         logger.info("CLAP audio model unloaded after %.0fs idle", idle_timeout)
 
     # ------------------------------------------------------------------
@@ -292,7 +293,11 @@ class EmbeddingWorker:
         @return Whether any job in it was settled, done or failed. A batch
             that was only set aside, because its storage is not answering,
             is not progress: the pass ends rather than asking again at once.
+            Nothing is claimed while the audio model is not loaded, so a job
+            only ever spends an attempt on its own audio.
         """
+        if not self._audio_available:
+            return False
         cfg = self.config.ai_search
         batch = await self.db.claim_batch("clap_audio", cfg.audio_batch_size)
         if not batch:
@@ -332,7 +337,7 @@ class EmbeddingWorker:
                 continue
             if blob is None:
                 await self.db.fail_job(
-                    job["id"], "clap returned None", cfg.max_job_attempts
+                    job["id"], "audio could not be embedded", cfg.max_job_attempts
                 )
                 continue
 
@@ -456,7 +461,12 @@ class EmbeddingWorker:
                 )
 
     async def _process_clap_text_batch(self) -> bool:
-        """Process clap_text jobs: embed track metadata text with CLAP."""
+        """Process clap_text jobs: embed track metadata text with CLAP.
+
+        Nothing is claimed while the text model is not loaded.
+        """
+        if not self._text_available:
+            return False
         cfg = self.config.ai_search
         batch = await self.db.claim_batch("clap_text", cfg.audio_batch_size)
         if not batch:
@@ -603,11 +613,13 @@ class EmbeddingWorker:
         cfg = self.config.ai_search
         poll = cfg.poll_interval_seconds
         audio_idle_timeout = cfg.audio_model_idle_timeout_seconds
+        loop = asyncio.get_running_loop()
 
         logger.info("EmbeddingWorker started (CLAP-only pipeline)")
 
         await self.db._check_vec_available()
         await self.db.recover_stale_jobs()
+        await self.db.requeue_ambiguous_audio_failures(CLAP_MODEL_VERSION)
         # Heal the KNN index from the blob column: rows can be missing after
         # a snapshot restore or an earlier failed upsert.
         await self.db.backfill_missing_vec_rows()
@@ -629,9 +641,7 @@ class EmbeddingWorker:
         # old "first query after idle times out" failure. The audio tower stays
         # unloaded until there's something to index.
         logger.info("Pre-loading CLAP text model")
-        await asyncio.get_running_loop().run_in_executor(
-            None, self._ensure_text_model
-        )
+        await loop.run_in_executor(None, self._ensure_text_model)
 
         # Wait for the first nudge or poll cycle before loading models.
         # On a fresh restart with an already-indexed library there's
@@ -662,7 +672,7 @@ class EmbeddingWorker:
             # Process CLAP audio — loads the audio tower on demand.
             while await self.db.has_pending_jobs("clap_audio"):
                 if time.monotonic() - self._audio_load_attempted_at >= retry_gap:
-                    self._ensure_audio_model()
+                    await loop.run_in_executor(None, self._ensure_audio_model)
 
                 try:
                     batch_processed = await self._process_clap_batch()
@@ -677,7 +687,7 @@ class EmbeddingWorker:
             # Process CLAP text (metadata) embeddings — text tower only.
             while await self.db.has_pending_jobs("clap_text"):
                 if time.monotonic() - self._text_load_attempted_at >= retry_gap:
-                    self._ensure_text_model()
+                    await loop.run_in_executor(None, self._ensure_text_model)
 
                 try:
                     batch_processed = await self._process_clap_text_batch()
@@ -696,7 +706,7 @@ class EmbeddingWorker:
             # which lives in the text tower, so it needs no audio session.
             if self.config.ai_search.mood.enabled:
                 if time.monotonic() - self._text_load_attempted_at >= retry_gap:
-                    self._ensure_text_model()
+                    await loop.run_in_executor(None, self._ensure_text_model)
                 try:
                     while await self._process_va_backfill():
                         did_work = True

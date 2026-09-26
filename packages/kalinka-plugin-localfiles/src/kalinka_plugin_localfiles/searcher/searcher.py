@@ -101,7 +101,8 @@ class SearchWorker:
         self._text_encode_response_queue = text_encode_response_queue
         # Mood index (words, va[M,2], text_emb[M,512]); lazy-loaded, retried.
         self._mood_index: Optional[tuple] = None
-        self._mood_load_attempted_at: float = 0.0
+        # -inf: monotonic time starts at boot, so 0.0 reads as "just tried".
+        self._mood_load_attempted_at: float = float("-inf")
 
     # ------------------------------------------------------------------
     # CLAP text encoding via IPC (served by embedder process)

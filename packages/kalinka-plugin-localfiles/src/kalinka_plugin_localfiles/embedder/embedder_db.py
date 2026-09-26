@@ -124,6 +124,44 @@ class AsyncEmbedderDb:
             await conn.commit()
         logger.info("Stale in_progress CLAP jobs reset to pending")
 
+    async def requeue_ambiguous_audio_failures(self, model_version: int) -> int:
+        """Requeue audio jobs failed as "clap returned None".
+
+        Builds up to 5.1.1 failed a job with that text whether its audio
+        would not decode or the audio model had never loaded, so none of them
+        says anything about the track. Undecodable audio now fails under
+        another text: once requeued, these never match again.
+
+        Only jobs of ``model_version`` whose track is still in the library
+        qualify: an older generation's job would overwrite the current
+        embedding under a stale version, and a removed track's can only fail.
+
+        @return How many jobs were requeued.
+        """
+        async with self._open() as conn:
+            cursor = await conn.execute(
+                """
+                UPDATE embedding_jobs
+                SET status = 'pending', attempts = 0, error = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE stage = 'clap_audio'
+                  AND status = 'failed'
+                  AND error = 'clap returned None'
+                  AND model_version = ?
+                  AND entity_id IN (SELECT id FROM tracks)
+                """,
+                (model_version,),
+            )
+            requeued = cursor.rowcount
+            await conn.commit()
+        if requeued:
+            logger.info(
+                "Requeued %d audio embedding job(s) an earlier build may have "
+                "failed without loading the model",
+                requeued,
+            )
+        return requeued
+
     async def restore_snapshot(self, model_version: int) -> int:
         """Re-attach snapshotted CLAP audio embeddings to re-indexed tracks.
 
@@ -446,7 +484,8 @@ class AsyncEmbedderDb:
         """Mark job 'failed' if at/above max_attempts, otherwise reset to 'pending' for retry."""
         async with self._open() as conn:
             cursor = await conn.execute(
-                "SELECT attempts FROM embedding_jobs WHERE id = ?", (job_id,)
+                "SELECT attempts, stage, entity_id FROM embedding_jobs WHERE id = ?",
+                (job_id,),
             )
             row = await cursor.fetchone()
             attempts = row[0] if row else max_attempts
@@ -460,6 +499,15 @@ class AsyncEmbedderDb:
                 (new_status, error[:500], job_id),
             )
             await conn.commit()
+        # Giving up is final, so it must never be silent.
+        if row and new_status == "failed":
+            logger.warning(
+                "Gave up on %s for track %s after %d attempt(s): %s",
+                row[1],
+                row[2],
+                attempts,
+                error,
+            )
 
     # ------------------------------------------------------------------
     # Aggregate embeddings

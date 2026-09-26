@@ -106,7 +106,7 @@ class TestAudioIdleUnload:
         assert worker._audio_available is False
         assert worker._clap.audio_loaded is False
         # Retry gate reset so the next batch reloads immediately.
-        assert worker._audio_load_attempted_at == 0.0
+        assert worker._audio_load_attempted_at == float("-inf")
 
     def test_keeps_loaded_within_timeout(self):
         worker = _make_worker()
