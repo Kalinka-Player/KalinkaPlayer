@@ -159,7 +159,7 @@ TEST_F(AudioGraphHttpStreamTest, seekTo_backward) {
 
   EXPECT_EQ(audioGraphHttpStream->getState().state,
             AudioGraphNodeState::FINISHED);
-  EXPECT_EQ(totalBytesRead, contentLength + halfContent / 2);
+  EXPECT_EQ(totalBytesRead, halfContent + (contentLength - halfContent / 2));
 }
 
 TEST_F(AudioGraphHttpStreamTest, seekTo_backward_after_finished) {
