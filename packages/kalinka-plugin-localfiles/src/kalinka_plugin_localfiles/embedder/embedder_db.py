@@ -125,18 +125,9 @@ class AsyncEmbedderDb:
         logger.info("Stale in_progress CLAP jobs reset to pending")
 
     async def requeue_ambiguous_audio_failures(self, model_version: int) -> int:
-        """Requeue audio jobs failed as "clap returned None".
+        """Requeue audio jobs of live tracks failed as "clap returned None".
 
-        Builds up to 5.1.1 failed a job with that text whether its audio
-        would not decode or the audio model had never loaded, so none of them
-        says anything about the track. Undecodable audio now fails under
-        another text: once requeued, these never match again.
-
-        Only jobs of ``model_version`` whose track is still in the library
-        qualify: an older generation's job would overwrite the current
-        embedding under a stale version, and a removed track's can only fail.
-
-        @return How many jobs were requeued.
+        Up to 5.1.1 that text also meant the audio model had never loaded.
         """
         async with self._open() as conn:
             cursor = await conn.execute(
@@ -499,7 +490,6 @@ class AsyncEmbedderDb:
                 (new_status, error[:500], job_id),
             )
             await conn.commit()
-        # Giving up is final, so it must never be silent.
         if row and new_status == "failed":
             logger.warning(
                 "Gave up on %s for track %s after %d attempt(s): %s",

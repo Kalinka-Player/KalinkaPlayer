@@ -1,11 +1,3 @@
-"""Embedding while a CLAP model is not loaded.
-
-``time.monotonic()`` counts from boot. An embedder nudged awake within its
-first poll interval of a Pi booting read "never tried to load the audio
-model" as "tried just now", skipped the load, and failed its whole audio
-backlog for good — every claimed job came back "clap returned None".
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -158,8 +150,6 @@ async def test_text_jobs_wait_for_the_model_instead_of_failing(tmp_path):
 
 @pytest.mark.asyncio
 async def test_audio_jobs_an_earlier_build_gave_up_on_are_requeued(tmp_path):
-    """Those builds failed a job the same way whether its audio would not
-    decode or the model had never loaded, so none of them can be trusted."""
     config, db = await _library(tmp_path, ["lost", "unreadable"], enriched=1)
     await db.schedule_new_jobs(CLAP_MODEL_VERSION)
     async with aiosqlite.connect(db.db_path) as conn:
