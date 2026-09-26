@@ -93,7 +93,8 @@ TEST_F(NativePlayerSettingsTest, OnlyWhatAUserPicksIsOnThePageProper) {
             pb::CONFIG_IMPORTANCE_EXPERT);
   EXPECT_EQ(field(section, "output.latency_ms")->importance(),
             pb::CONFIG_IMPORTANCE_EXPERT);
-  for (const pb::ConfigField &knob : buffers().fields()) {
+  const pb::ConfigSection buffering = buffers();
+  for (const pb::ConfigField &knob : buffering.fields()) {
     EXPECT_EQ(knob.importance(), pb::CONFIG_IMPORTANCE_EXPERT) << knob.path();
   }
 }
@@ -160,7 +161,8 @@ TEST_F(NativePlayerSettingsTest, ADraggedKnobSaysWhatItAccepts) {
 }
 
 TEST_F(NativePlayerSettingsTest, ABufferIsBoundedButTyped) {
-  for (const pb::ConfigField &knob : buffers().fields()) {
+  const pb::ConfigSection section = buffers();
+  for (const pb::ConfigField &knob : section.fields()) {
     ASSERT_TRUE(knob.has_range()) << knob.path();
     EXPECT_EQ(knob.widget(), pb::CONFIG_WIDGET_NUMBER) << knob.path();
     EXPECT_EQ(knob.unit(), "bytes") << knob.path();
