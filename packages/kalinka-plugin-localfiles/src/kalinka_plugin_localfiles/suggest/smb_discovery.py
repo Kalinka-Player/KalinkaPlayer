@@ -1,27 +1,33 @@
 """Finding the file servers on this network.
 
-Two ways, because no single one sees every server. Apple's and most NAS
+Three ways, because no single one sees every server. Apple's and most NAS
 boxes' shares announce themselves over mDNS as ``_smb._tcp``, which costs
-nothing to listen to and arrives by itself. Windows machines and plain Samba
-installs answer a NetBIOS node-status broadcast instead, which has to be
-asked for and is therefore asked rarely.
+nothing to listen to and arrives by itself. Windows answers a WS-Discovery
+probe for computers, and Samba a NetBIOS name query for every name; both
+have to be asked for, and are therefore asked rarely. Neither answer says
+what the host is called or whether it serves shares, so each host that
+answers is asked that on its own address with a node-status request — one
+sent by broadcast goes unanswered by Windows and Samba alike.
 
-Neither is allowed to hold up the settings page. What has answered so far is
-kept here and handed over at once; a request for something fresher only
-starts the next broadcast. The list is a starting point either way — a host
-is not yet a music folder, because the share on it still has to be named.
+None of it is allowed to hold up the settings page. What has answered so far
+is kept here and handed over at once; a request for something fresher only
+starts the next scan. The list is a starting point either way — a host is
+not yet a music folder, because the share on it still has to be named.
 """
 
 from __future__ import annotations
 
 import ipaddress
 import logging
+import select
 import socket
 import struct
 import threading
 import time
+import uuid
+import xml.etree.ElementTree as ElementTree
 from dataclasses import dataclass
-from typing import Callable, Iterable, Optional, Protocol
+from typing import Callable, Iterable, Mapping, Optional, Protocol
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
@@ -31,25 +37,46 @@ MDNS_SERVICE = "_smb._tcp.local."
 #: request is answered on.
 _NBNS_PORT = 137
 
-#: Node status request, for every name a host has registered.
+#: Name query, and node status request, for every name a host has
+#: registered.
+_NB = 0x0020
 _NBSTAT = 0x0021
 _IN_CLASS = 0x0001
 
 #: The name every host answers a node-status request for.
 _WILDCARD = "*"
 
+#: WS-Discovery's multicast group, where a probe is answered by every
+#: device of the types it names.
+_WSD_GROUP = "239.255.255.250"
+_WSD_PORT = 3702
+_WSD_NS = "http://schemas.xmlsoap.org/ws/2005/04/discovery"
+_ADDRESSING_NS = "http://schemas.xmlsoap.org/ws/2004/08/addressing"
+_SOAP_NS = "http://www.w3.org/2003/05/soap-envelope"
+
+#: The type a Windows computer publishes itself under; printers, scanners
+#: and cameras answer WS-Discovery too, under types of their own.
+_PUB_NS = "http://schemas.microsoft.com/windows/pub/2005/07"
+_COMPUTER = "Computer"
+
+#: How each way of finding a host is named to the user.
+WS_DISCOVERY = "WS-Discovery"
+NETBIOS = "NetBIOS"
+
 #: The NetBIOS suffix of the file-sharing service. A host registers it only
 #: while it is actually serving shares, which is the question being asked.
 _SERVER_SERVICE = 0x20
 
-#: SIOCGIFBRDADDR — the broadcast address of one interface.
+#: SIOCGIFADDR and SIOCGIFBRDADDR — the address, and the broadcast address,
+#: of one interface.
+_SIOCGIFADDR = 0x8915
 _SIOCGIFBRDADDR = 0x8919
 
-#: How long one broadcast's replies are collected. A host that has not
-#: answered by then is left to the next scan rather than waited for.
+#: How long one scan's replies are collected. A host that has not answered
+#: by then is left to the next scan rather than waited for.
 _SCAN_SECONDS = 2.5
 
-#: Floor between broadcasts, however often suggestions are asked for. The
+#: Floor between scans, however often suggestions are asked for. The
 #: settings page asks on every read, and a scan is traffic on someone's
 #: network.
 _MIN_SCAN_INTERVAL_S = 10.0
@@ -97,21 +124,23 @@ def encode_netbios_name(name: str, suffix: int = 0x00) -> bytes:
     return bytes(out)
 
 
-def nbstat_query(transaction_id: int = 0) -> bytes:
-    """A node-status request for every name on whoever receives it."""
-    header = struct.pack(
-        ">HHHHHH",
-        transaction_id & 0xFFFF,
-        0x0010,  # broadcast
-        1,  # one question
-        0,
-        0,
-        0,
-    )
+def _wildcard_question(transaction_id: int, flags: int, question_type: int) -> bytes:
+    header = struct.pack(">HHHHHH", transaction_id & 0xFFFF, flags, 1, 0, 0, 0)
     name = encode_netbios_name(_WILDCARD)
     return header + bytes([len(name)]) + name + b"\x00" + struct.pack(
-        ">HH", _NBSTAT, _IN_CLASS
+        ">HH", question_type, _IN_CLASS
     )
+
+
+def nbstat_query(transaction_id: int = 0) -> bytes:
+    """A node-status request for every name on the one host it is sent to."""
+    return _wildcard_question(transaction_id, 0x0000, _NBSTAT)
+
+
+def name_query(transaction_id: int = 0) -> bytes:
+    """A broadcast name query for every name, which Samba answers with its
+    address and Windows leaves unanswered."""
+    return _wildcard_question(transaction_id, 0x0110, _NB)  # recursion, broadcast
 
 
 def _skip_name(data: bytes, offset: int) -> int:
@@ -126,17 +155,17 @@ def _skip_name(data: bytes, offset: int) -> int:
     raise ValueError("the name runs past the end of the packet")
 
 
-def parse_nbstat_reply(data: bytes) -> list[tuple[str, int, bool]]:
-    """The name table out of a node-status reply.
+def _answer(data: bytes) -> tuple[int, int]:
+    """The type of the answer a name-service reply carries, and where that
+    answer's data starts.
 
-    @return One ``(name, suffix, is_group)`` per registered name.
-    @raise ValueError If the packet is not a node-status reply, or is cut
-        short of the table it claims to carry.
+    @raise ValueError If the packet is not a positive answer, or is cut
+        short of one.
     """
     if len(data) < 12:
         raise ValueError("the packet is shorter than a header")
     _id, flags, _qd, answers, _ns, _ar = struct.unpack(">HHHHHH", data[:12])
-    if not flags & 0x8000 or answers < 1:
+    if not flags & 0x8000 or flags & 0x000F or answers < 1:
         raise ValueError("not an answer")
 
     offset = _skip_name(data, 12)
@@ -145,9 +174,29 @@ def parse_nbstat_reply(data: bytes) -> list[tuple[str, int, bool]]:
     rr_type, _rr_class, _ttl, _rdlength = struct.unpack(
         ">HHIH", data[offset:offset + 10]
     )
+    return rr_type, offset + 10
+
+
+def answers_name_query(data: bytes) -> bool:
+    """Whether a packet is a host answering a name query, which gives its
+    address and nothing more."""
+    try:
+        rr_type, _offset = _answer(data)
+    except ValueError:
+        return False
+    return rr_type == _NB
+
+
+def parse_nbstat_reply(data: bytes) -> list[tuple[str, int, bool]]:
+    """The name table out of a node-status reply.
+
+    @return One ``(name, suffix, is_group)`` per registered name.
+    @raise ValueError If the packet is not a node-status reply, or is cut
+        short of the table it claims to carry.
+    """
+    rr_type, offset = _answer(data)
     if rr_type != _NBSTAT:
         raise ValueError("the answer is not a node status")
-    offset += 10
 
     if len(data) <= offset:
         raise ValueError("the name table is missing")
@@ -175,16 +224,75 @@ def file_server_name(names: Iterable[tuple[str, int, bool]]) -> Optional[str]:
     return None
 
 
-def broadcast_addresses() -> list[str]:
-    """Where to send a broadcast so every interface's network hears it.
+def wsd_probe(message_id: str) -> bytes:
+    """A WS-Discovery probe for computers, under ``message_id`` (a
+    ``urn:uuid:`` a reply relates itself to)."""
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        f'<soap:Envelope xmlns:soap="{_SOAP_NS}" xmlns:wsa="{_ADDRESSING_NS}"'
+        f' xmlns:wsd="{_WSD_NS}" xmlns:pub="{_PUB_NS}">'
+        "<soap:Header>"
+        "<wsa:To>urn:schemas-xmlsoap-org:ws:2005:04:discovery</wsa:To>"
+        f"<wsa:Action>{_WSD_NS}/Probe</wsa:Action>"
+        f"<wsa:MessageID>{message_id}</wsa:MessageID>"
+        "</soap:Header>"
+        f"<soap:Body><wsd:Probe><wsd:Types>pub:{_COMPUTER}</wsd:Types>"
+        "</wsd:Probe></soap:Body></soap:Envelope>"
+    ).encode()
 
-    Falls back to the all-networks address, which reaches the default route
-    alone but is better than asking nobody.
+
+class _ProbeReply(ElementTree.TreeBuilder):
+    """A WS-Discovery reply's tree, and the namespaces it declares.
+
+    Refuses a DTD in whatever encoding it arrives: WS-Discovery has no use
+    for one, and a DTD is how entities that expand without end get in.
     """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.namespaces: dict[str, str] = {}
+
+    def start_ns(self, prefix: str, uri: str) -> None:
+        self.namespaces[prefix] = uri
+
+    def doctype(self, name: str, pubid: str, system: str) -> None:
+        raise ValueError("a WS-Discovery reply carries no DTD")
+
+
+def is_computer_match(data: bytes) -> bool:
+    """Whether a WS-Discovery reply is a probe match from a computer.
+
+    A type is a prefixed name, and the prefix is the sender's to choose, so
+    it is looked up in the namespaces the reply declares.
+    """
+    reply = _ProbeReply()
+    parser = ElementTree.XMLParser(target=reply)
+    try:
+        parser.feed(data)
+        root = parser.close()
+    except (ElementTree.ParseError, ValueError, LookupError):
+        return False
+    types = [
+        name
+        for match in root.iter(f"{{{_WSD_NS}}}ProbeMatch")
+        for listed in match.iter(f"{{{_WSD_NS}}}Types")
+        for name in (listed.text or "").split()
+    ]
+    return any(_is_computer_type(name, reply.namespaces) for name in types)
+
+
+def _is_computer_type(name: str, namespaces: Mapping[str, str]) -> bool:
+    prefix, _, local = name.rpartition(":")
+    return local == _COMPUTER and namespaces.get(prefix) == _PUB_NS
+
+
+def _interface_addresses(request: int) -> list[str]:
+    """One IPv4 address per interface, as the ioctl ``request`` reads it,
+    bar the unset and loopback ones."""
     try:
         import fcntl
     except ImportError:
-        return ["255.255.255.255"]
+        return []
 
     found: list[str] = []
     try:
@@ -193,7 +301,7 @@ def broadcast_addresses() -> list[str]:
                 try:
                     packed = fcntl.ioctl(
                         probe.fileno(),
-                        _SIOCGIFBRDADDR,
+                        request,
                         struct.pack("256s", name.encode()[:15]),
                     )
                 except OSError:
@@ -204,8 +312,23 @@ def broadcast_addresses() -> list[str]:
                 if address not in found:
                     found.append(address)
     except OSError as exc:
-        logger.debug("Cannot enumerate broadcast addresses: %s", exc)
-    return found or ["255.255.255.255"]
+        logger.debug("Cannot enumerate interface addresses: %s", exc)
+    return found
+
+
+def broadcast_addresses() -> list[str]:
+    """Where to send a broadcast so every interface's network hears it.
+
+    Falls back to the all-networks address, which reaches the default route
+    alone but is better than asking nobody.
+    """
+    return _interface_addresses(_SIOCGIFBRDADDR) or ["255.255.255.255"]
+
+
+def multicast_interfaces() -> list[str]:
+    """This machine's IPv4 address on each interface: naming one is how a
+    multicast goes out of that interface rather than the default route's."""
+    return _interface_addresses(_SIOCGIFADDR)
 
 
 #: Reserved for documentation (RFC 5737), so assigned to no machine
@@ -356,24 +479,126 @@ class _ZeroconfWatch:
         self._on_lost(name)
 
 
+@dataclass(frozen=True)
+class Heard:
+    """One datagram a scan received.
+
+    @param over :data:`WS_DISCOVERY` or :data:`NETBIOS`, by the port it came
+        in on.
+    """
+
+    over: str
+    address: str
+    data: bytes
+
+
+class ScanChannel(Protocol):
+    """What one scan sends and hears. Opened per scan and closed after it."""
+
+    def ask_everyone(self, transaction_id: int) -> None:
+        """Send the WS-Discovery probe and the NetBIOS name query."""
+
+    def ask_host(self, address: str, transaction_id: int) -> None:
+        """Send one host a node-status request."""
+
+    def receive(self, timeout: float) -> Optional[Heard]:
+        """The next datagram, or None when none came within ``timeout``."""
+
+    def close(self) -> None: ...
+
+
+class _UdpScan:
+    """A scan's two sockets, each on a port of its own choosing: replies to a
+    broadcast or a multicast come back to the port that asked.
+
+    @note Owned by the one scan that opened it.
+    """
+
+    def __init__(self) -> None:
+        self._netbios = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            self._wsd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        except OSError:
+            self._netbios.close()
+            raise
+        try:
+            self._netbios.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            self._wsd.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+        except OSError:
+            self.close()
+            raise
+
+    def ask_everyone(self, transaction_id: int) -> None:
+        query = name_query(transaction_id)
+        for address in broadcast_addresses():
+            self._send(self._netbios, query, address, _NBNS_PORT)
+        probe = wsd_probe(f"urn:uuid:{uuid.uuid4()}")
+        interfaces = multicast_interfaces()
+        if not interfaces:
+            self._send(self._wsd, probe, _WSD_GROUP, _WSD_PORT)
+        for interface in interfaces:
+            try:
+                self._wsd.setsockopt(
+                    socket.IPPROTO_IP,
+                    socket.IP_MULTICAST_IF,
+                    socket.inet_aton(interface),
+                )
+            except OSError as exc:
+                logger.debug("No WS-Discovery probe out of %s: %s", interface, exc)
+                continue
+            self._send(self._wsd, probe, _WSD_GROUP, _WSD_PORT)
+
+    def ask_host(self, address: str, transaction_id: int) -> None:
+        self._send(self._netbios, nbstat_query(transaction_id), address, _NBNS_PORT)
+
+    def receive(self, timeout: float) -> Optional[Heard]:
+        readable, _, _ = select.select([self._netbios, self._wsd], [], [], timeout)
+        if not readable:
+            return None
+        sock = readable[0]
+        data, (address, _port) = sock.recvfrom(65535)
+        return Heard(WS_DISCOVERY if sock is self._wsd else NETBIOS, address, data)
+
+    def close(self) -> None:
+        self._netbios.close()
+        self._wsd.close()
+
+    @staticmethod
+    def _send(sock: socket.socket, data: bytes, address: str, port: int) -> None:
+        try:
+            sock.sendto(data, (address, port))
+        except OSError as exc:
+            logger.debug("Nothing sent to %s:%d: %s", address, port, exc)
+
+
+def _found_over(heard: Heard) -> Optional[str]:
+    """How a datagram found a host, or None when it found none: a host is
+    found by answering the probe as a computer, or the name query at all."""
+    if heard.over == WS_DISCOVERY:
+        return WS_DISCOVERY if is_computer_match(heard.data) else None
+    return NETBIOS if answers_name_query(heard.data) else None
+
+
 class SmbHostDiscovery:
     """The file servers this machine can see, kept up to date in the
     background.
 
     @note Owned by the process that serves the settings page. Starting a
         second one would put a second listener on the multicast group and
-        a second broadcast on the network for the same answer.
+        a second scan on the network for the same answer.
     """
 
     def __init__(
         self,
         mdns_factory: MdnsFactory = _ZeroconfWatch,
+        scan_factory: Callable[[], ScanChannel] = _UdpScan,
         scan_seconds: float = _SCAN_SECONDS,
         min_scan_interval: float = _MIN_SCAN_INTERVAL_S,
         stale_after: float = _STALE_S,
         now: Callable[[], float] = time.monotonic,
     ) -> None:
         self._mdns_factory = mdns_factory
+        self._scan_factory = scan_factory
         self._scan_seconds = scan_seconds
         self._min_scan_interval = min_scan_interval
         self._stale_after = stale_after
@@ -383,7 +608,7 @@ class SmbHostDiscovery:
         # Keyed by the announcement that carried them, so withdrawing one
         # takes its addresses with it.
         self._announced: dict[str, list[DiscoveredHost]] = {}
-        # Keyed by address, with when it last answered: a broadcast reply
+        # Keyed by address, with when it last answered: a reply to a scan
         # is a moment, not a subscription, so these have to expire.
         self._answered: dict[str, tuple[DiscoveredHost, float]] = {}
 
@@ -436,20 +661,20 @@ class SmbHostDiscovery:
             ).start()
         except RuntimeError as exc:
             # Nothing will reach the release in the thread that never ran,
-            # and a lock left held would retire the broadcast for good.
+            # and a lock left held would retire the scan for good.
             self._scanning.release()
             logger.warning("No thread to scan for shares on: %s", exc)
 
     def hosts(self) -> list[DiscoveredHost]:
         """Every server worth offering that was seen recently, by address.
 
-        A host found both ways is reported once, keeping whichever sighting
-        carried a name, and a host with a routed IPv4 address is offered on
-        IPv4 alone — the same shares under an IPv6 address are noise. This
-        machine is left out on every address it holds — Samba answers
-        on all of them, and the shares behind them are folders already
-        offered as folders. Whose an address is gets asked here rather than
-        on arrival, because it changes.
+        A host found more than one way is reported once, keeping whichever
+        sighting carried a name, and a host with a routed IPv4 address is
+        offered on IPv4 alone — the same shares under an IPv6 address are
+        noise. This machine is left out on every address it holds — Samba
+        answers on all of them, and the shares behind them are folders
+        already offered as folders. Whose an address is gets asked here
+        rather than on arrival, because it changes.
         """
         cutoff = self._now() - self._stale_after
         merged: dict[str, DiscoveredHost] = {}
@@ -504,10 +729,14 @@ class SmbHostDiscovery:
         with self._lock:
             self._announced.pop(key, None)
 
-    def _netbios_seen(self, address: str, name: str) -> None:
+    def _netbios_seen(self, address: str, name: str, source: str = NETBIOS) -> None:
+        """A host that named its file server in a node-status reply.
+
+        @param source How it was found before it was asked its name.
+        """
         with self._lock:
             self._answered[address] = (
-                DiscoveredHost(address=address, name=name, source="NetBIOS"),
+                DiscoveredHost(address=address, name=name, source=source),
                 self._now(),
             )
 
@@ -515,39 +744,50 @@ class SmbHostDiscovery:
         try:
             self._scan_once()
         except OSError as exc:
-            logger.debug("The NetBIOS scan could not be sent: %s", exc)
+            logger.debug("The scan for file servers stopped: %s", exc)
         finally:
             self._scanning.release()
 
     def _scan_once(self) -> None:
-        """Broadcast one node-status request and collect what answers."""
-        query = nbstat_query(transaction_id=int(self._now()) & 0xFFFF)
+        """Ask who is out there, ask each host that answers for its name,
+        and collect what comes back until the scan's time is up."""
+        transaction_id = int(self._now()) & 0xFFFF
         deadline = time.monotonic() + self._scan_seconds
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            sock.settimeout(0.5)
-            for address in broadcast_addresses():
-                try:
-                    sock.sendto(query, (address, _NBNS_PORT))
-                except OSError as exc:
-                    logger.debug("No NetBIOS query to %s: %s", address, exc)
-
+        channel = self._scan_factory()
+        try:
+            channel.ask_everyone(transaction_id)
+            found_by: dict[str, str] = {}
             while not self._stopping.is_set():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return
-                sock.settimeout(min(0.5, remaining))
-                try:
-                    data, (address, _port) = sock.recvfrom(4096)
-                except socket.timeout:
-                    continue
-                except OSError as exc:
-                    logger.debug("The NetBIOS scan stopped early: %s", exc)
-                    return
-                try:
-                    name = file_server_name(parse_nbstat_reply(data))
-                except ValueError as exc:
-                    logger.debug("Ignoring a reply from %s: %s", address, exc)
-                    continue
-                if name is not None:
-                    self._netbios_seen(address, name)
+                heard = channel.receive(min(0.5, remaining))
+                if heard is not None:
+                    self._take(channel, heard, found_by, transaction_id)
+        finally:
+            channel.close()
+
+    def _take(
+        self,
+        channel: ScanChannel,
+        heard: Heard,
+        found_by: dict[str, str],
+        transaction_id: int,
+    ) -> None:
+        """Ask a host that has just been found for its name, once, or take
+        the name a host asked earlier gives."""
+        found = _found_over(heard)
+        if found is not None:
+            if heard.address not in found_by:
+                found_by[heard.address] = found
+                channel.ask_host(heard.address, transaction_id)
+            return
+        if heard.over != NETBIOS or heard.address not in found_by:
+            return
+        try:
+            name = file_server_name(parse_nbstat_reply(heard.data))
+        except ValueError as exc:
+            logger.debug("Ignoring a reply from %s: %s", heard.address, exc)
+            return
+        if name is not None:
+            self._netbios_seen(heard.address, name, found_by[heard.address])
