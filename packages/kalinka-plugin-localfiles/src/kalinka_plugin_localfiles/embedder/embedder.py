@@ -293,8 +293,6 @@ class EmbeddingWorker:
         @return Whether any job in it was settled, done or failed. A batch
             that was only set aside, because its storage is not answering,
             is not progress: the pass ends rather than asking again at once.
-            Nothing is claimed while the audio model is not loaded, so a job
-            only ever spends an attempt on its own audio.
         """
         if not self._audio_available:
             return False
@@ -461,10 +459,7 @@ class EmbeddingWorker:
                 )
 
     async def _process_clap_text_batch(self) -> bool:
-        """Process clap_text jobs: embed track metadata text with CLAP.
-
-        Nothing is claimed while the text model is not loaded.
-        """
+        """Process clap_text jobs: embed track metadata text with CLAP."""
         if not self._text_available:
             return False
         cfg = self.config.ai_search

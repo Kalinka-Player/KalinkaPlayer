@@ -163,8 +163,6 @@ class TestEmbedderBackfill:
 
 class TestMoodIndexLoad:
     def test_loads_on_a_freshly_booted_pi(self, tmp_path, monkeypatch):
-        """Monotonic time starts at boot; the index must not wait out its
-        retry gap before the first attempt."""
         words, va, emb = _fixture_index()
         path = tmp_path / "mood_index.npz"
         np.savez(path, words=np.array(words), va=va, text_emb=emb)
