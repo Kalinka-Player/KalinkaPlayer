@@ -314,6 +314,19 @@ TEST_F(AudioGraphHttpStreamTest, stalled_transfer_resumes_where_it_stopped) {
       << "first difference at byte " << differs - content.begin();
 }
 
+TEST_F(AudioGraphHttpStreamTest, resume_answered_with_the_whole_file_skips_what_was_read) {
+  auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(
+      1, server.url("/forgets-ranges"), bufferSize, 0, stallTimeout);
+
+  const auto content = readToEnd(*audioGraphHttpStream);
+
+  EXPECT_EQ(audioGraphHttpStream->getState().state,
+            AudioGraphNodeState::FINISHED);
+  const auto expected = fileContent(file);
+  ASSERT_EQ(content.size(), expected.size());
+  EXPECT_TRUE(std::equal(content.begin(), content.end(), expected.begin()));
+}
+
 TEST_F(AudioGraphHttpStreamTest, stall_before_headers_still_reads_every_chunk) {
   // Chunked, so a length never learned would end the stream after one chunk.
   auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(

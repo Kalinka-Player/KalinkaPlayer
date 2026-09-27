@@ -51,6 +51,11 @@ size_t AudioGraphHttpStream::WriteCallback(void *contents, size_t size,
     silentSince = std::chrono::steady_clock::now();
     return totalSize;
   }
+  // A 200 carries the file from its first byte, whatever range was asked for.
+  if (responseCode == 200) {
+    sizeWritten = std::min(bytesToSkip, totalSize);
+    bytesToSkip -= sizeWritten;
+  }
 
   if (setStreamingState) {
     setState(StreamState(AudioGraphNodeState::STREAMING, offset,
@@ -291,6 +296,7 @@ int AudioGraphHttpStream::readSingleChunk(std::stop_token stopToken) {
         std::placeholders::_2, std::placeholders::_3)));
   }
   silentSince = std::chrono::steady_clock::now();
+  bytesToSkip = offset;
   try {
     request.perform();
   } catch (const curlpp::LibcurlRuntimeError &ex) {

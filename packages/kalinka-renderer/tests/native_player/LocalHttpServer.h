@@ -28,6 +28,9 @@
  * every response and `/stall-once` of its first alone; `/stall-often` sends
  * STALL_OFTEN_BYTES of every response longer than that; `/silent-once` sends
  * nothing at all to its first request, not even the headers.
+ * `/forgets-ranges` stalls its first response as `/stall-often` does, then
+ * answers every request after it with a 200 and the whole file, as a server
+ * does that ignores Range.
  *
  * `/fail-once` answers its first request with a bare 503, then as `/ranged`
  * does; `/slow-missing` is a 404 whose few bytes of body take TRICKLE_TIME to

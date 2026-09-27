@@ -161,6 +161,11 @@ Reply answer(const Request &request, const std::string &body, bool first) {
   if (target == "/silent-once") {
     return {ranged(request, body), first ? Delivery::Silent : Delivery::Whole};
   }
+  if (target == "/forgets-ranges") {
+    return first ? stalled(ranged(request, body),
+                           LocalHttpServer::STALL_OFTEN_BYTES)
+                 : Reply{respond(request, http::status::ok, body)};
+  }
   if (target == "/fail-once") {
     return {first ? respond(request, http::status::service_unavailable)
                   : ranged(request, body)};
