@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <fstream>
 #include <iterator>
 #include <optional>
@@ -32,7 +33,11 @@ enum class Delivery {
   Stall,
   /// The headers and `sentFirst` body bytes, the rest once release() is called.
   Held,
+  /// The headers, then the body a byte every TRICKLE_GAP.
+  Trickle,
 };
+
+constexpr std::chrono::milliseconds TRICKLE_GAP{250};
 
 struct Reply {
   Response response;
@@ -156,6 +161,16 @@ Reply answer(const Request &request, const std::string &body, bool first) {
   if (target == "/silent-once") {
     return {ranged(request, body), first ? Delivery::Silent : Delivery::Whole};
   }
+  if (target == "/fail-once") {
+    return {first ? respond(request, http::status::service_unavailable)
+                  : ranged(request, body)};
+  }
+  if (target == "/slow-missing") {
+    return {respond(request, http::status::not_found,
+                    std::string(LocalHttpServer::TRICKLE_TIME / TRICKLE_GAP,
+                                '.')),
+            Delivery::Trickle};
+  }
   return {respond(request, http::status::not_found)};
 }
 
@@ -258,6 +273,14 @@ void LocalHttpServer::serve(tcp::socket &socket) {
       asio::write(socket, asio::buffer(rest.data(), rest.size()), error);
       break;
     }
+    case Delivery::Trickle:
+      writeHead(socket, response, 0, error);
+      for (size_t sent = 0; !error && sent < response.body().size(); ++sent) {
+        std::this_thread::sleep_for(TRICKLE_GAP);
+        asio::write(socket, asio::buffer(response.body().data() + sent, 1),
+                    error);
+      }
+      break;
     }
     if (error || !response.keep_alive()) {
       return;

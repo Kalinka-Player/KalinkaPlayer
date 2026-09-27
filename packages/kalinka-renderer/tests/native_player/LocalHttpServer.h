@@ -2,6 +2,7 @@
 
 #include <boost/asio.hpp>
 
+#include <chrono>
 #include <condition_variable>
 #include <functional>
 #include <memory>
@@ -28,6 +29,10 @@
  * STALL_OFTEN_BYTES of every response longer than that; `/silent-once` sends
  * nothing at all to its first request, not even the headers.
  *
+ * `/fail-once` answers its first request with a bare 503, then as `/ranged`
+ * does; `/slow-missing` is a 404 whose few bytes of body take TRICKLE_TIME to
+ * arrive, one at a time.
+ *
  * Every connection is served on a thread of its own. The server must outlive
  * the streams reading from it: destroying it closes their connections and
  * joins every thread.
@@ -41,6 +46,8 @@ public:
   /// A little over the 32 KB buffer the stream tests use, so a stream held
   /// here waits for room in its buffer and holds the last bytes received.
   static constexpr size_t HELD_BYTES = 36864;
+  /// Twice the tests' one-second stall timeout, with a byte every 250 ms.
+  static constexpr std::chrono::milliseconds TRICKLE_TIME{2000};
 
   explicit LocalHttpServer(const std::string &filePath);
   ~LocalHttpServer();
