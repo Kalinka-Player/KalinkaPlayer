@@ -245,21 +245,16 @@ void AudioGraphHttpStream::readContentChunks(std::stop_token stopToken) {
                                std::to_string(offset) + "/" +
                                std::to_string(contentLength) +
                                ", chunk=" + std::to_string(chunkSize));
-    } else if (responseCode >= 400 && responseCode < 500) {
+    } else if (responseCode >= 500 && responseCode < 600 && numRetries > 0 &&
+               acceptRange) {
+      --numRetries;
+      spdlog::warn(
+          "HTTP GET request failed with code {}, retrying {} more times",
+          responseCode, numRetries);
+      std::this_thread::sleep_for(std::chrono::seconds(1));
+    } else {
       throw std::runtime_error("HTTP GET request failed with code " +
                                std::to_string(responseCode));
-    } else if (responseCode >= 500 && responseCode < 600) {
-      if (numRetries == 0 || !acceptRange) {
-        std::string message =
-            "HTTP GET request failed with code " + std::to_string(responseCode);
-        throw std::runtime_error(message);
-      } else {
-        --numRetries;
-        spdlog::warn(
-            "HTTP GET request failed with code {}, retrying {} more times",
-            responseCode, numRetries);
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-      }
     }
   }
 }

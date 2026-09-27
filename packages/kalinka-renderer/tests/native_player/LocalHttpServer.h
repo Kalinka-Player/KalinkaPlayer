@@ -34,7 +34,7 @@
  *
  * `/fail-once` answers its first request with a bare 503, then as `/ranged`
  * does; `/slow-missing` is a 404 whose few bytes of body take TRICKLE_TIME to
- * arrive, one at a time.
+ * arrive, one at a time; `/moved` is a 302 to `/ranged`.
  *
  * Every connection is served on a thread of its own. The server must outlive
  * the streams reading from it: destroying it closes their connections and
