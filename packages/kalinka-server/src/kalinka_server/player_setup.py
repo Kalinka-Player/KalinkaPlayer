@@ -3,7 +3,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from importlib.metadata import entry_points
-from typing import Any, Generator, Mapping, MutableMapping
+from typing import Any, Callable, Generator, Mapping, MutableMapping
 
 from kalinka_eventbus import EventBus
 from kalinka_plugin_sdk import DeviceVolume, ModuleHealthState, paths
@@ -42,8 +42,10 @@ from .config_overrides import (
     to_override_value,
 )
 from .config_secrets import is_private_path, loggable
+from .direct_playback import DirectPlaybackService
 from .module_timeout import TimeLimitedInputModule
 from .output_device_router import OutputDeviceRouter
+from .playback_arbiter import PlaybackArbiter
 from .playqueue import PlayQueueImpl
 from .renderer_output_device import RendererOutputPlugin
 from .renderer_prefs import RendererPreferences
@@ -67,6 +69,10 @@ class PlayerContext:
     # Resolves which device module owns the active renderer's output. Set by
     # setup() before the plugin scan, so device emitters can be routed.
     device_router: "OutputDeviceRouter | None" = None
+    # Who drives the output: the play queue or a plugin that took it over.
+    playback_arbiter: "PlaybackArbiter | None" = None
+    # An input plugin's handle for playing outside the queue, by plugin id.
+    direct_playback_for: "Callable[[str], DirectPlaybackService] | None" = None
 
 
 @dataclass
@@ -561,6 +567,7 @@ class PreparedModuleCollection:
         
         match plugin_class.PLUGIN_TYPE:
             case PluginType.INPUT_MODULE:
+                direct_playback_for = self.player_context.direct_playback_for
                 return InputPluginContext(
                     playqueue=self.player_context.playqueue,
                     listener=self.player_context.playqueue_eventbus,  # type: ignore[arg-type]
@@ -569,6 +576,9 @@ class PreparedModuleCollection:
                     sdk_version=SDK_VERSION,
                     config=config,
                     embedder=self.player_context.embedder,
+                    direct_playback=(
+                        direct_playback_for(name) if direct_playback_for else None
+                    ),
                 )
             case PluginType.OUTPUT_DEVICE:
                 router = self.player_context.device_router
@@ -741,10 +751,15 @@ async def setup(
             initial_state=ExtDeviceState(power_on=False, volume=DeviceVolume()))
 
     # Create core components
+    arbiter = PlaybackArbiter(playqueue_eventbus)
     player_context = PlayerContext(
         playqueue_eventbus=playqueue_eventbus,
         playqueue=PlayQueueImpl(
-            config, playqueue_eventbus, renderer_registry, renderer_sessions
+            config,
+            playqueue_eventbus,
+            renderer_registry,
+            renderer_sessions,
+            arbiter=arbiter,
         ),
         ext_device_eventbus=device_eventbus,
         embedder=SharedTextEmbedder(
@@ -763,6 +778,16 @@ async def setup(
         renderer_prefs,
         lambda: modules.prepared_devices,
         device_eventbus,
+    )
+    player_context.playback_arbiter = arbiter
+    player_context.direct_playback_for = lambda plugin_id: DirectPlaybackService(
+        plugin_id,
+        config=config,
+        registry=renderer_registry,
+        pool=renderer_sessions,
+        arbiter=arbiter,
+        device_router=lambda: player_context.device_router,
+        device_events=device_eventbus,
     )
 
     # Scan and setup plugins

@@ -304,6 +304,13 @@ class SimRenderer:
         self._fill_volume(snapshot.volume)
         return snapshot
 
+    def turn_knob(self, percent: int) -> None:
+        """The volume changed on the renderer's host, not by a command."""
+        self.volume = percent
+        changed = pb.VolumeChanged(external=True)
+        self._fill_volume(changed.volume)
+        self._send(StateChange.VOLUME, changed)
+
     def _fill_volume(self, out: pb.VolumeState) -> None:
         out.supported = self.volume_supported
         out.current = self.volume

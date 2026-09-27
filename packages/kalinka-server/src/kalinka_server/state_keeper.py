@@ -33,7 +33,8 @@ async def save_state(
     with open(STATE_FILE, "w") as f:
         snapshot = playqueue_eventbus.get_snapshot()
         json.dump(
-            snapshot.model_dump(),
+            # A plugin's hold on the output ends with the process.
+            snapshot.model_dump(exclude={"playback_control"}),
             f,
         )
     logger.info("State saved")

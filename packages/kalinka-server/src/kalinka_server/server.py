@@ -27,6 +27,7 @@ from kalinka_plugin_sdk.datamodel import (
     EntityId,
     EntityType,
     FavoriteIds,
+    PlaybackControl,
     PlaybackState,
     PlayerStateEnum,
 )
@@ -169,6 +170,10 @@ async def lifespan(app: FastAPI):
         log_export = getattr(app.state, "log_export", None)
         if log_export is not None:
             await log_export.close()
+        # A plugin playing outside the queue is told before its session goes.
+        arbiter = app.state.player_context.playback_arbiter
+        if arbiter is not None:
+            await arbiter.shutdown()
         # Finalize sessions and fire their close callbacks. uvicorn has already
         # closed the renderer sockets by now, so the renderer itself only
         # learns the session is gone from the STALE reconciliation at its next
@@ -640,11 +645,9 @@ async def create_app(
         StaticFiles(directory=TONE_DIR, check_dir=False),
         name=TONE_MOUNT_NAME,
     )
-    test_tone = TonePlayer(
-        renderer_registry,
-        renderer_sessions,
-        lambda rid: app.state.player_context.playqueue.release_renderer(rid),
-    )
+    arbiter = player_context.playback_arbiter
+    assert arbiter is not None  # setup() always builds one
+    test_tone = TonePlayer(renderer_registry, renderer_sessions, arbiter.vacate)
     app.state.test_tone = test_tone
 
     @app.get("/queue/list")
@@ -843,6 +846,10 @@ async def create_app(
     @app.get("/queue/state")
     async def state() -> PlaybackState:
         return await player_context.playqueue.get_playback_state()
+
+    @app.get("/queue/control")
+    async def control() -> PlaybackControl:
+        return player_context.playback_arbiter.control
 
     @app.get("/queue/mode")
     async def mode():

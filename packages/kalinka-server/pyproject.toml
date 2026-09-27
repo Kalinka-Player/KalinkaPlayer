@@ -53,7 +53,7 @@ dependencies = [
     "protobuf>=7.35,<8",
     # >=3.3: ConfigIssue and ConfigOption, the vocabulary a plugin answers
     # the settings page's suggestion and validation calls in.
-    "kalinka-plugin-sdk>=3.3,<4",
+    "kalinka-plugin-sdk>=3.4,<4",
 ]
 dynamic = ["version"]
 
