@@ -296,13 +296,16 @@ class FileStorage(ABC):
         """
 
     @abstractmethod
-    def open(self, path: str) -> BinaryIO:
+    def open(self, path: str, *, read_ahead: bool = True) -> BinaryIO:
         """Open a file for reading bytes.
 
         The object is seekable: tag readers and the audio embedder both
         jump around inside a file rather than reading it through. Its reads
         fail as ``OSError`` too, however the protocol reports them.
 
+        @param read_ahead Whether a read may fetch more than it asked for, in
+            case the next one wants it. False reads only what each call asks
+            for, which suits a caller that already reads in bounded spans.
         @raise FileNotFoundError If it is not there.
         @raise OSError If it cannot be opened.
         """

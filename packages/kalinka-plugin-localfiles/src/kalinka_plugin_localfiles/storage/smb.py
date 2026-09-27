@@ -199,13 +199,15 @@ class SmbStorage(FileStorage):
             identity=self._identity(info),
         )
 
-    def open(self, path: str) -> BinaryIO:
+    def open(self, path: str, *, read_ahead: bool = True) -> BinaryIO:
+        """Without read-ahead the handle is the raw SMB file, so each read
+        is one SMB READ of what it asked for, up to the negotiated size."""
         locator = parse(path)
         with self._as_os_error(locator):
             handle = smbclient.open_file(
                 self._unc(locator),
                 mode="rb",
-                buffering=_READ_BUFFER,
+                buffering=_READ_BUFFER if read_ahead else 0,
                 share_access=_SHARE_ACCESS,
                 **self._logon(locator),
             )

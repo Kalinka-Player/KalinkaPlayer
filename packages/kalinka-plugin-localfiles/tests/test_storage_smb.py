@@ -49,6 +49,38 @@ class _Entry:
         return self._is_dir
 
 
+class _RawFile(io.RawIOBase):
+    """A file on the share, counting the bytes its reads fetched from it."""
+
+    def __init__(self, data):
+        super().__init__()
+        self._data = data
+        self._offset = 0
+        self.fetched = 0
+
+    def readable(self):
+        return True
+
+    def seekable(self):
+        return True
+
+    def readinto(self, buffer):
+        chunk = self._data[self._offset:self._offset + len(buffer)]
+        buffer[:len(chunk)] = chunk
+        self._offset += len(chunk)
+        self.fetched += len(chunk)
+        return len(chunk)
+
+    def seek(self, offset, whence=io.SEEK_SET):
+        base = {io.SEEK_SET: 0, io.SEEK_CUR: self._offset,
+                io.SEEK_END: len(self._data)}[whence]
+        self._offset = base + offset
+        return self._offset
+
+    def tell(self):
+        return self._offset
+
+
 class _FakeSmbClient:
     """An in-memory share, recording what it was asked and with what."""
 
@@ -59,6 +91,7 @@ class _FakeSmbClient:
         self.failure = failure
         self.calls = []
         self.logons = []
+        self.opened = []
         self.session = SimpleNamespace(tree_connect_table={})
 
     def register_session(self, server, **kwargs):
@@ -92,6 +125,9 @@ class _FakeSmbClient:
 
     def open_file(self, unc, mode="rb", buffering=-1, share_access=None,
                   **kwargs):
+        """Buffered as the real client buffers: a ``BufferedReader`` of the
+        size asked for, one SMB2 payload by default, or the raw file for
+        0."""
         self._record(
             unc,
             dict(
@@ -103,7 +139,13 @@ class _FakeSmbClient:
         )
         if unc not in self.files:
             raise OSError(f"no such file: {unc}")
-        return io.BytesIO(self.files[unc])
+        raw = _RawFile(self.files[unc])
+        self.opened.append(raw)
+        if buffering == 0:
+            return raw
+        return io.BufferedReader(
+            raw, buffer_size=64 * 1024 if buffering == -1 else buffering
+        )
 
 
 def _stat_result(is_dir=False, size=0, mtime_ns=1_700_000_000_000_000_000,
@@ -443,6 +485,37 @@ class TestReading:
         client = fake_client(files={r"\\nas\music\a.flac": b"x"})
         _storage().open("smb://nas/music/a.flac")
         assert client.calls[0][1]["buffering"] >= 64 * 1024
+
+    def test_a_file_opens_without_read_ahead_when_asked(self, fake_client):
+        client = fake_client(files={r"\\nas\music\a.flac": b"x"})
+        _storage().open("smb://nas/music/a.flac", read_ahead=False)
+        assert client.calls[0][1]["buffering"] == 0
+
+    def test_a_served_range_fetches_only_its_own_bytes(self, fake_client):
+        """The server reads a renderer's 384,000-byte range in chunks of at
+        most 256 KiB. Through the read-ahead, the first chunk fetched a whole
+        1 MiB from the NAS, 2.7 times the audio each range served."""
+        audio = bytes(range(256)) * 16 * 1024
+        client = fake_client(files={r"\\nas\music\a.flac": audio})
+        start = 1_000_000
+
+        with _storage().open("smb://nas/music/a.flac", read_ahead=False) as handle:
+            handle.seek(start)
+            served = handle.read(262_144) + handle.read(121_856)
+
+        assert served == audio[start:start + 384_000]
+        assert client.opened[0].fetched == 384_000
+
+    def test_read_ahead_fetches_a_whole_buffer(self, fake_client):
+        """What a tag read or the embedder keeps, and what a served range used
+        to cost too."""
+        audio = bytes(range(256)) * 16 * 1024
+        client = fake_client(files={r"\\nas\music\a.flac": audio})
+
+        with _storage().open("smb://nas/music/a.flac") as handle:
+            handle.read(262_144)
+
+        assert client.opened[0].fetched == smb_mod._READ_BUFFER
 
     def test_nothing_local_to_hand_to_another_process(self, fake_client):
         fake_client(files={r"\\nas\music\a.flac": b"x"})
