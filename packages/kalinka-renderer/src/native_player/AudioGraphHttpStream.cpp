@@ -147,6 +147,7 @@ void AudioGraphHttpStream::reader(std::stop_token stopToken) {
     spdlog::error(ex.what());
     setState({AudioGraphNodeState::ERROR, StreamError{StreamErrorSource::HTTP_STREAM, ex.what()}});
   }
+  seekRequestSignal.close(static_cast<size_t>(-1));
   buffer.setEof();
   spdlog::debug("Reader thread is finished");
 }

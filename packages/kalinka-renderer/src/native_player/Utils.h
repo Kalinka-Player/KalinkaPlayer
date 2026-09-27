@@ -54,6 +54,8 @@ private:
 
   std::optional<SignalType> value;
   SignalType ackValue;
+  // Set once the answering thread has gone: nothing is waited for any more.
+  bool closed = false;
 
 public:
   Signal() = default;
@@ -62,6 +64,9 @@ public:
   void sendValue(const SignalType &value) {
     {
       std::unique_lock lock(mutex);
+      if (closed) {
+        return;
+      }
       this->value = value;
       ackValue = SignalType();
       signalStopSource.request_stop();
@@ -76,7 +81,7 @@ public:
 
   SignalType getResponse(std::stop_token stopToken) {
     std::unique_lock lock(mutex);
-    cv.wait(lock, stopToken, [this] { return !value.has_value(); });
+    cv.wait(lock, stopToken, [this] { return closed || !value.has_value(); });
     if (stopToken.stop_requested()) {
       return SignalType();
     }
@@ -99,8 +104,32 @@ public:
 
   std::optional<SignalType> waitValue(std::stop_token stopToken) {
     std::unique_lock lock(mutex);
-    cv.wait(lock, stopToken, [this] { return value.has_value(); });
+    cv.wait(lock, stopToken, [this] { return closed || value.has_value(); });
     return value;
+  }
+
+  /**
+   * @brief The answering thread has ended: a request pending now, or made
+   * later, gets `finalAck` at once, and a waitValue() returns without a value.
+   * @note Call it on the answering thread's way out. Without it a request made
+   * after the thread ended waits forever, since nothing is left to answer it.
+   */
+  void close(const SignalType &finalAck) {
+    {
+      std::unique_lock lock(mutex);
+      closed = true;
+      value.reset();
+      ackValue = finalAck;
+    }
+    cv.notify_all();
+  }
+
+  /// Undoes close() for an answering thread that is starting again.
+  void reopen() {
+    std::unique_lock lock(mutex);
+    closed = false;
+    value.reset();
+    signalStopSource = std::stop_source();
   }
 };
 

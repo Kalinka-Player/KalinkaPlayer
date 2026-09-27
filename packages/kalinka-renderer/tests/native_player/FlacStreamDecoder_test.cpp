@@ -98,3 +98,20 @@ TEST_F(FlacStreamDecoderTest, stream_error) {
   EXPECT_EQ(streamState.state, AudioGraphNodeState::ERROR);
   EXPECT_EQ(streamState.error->message, "Fake error message");
 }
+
+// A decoder whose thread has already ended, here on a start offset past the
+// end of the stream, must still answer a seek: the renderer asks from its
+// only command thread, and an unanswered seek froze it for good.
+TEST_F(FlacStreamDecoderTest, seek_after_the_decoder_has_stopped_returns) {
+  auto flacStreamDecoder =
+      std::make_shared<FlacStreamDecoder>(1, bufferSize, 60000);
+  auto inputNode = std::make_shared<FileInputNode>(1, testFile("tone440.flac"));
+  flacStreamDecoder->connectTo(inputNode);
+  waitForStatus(*flacStreamDecoder, AudioGraphNodeState::STOPPED,
+                std::chrono::milliseconds(2000));
+  ASSERT_EQ(flacStreamDecoder->getState().state, AudioGraphNodeState::STOPPED);
+
+  EXPECT_TRUE(returnsWithin(
+      [flacStreamDecoder] { flacStreamDecoder->seekTo(0); },
+      std::chrono::milliseconds(2000)));
+}

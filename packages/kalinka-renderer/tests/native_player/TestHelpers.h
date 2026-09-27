@@ -4,8 +4,12 @@
 #include "StreamState.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
+#include <future>
+#include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -29,6 +33,19 @@ std::string testFile(const std::string &name) {
 std::string testDevice() {
   const char *configured = std::getenv("KALINKA_TEST_ALSA_DEVICE");
   return configured != nullptr ? configured : "null";
+}
+
+// Whether call() returns within the timeout. On a timeout the call is left
+// running detached, so a hang fails the test rather than the whole suite.
+template <typename Call>
+bool returnsWithin(Call call, std::chrono::milliseconds timeout) {
+  auto done = std::make_shared<std::promise<void>>();
+  auto future = done->get_future();
+  std::thread([call, done]() mutable {
+    call();
+    done->set_value();
+  }).detach();
+  return future.wait_for(timeout) == std::future_status::ready;
 }
 
 std::vector<StreamState> drainStates(StateMonitor &monitor) {
