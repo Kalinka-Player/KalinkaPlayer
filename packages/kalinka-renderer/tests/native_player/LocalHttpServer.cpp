@@ -72,7 +72,7 @@ std::optional<std::pair<size_t, size_t>> requestedRange(std::string_view header,
 
 bool servesRanges(std::string_view target) {
   return target == "/ranged" || target == "/stall" || target == "/stall-once" ||
-         target == "/silent-once";
+         target == "/stall-often" || target == "/silent-once";
 }
 
 Response respond(const Request &request, const std::string &body) {
@@ -81,7 +81,7 @@ Response respond(const Request &request, const std::string &body) {
   response.keep_alive(request.keep_alive());
   const std::string_view target = request.target();
 
-  if (target == "/whole") {
+  if (target == "/whole" || target == "/held") {
     response.result(http::status::ok);
     response.set(http::field::accept_ranges, "none");
     response.body() = body;
@@ -123,6 +123,12 @@ void writeHead(tcp::socket &socket, Response &response, size_t bodyBytes,
   }
 }
 
+// Silent but open until the client hangs up or shutdown() wakes us.
+void holdOpen(tcp::socket &socket) {
+  beast::error_code ignored;
+  socket.wait(tcp::socket::wait_read, ignored);
+}
+
 } // namespace
 
 LocalHttpServer::LocalHttpServer(const std::string &filePath)
@@ -136,13 +142,14 @@ LocalHttpServer::~LocalHttpServer() {
     std::lock_guard lock(mutex_);
     stopping_ = true;
   }
+  releasedOrStopping_.notify_all();
   // A blocking accept only returns for a connection, so make one.
   boost::system::error_code ignored;
   tcp::socket waker(io_);
   waker.connect(acceptor_.local_endpoint(), ignored);
   acceptorThread_.join();
 
-  std::lock_guard lock(mutex_);
+  // Unlocked: the acceptor is joined, and a held response needs mutex_ to end.
   // Shutting the descriptor down wakes a read blocked on it; closing the
   // asio socket from this thread would race the one serving it.
   for (const auto &socket : sockets_) {
@@ -180,25 +187,57 @@ void LocalHttpServer::serve(tcp::socket &socket) {
       return;
     }
     Response response = respond(request, body_);
-    const bool silent = goesSilent(request.target());
-    if (silent || stalls(request.target())) {
-      if (!silent) {
-        writeHead(socket, response, STALLED_BODY_BYTES, error);
-      }
-      // Silent but open until the client hangs up or shutdown() wakes us.
-      socket.wait(tcp::socket::wait_read, error);
+    const std::string_view target = request.target();
+    if (goesSilent(target)) {
+      holdOpen(socket);
       return;
     }
-    http::write(socket, response, error);
+    if (const auto sent = sentBeforeStall(target, response.body().size())) {
+      writeHead(socket, response, *sent, error);
+      holdOpen(socket);
+      return;
+    }
+    if (target == "/held") {
+      writeHead(socket, response, HELD_BYTES, error);
+      if (error || !waitForRelease()) {
+        return;
+      }
+      const std::string_view rest =
+          std::string_view(response.body()).substr(HELD_BYTES);
+      asio::write(socket, asio::buffer(rest.data(), rest.size()), error);
+    } else {
+      http::write(socket, response, error);
+    }
     if (error || !response.keep_alive()) {
       return;
     }
   }
 }
 
-bool LocalHttpServer::stalls(std::string_view target) {
-  return target == "/stall" ||
-         (target == "/stall-once" && !stalledOnce_.exchange(true));
+void LocalHttpServer::release() {
+  {
+    std::lock_guard lock(mutex_);
+    released_ = true;
+  }
+  releasedOrStopping_.notify_all();
+}
+
+bool LocalHttpServer::waitForRelease() {
+  std::unique_lock lock(mutex_);
+  releasedOrStopping_.wait(lock, [this] { return released_ || stopping_; });
+  return !stopping_;
+}
+
+std::optional<size_t> LocalHttpServer::sentBeforeStall(std::string_view target,
+                                                       size_t bodySize) {
+  if (target == "/stall" ||
+      (target == "/stall-once" && !stalledOnce_.exchange(true))) {
+    return STALLED_BODY_BYTES;
+  }
+  if (target == "/stall-often" && bodySize > STALL_OFTEN_BYTES) {
+    return STALL_OFTEN_BYTES;
+  }
+  return std::nullopt;
 }
 
 bool LocalHttpServer::goesSilent(std::string_view target) {
