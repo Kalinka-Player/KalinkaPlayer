@@ -46,6 +46,7 @@ private:
   Buffer<uint8_t> buffer;
   size_t contentLength = 1;
   size_t offset = 0;
+  size_t bytesToSkip = 0;
   Signal<size_t> seekRequestSignal;
   size_t chunkSize = 0;
   std::chrono::seconds stallTimeout;
