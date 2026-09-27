@@ -1,6 +1,7 @@
 #include "Buffer.h"
 #include "PerfMon.h"
 
+#include <atomic>
 #include <thread>
 
 #include <gtest/gtest.h>
@@ -65,6 +66,20 @@ TEST_F(BufferTest, waitForSpace) {
   buffer.read((uint8_t *)actualData.data(), actualData.size());
 
   EXPECT_EQ(expectedData, actualData);
+}
+
+TEST_F(BufferTest, eof_is_seen_only_once_the_empty_callback_has_run) {
+  for (int attempt = 0; attempt < 2000; ++attempt) {
+    std::atomic<bool> calledBack = false;
+    Buffer<uint8_t> buffer(20, [&](Buffer<uint8_t> &) { calledBack = true; });
+    std::jthread writer([&] { buffer.setEof(); });
+
+    // Close behind the writer, as a reader draining the buffer is.
+    while (!buffer.isEof()) {
+    }
+    ASSERT_EQ(buffer.waitForData(), 0u);
+    ASSERT_TRUE(calledBack) << "attempt " << attempt;
+  }
 }
 
 #ifdef PROFILE
