@@ -48,6 +48,7 @@ size_t AudioGraphHttpStream::WriteCallback(void *contents, size_t size,
   curlpp::Info<CURLINFO_RESPONSE_CODE, long>::get(request, responseCode);
   if (responseCode != 200 && responseCode != 206) {
     spdlog::trace("Skipping data for response code {}", responseCode);
+    silentSince = std::chrono::steady_clock::now();
     return totalSize;
   }
 
@@ -62,9 +63,6 @@ size_t AudioGraphHttpStream::WriteCallback(void *contents, size_t size,
   while (sizeWritten < totalSize) {
     auto spaceAvailable = buffer.waitForSpace(combinedStopToken.get_token());
     if (combinedStopToken.get_token().stop_requested()) {
-      if (seekRequestSignal.getStopToken().stop_requested()) {
-        return chunkSize ? totalSize : 0;
-      }
       return 0;
     }
     auto writtenChunkSize =
@@ -305,11 +303,12 @@ int AudioGraphHttpStream::readSingleChunk(std::stop_token stopToken) {
     }
     throw;
   }
-  // Only now: a request that failed before its headers left them unread.
-  hasReadHeader = true;
-
   long responseCode = 0;
   curlpp::Info<CURLINFO_RESPONSE_CODE, long>::get(request, responseCode);
+  // Only a success: a failed request's headers carry no Content-Range.
+  if (responseCode >= 200 && responseCode < 300) {
+    hasReadHeader = true;
+  }
   return responseCode;
 }
 

@@ -326,6 +326,31 @@ TEST_F(AudioGraphHttpStreamTest, stall_before_headers_still_reads_every_chunk) {
   EXPECT_EQ(content.size(), fileContent(file).size());
 }
 
+TEST_F(AudioGraphHttpStreamTest, server_error_before_the_length_still_reads_every_chunk) {
+  // Chunked, so a length never learned would end the stream after one chunk.
+  auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(
+      1, server.url("/fail-once"), bufferSize, bufferSize / 2);
+
+  const auto content = readToEnd(*audioGraphHttpStream);
+
+  EXPECT_EQ(audioGraphHttpStream->getState().state,
+            AudioGraphNodeState::FINISHED);
+  EXPECT_EQ(content.size(), fileContent(file).size());
+}
+
+TEST_F(AudioGraphHttpStreamTest, slow_error_page_is_not_a_stall) {
+  ASSERT_GT(LocalHttpServer::TRICKLE_TIME, stallTimeout);
+  auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(
+      1, server.url("/slow-missing"), bufferSize, 0, stallTimeout);
+
+  auto state = waitForStatus(*audioGraphHttpStream, AudioGraphNodeState::ERROR,
+                             std::chrono::seconds(10));
+
+  ASSERT_EQ(state.state, AudioGraphNodeState::ERROR);
+  ASSERT_TRUE(state.error.has_value());
+  EXPECT_THAT(state.error->message, ::testing::HasSubstr("code 404"));
+}
+
 TEST_F(AudioGraphHttpStreamTest, negative_stall_timeout_never_gives_up) {
   auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(
       1, url, bufferSize, 0, std::chrono::seconds(-1));
@@ -338,8 +363,7 @@ TEST_F(AudioGraphHttpStreamTest, negative_stall_timeout_never_gives_up) {
 }
 
 TEST_F(AudioGraphHttpStreamTest, full_buffer_is_not_a_stall) {
-  // The write that waits for room holds the last bytes sent, so the first
-  // stall check after the pause has nothing newer to go by.
+  // The blocked write holds the newest bytes, so nothing renews the clock.
   ASSERT_GT(LocalHttpServer::HELD_BYTES, bufferSize);
   ASSERT_LE(LocalHttpServer::HELD_BYTES - bufferSize,
             static_cast<size_t>(CURL_MAX_WRITE_SIZE));
