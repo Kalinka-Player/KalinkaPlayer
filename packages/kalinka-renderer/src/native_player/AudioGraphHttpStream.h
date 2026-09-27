@@ -16,9 +16,9 @@ public:
    * @param chunkSize Bytes asked for per request; 0 asks for the rest of the
    * stream in one.
    * @param stallTimeout How long a connected transfer may run below 1 KB/s
-   * before it is dropped and resumed from where it stopped; 0 waits for as
-   * long as the connection lasts. Time spent waiting for room in the buffer,
-   * as while paused, does not count.
+   * before it is dropped and resumed from where it stopped; 0 or less waits
+   * for as long as the connection lasts. Time spent waiting for room in the
+   * buffer, as while paused, does not count.
    */
   AudioGraphHttpStream(std::optional<StreamId> streamId, const std::string &url,
                        size_t bufferSize, size_t chunkSize = 0,

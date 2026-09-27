@@ -20,9 +20,10 @@
  * `/ranged` does but sends only the headers and the first STALLED_BODY_BYTES
  * of the body, then holds the connection open without a word until the client
  * hangs up or the server stops; `/stall-once` does that to its first request
- * alone. Every connection is served on a thread of its own. The server must
- * outlive the streams reading from it: destroying it closes their connections
- * and joins every thread.
+ * alone. `/silent-once` answers its first request with nothing at all, not
+ * even the headers, and every later one as `/ranged` does. Every connection is
+ * served on a thread of its own. The server must outlive the streams reading
+ * from it: destroying it closes their connections and joins every thread.
  */
 class LocalHttpServer {
 public:
@@ -42,11 +43,13 @@ private:
   void acceptConnections();
   void serve(boost::asio::ip::tcp::socket &socket);
   bool stalls(std::string_view target);
+  bool goesSilent(std::string_view target);
 
   std::string body_;
   boost::asio::io_context io_;
   boost::asio::ip::tcp::acceptor acceptor_;
   std::atomic<bool> stalledOnce_ = false;
+  std::atomic<bool> silencedOnce_ = false;
   std::mutex mutex_;
   bool stopping_ = false;
   std::vector<std::shared_ptr<boost::asio::ip::tcp::socket>> sockets_;
