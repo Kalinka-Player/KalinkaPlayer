@@ -140,6 +140,8 @@ void AlsaAudioEmitter::start() {
     playbackThread.request_stop();
     playbackThread.join();
   }
+  seekRequestSignal.reopen();
+  pauseRequestSignal.reopen();
   playbackThread =
       std::jthread(std::bind_front(&AlsaAudioEmitter::workerThread, this));
 }
@@ -647,6 +649,8 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
   closeDevice();
   inputNode = nullptr;
   isWorkerRunning = false;
+  seekRequestSignal.close(static_cast<size_t>(-1));
+  pauseRequestSignal.close(false);
 }
 
 void AlsaAudioEmitter::setupAudioFormat(

@@ -88,6 +88,8 @@ void Mp3StreamDecoder::connectTo(
 
   if (!decodingThread.joinable()) {
     setState(StreamState(AudioGraphNodeState::PREPARING));
+    seekSignal.reopen();
+    initCompleteSignal.reopen();
     decodingThread =
         std::jthread(std::bind_front(&Mp3StreamDecoder::threadRun, this));
   }
@@ -220,10 +222,8 @@ void Mp3StreamDecoder::threadRun(std::stop_token token) {
 
   mp3dec_ex_close(&mp3);
   buffer.setEof();
-  if (seekSignal.getValue().has_value()) {
-    seekSignal.respond(-1);
-  }
-  initCompleteSignal.respond(false);
+  seekSignal.close(static_cast<size_t>(-1));
+  initCompleteSignal.close(false);
   setState(StreamState{AudioGraphNodeState::STOPPED});
   spdlog::trace("Mp3StreamDecoder::threadRun finished");
 }

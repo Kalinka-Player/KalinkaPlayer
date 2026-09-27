@@ -1,3 +1,4 @@
+#include "ErrorFakeNode.h"
 #include "FileInputNode.h"
 #include "Mp3StreamDecoder.h"
 #include "TestHelpers.h"
@@ -173,4 +174,17 @@ TEST_F(Mp3StreamDecoderTest, test_seekTo_correctness) {
   }
 
   EXPECT_EQ(dataRead, totalBytes / (totalFrames / seekPos));
+}
+
+// A decoder whose thread ended before the stream opened must still answer a
+// seek; it used to wait forever for an initialisation that could not come.
+TEST_F(Mp3StreamDecoderTest, seek_after_the_decoder_has_stopped_returns) {
+  auto decoder = std::make_shared<Mp3StreamDecoder>(1, 16384);
+  decoder->connectTo(std::make_shared<ErrorFakeNode>());
+  waitForStatus(*decoder, AudioGraphNodeState::STOPPED,
+                std::chrono::milliseconds(2000));
+  ASSERT_EQ(decoder->getState().state, AudioGraphNodeState::STOPPED);
+
+  EXPECT_TRUE(returnsWithin([decoder] { decoder->seekTo(0); },
+                            std::chrono::milliseconds(2000)));
 }

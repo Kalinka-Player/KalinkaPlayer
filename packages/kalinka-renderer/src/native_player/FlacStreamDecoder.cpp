@@ -32,6 +32,7 @@ void FlacStreamDecoder::connectTo(
 
   if (!decodingThread.joinable()) {
     setState(StreamState(AudioGraphNodeState::PREPARING));
+    seekSignal.reopen();
     decodingThread =
         std::jthread(std::bind_front(&FlacStreamDecoder::thread_run, this));
   }
@@ -330,6 +331,7 @@ void FlacStreamDecoder::thread_run(std::stop_token token) {
                 StreamError{StreamErrorSource::DECODER, message}});
     }
   }
+  seekSignal.close(static_cast<size_t>(-1));
   buffer.setEof();
   setState(StreamState{AudioGraphNodeState::STOPPED});
 }
