@@ -17,22 +17,24 @@ from kalinka_serialized import (
 )
 
 from kalinka_plugin_sdk.datamodel import (
-    DeviceAccess,
     EntityId,
-    OutputInfo,
+    PlaybackControl,
     PlayerStateEnum,
     Track,
-    AudioInfo,
     PlaybackState,
     PlaybackMode,
     TrackList,
+)
+from kalinka_plugin_sdk.direct_playback import (
+    RevokeReason,
+    TransportKind,
+    TransportRequest,
 )
 from kalinka_plugin_sdk.events import (
     PlayQueueState,
     PlaybackErrorEvent,
     PlaybackModeChangedEvent,
     RequestMoreTracksEvent,
-    PlaybackStateChangedEvent,
     TracksAddedEvent,
     TracksRemovedEvent,
     TrackMovedEvent,
@@ -46,17 +48,18 @@ from kalinka_plugin_sdk.inputmodule import (
 
 from kalinka_plugin_sdk.api import PlayQueueController, EventEmitter
 
+from .playback_arbiter import PlaybackArbiter
+from .playback_view import to_audio_info, to_state_name
 from .renderer_player import RendererPlayer
 from .stream_state import (
     AudioGraphNodeState,
-    DeviceAccess as StreamDeviceAccess,
     StateMonitor,
     StreamErrorSource,
-    StreamInfo,
     StreamState,
 )
 from .renderer_registry import RendererRegistry, RendererUnavailable
 from .renderer_sessions import SessionPool
+from .tasks import detach
 
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -85,52 +88,6 @@ def _remap_index(idx: int, from_index: int, to_index: int) -> int:
     return idx
 
 
-_ACCESS = {
-    StreamDeviceAccess.UNKNOWN: DeviceAccess.UNKNOWN,
-    StreamDeviceAccess.EXCLUSIVE: DeviceAccess.EXCLUSIVE,
-    StreamDeviceAccess.SHARED: DeviceAccess.SHARED,
-}
-
-
-def to_output_info(stream_info: StreamInfo) -> Optional[OutputInfo]:
-    if stream_info.device is None:
-        return None
-    return OutputInfo(
-        sample_rate=stream_info.device.format.sample_rate,
-        channels=stream_info.device.format.channels,
-        bits_per_sample=stream_info.device.format.bits_per_sample,
-        access=_ACCESS.get(stream_info.device.access, DeviceAccess.UNKNOWN),
-        lossless_path=stream_info.lossless_path,
-    )
-
-
-def to_audio_info(stream_info: StreamInfo):
-    if stream_info is None:
-        return None
-    return AudioInfo(
-        sample_rate=stream_info.format.sample_rate,
-        channels=stream_info.format.channels,
-        bits_per_sample=stream_info.format.bits_per_sample,
-        # The REST AudioInfo has no absent; clients have always read 0 there.
-        duration_ms=stream_info.duration_ms or 0,
-        output=to_output_info(stream_info),
-    )
-
-
-def to_state_name(state: AudioGraphNodeState) -> Optional[PlayerStateEnum]:
-    if state == AudioGraphNodeState.ERROR:
-        return PlayerStateEnum.ERROR
-    elif state == AudioGraphNodeState.STOPPED or state == AudioGraphNodeState.FINISHED:
-        return PlayerStateEnum.STOPPED
-    elif state == AudioGraphNodeState.PREPARING:
-        return PlayerStateEnum.BUFFERING
-    elif state == AudioGraphNodeState.STREAMING:
-        return PlayerStateEnum.PLAYING
-    elif state == AudioGraphNodeState.PAUSED:
-        return PlayerStateEnum.PAUSED
-    return None
-
-
 # State restore can involve many I/O calls; keep it outside the serial executor
 # so startup restore does not block the command lane.
 @with_serial_executor
@@ -141,12 +98,18 @@ class PlayQueueImpl(PlayQueueController):
         event_emitter: EventEmitter,
         renderer_registry: RendererRegistry,
         renderer_sessions: SessionPool,
+        *,
+        arbiter: Optional[PlaybackArbiter] = None,
     ):
         super().__init__()
         self.event_emitter = event_emitter
         self._config = config
         self._registry = renderer_registry
         self._sessions = renderer_sessions
+        # Playback state goes to clients through the arbiter, which drops it
+        # while a plugin plays in the queue's place.
+        self._arbiter = arbiter or PlaybackArbiter(event_emitter)
+        self._arbiter.set_queue(self)
         # One monitor for the queue's whole life; players come and go behind
         # it, so switching renderers never re-points the state listener.
         self.state_monitor = StateMonitor()
@@ -304,9 +267,7 @@ class PlayQueueImpl(PlayQueueController):
         if new_state.state == AudioGraphNodeState.FINISHED:
             new_state.position = 0
 
-        self.event_emitter.dispatch(
-            PlaybackStateChangedEvent(state=self._to_playback_state(new_state)),
-        )
+        self._arbiter.report(self, self._to_playback_state(new_state))
 
     @serialised
     async def play(self, index: Optional[int] = None) -> None:
@@ -502,6 +463,9 @@ class PlayQueueImpl(PlayQueueController):
 
     @serialised
     async def pause(self, paused: bool):
+        kind = TransportKind.PAUSE if paused else TransportKind.RESUME
+        if self._arbiter.forward(TransportRequest(kind)):
+            return
         if paused:
             self._track_player.pause()
         else:
@@ -509,6 +473,8 @@ class PlayQueueImpl(PlayQueueController):
 
     @serialised
     async def next(self):
+        if self._arbiter.forward(TransportRequest(TransportKind.NEXT)):
+            return
         if len(self.track_list) == 0:
             return
         target = self.current_track_id + 1
@@ -520,6 +486,8 @@ class PlayQueueImpl(PlayQueueController):
 
     @serialised
     async def prev(self):
+        if self._arbiter.forward(TransportRequest(TransportKind.PREV)):
+            return
         if len(self.track_list) == 0:
             return
         target = self.current_track_id - 1
@@ -531,15 +499,28 @@ class PlayQueueImpl(PlayQueueController):
 
     @serialised
     async def seek(self, position_ms: int) -> None:
+        if self._arbiter.forward(
+            TransportRequest(TransportKind.SEEK, position_ms=position_ms)
+        ):
+            return position_ms
         return self._track_player.seek(position_ms)
 
     @serialised
     async def stop(self):
+        if self._arbiter.held_by_plugin:
+            # Detached: the arbiter's lock may be held by an acquire that is
+            # waiting on this lane to preempt the queue.
+            detach(self._arbiter.take_back())
+            return
         self._track_player.stop()
 
     def _new_player(self) -> RendererPlayer:
         player = RendererPlayer(
-            self._config, self._registry, self._sessions, self.state_monitor
+            self._config,
+            self._registry,
+            self._sessions,
+            self.state_monitor,
+            before_claim=lambda _renderer_id: self._arbiter.acquire(self),
         )
         player.on_interrupted(self._resume_interrupted)
         return player
@@ -570,6 +551,12 @@ class PlayQueueImpl(PlayQueueController):
                 f"server does not, and cannot play until it is upgraded"
             )
         target = self._registry.resolve_active(renderer_id)
+        # A plugin playing in the queue's place moves instead; the queue has
+        # nothing on a renderer to take along.
+        if target is not None and await self._arbiter.move_holder(
+            target, lambda: self._registry.select(renderer_id)
+        ):
+            return
         old = self._track_player
         if old.renderer_id is None or old.renderer_id == target:
             self._registry.select(renderer_id)
@@ -620,14 +607,60 @@ class PlayQueueImpl(PlayQueueController):
         """
         if self._track_player.renderer_id != renderer_id:
             return False
+        await self._give_up_output()
+        logger.info("Released renderer %s", renderer_id)
+        return True
+
+    # ------------------------------------------------------------------
+    # The queue as the output's default owner (see playback_arbiter)
+
+    @property
+    def control(self) -> PlaybackControl:
+        return PlaybackControl.queue()
+
+    @property
+    def renderer_id(self) -> Optional[str]:
+        return self._track_player.renderer_id
+
+    @serialised
+    async def preempt(self, reason: RevokeReason) -> None:
+        """A plugin takes the output: stop, visibly, and keep the list's place."""
+        if await self._give_up_output():
+            logger.info("Play queue gave up the output (%s)", reason.value)
+        # Reported here rather than when the release's STOPPED comes round,
+        # which may be after the new owner took over and the queue went quiet.
+        self._arbiter.report(
+            self,
+            self._to_playback_state(
+                StreamState(
+                    state=AudioGraphNodeState.STOPPED,
+                    timestamp=time.monotonic_ns(),
+                )
+            ),
+        )
+
+    def snapshot(self) -> PlaybackState:
+        return self._get_playback_state()
+
+    async def _give_up_output(self) -> bool:
+        """Release the renderer; returns whether the queue held one.
+
+        The player is replaced, not reused, so an append still in its sender
+        cannot claim the renderer back from whoever takes it next.
+        """
         # As in switch_renderer: cleared before the stop, so the STOPPED does
-        # not restart the queue on a stream that is already on its way out.
+        # not restart the queue on a stream that is already on its way out,
+        # and a resolution still in flight does not start one.
+        self._resolution.supersede()
         self.prepared_tracks.clear()
         self.current_stream_id = None
         self._cancel_prefetch_timer()
-        await self._track_player.release()
-        logger.info("Released renderer %s for the speaker test", renderer_id)
-        return True
+        old = self._track_player
+        held = old.renderer_id is not None
+        self._track_player = self._new_player()
+        await old.release()
+        await old.shutdown()
+        return held
 
     @serialised
     async def add(self, tracks: list[TrackInfo], index: Optional[int] = None):
@@ -685,9 +718,7 @@ class PlayQueueImpl(PlayQueueController):
         if was_empty:
             self._notify_track_change()
         elif self.current_track_id != old_current_track_id:
-            self.event_emitter.dispatch(
-                PlaybackStateChangedEvent(state=self._get_playback_state())
-            )
+            self._arbiter.report(self, self._get_playback_state())
 
     @serialised
     async def remove(self, tracks: list[int]):
@@ -770,6 +801,8 @@ class PlayQueueImpl(PlayQueueController):
 
     @serialised
     async def get_playback_state(self) -> PlaybackState:
+        if self._arbiter.held_by_plugin:
+            return self._arbiter.current_state()
         return self._get_playback_state()
 
     def _get_playback_state(self) -> PlaybackState:
@@ -879,16 +912,15 @@ class PlayQueueImpl(PlayQueueController):
         # _notify_track_change won't fire (no tracks were loaded), so we need
         # to emit a state event ourselves.
         if was_already_stopped and not self.track_list:
-            self.event_emitter.dispatch(
-                PlaybackStateChangedEvent(
-                    state=PlaybackState(
-                        current_track=None,
-                        index=0,
-                        state=PlayerStateEnum.STOPPED,
-                        position=0,
-                        timestamp_ns=time.monotonic_ns(),
-                    )
-                )
+            self._arbiter.report(
+                self,
+                PlaybackState(
+                    current_track=None,
+                    index=0,
+                    state=PlayerStateEnum.STOPPED,
+                    position=0,
+                    timestamp_ns=time.monotonic_ns(),
+                ),
             )
 
         logger.info(
@@ -937,9 +969,7 @@ class PlayQueueImpl(PlayQueueController):
             TrackMovedEvent(from_index=from_index, to_index=to_index)
         )
         if self.current_track_id != old_current_track_id:
-            self.event_emitter.dispatch(
-                PlaybackStateChangedEvent(state=self._get_playback_state())
-            )
+            self._arbiter.report(self, self._get_playback_state())
 
     @serialised
     async def clear(self):
@@ -965,16 +995,15 @@ class PlayQueueImpl(PlayQueueController):
             TracksRemovedEvent(indices=[i for i in range(list_len - 1, -1, -1)])
         )
         if was_already_stopped:
-            self.event_emitter.dispatch(
-                PlaybackStateChangedEvent(
-                    state=PlaybackState(
-                        state=PlayerStateEnum.STOPPED,
-                        current_track=self._get_track_info(self.current_track_id),
-                        index=self.current_track_id,
-                        position=0,
-                        timestamp_ns=time.monotonic_ns(),
-                    )
-                )
+            self._arbiter.report(
+                self,
+                PlaybackState(
+                    state=PlayerStateEnum.STOPPED,
+                    current_track=self._get_track_info(self.current_track_id),
+                    index=self.current_track_id,
+                    position=0,
+                    timestamp_ns=time.monotonic_ns(),
+                ),
             )
 
     def _estimated_progress(self, stream_state: StreamState) -> int:
@@ -1189,15 +1218,14 @@ class PlayQueueImpl(PlayQueueController):
             self._prefetch_task = None
 
     def _notify_track_change(self):
-        self.event_emitter.dispatch(
-            PlaybackStateChangedEvent(
-                state=PlaybackState(
-                    current_track=self._get_track_info(self.current_track_id),
-                    index=self.current_track_id,
-                    state=to_state_name(AudioGraphNodeState.STOPPED),
-                    position=0,
-                    timestamp_ns=time.monotonic_ns(),
-                )
+        self._arbiter.report(
+            self,
+            PlaybackState(
+                current_track=self._get_track_info(self.current_track_id),
+                index=self.current_track_id,
+                state=to_state_name(AudioGraphNodeState.STOPPED),
+                position=0,
+                timestamp_ns=time.monotonic_ns(),
             ),
         )
 

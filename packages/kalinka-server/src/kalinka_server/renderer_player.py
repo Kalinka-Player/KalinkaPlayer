@@ -27,7 +27,7 @@ import inspect
 import logging
 import time
 from dataclasses import replace
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from kalinka_plugin_sdk.inputmodule import DirectUrl, TrackSource
 
@@ -83,8 +83,13 @@ class RendererPlayer:
         registry: RendererRegistry,
         sessions: SessionPool,
         monitor: StateMonitor,
+        *,
+        before_claim: Optional[Callable[[str], Awaitable[None]]] = None,
     ):
         self._config = config
+        # Awaited with the renderer id before every claim, so whoever owns
+        # the output can hand it over first.
+        self._before_claim = before_claim
         self._registry = registry
         self._pool = sessions
         # Passed in, not owned: the queue listens to one monitor for its whole
@@ -95,6 +100,7 @@ class RendererPlayer:
         )
         self._session: Optional[PlaybackSession] = None
         self._interrupted: Optional[Callable[[int], Any]] = None
+        self._session_lost: Optional[Callable[[Optional[CloseReason]], Any]] = None
         # What each live stream was addressed as — minted per renderer, here.
         self._stream_uris: dict[int, str] = {}
         # Commands are applied strictly in call order by one sender task.
@@ -121,6 +127,14 @@ class RendererPlayer:
         """Called with the position when playback was cut short but the
         renderer can play again. An async callback runs on its own."""
         self._interrupted = callback
+
+    def on_session_lost(
+        self, callback: Callable[[Optional[CloseReason]], Any]
+    ) -> None:
+        """Called when the session goes without this player's owner asking:
+        with the renderer's close reason, or None after the idle timeout. Not
+        called for a close resumed through on_interrupted()."""
+        self._session_lost = callback
 
     def append(
         self, stream_id: int, source: TrackSource, start_offset_ms: int = 0
@@ -281,6 +295,8 @@ class RendererPlayer:
         return await self._claim(renderer_id, announce=True)
 
     async def _claim(self, renderer_id: str, *, announce: bool) -> PlaybackSession:
+        if self._before_claim is not None:
+            await self._before_claim(renderer_id)
         session = await self._pool.open(renderer_id, announce=announce)
         session.on_state(self._on_session_state)
         session.on_closed(self._on_session_closed)
@@ -339,6 +355,7 @@ class RendererPlayer:
                 ),
             )
         )
+        self._notify_session_lost(reason)
 
     # ------------------------------------------------------------------
     # State delivery
@@ -441,6 +458,14 @@ class RendererPlayer:
         self._release_task = None
         logger.info("Releasing idle renderer session")
         await self._release(synthesize_stopped=synthesize)
+        self._notify_session_lost(None)
+
+    def _notify_session_lost(self, reason: Optional[CloseReason]) -> None:
+        if self._session_lost is None:
+            return
+        result = self._session_lost(reason)
+        if inspect.isawaitable(result):
+            detach(result)
 
     def _cancel_release(self) -> None:
         if self._release_task is not None:

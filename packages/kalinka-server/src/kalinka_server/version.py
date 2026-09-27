@@ -66,7 +66,20 @@ def get_version() -> str:
 # folders; writing either list updates the other. A /server/modules entry
 # carries the module's `icon` (a material icon name, or null), which a client
 # draws in place of its letter badge.
-REST_API_VERSION = "0.7"
+# 0.8: who drives the output is `playback_control`: in the /queue/ws and
+# /queue/events replay, in playback_control_changed (sent ahead of the
+# state_changed it explains), and from GET /queue/control. Its mode is "queue"
+# while the play queue plays, or "exclusive" with the plugin_id and title
+# ("Qobuz Connect") of an input plugin that took the renderer to play outside
+# the queue, as a Connect receiver does. Under "exclusive" the queue plays
+# nothing and keeps its contents; state_changed and GET /queue/state describe
+# the plugin's playback, with current_track the plugin's and index null. pause,
+# seek, next and prev go to the plugin; play gives the renderer back to the
+# queue and plays; stop gives it back without playing. Queue edits and
+# set_playback_mode still apply to the queue. PUT /renderer/active moves the
+# plugin's playback, which carries on where it had reached; the speaker test
+# ends it.
+REST_API_VERSION = "0.8"
 
 
 def get_rest_api_version() -> str:
