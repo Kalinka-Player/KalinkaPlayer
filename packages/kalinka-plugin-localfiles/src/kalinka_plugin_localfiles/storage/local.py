@@ -126,8 +126,8 @@ class LocalStorage(FileStorage):
         return os.access(path, os.R_OK)
 
     def open(self, path: str, *, read_ahead: bool = True) -> BinaryIO:
-        """``read_ahead`` is ignored: the kernel's read-ahead on a local
-        filesystem costs no network, and the server reads these files by
+        """``read_ahead`` is ignored: the kernel decides how far to read
+        ahead, even on a mounted share, and the server serves these files by
         name rather than through this."""
         return open(path, "rb")
 

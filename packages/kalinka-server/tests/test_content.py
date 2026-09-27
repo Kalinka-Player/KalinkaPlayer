@@ -47,7 +47,13 @@ def _file_backed(path):
 
 
 class _CountingStream(io.RawIOBase):
-    """A stream counting every byte read out of it, however it was read."""
+    """A stream counting every byte read out of it, however it was read.
+
+    Each read returns at most one SMB2 payload, as a raw SMB handle does when
+    the server grants few credits.
+    """
+
+    _MOST_PER_READ = 64 * 1024
 
     def __init__(self, payload):
         super().__init__()
@@ -64,7 +70,7 @@ class _CountingStream(io.RawIOBase):
         return self._source.seek(offset, whence)
 
     def readinto(self, buffer):
-        count = self._source.readinto(buffer)
+        count = self._source.readinto(memoryview(buffer)[: self._MOST_PER_READ])
         self.fetched += count
         return count
 

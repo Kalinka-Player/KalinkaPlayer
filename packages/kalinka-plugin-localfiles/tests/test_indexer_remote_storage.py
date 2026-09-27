@@ -63,7 +63,8 @@ class VaultStorage(FileStorage):
         self.identify = True
         self._inodes = itertools.count(1)
         self.trips: list[tuple[str, str]] = []
-        self.opens: list[dict] = []
+        #: ``read_ahead`` of each open, in order.
+        self.opens: list[bool] = []
         #: ``(operation, path)`` pairs that fail as a share does mid-drop.
         self.failing: dict[tuple[str, str], OSError] = {}
 
@@ -135,7 +136,7 @@ class VaultStorage(FileStorage):
 
     def open(self, path: str, *, read_ahead: bool = True) -> BinaryIO:
         self.trips.append(("open", path))
-        self.opens.append({"read_ahead": read_ahead})
+        self.opens.append(read_ahead)
         self._require_online()
         self._fail_if_asked("open", path)
         node = self.nodes.get(path)
@@ -504,7 +505,7 @@ class TestServingATrack:
         )
         changes = await indexer.process_file(path)
         assert vault.opens
-        assert all(opened == {"read_ahead": True} for opened in vault.opens)
+        assert all(vault.opens)
 
         module = _module_over(config, vault)
         info = await module.get_content_info(changes["tracks"])
@@ -512,7 +513,7 @@ class TestServingATrack:
         with info.reader():
             pass
 
-        assert vault.opens == [{"read_ahead": False}]
+        assert vault.opens == [False]
 
     @pytest.mark.asyncio
     async def test_a_track_that_went_away_is_absent(self, library, tmp_path):

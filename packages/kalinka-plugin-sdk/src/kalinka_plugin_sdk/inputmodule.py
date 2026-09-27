@@ -103,8 +103,9 @@ class ContentInfo(BaseModel):
         local_path (Optional[str]): A file the server may read directly.
         reader (Optional[Callable[[], BinaryIO]]): Opens the asset for
             reading. Called once per request and given back a fresh,
-            seekable, binary stream each time; the server closes it. Ignored
-            when ``local_path`` is set.
+            seekable, binary stream each time; the server closes it. A read
+            may return fewer bytes than asked for; only an empty one is the
+            end. Ignored when ``local_path`` is set.
         size (Optional[int]): Byte length. Required alongside ``reader``;
             the server measures a local file for itself.
         cacheable (bool): Whether the server may hold on to these bytes.
