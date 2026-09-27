@@ -22,6 +22,8 @@ if [ -z "$WHEEL_PATH" ] || [ ! -f "$WHEEL_PATH" ]; then
 fi
 
 VERSION=$(basename "$WHEEL_PATH" | sed 's/{{ cookiecutter.plugin_id }}-\(.*\)-py3-none-any\.whl/\1/')
+# '~' sorts a .devN build below the release it leads up to, as PEP 440 does.
+DEB_VERSION=$(printf '%s' "$VERSION" | sed 's/\.dev\([0-9]\)/~dev\1/')
 
 PLUGIN_WHEEL="{{ cookiecutter.plugin_id }}-${VERSION}-py3-none-any.whl"
 
@@ -40,7 +42,7 @@ fi
 cp "dist/${PLUGIN_WHEEL}" "pkgroot/opt/kalinka/wheels/"
 
 # Generate control file from template
-sed "s/@VERSION@/${VERSION}/g" debian/control.in > pkgroot/DEBIAN/control
+sed "s/@VERSION@/${DEB_VERSION}/g" debian/control.in > pkgroot/DEBIAN/control
 
 # Copy triggers file
 cp debian/triggers pkgroot/DEBIAN/triggers
@@ -52,7 +54,7 @@ cp debian/prerm pkgroot/DEBIAN/prerm
 chmod 755 pkgroot/DEBIAN/prerm
 
 # Build the .deb package
-dpkg-deb --root-owner-group --build pkgroot "${PLUGIN_SLUG}_${VERSION}_all.deb"
+dpkg-deb --root-owner-group --build pkgroot "${PLUGIN_SLUG}_${DEB_VERSION}_all.deb"
 
-echo "Package built: ${PLUGIN_SLUG}_${VERSION}_all.deb"
-ls -l "${PLUGIN_SLUG}_${VERSION}_all.deb"
+echo "Package built: ${PLUGIN_SLUG}_${DEB_VERSION}_all.deb"
+ls -l "${PLUGIN_SLUG}_${DEB_VERSION}_all.deb"
