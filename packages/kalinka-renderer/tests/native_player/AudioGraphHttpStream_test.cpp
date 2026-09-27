@@ -338,16 +338,74 @@ TEST_F(AudioGraphHttpStreamTest, negative_stall_timeout_never_gives_up) {
 }
 
 TEST_F(AudioGraphHttpStreamTest, full_buffer_is_not_a_stall) {
+  // The write that waits for room holds the last bytes sent, so the first
+  // stall check after the pause has nothing newer to go by.
+  ASSERT_GT(LocalHttpServer::HELD_BYTES, bufferSize);
+  ASSERT_LE(LocalHttpServer::HELD_BYTES - bufferSize,
+            static_cast<size_t>(CURL_MAX_WRITE_SIZE));
   // Without ranges there is no retry to hide a stall wrongly seen.
   auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(
-      1, urlNoRanges, bufferSize, 0, stallTimeout);
+      1, server.url("/held"), bufferSize, 0, stallTimeout);
 
   // A paused player: the whole file is one request, held up on a full buffer.
   audioGraphHttpStream->waitForData(std::stop_token(), bufferSize);
-  std::this_thread::sleep_for(stallTimeout * 3);
-  const auto content = readToEnd(*audioGraphHttpStream);
+  std::this_thread::sleep_for(stallTimeout * 2);
+  std::vector<uint8_t> content(bufferSize);
+  content.resize(audioGraphHttpStream->read(content.data(), content.size()));
+  // Time for that check to run, well inside the stall timeout.
+  std::this_thread::sleep_for(std::chrono::milliseconds(250));
+  server.release();
+  const auto rest = readToEnd(*audioGraphHttpStream);
+  content.insert(content.end(), rest.begin(), rest.end());
 
   EXPECT_EQ(audioGraphHttpStream->getState().state,
             AudioGraphNodeState::FINISHED);
   EXPECT_EQ(content.size(), fileContent(file).size());
+}
+
+TEST_F(AudioGraphHttpStreamTest, stopping_a_stalled_stream_is_prompt) {
+  auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(
+      1, server.url("/stall"), bufferSize);
+  waitForStatus(*audioGraphHttpStream, AudioGraphNodeState::STREAMING);
+
+  const auto stopping = std::chrono::steady_clock::now();
+  audioGraphHttpStream.reset();
+
+  EXPECT_LT(std::chrono::steady_clock::now() - stopping,
+            std::chrono::seconds(3));
+}
+
+TEST_F(AudioGraphHttpStreamTest, seeking_a_stalled_stream_is_prompt) {
+  auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(
+      1, server.url("/stall-once"), bufferSize);
+  waitForStatus(*audioGraphHttpStream, AudioGraphNodeState::STREAMING);
+  const auto expected = fileContent(file);
+  const size_t position = expected.size() / 2;
+
+  const auto seeking = std::chrono::steady_clock::now();
+  EXPECT_EQ(audioGraphHttpStream->seekTo(position), position);
+  EXPECT_LT(std::chrono::steady_clock::now() - seeking,
+            std::chrono::seconds(3));
+
+  const auto content = readToEnd(*audioGraphHttpStream);
+  EXPECT_EQ(audioGraphHttpStream->getState().state,
+            AudioGraphNodeState::FINISHED);
+  ASSERT_EQ(content.size(), expected.size() - position);
+  EXPECT_TRUE(std::equal(content.begin(), content.end(),
+                         expected.begin() + position));
+}
+
+TEST_F(AudioGraphHttpStreamTest, stalls_between_progress_do_not_use_up_retries) {
+  const auto expected = fileContent(file);
+  // More stalls than the first request and its three retries.
+  ASSERT_GT(expected.size() / LocalHttpServer::STALL_OFTEN_BYTES, 4u);
+  auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(
+      1, server.url("/stall-often"), bufferSize, 0, stallTimeout);
+
+  const auto content = readToEnd(*audioGraphHttpStream);
+
+  EXPECT_EQ(audioGraphHttpStream->getState().state,
+            AudioGraphNodeState::FINISHED);
+  ASSERT_EQ(content.size(), expected.size());
+  EXPECT_TRUE(std::equal(content.begin(), content.end(), expected.begin()));
 }
