@@ -3,6 +3,8 @@
 
 set -euo pipefail
 
+. "$(dirname "${BASH_SOURCE[0]}")/../../../scripts/deb_version.sh"
+
 PLUGIN_SLUG="kalinka-plugin-sdk"
 
 echo "Building .deb package for ${PLUGIN_SLUG} (version from src/kalinka_plugin_sdk/_version.py)"
@@ -24,6 +26,7 @@ if [ -z "$WHEEL_PATH" ] || [ ! -f "$WHEEL_PATH" ]; then
 fi
 
 VERSION=$(basename "$WHEEL_PATH" | sed 's/kalinka_plugin_sdk-\(.*\)-py3-none-any\.whl/\1/')
+DEB_VERSION=$(deb_version "$VERSION")
 
 PLUGIN_WHEEL="kalinka_plugin_sdk-${VERSION}-py3-none-any.whl"
 
@@ -42,7 +45,7 @@ fi
 cp "dist/${PLUGIN_WHEEL}" "pkgroot/opt/kalinka/wheels/"
 
 # Generate control file from template
-sed "s/@VERSION@/${VERSION}/g" debian/control.in > pkgroot/DEBIAN/control
+sed "s/@VERSION@/${DEB_VERSION}/g" debian/control.in > pkgroot/DEBIAN/control
 
 # Copy triggers file
 cp debian/triggers pkgroot/DEBIAN/triggers
@@ -54,7 +57,7 @@ cp debian/prerm pkgroot/DEBIAN/prerm
 chmod 755 pkgroot/DEBIAN/prerm
 
 # Build the .deb package
-dpkg-deb --root-owner-group --build pkgroot "${PLUGIN_SLUG}_${VERSION}_all.deb"
+dpkg-deb --root-owner-group --build pkgroot "${PLUGIN_SLUG}_${DEB_VERSION}_all.deb"
 
-echo "Package built: ${PLUGIN_SLUG}_${VERSION}_all.deb"
-ls -l "${PLUGIN_SLUG}_${VERSION}_all.deb"
+echo "Package built: ${PLUGIN_SLUG}_${DEB_VERSION}_all.deb"
+ls -l "${PLUGIN_SLUG}_${DEB_VERSION}_all.deb"

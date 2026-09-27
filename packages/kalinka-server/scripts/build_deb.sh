@@ -6,6 +6,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/../../../scripts/deb_version.sh"
 
 echo "Building wheel..."
 
@@ -34,20 +35,21 @@ if [ -z "$WHEEL_VERSION" ]; then
     echo "Error: Could not determine package version."
     exit 1
 fi
+DEB_VERSION=$(deb_version "$WHEEL_VERSION")
 
 WHEEL_BASENAME=$(basename "$WHEEL_PATH")
-TARGET_DIR="kalinka-server-$WHEEL_VERSION"
-TARGET_FILE="kalinka-server_${WHEEL_VERSION}_all.deb"
+TARGET_DIR="kalinka-server-$DEB_VERSION"
+TARGET_FILE="kalinka-server_${DEB_VERSION}_all.deb"
 
 echo "Using wheel: $WHEEL_BASENAME"
-echo "Building Debian package with version: $WHEEL_VERSION"
+echo "Building Debian package with version: $DEB_VERSION"
 echo "Target file: $TARGET_FILE"
 
 rm -rf "$TARGET_DIR"
 mkdir -p "$TARGET_DIR"
 cp -r DEBIAN "$TARGET_DIR"
 
-sed "s/@VERSION@/$WHEEL_VERSION/" DEBIAN/control.in > "$TARGET_DIR/DEBIAN/control"
+sed "s/@VERSION@/$DEB_VERSION/" DEBIAN/control.in > "$TARGET_DIR/DEBIAN/control"
 rm "$TARGET_DIR/DEBIAN/control.in"
 
 mkdir -p "$TARGET_DIR/opt/kalinka/wheels"
