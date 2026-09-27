@@ -117,6 +117,18 @@ TEST_F(AudioGraphHttpStreamTest, test_broken_url_set_error_status) {
   EXPECT_EQ(totalBytesRead, 0);
 }
 
+TEST_F(AudioGraphHttpStreamTest, unexpected_status_is_an_error_not_a_retry) {
+  auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(
+      1, server.url("/moved"), bufferSize);
+
+  auto state = waitForStatus(*audioGraphHttpStream, AudioGraphNodeState::ERROR,
+                             std::chrono::seconds(5));
+
+  ASSERT_EQ(state.state, AudioGraphNodeState::ERROR);
+  ASSERT_TRUE(state.error.has_value());
+  EXPECT_THAT(state.error->message, ::testing::HasSubstr("code 302"));
+}
+
 TEST_F(AudioGraphHttpStreamTest, seekTo_forward) {
   auto audioGraphHttpStream =
       std::make_shared<AudioGraphHttpStream>(1, url, bufferSize);

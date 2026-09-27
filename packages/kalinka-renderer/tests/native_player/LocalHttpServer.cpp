@@ -170,6 +170,11 @@ Reply answer(const Request &request, const std::string &body, bool first) {
     return {first ? respond(request, http::status::service_unavailable)
                   : ranged(request, body)};
   }
+  if (target == "/moved") {
+    Response response = respond(request, http::status::found);
+    response.set(http::field::location, "/ranged");
+    return {std::move(response)};
+  }
   if (target == "/slow-missing") {
     return {respond(request, http::status::not_found,
                     std::string(LocalHttpServer::TRICKLE_TIME / TRICKLE_GAP,
