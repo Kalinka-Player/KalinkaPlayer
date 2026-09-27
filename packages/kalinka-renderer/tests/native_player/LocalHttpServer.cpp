@@ -70,6 +70,10 @@ std::optional<std::pair<size_t, size_t>> requestedRange(std::string_view header,
   return std::make_pair(*first, last);
 }
 
+bool servesRanges(std::string_view target) {
+  return target == "/ranged" || target == "/stall" || target == "/stall-once";
+}
+
 Response respond(const Request &request, const std::string &body) {
   Response response;
   response.version(request.version());
@@ -80,7 +84,7 @@ Response respond(const Request &request, const std::string &body) {
     response.result(http::status::ok);
     response.set(http::field::accept_ranges, "none");
     response.body() = body;
-  } else if (target == "/ranged") {
+  } else if (servesRanges(target)) {
     response.set(http::field::accept_ranges, "bytes");
     const auto range = requestedRange(request[http::field::range], body.size());
     if (!range) {
@@ -104,6 +108,18 @@ Response respond(const Request &request, const std::string &body) {
   }
   response.prepare_payload();
   return response;
+}
+
+void writeHead(tcp::socket &socket, Response &response, size_t bodyBytes,
+               beast::error_code &error) {
+  http::response_serializer<http::string_body> serializer(response);
+  http::write_header(socket, serializer, error);
+  if (!error) {
+    const std::string &body = response.body();
+    asio::write(socket,
+                asio::buffer(body.data(), std::min(bodyBytes, body.size())),
+                error);
+  }
 }
 
 } // namespace
@@ -153,7 +169,7 @@ void LocalHttpServer::acceptConnections() {
   }
 }
 
-void LocalHttpServer::serve(tcp::socket &socket) const {
+void LocalHttpServer::serve(tcp::socket &socket) {
   beast::flat_buffer buffer;
   for (;;) {
     Request request;
@@ -163,9 +179,20 @@ void LocalHttpServer::serve(tcp::socket &socket) const {
       return;
     }
     Response response = respond(request, body_);
+    if (stalls(request.target())) {
+      writeHead(socket, response, STALLED_BODY_BYTES, error);
+      // Silent but open until the client hangs up or shutdown() wakes us.
+      socket.wait(tcp::socket::wait_read, error);
+      return;
+    }
     http::write(socket, response, error);
     if (error || !response.keep_alive()) {
       return;
     }
   }
+}
+
+bool LocalHttpServer::stalls(std::string_view target) {
+  return target == "/stall" ||
+         (target == "/stall-once" && !stalledOnce_.exchange(true));
 }
