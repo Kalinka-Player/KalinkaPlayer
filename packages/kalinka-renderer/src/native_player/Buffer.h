@@ -130,9 +130,10 @@ public:
   bool empty() const { return data.empty(); }
 
   void setEof() {
-    eof.store(true);
     {
       std::lock_guard<std::mutex> lock(m);
+      // Under the lock, or a waiter could see the end before the callback ran.
+      eof.store(true);
       if (data.empty()) {
         onEmptyCallback(*this);
       }
