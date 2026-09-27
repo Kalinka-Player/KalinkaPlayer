@@ -26,6 +26,7 @@ from .events import (
     PlaybackErrorEvent,
     RenderersChangedEvent,
     CurrentRendererChangedEvent,
+    PlaybackControlChangedEvent,
     RendererDescriptor,
 )
 
@@ -35,7 +36,19 @@ from .datamodel import (
     DeviceVolume,
     MatchTier,
     NameMatch,
+    PlaybackControl,
+    PlaybackControlMode,
     VolumeBackend,
+)
+from .direct_playback import (
+    DirectPlayback,
+    DirectPlaybackListener,
+    DirectPlaybackSession,
+    HoldEnded,
+    OutputUnavailable,
+    RevokeReason,
+    TransportKind,
+    TransportRequest,
 )
 from .filters import (
     or_unfiltered,
@@ -88,6 +101,14 @@ __all__ = [
     "TextEmbedder",
     "InputPluginContext",
     "OutputDevicePluginContext",
+    "DirectPlayback",
+    "DirectPlaybackListener",
+    "DirectPlaybackSession",
+    "HoldEnded",
+    "OutputUnavailable",
+    "RevokeReason",
+    "TransportKind",
+    "TransportRequest",
     # Events and States
     "PlayQueueEventType",
     "PlayQueueEvent",
@@ -102,6 +123,7 @@ __all__ = [
     "PlaybackErrorEvent",
     "RenderersChangedEvent",
     "CurrentRendererChangedEvent",
+    "PlaybackControlChangedEvent",
     "RendererDescriptor",
     # Data Models
     "EntityType",
@@ -109,6 +131,8 @@ __all__ = [
     "DeviceVolume",
     "MatchTier",
     "NameMatch",
+    "PlaybackControl",
+    "PlaybackControlMode",
     "VolumeBackend",
     # Filtering
     "TEXT_FIELD",

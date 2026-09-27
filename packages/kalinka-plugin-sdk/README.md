@@ -74,6 +74,8 @@ class MyDevice(ExternalOutputDevice):
 - `EventListenerAPI`: Interface for subscribing to events
 - `LoggerAPI`: Interface for logging
 - `PluginContext`: Context provided to plugins
+- `DirectPlayback` (3.4+): an input plugin plays on the renderer outside the play queue, as a Connect receiver does; offered as `InputPluginContext.direct_playback`, `None` on older servers
+- `PlaybackControl` (3.4+): whether the play queue drives the output or an input plugin holds it exclusively; `PlayQueueState.playback_control`, announced by `PlaybackControlChangedEvent`
 
 ### Base Classes
 - `InputModule`: Base class for input modules
