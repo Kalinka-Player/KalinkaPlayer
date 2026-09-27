@@ -875,7 +875,8 @@ class LocalFilesInputModule(InputModule):
             return None
         return ContentInfo(
             mime_type=mime_type,
-            reader=lambda: storage.open(track_path),
+            # Read-ahead fetches 1 MiB per range; the server caps reads at the range.
+            reader=lambda: storage.open(track_path, read_ahead=False),
             size=measured.size,
             cacheable=True,
         )

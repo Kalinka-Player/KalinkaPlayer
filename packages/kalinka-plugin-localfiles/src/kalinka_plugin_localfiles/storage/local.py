@@ -125,7 +125,10 @@ class LocalStorage(FileStorage):
     def readable(self, path: str) -> bool:
         return os.access(path, os.R_OK)
 
-    def open(self, path: str) -> BinaryIO:
+    def open(self, path: str, *, read_ahead: bool = True) -> BinaryIO:
+        """``read_ahead`` is ignored: the kernel's read-ahead on a local
+        filesystem costs no network, and the server reads these files by
+        name rather than through this."""
         return open(path, "rb")
 
     def local_path(self, path: str) -> Optional[str]:

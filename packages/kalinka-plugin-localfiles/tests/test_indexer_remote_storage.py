@@ -63,6 +63,7 @@ class VaultStorage(FileStorage):
         self.identify = True
         self._inodes = itertools.count(1)
         self.trips: list[tuple[str, str]] = []
+        self.opens: list[dict] = []
         #: ``(operation, path)`` pairs that fail as a share does mid-drop.
         self.failing: dict[tuple[str, str], OSError] = {}
 
@@ -132,8 +133,9 @@ class VaultStorage(FileStorage):
             identity=identity,
         )
 
-    def open(self, path: str) -> BinaryIO:
+    def open(self, path: str, *, read_ahead: bool = True) -> BinaryIO:
         self.trips.append(("open", path))
+        self.opens.append({"read_ahead": read_ahead})
         self._require_online()
         self._fail_if_asked("open", path)
         node = self.nodes.get(path)
@@ -486,6 +488,31 @@ class TestServingATrack:
         assert info.size is not None
         with info.reader():
             pass
+
+    @pytest.mark.asyncio
+    async def test_only_the_served_stream_goes_without_read_ahead(
+        self, library, tmp_path
+    ):
+        """The server reads a range in chunks capped at what is left of it, so
+        read-ahead under the stream only fetches bytes it throws away: over
+        SMB, 1 MiB for every 384,000-byte range a renderer asks for. Tag
+        reads seek about a file and keep it."""
+        indexer, vault, config = library
+        path = vault.add(
+            f"{ROOT}/01 track.flac",
+            _flac(tmp_path, {"title": "T", "artist": "A", "album": "B"}),
+        )
+        changes = await indexer.process_file(path)
+        assert vault.opens
+        assert all(opened == {"read_ahead": True} for opened in vault.opens)
+
+        module = _module_over(config, vault)
+        info = await module.get_content_info(changes["tracks"])
+        vault.opens.clear()
+        with info.reader():
+            pass
+
+        assert vault.opens == [{"read_ahead": False}]
 
     @pytest.mark.asyncio
     async def test_a_track_that_went_away_is_absent(self, library, tmp_path):
