@@ -124,7 +124,10 @@ struct StreamNodes {
       spdlog::debug("Creating AudioGraphHttpStream for URL: {}", url);
       nodeChain.emplace_back(std::make_shared<AudioGraphHttpStream>(
           id, url, value_or(config, "input.http.buffer_size", HTTP_BUFFER_SIZE),
-          value_or(config, "input.http.chunk_size", CHUNK_SIZE)));
+          value_or(config, "input.http.chunk_size", CHUNK_SIZE),
+          std::chrono::seconds(value_or(
+              config, "input.http.stall_timeout",
+              AudioGraphHttpStream::DEFAULT_STALL_TIMEOUT.count()))));
     }
 
     auto decoder =
