@@ -23,7 +23,8 @@ AudioGraphHttpStream::AudioGraphHttpStream(std::optional<StreamId> streamId,
       buffer(std::max(bufferSize, static_cast<size_t>(CURL_MAX_WRITE_SIZE)),
              std::bind(&AudioGraphHttpStream::emptyBufferCallback, this,
                        std::placeholders::_1)),
-      chunkSize(chunkSize), stallTimeout(stallTimeout) {
+      chunkSize(chunkSize),
+      stallTimeout(std::max(stallTimeout, std::chrono::seconds::zero())) {
   readerThread =
       std::jthread(std::bind_front(&AudioGraphHttpStream::reader, this));
 }
@@ -265,9 +266,10 @@ int AudioGraphHttpStream::readSingleChunk(std::stop_token stopToken) {
     request.setOpt(new curlpp::options::HeaderFunction(std::bind(
         &AudioGraphHttpStream::headerCallback, this, std::placeholders::_1,
         std::placeholders::_2, std::placeholders::_3)));
-    hasReadHeader = true;
   }
   request.perform();
+  // Only now: a request that failed before its headers left them unread.
+  hasReadHeader = true;
 
   long responseCode = 0;
   curlpp::Info<CURLINFO_RESPONSE_CODE, long>::get(request, responseCode);

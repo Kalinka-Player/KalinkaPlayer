@@ -71,7 +71,8 @@ std::optional<std::pair<size_t, size_t>> requestedRange(std::string_view header,
 }
 
 bool servesRanges(std::string_view target) {
-  return target == "/ranged" || target == "/stall" || target == "/stall-once";
+  return target == "/ranged" || target == "/stall" || target == "/stall-once" ||
+         target == "/silent-once";
 }
 
 Response respond(const Request &request, const std::string &body) {
@@ -179,8 +180,11 @@ void LocalHttpServer::serve(tcp::socket &socket) {
       return;
     }
     Response response = respond(request, body_);
-    if (stalls(request.target())) {
-      writeHead(socket, response, STALLED_BODY_BYTES, error);
+    const bool silent = goesSilent(request.target());
+    if (silent || stalls(request.target())) {
+      if (!silent) {
+        writeHead(socket, response, STALLED_BODY_BYTES, error);
+      }
       // Silent but open until the client hangs up or shutdown() wakes us.
       socket.wait(tcp::socket::wait_read, error);
       return;
@@ -195,4 +199,8 @@ void LocalHttpServer::serve(tcp::socket &socket) {
 bool LocalHttpServer::stalls(std::string_view target) {
   return target == "/stall" ||
          (target == "/stall-once" && !stalledOnce_.exchange(true));
+}
+
+bool LocalHttpServer::goesSilent(std::string_view target) {
+  return target == "/silent-once" && !silencedOnce_.exchange(true);
 }

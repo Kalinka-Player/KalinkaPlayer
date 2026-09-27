@@ -314,6 +314,29 @@ TEST_F(AudioGraphHttpStreamTest, stalled_transfer_resumes_where_it_stopped) {
       << "first difference at byte " << differs - content.begin();
 }
 
+TEST_F(AudioGraphHttpStreamTest, stall_before_headers_still_reads_every_chunk) {
+  // Chunked, so a length never learned would end the stream after one chunk.
+  auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(
+      1, server.url("/silent-once"), bufferSize, bufferSize / 2, stallTimeout);
+
+  const auto content = readToEnd(*audioGraphHttpStream);
+
+  EXPECT_EQ(audioGraphHttpStream->getState().state,
+            AudioGraphNodeState::FINISHED);
+  EXPECT_EQ(content.size(), fileContent(file).size());
+}
+
+TEST_F(AudioGraphHttpStreamTest, negative_stall_timeout_never_gives_up) {
+  auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(
+      1, url, bufferSize, 0, std::chrono::seconds(-1));
+
+  const auto content = readToEnd(*audioGraphHttpStream);
+
+  EXPECT_EQ(audioGraphHttpStream->getState().state,
+            AudioGraphNodeState::FINISHED);
+  EXPECT_EQ(content.size(), fileContent(file).size());
+}
+
 TEST_F(AudioGraphHttpStreamTest, full_buffer_is_not_a_stall) {
   // Without ranges there is no retry to hide a stall wrongly seen.
   auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(
