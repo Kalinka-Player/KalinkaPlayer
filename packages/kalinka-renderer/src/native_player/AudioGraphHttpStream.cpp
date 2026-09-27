@@ -12,7 +12,9 @@
 #include "Log.h"
 
 namespace {
-const long STALL_BYTES_PER_SECOND = 1024;
+const int RETRIES = 3;
+// Any less, and a server that sends a few bytes before each stall never fails.
+const size_t PROGRESS_THAT_RENEWS_RETRIES = CURL_MAX_WRITE_SIZE;
 } // namespace
 
 AudioGraphHttpStream::AudioGraphHttpStream(std::optional<StreamId> streamId,
@@ -72,7 +74,24 @@ size_t AudioGraphHttpStream::WriteCallback(void *contents, size_t size,
     offset += writtenChunkSize;
   }
 
+  // Set on the way out: waiting for room is not the sender going quiet.
+  silentSince = std::chrono::steady_clock::now();
   return sizeWritten;
+}
+
+int AudioGraphHttpStream::transferInfoCallback(void *stream, curl_off_t,
+                                               curl_off_t, curl_off_t,
+                                               curl_off_t) {
+  const auto &self = *static_cast<AudioGraphHttpStream *>(stream);
+  const bool abort = self.readerThread.get_stop_token().stop_requested() ||
+                     self.seekRequestSignal.getStopToken().stop_requested() ||
+                     self.stalled();
+  return abort ? 1 : 0;
+}
+
+bool AudioGraphHttpStream::stalled() const {
+  return stallTimeout > std::chrono::seconds::zero() &&
+         std::chrono::steady_clock::now() - silentSince >= stallTimeout;
 }
 
 void AudioGraphHttpStream::emptyBufferCallback(Buffer<uint8_t> &buffer) {
@@ -162,7 +181,7 @@ void AudioGraphHttpStream::reader(std::stop_token stopToken) {
 
 void AudioGraphHttpStream::readContentChunks(std::stop_token stopToken) {
   using namespace std::placeholders;
-  int numRetries = 3;
+  int numRetries = RETRIES;
   while (offset < contentLength) {
     auto seekToPos = seekRequestSignal.getValue();
     if (seekToPos) {
@@ -183,6 +202,7 @@ void AudioGraphHttpStream::readContentChunks(std::stop_token stopToken) {
       continue;
     }
 
+    const size_t requestedFrom = offset;
     try {
       responseCode = readSingleChunk(stopToken);
     } catch (const curlpp::LibcurlRuntimeError &ex) {
@@ -194,6 +214,9 @@ void AudioGraphHttpStream::readContentChunks(std::stop_token stopToken) {
       }
       responseCode = -1;
       spdlog::warn("Libcurl exception: {}", ex.what());
+      if (offset - requestedFrom >= PROGRESS_THAT_RENEWS_RETRIES) {
+        numRetries = RETRIES;
+      }
       if (numRetries == 0 || !acceptRange) {
         spdlog::error("Request failed at offset {}/{} - aborting", offset,
                       contentLength);
@@ -207,7 +230,7 @@ void AudioGraphHttpStream::readContentChunks(std::stop_token stopToken) {
     }
 
     if (responseCode >= 200 && responseCode < 300) {
-      numRetries = 3;
+      numRetries = RETRIES;
     }
 
     if (responseCode == 200) {
@@ -258,9 +281,11 @@ int AudioGraphHttpStream::readSingleChunk(std::stop_token stopToken) {
   }
 
   request.setOpt(new curlpp::options::ConnectTimeout(10));
-  // A sender gone quiet would otherwise hold perform() until TCP gives up.
-  request.setOpt(new curlpp::options::LowSpeedLimit(STALL_BYTES_PER_SECOND));
-  request.setOpt(new curlpp::options::LowSpeedTime(stallTimeout.count()));
+  // Called about once a second while nothing arrives, unlike WriteCallback.
+  request.setOpt(new curlpp::options::NoProgress(false));
+  curl_easy_setopt(request.getHandle(), CURLOPT_XFERINFOFUNCTION,
+                   &AudioGraphHttpStream::transferInfoCallback);
+  curl_easy_setopt(request.getHandle(), CURLOPT_XFERINFODATA, this);
   request.setOpt(new curlpp::options::WriteFunction(
       std::bind(&AudioGraphHttpStream::WriteCallback, this, _1, _2, _3)));
   if (!hasReadHeader) {
@@ -268,7 +293,18 @@ int AudioGraphHttpStream::readSingleChunk(std::stop_token stopToken) {
         &AudioGraphHttpStream::headerCallback, this, std::placeholders::_1,
         std::placeholders::_2, std::placeholders::_3)));
   }
-  request.perform();
+  silentSince = std::chrono::steady_clock::now();
+  try {
+    request.perform();
+  } catch (const curlpp::LibcurlRuntimeError &ex) {
+    if (ex.whatCode() == CURLE_ABORTED_BY_CALLBACK && stalled()) {
+      throw curlpp::LibcurlRuntimeError(
+          "Nothing received for " + std::to_string(stallTimeout.count()) +
+              " s",
+          CURLE_OPERATION_TIMEDOUT);
+    }
+    throw;
+  }
   // Only now: a request that failed before its headers left them unread.
   hasReadHeader = true;
 

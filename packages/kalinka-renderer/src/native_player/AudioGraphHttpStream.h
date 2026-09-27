@@ -8,6 +8,14 @@
 #include <chrono>
 #include <curlpp/Easy.hpp>
 
+/**
+ * @brief Reads a URL into a buffer on a thread of its own, in ranges where the
+ * server allows them, and resumes a failed or stalled request from the byte it
+ * stopped at.
+ *
+ * A stop or a seek interrupts a request within about a second, even one whose
+ * sender has gone quiet.
+ */
 class AudioGraphHttpStream : public AudioGraphOutputNode {
 public:
   static constexpr std::chrono::seconds DEFAULT_STALL_TIMEOUT{15};
@@ -15,7 +23,7 @@ public:
   /**
    * @param chunkSize Bytes asked for per request; 0 asks for the rest of the
    * stream in one.
-   * @param stallTimeout How long a connected transfer may run below 1 KB/s
+   * @param stallTimeout How long a request may go without receiving a byte
    * before it is dropped and resumed from where it stopped; 0 or less waits
    * for as long as the connection lasts. Time spent waiting for room in the
    * buffer, as while paused, does not count.
@@ -41,6 +49,7 @@ private:
   Signal<size_t> seekRequestSignal;
   size_t chunkSize = 0;
   std::chrono::seconds stallTimeout;
+  std::chrono::steady_clock::time_point silentSince;
   bool acceptRange = true;
   bool hasReadHeader = false;
   bool setStreamingState = true;
@@ -49,6 +58,9 @@ private:
   void readContentChunks(std::stop_token token);
   int readSingleChunk(std::stop_token stopToken);
   size_t WriteCallback(void *contents, size_t size, size_t nmemb);
+  static int transferInfoCallback(void *stream, curl_off_t, curl_off_t,
+                                  curl_off_t, curl_off_t);
+  bool stalled() const;
   void emptyBufferCallback(Buffer<uint8_t> &buffer);
   size_t headerCallback(char *buffer, size_t size, size_t nitems);
 
