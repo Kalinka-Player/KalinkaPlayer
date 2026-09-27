@@ -46,6 +46,29 @@ def _file_backed(path):
     return ContentInfo(mime_type="audio/flac", local_path=str(path), cacheable=True)
 
 
+class _CountingStream(io.RawIOBase):
+    """A stream counting every byte read out of it, however it was read."""
+
+    def __init__(self, payload):
+        super().__init__()
+        self._source = io.BytesIO(payload)
+        self.fetched = 0
+
+    def readable(self):
+        return True
+
+    def seekable(self):
+        return True
+
+    def seek(self, offset, whence=io.SEEK_SET):
+        return self._source.seek(offset, whence)
+
+    def readinto(self, buffer):
+        count = self._source.readinto(buffer)
+        self.fetched += count
+        return count
+
+
 def _reader_backed(reader=None, size=len(AUDIO)):
     return ContentInfo(
         mime_type="audio/flac",
@@ -280,6 +303,26 @@ def test_a_stream_is_closed_once_the_response_ends():
     while not streams[0].closed and time.monotonic() < deadline:
         time.sleep(0.01)
     assert streams[0].closed
+
+
+@pytest.mark.parametrize("start", [0, 1_000_000])
+def test_a_range_reads_no_more_than_it_serves(start):
+    """A renderer asks for 384,000 bytes at a time. Every byte read past the
+    span comes from the storage, on a share from the NAS, only to be thrown
+    away when the response closes the stream."""
+    audio = bytes(range(256)) * 8 * 1024
+    streams = []
+
+    def open_stream():
+        streams.append(_CountingStream(audio))
+        return streams[-1]
+
+    client = _client_for(_reader_backed(reader=open_stream, size=len(audio)))
+    r = client.get(_url(), headers={"Range": f"bytes={start}-{start + 383_999}"})
+
+    assert r.status_code == 206
+    assert r.content == audio[start:start + 384_000]
+    assert streams[0].fetched == int(r.headers["content-length"]) == 384_000
 
 
 def test_a_stream_the_storage_refuses_is_transient():
