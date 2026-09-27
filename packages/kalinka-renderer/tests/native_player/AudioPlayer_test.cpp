@@ -27,7 +27,6 @@ protected:
 
   Config config = {{"input.http.buffer_size", "768000"},
                    {"input.http.chunk_size", "384000"},
-                   {"input.http.stall_timeout", "1"},
                    {"decoder.flac.buffer_size", "1536000"},
                    {"output.alsa.device", testDevice()},
                    {"output.alsa.buffer_size", "16384"},
@@ -35,10 +34,26 @@ protected:
 
   AudioPlayer audioPlayer;
 
-  AudioPlayerTest() : audioPlayer(config) {
+  explicit AudioPlayerTest(const Config &overrides = {})
+      : audioPlayer(withOverrides(overrides)) {
     audioPlayer.configureVolume("software", "");
     audioPlayer.setVolume(0);
   }
+
+  Config withOverrides(const Config &overrides) const {
+    Config merged = config;
+    for (const auto &[key, value] : overrides) {
+      merged.insert_or_assign(key, value);
+    }
+    return merged;
+  }
+};
+
+class AudioPlayerStallTest : public AudioPlayerTest {
+protected:
+  // Four one-second stalls; the 15 s default would outlast the test.
+  AudioPlayerStallTest()
+      : AudioPlayerTest({{"input.http.stall_timeout", "1"}}) {}
 };
 
 TEST_F(AudioPlayerTest, constructor_destructor) {}
@@ -388,11 +403,10 @@ TEST_F(AudioPlayerTest, test_protocol_detection) {
   EXPECT_TRUE(reported(seen, AudioGraphNodeState::FINISHED));
 }
 
-TEST_F(AudioPlayerTest, stalled_http_stream_fails_after_stall_timeout) {
+TEST_F(AudioPlayerStallTest, stalled_http_stream_fails_after_stall_timeout) {
   auto monitor = audioPlayer.monitor();
   audioPlayer.append(27, server.url("/stall"));
 
-  // Four one-second stalls; the 15 s default would outlast the test.
   std::optional<StreamState> failed;
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(20);
