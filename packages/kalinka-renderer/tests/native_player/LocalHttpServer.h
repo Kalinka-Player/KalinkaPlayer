@@ -2,11 +2,11 @@
 
 #include <boost/asio.hpp>
 
-#include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
-#include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -57,20 +57,17 @@ public:
 private:
   void acceptConnections();
   void serve(boost::asio::ip::tcp::socket &socket);
-  std::optional<size_t> sentBeforeStall(std::string_view target,
-                                        size_t bodySize);
-  bool goesSilent(std::string_view target);
+  bool firstRequestTo(std::string_view target);
   bool waitForRelease();
 
   std::string body_;
   boost::asio::io_context io_;
   boost::asio::ip::tcp::acceptor acceptor_;
-  std::atomic<bool> stalledOnce_ = false;
-  std::atomic<bool> silencedOnce_ = false;
   std::mutex mutex_;
   std::condition_variable releasedOrStopping_;
   bool released_ = false;
   bool stopping_ = false;
+  std::set<std::string, std::less<>> answered_;
   std::vector<std::shared_ptr<boost::asio::ip::tcp::socket>> sockets_;
   std::vector<std::jthread> connections_;
   std::jthread acceptorThread_;

@@ -24,6 +24,22 @@ namespace {
 using Request = http::request<http::empty_body>;
 using Response = http::response<http::string_body>;
 
+enum class Delivery {
+  Whole,
+  /// Not even the headers, then the connection is held open.
+  Silent,
+  /// The headers and `sentFirst` body bytes, then the connection is held open.
+  Stall,
+  /// The headers and `sentFirst` body bytes, the rest once release() is called.
+  Held,
+};
+
+struct Reply {
+  Response response;
+  Delivery delivery = Delivery::Whole;
+  size_t sentFirst = 0;
+};
+
 std::string readFile(const std::string &path) {
   std::ifstream file(path, std::ios::binary);
   if (!file) {
@@ -70,45 +86,77 @@ std::optional<std::pair<size_t, size_t>> requestedRange(std::string_view header,
   return std::make_pair(*first, last);
 }
 
-bool servesRanges(std::string_view target) {
-  return target == "/ranged" || target == "/stall" || target == "/stall-once" ||
-         target == "/stall-often" || target == "/silent-once";
-}
-
-Response respond(const Request &request, const std::string &body) {
+Response respond(const Request &request, http::status status,
+                 std::string body = {}) {
   Response response;
   response.version(request.version());
   response.keep_alive(request.keep_alive());
-  const std::string_view target = request.target();
-
-  if (target == "/whole" || target == "/held") {
-    response.result(http::status::ok);
-    response.set(http::field::accept_ranges, "none");
-    response.body() = body;
-  } else if (servesRanges(target)) {
-    response.set(http::field::accept_ranges, "bytes");
-    const auto range = requestedRange(request[http::field::range], body.size());
-    if (!range) {
-      response.result(http::status::ok);
-      response.body() = body;
-    } else if (range->first >= body.size()) {
-      response.result(http::status::range_not_satisfiable);
-      response.set(http::field::content_range,
-                   "bytes */" + std::to_string(body.size()));
-    } else {
-      response.result(http::status::partial_content);
-      response.set(http::field::content_range,
-                   "bytes " + std::to_string(range->first) + "-" +
-                       std::to_string(range->second) + "/" +
-                       std::to_string(body.size()));
-      response.body() =
-          body.substr(range->first, range->second - range->first + 1);
-    }
-  } else {
-    response.result(http::status::not_found);
-  }
+  response.result(status);
+  response.body() = std::move(body);
   response.prepare_payload();
   return response;
+}
+
+Response ranged(const Request &request, const std::string &body) {
+  const auto range = requestedRange(request[http::field::range], body.size());
+  Response response;
+  if (!range) {
+    response = respond(request, http::status::ok, body);
+  } else if (range->first >= body.size()) {
+    response = respond(request, http::status::range_not_satisfiable);
+    response.set(http::field::content_range,
+                 "bytes */" + std::to_string(body.size()));
+  } else {
+    response =
+        respond(request, http::status::partial_content,
+                body.substr(range->first, range->second - range->first + 1));
+    response.set(http::field::content_range,
+                 "bytes " + std::to_string(range->first) + "-" +
+                     std::to_string(range->second) + "/" +
+                     std::to_string(body.size()));
+  }
+  response.set(http::field::accept_ranges, "bytes");
+  return response;
+}
+
+Reply stalled(Response response, size_t sentFirst) {
+  return {std::move(response), Delivery::Stall, sentFirst};
+}
+
+/// Every route in one place; @p first is whether @p request is the first to
+/// its path.
+Reply answer(const Request &request, const std::string &body, bool first) {
+  const std::string_view target = request.target();
+  if (target == "/ranged") {
+    return {ranged(request, body)};
+  }
+  if (target == "/whole" || target == "/held") {
+    Response response = respond(request, http::status::ok, body);
+    response.set(http::field::accept_ranges, "none");
+    if (target == "/held") {
+      return {std::move(response), Delivery::Held, LocalHttpServer::HELD_BYTES};
+    }
+    return {std::move(response)};
+  }
+  if (target == "/stall") {
+    return stalled(ranged(request, body), LocalHttpServer::STALLED_BODY_BYTES);
+  }
+  if (target == "/stall-once") {
+    Response response = ranged(request, body);
+    return first ? stalled(std::move(response),
+                           LocalHttpServer::STALLED_BODY_BYTES)
+                 : Reply{std::move(response)};
+  }
+  if (target == "/stall-often") {
+    Response response = ranged(request, body);
+    return response.body().size() > LocalHttpServer::STALL_OFTEN_BYTES
+               ? stalled(std::move(response), LocalHttpServer::STALL_OFTEN_BYTES)
+               : Reply{std::move(response)};
+  }
+  if (target == "/silent-once") {
+    return {ranged(request, body), first ? Delivery::Silent : Delivery::Whole};
+  }
+  return {respond(request, http::status::not_found)};
 }
 
 void writeHead(tcp::socket &socket, Response &response, size_t bodyBytes,
@@ -186,27 +234,30 @@ void LocalHttpServer::serve(tcp::socket &socket) {
     if (error) {
       return;
     }
-    Response response = respond(request, body_);
-    const std::string_view target = request.target();
-    if (goesSilent(target)) {
+    Reply reply = answer(request, body_, firstRequestTo(request.target()));
+    Response &response = reply.response;
+    switch (reply.delivery) {
+    case Delivery::Whole:
+      http::write(socket, response, error);
+      break;
+    case Delivery::Silent:
       holdOpen(socket);
       return;
-    }
-    if (const auto sent = sentBeforeStall(target, response.body().size())) {
-      writeHead(socket, response, *sent, error);
+    case Delivery::Stall:
+      writeHead(socket, response, reply.sentFirst, error);
       holdOpen(socket);
       return;
-    }
-    if (target == "/held") {
-      writeHead(socket, response, HELD_BYTES, error);
+    case Delivery::Held: {
+      writeHead(socket, response, reply.sentFirst, error);
       if (error || !waitForRelease()) {
         return;
       }
+      const std::string_view body = response.body();
       const std::string_view rest =
-          std::string_view(response.body()).substr(HELD_BYTES);
+          body.substr(std::min(reply.sentFirst, body.size()));
       asio::write(socket, asio::buffer(rest.data(), rest.size()), error);
-    } else {
-      http::write(socket, response, error);
+      break;
+    }
     }
     if (error || !response.keep_alive()) {
       return;
@@ -228,18 +279,7 @@ bool LocalHttpServer::waitForRelease() {
   return !stopping_;
 }
 
-std::optional<size_t> LocalHttpServer::sentBeforeStall(std::string_view target,
-                                                       size_t bodySize) {
-  if (target == "/stall" ||
-      (target == "/stall-once" && !stalledOnce_.exchange(true))) {
-    return STALLED_BODY_BYTES;
-  }
-  if (target == "/stall-often" && bodySize > STALL_OFTEN_BYTES) {
-    return STALL_OFTEN_BYTES;
-  }
-  return std::nullopt;
-}
-
-bool LocalHttpServer::goesSilent(std::string_view target) {
-  return target == "/silent-once" && !silencedOnce_.exchange(true);
+bool LocalHttpServer::firstRequestTo(std::string_view target) {
+  std::lock_guard lock(mutex_);
+  return answered_.emplace(target).second;
 }
