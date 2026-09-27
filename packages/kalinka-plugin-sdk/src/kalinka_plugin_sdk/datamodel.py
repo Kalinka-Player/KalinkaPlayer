@@ -807,6 +807,52 @@ class PlaybackState(BaseModel):
     timestamp_ns: NonNegativeInt = 0
 
 
+class PlaybackControlMode(str, Enum):
+    QUEUE = "queue"
+    EXCLUSIVE = "exclusive"
+
+
+class PlaybackControl(BaseModel):
+    """Who drives the output.
+
+    Under QUEUE, Kalinka's play queue plays. Under EXCLUSIVE, an input plugin
+    holds the renderer to play outside the queue, as a Connect receiver does:
+    the queue keeps its contents but plays nothing, and the playback state
+    clients are shown is the plugin's.
+
+    Attributes:
+        mode (PlaybackControlMode): QUEUE or EXCLUSIVE
+        plugin_id (Optional[str]): The plugin holding the output; EXCLUSIVE only
+        title (Optional[str]): What clients call its playback ("Qobuz
+            Connect"); EXCLUSIVE only
+    """
+
+    mode: PlaybackControlMode = PlaybackControlMode.QUEUE
+    plugin_id: Optional[str] = None
+    title: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _names_the_plugin_only_when_exclusive(self) -> "PlaybackControl":
+        if self.mode is PlaybackControlMode.EXCLUSIVE:
+            if not self.plugin_id or not self.title:
+                raise ValueError("exclusive control names the plugin and its title")
+        elif self.plugin_id is not None or self.title is not None:
+            raise ValueError("the queue's control names no plugin")
+        return self
+
+    @classmethod
+    def queue(cls) -> "PlaybackControl":
+        return cls()
+
+    @classmethod
+    def exclusive(cls, plugin_id: str, title: str) -> "PlaybackControl":
+        return cls(mode=PlaybackControlMode.EXCLUSIVE, plugin_id=plugin_id, title=title)
+
+    @property
+    def is_exclusive(self) -> bool:
+        return self.mode is PlaybackControlMode.EXCLUSIVE
+
+
 class DeviceState(BaseModel):
     """
     State information for an audio output device.

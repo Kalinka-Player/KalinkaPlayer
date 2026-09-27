@@ -5,6 +5,7 @@ from typing import Any, ClassVar, Generic, Optional, TypeVar
 from .api import EventEmitter, EventListener, LoggerAPI, PlayQueueController
 from .config_feedback import ConfigIssue, ConfigOption
 from .dynamic_fields import DynamicFieldDecl
+from .direct_playback import DirectPlayback
 from .embedding import TextEmbedder
 from .events import PlayQueueEventType, PlayQueueEvent, PlayQueueState
 from .ext_device_events import ExtDeviceEventType, ExtDeviceEvent, ExtDeviceState
@@ -199,6 +200,9 @@ class InputPluginContext(PluginContextBase):
     """Context provided to input module plugins."""
 
     playqueue: PlayQueueController
+    # SDK 3.4+: plays on the renderer outside the play queue. None on a server
+    # that cannot, so a plugin checks before relying on it.
+    direct_playback: Optional[DirectPlayback] = field(default=None, kw_only=True)
 
 
 @dataclass

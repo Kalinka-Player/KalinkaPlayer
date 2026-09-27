@@ -7,6 +7,7 @@ from .api import BaseEvent, BaseState
 
 from .datamodel import (
     Track,
+    PlaybackControl,
     PlaybackState,
     PlaybackMode,
 )
@@ -23,6 +24,7 @@ class PlayQueueEventType(Enum):
     PlaybackModeChanged = "playback_mode_changed"
     RenderersChanged = "renderers_changed"
     CurrentRendererChanged = "current_renderer_changed"
+    PlaybackControlChanged = "playback_control_changed"
 
 
 class RendererDescriptor(BaseModel):
@@ -67,6 +69,9 @@ class PlayQueueState(BaseState[PlayQueueEvent]):
     renderers: List[RendererDescriptor] = Field(default_factory=list)
     current_renderer_id: Optional[str] = None
     selected_renderer_id: Optional[str] = None
+    # Whether the queue plays, or an input plugin holds the output exclusively;
+    # while one does, playback_state describes the plugin's playback.
+    playback_control: PlaybackControl = Field(default_factory=PlaybackControl)
 
     def apply(self, event: PlayQueueEvent) -> "PlayQueueState":
         """Apply event and return a new state (immutable pattern)."""
@@ -109,6 +114,8 @@ class PlayQueueState(BaseState[PlayQueueEvent]):
         elif isinstance(event, CurrentRendererChangedEvent):
             updates["current_renderer_id"] = event.renderer_id
             updates["selected_renderer_id"] = event.selected_renderer_id
+        elif isinstance(event, PlaybackControlChangedEvent):
+            updates["playback_control"] = event.control
         else:
             return self
 
@@ -177,3 +184,14 @@ class CurrentRendererChangedEvent(PlayQueueEvent):
     event_type: PlayQueueEventType = PlayQueueEventType.CurrentRendererChanged
     renderer_id: Optional[str] = None
     selected_renderer_id: Optional[str] = None
+
+
+class PlaybackControlChangedEvent(PlayQueueEvent):
+    """Who drives the output changed: the play queue, or an input plugin
+    playing exclusively outside it.
+
+    Always followed by a PlaybackStateChangedEvent describing the new
+    controller's playback."""
+
+    event_type: PlayQueueEventType = PlayQueueEventType.PlaybackControlChanged
+    control: PlaybackControl = Field(default_factory=PlaybackControl)
