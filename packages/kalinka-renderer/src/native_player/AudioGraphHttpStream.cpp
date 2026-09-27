@@ -11,14 +11,19 @@
 
 #include "Log.h"
 
+namespace {
+const long STALL_BYTES_PER_SECOND = 1024;
+} // namespace
+
 AudioGraphHttpStream::AudioGraphHttpStream(std::optional<StreamId> streamId,
                                            const std::string &url,
-                                           size_t bufferSize, size_t chunkSize)
+                                           size_t bufferSize, size_t chunkSize,
+                                           std::chrono::seconds stallTimeout)
     : AudioGraphNode(streamId), url(url),
       buffer(std::max(bufferSize, static_cast<size_t>(CURL_MAX_WRITE_SIZE)),
              std::bind(&AudioGraphHttpStream::emptyBufferCallback, this,
                        std::placeholders::_1)),
-      chunkSize(chunkSize) {
+      chunkSize(chunkSize), stallTimeout(stallTimeout) {
   readerThread =
       std::jthread(std::bind_front(&AudioGraphHttpStream::reader, this));
 }
@@ -139,7 +144,9 @@ void AudioGraphHttpStream::reader(std::stop_token stopToken) {
     }
   } catch (curlpp::LibcurlRuntimeError &ex) {
     if (!stopToken.stop_requested()) {
-      std::string message = std::string("Libcurl exception: ") + ex.what();
+      std::string message = std::string("Libcurl exception: ") +
+                            curl_easy_strerror(ex.whatCode()) + ": " +
+                            ex.what();
       spdlog::error(message);
       setState({AudioGraphNodeState::ERROR, StreamError{StreamErrorSource::HTTP_STREAM, message}});
     }
@@ -249,6 +256,9 @@ int AudioGraphHttpStream::readSingleChunk(std::stop_token stopToken) {
   }
 
   request.setOpt(new curlpp::options::ConnectTimeout(10));
+  // A sender gone quiet would otherwise hold perform() until TCP gives up.
+  request.setOpt(new curlpp::options::LowSpeedLimit(STALL_BYTES_PER_SECOND));
+  request.setOpt(new curlpp::options::LowSpeedTime(stallTimeout.count()));
   request.setOpt(new curlpp::options::WriteFunction(
       std::bind(&AudioGraphHttpStream::WriteCallback, this, _1, _2, _3)));
   if (!hasReadHeader) {

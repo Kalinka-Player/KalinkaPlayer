@@ -1,19 +1,46 @@
 #include "AudioGraphHttpStream.h"
 
+#include <curl/curl.h>
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
+
+#include <algorithm>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <vector>
 
 #include "LocalHttpServer.h"
 #include "TestHelpers.h"
 
+namespace {
+std::vector<uint8_t> readToEnd(AudioGraphHttpStream &stream) {
+  std::vector<uint8_t> content;
+  size_t available = 0;
+  while ((available = stream.waitForData(std::stop_token(), 1)) != 0) {
+    const size_t start = content.size();
+    content.resize(start + available);
+    content.resize(start + stream.read(content.data() + start, available));
+  }
+  return content;
+}
+
+std::vector<uint8_t> fileContent(const std::string &path) {
+  std::ifstream file(path, std::ios::binary);
+  return {std::istreambuf_iterator<char>(file),
+          std::istreambuf_iterator<char>()};
+}
+} // namespace
+
 class AudioGraphHttpStreamTest : public ::testing::Test {
 protected:
   // Several buffers long, so seeking past what is buffered asks for a range.
-  LocalHttpServer server{testFile("tone880.flac")};
+  const std::string file = testFile("tone880.flac");
+  LocalHttpServer server{file};
   const std::string url = server.url("/ranged");
   const std::string urlNoRanges = server.url("/whole");
   const size_t bufferSize = 32768;
+  const std::chrono::seconds stallTimeout{1};
 
   void SetUp() override {}
 };
@@ -251,4 +278,53 @@ TEST_F(AudioGraphHttpStreamTest, read_whole_dump) {
   }
 
   EXPECT_EQ(bytesRead, bytesReadChunked);
+}
+
+TEST_F(AudioGraphHttpStreamTest, stalled_transfer_ends_in_timeout_error) {
+  auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(
+      1, server.url("/stall"), bufferSize, 0, stallTimeout);
+
+  // Every attempt stalls: the first request and the three retries.
+  auto state = waitForStatus(*audioGraphHttpStream, AudioGraphNodeState::ERROR,
+                             std::chrono::seconds(20));
+
+  ASSERT_EQ(state.state, AudioGraphNodeState::ERROR);
+  ASSERT_TRUE(state.error.has_value());
+  EXPECT_EQ(state.error->source, StreamErrorSource::HTTP_STREAM);
+  EXPECT_THAT(state.error->message,
+              ::testing::HasSubstr(curl_easy_strerror(CURLE_OPERATION_TIMEDOUT)));
+}
+
+TEST_F(AudioGraphHttpStreamTest, stalled_transfer_resumes_where_it_stopped) {
+  const auto started = std::chrono::steady_clock::now();
+  auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(
+      1, server.url("/stall-once"), bufferSize, 0, stallTimeout);
+
+  const auto content = readToEnd(*audioGraphHttpStream);
+
+  // Otherwise the first request never stalled and nothing was resumed.
+  EXPECT_GE(std::chrono::steady_clock::now() - started, stallTimeout);
+  EXPECT_EQ(audioGraphHttpStream->getState().state,
+            AudioGraphNodeState::FINISHED);
+  const auto expected = fileContent(file);
+  ASSERT_EQ(content.size(), expected.size());
+  const auto differs =
+      std::mismatch(content.begin(), content.end(), expected.begin()).first;
+  EXPECT_TRUE(differs == content.end())
+      << "first difference at byte " << differs - content.begin();
+}
+
+TEST_F(AudioGraphHttpStreamTest, full_buffer_is_not_a_stall) {
+  // Without ranges there is no retry to hide a stall wrongly seen.
+  auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(
+      1, urlNoRanges, bufferSize, 0, stallTimeout);
+
+  // A paused player: the whole file is one request, held up on a full buffer.
+  audioGraphHttpStream->waitForData(std::stop_token(), bufferSize);
+  std::this_thread::sleep_for(stallTimeout * 3);
+  const auto content = readToEnd(*audioGraphHttpStream);
+
+  EXPECT_EQ(audioGraphHttpStream->getState().state,
+            AudioGraphNodeState::FINISHED);
+  EXPECT_EQ(content.size(), fileContent(file).size());
 }

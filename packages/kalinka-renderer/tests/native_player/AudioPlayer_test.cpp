@@ -27,6 +27,7 @@ protected:
 
   Config config = {{"input.http.buffer_size", "768000"},
                    {"input.http.chunk_size", "384000"},
+                   {"input.http.stall_timeout", "1"},
                    {"decoder.flac.buffer_size", "1536000"},
                    {"output.alsa.device", testDevice()},
                    {"output.alsa.buffer_size", "16384"},
@@ -385,4 +386,26 @@ TEST_F(AudioPlayerTest, test_protocol_detection) {
   auto seen = drainStates(*monitor);
   expectPlayedInTurn(seen, {25, 26});
   EXPECT_TRUE(reported(seen, AudioGraphNodeState::FINISHED));
+}
+
+TEST_F(AudioPlayerTest, stalled_http_stream_fails_after_stall_timeout) {
+  auto monitor = audioPlayer.monitor();
+  audioPlayer.append(27, server.url("/stall"));
+
+  // Four one-second stalls; the 15 s default would outlast the test.
+  std::optional<StreamState> failed;
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(20);
+  while (!failed && std::chrono::steady_clock::now() < deadline) {
+    for (const auto &state : drainStates(*monitor)) {
+      if (state.state == AudioGraphNodeState::ERROR) {
+        failed = state;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+
+  ASSERT_TRUE(failed.has_value());
+  ASSERT_TRUE(failed->error.has_value());
+  EXPECT_EQ(failed->error->source, StreamErrorSource::HTTP_STREAM);
 }
