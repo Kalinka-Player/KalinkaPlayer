@@ -24,12 +24,14 @@ There are four independent things to version, and they work differently:
 - The **SDK** is the plugin API contract, versioned by its **own SemVer**,
   independent of the app/`kalinka-v*` version. **Major** = a breaking API
   change; **minor** = a backwards-compatible addition; **patch** = a fix.
-  Plugins and the server depend on it as `kalinka-plugin-sdk>=1,<2`, so
-  backwards-compatible minor/patch bumps (`1.0 → 1.1 → …`) never break existing
-  plugins, while a major bump (`→ 2.0`) does — those plugins must be re-pinned
-  and rebuilt. The SDK's `1.x` measures **API compatibility**; the app's `0.x`
-  measures **product maturity** — they are different axes and are expected to
-  differ. The server also verifies the installed SDK major at startup and
+  Plugins and the server pin it within the current major, as
+  `kalinka-plugin-sdk>=3,<4` (some with a minor floor, such as the server's
+  `>=3.4,<4`), so backwards-compatible minor/patch bumps (`3.4 → 3.5 → …`)
+  never break existing plugins, while a major bump (`→ 4.0`) does — those
+  plugins must be re-pinned and rebuilt. The SDK's `3.x` measures **API
+  compatibility**; the app's own `kalinka-v*` version measures **product
+  maturity** — they are different axes and are expected to differ. The
+  server also verifies the installed SDK major at startup and
   refuses to run on a mismatch (see [Runtime enforcement](#runtime-enforcement-startup-guard)).
 
 Old per-package tags (`kalinka-server-v*`, `kalinka-plugin-*-v*`, `release-*`)
@@ -74,7 +76,7 @@ SemVer picks the digit, the calendar picks the date. Keep those two decisions ap
    ```
    `debs/` is wiped at the start of each build, so it contains only this
    release's artifacts. Every app package will be named `…0.2.0…`; the bundled
-   SDK keeps its own SemVer version (e.g. `kalinka-plugin-sdk_1.0.0_all.deb`).
+   SDK keeps its own SemVer version (e.g. `kalinka-plugin-sdk_3.4.0_all.deb`).
 
 4. Write the release notes. The tag push has `release.yml` publish the release with install instructions and a folded commit log, and nothing that says what changed. Once the workflow has finished, put that above them by hand:
    ```bash
@@ -195,24 +197,26 @@ mislabeled data release.
 
 The SDK version lives in **one place**:
 
-- [`packages/kalinka-plugin-sdk/src/kalinka_plugin_sdk/_version.py`](packages/kalinka-plugin-sdk/src/kalinka_plugin_sdk/_version.py) → `__version__ = "1.0.0"`
+- [`packages/kalinka-plugin-sdk/src/kalinka_plugin_sdk/_version.py`](packages/kalinka-plugin-sdk/src/kalinka_plugin_sdk/_version.py) → `__version__`
 
 `pyproject.toml` derives the packaging version from it via
 `[tool.setuptools.dynamic] version = {attr = "kalinka_plugin_sdk._version.__version__"}`,
 so you never edit the version in two places.
 
-### Minor or patch (backwards compatible — e.g. `1.0.0` → `1.1.0`)
+### Minor or patch (backwards compatible — e.g. `3.4.0` → `3.5.0`)
 Added an API, fixed a bug, nothing removed/changed:
 
 1. Edit `__version__` in `_version.py` — in the same commit as the API change, not as a later release chore ([When to release](#when-to-release)).
-2. Done. Consumers pin `>=1,<2`, which already accepts it — **no plugin
+2. Done. Consumers pin `<4`, which already accepts it — **no plugin
    changes, no re-pinning, no rebuild required**. Existing plugins keep working.
+   A consumer that starts using the new API raises its own floor, e.g. to
+   `>=3.5,<4`, in both its `pyproject.toml` and its `control.in`.
 
-### Major (breaking — e.g. `1.x` → `2.0.0`)
+### Major (breaking — e.g. `3.x` → `4.0.0`)
 Removed or changed an existing public API (a protocol change):
 
-1. Edit `__version__` in `_version.py` to `2.0.0`.
-2. Widen **every consumer pin** from `<2` to `<3`, i.e. `kalinka-plugin-sdk>=2,<3`. Each consumer pins twice — `pyproject.toml` for the wheel, `debian/control.in` for the deb — and the deb pin is the one that decides whether `apt` will install the set at all:
+1. Edit `__version__` in `_version.py` to `4.0.0`.
+2. Widen **every consumer pin** from `<4` to `<5`, i.e. `kalinka-plugin-sdk>=4,<5`. Each consumer pins twice — `pyproject.toml` for the wheel, `debian/control.in` for the deb — and the deb pin is the one that decides whether `apt` will install the set at all:
    - `packages/kalinka-server/pyproject.toml` and `packages/kalinka-server/DEBIAN/control.in`
    - `packages/kalinka-plugin-localfiles/` — `pyproject.toml` and `debian/control.in`
    - `packages/kalinka-plugin-jamendo/` — likewise
@@ -222,7 +226,7 @@ Removed or changed an existing public API (a protocol change):
    - the plugin template, so a plugin generated after the bump is born on the new major: `sdk_version_constraint` in `template/cookiecutter-kalinka-plugin/cookiecutter.json` (the generated wheel's pin and `REQUIRES_SDK`) and `template/cookiecutter-kalinka-plugin/{{cookiecutter.plugin_name}}/debian/control.in`. `make test` fails until both accept the new SDK. `template/cookiecutter-kalinka-plugin/README.md` quotes the default three times; move those along with it.
 3. Raise each plugin's `REQUIRES_SDK` floor to the new major. This is a
    *second* gate, checked when the plugin is loaded rather than installed: a
-   plugin left at `>=1,<2` is not set up and is listed as an error, even when
+   plugin left at `>=3,<4` is not set up and is listed as an error, even when
    an earlier boot's copy of it is still in the venv after pip refused its new
    wheel. The built-in renderer output device declares one too; nothing
    checks it as it loads, but `make test` fails until it admits the new SDK.
@@ -231,7 +235,7 @@ Removed or changed an existing public API (a protocol change):
    lives in its own repo and is not covered by the greps below.
 6. Cut a new `kalinka-vX.Y.Z` app release — a protocol break is a server change,
    so the **server version moves with it**. Third-party plugins built for the old
-   major won't install against the new server (their `<2` excludes SDK `2.x`).
+   major won't install against the new server (their `<4` excludes SDK `4.x`).
 
 Find the spots to touch:
 ```bash
@@ -250,7 +254,7 @@ not need a tag or a separate release step.
 
 Dependency pins only fire when an install goes through the resolver. As a
 backstop, the **server checks the installed SDK at startup**: it reads its own
-`kalinka-plugin-sdk` requirement (from package metadata — the same `>=1,<2`
+`kalinka-plugin-sdk` requirement (from package metadata — the same `>=3.4,<4`
 pin, no second source of truth) and **refuses to start** if the installed SDK
 falls outside it. This catches the cases pins can't — `pip install --no-deps`,
 `dpkg --force-depends`, or upgrading the SDK in place to a different major.
@@ -286,6 +290,6 @@ git tag kalinka-image-vX.Y.Z && git push origin kalinka-image-vX.Y.Z
 - **SemVer picks the digit, the calendar picks the date** — see [When to release](#when-to-release).
 - **Clean tree on the tagged commit**, or the version carries a dev/dirty suffix.
 - **SDK = one constant.** Minor/patch touches only `_version.py`; major also
-  widens the four `>=1,<2` consumer pins.
+  widens the `<4` of every consumer pin (server, four plugins, template).
 - Compatibility is guaranteed **within a major version only** — that's what the
   `>=N,<N+1` pins encode.
