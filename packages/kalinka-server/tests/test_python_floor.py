@@ -18,6 +18,11 @@ PLUGIN_TEMPLATE_PYPROJECT = (
 
 FLOOR_STATEMENTS = [
     ("packages/*/pyproject.toml", r'requires-python = ">=(\d+\.\d+)"'),
+    (
+        "packages/*/pyproject.toml",
+        r'"Programming Language :: Python :: 3",\s*'
+        r'"Programming Language :: Python :: (\d+\.\d+)"',
+    ),
     ("packages/kalinka-plugin-sdk/debian/control.in", r"python3 \(>= (\d+\.\d+)\)"),
     ("packages/kalinka-server/DEBIAN/control.in", r"python3 \(>= (\d+\.\d+)\)"),
     ("packages/kalinka-server/rpm/kalinka-server.spec", r"python3 >= (\d+\.\d+)"),
@@ -33,7 +38,16 @@ FLOOR_STATEMENTS = [
     ("Makefile", r"(?:Python|but) >= (\d+\.\d+)"),
     ("Makefile", r"version_info\[:2\] >= \((\d+), (\d+)\)"),
     ("docs/development.md", r"Python (\d+\.\d+)\+"),
+    ("docs/development.md", r"older than (\d+\.\d+)"),
     ("template/cookiecutter-kalinka-plugin/README.md", r"Python (\d+\.\d+)\+"),
+    (
+        "template/cookiecutter-kalinka-plugin/README.md",
+        r'Python version \(default: "(\d+\.\d+)"\)',
+    ),
+    (
+        "template/cookiecutter-kalinka-plugin/README.md",
+        r"python_version \[(\d+\.\d+)\]",
+    ),
     (
         "template/cookiecutter-kalinka-plugin/cookiecutter.json",
         r'"python_version": "(\d+\.\d+)"',
@@ -65,8 +79,7 @@ def test_every_statement_of_the_python_floor_agrees():
 
 
 def test_a_generated_plugin_states_its_floor_only_in_requires_python():
-    # Its author picks python_version, which a fixed list of minor-version
-    # classifiers would contradict for any choice but one.
+    # Fixed minor-version classifiers would contradict any python_version but one.
     pyproject = PLUGIN_TEMPLATE_PYPROJECT.read_text()
     assert 'requires-python = ">={{ cookiecutter.python_version }}"' in pyproject
     assert re.findall(r"Programming Language :: Python :: 3\.\d+", pyproject) == []
