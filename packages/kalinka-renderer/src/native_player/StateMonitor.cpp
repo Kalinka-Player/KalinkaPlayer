@@ -47,7 +47,11 @@ void StateMonitor::stop() {
     return;
   }
   ptr->removeStateChangeCallback(subscriptionId);
-  stopped = true;
+  {
+    // Locked, or the wakeup can fall between a waiter's check and its sleep.
+    std::lock_guard lock(mutex);
+    stopped = true;
+  }
   cv.notify_all();
 }
 
