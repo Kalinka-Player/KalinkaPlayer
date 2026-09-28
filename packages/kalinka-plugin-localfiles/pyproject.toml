@@ -52,6 +52,10 @@ dev = [
     "kalinka-plugin-dev>=1.0,<2",
     "pytest",
     "setuptools-scm",
+    # test_share_read_ahead.py serves a track on a share through the
+    # server's content route, which streams a module's reader since 5.1.
+    "kalinka-server>=5.1,<6",
+    "httpx>=0.24.0",
 ]
 
 [project.entry-points."kalinka.plugins"]
