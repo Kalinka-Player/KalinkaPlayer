@@ -79,6 +79,26 @@ async def test_untagged_single_gets_track_art_at_index_time(indexer):
 
 
 @pytest.mark.asyncio
+async def test_new_album_gets_no_cover_from_a_picture_that_would_not_save(
+    indexer,
+):
+    """A cover reference to files never written would also keep the album
+    out of every pass that looks for one."""
+    fi, db, music_dir, config = indexer
+    path = music_dir / "bee.flac"
+    _write_flac(path, {"title": "Bee Moved", "artist": "Blue Coast",
+                       "album": "Bee Moved"},
+                cover=b"not an image")
+
+    track_id = (await fi.process_file(str(path)))["tracks"]
+
+    album_id = (await db.get_track_by_id(track_id))["album_id"]
+    assert album_id != "unknown_album"
+    assert (await db.get_album_by_id(album_id))["image_url"] is None
+    assert not (fi.artwork_path / "album" / f"{album_id}_large.jpg").exists()
+
+
+@pytest.mark.asyncio
 async def test_reindex_without_embedded_art_drops_the_track_cover(indexer):
     """The update is surgical, so a cover the file no longer carries would
     otherwise stay on the row forever."""

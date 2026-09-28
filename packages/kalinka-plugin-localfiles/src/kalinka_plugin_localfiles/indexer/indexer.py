@@ -920,10 +920,9 @@ class FileIndexer:
             album_data["year"] = year
         if "genre" in metadata:
             album_data["genre"] = metadata["genre"]
-        if "album_art" in metadata:
-            await asyncio.to_thread(
-                self._save_images, metadata["album_art"], album_id, "album", file_path
-            )
+        if "album_art" in metadata and await asyncio.to_thread(
+            self._save_images, metadata["album_art"], album_id, "album", file_path
+        ):
             album_data["image_url"] = f"{album_id}.jpg"
         await self.db_manager.insert_album(album_data)
         if year is not None:
