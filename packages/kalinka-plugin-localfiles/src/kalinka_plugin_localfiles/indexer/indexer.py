@@ -71,7 +71,13 @@ from .id_generator import (
     generate_album_id,
     generate_track_id,
 )
-from .indexer_db import EMBEDDED_COVER, FOLDER_COVER, AsyncIndexerDb, Fingerprint
+from .indexer_db import (
+    EMBEDDED_COVER,
+    FOLDER_COVER,
+    FOLDER_STATE,
+    AsyncIndexerDb,
+    Fingerprint,
+)
 
 
 # V/A-compilation classification (thresholds, folder heuristics, title
@@ -1425,23 +1431,28 @@ class FileIndexer:
         Costs one directory listing plus a header read per candidate image,
         for albums that have no real cover yet; a recorded ``image_url``
         stops repeats. So does a folder none of whose images would decode:
-        until one of them, or one of the directories searched, changes, it
-        costs a stat of each.
+        until one of its images, or one of the directories searched, changes,
+        it costs a stat of each.
         """
         counts = {"albums": 0}
         written_off = await self.db_manager.get_art_failures(FOLDER_COVER)
+        searched = await self.db_manager.get_art_failures(FOLDER_STATE)
         for album_id, file_path in await self.db_manager.get_albums_without_cover():
             if self.storage.root_of(file_path, available_folders) is None:
                 continue
             storage = self.storage.for_path(file_path)
             folder = album_folder_for_path(file_path)
             failed = written_off.get(album_id, {})
-            if folder in failed and failed == await asyncio.to_thread(
-                _fingerprints, storage, failed
+            state = searched.get(album_id, {})
+            recorded = {**failed, **state}
+            if folder in state and recorded == await asyncio.to_thread(
+                _fingerprints, storage, recorded
             ):
                 logger.debug(f"Folder not searched again, unchanged: {folder}")
                 continue
-            cover = await self._cover_from_folder(album_id, storage, folder, failed)
+            cover = await self._cover_from_folder(
+                album_id, storage, folder, failed, state
+            )
             if cover is None:
                 continue
             await self.db_manager.set_album_cover(album_id)
@@ -1456,14 +1467,18 @@ class FileIndexer:
         storage: FileStorage,
         folder: str,
         failed: Dict[str, Fingerprint],
+        state: Dict[str, Fingerprint],
     ) -> Optional[FolderCover]:
         """Store the best image in ``folder`` that decodes, and say which.
 
         Candidates are tried best first, passing over any that failed before
-        and has not changed. When none decodes, they are written off with the
-        directories searched, so the folder is searched again only once one
-        of those changes. A read or write failure ends the attempt without
-        writing the folder off: it says nothing about the images.
+        and has not changed. When none decodes, they are written off, and
+        the directories searched and every other image in them are recorded
+        as the folder's state, so it is searched again only once one of
+        those changes. The state is kept apart because an image that was not
+        a candidate — outranked, say, by a larger broken one — was never
+        tried. A read or write failure ends the attempt without writing the
+        folder off: it says nothing about the images.
         """
         found = await asyncio.to_thread(find_folder_covers, storage, folder)
         if not found.covers:
@@ -1483,20 +1498,29 @@ class FileIndexer:
                     break
             undecodable[cover.path] = fingerprint
         if len(undecodable) == len(found.covers):
-            directories = await asyncio.to_thread(
-                _fingerprints, storage, found.directories
+            passed_over = [p for p in found.images if p not in undecodable]
+            folder_state = (
+                await asyncio.to_thread(
+                    _fingerprints, storage, found.directories + passed_over
+                )
+                or {}
             )
-            sources = {**undecodable, **(directories or {})}
         else:
-            # Interrupted: keep what is known of each image, not of the folder.
-            sources = {
-                path: fingerprint
-                for path, fingerprint in failed.items()
-                if path not in found.directories
+            # Interrupted: keep what is known of each cover, not of the folder.
+            candidates = {cover.path for cover in found.covers}
+            undecodable = {
+                **{p: f for p, f in failed.items() if p in candidates},
+                **undecodable,
             }
-            sources.update(undecodable)
-        if sources != failed:
-            await self.db_manager.replace_art_failures(album_id, FOLDER_COVER, sources)
+            folder_state = {}
+        if undecodable != failed:
+            await self.db_manager.replace_art_failures(
+                album_id, FOLDER_COVER, undecodable
+            )
+        if folder_state != state:
+            await self.db_manager.replace_art_failures(
+                album_id, FOLDER_STATE, folder_state
+            )
         return None
 
     def _save_folder_cover(

@@ -90,10 +90,14 @@ class FolderCovers(NamedTuple):
         first; a caller whose first choice will not decode takes the next.
     @param directories Every directory searched. Adding an image to one
         changes its mtime, so these say whether the answer could differ.
+    @param images Every image file found, whether or not it could be the
+        cover: one still being copied is passed over, and finishing the copy
+        changes the file but not its directory.
     """
 
     covers: List[FolderCover]
     directories: List[str]
+    images: List[str]
 
 
 class _Candidate(NamedTuple):
@@ -178,27 +182,28 @@ def _searchable_directory(storage: FileStorage, entry: DirEntry) -> bool:
 
 
 def _image_entries(storage: FileStorage, directories: List[str]) -> List[DirEntry]:
-    """Admissible image files, cheaply filtered — no file is opened here."""
+    """Image files, by name alone — no file is opened here."""
     entries: List[DirEntry] = []
     for directory in directories:
         try:
             children = sorted(storage.listdir(directory), key=lambda e: e.name)
         except OSError:
             continue
-        for entry in children:
-            if (
-                entry.is_dir
-                or is_hidden_file(entry.name)
-                or not entry.name.lower().endswith(_EXTENSIONS)
-            ):
-                continue
-            size = storage.size_of(entry)
-            # Zero is an empty file or one the storage could not measure;
-            # neither is worth a round trip to open.
-            if not size or size > _MAX_BYTES:
-                continue
-            entries.append(entry)
+        entries.extend(
+            entry
+            for entry in children
+            if not entry.is_dir
+            and not is_hidden_file(entry.name)
+            and entry.name.lower().endswith(_EXTENSIONS)
+        )
     return entries
+
+
+def _worth_measuring(storage: FileStorage, entry: DirEntry) -> bool:
+    size = storage.size_of(entry)
+    # Zero is an empty file or one the storage could not measure;
+    # neither is worth a round trip to open.
+    return bool(size) and size <= _MAX_BYTES
 
 
 def _measure(storage: FileStorage, path: str) -> Optional[_Candidate]:
@@ -221,16 +226,21 @@ def find_folder_covers(storage: FileStorage, folder: str) -> FolderCovers:
     @param folder The album's directory; its immediate subdirectories are
         searched too.
     @return Which files could hold the cover and which part of each is the
-        front, with the directories that were searched for them.
+        front, with the directories and images that were searched for them.
     """
     if not folder:
-        return FolderCovers([], [])
+        return FolderCovers([], [], [])
     directories = _directories(storage, folder)
+    images = _image_entries(storage, directories)
     measured = (
-        _measure(storage, e.path) for e in _image_entries(storage, directories)
+        _measure(storage, e.path) for e in images if _worth_measuring(storage, e)
     )
     candidates = [c for c in measured if c is not None]
-    return FolderCovers([c.as_cover() for c in _ranked(candidates)], directories)
+    return FolderCovers(
+        [c.as_cover() for c in _ranked(candidates)],
+        directories,
+        [e.path for e in images],
+    )
 
 
 def find_folder_cover(
