@@ -1,13 +1,17 @@
 """TimeLimitedInputModule enforces the SDK latency contract server-side."""
 
 import asyncio
+import runpy
+import sys
+import typing
 
 import pytest
 
 from kalinka_plugin_sdk.datamodel import BrowseItemList
 from kalinka_plugin_sdk.inputmodule import InputModule
 
-from kalinka_server.module_timeout import TimeLimitedInputModule
+from kalinka_server import module_timeout
+from kalinka_server.module_timeout import _PROTOCOL_METHODS, TimeLimitedInputModule
 
 
 class SlowModule(InputModule):
@@ -58,6 +62,22 @@ async def test_sync_attributes_and_protocol_check_pass_through():
     # The server gates modules with isinstance against the runtime-checkable
     # protocol; the proxy must remain indistinguishable there.
     assert isinstance(proxy, InputModule)
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="__protocol_attrs__ is new in Python 3.12"
+)
+def test_protocol_methods_are_the_members_isinstance_checks():
+    assert set(_PROTOCOL_METHODS) == set(InputModule.__protocol_attrs__)
+
+
+def test_module_loads_on_a_python_without_protocol_attrs(monkeypatch):
+    # Python 3.10 and 3.11 have no __protocol_attrs__, not even on Protocol,
+    # and the server imports this module at start-up.
+    monkeypatch.delattr(InputModule, "__protocol_attrs__", raising=False)
+    monkeypatch.delattr(typing.Protocol, "__protocol_attrs__", raising=False)
+    namespace = runpy.run_path(module_timeout.__file__)
+    assert namespace["_PROTOCOL_METHODS"] == _PROTOCOL_METHODS
 
 
 async def test_inherited_default_get_all_is_also_budgeted():
