@@ -72,7 +72,7 @@ When you run cookiecutter, you'll be prompted to provide values for the followin
 
 - **python_version**: Minimum Python version (default: "3.10")
 
-- **sdk_version_constraint**: SDK version constraint (default: ">=2.0,<3")
+- **sdk_version_constraint**: SDK version constraint (default: ">=3,<4")
 
 - **license**: Choose from:
   - GPL-3.0-or-later (default)
@@ -95,7 +95,7 @@ author_name [Your Name]: John Doe
 author_email [your.email@example.com]: john@example.com
 version [1.0.0]: 
 python_version [3.10]: 
-sdk_version_constraint [>=2.0,<3]: 
+sdk_version_constraint [>=3,<4]: 
 license [GPL-3.0-or-later]: MIT
 year [2025]: 
 ```

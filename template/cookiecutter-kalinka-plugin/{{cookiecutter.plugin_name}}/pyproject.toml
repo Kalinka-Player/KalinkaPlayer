@@ -28,7 +28,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "kalinka-plugin-dev{{ cookiecutter.sdk_version_constraint }}",
+    "kalinka-plugin-dev>=1.0,<2",
     "pytest",
     "setuptools-scm",
 ]

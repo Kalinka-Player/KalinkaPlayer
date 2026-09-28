@@ -137,10 +137,10 @@ clean:
 	@find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 	@find . -name "*.egg-info" -type d -exec rm -rf {} + 2>/dev/null || true
 
-## Run the SDK, server and plugin suites, each from its own package so its
-## conftest.py applies. The play queue suite is slow and flaky, so it runs on
-## its own (make test-playqueue) when the play queue changes. Extra pytest
-## args via ARGS, e.g. make test ARGS="-q -rfE"
+## Run the SDK, server, plugin and plugin template suites, each from its own
+## package so its conftest.py applies. The play queue suite is slow and flaky,
+## so it runs on its own (make test-playqueue) when the play queue changes.
+## Extra pytest args via ARGS, e.g. make test ARGS="-q -rfE"
 PLUGIN_TEST_DIRS := $(filter-out packages/kalinka-plugin-sdk,$(patsubst %/tests/,%,$(wildcard packages/kalinka-plugin-*/tests/)))
 
 test:
@@ -152,6 +152,7 @@ test:
 		(cd $$dir && python -m pytest tests/ -v $(ARGS)) || exit 1; \
 	done
 	@python -m pytest benchmarks/sdd/tests -v $(ARGS)
+	@python -m pytest template/cookiecutter-kalinka-plugin/tests -v $(ARGS)
 
 ## The server's play queue suite. Extra pytest args via ARGS, e.g.
 ## make test-playqueue ARGS=--last-failed
@@ -277,7 +278,7 @@ help:
 	@echo "  image-amd64       Build the x86-64 appliance image (needs root)"
 	@echo "  image-test        Run the appliance image tests"
 	@echo "  copy-debs         Move built deb packages to debs/ directory"
-	@echo "  test              Run the SDK, server and plugin tests (not the play queue)"
+	@echo "  test              Run the SDK, server, plugin and plugin template tests (not the play queue)"
 	@echo "  test-playqueue    Run the server's slow play queue tests"
 	@echo "  lint              Check for undefined names (F821)"
 	@echo "  clean             Clean build artifacts"
