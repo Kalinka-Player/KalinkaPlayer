@@ -149,6 +149,19 @@ def test_a_renderer_that_really_failed_still_reports_it(tmp_path):
     assert "apt could not install" in result.stderr
 
 
+def test_the_renderer_takes_no_recommends(tmp_path):
+    """install-release.sh runs it first, so whatever it lets in reaches every
+    box the release install keeps recommends off."""
+    binv = _stub_bin(tmp_path, installed_version="0.4.0")
+    log = tmp_path / "apt-get.log"
+    (binv / "apt-get").write_text(f'#!/usr/bin/env bash\necho "$*" >> "{log}"\n')
+
+    result = _renderer_install_block(tmp_path, binv)
+
+    assert result.returncode == 0, result.stderr
+    assert "--no-install-recommends" in log.read_text().split()
+
+
 EXTRAS = {"libchromaprint-tools", "build-essential", "python3-dev"}
 
 EITHER_PATH = pytest.mark.parametrize(
@@ -165,8 +178,13 @@ while [ $# -gt 0 ]; do
 done
 if [ -n "$out" ]; then : > "$out"; else cat "$STUB_STATE/release.json"; fi
 """,
-    # Records what it installed by name, the way dpkg-query below reads it.
+    # Records what it installed by name, the way dpkg-query below reads it. A
+    # simulation takes no lock and installs nothing, so it is not logged.
     "apt-get": """#!/usr/bin/env bash
+if [ "$1" = -s ]; then
+  grep -qxF "${!#}" "$STUB_STATE/unknown" && exit 100
+  exit 0
+fi
 echo "$*" >> "$STUB_STATE/apt-get.log"
 names=()
 while [ $# -gt 0 ]; do
@@ -189,10 +207,6 @@ for name in "${names[@]}"; do
 done
 exit 0
 """,
-    "apt-cache": """#!/usr/bin/env bash
-grep -qxF "${!#}" "$STUB_STATE/unknown" && exit 100
-exit 0
-""",
     "dpkg": """#!/usr/bin/env bash
 echo "$*" >> "$STUB_STATE/dpkg.log"
 exit 1
@@ -213,8 +227,8 @@ def _install_release(tmp_path, *, bundle_fails=False, names_fail=False, unknown=
     apt logs every call. ``bundle_fails`` makes it refuse the downloaded debs,
     which sends the script down its dpkg -i fallback; ``names_fail`` makes it
     refuse every install by name, as a lock it waited out does; ``unknown``
-    names packages it cannot locate, failing any call that asks for one — what
-    a distribution without that package does.
+    names packages it cannot install, failing any call that asks for one — what
+    a distribution without that package, or with a conflicting one, does.
     """
     binv = tmp_path / "bin"
     binv.mkdir()
@@ -295,6 +309,16 @@ def test_the_names_go_in_before_the_bundle(bundle_fails, tmp_path):
     assert named < bundle
 
 
+def test_what_is_already_there_is_not_upgraded(tmp_path):
+    """Auto-upgrade reruns the installer, and python3-dev pins python3 by exact
+    version: upgrading it would upgrade the interpreter the server runs on."""
+    result, calls, _ = _install_release(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    [named] = [c for c in calls if EXTRAS <= set(c)]
+    assert "--no-upgrade" in named
+
+
 def test_a_refused_install_is_not_asked_again_per_package(tmp_path):
     """A held dpkg lock is waited out for five minutes a call; asking once more
     per package kept the unattended upgrade waiting for each of them."""
@@ -308,9 +332,10 @@ def test_a_refused_install_is_not_asked_again_per_package(tmp_path):
 
 
 @EITHER_PATH
-def test_a_package_apt_cannot_find_costs_only_itself(bundle_fails, tmp_path):
-    """One name missing from a distribution must not take the others down
-    with it, nor the install: the operator is told what it costs instead."""
+def test_a_package_apt_cannot_install_costs_only_itself(bundle_fails, tmp_path):
+    """One name missing from a distribution, or held back by a pinned python3,
+    must not take the others down with it, nor the install: the operator is
+    told what it costs instead."""
     result, _, installed = _install_release(
         tmp_path, bundle_fails=bundle_fails, unknown=["python3-dev"]
     )

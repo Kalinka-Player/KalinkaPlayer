@@ -229,15 +229,15 @@ declare -A EXTRAS=(
 
 # Best-effort: every one of them serves an optional feature.
 install_extras() {
-  # A name apt cannot find fails the whole call, so it is left out up front
-  # rather than retried per package, which waits out a held lock once for each.
+  # Simulated alone, so one apt cannot install costs only itself and the lock is waited out once.
   local pkg found=()
   for pkg in "${!EXTRAS[@]}"; do
-    apt-cache show "$pkg" >/dev/null 2>&1 && found+=("$pkg")
+    apt-get -s install --no-install-recommends --no-upgrade "$pkg" >/dev/null 2>&1 && found+=("$pkg")
   done
   [ "${#found[@]}" -gt 0 ] || return 0
   echo ">> Installing what Kalinka's optional features use ..."
-  $SUDO "${APT_INSTALL[@]}" "${found[@]}" || true
+  # Upgrading python3-dev would upgrade the python3 it pins, under the server, on every auto-upgrade.
+  $SUDO "${APT_INSTALL[@]}" --no-upgrade "${found[@]}" || true
 }
 
 report_missing_extras() {
@@ -260,8 +260,7 @@ if [ "${NO_APT_UPDATE:-0}" != "1" ]; then
   $SUDO apt-get "${APT_OPTS[@]}" update
 fi
 
-# Ahead of the bundle: its postinst restarts kalinka.service, which looks for
-# fpcalc and builds a pending Smart Search install only as it starts.
+# The bundle's postinst starts kalinka.service, which looks for fpcalc and the toolchain only then.
 install_extras
 
 echo ">> Installing ${#URLS[@]} package(s) with apt ..."
