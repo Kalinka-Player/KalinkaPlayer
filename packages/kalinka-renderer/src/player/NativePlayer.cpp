@@ -7,6 +7,7 @@
 #include <chrono>
 #include <span>
 
+#include "../config/ConfigService.h"
 #include "../config/SettingsPersistence.h"
 #include "../native_player/AlsaDeviceEnumeration.h"
 #include "../native_player/AudioGraphHttpStream.h"
@@ -165,36 +166,61 @@ bool holds(std::span<const Knob> knobs, const std::string &path) {
       knobs, [&path](const Knob &knob) { return knob.path == path; });
 }
 
-bool isKnob(const std::string &path) {
-  return holds(kOutputKnobs, path) || holds(kBuffering.knobs, path) ||
-         holds(kNetwork.knobs, path);
+const Knob *findKnob(const std::string &path) {
+  for (std::span<const Knob> knobs : {std::span<const Knob>(kOutputKnobs),
+                                      kBuffering.knobs, kNetwork.knobs}) {
+    const auto knob = std::ranges::find_if(
+        knobs, [&path](const Knob &knob) { return knob.path == path; });
+    if (knob != knobs.end()) {
+      return &*knob;
+    }
+  }
+  return nullptr;
+}
+
+// Everything the settings page is told about a knob but its values.
+void describe(pb::ConfigField &field, const Knob &knob) {
+  field.set_path(knob.path);
+  field.set_title(knob.title);
+  field.set_description(knob.description);
+  field.set_type(knob.type);
+  field.set_apply(readPerStream(knob.path) ? pb::APPLY_COST_INSTANT
+                                           : pb::APPLY_COST_INTERRUPTS_PLAYBACK);
+  // Reached for when the card or the link misbehaves, which is not what a
+  // settings page is for.
+  field.set_importance(pb::CONFIG_IMPORTANCE_EXPERT);
+  field.set_unit(knob.unit);
+  if (!knob.bounds.declared()) {
+    return;
+  }
+  pb::ConfigRange *range = field.mutable_range();
+  range->set_min(knob.bounds.min);
+  range->set_max(knob.bounds.max);
+  range->set_step(knob.bounds.step);
+  field.set_widget(knob.bounds.slider ? pb::CONFIG_WIDGET_SLIDER
+                                      : pb::CONFIG_WIDGET_NUMBER);
 }
 
 void declare(pb::ConfigSection &out, const Knob &knob,
              const std::map<std::string, std::string> &settings,
              const std::map<std::string, std::string> &defaults) {
   pb::ConfigField *field = out.add_fields();
-  field->set_path(knob.path);
-  field->set_title(knob.title);
-  field->set_description(knob.description);
-  field->set_type(knob.type);
+  describe(*field, knob);
   field->set_value(settings.at(knob.path));
   field->set_default_value(defaults.at(knob.path));
-  field->set_apply(readPerStream(knob.path) ? pb::APPLY_COST_INSTANT
-                                            : pb::APPLY_COST_INTERRUPTS_PLAYBACK);
-  // Reached for when the card or the link misbehaves, which is not what a
-  // settings page is for.
-  field->set_importance(pb::CONFIG_IMPORTANCE_EXPERT);
-  field->set_unit(knob.unit);
-  if (!knob.bounds.declared()) {
-    return;
+}
+
+// Held to the knob's field as a write is: a hand-edited stall timeout of 0
+// would switch stall detection off, and a negative size throws mid-track.
+bool knobTakes(const std::string &path, const std::string &value,
+               std::string &error) {
+  const Knob *knob = findKnob(path);
+  if (knob == nullptr) {
+    return true;
   }
-  pb::ConfigRange *range = field->mutable_range();
-  range->set_min(knob.bounds.min);
-  range->set_max(knob.bounds.max);
-  range->set_step(knob.bounds.step);
-  field->set_widget(knob.bounds.slider ? pb::CONFIG_WIDGET_SLIDER
-                                       : pb::CONFIG_WIDGET_NUMBER);
+  pb::ConfigField field;
+  describe(field, *knob);
+  return fieldAccepts(field, value, error);
 }
 
 }  // namespace
@@ -272,10 +298,17 @@ Config NativePlayer::graphConfig() const {
 NativePlayer::NativePlayer(asio::io_context &ioc) : ioc_(ioc) {
   for (const auto &[key, value] : loadSettingsOverrides()) {
     const auto setting = settings_.find(key);
-    if (setting != settings_.end()) {
-      setting->second = value;
-      spdlog::info("Config override {} = '{}'", key, value);
+    if (setting == settings_.end()) {
+      continue;
     }
+    std::string error;
+    if (!knobTakes(key, value, error)) {
+      spdlog::warn("Ignoring config override {} = '{}': {}; using '{}'", key,
+                   value, error, setting->second);
+      continue;
+    }
+    setting->second = value;
+    spdlog::info("Config override {} = '{}'", key, value);
   }
   ensurePlayer();
 }
@@ -693,7 +726,7 @@ bool NativePlayer::applySetting(const std::string &path,
   // Sizes and durations, which the graph reads as unsigned: a negative one
   // throws where it is read, which is halfway into the next track. The service
   // refuses what a knob's declared range excludes before it ever reaches here.
-  if (value.starts_with("-") && isKnob(path)) {
+  if (value.starts_with("-") && findKnob(path) != nullptr) {
     error = "must not be negative";
     return false;
   }
