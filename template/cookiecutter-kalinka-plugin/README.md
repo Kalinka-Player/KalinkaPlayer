@@ -6,7 +6,7 @@ This is a cookiecutter template for creating new Kalinka Music Player plugins. I
 
 Before using this template, ensure you have:
 
-- Python 3.10+
+- Python 3.11+
 - [cookiecutter](https://cookiecutter.readthedocs.io/) installed
 - Git (for version management)
 - Basic understanding of Kalinka Plugin SDK
@@ -70,7 +70,7 @@ When you run cookiecutter, you'll be prompted to provide values for the followin
 
 - **version**: Initial version (default: "1.0.0")
 
-- **python_version**: Minimum Python version (default: "3.10")
+- **python_version**: Minimum Python version (default: "3.11")
 
 - **sdk_version_constraint**: SDK version constraint (default: ">=3,<4")
 
@@ -94,7 +94,7 @@ plugin_type [input_module]:
 author_name [Your Name]: John Doe
 author_email [your.email@example.com]: john@example.com
 version [1.0.0]: 
-python_version [3.10]: 
+python_version [3.11]: 
 sdk_version_constraint [>=3,<4]: 
 license [GPL-3.0-or-later]: MIT
 ```
@@ -334,7 +334,7 @@ Each generated project includes:
 
 **Permission errors**: Make sure you have write permissions in the target directory.
 
-**Missing dependencies**: Install cookiecutter and ensure Python 3.10+ is available.
+**Missing dependencies**: Install cookiecutter and ensure Python 3.11+ is available.
 
 **Build failures**: Check that all template variables were properly substituted and that there are no syntax errors in generated files.
 

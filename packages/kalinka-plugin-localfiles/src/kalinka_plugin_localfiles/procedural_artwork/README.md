@@ -109,4 +109,4 @@ across releases of this code as long as the algorithm is unchanged.
 ## Dependencies
 
 Pillow and NumPy only, both already provided by the host application
-(works with NumPy 1.26+ and 2.x). Python >= 3.10.
+(works with NumPy 1.26+ and 2.x). Python >= 3.11.
