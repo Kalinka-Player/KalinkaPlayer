@@ -11,6 +11,7 @@ record's while a folder may hold a whole sleeve set.
 
 import io
 import logging
+import os
 import sqlite3
 from contextlib import closing
 
@@ -25,7 +26,11 @@ import kalinka_plugin_localfiles.indexer.indexer as indexer_module
 from kalinka_plugin_localfiles.config_model import LocalFilesConfig
 from kalinka_plugin_localfiles.db_schema import init_db
 from kalinka_plugin_localfiles.indexer.indexer import FileIndexer
-from kalinka_plugin_localfiles.indexer.indexer_db import AsyncIndexerDb
+from kalinka_plugin_localfiles.indexer.indexer_db import (
+    FOLDER_COVER,
+    AsyncIndexerDb,
+)
+from kalinka_plugin_localfiles.storage.local import LocalStorage
 
 
 @pytest_asyncio.fixture
@@ -95,19 +100,51 @@ def _failed_sources(config, entity_id):
             "SELECT source_path FROM art_source_failures WHERE entity_id = ?",
             (entity_id,),
         )
-        return [path for (path,) in rows]
+        return {path for (path,) in rows}
 
 
-def _spy_on_save(monkeypatch):
+def _spy(monkeypatch, name, record=lambda args, kwargs: kwargs.get("origin")):
     calls = []
-    real = indexer_module.save_artwork_from_file
+    real = getattr(indexer_module, name)
 
     def spy(*args, **kwargs):
-        calls.append(kwargs.get("origin"))
+        calls.append(record(args, kwargs))
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(indexer_module, "save_artwork_from_file", spy)
+    monkeypatch.setattr(indexer_module, name, spy)
     return calls
+
+
+class _DroppingFile(io.BytesIO):
+    """A file on a share that stops answering half-way through."""
+
+    def read(self, size=-1):
+        whole = len(self.getbuffer())
+        end = whole if size is None or size < 0 else self.tell() + size
+        if end > whole // 2:
+            raise OSError("host is down")
+        return super().read(size)
+
+
+def _share_drops_images(monkeypatch):
+    real_open = LocalStorage.open
+
+    def open_(self, path, *, read_ahead=True):
+        handle = real_open(self, path, read_ahead=read_ahead)
+        if not path.endswith(".jpg"):
+            return handle
+        with handle:
+            return _DroppingFile(handle.read())
+
+    monkeypatch.setattr(LocalStorage, "open", open_)
+
+
+def _block_artwork(monkeypatch, fi, tmp_path):
+    """The artwork directory cannot be written, as on a full or read-only
+    disk."""
+    blocked = tmp_path / "blocked"
+    blocked.write_text("a file where the artwork directory should be")
+    monkeypatch.setattr(fi, "artwork_path", blocked)
 
 
 @pytest.mark.asyncio
@@ -244,7 +281,7 @@ async def test_a_cover_that_will_not_decode_is_reported_once(
     folder, album_id = await _album_with(music_dir, fi)
     cover = folder / "cover.jpg"
     cover.write_bytes(_truncated_jpeg())
-    saves = _spy_on_save(monkeypatch)
+    saves = _spy(monkeypatch, "store_artwork_from_file")
 
     caplog.clear()
     with caplog.at_level(logging.WARNING):
@@ -263,19 +300,35 @@ async def test_a_cover_that_will_not_decode_is_reported_once(
 
 
 @pytest.mark.asyncio
+async def test_a_written_off_folder_is_not_searched_again(indexer, monkeypatch):
+    """Listing it and reading every image header each pass is what a share
+    pays for; a stat of the broken file and of the folder is enough to know
+    nothing changed."""
+    fi, db, music_dir, config = indexer
+    folder, album_id = await _album_with(music_dir, fi)
+    cover = folder / "cover.jpg"
+    cover.write_bytes(_truncated_jpeg())
+    assert (await fi.backfill_folder_art([str(music_dir)]))["albums"] == 0
+    assert _failed_sources(config, album_id) == {str(cover), str(folder)}
+
+    searches = _spy(monkeypatch, "find_folder_covers", lambda args, _: args[1])
+    assert (await fi.backfill_folder_art([str(music_dir)]))["albums"] == 0
+    assert searches == []
+
+
+@pytest.mark.asyncio
 async def test_a_replaced_cover_is_tried_again(indexer):
     fi, db, music_dir, config = indexer
     folder, album_id = await _album_with(music_dir, fi)
     cover = folder / "cover.jpg"
     cover.write_bytes(_truncated_jpeg())
     assert (await fi.backfill_folder_art([str(music_dir)]))["albums"] == 0
-    assert _failed_sources(config, album_id) == [str(cover)]
 
     Image.new("RGB", (500, 500), (30, 90, 140)).save(cover)
 
     assert (await fi.backfill_folder_art([str(music_dir)]))["albums"] == 1
     assert (await db.get_album_by_id(album_id))["image_url"] == f"{album_id}.jpg"
-    assert _failed_sources(config, album_id) == []
+    assert _failed_sources(config, album_id) == set()
 
 
 @pytest.mark.asyncio
@@ -288,30 +341,87 @@ async def test_a_good_image_added_beside_a_broken_one_is_taken(indexer):
     assert (await fi.backfill_folder_art([str(music_dir)]))["albums"] == 0
 
     Image.new("RGB", (600, 600), (30, 90, 140)).save(folder / "folder.jpg")
+    # Past the filesystem's timestamp granularity, which a fast test can
+    # otherwise fall inside.
+    stat = folder.stat()
+    os.utime(folder, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
 
     assert (await fi.backfill_folder_art([str(music_dir)]))["albums"] == 1
-    assert _failed_sources(config, album_id) == []
+    assert _failed_sources(config, album_id) == set()
 
 
 @pytest.mark.asyncio
-async def test_a_cover_that_could_not_be_opened_is_not_written_off(
+async def test_the_next_image_is_taken_when_the_first_will_not_decode(
     indexer, monkeypatch
 ):
-    """A share that did not answer has not shown the file to be broken."""
+    fi, db, music_dir, config = indexer
+    folder, album_id = await _album_with(
+        music_dir, fi, folder_images=[("scan_1.jpg", (500, 500))]
+    )
+    (folder / "cover.jpg").write_bytes(_truncated_jpeg())
+    saves = _spy(monkeypatch, "store_artwork_from_file")
+
+    assert (await fi.backfill_folder_art([str(music_dir)]))["albums"] == 1
+    assert saves == [str(folder / "cover.jpg"), str(folder / "scan_1.jpg")]
+    assert (await db.get_album_by_id(album_id))["image_url"] == f"{album_id}.jpg"
+
+
+@pytest.mark.asyncio
+async def test_a_read_that_fails_part_way_writes_nothing_off(indexer, monkeypatch):
+    """A share that stopped answering has not shown the file to be broken."""
     fi, db, music_dir, config = indexer
     folder, album_id = await _album_with(
         music_dir, fi, folder_images=[("cover.jpg", (500, 500))]
     )
 
-    def unreachable(*_):
-        raise OSError("host is down")
-
-    monkeypatch.setattr(fi, "_save_folder_cover", unreachable)
+    _share_drops_images(monkeypatch)
     assert (await fi.backfill_folder_art([str(music_dir)]))["albums"] == 0
-    assert _failed_sources(config, album_id) == []
+    assert _failed_sources(config, album_id) == set()
 
     monkeypatch.undo()
     assert (await fi.backfill_folder_art([str(music_dir)]))["albums"] == 1
+
+
+@pytest.mark.asyncio
+async def test_an_artwork_disk_that_cannot_be_written_writes_nothing_off(
+    indexer, monkeypatch, tmp_path
+):
+    fi, db, music_dir, config = indexer
+    folder, album_id = await _album_with(
+        music_dir, fi, folder_images=[("cover.jpg", (500, 500))]
+    )
+
+    _block_artwork(monkeypatch, fi, tmp_path)
+    assert (await fi.backfill_folder_art([str(music_dir)]))["albums"] == 0
+    assert _failed_sources(config, album_id) == set()
+
+    monkeypatch.undo()
+    assert (await fi.backfill_folder_art([str(music_dir)]))["albums"] == 1
+
+
+@pytest.mark.asyncio
+async def test_an_interrupted_pass_keeps_what_it_learnt(
+    indexer, monkeypatch, tmp_path
+):
+    """The broken image is not decoded again, but the folder is not written
+    off either: the image after it was never really tried."""
+    fi, db, music_dir, config = indexer
+    folder, album_id = await _album_with(
+        music_dir, fi, folder_images=[("scan_1.jpg", (500, 500))]
+    )
+    cover = folder / "cover.jpg"
+    cover.write_bytes(_truncated_jpeg())
+    saves = _spy(monkeypatch, "store_artwork_from_file")
+    artwork = fi.artwork_path
+
+    _block_artwork(monkeypatch, fi, tmp_path)
+    assert (await fi.backfill_folder_art([str(music_dir)]))["albums"] == 0
+    assert _failed_sources(config, album_id) == {str(cover)}
+
+    monkeypatch.setattr(fi, "artwork_path", artwork)
+    saves.clear()
+    assert (await fi.backfill_folder_art([str(music_dir)]))["albums"] == 1
+    assert saves == [str(folder / "scan_1.jpg")]
 
 
 @pytest.mark.asyncio
@@ -319,11 +429,15 @@ async def test_failed_sources_go_with_their_album_and_track(indexer):
     fi, db, music_dir, config = indexer
     folder, album_id = await _album_with(music_dir, fi)
     [track] = await db.get_all_tracks()
-    await db.record_art_failure(album_id, str(folder / "cover.jpg"), 1, 1)
-    await db.record_art_failure(track["id"], track["file_path"], 1, 1)
+    await db.replace_art_failures(
+        album_id, FOLDER_COVER, {str(folder / "cover.jpg"): (1, 1)}
+    )
+    await db.replace_art_failures(
+        track["id"], "embedded", {track["file_path"]: (1, 1)}
+    )
 
     await db.delete_track(track["id"])
     await db.delete_orphaned_albums_and_artists()
 
-    assert _failed_sources(config, album_id) == []
-    assert _failed_sources(config, track["id"]) == []
+    assert _failed_sources(config, album_id) == set()
+    assert _failed_sources(config, track["id"]) == set()

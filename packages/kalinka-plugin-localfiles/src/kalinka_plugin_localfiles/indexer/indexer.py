@@ -39,14 +39,19 @@ from ..resolution.resolver import (
     OBSERVED,
     TAG_CONSENSUS,
 )
-from ..utils.artwork_store import save_artwork_from_file, save_artwork_images
-from ..utils.folder_art import FolderCover, find_folder_cover
+from ..utils.artwork_store import (
+    ArtworkSave,
+    save_artwork_images,
+    store_artwork_from_file,
+    store_artwork_images,
+)
+from ..utils.folder_art import FolderCover, find_folder_covers
+from ..utils.watched_file import WatchedFile
 from ..worker_utils import nudge
 from ..storage import (
     PROBE_TIMEOUT_S,
     ChangeKind,
     ChangeWatcher,
-    FileStat,
     FileStorage,
     RootStatus,
     StorageResolver,
@@ -66,7 +71,7 @@ from .id_generator import (
     generate_album_id,
     generate_track_id,
 )
-from .indexer_db import AsyncIndexerDb
+from .indexer_db import EMBEDDED_COVER, FOLDER_COVER, AsyncIndexerDb, Fingerprint
 
 
 # V/A-compilation classification (thresholds, folder heuristics, title
@@ -200,6 +205,28 @@ def _tags_leave_a_gap(metadata: Dict, file_path: str) -> bool:
             )
         )
     )
+
+
+def _fingerprint(storage: FileStorage, path: str) -> Optional[Fingerprint]:
+    """A cover source's size and mtime, or None when it cannot be measured."""
+    try:
+        stat = storage.stat(path)
+    except OSError:
+        return None
+    return stat.size, stat.mtime_ns
+
+
+def _fingerprints(
+    storage: FileStorage, paths: Iterable[str]
+) -> Optional[Dict[str, Fingerprint]]:
+    """Each path's fingerprint, or None when one cannot be measured."""
+    measured: Dict[str, Fingerprint] = {}
+    for path in paths:
+        fingerprint = _fingerprint(storage, path)
+        if fingerprint is None:
+            return None
+        measured[path] = fingerprint
+    return measured
 
 
 class FileIndexer:
@@ -1297,18 +1324,28 @@ class FileIndexer:
     def _embedded_art(
         self, storage: FileStorage, file_path: str
     ) -> Optional[bytes]:
-        """Read just the embedded cover from a file, or None."""
-        try:
-            mime_type = media_type_of(file_path) or ""
-            if "audio/mpeg" in mime_type:
-                with storage.open(file_path) as audio:
-                    return self._mp3_cover(ID3(audio))
-            if mime_type in ("audio/flac", "audio/x-flac"):
-                with storage.open(file_path) as audio:
-                    return self._flac_cover(FLAC(audio))
-        except Exception as e:
-            logger.debug("Could not read embedded art from %s: %s", file_path, e)
-        return None
+        """Read just the embedded cover from a file, or None when its tags
+        give up none.
+
+        @raise OSError If the file cannot be read, which says nothing about
+            its tags — though the tag reader reports it as a tag error.
+        """
+        mime_type = media_type_of(file_path) or ""
+        if "audio/mpeg" in mime_type:
+            tags, cover_in = ID3, self._mp3_cover
+        elif mime_type in ("audio/flac", "audio/x-flac"):
+            tags, cover_in = FLAC, self._flac_cover
+        else:
+            return None
+        with storage.open(file_path) as audio:
+            watched = WatchedFile(audio)
+            try:
+                return cover_in(tags(watched))
+            except Exception as e:
+                if watched.read_error is not None:
+                    raise watched.read_error from None
+                logger.debug("Could not read embedded art from %s: %s", file_path, e)
+                return None
 
     @staticmethod
     def _art_phash(image_data: bytes) -> Optional[str]:
@@ -1353,28 +1390,24 @@ class FileIndexer:
 
         Each entity costs one file read, once: the evidence ``art_phash``
         gates the pass to files known to embed a picture, and a recorded
-        ``image_url`` stops repeats — as does a picture that would not
-        decode, until its file changes. Only files under currently available
-        roots are touched. Runs before the enricher nudge so embedded art
-        wins over a procedural cover.
+        ``image_url`` stops repeats — as does a picture whose tags or data
+        would not decode, until its file changes. Only files under currently
+        available roots are touched. Runs before the enricher nudge so
+        embedded art wins over a procedural cover.
         """
         counts = {"albums": 0, "tracks": 0}
+        written_off = await self.db_manager.get_art_failures(EMBEDDED_COVER)
         for album_id, file_path in await self.db_manager.get_albums_missing_art():
             if await self._restore_embedded_art(
-                album_id, file_path, "album", available_folders
+                album_id, file_path, "album", available_folders, written_off
             ):
-                await self.db_manager.update_album(
-                    album_id,
-                    {"image_url": f"{album_id}.jpg", "image_generated": 0},
-                )
+                await self.db_manager.set_album_cover(album_id)
                 counts["albums"] += 1
         for track_id, file_path in await self.db_manager.get_singles_missing_art():
             if await self._restore_embedded_art(
-                track_id, file_path, "track", available_folders
+                track_id, file_path, "track", available_folders, written_off
             ):
-                await self.db_manager.update_track(
-                    track_id, {"image_url": f"{track_id}.jpg"}
-                )
+                await self.db_manager.set_track_cover(track_id)
                 counts["tracks"] += 1
         return counts
 
@@ -1391,57 +1424,98 @@ class FileIndexer:
 
         Costs one directory listing plus a header read per candidate image,
         for albums that have no real cover yet; a recorded ``image_url``
-        stops repeats, and so does a chosen image that would not decode,
-        until the file changes.
+        stops repeats. So does a folder none of whose images would decode:
+        until one of them, or one of the directories searched, changes, it
+        costs a stat of each.
         """
         counts = {"albums": 0}
+        written_off = await self.db_manager.get_art_failures(FOLDER_COVER)
         for album_id, file_path in await self.db_manager.get_albums_without_cover():
             if self.storage.root_of(file_path, available_folders) is None:
                 continue
             storage = self.storage.for_path(file_path)
             folder = album_folder_for_path(file_path)
-            cover = await asyncio.to_thread(find_folder_cover, storage, folder)
-            if not cover:
+            failed = written_off.get(album_id, {})
+            if folder in failed and failed == await asyncio.to_thread(
+                _fingerprints, storage, failed
+            ):
+                logger.debug(f"Folder not searched again, unchanged: {folder}")
                 continue
-            stat = await self._art_source_to_try(album_id, storage, cover.path)
-            if stat is None:
+            cover = await self._cover_from_folder(album_id, storage, folder, failed)
+            if cover is None:
                 continue
-            try:
-                saved = await asyncio.to_thread(
-                    self._save_folder_cover, storage, cover, album_id
-                )
-            except OSError as e:
-                logger.debug(f"Could not read folder cover {cover.path}: {e}")
-                continue
-            await self._record_art_attempt(album_id, cover.path, stat, saved)
-            if not saved:
-                continue
-            await self.db_manager.update_album(
-                album_id, {"image_url": f"{album_id}.jpg", "image_generated": 0}
-            )
+            await self.db_manager.set_album_cover(album_id)
             counts["albums"] += 1
             panel = " (front panel)" if cover.box else ""
             logger.info(f"Cover for album {album_id} taken from {cover.path}{panel}")
         return counts
 
+    async def _cover_from_folder(
+        self,
+        album_id: str,
+        storage: FileStorage,
+        folder: str,
+        failed: Dict[str, Fingerprint],
+    ) -> Optional[FolderCover]:
+        """Store the best image in ``folder`` that decodes, and say which.
+
+        Candidates are tried best first, passing over any that failed before
+        and has not changed. When none decodes, they are written off with the
+        directories searched, so the folder is searched again only once one
+        of those changes. A read or write failure ends the attempt without
+        writing the folder off: it says nothing about the images.
+        """
+        found = await asyncio.to_thread(find_folder_covers, storage, folder)
+        if not found.covers:
+            return None
+        undecodable: Dict[str, Fingerprint] = {}
+        for cover in found.covers:
+            fingerprint = await asyncio.to_thread(_fingerprint, storage, cover.path)
+            if fingerprint is None:
+                break
+            if failed.get(cover.path) != fingerprint:
+                outcome = await asyncio.to_thread(
+                    self._save_folder_cover, storage, cover, album_id
+                )
+                if outcome is ArtworkSave.SAVED:
+                    return cover
+                if outcome is ArtworkSave.IO_FAILED:
+                    break
+            undecodable[cover.path] = fingerprint
+        if len(undecodable) == len(found.covers):
+            directories = await asyncio.to_thread(
+                _fingerprints, storage, found.directories
+            )
+            sources = {**undecodable, **(directories or {})}
+        else:
+            # Interrupted: keep what is known of each image, not of the folder.
+            sources = {
+                path: fingerprint
+                for path, fingerprint in failed.items()
+                if path not in found.directories
+            }
+            sources.update(undecodable)
+        if sources != failed:
+            await self.db_manager.replace_art_failures(album_id, FOLDER_COVER, sources)
+        return None
+
     def _save_folder_cover(
         self, storage: FileStorage, cover: FolderCover, album_id: str
-    ) -> bool:
-        """Store an album's cover from an image file beside its audio.
-
-        @return False when the image would not decode.
-        @raise OSError If the file cannot be opened, which says nothing
-            about whether it would.
-        """
-        with storage.open(cover.path) as image:
-            return save_artwork_from_file(
-                self.artwork_path,
-                image,
-                album_id,
-                "album",
-                cover.box,
-                origin=cover.path,
-            )
+    ) -> ArtworkSave:
+        """Store an album's cover from an image file beside its audio."""
+        try:
+            with storage.open(cover.path) as image:
+                return store_artwork_from_file(
+                    self.artwork_path,
+                    image,
+                    album_id,
+                    "album",
+                    cover.box,
+                    origin=cover.path,
+                )
+        except OSError as e:
+            logger.debug(f"Could not read folder cover {cover.path}: {e}")
+            return ArtworkSave.IO_FAILED
 
     async def _restore_embedded_art(
         self,
@@ -1449,54 +1523,42 @@ class FileIndexer:
         file_path: str,
         entity_type: str,
         available_folders: List[str],
+        written_off: Dict[str, Dict[str, Fingerprint]],
     ) -> bool:
+        """Store the cover embedded in ``file_path`` for an album or single.
+
+        A file whose tags or picture would not decode is written off until it
+        changes; one that could not be read is tried again next pass.
+        """
         if self.storage.root_of(file_path, available_folders) is None:
             return False
         storage = self.storage.for_path(file_path)
-        stat = await self._art_source_to_try(entity_id, storage, file_path)
-        if stat is None:
+        fingerprint = await asyncio.to_thread(_fingerprint, storage, file_path)
+        if fingerprint is None:
             return False
-        art = await asyncio.to_thread(self._embedded_art, storage, file_path)
-        if not art:
+        if written_off.get(entity_id, {}).get(file_path) == fingerprint:
+            logger.debug(f"Cover for {entity_id} not retried, unchanged: {file_path}")
             return False
-        saved = await asyncio.to_thread(
-            self._save_images, art, entity_id, entity_type, file_path
-        )
-        await self._record_art_attempt(entity_id, file_path, stat, saved)
-        return saved
-
-    async def _art_source_to_try(
-        self, entity_id: str, storage: FileStorage, path: str
-    ) -> Optional[FileStat]:
-        """Measure a cover's source file, or None when it is not worth reading.
-
-        A picture that would not decode fails the same way on every pass, so
-        once it has, it is read again only after its size or mtime changes.
-        A file that cannot be measured is skipped for this pass only.
-        """
         try:
-            stat = await asyncio.to_thread(storage.stat, path)
+            art = await asyncio.to_thread(self._embedded_art, storage, file_path)
         except OSError as e:
-            logger.debug(f"Could not measure cover source {path}: {e}")
-            return None
-        if await self.db_manager.art_failure_matches(
-            entity_id, path, stat.size, stat.mtime_ns
-        ):
-            logger.debug(f"Cover for {entity_id} not retried, unchanged: {path}")
-            return None
-        return stat
-
-    async def _record_art_attempt(
-        self, entity_id: str, path: str, stat: FileStat, saved: bool
-    ) -> None:
-        """Keep the fingerprint of a source that would not decode, or drop
-        every failed source of an entity once one of them has worked."""
-        if saved:
-            await self.db_manager.clear_art_failures(entity_id)
-        else:
-            await self.db_manager.record_art_failure(
-                entity_id, path, stat.size, stat.mtime_ns
+            logger.debug(f"Could not read embedded art from {file_path}: {e}")
+            return False
+        outcome = ArtworkSave.UNDECODABLE
+        if art:
+            outcome = await asyncio.to_thread(
+                store_artwork_images,
+                self.artwork_path,
+                art,
+                entity_id,
+                entity_type,
+                origin=file_path,
             )
+        if outcome is ArtworkSave.UNDECODABLE:
+            await self.db_manager.replace_art_failures(
+                entity_id, EMBEDDED_COVER, {file_path: fingerprint}
+            )
+        return outcome is ArtworkSave.SAVED
 
     async def recluster(self) -> Dict[str, int]:
         """Folder-first album grouping over the whole library.

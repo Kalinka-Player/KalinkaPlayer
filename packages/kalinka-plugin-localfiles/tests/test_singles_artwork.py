@@ -7,6 +7,8 @@ its per-file album row.
 
 import io
 import os
+import sqlite3
+from contextlib import closing
 
 import numpy as np
 import pytest
@@ -149,45 +151,133 @@ async def test_backfill_restores_art_after_clustering_demotion(indexer):
     }
 
 
+NOTHING = {"albums": 0, "tracks": 0}
+TAGS = {"title": "Bee Moved", "artist": "Blue Coast"}
+
+
+def _truncated_jpeg():
+    buf = io.BytesIO()
+    Image.effect_noise((400, 400), 64).convert("RGB").save(buf, "JPEG")
+    data = buf.getvalue()
+    return data[: len(data) // 2]
+
+
+def _failed_sources(config, entity_id):
+    with closing(sqlite3.connect(config.db_path)) as conn:
+        rows = conn.execute(
+            "SELECT source_path FROM art_source_failures WHERE entity_id = ?",
+            (entity_id,),
+        )
+        return {path for (path,) in rows}
+
+
+def _touch(path):
+    """Change the file's mtime past the filesystem's timestamp granularity,
+    which a fast test can otherwise fall inside."""
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+
+
+async def _single_whose_cover_broke(fi, db, music_dir):
+    """A loose single indexed with a good cover, then re-tagged with one cut
+    short. The broken picture has no hash, so the good one's is kept, and
+    the backfill goes on selecting the track."""
+    path = music_dir / "loose.flac"
+    _write_flac(path, TAGS, cover=_cover_png((20, 90, 250)))
+    track_id = (await fi.process_file(str(path)))["tracks"]
+    _write_flac(path, TAGS, cover=_truncated_jpeg())
+    await fi.process_file(str(path))
+    assert (await db.get_track_by_id(track_id))["image_url"] is None
+    return path, track_id
+
+
+async def _single_needing_its_cover(fi, db, music_dir):
+    path = music_dir / "loose.flac"
+    _write_flac(path, TAGS, cover=_cover_png((20, 90, 250)))
+    track_id = (await fi.process_file(str(path)))["tracks"]
+    await db.update_track(track_id, {"image_url": None})
+    return path, track_id
+
+
+class _DroppingFile(io.BytesIO):
+    """A file on a share that stops answering after its first few bytes."""
+
+    def read(self, size=-1):
+        if size is None or size < 0 or self.tell() + size > 64:
+            raise OSError("host is down")
+        return super().read(size)
+
+
 @pytest.mark.asyncio
-async def test_backfill_retries_art_that_would_not_save_only_once_changed(
+async def test_a_cover_that_will_not_decode_is_retried_once_its_file_changes(
     indexer, monkeypatch
 ):
-    """The picture hashed at index time, so the track keeps being selected;
-    while its file is unchanged, a failed save is not read and tried again
-    on every pass."""
     fi, db, music_dir, config = indexer
-    path = music_dir / "single.flac"
-    _write_flac(path, {"title": "Bee Moved", "artist": "Blue Coast",
-                       "album": "Bee Moved"},
-                cover=_cover_png((20, 90, 250)))
-    track_id = (await fi.process_file(str(path)))["tracks"]
-    await db.reassign_album(track_id, "unknown_album")
-    await db.delete_orphaned_albums_and_artists()
+    path, track_id = await _single_whose_cover_broke(fi, db, music_dir)
+    stores = []
+    real_store = indexer_module.store_artwork_images
 
-    attempts = []
+    def store(*args, **kwargs):
+        stores.append(kwargs["origin"])
+        return real_store(*args, **kwargs)
 
-    def failing_save(artwork_path, image_data, entity_id, entity_type, origin=None):
-        attempts.append((entity_id, origin))
-        return False
+    monkeypatch.setattr(indexer_module, "store_artwork_images", store)
 
-    monkeypatch.setattr(indexer_module, "save_artwork_images", failing_save)
-    nothing = {"albums": 0, "tracks": 0}
-
-    assert await fi.backfill_embedded_art([str(music_dir)]) == nothing
-    assert await fi.backfill_embedded_art([str(music_dir)]) == nothing
-    assert attempts == [(track_id, str(path))]
+    assert await fi.backfill_embedded_art([str(music_dir)]) == NOTHING
+    assert await fi.backfill_embedded_art([str(music_dir)]) == NOTHING
+    assert stores == [str(path)]
+    assert _failed_sources(config, track_id) == {str(path)}
 
     audio = FLAC(str(path))
     audio["comment"] = "remastered"
     audio.save()
-    # Past the filesystem's timestamp granularity, which a fast test can
-    # otherwise fall inside.
-    stat = path.stat()
-    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    _touch(path)
 
-    assert await fi.backfill_embedded_art([str(music_dir)]) == nothing
-    assert attempts == [(track_id, str(path))] * 2
+    assert await fi.backfill_embedded_art([str(music_dir)]) == NOTHING
+    assert stores == [str(path)] * 2
+
+
+@pytest.mark.asyncio
+async def test_tags_that_will_not_parse_are_not_read_again(indexer, monkeypatch):
+    fi, db, music_dir, config = indexer
+    path, track_id = await _single_needing_its_cover(fi, db, music_dir)
+    path.write_bytes(b"no longer a FLAC file " * 64)
+    reads = []
+    real_read = fi._embedded_art
+
+    def read(storage, file_path):
+        reads.append(file_path)
+        return real_read(storage, file_path)
+
+    monkeypatch.setattr(fi, "_embedded_art", read)
+
+    assert await fi.backfill_embedded_art([str(music_dir)]) == NOTHING
+    assert await fi.backfill_embedded_art([str(music_dir)]) == NOTHING
+    assert reads == [str(path)]
+    assert _failed_sources(config, track_id) == {str(path)}
+
+
+@pytest.mark.asyncio
+async def test_a_file_that_could_not_be_read_is_tried_again(indexer, monkeypatch):
+    """A share that stopped answering has not shown the tags to be broken,
+    though the tag reader reports it as if it had."""
+    fi, db, music_dir, config = indexer
+    path, track_id = await _single_needing_its_cover(fi, db, music_dir)
+    real_open = LocalStorage.open
+
+    def open_(self, file_path, *, read_ahead=True):
+        with real_open(self, file_path, read_ahead=read_ahead) as handle:
+            return _DroppingFile(handle.read())
+
+    monkeypatch.setattr(LocalStorage, "open", open_)
+    assert await fi.backfill_embedded_art([str(music_dir)]) == NOTHING
+    assert _failed_sources(config, track_id) == set()
+
+    monkeypatch.undo()
+    assert await fi.backfill_embedded_art([str(music_dir)]) == {
+        "albums": 0,
+        "tracks": 1,
+    }
 
 
 @pytest.mark.asyncio
@@ -256,7 +346,8 @@ async def test_embedded_art_reads_mp3_apic(indexer):
 
     art = fi._embedded_art(LOCAL, str(path))
     assert art == _cover_png((90, 10, 130))
-    assert fi._embedded_art(LOCAL, str(music_dir / "missing.mp3")) is None
+    with pytest.raises(OSError):
+        fi._embedded_art(LOCAL, str(music_dir / "missing.mp3"))
 
 
 @pytest.mark.asyncio
