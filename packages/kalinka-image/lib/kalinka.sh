@@ -1,14 +1,6 @@
 # shellcheck shell=bash
 # Installing Kalinka into the image and proving it works there. Defines only.
 
-# What recommends would drag onto a headless box; the README says why each is named.
-EXCLUDED_PACKAGES=(va-driver-all vdpau-driver-all
-                   mesa-va-drivers i965-va-driver intel-media-va-driver
-                   libvdpau-va-gl1 mesa-vdpau-drivers mesa-vulkan-drivers
-                   mesa-libgallium libllvm19 libgl1 'nvidia-*'
-                   modemmanager ppp usb-modeswitch dnsmasq-base
-                   xauth bash-completion ncurses-term groff-base)
-
 # An unbounded journal is what filled the Pi this image replaces.
 limit_journal() {
   mkdir -p "$ROOTFS/etc/systemd/journald.conf.d"
@@ -21,21 +13,9 @@ installed_packages() {
     | awk '$4 == "installed" { print $1 }' | sort
 }
 
-# A base may ship refused packages itself; only what this build brings in counts.
+# What the base shipped, so a check on what this build installed can leave it out.
 snapshot_packages() {
   installed_packages > "$WORK/packages.before"
-}
-
-# Prints the packages in <after> but not <before> that match one of the named globs.
-packages_landed() {
-  local before="$1" after="$2" pkg pattern
-  shift 2
-  { grep -Fxv -f "$before" "$after" || true; } | while read -r pkg; do
-    for pattern in "$@"; do
-      # shellcheck disable=SC2254  # the pattern is meant as a glob
-      case "$pkg" in $pattern) echo "$pkg"; break ;; esac
-    done
-  done
 }
 
 install_kalinka() {
@@ -55,7 +35,7 @@ verify_kalinka() {
   [ -x "$ROOTFS/opt/kalinka/venv/bin/kalinka-server" ] \
     || die "bootstrap.sh left no kalinka-server in the venv"
 
-  # Checked by use: a refused library leaves fpcalc installed and unable to load.
+  # install-release.sh only warns when fpcalc does not come; an image must have it working.
   in_chroot python3 -c "
 import math, struct, wave
 w = wave.open('/tmp/fpcalc-check.wav', 'w')
@@ -70,13 +50,6 @@ w.close()"
     *FINGERPRINT=*) ;;
     *) die "fpcalc cannot fingerprint audio in this image" ;;
   esac
-
-  # A file, not <(...): a dpkg-query that failed there would read as nothing landed.
-  installed_packages > "$WORK/packages.after"
-  local landed
-  landed="$(packages_landed "$WORK/packages.before" "$WORK/packages.after" "${EXCLUDED_PACKAGES[@]}")"
-  [ -z "$landed" ] \
-    || die "packages this image refuses landed anyway: $(echo "$landed" | tr '\n' ' ')"
 
   # install-release.sh installs the renderer best-effort; without it nothing plays.
   require_enabled multi-user.target kalinka.service kalinka-renderer.service

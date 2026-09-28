@@ -19,8 +19,10 @@ TARGET_ROOT_PART=3
 TARGET_BOOT_MOUNT=/boot/efi
 TARGET_BOOT_FSTAB_OPTS="umask=0077"
 # Intel and Realtek cover all but the margins of x86 wireless, and the
-# first-boot file offers Wi-Fi on this image as much as on the Pi one.
+# first-boot file offers Wi-Fi on this image as much as on the Pi one. The
+# signed GRUB and shim are what let Secure Boot stay on.
 TARGET_PACKAGES="linux-image-amd64 grub2-common grub-efi-amd64-bin grub-pc-bin
+                 grub-efi-amd64-signed shim-signed
                  firmware-iwlwifi firmware-realtek"
 
 target_install_bootloader() {
@@ -44,4 +46,7 @@ GRUB
     || die "grub.cfg does not name the root filesystem by UUID — it would boot only from the loop device it was built on"
   [ -s "$ROOTFS$TARGET_BOOT_MOUNT/EFI/BOOT/BOOTX64.EFI" ] \
     || die "grub-install left no removable-media EFI binary"
+  # Only with shim as BOOTX64.EFI does GRUB sit beside it, where shim chain-loads it from.
+  [ -s "$ROOTFS$TARGET_BOOT_MOUNT/EFI/BOOT/grubx64.efi" ] \
+    || die "grub-install put no shim in front of GRUB — Secure Boot would refuse this image"
 }
