@@ -53,8 +53,7 @@ if [ ${#wheels[@]} -gt 0 ]; then
     # from outside the bundle is left behind by an SDK major — its pin excludes
     # the SDK now shipping, and resolving the whole directory at once turns that
     # into a server that never boots. Installed one at a time, the bundle still
-    # lands and the load-time REQUIRES_SDK gate reports the odd one out as
-    # unavailable, which is what it is there for.
+    # lands and pip refuses only the odd one out.
     echo "[bootstrap] Wheels do not resolve together; installing them singly" >&2
     ordered=()
     # The SDK leads: everything else requires it, and no index carries it, so a

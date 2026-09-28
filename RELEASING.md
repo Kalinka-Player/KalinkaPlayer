@@ -210,7 +210,7 @@ Removed or changed an existing public API (a protocol change):
    - `packages/kalinka-plugin-jamendo/` — likewise
    - `packages/kalinka-plugin-musiccast/` — likewise
    - `packages/kalinka-plugin-dummydevice/` — likewise
-   - the plugin template, so a plugin generated after the bump is born on the new major: `sdk_version_constraint` in `template/cookiecutter-kalinka-plugin/cookiecutter.json` (the generated wheel's pin and `REQUIRES_SDK`) and `template/cookiecutter-kalinka-plugin/{{cookiecutter.plugin_name}}/debian/control.in`. `make test` fails until both accept the new SDK.
+   - the plugin template, so a plugin generated after the bump is born on the new major: `sdk_version_constraint` in `template/cookiecutter-kalinka-plugin/cookiecutter.json` (the generated wheel's pin and `REQUIRES_SDK`) and `template/cookiecutter-kalinka-plugin/{{cookiecutter.plugin_name}}/debian/control.in`. `make test` fails until both accept the new SDK. `template/cookiecutter-kalinka-plugin/README.md` quotes the default three times; move those along with it.
 3. Raise each plugin's `REQUIRES_SDK` floor to the new major. It declares
    which SDK the plugin was written for, and nothing reads it yet: the server
    loads a plugin whatever its `REQUIRES_SDK` says, so only the package pins
@@ -228,6 +228,7 @@ Find the spots to touch:
 grep -rn 'kalinka-plugin-sdk *[>=<]' packages/*/pyproject.toml   # the 5 consumer pins
 grep -rn 'kalinka-plugin-sdk (' packages/*/debian/control.in packages/kalinka-server/DEBIAN/control.in template/*/*/debian/control.in  # the deb pins
 grep -n  'sdk_version_constraint' template/*/cookiecutter.json    # the template's wheel pin
+grep -n  'sdk_version_constraint\|REQUIRES_SDK = "' template/*/README.md  # the template docs quoting it
 grep -rn 'REQUIRES_SDK' packages/*/src --include='*.py'          # the declared floors
 grep -n  '__version__' packages/kalinka-plugin-sdk/src/kalinka_plugin_sdk/_version.py  # the 1 SDK source
 ```

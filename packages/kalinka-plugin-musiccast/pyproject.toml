@@ -24,8 +24,8 @@ classifiers = [
 ]
 
 dependencies = [
-    # >=3: an output device uses none of the filter contract, but
-    # REQUIRES_SDK gates the major at load.
+    # >=3: an output device uses none of the filter contract, but this pin
+    # is all that keeps it off an SDK major it was not built for.
     "kalinka-plugin-sdk>=3,<4",
     "ssdpy>=0.4.0",
 ]
