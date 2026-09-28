@@ -5,9 +5,11 @@
 #include <algorithm>
 #include <charconv>
 #include <chrono>
+#include <span>
 
 #include "../config/SettingsPersistence.h"
 #include "../native_player/AlsaDeviceEnumeration.h"
+#include "../native_player/AudioGraphHttpStream.h"
 #include "StateTranslator.h"
 
 namespace asio = boost::asio;
@@ -105,6 +107,32 @@ const Knob kBufferKnobs[] = {
      pb::CONFIG_FIELD_TYPE_INT, "bytes", {64000, 33554432}},
 };
 
+const Knob kNetworkKnobs[] = {
+    {"network.stall_timeout_s", "Stall timeout",
+     "How long a track may go without anything arriving from the server, in "
+     "seconds, before the renderer asks for the rest again. A track that keeps "
+     "stalling fails. Raise it on a very slow connection.",
+     pb::CONFIG_FIELD_TYPE_INT, "s", {5, 300, 5, true}},
+};
+
+// A section of the settings page that holds nothing but knobs.
+struct Section {
+  const char *path;
+  const char *title;
+  const char *description;
+  std::span<const Knob> knobs;
+};
+
+const Section kBuffering{"buffers", "Buffering",
+                         "How much of a track the renderer holds in memory "
+                         "while it plays.",
+                         kBufferKnobs};
+
+const Section kNetwork{"network", "Network",
+                       "How long the renderer waits on a server that has gone "
+                       "quiet.",
+                       kNetworkKnobs};
+
 // Every setting the graph is built with, and the key it is built under. A
 // write to any of them is a new graph, which is what they declare.
 const std::map<std::string, std::string> &graphKeys() {
@@ -120,6 +148,7 @@ const std::map<std::string, std::string> &graphKeys() {
       {"buffers.network_request", "input.http.chunk_size"},
       {"buffers.flac", "decoder.flac.buffer_size"},
       {"buffers.mpeg", "decoder.mpeg.buffer_size"},
+      {"network.stall_timeout_s", "input.http.stall_timeout"},
   };
   return keys;
 }
@@ -127,7 +156,8 @@ const std::map<std::string, std::string> &graphKeys() {
 bool isKnob(const std::string &path) {
   const auto named = [&path](const Knob &knob) { return knob.path == path; };
   return std::any_of(std::begin(kOutputKnobs), std::end(kOutputKnobs), named) ||
-         std::any_of(std::begin(kBufferKnobs), std::end(kBufferKnobs), named);
+         std::any_of(std::begin(kBufferKnobs), std::end(kBufferKnobs), named) ||
+         std::any_of(std::begin(kNetworkKnobs), std::end(kNetworkKnobs), named);
 }
 
 void declare(pb::ConfigSection &out, const Knob &knob,
@@ -174,21 +204,22 @@ const std::map<std::string, std::string> &NativePlayer::defaultSettings() {
       {"buffers.network_request", "384000"},
       {"buffers.flac", "1536000"},
       {"buffers.mpeg", "768000"},
+      {"network.stall_timeout_s",
+       std::to_string(AudioGraphHttpStream::DEFAULT_STALL_TIMEOUT.count())},
   };
   return defaults;
 }
 
-class NativePlayer::Buffers : public ConfigContributor {
+class NativePlayer::KnobSection : public ConfigContributor {
 public:
-  explicit Buffers(std::shared_ptr<NativePlayer> player)
-      : player_(std::move(player)) {}
+  KnobSection(std::shared_ptr<NativePlayer> player, const Section &section)
+      : player_(std::move(player)), section_(section) {}
 
   void fillConfig(pb::ConfigSection &out) const override {
-    out.set_path("buffers");
-    out.set_title("Buffering");
-    out.set_description("How much of a track the renderer holds in memory "
-                        "while it plays.");
-    for (const Knob &knob : kBufferKnobs) {
+    out.set_path(section_.path);
+    out.set_title(section_.title);
+    out.set_description(section_.description);
+    for (const Knob &knob : section_.knobs) {
       declare(out, knob, player_->settings_, defaultSettings());
     }
   }
@@ -200,10 +231,15 @@ public:
 
 private:
   const std::shared_ptr<NativePlayer> player_;
+  const Section section_;
 };
 
 std::shared_ptr<ConfigContributor> NativePlayer::bufferSettings() {
-  return std::make_shared<Buffers>(shared_from_this());
+  return std::make_shared<KnobSection>(shared_from_this(), kBuffering);
+}
+
+std::shared_ptr<ConfigContributor> NativePlayer::networkSettings() {
+  return std::make_shared<KnobSection>(shared_from_this(), kNetwork);
 }
 
 void NativePlayer::persistOverrides() const {

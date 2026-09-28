@@ -1,11 +1,16 @@
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <stdlib.h>
 
 #include <boost/asio.hpp>
+#include <chrono>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 
+#include "LocalHttpServer.h"
+#include "TestHelpers.h"
 #include "config/SettingsPersistence.h"
 #include "player/NativePlayer.h"
 
@@ -57,10 +62,22 @@ protected:
     return section;
   }
 
+  pb::ConfigSection network() const {
+    pb::ConfigSection section;
+    player_->networkSettings()->fillConfig(section);
+    return section;
+  }
+
   std::string error_;
   fs::path prefix_;
   boost::asio::io_context ioc_;
   std::shared_ptr<NativePlayer> player_;
+};
+
+// TearDown() drops the player before the server goes, as its streams need.
+class NativePlayerStallTest : public NativePlayerSettingsTest {
+protected:
+  LocalHttpServer server_{testFile("tone880.flac")};
 };
 
 TEST_F(NativePlayerSettingsTest, TheSinkIsBufferedAsTheServerUsedToBufferIt) {
@@ -134,6 +151,65 @@ TEST_F(NativePlayerSettingsTest, BufferWritesGoThroughTheBufferingSection) {
 
   EXPECT_EQ(field(buffers(), "buffers.mpeg")->value(), "200000");
   EXPECT_EQ(loadSettingsOverrides().at("buffers.mpeg"), "200000");
+}
+
+TEST_F(NativePlayerSettingsTest, TheStallTimeoutIsItsOwnSection) {
+  const pb::ConfigSection section = network();
+
+  EXPECT_EQ(section.path(), "network");
+  ASSERT_EQ(section.fields_size(), 1);
+  const pb::ConfigField &timeout = section.fields(0);
+  EXPECT_EQ(timeout.path(), "network.stall_timeout_s");
+  EXPECT_EQ(timeout.value(), "15");
+  EXPECT_EQ(timeout.default_value(), "15");
+  EXPECT_EQ(timeout.type(), pb::CONFIG_FIELD_TYPE_INT);
+  EXPECT_EQ(timeout.unit(), "s");
+  EXPECT_EQ(timeout.importance(), pb::CONFIG_IMPORTANCE_EXPERT);
+  EXPECT_EQ(timeout.apply(), pb::APPLY_COST_INTERRUPTS_PLAYBACK);
+  ASSERT_TRUE(timeout.has_range());
+  EXPECT_EQ(timeout.range().min(), 5);
+  EXPECT_EQ(timeout.range().max(), 300);
+}
+
+TEST_F(NativePlayerSettingsTest, StallTimeoutWritesGoThroughTheNetworkSection) {
+  ASSERT_TRUE(player_->networkSettings()->applyConfig(
+      "network.stall_timeout_s", "60", error_))
+      << error_;
+
+  EXPECT_EQ(network().fields(0).value(), "60");
+  EXPECT_EQ(loadSettingsOverrides().at("network.stall_timeout_s"), "60");
+}
+
+TEST_F(NativePlayerStallTest, TheGraphWaitsOnAStallForTheConfiguredTime) {
+  // Under the declared minimum, which the config service enforces and the
+  // player does not: four stalls at the 15 s default would outlast the test.
+  ASSERT_TRUE(player_->networkSettings()->applyConfig(
+      "network.stall_timeout_s", "1", error_))
+      << error_;
+  std::optional<pb::PlaybackStateChanged> failed;
+  player_->setStateSink([&failed](pb::Envelope &env) {
+    if (env.has_playback_state_changed() &&
+        env.playback_state_changed().state() == pb::PLAYBACK_STATE_ERROR) {
+      failed = env.playback_state_changed();
+    }
+  });
+  pb::Source source;
+  source.set_source_token("stalled");
+  source.set_uri(server_.url("/stall"));
+  source.set_mime_type("audio/flac");
+
+  player_->setSource(source);
+  auto work = boost::asio::make_work_guard(ioc_);
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(20);
+  while (!failed && std::chrono::steady_clock::now() < deadline) {
+    ioc_.run_for(std::chrono::milliseconds(100));
+  }
+
+  ASSERT_TRUE(failed.has_value());
+  EXPECT_EQ(failed->error().source(), pb::ERROR_SOURCE_HTTP_STREAM);
+  EXPECT_THAT(failed->error().message(),
+              ::testing::HasSubstr("Nothing received for 1 s"));
 }
 
 TEST_F(NativePlayerSettingsTest, ANegativeSizeIsRefusedRatherThanStored) {

@@ -168,7 +168,8 @@ int main(int argc, char **argv) {
           ioc, std::chrono::seconds(opts.sessionGraceSeconds), player),
       std::make_shared<ConfigService>(
           std::vector<std::shared_ptr<ConfigContributor>>{
-              name, player, player->bufferSettings()}),
+              name, player, player->bufferSettings(),
+              player->networkSettings()}),
       std::make_shared<TriggerFileUpgradeService>(),
   };
   ConnectionManager manager(ioc, identity, name->value(), services);
