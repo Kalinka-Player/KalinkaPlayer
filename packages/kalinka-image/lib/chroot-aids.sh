@@ -7,7 +7,7 @@ Package: ${EXCLUDED_PACKAGES[*]}
 Pin: release *
 Pin-Priority: -1
 PREFERENCES
-  # fpcalc is a Recommends a base may turn off; by-source upgrades would move the kernel with linux-libc-dev.
+  # By-source upgrades would move the kernel with linux-libc-dev.
   printf 'APT::Install-Recommends "true";\nAPT::Get::Upgrade-By-Source-Package "false";\n' \
     > "$ROOTFS/etc/apt/apt.conf.d/99kalinka-image-build"
 
