@@ -11,7 +11,6 @@ unreachable share.
 
 import io
 import os
-import stat
 import threading
 import time
 from types import SimpleNamespace
@@ -27,6 +26,7 @@ from smbprotocol.exceptions import (
 import kalinka_plugin_localfiles.storage.smb as smb_mod
 from kalinka_plugin_localfiles.storage.locator import LocatorError, parse
 from kalinka_plugin_localfiles.storage.smb import SmbCredentials, SmbStorage
+from smb_fakes import FakeSmbClient, stat_result
 
 
 class _Entry:
@@ -47,116 +47,6 @@ class _Entry:
         if self._link_to_dir:
             return follow_symlinks
         return self._is_dir
-
-
-class _RawFile(io.RawIOBase):
-    """A file on the share, counting the bytes its reads fetched from it."""
-
-    def __init__(self, data):
-        super().__init__()
-        self._data = data
-        self._offset = 0
-        self.fetched = 0
-
-    def readable(self):
-        return True
-
-    def seekable(self):
-        return True
-
-    def readinto(self, buffer):
-        chunk = self._data[self._offset:self._offset + len(buffer)]
-        buffer[:len(chunk)] = chunk
-        self._offset += len(chunk)
-        self.fetched += len(chunk)
-        return len(chunk)
-
-    def seek(self, offset, whence=io.SEEK_SET):
-        base = {io.SEEK_SET: 0, io.SEEK_CUR: self._offset,
-                io.SEEK_END: len(self._data)}[whence]
-        self._offset = base + offset
-        return self._offset
-
-    def tell(self):
-        return self._offset
-
-
-class _FakeSmbClient:
-    """An in-memory share, recording what it was asked and with what."""
-
-    def __init__(self, listings=None, files=None, stats=None, failure=None):
-        self.listings = listings or {}
-        self.files = files or {}
-        self.stats = stats or {}
-        self.failure = failure
-        self.calls = []
-        self.logons = []
-        self.opened = []
-        self.session = SimpleNamespace(tree_connect_table={})
-
-    def register_session(self, server, **kwargs):
-        """What the real client pools a connection and a session under. It is
-        also where a logon fails, so a configured failure surfaces here."""
-        self.logons.append((server, kwargs))
-        if self.failure is not None:
-            raise self.failure
-        return self.session
-
-    def _record(self, unc, kwargs):
-        self.calls.append((unc, kwargs))
-        if self.failure is not None:
-            raise self.failure
-
-    def scandir(self, unc, **kwargs):
-        self._record(unc, kwargs)
-        if unc not in self.listings:
-            raise OSError(f"no such directory: {unc}")
-        return iter(self.listings[unc])
-
-    def stat(self, unc, **kwargs):
-        self._record(unc, kwargs)
-        if unc in self.stats:
-            return self.stats[unc]
-        if unc in self.listings:
-            return _stat_result(is_dir=True)
-        if unc in self.files:
-            return _stat_result(size=len(self.files[unc]))
-        raise OSError(f"no such path: {unc}")
-
-    def open_file(self, unc, mode="rb", buffering=-1, share_access=None,
-                  **kwargs):
-        """Buffered as the real client buffers: a ``BufferedReader`` of the
-        size asked for, one SMB2 payload by default, or the raw file for
-        0."""
-        self._record(
-            unc,
-            dict(
-                kwargs,
-                mode=mode,
-                buffering=buffering,
-                share_access=share_access,
-            ),
-        )
-        if unc not in self.files:
-            raise OSError(f"no such file: {unc}")
-        raw = _RawFile(self.files[unc])
-        self.opened.append(raw)
-        if buffering == 0:
-            return raw
-        return io.BufferedReader(
-            raw, buffer_size=64 * 1024 if buffering == -1 else buffering
-        )
-
-
-def _stat_result(is_dir=False, size=0, mtime_ns=1_700_000_000_000_000_000,
-                 dev=305419896, ino=42):
-    return SimpleNamespace(
-        st_mode=stat.S_IFDIR if is_dir else stat.S_IFREG,
-        st_size=size,
-        st_mtime_ns=mtime_ns,
-        st_dev=dev,
-        st_ino=ino,
-    )
 
 
 class _FakeTreeConnect:
@@ -184,7 +74,7 @@ def fresh_refusals(monkeypatch):
 @pytest.fixture
 def fake_client(monkeypatch):
     def install(**kwargs):
-        client = _FakeSmbClient(**kwargs)
+        client = FakeSmbClient(**kwargs)
         monkeypatch.setattr(smb_mod, "smbclient", client)
         return client
 
@@ -438,7 +328,7 @@ class TestMeasuring:
         it would make each file look like a rename of the last one indexed,
         handing an unrelated library row's history to a new file."""
         fake_client(
-            stats={r"\\nas\music\a.flac": _stat_result(size=5, ino=0)}
+            stats={r"\\nas\music\a.flac": stat_result(size=5, ino=0)}
         )
         assert _storage().stat("smb://nas/music/a.flac").identity is None
 
