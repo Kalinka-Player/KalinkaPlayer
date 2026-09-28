@@ -9,4 +9,8 @@ class {{ cookiecutter.plugin_class_prefix }}Config(ModuleConfig):
         frozen=True,
         exclude=True,
     )
-    enabled: bool = Field(default=False, title="Module Enabled")
+    enabled: bool = Field(
+        default=False,
+        title="Module enabled",
+        json_schema_extra={"importance": "simple"},
+    )

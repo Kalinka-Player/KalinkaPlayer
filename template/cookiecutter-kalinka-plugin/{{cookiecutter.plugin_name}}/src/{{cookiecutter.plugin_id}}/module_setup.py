@@ -1,19 +1,18 @@
 from typing import Optional
-from kalinka_plugin_sdk.api import PluginContext  # runtime Protocols
 {%- if cookiecutter.plugin_type == "input_module" %}
+
 from kalinka_plugin_sdk.inputmodule import InputModule
-from kalinka_plugin_sdk.api import InputModulePlugin
-{%- endif %}
-{%- if cookiecutter.plugin_type == "device" %}
+from kalinka_plugin_sdk.plugin import InputModulePlugin, InputPluginContext
+{%- else %}
+
 from kalinka_plugin_sdk.ext_device import ExternalOutputDevice
-from kalinka_plugin_sdk.api import OutputDevicePlugin
+from kalinka_plugin_sdk.plugin import OutputDevicePlugin, OutputDevicePluginContext
 {%- endif %}
 
 from .config_model import {{ cookiecutter.plugin_class_prefix }}Config
 {%- if cookiecutter.plugin_type == "input_module" %}
 from .{{ cookiecutter.plugin_id }}_input_module import {{ cookiecutter.plugin_class_prefix }}InputModule
-{%- endif %}
-{%- if cookiecutter.plugin_type == "device" %}
+{%- else %}
 from .{{ cookiecutter.plugin_id }}_device import {{ cookiecutter.plugin_class_prefix }}Device
 {%- endif %}
 
@@ -40,20 +39,19 @@ class KalinkaPlugin{{ cookiecutter.plugin_class_prefix }}({% if cookiecutter.plu
         return self._device
 {%- endif %}
 
-    def setup(self, context: PluginContext) -> None:
+    async def setup(self, context: {% if cookiecutter.plugin_type == "input_module" %}InputPluginContext{% else %}OutputDevicePluginContext{% endif %}) -> None:
         """
         Entry point used by Kalinka. Register subscriptions, timers, etc.
         This function must not block.
         """
-        config = {{ cookiecutter.plugin_class_prefix }}Config(**context.config.model_dump())
 {%- if cookiecutter.plugin_type == "input_module" %}
-        self.interface = {{ cookiecutter.plugin_class_prefix }}InputModule(config)
+        self.interface = {{ cookiecutter.plugin_class_prefix }}InputModule(context.config)
 {%- else %}
-        self._device = {{ cookiecutter.plugin_class_prefix }}Device(config)
+        self._device = {{ cookiecutter.plugin_class_prefix }}Device(context.config, context.emitter)
 {%- endif %}
-        context.logger.info("plugin_setup", plugin=self.PLUGIN_ID, version=context.sdk_version)
+        context.logger.info("%s set up (SDK %s)", self.PLUGIN_ID, context.sdk_version)
 
-    def shutdown(self) -> None:
+    async def shutdown(self) -> None:
         """
         Entry point used by Kalinka when unloading the plugin. Clean up resources here.
         Should not raise exceptions - log errors instead.
