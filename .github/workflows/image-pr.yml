@@ -1,0 +1,88 @@
+name: Image boot test
+
+# Builds the PC image a pull request would release and boots it in QEMU twice,
+# through UEFI with Secure Boot on and through a legacy BIOS, since the one
+# image installs GRUB for both. A boot passes when the server answers; the
+# disk the Secure Boot run leaves is then checked for what the first boot did
+# and what the image carries. A VM has no Wi-Fi hardware, so for Wi-Fi the
+# check that wpasupplicant is installed is as far as this goes.
+#
+# No container: the build needs loop devices and mounts on the host.
+
+on:
+  pull_request:
+    paths:
+      - 'packages/kalinka-image/**'
+      - '.github/actions/build-image/**'
+      - '.github/workflows/image-pr.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  boot:
+    name: Build and boot the PC image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test and build the image
+        uses: ./.github/actions/build-image
+        with:
+          target: amd64
+
+      - name: Install QEMU, OVMF and sbverify
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 qemu-utils ovmf sbsigntool
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # Larger than the image, so the first boot has a disk to grow into.
+      - name: Put the image on an 8 GB disk
+        id: disk
+        run: |
+          xz -dc out/*-amd64.img.xz > "$RUNNER_TEMP/kalinka.img"
+          qemu-img resize -f raw "$RUNNER_TEMP/kalinka.img" 8G
+
+      - name: Boot through UEFI with Secure Boot
+        run: |
+          packages/kalinka-image/tests/vm/boot.sh \
+            "$RUNNER_TEMP/kalinka.img" uefi-secure-boot "$RUNNER_TEMP/secure-boot"
+
+      # Also after a failed boot: what the image carries is often the reason.
+      - name: Inspect the disk the Secure Boot run left
+        if: ${{ !cancelled() && steps.disk.outcome == 'success' }}
+        run: |
+          sudo packages/kalinka-image/tests/vm/inspect.sh \
+            "$RUNNER_TEMP/secure-boot/disk.img" "$RUNNER_TEMP/secure-boot/journal"
+
+      - name: Boot through a legacy BIOS
+        if: ${{ !cancelled() && steps.disk.outcome == 'success' }}
+        run: |
+          packages/kalinka-image/tests/vm/boot.sh \
+            "$RUNNER_TEMP/kalinka.img" bios "$RUNNER_TEMP/bios"
+
+      - name: Upload the boot logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-boot-logs
+          path: |
+            ${{ runner.temp }}/secure-boot
+            ${{ runner.temp }}/bios
+            !${{ runner.temp }}/**/disk.img
+          if-no-files-found: ignore
