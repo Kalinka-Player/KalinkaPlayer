@@ -1,29 +1,42 @@
+from kalinka_plugin_sdk.api import EventEmitter
 from kalinka_plugin_sdk.ext_device import ExternalOutputDevice, SupportedFunction, DeviceVolume
+from kalinka_plugin_sdk.ext_device_events import ExtDeviceEvent, ExtDeviceState
 
 from .config_model import {{ cookiecutter.plugin_class_prefix }}Config
 
 
 class {{ cookiecutter.plugin_class_prefix }}Device(ExternalOutputDevice):
-    def __init__(self, config: {{ cookiecutter.plugin_class_prefix }}Config):
-        self.config = config
+    """
+    Tells Kalinka the device's volume and power state through ``emitter``:
+    ``set_initial_state()`` once the device is reached, then ``dispatch()``
+    a ``VolumeChangedEvent`` or ``DevicePowerStateChangedEvent`` on each change.
+    """
 
-    def get_volume(self) -> DeviceVolume:
+    def __init__(
+        self,
+        config: {{ cookiecutter.plugin_class_prefix }}Config,
+        emitter: EventEmitter[ExtDeviceEvent, ExtDeviceState],
+    ):
+        self.config = config
+        self.emitter = emitter
+
+    async def get_volume(self) -> DeviceVolume:
         """Get current volume level"""
         raise NotImplementedError
 
-    def set_volume(self, volume: float) -> None:
-        """Set volume (0.0 to 1.0)"""
+    async def set_volume(self, volume: int) -> None:
+        """Set volume (0 to 100)"""
         raise NotImplementedError
 
-    def power_on(self) -> None:
+    async def power_on(self) -> None:
         """Power on the device"""
         raise NotImplementedError
 
-    def is_power_on(self) -> bool:
+    async def is_power_on(self) -> bool:
         """Check if device is powered on"""
         raise NotImplementedError
 
-    def power_off(self) -> None:
+    async def power_off(self) -> None:
         """Power off the device"""
         raise NotImplementedError
 
