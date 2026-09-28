@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 #
 # Render the plugin template once per plugin type, install what it generates
-# next to the SDK in this tree, and run the generated plugin's own tests. The
-# template once fell a whole SDK major behind, with imports that no longer
-# existed, and nobody noticed because nothing ever rendered it.
+# next to the SDK in this tree, and run the generated plugin's own tests.
 #
 # Each plugin gets a venv of its own, apart from the one cookiecutter runs in,
 # so a dependency the plugin forgot to declare cannot hide behind one of
@@ -21,6 +19,9 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 "$python" -m venv "$work/tools"
+"$work/tools/bin/pip" wheel --quiet --disable-pip-version-check --no-deps \
+  --wheel-dir "$work/wheels" "$sdk"
+sdk=$(echo "$work"/wheels/kalinka_plugin_sdk-*.whl)
 "$work/tools/bin/pip" install --quiet --disable-pip-version-check cookiecutter pytest "$sdk"
 "$work/tools/bin/python" -m pytest -p no:cacheprovider "$template/tests"
 
