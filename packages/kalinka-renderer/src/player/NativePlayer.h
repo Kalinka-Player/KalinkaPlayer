@@ -29,12 +29,12 @@
  *
  * Configuration: output driver, device (enumerated from ALSA), volume mode,
  * and the numbers the graph is built with — how far ahead of the card it
- * buffers, how much of a stream it holds in memory. Changing any of the
- * latter rebuilds the graph — APPLY_COST_INTERRUPTS_PLAYBACK — and anything
- * that was playing is gone, as declared. Overrides that differ from the
- * defaults are persisted to the state directory (see SettingsPersistence) and
- * loaded on construction; an applied change updates memory and the file in one
- * step.
+ * buffers, how much of a stream it holds in memory, how long it waits on a
+ * stream that has stopped arriving. Changing any of the latter rebuilds the
+ * graph — APPLY_COST_INTERRUPTS_PLAYBACK — and anything that was playing is
+ * gone, as declared. Overrides that differ from the defaults are persisted to
+ * the state directory (see SettingsPersistence) and loaded on construction; an
+ * applied change updates memory and the file in one step.
  *
  * The config plane's paths are the renderer's own; the keys the graph is built
  * with are the backend's, and stay behind them.
@@ -78,9 +78,12 @@ public:
    */
   std::shared_ptr<ConfigContributor> bufferSettings();
 
+  /// The network section, which is held and registered as bufferSettings() is.
+  std::shared_ptr<ConfigContributor> networkSettings();
+
 private:
-  /// Contributes the buffering section; writes land back on the player.
-  class Buffers;
+  /// Contributes one section of knobs; writes land back on the player.
+  class KnobSection;
 
   struct TrackedSource {
     kalinka::renderer::v1::Source source;

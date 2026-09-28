@@ -277,9 +277,10 @@ Rules the implementation pins down:
 ### 3.4 Configuration
 
 `ConfigService` assembles one section per registered `ConfigContributor` —
-today `RendererName`, `NativePlayer` (output) and its buffer settings — and
-serves schema and values together, so one round trip is a whole settings page
-and enumerated options (the device list) are as fresh as the request.
+today `RendererName`, `NativePlayer` (output) and its buffer and network
+settings — and serves schema and values together, so one round trip is a whole
+settings page and enumerated options (the device list) are as fresh as the
+request.
 
 Writes are validated against the declared field before the contributor sees
 them: unknown path, read-only field, unparsable value, out-of-range integer or
