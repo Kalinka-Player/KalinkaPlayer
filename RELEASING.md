@@ -210,11 +210,12 @@ Removed or changed an existing public API (a protocol change):
    - `packages/kalinka-plugin-jamendo/` — likewise
    - `packages/kalinka-plugin-musiccast/` — likewise
    - `packages/kalinka-plugin-dummydevice/` — likewise
-   - `template/cookiecutter-kalinka-plugin/{{cookiecutter.plugin_name}}/debian/control.in`, so a plugin generated after the bump is born on the new major
-3. Raise each plugin's `REQUIRES_SDK` floor to the new major. This is a
-   *second* gate, checked when the plugin is loaded rather than installed: a
-   plugin left at `>=1.0,<2` is skipped at startup even though its package pin
-   resolved. The built-in renderer output device declares one too.
+   - the plugin template, so a plugin generated after the bump is born on the new major: `sdk_version_constraint` in `template/cookiecutter-kalinka-plugin/cookiecutter.json` (the generated wheel's pin and `REQUIRES_SDK`) and `template/cookiecutter-kalinka-plugin/{{cookiecutter.plugin_name}}/debian/control.in`. `make test` fails until both accept the new SDK.
+3. Raise each plugin's `REQUIRES_SDK` floor to the new major. It declares
+   which SDK the plugin was written for, and nothing reads it yet: the server
+   loads a plugin whatever its `REQUIRES_SDK` says, so only the package pins
+   above keep an old plugin off a new SDK. The built-in renderer output device
+   declares one too.
 4. Update the plugins/server to the new API and confirm they build & run.
 5. Release any out-of-tree plugin against the new major — `kalinka-plugin-qobuz`
    lives in its own repo and is not covered by the greps below.
@@ -226,7 +227,8 @@ Find the spots to touch:
 ```bash
 grep -rn 'kalinka-plugin-sdk *[>=<]' packages/*/pyproject.toml   # the 5 consumer pins
 grep -rn 'kalinka-plugin-sdk (' packages/*/debian/control.in packages/kalinka-server/DEBIAN/control.in template/*/*/debian/control.in  # the deb pins
-grep -rn 'REQUIRES_SDK' packages/*/src --include='*.py'          # the load-time floors
+grep -n  'sdk_version_constraint' template/*/cookiecutter.json    # the template's wheel pin
+grep -rn 'REQUIRES_SDK' packages/*/src --include='*.py'          # the declared floors
 grep -n  '__version__' packages/kalinka-plugin-sdk/src/kalinka_plugin_sdk/_version.py  # the 1 SDK source
 ```
 
