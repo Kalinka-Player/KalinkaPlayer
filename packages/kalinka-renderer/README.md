@@ -3,8 +3,8 @@
 The playback end of Kalinka. A standalone C++ binary that finds Kalinka Cores
 on the network, accepts a playback session from one of them, and plays what it
 is told to play through the local sound card. Core keeps the play queue, the
-library and the UI; the audio graph — HTTP fetch, FLAC/MP3 decode, buffering,
-output and volume — lives here.
+library and the UI; the audio graph — HTTP fetch, FLAC/MP3/Ogg Vorbis decode,
+buffering, output and volume — lives here.
 
 Output is **ALSA only**, which covers any Linux sink ALSA can reach: a card's
 `hw:` device, `default`, a `dmix`/`plug` PCM, or a bridge like PulseAudio's or
@@ -15,12 +15,12 @@ offers ALSA as the only driver. The protocol itself does not assume ALSA — see
 ## Build
 
 Dependencies (dev headers): protobuf (+ compiler), Boost (headers only — asio
-and beast), spdlog, ALSA, FLAC++, libcurl, curlpp. GoogleTest is optional and
-only builds the test binary. mDNS is self-contained (vendored public-domain
+and beast), spdlog, ALSA, FLAC++, libvorbisfile, libcurl, curlpp. GoogleTest is
+optional and only builds the test binary. mDNS is self-contained (vendored public-domain
 `third_party/mdns`), so no avahi or Bonjour daemon is needed.
 
-- Fedora: `sudo dnf install cmake gcc-c++ protobuf-devel protobuf-compiler protobuf-lite-devel boost-devel spdlog-devel alsa-lib-devel flac-devel libcurl-devel curlpp-devel gtest-devel`
-- Debian/Ubuntu: `sudo apt install cmake g++ libprotobuf-dev protobuf-compiler libboost-dev libspdlog-dev libasound2-dev libflac++-dev libcurl4-openssl-dev libcurlpp-dev libgtest-dev`
+- Fedora: `sudo dnf install cmake gcc-c++ protobuf-devel protobuf-compiler protobuf-lite-devel boost-devel spdlog-devel alsa-lib-devel flac-devel libvorbis-devel libcurl-devel curlpp-devel gtest-devel`
+- Debian/Ubuntu: `sudo apt install cmake g++ libprotobuf-dev protobuf-compiler libboost-dev libspdlog-dev libasound2-dev libflac++-dev libvorbis-dev libcurl4-openssl-dev libcurlpp-dev libgtest-dev`
 
 From the repo root:
 
@@ -32,6 +32,12 @@ cmake --build packages/kalinka-renderer/build -j
 ```
 
 A C++23 compiler is required.
+
+Ogg Vorbis (`audio/ogg`, `application/ogg`, `audio/vorbis`, `.ogg` or `.oga`)
+decodes to 16-bit PCM, with mono and stereo supported. Seekable files and HTTP
+streams support seeking and start offsets; sequential streams play from the
+beginning. Chained Vorbis streams must keep the same sample rate and channel
+count. Other codecs in an Ogg container, such as Opus, are not supported.
 
 ## Run
 

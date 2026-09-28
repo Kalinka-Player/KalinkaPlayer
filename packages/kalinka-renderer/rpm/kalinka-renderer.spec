@@ -22,6 +22,7 @@ BuildRequires:  alsa-lib-devel
 BuildRequires:  libcurl-devel
 BuildRequires:  curlpp-devel
 BuildRequires:  flac-devel
+BuildRequires:  libvorbis-devel
 BuildRequires:  pkgconf-pkg-config
 BuildRequires:  systemd-rpm-macros
 %{?systemd_requires}

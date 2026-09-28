@@ -143,7 +143,7 @@ TEST_F(NativePlayerSettingsTest, BufferingIsItsOwnSection) {
   const pb::ConfigSection section = buffers();
 
   EXPECT_EQ(section.path(), "buffers");
-  EXPECT_EQ(section.fields_size(), 4);
+  EXPECT_EQ(section.fields_size(), 5);
   for (const pb::ConfigField &knob : section.fields()) {
     EXPECT_TRUE(knob.path().starts_with("buffers."));
     EXPECT_FALSE(knob.value().empty()) << knob.path();
@@ -297,6 +297,78 @@ TEST_F(NativePlayerSettingsTest, AStoredValueItsKnobWouldRefuseIsIgnored) {
   EXPECT_EQ(field(sink, "output.reopen_on_format_change")->value(), "false");
   EXPECT_EQ(field(sink, "output.latency_ms")->value(), "250");
   EXPECT_EQ(field(sink, "output.device")->value(), "null");
+}
+
+TEST_F(NativePlayerSettingsTest, VorbisBufferCanBeConfiguredAndPersisted) {
+  auto section = player_->bufferSettings();
+  ASSERT_TRUE(section->applyConfig("buffers.vorbis", "200000", error_)) << error_;
+  EXPECT_EQ(field(buffers(), "buffers.vorbis")->value(), "200000");
+  EXPECT_EQ(loadSettingsOverrides().at("buffers.vorbis"), "200000");
+}
+
+TEST_F(NativePlayerSettingsTest, VorbisSourcesPlayThroughTheProtocolAdapter) {
+  using namespace std::chrono_literals;
+  struct SourceCase {
+    const char *mime;
+    const char *name;
+  };
+  const SourceCase cases[] = {
+      {"audio/ogg", "track"},
+      {"application/ogg", "track"},
+      {"audio/vorbis", "track"},
+      {"audio/x-vorbis+ogg", "track"},
+      {"Audio/Ogg; codecs=vorbis", "track.flac"},
+      {"", "track.ogg"},
+      {"", "track.oga"},
+      {"application/octet-stream", "track.OGG"},
+      // A literal query in a local filename lets the adapter's URL suffix
+      // handling be exercised without a remote server or signed URL.
+      {"", "track.OGA?token=opaque#fragment"},
+  };
+  auto work = boost::asio::make_work_guard(ioc_);
+  for (const auto &test : cases) {
+    SCOPED_TRACE(std::string(test.mime) + " " + test.name);
+    const auto path = prefix_ / test.name;
+    fs::copy_file(fs::path(KALINKA_TEST_DATA_DIR) / "ladder.ogg", path,
+                  fs::copy_options::overwrite_existing);
+    std::vector<pb::PlaybackStateChanged> states;
+    player_->setStateSink([&](pb::Envelope &env) {
+      if (env.has_playback_state_changed()) {
+        states.push_back(env.playback_state_changed());
+      }
+    });
+    pb::Source source;
+    source.set_uri("file://" + path.string());
+    source.set_mime_type(test.mime);
+    source.set_source_token(test.name);
+    source.set_start_offset_ms(2000);
+    player_->setSource(source);
+    const auto finished = [&] {
+      return std::any_of(states.begin(), states.end(), [](const auto &state) {
+        return state.state() == pb::PLAYBACK_STATE_FINISHED ||
+               state.state() == pb::PLAYBACK_STATE_ERROR;
+      });
+    };
+    ioc_.restart();
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (!finished() && std::chrono::steady_clock::now() < deadline) {
+      ioc_.run_for(10ms);
+    }
+    player_->setStateSink({});
+    player_->stop();
+    EXPECT_TRUE(std::any_of(states.begin(), states.end(), [](const auto &state) {
+      return state.state() == pb::PLAYBACK_STATE_PLAYING && state.has_format() &&
+             state.format().sample_rate_hz() == 22050 && state.position_ms() >= 2000;
+    }));
+    EXPECT_TRUE(std::any_of(states.begin(), states.end(), [](const auto &state) {
+      return state.state() == pb::PLAYBACK_STATE_FINISHED;
+    }));
+    for (const auto &state : states) {
+      EXPECT_NE(state.state(), pb::PLAYBACK_STATE_ERROR) << state.error().message();
+    }
+    // Deliver the stop before installing the next source's event recorder.
+    ioc_.poll();
+  }
 }
 
 TEST_F(NativePlayerSettingsTest, ANegativeSizeIsRefusedRatherThanStored) {

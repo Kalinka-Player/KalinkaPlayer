@@ -1,10 +1,10 @@
 # Decoder test fixtures
 
-`ladder.flac` / `ladder.mp3` — 6 s, 22050 Hz, stereo, a 440 Hz sine whose
-amplitude steps once a second: `0.10 + 0.15 * second`. Decode anywhere in the
+`ladder.flac` / `ladder.mp3` / `ladder.ogg` — 6 s, 22050 Hz, stereo, a 440 Hz
+sine whose amplitude steps once a second: `0.10 + 0.15 * second`. Decode anywhere in the
 stream and the peak amplitude says which second you landed in, which is how
 `test_decoder_start_offset.cpp` checks where a decoder started. It survives
-MP3's lossy coding, where exact sample values would not.
+MP3 and Vorbis lossy coding, where exact sample values would not.
 
 Regenerate with:
 
@@ -23,4 +23,8 @@ w.writeframes(bytes(frames)); w.close()
 PY
 ffmpeg -i ladder.wav -c:a flac ladder.flac
 ffmpeg -i ladder.wav -c:a libmp3lame -b:a 64k ladder.mp3
+ffmpeg -i ladder.wav -c:a libvorbis -q:a 4 ladder.ogg
+ffmpeg -i ladder.wav -ac 1 -t 0.5 -c:a libvorbis -q:a 4 mono.ogg
 ```
+
+`mono.ogg` is the first half second downmixed to mono, for channel-count tests.

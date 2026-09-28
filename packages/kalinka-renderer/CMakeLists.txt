@@ -20,6 +20,7 @@ find_package(ALSA REQUIRED)
 find_package(CURL REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FLACPP REQUIRED IMPORTED_TARGET flac++)
+pkg_check_modules(VORBISFILE REQUIRED IMPORTED_TARGET vorbisfile)
 pkg_check_modules(CURLPP REQUIRED IMPORTED_TARGET curlpp)
 # Debian's curlpp.pc emits a relative "-Iinclude" (empty ${prefix}), which
 # CMake rejects on the imported target. The headers are in the default search
@@ -76,12 +77,14 @@ add_library(kalinka_native_player STATIC
   src/native_player/PerfMon.cpp
   src/native_player/StateMonitor.cpp
   src/native_player/StreamState.cpp
+  src/native_player/VorbisStreamDecoder.cpp
 )
 target_link_libraries(kalinka_native_player PUBLIC
   ALSA::ALSA
   CURL::libcurl
   PkgConfig::CURLPP
   PkgConfig::FLACPP
+  PkgConfig::VORBISFILE
   Boost::headers
   spdlog::spdlog
   Threads::Threads
@@ -188,6 +191,7 @@ if(GTest_FOUND)
     tests/native_player/SineWaveNode_test.cpp
     tests/native_player/StateMonitor_test.cpp
     tests/native_player/Utils_test.cpp
+    tests/native_player/VorbisStreamDecoder_test.cpp
     tests/native_player/integration_test.cpp
   )
   target_link_libraries(kalinka-renderer-tests PRIVATE

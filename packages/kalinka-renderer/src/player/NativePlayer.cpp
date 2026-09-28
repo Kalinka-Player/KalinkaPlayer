@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cctype>
 #include <chrono>
 #include <span>
 
@@ -25,7 +26,12 @@ int64_t nowUnixMs() {
 }
 
 AudioFormat formatOf(const pb::Source &source) {
-  const std::string &mime = source.mime_type();
+  auto lower = [](std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    return value;
+  };
+  const auto mime = lower(source.mime_type());
   if (mime.find("mpeg") != std::string::npos ||
       mime.find("mp3") != std::string::npos) {
     return AudioFormat::FormatMpeg;
@@ -33,8 +39,16 @@ AudioFormat formatOf(const pb::Source &source) {
   if (mime.find("flac") != std::string::npos) {
     return AudioFormat::FormatFlac;
   }
-  if (source.uri().ends_with(".mp3")) {
+  if (mime.find("ogg") != std::string::npos ||
+      mime.find("vorbis") != std::string::npos) {
+    return AudioFormat::FormatVorbis;
+  }
+  const auto path = lower(source.uri().substr(0, source.uri().find_first_of("?#")));
+  if (path.ends_with(".mp3")) {
     return AudioFormat::FormatMpeg;
+  }
+  if (path.ends_with(".ogg") || path.ends_with(".oga")) {
+    return AudioFormat::FormatVorbis;
   }
   return AudioFormat::FormatFlac;
 }
@@ -105,6 +119,9 @@ const Knob kBufferKnobs[] = {
     {"buffers.mpeg", "MP3 buffer",
      "Decoded audio held ahead for MP3 playback, in bytes.",
      pb::CONFIG_FIELD_TYPE_INT, "bytes", {64000, 33554432}},
+    {"buffers.vorbis", "Ogg Vorbis buffer",
+     "Decoded audio held ahead for Ogg Vorbis playback, in bytes.",
+     pb::CONFIG_FIELD_TYPE_INT, "bytes", {64000, 33554432}},
 };
 
 const Knob kNetworkKnobs[] = {
@@ -147,6 +164,7 @@ const std::map<std::string, std::string> &graphKeys() {
       {"buffers.network_request", "input.http.chunk_size"},
       {"buffers.flac", "decoder.flac.buffer_size"},
       {"buffers.mpeg", "decoder.mpeg.buffer_size"},
+      {"buffers.vorbis", "decoder.vorbis.buffer_size"},
       {"network.stall_timeout_s", "input.http.stall_timeout"},
   };
   return keys;
@@ -236,6 +254,7 @@ const std::map<std::string, std::string> &NativePlayer::defaultSettings() {
       {"buffers.network_request", "384000"},
       {"buffers.flac", "1536000"},
       {"buffers.mpeg", "768000"},
+      {"buffers.vorbis", "768000"},
       {"network.stall_timeout_s",
        std::to_string(AudioGraphHttpStream::DEFAULT_STALL_TIMEOUT.count())},
   };
