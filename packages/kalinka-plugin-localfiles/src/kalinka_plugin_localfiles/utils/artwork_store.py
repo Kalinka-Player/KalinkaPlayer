@@ -30,17 +30,21 @@ def save_artwork_images(
     image_data: bytes,
     entity_id: str,
     entity_type: str,
+    origin: Optional[str] = None,
 ) -> bool:
     """Decode ``image_data`` and save it as thumbnail/small/large JPEGs.
 
     Returns False (and logs) on any failure — a broken image must not fail
     the enrichment or indexing pass that found it.
+
+    @param origin Where the image came from, named in the failure log so
+        the broken file can be found; only the entity is named without it.
     """
     try:
         with Image.open(io.BytesIO(image_data)) as img:
             return _save_resized(img, artwork_path, entity_id, entity_type)
     except Exception as e:  # noqa: BLE001 - callers treat art as best-effort
-        logger.error(f"Error saving artwork for {entity_type} {entity_id}: {e}")
+        _log_failure(entity_type, entity_id, origin, e)
         return False
 
 
@@ -50,6 +54,7 @@ def save_artwork_from_file(
     entity_id: str,
     entity_type: str,
     box: Optional[Tuple[float, float, float, float]] = None,
+    origin: Optional[str] = None,
 ) -> bool:
     """As :func:`save_artwork_images`, for a cover that is already a file.
 
@@ -65,6 +70,8 @@ def save_artwork_from_file(
     @param box The part of the image to keep, as ``(left, top, right,
         bottom)`` fractions — the whole image when omitted. Fractions
         because ``draft`` has already changed what the pixels measure.
+    @param origin As for :func:`save_artwork_images`; an open file cannot
+        say where it came from.
     """
     try:
         with Image.open(source) as img:
@@ -73,8 +80,17 @@ def save_artwork_from_file(
                 _cropped(img, box), artwork_path, entity_id, entity_type
             )
     except Exception as e:  # noqa: BLE001 - callers treat art as best-effort
-        logger.error(f"Error saving artwork for {entity_type} {entity_id}: {e}")
+        _log_failure(entity_type, entity_id, origin, e)
         return False
+
+
+def _log_failure(
+    entity_type: str, entity_id: str, origin: Optional[str], error: Exception
+) -> None:
+    source = f" from {origin}" if origin else ""
+    logger.error(
+        f"Error saving artwork for {entity_type} {entity_id}{source}: {error}"
+    )
 
 
 def _cropped(
