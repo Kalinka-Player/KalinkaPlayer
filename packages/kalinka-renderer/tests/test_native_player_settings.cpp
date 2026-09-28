@@ -279,6 +279,26 @@ TEST_F(NativePlayerStreamTest, AStreamKnobLeavesThePlayingTrackAlone) {
   EXPECT_EQ(field(buffers(), "buffers.flac")->value(), "2000000");
 }
 
+TEST_F(NativePlayerSettingsTest, AStoredValueItsKnobWouldRefuseIsIgnored) {
+  player_.reset();
+  saveSettingsOverrides({{"output.device", "null"},
+                         {"network.stall_timeout_s", "0"},
+                         {"buffers.flac", "-1"},
+                         {"buffers.mpeg", "lots"},
+                         {"output.reopen_on_format_change", "maybe"},
+                         {"output.latency_ms", "250"}});
+
+  player_ = std::make_shared<NativePlayer>(ioc_);
+
+  EXPECT_EQ(network().fields(0).value(), "15");
+  EXPECT_EQ(field(buffers(), "buffers.flac")->value(), "1536000");
+  EXPECT_EQ(field(buffers(), "buffers.mpeg")->value(), "768000");
+  const pb::ConfigSection sink = output();
+  EXPECT_EQ(field(sink, "output.reopen_on_format_change")->value(), "false");
+  EXPECT_EQ(field(sink, "output.latency_ms")->value(), "250");
+  EXPECT_EQ(field(sink, "output.device")->value(), "null");
+}
+
 TEST_F(NativePlayerSettingsTest, ANegativeSizeIsRefusedRatherThanStored) {
   EXPECT_FALSE(player_->applyConfig("buffers.flac", "-1", error_));
   EXPECT_EQ(error_, "must not be negative");

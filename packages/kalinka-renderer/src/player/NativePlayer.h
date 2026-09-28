@@ -36,8 +36,10 @@
  * stall timeout, reaches each stream appended after the change, while those
  * already appended, the playing one among them, keep theirs —
  * APPLY_COST_INSTANT. Overrides that differ from the defaults are persisted to
- * the state directory (see SettingsPersistence) and loaded on construction; an
- * applied change updates memory and the file in one step.
+ * the state directory (see SettingsPersistence) and loaded on construction; a
+ * stored knob value its field would refuse as a write is dropped with a
+ * warning, and the default stays. An applied change updates memory and the
+ * file in one step.
  *
  * The config plane's paths are the renderer's own; the keys the graph is built
  * with are the backend's, and stay behind them.

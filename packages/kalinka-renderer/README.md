@@ -87,6 +87,10 @@ the stall timeout apply to each track handed to the renderer after the change,
 and leave the one playing alone. The schema says so per field, so the settings
 page can warn first.
 
+A value in `config_overrides` that the setting's field would refuse as a write,
+such as a number out of its range, is ignored with a warning in the log, and
+the default applies.
+
 ## State on disk
 
 Under `$KALINKA_PREFIX/var/lib/kalinka-renderer` (`KALINKA_PREFIX` defaults to

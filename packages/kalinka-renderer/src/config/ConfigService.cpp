@@ -55,8 +55,10 @@ const pb::ConfigField *findField(const pb::ConfigSnapshot &snapshot,
   return nullptr;
 }
 
-bool validate(const pb::ConfigField &field, const std::string &value,
-              std::string &error) {
+}  // namespace
+
+bool fieldAccepts(const pb::ConfigField &field, const std::string &value,
+                  std::string &error) {
   if (field.read_only()) {
     error = "read-only setting";
     return false;
@@ -99,8 +101,6 @@ bool validate(const pb::ConfigField &field, const std::string &value,
   }
 }
 
-}  // namespace
-
 ConfigService::ConfigService(
     std::vector<std::shared_ptr<ConfigContributor>> contributors)
     : contributors_(std::move(contributors)) {}
@@ -133,7 +133,7 @@ void ConfigService::apply(const pb::ConfigUpdate &update,
     outcome->set_value(field->value());
 
     std::string error;
-    if (!validate(*field, setting.value(), error) ||
+    if (!fieldAccepts(*field, setting.value(), error) ||
         !contributors_[declaredBy]->applyConfig(setting.path(),
                                                 setting.value(), error)) {
       outcome->set_error(error);
