@@ -4,8 +4,13 @@ Both behaviours here were misreported on a real 4.3.0 -> 4.3.1 upgrade: the
 prerm announced a removal that was not happening, and the renderer installer
 blamed itself for an apt failure that belonged to another half-configured
 package. Neither broke the install; both told the operator something untrue.
+
+The release installer that auto-upgrade reruns is here too, for what it asks
+apt to bring: on a headless box, one flag decides between the packages Kalinka
+uses and a graphics stack that nothing on it will ever draw with.
 """
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -15,6 +20,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 PRERM = REPO / "packages" / "kalinka-server" / "DEBIAN" / "prerm"
 INSTALL_RENDERER = REPO / "scripts" / "install-renderer.sh"
+INSTALL_RELEASE = REPO / "scripts" / "install-release.sh"
 
 
 def _run(script, *args, env=None):
@@ -144,3 +150,166 @@ def test_a_renderer_that_really_failed_still_reports_it(tmp_path):
 
     assert result.returncode == 1
     assert "apt could not install" in result.stderr
+
+
+# ---------------------------------------------------------------- release
+
+EXTRAS = {"libchromaprint-tools", "build-essential", "python3-dev"}
+
+EITHER_PATH = pytest.mark.parametrize(
+    "bundle_fails", [False, True], ids=["apt", "dpkg-fallback"]
+)
+
+_RELEASE_STUBS = {
+    # A fetch prints the release; a download leaves an empty .deb behind.
+    "curl": """#!/usr/bin/env bash
+out=""
+while [ $# -gt 0 ]; do
+  case "$1" in -o) out="$2"; shift ;; esac
+  shift
+done
+if [ -n "$out" ]; then : > "$out"; else cat "$STUB_STATE/release.json"; fi
+""",
+    # Records what it installed by name, the way dpkg-query below reads it.
+    "apt-get": """#!/usr/bin/env bash
+echo "$*" >> "$STUB_STATE/apt-get.log"
+names=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) shift ;;
+    -*|install|update) ;;
+    *) names+=("$1") ;;
+  esac
+  shift
+done
+for name in "${names[@]}"; do
+  case "$name" in *.deb) [ "$STUB_BUNDLE_FAILS" = 1 ] && exit 100 ;; esac
+  grep -qxF "$name" "$STUB_STATE/unknown" && exit 100
+done
+for name in "${names[@]}"; do
+  case "$name" in *.deb) ;; *) echo "$name" >> "$STUB_STATE/installed" ;; esac
+done
+exit 0
+""",
+    "dpkg": """#!/usr/bin/env bash
+echo "$*" >> "$STUB_STATE/dpkg.log"
+exit 1
+""",
+    "dpkg-query": """#!/usr/bin/env bash
+pkg="${!#}"
+grep -qxF "$pkg" "$STUB_STATE/installed" || exit 1
+case "$2" in *Status*) printf 'install ok installed' ;; *) echo "   $pkg 9.9.9" ;; esac
+""",
+    "sudo": '#!/usr/bin/env bash\nexec "$@"\n',
+}
+
+
+def _install_release(tmp_path, *, bundle_fails=False, unknown=()):
+    """install-release.sh end to end, against one published release and no
+    package database.
+
+    apt logs every call. ``bundle_fails`` makes it refuse the downloaded debs,
+    which sends the script down its dpkg -i fallback; ``unknown`` names
+    packages it cannot locate, failing any call that asks for one — what a
+    distribution without that package does.
+    """
+    binv = tmp_path / "bin"
+    binv.mkdir()
+    for name, text in _RELEASE_STUBS.items():
+        (binv / name).write_text(text)
+        (binv / name).chmod(0o755)
+    state = tmp_path / "state"
+    state.mkdir()
+    assets = [
+        {"name": n, "browser_download_url": f"https://x.invalid/{n}"}
+        for n in ("kalinka-server_9.9.9_all.deb", "kalinka-plugin-sdk_9.9.9_all.deb")
+    ]
+    release = [{"tag_name": "kalinka-v9.9.9", "assets": assets}]
+    (state / "release.json").write_text(json.dumps(release))
+    (state / "unknown").write_text("".join(f"{name}\n" for name in unknown))
+    (state / "installed").write_text("")
+
+    result = subprocess.run(
+        ["bash", str(INSTALL_RELEASE)],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{binv}:{os.environ['PATH']}",
+            "STUB_STATE": str(state),
+            "STUB_BUNDLE_FAILS": "1" if bundle_fails else "0",
+            "KALINKA_WEB": "0",
+            "KALINKA_RENDERER": "0",
+        },
+    )
+    calls = [c.split() for c in (state / "apt-get.log").read_text().splitlines()]
+    installed = set((state / "installed").read_text().split())
+    return result, calls, installed
+
+
+def _notes(result):
+    return [
+        line for line in result.stderr.splitlines() if "could not be installed" in line
+    ]
+
+
+@EITHER_PATH
+def test_no_install_takes_every_recommend(bundle_fails, tmp_path):
+    """Recommends of the whole transaction follow fpcalc's ffmpeg to Mesa and
+    a 118 MB libLLVM, on a box with no display."""
+    result, calls, _ = _install_release(tmp_path, bundle_fails=bundle_fails)
+
+    assert result.returncode == 0, result.stderr
+    installs = [c for c in calls if "install" in c]
+    assert len(installs) >= 2
+    assert not any("--install-recommends" in c for c in calls)
+    assert all("--no-install-recommends" in c for c in installs)
+
+
+@EITHER_PATH
+def test_what_kalinka_wants_is_asked_for_by_name(bundle_fails, tmp_path):
+    """DietPi skips recommends, and a failed apt run skipped them too; fpcalc
+    and the toolchain have to come either way."""
+    result, calls, installed = _install_release(tmp_path, bundle_fails=bundle_fails)
+
+    assert result.returncode == 0, result.stderr
+    bundle = next(i for i, c in enumerate(calls) if any(a.endswith(".deb") for a in c))
+    assert any(EXTRAS <= set(c) for c in calls[bundle + 1 :])
+    assert installed == EXTRAS
+    assert _notes(result) == []
+
+
+def test_the_fallback_repairs_the_bundle_before_the_names(tmp_path):
+    result, calls, _ = _install_release(tmp_path, bundle_fails=True)
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "state" / "dpkg.log").read_text().split()[0] == "-i"
+    repair = next(i for i, c in enumerate(calls) if "-f" in c)
+    named = next(i for i, c in enumerate(calls) if EXTRAS <= set(c))
+    assert repair < named
+
+
+@EITHER_PATH
+def test_a_package_apt_cannot_find_costs_only_itself(bundle_fails, tmp_path):
+    """One name missing from a distribution must not take the others down
+    with it, nor the install: the operator is told what it costs instead."""
+    result, _, installed = _install_release(
+        tmp_path, bundle_fails=bundle_fails, unknown=["python3-dev"]
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert installed == EXTRAS - {"python3-dev"}
+    [note] = _notes(result)
+    assert "python3-dev" in note and "Smart Search" in note
+    assert "Done." in result.stdout
+
+
+def test_each_package_that_did_not_come_is_named(tmp_path):
+    result, _, installed = _install_release(tmp_path, unknown=sorted(EXTRAS))
+
+    assert result.returncode == 0, result.stderr
+    assert installed == set()
+    notes = _notes(result)
+    assert sorted(note.split()[2] for note in notes) == sorted(EXTRAS)
+    assert any("libchromaprint-tools" in n and "fpcalc" in n for n in notes)
+    assert "apt-get install --no-install-recommends" in result.stderr
