@@ -2,8 +2,7 @@
 #
 # The pieces of the build shared by every base that can be checked without
 # root: the published file name, putting the image's own resolv.conf back, the
-# overlay's modes, reading unit links, and telling what this build installed
-# from what the base already had.
+# overlay's modes, and reading unit links.
 set -uo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -90,20 +89,5 @@ ln -s /etc/systemd/system/kalinka-test-absent.service \
 ( require_disabled multi-user.target never-enabled.service ) \
   || fail "refused a unit that is not enabled"
 ROOTFS="$WORK/rootfs"
-
-echo "  -- which refused packages this build brought in"
-printf 'bash\nbash-completion\ncoreutils\n' > "$WORK/before"
-printf 'bash\nbash-completion\ncoreutils\nlibgl1\npython3\n' > "$WORK/after"
-assert_eq "one the base already had does not count" \
-  "$(packages_landed "$WORK/before" "$WORK/after" bash-completion libgl1 modemmanager)" "libgl1"
-printf 'bash\n' > "$WORK/after"
-assert_eq "nothing new, nothing reported" \
-  "$(packages_landed "$WORK/before" "$WORK/after" bash-completion libgl1)" ""
-assert_eq "and the build, which runs under set -e, goes on" \
-  "$(set -e; packages_landed "$WORK/before" "$WORK/after" libgl1; echo carried-on)" "carried-on"
-printf 'bash\nlibnvidia-cfg1\nnvidia-support\nnvidia-tesla-535-vdpau-driver\n' > "$WORK/after"
-assert_eq "a glob names a whole family" \
-  "$(packages_landed "$WORK/before" "$WORK/after" libgl1 'nvidia-*' | tr '\n' ' ')" \
-  "nvidia-support nvidia-tesla-535-vdpau-driver "
 
 exit "$FAILURES"

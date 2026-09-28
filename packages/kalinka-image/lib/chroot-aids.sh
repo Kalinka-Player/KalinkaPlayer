@@ -2,13 +2,8 @@
 # What the chroot needs while packages go in, taken out again before sealing. Defines only.
 
 start_build_aids() {
-  cat > "$ROOTFS/etc/apt/preferences.d/kalinka-image-excludes" <<PREFERENCES
-Package: ${EXCLUDED_PACKAGES[*]}
-Pin: release *
-Pin-Priority: -1
-PREFERENCES
-  # By-source upgrades would move the kernel with linux-libc-dev.
-  printf 'APT::Install-Recommends "true";\nAPT::Get::Upgrade-By-Source-Package "false";\n' \
+  # fpcalc's recommends reach Mesa and LLVM, and by-source upgrades would move the kernel with linux-libc-dev.
+  printf 'APT::Install-Recommends "false";\nAPT::Get::Upgrade-By-Source-Package "false";\n' \
     > "$ROOTFS/etc/apt/apt.conf.d/99kalinka-image-build"
 
   # No systemd runs in a chroot; build-aids/systemctl says what stands in for it.
@@ -25,9 +20,8 @@ stop_build_aids() {
   in_chroot dpkg-divert --local --rename --divert /usr/bin/systemctl.real \
     --remove /usr/bin/systemctl
   rm -f "$ROOTFS/usr/sbin/policy-rc.d"
-  # The refusals kept the build lean; they do not bind the machine's owner.
-  rm -f "$ROOTFS/etc/apt/preferences.d/kalinka-image-excludes" \
-    "$ROOTFS/etc/apt/apt.conf.d/99kalinka-image-build"
+  # The build's apt settings do not bind the machine's owner.
+  rm -f "$ROOTFS/etc/apt/apt.conf.d/99kalinka-image-build"
 }
 
 # The image's own resolv.conf, file or symlink, comes back exactly as it was.
