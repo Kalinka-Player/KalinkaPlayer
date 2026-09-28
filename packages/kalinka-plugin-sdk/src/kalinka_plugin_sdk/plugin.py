@@ -65,6 +65,9 @@ PLUGIN_CLASS = TypeVar("PLUGIN_CLASS", bound=InputModule | ExternalOutputDevice)
 
 class PluginBase(ABC, Generic[PLUGIN_CLASS, CTX_TYPE]):
     PLUGIN_ID: str
+    # A PEP 440 specifier for the SDK this plugin was written for, such as
+    # ">=3,<4". The server does not set up a plugin whose specifier excludes
+    # the installed SDK.
     REQUIRES_SDK: str
     PLUGIN_TYPE: PluginType
     CONFIG_MODEL: type[ModuleConfig]

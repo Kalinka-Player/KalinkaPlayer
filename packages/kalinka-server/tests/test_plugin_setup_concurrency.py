@@ -21,6 +21,7 @@ from pydantic import Field
 from kalinka_plugin_sdk.module_config import ModuleConfig
 from kalinka_plugin_sdk.plugin import PluginBase, PluginType
 from kalinka_plugin_sdk import ModuleHealthState
+from kalinka_plugin_sdk import __version__ as SDK_VERSION
 
 from kalinka_server.player_setup import PreparedModuleCollection
 
@@ -66,7 +67,7 @@ def _make_plugin(
 
     class _Plugin(PluginBase):
         PLUGIN_ID = plugin_id
-        REQUIRES_SDK = "1.0"
+        REQUIRES_SDK = f"=={SDK_VERSION}"
         PLUGIN_TYPE = PluginType.INPUT_MODULE
         CONFIG_MODEL = _Config
 
