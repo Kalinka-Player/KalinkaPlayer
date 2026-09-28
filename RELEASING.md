@@ -147,7 +147,13 @@ Ready-to-flash images with the whole player already installed — two for the Ra
    ```
    `image-release.yml` builds each image on a runner of its own architecture — nothing is emulated — and publishes all three to the tag's own release, never marked "latest".
 
-   The workflow writes the release notes with [`scripts/image-release-notes.sh`](scripts/image-release-notes.sh): the table of images, the checksum line, and links to *Install the server* and *Settings on the card* in [`docs/installation.md`](docs/installation.md) as it stands at the tag. How to write an image and set it up lives in that guide and nowhere else. Keep it out of the notes: a copy there once told PC users something the guide had already corrected. `make test` fails if a heading the notes link to is renamed.
+   The workflow writes the release notes with [`scripts/image-release-notes.sh`](scripts/image-release-notes.sh): the table of images, what the Pi images carry, the checksum line, and links to *Install the server* and *Settings on the card* in [`docs/installation.md`](docs/installation.md) as it stands at the tag. How to write an image and set it up lives in that guide and nowhere else. Keep it out of the notes: a copy there once told PC users something the guide had already corrected. `make test` fails if a heading the notes link to is renamed. It also runs [`scripts/check_release_notes.py`](scripts/check_release_notes.py), which fails when a heading linked from a release workflow, the docs or the guide itself is renamed, when the notes lose the image table, a row for an image the workflow builds or the checksum line, when they link anything but the release's tag, or when a step comes back into them.
+
+   The workflow writes the notes only when it creates the release, so a rerun leaves a published release's notes as they were; change those by hand:
+   ```bash
+   bash scripts/image-release-notes.sh kalinka-image-vX.Y.Z > notes.md
+   gh release edit kalinka-image-vX.Y.Z --notes-file notes.md
+   ```
 
 2. **Pick the app-bundle release to bake in.** The tag push installs whatever is the latest published `kalinka-v*` at build time, which is usually what you want. To pin a specific one, run the workflow by hand instead (**Actions → Image release → Run workflow**) with `kalinka_version` set; it also takes the existing tag to publish under. The image filename carries the version that actually landed inside it, not the one that was asked for.
 
