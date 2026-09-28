@@ -1,0 +1,50 @@
+name: Build an appliance image
+description: >-
+  Test the image scripts and build one target's image into out/. The release
+  and the pull-request builds both run this, so what a pull request boots is
+  what a release would ship.
+
+inputs:
+  target:
+    description: A target in packages/kalinka-image/targets/
+    required: true
+  kalinka-version:
+    description: 'Kalinka release to install (default: the latest published)'
+    required: false
+    default: ''
+  github-token:
+    description: Raises the GitHub API rate limit while the build finds the release
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install build dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          debootstrap dosfstools e2fsprogs fdisk xz-utils curl gpg gpgv
+        # Ubuntu's debootstrap carries no script for a Debian release younger
+        # than itself, and every Debian suite script is the same file.
+        [ -e /usr/share/debootstrap/scripts/trixie ] \
+          || sudo ln -s sid /usr/share/debootstrap/scripts/trixie
+
+    # In a container, so the tests that create accounts and regenerate host
+    # keys get a throwaway system rather than this runner.
+    - name: Test the image scripts
+      shell: bash
+      run: make image-test
+
+    - name: Build the image
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        TARGET: ${{ inputs.target }}
+        KALINKA_VERSION: ${{ inputs.kalinka-version }}
+      run: |
+        sudo --preserve-env=GITHUB_TOKEN \
+          env OUT_DIR="$GITHUB_WORKSPACE/out" \
+          packages/kalinka-image/build-image.sh \
+          "$TARGET" ${KALINKA_VERSION:+"$KALINKA_VERSION"}

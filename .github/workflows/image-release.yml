@@ -57,29 +57,11 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            debootstrap dosfstools e2fsprogs fdisk xz-utils curl gpg gpgv
-          # Ubuntu's debootstrap carries no script for a Debian release younger
-          # than itself, and every Debian suite script is the same file.
-          [ -e /usr/share/debootstrap/scripts/trixie ] \
-            || sudo ln -s sid /usr/share/debootstrap/scripts/trixie
-
-      # In a container, so the tests that create accounts and regenerate host
-      # keys get a throwaway system rather than this runner.
-      - name: Test the image scripts
-        run: make image-test
-
-      - name: Build the image
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          sudo --preserve-env=GITHUB_TOKEN \
-            env OUT_DIR="$GITHUB_WORKSPACE/out" \
-            packages/kalinka-image/build-image.sh \
-            ${{ matrix.target }} ${{ github.event.inputs.kalinka_version }}
+      - name: Test and build the image
+        uses: ./.github/actions/build-image
+        with:
+          target: ${{ matrix.target }}
+          kalinka-version: ${{ github.event.inputs.kalinka_version }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
