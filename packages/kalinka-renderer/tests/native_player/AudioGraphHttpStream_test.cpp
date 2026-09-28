@@ -293,18 +293,26 @@ TEST_F(AudioGraphHttpStreamTest, read_whole_dump) {
 }
 
 TEST_F(AudioGraphHttpStreamTest, stalled_transfer_ends_in_timeout_error) {
+  // Every attempt stalls: the first request and the three retries.
+  const size_t attempts = 4;
+  const auto started = std::chrono::steady_clock::now();
   auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(
       1, server.url("/stall"), bufferSize, 0, stallTimeout);
 
-  // Every attempt stalls: the first request and the three retries.
   auto state = waitForStatus(*audioGraphHttpStream, AudioGraphNodeState::ERROR,
                              std::chrono::seconds(20));
 
+  // libcurl looks in on a quiet transfer about once a second.
+  EXPECT_LT(std::chrono::steady_clock::now() - started,
+            attempts * (stallTimeout + std::chrono::seconds(1)));
+  EXPECT_EQ(server.requestsTo("/stall"), attempts);
   ASSERT_EQ(state.state, AudioGraphNodeState::ERROR);
   ASSERT_TRUE(state.error.has_value());
   EXPECT_EQ(state.error->source, StreamErrorSource::HTTP_STREAM);
   EXPECT_THAT(state.error->message,
               ::testing::HasSubstr(curl_easy_strerror(CURLE_OPERATION_TIMEDOUT)));
+  EXPECT_THAT(state.error->message,
+              ::testing::HasSubstr("Nothing received for 1 s"));
 }
 
 TEST_F(AudioGraphHttpStreamTest, stalled_transfer_resumes_where_it_stopped) {
@@ -410,6 +418,25 @@ TEST_F(AudioGraphHttpStreamTest, full_buffer_is_not_a_stall) {
   EXPECT_EQ(audioGraphHttpStream->getState().state,
             AudioGraphNodeState::FINISHED);
   EXPECT_EQ(content.size(), fileContent(file).size());
+}
+
+TEST_F(AudioGraphHttpStreamTest, sender_quiet_for_less_than_the_timeout_is_not_a_stall) {
+  // Half of it spans one of libcurl's once-a-second looks at a quiet transfer.
+  const std::chrono::seconds patientTimeout{3};
+  // Without ranges there is no retry to hide a stall wrongly seen.
+  auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(
+      1, server.url("/held"), bufferSize, 0, patientTimeout);
+  std::jthread resume([this, patientTimeout] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(patientTimeout) / 2);
+    server.release();
+  });
+
+  const auto content = readToEnd(*audioGraphHttpStream);
+
+  EXPECT_EQ(audioGraphHttpStream->getState().state,
+            AudioGraphNodeState::FINISHED);
+  EXPECT_EQ(server.requestsTo("/held"), 1u);
+  EXPECT_TRUE(content == fileContent(file));
 }
 
 TEST_F(AudioGraphHttpStreamTest, stopping_a_stalled_stream_is_prompt) {

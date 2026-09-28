@@ -5,9 +5,9 @@
 #include <chrono>
 #include <condition_variable>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
-#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -64,6 +64,9 @@ public:
   /// Lets every `/held` response, current and future, send the rest.
   void release();
 
+  /// How many requests have been made to @p path, however they were answered.
+  size_t requestsTo(std::string_view path) const;
+
 private:
   void acceptConnections();
   void serve(boost::asio::ip::tcp::socket &socket);
@@ -73,11 +76,11 @@ private:
   std::string body_;
   boost::asio::io_context io_;
   boost::asio::ip::tcp::acceptor acceptor_;
-  std::mutex mutex_;
+  mutable std::mutex mutex_;
   std::condition_variable releasedOrStopping_;
   bool released_ = false;
   bool stopping_ = false;
-  std::set<std::string, std::less<>> answered_;
+  std::map<std::string, size_t, std::less<>> requests_;
   std::vector<std::shared_ptr<boost::asio::ip::tcp::socket>> sockets_;
   std::vector<std::jthread> connections_;
   std::jthread acceptorThread_;

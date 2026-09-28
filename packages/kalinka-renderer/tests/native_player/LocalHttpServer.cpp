@@ -312,7 +312,13 @@ bool LocalHttpServer::waitForRelease() {
   return !stopping_;
 }
 
+size_t LocalHttpServer::requestsTo(std::string_view path) const {
+  std::lock_guard lock(mutex_);
+  const auto counted = requests_.find(path);
+  return counted == requests_.end() ? 0 : counted->second;
+}
+
 bool LocalHttpServer::firstRequestTo(std::string_view target) {
   std::lock_guard lock(mutex_);
-  return answered_.emplace(target).second;
+  return ++requests_[std::string(target)] == 1;
 }
