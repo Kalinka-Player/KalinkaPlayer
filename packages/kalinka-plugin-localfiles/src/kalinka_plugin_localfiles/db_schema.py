@@ -186,12 +186,14 @@ async def init_db(db_path: str) -> None:
             """
         )
 
-        # The same for cover sources that would not decode, per entity.
+        # The same for cover sources that would not decode, per entity and
+        # per pass (kind 'folder' or 'embedded').
         await cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS art_source_failures (
                 entity_id   TEXT NOT NULL,
                 source_path TEXT NOT NULL,
+                kind        TEXT NOT NULL,
                 size        INTEGER NOT NULL,
                 mtime_ns    INTEGER NOT NULL,
                 PRIMARY KEY (entity_id, source_path)

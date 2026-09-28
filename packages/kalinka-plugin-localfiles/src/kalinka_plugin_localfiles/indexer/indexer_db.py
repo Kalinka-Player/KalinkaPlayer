@@ -13,6 +13,14 @@ from ..worker_utils import retry_db_locked
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
+#: A cover source's size and nanosecond mtime: when either changes, the file
+#: is worth reading again.
+Fingerprint = Tuple[int, int]
+
+#: The cover passes, as ``art_source_failures.kind``.
+FOLDER_COVER = "folder"
+EMBEDDED_COVER = "embedded"
+
 
 @retry_db_locked
 class AsyncIndexerDb(ProvenanceDb):
@@ -509,37 +517,65 @@ class AsyncIndexerDb(ProvenanceDb):
             rows = await cursor.fetchall()
             return [row[0] for row in rows]
 
-    async def art_failure_matches(
-        self, entity_id: str, source_path: str, size: int, mtime_ns: int
-    ) -> bool:
-        """Whether a cover for ``entity_id`` already failed to come from this
-        file as it stands now — same path, size and nanosecond mtime."""
+    async def get_art_failures(
+        self, kind: str
+    ) -> Dict[str, Dict[str, Fingerprint]]:
+        """What one cover pass has written off, as entity id -> source path ->
+        the fingerprint the source had then."""
         async with self._open() as conn:
             cursor = await conn.execute(
-                "SELECT 1 FROM art_source_failures WHERE entity_id = ? "
-                "AND source_path = ? AND size = ? AND mtime_ns = ?",
-                (entity_id, source_path, size, mtime_ns),
+                "SELECT entity_id, source_path, size, mtime_ns "
+                "FROM art_source_failures WHERE kind = ?",
+                (kind,),
             )
-            return await cursor.fetchone() is not None
+            failures: Dict[str, Dict[str, Fingerprint]] = {}
+            for entity_id, path, size, mtime_ns in await cursor.fetchall():
+                failures.setdefault(entity_id, {})[path] = (size, mtime_ns)
+            return failures
 
-    async def record_art_failure(
-        self, entity_id: str, source_path: str, size: int, mtime_ns: int
+    async def replace_art_failures(
+        self, entity_id: str, kind: str, sources: Dict[str, Fingerprint]
     ) -> None:
-        """Remember that no cover for ``entity_id`` could be saved from this
-        file, replacing what an earlier version of the file left."""
+        """Make ``sources`` all that one cover pass has written off for
+        ``entity_id``, forgetting what it had before."""
         async with self._open() as conn:
             await conn.execute(
+                "DELETE FROM art_source_failures WHERE entity_id = ? AND kind = ?",
+                (entity_id, kind),
+            )
+            await conn.executemany(
                 "INSERT OR REPLACE INTO art_source_failures "
-                "(entity_id, source_path, size, mtime_ns) VALUES (?, ?, ?, ?)",
-                (entity_id, source_path, size, mtime_ns),
+                "(entity_id, source_path, kind, size, mtime_ns) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [
+                    (entity_id, path, kind, size, mtime_ns)
+                    for path, (size, mtime_ns) in sources.items()
+                ],
             )
             await conn.commit()
 
-    async def clear_art_failures(self, entity_id: str) -> None:
-        """Forget every failed cover source of an entity that has one now."""
+    async def set_album_cover(self, album_id: str) -> None:
+        """Point an album at the cover just stored for it, and forget every
+        source that failed to give it one."""
         async with self._open() as conn:
             await conn.execute(
-                "DELETE FROM art_source_failures WHERE entity_id = ?", (entity_id,)
+                "UPDATE albums SET image_url = ?, image_generated = 0 WHERE id = ?",
+                (f"{album_id}.jpg", album_id),
+            )
+            await conn.execute(
+                "DELETE FROM art_source_failures WHERE entity_id = ?", (album_id,)
+            )
+            await conn.commit()
+
+    async def set_track_cover(self, track_id: str) -> None:
+        """As :meth:`set_album_cover`, for a single's own cover."""
+        async with self._open() as conn:
+            await conn.execute(
+                "UPDATE tracks SET image_url = ? WHERE id = ?",
+                (f"{track_id}.jpg", track_id),
+            )
+            await conn.execute(
+                "DELETE FROM art_source_failures WHERE entity_id = ?", (track_id,)
             )
             await conn.commit()
 
