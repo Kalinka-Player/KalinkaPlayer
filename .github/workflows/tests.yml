@@ -107,7 +107,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             cmake ninja-build pkg-config libboost-dev libcurlpp-dev libcurl4-openssl-dev \
-            libflac++-dev libasound2-dev libspdlog-dev libfmt-dev protobuf-compiler libprotobuf-dev \
+            libflac++-dev libvorbis-dev libasound2-dev libspdlog-dev libfmt-dev protobuf-compiler libprotobuf-dev \
             libgtest-dev libgmock-dev
       - name: Build the tests
         run: |

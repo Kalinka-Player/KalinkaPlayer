@@ -10,6 +10,7 @@
 #include "PerfMon.h"
 #include "SineWaveNode.h"
 #include "StateMonitor.h"
+#include "VorbisStreamDecoder.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -21,6 +22,7 @@ namespace {
 // 1.5MB = 1s for 192KHz / 24bit audio / stereo
 const size_t FLAC_BUFFER_SIZE = 1536000;
 const size_t MPEG_BUFFER_SIZE = 768000;
+const size_t VORBIS_BUFFER_SIZE = 768000;
 // 750KB, 50% of flac buffer size
 // approx. flac compression ratio is 50%
 const size_t HTTP_BUFFER_SIZE = 768000;
@@ -152,6 +154,13 @@ struct StreamNodes {
     case AudioFormat::FormatMpeg: {
       auto decoder = std::make_shared<Mp3StreamDecoder>(
           id, value_or(config, "decoder.mpeg.buffer_size", MPEG_BUFFER_SIZE),
+          startOffsetMs);
+      decoder->connectTo(outputNode);
+      return decoder;
+    }
+    case AudioFormat::FormatVorbis: {
+      auto decoder = std::make_shared<VorbisStreamDecoder>(
+          id, value_or(config, "decoder.vorbis.buffer_size", VORBIS_BUFFER_SIZE),
           startOffsetMs);
       decoder->connectTo(outputNode);
       return decoder;

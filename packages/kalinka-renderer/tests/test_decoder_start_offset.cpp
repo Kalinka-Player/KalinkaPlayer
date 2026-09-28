@@ -12,8 +12,9 @@
 #include "native_player/FileInputNode.h"
 #include "native_player/FlacStreamDecoder.h"
 #include "native_player/Mp3StreamDecoder.h"
+#include "native_player/VorbisStreamDecoder.h"
 
-// Both decoders against the same fixture: 6 s of a 440 Hz sine whose amplitude
+// All decoders against the same fixture: 6 s of a 440 Hz sine whose amplitude
 // steps once a second (tests/data/README.md). Peak amplitude therefore names
 // the second the decoder landed in, which survives MP3's lossy coding where
 // exact sample values would not.
@@ -48,6 +49,10 @@ std::shared_ptr<Decoder> makeFlac(size_t startOffsetMs) {
 
 std::shared_ptr<Decoder> makeMp3(size_t startOffsetMs) {
   return std::make_shared<Mp3StreamDecoder>(1, kBufferSize, startOffsetMs);
+}
+
+std::shared_ptr<Decoder> makeVorbis(size_t startOffsetMs) {
+  return std::make_shared<VorbisStreamDecoder>(1, kBufferSize, startOffsetMs);
 }
 
 // A decoder reading the fixture, held together so the input node outlives it.
@@ -165,7 +170,8 @@ class DecoderTest : public testing::TestWithParam<Format> {};
 INSTANTIATE_TEST_SUITE_P(
     Formats, DecoderTest,
     testing::Values(Format{"flac", "ladder.flac", &makeFlac},
-                    Format{"mp3", "ladder.mp3", &makeMp3}),
+                    Format{"mp3", "ladder.mp3", &makeMp3},
+                    Format{"vorbis", "ladder.ogg", &makeVorbis}),
     [](const testing::TestParamInfo<Format> &info) { return info.param.name; });
 
 TEST_P(DecoderTest, ReportsTheFormatItIsDecoding) {

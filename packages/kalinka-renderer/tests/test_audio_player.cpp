@@ -124,6 +124,18 @@ TEST_F(PlaybackPositionTest, PlaysWhatItIsGiven) {
   EXPECT_EQ(streaming->streamInfo->format.sampleRate, 22050u);
 }
 
+TEST_F(PlaybackPositionTest, PlaysOggVorbis) {
+  Playing playing;
+  playing.player().append(1, fixture("ladder.ogg"), AudioFormat::FormatVorbis);
+
+  const auto streaming = playing.nextOf(0, AudioGraphNodeState::STREAMING);
+  ASSERT_TRUE(streaming.has_value()) << "never started";
+  ASSERT_TRUE(streaming->streamInfo.has_value());
+  EXPECT_EQ(streaming->streamInfo->format.sampleRate, 22050u);
+  EXPECT_EQ(streaming->streamInfo->format.bitsPerSample, 16u);
+  EXPECT_TRUE(playing.nextOf(0, AudioGraphNodeState::FINISHED).has_value());
+}
+
 TEST_F(PlaybackPositionTest, SeekingForwardReportsWhereItLanded) {
   Playing playing;
   playing.player().append(1, fixture("ladder.flac"));

@@ -70,7 +70,7 @@ jobs:
           # (debian:trixie does, which is why only amd64 ever noticed).
           apt-get install -y --no-install-recommends \
             build-essential make git ca-certificates dpkg-dev cmake pkg-config \
-            libboost-dev libcurlpp-dev libcurl4-openssl-dev libflac++-dev \
+            libboost-dev libcurlpp-dev libcurl4-openssl-dev libflac++-dev libvorbis-dev \
             libasound2-dev libspdlog-dev libfmt-dev \
             protobuf-compiler libprotobuf-dev
 
@@ -117,7 +117,7 @@ jobs:
           dnf install -y make git rpm-build cmake gcc-c++ \
             protobuf-devel protobuf-lite-devel protobuf-compiler \
             boost-devel spdlog-devel \
-            alsa-lib-devel libcurl-devel curlpp-devel flac-devel \
+            alsa-lib-devel libcurl-devel curlpp-devel flac-devel libvorbis-devel \
             pkgconf-pkg-config systemd-rpm-macros
 
       - name: Checkout (tag)
