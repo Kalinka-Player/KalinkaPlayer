@@ -50,7 +50,7 @@ Writing network configuration is a root job. The server runs as `kalusr` with `N
 
 ### 2.5 Proximity is the authorisation; the link is encrypted
 
-Anyone within Bluetooth range of an unprovisioned box, during the window after it starts, can put it on a network. Every commercial speaker makes the same trade. The window is short (§5.3), it opens only on a box with no network, and it can be switched off (§5.7). The password itself travels only over a link that the phone and the box have paired and encrypted (§5.5).
+Anyone within Bluetooth range of an unprovisioned box, during the window after it starts, can put it on a network. Every commercial speaker makes the same trade. The window is short (§5.3) and it can be switched off (§5.7). It opens only on a box that finds no network at boot. That includes a provisioned box whose router starts more slowly than the box after a power cut, until the router's route arrives. The password itself travels only over a link that the phone and the box have paired and encrypted (§5.5).
 
 ### 2.6 What this leaves out, plainly
 
@@ -69,7 +69,7 @@ Disk sizes are Debian 13's `Installed-Size` for amd64. arm64 sizes differ slight
 | New on the PC image | Not offered | `bluez`, `python3-dbus-fast`. Intel and Realtek Bluetooth firmware is already in `firmware-iwlwifi` and `firmware-realtek`. | `hostapd`, `dnsmasq-base`, `nftables` |
 | New in the app | Nothing | `universal_ble`; Android Bluetooth permissions | Nothing |
 | Disk | A few kilobytes of scripts | About 9 MB: `bluez` 4.8, `python3-dbus-fast` 3.2, and the Sphinx JavaScript it hard-depends on, 1.1 (`libjs-sphinxdoc`, `libjs-jquery`, `libjs-underscore`). Up to 2 MB more for `libdw1t64` and `libelf1t64` where missing. GLib, which BlueZ needs, is already there through ffmpeg's `librsvg2-2`. | About 5 MB: `hostapd` 2.3, `dnsmasq-base` 1.1, `libnftables1` 1.1 and small netfilter libraries |
-| Memory while working (estimate) | One short Python process at first boot | 20–25 MB: `bluetoothd` about 3, the daemon 15–20 | About 5 MB for `hostapd` and `dnsmasq`, plus whatever serves the page |
+| Memory while working (estimate) | One short Python process at first boot | 18–23 MB: `bluetoothd` about 3, the daemon 15–20 | About 5 MB for `hostapd` and `dnsmasq`, plus whatever serves the page |
 | Memory once on the network | None | None. Both processes exit; the kernel's Bluetooth modules stay loaded (under 1 MB). | None |
 | Boot cost, box already on a network | None: the unit's condition is false | One shell check off the critical path; the Bluetooth firmware loads in parallel (1–2 s) | The same shell check |
 | Boot cost, box with no network | 1–2 s before DietPi's first boot, first boot only | `bluetoothd` and the daemon take 2–3 s to start, off the critical path | The access point takes about 5 s to come up |
@@ -91,13 +91,13 @@ Imager has written customisation in two forms. One is `custom.toml` on the FAT p
 Two front-ends feed it, so it does not matter which form Imager wrote:
 
 - **`custom.toml`**: `imager-toml.py` parses the file with the standard library's `tomllib` on the system interpreter and checks every value. It passes the values to the applier as NUL-separated pairs on a pipe, never on a command line, because any local user can read another process's arguments. `kalinka-imager-custom.service` runs it (§4.3).
-- **`firstrun.sh`**: the two programs the script looks for, at the paths where it looks for them. Each one calls the applier. `userconf` creates the named account instead of renaming DietPi's `dietpi` user, which DietPi's own tools expect. It then moves the `authorized_keys` that `firstrun.sh` wrote into UID 1000's home over to the new account. The build fails if any package owns either path (`dpkg -S`), so a later `raspberrypi-sys-mods` cannot overwrite them without anyone noticing.
+- **`firstrun.sh`**: the two programs the script looks for, at the paths where it looks for them. Each one calls the applier. `userconf` creates the named account instead of renaming DietPi's `dietpi` user, which DietPi's own tools expect. Where `firstrun.sh` finds `imager_custom`, it writes no `authorized_keys` itself. It passes the keys as `imager_custom enable_ssh -k KEY…`, before `userconf` runs. `enable_ssh` therefore installs them for UID 1000, DietPi's `dietpi`, where the script would otherwise have written them. `userconf` then moves them over to the new account. Issue 1 confirms the order against the current script. The build fails if any package owns either path (`dpkg -S`), so a later `raspberrypi-sys-mods` cannot overwrite them without anyone noticing.
 
 | Imager setting | `custom.toml` | `firstrun.sh` | Applied as |
 |---|---|---|---|
 | Host name | `system.hostname` | `imager_custom set_hostname` | `AUTO_SETUP_NET_HOSTNAME` |
 | User and password | `user.name`, `user.password` (a crypt hash when `password_encrypted`) | `userconf NAME HASH` | A sudo account with that hash; `root` and `dietpi` stay locked |
-| SSH keys | `ssh.authorized_keys` | Written by the script | The account's `authorized_keys` |
+| SSH keys | `ssh.authorized_keys` | `imager_custom enable_ssh -k` | The account's `authorized_keys` |
 | SSH off | `ssh.enabled = false` | Only `enable_ssh` exists | `AUTO_SETUP_SSH_SERVER_INDEX=0`; otherwise Dropbear stays on, as DietPi ships it |
 | Wi-Fi | `wlan.ssid`, `password`, `password_encrypted`, `hidden`, `country` | `imager_custom set_wlan` | `AUTO_SETUP_NET_WIFI_ENABLED=1`, `AUTO_SETUP_NET_WIFI_COUNTRY_CODE`, the network in `dietpi-wifi.txt` |
 | Time zone, keyboard | `locale.timezone`, `locale.keymap` | `set_timezone`, `set_keymap` | `AUTO_SETUP_TIMEZONE`, `AUTO_SETUP_KEYBOARD_LAYOUT` |
@@ -123,11 +123,16 @@ If nothing applies, the box boots without Wi-Fi, exactly as it does today. On an
 `overlays/common/usr/lib/kalinka-image/wifi.sh` does four things, the same on both images: `scan`, `join`, `status` and `forget`. The base records which backend it uses as `KALINKA_WIFI_BACKEND` in `/etc/default/kalinka-image`. `firstboot.sh` already reads that file, and the DietPi base starts writing one too.
 
 - `scan` prints one network per line, tab-separated: signal in dBm, security (`open`, `psk`, `sae` or `eap`), and the SSID as hex octets. SSIDs are 32 arbitrary bytes, and hex keeps tabs and newlines out of the parse.
-- `join SSID_HEX COUNTRY HIDDEN` reads the passphrase from standard input, never from `argv`. On success it prints the IPv4 address. Its exit status is the reason: `wrong_password`, `not_found`, `no_address`, `timeout` or `error`. The whole join is bounded at 45 seconds.
+- `join SSID_HEX SECURITY COUNTRY HIDDEN` reads the passphrase from standard input, never from `argv`. `SECURITY` is what the daemon's last scan reported for that SSID. A hidden network appears in no scan, so for one the daemon passes `psk` when the phone sent a passphrase and `open` when it did not. On success it prints the IPv4 address and exits 0. Otherwise its exit status names the reason, 1 to 5 in this order: `wrong_password`, `not_found`, `no_address`, `timeout`, `error`. The whole join is bounded at 45 seconds.
 - `status` prints the network and address the box is on, or nothing.
 - `forget SSID_HEX` removes a network the backend stored. The daemon uses it to take back a network whose join failed, so a wrong password does not stay behind and keep failing.
 
-The **`nm`** backend, for the PC image, scans with `nmcli --terse device wifi list --rescan yes` and converts NetworkManager's 0–100 signal back to dBm on NetworkManager's own linear scale. It joins by writing the keyfile the way `configure_wifi` does today (the function moves here, and `firstboot.sh` sources `wifi.sh`), then runs `nmcli --wait 45 connection up`. NetworkManager's state reason gives the failure reason.
+The **`nm`** backend, for the PC image, scans with `nmcli --terse device wifi list --rescan yes` and converts NetworkManager's 0–100 signal back to dBm on NetworkManager's own linear scale. It joins by writing a keyfile, then runs `nmcli --wait 45 connection up`. NetworkManager's state reason gives the failure reason. `configure_wifi` moves here and `firstboot.sh` sources `wifi.sh`, but the function as it stands cannot serve a join from the phone, and it is generalised on the way:
+
+- `key-mgmt` follows `SECURITY`: `wpa-psk` for `psk`, `sae` for `sae`, and no `[wifi-security]` section for `open`. Today it always writes `wpa-psk`, which fails on a WPA3-only network and on an open one.
+- A hidden network gets `hidden=true`.
+- The SSID is written as a keyfile byte list (`ssid=83;116;117;…;`), since it arrives as hex and may hold any byte.
+- The passphrase is escaped for GKeyFile: `\` as `\\`, and a leading space as `\s`. Written raw, as today, a passphrase with a backslash or a leading space reaches NetworkManager changed and fails as a wrong password.
 
 The **`dietpi`** backend, for the Pi images, drives DietPi's tools the way `kalinka-soundcard.service` does. It sets the country with `dietpi-set_hardware wificountrycode`, adds the network to DietPi's Wi-Fi database and applies it with `dietpi-wifidb`. It then watches `wpa_supplicant` through `wpa_cli` for the result of the four-way handshake, and `wlan0` for a DHCP lease. Issue 1 pins down the exact calls.
 
@@ -145,7 +150,7 @@ The passphrase is passed through as typed, and the box derives nothing from it. 
 | `gatt.py` | BlueZ over D-Bus: a `NoInputNoOutput` agent, the LE advertisement, one GATT service with three characteristics | Yes, the only module that does |
 | `__main__.py` | Wiring and signals | No |
 
-Everything except `gatt.py` is tested with the standard library's `unittest` under `make image-test`. That container has `python3` but neither `pytest` nor `dbus-fast`, which is why D-Bus stays at the edge.
+Everything except `gatt.py` is tested with the standard library's `unittest` under `make image-test`. That container has `python3` but neither `pytest` nor `dbus-fast`, which is why D-Bus stays at the edge. `make image-test` runs only when an image is released from a tag, not on pull requests. The Makefile's `test` target, which every pull request runs, therefore gains a line that runs them with `python -m unittest discover`, so a pull request that breaks the codec or the state machine fails its own checks.
 
 The daemon logs the phases it passes through and the SSIDs it joins. It never logs a command's payload.
 
@@ -155,7 +160,7 @@ Both images ship the same units. `bluetooth.service` is disabled at build time, 
 
 | Unit | Kind | Job |
 |---|---|---|
-| `kalinka-provision-check.service` | enabled, `Type=exec` | Runs `provision-needed.sh`, and starts `kalinka-provision.service` without waiting if setup is needed. With `Type=exec`, its wait for a route holds up no target. |
+| `kalinka-provision-check.service` | enabled, `Type=exec` | `After=dietpi-preboot.service dietpi-firstboot.service kalinka-firstboot.service`, as `kalinka-soundcard.service` waits for DietPi; the base's absent units are ignored. Only then has DietPi imported the card's `dietpi.txt` into `/boot/dietpi.txt` and applied `dietpi-wifi.txt`, or `firstboot.sh` applied `kalinka-firstboot.conf`. Earlier, the check would read the build's copy of `dietpi.txt` and see no Wi-Fi configured on a card that has one. Runs `provision-needed.sh`, and starts `kalinka-provision.service` without waiting if setup is needed. With `Type=exec`, its wait for a route holds up no target. |
 | `kalinka-provision.service` | static | `Wants=` and `After=bluetooth.service`; runs `python3 -m kalinka_provision` with `PYTHONPATH=/usr/lib/kalinka-image` |
 | `bluetooth.service.d/kalinka.conf` | drop-in | `StopWhenUnneeded=yes`: `bluetoothd` runs exactly as long as something wants it. That is the daemon, or `bluetooth.target` for someone who enabled Bluetooth for their own devices. |
 
@@ -172,8 +177,8 @@ On a box that has a network, the only cost is that shell check, and `bluetoothd`
 
 Once running, the daemon advertises and exits on the first of these:
 
-- the box gets a default route by itself (a cable plugged in, a router that came back after a power cut) while no phone is connected;
-- 15 minutes pass with no phone connected;
+- the box gets a default route by itself (a cable plugged in, a router that came back after a power cut) while no phone is connected and no join has been started. The route a join brings does not count, so that exit cannot pre-empt the reconnect below;
+- 15 minutes pass without a command, so neither an empty room nor a device that connects and then idles holds the box open;
 - the phone that joined the box has read the `connected` status, or 120 s have passed since the join.
 
 It keeps advertising until the phone has read `connected`. A phone whose link dropped during the join (the Pi's Wi-Fi and Bluetooth share one chip) can then reconnect and read the result. On the way out it withdraws the advertisement and removes the phone's pairing. `bluetoothd`, no longer wanted, stops too. A box that is on its network runs no Bluetooth process.
@@ -220,7 +225,7 @@ Networks are sorted by signal, strongest first, with one entry per SSID. A page 
 
 `scan` refreshes the list, with `scanning` then `idle` reported through status. `page` moves the networks window. `join` starts a join. A command that is malformed, too long or unknown is answered with status `failed` and reason `error`. A command sent while a join is still running is refused with BlueZ's `org.bluez.Error.InProgress`, and the status stays as it was.
 
-The app asks for an MTU of 517 before its first write, and a command must fit in one write. A notification is cut at the link's MTU, so the app treats every notification as a cue to read `status`, which always returns the whole value.
+The app asks for an MTU of 517 before its first write. Windows lets the app request no MTU, and a link may settle lower, so a command can arrive as a long write. BlueZ joins the pieces of a long write before it calls `WriteValue`, so the daemon receives the whole command at `offset` 0, and it answers a write at any other offset with `failed`/`error`. The 512-byte cap applies to the whole command. A value longer than one packet is read in pieces too, as `ReadValue` calls with rising offsets. The daemon answers those from the value it returned at offset 0, so a status that changes mid-read never arrives torn. A notification is cut at the link's MTU, so the app treats every notification as a cue to read `status`, which always returns the whole value.
 
 The first device to write a command holds the box until it disconnects. Commands from any other device get `InProgress`.
 
@@ -240,7 +245,7 @@ The passphrase is written once and can never be read back: no characteristic ret
 
 ### 5.7 Switching it off
 
-Anything that uses the radio can be switched off. On a Pi, `KALINKA_BLE_SETUP=0` in `dietpi.txt` does it; DietPi ignores keys it does not know, and `provision-needed.sh` reads `/boot/dietpi.txt` the way `soundcard.sh` does. On the PC image, `BLE_SETUP=0` in `kalinka-firstboot.conf` makes `firstboot.sh` disable the unit, because that file does not survive being read. From a login, `systemctl disable kalinka-provision-check.service` does it on either image.
+Anything that uses the radio can be switched off. On a Pi, `KALINKA_BLE_SETUP=0` in `dietpi.txt` does it; DietPi ignores keys it does not know, and `provision-needed.sh` reads `/boot/dietpi.txt` the way `soundcard.sh` does. On the PC image, `BLE_SETUP=0` in `kalinka-firstboot.conf` makes `firstboot.sh` write `KALINKA_BLE_SETUP=0` to `/etc/default/kalinka-image`, which `provision-needed.sh` reads, because the conf file does not survive being read. Disabling the unit instead would not cancel the start job already queued for that boot. The check runs after `kalinka-firstboot.service` (§5.3), so the switch holds from the boot that reads it. From a login, `systemctl disable kalinka-provision-check.service` does it on either image.
 
 ## 6. Path B: the app
 
@@ -374,7 +379,7 @@ Country    United Kingdom (GB)          Change
 [ Back ]  [            Join Studio            ]
 ```
 
-For **Other network…** a *Network name* field comes first, and the network is sent as hidden. For an open network the password field is not shown, and the subtitle reads "Studio is open: no password needed." The password must be 8 to 63 characters, or exactly 64 hex digits; the field's error line says so in `statusOffline`. The country defaults to the phone's region. **Change** opens a `KalinkaBottomSheet` listing the countries.
+For **Other network…** a *Network name* field comes first, and the network is sent as hidden. For an open network the password field is not shown, and the subtitle reads "Studio is open: no password needed." The password must be 8 to 63 printable ASCII characters, WPA's rule for a passphrase. A 64-hex-digit key is refused, because the box passes the passphrase through (§5.1) and a raw key cannot join a WPA3-SAE network. The field's error line says so in `statusOffline`. The country defaults to the phone's region. **Change** opens a `KalinkaBottomSheet` listing the countries.
 
 **5. Joining**
 
@@ -454,7 +459,7 @@ Issue 1 answers these on a Pi Zero 2 W, a 3B, a 5 and the PC image, before the d
 2. DietPi's defaults: are Bluetooth and the Wi-Fi modules off? What are the exact `dietpi-set_hardware` calls, and do they run in the build chroot? Does DietPi's first boot switch the Wi-Fi modules back off when `AUTO_SETUP_NET_WIFI_ENABLED=0`, and if so, does setting it to 1 with an empty network database make the first boot wait?
 3. `dietpi-wifidb`: does it accept a 64-hex key? Can the network be written where DietPi keeps it on the root filesystem instead of the FAT partition? Do hidden networks need `scan_ssid`?
 4. `pi-bluetooth` and Raspberry Pi's `bluez-firmware` on DietPi Trixie: where they come from and their arm64 sizes. Do `/usr/lib/raspberrypi-sys-mods` and `/usr/lib/userconf-pi` stay unowned on DietPi?
-5. BlueZ: does the name reach the phone in the scan response? Does `encrypt-write` trigger Android's pairing prompt? Which pairing method does each board use, according to `btmon`? Does the BLE link survive the Wi-Fi join on the Zero 2 W's shared chip?
+5. BlueZ: does the name reach the phone in the scan response? Does `encrypt-write` trigger Android's pairing prompt? Which pairing method does each board use, according to `btmon`? Does the BLE link survive the Wi-Fi join on the Zero 2 W's shared chip? Does a long write from a Windows desktop reach the daemon as one `WriteValue` call at offset 0?
 6. Measurements on the Zero 2 W, replacing the estimates of §3: resident memory of `bluetoothd` and the daemon, the `systemd-analyze critical-chain kalinka.service` change on a box with a network and one without, and the time from power to the box being visible on the phone.
 7. `universal_ble` on Android, Linux and Windows: scanning with a service filter, requesting an MTU, pairing and unpairing, and its licence against the app's. The fallback is `flutter_blue_plus` with Android alone, which is the acceptance platform anyway.
 
@@ -472,7 +477,7 @@ Issue 1 answers these on a Pi Zero 2 W, a 3B, a 5 and the PC image, before the d
 
 **Path B, box:**
 
-- Recorder tests of `wifi.sh` on both backends, including the passphrase never reaching `argv`.
+- Recorder tests of `wifi.sh` on both backends, including the passphrase never reaching `argv`. On `nm` they also cover the keyfile for an open, a WPA2 and a WPA3-only network, a hidden one, an SSID with a `;` or a non-UTF-8 byte, and a passphrase with a `\` or a leading space.
 - `unittest` tests of the codec (the 512-byte cap, unknown fields, unknown ops, `ssid_hex`) and of the state machine (join while joining, the one-phone lock, the three exits, a notification sent for every state change).
 - On real Pis:
   - the box is visible to the phone within 45 s of power on a Zero 2 W;
