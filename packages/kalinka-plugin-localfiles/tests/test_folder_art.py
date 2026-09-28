@@ -14,7 +14,10 @@ import pytest
 from PIL import Image
 
 from kalinka_plugin_localfiles.storage.local import LocalStorage
-from kalinka_plugin_localfiles.utils.folder_art import find_folder_cover
+from kalinka_plugin_localfiles.utils.folder_art import (
+    find_folder_cover,
+    find_folder_covers,
+)
 
 LOCAL = LocalStorage()
 
@@ -27,6 +30,10 @@ def _image(path, size=(1000, 1000)):
 
 def _name(cover):
     return os.path.basename(cover.path) if cover else None
+
+
+def _names(found):
+    return [_name(cover) for cover in found.covers]
 
 
 def _box(cover):
@@ -163,6 +170,37 @@ class TestWhenTheNamesAreNoHelp:
         for name in ("c.jpg", "a.jpg", "b.jpg"):
             _image(str(tmp_path / name), (1200, 1200))
         assert _name(find_folder_cover(LOCAL, str(tmp_path))) == "a.jpg"
+
+
+class TestWhenTheFirstChoiceWillNotDecode:
+    """The caller moves on to the next image, so the order has to hold past
+    the first one."""
+
+    def test_the_other_scans_follow_the_named_images(self, tmp_path):
+        _image(str(tmp_path / "cover.jpg"), (1500, 1500))
+        _image(str(tmp_path / "folder.jpg"), (1000, 1000))
+        _image(str(tmp_path / "scan_2.jpg"), (1400, 1400))
+        _image(str(tmp_path / "scan_1.jpg"), (1400, 1400))
+        assert _names(find_folder_covers(LOCAL, str(tmp_path))) == [
+            "cover.jpg",
+            "folder.jpg",
+            "scan_1.jpg",
+            "scan_2.jpg",
+        ]
+
+    def test_a_disc_label_is_no_stand_in_for_a_named_sleeve(self, tmp_path):
+        _image(str(tmp_path / "cover.jpg"), (3000, 3000))
+        _image(str(tmp_path / "abbey_d1.jpg"), (1000, 1000))
+        assert _names(find_folder_covers(LOCAL, str(tmp_path))) == ["cover.jpg"]
+
+    def test_the_directories_searched_are_named(self, tmp_path):
+        """Where a new image could appear; another album's folder is not
+        one of them."""
+        _image(str(tmp_path / "PIC" / "abbey_1.jpg"), (3000, 3000))
+        (tmp_path / "Other Album").mkdir()
+        (tmp_path / "Other Album" / "01.flac").write_bytes(b"not audio really")
+        found = find_folder_covers(LOCAL, str(tmp_path))
+        assert found.directories == [str(tmp_path), str(tmp_path / "PIC")]
 
 
 class TestSubdirectories:
