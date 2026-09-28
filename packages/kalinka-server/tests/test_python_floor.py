@@ -8,6 +8,13 @@ import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
+PLUGIN_TEMPLATE_PYPROJECT = (
+    REPO
+    / "template"
+    / "cookiecutter-kalinka-plugin"
+    / "{{cookiecutter.plugin_name}}"
+    / "pyproject.toml"
+)
 
 FLOOR_STATEMENTS = [
     ("packages/*/pyproject.toml", r'requires-python = ">=(\d+\.\d+)"'),
@@ -55,3 +62,11 @@ def test_every_statement_of_the_python_floor_agrees():
         f"{version} in {', '.join(sorted(paths))}"
         for version, paths in sorted(files_by_floor.items())
     )
+
+
+def test_a_generated_plugin_states_its_floor_only_in_requires_python():
+    # Its author picks python_version, which a fixed list of minor-version
+    # classifiers would contradict for any choice but one.
+    pyproject = PLUGIN_TEMPLATE_PYPROJECT.read_text()
+    assert 'requires-python = ">={{ cookiecutter.python_version }}"' in pyproject
+    assert re.findall(r"Programming Language :: Python :: 3\.\d+", pyproject) == []
