@@ -5,6 +5,18 @@
 #include "kalinka/renderer/v1/renderer.pb.h"
 
 /**
+ * @brief Whether @p field takes @p value: the field is writable, and the value
+ * parses as its type, lies within its range and is among its options.
+ *
+ * The check ConfigService::apply() makes of every write, for a contributor to
+ * hold a value that did not come through it, such as a stored one, to the same.
+ *
+ * @param error Filled with the reason when the value is not taken.
+ */
+bool fieldAccepts(const kalinka::renderer::v1::ConfigField &field,
+                  const std::string &value, std::string &error);
+
+/**
  * @brief One section of the renderer's settings, owned by whoever declares it.
  *
  * The player contributes its backend-specific section (driver, device, and

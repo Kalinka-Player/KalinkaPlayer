@@ -7,7 +7,7 @@
 #include <chrono>
 #include <span>
 
-#include "../config/ConfigService.h"
+#include "../config/ConfigContributor.h"
 #include "../config/SettingsPersistence.h"
 #include "../native_player/AlsaDeviceEnumeration.h"
 #include "../native_player/AudioGraphHttpStream.h"
@@ -61,9 +61,7 @@ struct Bounds {
   bool declared() const { return max > min; }
 };
 
-// A setting with nothing to it but a number and what to call it: value and
-// default come from the settings map, and applying it means a new graph, or,
-// for one the graph reads per stream, a new value for the next stream.
+// Value and default live in the settings map; the graph key says how it applies.
 struct Knob {
   const char *path;
   const char *title;
@@ -135,9 +133,7 @@ const Section kNetwork{"network", "Network",
                        "quiet.",
                        kNetworkKnobs};
 
-// Every setting the graph is built with, and the key it is built under. A
-// write to one the graph reads per stream reaches the next stream appended; a
-// write to any other is a new graph. Each declares which.
+// Per-stream keys reach the next stream appended; the rest need a new graph.
 const std::map<std::string, std::string> &graphKeys() {
   static const std::map<std::string, std::string> keys{
       {"output.device", "output.alsa.device"},
@@ -210,8 +206,7 @@ void declare(pb::ConfigSection &out, const Knob &knob,
   field->set_default_value(defaults.at(knob.path));
 }
 
-// Held to the knob's field as a write is: a hand-edited stall timeout of 0
-// would switch stall detection off, and a negative size throws mid-track.
+// A hand-edited stall timeout of 0 would switch stall detection off.
 bool knobTakes(const std::string &path, const std::string &value,
                std::string &error) {
   const Knob *knob = findKnob(path);
@@ -272,7 +267,7 @@ public:
 
 private:
   const std::shared_ptr<NativePlayer> player_;
-  const Section &section_;
+  const Section section_;
 };
 
 std::shared_ptr<ConfigContributor> NativePlayer::bufferSettings() {
