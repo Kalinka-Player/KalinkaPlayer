@@ -9,7 +9,8 @@ This plugin was generated from the Kalinka Plugin cookiecutter template and prov
 ## Plugin Information
 
 - **Plugin Name**: {{ cookiecutter.plugin_display_name }}
-- **Plugin ID**: `{{ cookiecutter.plugin_id }}`
+- **Plugin ID**: `{{ cookiecutter.name }}`
+- **Python package**: `{{ cookiecutter.plugin_id }}`
 - **Plugin Type**: {{ cookiecutter.plugin_type }}
 - **Author**: {{ cookiecutter.author_name }} <{{ cookiecutter.author_email }}>
 - **License**: {{ cookiecutter.license }}
@@ -54,7 +55,7 @@ from pydantic import Field
 from kalinka_plugin_sdk.module_config import ModuleConfig
 
 class {{ cookiecutter.plugin_class_prefix }}Config(ModuleConfig):
-    name: str = Field(default="{{ cookiecutter.plugin_id }}", frozen=True, exclude=True)
+    name: str = Field(default="{{ cookiecutter.name }}", frozen=True, exclude=True)
     enabled: bool = Field(
         default=False,
         title="Module enabled",
