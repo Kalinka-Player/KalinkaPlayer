@@ -186,6 +186,21 @@ async def init_db(db_path: str) -> None:
             """
         )
 
+        # The same for cover art: a folder image or an embedded picture that
+        # would not decode, keyed to the entity it was meant for. The cover
+        # passes skip it until the file's size or mtime changes.
+        await cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS art_source_failures (
+                entity_id   TEXT NOT NULL,
+                source_path TEXT NOT NULL,
+                size        INTEGER NOT NULL,
+                mtime_ns    INTEGER NOT NULL,
+                PRIMARY KEY (entity_id, source_path)
+            )
+            """
+        )
+
         # Per local-album-cluster grouping metadata, keyed 1:1 to an albums
         # row. The folders a cluster occupies are derived from member tracks;
         # primary_folder is the dominant one (display/blocking only).

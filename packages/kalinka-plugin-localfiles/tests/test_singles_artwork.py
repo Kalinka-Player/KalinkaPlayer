@@ -6,6 +6,7 @@ its per-file album row.
 """
 
 import io
+import os
 
 import numpy as np
 import pytest
@@ -14,6 +15,7 @@ import soundfile as sf
 from mutagen.flac import FLAC, Picture
 from PIL import Image
 
+import kalinka_plugin_localfiles.indexer.indexer as indexer_module
 from kalinka_plugin_localfiles.config_model import LocalFilesConfig
 from kalinka_plugin_localfiles.storage.local import LocalStorage
 from kalinka_plugin_localfiles.db_schema import init_db
@@ -125,6 +127,47 @@ async def test_backfill_restores_art_after_clustering_demotion(indexer):
         "albums": 0,
         "tracks": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_backfill_retries_art_that_would_not_save_only_once_changed(
+    indexer, monkeypatch
+):
+    """The picture hashed at index time, so the track keeps being selected;
+    while its file is unchanged, a failed save is not read and tried again
+    on every pass."""
+    fi, db, music_dir, config = indexer
+    path = music_dir / "single.flac"
+    _write_flac(path, {"title": "Bee Moved", "artist": "Blue Coast",
+                       "album": "Bee Moved"},
+                cover=_cover_png((20, 90, 250)))
+    track_id = (await fi.process_file(str(path)))["tracks"]
+    await db.reassign_album(track_id, "unknown_album")
+    await db.delete_orphaned_albums_and_artists()
+
+    attempts = []
+
+    def failing_save(artwork_path, image_data, entity_id, entity_type, origin=None):
+        attempts.append((entity_id, origin))
+        return False
+
+    monkeypatch.setattr(indexer_module, "save_artwork_images", failing_save)
+    nothing = {"albums": 0, "tracks": 0}
+
+    assert await fi.backfill_embedded_art([str(music_dir)]) == nothing
+    assert await fi.backfill_embedded_art([str(music_dir)]) == nothing
+    assert attempts == [(track_id, str(path))]
+
+    audio = FLAC(str(path))
+    audio["comment"] = "remastered"
+    audio.save()
+    # Past the filesystem's timestamp granularity, which a fast test can
+    # otherwise fall inside.
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+
+    assert await fi.backfill_embedded_art([str(music_dir)]) == nothing
+    assert attempts == [(track_id, str(path))] * 2
 
 
 @pytest.mark.asyncio
