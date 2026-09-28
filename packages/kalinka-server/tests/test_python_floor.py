@@ -14,9 +14,19 @@ FLOOR_STATEMENTS = [
     ("packages/kalinka-plugin-sdk/debian/control.in", r"python3 \(>= (\d+\.\d+)\)"),
     ("packages/kalinka-server/DEBIAN/control.in", r"python3 \(>= (\d+\.\d+)\)"),
     ("packages/kalinka-server/rpm/kalinka-server.spec", r"python3 >= (\d+\.\d+)"),
-    ("Makefile", r">= (\d+\.\d+)"),
+    ("packages/kalinka-server/pyproject.toml", r'python_version = "(\d+\.\d+)"'),
+    ("packages/kalinka-server/pyproject.toml", r"target-version = \['py(\d)(\d+)'\]"),
+    ("packages/kalinka-plugin-dummydevice/README.md", r"Python (\d+\.\d+)\+"),
+    ("packages/kalinka-plugin-musiccast/README.md", r"Python (\d+\.\d+)\+"),
+    (
+        "packages/kalinka-plugin-localfiles/src/kalinka_plugin_localfiles/"
+        "procedural_artwork/README.md",
+        r"Python >= (\d+\.\d+)",
+    ),
+    ("Makefile", r"(?:Python|but) >= (\d+\.\d+)"),
     ("Makefile", r"version_info\[:2\] >= \((\d+), (\d+)\)"),
     ("docs/development.md", r"Python (\d+\.\d+)\+"),
+    ("template/cookiecutter-kalinka-plugin/README.md", r"Python (\d+\.\d+)\+"),
     (
         "template/cookiecutter-kalinka-plugin/cookiecutter.json",
         r'"python_version": "(\d+\.\d+)"',
