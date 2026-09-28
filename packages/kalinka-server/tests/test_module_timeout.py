@@ -68,8 +68,7 @@ def _implementing(names):
 
 
 def test_bound_members_are_exactly_what_the_protocol_check_requires():
-    # Judged by the running interpreter's own isinstance, not by typing's
-    # private attributes, whose names and contents change between versions.
+    # typing's private protocol attributes differ between versions; isinstance doesn't.
     members = set(_PROTOCOL_METHODS)
     assert isinstance(_implementing(members), InputModule)
     for name in members:
