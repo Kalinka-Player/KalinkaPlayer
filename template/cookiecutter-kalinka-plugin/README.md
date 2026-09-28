@@ -97,7 +97,6 @@ version [1.0.0]:
 python_version [3.10]: 
 sdk_version_constraint [>=3,<4]: 
 license [GPL-3.0-or-later]: MIT
-year [2025]: 
 ```
 
 ## Generated Project Structure
