@@ -51,9 +51,10 @@ dependencies = [
 dev = [
     "kalinka-plugin-dev>=1.0,<2",
     "pytest",
+    "pytest-asyncio>=0.23.0",
     "setuptools-scm",
-    # test_share_read_ahead.py serves a track on a share through the
-    # server's content route, which streams a module's reader since 5.1.
+    "soundfile>=0.12",
+    # Streams a module's reader through its content route since 5.1.
     "kalinka-server>=5.1,<6",
     "httpx>=0.24.0",
 ]

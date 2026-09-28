@@ -41,9 +41,10 @@ TRACK_UNC = r"\\nas\music\01 noise.flac"
 RANGE_BYTES = 384_000
 
 
-def _noise_flac(tmp_path) -> bytes:
+@pytest.fixture(scope="module")
+def noise_flac(tmp_path_factory) -> bytes:
     """Eight seconds of noise, which FLAC cannot shrink below three ranges."""
-    scratch = tmp_path / "noise.flac"
+    scratch = tmp_path_factory.mktemp("noise") / "noise.flac"
     noise = np.random.default_rng(142).uniform(-1.0, 1.0, (8 * 44100, 2))
     sf.write(str(scratch), noise, 44100, format="FLAC")
     audio = FLAC(str(scratch))
@@ -53,12 +54,14 @@ def _noise_flac(tmp_path) -> bytes:
 
 
 @pytest.fixture
-def share(monkeypatch, tmp_path):
+def share(monkeypatch, tmp_path, noise_flac):
     client = FakeSmbClient(
         listings={r"\\nas\music": []},
-        files={TRACK_UNC: _noise_flac(tmp_path)},
+        files={TRACK_UNC: noise_flac},
     )
     monkeypatch.setattr(smb_mod, "smbclient", client)
+    # Refusals outlive a test; one left behind would refuse this logon.
+    monkeypatch.setattr(smb_mod, "_REFUSALS", smb_mod._RefusedLogins())
     config = LocalFilesConfig(
         music_sources=[
             SmbSource(
