@@ -154,7 +154,7 @@ download "$URL" "$TMPDIR_DL/$NAME"
 if [ "$FORMAT" = deb ]; then
   APT_OPTS=(-o DPkg::Lock::Timeout=300)
   echo ">> Installing with apt ..."
-  if ! $SUDO apt-get "${APT_OPTS[@]}" install -y "$TMPDIR_DL/$NAME"; then
+  if ! $SUDO apt-get "${APT_OPTS[@]}" install -y --no-install-recommends "$TMPDIR_DL/$NAME"; then
     # apt finishes configuring whatever else the box left half-installed, and
     # that failure lands on this exit status too. Ask dpkg what actually
     # happened before blaming the package we came to install.
