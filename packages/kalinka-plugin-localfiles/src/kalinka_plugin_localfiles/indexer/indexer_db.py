@@ -432,6 +432,9 @@ class AsyncIndexerDb(ProvenanceDb):
             cursor = await conn.cursor()
             await cursor.execute("DELETE FROM tracks WHERE id = ?", (track_id,))
             deleted = cursor.rowcount > 0
+            await cursor.execute(
+                "DELETE FROM art_source_failures WHERE entity_id = ?", (track_id,)
+            )
             await conn.commit()
             return deleted
 
@@ -505,6 +508,40 @@ class AsyncIndexerDb(ProvenanceDb):
             await cursor.execute("SELECT file_path FROM indexer_failures")
             rows = await cursor.fetchall()
             return [row[0] for row in rows]
+
+    async def art_failure_matches(
+        self, entity_id: str, source_path: str, size: int, mtime_ns: int
+    ) -> bool:
+        """Whether a cover for ``entity_id`` already failed to come from this
+        file as it stands now — same path, size and nanosecond mtime."""
+        async with self._open() as conn:
+            cursor = await conn.execute(
+                "SELECT 1 FROM art_source_failures WHERE entity_id = ? "
+                "AND source_path = ? AND size = ? AND mtime_ns = ?",
+                (entity_id, source_path, size, mtime_ns),
+            )
+            return await cursor.fetchone() is not None
+
+    async def record_art_failure(
+        self, entity_id: str, source_path: str, size: int, mtime_ns: int
+    ) -> None:
+        """Remember that no cover for ``entity_id`` could be saved from this
+        file, replacing what an earlier version of the file left."""
+        async with self._open() as conn:
+            await conn.execute(
+                "INSERT OR REPLACE INTO art_source_failures "
+                "(entity_id, source_path, size, mtime_ns) VALUES (?, ?, ?, ?)",
+                (entity_id, source_path, size, mtime_ns),
+            )
+            await conn.commit()
+
+    async def clear_art_failures(self, entity_id: str) -> None:
+        """Forget every failed cover source of an entity that has one now."""
+        async with self._open() as conn:
+            await conn.execute(
+                "DELETE FROM art_source_failures WHERE entity_id = ?", (entity_id,)
+            )
+            await conn.commit()
 
     async def set_scan_progress(
         self, total: int, processed: int, active: bool
@@ -634,7 +671,7 @@ class AsyncIndexerDb(ProvenanceDb):
 
     async def delete_orphaned_albums_and_artists(self) -> Tuple[int, int]:
         """Delete albums and artists that have no tracks referencing them,
-        and the provenance recorded against them.
+        and the provenance and failed cover sources recorded against them.
         Returns tuple of (deleted_albums_count, deleted_artists_count)"""
         async with self._open() as conn:
             cursor = await conn.cursor()
@@ -660,6 +697,11 @@ class AsyncIndexerDb(ProvenanceDb):
                 )
                 deleted_albums = cursor.rowcount
                 await self._forget_provenance(cursor, "album", orphaned_albums)
+                await cursor.execute(
+                    "DELETE FROM art_source_failures "
+                    f"WHERE entity_id IN ({albums_placeholders})",
+                    orphaned_albums,
+                )
 
             # Get artists with no tracks or albums. ``unknown_artist``
             # is excluded as the only sentinel — every other artist
