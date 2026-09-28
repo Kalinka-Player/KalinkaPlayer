@@ -51,6 +51,7 @@ from .renderer_output_device import RendererOutputPlugin
 from .renderer_prefs import RendererPreferences
 from .renderer_registry import RendererRegistry
 from .renderer_sessions import SessionPool
+from .sdk_compat import plugin_sdk_mismatch
 from .text_embedder import SharedTextEmbedder
 from kalinka_plugin_sdk.api import PlayQueueController
 
@@ -456,9 +457,13 @@ class PreparedModuleCollection:
                 "class": plugin_class,
                 "config": None,
                 "context": None,
-                "error": None,
+                "error": plugin_sdk_mismatch(plugin_class, SDK_VERSION),
                 "consumed_one_shot": [],
             }
+            if entry["error"]:
+                logger.error(
+                    "Not setting up plugin %s: %s", plugin_name, entry["error"]
+                )
             try:
                 config = self._build_module_config(
                     plugin_name, plugin_class, overrides
@@ -467,9 +472,10 @@ class PreparedModuleCollection:
                 # Reset armed one-shot triggers on disk *before* the plugin
                 # acts, leaving the armed value on ``config`` for this boot.
                 # Only when the module will actually run (setup() is skipped
-                # for disabled modules) — otherwise the trigger waits, armed,
-                # until the module is enabled rather than being silently lost.
-                if getattr(config, "enabled", True):
+                # for disabled modules and for ones the SDK rules out) —
+                # otherwise the trigger waits, armed, until the module runs
+                # rather than being silently lost.
+                if not entry["error"] and getattr(config, "enabled", True):
                     entry["consumed_one_shot"] = self._consume_one_shot_overrides(
                         plugin_name, plugin_class, config, overrides
                     )
@@ -480,14 +486,13 @@ class PreparedModuleCollection:
                 logger.error(
                     f"Failed to prepare plugin {plugin_name}: {e}", exc_info=True
                 )
-                entry["error"] = str(e)
+                entry["error"] = entry["error"] or str(e)
             prepared.append(entry)
 
         # Phase 2 (concurrent): run the slow setup() calls in parallel. Entries
-        # that failed to build a context in phase 1 are skipped here and handled
-        # as errors below.
+        # that failed in phase 1 are skipped here and handled as errors below.
         async def _do_setup(entry: dict[str, Any]):
-            if entry["context"] is None:
+            if entry["context"] is None or entry["error"]:
                 return None
             return await PreparedPlugin.setup(entry["class"], entry["context"])
 

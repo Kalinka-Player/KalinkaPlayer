@@ -1,9 +1,9 @@
-"""Tests for the startup SDK-compatibility guard (:mod:`kalinka_server.sdk_compat`).
+"""Tests for the SDK-compatibility guards (:mod:`kalinka_server.sdk_compat`).
 
-The guard reads the server's own ``kalinka-plugin-sdk`` requirement and the
-installed SDK version from package metadata. These tests patch those two
-metadata lookups so the behaviour can be exercised without installing real
-packages.
+The startup guard reads the server's own ``kalinka-plugin-sdk`` requirement
+and the installed SDK version from package metadata. These tests patch those
+two metadata lookups so the behaviour can be exercised without installing real
+packages. The per-plugin check reads a plugin's ``REQUIRES_SDK``.
 """
 
 from importlib.metadata import PackageNotFoundError
@@ -11,7 +11,11 @@ from importlib.metadata import PackageNotFoundError
 import pytest
 
 from kalinka_server import sdk_compat
-from kalinka_server.sdk_compat import IncompatibleSDKError, check_sdk_compatibility
+from kalinka_server.sdk_compat import (
+    IncompatibleSDKError,
+    check_sdk_compatibility,
+    plugin_sdk_mismatch,
+)
 
 
 def _setup(monkeypatch, *, server_requires, sdk_version):
@@ -107,3 +111,32 @@ def test_non_sdk_requirements_skipped(monkeypatch):
         sdk_version="1.5.0",
     )
     check_sdk_compatibility()  # does not raise
+
+
+def _plugin_requiring(requires_sdk):
+    return type("_Plugin", (), {"REQUIRES_SDK": requires_sdk})
+
+
+@pytest.mark.parametrize("sdk_version", ["3.0.0", "3.4.0", "3.5.0.dev2+g829e38c"])
+def test_a_plugin_runs_on_any_sdk_its_requirement_admits(sdk_version):
+    assert plugin_sdk_mismatch(_plugin_requiring(">=3,<4"), sdk_version) is None
+
+
+@pytest.mark.parametrize("requires_sdk", [">=2,<3", ">=4,<5", ">=3.5,<4"])
+def test_a_plugin_whose_requirement_excludes_the_sdk_may_not_run(requires_sdk):
+    reason = plugin_sdk_mismatch(_plugin_requiring(requires_sdk), "3.4.0")
+
+    assert reason is not None
+    assert f"kalinka-plugin-sdk{requires_sdk}" in reason
+    assert "3.4.0" in reason
+
+
+@pytest.mark.parametrize("requires_sdk", ["1.0", "", 3])
+def test_a_requirement_that_is_not_a_specifier_counts_against_the_plugin(
+    requires_sdk,
+):
+    assert plugin_sdk_mismatch(_plugin_requiring(requires_sdk), "3.4.0") is not None
+
+
+def test_a_plugin_declaring_no_requirement_may_not_run():
+    assert plugin_sdk_mismatch(type("_Plugin", (), {}), "3.4.0") is not None

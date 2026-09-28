@@ -1,15 +1,16 @@
-"""Startup guard: refuse to run with an incompatible kalinka-plugin-sdk.
+"""Runtime guards against an incompatible kalinka-plugin-sdk.
 
-Compatibility is declared in exactly one place — this server's
-``kalinka-plugin-sdk`` dependency in ``pyproject.toml`` (``>=2,<3``). We read
-that requirement back from installed package metadata and check the installed
-SDK against it, so there is no second copy of the supported range to keep in
-sync.
+The server's own compatibility is declared in exactly one place — its
+``kalinka-plugin-sdk`` dependency in ``pyproject.toml``. We read that
+requirement back from installed package metadata and check the installed SDK
+against it at startup, so there is no second copy of the supported range to
+keep in sync.
 
-Plugins pin the same SDK major, so an SDK that satisfies the server implies the
-plugins are within the supported major as well. This is the runtime backstop
-for the cases dependency resolution can't catch (``pip install --no-deps``,
-``dpkg --force-depends``, an in-place SDK upgrade to a different major).
+Each plugin declares the SDK it was written for in ``REQUIRES_SDK``, which is
+checked as the plugin is loaded. Both are the runtime backstop for the cases
+dependency resolution can't catch (``pip install --no-deps``,
+``dpkg --force-depends``, an in-place SDK upgrade to a different major, a
+plugin an earlier boot installed whose wheel pip now refuses).
 
 See RELEASING.md for the versioning policy.
 """
@@ -19,6 +20,7 @@ from importlib.metadata import PackageNotFoundError, requires
 from importlib.metadata import version as dist_version
 
 from packaging.requirements import Requirement
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
@@ -78,4 +80,29 @@ def check_sdk_compatibility() -> None:
 
     logger.info(
         "SDK compatibility OK: %s %s satisfies %s", SDK_DIST, installed, req.specifier
+    )
+
+
+def plugin_sdk_mismatch(plugin_class: type, sdk_version: str) -> str | None:
+    """Why a plugin must not run on ``sdk_version``, or None when it may.
+
+    Judged by the plugin's ``REQUIRES_SDK`` specifier. One that is missing,
+    empty or does not parse counts against the plugin: it cannot say which SDK
+    it fits.
+
+    @return A reason fit to show the user beside the plugin.
+    """
+    declared = getattr(plugin_class, "REQUIRES_SDK", None)
+    if not isinstance(declared, str) or not declared.strip():
+        return "Declares no REQUIRES_SDK, so the SDK it was written for is unknown"
+    try:
+        specifier = SpecifierSet(declared)
+    except InvalidSpecifier:
+        return f"REQUIRES_SDK {declared!r} is not a version specifier"
+    # prereleases=True so local dev builds (e.g. 3.5.0.dev2+...) are accepted.
+    if specifier.contains(sdk_version, prereleases=True):
+        return None
+    return (
+        f"Needs {SDK_DIST}{declared}, but {sdk_version} is installed. "
+        f"Install a release of the plugin built for this SDK."
     )

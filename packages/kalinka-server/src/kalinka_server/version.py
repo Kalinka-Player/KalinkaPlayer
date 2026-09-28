@@ -11,7 +11,8 @@ Two distinct, unrelated versions live here:
   derived from git or the package version. It is exposed via ``/server/version``
   and mDNS discovery so clients (e.g. the frontend app) can check compatibility.
   (Distinct from ``kalinka_plugin_sdk.__version__``, the server↔plugin
-  contract, which the plugins' ``kalinka-plugin-sdk`` pins gate.)
+  contract, which the plugins' ``kalinka-plugin-sdk`` pins gate at install and
+  their ``REQUIRES_SDK`` specifiers at load.)
 """
 
 # Written by setuptools_scm at build time; absent only in an unbuilt source tree.

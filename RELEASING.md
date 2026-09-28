@@ -211,11 +211,11 @@ Removed or changed an existing public API (a protocol change):
    - `packages/kalinka-plugin-musiccast/` — likewise
    - `packages/kalinka-plugin-dummydevice/` — likewise
    - the plugin template, so a plugin generated after the bump is born on the new major: `sdk_version_constraint` in `template/cookiecutter-kalinka-plugin/cookiecutter.json` (the generated wheel's pin and `REQUIRES_SDK`) and `template/cookiecutter-kalinka-plugin/{{cookiecutter.plugin_name}}/debian/control.in`. `make test` fails until both accept the new SDK. `template/cookiecutter-kalinka-plugin/README.md` quotes the default three times; move those along with it.
-3. Raise each plugin's `REQUIRES_SDK` floor to the new major. It declares
-   which SDK the plugin was written for, and nothing reads it yet: the server
-   loads a plugin whatever its `REQUIRES_SDK` says, so only the package pins
-   above keep an old plugin off a new SDK. The built-in renderer output device
-   declares one too.
+3. Raise each plugin's `REQUIRES_SDK` floor to the new major. This is a
+   *second* gate, checked when the plugin is loaded rather than installed: a
+   plugin left at `>=2,<3` is not set up and is listed as an error, even when
+   an earlier boot's copy of it is still in the venv after pip refused its new
+   wheel. The built-in renderer output device declares one too.
 4. Update the plugins/server to the new API and confirm they build & run.
 5. Release any out-of-tree plugin against the new major — `kalinka-plugin-qobuz`
    lives in its own repo and is not covered by the greps below.
@@ -229,7 +229,7 @@ grep -rn 'kalinka-plugin-sdk *[>=<]' packages/*/pyproject.toml   # the 5 consume
 grep -rn 'kalinka-plugin-sdk (' packages/*/debian/control.in packages/kalinka-server/DEBIAN/control.in template/*/*/debian/control.in  # the deb pins
 grep -n  'sdk_version_constraint' template/*/cookiecutter.json    # the template's wheel pin
 grep -n  'sdk_version_constraint\|REQUIRES_SDK = "' template/*/README.md  # the template docs quoting it
-grep -rn 'REQUIRES_SDK' packages/*/src --include='*.py'          # the declared floors
+grep -rn 'REQUIRES_SDK' packages/*/src --include='*.py'          # the load-time floors
 grep -n  '__version__' packages/kalinka-plugin-sdk/src/kalinka_plugin_sdk/_version.py  # the 1 SDK source
 ```
 
@@ -245,7 +245,10 @@ pin, no second source of truth) and **refuses to start** if the installed SDK
 falls outside it. This catches the cases pins can't — `pip install --no-deps`,
 `dpkg --force-depends`, or upgrading the SDK in place to a different major.
 "No legacy SDK" means the server supports only the SDK **major** it was built
-against. The check lives in
+against. As it loads each plugin, the server also checks the plugin's
+`REQUIRES_SDK` against the installed SDK: one that excludes it, or declares
+nothing it can read, is not set up and shows as an error with the reason.
+Both checks live in
 [`sdk_compat.py`](packages/kalinka-server/src/kalinka_server/sdk_compat.py).
 
 ---
