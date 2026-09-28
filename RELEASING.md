@@ -210,8 +210,8 @@ Added an API, fixed a bug, nothing removed/changed:
 2. Done. Consumers pin `<4`, which already accepts it — **no plugin
    changes, no re-pinning, no rebuild required**. Existing plugins keep working.
    A consumer that starts using the new API raises its own floor, e.g. to
-   `>=3.5,<4`, in its `pyproject.toml`, its `control.in` and its
-   `REQUIRES_SDK`.
+   `>=3.5,<4`, in its `pyproject.toml` and its `control.in` (the server's is
+   `DEBIAN/control.in`) and, if it is a plugin, in its `REQUIRES_SDK`.
 
 ### Major (breaking — e.g. `3.x` → `4.0.0`)
 Removed or changed an existing public API (a protocol change):
