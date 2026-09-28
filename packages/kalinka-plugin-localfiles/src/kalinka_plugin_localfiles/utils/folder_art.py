@@ -83,6 +83,19 @@ class FolderCover(NamedTuple):
     box: Optional[Tuple[float, float, float, float]]
 
 
+class FolderCovers(NamedTuple):
+    """What a search of an album folder turned up.
+
+    @param covers The images that could be the front cover, most likely
+        first; a caller whose first choice will not decode takes the next.
+    @param directories Every directory searched. Adding an image to one
+        changes its mtime, so these say whether the answer could differ.
+    """
+
+    covers: List[FolderCover]
+    directories: List[str]
+
+
 class _Candidate(NamedTuple):
     path: str
     width: int
@@ -164,10 +177,10 @@ def _searchable_directory(storage: FileStorage, entry: DirEntry) -> bool:
     return storage.is_dir(entry.path)
 
 
-def _image_entries(storage: FileStorage, folder: str) -> List[DirEntry]:
+def _image_entries(storage: FileStorage, directories: List[str]) -> List[DirEntry]:
     """Admissible image files, cheaply filtered — no file is opened here."""
     entries: List[DirEntry] = []
-    for directory in _directories(storage, folder):
+    for directory in directories:
         try:
             children = sorted(storage.listdir(directory), key=lambda e: e.name)
         except OSError:
@@ -200,40 +213,59 @@ def _measure(storage: FileStorage, path: str) -> Optional[_Candidate]:
     return _Candidate(path, width, height)
 
 
-def find_folder_cover(
-    storage: FileStorage, folder: str
-) -> Optional[FolderCover]:
-    """The image in ``folder`` most likely to be its front cover, or None.
+def find_folder_covers(storage: FileStorage, folder: str) -> FolderCovers:
+    """The images in ``folder`` that could be its front cover, best first.
 
     @param storage Where the folder lives; the same call serves a local
         album folder and one on a share.
     @param folder The album's directory; its immediate subdirectories are
         searched too.
-    @return Which file holds the cover and which part of it is the front,
-        or None when the folder offers nothing that could be a cover.
+    @return Which files could hold the cover and which part of each is the
+        front, with the directories that were searched for them.
     """
     if not folder:
-        return None
-    measured = (_measure(storage, e.path) for e in _image_entries(storage, folder))
+        return FolderCovers([], [])
+    directories = _directories(storage, folder)
+    measured = (
+        _measure(storage, e.path) for e in _image_entries(storage, directories)
+    )
     candidates = [c for c in measured if c is not None]
+    return FolderCovers([c.as_cover() for c in _ranked(candidates)], directories)
 
+
+def find_folder_cover(
+    storage: FileStorage, folder: str
+) -> Optional[FolderCover]:
+    """The first of :func:`find_folder_covers`, or None when the folder
+    offers nothing that could be a cover."""
+    covers = find_folder_covers(storage, folder).covers
+    return covers[0] if covers else None
+
+
+def _ranked(candidates: List[_Candidate]) -> List[_Candidate]:
+    """The candidates that could be the front cover, most likely first."""
     # A name that says "cover" settles it, whatever the shape — and a scan
     # that is already the front beats one the front must be cut out of.
-    named = [c for c in candidates if _PREFERRED_RE.search(_stem(c.path))]
-    if named:
-        return max(
-            named, key=lambda c: (not c.is_folded, c.longest_side, c.path)
-        ).as_cover()
-
-    candidates = [
+    named = sorted(
+        (c for c in candidates if _PREFERRED_RE.search(_stem(c.path))),
+        key=lambda c: (not c.is_folded, c.longest_side, c.path),
+        reverse=True,
+    )
+    others = [
         c
         for c in candidates
-        if not _REJECTED_RE.search(_stem(c.path))
+        if not _PREFERRED_RE.search(_stem(c.path))
+        and not _REJECTED_RE.search(_stem(c.path))
         and _MIN_ASPECT <= c.width / c.height <= _MAX_ASPECT
     ]
-    if not candidates:
-        return None
+    if not named and not others:
+        return []
 
-    floor = max(c.longest_side for c in candidates) * _MIN_RELATIVE_SIDE
-    sleeves = [c for c in candidates if c.longest_side >= floor]
-    return min(sleeves, key=lambda c: (c.ordinal, -c.longest_side, c.path)).as_cover()
+    # The named images count toward the floor, so that a disc label is not
+    # promoted to the front when the sleeve named cover.jpg will not decode.
+    floor = max(c.longest_side for c in named + others) * _MIN_RELATIVE_SIDE
+    sleeves = sorted(
+        (c for c in others if c.longest_side >= floor),
+        key=lambda c: (c.ordinal, -c.longest_side, c.path),
+    )
+    return named + sleeves
