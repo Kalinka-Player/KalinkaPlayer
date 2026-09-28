@@ -14,6 +14,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 NOTES = REPO / "scripts" / "image-release-notes.sh"
 GUIDE = REPO / "docs" / "installation.md"
+WORKFLOW = REPO / ".github" / "workflows" / "image-release.yml"
 TAG = "kalinka-image-v1.2.3"
 GUIDE_LINK = re.compile(r"\]\(([^)#]*/docs/installation\.md)#([^)]+)\)")
 
@@ -64,3 +65,10 @@ def test_the_notes_keep_what_only_the_release_page_can_say():
     for image in ("-rpi234-arm64.img.xz", "-rpi5-arm64.img.xz", "-amd64.img.xz"):
         assert image in notes
     assert "sha256sum -c SHA256SUMS --ignore-missing" in notes
+
+
+def test_the_release_publishes_the_notes_this_script_prints():
+    workflow = WORKFLOW.read_text()
+    assert 'bash scripts/image-release-notes.sh "$TAG" > notes.md' in workflow
+    assert workflow.count("> notes.md") == 1
+    assert "--notes-file notes.md" in workflow
