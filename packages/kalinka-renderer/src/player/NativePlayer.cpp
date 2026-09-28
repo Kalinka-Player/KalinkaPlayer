@@ -61,7 +61,8 @@ struct Bounds {
 };
 
 // A setting with nothing to it but a number and what to call it: value and
-// default come from the settings map, and applying it means a new graph.
+// default come from the settings map, and applying it means a new graph, or,
+// for one the graph reads per stream, a new value for the next stream.
 struct Knob {
   const char *path;
   const char *title;
@@ -134,7 +135,8 @@ const Section kNetwork{"network", "Network",
                        kNetworkKnobs};
 
 // Every setting the graph is built with, and the key it is built under. A
-// write to any of them is a new graph, which is what they declare.
+// write to one the graph reads per stream reaches the next stream appended; a
+// write to any other is a new graph. Each declares which.
 const std::map<std::string, std::string> &graphKeys() {
   static const std::map<std::string, std::string> keys{
       {"output.device", "output.alsa.device"},
@@ -151,6 +153,11 @@ const std::map<std::string, std::string> &graphKeys() {
       {"network.stall_timeout_s", "input.http.stall_timeout"},
   };
   return keys;
+}
+
+bool readPerStream(const std::string &path) {
+  const auto key = graphKeys().find(path);
+  return key != graphKeys().end() && AudioPlayer::isStreamKey(key->second);
 }
 
 bool holds(std::span<const Knob> knobs, const std::string &path) {
@@ -173,7 +180,8 @@ void declare(pb::ConfigSection &out, const Knob &knob,
   field->set_type(knob.type);
   field->set_value(settings.at(knob.path));
   field->set_default_value(defaults.at(knob.path));
-  field->set_apply(pb::APPLY_COST_INTERRUPTS_PLAYBACK);
+  field->set_apply(readPerStream(knob.path) ? pb::APPLY_COST_INSTANT
+                                            : pb::APPLY_COST_INTERRUPTS_PLAYBACK);
   // Reached for when the card or the link misbehaves, which is not what a
   // settings page is for.
   field->set_importance(pb::CONFIG_IMPORTANCE_EXPERT);
@@ -707,7 +715,11 @@ bool NativePlayer::applySetting(const std::string &path,
   setting->second = value;
   persistOverrides();
   spdlog::info("Config {} = '{}'", path, value);
-  if (graphKeys().contains(path)) {
+  if (readPerStream(path)) {
+    if (player_) {
+      player_->setStreamConfig(graphKeys().at(path), value);
+    }
+  } else if (graphKeys().contains(path)) {
     rebuildPlayer();
   } else if (path == "output.volume_mode" && player_) {
     // A downstream session override outranks the configured value until it ends.

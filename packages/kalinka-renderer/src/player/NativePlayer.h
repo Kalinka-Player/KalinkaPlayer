@@ -30,9 +30,12 @@
  * Configuration: output driver, device (enumerated from ALSA), volume mode,
  * and the numbers the graph is built with — how far ahead of the card it
  * buffers, how much of a stream it holds in memory, how long it waits on a
- * stream that has stopped arriving. Changing any of the latter rebuilds the
- * graph — APPLY_COST_INTERRUPTS_PLAYBACK — and anything that was playing is
- * gone, as declared. Overrides that differ from the defaults are persisted to
+ * stream that has stopped arriving. Changing how the card is driven rebuilds
+ * the graph — APPLY_COST_INTERRUPTS_PLAYBACK — and anything that was playing is
+ * gone, as declared. What the graph reads per stream, the buffer sizes and the
+ * stall timeout, reaches each stream appended after the change, while those
+ * already appended, the playing one among them, keep theirs —
+ * APPLY_COST_INSTANT. Overrides that differ from the defaults are persisted to
  * the state directory (see SettingsPersistence) and loaded on construction; an
  * applied change updates memory and the file in one step.
  *

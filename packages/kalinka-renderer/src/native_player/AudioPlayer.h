@@ -84,8 +84,25 @@ public:
   // the mixer behind it. Mirrors monitor() for stream state.
   std::unique_ptr<VolumeMonitor> volumeMonitor();
 
+  /// Whether @p key is read as each stream is appended (those under `input.`
+  /// and `decoder.`), rather than once, when the output is built.
+  static bool isStreamKey(const std::string &key);
+
+  /**
+   * @brief Change a stream key for every stream appended from now on.
+   *
+   * Streams already appended, the one playing among them, keep what they were
+   * built with. Safe to call from any thread.
+   *
+   * @return false, changing nothing, when @p key is not a stream key: anything
+   * else needs a new AudioPlayer.
+   */
+  bool setStreamConfig(const std::string &key, const std::string &value);
+
 private:
-  Config config;
+  const Config config;
+  std::mutex streamConfigMutex_;
+  Config streamConfig;
   std::shared_ptr<AlsaAudioEmitter> audioEmitter;
   std::shared_ptr<AudioStreamSwitcher> streamSwitcher;
   std::list<StreamNodes> streamNodesList;
@@ -108,6 +125,8 @@ private:
 
   // Requires volumeMutex_ held by the caller.
   VolumeBackend activeBackend() const;
+
+  Config currentStreamConfig();
 
   void disconnectAllStreams();
   void cleanUpFinishedStreams();
