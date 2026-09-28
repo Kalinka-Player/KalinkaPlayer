@@ -217,6 +217,41 @@ fi
 # Wait for a held dpkg/apt lock (e.g. unattended-upgrades) instead of failing
 # outright — this script also runs unattended from kalinka-upgrade.service.
 APT_OPTS=(-o DPkg::Lock::Timeout=300)
+# Recommends of the whole transaction would follow fpcalc's ffmpeg to Mesa and LLVM on a headless box.
+APT_INSTALL=(apt-get "${APT_OPTS[@]}" install -y --no-install-recommends)
+
+# Named, as no install here takes recommends; each maps to what is lost without it.
+declare -A EXTRAS=(
+  [libchromaprint-tools]="AcoustID has no fpcalc to fingerprint tracks with"
+  [build-essential]="Smart Search cannot build a package that has no wheel for this machine"
+  [python3-dev]="Smart Search cannot build a package that has no wheel for this machine"
+)
+
+# Best-effort: every one of them serves an optional feature.
+install_extras() {
+  echo ">> Installing what Kalinka's optional features use ..."
+  $SUDO "${APT_INSTALL[@]}" "${!EXTRAS[@]}" && return
+  # A name apt cannot place fails the whole call; the others still go in alone.
+  local pkg
+  for pkg in "${!EXTRAS[@]}"; do
+    $SUDO "${APT_INSTALL[@]}" "$pkg" || true
+  done
+}
+
+report_missing_extras() {
+  local pkg missing=()
+  for pkg in "${!EXTRAS[@]}"; do
+    case "$(dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null || true)" in
+      *" installed") ;;
+      *) missing+=("$pkg")
+         echo ">> note: $pkg could not be installed, so ${EXTRAS[$pkg]}." >&2 ;;
+    esac
+  done
+  if [ "${#missing[@]}" -gt 0 ]; then
+    echo "   The rest of Kalinka works as it is. Add what is missing later with" >&2
+    echo "   apt-get install --no-install-recommends ${missing[*]}" >&2
+  fi
+}
 
 if [ "${NO_APT_UPDATE:-0}" != "1" ]; then
   echo ">> apt-get update"
@@ -227,12 +262,12 @@ echo ">> Installing ${#URLS[@]} package(s) with apt ..."
 # apt resolves install order among the bundle packages (server depends on the
 # SDK) and pulls system dependencies from the configured repos. A leading ./ or
 # absolute path tells apt these are local files, not repo package names.
-# Recommends bring fpcalc and Smart Search's build tools even where apt skips them, as on DietPi.
-if ! $SUDO apt-get "${APT_OPTS[@]}" install -y --install-recommends "$TMPDIR_DL"/*.deb; then
+if ! $SUDO "${APT_INSTALL[@]}" "$TMPDIR_DL"/*.deb; then
   echo ">> apt-get install failed; falling back to dpkg -i + apt-get -f install"
   $SUDO dpkg -i "$TMPDIR_DL"/*.deb || true
-  $SUDO apt-get "${APT_OPTS[@]}" -f install -y
+  $SUDO "${APT_INSTALL[@]}" -f
 fi
+install_extras
 
 # --- report -------------------------------------------------------------------
 echo
@@ -243,6 +278,7 @@ if have dpkg-query; then
              kalinka-plugin-dummydevice kalinka-web kalinka-renderer; do
     dpkg-query -W -f='   ${Package} ${Version}\n' "$pkg" 2>/dev/null || true
   done
+  report_missing_extras
 fi
 
 echo
