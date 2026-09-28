@@ -5,6 +5,7 @@
 #include "StreamState.h"
 
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "LocalHttpServer.h"
@@ -401,6 +402,39 @@ TEST_F(AudioPlayerTest, test_protocol_detection) {
   auto seen = drainStates(*monitor);
   expectPlayedInTurn(seen, {25, 26});
   EXPECT_TRUE(reported(seen, AudioGraphNodeState::FINISHED));
+}
+
+TEST_F(AudioPlayerTest, a_stream_key_set_later_reaches_the_next_stream) {
+  ASSERT_TRUE(audioPlayer.setStreamConfig("input.http.stall_timeout", "1"));
+  auto monitor = audioPlayer.monitor();
+  audioPlayer.append(28, server.url("/stall"));
+
+  std::optional<StreamState> failed;
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(20);
+  while (!failed && std::chrono::steady_clock::now() < deadline) {
+    for (const auto &state : drainStates(*monitor)) {
+      if (!failed && state.state == AudioGraphNodeState::ERROR) {
+        failed = state;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+
+  ASSERT_TRUE(failed.has_value());
+  ASSERT_TRUE(failed->error.has_value());
+  EXPECT_THAT(failed->error->message,
+              ::testing::HasSubstr("Nothing received for 1 s"));
+}
+
+TEST_F(AudioPlayerTest, only_a_stream_key_changes_without_a_new_player) {
+  EXPECT_TRUE(AudioPlayer::isStreamKey("input.http.buffer_size"));
+  EXPECT_TRUE(AudioPlayer::isStreamKey("decoder.flac.buffer_size"));
+  EXPECT_FALSE(AudioPlayer::isStreamKey("output.alsa.latency_ms"));
+  EXPECT_FALSE(
+      AudioPlayer::isStreamKey("fixups.alsa_reopen_device_with_new_format"));
+
+  EXPECT_FALSE(audioPlayer.setStreamConfig("output.alsa.latency_ms", "500"));
 }
 
 TEST_F(AudioPlayerStallTest, stalled_http_stream_fails_after_stall_timeout) {

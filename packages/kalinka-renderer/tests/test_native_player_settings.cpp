@@ -3,11 +3,13 @@
 #include <stdlib.h>
 
 #include <boost/asio.hpp>
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "LocalHttpServer.h"
 #include "TestHelpers.h"
@@ -75,8 +77,29 @@ protected:
 };
 
 // TearDown() drops the player before the server goes, as its streams need.
-class NativePlayerStallTest : public NativePlayerSettingsTest {
+class NativePlayerStreamTest : public NativePlayerSettingsTest {
 protected:
+  pb::Source sourceAt(const std::string &path) const {
+    pb::Source source;
+    source.set_source_token(path);
+    source.set_uri(server_.url(path));
+    source.set_mime_type("audio/flac");
+    return source;
+  }
+
+  // Delivers what the pumps post until done() holds or 20 s have passed.
+  template <typename Done> bool runUntil(Done done) {
+    // The last run's guard stopped the context as it let go.
+    ioc_.restart();
+    auto work = boost::asio::make_work_guard(ioc_);
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (!done() && std::chrono::steady_clock::now() < deadline) {
+      ioc_.run_for(std::chrono::milliseconds(100));
+    }
+    return done();
+  }
+
   LocalHttpServer server_{testFile("tone880.flac")};
 };
 
@@ -165,7 +188,7 @@ TEST_F(NativePlayerSettingsTest, TheStallTimeoutIsItsOwnSection) {
   EXPECT_EQ(timeout.type(), pb::CONFIG_FIELD_TYPE_INT);
   EXPECT_EQ(timeout.unit(), "s");
   EXPECT_EQ(timeout.importance(), pb::CONFIG_IMPORTANCE_EXPERT);
-  EXPECT_EQ(timeout.apply(), pb::APPLY_COST_INTERRUPTS_PLAYBACK);
+  EXPECT_EQ(timeout.apply(), pb::APPLY_COST_INSTANT);
   ASSERT_TRUE(timeout.has_range());
   EXPECT_EQ(timeout.range().min(), 5);
   EXPECT_EQ(timeout.range().max(), 300);
@@ -191,7 +214,7 @@ TEST_F(NativePlayerSettingsTest, ASectionRefusesAnotherSectionsSetting) {
   EXPECT_EQ(network().fields(0).value(), "15");
 }
 
-TEST_F(NativePlayerStallTest, TheGraphWaitsOnAStallForTheConfiguredTime) {
+TEST_F(NativePlayerStreamTest, TheGraphWaitsOnAStallForTheConfiguredTime) {
   // Under the service's 5 s minimum, so four stalls fit in the 20 s deadline.
   ASSERT_TRUE(player_->networkSettings()->applyConfig(
       "network.stall_timeout_s", "1", error_))
@@ -203,23 +226,57 @@ TEST_F(NativePlayerStallTest, TheGraphWaitsOnAStallForTheConfiguredTime) {
       failed = env.playback_state_changed();
     }
   });
-  pb::Source source;
-  source.set_source_token("stalled");
-  source.set_uri(server_.url("/stall"));
-  source.set_mime_type("audio/flac");
 
-  player_->setSource(source);
-  auto work = boost::asio::make_work_guard(ioc_);
-  const auto deadline =
-      std::chrono::steady_clock::now() + std::chrono::seconds(20);
-  while (!failed && std::chrono::steady_clock::now() < deadline) {
-    ioc_.run_for(std::chrono::milliseconds(100));
-  }
+  player_->setSource(sourceAt("/stall"));
 
-  ASSERT_TRUE(failed.has_value());
+  ASSERT_TRUE(runUntil([&failed] { return failed.has_value(); }));
   EXPECT_EQ(failed->error().source(), pb::ERROR_SOURCE_HTTP_STREAM);
   EXPECT_THAT(failed->error().message(),
               ::testing::HasSubstr("Nothing received for 1 s"));
+}
+
+TEST_F(NativePlayerSettingsTest, WhatTheGraphReadsPerStreamAppliesAtOnce) {
+  for (const pb::ConfigSection &section : {buffers(), network()}) {
+    for (const pb::ConfigField &knob : section.fields()) {
+      EXPECT_EQ(knob.apply(), pb::APPLY_COST_INSTANT) << knob.path();
+    }
+  }
+  const pb::ConfigSection sink = output();
+  for (const char *path :
+       {"output.device", "output.latency_ms", "output.period_ms",
+        "output.format_change_delay_ms", "output.reopen_on_format_change"}) {
+    EXPECT_EQ(field(sink, path)->apply(), pb::APPLY_COST_INTERRUPTS_PLAYBACK)
+        << path;
+  }
+}
+
+TEST_F(NativePlayerStreamTest, AStreamKnobLeavesThePlayingTrackAlone) {
+  std::vector<pb::PlaybackState> states;
+  player_->setStateSink([&states](pb::Envelope &env) {
+    if (env.has_playback_state_changed()) {
+      states.push_back(env.playback_state_changed().state());
+    }
+  });
+  const auto reached = [&states](pb::PlaybackState state) {
+    return [&states, state] { return std::ranges::count(states, state) > 0; };
+  };
+  // Held after its first bytes, so the track is still on when the knobs move.
+  player_->setSource(sourceAt("/held"));
+  ASSERT_TRUE(runUntil(reached(pb::PLAYBACK_STATE_PLAYING)));
+  states.clear();
+
+  ASSERT_TRUE(player_->networkSettings()->applyConfig(
+      "network.stall_timeout_s", "60", error_))
+      << error_;
+  ASSERT_TRUE(player_->bufferSettings()->applyConfig("buffers.flac", "2000000",
+                                                     error_))
+      << error_;
+  server_.release();
+
+  EXPECT_TRUE(runUntil(reached(pb::PLAYBACK_STATE_FINISHED)));
+  EXPECT_EQ(std::ranges::count(states, pb::PLAYBACK_STATE_STOPPED), 0);
+  EXPECT_EQ(network().fields(0).value(), "60");
+  EXPECT_EQ(field(buffers(), "buffers.flac")->value(), "2000000");
 }
 
 TEST_F(NativePlayerSettingsTest, ANegativeSizeIsRefusedRatherThanStored) {

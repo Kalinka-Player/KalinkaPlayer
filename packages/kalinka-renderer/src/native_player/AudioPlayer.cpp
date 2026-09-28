@@ -183,7 +183,8 @@ struct StreamNodes {
 };
 
 AudioPlayer::AudioPlayer(const Config &config)
-    : config(config), audioEmitter(std::make_shared<AlsaAudioEmitter>(config)),
+    : config(config), streamConfig(config),
+      audioEmitter(std::make_shared<AlsaAudioEmitter>(config)),
       streamSwitcher(std::make_shared<AudioStreamSwitcher>()) {
   // Renderer delta: no initLogger() — the renderer owns the spdlog setup.
   perfmon_print_periodically(5);
@@ -246,7 +247,7 @@ void AudioPlayer::append(StreamId id, const std::string &url,
   }
   spdlog::debug("Appending stream id={} url={} startOffset={}ms", id, url,
                 startOffsetMs);
-  StreamNodes newStream(id, url, config, format, startOffsetMs);
+  StreamNodes newStream(id, url, currentStreamConfig(), format, startOffsetMs);
   streamSwitcher->connectTo(newStream.nodeChain.back());
   audioEmitter->connectTo(streamSwitcher);
   streamNodesList.emplace_back(std::move(newStream));
@@ -352,6 +353,25 @@ std::unique_ptr<VolumeMonitor> AudioPlayer::volumeMonitor() {
   // No lock and no backend to ask: the monitor listens to the player, not to
   // whichever mixer happens to be open, so a later mode change reaches it too.
   return std::make_unique<VolumeMonitor>(volumeEvents);
+}
+
+bool AudioPlayer::isStreamKey(const std::string &key) {
+  return key.starts_with("input.") || key.starts_with("decoder.");
+}
+
+bool AudioPlayer::setStreamConfig(const std::string &key,
+                                  const std::string &value) {
+  if (!isStreamKey(key)) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(streamConfigMutex_);
+  streamConfig.insert_or_assign(key, value);
+  return true;
+}
+
+Config AudioPlayer::currentStreamConfig() {
+  std::lock_guard<std::mutex> lock(streamConfigMutex_);
+  return streamConfig;
 }
 
 void AudioPlayer::disconnectAllStreams() {

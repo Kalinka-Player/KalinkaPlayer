@@ -81,9 +81,11 @@ the default is written to `config_overrides` in the state directory.
 | `buffers.*` | How much audio is held in memory and how far ahead of the card it runs. |
 | `network.stall_timeout_s` | How long a stream may go without receiving a byte, in seconds, before the request is dropped and made again from where it stopped (default 15, 5 to 300). The track fails after four failed requests in a row — stalls, dropped connections or 5xx answers — with less than 16 KB received between them, or after the first from a server that cannot resume. |
 
-Changing the device, the buffering or the stall timeout rebuilds the graph and
-stops playback; the schema says so per field, so the settings page can warn
-first.
+Changing the device or how the sink is driven (`output.latency_ms` and the
+rest of that row) rebuilds the graph and stops playback. The buffer sizes and
+the stall timeout apply to each track handed to the renderer after the change,
+and leave the one playing alone. The schema says so per field, so the settings
+page can warn first.
 
 ## State on disk
 
