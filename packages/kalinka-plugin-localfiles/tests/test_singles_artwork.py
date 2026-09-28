@@ -281,6 +281,35 @@ async def test_a_file_that_could_not_be_read_is_tried_again(indexer, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_a_written_off_cover_is_forgotten_once_the_file_is_read_again(
+    indexer,
+):
+    fi, db, music_dir, config = indexer
+    path, track_id = await _single_whose_cover_broke(fi, db, music_dir)
+    await fi.backfill_embedded_art([str(music_dir)])
+    assert _failed_sources(config, track_id) == {str(path)}
+
+    _write_flac(path, TAGS, cover=_cover_png((20, 90, 250)))
+    await fi.process_file(str(path))
+
+    assert _failed_sources(config, track_id) == set()
+    assert (await db.get_track_by_id(track_id))["image_url"] == f"{track_id}.jpg"
+
+
+@pytest.mark.asyncio
+async def test_a_written_off_cover_is_forgotten_when_the_track_joins_an_album(
+    indexer,
+):
+    fi, db, music_dir, config = indexer
+    path, track_id = await _single_whose_cover_broke(fi, db, music_dir)
+    await fi.backfill_embedded_art([str(music_dir)])
+
+    await db.reassign_album(track_id, "album_minted1")
+
+    assert _failed_sources(config, track_id) == set()
+
+
+@pytest.mark.asyncio
 async def test_backfill_gives_minted_album_its_embedded_cover(indexer):
     fi, db, music_dir, config = indexer
     path = music_dir / "bee.flac"

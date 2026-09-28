@@ -207,8 +207,20 @@ class AsyncIndexerDb(ProvenanceDb):
         """The single owner of tracks.album_id writes — clustering / reconciler
         only. Album membership must flow through here, never through an
         enrichment plugin (§3 invariant: membership changes only in the
-        clustering pass)."""
-        await self._update("tracks", track_id, {"album_id": album_id})
+        clustering pass).
+
+        A track that joins an album no longer needs a cover of its own, so
+        what failed to give it one is forgotten."""
+        async with self._open() as conn:
+            await conn.execute(
+                "UPDATE tracks SET album_id = ? WHERE id = ?", (album_id, track_id)
+            )
+            if album_id != "unknown_album":
+                await conn.execute(
+                    "DELETE FROM art_source_failures WHERE entity_id = ?",
+                    (track_id,),
+                )
+            await conn.commit()
 
     async def update_album(self, album_id: str, data: Dict[str, Any]) -> None:
         """Update album information (only columns that exist in the table)."""
@@ -501,11 +513,16 @@ class AsyncIndexerDb(ProvenanceDb):
             return attempts
 
     async def clear_failure(self, file_path: str) -> None:
-        """Remove any recorded extraction failure for a file path."""
+        """Remove any recorded extraction failure for a file path, and any
+        cover that failed to come out of it: it has just been read again."""
         async with self._open() as conn:
             cursor = await conn.cursor()
             await cursor.execute(
                 "DELETE FROM indexer_failures WHERE file_path = ?", (file_path,)
+            )
+            await cursor.execute(
+                "DELETE FROM art_source_failures WHERE source_path = ?",
+                (file_path,),
             )
             await conn.commit()
 
