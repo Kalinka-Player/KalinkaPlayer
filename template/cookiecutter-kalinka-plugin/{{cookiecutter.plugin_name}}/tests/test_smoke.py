@@ -73,25 +73,18 @@ def test_imports():
 
 def _context(config):
     """A context like the one the server hands the plugin's setup()"""
+    return {% if cookiecutter.plugin_type == "input_module" %}InputPluginContext{% else %}OutputDevicePluginContext{% endif %}(
+        logger=logging.getLogger("{{ cookiecutter.name }}"),
+        plugin_id="{{ cookiecutter.name }}",
+        sdk_version=sdk_version,
+        config=config,
+        listener=Mock(spec=EventListener),
 {%- if cookiecutter.plugin_type == "input_module" %}
-    return InputPluginContext(
-        logger=logging.getLogger("{{ cookiecutter.name }}"),
-        plugin_id="{{ cookiecutter.name }}",
-        sdk_version=sdk_version,
-        config=config,
-        listener=Mock(spec=EventListener),
         playqueue=Mock(spec=PlayQueueController),
-    )
 {%- else %}
-    return OutputDevicePluginContext(
-        logger=logging.getLogger("{{ cookiecutter.name }}"),
-        plugin_id="{{ cookiecutter.name }}",
-        sdk_version=sdk_version,
-        config=config,
-        listener=Mock(spec=EventListener),
         emitter=Mock(spec=EventEmitter),
-    )
 {%- endif %}
+    )
 
 
 @pytest.mark.smoke
@@ -119,10 +112,12 @@ def test_setup_and_shutdown_as_the_server_runs_them(caplog):
 def test_config_model_instantiation():
     """Test that config model can be instantiated with correct defaults"""
     from {{ cookiecutter.plugin_id }}.config_model import {{ cookiecutter.plugin_class_prefix }}Config
+    from {{ cookiecutter.plugin_id }}.module_setup import KalinkaPlugin{{ cookiecutter.plugin_class_prefix }}
 
     config = {{ cookiecutter.plugin_class_prefix }}Config()
 
-    assert config.name == "{{ cookiecutter.plugin_id }}"
+    # The settings page addresses the config by its name, the server by PLUGIN_ID
+    assert config.name == KalinkaPlugin{{ cookiecutter.plugin_class_prefix }}.PLUGIN_ID
     # Check that the config name title matches plugin display name
     assert config.__class__.model_fields["name"].title == "{{ cookiecutter.plugin_display_name }}"
     # Enabled field should be boolean and should have a default value
@@ -138,7 +133,7 @@ def test_config_model_validation():
     # Test with valid data
     config = {{ cookiecutter.plugin_class_prefix }}Config(enabled=True)
     assert config.enabled is True
-    assert config.name == "{{ cookiecutter.plugin_id }}"
+    assert config.name == "{{ cookiecutter.name }}"
 
     # Test with custom name (frozen=True prevents modification after creation, not during init)
     config_with_name = {{ cookiecutter.plugin_class_prefix }}Config(name="different_name", enabled=True)

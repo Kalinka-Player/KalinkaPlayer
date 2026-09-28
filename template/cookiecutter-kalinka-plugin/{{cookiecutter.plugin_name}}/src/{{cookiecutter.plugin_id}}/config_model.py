@@ -4,7 +4,7 @@ from kalinka_plugin_sdk.module_config import ModuleConfig
 
 class {{ cookiecutter.plugin_class_prefix }}Config(ModuleConfig):
     name: str = Field(
-        default="{{ cookiecutter.plugin_id }}",
+        default="{{ cookiecutter.name }}",
         title="{{ cookiecutter.plugin_display_name }}",
         frozen=True,
         exclude=True,
