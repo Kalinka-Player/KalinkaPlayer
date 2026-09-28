@@ -147,6 +147,8 @@ Ready-to-flash images with the whole player already installed — two for the Ra
    ```
    `image-release.yml` builds each image on a runner of its own architecture — nothing is emulated — and publishes all three to the tag's own release, never marked "latest".
 
+   The workflow writes the release notes with [`scripts/image-release-notes.sh`](scripts/image-release-notes.sh): the table of images, the checksum line, and links to *Install the server* and *Settings on the card* in [`docs/installation.md`](docs/installation.md) as it stands at the tag. How to write an image and set it up lives in that guide and nowhere else. Keep it out of the notes: a copy there once told PC users something the guide had already corrected. `make test` fails if a heading the notes link to is renamed.
+
 2. **Pick the app-bundle release to bake in.** The tag push installs whatever is the latest published `kalinka-v*` at build time, which is usually what you want. To pin a specific one, run the workflow by hand instead (**Actions → Image release → Run workflow**) with `kalinka_version` set; it also takes the existing tag to publish under. The image filename carries the version that actually landed inside it, not the one that was asked for.
 
 3. Cut an image release when the OS side changes — a Debian point release or a DietPi release worth picking up, a first-boot or partitioning fix — or when the app bundle has moved far enough that a freshly flashed card would otherwise spend its first boot upgrading. Not on every app release: the images auto-upgrade like any other install.
