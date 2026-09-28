@@ -1,6 +1,7 @@
 #ifndef STATE_MONITOR_H
 #define STATE_MONITOR_H
 
+#include <atomic>
 #include <condition_variable>
 #include <mutex>
 #include <queue>
@@ -30,7 +31,7 @@ protected:
   AudioGraphNode *ptr;
   int subscriptionId;
 
-  bool stopped = false;
+  std::atomic<bool> stopped = false;
 };
 
 class StateChangeWaitLock {

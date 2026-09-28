@@ -4,7 +4,9 @@
 #include "FlacStreamDecoder.h"
 
 #include <gtest/gtest.h>
+#include <atomic>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #include "TestHelpers.h"
@@ -54,4 +56,22 @@ TEST_F(AudioGraphNodeTest, stateMonitor) {
 
   alsaAudioEmitter->disconnect(flacStreamDecoder);
   flacStreamDecoder->disconnect(fileInputNode);
+}
+
+// A stop that lands between the waiter's check and its sleep hangs the join.
+TEST_F(AudioGraphNodeTest, stop_wakes_a_waiter_however_the_two_interleave) {
+  for (int i = 0; i < 5000; ++i) {
+    StateMonitor monitor(alsaAudioEmitter.get());
+    std::atomic<bool> started = false;
+    std::thread waiter([&monitor, &started] {
+      while (monitor.isRunning()) {
+        started = true;
+        monitor.waitState();
+      }
+    });
+    while (!started) {
+    }
+    monitor.stop();
+    waiter.join();
+  }
 }
