@@ -1,6 +1,6 @@
 ## KalinkaPlayer Development Makefile
 
-.PHONY: clean test test-playqueue system-test bench-sdd help venv-env kalinka-server-deb kalinka-server-rpm kalinka-plugins-deb build-all-deb copy-debs build-env dev-setup dev-run renderer-build renderer-clean renderer-deb renderer-rpm proto image-rpi234 image-rpi5 image-amd64 image-test
+.PHONY: clean test test-playqueue test-plugin-template system-test bench-sdd help venv-env kalinka-server-deb kalinka-server-rpm kalinka-plugins-deb build-all-deb copy-debs build-env dev-setup dev-run renderer-build renderer-clean renderer-deb renderer-rpm proto image-rpi234 image-rpi5 image-amd64 image-test
 
 ## --- Local-from-source dev environment (no root, no systemd) ------------------
 ## Everything lands in a per-user fakeroot under $(KALINKA_PREFIX) instead of the
@@ -159,6 +159,11 @@ test:
 test-playqueue:
 	@cd packages/kalinka-server && python -m pytest tests/test_playqueue.py -v $(ARGS)
 
+## Render the plugin template as each plugin type and run the generated tests.
+## Slow and needs the network, so not part of make test.
+test-plugin-template:
+	@bash scripts/test-plugin-template.sh
+
 ## Retrieval-quality benchmark (benchmarks/sdd): indexes the Song Describer
 ## Dataset through the shipped pipeline and scores the search endpoint against
 ## its captions. Long-running and needs the network; artifacts land under
@@ -280,6 +285,7 @@ help:
 	@echo "  copy-debs         Move built deb packages to debs/ directory"
 	@echo "  test              Run the SDK, server, plugin and plugin template tests (not the play queue)"
 	@echo "  test-playqueue    Run the server's slow play queue tests"
+	@echo "  test-plugin-template  Render the plugin template and run what it generates"
 	@echo "  lint              Check for undefined names (F821)"
 	@echo "  clean             Clean build artifacts"
 	@echo "  help              Show this help message"
