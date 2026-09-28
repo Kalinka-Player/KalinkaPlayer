@@ -5,6 +5,7 @@ directly, and backfilled from the file after clustering demotes it and drops
 its per-file album row.
 """
 
+import errno
 import io
 import os
 import sqlite3
@@ -377,6 +378,36 @@ async def test_embedded_art_reads_mp3_apic(indexer):
     assert art == _cover_png((90, 10, 130))
     with pytest.raises(OSError):
         fi._embedded_art(LOCAL, str(music_dir / "missing.mp3"))
+
+
+@pytest.mark.asyncio
+async def test_a_stub_too_short_for_an_id3v1_tag_is_broken_not_unreadable(indexer):
+    """mutagen looks for ID3v1 by seeking 131 bytes back from the end, and
+    handles the refusal a shorter file gets; that is not a failed read."""
+    fi, db, music_dir, config = indexer
+    path = music_dir / "stub.mp3"
+    path.write_bytes(b"not an mp3 at all")
+
+    assert fi._embedded_art(LOCAL, str(path)) is None
+
+
+class _InvalidReadFile(io.BytesIO):
+    def read(self, size=-1):
+        raise OSError(errno.EINVAL, "Invalid argument")
+
+
+@pytest.mark.asyncio
+async def test_a_read_refused_as_invalid_is_still_unreadable(indexer, monkeypatch):
+    """Only a seek's EINVAL is the parser probing; a read's is the storage."""
+    fi, db, music_dir, config = indexer
+    path = music_dir / "single.mp3"
+    path.write_bytes(b"\0" * 1024)
+    monkeypatch.setattr(
+        LocalStorage, "open", lambda self, p, *, read_ahead=True: _InvalidReadFile()
+    )
+
+    with pytest.raises(OSError):
+        fi._embedded_art(LOCAL, str(path))
 
 
 @pytest.mark.asyncio
