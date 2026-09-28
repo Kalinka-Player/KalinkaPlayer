@@ -30,35 +30,12 @@ class _Config(ModuleConfig):
     enabled: bool = Field(default=True)
 
 
-class _Barrier:
-    """Minimal asyncio barrier (``asyncio.Barrier`` is 3.11+; the server's
-    ``requires-python`` is 3.10).
-
-    The event loop is single-threaded, so the unguarded counter bump is safe.
-    Each waiter records its arrival; the last to arrive releases everyone. If
-    plugin setup runs sequentially the first (and only) waiter never sees the
-    others arrive and blocks forever — the test's ``wait_for`` turns that
-    deadlock into a clean, deterministic failure instead of a timing flake.
-    """
-
-    def __init__(self, parties: int):
-        self._parties = parties
-        self._count = 0
-        self._released = asyncio.Event()
-
-    async def wait(self):
-        self._count += 1
-        if self._count >= self._parties:
-            self._released.set()
-        await self._released.wait()
-
-
 def _make_plugin(
     plugin_id: str,
     *,
     delay: float = 0.0,
     fail: bool = False,
-    barrier: "_Barrier | None" = None,
+    barrier: asyncio.Barrier | None = None,
 ):
     """Build a fake input-module plugin class whose setup() optionally sleeps
     (to expose serialisation), waits on a shared barrier, and/or raises."""
@@ -109,7 +86,7 @@ async def test_setups_run_concurrently():
     # serialised the first plugin would block at the barrier forever (the
     # others never start), and wait_for would trip — no timing heuristic, so
     # no CI flake.
-    barrier = _Barrier(3)
+    barrier = asyncio.Barrier(3)
     plugins = [_make_plugin(f"p{i}", barrier=barrier) for i in range(3)]
     collection = _collection(plugins)
 
