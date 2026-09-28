@@ -351,6 +351,47 @@ async def test_a_good_image_added_beside_a_broken_one_is_taken(indexer):
 
 
 @pytest.mark.asyncio
+async def test_an_image_whose_copy_finishes_later_is_taken(indexer):
+    """Still empty when the folder was written off, so never a candidate —
+    and finishing the copy changes the file, not its directory."""
+    fi, db, music_dir, config = indexer
+    folder, album_id = await _album_with(music_dir, fi)
+    (folder / "cover.jpg").write_bytes(_truncated_jpeg())
+    arriving = folder / "folder.jpg"
+    arriving.write_bytes(b"")
+    assert (await fi.backfill_folder_art([str(music_dir)]))["albums"] == 0
+    assert str(arriving) in _failed_sources(config, album_id)
+
+    before = folder.stat()
+    Image.new("RGB", (600, 600), (30, 90, 140)).save(arriving)
+    stat = arriving.stat()
+    os.utime(arriving, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    os.utime(folder, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    assert (await fi.backfill_folder_art([str(music_dir)]))["albums"] == 1
+
+
+@pytest.mark.asyncio
+async def test_an_outranked_image_is_tried_once_the_broken_one_goes(indexer):
+    """Under half the size of the broken cover, the scan was never a
+    candidate, so the write-off says nothing about whether it decodes."""
+    fi, db, music_dir, config = indexer
+    folder, album_id = await _album_with(
+        music_dir, fi, folder_images=[("scan_1.jpg", (500, 500))]
+    )
+    broken = folder / "cover.jpg"
+    broken.write_bytes(_truncated_jpeg((1200, 1200)))
+    assert (await fi.backfill_folder_art([str(music_dir)]))["albums"] == 0
+    assert str(folder / "scan_1.jpg") in _failed_sources(config, album_id)
+
+    broken.unlink()
+    stat = folder.stat()
+    os.utime(folder, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+
+    assert (await fi.backfill_folder_art([str(music_dir)]))["albums"] == 1
+
+
+@pytest.mark.asyncio
 async def test_the_next_image_is_taken_when_the_first_will_not_decode(
     indexer, monkeypatch
 ):

@@ -20,6 +20,10 @@ Fingerprint = Tuple[int, int]
 #: The cover passes, as ``art_source_failures.kind``.
 FOLDER_COVER = "folder"
 EMBEDDED_COVER = "embedded"
+#: The rest of a written-off folder: the directories searched and the images
+#: that were never candidates. They say when to search it again, but were
+#: not tried, so they must not be passed over as having failed.
+FOLDER_STATE = "folder_state"
 
 
 @retry_db_locked
