@@ -19,9 +19,5 @@
         "MIT",
         "Apache-2.0",
         "BSD-3-Clause"
-    ],
-    "year": "{% now 'utc', '%Y' %}",
-    "_extensions": [
-        "jinja2_time.TimeExtension"
     ]
 }
