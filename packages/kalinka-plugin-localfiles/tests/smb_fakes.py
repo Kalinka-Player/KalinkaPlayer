@@ -6,12 +6,14 @@ from types import SimpleNamespace
 
 
 class RawFile(io.RawIOBase):
-    """A file on the share, counting the bytes its reads fetched from it."""
+    """A file on the share, counting the reads made of it and the bytes they
+    fetched."""
 
     def __init__(self, data):
         super().__init__()
         self._data = data
         self._offset = 0
+        self.reads = 0
         self.fetched = 0
 
     def readable(self):
@@ -24,6 +26,7 @@ class RawFile(io.RawIOBase):
         chunk = self._data[self._offset:self._offset + len(buffer)]
         buffer[:len(chunk)] = chunk
         self._offset += len(chunk)
+        self.reads += 1
         self.fetched += len(chunk)
         return len(chunk)
 

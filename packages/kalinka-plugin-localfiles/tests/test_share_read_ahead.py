@@ -77,6 +77,7 @@ def share(monkeypatch, tmp_path):
 async def _index(config) -> str:
     await init_db(config.db_path)
     changes = await FileIndexer(config, AsyncIndexerDb(config)).process_file(TRACK)
+    assert changes and changes["tracks"]
     return changes["tracks"]
 
 
@@ -112,6 +113,7 @@ def test_fragments_are_embedded_with_read_ahead(share):
     assert worker._compute_clap_audio(TRACK) is not None
 
     assert _open_bufferings(client) == [smb_mod._READ_BUFFER]
+    assert [opened.reads for opened in client.opened] == [1]
 
 
 @pytest.mark.asyncio
@@ -140,7 +142,5 @@ async def test_ranges_served_cost_the_nas_only_their_own_bytes(share):
             assert r.headers["content-length"] == str(RANGE_BYTES)
             assert r.content == audio[start:start + RANGE_BYTES]
 
-    fetched = [opened.fetched for opened in client.opened]
-    assert sum(fetched) < 1_200_000
-    assert all(each <= 384 * 1024 for each in fetched)
+    assert [opened.fetched for opened in client.opened] == [RANGE_BYTES] * 3
     assert _open_bufferings(client) == [0, 0, 0]
