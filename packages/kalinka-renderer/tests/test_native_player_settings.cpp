@@ -180,15 +180,25 @@ TEST_F(NativePlayerSettingsTest, StallTimeoutWritesGoThroughTheNetworkSection) {
   EXPECT_EQ(loadSettingsOverrides().at("network.stall_timeout_s"), "60");
 }
 
+TEST_F(NativePlayerSettingsTest, ASectionRefusesAnotherSectionsSetting) {
+  EXPECT_FALSE(player_->networkSettings()->applyConfig("buffers.flac",
+                                                       "2000000", error_));
+  EXPECT_EQ(error_, "unknown setting");
+  EXPECT_FALSE(player_->bufferSettings()->applyConfig(
+      "network.stall_timeout_s", "60", error_));
+
+  EXPECT_EQ(field(buffers(), "buffers.flac")->value(), "1536000");
+  EXPECT_EQ(network().fields(0).value(), "15");
+}
+
 TEST_F(NativePlayerStallTest, TheGraphWaitsOnAStallForTheConfiguredTime) {
-  // Under the declared minimum, which the config service enforces and the
-  // player does not: four stalls at the 15 s default would outlast the test.
+  // Under the service's 5 s minimum, so four stalls fit in the 20 s deadline.
   ASSERT_TRUE(player_->networkSettings()->applyConfig(
       "network.stall_timeout_s", "1", error_))
       << error_;
   std::optional<pb::PlaybackStateChanged> failed;
   player_->setStateSink([&failed](pb::Envelope &env) {
-    if (env.has_playback_state_changed() &&
+    if (!failed && env.has_playback_state_changed() &&
         env.playback_state_changed().state() == pb::PLAYBACK_STATE_ERROR) {
       failed = env.playback_state_changed();
     }
