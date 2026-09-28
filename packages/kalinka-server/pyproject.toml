@@ -18,15 +18,13 @@ classifiers = [
     "Intended Audience :: End Users/Desktop",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Multimedia :: Sound/Audio :: Players",
 ]
-# Matches kalinka-plugin-sdk (>=3.10); anything lower fails dependency
-# resolution against it. Dev/build tooling needs 3.11+, production runs 3.13.
-requires-python = ">=3.10"
+# The whole tree states one floor; tests/test_python_floor.py holds it to that.
+requires-python = ">=3.11"
 dependencies = [
     "asyncio>=4.0.0",
     "pydantic>=2.0.0",
@@ -104,7 +102,7 @@ search_parent_directories = true
 
 [tool.black]
 line-length = 88
-target-version = ['py310']
+target-version = ['py311']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
@@ -136,7 +134,7 @@ asyncio_mode = "auto"
 pythonpath = ["src"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true

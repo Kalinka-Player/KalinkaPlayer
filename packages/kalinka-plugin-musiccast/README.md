@@ -81,7 +81,7 @@ Implements the `ExternalOutputDevice` interface with all required methods for au
 ## Building
 
 ### Prerequisites
-- Python 3.10+
+- Python 3.11+
 - `kalinka-plugin-sdk` package
 - Build tools: `python3-build`, `setuptools`, `setuptools-scm`, `wheel`
 - For Debian packaging: `dpkg-dev`
