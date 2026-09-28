@@ -80,9 +80,6 @@ def test_prerm_still_reports_a_real_removal(tmp_path):
     ]
 
 
-# ---------------------------------------------------------------- renderer
-
-
 def _stub_bin(tmp_path, *, installed_version, apt_fails=True):
     """A PATH where apt fails and dpkg reports what is really installed."""
     binv = tmp_path / "bin"
@@ -152,8 +149,6 @@ def test_a_renderer_that_really_failed_still_reports_it(tmp_path):
     assert "apt could not install" in result.stderr
 
 
-# ---------------------------------------------------------------- release
-
 EXTRAS = {"libchromaprint-tools", "build-essential", "python3-dev"}
 
 EITHER_PATH = pytest.mark.parametrize(
@@ -183,12 +178,19 @@ while [ $# -gt 0 ]; do
   shift
 done
 for name in "${names[@]}"; do
-  case "$name" in *.deb) [ "$STUB_BUNDLE_FAILS" = 1 ] && exit 100 ;; esac
+  case "$name" in
+    *.deb) [ "$STUB_BUNDLE_FAILS" = 1 ] && exit 100 ;;
+    *) [ "$STUB_NAMES_FAIL" = 1 ] && exit 100 ;;
+  esac
   grep -qxF "$name" "$STUB_STATE/unknown" && exit 100
 done
 for name in "${names[@]}"; do
   case "$name" in *.deb) ;; *) echo "$name" >> "$STUB_STATE/installed" ;; esac
 done
+exit 0
+""",
+    "apt-cache": """#!/usr/bin/env bash
+grep -qxF "${!#}" "$STUB_STATE/unknown" && exit 100
 exit 0
 """,
     "dpkg": """#!/usr/bin/env bash
@@ -204,14 +206,15 @@ case "$2" in *Status*) printf 'install ok installed' ;; *) echo "   $pkg 9.9.9" 
 }
 
 
-def _install_release(tmp_path, *, bundle_fails=False, unknown=()):
+def _install_release(tmp_path, *, bundle_fails=False, names_fail=False, unknown=()):
     """install-release.sh end to end, against one published release and no
     package database.
 
     apt logs every call. ``bundle_fails`` makes it refuse the downloaded debs,
-    which sends the script down its dpkg -i fallback; ``unknown`` names
-    packages it cannot locate, failing any call that asks for one — what a
-    distribution without that package does.
+    which sends the script down its dpkg -i fallback; ``names_fail`` makes it
+    refuse every install by name, as a lock it waited out does; ``unknown``
+    names packages it cannot locate, failing any call that asks for one — what
+    a distribution without that package does.
     """
     binv = tmp_path / "bin"
     binv.mkdir()
@@ -238,11 +241,13 @@ def _install_release(tmp_path, *, bundle_fails=False, unknown=()):
             "PATH": f"{binv}:{os.environ['PATH']}",
             "STUB_STATE": str(state),
             "STUB_BUNDLE_FAILS": "1" if bundle_fails else "0",
+            "STUB_NAMES_FAIL": "1" if names_fail else "0",
             "KALINKA_WEB": "0",
             "KALINKA_RENDERER": "0",
         },
     )
-    calls = [c.split() for c in (state / "apt-get.log").read_text().splitlines()]
+    log = state / "apt-get.log"
+    calls = [c.split() for c in log.read_text().splitlines()] if log.exists() else []
     installed = set((state / "installed").read_text().split())
     return result, calls, installed
 
@@ -273,20 +278,33 @@ def test_what_kalinka_wants_is_asked_for_by_name(bundle_fails, tmp_path):
     result, calls, installed = _install_release(tmp_path, bundle_fails=bundle_fails)
 
     assert result.returncode == 0, result.stderr
-    bundle = next(i for i, c in enumerate(calls) if any(a.endswith(".deb") for a in c))
-    assert any(EXTRAS <= set(c) for c in calls[bundle + 1 :])
+    assert any(EXTRAS <= set(c) for c in calls)
     assert installed == EXTRAS
     assert _notes(result) == []
 
 
-def test_the_fallback_repairs_the_bundle_before_the_names(tmp_path):
-    result, calls, _ = _install_release(tmp_path, bundle_fails=True)
+@EITHER_PATH
+def test_the_names_go_in_before_the_bundle(bundle_fails, tmp_path):
+    """The server's postinst restarts kalinka.service, which looks for fpcalc
+    and builds a pending Smart Search install only as it starts."""
+    result, calls, _ = _install_release(tmp_path, bundle_fails=bundle_fails)
 
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "state" / "dpkg.log").read_text().split()[0] == "-i"
-    repair = next(i for i, c in enumerate(calls) if "-f" in c)
     named = next(i for i, c in enumerate(calls) if EXTRAS <= set(c))
-    assert repair < named
+    bundle = next(i for i, c in enumerate(calls) if any(a.endswith(".deb") for a in c))
+    assert named < bundle
+
+
+def test_a_refused_install_is_not_asked_again_per_package(tmp_path):
+    """A held dpkg lock is waited out for five minutes a call; asking once more
+    per package kept the unattended upgrade waiting for each of them."""
+    result, calls, installed = _install_release(tmp_path, names_fail=True)
+
+    assert result.returncode == 0, result.stderr
+    assert len([c for c in calls if EXTRAS & set(c)]) == 1
+    assert installed == set()
+    assert len(_notes(result)) == len(EXTRAS)
+    assert "Done." in result.stdout
 
 
 @EITHER_PATH
