@@ -302,9 +302,10 @@ TEST_F(AudioGraphHttpStreamTest, stalled_transfer_ends_in_timeout_error) {
   auto state = waitForStatus(*audioGraphHttpStream, AudioGraphNodeState::ERROR,
                              std::chrono::seconds(20));
 
-  // libcurl looks in on a quiet transfer about once a second.
+  // libcurl looks in on a quiet transfer about once a second; plus reconnects.
   EXPECT_LT(std::chrono::steady_clock::now() - started,
-            attempts * (stallTimeout + std::chrono::seconds(1)));
+            attempts * (stallTimeout + std::chrono::seconds(1)) +
+                std::chrono::seconds(1));
   EXPECT_EQ(server.requestsTo("/stall"), attempts);
   ASSERT_EQ(state.state, AudioGraphNodeState::ERROR);
   ASSERT_TRUE(state.error.has_value());

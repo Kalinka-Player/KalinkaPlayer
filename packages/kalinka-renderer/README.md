@@ -79,7 +79,7 @@ the default is written to `config_overrides` in the state directory.
 | `output.session_start_volume_ceiling_percent` | Maximum allowed level when a renderer-controlled session starts. It lowers a louder existing level but never raises a quieter one. Fixed output bypasses it. |
 | `output.latency_ms`, `output.period_ms`, `output.format_change_delay_ms`, `output.reopen_on_format_change` | How the ALSA sink is opened and driven. |
 | `buffers.*` | How much audio is held in memory and how far ahead of the card it runs. |
-| `network.stall_timeout_s` | How long a stream may go without receiving a byte, in seconds, before the request is dropped and made again from where it stopped (default 15, 5 to 300). The track fails after four stalls in a row with less than 16 KB received between them, or after one from a server that cannot resume. |
+| `network.stall_timeout_s` | How long a stream may go without receiving a byte, in seconds, before the request is dropped and made again from where it stopped (default 15, 5 to 300). The track fails after four failed requests in a row — stalls, dropped connections or 5xx answers — with less than 16 KB received between them, or after the first from a server that cannot resume. |
 
 Changing the device, the buffering or the stall timeout rebuilds the graph and
 stops playback; the schema says so per field, so the settings page can warn

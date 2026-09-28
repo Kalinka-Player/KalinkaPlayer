@@ -153,11 +153,14 @@ const std::map<std::string, std::string> &graphKeys() {
   return keys;
 }
 
+bool holds(std::span<const Knob> knobs, const std::string &path) {
+  return std::ranges::any_of(
+      knobs, [&path](const Knob &knob) { return knob.path == path; });
+}
+
 bool isKnob(const std::string &path) {
-  const auto named = [&path](const Knob &knob) { return knob.path == path; };
-  return std::any_of(std::begin(kOutputKnobs), std::end(kOutputKnobs), named) ||
-         std::any_of(std::begin(kBufferKnobs), std::end(kBufferKnobs), named) ||
-         std::any_of(std::begin(kNetworkKnobs), std::end(kNetworkKnobs), named);
+  return holds(kOutputKnobs, path) || holds(kBuffering.knobs, path) ||
+         holds(kNetwork.knobs, path);
 }
 
 void declare(pb::ConfigSection &out, const Knob &knob,
@@ -226,12 +229,16 @@ public:
 
   bool applyConfig(const std::string &path, const std::string &value,
                    std::string &error) override {
+    if (!holds(section_.knobs, path)) {
+      error = "unknown setting";
+      return false;
+    }
     return player_->applySetting(path, value, error);
   }
 
 private:
   const std::shared_ptr<NativePlayer> player_;
-  const Section section_;
+  const Section &section_;
 };
 
 std::shared_ptr<ConfigContributor> NativePlayer::bufferSettings() {
