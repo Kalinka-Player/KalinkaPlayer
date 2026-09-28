@@ -178,7 +178,7 @@ base_finish() {
   # A locked password still lets an SSH key from AUTO_SETUP_SSH_PUBKEY in.
   in_chroot usermod -p '!' root
   in_chroot usermod -p '!' dietpi
-  # fpcalc and the toolchain came as recommends, which DietPi's autoremove would take.
+  # The build's own installs took recommends, which DietPi's autoremove would take.
   printf 'APT::AutoRemove::RecommendsImportant "true";\n' \
     > "$ROOTFS/etc/apt/apt.conf.d/98kalinka-image"
   printf 'Kalinka Player\n%s v%s\n' "$DIETPI_IMAGE" "$DIETPI_VERSION" > "$ROOTFS/boot/dietpi/.prep_info"
