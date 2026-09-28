@@ -10,7 +10,9 @@ from importlib.metadata import PackageNotFoundError
 
 import pytest
 
+from kalinka_plugin_sdk import __version__ as SDK_VERSION
 from kalinka_server import sdk_compat
+from kalinka_server.renderer_output_device import RendererOutputPlugin
 from kalinka_server.sdk_compat import (
     IncompatibleSDKError,
     check_sdk_compatibility,
@@ -140,3 +142,9 @@ def test_a_requirement_that_is_not_a_specifier_counts_against_the_plugin(
 
 def test_a_plugin_declaring_no_requirement_may_not_run():
     assert plugin_sdk_mismatch(type("_Plugin", (), {}), "3.4.0") is not None
+
+
+def test_the_built_in_renderer_device_admits_the_installed_sdk():
+    # It is set up without the load-time check, so a major bump that leaves
+    # its REQUIRES_SDK behind is caught here instead.
+    assert plugin_sdk_mismatch(RendererOutputPlugin, SDK_VERSION) is None

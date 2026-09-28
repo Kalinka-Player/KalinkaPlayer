@@ -213,9 +213,10 @@ Removed or changed an existing public API (a protocol change):
    - the plugin template, so a plugin generated after the bump is born on the new major: `sdk_version_constraint` in `template/cookiecutter-kalinka-plugin/cookiecutter.json` (the generated wheel's pin and `REQUIRES_SDK`) and `template/cookiecutter-kalinka-plugin/{{cookiecutter.plugin_name}}/debian/control.in`. `make test` fails until both accept the new SDK. `template/cookiecutter-kalinka-plugin/README.md` quotes the default three times; move those along with it.
 3. Raise each plugin's `REQUIRES_SDK` floor to the new major. This is a
    *second* gate, checked when the plugin is loaded rather than installed: a
-   plugin left at `>=2,<3` is not set up and is listed as an error, even when
+   plugin left at `>=1,<2` is not set up and is listed as an error, even when
    an earlier boot's copy of it is still in the venv after pip refused its new
-   wheel. The built-in renderer output device declares one too.
+   wheel. The built-in renderer output device declares one too; nothing
+   checks it as it loads, but `make test` fails until it admits the new SDK.
 4. Update the plugins/server to the new API and confirm they build & run.
 5. Release any out-of-tree plugin against the new major — `kalinka-plugin-qobuz`
    lives in its own repo and is not covered by the greps below.
