@@ -43,14 +43,17 @@ bool StateMonitor::hasData() {
 }
 
 void StateMonitor::stop() {
-  if (stopped) {
-    return;
-  }
-  ptr->removeStateChangeCallback(subscriptionId);
   {
     // Locked, or the wakeup can fall between a waiter's check and its sleep.
     std::lock_guard lock(mutex);
+    if (stopped) {
+      return;
+    }
     stopped = true;
+  }
+  // Unlocked: the callback takes our mutex under the node's.
+  if (ptr) {
+    ptr->removeStateChangeCallback(subscriptionId);
   }
   cv.notify_all();
 }

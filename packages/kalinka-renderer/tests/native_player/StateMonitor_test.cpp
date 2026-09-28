@@ -70,6 +70,7 @@ TEST_F(AudioGraphNodeTest, stop_wakes_a_waiter_however_the_two_interleave) {
       }
     });
     while (!started) {
+      std::this_thread::yield();
     }
     monitor.stop();
     waiter.join();

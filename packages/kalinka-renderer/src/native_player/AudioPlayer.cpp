@@ -186,6 +186,8 @@ AudioPlayer::AudioPlayer(const Config &config)
     : config(config), streamConfig(config),
       audioEmitter(std::make_shared<AlsaAudioEmitter>(config)),
       streamSwitcher(std::make_shared<AudioStreamSwitcher>()) {
+  std::erase_if(streamConfig,
+                [](const auto &entry) { return !isStreamKey(entry.first); });
   // Renderer delta: no initLogger() — the renderer owns the spdlog setup.
   perfmon_print_periodically(5);
   // Volume handling stays "fixed" (no processing) until the local output device
