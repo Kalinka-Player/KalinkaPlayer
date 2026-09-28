@@ -210,12 +210,14 @@ Added an API, fixed a bug, nothing removed/changed:
 2. Done. Consumers pin `<4`, which already accepts it — **no plugin
    changes, no re-pinning, no rebuild required**. Existing plugins keep working.
    A consumer that starts using the new API raises its own floor, e.g. to
-   `>=3.5,<4`, in both its `pyproject.toml` and its `control.in`.
+   `>=3.5,<4`, in its `pyproject.toml`, its `control.in` and its
+   `REQUIRES_SDK`.
 
 ### Major (breaking — e.g. `3.x` → `4.0.0`)
 Removed or changed an existing public API (a protocol change):
 
-1. Edit `__version__` in `_version.py` to `4.0.0`.
+1. Edit `__version__` in `_version.py` to `4.0.0`, and move this document's
+   worked examples up a major — `test_releasing_sdk_pins.py` fails until you do.
 2. Widen **every consumer pin** from `<4` to `<5`, i.e. `kalinka-plugin-sdk>=4,<5`. Each consumer pins twice — `pyproject.toml` for the wheel, `debian/control.in` for the deb — and the deb pin is the one that decides whether `apt` will install the set at all:
    - `packages/kalinka-server/pyproject.toml` and `packages/kalinka-server/DEBIAN/control.in`
    - `packages/kalinka-plugin-localfiles/` — `pyproject.toml` and `debian/control.in`
@@ -289,7 +291,9 @@ git tag kalinka-image-vX.Y.Z && git push origin kalinka-image-vX.Y.Z
   the renderer is the one exception, with its own `kalinka-renderer-v*` train.
 - **SemVer picks the digit, the calendar picks the date** — see [When to release](#when-to-release).
 - **Clean tree on the tagged commit**, or the version carries a dev/dirty suffix.
-- **SDK = one constant.** Minor/patch touches only `_version.py`; major also
-  widens the `<4` of every consumer pin (server, four plugins, template).
+- **SDK = one constant.** Minor/patch touches only `_version.py` (plus the
+  floor of a consumer that adopts the new API); major also moves every
+  consumer pin and `REQUIRES_SDK` onto the new major (server, four plugins,
+  template).
 - Compatibility is guaranteed **within a major version only** — that's what the
   `>=N,<N+1` pins encode.
