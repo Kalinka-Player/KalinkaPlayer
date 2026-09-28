@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # Installing Kalinka into the image and proving it works there. Defines only.
 
-# What fpcalc's recommends would drag onto a headless box; the README says why each is named.
+# What recommends would drag onto a headless box; the README says why each is named.
 EXCLUDED_PACKAGES=(va-driver-all vdpau-driver-all
                    mesa-va-drivers i965-va-driver intel-media-va-driver
                    libvdpau-va-gl1 mesa-vdpau-drivers mesa-vulkan-drivers

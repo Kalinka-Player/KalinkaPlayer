@@ -220,7 +220,7 @@ APT_OPTS=(-o DPkg::Lock::Timeout=300)
 # Recommends of the whole transaction would follow fpcalc's ffmpeg to Mesa and LLVM on a headless box.
 APT_INSTALL=(apt-get "${APT_OPTS[@]}" install -y --no-install-recommends)
 
-# Named, as no install here takes recommends; each maps to what is lost without it.
+# Named, as the installs below take no recommends; each maps to what is lost without it.
 declare -A EXTRAS=(
   [libchromaprint-tools]="AcoustID has no fpcalc to fingerprint tracks with"
   [build-essential]="Smart Search cannot build a package that has no wheel for this machine"
@@ -229,13 +229,15 @@ declare -A EXTRAS=(
 
 # Best-effort: every one of them serves an optional feature.
 install_extras() {
-  echo ">> Installing what Kalinka's optional features use ..."
-  $SUDO "${APT_INSTALL[@]}" "${!EXTRAS[@]}" && return
-  # A name apt cannot place fails the whole call; the others still go in alone.
-  local pkg
+  # A name apt cannot find fails the whole call, so it is left out up front
+  # rather than retried per package, which waits out a held lock once for each.
+  local pkg found=()
   for pkg in "${!EXTRAS[@]}"; do
-    $SUDO "${APT_INSTALL[@]}" "$pkg" || true
+    apt-cache show "$pkg" >/dev/null 2>&1 && found+=("$pkg")
   done
+  [ "${#found[@]}" -gt 0 ] || return 0
+  echo ">> Installing what Kalinka's optional features use ..."
+  $SUDO "${APT_INSTALL[@]}" "${found[@]}" || true
 }
 
 report_missing_extras() {
@@ -258,6 +260,10 @@ if [ "${NO_APT_UPDATE:-0}" != "1" ]; then
   $SUDO apt-get "${APT_OPTS[@]}" update
 fi
 
+# Ahead of the bundle: its postinst restarts kalinka.service, which looks for
+# fpcalc and builds a pending Smart Search install only as it starts.
+install_extras
+
 echo ">> Installing ${#URLS[@]} package(s) with apt ..."
 # apt resolves install order among the bundle packages (server depends on the
 # SDK) and pulls system dependencies from the configured repos. A leading ./ or
@@ -267,7 +273,6 @@ if ! $SUDO "${APT_INSTALL[@]}" "$TMPDIR_DL"/*.deb; then
   $SUDO dpkg -i "$TMPDIR_DL"/*.deb || true
   $SUDO "${APT_INSTALL[@]}" -f
 fi
-install_extras
 
 # --- report -------------------------------------------------------------------
 echo
