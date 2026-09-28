@@ -244,6 +244,8 @@ The Pi images are built on [DietPi](https://dietpi.com), and use its settings fi
 | Your time zone, instead of UTC | `AUTO_SETUP_TIMEZONE=UTC` | `AUTO_SETUP_TIMEZONE=Europe/London` |
 | A DAC HAT without an ID chip, the headphone socket or HDMI | `CONFIG_SOUNDCARD=none` | `CONFIG_SOUNDCARD=hifiberry-digi` (see below) |
 
+Leave `AUTO_SETUP_AUTOMATED=0` as it is. Set to 1, it makes DietPi run its own first-run setup unattended on the first start, instead of at your first login (see **Logging in** below).
+
 For Wi-Fi, also open **`dietpi-wifi.txt`** and put your network's name and password between the quotes on these two lines:
 
 ```sh
