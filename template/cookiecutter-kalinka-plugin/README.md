@@ -113,12 +113,12 @@ kalinka-plugin-musicbox/
 │       ├── _version.py         # Auto-generated version file
 │       ├── config_model.py     # Plugin configuration schema
 │       ├── module_setup.py     # Plugin class definition and entry point
-│       └── musicbox_input_module.py  # Input module (or device) implementation
+│       └── kalinka_plugin_musicbox_input_module.py  # Input module (or device) implementation
 ├── debian/                     # Debian packaging files
 │   ├── control.in             # Package metadata template
-│   ├── postinst              # Post-installation script
 │   ├── prerm                 # Pre-removal script
-│   └── rules                 # Build rules
+│   ├── rules                 # Build rules
+│   └── triggers              # Restarts Kalinka to pick up the wheel
 ├── scripts/
 │   ├── build_wheel.sh        # Build Python wheel
 │   └── build_deb.sh          # Build Debian package
@@ -139,7 +139,7 @@ git commit -m "Initial commit from cookiecutter template"
 
 ### 2. Implement Your Plugin Logic
 
-**Note**: For detailed API documentation, parameter specifications, and implementation examples, refer to the [kalinka-plugin-sdk documentation](../kalinka-plugin-sdk/README.md).
+**Note**: For detailed API documentation, parameter specifications, and implementation examples, refer to the [kalinka-plugin-sdk documentation](../../packages/kalinka-plugin-sdk/README.md).
 
 #### For Input Module Plugins:
 Edit `src/your_plugin/your_plugin_input_module.py` and implement:
@@ -162,9 +162,9 @@ Edit `src/your_plugin/your_plugin_input_module.py` and implement:
 - `get_resource_path()` - Get URLs for cover art and other resources
 
 #### For Device Plugins:
-Edit `src/your_plugin/your_plugin_device.py` and implement:
+Edit `src/your_plugin/your_plugin_device.py` and implement (all `async` but `supported_functions()`):
 - `get_volume()` - Get current device volume
-- `set_volume()` - Set device volume
+- `set_volume()` - Set device volume (0 to 100)
 - `power_on()` - Turn device on
 - `is_power_on()` - Check if device is powered on
 - `power_off()` - Turn device off
@@ -177,10 +177,19 @@ Edit `src/your_plugin/config_model.py` to add plugin-specific configuration:
 ```python
 class YourPluginConfig(ModuleConfig):
     name: str = Field(default="your_plugin", frozen=True, exclude=True)
-    enabled: bool = Field(default=False, title="Module Enabled")
+    enabled: bool = Field(
+        default=False,
+        title="Module enabled",
+        json_schema_extra={"importance": "simple"},
+    )
     
     # Add your custom fields
-    api_key: str = Field(default="", title="API Key", description="Your service API key")
+    api_key: str = Field(
+        default="",
+        title="API Key",
+        description="Your service API key",
+        json_schema_extra={"widget": "password"},
+    )
     server_url: str = Field(default="https://api.example.com", title="Server URL")
     timeout: int = Field(default=30, title="Request Timeout (seconds)")
 ```
@@ -190,26 +199,27 @@ class YourPluginConfig(ModuleConfig):
 Edit `src/your_plugin/module_setup.py` to add any initialization logic:
 
 ```python
+from kalinka_plugin_sdk.plugin import InputModulePlugin, InputPluginContext
+
 class KalinkaPluginYourPlugin(InputModulePlugin):  # or OutputDevicePlugin
-    REQUIRES_SDK = ">=2.0,<3"
+    REQUIRES_SDK = ">=3,<4"
     PLUGIN_ID = "your_plugin"
     CONFIG_MODEL = YourPluginConfig
 
     def __init__(self):
         self.interface = None  # or self._device = None for devices
 
-    def setup(self, context: PluginContext) -> None:
+    async def setup(self, context: InputPluginContext) -> None:  # or OutputDevicePluginContext
         """Entry point used by Kalinka"""
-        config = YourPluginConfig(**context.config.model_dump())
-        
         # Add any initialization logic here
-        if not config.api_key:
+        if not context.config.api_key:
             context.logger.warning("No API key configured")
         
-        self.interface = YourPluginInputModule(config)  # or YourPluginDevice
-        context.logger.info("plugin_setup", plugin=self.PLUGIN_ID, version=context.sdk_version)
+        # or YourPluginDevice(context.config, context.emitter)
+        self.interface = YourPluginInputModule(context.config)
+        context.logger.info("%s set up (SDK %s)", self.PLUGIN_ID, context.sdk_version)
 
-    def shutdown(self) -> None:
+    async def shutdown(self) -> None:
         """Clean up resources"""
         self.interface = None  # or self._device = None
 ```
@@ -301,7 +311,7 @@ Each generated project includes:
 ### Development
 - Start with the smoke tests to ensure basic structure works
 - Implement one method at a time and test incrementally
-- Use structured logging with the provided context logger
+- Log through `context.logger`, a standard `logging.Logger`, with %-style arguments
 - Handle errors gracefully and provide meaningful messages
 
 ### Configuration

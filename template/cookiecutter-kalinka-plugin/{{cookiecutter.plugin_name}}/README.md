@@ -18,7 +18,7 @@ This plugin was generated from the Kalinka Plugin cookiecutter template and prov
 ## Plugin Structure
 
 ```
-kalinka-plugin-{{ cookiecutter.plugin_name }}/
+{{ cookiecutter.plugin_name }}/
 ├── README.md                    # This file
 ├── pyproject.toml              # Python package configuration
 ├── src/
@@ -34,9 +34,9 @@ kalinka-plugin-{{ cookiecutter.plugin_name }}/
 {%- endif %}
 ├── debian/                     # Debian packaging files
 │   ├── control.in             # Package metadata template
-│   ├── postinst              # Post-installation script
 │   ├── prerm                 # Pre-removal script
-│   └── rules                 # Build rules
+│   ├── rules                 # Build rules
+│   └── triggers              # Restarts Kalinka to pick up the wheel
 ├── scripts/
 │   ├── build_wheel.sh        # Build Python wheel
 │   └── build_deb.sh          # Build Debian package
@@ -55,7 +55,11 @@ from kalinka_plugin_sdk.module_config import ModuleConfig
 
 class {{ cookiecutter.plugin_class_prefix }}Config(ModuleConfig):
     name: str = Field(default="{{ cookiecutter.plugin_id }}", frozen=True, exclude=True)
-    enabled: bool = Field(default=False, title="Module Enabled")
+    enabled: bool = Field(
+        default=False,
+        title="Module enabled",
+        json_schema_extra={"importance": "simple"},
+    )
     # Add your plugin-specific configuration fields here
 ```
 
@@ -64,8 +68,10 @@ The main entry point class that Kalinka instantiates for your plugin:
 
 ```python
 {%- if cookiecutter.plugin_type == "input_module" %}
-from kalinka_plugin_sdk.api import InputModulePlugin, PluginContext
+from typing import Optional
+
 from kalinka_plugin_sdk.inputmodule import InputModule
+from kalinka_plugin_sdk.plugin import InputModulePlugin, InputPluginContext
 
 class KalinkaPlugin{{ cookiecutter.plugin_class_prefix }}(InputModulePlugin):
     REQUIRES_SDK = "{{ cookiecutter.sdk_version_constraint }}"
@@ -78,18 +84,19 @@ class KalinkaPlugin{{ cookiecutter.plugin_class_prefix }}(InputModulePlugin):
     def get_interface(self) -> Optional[InputModule]:
         return self.interface
 
-    def setup(self, context: PluginContext) -> None:
+    async def setup(self, context: InputPluginContext) -> None:
         """Entry point used by Kalinka"""
-        config = {{ cookiecutter.plugin_class_prefix }}Config(**context.config.model_dump())
-        self.interface = {{ cookiecutter.plugin_class_prefix }}InputModule(config)
-        context.logger.info("plugin_setup", plugin=self.PLUGIN_ID)
+        self.interface = {{ cookiecutter.plugin_class_prefix }}InputModule(context.config)
+        context.logger.info("%s set up (SDK %s)", self.PLUGIN_ID, context.sdk_version)
 
-    def shutdown(self) -> None:
+    async def shutdown(self) -> None:
         """Clean up resources"""
         self.interface = None
 {%- else %}
-from kalinka_plugin_sdk.api import OutputDevicePlugin, PluginContext
+from typing import Optional
+
 from kalinka_plugin_sdk.ext_device import ExternalOutputDevice
+from kalinka_plugin_sdk.plugin import OutputDevicePlugin, OutputDevicePluginContext
 
 class KalinkaPlugin{{ cookiecutter.plugin_class_prefix }}(OutputDevicePlugin):
     REQUIRES_SDK = "{{ cookiecutter.sdk_version_constraint }}"
@@ -102,13 +109,12 @@ class KalinkaPlugin{{ cookiecutter.plugin_class_prefix }}(OutputDevicePlugin):
     def get_interface(self) -> Optional[ExternalOutputDevice]:
         return self._device
 
-    def setup(self, context: PluginContext) -> None:
+    async def setup(self, context: OutputDevicePluginContext) -> None:
         """Entry point used by Kalinka"""
-        config = {{ cookiecutter.plugin_class_prefix }}Config(**context.config.model_dump())
-        self._device = {{ cookiecutter.plugin_class_prefix }}Device(config)
-        context.logger.info("plugin_setup", plugin=self.PLUGIN_ID)
+        self._device = {{ cookiecutter.plugin_class_prefix }}Device(context.config, context.emitter)
+        context.logger.info("%s set up (SDK %s)", self.PLUGIN_ID, context.sdk_version)
 
-    def shutdown(self) -> None:
+    async def shutdown(self) -> None:
         """Clean up resources"""
         self._device = None
 {%- endif %}
@@ -140,13 +146,15 @@ Implements the `InputModule` interface with all required methods for music strea
 Implements the `ExternalOutputDevice` interface with all required methods for device control:
 
 - `get_volume()` - Get current device volume
-- `set_volume()` - Set device volume (0.0 to 1.0)
+- `set_volume()` - Set device volume (0 to 100)
 - `power_on()` - Turn device on
 - `is_power_on()` - Check if device is powered on
 - `power_off()` - Turn device off
 - `supported_functions()` - Return list of supported device functions
 
 The device interface focuses on external audio device control rather than playback control.
+Every method but `supported_functions()` is `async`. The device reports its volume and power
+state through the `emitter` it is given, including changes made on the device itself.
 {%- endif %}
 
 ## Building
@@ -160,7 +168,7 @@ The device interface focuses on external audio device control rather than playba
 
 ### Version Management
 This plugin uses **setuptools_scm** for automatic version detection:
-- **Release builds**: Tag your release with `kalinka-plugin-{{ cookiecutter.plugin_name }}-v1.2.3` format
+- **Release builds**: Tag your release with `{{ cookiecutter.plugin_name }}-v1.2.3` format
 - **Development builds**: setuptools_scm automatically generates dev versions like `1.2.4.dev0+gc1e6070.d20250928`
 - **Clean releases**: Commit all changes and tag for clean release versions
 
@@ -183,21 +191,20 @@ The script automatically:
 - Creates a `.deb` package ready for installation
 
 The Debian package will:
-1. Install the wheel to `/usr/share/kalinka/plugins/`
-2. Use post-install script to install into Kalinka's venv
-3. Restart Kalinka service if available
+1. Install the wheel to `/opt/kalinka/wheels/`
+2. Activate the `kalinka-server-restart` trigger, so Kalinka restarts and its startup installs the wheel into Kalinka's venv
 
 ## Installation
 
 ### From Wheel
 ```bash
 # Install into Kalinka's venv
-/opt/kalinka/venv/bin/pip install kalinka-plugin-{{ cookiecutter.plugin_name }}-*.whl
+/opt/kalinka/venv/bin/pip install dist/{{ cookiecutter.plugin_id }}-*.whl
 ```
 
 ### From Debian Package
 ```bash
-sudo dpkg -i kalinka-plugin-{{ cookiecutter.plugin_name }}_*_all.deb
+sudo dpkg -i {{ cookiecutter.plugin_name }}_*_all.deb
 ```
 
 ## Configuration
@@ -217,10 +224,11 @@ pytest tests/
 ```
 
 ### Logging
-Use the context logger for structured logging:
+`context.logger` is a standard `logging.Logger` named after the plugin. Pass values as
+%-style arguments; it takes no keyword fields:
 
 ```python
-ctx.logger.info("message", key="value")
+context.logger.info("Found %d albums for %s", len(albums), query)
 ```
 
 ### Error Handling
