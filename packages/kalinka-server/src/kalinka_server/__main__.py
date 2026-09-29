@@ -12,6 +12,7 @@ from kalinka_plugin_sdk import paths
 
 from .config_model import KalinkaConfig
 from .config_overrides import apply_overrides_with_prefix, load_overrides
+from .http_server import KalinkaServer
 from .logging_setup import (
     make_handler,
     quiet_credential_carrying_loggers,
@@ -86,7 +87,10 @@ async def main():
             timeout_graceful_shutdown=5,
             log_config=uvicorn_log_config(args.debug),
         )
-        server = uvicorn.Server(uvicorn_config)
+        server = KalinkaServer(
+            uvicorn_config,
+            before_shutdown=app.state.player_context.playback_arbiter.shutdown,
+        )
         await server.serve()
         logger.info("Server shut down")
 
