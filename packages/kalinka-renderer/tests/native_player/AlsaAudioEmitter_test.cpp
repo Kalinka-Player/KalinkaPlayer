@@ -2,6 +2,7 @@
 #include "SineWaveNode.h"
 
 #include <cmath>
+#include <future>
 #include <gtest/gtest.h>
 
 #include "Config.h"
@@ -34,6 +35,48 @@ public:
   }
 };
 
+// A valid live source can run out of bytes without reaching EOF. Controls
+// must still be acknowledged while its next packet has not arrived.
+class StarvedOutputNode : public AudioGraphOutputNode {
+public:
+  StarvedOutputNode() {
+    setState({AudioGraphNodeState::STREAMING, 0,
+              StreamInfo{.format = {.sampleRate = 44100,
+                                    .channels = 2,
+                                    .bitsPerSample = 16},
+                         .streamType = StreamType::FRAMES}});
+  }
+  size_t read(void *data, size_t size) override {
+    return buffer.read(static_cast<uint8_t *>(data), size);
+  }
+  size_t waitForData(std::stop_token token, size_t size) override {
+    if (!waiting.exchange(true)) {
+      firstWait.set_value();
+    }
+    return buffer.waitForData(token, size);
+  }
+  size_t waitForDataFor(std::stop_token token,
+                        std::chrono::milliseconds timeout,
+                        size_t size) override {
+    return buffer.waitForDataFor(token, timeout, size);
+  }
+  size_t seekTo(size_t position) override {
+    soughtTo = position;
+    return position;
+  }
+  void provideAudio() {
+    std::array<uint8_t, 16384> silence{};
+    buffer.write(silence.data(), silence.size());
+  }
+
+  std::promise<void> firstWait;
+  std::atomic<size_t> soughtTo{0};
+
+private:
+  Buffer<uint8_t> buffer{16384};
+  std::atomic<bool> waiting{false};
+};
+
 class AlsaAudioEmitterTest : public ::testing::Test {
 protected:
   Config config = {{"output.alsa.device", testDevice()},
@@ -50,6 +93,64 @@ protected:
 };
 
 TEST_F(AlsaAudioEmitterTest, constructor_destructor) {}
+
+TEST_F(AlsaAudioEmitterTest, starved_live_input_buffers_then_resumes_without_pause) {
+  auto source = std::make_shared<StarvedOutputNode>();
+  auto waiting = source->firstWait.get_future();
+  StateMonitor monitor(alsaAudioEmitter.get());
+  alsaAudioEmitter->connectTo(source);
+  ASSERT_EQ(waiting.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+  EXPECT_EQ(alsaAudioEmitter->getState().state, AudioGraphNodeState::PREPARING);
+  source->provideAudio();
+  bool resumed = false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  while (!resumed && std::chrono::steady_clock::now() < deadline) {
+    for (const auto &state : drainStates(monitor)) {
+      EXPECT_NE(state.state, AudioGraphNodeState::PAUSED);
+      resumed |= state.state == AudioGraphNodeState::STREAMING;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_TRUE(resumed);
+  alsaAudioEmitter->disconnect(source);
+}
+
+TEST_F(AlsaAudioEmitterTest, pause_while_live_input_is_starved) {
+  auto source = std::make_shared<StarvedOutputNode>();
+  auto waiting = source->firstWait.get_future();
+  alsaAudioEmitter->connectTo(source);
+  ASSERT_EQ(waiting.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+  auto pause = std::async(std::launch::async, [emitter = alsaAudioEmitter] {
+    emitter->pause(true);
+  });
+  const auto result = pause.wait_for(std::chrono::milliseconds(300));
+  EXPECT_EQ(result, std::future_status::ready);
+  if (result == std::future_status::ready) {
+    EXPECT_EQ(waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::PAUSED,
+                            std::chrono::milliseconds(500)).state,
+              AudioGraphNodeState::PAUSED);
+  }
+  // Also releases a regressed pause so failure does not hang the whole suite.
+  alsaAudioEmitter->disconnect(source);
+  pause.get();
+}
+
+TEST_F(AlsaAudioEmitterTest, seek_while_live_input_is_starved) {
+  auto source = std::make_shared<StarvedOutputNode>();
+  auto waiting = source->firstWait.get_future();
+  alsaAudioEmitter->connectTo(source);
+  ASSERT_EQ(waiting.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+  auto seek = std::async(std::launch::async, [emitter = alsaAudioEmitter] {
+    return emitter->seek(12000);
+  });
+  const auto result = seek.wait_for(std::chrono::milliseconds(300));
+  EXPECT_EQ(result, std::future_status::ready);
+  EXPECT_EQ(source->soughtTo.load(), 12 * 44100);
+  alsaAudioEmitter->disconnect(source);
+  if (result == std::future_status::ready) {
+    EXPECT_EQ(seek.get(), 12000);
+  }
+}
 
 TEST_F(AlsaAudioEmitterTest, connectTo) {
   auto outputNode = std::make_shared<SineWaveNode>(1, 440, 1000);
