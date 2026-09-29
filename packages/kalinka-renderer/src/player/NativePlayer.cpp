@@ -7,6 +7,7 @@
 #include <cctype>
 #include <chrono>
 #include <span>
+#include <string_view>
 
 #include "../config/ConfigContributor.h"
 #include "../config/SettingsPersistence.h"
@@ -31,26 +32,41 @@ AudioFormat formatOf(const pb::Source &source) {
                    [](unsigned char c) { return std::tolower(c); });
     return value;
   };
-  const auto mime = lower(source.mime_type());
-  if (mime.find("mpeg") != std::string::npos ||
-      mime.find("mp3") != std::string::npos) {
+  const auto mimeValue = lower(source.mime_type());
+  std::string_view mime(mimeValue);
+  mime = mime.substr(0, mime.find(';'));
+  const auto first = mime.find_first_not_of(" \t\r\n");
+  mime = first == std::string_view::npos
+             ? std::string_view{}
+             : mime.substr(first, mime.find_last_not_of(" \t\r\n") - first + 1);
+  if (mime == "audio/mpeg" || mime == "audio/mp3" || mime == "audio/x-mp3" ||
+      mime == "mpeg" || mime == "mp3") {
     return AudioFormat::FormatMpeg;
   }
-  if (mime.find("flac") != std::string::npos) {
+  if (mime == "audio/flac" || mime == "audio/x-flac" || mime == "flac") {
     return AudioFormat::FormatFlac;
   }
-  if (mime.find("ogg") != std::string::npos ||
-      mime.find("vorbis") != std::string::npos) {
+  if (mime == "audio/ogg" || mime == "application/ogg" ||
+      mime == "audio/vorbis" || mime == "audio/x-vorbis+ogg" ||
+      mime == "ogg" || mime == "vorbis") {
     return AudioFormat::FormatVorbis;
   }
+  // A declared, unsupported type must not be overridden by the URL suffix.
+  // Extension lookup is only a fallback for missing or generic metadata.
+  if (!mime.empty() && mime != "application/octet-stream") {
+    return AudioFormat::FormatUnsupported;
+  }
   const auto path = lower(source.uri().substr(0, source.uri().find_first_of("?#")));
+  if (path.ends_with(".flac")) {
+    return AudioFormat::FormatFlac;
+  }
   if (path.ends_with(".mp3")) {
     return AudioFormat::FormatMpeg;
   }
   if (path.ends_with(".ogg") || path.ends_with(".oga")) {
     return AudioFormat::FormatVorbis;
   }
-  return AudioFormat::FormatFlac;
+  return AudioFormat::FormatUnsupported;
 }
 
 // The noisy virtual PCMs the server's device list also hides. "sysdefault:" is
@@ -884,7 +900,10 @@ void NativePlayer::fillSnapshot(pb::StateSnapshot &out) const {
     return;
   }
 
-  const StreamState state = player_->getState();
+  StreamState state = player_->getState();
+  const auto now = getTimestampNs();
+  state.position = state.positionAt(now);
+  state.timestamp = now;
   const std::optional<StreamId> onAir =
       state.streamId ? state.streamId : currentId_;
   pb::PlaybackStateChanged translated;

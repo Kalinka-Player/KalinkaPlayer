@@ -375,3 +375,53 @@ TEST(VorbisStreamDecoderTest, DisconnectUnblocksInputWaitingForData) {
       returnsWithin([decoder, source] { decoder->disconnect(source); }, 1s));
 }
 } // namespace
+
+TEST(VorbisStreamDecoderTest, PlaysChunkedOggWithUnknownLength) {
+  LocalHttpServer server(fixture());
+  auto source = std::make_shared<AudioGraphHttpStream>(1, server.url("/live"), 16384);
+  VorbisStreamDecoder decoder(1, 16384);
+  decoder.connectTo(source);
+  const auto pcm = decode(decoder);
+  EXPECT_EQ(pcm.size(), kFrames * kFrameBytes);
+  EXPECT_EQ(decoder.getState().state, AudioGraphNodeState::FINISHED);
+  EXPECT_EQ(server.requestsTo("/live"), 1);
+}
+
+TEST(VorbisStreamDecoderTest, StartsBeforeTheNextLivePageOrEndOfStream) {
+  class LiveInput : public AudioGraphOutputNode {
+  public:
+    Buffer<uint8_t> bytes{16384};
+    LiveInput() {
+      setState({AudioGraphNodeState::STREAMING, 0,
+                StreamInfo{.streamType = StreamType::BYTES}});
+    }
+    size_t read(void *out, size_t count) override {
+      return bytes.read(static_cast<uint8_t *>(out), count);
+    }
+    size_t waitForData(std::stop_token token, size_t count) override {
+      return bytes.waitForData(token, count);
+    }
+    size_t waitForDataFor(std::stop_token token, std::chrono::milliseconds timeout,
+                         size_t count) override {
+      return bytes.waitForDataFor(token, timeout, count);
+    }
+  };
+  const auto ogg = encoded();
+  // Three pages: identification, remaining headers, and about one second of
+  // audio. The producer waits for playback feedback before sending any more.
+  size_t prefix = 0;
+  for (int page = 0; page < 3; ++page) {
+    const auto segments = ogg.at(prefix + 26);
+    size_t length = 27 + segments;
+    for (size_t i = 0; i < segments; ++i) {
+      length += ogg.at(prefix + 27 + i);
+    }
+    prefix += length;
+  }
+  auto source = std::make_shared<LiveInput>();
+  ASSERT_EQ(source->bytes.write(ogg.data(), prefix), prefix);
+  VorbisStreamDecoder decoder(1, 16384);
+  decoder.connectTo(source);
+  EXPECT_GE(decoder.waitForDataFor({}, 1s, 1024), 1024);
+  decoder.disconnect(source);
+}

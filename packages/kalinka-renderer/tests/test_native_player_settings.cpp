@@ -119,6 +119,48 @@ TEST_F(NativePlayerSettingsTest, TheSinkIsBufferedAsTheServerUsedToBufferIt) {
   EXPECT_EQ(period->default_value(), "40");
 }
 
+TEST_F(NativePlayerSettingsTest, RepeatedSnapshotsAdvanceAndPauseFreezesPosition) {
+  SKIP_UNLESS_PLAYED_IN_REAL_TIME();
+  ASSERT_TRUE(player_->applyConfig("output.device", testDevice(), error_)) << error_;
+  ASSERT_TRUE(player_->applyConfig("output.volume_mode", "software", error_)) << error_;
+  player_->setVolume(0);
+  pb::Source source;
+  source.set_source_token("snapshot-clock");
+  source.set_uri("file://" + std::string(KALINKA_TEST_DATA_DIR) + "/ladder.ogg");
+  source.set_mime_type("audio/ogg");
+  player_->setSource(source);
+  auto awaitState = [&](pb::PlaybackState wanted) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    pb::StateSnapshot state;
+    do {
+      ioc_.restart();
+      ioc_.run_for(std::chrono::milliseconds(10));
+      player_->fillSnapshot(state);
+      if (state.playback_state() == wanted) return true;
+    } while (std::chrono::steady_clock::now() < deadline);
+    return false;
+  };
+  ASSERT_TRUE(awaitState(pb::PLAYBACK_STATE_PLAYING));
+  pb::StateSnapshot previous;
+  player_->fillSnapshot(previous);
+  for (int i = 0; i < 3; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    pb::StateSnapshot next;
+    player_->fillSnapshot(next);
+    EXPECT_EQ(next.playback_state(), pb::PLAYBACK_STATE_PLAYING);
+    EXPECT_GE(next.position_ms(), previous.position_ms() + 100);
+    previous = next;
+  }
+  player_->pause();
+  ASSERT_TRUE(awaitState(pb::PLAYBACK_STATE_PAUSED));
+  player_->fillSnapshot(previous);
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  pb::StateSnapshot paused;
+  player_->fillSnapshot(paused);
+  EXPECT_EQ(paused.position_ms(), previous.position_ms());
+  player_->stop();
+}
+
 TEST_F(NativePlayerSettingsTest, OnlyWhatAUserPicksIsOnThePageProper) {
   const pb::ConfigSection section = output();
 
@@ -306,11 +348,12 @@ TEST_F(NativePlayerSettingsTest, VorbisBufferCanBeConfiguredAndPersisted) {
   EXPECT_EQ(loadSettingsOverrides().at("buffers.vorbis"), "200000");
 }
 
-TEST_F(NativePlayerSettingsTest, VorbisSourcesPlayThroughTheProtocolAdapter) {
+TEST_F(NativePlayerSettingsTest, SupportedSourcesPlayThroughTheProtocolAdapter) {
   using namespace std::chrono_literals;
   struct SourceCase {
     const char *mime;
     const char *name;
+    const char *fixture = "ladder.ogg";
   };
   const SourceCase cases[] = {
       {"audio/ogg", "track"},
@@ -318,18 +361,33 @@ TEST_F(NativePlayerSettingsTest, VorbisSourcesPlayThroughTheProtocolAdapter) {
       {"audio/vorbis", "track"},
       {"audio/x-vorbis+ogg", "track"},
       {"Audio/Ogg; codecs=vorbis", "track.flac"},
+      {"ogg", "track"},
+      {"vorbis", "track"},
       {"", "track.ogg"},
       {"", "track.oga"},
       {"application/octet-stream", "track.OGG"},
       // A literal query in a local filename lets the adapter's URL suffix
       // handling be exercised without a remote server or signed URL.
       {"", "track.OGA?token=opaque#fragment"},
+      {"audio/flac", "track", "ladder.flac"},
+      {"audio/x-flac", "track", "ladder.flac"},
+      {"flac", "track", "ladder.flac"},
+      {" Audio/FLAC ; rate=22050", "track.mp3", "ladder.flac"},
+      {"", "track.flac", "ladder.flac"},
+      {"application/octet-stream", "track.FLAC?token=opaque#fragment", "ladder.flac"},
+      {"audio/mpeg", "track", "ladder.mp3"},
+      {"audio/mp3", "track", "ladder.mp3"},
+      {"audio/x-mp3", "track", "ladder.mp3"},
+      {"mpeg", "track", "ladder.mp3"},
+      {"mp3", "track", "ladder.mp3"},
+      {"", "track.mp3", "ladder.mp3"},
+      {"application/octet-stream", "track.MP3?token=opaque#fragment", "ladder.mp3"},
   };
   auto work = boost::asio::make_work_guard(ioc_);
   for (const auto &test : cases) {
     SCOPED_TRACE(std::string(test.mime) + " " + test.name);
     const auto path = prefix_ / test.name;
-    fs::copy_file(fs::path(KALINKA_TEST_DATA_DIR) / "ladder.ogg", path,
+    fs::copy_file(fs::path(KALINKA_TEST_DATA_DIR) / test.fixture, path,
                   fs::copy_options::overwrite_existing);
     std::vector<pb::PlaybackStateChanged> states;
     player_->setStateSink([&](pb::Envelope &env) {
@@ -369,6 +427,111 @@ TEST_F(NativePlayerSettingsTest, VorbisSourcesPlayThroughTheProtocolAdapter) {
     // Deliver the stop before installing the next source's event recorder.
     ioc_.poll();
   }
+}
+
+TEST_F(NativePlayerStreamTest, SpeakerTestToneNeedsNoStreamFormat) {
+  std::vector<pb::PlaybackState> states;
+  player_->setStateSink([&](pb::Envelope &env) {
+    if (env.has_playback_state_changed()) {
+      states.push_back(env.playback_state_changed().state());
+    }
+  });
+  pb::Source source;
+  source.set_source_token("speaker-test");
+  source.set_uri("tone://both?duration_ms=1000");
+  player_->setSource(source);
+  EXPECT_TRUE(runUntil([&] {
+    return std::ranges::count(states, pb::PLAYBACK_STATE_FINISHED) > 0 ||
+           std::ranges::count(states, pb::PLAYBACK_STATE_ERROR) > 0;
+  }));
+  EXPECT_GT(std::ranges::count(states, pb::PLAYBACK_STATE_PLAYING), 0);
+  EXPECT_GT(std::ranges::count(states, pb::PLAYBACK_STATE_FINISHED), 0);
+  EXPECT_EQ(std::ranges::count(states, pb::PLAYBACK_STATE_ERROR), 0);
+  player_->setStateSink({});
+}
+
+TEST_F(NativePlayerStreamTest, UnsupportedSourcesFailBeforeOpeningTheStream) {
+  struct SourceCase {
+    const char *mime;
+    const char *path;
+  };
+  const SourceCase cases[] = {
+      {"audio/aac", "/whole"},
+      {"audio/aac", "/track.flac"},
+      {"audio/mpeg4", "/whole"},
+      {"audio/not-flac", "/whole"},
+      {"", "/whole"},
+      {"application/octet-stream", "/whole?name=track.flac"},
+  };
+  for (const auto &test : cases) {
+    SCOPED_TRACE(std::string(test.mime) + " " + test.path);
+    std::vector<pb::PlaybackStateChanged> states;
+    player_->setStateSink([&](pb::Envelope &env) {
+      if (env.has_playback_state_changed()) {
+        states.push_back(env.playback_state_changed());
+      }
+    });
+    auto source = sourceAt(test.path);
+    source.set_mime_type(test.mime);
+    player_->setSource(source);
+    EXPECT_TRUE(runUntil([&] {
+      return std::any_of(states.begin(), states.end(), [](const auto &state) {
+        return state.state() == pb::PLAYBACK_STATE_ERROR ||
+               state.state() == pb::PLAYBACK_STATE_FINISHED;
+      });
+    }));
+    pb::StateSnapshot snapshot;
+    player_->fillSnapshot(snapshot);
+    EXPECT_EQ(snapshot.playback_state(), pb::PLAYBACK_STATE_ERROR);
+    EXPECT_EQ(snapshot.error().source(), pb::ERROR_SOURCE_DECODER);
+    EXPECT_EQ(snapshot.error().message(), "Unsupported stream format");
+    EXPECT_EQ(snapshot.current_source().source_token(), source.source_token());
+    EXPECT_FALSE(snapshot.position_valid());
+    EXPECT_TRUE(std::any_of(states.begin(), states.end(), [&](const auto &state) {
+      return state.state() == pb::PLAYBACK_STATE_ERROR &&
+             state.source_token() == source.source_token() &&
+             state.error().message() == "Unsupported stream format";
+    }));
+    EXPECT_EQ(server_.requestsTo(test.path), 0);
+    player_->setStateSink({});
+    player_->stop();
+    ioc_.poll();
+  }
+}
+
+TEST_F(NativePlayerStreamTest, QueuedUnsupportedSourceReportsItsOwnErrorAndRecovers) {
+  std::vector<pb::PlaybackStateChanged> states;
+  player_->setStateSink([&](pb::Envelope &env) {
+    if (env.has_playback_state_changed()) {
+      states.push_back(env.playback_state_changed());
+    }
+  });
+  const auto reached = [&](const std::string &token, pb::PlaybackState wanted) {
+    return std::any_of(states.begin(), states.end(), [&](const auto &state) {
+      return state.source_token() == token && state.state() == wanted;
+    });
+  };
+  player_->setSource(sourceAt("/held"));
+  EXPECT_TRUE(runUntil([&] { return reached("/held", pb::PLAYBACK_STATE_PLAYING); }));
+  auto unsupported = sourceAt("/whole");
+  unsupported.set_mime_type("audio/aac");
+  player_->enqueueSource(unsupported);
+  ioc_.run_for(std::chrono::milliseconds(100));
+  EXPECT_FALSE(reached("/whole", pb::PLAYBACK_STATE_ERROR));
+  EXPECT_EQ(server_.requestsTo("/whole"), 0);
+
+  server_.release();
+  EXPECT_TRUE(runUntil([&] { return reached("/whole", pb::PLAYBACK_STATE_ERROR); }));
+  pb::StateSnapshot snapshot;
+  player_->fillSnapshot(snapshot);
+  EXPECT_EQ(snapshot.current_source().source_token(), "/whole");
+  EXPECT_EQ(snapshot.error().message(), "Unsupported stream format");
+
+  player_->setSource(sourceAt("/ranged"));
+  EXPECT_TRUE(runUntil([&] { return reached("/ranged", pb::PLAYBACK_STATE_FINISHED); }));
+  EXPECT_TRUE(reached("/ranged", pb::PLAYBACK_STATE_PLAYING));
+  EXPECT_FALSE(reached("/ranged", pb::PLAYBACK_STATE_ERROR));
+  player_->setStateSink({});
 }
 
 TEST_F(NativePlayerSettingsTest, ANegativeSizeIsRefusedRatherThanStored) {

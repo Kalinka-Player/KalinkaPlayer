@@ -11,6 +11,21 @@ using state_translator::fillPlaybackStateChanged;
 using state_translator::fillVolume;
 using state_translator::toProto;
 
+TEST(StreamClock, PollingBetweenStateChangesAdvancesOnlyWhilePlaying) {
+  StreamState state(AudioGraphNodeState::STREAMING, 68000);
+  state.timestamp = 1000000000;
+  EXPECT_EQ(state.positionAt(2000000000), 69000);
+  EXPECT_EQ(state.positionAt(3000000000), 70000);
+  EXPECT_EQ(state.positionAt(500000000), 68000);
+  EXPECT_EQ(state.position, 68000);
+  for (auto mode : {AudioGraphNodeState::PAUSED, AudioGraphNodeState::PREPARING,
+                    AudioGraphNodeState::STOPPED, AudioGraphNodeState::FINISHED,
+                    AudioGraphNodeState::ERROR}) {
+    state.state = mode;
+    EXPECT_EQ(state.positionAt(3000000000), 68000);
+  }
+}
+
 TEST(StateTranslator, EveryGraphStateHasExactlyOneProtoState) {
   EXPECT_EQ(toProto(AudioGraphNodeState::STOPPED), pb::PLAYBACK_STATE_STOPPED);
   EXPECT_EQ(toProto(AudioGraphNodeState::PREPARING),
