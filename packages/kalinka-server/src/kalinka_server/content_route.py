@@ -25,7 +25,7 @@ from kalinka_plugin_sdk.inputmodule import (
     SourceUnavailableError,
 )
 
-from . import ranged_content
+from . import ranged_content, live_content
 from .content_urls import CONTENT_ROUTE
 
 logger = logging.getLogger(__name__)
@@ -84,6 +84,8 @@ def register_content_route(
             )
         if info is None:
             raise HTTPException(status_code=404, detail="Content not found")
+        if info.live is not None:
+            return await live_content.serve(info.live, info.mime_type, request)
         if not info.local_path:
             return await _serve_stream(info, module_name, asset_id, request)
 

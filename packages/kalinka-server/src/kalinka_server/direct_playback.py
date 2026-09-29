@@ -147,6 +147,7 @@ class HolderSession:
         self._teardown: Optional[asyncio.Future] = None
         self._consumer = asyncio.get_running_loop().create_task(self._consume())
         self._volume_watch = asyncio.get_running_loop().create_task(self._watch_volume())
+        self._progress_watch = asyncio.get_running_loop().create_task(self._watch_progress())
 
     # ------------------------------------------------------------------
     # DirectPlaybackSession
@@ -228,6 +229,10 @@ class HolderSession:
         target is claimed before the current renderer is given up. A paused
         track stays paused.
         """
+        if self._source is not None and self._source.sequential and renderer_id != self.renderer_id:
+            await self._on_session_lost(CloseReason.RENDERER_LOST)
+            commit()
+            return
         async with self._swap:
             old = self._player
             if self._ended or old.renderer_id in (None, renderer_id):
@@ -273,6 +278,7 @@ class HolderSession:
         )
         player.on_interrupted(self._replay)
         player.on_session_lost(self._on_session_lost)
+        player.publish_snapshots = True
         return player
 
     def _start(self, source: TrackSource, track: Optional[Track], offset_ms: int) -> None:
@@ -302,6 +308,9 @@ class HolderSession:
         """The renderer came back mid-track: the same stream from where it was."""
         if self._ended or self._source is None or self._track is None:
             return
+        if self._source.sequential:
+            await self._on_session_lost(CloseReason.RENDERER_LOST)
+            return
         await self.play(self._source, self._track, start_offset_ms=position_ms)
 
     async def _on_session_lost(self, reason: Optional[CloseReason]) -> None:
@@ -317,6 +326,7 @@ class HolderSession:
             return False
         self._ended = True
         self._volume_watch.cancel()
+        self._progress_watch.cancel()
         self._teardown = asyncio.ensure_future(self._stop_player())
         await asyncio.shield(self._teardown)
         if reason is not None:
@@ -335,6 +345,8 @@ class HolderSession:
         async for state in self._monitor:
             if self._ended:
                 continue
+            if state.stream_id is not None and state.stream_id != self._stream_id:
+                continue
             if state.state is AudioGraphNodeState.SOURCE_CHANGED:
                 continue
             if state.state is AudioGraphNodeState.FINISHED:
@@ -342,6 +354,16 @@ class HolderSession:
                 self._bridge.send("on_finished")
                 continue
             self._publish(state)
+
+    async def _watch_progress(self) -> None:
+        while not self._ended:
+            await asyncio.sleep(1)
+            if self._source is not None and self._source.sequential:
+                try:
+                    await self._player.request_snapshot()
+                except Exception:
+                    # Session loss/reconnect is handled by the player's callbacks.
+                    logger.debug("Sequential playback snapshot was unavailable")
 
     async def _watch_volume(self) -> None:
         """Tell the plugin the output's volume: now, and at every change.
@@ -361,7 +383,9 @@ class HolderSession:
             state=to_state_name(state.state),
             current_track=self._track,
             index=None,
-            position=state.position_at(time.monotonic_ns()),
+            position=state.position_at(time.monotonic_ns()) + (
+                self._source.timeline_offset_ms if self._source else 0
+            ),
             message=state.error.message if state.error else None,
             audio_info=to_audio_info(state.stream_info),
             mime_type=self._source.format if self._source else None,

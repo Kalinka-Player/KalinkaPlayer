@@ -799,3 +799,60 @@ async def test_the_queue_plays_where_the_plugin_was_moved(
     await asyncio.sleep(SETTLE_S)
 
     assert _enqueued(other)[-1] == "http://example/1.flac"
+
+
+async def test_sequential_source_reports_timeline_offset(queue, renderer, direct):
+    listener = Listener()
+    hold = await direct.acquire('Spotify Connect', listener)
+    source, track = _connect_track()
+    source = source.model_copy(update={'sequential': True, 'timeline_offset_ms': 45000})
+    await hold.play(source, track)
+    await asyncio.sleep(SETTLE_S)
+    renderer.report_position(1000)
+    await asyncio.sleep(.05)
+    assert listener.states[-1].position >= 46000
+    enqueue = [c for c in renderer.commands if c.WhichOneof('op') == 'enqueue_source'][-1]
+    assert enqueue.enqueue_source.source.start_offset_ms == 0
+
+
+async def test_sequential_source_is_revoked_on_replay(queue, renderer, direct):
+    listener = Listener()
+    hold = await direct.acquire('Spotify Connect', listener)
+    source, track = _connect_track()
+    source = source.model_copy(update={'sequential': True})
+    await hold.play(source, track)
+    await asyncio.sleep(SETTLE_S)
+    before = len(_enqueued(renderer))
+    await hold._replay(1000)
+    await asyncio.sleep(.05)
+    assert not hold.active
+    assert listener.revoked == [RevokeReason.OUTPUT_LOST]
+    assert len(_enqueued(renderer)) == before
+
+
+async def test_sequential_source_target_change_revokes(queue, renderer, direct):
+    listener = Listener()
+    hold = await direct.acquire('Spotify Connect', listener)
+    source, track = _connect_track()
+    source = source.model_copy(update={'sequential': True})
+    await hold.play(source, track)
+    await asyncio.sleep(SETTLE_S)
+    commit = Mock()
+    await hold.move_to('different-renderer', commit)
+    await asyncio.sleep(.05)
+    assert not hold.active
+    assert listener.revoked == [RevokeReason.OUTPUT_LOST]
+    commit.assert_called_once()
+
+
+async def test_sequential_feedback_polls_actual_renderer_position(queue, renderer, direct):
+    listener = Listener()
+    hold = await direct.acquire('Spotify Connect', listener)
+    source, track = _connect_track()
+    source = source.model_copy(update={'sequential': True})
+    await hold.play(source, track)
+    await asyncio.sleep(SETTLE_S)
+    renderer.position_ms = 10000  # No state transition/event is emitted.
+    await asyncio.sleep(1.1)
+    assert listener.states[-1].position >= 10000
+    assert any(c.WhichOneof('op') == 'request_snapshot' for c in renderer.commands)

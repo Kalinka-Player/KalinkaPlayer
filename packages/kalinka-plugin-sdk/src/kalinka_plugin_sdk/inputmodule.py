@@ -1,6 +1,6 @@
 import asyncio
 
-from pydantic import BaseModel, PositiveInt, ConfigDict
+from pydantic import BaseModel, PositiveInt, NonNegativeInt, ConfigDict
 from enum import Enum
 from typing import (
     Awaitable,
@@ -22,6 +22,7 @@ from .datamodel import (
     EmptyList,
 )
 from .filters import FilterQuery, FilterValueList
+from .live_content import LiveContent
 
 
 class SourceUnavailableError(RuntimeError):
@@ -84,6 +85,10 @@ class TrackSource(BaseModel):
 
     source: ModuleAsset | DirectUrl
     format: str
+    # Sequential resources cannot be reopened at an arbitrary media offset.
+    # The plugin creates a new resource after a seek or renderer loss.
+    sequential: bool = False
+    timeline_offset_ms: NonNegativeInt = 0
 
 
 class ContentInfo(BaseModel):
@@ -111,11 +116,17 @@ class ContentInfo(BaseModel):
         cacheable (bool): Whether the server may hold on to these bytes.
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     mime_type: str
     local_path: Optional[str] = None
     reader: Optional[Callable[[], BinaryIO]] = None
     size: Optional[int] = None
     cacheable: bool = False
+    # SDK 3.5: an asynchronous, in-progress resource. Its open method returns
+    # an async reader; waiting for bytes happens outside the module RPC budget.
+    # See live_content.LiveContent for the contract.
+    live: Optional[LiveContent] = None
 
 
 class TrackInfo(BaseModel):
