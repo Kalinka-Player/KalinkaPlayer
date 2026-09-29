@@ -450,7 +450,7 @@ AlsaAudioEmitter::readIntoAlsaFromStream(std::stop_token stopToken,
     playedFramesCounter.update(framesToRead);
   }
 
-  while (framesRead < framesToRead) {
+  while (framesRead < framesToRead && !stopToken.stop_requested()) {
     snd_pcm_uframes_t frames = framesToRead - framesRead;
     if (paused) {
 
@@ -483,6 +483,12 @@ AlsaAudioEmitter::readIntoAlsaFromStream(std::stop_token stopToken,
             waitForInputData(stopToken, frames - actualFrames);
         perfmon_end("waitForMoreInputData");
         if (bytesAvailable == 0) {
+          // A pause/seek interrupts the wait even though this is not an
+          // underrun. Return to the worker so it can acknowledge the command;
+          // draining/restarting here leaves that request pending forever.
+          if (stopToken.stop_requested()) {
+            break;
+          }
           drainPcm();
           return -1;
         }
@@ -605,7 +611,7 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
 
         auto framesRead =
             readIntoAlsaFromStream(combinedToken.get_token(), framesToRead);
-        if (framesRead < 0) {
+        if (framesRead < 0 || token.stop_requested()) {
           break;
         }
 
