@@ -100,6 +100,8 @@ the app repo at install time, so the two release cadences are decoupled and a
 web-UI update ships to users on their next `install-release.sh` run without a
 server release. Nothing to do here when cutting a server release.
 
+The on-device display (`kalinka-kiosk_*_<arch>.deb`, arm64 only for now) comes from the same app releases the same way, but only onto boxes that asked for it (`KALINKA_DISPLAY=1`) or already have it installed.
+
 ---
 
 ## Release the renderer

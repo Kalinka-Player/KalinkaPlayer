@@ -123,6 +123,36 @@ class ServerConfig(BaseModel):
     )
 
 
+class DisplayRotation(str, Enum):
+    r0 = "0"
+    r90 = "90"
+    r180 = "180"
+    r270 = "270"
+
+
+class DisplayConfig(BaseModel):
+    """Read by the kalinka-kiosk package's units, not by the server."""
+
+    enabled: bool = Field(
+        default=False,
+        title="Now-playing display on this machine",
+        json_schema_extra={
+            "help": (
+                "Show the now-playing display on a screen attached to this "
+                "machine, restarted if it ever stops — needs the "
+                "kalinka-kiosk package (Raspberry Pi)"
+            ),
+        },
+    )
+    rotation: DisplayRotation = Field(
+        default=DisplayRotation.r0,
+        title="Screen rotation",
+        json_schema_extra={
+            "help": "Clockwise, in degrees — for a screen mounted on its side or upside down",
+        },
+    )
+
+
 class DeviceAutomationConfig(BaseModel):
     auto_power_on: bool = Field(
         default=True,
@@ -226,6 +256,11 @@ class KalinkaConfig(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig, title="Server")
     device_automation: DeviceAutomationConfig = Field(
         default_factory=DeviceAutomationConfig, title="Device automation"
+    )
+    display: DisplayConfig = Field(
+        default_factory=DisplayConfig,
+        title="Screen",
+        json_schema_extra=_EXPERT_SECTION,
     )
     search: SearchConfig = Field(
         default_factory=SearchConfig,
