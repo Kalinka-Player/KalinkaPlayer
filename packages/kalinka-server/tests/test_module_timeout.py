@@ -72,7 +72,8 @@ def test_protocol_methods_are_the_members_isinstance_checks():
 
 
 def test_module_loads_on_a_python_without_protocol_attrs(monkeypatch):
-    # 3.10 and 3.11 have no __protocol_attrs__, not even on Protocol.
+    # Python 3.10 and 3.11 have no __protocol_attrs__, not even on Protocol,
+    # and the server imports this module at start-up.
     monkeypatch.delattr(InputModule, "__protocol_attrs__", raising=False)
     monkeypatch.delattr(typing.Protocol, "__protocol_attrs__", raising=False)
     namespace = runpy.run_path(module_timeout.__file__)
