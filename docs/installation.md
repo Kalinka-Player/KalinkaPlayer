@@ -193,6 +193,7 @@ You only need these in special cases.
 | A particular version of the server and its plugins (the output and the browser player still come from their latest releases) | `curl -fsSL https://kalinkaplayer.com/install.sh \| sudo bash -s -- 5.0.0` |
 | A server with no output on this machine, for example a NAS whose sound nobody hears | `curl -fsSL https://kalinkaplayer.com/install.sh \| sudo KALINKA_RENDERER=0 bash` |
 | No browser player | `curl -fsSL https://kalinkaplayer.com/install.sh \| sudo KALINKA_WEB=0 bash` |
+| The now-playing display on a screen attached to this machine (Raspberry Pi, arm64); turn it on afterwards in the app under **Settings › EXPERT › Now-playing display on this machine** | `curl -fsSL https://kalinkaplayer.com/install.sh \| sudo KALINKA_DISPLAY=1 bash` |
 
 Running the command again upgrades whatever is installed. Kalinka normally [upgrades itself](#keeping-it-up-to-date), though.
 
@@ -201,7 +202,7 @@ Running the command again upgrades whatever is installed. Kalinka normally [upgr
 <details>
 <summary>Installing without the script</summary>
 
-From the [latest server release](https://github.com/Kalinka-Player/KalinkaPlayer/releases/latest), download every file that ends in `_all.deb`, plus `SHA256SUMS`. Add `kalinka-web_…_all.deb` from the [latest app release](https://github.com/Kalinka-Player/KalinkaAI/releases/latest). For sound on this machine, add the renderer `.deb` whose name matches your system and processor, for example `debian-13.arm64` or `ubuntu-24.04.amd64`, from the [renderer releases](https://github.com/Kalinka-Player/KalinkaPlayer/releases?q=kalinka-renderer-v&expanded=true). Then, in the download folder:
+From the [latest server release](https://github.com/Kalinka-Player/KalinkaPlayer/releases/latest), download every file that ends in `_all.deb`, plus `SHA256SUMS`. Add `kalinka-web_…_all.deb` from the [latest app release](https://github.com/Kalinka-Player/KalinkaAI/releases/latest). For the now-playing display on this machine's screen, add `kalinka-kiosk_…_arm64.deb` from there too. For sound on this machine, add the renderer `.deb` whose name matches your system and processor, for example `debian-13.arm64` or `ubuntu-24.04.amd64`, from the [renderer releases](https://github.com/Kalinka-Player/KalinkaPlayer/releases?q=kalinka-renderer-v&expanded=true). Then, in the download folder:
 
 ```bash
 sha256sum -c SHA256SUMS --ignore-missing

@@ -208,6 +208,7 @@ done
 exit 0
 """,
     "dpkg": """#!/usr/bin/env bash
+[ "$1" = --print-architecture ] && { echo arm64; exit 0; }
 echo "$*" >> "$STUB_STATE/dpkg.log"
 exit 1
 """,
@@ -220,7 +221,16 @@ case "$2" in *Status*) printf 'install ok installed' ;; *) echo "   $pkg 9.9.9" 
 }
 
 
-def _install_release(tmp_path, *, bundle_fails=False, names_fail=False, unknown=()):
+def _install_release(
+    tmp_path,
+    *,
+    bundle_fails=False,
+    names_fail=False,
+    unknown=(),
+    app_assets=(),
+    installed=(),
+    env=None,
+):
     """install-release.sh end to end, against one published release and no
     package database.
 
@@ -229,6 +239,8 @@ def _install_release(tmp_path, *, bundle_fails=False, names_fail=False, unknown=
     refuse every install by name, as a lock it waited out does; ``unknown``
     names packages it cannot install, failing any call that asks for one — what
     a distribution without that package, or with a conflicting one, does.
+    ``app_assets`` are published beside the bundle, where the app repo's
+    lookup finds them too; ``installed`` are packages already on the box.
     """
     binv = tmp_path / "bin"
     binv.mkdir()
@@ -239,12 +251,16 @@ def _install_release(tmp_path, *, bundle_fails=False, names_fail=False, unknown=
     state.mkdir()
     assets = [
         {"name": n, "browser_download_url": f"https://x.invalid/{n}"}
-        for n in ("kalinka-server_9.9.9_all.deb", "kalinka-plugin-sdk_9.9.9_all.deb")
+        for n in (
+            "kalinka-server_9.9.9_all.deb",
+            "kalinka-plugin-sdk_9.9.9_all.deb",
+            *app_assets,
+        )
     ]
     release = [{"tag_name": "kalinka-v9.9.9", "assets": assets}]
     (state / "release.json").write_text(json.dumps(release))
     (state / "unknown").write_text("".join(f"{name}\n" for name in unknown))
-    (state / "installed").write_text("")
+    (state / "installed").write_text("".join(f"{name}\n" for name in installed))
 
     result = subprocess.run(
         ["bash", str(INSTALL_RELEASE)],
@@ -258,11 +274,12 @@ def _install_release(tmp_path, *, bundle_fails=False, names_fail=False, unknown=
             "STUB_NAMES_FAIL": "1" if names_fail else "0",
             "KALINKA_WEB": "0",
             "KALINKA_RENDERER": "0",
+            **(env or {}),
         },
     )
     log = state / "apt-get.log"
     calls = [c.split() for c in log.read_text().splitlines()] if log.exists() else []
-    installed = set((state / "installed").read_text().split())
+    installed = set((state / "installed").read_text().split()) - set(installed)
     return result, calls, installed
 
 
@@ -356,3 +373,54 @@ def test_each_package_that_did_not_come_is_named(tmp_path):
     assert sorted(note.split()[2] for note in notes) == sorted(EXTRAS)
     assert any("libchromaprint-tools" in n and "fpcalc" in n for n in notes)
     assert "apt-get install --no-install-recommends" in result.stderr
+
+
+KIOSK_ARM64 = "kalinka-kiosk_9.9.9_arm64.deb"
+KIOSK_AMD64 = "kalinka-kiosk_9.9.9_amd64.deb"
+
+
+def _bundle_debs(calls):
+    return {
+        a.rsplit("/", 1)[-1] for c in calls for a in c if a.endswith(".deb")
+    }
+
+
+def test_the_display_comes_only_when_asked_for(tmp_path):
+    """It brings Mesa and GStreamer, which a headless box has no use for."""
+    result, calls, _ = _install_release(tmp_path, app_assets=(KIOSK_ARM64,))
+
+    assert result.returncode == 0, result.stderr
+    assert KIOSK_ARM64 not in _bundle_debs(calls)
+
+
+def test_the_display_asked_for_is_this_machines_build(tmp_path):
+    result, calls, _ = _install_release(
+        tmp_path,
+        app_assets=(KIOSK_AMD64, KIOSK_ARM64),
+        env={"KALINKA_DISPLAY": "1"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    debs = _bundle_debs(calls)
+    assert KIOSK_ARM64 in debs
+    assert KIOSK_AMD64 not in debs
+
+
+def test_an_installed_display_is_upgraded(tmp_path):
+    """Auto-upgrade reruns the installer with no switches."""
+    result, calls, _ = _install_release(
+        tmp_path, app_assets=(KIOSK_ARM64,), installed=("kalinka-kiosk",)
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert KIOSK_ARM64 in _bundle_debs(calls)
+
+
+def test_no_display_for_this_machine_still_installs_the_rest(tmp_path):
+    result, calls, _ = _install_release(
+        tmp_path, app_assets=(KIOSK_AMD64,), env={"KALINKA_DISPLAY": "1"}
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "kalinka-server_9.9.9_all.deb" in _bundle_debs(calls)
+    assert "no kalinka-kiosk package for arm64" in result.stderr

@@ -7,11 +7,15 @@
 # in the bundle — server, plugins, SDK — is pure Python and arch-independent
 # (_all), so the same artifacts install on any machine.
 #
-# Two pieces ship on their own release trains and are installed alongside, each
-# best-effort so a lookup failure only warns:
+# Some pieces ship on their own release trains and are installed alongside,
+# each best-effort so a lookup failure only warns:
 #
 #   * the browser player (kalinka-web), released from the app repo — the
 #     server serves it at its root URL, and shows an install page without it;
+#   * on request, the now-playing display for a screen on this machine
+#     (kalinka-kiosk), also from the app repo, in per-arch packages. It brings
+#     a graphics stack, so it is only installed when asked for, and upgraded
+#     once it is there;
 #   * the renderer (kalinka-renderer), which is what actually plays audio, in
 #     per-arch packages picked by install-renderer.sh. Installing it here is
 #     what makes a plain install play sound through this machine's sound card;
@@ -20,7 +24,7 @@
 #     server against a renderer too old to talk to it.
 #
 # Re-running the script upgrades whatever is already installed, which is how
-# the server's own auto-upgrade reaches all three.
+# the server's own auto-upgrade reaches all of them.
 #
 # Usage:
 #   ./install-release.sh                 # install the latest kalinka-v* release
@@ -29,8 +33,11 @@
 #
 # Env:
 #   KALINKA_REPO     owner/repo to pull the server release from (default: madenvel/KalinkaPlayer)
-#   KALINKA_WEB_REPO owner/repo for the kalinka-web package (default: madenvel/KalinkaAI)
+#   KALINKA_WEB_REPO owner/repo for the kalinka-web and kalinka-kiosk packages
+#                    (default: madenvel/KalinkaAI)
 #   KALINKA_WEB      set to 0 to skip installing the browser player
+#   KALINKA_DISPLAY  set to 1 to install the now-playing display for a screen
+#                    on this machine, 0 to leave an installed one un-upgraded
 #   KALINKA_RENDERER set to 0 to skip installing the local renderer
 #   KALINKA_RENDERER_INSTALLER  URL of the renderer installer to use instead of
 #                    the published one at kalinkaplayer.com/install-renderer.sh
@@ -98,20 +105,21 @@ fi
 # fed on stdin without colliding with the program source.
 TMPDIR_DL=""
 PARSER="$(mktemp --suffix=.py)"
-WEB_PARSER="$(mktemp --suffix=.py)"
-cleanup() { rm -rf "$PARSER" "$WEB_PARSER" ${TMPDIR_DL:+"$TMPDIR_DL"}; }
+APP_PARSER="$(mktemp --suffix=.py)"
+cleanup() { rm -rf "$PARSER" "$APP_PARSER" ${TMPDIR_DL:+"$TMPDIR_DL"}; }
 trap cleanup EXIT
 
-# Picks the newest non-draft/prerelease's kalinka-web_*_all.deb asset URL, if any.
-cat > "$WEB_PARSER" <<'PY'
+# Picks the newest non-draft/prerelease's <prefix>*<suffix> asset URL, if any.
+cat > "$APP_PARSER" <<'PY'
 import sys, json
+prefix, suffix = sys.argv[1], sys.argv[2]
 data = json.load(sys.stdin)
 for r in (data if isinstance(data, list) else [data]):
     if r.get("draft") or r.get("prerelease"):
         continue
     for a in r.get("assets", []):
         name = a.get("name", "")
-        if name.startswith("kalinka-web_") and name.endswith("_all.deb"):
+        if name.startswith(prefix) and name.endswith(suffix):
             print(a["browser_download_url"])
             sys.exit(0)
 PY
@@ -151,18 +159,47 @@ TAG="$(printf '%s\n' "$parsed" | sed -n '1p')"
 mapfile -t URLS < <(printf '%s\n' "$parsed" | sed '1d')
 [ "${#URLS[@]}" -gt 0 ] || die "no installable .deb assets found for $TAG"
 
-# --- resolve the browser player (kalinka-web) from the app repo ----------------
+# --- resolve the packages released from the app repo ---------------------------
+WEB_REPO="${KALINKA_WEB_REPO:-madenvel/KalinkaAI}"
+
+WANT_DISPLAY="${KALINKA_DISPLAY:-}"
+if [ -z "$WANT_DISPLAY" ]; then
+  case "$(dpkg-query -W -f='${Status}' kalinka-kiosk 2>/dev/null || true)" in
+    *" installed") WANT_DISPLAY=1 ;;
+    *) WANT_DISPLAY=0 ;;
+  esac
+fi
+
+app_json=""
+if [ "${KALINKA_WEB:-1}" != "0" ] || [ "$WANT_DISPLAY" = "1" ]; then
+  echo ">> Looking up the latest app packages in $WEB_REPO ..."
+  app_json="$(fetch "https://api.github.com/repos/${WEB_REPO}/releases?per_page=30")" \
+    || app_json=""
+fi
+
+app_asset() {  # app_asset <prefix> <suffix> -> URL of the newest such asset
+  [ -n "$app_json" ] && printf '%s' "$app_json" | python3 "$APP_PARSER" "$1" "$2"
+}
+
 if [ "${KALINKA_WEB:-1}" != "0" ]; then
-  WEB_REPO="${KALINKA_WEB_REPO:-madenvel/KalinkaAI}"
-  echo ">> Looking up the latest kalinka-web package in $WEB_REPO ..."
-  if web_json="$(fetch "https://api.github.com/repos/${WEB_REPO}/releases?per_page=30")" \
-     && web_url="$(printf '%s' "$web_json" | python3 "$WEB_PARSER")" \
-     && [ -n "$web_url" ]; then
+  if web_url="$(app_asset kalinka-web_ _all.deb)" && [ -n "$web_url" ]; then
     URLS+=("$web_url")
     echo "   found ${web_url##*/}"
   else
     echo ">> note: no kalinka-web package found in $WEB_REPO — installing without the" >&2
     echo "   browser player (set KALINKA_WEB=0 to silence, or install it later)." >&2
+  fi
+fi
+
+if [ "$WANT_DISPLAY" = "1" ]; then
+  arch="$(dpkg --print-architecture 2>/dev/null || true)"
+  if [ -n "$arch" ] \
+     && kiosk_url="$(app_asset kalinka-kiosk_ "_${arch}.deb")" && [ -n "$kiosk_url" ]; then
+    URLS+=("$kiosk_url")
+    echo "   found ${kiosk_url##*/}"
+  else
+    echo ">> note: no kalinka-kiosk package for ${arch:-this machine} found in $WEB_REPO —" >&2
+    echo "   installing without the now-playing display." >&2
   fi
 fi
 
@@ -279,7 +316,8 @@ echo ">> Installed:"
 if have dpkg-query; then
   for pkg in kalinka-server kalinka-plugin-sdk kalinka-plugin-localfiles \
              kalinka-plugin-musiccast kalinka-plugin-jamendo \
-             kalinka-plugin-dummydevice kalinka-web kalinka-renderer; do
+             kalinka-plugin-dummydevice kalinka-web kalinka-kiosk \
+             kalinka-renderer; do
     dpkg-query -W -f='   ${Package} ${Version}\n' "$pkg" 2>/dev/null || true
   done
   report_missing_extras

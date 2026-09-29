@@ -148,6 +148,7 @@ def test_kalinka_expert_section_dropped_from_simple_view():
     ids = {s.id for s in _general_page(schema).sections}
     assert "base_config.search" not in ids
     assert "base_config.embedding" not in ids
+    assert "base_config.display" not in ids
 
 
 def test_general_page_sections_follow_declaration_order():
@@ -270,6 +271,9 @@ def test_expert_list_includes_both_simple_and_expert_fields():
     assert "base_config.search.candidate_limit" in paths
     # The app-written first-run flag stays expert-only but settable:
     assert "base_config.server.oobe_complete" in paths
+    # Read by the kalinka-kiosk units, so settable only here:
+    assert "base_config.display.enabled" in paths
+    assert "base_config.display.rotation" in paths
     # Nested expert leaves:
     assert "input_modules.localfiles.ai_search.knn_candidate_limit" in paths
 
