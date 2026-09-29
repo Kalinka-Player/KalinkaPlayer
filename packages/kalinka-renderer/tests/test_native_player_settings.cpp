@@ -119,6 +119,15 @@ TEST_F(NativePlayerSettingsTest, TheSinkIsBufferedAsTheServerUsedToBufferIt) {
   EXPECT_EQ(period->default_value(), "40");
 }
 
+TEST_F(NativePlayerSettingsTest, TheCardIsGivenTimeToSyncAfterAFormatChange) {
+  const pb::ConfigSection section = output();
+
+  const pb::ConfigField *delay = field(section, "output.format_change_delay_ms");
+  ASSERT_NE(delay, nullptr);
+  EXPECT_EQ(delay->value(), "500");
+  EXPECT_EQ(delay->default_value(), "500");
+}
+
 TEST_F(NativePlayerSettingsTest, RepeatedSnapshotsAdvanceAndPauseFreezesPosition) {
   SKIP_UNLESS_PLAYED_IN_REAL_TIME();
   ASSERT_TRUE(player_->applyConfig("output.device", testDevice(), error_)) << error_;
