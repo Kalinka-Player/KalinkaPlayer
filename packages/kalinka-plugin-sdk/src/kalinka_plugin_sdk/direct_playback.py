@@ -114,14 +114,20 @@ class DirectPlaybackSession(Protocol):
     async def play(
         self, source: TrackSource, track: Track, *, start_offset_ms: int = 0
     ) -> None:
-        """Replace what plays with ``source``, shown to clients as ``track``."""
+        """Replace what plays with ``source``, shown to clients as ``track``.
+
+        Raises ValueError for a start offset on a sequential source, which
+        plays from its first byte.
+        """
         ...
 
     async def pause(self) -> None: ...
 
     async def resume(self) -> None: ...
 
-    async def seek(self, position_ms: int) -> None: ...
+    async def seek(self, position_ms: int) -> None:
+        """Raises ValueError while a sequential source plays: play a new one."""
+        ...
 
     async def set_volume(self, percent: int) -> None:
         """Through whichever device controls the renderer's volume.

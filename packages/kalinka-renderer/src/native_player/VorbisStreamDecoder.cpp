@@ -131,10 +131,7 @@ size_t VorbisStreamDecoder::readInput(void *data, size_t size, size_t count) {
   }
   auto combined = combineStopTokens(workerToken, seekSignal.getStopToken());
   const auto token = interruptReadForSeek ? combined.get_token() : workerToken;
-  // A live producer can wait for playback before sending its next page.
-  // Waiting for libvorbisfile's full read buffer would deadlock even when a
-  // complete page is already available. Return available whole items; only a
-  // zero-length read signals EOF to libvorbisfile.
+  // A paced producer holds its next page until this one plays.
   const auto available = inputNode->waitForData(token, size);
   if (token.stop_requested()) {
     return 0;

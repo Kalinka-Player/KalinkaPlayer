@@ -112,7 +112,8 @@ FlacStreamDecoder::write_callback(const ::FLAC__Frame *frame,
 FlacStreamDecoder::read_callback(FLAC__byte buffer[], size_t *bytes) {
   auto combinedStopToken = combineStopTokens(seekSignal.getStopToken(),
                                              decodingThread.get_stop_token());
-  inputNode->waitForData(combinedStopToken.get_token(), *bytes);
+  // A paced producer holds its next frames until these play.
+  inputNode->waitForData(combinedStopToken.get_token());
   *bytes = inputNode->read(buffer, *bytes);
   sourceStreamPosition += *bytes;
   if (decodingThread.get_stop_token().stop_requested()) {

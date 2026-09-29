@@ -30,6 +30,8 @@ class LiveContent(Protocol):
         """Pin a reader at a byte offset; reject evicted/unavailable bytes.
 
         end is exclusive. Implementations must bound waits, storage and reader
-        count, wake on cancellation, and retain pinned data until aclose.
+        count, wake on cancellation, and retain pinned data until aclose. The
+        server gives up on an open or read that produces nothing for 30
+        minutes.
         """
         ...

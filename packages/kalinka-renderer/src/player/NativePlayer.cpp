@@ -8,6 +8,7 @@
 #include <chrono>
 #include <span>
 #include <string_view>
+#include <unordered_map>
 
 #include "../config/ConfigContributor.h"
 #include "../config/SettingsPersistence.h"
@@ -39,20 +40,33 @@ AudioFormat formatOf(const pb::Source &source) {
   mime = first == std::string_view::npos
              ? std::string_view{}
              : mime.substr(first, mime.find_last_not_of(" \t\r\n") - first + 1);
-  if (mime == "audio/mpeg" || mime == "audio/mp3" || mime == "audio/x-mp3" ||
-      mime == "mpeg" || mime == "mp3") {
-    return AudioFormat::FormatMpeg;
+  static const std::unordered_map<std::string_view, AudioFormat> declared = {
+      {"audio/mpeg", AudioFormat::FormatMpeg},
+      {"audio/mp3", AudioFormat::FormatMpeg},
+      {"audio/x-mp3", AudioFormat::FormatMpeg},
+      {"audio/x-mpeg", AudioFormat::FormatMpeg},
+      {"audio/mpeg3", AudioFormat::FormatMpeg},
+      {"audio/x-mpeg-3", AudioFormat::FormatMpeg},
+      {"mpeg", AudioFormat::FormatMpeg},
+      {"mp3", AudioFormat::FormatMpeg},
+      {"audio/flac", AudioFormat::FormatFlac},
+      {"audio/x-flac", AudioFormat::FormatFlac},
+      {"application/x-flac", AudioFormat::FormatFlac},
+      {"flac", AudioFormat::FormatFlac},
+      {"audio/ogg", AudioFormat::FormatVorbis},
+      {"audio/x-ogg", AudioFormat::FormatVorbis},
+      {"application/ogg", AudioFormat::FormatVorbis},
+      {"application/x-ogg", AudioFormat::FormatVorbis},
+      {"audio/vorbis", AudioFormat::FormatVorbis},
+      {"audio/x-vorbis", AudioFormat::FormatVorbis},
+      {"audio/x-vorbis+ogg", AudioFormat::FormatVorbis},
+      {"ogg", AudioFormat::FormatVorbis},
+      {"vorbis", AudioFormat::FormatVorbis},
+  };
+  if (const auto found = declared.find(mime); found != declared.end()) {
+    return found->second;
   }
-  if (mime == "audio/flac" || mime == "audio/x-flac" || mime == "flac") {
-    return AudioFormat::FormatFlac;
-  }
-  if (mime == "audio/ogg" || mime == "application/ogg" ||
-      mime == "audio/vorbis" || mime == "audio/x-vorbis+ogg" ||
-      mime == "ogg" || mime == "vorbis") {
-    return AudioFormat::FormatVorbis;
-  }
-  // A declared, unsupported type must not be overridden by the URL suffix.
-  // Extension lookup is only a fallback for missing or generic metadata.
+  // A declared type outranks the URL suffix, even one no decoder handles.
   if (!mime.empty() && mime != "application/octet-stream") {
     return AudioFormat::FormatUnsupported;
   }
@@ -901,9 +915,7 @@ void NativePlayer::fillSnapshot(pb::StateSnapshot &out) const {
   }
 
   StreamState state = player_->getState();
-  const auto now = getTimestampNs();
-  state.position = state.positionAt(now);
-  state.timestamp = now;
+  state.position = state.positionAt(getTimestampNs());
   const std::optional<StreamId> onAir =
       state.streamId ? state.streamId : currentId_;
   pb::PlaybackStateChanged translated;

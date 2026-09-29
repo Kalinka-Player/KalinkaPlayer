@@ -92,7 +92,7 @@ def head_response(
     Built from the same headers so a client cannot learn one thing from HEAD
     and another from GET.
     """
-    status, headers = _headers(span, size)
+    status, headers = range_headers(span, size)
     return Response(status_code=status, media_type=mime_type, headers=headers)
 
 
@@ -109,7 +109,7 @@ def stream_response(
         including when the client goes away mid-track.
     @param span The honoured range, or None to serve the whole asset.
     """
-    status, headers = _headers(span, size)
+    status, headers = range_headers(span, size)
     start, end = span if span is not None else (0, size - 1)
     return _ClosingStreamingResponse(
         reader,
@@ -143,7 +143,7 @@ class _ClosingStreamingResponse(StreamingResponse):
             _close_detached(self._reader)
 
 
-def _headers(
+def range_headers(
     span: Optional[tuple[int, int]], size: int
 ) -> tuple[int, dict[str, str]]:
     """Status and headers for one answer. ``Accept-Ranges`` goes on every

@@ -72,8 +72,7 @@ struct StreamState {
   explicit StreamState(AudioGraphNodeState state)
       : state(state), position(0), timestamp(getTimestampNs()) {}
 
-  // position is anchored when the state changes. A later snapshot must move
-  // the running clock forward, without advancing a paused or buffering source.
+  /// The position at `now`: only a streaming source's clock runs on.
   long positionAt(unsigned long long now) const {
     return position +
            (state == AudioGraphNodeState::STREAMING && now > timestamp

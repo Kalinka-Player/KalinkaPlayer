@@ -3,6 +3,7 @@
 #include "AlsaAudioEmitter.h"
 #include "AudioGraphHttpStream.h"
 #include "FileInputNode.h"
+#include "LiveInputNode.h"
 #include "LocalHttpServer.h"
 #include "TestHelpers.h"
 
@@ -388,27 +389,8 @@ TEST(VorbisStreamDecoderTest, PlaysChunkedOggWithUnknownLength) {
 }
 
 TEST(VorbisStreamDecoderTest, StartsBeforeTheNextLivePageOrEndOfStream) {
-  class LiveInput : public AudioGraphOutputNode {
-  public:
-    Buffer<uint8_t> bytes{16384};
-    LiveInput() {
-      setState({AudioGraphNodeState::STREAMING, 0,
-                StreamInfo{.streamType = StreamType::BYTES}});
-    }
-    size_t read(void *out, size_t count) override {
-      return bytes.read(static_cast<uint8_t *>(out), count);
-    }
-    size_t waitForData(std::stop_token token, size_t count) override {
-      return bytes.waitForData(token, count);
-    }
-    size_t waitForDataFor(std::stop_token token, std::chrono::milliseconds timeout,
-                         size_t count) override {
-      return bytes.waitForDataFor(token, timeout, count);
-    }
-  };
   const auto ogg = encoded();
-  // Three pages: identification, remaining headers, and about one second of
-  // audio. The producer waits for playback feedback before sending any more.
+  // Identification, remaining headers, and about one second of audio.
   size_t prefix = 0;
   for (int page = 0; page < 3; ++page) {
     const auto segments = ogg.at(prefix + 26);
@@ -418,7 +400,7 @@ TEST(VorbisStreamDecoderTest, StartsBeforeTheNextLivePageOrEndOfStream) {
     }
     prefix += length;
   }
-  auto source = std::make_shared<LiveInput>();
+  auto source = std::make_shared<LiveInputNode>();
   ASSERT_EQ(source->bytes.write(ogg.data(), prefix), prefix);
   VorbisStreamDecoder decoder(1, 16384);
   decoder.connectTo(source);

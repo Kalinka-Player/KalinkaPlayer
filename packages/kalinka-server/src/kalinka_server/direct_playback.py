@@ -94,12 +94,9 @@ class _ListenerBridge:
                 logger.exception("%s: %s failed", self._label, method)
 
 
+_PLAYING_STATES = (AudioGraphNodeState.PREPARING, AudioGraphNodeState.STREAMING)
 # A source that was playing, or paused partway, when the renderer changed.
-_MOVING_STATES = (
-    AudioGraphNodeState.PREPARING,
-    AudioGraphNodeState.STREAMING,
-    AudioGraphNodeState.PAUSED,
-)
+_MOVING_STATES = (*_PLAYING_STATES, AudioGraphNodeState.PAUSED)
 
 
 class HolderSession:
@@ -145,6 +142,7 @@ class HolderSession:
         )
         self._ended = False
         self._teardown: Optional[asyncio.Future] = None
+        self._paced = asyncio.Event()
         self._consumer = asyncio.get_running_loop().create_task(self._consume())
         self._volume_watch = asyncio.get_running_loop().create_task(self._watch_volume())
         self._progress_watch = asyncio.get_running_loop().create_task(self._watch_progress())
@@ -172,6 +170,8 @@ class HolderSession:
         self, source: TrackSource, track: Track, *, start_offset_ms: int = 0
     ) -> None:
         self._require_active()
+        if source.sequential and start_offset_ms:
+            raise ValueError("a sequential source starts at its first byte")
         self._start(source, track, start_offset_ms)
 
     async def pause(self) -> None:
@@ -184,6 +184,8 @@ class HolderSession:
 
     async def seek(self, position_ms: int) -> None:
         self._require_active()
+        if self._source is not None and self._source.sequential:
+            raise ValueError("a sequential source cannot seek; play a new one")
         self._player.seek(position_ms)
 
     async def set_volume(self, percent: int) -> None:
@@ -351,19 +353,22 @@ class HolderSession:
                 continue
             if state.state is AudioGraphNodeState.FINISHED:
                 # Not shown: the plugin plays on or releases.
+                self._paced.clear()
                 self._bridge.send("on_finished")
                 continue
             self._publish(state)
 
     async def _watch_progress(self) -> None:
         while not self._ended:
+            await self._paced.wait()
             await asyncio.sleep(1)
-            if self._source is not None and self._source.sequential:
-                try:
-                    await self._player.request_snapshot()
-                except Exception:
-                    # Session loss/reconnect is handled by the player's callbacks.
-                    logger.debug("Sequential playback snapshot was unavailable")
+            if not self._paced.is_set():
+                continue
+            try:
+                await self._player.request_snapshot()
+            except Exception:
+                # Session loss/reconnect is handled by the player's callbacks.
+                logger.debug("Sequential playback snapshot was unavailable")
 
     async def _watch_volume(self) -> None:
         """Tell the plugin the output's volume: now, and at every change.
@@ -379,6 +384,14 @@ class HolderSession:
                     self._bridge.send("on_volume", event.volume)
 
     def _publish(self, state: StreamState) -> None:
+        if (
+            self._source is not None
+            and self._source.sequential
+            and state.state in _PLAYING_STATES
+        ):
+            self._paced.set()
+        else:
+            self._paced.clear()
         self._state = PlaybackState(
             state=to_state_name(state.state),
             current_track=self._track,
