@@ -33,9 +33,12 @@ logger = logging.getLogger(__name__.split(".")[-1])
 # docstring — plugins size their backend HTTP timeouts against this.
 PLUGIN_CALL_TIMEOUT_S = 3.0
 
-# From the class body, since typing's __protocol_attrs__ is 3.12+ only.
+# The protocol members the proxy must expose concretely (see module docstring),
+# read from the class body because typing's __protocol_attrs__ is 3.12+ only.
 _PROTOCOL_METHODS = tuple(
-    name for name in vars(InputModule) if not name.startswith("_")
+    name
+    for name, value in vars(InputModule).items()
+    if not name.startswith("_") and callable(value)
 )
 
 
