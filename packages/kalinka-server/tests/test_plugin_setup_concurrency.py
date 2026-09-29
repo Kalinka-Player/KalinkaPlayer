@@ -31,8 +31,7 @@ class _Config(ModuleConfig):
 
 
 class _Barrier:
-    """Minimal asyncio barrier (``asyncio.Barrier`` is 3.11+; the server's
-    ``requires-python`` is 3.10).
+    """Minimal asyncio barrier (``asyncio.Barrier`` is 3.11+, we target 3.8).
 
     The event loop is single-threaded, so the unguarded counter bump is safe.
     Each waiter records its arrival; the last to arrive releases everyone. If
