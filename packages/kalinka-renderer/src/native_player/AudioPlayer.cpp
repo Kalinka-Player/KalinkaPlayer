@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <functional>
 
 namespace {
 // These numbers can be reduced depending on audio bitness,
@@ -43,8 +44,12 @@ float percentToGain(int percent) {
   return p * p * p;
 }
 
-// Keep rejection in the graph so queued failures only surface when their
-// source becomes current, with the same stream identity as decoder errors.
+/**
+ * @brief Stands in for a source no decoder can play.
+ *
+ * Reports a decoder error under its own stream id and yields no data, so a
+ * queued source fails only once it becomes current, as a decoder error would.
+ */
 class UnsupportedStreamNode : public AudioGraphOutputNode {
 public:
   explicit UnsupportedStreamNode(StreamId id) : AudioGraphNode(id) {
@@ -133,9 +138,8 @@ struct StreamNodes {
       return;
     }
 
-    if (format != AudioFormat::FormatFlac && format != AudioFormat::FormatMpeg &&
-        format != AudioFormat::FormatVorbis) {
-      // Reject before fetching bytes or opening an input/decoder.
+    const auto decoder = decoderFor(config, format, startOffsetMs);
+    if (!decoder) {
       nodeChain.emplace_back(std::make_shared<UnsupportedStreamNode>(id));
       return;
     }
@@ -156,42 +160,40 @@ struct StreamNodes {
               AudioGraphHttpStream::DEFAULT_STALL_TIMEOUT.count()))));
     }
 
-    auto decoder =
-        connectDecoder(nodeChain.back(), config, format, startOffsetMs);
-    if (nodeChain.back() != decoder) {
-      nodeChain.emplace_back(std::move(decoder));
+    nodeChain.emplace_back(decoder(nodeChain.back()));
+  }
+
+  using DecoderFactory = std::function<std::shared_ptr<AudioGraphOutputNode>(
+      std::shared_ptr<AudioGraphOutputNode>)>;
+
+  /// Builds the decoder for `format` onto an input; empty when none exists.
+  DecoderFactory decoderFor(const Config &config, const AudioFormat format,
+                            size_t startOffsetMs) const {
+    switch (format) {
+    case AudioFormat::FormatFlac:
+      return decoding<FlacStreamDecoder>(
+          value_or(config, "decoder.flac.buffer_size", FLAC_BUFFER_SIZE),
+          startOffsetMs);
+    case AudioFormat::FormatMpeg:
+      return decoding<Mp3StreamDecoder>(
+          value_or(config, "decoder.mpeg.buffer_size", MPEG_BUFFER_SIZE),
+          startOffsetMs);
+    case AudioFormat::FormatVorbis:
+      return decoding<VorbisStreamDecoder>(
+          value_or(config, "decoder.vorbis.buffer_size", VORBIS_BUFFER_SIZE),
+          startOffsetMs);
+    default:
+      return {};
     }
   }
 
-  std::shared_ptr<AudioGraphOutputNode>
-  connectDecoder(std::shared_ptr<AudioGraphOutputNode> outputNode,
-                 const Config &config, const AudioFormat format,
-                 size_t startOffsetMs) {
-    switch (format) {
-    case AudioFormat::FormatFlac: {
-      auto decoder = std::make_shared<FlacStreamDecoder>(
-          id, value_or(config, "decoder.flac.buffer_size", FLAC_BUFFER_SIZE),
-          startOffsetMs);
-      decoder->connectTo(outputNode);
-      return decoder;
-    }
-    case AudioFormat::FormatMpeg: {
-      auto decoder = std::make_shared<Mp3StreamDecoder>(
-          id, value_or(config, "decoder.mpeg.buffer_size", MPEG_BUFFER_SIZE),
-          startOffsetMs);
-      decoder->connectTo(outputNode);
-      return decoder;
-    }
-    case AudioFormat::FormatVorbis: {
-      auto decoder = std::make_shared<VorbisStreamDecoder>(
-          id, value_or(config, "decoder.vorbis.buffer_size", VORBIS_BUFFER_SIZE),
-          startOffsetMs);
-      decoder->connectTo(outputNode);
-      return decoder;
-    }
-    default:
-      return std::make_shared<UnsupportedStreamNode>(id);
-    }
+  template <typename Decoder>
+  DecoderFactory decoding(size_t bufferSize, size_t startOffsetMs) const {
+    return [id = id, bufferSize, startOffsetMs](auto input) {
+      auto decoder = std::make_shared<Decoder>(id, bufferSize, startOffsetMs);
+      decoder->connectTo(input);
+      return std::shared_ptr<AudioGraphOutputNode>(std::move(decoder));
+    };
   }
 
   StreamNodes(StreamNodes &&other)

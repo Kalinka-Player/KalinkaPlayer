@@ -1,10 +1,13 @@
 #include "FileInputNode.h"
 #include "FlacStreamDecoder.h"
 
+#include <fstream>
 #include <gtest/gtest.h>
+#include <iterator>
 #include <memory>
 
 #include "ErrorFakeNode.h"
+#include "LiveInputNode.h"
 #include "TestHelpers.h"
 
 class FlacStreamDecoderTest : public ::testing::Test {
@@ -114,4 +117,17 @@ TEST_F(FlacStreamDecoderTest, seek_after_the_decoder_has_stopped_returns) {
   EXPECT_TRUE(returnsWithin(
       [flacStreamDecoder] { flacStreamDecoder->seekTo(0); },
       std::chrono::milliseconds(2000)));
+}
+
+TEST_F(FlacStreamDecoderTest, starts_before_a_live_producer_sends_the_rest) {
+  std::ifstream file(testFile("tone440.flac"), std::ios::binary);
+  const std::vector<uint8_t> flac(std::istreambuf_iterator<char>(file), {});
+  const size_t prefix = 4096;
+  ASSERT_GT(flac.size(), prefix);
+  auto source = std::make_shared<LiveInputNode>(1 << 20);
+  ASSERT_EQ(source->bytes.write(flac.data(), prefix), prefix);
+  auto decoder = std::make_shared<FlacStreamDecoder>(1, bufferSize);
+  decoder->connectTo(source);
+  EXPECT_GE(decoder->waitForDataFor({}, std::chrono::seconds(1), 1024), 1024u);
+  decoder->disconnect(source);
 }

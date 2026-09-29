@@ -856,3 +856,54 @@ async def test_sequential_feedback_polls_actual_renderer_position(queue, rendere
     await asyncio.sleep(1.1)
     assert listener.states[-1].position >= 10000
     assert any(c.WhichOneof('op') == 'request_snapshot' for c in renderer.commands)
+
+
+def _snapshot_requests(renderer) -> int:
+    return sum(c.WhichOneof('op') == 'request_snapshot' for c in renderer.commands)
+
+
+async def test_sequential_source_refuses_an_offset_or_a_seek(queue, renderer, direct):
+    hold = await direct.acquire('Spotify Connect', Listener())
+    source, track = _connect_track()
+    source = source.model_copy(update={'sequential': True})
+    with pytest.raises(ValueError):
+        await hold.play(source, track, start_offset_ms=1000)
+    await hold.play(source, track)
+    await asyncio.sleep(SETTLE_S)
+    with pytest.raises(ValueError):
+        await hold.seek(30000)
+    await asyncio.sleep(SETTLE_S)
+    assert not any(c.WhichOneof('op') == 'seek' for c in renderer.commands)
+
+
+async def test_a_finished_sequential_source_is_finished_once(queue, renderer, direct):
+    listener = Listener()
+    hold = await direct.acquire('Spotify Connect', listener)
+    source, track = _connect_track()
+    await hold.play(source.model_copy(update={'sequential': True}), track)
+    await asyncio.sleep(SETTLE_S)
+    renderer.finish_current()
+    await asyncio.sleep(SETTLE_S)
+    polled = _snapshot_requests(renderer)
+    await asyncio.sleep(2.2)
+    assert listener.finished == 1
+    assert _snapshot_requests(renderer) == polled
+
+
+async def test_a_paused_sequential_source_is_not_polled(queue, renderer, direct):
+    hold = await direct.acquire('Spotify Connect', Listener())
+    source, track = _connect_track()
+    await hold.play(source.model_copy(update={'sequential': True}), track)
+    await asyncio.sleep(SETTLE_S)
+    await hold.pause()
+    await asyncio.sleep(SETTLE_S)
+    polled = _snapshot_requests(renderer)
+    await asyncio.sleep(1.2)
+    assert _snapshot_requests(renderer) == polled
+
+
+async def test_a_seekable_source_is_not_polled(queue, renderer, direct):
+    hold = await direct.acquire('Spotify Connect', Listener())
+    await hold.play(*_connect_track())
+    await asyncio.sleep(1.2)
+    assert _snapshot_requests(renderer) == 0

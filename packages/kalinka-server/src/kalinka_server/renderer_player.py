@@ -390,7 +390,7 @@ class RendererPlayer:
             # dropped for want of anywhere to send them.
             if translated.state is self._last_state.state:
                 self._record(translated)
-                if self.publish_snapshots:
+                if self.publish_snapshots and translated.state in _PLAYING_STATES:
                     self._monitor.push(translated)
             else:
                 self._publish(translated)

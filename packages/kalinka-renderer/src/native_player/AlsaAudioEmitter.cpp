@@ -6,7 +6,9 @@
 #include "StreamState.h"
 #include "Utils.h"
 
+#include <condition_variable>
 #include <iostream>
+#include <mutex>
 #include <pthread.h>
 #include <sstream>
 #include <stdexcept>
@@ -199,7 +201,8 @@ StreamState AlsaAudioEmitter::waitForInputToBeReady(std::stop_token token) {
   while (!token.stop_requested()) {
     switch (inputNodeState.state) {
     case AudioGraphNodeState::PREPARING:
-      setState(StreamState(AudioGraphNodeState::PREPARING));
+      setState({AudioGraphNodeState::PREPARING, reachedPositionMs(),
+                getState().streamInfo});
       break;
     case AudioGraphNodeState::STREAMING:
       return inputNodeState;
@@ -264,6 +267,30 @@ bool AlsaAudioEmitter::handleSeekSignal() {
   seekRequestSignal.respond(framesToTimeMs(retVal).count());
   seekHappened = true;
   return true;
+}
+
+void AlsaAudioEmitter::pauseBeforeStart(bool paused,
+                                        const StreamInfo &streamInfo,
+                                        snd_pcm_uframes_t position) {
+  this->paused = paused;
+  setState({paused ? AudioGraphNodeState::PAUSED
+                   : AudioGraphNodeState::PREPARING,
+            framesToTimeMs(position).count(), streamInfo});
+}
+
+void AlsaAudioEmitter::waitForCommand(std::stop_token token) {
+  std::mutex mutex;
+  std::condition_variable_any woken;
+  std::unique_lock lock(mutex);
+  woken.wait(lock, token, [] { return false; });
+}
+
+long AlsaAudioEmitter::reachedPositionMs() {
+  const auto current = getState();
+  // Only a drain leaves a streaming state here, and it plays out all written.
+  return current.state == AudioGraphNodeState::STREAMING
+             ? framesToTimeMs(currentSourceTotalFramesWritten).count()
+             : current.position;
 }
 
 bool AlsaAudioEmitter::handlePauseSignal(bool paused) {
@@ -483,9 +510,7 @@ AlsaAudioEmitter::readIntoAlsaFromStream(std::stop_token stopToken,
             waitForInputData(stopToken, frames - actualFrames);
         perfmon_end("waitForMoreInputData");
         if (bytesAvailable == 0) {
-          // A pause/seek interrupts the wait even though this is not an
-          // underrun. Return to the worker so it can acknowledge the command;
-          // draining/restarting here leaves that request pending forever.
+          // A command cut the wait short: the worker has to answer it.
           if (stopToken.stop_requested()) {
             break;
           }
@@ -593,35 +618,44 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
       // further back than this run began however much the device claims.
       snd_pcm_uframes_t streamStartPosition = std::max(
           currentSourceStartFrames, currentSourceTotalFramesWritten - queued);
-      // A refill is still the same timeline. Reporting zero here rewinds a
-      // live producer's progress/credit when it has already played this prefix.
+      // Zero would rewind a live producer's credit for what already played.
       setState({AudioGraphNodeState::PREPARING,
                 framesToTimeMs(streamStartPosition).count(), streamInfo});
       paused = false;
 
       while (!token.stop_requested()) {
-        auto framesToRead = waitForAlsaBufferSpace();
-        if (!framesToRead) {
-          break;
-        }
-
         auto combinedToken =
             combineStopTokens(token, seekRequestSignal.getStopToken(),
                               pauseRequestSignal.getStopToken());
 
-        auto framesRead =
-            readIntoAlsaFromStream(combinedToken.get_token(), framesToRead);
-        if (framesRead < 0 || token.stop_requested()) {
+        if (paused && !started) {
+          // Silence written now would play before the audio it waits for.
+          waitForCommand(combinedToken.get_token());
+        } else {
+          auto framesToRead = waitForAlsaBufferSpace();
+          if (!framesToRead) {
+            break;
+          }
+          auto framesRead =
+              readIntoAlsaFromStream(combinedToken.get_token(), framesToRead);
+          if (framesRead < 0) {
+            break;
+          }
+        }
+        if (token.stop_requested()) {
           break;
         }
 
         if (pauseRequestSignal.getValue()) {
-          if (paused != *pauseRequestSignal.getValue()) {
-            bool success = handlePauseSignal(*pauseRequestSignal.getValue());
-            pauseRequestSignal.respond(success ? *pauseRequestSignal.getValue()
-                                               : paused);
-          } else {
+          const bool requested = *pauseRequestSignal.getValue();
+          if (paused == requested) {
             pauseRequestSignal.respond(paused);
+          } else if (!started) {
+            pauseBeforeStart(requested, streamInfo.value(), streamStartPosition);
+            pauseRequestSignal.respond(requested);
+          } else {
+            const bool success = handlePauseSignal(requested);
+            pauseRequestSignal.respond(success ? requested : paused);
           }
           continue;
         }

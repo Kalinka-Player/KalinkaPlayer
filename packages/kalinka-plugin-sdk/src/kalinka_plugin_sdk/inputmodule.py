@@ -1,6 +1,6 @@
 import asyncio
 
-from pydantic import BaseModel, PositiveInt, NonNegativeInt, ConfigDict
+from pydantic import BaseModel, PositiveInt, NonNegativeInt, ConfigDict, model_validator
 from enum import Enum
 from typing import (
     Awaitable,
@@ -81,14 +81,25 @@ class TrackSource(BaseModel):
     Attributes:
         source (ModuleAsset | DirectUrl): Server-proxied asset, or an absolute URL
         format (str): The audio format/codec (e.g., "mp3", "flac", "aac")
+        sequential (bool): SDK 3.5. The resource plays from its first byte
+            only and cannot be reopened at another offset: after a seek or a
+            lost renderer the plugin makes a new one. Plays only through
+            DirectPlayback, which never seeks it; the play queue refuses it.
+        timeline_offset_ms (int): SDK 3.5. Where a sequential resource starts
+            in its track, added to the position clients are shown. Only for a
+            sequential source.
     """
 
     source: ModuleAsset | DirectUrl
     format: str
-    # Sequential resources cannot be reopened at an arbitrary media offset.
-    # The plugin creates a new resource after a seek or renderer loss.
     sequential: bool = False
     timeline_offset_ms: NonNegativeInt = 0
+
+    @model_validator(mode="after")
+    def _offset_only_when_sequential(self) -> "TrackSource":
+        if self.timeline_offset_ms and not self.sequential:
+            raise ValueError("timeline_offset_ms applies only to a sequential source")
+        return self
 
 
 class ContentInfo(BaseModel):
@@ -114,6 +125,9 @@ class ContentInfo(BaseModel):
         size (Optional[int]): Byte length. Required alongside ``reader``;
             the server measures a local file for itself.
         cacheable (bool): Whether the server may hold on to these bytes.
+        live (Optional[LiveContent]): SDK 3.5. A resource still being
+            produced, read through asynchronous readers outside the module
+            call budget. Takes precedence over ``local_path`` and ``reader``.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -123,9 +137,6 @@ class ContentInfo(BaseModel):
     reader: Optional[Callable[[], BinaryIO]] = None
     size: Optional[int] = None
     cacheable: bool = False
-    # SDK 3.5: an asynchronous, in-progress resource. Its open method returns
-    # an async reader; waiting for bytes happens outside the module RPC budget.
-    # See live_content.LiveContent for the contract.
     live: Optional[LiveContent] = None
 
 

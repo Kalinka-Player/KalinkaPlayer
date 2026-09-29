@@ -97,6 +97,14 @@ private:
   void workerThread(std::stop_token token);
   bool handleSeekSignal();
   bool handlePauseSignal(bool paused);
+  /// Applies a pause or resume that lands before the device started: nothing
+  /// is playing out, so the new state holds at once.
+  void pauseBeforeStart(bool paused, const StreamInfo &streamInfo,
+                        snd_pcm_uframes_t position);
+  /// Blocks until `token` stops: a pause, a seek or the worker's end.
+  void waitForCommand(std::stop_token token);
+  /// Where playback stands with nothing queued on the device.
+  long reachedPositionMs();
 
   void openDevice();
   void closeDevice();

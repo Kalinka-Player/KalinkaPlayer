@@ -1424,6 +1424,28 @@ async def test_resolve_playable_carries_the_module_reason(event_emitter, playque
 
 
 @pytest.mark.asyncio
+async def test_resolve_playable_refuses_a_sequential_source(event_emitter, playqueue):
+    """The queue resumes a track at an offset, which a sequential source
+    cannot do; it plays only through its plugin's direct playback."""
+
+    async def live():
+        return TrackSource(
+            source=DirectUrl(url="http://example.com/live"),
+            format="ogg",
+            sequential=True,
+        )
+
+    tracks = make_tracks_with_failures(2, set())
+    tracks[0] = tracks[0].model_copy(update={"source_retriever": live})
+    playqueue.track_list = tracks
+
+    index, _, _, failed = await playqueue._resolve_playable(0, step=1)
+
+    assert index == 1
+    assert failed == [(0, "This source plays only through its own plugin")]
+
+
+@pytest.mark.asyncio
 async def test_resolve_playable_all_failed_returns_none(event_emitter, playqueue):
     """When every candidate fails, resolve returns (None, None, all-indices)."""
     playqueue.track_list = make_tracks_with_failures(3, {0, 1, 2})

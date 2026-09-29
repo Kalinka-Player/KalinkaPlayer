@@ -1024,6 +1024,12 @@ class PlayQueueImpl(PlayQueueController):
             source = await asyncio.wait_for(
                 track.source_retriever(), timeout=SOURCE_RETRIEVAL_TIMEOUT_S
             )
+            if source.sequential:
+                logger.warning(
+                    "Track source for index %d is sequential; the queue cannot resume it",
+                    index,
+                )
+                return None, "This source plays only through its own plugin"
             return source, None
         except SourceUnavailableError as e:
             logger.warning(

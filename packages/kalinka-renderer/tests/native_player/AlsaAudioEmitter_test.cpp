@@ -35,8 +35,7 @@ public:
   }
 };
 
-// A valid live source can run out of bytes without reaching EOF. Controls
-// must still be acknowledged while its next packet has not arrived.
+// A live source that runs out of bytes without reaching EOF.
 class StarvedOutputNode : public AudioGraphOutputNode {
 public:
   StarvedOutputNode() {
@@ -75,6 +74,50 @@ public:
 private:
   Buffer<uint8_t> buffer{16384};
   std::atomic<bool> waiting{false};
+};
+
+// Reports buffering once its bytes run out, as an input fetching more does.
+class DryingOutputNode : public AudioGraphOutputNode {
+public:
+  static constexpr size_t kFrames = 4096;
+
+  DryingOutputNode() {
+    setState({AudioGraphNodeState::STREAMING, 0, info});
+    provideAudio();
+  }
+  size_t read(void *data, size_t size) override {
+    return buffer.read(static_cast<uint8_t *>(data), size);
+  }
+  size_t waitForData(std::stop_token token, size_t size) override {
+    runDryIfEmpty();
+    return buffer.waitForData(token, size);
+  }
+  size_t waitForDataFor(std::stop_token token, std::chrono::milliseconds timeout,
+                        size_t size) override {
+    runDryIfEmpty();
+    return buffer.waitForDataFor(token, timeout, size);
+  }
+  void catchUp() {
+    setState({AudioGraphNodeState::STREAMING, 0, info});
+    provideAudio();
+  }
+
+private:
+  const StreamInfo info{.format = {.sampleRate = 44100,
+                                   .channels = 2,
+                                   .bitsPerSample = 16},
+                        .streamType = StreamType::FRAMES};
+  Buffer<uint8_t> buffer{kFrames * 4};
+
+  void provideAudio() {
+    std::array<uint8_t, kFrames * 4> silence{};
+    buffer.write(silence.data(), silence.size());
+  }
+  void runDryIfEmpty() {
+    if (buffer.size() == 0) {
+      setState({AudioGraphNodeState::PREPARING, 0, info});
+    }
+  }
 };
 
 class AlsaAudioEmitterTest : public ::testing::Test {
@@ -150,6 +193,55 @@ TEST_F(AlsaAudioEmitterTest, seek_while_live_input_is_starved) {
   if (result == std::future_status::ready) {
     EXPECT_EQ(seek.get(), 12000);
   }
+}
+
+TEST_F(AlsaAudioEmitterTest, a_pause_before_the_device_starts_holds_until_resumed) {
+  auto source = std::make_shared<StarvedOutputNode>();
+  auto waiting = source->firstWait.get_future();
+  alsaAudioEmitter->connectTo(source);
+  ASSERT_EQ(waiting.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+  StateMonitor monitor(alsaAudioEmitter.get());
+  auto emitter = alsaAudioEmitter;
+  ASSERT_TRUE(returnsWithin([emitter] { emitter->pause(true); },
+                            std::chrono::milliseconds(300)));
+  source->provideAudio();
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  const auto whilePaused = drainStates(monitor);
+  EXPECT_TRUE(reported(whilePaused, AudioGraphNodeState::PAUSED));
+  EXPECT_FALSE(reported(whilePaused, AudioGraphNodeState::STREAMING));
+  ASSERT_TRUE(returnsWithin([emitter] { emitter->pause(false); },
+                            std::chrono::milliseconds(300)));
+  EXPECT_EQ(waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING,
+                          std::chrono::seconds(1))
+                .state,
+            AudioGraphNodeState::STREAMING);
+  alsaAudioEmitter->disconnect(source);
+}
+
+TEST_F(AlsaAudioEmitterTest, an_input_that_runs_dry_buffers_where_playback_reached) {
+  auto source = std::make_shared<DryingOutputNode>();
+  StateMonitor monitor(alsaAudioEmitter.get());
+  alsaAudioEmitter->connectTo(source);
+  std::optional<StreamState> buffering;
+  bool streamed = false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  while (!buffering && std::chrono::steady_clock::now() < deadline) {
+    for (const auto &state : drainStates(monitor)) {
+      streamed |= state.state == AudioGraphNodeState::STREAMING;
+      if (streamed && !buffering && state.state == AudioGraphNodeState::PREPARING) {
+        buffering = state;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  ASSERT_TRUE(buffering.has_value());
+  EXPECT_EQ(buffering->position, 1000 * DryingOutputNode::kFrames / 44100);
+  source->catchUp();
+  EXPECT_EQ(waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING,
+                          std::chrono::seconds(1))
+                .state,
+            AudioGraphNodeState::STREAMING);
+  alsaAudioEmitter->disconnect(source);
 }
 
 TEST_F(AlsaAudioEmitterTest, connectTo) {
