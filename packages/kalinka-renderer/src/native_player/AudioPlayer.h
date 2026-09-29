@@ -15,7 +15,7 @@ class AudioStreamSwitcher;
 struct StreamNodes;
 class StateMonitor;
 
-enum AudioFormat { FormatFlac = 0, FormatMpeg, FormatVorbis };
+enum AudioFormat { FormatFlac = 0, FormatMpeg, FormatVorbis, FormatUnsupported };
 
 using StreamId = size_t;
 

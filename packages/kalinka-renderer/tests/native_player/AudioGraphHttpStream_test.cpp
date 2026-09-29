@@ -79,8 +79,7 @@ TEST_F(AudioGraphHttpStreamTest, read_no_ranges) {
   auto state =
       waitForStatus(*audioGraphHttpStream, AudioGraphNodeState::STREAMING);
   size_t totalLength = state.streamInfo.value().streamSize;
-  // Streaming data, no length available
-  EXPECT_EQ(totalLength, 1);
+  EXPECT_EQ(totalLength, fileContent(file).size());
   size_t bytesToRead = 0;
   size_t totalBytesRead = 0;
   while ((bytesToRead =
@@ -485,4 +484,31 @@ TEST_F(AudioGraphHttpStreamTest, stalls_between_progress_do_not_use_up_retries) 
             AudioGraphNodeState::FINISHED);
   ASSERT_EQ(content.size(), expected.size());
   EXPECT_TRUE(std::equal(content.begin(), content.end(), expected.begin()));
+}
+
+TEST_F(AudioGraphHttpStreamTest, LiveChunkedResponseHasUnknownLength) {
+  AudioGraphHttpStream stream(1, server.url("/live"), bufferSize);
+  const auto state = waitForStatus(stream, AudioGraphNodeState::STREAMING);
+  ASSERT_TRUE(state.streamInfo);
+  EXPECT_EQ(state.streamInfo->streamSize, 0);
+  EXPECT_EQ(readToEnd(stream), fileContent(file));
+}
+
+TEST_F(AudioGraphHttpStreamTest, LivePauseDoesNotBecomeStallOrEof) {
+  AudioGraphHttpStream stream(1, server.url("/live-held"), bufferSize, 0,
+                              std::chrono::seconds(1));
+  const auto state = waitForStatus(stream, AudioGraphNodeState::STREAMING);
+  ASSERT_TRUE(state.streamInfo);
+  EXPECT_EQ(state.streamInfo->streamSize, 0);
+  std::vector<uint8_t> first(1000);
+  ASSERT_EQ(stream.waitForData({}, 1000), 1000);
+  ASSERT_EQ(stream.read(first.data(), first.size()), 1000);
+  EXPECT_EQ(stream.waitForDataFor({}, std::chrono::milliseconds(2200), 1), 0);
+  EXPECT_NE(stream.getState().state, AudioGraphNodeState::ERROR);
+  EXPECT_NE(stream.getState().state, AudioGraphNodeState::FINISHED);
+  server.release();
+  const auto rest = readToEnd(stream);
+  first.insert(first.end(), rest.begin(), rest.end());
+  EXPECT_EQ(first, fileContent(file));
+  EXPECT_EQ(server.requestsTo("/live-held"), 1);
 }

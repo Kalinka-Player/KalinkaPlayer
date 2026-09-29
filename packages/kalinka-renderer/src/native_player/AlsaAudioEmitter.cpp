@@ -568,7 +568,6 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
         throw std::runtime_error("Unsupported stream type");
       }
 
-      setState(StreamState(AudioGraphNodeState::PREPARING));
       setupAudioFormat(streamInfo.value().format);
       streamInfo.value().format = currentStreamAudioFormat;
 
@@ -588,6 +587,10 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
       // further back than this run began however much the device claims.
       snd_pcm_uframes_t streamStartPosition = std::max(
           currentSourceStartFrames, currentSourceTotalFramesWritten - queued);
+      // A refill is still the same timeline. Reporting zero here rewinds a
+      // live producer's progress/credit when it has already played this prefix.
+      setState({AudioGraphNodeState::PREPARING,
+                framesToTimeMs(streamStartPosition).count(), streamInfo});
       paused = false;
 
       while (!token.stop_requested()) {

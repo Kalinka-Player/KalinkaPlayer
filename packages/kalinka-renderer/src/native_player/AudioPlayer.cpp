@@ -43,6 +43,23 @@ float percentToGain(int percent) {
   return p * p * p;
 }
 
+// Keep rejection in the graph so queued failures only surface when their
+// source becomes current, with the same stream identity as decoder errors.
+class UnsupportedStreamNode : public AudioGraphOutputNode {
+public:
+  explicit UnsupportedStreamNode(StreamId id) : AudioGraphNode(id) {
+    setState({AudioGraphNodeState::ERROR,
+              {StreamErrorSource::DECODER, "Unsupported stream format"}});
+  }
+
+  size_t read(void *, size_t) override { return 0; }
+  size_t waitForData(std::stop_token, size_t) override { return 0; }
+  size_t waitForDataFor(std::stop_token, std::chrono::milliseconds,
+                       size_t) override {
+    return 0;
+  }
+};
+
 // Pseudo-scheme for the speaker test:
 //   tone://<left|right|both>?freq=<hz>&duration_ms=<ms>
 // Generates audio in-process (SineWaveNode) instead of reading a stream, so
@@ -116,6 +133,13 @@ struct StreamNodes {
       return;
     }
 
+    if (format != AudioFormat::FormatFlac && format != AudioFormat::FormatMpeg &&
+        format != AudioFormat::FormatVorbis) {
+      // Reject before fetching bytes or opening an input/decoder.
+      nodeChain.emplace_back(std::make_shared<UnsupportedStreamNode>(id));
+      return;
+    }
+
     if (url.substr(0, 7) == "file://") {
       // Use FileInputNode for local files
       std::string filePath = url.substr(7);
@@ -166,10 +190,7 @@ struct StreamNodes {
       return decoder;
     }
     default:
-      spdlog::warn(
-          "Undefined format {}, assuming raw and not attaching any decoder",
-          static_cast<int>(format));
-      return outputNode;
+      return std::make_shared<UnsupportedStreamNode>(id);
     }
   }
 

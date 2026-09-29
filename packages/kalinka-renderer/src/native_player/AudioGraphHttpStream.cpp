@@ -93,7 +93,7 @@ int AudioGraphHttpStream::transferInfoCallback(void *stream, curl_off_t,
 }
 
 bool AudioGraphHttpStream::stalled() const {
-  return stallTimeout > std::chrono::seconds::zero() &&
+  return !live && stallTimeout > std::chrono::seconds::zero() &&
          std::chrono::steady_clock::now() - silentSince >= stallTimeout;
 }
 
@@ -123,11 +123,26 @@ size_t AudioGraphHttpStream::headerCallback(char *buffer, size_t size,
       size_t separator = value.find('/');
       if (separator != std::string::npos) {
         value = value.substr(separator + 1);
-        contentLength = std::stoul(value);
+        if (value != "*") {
+          contentLength = std::stoull(value);
+          lengthKnown = true;
+        }
       }
     }
     if (key == "accept-ranges") {
       acceptRange = (value == "bytes");
+    }
+    if (key == "x-kalinka-live" && value == "1") {
+      live = true;
+      acceptRange = false;
+    }
+    if (key == "content-length" && !lengthKnown) {
+      long responseCode = 0;
+      curlpp::Info<CURLINFO_RESPONSE_CODE, long>::get(request, responseCode);
+      if (responseCode == 200) {
+        contentLength = std::stoull(value);
+        lengthKnown = true;
+      }
     }
   }
   return totalSize;
@@ -140,7 +155,7 @@ void AudioGraphHttpStream::handleSeekSignal(size_t position) {
   }
 
   buffer.clear();
-  if (position >= contentLength) {
+  if (lengthKnown && position >= contentLength) {
     offset = contentLength;
   } else {
     buffer.resetEof();
@@ -185,7 +200,7 @@ void AudioGraphHttpStream::reader(std::stop_token stopToken) {
 void AudioGraphHttpStream::readContentChunks(std::stop_token stopToken) {
   using namespace std::placeholders;
   int numRetries = RETRIES;
-  while (offset < contentLength) {
+  while (!lengthKnown || offset < contentLength) {
     auto seekToPos = seekRequestSignal.getValue();
     if (seekToPos) {
       handleSeekSignal(seekToPos.value());

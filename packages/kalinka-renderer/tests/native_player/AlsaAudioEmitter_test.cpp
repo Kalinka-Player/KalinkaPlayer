@@ -177,9 +177,11 @@ TEST_F(AlsaAudioEmitterTest, slow_output_node_goes_into_preparing) {
       waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING).state,
       AudioGraphNodeState::STREAMING);
 
-  EXPECT_EQ(
-      waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::PREPARING).state,
-      AudioGraphNodeState::PREPARING);
+  const auto buffering =
+      waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::PREPARING);
+  EXPECT_EQ(buffering.state, AudioGraphNodeState::PREPARING);
+  EXPECT_EQ(buffering.position, duration / 2);
+  EXPECT_TRUE(buffering.streamInfo.has_value());
 
   auto state = waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING);
 

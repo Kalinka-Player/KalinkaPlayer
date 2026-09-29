@@ -44,7 +44,9 @@ private:
   std::jthread readerThread;
   std::string url;
   Buffer<uint8_t> buffer;
-  size_t contentLength = 1;
+  size_t contentLength = 0;
+  bool lengthKnown = false;
+  bool live = false;
   size_t offset = 0;
   size_t bytesToSkip = 0;
   Signal<size_t> seekRequestSignal;

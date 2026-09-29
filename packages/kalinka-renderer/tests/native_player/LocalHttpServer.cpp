@@ -132,6 +132,18 @@ Reply stalled(Response response, size_t sentFirst) {
 /// its path.
 Reply answer(const Request &request, const std::string &body, bool first) {
   const std::string_view target = request.target();
+  if (target == "/live" || target == "/live-held") {
+    Response response = respond(request, http::status::ok, body);
+    response.erase(http::field::content_length);
+    response.set(http::field::accept_ranges, "none");
+    response.set("X-Kalinka-Live", "1");
+    response.keep_alive(false);
+    if (target == "/live-held") {
+      return {std::move(response), Delivery::Held, 1000};
+    }
+    response.chunked(true);
+    return {std::move(response)};
+  }
   if (target == "/ranged") {
     return {ranged(request, body)};
   }
@@ -293,6 +305,8 @@ void LocalHttpServer::serve(tcp::socket &socket) {
       break;
     }
     if (error || !response.keep_alive()) {
+      socket.shutdown(tcp::socket::shutdown_both, error);
+      socket.close(error);
       return;
     }
   }
