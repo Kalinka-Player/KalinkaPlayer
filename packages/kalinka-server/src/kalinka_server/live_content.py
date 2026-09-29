@@ -5,6 +5,7 @@ import re
 
 from fastapi import Request
 from starlette.responses import Response, StreamingResponse
+from starlette.requests import ClientDisconnect
 from kalinka_plugin_sdk.live_content import LiveContent, LiveContentError
 from . import ranged_content
 
@@ -15,11 +16,38 @@ class LiveResponse(StreamingResponse):
         self.reader = reader
 
     async def __call__(self, scope, receive, send):
+        async def send_to_client(message):
+            try:
+                await send(message)
+            except OSError as exc:
+                # A closed socket is expected; an OSError from reader.read
+                # remains a source failure and must still propagate.
+                raise ClientDisconnect() from exc
+
+        # Always watch disconnects, including ASGI 2.4: an unfinished reader
+        # may be waiting for audio and never reach send() to notice the socket.
+        streaming = asyncio.create_task(self.stream_response(send_to_client))
+        disconnected = asyncio.create_task(self.listen_for_disconnect(receive))
         try:
-            await super().__call__(scope, receive, send)
+            done, _ = await asyncio.wait(
+                (streaming, disconnected), return_when=asyncio.FIRST_COMPLETED
+            )
+            if streaming in done:
+                try:
+                    await streaming
+                except ClientDisconnect:
+                    pass
+            else:
+                await disconnected
         finally:
-            # Close even if ASGI cancellation occurs while suspended at yield.
-            await asyncio.shield(self.reader.aclose())
+            streaming.cancel()
+            disconnected.cancel()
+            try:
+                await asyncio.gather(streaming, disconnected, return_exceptions=True)
+            finally:
+                await asyncio.shield(self.reader.aclose())
+        if self.background is not None:
+            await self.background()
 
 
 async def serve(content: LiveContent, mime_type: str, request: Request) -> Response:
