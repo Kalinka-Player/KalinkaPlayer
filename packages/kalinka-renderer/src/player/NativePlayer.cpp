@@ -278,7 +278,8 @@ const std::map<std::string, std::string> &NativePlayer::defaultSettings() {
       // sink's own 100/25.
       {"output.latency_ms", "160"},
       {"output.period_ms", "40"},
-      {"output.format_change_delay_ms", "0"},
+      // A HiFiBerry on a Pi can stay silent when audio starts before I2S syncs.
+      {"output.format_change_delay_ms", "500"},
       {"output.reopen_on_format_change", "false"},
       {"buffers.network_stream", "768000"},
       {"buffers.network_request", "384000"},
