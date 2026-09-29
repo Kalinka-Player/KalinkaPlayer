@@ -375,6 +375,32 @@ if __name__ == "__main__":
     pytest.main([__file__, "-v"])
 
 
+async def _silent_source(offset: int, limit: int):
+    """A module that leaves the SDK's default body alone answers None."""
+
+
+@pytest.mark.asyncio
+async def test_source_answering_none_counts_as_empty():
+    source = MockDataSource([("Track A", 100), ("Track B", 90)], "s", call_delay=0)
+
+    result = await k_way_merge_browse_items(
+        [_silent_source, source], compared_value, offset=0, limit=10
+    )
+
+    assert [item.name for item in result.items] == ["Track A", "Track B"]
+    assert result.total == 2
+
+
+@pytest.mark.asyncio
+async def test_only_sources_answering_none():
+    result = await k_way_merge_browse_items(
+        [_silent_source], compared_value, offset=0, limit=10
+    )
+
+    assert result.items == []
+    assert result.total == 0
+
+
 # Tests for flat_merge function
 @pytest.mark.asyncio
 async def test_flat_merge_basic():
@@ -625,3 +651,13 @@ async def test_flat_merge_preserves_exact_order():
 
     assert actual_names == expected_names
     assert len(result.items) == 3
+
+
+@pytest.mark.asyncio
+async def test_flat_merge_source_answering_none():
+    source = MockDataSource([("Track A", 100)], "s", call_delay=0)
+
+    result = await flat_merge([_silent_source, source], offset=0, limit=10)
+
+    assert [item.name for item in result.items] == ["Track A"]
+    assert result.total == 1
