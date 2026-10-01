@@ -5,6 +5,7 @@ import random
 import socket
 import time
 import urllib.parse
+from collections import deque
 from typing import Any, Dict, Optional
 
 import httpx
@@ -318,6 +319,12 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
     # DEBUG and retries every _REDISCOVERY_INTERVAL_SEC indefinitely.
     _QUICK_RETRY_INTERVALS_SEC = (2, 5, 10)
     _REDISCOVERY_INTERVAL_SEC = 60
+    _APP_NAME = "MusicCast/1.0(Linux)"
+    # The amplifier answers setVolume in a few ms but applies it far slower;
+    # anything faster queues inside it and plays out after the user stops.
+    _VOLUME_SEND_INTERVAL_SEC = 0.05
+    # An unchanged level is never echoed, and UDP can drop one.
+    _ECHO_TIMEOUT_SEC = 1.0
 
     def __init__(
         self,
@@ -333,6 +340,13 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
         self.auto_volume = config.auto_volume_correction
         self.discovery_timeout = config.discovery_timeout
         self.session = httpx.AsyncClient(timeout=5)
+        # The amplifier refuses connections when asked several things at once.
+        self._request_lock = asyncio.Lock()
+        self._volume_target: Optional[int] = None
+        self._volume_sender: Optional[asyncio.Task] = None
+        # Levels sent but not yet echoed, oldest first.
+        self._unconfirmed: deque[int] = deque()
+        self._volume_wake = asyncio.Event()
         self.ready = False
 
         self.config = config
@@ -507,14 +521,18 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
             except asyncio.CancelledError:
                 pass
 
+        tasks = list(self.tasks)
+        if self._volume_sender is not None:
+            tasks.append(self._volume_sender)
+
         # Cancel all tasks
-        for task in self.tasks:
+        for task in tasks:
             if not task.done():
                 task.cancel()
 
         # Wait for all tasks to complete
-        if self.tasks:
-            await asyncio.gather(*self.tasks, return_exceptions=True)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         # Close HTTP session
         if hasattr(self, "session"):
@@ -581,6 +599,7 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
                             pass
 
                 if target != last_sent_volume:
+                    logger.debug(f"[volume] emitting VolumeChanged={target}")
                     self.event_emitter.dispatch(
                         VolumeChangedEvent(
                             volume=DeviceVolume(
@@ -664,26 +683,11 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
                         f"[udp] refreshing subscription via getStatus "
                         f"(X-AppPort={self.udp_port})"
                     )
-                    status = await self._get_status(
-                        headers={
-                            "X-AppName": "MusicCast/1.0(Linux)",
-                            "X-AppPort": str(self.udp_port),
-                        }
-                    )
+                    status = await self._get_status()
 
                     polled_volume = status.get("volume")
                     if isinstance(polled_volume, int):
-                        if polled_volume != self.volume.current_volume:
-                            logger.debug(
-                                f"[volume] poll resync: {self.volume.current_volume} -> {polled_volume}"
-                            )
-                            self.volume.current_volume = polled_volume
-                            if hasattr(self, "_volume_changed_event"):
-                                self._volume_changed_event.set()
-                        else:
-                            logger.debug(
-                                f"[volume] poll: cache in sync at {polled_volume}"
-                            )
+                        self._on_reported_volume(polled_volume, "poll resync")
 
                     await asyncio.sleep(60)
                 except (httpx.ConnectError, httpx.TimeoutException, ConnectionError):
@@ -789,13 +793,8 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
         # Handle volume changes
         if "volume" in zone_state:
             new_volume = zone_state["volume"]
-            if isinstance(new_volume, int) and new_volume != self.volume.current_volume:
-                logger.debug(
-                    f"[volume] UDP push: {self.volume.current_volume} -> {new_volume}"
-                )
-                self.volume.current_volume = new_volume
-                if hasattr(self, "_volume_changed_event"):
-                    self._volume_changed_event.set()
+            if isinstance(new_volume, int):
+                self._on_reported_volume(new_volume, "UDP push")
 
         # Handle power state changes
         power_state = zone_state.get("power")
@@ -863,10 +862,8 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
             await self.set_volume(new_volume)
             logger.info(f"Loudness correction applied: {device_gain_units}")
 
-    async def _get_status(self, headers=None):
-        response = await self._request_musiccast(
-            f"/{self.zone_name}/getStatus", headers=headers
-        )
+    async def _get_status(self):
+        response = await self._request_musiccast(f"/{self.zone_name}/getStatus")
         if response["response_code"] != 0:
             logger.warning(
                 "MusicCast returned error code %d", response["response_code"]
@@ -879,16 +876,24 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
             f"/{self.zone_name}/setInput?input={self.connected_input}"
         )
 
-    async def _request_musiccast(self, endpoint, headers=None):
+    def _event_headers(self) -> dict[str, str]:
+        # On every request, as Yamaha's clients do: the device takes its event
+        # receiver from these, and any request renews the subscription.
+        if self.udp_port is None:
+            return {}
+        return {"X-AppName": self._APP_NAME, "X-AppPort": str(self.udp_port)}
+
+    async def _request_musiccast(self, endpoint):
         try:
             if self.base_url is None:
                 raise Exception("MusicCast device not initialized")
 
-            response = await self.session.get(
-                safe_urljoin(self.base_url, endpoint),
-                headers=headers,
-                timeout=5,
-            )
+            async with self._request_lock:
+                response = await self.session.get(
+                    safe_urljoin(self.base_url, endpoint),
+                    headers=self._event_headers(),
+                    timeout=5,
+                )
             if response.status_code != 200:
                 raise Exception(f"MusicCast returned {response.status_code}")
 
@@ -907,10 +912,11 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
     def _mark_unavailable(self) -> None:
         """Signal device-unreachable to subscribers.
 
-        Uses the existing wire model (no new fields): volume.supported=False
-        tells the UI that volume control isn't available, and power_on=False
-        keeps the device card in the off state. Only emits on actual state
-        transitions to avoid spamming the bus during retry loops.
+        volume.supported=False tells the UI that volume control isn't
+        available. Power is left alone: an unanswered request is not a
+        power-off, and a power-off stops playback. get_ready() reports the
+        real power state once the device answers again. Only emits on the
+        transition to avoid spamming the bus during retry loops.
         """
         if self.volume.supported:
             self.volume = DeviceVolume(
@@ -921,12 +927,6 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
                 backend=self.volume.backend,
             )
             self.event_emitter.dispatch(VolumeChangedEvent(volume=self.volume))
-
-        if self._device_power_on:
-            self._device_power_on = False
-            self.event_emitter.dispatch(
-                DevicePowerStateChangedEvent(power_on=False)
-            )
 
     async def rediscover_device(self):
         """Mark device unreachable and ensure the retry loop is running.
@@ -991,6 +991,9 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
         return self.volume
 
     async def set_volume(self, volume: int) -> None:
+        """Returns once the level is queued, before the amplifier has it.
+        Levels are sent at most every _VOLUME_SEND_INTERVAL_SEC, and only the
+        newest queued one: a burst never leaves a backlog of stale levels."""
         if not self.ready:
             return
 
@@ -999,18 +1002,79 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
             f"[volume] set_volume requested={volume} clamped={clamped} "
             f"cache_before={self.volume.current_volume}"
         )
-        await self._request_musiccast(f"/{self.zone_name}/setVolume?volume={clamped}")
-        # YXC suppresses the UDP echo for self-issued setVolume, so the cache
-        # would otherwise stay frozen until an external source (knob, phone app)
-        # nudges it. Update locally and signal the event sender.
-        if clamped != self.volume.current_volume:
-            logger.debug(
-                f"[volume] set_volume optimistic update: "
-                f"{self.volume.current_volume} -> {clamped}"
-            )
-            self.volume.current_volume = clamped
-            if hasattr(self, "_volume_changed_event"):
-                self._volume_changed_event.set()
+        self._volume_target = clamped
+        self._volume_wake.set()
+        if self._volume_sender is None or self._volume_sender.done():
+            self._volume_sender = asyncio.create_task(self._send_volume())
+        self._cache_volume(clamped, "set_volume optimistic update")
+
+    async def _send_volume(self) -> None:
+        while True:
+            if self._volume_target is not None:
+                target, self._volume_target = self._volume_target, None
+                self._unconfirmed.append(target)
+                logger.debug(f"[volume] sending setVolume={target}")
+                try:
+                    await self._request_musiccast(
+                        f"/{self.zone_name}/setVolume?volume={target}"
+                    )
+                except Exception:
+                    self._volume_target = None
+                    self._unconfirmed.clear()
+                    await self.rediscover_device()
+                    return
+                await asyncio.sleep(self._VOLUME_SEND_INTERVAL_SEC)
+            elif not self._unconfirmed:
+                return
+            else:
+                # A new level wakes this to send it; so does the last echo.
+                self._volume_wake.clear()
+                try:
+                    await asyncio.wait_for(
+                        self._volume_wake.wait(), timeout=self._ECHO_TIMEOUT_SEC
+                    )
+                except asyncio.TimeoutError:
+                    logger.debug(
+                        f"[volume] no echo for {list(self._unconfirmed)}; reconciling"
+                    )
+                    self._unconfirmed.clear()
+                    await self._reconcile_volume()
+
+    def _on_reported_volume(self, level: int, source: str) -> None:
+        """A level the amplifier reports: an echo of ours, or a change made
+        elsewhere (knob, another app).
+
+        The amplifier echoes our sends in order, so an unconfirmed level
+        confirms itself and every send before it. While any send is still
+        unconfirmed or queued, any other level is older than our newest one
+        and is dropped rather than shown to clients.
+        """
+        if level in self._unconfirmed:
+            while self._unconfirmed.popleft() != level:
+                pass
+            if not self._unconfirmed:
+                self._volume_wake.set()
+            return
+        if self._unconfirmed or self._volume_target is not None:
+            logger.debug(f"[volume] {source}: dropped {level}, superseded")
+            return
+        self._cache_volume(level, source)
+
+    async def _reconcile_volume(self) -> None:
+        try:
+            status = await self._get_status()
+        except Exception:
+            return  # Already logged; a network error has started rediscovery.
+        level = status.get("volume")
+        if isinstance(level, int):
+            self._on_reported_volume(level, "reconcile")
+
+    def _cache_volume(self, level: int, reason: str) -> None:
+        if level == self.volume.current_volume:
+            return
+        logger.debug(f"[volume] {reason}: {self.volume.current_volume} -> {level}")
+        self.volume.current_volume = level
+        self._volume_changed_event.set()
 
     async def power_on(self) -> None:
         if not self.ready:

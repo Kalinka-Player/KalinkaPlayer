@@ -159,3 +159,18 @@ async def test_going_unreachable_keeps_the_backend(device):
 
     assert device.volume.supported is False
     assert device.volume.backend is VolumeBackend.HARDWARE
+
+
+@pytest.mark.unit
+async def test_going_unreachable_is_not_a_power_off(device):
+    """A power-off stops playback; an amplifier that missed a request has not
+    been switched off."""
+    device.volume = DeviceVolume(
+        max_volume=60, current_volume=30, volume_gain=0, supported=True
+    )
+    device._device_power_on = True
+    device._mark_unavailable()
+
+    dispatched = [c.args[0] for c in device.event_emitter.dispatch.call_args_list]
+    assert not any(isinstance(e, DevicePowerStateChangedEvent) for e in dispatched)
+    assert device._device_power_on is True
