@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+case "$1" in
+  remove|deconfigure)
+    VENVDIR="/opt/kalinka/venv"
+    PKG="kalinka-plugin-upnp"
+    if [ -x "$VENVDIR/bin/pip" ]; then
+      "$VENVDIR/bin/pip" uninstall -y "$PKG" || true
+    fi
+    ;;
+esac
+exit 0
