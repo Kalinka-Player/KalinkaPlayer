@@ -307,3 +307,38 @@ async def test_a_new_level_while_waiting_for_echoes_is_sent(device, amp, monkeyp
     await _echo(device, 44)
     await asyncio.wait_for(device._volume_sender, timeout=0.5)
     assert not device._unconfirmed
+
+
+@pytest.mark.unit
+async def test_losing_the_amplifier_drops_the_queued_level(device, amp, monkeypatch):
+    """A failure elsewhere (status poll, power) must not leave a stale level
+    to be sent over the one read back on reconnect."""
+    monkeypatch.setattr(device, "_VOLUME_SEND_INTERVAL_SEC", 0.05)
+    monkeypatch.setattr(device, "_discovery_worker", AsyncMock())
+    amp.release.set()
+    await device.set_volume(40)
+    await _settle()
+    await device.set_volume(45)  # queued while the sender paces
+
+    await device.rediscover_device()
+    await asyncio.wait_for(device._volume_sender, 0.5)
+
+    assert not device.ready
+    assert amp.volumes() == [40]
+    assert device._volume_target is None and not device._unconfirmed
+
+
+@pytest.mark.unit
+async def test_losing_the_amplifier_ends_the_wait_for_an_echo(device, amp, monkeypatch):
+    monkeypatch.setattr(device, "_ECHO_TIMEOUT_SEC", 5.0)
+    monkeypatch.setattr(device, "_discovery_worker", AsyncMock())
+    amp.release.set()
+    await device.set_volume(40)
+    await _settle()
+    assert list(device._unconfirmed) == [40]
+
+    await device.rediscover_device()
+    await asyncio.wait_for(device._volume_sender, 0.5)
+
+    assert not device._unconfirmed
+    assert not any("getStatus" in url for url in amp.urls)
