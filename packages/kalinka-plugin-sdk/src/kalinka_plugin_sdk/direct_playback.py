@@ -73,7 +73,15 @@ class DirectPlaybackListener(Protocol):
         ...
 
     def on_finished(self) -> Any:
-        """The current source played to its end."""
+        """The current source played to its end without a queued successor."""
+        ...
+
+    def on_next_started(self, track: Track) -> Any:
+        """SDK 3.6: the queued track started; on_state follows with its progress.
+
+        Only called for a source supplied through set_next(). The server
+        already advanced playback; the plugin must not play it again.
+        """
         ...
 
     def on_command(self, request: TransportRequest) -> Any:
@@ -121,9 +129,30 @@ class DirectPlaybackSession(Protocol):
         """
         ...
 
+    async def set_next(
+        self, source: Optional[TrackSource], track: Optional[Track] = None
+    ) -> None:
+        """SDK 3.6: set one successor, replacing any pending one.
+
+        Call after play(). The server submits it to the renderer immediately,
+        regardless of duration. The renderer advances automatically;
+        on_next_started reports this. Pause and seek keep the queued source.
+        None, play(), and stop() remove any queued successor.
+        A track is required with a source; sequential sources cannot be queued.
+        """
+        ...
+
     async def pause(self) -> None: ...
 
     async def resume(self) -> None: ...
+
+    async def stop(self) -> None:
+        """SDK 3.6: stop the source while keeping the renderer session open.
+
+        A following play reuses the session and its volume. The server's
+        normal idle timeout still releases it; release() gives it up now.
+        """
+        ...
 
     async def seek(self, position_ms: int) -> None:
         """Raises ValueError while a sequential source plays: play a new one."""
