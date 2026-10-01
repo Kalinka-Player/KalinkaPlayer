@@ -7,7 +7,6 @@ import json
 from unittest.mock import Mock
 
 import pytest
-
 from kalinka_eventbus import EventBus
 from kalinka_plugin_sdk import EventEmitter
 from kalinka_plugin_sdk.datamodel import (
@@ -50,7 +49,7 @@ from kalinka_server.renderer_registry import RendererRegistry
 from kalinka_server.renderer_sessions import RendererBusy, SessionPool
 from kalinka_server.renderer_test_tone import TonePlayer
 
-from tests.sim_renderer import SimRenderer
+from tests.sim_renderer import DURATION_MS, SimRenderer
 
 SETTLE_S = 0.2
 CONNECT_URL = "https://streaming.qobuz.test/111"
@@ -97,6 +96,7 @@ class Listener:
     def __init__(self):
         self.states: list[PlaybackState] = []
         self.finished = 0
+        self.started_next = []
         self.commands = []
         self.revoked: list[RevokeReason] = []
         self.volumes: list[DeviceVolume] = []
@@ -106,6 +106,9 @@ class Listener:
 
     def on_finished(self):
         self.finished += 1
+
+    def on_next_started(self, track):
+        self.started_next.append(track)
 
     def on_command(self, request):
         self.commands.append(request)
@@ -786,6 +789,54 @@ async def test_moving_to_where_it_plays_only_pins_the_choice(
     assert hold.renderer_id == SimRenderer.RENDERER_ID
 
 
+@pytest.mark.parametrize("settled_stop", [False, True])
+async def test_switching_renderer_releases_a_stopped_hold(
+    queue, renderer, direct, arbiter, settled_stop
+):
+    other = _second_renderer(renderer)
+    listener = Listener()
+    hold = await _hold_and_play(direct, listener)
+    await hold.stop()
+    if settled_stop:
+        await asyncio.sleep(0.05)
+
+    await queue.switch_renderer("rid-b")
+    await asyncio.sleep(0.05)
+
+    assert not hold.active and not arbiter.control.is_exclusive
+    assert listener.revoked == [RevokeReason.IDLE]
+    assert renderer.session_id is None and other.session_id is None
+    assert renderer.registry.selected_id == "rid-b"
+    assert _enqueued(other) == []
+
+
+async def test_stopping_while_renderer_switches_releases_the_new_session(
+    queue, renderer, direct, arbiter, monkeypatch
+):
+    other = _second_renderer(renderer)
+    hold = await _hold_and_play(direct, Listener())
+    opening, proceed = asyncio.Event(), asyncio.Event()
+    open_session = other.send_session_open
+
+    async def delayed_open(*args, **kwargs):
+        await open_session(*args, **kwargs)
+        opening.set()
+        await proceed.wait()
+
+    monkeypatch.setattr(other, "send_session_open", delayed_open)
+    move = asyncio.create_task(queue.switch_renderer("rid-b"))
+    try:
+        await asyncio.wait_for(opening.wait(), 1)
+        await hold.stop()
+    finally:
+        proceed.set()
+        await asyncio.wait_for(move, 1)
+
+    assert not hold.active and not arbiter.control.is_exclusive
+    assert renderer.session_id is None and other.session_id is None
+    assert _enqueued(other) == []
+
+
 async def test_the_queue_plays_where_the_plugin_was_moved(
     queue, renderer, direct
 ):
@@ -907,3 +958,260 @@ async def test_a_seekable_source_is_not_polled(queue, renderer, direct):
     await hold.play(*_connect_track())
     await asyncio.sleep(1.2)
     assert _snapshot_requests(renderer) == 0
+
+
+async def test_stop_retains_session_and_immediate_play_ignores_old_finish(
+    queue, renderer, direct
+):
+    listener = Listener()
+    hold = await _hold_and_play(direct, listener)
+    session = renderer.session_id
+    await hold.stop()
+    assert hold.state.state == PlayerStateEnum.STOPPED
+    await hold.play(*_connect_track("222"))
+    await asyncio.sleep(SETTLE_S)
+    assert renderer.session_id == session
+    assert hold.active and hold.state.state == PlayerStateEnum.PLAYING
+    assert hold.state.current_track.id.id == "222"
+    assert listener.finished == 0
+
+
+async def test_stopped_hold_expires_and_cannot_be_reused(
+    queue, renderer, direct, monkeypatch
+):
+    monkeypatch.setattr(renderer_player, "IDLE_RELEASE_TIMEOUT_S", 0.05)
+    listener = Listener()
+    hold = await _hold_and_play(direct, listener)
+    await hold.stop()
+    await asyncio.sleep(SETTLE_S)
+    assert listener.revoked == [RevokeReason.IDLE]
+    assert listener.finished == 0
+    assert not hold.active and renderer.session_id is None
+    with pytest.raises(HoldEnded):
+        await hold.stop()
+    with pytest.raises(HoldEnded):
+        await hold.set_next(*_connect_track("222"))
+
+
+async def test_next_source_is_queued_immediately_and_promotes_metadata_without_replay(
+    queue, renderer, direct
+):
+    listener = Listener()
+    hold = await _hold_and_play(direct, listener)
+    session = renderer.session_id
+    source, track = _connect_track("222")
+    await hold.set_next(source, track)
+    await asyncio.sleep(SETTLE_S)
+    assert len(renderer.queued) == 1
+    assert renderer.position_ms == 0
+    assert hold.state.current_track.id.id == "111"
+    renderer.finish_current()
+    await asyncio.sleep(SETTLE_S)
+    assert hold.state.current_track == track
+    assert hold.state.state == PlayerStateEnum.PLAYING
+    assert listener.started_next == [track]
+    assert listener.finished == 0
+    assert renderer.session_id == session
+    assert len(_enqueued(renderer)) == 2
+    renderer.finish_current()
+    await asyncio.sleep(SETTLE_S)
+    assert listener.finished == 1
+
+
+@pytest.mark.parametrize("delivered", [False, True])
+async def test_next_source_can_be_replaced_and_cleared(
+    queue, renderer, direct, delivered
+):
+    listener = Listener()
+    hold = await _hold_and_play(direct, listener)
+    await hold.set_next(*_connect_track("222"))
+    if delivered:
+        await asyncio.sleep(SETTLE_S)
+    await hold.set_next(*_connect_track("333"))
+    await asyncio.sleep(SETTLE_S)
+    assert len(renderer.queued) == 1
+    renderer.finish_current()
+    await asyncio.sleep(SETTLE_S)
+    assert hold.state.current_track.id.id == "333"
+    assert [track.id.id for track in listener.started_next] == ["333"]
+    await hold.set_next(*_connect_track("444"))
+    await hold.set_next(None)
+    await asyncio.sleep(SETTLE_S)
+    assert renderer.queued == []
+    renderer.finish_current()
+    await asyncio.sleep(SETTLE_S)
+    assert listener.finished == 1
+
+
+@pytest.mark.parametrize("action", ["stop", "play"])
+@pytest.mark.parametrize("delivered", [False, True])
+async def test_stopping_or_replacing_current_clears_queued_source(
+    queue, renderer, direct, action, delivered
+):
+    listener = Listener()
+    hold = await _hold_and_play(direct, listener)
+    await hold.set_next(*_connect_track("222"))
+    if delivered:
+        await asyncio.sleep(SETTLE_S)
+        assert len(renderer.queued) == 1
+    if action == "stop":
+        await hold.stop()
+    else:
+        await hold.play(*_connect_track("333"))
+    await asyncio.sleep(SETTLE_S)
+    assert renderer.queued == []
+    assert listener.started_next == []
+    assert listener.finished == 0
+    if action == "stop":
+        assert renderer.current is None
+        assert hold.state.state == PlayerStateEnum.STOPPED
+    else:
+        assert hold.state.current_track.id.id == "333"
+
+
+async def test_invalid_next_does_not_displace_valid_queued_source(
+    queue, renderer, direct
+):
+    listener = Listener()
+    hold = await direct.acquire("Qobuz Connect", listener)
+    source, track = _connect_track("222")
+    with pytest.raises(ValueError):
+        await hold.set_next(source, track)
+    await hold.play(*_connect_track())
+    await hold.set_next(source, track)
+    with pytest.raises(ValueError):
+        await hold.set_next(source)
+    with pytest.raises(ValueError):
+        await hold.set_next(source.model_copy(update={"sequential": True}), track)
+    await asyncio.sleep(SETTLE_S)
+    renderer.finish_current()
+    await asyncio.sleep(SETTLE_S)
+    assert hold.state.current_track == track
+
+
+async def test_queued_source_moves_with_current_to_another_renderer(
+    queue, renderer, direct
+):
+    other = _second_renderer(renderer)
+    listener = Listener()
+    hold = await _hold_and_play(direct, listener)
+    await hold.set_next(*_connect_track("222"))
+    await asyncio.sleep(SETTLE_S)
+    await queue.switch_renderer("rid-b")
+    await asyncio.sleep(SETTLE_S)
+    assert len(other.queued) == 1
+    other.finish_current()
+    await asyncio.sleep(SETTLE_S)
+    assert hold.state.current_track.id.id == "222"
+    assert len(listener.started_next) == 1
+    assert renderer.session_id is None
+
+
+async def test_queued_source_is_restored_after_renderer_reconnect(
+    queue, renderer, direct
+):
+    listener = Listener()
+    hold = await _hold_and_play(direct, listener)
+    await hold.set_next(*_connect_track("222"))
+    await asyncio.sleep(SETTLE_S)
+    renderer.report_position(30000)
+    await asyncio.sleep(0.05)
+    renderer.linked = False
+    renderer.registry.disconnect(renderer.RENDERER_ID, renderer, clean=False)
+    renderer.pool.suspend(renderer.RENDERER_ID, renderer)
+    renderer.session_id = None
+    renderer.current = None
+    renderer.queued.clear()
+    renderer.linked = True
+    renderer.connect()
+    await renderer.pool.reconcile(
+        renderer_id=renderer.RENDERER_ID,
+        reported_session_id="",
+        reported_owner_server_id="test-server-id",
+        ws_session=renderer,
+    )
+    await asyncio.sleep(SETTLE_S)
+    assert hold.state.current_track.id.id == "111"
+    assert len(renderer.queued) == 1
+    renderer.finish_current()
+    await asyncio.sleep(SETTLE_S)
+    assert hold.state.current_track.id.id == "222"
+    assert len(listener.started_next) == 1
+    assert hold.active and listener.revoked == []
+
+
+async def test_next_is_queued_while_paused_without_starting_it(queue, renderer, direct):
+    listener = Listener()
+    hold = await _hold_and_play(direct, listener)
+    await hold.pause()
+    await asyncio.sleep(SETTLE_S)
+    await hold.set_next(*_connect_track("222"))
+    await asyncio.sleep(SETTLE_S)
+    assert len(renderer.queued) == 1
+    assert hold.state.state == PlayerStateEnum.PAUSED
+    assert hold.state.current_track.id.id == "111"
+    assert listener.started_next == []
+    await hold.resume()
+    await asyncio.sleep(SETTLE_S)
+    assert len(renderer.queued) == 1
+    assert len(_enqueued(renderer)) == 2
+    renderer.finish_current()
+    await asyncio.sleep(SETTLE_S)
+    assert hold.state.current_track.id.id == "222"
+    assert len(listener.started_next) == 1
+
+
+@pytest.mark.parametrize("position_ms", [1000, DURATION_MS - 5000])
+async def test_seeking_keeps_next_queued_without_fetching_it_again(
+    queue, renderer, direct, position_ms
+):
+    listener = Listener()
+    hold = await _hold_and_play(direct, listener)
+    await hold.set_next(*_connect_track("222"))
+    await asyncio.sleep(SETTLE_S)
+    queued = list(renderer.queued)
+    await hold.seek(position_ms)
+    await asyncio.sleep(SETTLE_S)
+    assert len(queued) == 1 and renderer.queued == queued
+    assert len(_enqueued(renderer)) == 2
+    assert listener.started_next == []
+    renderer.finish_current()
+    await asyncio.sleep(SETTLE_S)
+    assert hold.state.current_track.id.id == "222"
+    assert len(listener.started_next) == 1
+
+
+async def test_unknown_duration_does_not_delay_next(
+    queue, renderer, direct, monkeypatch
+):
+    monkeypatch.setattr("tests.sim_renderer.DURATION_MS", 0)
+    listener = Listener()
+    hold = await _hold_and_play(direct, listener)
+    await hold.set_next(*_connect_track("222"))
+    await asyncio.sleep(SETTLE_S)
+    assert len(renderer.queued) == 1
+    renderer.finish_current()
+    await asyncio.sleep(SETTLE_S)
+    assert hold.state.current_track.id.id == "222"
+    assert listener.finished == 0
+
+
+@pytest.mark.parametrize("action", ["clear", "release", "take_back"])
+async def test_cancelled_next_cannot_start_later(queue, renderer, direct, action):
+    listener = Listener()
+    hold = await _hold_and_play(direct, listener)
+    await hold.set_next(*_connect_track("222"))
+    await asyncio.sleep(SETTLE_S)
+    assert len(renderer.queued) == 1
+    if action == "clear":
+        await hold.set_next(None)
+    elif action == "release":
+        await hold.release()
+    else:
+        await queue.stop()
+    await asyncio.sleep(SETTLE_S)
+    assert renderer.queued == []
+    renderer.finish_current()
+    await asyncio.sleep(SETTLE_S)
+    assert renderer.current is None
+    assert listener.started_next == []

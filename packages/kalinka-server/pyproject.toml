@@ -51,8 +51,8 @@ dependencies = [
     # Renderer protocol (renderer_ws_handler.py). The committed generated
     # bindings (renderer_proto/) pin the runtime floor; `make proto` regenerates.
     "protobuf>=7.35,<8",
-    # >=3.5: asynchronous live content and sequential direct playback.
-    "kalinka-plugin-sdk>=3.5,<4",
+    # >=3.6: queued successors and retained direct-playback sessions.
+    "kalinka-plugin-sdk>=3.6,<4",
 ]
 dynamic = ["version"]
 

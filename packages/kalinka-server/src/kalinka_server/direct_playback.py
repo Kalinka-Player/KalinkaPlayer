@@ -12,6 +12,7 @@ import asyncio
 import inspect
 import logging
 import time
+from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from kalinka_eventbus import EventBus
@@ -99,6 +100,15 @@ _PLAYING_STATES = (AudioGraphNodeState.PREPARING, AudioGraphNodeState.STREAMING)
 _MOVING_STATES = (*_PLAYING_STATES, AudioGraphNodeState.PAUSED)
 
 
+@dataclass(frozen=True)
+class _QueuedSource:
+    """One successor awaiting the renderer's source-change event."""
+
+    stream_id: int
+    source: TrackSource
+    track: Track
+
+
 class HolderSession:
     """One plugin's hold on the output (SDK DirectPlaybackSession).
 
@@ -135,6 +145,7 @@ class HolderSession:
         self._swap = asyncio.Lock()
         self._track: Optional[Track] = None
         self._source: Optional[TrackSource] = None
+        self._queued: Optional[_QueuedSource] = None
         self._stream_id: Optional[int] = None
         self._next_stream_id = 0
         self._state = PlaybackState(
@@ -172,7 +183,31 @@ class HolderSession:
         self._require_active()
         if source.sequential and start_offset_ms:
             raise ValueError("a sequential source starts at its first byte")
+        self._clear_next()
         self._start(source, track, start_offset_ms)
+
+    async def set_next(
+        self, source: Optional[TrackSource], track: Optional[Track] = None
+    ) -> None:
+        self._require_active()
+        if source is not None:
+            if track is None:
+                raise ValueError("a queued source needs track metadata")
+            if source.sequential:
+                raise ValueError("a sequential source cannot be queued ahead")
+            if self._source is None:
+                raise ValueError("play a source before setting its successor")
+        self._clear_next()
+        if source is not None:
+            stream_id = self._next_stream_id
+            self._next_stream_id += 1
+            self._queued = _QueuedSource(stream_id, source, track)
+            self._player.append(stream_id, source, 0)
+
+    def _clear_next(self) -> None:
+        queued, self._queued = self._queued, None
+        if queued is not None:
+            self._player.remove(queued.stream_id)
 
     async def pause(self) -> None:
         self._require_active()
@@ -181,6 +216,20 @@ class HolderSession:
     async def resume(self) -> None:
         self._require_active()
         self._player.resume()
+
+    async def stop(self) -> None:
+        self._require_active()
+        self._clear_next()
+        stream_id, self._stream_id = self._stream_id, None
+        self._source = None
+        if stream_id is not None:
+            self._player.remove(stream_id)
+        self._publish(
+            StreamState(
+                state=AudioGraphNodeState.STOPPED,
+                timestamp=time.monotonic_ns(),
+            )
+        )
 
     async def seek(self, position_ms: int) -> None:
         self._require_active()
@@ -252,21 +301,25 @@ class HolderSession:
                 raise
             commit()
             reached = old.get_state()
+            queued, self._queued = self._queued, None
             self._player = player
             # Not release(): its STOPPED would reach clients and the plugin
             # as the playback ending, when it is only moving.
             await old.shutdown()
             await player.announce()
-            if reached.state not in _MOVING_STATES or self._source is None:
+            if reached.state in _MOVING_STATES and self._source is not None:
+                self._start(
+                    self._source,
+                    self._track,
+                    reached.position_at(time.monotonic_ns()),
+                )
+                if queued is not None:
+                    await self.set_next(queued.source, queued.track)
+                if reached.state is AudioGraphNodeState.PAUSED:
+                    self._player.pause()
+                logger.info("%s moved to renderer %s", self._plugin_id, renderer_id)
                 return
-            self._start(
-                self._source,
-                self._track,
-                reached.position_at(time.monotonic_ns()),
-            )
-            if reached.state is AudioGraphNodeState.PAUSED:
-                self._player.pause()
-            logger.info("%s moved to renderer %s", self._plugin_id, renderer_id)
+        await self._on_session_lost(None)
 
     # ------------------------------------------------------------------
 
@@ -313,7 +366,10 @@ class HolderSession:
         if self._source.sequential:
             await self._on_session_lost(CloseReason.RENDERER_LOST)
             return
+        queued = self._queued
         await self.play(self._source, self._track, start_offset_ms=position_ms)
+        if queued is not None:
+            await self.set_next(queued.source, queued.track)
 
     async def _on_session_lost(self, reason: Optional[CloseReason]) -> None:
         cause = RevokeReason.IDLE if reason is None else RevokeReason.OUTPUT_LOST
@@ -327,6 +383,7 @@ class HolderSession:
                 await asyncio.shield(self._teardown)
             return False
         self._ended = True
+        self._queued = None
         self._volume_watch.cancel()
         self._progress_watch.cancel()
         self._teardown = asyncio.ensure_future(self._stop_player())
@@ -347,12 +404,25 @@ class HolderSession:
         async for state in self._monitor:
             if self._ended:
                 continue
+            queued = self._queued
+            if queued is not None and state.stream_id == queued.stream_id:
+                previous = self._stream_id
+                self._stream_id = queued.stream_id
+                self._source, self._track = queued.source, queued.track
+                self._queued = None
+                if previous is not None:
+                    self._player.remove(previous)
+                self._bridge.send("on_next_started", queued.track)
             if state.stream_id is not None and state.stream_id != self._stream_id:
                 continue
             if state.state is AudioGraphNodeState.SOURCE_CHANGED:
                 continue
             if state.state is AudioGraphNodeState.FINISHED:
-                # Not shown: the plugin plays on or releases.
+                if self._source is None:
+                    continue
+                if self._queued is not None:
+                    continue
+                # The plugin decides whether to play, stop, or release.
                 self._paced.clear()
                 self._bridge.send("on_finished")
                 continue
