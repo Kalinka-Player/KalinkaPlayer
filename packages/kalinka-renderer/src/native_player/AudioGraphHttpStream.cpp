@@ -308,7 +308,9 @@ int AudioGraphHttpStream::readSingleChunk(std::stop_token stopToken) {
     std::ostringstream range;
     range << offset << "-";
     if (chunkSize) {
-      range << chunkSize + offset - 1;
+      const size_t requestSize =
+          lengthKnown ? std::min(chunkSize, contentLength - offset) : chunkSize;
+      range << offset + requestSize - 1;
     }
     request.setOpt(new curlpp::options::Range(range.str()));
 
