@@ -55,6 +55,7 @@ async def test_kalinka_controls_use_same_hold(playback, direct):
     await playback.command("play")
     hold = direct.sessions[0]
     hold.listener.on_state(PlaybackState(state=PlayerStateEnum.PLAYING, position=12000))
+    await drain(playback)
     assert playback.position_ms == 12000
     hold.listener.on_command(TransportRequest(TransportKind.PAUSE))
     await drain(playback)
@@ -160,10 +161,12 @@ async def test_volume_scaling_echo_and_mute(playback, direct):
     await load(playback)
     await playback.command("play")
     hold = direct.sessions[0]
+    await drain(playback)
     assert playback.volume == 50
     await playback.command("set_mute", True)
     hold.set_volume.assert_awaited_with(0)
     hold.listener.on_volume(DeviceVolume(current_volume=0, max_volume=80))
+    await drain(playback)
     assert playback.muted
     await playback.command("set_mute", False)
     hold.set_volume.assert_awaited_with(50)
@@ -171,6 +174,7 @@ async def test_volume_scaling_echo_and_mute(playback, direct):
     await playback.command("set_volume", 25)
     hold.set_volume.assert_awaited_with(25)
     hold.listener.on_volume(DeviceVolume(current_volume=24, max_volume=80))
+    await drain(playback)
     assert playback.volume == 30
 
 
@@ -355,6 +359,7 @@ async def test_next_can_be_replaced_cleared_and_ignored_after_explicit_play(
     hold.set_next.assert_awaited_with(None)
     current = await load(playback, "replacement")
     hold.listener.on_next_started(second.track)
+    await drain(playback)
     assert playback.current == current
 
 
@@ -396,3 +401,144 @@ async def test_transition_reported_after_new_next_preserves_new_successor(
     await drain(playback)
     assert playback.current == third
     assert playback.next is None
+
+
+@pytest.mark.parametrize("command", ["set_next", "set_uri", "play"])
+async def test_revocation_waits_for_in_flight_commands(playback, direct, command):
+    await load(playback)
+    await playback.command("play")
+    hold = direct.sessions[0]
+    if command == "play":
+        await playback.command("stop")
+    media = Media.parse("http://media.test/second.flac", "")
+    entered, finish = asyncio.Event(), asyncio.Event()
+
+    async def blocked(*args, **kwargs):
+        entered.set()
+        await finish.wait()
+
+    operation = hold.set_next if command == "set_next" else hold.play
+    operation.side_effect = blocked
+    args = () if command == "play" else (media,)
+    task = asyncio.create_task(playback.command(command, *args))
+    await entered.wait()
+    hold.revoke()
+    try:
+        assert playback.hold is hold
+    finally:
+        finish.set()
+        await task
+    await drain(playback)
+    assert playback.hold is None
+    assert playback.listener is None
+    assert playback.state == "STOPPED"
+    assert playback.next is None
+    assert playback.scheduled_next is None
+    assert not playback.queued_media
+
+
+async def test_next_transition_waits_for_in_flight_set_next(playback, direct):
+    first = await load(playback)
+    await playback.command("play")
+    second = Media.parse("http://media.test/second.flac", "")
+    hold = direct.sessions[0]
+    entered, finish = asyncio.Event(), asyncio.Event()
+
+    async def blocked(*args):
+        entered.set()
+        await finish.wait()
+
+    hold.set_next.side_effect = blocked
+    task = asyncio.create_task(playback.command("set_next", second))
+    await entered.wait()
+    hold.listener.on_next_started(second.track)
+    hold.listener.on_state(
+        PlaybackState(
+            state=PlayerStateEnum.PLAYING, current_track=second.track, position=321
+        )
+    )
+    try:
+        assert playback.current == first
+    finally:
+        finish.set()
+        await task
+    await drain(playback)
+    assert playback.current == second
+    assert playback.previous == first
+    assert playback.next is None
+    assert playback.scheduled_next is None
+    assert playback.state == "PLAYING"
+    assert playback.position_ms >= 321
+    hold.set_next.assert_awaited_once_with(second.source, second.track)
+
+
+async def test_finished_after_queued_transition_stops_successor(playback, direct):
+    await load(playback)
+    await playback.command("play")
+    second = Media.parse("http://media.test/second.flac", "")
+    await playback.command("set_next", second)
+    hold = direct.sessions[0]
+    hold.listener.on_next_started(second.track)
+    hold.listener.on_finished()
+    await drain(playback)
+    assert playback.current == second
+    assert playback.state == "STOPPED"
+    hold.stop.assert_awaited_once()
+
+
+async def test_stop_cancels_a_pending_finished_callback(playback, direct):
+    first = await load(playback)
+    await playback.command("play")
+    await playback.command("set_next", Media.parse("http://media.test/second.flac", ""))
+    hold = direct.sessions[0]
+    hold.listener.on_finished()
+    await playback.command("stop")
+    await drain(playback)
+    assert playback.current == first
+    assert playback.previous is None
+    hold.play.assert_awaited_once()
+
+
+async def test_volume_updates_cannot_discard_a_queued_transition(playback, direct):
+    await load(playback)
+    await playback.command("play")
+    second = Media.parse("http://media.test/second.flac", "")
+    await playback.command("set_next", second)
+    hold = direct.sessions[0]
+    hold.listener.on_next_started(second.track)
+    hold.listener.on_state(
+        PlaybackState(state=PlayerStateEnum.PLAYING, current_track=second.track)
+    )
+    for volume in range(40):
+        hold.listener.on_volume(DeviceVolume(current_volume=volume, max_volume=100))
+    await drain(playback)
+    assert playback.current == second
+    assert playback.state == "PLAYING"
+    assert playback.volume == 39
+
+
+async def test_revocation_is_not_dropped_when_controls_fill_the_queue(playback, direct):
+    await load(playback)
+    await playback.command("play")
+    hold = direct.sessions[0]
+    for _ in range(32):
+        hold.listener.on_command(TransportRequest(TransportKind.RESUME))
+    hold.revoke()
+    await drain(playback)
+    assert playback.hold is None
+    assert playback.listener is None
+    assert playback.state == "STOPPED"
+    assert direct.acquire.await_count == 1
+
+
+async def test_revocation_before_new_play_does_not_reuse_old_successor(playback, direct):
+    await load(playback)
+    await playback.command("play")
+    await playback.command("set_next", Media.parse("http://media.test/second.flac", ""))
+    direct.sessions[0].revoke()
+    await playback.command("play")
+    await drain(playback)
+    assert playback.active
+    assert playback.state == "TRANSITIONING"
+    assert playback.next is None
+    direct.sessions[1].set_next.assert_not_awaited()
