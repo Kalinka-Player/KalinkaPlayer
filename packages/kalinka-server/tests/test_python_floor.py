@@ -24,6 +24,7 @@ FLOOR_STATEMENTS = [
         r'"Programming Language :: Python :: (\d+\.\d+)"',
     ),
     ("packages/kalinka-plugin-sdk/debian/control.in", r"python3 \(>= (\d+\.\d+)\)"),
+    ("packages/kalinka-plugin-upnp/debian/control.in", r"python3 \(>= (\d+\.\d+)\)"),
     ("packages/kalinka-server/DEBIAN/control.in", r"python3 \(>= (\d+\.\d+)\)"),
     ("packages/kalinka-server/rpm/kalinka-server.spec", r"python3 >= (\d+\.\d+)"),
     ("packages/kalinka-server/pyproject.toml", r'python_version = "(\d+\.\d+)"'),
