@@ -45,9 +45,15 @@ jobs:
           echo "playqueue=$(touched '^packages/kalinka-server/(src/kalinka_server/playqueue|tests/test_playqueue)')" >> "$GITHUB_OUTPUT"
 
   python:
-    name: Python tests
+    # The 3.13 leg keeps the name the ruleset requires.
+    name: ${{ matrix.python == '3.13' && 'Python tests' || format('Python tests on {0}', matrix.python) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor the packages accept, and what the Pi images ship.
+        python: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -55,7 +61,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: |
             packages/*/pyproject.toml
