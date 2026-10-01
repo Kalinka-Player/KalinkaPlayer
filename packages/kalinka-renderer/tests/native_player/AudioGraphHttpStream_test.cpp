@@ -3,11 +3,14 @@
 #include <curl/curl.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <sstream>
 #include <vector>
 
 #include "LocalHttpServer.h"
@@ -116,9 +119,9 @@ TEST_F(AudioGraphHttpStreamTest, test_broken_url_set_error_status) {
   EXPECT_EQ(totalBytesRead, 0);
 }
 
-TEST_F(AudioGraphHttpStreamTest, unexpected_status_is_an_error_not_a_retry) {
+TEST_F(AudioGraphHttpStreamTest, redirect_without_location_is_an_error_not_a_retry) {
   auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(
-      1, server.url("/moved"), bufferSize);
+      1, server.url("/redirect-without-location"), bufferSize);
 
   auto state = waitForStatus(*audioGraphHttpStream, AudioGraphNodeState::ERROR,
                              std::chrono::seconds(5));
@@ -126,6 +129,142 @@ TEST_F(AudioGraphHttpStreamTest, unexpected_status_is_an_error_not_a_retry) {
   ASSERT_EQ(state.state, AudioGraphNodeState::ERROR);
   ASSERT_TRUE(state.error.has_value());
   EXPECT_THAT(state.error->message, ::testing::HasSubstr("code 302"));
+  EXPECT_EQ(server.requestsTo("/redirect-without-location"), 1u);
+}
+
+class AudioGraphHttpRedirectTest : public AudioGraphHttpStreamTest,
+                                   public ::testing::WithParamInterface<int> {};
+
+TEST_P(AudioGraphHttpRedirectTest, follows_relative_redirect_for_each_range) {
+  const std::string path = "/redirect/" + std::to_string(GetParam()) + "//ranged";
+  const auto expected = fileContent(file);
+  const size_t chunkSize = bufferSize / 2;
+  AudioGraphHttpStream stream(1, server.url(path), bufferSize, chunkSize);
+
+  EXPECT_EQ(readToEnd(stream), expected);
+  EXPECT_EQ(stream.getState().state, AudioGraphNodeState::FINISHED);
+  const size_t chunks = (expected.size() + chunkSize - 1) / chunkSize;
+  EXPECT_GT(chunks, 1u);
+  EXPECT_EQ(server.requestsTo(path), chunks);
+  EXPECT_EQ(server.requestsTo("/ranged"), chunks);
+}
+
+INSTANTIATE_TEST_SUITE_P(HttpStatus, AudioGraphHttpRedirectTest,
+                         ::testing::Values(301, 302, 303, 307, 308));
+
+TEST_F(AudioGraphHttpStreamTest, follows_absolute_redirect_to_another_server) {
+  LocalHttpServer destination(file);
+  const auto path = "/redirect/302/" + destination.url("/moved");
+  AudioGraphHttpStream stream(1, server.url(path), bufferSize);
+
+  EXPECT_EQ(readToEnd(stream), fileContent(file));
+  EXPECT_EQ(stream.getState().state, AudioGraphNodeState::FINISHED);
+  EXPECT_EQ(server.requestsTo(path), 1u);
+  EXPECT_EQ(destination.requestsTo("/moved"), 1u);
+  EXPECT_EQ(destination.requestsTo("/ranged"), 1u);
+}
+
+TEST_F(AudioGraphHttpStreamTest, seeks_through_original_redirect_url) {
+  const auto expected = fileContent(file);
+  AudioGraphHttpStream stream(1, server.url("/moved"), bufferSize);
+  ASSERT_EQ(readToEnd(stream), expected);
+  const size_t position = expected.size() / 2;
+
+  ASSERT_EQ(stream.seekTo(position), position);
+
+  EXPECT_EQ(readToEnd(stream),
+            std::vector<uint8_t>(expected.begin() + position, expected.end()));
+  EXPECT_EQ(stream.getState().state, AudioGraphNodeState::FINISHED);
+  EXPECT_EQ(server.requestsTo("/moved"), 2u);
+  EXPECT_EQ(server.requestsTo("/ranged"), 2u);
+}
+
+TEST_F(AudioGraphHttpStreamTest,
+       resumes_stalled_transfer_through_original_redirect_url) {
+  const std::string path = "/redirect/302//stall-once";
+  AudioGraphHttpStream stream(1, server.url(path), bufferSize, 0, stallTimeout);
+
+  EXPECT_EQ(readToEnd(stream), fileContent(file));
+  EXPECT_EQ(stream.getState().state, AudioGraphNodeState::FINISHED);
+  EXPECT_EQ(server.requestsTo(path), 2u);
+  EXPECT_EQ(server.requestsTo("/stall-once"), 2u);
+}
+
+TEST_F(AudioGraphHttpStreamTest, redirect_headers_do_not_describe_the_audio) {
+  AudioGraphHttpStream stream(1, server.url("/redirect-headers"), bufferSize);
+  const auto state = waitForStatus(stream, AudioGraphNodeState::STREAMING,
+                                   std::chrono::seconds(5));
+  ASSERT_TRUE(state.streamInfo);
+  EXPECT_EQ(state.streamInfo->streamSize, fileContent(file).size());
+  EXPECT_EQ(readToEnd(stream), fileContent(file));
+}
+
+TEST_F(AudioGraphHttpStreamTest, redirect_loop_stops_at_limit_without_retrying) {
+  AudioGraphHttpStream stream(1, server.url("/redirect-loop"), bufferSize);
+  const auto state = waitForStatus(stream, AudioGraphNodeState::ERROR,
+                                   std::chrono::seconds(5));
+  ASSERT_TRUE(state.error);
+  EXPECT_THAT(state.error->message,
+              ::testing::HasSubstr(curl_easy_strerror(CURLE_TOO_MANY_REDIRECTS)));
+  EXPECT_EQ(server.requestsTo("/redirect-loop"), 4u);
+  EXPECT_TRUE(readToEnd(stream).empty());
+}
+
+class AudioGraphHttpRedirectLimitTest
+    : public AudioGraphHttpStreamTest,
+      public ::testing::WithParamInterface<long> {};
+
+TEST_P(AudioGraphHttpRedirectLimitTest, enforces_configured_limit_without_retrying) {
+  AudioGraphHttpStream stream(1, server.url("/redirect-loop"), bufferSize, 0,
+                              AudioGraphHttpStream::DEFAULT_STALL_TIMEOUT,
+                              GetParam());
+  const auto state = waitForStatus(stream, AudioGraphNodeState::ERROR,
+                                   std::chrono::seconds(5));
+  ASSERT_TRUE(state.error);
+  EXPECT_THAT(state.error->message,
+              ::testing::HasSubstr(curl_easy_strerror(CURLE_TOO_MANY_REDIRECTS)));
+  EXPECT_EQ(server.requestsTo("/redirect-loop"), std::max(GetParam(), 0L) + 1);
+  EXPECT_TRUE(readToEnd(stream).empty());
+}
+
+INSTANTIATE_TEST_SUITE_P(RedirectLimit, AudioGraphHttpRedirectLimitTest,
+                         ::testing::Values(-1L, 0L, 1L, 5L));
+
+TEST_F(AudioGraphHttpStreamTest, redirect_rejects_ftp_without_retrying) {
+  const std::string path = "/redirect/302/ftp://127.0.0.1/audio.flac";
+  AudioGraphHttpStream stream(1, server.url(path), bufferSize);
+  const auto state = waitForStatus(stream, AudioGraphNodeState::ERROR,
+                                   std::chrono::seconds(5));
+  ASSERT_TRUE(state.error);
+  EXPECT_THAT(state.error->message,
+              ::testing::HasSubstr(curl_easy_strerror(CURLE_UNSUPPORTED_PROTOCOL)));
+  EXPECT_EQ(server.requestsTo(path), 1u);
+  EXPECT_TRUE(readToEnd(stream).empty());
+}
+
+TEST_F(AudioGraphHttpStreamTest,
+       redirect_errors_do_not_expose_url_in_logs_or_state) {
+  const std::string secret = "private-redirect-token";
+  const auto path = "/redirect/302/" + secret + "://example.com/audio.flac";
+  std::ostringstream log;
+  auto sink = std::make_shared<spdlog::sinks::ostream_sink_mt>(log);
+  const auto previousLogger = spdlog::default_logger();
+  spdlog::set_default_logger(
+      std::make_shared<spdlog::logger>("redirect-test", sink));
+  StreamState state(AudioGraphNodeState::PREPARING);
+  {
+    AudioGraphHttpStream stream(1, server.url(path), bufferSize);
+    state = waitForStatus(stream, AudioGraphNodeState::ERROR,
+                          std::chrono::seconds(5));
+  }
+  spdlog::set_default_logger(previousLogger);
+
+  ASSERT_TRUE(state.error);
+  EXPECT_THAT(state.error->message,
+              ::testing::HasSubstr(curl_easy_strerror(CURLE_UNSUPPORTED_PROTOCOL)));
+  EXPECT_THAT(state.error->message, ::testing::Not(::testing::HasSubstr(secret)));
+  EXPECT_THAT(log.str(), ::testing::HasSubstr("Libcurl exception"));
+  EXPECT_THAT(log.str(), ::testing::Not(::testing::HasSubstr(secret)));
 }
 
 TEST_F(AudioGraphHttpStreamTest, seekTo_forward) {

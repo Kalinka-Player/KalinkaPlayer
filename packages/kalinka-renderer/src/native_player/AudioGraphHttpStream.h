@@ -13,12 +13,16 @@
  * server allows them, and resumes a failed or stalled request from the byte it
  * stopped at.
  *
+ * Follows HTTP(S) redirects up to the configured limit. Each range, retry, or
+ * seek starts from the original URL so temporary media URLs can be refreshed.
+ *
  * A stop or a seek interrupts a request within about a second, even one whose
  * sender has gone quiet.
  */
 class AudioGraphHttpStream : public AudioGraphOutputNode {
 public:
   static constexpr std::chrono::seconds DEFAULT_STALL_TIMEOUT{15};
+  static constexpr long DEFAULT_MAX_REDIRECTS = 3;
 
   /**
    * @param chunkSize Bytes asked for per request; 0 asks for the rest of the
@@ -27,10 +31,12 @@ public:
    * before it is dropped and resumed from where it stopped; 0 or less waits
    * for as long as the connection lasts. Time spent waiting for room in the
    * buffer, as while paused, does not count.
+   * @param maxRedirects Maximum redirects per request; 0 or less disables them.
    */
   AudioGraphHttpStream(std::optional<StreamId> streamId, const std::string &url,
                        size_t bufferSize, size_t chunkSize = 0,
-                       std::chrono::seconds stallTimeout = DEFAULT_STALL_TIMEOUT);
+                       std::chrono::seconds stallTimeout = DEFAULT_STALL_TIMEOUT,
+                       long maxRedirects = DEFAULT_MAX_REDIRECTS);
   virtual size_t read(void *data, size_t size) override;
   virtual size_t waitForData(std::stop_token stopToken, size_t size) override;
   virtual size_t waitForDataFor(std::stop_token stopToken,
@@ -52,6 +58,7 @@ private:
   Signal<size_t> seekRequestSignal;
   size_t chunkSize = 0;
   std::chrono::seconds stallTimeout;
+  long maxRedirects;
   std::chrono::steady_clock::time_point silentSince;
   bool acceptRange = true;
   bool hasReadHeader = false;
@@ -64,6 +71,7 @@ private:
   static int transferInfoCallback(void *stream, curl_off_t, curl_off_t,
                                   curl_off_t, curl_off_t);
   bool stalled() const;
+  std::string requestError(CURLcode code) const;
   void emptyBufferCallback(Buffer<uint8_t> &buffer);
   size_t headerCallback(char *buffer, size_t size, size_t nitems);
 

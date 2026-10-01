@@ -160,6 +160,10 @@ const Knob kNetworkKnobs[] = {
      "seconds, before the renderer asks for the rest again. A track that keeps "
      "stalling fails. Raise it on a very slow connection.",
      pb::CONFIG_FIELD_TYPE_INT, "s", {5, 300, 5, true}},
+    {"network.max_redirects", "Maximum redirects",
+     "How many HTTP redirects to follow per request. Set to 0 to disable "
+     "redirects. Applies to newly opened tracks.",
+     pb::CONFIG_FIELD_TYPE_INT, "", {0, 10, 1}},
 };
 
 // A section of the settings page that holds nothing but knobs.
@@ -176,8 +180,7 @@ const Section kBuffering{"buffers", "Buffering",
                          kBufferKnobs};
 
 const Section kNetwork{"network", "Network",
-                       "How long the renderer waits on a server that has gone "
-                       "quiet.",
+                       "How the renderer handles network requests.",
                        kNetworkKnobs};
 
 // Per-stream keys reach the next stream appended; the rest need a new graph.
@@ -196,6 +199,7 @@ const std::map<std::string, std::string> &graphKeys() {
       {"buffers.mpeg", "decoder.mpeg.buffer_size"},
       {"buffers.vorbis", "decoder.vorbis.buffer_size"},
       {"network.stall_timeout_s", "input.http.stall_timeout"},
+      {"network.max_redirects", "input.http.max_redirects"},
   };
   return keys;
 }
@@ -288,6 +292,8 @@ const std::map<std::string, std::string> &NativePlayer::defaultSettings() {
       {"buffers.vorbis", "768000"},
       {"network.stall_timeout_s",
        std::to_string(AudioGraphHttpStream::DEFAULT_STALL_TIMEOUT.count())},
+      {"network.max_redirects",
+       std::to_string(AudioGraphHttpStream::DEFAULT_MAX_REDIRECTS)},
   };
   return defaults;
 }

@@ -157,7 +157,9 @@ struct StreamNodes {
           value_or(config, "input.http.chunk_size", CHUNK_SIZE),
           std::chrono::seconds(value_or(
               config, "input.http.stall_timeout",
-              AudioGraphHttpStream::DEFAULT_STALL_TIMEOUT.count()))));
+              AudioGraphHttpStream::DEFAULT_STALL_TIMEOUT.count())),
+          value_or(config, "input.http.max_redirects",
+                   AudioGraphHttpStream::DEFAULT_MAX_REDIRECTS)));
     }
 
     nodeChain.emplace_back(decoder(nodeChain.back()));
