@@ -13,7 +13,7 @@ against both.
 
 import io
 import time
-from pathlib import Path
+from pathlib import Path, PosixPath
 from types import SimpleNamespace
 
 import pytest
@@ -270,7 +270,7 @@ def test_a_hung_mount_does_not_pin_the_request(file_client, monkeypatch):
     hold the event loop while it does."""
     import kalinka_server.content_route as content_route
 
-    class _HungPath(Path):
+    class _HungPath(PosixPath):  # Path itself subclasses only from 3.12
         def is_file(self):
             time.sleep(5)
             return True
