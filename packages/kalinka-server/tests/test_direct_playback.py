@@ -924,11 +924,14 @@ async def test_sequential_feedback_uses_control_points_without_polling(
     await asyncio.sleep(SETTLE_S)
     assert listener.states[-1].state == PlayerStateEnum.PAUSED
     assert listener.states[-1].position == 10000
-    assert len(_events(emitter)) > events
+    assert _states(emitter)[-1].state == PlayerStateEnum.PAUSED
+    assert _states(emitter)[-1].position == 10000
     await hold.resume()
     await asyncio.sleep(SETTLE_S)
     assert listener.states[-1].state == PlayerStateEnum.PLAYING
     assert listener.states[-1].position >= 10000
+    assert _states(emitter)[-1].state == PlayerStateEnum.PLAYING
+    assert _states(emitter)[-1].position >= 10000
     assert _snapshot_requests(renderer) == polled
 
 
