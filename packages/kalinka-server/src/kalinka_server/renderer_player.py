@@ -110,18 +110,12 @@ class RendererPlayer:
         # Bumped on every published state; an armed release fires only if the
         # player is still in the state that armed it.
         self._epoch = 0
-        # Direct sequential playback uses real renderer feedback for pacing.
-        self.publish_snapshots = False
 
     # ------------------------------------------------------------------
     # The AudioPlayer surface
 
     def get_state(self) -> StreamState:
         return self._last_state
-
-    async def request_snapshot(self) -> None:
-        if self._session is not None:
-            await self._session.request_snapshot()
 
     def stream_uri(self, stream_id: Optional[int]) -> Optional[str]:
         """Where the renderer is fetching this stream from, while it holds it."""
@@ -390,8 +384,6 @@ class RendererPlayer:
             # dropped for want of anywhere to send them.
             if translated.state is self._last_state.state:
                 self._record(translated)
-                if self.publish_snapshots and translated.state in _PLAYING_STATES:
-                    self._monitor.push(translated)
             else:
                 self._publish(translated)
             return
