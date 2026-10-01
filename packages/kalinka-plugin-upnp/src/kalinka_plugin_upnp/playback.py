@@ -27,11 +27,11 @@ class SessionListener:
 
     def on_state(self, state: PlaybackState):
         if self.playback.listener is self:
-            self.playback.update_state(state)
+            self.playback.enqueue(self, "state", state)
 
     def on_volume(self, volume: DeviceVolume):
         if self.playback.listener is self:
-            self.playback.update_volume(volume)
+            self.playback.enqueue(self, "volume", volume)
 
     def on_command(self, request):
         if self.playback.listener is self:
@@ -43,19 +43,11 @@ class SessionListener:
 
     def on_next_started(self, track):
         if self.playback.listener is self:
-            self.playback.next_started(track)
+            self.playback.enqueue(self, "next_started", track)
 
     def on_revoked(self, reason):
         if self.playback.listener is self:
-            self.playback.hold = self.playback.listener = None
-            self.playback.next_uri = None
-            self.playback.forward.clear()
-            self.playback.queued_media.clear()
-            self.playback.scheduled_next = None
-            self.playback.state = (
-                "STOPPED" if self.playback.current else "NO_MEDIA_PRESENT"
-            )
-            self.playback.changed("AVTransport")
+            self.playback.enqueue(self, "revoked", reason)
 
 
 class Playback:
@@ -81,6 +73,7 @@ class Playback:
         self.restore_volume = 0
         self.lock = asyncio.Lock()
         self.commands = asyncio.Queue(maxsize=32)
+        self.generation = 0
         self.worker = None
         self.closed = False
 
@@ -112,27 +105,56 @@ class Playback:
             actions.append("Previous")
         return ",".join(actions)
 
-    def enqueue(self, listener, kind, position):
-        try:
-            self.commands.put_nowait((listener, kind, position, self.current))
-        except asyncio.QueueFull:
-            if kind == "finished":
-                self.commands.get_nowait()
-                self.commands.put_nowait((listener, kind, position, self.current))
+    def enqueue(self, listener, kind, value):
+        if self.closed:
+            return
+        callbacks = ("state", "volume", "finished", "next_started", "revoked")
+        if kind in ("state", "volume") or self.commands.full():
+            pending = [self.commands.get_nowait() for _ in range(self.commands.qsize())]
+            if kind in ("state", "volume"):
+                pending = [
+                    item for item in pending if item[0] is not listener or item[1] != kind
+                ]
+            if len(pending) == self.commands.maxsize and kind in callbacks:
+                disposable = next(
+                    (i for i, item in enumerate(pending) if item[1] not in callbacks),
+                    None,
+                )
+                if kind == "revoked":
+                    pending.clear()
+                elif disposable is not None:
+                    pending.pop(disposable)
+            for item in pending:
+                self.commands.put_nowait(item)
+            if self.commands.full():
+                logger.warning("UPnP transport command queue is full")
                 return
-            logger.warning("UPnP transport command queue is full")
+        self.commands.put_nowait((listener, kind, value, self.generation))
 
     async def _run_commands(self):
         while True:
-            listener, kind, position, media = await self.commands.get()
+            listener, kind, value, generation = await self.commands.get()
             try:
                 async with self.lock:
-                    if self.listener is not listener or not self.active:
+                    if self.listener is not listener:
                         continue
-                    if kind in ("finished", "queue_next") and media is not self.current:
+                    if kind == "revoked":
+                        self._revoked()
+                        continue
+                    if not self.active:
+                        continue
+                    if kind in ("state", "next_started", "finished") and (
+                        generation != self.generation
+                    ):
                         continue
                     async with asyncio.timeout(10):
-                        if kind == "finished":
+                        if kind == "state":
+                            self.update_state(value)
+                        elif kind == "volume":
+                            self.update_volume(value)
+                        elif kind == "next_started":
+                            await self._next_started(value)
+                        elif kind == "finished":
                             if self.next:
                                 await self._next()
                             else:
@@ -142,13 +164,11 @@ class Playback:
                         elif kind == TransportKind.RESUME.value:
                             await self._play()
                         elif kind == TransportKind.SEEK.value:
-                            await self._seek(position)
+                            await self._seek(value)
                         elif kind == TransportKind.NEXT.value:
                             await self._next()
                         elif kind == TransportKind.PREV.value:
                             await self._previous()
-                        elif kind == "queue_next":
-                            await self._queue_next()
             except UpnpError as exc:
                 logger.info("UPnP %s unavailable: %s", kind, exc.description)
             except (HoldEnded, OutputUnavailable, TimeoutError):
@@ -203,7 +223,7 @@ class Playback:
             await self.hold.set_next(None)
         self.scheduled_next = media
 
-    def next_started(self, track):
+    async def _next_started(self, track):
         media = next(
             (media for media in reversed(self.queued_media) if media.track == track),
             None,
@@ -220,7 +240,7 @@ class Playback:
         self.position_ms, self.duration_ms = 0, media.duration_ms
         self.state, self.status = "TRANSITIONING", "OK"
         self.changed("AVTransport")
-        self.enqueue(self.listener, "queue_next", None)
+        await self._queue_next()
 
     async def _play(self):
         if self.current is None:
@@ -231,6 +251,8 @@ class Playback:
             await self.hold.resume()
         else:
             if not self.active:
+                if self.hold is not None:
+                    self._revoked()
                 listener = SessionListener(self)
                 self.listener = listener
                 acquiring = asyncio.create_task(self.direct.acquire("UPnP", listener))
@@ -254,6 +276,7 @@ class Playback:
                     raise HoldEnded("UPnP hold ended while opening")
                 self.hold = hold
             try:
+                self.generation += 1
                 self.queued_media.clear()
                 self.scheduled_next = None
                 await self.hold.play(
@@ -281,6 +304,7 @@ class Playback:
         self.changed("AVTransport")
 
     async def _stop(self):
+        self.generation += 1
         self.queued_media.clear()
         self.scheduled_next = None
         if self.active:
@@ -294,12 +318,22 @@ class Playback:
         self.changed("AVTransport")
 
     async def _release(self):
+        self.generation += 1
         hold, self.hold, self.listener = self.hold, None, None
         self.queued_media.clear()
         self.scheduled_next = None
         self._stopped()
         if hold is not None:
             await hold.release()
+
+    def _revoked(self):
+        self.hold = self.listener = None
+        self.next_uri = None
+        self.forward.clear()
+        self.queued_media.clear()
+        self.scheduled_next = None
+        self.state = "STOPPED" if self.current else "NO_MEDIA_PRESENT"
+        self.changed("AVTransport")
 
     async def _seek(self, position_ms):
         if not self.current:
