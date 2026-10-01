@@ -13,6 +13,7 @@
 
 #include "LocalHttpServer.h"
 #include "TestHelpers.h"
+#include "config/ConfigService.h"
 #include "config/SettingsPersistence.h"
 #include "player/NativePlayer.h"
 
@@ -227,11 +228,11 @@ TEST_F(NativePlayerSettingsTest, BufferWritesGoThroughTheBufferingSection) {
   EXPECT_EQ(loadSettingsOverrides().at("buffers.mpeg"), "200000");
 }
 
-TEST_F(NativePlayerSettingsTest, TheStallTimeoutIsItsOwnSection) {
+TEST_F(NativePlayerSettingsTest, TheStallTimeoutIsInTheNetworkSection) {
   const pb::ConfigSection section = network();
 
   EXPECT_EQ(section.path(), "network");
-  ASSERT_EQ(section.fields_size(), 1);
+  ASSERT_EQ(section.fields_size(), 2);
   const pb::ConfigField &timeout = section.fields(0);
   EXPECT_EQ(timeout.path(), "network.stall_timeout_s");
   EXPECT_EQ(timeout.value(), "15");
@@ -243,6 +244,64 @@ TEST_F(NativePlayerSettingsTest, TheStallTimeoutIsItsOwnSection) {
   ASSERT_TRUE(timeout.has_range());
   EXPECT_EQ(timeout.range().min(), 5);
   EXPECT_EQ(timeout.range().max(), 300);
+}
+
+TEST_F(NativePlayerSettingsTest, RedirectLimitDefaultsToThreeInTheNetworkSection) {
+  const pb::ConfigSection section = network();
+  const pb::ConfigField *limit = field(section, "network.max_redirects");
+  ASSERT_NE(limit, nullptr);
+  EXPECT_EQ(limit->value(), "3");
+  EXPECT_EQ(limit->default_value(), "3");
+  EXPECT_EQ(limit->type(), pb::CONFIG_FIELD_TYPE_INT);
+  EXPECT_EQ(limit->importance(), pb::CONFIG_IMPORTANCE_EXPERT);
+  EXPECT_EQ(limit->apply(), pb::APPLY_COST_INSTANT);
+  ASSERT_TRUE(limit->has_range());
+  EXPECT_EQ(limit->range().min(), 0);
+  EXPECT_EQ(limit->range().max(), 10);
+  EXPECT_EQ(limit->range().step(), 1);
+}
+
+TEST_F(NativePlayerSettingsTest, RedirectLimitIsPersistedAndCanResetToDefault) {
+  ASSERT_TRUE(player_->networkSettings()->applyConfig(
+      "network.max_redirects", "5", error_)) << error_;
+  EXPECT_EQ(loadSettingsOverrides().at("network.max_redirects"), "5");
+
+  player_.reset();
+  player_ = std::make_shared<NativePlayer>(ioc_);
+  EXPECT_EQ(field(network(), "network.max_redirects")->value(), "5");
+
+  ASSERT_TRUE(player_->networkSettings()->applyConfig(
+      "network.max_redirects", "3", error_)) << error_;
+  EXPECT_EQ(field(network(), "network.max_redirects")->value(), "3");
+  EXPECT_FALSE(loadSettingsOverrides().contains("network.max_redirects"));
+}
+
+TEST_F(NativePlayerSettingsTest, RedirectLimitWritesValidateTheDeclaredRange) {
+  ConfigService service{{player_->networkSettings()}};
+  pb::ConfigUpdate update;
+  auto *setting = update.add_settings();
+  setting->set_path("network.max_redirects");
+  for (const char *value : {"-1", "11", "1.5", "many"}) {
+    SCOPED_TRACE(value);
+    setting->set_value(value);
+    pb::ConfigResult result;
+    service.apply(update, result);
+    ASSERT_EQ(result.outcomes_size(), 1);
+    EXPECT_FALSE(result.outcomes(0).applied());
+    EXPECT_FALSE(result.outcomes(0).error().empty());
+    EXPECT_EQ(field(network(), "network.max_redirects")->value(), "3");
+    EXPECT_FALSE(loadSettingsOverrides().contains("network.max_redirects"));
+  }
+  for (const char *value : {"0", "10"}) {
+    SCOPED_TRACE(value);
+    setting->set_value(value);
+    pb::ConfigResult result;
+    service.apply(update, result);
+    ASSERT_EQ(result.outcomes_size(), 1);
+    EXPECT_TRUE(result.outcomes(0).applied());
+    EXPECT_EQ(field(network(), "network.max_redirects")->value(), value);
+    EXPECT_EQ(loadSettingsOverrides().at("network.max_redirects"), value);
+  }
 }
 
 TEST_F(NativePlayerSettingsTest, StallTimeoutWritesGoThroughTheNetworkSection) {
@@ -301,6 +360,30 @@ TEST_F(NativePlayerSettingsTest, WhatTheGraphReadsPerStreamAppliesAtOnce) {
   }
 }
 
+TEST_F(NativePlayerStreamTest, NewStreamsUseTheConfiguredRedirectLimit) {
+  std::optional<pb::PlaybackStateChanged> failed;
+  player_->setStateSink([&failed](pb::Envelope &env) {
+    if (!failed && env.has_playback_state_changed() &&
+        env.playback_state_changed().state() == pb::PLAYBACK_STATE_ERROR) {
+      failed = env.playback_state_changed();
+    }
+  });
+  size_t requests = 0;
+  for (int limit : {0, 1, 5}) {
+    SCOPED_TRACE(limit);
+    ASSERT_TRUE(player_->networkSettings()->applyConfig(
+        "network.max_redirects", std::to_string(limit), error_)) << error_;
+    failed.reset();
+    player_->setSource(sourceAt("/redirect-loop"));
+
+    ASSERT_TRUE(runUntil([&failed] { return failed.has_value(); }));
+    EXPECT_EQ(failed->error().source(), pb::ERROR_SOURCE_HTTP_STREAM);
+    EXPECT_THAT(failed->error().message(), ::testing::HasSubstr("redirect"));
+    requests += limit + 1;
+    EXPECT_EQ(server_.requestsTo("/redirect-loop"), requests);
+  }
+}
+
 TEST_F(NativePlayerStreamTest, AStreamKnobLeavesThePlayingTrackAlone) {
   std::vector<pb::PlaybackState> states;
   player_->setStateSink([&states](pb::Envelope &env) {
@@ -319,6 +402,8 @@ TEST_F(NativePlayerStreamTest, AStreamKnobLeavesThePlayingTrackAlone) {
   ASSERT_TRUE(player_->networkSettings()->applyConfig(
       "network.stall_timeout_s", "60", error_))
       << error_;
+  ASSERT_TRUE(player_->networkSettings()->applyConfig(
+      "network.max_redirects", "5", error_)) << error_;
   ASSERT_TRUE(player_->bufferSettings()->applyConfig("buffers.flac", "2000000",
                                                      error_))
       << error_;
@@ -327,6 +412,7 @@ TEST_F(NativePlayerStreamTest, AStreamKnobLeavesThePlayingTrackAlone) {
   EXPECT_TRUE(runUntil(reached(pb::PLAYBACK_STATE_FINISHED)));
   EXPECT_EQ(std::ranges::count(states, pb::PLAYBACK_STATE_STOPPED), 0);
   EXPECT_EQ(network().fields(0).value(), "60");
+  EXPECT_EQ(field(network(), "network.max_redirects")->value(), "5");
   EXPECT_EQ(field(buffers(), "buffers.flac")->value(), "2000000");
 }
 
@@ -334,6 +420,7 @@ TEST_F(NativePlayerSettingsTest, AStoredValueItsKnobWouldRefuseIsIgnored) {
   player_.reset();
   saveSettingsOverrides({{"output.device", "null"},
                          {"network.stall_timeout_s", "0"},
+                         {"network.max_redirects", "-1"},
                          {"buffers.flac", "-1"},
                          {"buffers.mpeg", "lots"},
                          {"output.reopen_on_format_change", "maybe"},
@@ -342,6 +429,7 @@ TEST_F(NativePlayerSettingsTest, AStoredValueItsKnobWouldRefuseIsIgnored) {
   player_ = std::make_shared<NativePlayer>(ioc_);
 
   EXPECT_EQ(network().fields(0).value(), "15");
+  EXPECT_EQ(field(network(), "network.max_redirects")->value(), "3");
   EXPECT_EQ(field(buffers(), "buffers.flac")->value(), "1536000");
   EXPECT_EQ(field(buffers(), "buffers.mpeg")->value(), "768000");
   const pb::ConfigSection sink = output();

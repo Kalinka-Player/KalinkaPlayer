@@ -20,13 +20,15 @@ const size_t PROGRESS_THAT_RENEWS_RETRIES = CURL_MAX_WRITE_SIZE;
 AudioGraphHttpStream::AudioGraphHttpStream(std::optional<StreamId> streamId,
                                            const std::string &url,
                                            size_t bufferSize, size_t chunkSize,
-                                           std::chrono::seconds stallTimeout)
+                                           std::chrono::seconds stallTimeout,
+                                           long maxRedirects)
     : AudioGraphNode(streamId), url(url),
       buffer(std::max(bufferSize, static_cast<size_t>(CURL_MAX_WRITE_SIZE)),
              std::bind(&AudioGraphHttpStream::emptyBufferCallback, this,
                        std::placeholders::_1)),
       chunkSize(chunkSize),
-      stallTimeout(std::max(stallTimeout, std::chrono::seconds::zero())) {
+      stallTimeout(std::max(stallTimeout, std::chrono::seconds::zero())),
+      maxRedirects(std::max(maxRedirects, 0L)) {
   readerThread =
       std::jthread(std::bind_front(&AudioGraphHttpStream::reader, this));
 }
@@ -97,6 +99,17 @@ bool AudioGraphHttpStream::stalled() const {
          std::chrono::steady_clock::now() - silentSince >= stallTimeout;
 }
 
+std::string AudioGraphHttpStream::requestError(CURLcode code) const {
+  // Libcurl's detailed message can contain credentials from a redirect URL.
+  std::string message =
+      std::string("Libcurl exception: ") + curl_easy_strerror(code);
+  if (code == CURLE_OPERATION_TIMEDOUT && stalled()) {
+    message +=
+        ": Nothing received for " + std::to_string(stallTimeout.count()) + " s";
+  }
+  return message;
+}
+
 void AudioGraphHttpStream::emptyBufferCallback(Buffer<uint8_t> &buffer) {
   if (buffer.isEof() && getState().state != AudioGraphNodeState::ERROR) {
     setState(StreamState(AudioGraphNodeState::FINISHED));
@@ -106,6 +119,11 @@ void AudioGraphHttpStream::emptyBufferCallback(Buffer<uint8_t> &buffer) {
 size_t AudioGraphHttpStream::headerCallback(char *buffer, size_t size,
                                             size_t nitems) {
   size_t totalSize = size * nitems;
+  long responseCode = 0;
+  curlpp::Info<CURLINFO_RESPONSE_CODE, long>::get(request, responseCode);
+  if (responseCode != 200 && responseCode != 206) {
+    return totalSize;
+  }
   std::string header(buffer, totalSize);
 
   size_t separator = header.find(": ");
@@ -137,8 +155,6 @@ size_t AudioGraphHttpStream::headerCallback(char *buffer, size_t size,
       acceptRange = false;
     }
     if (key == "content-length" && !lengthKnown) {
-      long responseCode = 0;
-      curlpp::Info<CURLINFO_RESPONSE_CODE, long>::get(request, responseCode);
       if (responseCode == 200) {
         contentLength = std::stoull(value);
         lengthKnown = true;
@@ -182,9 +198,7 @@ void AudioGraphHttpStream::reader(std::stop_token stopToken) {
     }
   } catch (curlpp::LibcurlRuntimeError &ex) {
     if (!stopToken.stop_requested()) {
-      std::string message = std::string("Libcurl exception: ") +
-                            curl_easy_strerror(ex.whatCode()) + ": " +
-                            ex.what();
+      std::string message = requestError(ex.whatCode());
       spdlog::error(message);
       setState({AudioGraphNodeState::ERROR, StreamError{StreamErrorSource::HTTP_STREAM, message}});
     }
@@ -231,7 +245,12 @@ void AudioGraphHttpStream::readContentChunks(std::stop_token stopToken) {
         continue;
       }
       responseCode = -1;
-      spdlog::warn("Libcurl exception: {}", ex.what());
+      spdlog::warn("{}", requestError(ex.whatCode()));
+      if (ex.whatCode() == CURLE_TOO_MANY_REDIRECTS ||
+          ex.whatCode() == CURLE_UNSUPPORTED_PROTOCOL ||
+          ex.whatCode() == CURLE_URL_MALFORMAT) {
+        throw;
+      }
       if (offset - requestedFrom >= PROGRESS_THAT_RENEWS_RETRIES) {
         numRetries = RETRIES;
       }
@@ -280,6 +299,10 @@ int AudioGraphHttpStream::readSingleChunk(std::stop_token stopToken) {
   request.reset();
   curlpp::options::Url myUrl(url);
   request.setOpt(myUrl);
+  request.setOpt(curlpp::options::FollowLocation(true));
+  request.setOpt(curlpp::options::MaxRedirs(maxRedirects));
+  request.setOpt(curlpp::OptionTrait<std::string, CURLOPT_REDIR_PROTOCOLS_STR>(
+      "http,https"));
 
   if (acceptRange) {
     std::ostringstream range;

@@ -132,6 +132,32 @@ Reply stalled(Response response, size_t sentFirst) {
 /// its path.
 Reply answer(const Request &request, const std::string &body, bool first) {
   const std::string_view target = request.target();
+  if (target.starts_with("/redirect/")) {
+    const size_t separator = target.find('/', 10);
+    const auto status = parseNumber(target.substr(10, separator - 10));
+    if (status && separator != std::string_view::npos) {
+      Response response = respond(request, static_cast<http::status>(*status),
+                                  "This response is not audio");
+      response.set(http::field::location, target.substr(separator + 1));
+      return {std::move(response)};
+    }
+  }
+  if (target == "/redirect-loop") {
+    Response response = respond(request, http::status::found);
+    response.set(http::field::location, "/redirect-loop");
+    return {std::move(response)};
+  }
+  if (target == "/redirect-headers") {
+    Response response = respond(request, http::status::found, "Not audio");
+    response.set(http::field::location, "/whole");
+    response.set(http::field::content_range, "bytes */1");
+    response.set(http::field::accept_ranges, "none");
+    response.set("X-Kalinka-Live", "1");
+    return {std::move(response)};
+  }
+  if (target == "/redirect-without-location") {
+    return {respond(request, http::status::found)};
+  }
   if (target == "/live" || target == "/live-held") {
     Response response = respond(request, http::status::ok, body);
     response.erase(http::field::content_length);
