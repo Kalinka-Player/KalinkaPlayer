@@ -64,7 +64,7 @@ std::optional<size_t> parseNumber(std::string_view text) {
 }
 
 /// The inclusive byte span a `bytes=first-[last]` header asks for, with the
-/// end clamped to the file; nullopt when there is no such header.
+/// end defaulting to EOF; nullopt when there is no such header.
 std::optional<std::pair<size_t, size_t>> requestedRange(std::string_view header,
                                                         size_t size) {
   constexpr std::string_view prefix = "bytes=";
@@ -86,7 +86,7 @@ std::optional<std::pair<size_t, size_t>> requestedRange(std::string_view header,
     if (!requestedLast) {
       return std::nullopt;
     }
-    last = std::min(last, *requestedLast);
+    last = *requestedLast;
   }
   return std::make_pair(*first, last);
 }
@@ -102,22 +102,25 @@ Response respond(const Request &request, http::status status,
   return response;
 }
 
-Response ranged(const Request &request, const std::string &body) {
+Response ranged(const Request &request, const std::string &body,
+                bool rejectPastEnd = false) {
   const auto range = requestedRange(request[http::field::range], body.size());
   Response response;
   if (!range) {
     response = respond(request, http::status::ok, body);
-  } else if (range->first >= body.size()) {
+  } else if (range->first >= body.size() ||
+             (rejectPastEnd && range->second >= body.size())) {
     response = respond(request, http::status::range_not_satisfiable);
     response.set(http::field::content_range,
                  "bytes */" + std::to_string(body.size()));
   } else {
+    const size_t last = std::min(range->second, body.size() - 1);
     response =
         respond(request, http::status::partial_content,
-                body.substr(range->first, range->second - range->first + 1));
+                body.substr(range->first, last - range->first + 1));
     response.set(http::field::content_range,
                  "bytes " + std::to_string(range->first) + "-" +
-                     std::to_string(range->second) + "/" +
+                     std::to_string(last) + "/" +
                      std::to_string(body.size()));
   }
   response.set(http::field::accept_ranges, "bytes");
@@ -144,8 +147,8 @@ Reply answer(const Request &request, const std::string &body, bool first) {
     response.chunked(true);
     return {std::move(response)};
   }
-  if (target == "/ranged") {
-    return {ranged(request, body)};
+  if (target == "/ranged" || target == "/strict-ranged") {
+    return {ranged(request, body, target == "/strict-ranged")};
   }
   if (target == "/whole" || target == "/held") {
     Response response = respond(request, http::status::ok, body);

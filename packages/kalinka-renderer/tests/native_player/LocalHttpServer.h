@@ -21,6 +21,7 @@
  * server does; `/whole` ignores Range and sends the whole file with
  * `Accept-Ranges: none`; `/held` does as `/whole` does, but sends only the
  * first HELD_BYTES until release() is called; any other path is a 404.
+ * `/strict-ranged` returns 416 for ranges extending past EOF, like BubbleUPnP.
  *
  * The routes that stall answer as `/ranged` does, but send the headers and only
  * part of the body, then hold the connection open without a word until the

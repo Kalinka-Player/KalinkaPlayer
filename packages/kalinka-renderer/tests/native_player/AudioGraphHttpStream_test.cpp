@@ -291,6 +291,44 @@ TEST_F(AudioGraphHttpStreamTest, read_whole_dump) {
   EXPECT_EQ(bytesRead, bytesReadChunked);
 }
 
+TEST_F(AudioGraphHttpStreamTest, final_chunk_reads_through_eof_on_strict_server) {
+  const auto expected = fileContent(file);
+  const size_t chunkSize = bufferSize / 2;
+  ASSERT_GT(expected.size(), chunkSize);
+  ASSERT_NE(expected.size() % chunkSize, 0);
+  AudioGraphHttpStream stream(1, server.url("/strict-ranged"), bufferSize,
+                              chunkSize);
+
+  const auto content = readToEnd(stream);
+
+  EXPECT_EQ(stream.getState().state, AudioGraphNodeState::FINISHED);
+  ASSERT_EQ(content.size(), expected.size());
+  EXPECT_TRUE(std::equal(content.begin(), content.end(), expected.begin()));
+  EXPECT_EQ(server.requestsTo("/strict-ranged"),
+            (expected.size() + chunkSize - 1) / chunkSize);
+}
+
+TEST_F(AudioGraphHttpStreamTest, seek_near_eof_reads_remaining_bytes_on_strict_server) {
+  const auto expected = fileContent(file);
+  const size_t chunkSize = bufferSize / 2;
+  const size_t tailSize = 1000;
+  ASSERT_GT(expected.size(), bufferSize + chunkSize + tailSize);
+  AudioGraphHttpStream stream(1, server.url("/strict-ranged"), bufferSize,
+                              chunkSize);
+  ASSERT_EQ(waitForStatus(stream, AudioGraphNodeState::STREAMING,
+                          std::chrono::seconds(5)).state,
+            AudioGraphNodeState::STREAMING);
+  const size_t position = expected.size() - tailSize;
+
+  ASSERT_EQ(stream.seekTo(position), position);
+  const auto content = readToEnd(stream);
+
+  EXPECT_EQ(stream.getState().state, AudioGraphNodeState::FINISHED);
+  ASSERT_EQ(content.size(), tailSize);
+  EXPECT_TRUE(std::equal(content.begin(), content.end(),
+                         expected.begin() + position));
+}
+
 TEST_F(AudioGraphHttpStreamTest, stalled_transfer_ends_in_timeout_error) {
   // Every attempt stalls: the first request and the three retries.
   const size_t attempts = 4;
