@@ -917,7 +917,14 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
         power-off, and a power-off stops playback. get_ready() reports the
         real power state once the device answers again. Only emits on the
         transition to avoid spamming the bus during retry loops.
+
+        Volume queued or sent on the lost connection is dropped, and the
+        sender woken to exit: replayed after reconnecting, it would overwrite
+        the level get_ready() reads back.
         """
+        self._volume_target = None
+        self._unconfirmed.clear()
+        self._volume_wake.set()
         if self.volume.supported:
             self.volume = DeviceVolume(
                 max_volume=self.volume.max_volume,
