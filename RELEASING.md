@@ -9,7 +9,7 @@ There are four independent things to version, and they work differently:
 
 | What | Packages | Versioned by | Needs a git tag? |
 |------|----------|--------------|------------------|
-| **App bundle** | `kalinka-server`, `kalinka-plugin-localfiles`, `kalinka-plugin-musiccast`, `kalinka-plugin-dummydevice` | A single `kalinka-vX.Y.Z` git tag (via setuptools_scm) | **Yes** |
+| **App bundle** | `kalinka-server`, `kalinka-plugin-localfiles`, `kalinka-plugin-musiccast`, `kalinka-plugin-dummydevice`, `kalinka-plugin-jamendo`, `kalinka-plugin-upnp` | A single `kalinka-vX.Y.Z` git tag (via setuptools_scm) | **Yes** |
 | **Renderer** | `kalinka-renderer` (deb/rpm/flatpak) | Its own `kalinka-renderer-vX.Y.Z` git tag | **Yes** (its own) |
 | **Plugin SDK** | `kalinka-plugin-sdk` | Its **own SemVer** — a constant in source | **No** |
 | **Appliance images** | `kalinka-*-rpi234-arm64.img.xz`, `kalinka-*-rpi5-arm64.img.xz`, `kalinka-*-amd64.img.xz` | Their own `kalinka-image-vX.Y.Z` git tag | **Yes** (its own) |
@@ -212,6 +212,7 @@ Removed or changed an existing public API (a protocol change):
    - `packages/kalinka-plugin-jamendo/` — likewise
    - `packages/kalinka-plugin-musiccast/` — likewise
    - `packages/kalinka-plugin-dummydevice/` — likewise
+   - `packages/kalinka-plugin-upnp/` — likewise
    - the plugin template, so a plugin generated after the bump is born on the new major: `sdk_version_constraint` in `template/cookiecutter-kalinka-plugin/cookiecutter.json` (the generated wheel's pin and `REQUIRES_SDK`) and `template/cookiecutter-kalinka-plugin/{{cookiecutter.plugin_name}}/debian/control.in`. `make test` fails until both accept the new SDK. `template/cookiecutter-kalinka-plugin/README.md` quotes the default three times; move those along with it.
 3. Raise each plugin's `REQUIRES_SDK` floor to the new major. This is a
    *second* gate, checked when the plugin is loaded rather than installed: a

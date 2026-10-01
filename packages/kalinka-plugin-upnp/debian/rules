@@ -1,0 +1,10 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	# No build step needed - wheel is pre-built
+
+override_dh_auto_install:
+	# Custom installation handled by scripts

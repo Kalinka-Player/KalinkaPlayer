@@ -210,7 +210,7 @@ kalinka-server-rpm: build-env
 	@echo "Building kalinka-server rpm package..."
 	@cd packages/kalinka-server && PATH="$(VENV_BIN):$$PATH" ./scripts/build_rpm.sh
 
-## Build all plugin deb packages (SDK, local files, musiccast, dummydevice, jamendo)
+## Build all bundled plugin deb packages and the SDK
 kalinka-plugins-deb: build-env
 	@echo "Building plugin deb packages..."
 	@for dir in packages/kalinka-plugin-*; do \

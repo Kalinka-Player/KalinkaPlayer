@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=77", "wheel", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kalinka-plugin-upnp"
+dynamic = ["version"]
+description = "UPnP MediaRenderer input plugin for Kalinka Music Player"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.11"
+authors = [{name = "Dmitry Savin", email = "envelsavinds@gmail.com"}]
+dependencies = [
+    "kalinka-plugin-sdk>=3.6,<4",
+    "aiohttp>=3.10,<4",
+    "defusedxml>=0.7,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[project.entry-points."kalinka.plugins"]
+kalinka_plugin_upnp = "kalinka_plugin_upnp:KalinkaPluginUpnp"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools_scm]
+write_to = "src/kalinka_plugin_upnp/_version.py"
+tag_regex = "^kalinka-v(?P<version>\\d+\\.\\d+\\.\\d+)$"
+git_describe_command = "git describe --dirty --tags --long --match kalinka-v*"
+version_scheme = "guess-next-dev"
+local_scheme = "node-and-date"
+fallback_version = "0.0.0"
+search_parent_directories = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = ["--tb=short", "--strict-markers"]

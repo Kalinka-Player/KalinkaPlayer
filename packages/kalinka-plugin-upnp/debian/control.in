@@ -1,0 +1,9 @@
+Package: kalinka-plugin-upnp
+Version: @VERSION@
+Section: python
+Priority: optional
+Architecture: all
+Depends: kalinka-plugin-sdk (>= 3.6), kalinka-plugin-sdk (<< 4), python3 (>= 3.11), ca-certificates
+Maintainer: Dmitry Savin <envelsavinds@gmail.com>
+Description: UPnP MediaRenderer input for Kalinka Music Player
+ Receives UPnP media and controls the selected Kalinka renderer directly.

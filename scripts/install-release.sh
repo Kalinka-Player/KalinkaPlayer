@@ -315,7 +315,7 @@ echo
 echo ">> Installed:"
 if have dpkg-query; then
   for pkg in kalinka-server kalinka-plugin-sdk kalinka-plugin-localfiles \
-             kalinka-plugin-musiccast kalinka-plugin-jamendo \
+             kalinka-plugin-musiccast kalinka-plugin-jamendo kalinka-plugin-upnp \
              kalinka-plugin-dummydevice kalinka-web kalinka-kiosk \
              kalinka-renderer; do
     dpkg-query -W -f='   ${Package} ${Version}\n' "$pkg" 2>/dev/null || true
