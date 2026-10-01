@@ -227,6 +227,7 @@ def _install_release(
     bundle_fails=False,
     names_fail=False,
     unknown=(),
+    bundle_assets=(),
     app_assets=(),
     installed=(),
     env=None,
@@ -254,6 +255,7 @@ def _install_release(
         for n in (
             "kalinka-server_9.9.9_all.deb",
             "kalinka-plugin-sdk_9.9.9_all.deb",
+            *bundle_assets,
             *app_assets,
         )
     ]
@@ -383,6 +385,24 @@ def _bundle_debs(calls):
     return {
         a.rsplit("/", 1)[-1] for c in calls for a in c if a.endswith(".deb")
     }
+
+
+@EITHER_PATH
+def test_upnp_is_installed_with_the_bundle(bundle_fails, tmp_path):
+    upnp_deb = "kalinka-plugin-upnp_9.9.9_all.deb"
+    result, calls, _ = _install_release(
+        tmp_path, bundle_fails=bundle_fails, bundle_assets=(upnp_deb,)
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert upnp_deb in _bundle_debs(calls)
+    if bundle_fails:
+        dpkg_calls = [
+            line.split()
+            for line in (tmp_path / "state" / "dpkg.log").read_text().splitlines()
+        ]
+        assert upnp_deb in _bundle_debs(dpkg_calls)
+        assert any("install" in call and "-f" in call for call in calls)
 
 
 def test_the_display_comes_only_when_asked_for(tmp_path):
