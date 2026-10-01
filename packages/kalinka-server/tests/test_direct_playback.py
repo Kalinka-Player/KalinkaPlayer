@@ -4,6 +4,7 @@ clients and the plugin are told along the way."""
 
 import asyncio
 import json
+import time
 from unittest.mock import Mock
 
 import pytest
@@ -896,17 +897,39 @@ async def test_sequential_source_target_change_revokes(queue, renderer, direct):
     commit.assert_called_once()
 
 
-async def test_sequential_feedback_polls_actual_renderer_position(queue, renderer, direct):
+async def test_sequential_feedback_uses_control_points_without_polling(
+    queue, renderer, direct, emitter
+):
     listener = Listener()
     hold = await direct.acquire('Spotify Connect', listener)
     source, track = _connect_track()
     source = source.model_copy(update={'sequential': True})
     await hold.play(source, track)
     await asyncio.sleep(SETTLE_S)
-    renderer.position_ms = 10000  # No state transition/event is emitted.
+    anchor = listener.states[-1]
+    assert anchor.state == PlayerStateEnum.PLAYING
+    assert anchor.timestamp_ns > 0
+    states = len(listener.states)
+    events = len(_events(emitter))
+    polled = _snapshot_requests(renderer)
     await asyncio.sleep(1.1)
+    assert len(listener.states) == states
+    assert len(_events(emitter)) == events
+    assert _snapshot_requests(renderer) == polled
+    assert (time.monotonic_ns() - anchor.timestamp_ns) // 1_000_000 >= 1000
+
+    # Real transitions still provide new anchors and reach public subscribers.
+    renderer.position_ms = 10000
+    await hold.pause()
+    await asyncio.sleep(SETTLE_S)
+    assert listener.states[-1].state == PlayerStateEnum.PAUSED
+    assert listener.states[-1].position == 10000
+    assert len(_events(emitter)) > events
+    await hold.resume()
+    await asyncio.sleep(SETTLE_S)
+    assert listener.states[-1].state == PlayerStateEnum.PLAYING
     assert listener.states[-1].position >= 10000
-    assert any(c.WhichOneof('op') == 'request_snapshot' for c in renderer.commands)
+    assert _snapshot_requests(renderer) == polled
 
 
 def _snapshot_requests(renderer) -> int:

@@ -153,10 +153,8 @@ class HolderSession:
         )
         self._ended = False
         self._teardown: Optional[asyncio.Future] = None
-        self._paced = asyncio.Event()
         self._consumer = asyncio.get_running_loop().create_task(self._consume())
         self._volume_watch = asyncio.get_running_loop().create_task(self._watch_volume())
-        self._progress_watch = asyncio.get_running_loop().create_task(self._watch_progress())
 
     # ------------------------------------------------------------------
     # DirectPlaybackSession
@@ -333,7 +331,6 @@ class HolderSession:
         )
         player.on_interrupted(self._replay)
         player.on_session_lost(self._on_session_lost)
-        player.publish_snapshots = True
         return player
 
     def _start(self, source: TrackSource, track: Optional[Track], offset_ms: int) -> None:
@@ -385,7 +382,6 @@ class HolderSession:
         self._ended = True
         self._queued = None
         self._volume_watch.cancel()
-        self._progress_watch.cancel()
         self._teardown = asyncio.ensure_future(self._stop_player())
         await asyncio.shield(self._teardown)
         if reason is not None:
@@ -423,22 +419,9 @@ class HolderSession:
                 if self._queued is not None:
                     continue
                 # The plugin decides whether to play, stop, or release.
-                self._paced.clear()
                 self._bridge.send("on_finished")
                 continue
             self._publish(state)
-
-    async def _watch_progress(self) -> None:
-        while not self._ended:
-            await self._paced.wait()
-            await asyncio.sleep(1)
-            if not self._paced.is_set():
-                continue
-            try:
-                await self._player.request_snapshot()
-            except Exception:
-                # Session loss/reconnect is handled by the player's callbacks.
-                logger.debug("Sequential playback snapshot was unavailable")
 
     async def _watch_volume(self) -> None:
         """Tell the plugin the output's volume: now, and at every change.
@@ -454,14 +437,8 @@ class HolderSession:
                     self._bridge.send("on_volume", event.volume)
 
     def _publish(self, state: StreamState) -> None:
-        if (
-            self._source is not None
-            and self._source.sequential
-            and state.state in _PLAYING_STATES
-        ):
-            self._paced.set()
-        else:
-            self._paced.clear()
+        # Timestamped control points let plugins advance their own clocks,
+        # just like the play queue. Quiet playback needs no renderer polling.
         self._state = PlaybackState(
             state=to_state_name(state.state),
             current_track=self._track,
