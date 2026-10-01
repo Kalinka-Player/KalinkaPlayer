@@ -2,7 +2,6 @@
 
 import asyncio
 import runpy
-import sys
 import typing
 
 import pytest
@@ -64,11 +63,17 @@ async def test_sync_attributes_and_protocol_check_pass_through():
     assert isinstance(proxy, InputModule)
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 12), reason="__protocol_attrs__ is new in Python 3.12"
-)
-def test_protocol_methods_are_the_members_isinstance_checks():
-    assert set(_PROTOCOL_METHODS) == set(InputModule.__protocol_attrs__)
+def _implementing(names):
+    return type("Stub", (), {name: lambda self: None for name in names})()
+
+
+def test_bound_members_are_exactly_what_the_protocol_check_requires():
+    # Judged by the running interpreter's own isinstance, not by typing's
+    # private attributes, whose names and contents change between versions.
+    members = set(_PROTOCOL_METHODS)
+    assert isinstance(_implementing(members), InputModule)
+    for name in members:
+        assert not isinstance(_implementing(members - {name}), InputModule), name
 
 
 def test_module_loads_on_a_python_without_protocol_attrs(monkeypatch):
