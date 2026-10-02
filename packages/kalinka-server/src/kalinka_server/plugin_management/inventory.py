@@ -349,6 +349,7 @@ def reconcile(
 CAPABILITIES = {
     "inventory": True,
     "catalog_browsing": True,
+    "metadata_compatibility": True,
     "catalog_verification": False,
     "independent_verification": False,
     "update_checks": False,

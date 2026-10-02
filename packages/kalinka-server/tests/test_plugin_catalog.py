@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import gzip
 import hashlib
 import json
+import threading
 
 from fastapi import FastAPI
 import httpx
@@ -27,6 +28,10 @@ from kalinka_server.plugin_management.inventory import (
     EntryPoint,
     Installation,
     PluginInventory,
+)
+from kalinka_server.plugin_management.compatibility import (
+    CatalogCompatibility,
+    HostEnvironment,
 )
 from kalinka_server.plugin_management.route import register_plugin_routes
 
@@ -607,7 +612,11 @@ async def test_rest_browsing_does_not_promote_installed_identity(document):
         response = await client.get("/server/plugins/catalog")
         assert response.status_code == 200
         assert response.headers["cache-control"] == "no-store"
-        assert response.json()["plugins"] == document["plugins"]
+        rows = response.json()["plugins"]
+        assert response.json()["compatibility"]["status"] == "evaluated"
+        assert rows[0].pop("compatibility")["installation_allowed"] is False
+        assert rows == document["plugins"]
+        assert catalog.snapshot()["plugins"] == document["plugins"]
         installed = (await client.get("/server/plugins")).json()
         assert installed["capabilities"]["catalog_browsing"] is True
         assert installed["plugins"][0]["catalog_binding"] is None
@@ -616,3 +625,77 @@ async def test_rest_browsing_does_not_promote_installed_identity(document):
         assert updates["status"] == "unavailable"
         assert updates["automatic_updates_enabled"] is False
         assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_rest_preflight_uses_server_facts_and_live_renderers(document):
+    document["plugins"][0]["releases"][0]["requires"]["renderer"] = ">=0.5,<1"
+    catalog = service(lambda _: httpx.Response(200, json=document))
+    await catalog.refresh()
+    event_loop_thread = threading.get_ident()
+
+    def host():
+        assert threading.get_ident() != event_loop_thread
+        return HostEnvironment(
+            "linux", "aarch64", "deb", "debian", "13", "5.3.0", "3.5.0", "3.11.0"
+        )
+
+    renderers = [
+        {
+            "renderer_id": "speaker",
+            "software_version": "0.5.0",
+            "status": "connected",
+            "compatible": True,
+        }
+    ]
+    app = FastAPI()
+    register_plugin_routes(
+        app,
+        PluginInventory(lambda: Discovery((), True)),
+        catalog,
+        enabled=lambda: True,
+        compatibility=CatalogCompatibility(host),
+        renderers=lambda: tuple(renderers),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        data = (await client.get("/server/plugins/catalog")).json()
+        assert data["compatibility"]["host"]["architecture"] == "aarch64"
+        assert data["plugins"][0]["compatibility"]["status"] == "metadata_compatible"
+        assert data["installation_allowed"] is False
+        assert data["trust"]["status"] == "unverified"
+        renderers[0]["software_version"] = "0.4.0"
+        data = (await client.get("/server/plugins/catalog")).json()
+        assert data["plugins"][0]["compatibility"]["status"] == "blocked"
+        assert catalog.snapshot()["plugins"] == document["plugins"]
+        for path in ("/plans", "/operations"):
+            assert (
+                await client.post("/server/plugins" + path, json={})
+            ).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_disabling_during_host_probe_revokes_catalog_response(document):
+    enabled = [True]
+    catalog = service(lambda _: httpx.Response(200, json=document))
+    await catalog.refresh()
+
+    def host():
+        enabled[0] = False
+        return HostEnvironment("linux", None, None, None, None, None, None, None)
+
+    app = FastAPI()
+    register_plugin_routes(
+        app,
+        PluginInventory(lambda: Discovery((), True)),
+        catalog,
+        enabled=lambda: enabled[0],
+        compatibility=CatalogCompatibility(host),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        response = await client.get("/server/plugins/catalog")
+        assert response.status_code == 403
+        assert response.json()["detail"]["code"] == "plugin_catalog_disabled"

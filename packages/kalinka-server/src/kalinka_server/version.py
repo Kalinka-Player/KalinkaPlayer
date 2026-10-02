@@ -82,8 +82,9 @@ def get_version() -> str:
 # ends it.
 # 0.9: read-only /server/plugins inventory separates installation origin,
 # catalog identity verification and update eligibility. Public HTTPS catalogs
-# are browsable without credentials; signature verification and installation
-# remain unavailable. /server/version advertises the implemented capabilities.
+# are browsable with metadata-only host compatibility checks; signature
+# verification and installation remain unavailable. /server/version advertises
+# the implemented capabilities.
 REST_API_VERSION = "0.9"
 
 
