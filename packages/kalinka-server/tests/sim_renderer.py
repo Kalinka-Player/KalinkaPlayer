@@ -122,6 +122,9 @@ class SimRenderer:
             self.current = None
             self.queued.clear()
             self.position_ms = 0
+        self.pool.handle_closed(
+            self.RENDERER_ID, session_id=session_id, renderer_error=False, detail=""
+        )
 
     async def send_command(self, session_id: str, command: pb.Command) -> None:
         copied = pb.Command()

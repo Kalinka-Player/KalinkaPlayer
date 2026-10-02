@@ -45,8 +45,7 @@ from .tasks import detach
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
-# Network timeout, nothing more: the renderer is on the LAN, and neither a
-# session-open round trip nor a socket write is waiting on anything it does.
+# LAN request timeout, including an acknowledged close of the audio session.
 DEFAULT_TIMEOUT_S = 3.0
 
 
@@ -151,6 +150,7 @@ class PlaybackSession:
         self._pool = pool
         self._ws: Optional[RendererLink] = ws_session
         self._open_future: Optional[asyncio.Future] = None
+        self._close_task: Optional[asyncio.Task[None]] = None
         self._callbacks: list[Callable] = []
         self._state_callbacks: list[Callable] = []
         self._suspend_callbacks: list[Callable] = []
@@ -278,14 +278,57 @@ class PlaybackSession:
                 f"could not reach renderer {self.renderer_id}: {exc}"
             ) from exc
 
-    async def close(self, reason: CloseReason = CloseReason.CLOSED_BY_SERVER) -> None:
-        """Idempotent, and never waits on the renderer's acknowledgement."""
+    async def close(
+        self,
+        reason: CloseReason = CloseReason.CLOSED_BY_SERVER,
+        *,
+        wait_for_ack: bool = False,
+    ) -> None:
+        """End the claim, optionally waiting until the renderer has stopped.
+
+        Audio handovers must await SessionClosed: writing SessionClose only
+        queues the request on the wire. Reconciliation uses the non-waiting
+        form because it runs on the same lane that receives acknowledgements.
+        Cancellation of a caller must not abandon a close already requested.
+        """
+        if self._close_task is not None:
+            await asyncio.shield(self._close_task)
+            return
         if self.state is SessionState.CLOSED:
             return
         ws = self._ws
         self._finish(reason)
+        if wait_for_ack and ws is None and reason in _WIRE_CLOSE_REASONS:
+            raise SessionNotActive("Cannot confirm release of an offline renderer")
         if ws is not None and reason in _WIRE_CLOSE_REASONS:
+            self._close_task = asyncio.create_task(
+                self._close_renderer(ws, reason, wait_for_ack)
+            )
+            await asyncio.shield(self._close_task)
+
+    async def _close_renderer(
+        self, ws: RendererLink, reason: CloseReason, wait_for_ack: bool
+    ) -> None:
+        if not wait_for_ack:
             await _send_close(ws, self.session_id, reason)
+            return
+        key = (self.renderer_id, self.session_id)
+        acknowledged: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._pool._pending_closes[key] = acknowledged
+        try:
+            async with asyncio.timeout(self._timeout_s):
+                await ws.send_session_close(self.session_id, reason)
+                await acknowledged
+        except Exception:
+            logger.warning(
+                "Renderer %s did not confirm release of session %s",
+                self.renderer_id,
+                self.session_id,
+                exc_info=True,
+            )
+            raise
+        finally:
+            self._pool._pending_closes.pop(key, None)
 
     def to_dict(self) -> dict:
         return {
@@ -367,6 +410,7 @@ class SessionPool:
         self.server_id = server_id
         self._timeout_s = timeout_s
         self._sessions: dict[str, PlaybackSession] = {}
+        self._pending_closes: dict[tuple[str, str], asyncio.Future[None]] = {}
         self._open_hooks: list[Callable] = []
         self._volume_policy: Callable[
             [str], SessionVolumePolicy
@@ -618,6 +662,15 @@ class SessionPool:
         renderer_error: bool,
         detail: str,
     ) -> None:
+        # The local claim has already ended, but its device release may still
+        # be awaited. Match both identities so a stale ACK cannot release a
+        # different renderer or a newer session.
+        pending = self._pending_closes.get((renderer_id, session_id))
+        if pending is not None and not pending.done():
+            if renderer_error:
+                pending.set_exception(RuntimeError(detail or "renderer close failed"))
+            else:
+                pending.set_result(None)
         session = self._sessions.get(renderer_id)
         if session is None or session.session_id != session_id:
             return

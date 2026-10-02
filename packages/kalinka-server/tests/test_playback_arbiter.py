@@ -253,14 +253,24 @@ async def test_the_owner_changes_only_once_its_predecessor_let_go(arbiter, queue
     assert arbiter.owns(plugin)
 
 
-async def test_a_failing_preempt_still_hands_the_output_over(arbiter, queue):
+async def test_a_failing_preempt_returns_to_queue_and_reports_failure(arbiter, queue):
     plugin = _plugin()
     await arbiter.acquire(plugin)
     plugin.preempt_error = RuntimeError("teardown failed")
 
-    await arbiter.acquire(queue)
+    with pytest.raises(RuntimeError, match="teardown failed"):
+        await arbiter.acquire(queue)
 
     assert arbiter.owns(queue)
+
+
+async def test_failed_renderer_release_cannot_grant_external_output(arbiter, queue):
+    plugin = _plugin()
+    queue.preempt_error = TimeoutError("renderer did not close")
+    with pytest.raises(TimeoutError):
+        await arbiter.acquire(plugin)
+    assert arbiter.owns(queue)
+    assert not arbiter.owns(plugin)
 
 
 async def test_shutdown_tells_the_holder(arbiter, queue):
