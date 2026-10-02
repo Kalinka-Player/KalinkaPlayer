@@ -69,6 +69,7 @@ class MyDevice(ExternalOutputDevice):
 ## API Reference
 
 ### Core APIs
+- `ExternalPlayback` (3.7+): an input plugin whose engine owns audio output (for example Roon Bridge) acquires `InputPluginContext.external_playback`, then reports `PlaybackState` metadata and progress without opening a renderer. Its async `on_revoked` callback must stop external audio within three seconds, including an engine-termination fallback when network control fails. The server waits for that callback before handing playback to the next source. Do not reenter acquisition/release from that callback. Renderer selection changes revoke external playback rather than migrating it. `release()` is called after the plugin has stopped its own engine. Position is in milliseconds; report timestamps are assigned by the server. Older servers expose `None`.
 - `PlayQueueAPI`: Interface for playqueue operations
 - `EventEmitterAPI`: Interface for dispatching events
 - `EventListenerAPI`: Interface for subscribing to events

@@ -26,7 +26,7 @@ There are four independent things to version, and they work differently:
   change; **minor** = a backwards-compatible addition; **patch** = a fix.
   Plugins and the server pin it within the current major, as
   `kalinka-plugin-sdk>=3,<4` (some with a minor floor, such as the server's
-  `>=3.6,<4`), so backwards-compatible minor/patch bumps (`3.6 → 3.7 → …`)
+  `>=3.7,<4`), so backwards-compatible minor/patch bumps (`3.7 → 3.8 → …`)
   never break existing plugins, while a major bump (`→ 4.0`) does — those
   plugins must be re-pinned and rebuilt. The SDK's `3.x` measures **API
   compatibility**; the app's own `kalinka-v*` version measures **product
@@ -256,7 +256,7 @@ not need a tag or a separate release step.
 
 Dependency pins only fire when an install goes through the resolver. As a
 backstop, the **server checks the installed SDK at startup**: it reads its own
-`kalinka-plugin-sdk` requirement (from package metadata — the same `>=3.6,<4`
+`kalinka-plugin-sdk` requirement (from package metadata — the same `>=3.7,<4`
 pin, no second source of truth) and **refuses to start** if the installed SDK
 falls outside it. This catches the cases pins can't — `pip install --no-deps`,
 `dpkg --force-depends`, or upgrading the SDK in place to a different major.

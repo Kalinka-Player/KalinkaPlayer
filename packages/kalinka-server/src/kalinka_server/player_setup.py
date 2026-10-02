@@ -43,6 +43,7 @@ from .config_overrides import (
 )
 from .config_secrets import is_private_path, loggable
 from .direct_playback import DirectPlaybackService
+from .external_playback import ExternalPlaybackService
 from .module_timeout import TimeLimitedInputModule
 from .output_device_router import OutputDeviceRouter
 from .playback_arbiter import PlaybackArbiter
@@ -74,6 +75,7 @@ class PlayerContext:
     playback_arbiter: "PlaybackArbiter | None" = None
     # An input plugin's handle for playing outside the queue, by plugin id.
     direct_playback_for: "Callable[[str], DirectPlaybackService] | None" = None
+    external_playback_for: "Callable[[str], ExternalPlaybackService] | None" = None
 
 
 @dataclass
@@ -573,6 +575,7 @@ class PreparedModuleCollection:
         match plugin_class.PLUGIN_TYPE:
             case PluginType.INPUT_MODULE:
                 direct_playback_for = self.player_context.direct_playback_for
+                external_playback_for = self.player_context.external_playback_for
                 return InputPluginContext(
                     playqueue=self.player_context.playqueue,
                     listener=self.player_context.playqueue_eventbus,  # type: ignore[arg-type]
@@ -583,6 +586,9 @@ class PreparedModuleCollection:
                     embedder=self.player_context.embedder,
                     direct_playback=(
                         direct_playback_for(name) if direct_playback_for else None
+                    ),
+                    external_playback=(
+                        external_playback_for(name) if external_playback_for else None
                     ),
                 )
             case PluginType.OUTPUT_DEVICE:
@@ -785,6 +791,9 @@ async def setup(
         device_eventbus,
     )
     player_context.playback_arbiter = arbiter
+    player_context.external_playback_for = lambda plugin_id: ExternalPlaybackService(
+        plugin_id, arbiter, renderer_registry.active_id
+    )
     player_context.direct_playback_for = lambda plugin_id: DirectPlaybackService(
         plugin_id,
         config=config,
@@ -829,4 +838,3 @@ async def shutdown():
 
     await shutdown_modules(modules.prepared_input_modules)
     await shutdown_modules(modules.prepared_devices)
-
