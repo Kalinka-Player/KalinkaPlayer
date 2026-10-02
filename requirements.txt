@@ -10,6 +10,7 @@ zeroconf>=0.47.0
 pyyaml>=6.0
 pybind11>=2.10.0
 httpx[http2]>=0.24.0
+jsonschema>=4.18.0
 schedule>=1.2.0
 mutagen>=1.46.0
 pillow>=9.0.0

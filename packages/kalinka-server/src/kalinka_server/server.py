@@ -114,6 +114,12 @@ from .renderer_test_tone import (
     tone_url,
 )
 from .server_identity import get_server_id
+from .plugin_management.inventory import (
+    CAPABILITIES as PLUGIN_MANAGEMENT_CAPABILITIES,
+    PluginInventory,
+)
+from .plugin_management.route import register_plugin_routes
+from .plugin_management.catalog import PublicCatalog
 
 
 @asynccontextmanager
@@ -144,6 +150,11 @@ async def lifespan(app: FastAPI):
         )
         await app.state.player_context.playqueue.__aenter__()
 
+        # Public metadata browsing is independent of signed update authorization.
+        # Do not block startup or GET requests on an upstream network fetch.
+        app.state.plugin_catalog_task = asyncio.create_task(
+            app.state.plugin_catalog.run()
+        )
         yield
 
     except Exception as e:
@@ -152,7 +163,12 @@ async def lifespan(app: FastAPI):
     finally:
         logger.info("Shutting down...")
         # These loops run forever by design; cancel them and swallow the result.
-        for attr in ("suggestions_task", "catalog_art_task", "update_check_task"):
+        for attr in (
+            "suggestions_task",
+            "catalog_art_task",
+            "update_check_task",
+            "plugin_catalog_task",
+        ):
             task = getattr(app.state, attr, None)
             if task is not None:
                 task.cancel()
@@ -411,6 +427,20 @@ async def create_app(
     app.state.bind_host = bind_host
     app.state.overrides_file = overrides_file
     app.state.overrides = dict(overrides)
+    app.state.plugin_inventory = PluginInventory()
+
+    def plugin_catalog_enabled() -> bool:
+        return app.state.config.server.plugin_catalog_enabled
+
+    app.state.plugin_catalog = PublicCatalog.from_environment(
+        enabled=plugin_catalog_enabled
+    )
+    register_plugin_routes(
+        app,
+        app.state.plugin_inventory,
+        app.state.plugin_catalog,
+        enabled=plugin_catalog_enabled,
+    )
     # Renderer services exist before the play queue: playback runs through a
     # renderer session, so the queue needs the registry and the session pool.
     async def _replace_renderer_session(old_session: RendererLink):
@@ -1018,6 +1048,10 @@ async def create_app(
             "server_version": get_version(),
             "api_version": get_rest_api_version(),
             "name": "kalinka-player",
+            "plugin_management": {
+                **PLUGIN_MANAGEMENT_CAPABILITIES,
+                "enabled": app.state.config.server.plugin_catalog_enabled,
+            },
         }
 
     @app.get("/server/update")

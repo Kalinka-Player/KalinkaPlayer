@@ -27,7 +27,7 @@ Bit-perfect playback from your own library, on your own hardware — with on-dev
 
 Kalinka turns a Raspberry Pi or any Linux box into a music player you control from your phone, desktop or a browser. The server holds your library; a separate **renderer** does the playing, talking to ALSA directly — so it can sit on the same machine, or on a Pi next to each amplifier in the house.
 
-Your files stay yours — nothing is uploaded, there is no account and no telemetry, and the semantic search runs on the device. Two things do reach the internet, both switchable: the metadata lookups that repair your tags (MusicBrainz, Wikidata, Deezer, Cover Art Archive), and an hourly check for a published release.
+Your files stay yours — nothing is uploaded, there is no account and no telemetry, and the semantic search runs on the device. Optional internet requests cover metadata lookups that repair your tags (MusicBrainz, Wikidata, Deezer, Cover Art Archive), hourly checks for published releases, and the public plugin catalog. Catalog browsing is off by default. Enable **Plugin catalog preview** in Server settings → General using expert mode, then open **Plugins** in the server menu. This is read-only browsing, without installation or updates. Fetching requires no account; see the [catalog configuration and trust model](docs/plugin-catalog-design.md#public-access-and-hosting).
 
 ## Installation
 
@@ -99,6 +99,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for how to send a change, and for the pro
 | [Architecture](docs/architecture.md) | How the pieces fit, the package layout, the REST/WS API, configuration and tuning |
 | [Development](docs/development.md) | Building the Debian packages, running from source, tests |
 | [Renderer design](docs/native-renderer-design.md) | The contract a renderer implements |
+| [Plugin catalog design](docs/plugin-catalog-design.md) | Proposed discovery, installation, compatibility checks, and updates |
 | [Appliance images](packages/kalinka-image/README.md) | How the ready-to-flash images are built |
 | [Releasing](RELEASING.md) | Version model and release procedure |
 
