@@ -110,6 +110,18 @@ class ServerConfig(BaseModel):
             **_SIMPLE,
         },
     )
+    plugin_catalog_enabled: bool = Field(
+        default=False,
+        title="Plugin catalog preview",
+        json_schema_extra={
+            "importance": "expert",
+            "help": (
+                "Show Plugins in the server menu and fetch the public catalog. "
+                "Experimental, read-only browsing; installation and updates "
+                "are not available. Disabled by default."
+            ),
+        },
+    )
     # App-written when the first-run wizard finishes; expert-tier on purpose.
     oobe_complete: bool = Field(
         default=False,

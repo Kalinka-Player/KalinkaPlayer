@@ -80,7 +80,11 @@ def get_version() -> str:
 # set_playback_mode still apply to the queue. PUT /renderer/active moves the
 # plugin's playback, which carries on where it had reached; the speaker test
 # ends it.
-REST_API_VERSION = "0.8"
+# 0.9: read-only /server/plugins inventory separates installation origin,
+# catalog identity verification and update eligibility. Public HTTPS catalogs
+# are browsable without credentials; signature verification and installation
+# remain unavailable. /server/version advertises the implemented capabilities.
+REST_API_VERSION = "0.9"
 
 
 def get_rest_api_version() -> str:

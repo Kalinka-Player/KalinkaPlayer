@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:kalinka:plugin-schema:1",
+  "title": "Kalinka plugin catalog entry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "name", "description", "distribution", "entry_point", "creator", "maintainers", "license", "source", "type", "tier", "maturity", "categories", "delivery", "releases"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,79}$"},
+    "name": {"type": "string", "minLength": 1, "maxLength": 100},
+    "description": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "distribution": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+    "entry_point": {"type": "string", "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*$"},
+    "creator": {"$ref": "#/$defs/person"},
+    "maintainers": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/person"}},
+    "license": {"type": "string", "minLength": 1, "maxLength": 200},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "subdirectory"],
+      "properties": {
+        "repository": {"$ref": "#/$defs/https"},
+        "subdirectory": {"type": "string", "maxLength": 300}
+      }
+    },
+    "type": {"enum": ["input_module", "output_device"], "description": "Curated copy of the plugin's SDK PLUGIN_TYPE.value, used for discovery before installation."},
+    "device_support": {"$ref": "#/$defs/device_support"},
+    "tier": {"enum": ["official", "unofficial"]},
+    "maturity": {"enum": ["stable", "experimental", "deprecated"]},
+    "categories": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"}},
+    "delivery": {"enum": ["bundle", "independent"]},
+    "releases": {"type": "array", "items": {"$ref": "#/$defs/release"}}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"type": {"const": "output_device"}}, "required": ["type"]},
+      "then": {"required": ["device_support"]},
+      "else": {"not": {"required": ["device_support"]}}
+    }
+  ],
+  "$defs": {
+    "device_support": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["models", "families", "notes"],
+      "description": "Searchable, curated hardware scope. At least one model or family is required. A family match is not verification of an individual model.",
+      "properties": {
+        "models": {"type": "array", "maxItems": 500, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "\\S"}},
+        "families": {"type": "array", "maxItems": 100, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "\\S"}},
+        "notes": {"type": "array", "minItems": 1, "maxItems": 30, "items": {"type": "string", "minLength": 1, "maxLength": 1000, "pattern": "\\S"}}
+      },
+      "anyOf": [
+        {"properties": {"models": {"minItems": 1}}},
+        {"properties": {"families": {"minItems": 1}}}
+      ]
+    },
+    "https": {"type": "string", "format": "uri", "pattern": "^https://", "maxLength": 2048},
+    "person": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "url"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 100},
+        "url": {"$ref": "#/$defs/https"}
+      }
+    },
+    "specifier": {"type": "string", "minLength": 1, "maxLength": 200},
+    "architectures": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"enum": ["all", "x86_64", "aarch64", "armv7l", "x86", "riscv64"]},
+      "description": "Canonical userspace architectures. all means architecture-independent, not all operating systems. Never mix all with specific architectures."
+    },
+    "requirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["server", "sdk", "python", "platforms", "architectures", "capabilities", "notes"],
+      "properties": {
+        "server": {"$ref": "#/$defs/specifier"},
+        "sdk": {"$ref": "#/$defs/specifier"},
+        "python": {"$ref": "#/$defs/specifier"},
+        "renderer": {"$ref": "#/$defs/specifier"},
+        "platforms": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["all", "linux", "macos", "windows"]}},
+        "architectures": {"$ref": "#/$defs/architectures"},
+        "capabilities": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]*$"}},
+        "notes": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 500}}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "filename", "platform", "architectures", "url", "sha256", "size_bytes"],
+      "properties": {
+        "format": {"enum": ["deb", "rpm", "wheel"]},
+        "filename": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+~-]+\\.(deb|rpm|whl)$", "maxLength": 255},
+        "platform": {"enum": ["all", "linux", "macos", "windows"]},
+        "architectures": {"$ref": "#/$defs/architectures"},
+        "package": {
+          "type": "object", "additionalProperties": false,
+          "required": ["name", "version", "architecture"],
+          "properties": {
+            "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9+.-]+$"},
+            "version": {"type": "string", "pattern": "^[0-9][A-Za-z0-9.+:~_-]*$", "maxLength": 200},
+            "architecture": {"enum": ["all", "amd64", "arm64", "armhf", "i386", "riscv64", "noarch", "x86_64", "aarch64", "armv7hl", "i686"]}
+          },
+          "description": "Exact package header identity, not inferred from the filename. Version uses the backend's syntax: DEB Version or RPM [epoch:]version-release."
+        },
+        "targets": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["id", "versions"],
+            "properties": {
+              "id": {"enum": ["debian", "ubuntu", "raspbian", "fedora", "rhel", "rocky", "almalinux", "opensuse-leap"]},
+              "versions": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+)*$"}}
+            }
+          },
+          "description": "Exact /etc/os-release ID and VERSION_ID allowlist. ID_LIKE and newer distro versions do not imply support."
+        },
+        "url": {"$ref": "#/$defs/https"},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "size_bytes": {"type": "integer", "minimum": 1}
+      },
+      "allOf": [{
+        "if": {"properties": {"format": {"enum": ["deb", "rpm"]}}},
+        "then": {"required": ["package", "targets"], "properties": {"platform": {"const": "linux"}}},
+        "else": {"not": {"anyOf": [{"required": ["package"]}, {"required": ["targets"]}]}}
+      }]
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "channel", "published_at", "source_tag", "source_commit", "release_notes", "requires", "data_rollback", "withdrawn", "artifacts"],
+      "properties": {
+        "version": {"type": "string", "minLength": 1, "maxLength": 100},
+        "channel": {"enum": ["stable", "preview"]},
+        "published_at": {"type": "string", "format": "date-time"},
+        "source_tag": {"type": "string", "minLength": 1, "maxLength": 200},
+        "source_commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "release_notes": {"$ref": "#/$defs/https"},
+        "requires": {"$ref": "#/$defs/requirements"},
+        "data_rollback": {"enum": ["compatible", "manual"]},
+        "rollback_versions": {"$ref": "#/$defs/specifier"},
+        "withdrawn": {"type": "boolean"},
+        "withdrawal_reason": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "artifacts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/artifact"}}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"withdrawn": {"const": true}}},
+          "then": {"required": ["withdrawal_reason"]}
+        },
+        {
+          "if": {"properties": {"data_rollback": {"const": "compatible"}}},
+          "then": {"required": ["rollback_versions"]},
+          "else": {"not": {"required": ["rollback_versions"]}}
+        }
+      ]
+    }
+  }
+}
