@@ -91,7 +91,16 @@ from .config_records import ConfigRecord, Records
 from .dynamic_fields import DynamicFieldDecl
 from .optional_packages import OptionalPackageSpec
 
+from .external_playback import (
+    ExternalPlayback,
+    ExternalPlaybackListener,
+    ExternalPlaybackSession,
+)
+
 __all__ = [
+    "ExternalPlayback",
+    "ExternalPlaybackListener",
+    "ExternalPlaybackSession",
     "__version__",
     # APIs
     "PlayQueueController",

@@ -6,6 +6,7 @@ from .api import EventEmitter, EventListener, LoggerAPI, PlayQueueController
 from .config_feedback import ConfigIssue, ConfigOption
 from .dynamic_fields import DynamicFieldDecl
 from .direct_playback import DirectPlayback
+from .external_playback import ExternalPlayback
 from .embedding import TextEmbedder
 from .events import PlayQueueEventType, PlayQueueEvent, PlayQueueState
 from .ext_device_events import ExtDeviceEventType, ExtDeviceEvent, ExtDeviceState
@@ -206,6 +207,8 @@ class InputPluginContext(PluginContextBase):
     # SDK 3.4+: plays on the renderer outside the play queue. None on a server
     # that cannot, so a plugin checks before relying on it.
     direct_playback: Optional[DirectPlayback] = field(default=None, kw_only=True)
+    # SDK 3.7+: ownership and metadata for plugins with their own audio engine.
+    external_playback: Optional[ExternalPlayback] = field(default=None, kw_only=True)
 
 
 @dataclass

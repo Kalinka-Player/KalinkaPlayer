@@ -43,6 +43,7 @@ from kalinka_plugin_sdk.inputmodule import DirectUrl, Track, TrackInfo, TrackSou
 from kalinka_server import renderer_player, state_keeper
 from kalinka_server.config_model import KalinkaConfig
 from kalinka_server.direct_playback import DirectPlaybackService
+from kalinka_server.external_playback import ExternalPlaybackService
 from kalinka_server.playback_arbiter import PlaybackArbiter
 from kalinka_server.playqueue import PlayQueueImpl
 from kalinka_server.renderer_output_device import RendererVolumeDevice
@@ -252,6 +253,41 @@ async def test_a_plugin_takes_over_a_playing_queue(queue, renderer, direct, emit
     assert shown.index is None
     assert hold.renderer_id == SimRenderer.RENDERER_ID
     assert listener.states[-1].state is PlayerStateEnum.PLAYING
+
+
+async def test_external_engine_releases_the_renderer_and_waits_before_queue_resumes(
+    queue, renderer, arbiter, emitter
+):
+    from unittest.mock import AsyncMock
+
+    await _play_queue(queue, renderer, "1", "2")
+    listener = Mock(on_command=AsyncMock(), on_revoked=AsyncMock())
+    service = ExternalPlaybackService("roon", arbiter, renderer.registry.active_id)
+    hold = await service.acquire("Roon endpoint", listener)
+    await asyncio.sleep(SETTLE_S)
+    assert renderer.session_id is None
+    assert len(queue.track_list) == 2
+    _, track = _connect_track()
+    hold.report(PlaybackState(state=PlayerStateEnum.PLAYING, current_track=track, position=24000))
+    assert _states(emitter)[-1].position == 24000
+
+    stopping, stopped = asyncio.Event(), asyncio.Event()
+
+    async def stop(reason):
+        stopping.set()
+        await stopped.wait()
+
+    listener.on_revoked.side_effect = stop
+    resume = asyncio.create_task(queue.play())
+    await asyncio.wait_for(stopping.wait(), 1)
+    assert renderer.session_id is None
+    assert arbiter.held_by_plugin
+    stopped.set()
+    await resume
+    await asyncio.sleep(SETTLE_S)
+    assert renderer.current is not None
+    assert _states(emitter)[-1].index == 0
+    listener.on_revoked.assert_awaited_once_with(RevokeReason.QUEUE_PLAY)
 
 
 async def test_the_queue_keeps_its_place(queue, renderer, direct):
