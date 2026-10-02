@@ -127,8 +127,7 @@ class PlaybackArbiter:
                 if owner is self._queue
                 else RevokeReason.OTHER_HOLDER
             )
-            await _preempt(previous, reason)
-            self._switch_to(owner)
+            await self._handover(previous, owner, reason)
 
     async def release(self, owner: OutputOwner) -> None:
         """``owner`` let the output go; the play queue has it again."""
@@ -151,8 +150,9 @@ class PlaybackArbiter:
         async with self._lock:
             owner = self._require_owner()
             if owner is not self._queue and owner.renderer_id == renderer_id:
-                await _preempt(owner, RevokeReason.OTHER_HOLDER)
-                self._switch_to(self._require_queue())
+                await self._handover(
+                    owner, self._require_queue(), RevokeReason.OTHER_HOLDER
+                )
         await self._require_queue().release_renderer(renderer_id)
 
     async def shutdown(self) -> None:
@@ -189,8 +189,34 @@ class PlaybackArbiter:
             owner = self._require_owner()
             if owner is self._queue:
                 return
-            await _preempt(owner, reason)
-            self._switch_to(self._require_queue())
+            await self._handover(owner, self._require_queue(), reason)
+
+    async def _handover(
+        self, previous: OutputOwner, owner: OutputOwner, reason: RevokeReason
+    ) -> None:
+        """Finish preemption under the lock, even if the requester goes away.
+
+        An owner may already be inactive by its first await. Keep the lock
+        until it has stopped and ownership is settled; cancellation must
+        neither abandon it nor let a new source open the device too early.
+        A cancelled request falls back to the queue, without starting the
+        requested plugin. Cancellation while waiting for the lock is still
+        immediate and never preempts the current owner.
+        """
+        stopping = asyncio.create_task(_preempt(previous, reason))
+        cancellation: asyncio.CancelledError | None = None
+        while True:
+            try:
+                await asyncio.shield(stopping)
+                break
+            except asyncio.CancelledError as exc:
+                cancellation = exc
+                # Also handle a preempt implementation that cancels itself.
+                if stopping.done():
+                    break
+        self._switch_to(self._require_queue() if cancellation is not None else owner)
+        if cancellation is not None:
+            raise cancellation
 
     def _switch_to(self, owner: OutputOwner) -> None:
         self._owner = owner
