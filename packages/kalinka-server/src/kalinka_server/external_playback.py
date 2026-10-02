@@ -88,9 +88,10 @@ class ExternalSession:
         while self.active:
             request = await self._commands.get()
             try:
-                await asyncio.wait_for(
-                    self._listener.on_command(request), PLUGIN_CALL_TIMEOUT_S
-                )
+                # Keep the callback on this task on Python 3.11 too, so a
+                # plugin releasing from on_command never cancels itself.
+                async with asyncio.timeout(PLUGIN_CALL_TIMEOUT_S):
+                    await self._listener.on_command(request)
             except Exception:
                 logger.exception("External playback command failed")
 
