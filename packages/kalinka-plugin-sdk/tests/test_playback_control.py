@@ -66,7 +66,7 @@ def test_the_queues_control_names_no_plugin():
         PlaybackControl(plugin_id="qobuz", title="Qobuz Connect")
 
 
-def test_a_context_without_direct_playback_still_builds():
+def test_a_context_without_playback_services_still_builds():
     """What an older server hands a plugin: the field is simply absent."""
     context = InputPluginContext(
         logger=None,
@@ -77,3 +77,4 @@ def test_a_context_without_direct_playback_still_builds():
         playqueue=None,
     )
     assert context.direct_playback is None
+    assert context.external_playback is None
