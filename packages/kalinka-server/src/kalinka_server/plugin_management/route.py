@@ -4,8 +4,10 @@ from typing import Callable
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from .catalog import PublicCatalog
+from .compatibility import CatalogCompatibility
 from .inventory import PluginInventory
 
 _HEADERS = {"Cache-Control": "no-store"}
@@ -17,6 +19,8 @@ def register_plugin_routes(
     public_catalog: PublicCatalog | None = None,
     *,
     enabled: Callable[[], bool] = lambda: False,
+    compatibility: CatalogCompatibility | None = None,
+    renderers: Callable[[], tuple[dict, ...]] = lambda: (),
 ) -> None:
     def require_enabled():
         if not enabled():
@@ -34,6 +38,9 @@ def register_plugin_routes(
         dependencies=[Depends(require_enabled)],
     )
     public_catalog = public_catalog if public_catalog is not None else PublicCatalog("")
+    compatibility = (
+        compatibility if compatibility is not None else CatalogCompatibility()
+    )
 
     @router.get("")
     def installed_plugins():
@@ -46,7 +53,12 @@ def register_plugin_routes(
     async def catalog():
         result = public_catalog.snapshot()
         available = result["status"] in {"available", "stale"}
-        if not available:
+        if available:
+            result = await run_in_threadpool(
+                compatibility.annotate, result, renderers()
+            )
+            require_enabled()
+        else:
             result["code"] = "catalog_unavailable"
         return JSONResponse(
             status_code=200 if available else 503,

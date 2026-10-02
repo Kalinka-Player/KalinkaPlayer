@@ -432,6 +432,7 @@ async def create_app(
         app.state.plugin_inventory,
         app.state.plugin_catalog,
         enabled=plugin_catalog_enabled,
+        renderers=lambda: tuple(app.state.renderer_registry.list()),
     )
     # Renderer services exist before the play queue: playback runs through a
     # renderer session, so the queue needs the registry and the session pool.
