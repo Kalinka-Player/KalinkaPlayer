@@ -203,7 +203,7 @@ class PlaybackArbiter:
         requested plugin. Cancellation while waiting for the lock is still
         immediate and never preempts the current owner.
         """
-        stopping = asyncio.create_task(previous.preempt(reason))
+        stopping = asyncio.create_task(_preempt(previous, reason))
         cancellation: asyncio.CancelledError | None = None
         while True:
             try:
@@ -214,11 +214,6 @@ class PlaybackArbiter:
                 # Also handle a preempt implementation that cancels itself.
                 if stopping.done():
                     break
-            except Exception:
-                # A failed close is not permission to open the same DAC.
-                # Retire the failed owner but do not grant the requested hold.
-                self._switch_to(self._require_queue())
-                raise
         self._switch_to(self._require_queue() if cancellation is not None else owner)
         if cancellation is not None:
             raise cancellation
@@ -260,3 +255,11 @@ class PlaybackArbiter:
         if self._owner is None:
             raise RuntimeError("the play queue has not joined the arbiter")
         return self._owner
+
+
+async def _preempt(owner: OutputOwner, reason: RevokeReason) -> None:
+    # The output changes hands whatever the old owner's teardown does.
+    try:
+        await owner.preempt(reason)
+    except Exception:
+        logger.exception("Preempting the output's owner failed")
