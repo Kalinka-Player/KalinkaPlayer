@@ -658,10 +658,8 @@ class PlayQueueImpl(PlayQueueController):
         old = self._track_player
         held = old.renderer_id is not None
         self._track_player = self._new_player()
-        try:
-            await old.release()
-        finally:
-            await old.shutdown()
+        await old.release()
+        await old.shutdown()
         return held
 
     @serialised

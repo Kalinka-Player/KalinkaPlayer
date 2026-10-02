@@ -107,7 +107,6 @@ class RendererPlayer:
         self._ops: asyncio.Queue = asyncio.Queue()
         self._sender_task: Optional[asyncio.Task] = None
         self._release_task: Optional[asyncio.Task] = None
-        self._pending_release: Optional[asyncio.Task[None]] = None
         # Bumped on every published state; an armed release fires only if the
         # player is still in the state that armed it.
         self._epoch = 0
@@ -174,7 +173,6 @@ class RendererPlayer:
                     pass
         self._release_task = None
         self._sender_task = None
-        await self._wait_for_release()
         session, self._session = self._session, None
         if session is not None and session.state is not SessionState.CLOSED:
             await session.close(CloseReason.CLOSED_BY_SERVER)
@@ -286,18 +284,9 @@ class RendererPlayer:
 
     async def release(self) -> None:
         """Stop playback and drop the session, reporting STOPPED."""
-        # No queued append may reopen the renderer while its close ACK is
-        # pending. The public release is called by the retiring owner.
-        if self._sender_task is not None:
-            self._sender_task.cancel()
-            await asyncio.gather(self._sender_task, return_exceptions=True)
-            self._sender_task = None
-        while not self._ops.empty():
-            self._ops.get_nowait()
         await self._release(synthesize_stopped=True)
 
     async def _ensure_session(self) -> PlaybackSession:
-        await self._wait_for_release()
         if self._session is not None and self._session.state is not SessionState.CLOSED:
             return self._session
         renderer_id = self._registry.active_id()
@@ -322,28 +311,9 @@ class RendererPlayer:
         self._stream_uris.clear()
         session, self._session = self._session, None
         if session is None:
-            await self._wait_for_release()
             return
         self._registry.session_released(session.renderer_id)
-        self._pending_release = asyncio.create_task(
-            self._close_session(session, synthesize_stopped)
-        )
-        await self._wait_for_release()
-
-    async def _wait_for_release(self) -> None:
-        closing = self._pending_release
-        if closing is None:
-            return
-        try:
-            await asyncio.shield(closing)
-        finally:
-            if closing.done() and self._pending_release is closing:
-                self._pending_release = None
-
-    async def _close_session(
-        self, session: PlaybackSession, synthesize_stopped: bool
-    ) -> None:
-        await session.close(CloseReason.CLOSED_BY_SERVER, wait_for_ack=True)
+        await session.close(CloseReason.CLOSED_BY_SERVER)
         if synthesize_stopped:
             self._publish(
                 StreamState(

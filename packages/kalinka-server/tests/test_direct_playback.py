@@ -290,46 +290,6 @@ async def test_external_engine_releases_the_renderer_and_waits_before_queue_resu
     listener.on_revoked.assert_awaited_once_with(RevokeReason.QUEUE_PLAY)
 
 
-@pytest.mark.parametrize("queue_stops_first", [False, True])
-async def test_external_takeover_waits_for_remote_device_close(
-    queue, renderer, arbiter, monkeypatch, queue_stops_first
-):
-    from unittest.mock import AsyncMock
-
-    await _play_queue(queue, renderer, "1", "2")
-    close_sent, device_closed = asyncio.Event(), asyncio.Event()
-    original_close = renderer.send_session_close
-
-    async def close(session_id, reason):
-        # The socket write finishes before the renderer closes its PCM handle.
-        close_sent.set()
-
-        async def acknowledge():
-            await device_closed.wait()
-            await original_close(session_id, reason)
-
-        asyncio.create_task(acknowledge())
-
-    monkeypatch.setattr(renderer, "send_session_close", close)
-    if queue_stops_first:
-        await queue.stop()
-        await asyncio.wait_for(close_sent.wait(), 1)
-    listener = Mock(on_command=AsyncMock(), on_revoked=AsyncMock())
-    taking = asyncio.create_task(
-        ExternalPlaybackService("roon", arbiter).acquire("Roon", listener)
-    )
-    await asyncio.wait_for(close_sent.wait(), 1)
-    await asyncio.sleep(0)
-    assert renderer.session_id is not None
-    assert not taking.done()
-    assert not arbiter.held_by_plugin
-    device_closed.set()
-    hold = await asyncio.wait_for(taking, 1)
-    assert renderer.session_id is None
-    assert hold.active
-    await hold.release()
-
-
 async def test_the_queue_keeps_its_place(queue, renderer, direct):
     await _play_queue(queue, renderer, "1", "2")
     await queue.next()
