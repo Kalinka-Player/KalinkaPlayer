@@ -391,10 +391,14 @@ class HolderSession:
         return True
 
     async def _stop_player(self) -> None:
-        async with self._swap:
-            await self._player.release()
-            await self._player.shutdown()
-        self._monitor.stop()
+        try:
+            async with self._swap:
+                try:
+                    await self._player.release()
+                finally:
+                    await self._player.shutdown()
+        finally:
+            self._monitor.stop()
 
     async def _consume(self) -> None:
         async for state in self._monitor:
