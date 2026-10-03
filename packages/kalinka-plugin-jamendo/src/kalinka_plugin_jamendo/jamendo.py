@@ -1119,26 +1119,14 @@ class JamendoInputModule(InputModule):
         if not track_ids:
             return []
 
-        missing = [tid for tid in track_ids if tid not in self._track_cache]
-        fetched: dict[str, Track] = {}
-        for i in range(0, len(missing), MAX_LIMIT):
-            chunk = missing[i : i + MAX_LIMIT]
-            results = await self.client.request(
-                "tracks", {"id": " ".join(chunk), "limit": len(chunk)}
-            )
-            for track in results:
-                meta = self._track_metadata(track)
-                fetched[meta.id.id] = meta
+        known = await self._tracks_by_id(track_ids)
 
         # A track with no metadata still plays: /tracks/file/ resolves it by id.
         infos: List[TrackInfo] = []
         without_metadata: List[str] = []
         for tid in track_ids:
-            if tid in self._track_cache:
-                metadata = self._track_cache[tid]
-            elif tid in fetched:
-                metadata = fetched[tid]
-            else:
+            metadata = known.get(tid)
+            if metadata is None:
                 metadata = self._placeholder_metadata(tid)
                 without_metadata.append(tid)
             infos.append(self._make_track_info(tid, metadata))
@@ -1158,6 +1146,23 @@ class JamendoInputModule(InputModule):
             len(track_ids),
         )
         return infos
+
+    async def _tracks_by_id(self, track_ids: List[str]) -> dict[str, Track]:
+        """Metadata for those of ``track_ids`` the listing cache or the
+        /tracks/ index knows, asking the index only for what the cache lacks."""
+        known = {
+            tid: self._track_cache[tid] for tid in track_ids if tid in self._track_cache
+        }
+        missing = [tid for tid in dict.fromkeys(track_ids) if tid not in known]
+        for i in range(0, len(missing), MAX_LIMIT):
+            chunk = missing[i : i + MAX_LIMIT]
+            results = await self.client.request(
+                "tracks", {"id": " ".join(chunk), "limit": len(chunk)}
+            )
+            for track in results:
+                meta = self._track_metadata(track)
+                known[meta.id.id] = meta
+        return known
 
     def _make_track_info(self, tid: str, metadata: Track) -> TrackInfo:
         """Build a TrackInfo whose link resolves via /tracks/file/ at play time."""
@@ -1213,7 +1218,12 @@ class JamendoInputModule(InputModule):
         """Batch resolve (SDK 1.3). Artists resolve in ONE ``/artists`` call
         — the ``id`` param accepts a space-separated list — with an LRU cache
         in front, so Related Artists costs at most one round-trip per search
-        instead of one per artist. Other types fall back to per-id get()."""
+        instead of one per artist. Tracks resolve as get_track_info finds
+        their metadata, the listing cache first and then one ``/tracks``
+        call, so tracks added to the queue cost one round-trip at most.
+        Other types fall back to per-id get()."""
+        track_ids = [e.id for e in entity_ids if e.type == EntityType.TRACK]
+        tracks = await self._tracks_by_id(track_ids) if track_ids else {}
         artist_ids = [e.id for e in entity_ids if e.type == EntityType.ARTIST]
         missing = [i for i in artist_ids if i not in self._artist_cache]
         if missing:
@@ -1233,6 +1243,11 @@ class JamendoInputModule(InputModule):
                 if item is not None:
                     self._artist_cache.move_to_end(eid.id)
                     out.append(item)
+                continue
+            if eid.type == EntityType.TRACK:
+                # The file endpoint plays an id the index misses, so it stays.
+                metadata = tracks.get(eid.id) or self._placeholder_metadata(eid.id)
+                out.append(self._track_item(metadata))
                 continue
             try:
                 out.append(await self.get(eid))
@@ -1281,17 +1296,19 @@ class JamendoInputModule(InputModule):
             meta = self._track_metadata(track, album_meta)
             # Lets get_track_info label ids the /tracks/ index can't resolve.
             self._cache_track(meta)
-            result.append(
-                BrowseItem(
-                    id=meta.id,
-                    name=meta.title,
-                    subname=meta.performer.name if meta.performer else None,
-                    can_browse=False,
-                    can_add=True,
-                    track=meta,
-                )
-            )
+            result.append(self._track_item(meta))
         return result
+
+    @staticmethod
+    def _track_item(meta: Track) -> BrowseItem:
+        return BrowseItem(
+            id=meta.id,
+            name=meta.title,
+            subname=meta.performer.name if meta.performer else None,
+            can_browse=False,
+            can_add=True,
+            track=meta,
+        )
 
     def _albums_to_browse_items(self, albums) -> List[BrowseItem]:
         result = []
