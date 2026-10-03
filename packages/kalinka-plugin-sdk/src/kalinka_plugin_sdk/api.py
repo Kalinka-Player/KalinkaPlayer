@@ -45,8 +45,16 @@ class PlayQueueController(Protocol):
         """Stop playback."""
         ...
 
-    def add(self, tracks: list[TrackInfo], index: Optional[int] = None) -> Coroutine[Any, Any, None]:
-        """Add tracks to the queue. If index is given, insert at that position; otherwise append."""
+    def add(
+        self, tracks: list[Track | TrackInfo], index: Optional[int] = None
+    ) -> Coroutine[Any, Any, None]:
+        """Add tracks to the queue. If index is given, insert at that position; otherwise append.
+
+        The queue keeps each track's metadata and asks the track's module for
+        its source when it plays (SDK 3.8). A TrackInfo is still accepted:
+        its metadata is kept and its source_retriever is not used, and one
+        without metadata is not queued.
+        """
         ...
 
     def remove(self, tracks: list[int]) -> Coroutine[Any, Any, None]:
@@ -68,9 +76,16 @@ class PlayQueueController(Protocol):
     def restore_from_state(
         self,
         state: Any,
-        track_info_retriever: Callable[[EntityId], Awaitable[TrackInfo]],
+        track_info_retriever: Optional[
+            Callable[[EntityId], Awaitable[TrackInfo]]
+        ] = None,
     ) -> Coroutine[Any, Any, None]:
-        """Restore the playback state from a saved state."""
+        """Restore the playback state from a saved state.
+
+        Every saved track comes back as it was saved, with no module asked
+        (SDK 3.8). ``track_info_retriever`` is accepted from older callers
+        and not used.
+        """
         ...
 
     def clear(self) -> Coroutine[Any, Any, None]:

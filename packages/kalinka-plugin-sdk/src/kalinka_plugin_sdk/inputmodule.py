@@ -28,10 +28,11 @@ from .live_content import LiveContent
 class SourceUnavailableError(RuntimeError):
     """A track's backing storage is temporarily unreachable.
 
-    Raised by :meth:`InputModule.get_content_info` or a track's
-    ``source_retriever`` when the content exists but cannot be served right
-    now — an unmounted network share, an offline backend. Distinct from a
-    missing asset: callers should surface it as a transient condition (the
+    Raised by :meth:`InputModule.get_track_source`,
+    :meth:`InputModule.get_content_info` or a track's ``source_retriever``
+    when the content exists but cannot be served right now — an unmounted
+    network share, an offline backend, a service still signing in. Distinct
+    from a missing asset: callers should surface it as a transient condition (the
     server answers a content fetch with 503 rather than 404). The message is
     shown to users, so keep it presentable.
     """
@@ -194,13 +195,13 @@ class InputModule(Protocol):
     - Declaring what its catalogs can be filtered by, and honouring it
 
     Latency contract: every call into this interface serves a real-time
-    request, and the server enforces a hard per-call timeout (3 seconds) on
-    its side — a call that overruns is cancelled and treated as failed, no
-    matter what the module was doing. Implementations must return within
-    that budget: configure backend HTTP timeouts to fail fast, don't retry
-    requests that already timed out, and never run provisioning or other
-    long work inline in a request path (start it in the background and
-    return what is available).
+    request, and the server enforces a hard per-call timeout (3 seconds;
+    8 for :meth:`get_track_source`) on its side — a call that overruns is
+    cancelled and treated as failed, no matter what the module was doing.
+    Implementations must return within that budget: configure backend HTTP
+    timeouts to fail fast, don't retry requests that already timed out, and
+    never run provisioning or other long work inline in a request path
+    (start it in the background and return what is available).
     """
 
     def module_name(self) -> str:
@@ -301,8 +302,10 @@ class InputModule(Protocol):
         """
         Retrieve detailed track information including playback sources.
 
-        This method is called when the player needs to actually play tracks,
-        providing both metadata and a callable to get the audio source.
+        Provides both metadata and a callable to get the audio source. The
+        default :meth:`get_track_source` plays a track through this, so a
+        module that does not override that must answer here for every track
+        it can play.
 
         Args:
             track_ids (List[str]): List of track IDs to get information for
@@ -315,6 +318,38 @@ class InputModule(Protocol):
         class docstring's latency contract).
         """
         ...
+
+    async def get_track_source(self, track_id: str) -> TrackSource:
+        """
+        Resolve where one of this module's tracks plays from (SDK 3.8+).
+
+        The server asks each time the track is about to play — never when it
+        is queued or restored — so the play queue holds a track while its
+        module is still starting, offline or switched off, and a source that
+        expires is fetched afresh for every play.
+
+        The default looks the track up through :meth:`get_track_info` and
+        calls its ``source_retriever``, so a module written for an earlier
+        SDK plays as before. Override it to answer from the id alone.
+
+        Args:
+            track_id (str): The track's id within this module
+
+        Returns:
+            TrackSource: Where the track's audio is, and in what format
+
+        Raises:
+            SourceUnavailableError: The track exists but cannot be served
+                right now; the server shows the message to the user.
+            LookupError: This module has no such track.
+
+        Must complete within 8 seconds, longer than the other calls: it may
+        wait on storage or a backend, and allows one retry in the module.
+        """
+        for info in await self.get_track_info([track_id]):
+            if info.id.id == track_id:
+                return await info.source_retriever()
+        raise LookupError(f"Track {track_id} not found in {self.module_name()}")
 
     async def get_content_info(self, asset_id: str) -> Optional[ContentInfo]:
         """
