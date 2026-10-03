@@ -15,6 +15,8 @@ from kalinka_plugin_sdk.inputmodule import (
     TrackSource,
 )
 
+_NO_MODULE = "This track's source is not available"
+
 
 class TrackSourceResolver(Protocol):
     """Resolves a queued track's id to the source a renderer plays.
@@ -25,6 +27,11 @@ class TrackSourceResolver(Protocol):
     """
 
     async def resolve(self, track_id: EntityId) -> TrackSource: ...
+
+    def unavailable_reason(self, track_id: EntityId) -> Optional[str]:
+        """Why the track cannot be played now, if that is known without asking
+        anyone — nothing here could serve it — else None. Fit for the user."""
+        ...
 
 
 class InputModuleRegistry(Protocol):
@@ -49,5 +56,10 @@ class ModuleTrackSources:
     async def resolve(self, track_id: EntityId) -> TrackSource:
         module = self._registry.enabled_input_module(track_id.source)
         if module is None:
-            raise SourceUnavailableError("This track's source is not available")
+            raise SourceUnavailableError(_NO_MODULE)
         return await module.get_track_source(track_id.id)
+
+    def unavailable_reason(self, track_id: EntityId) -> Optional[str]:
+        if self._registry.enabled_input_module(track_id.source) is None:
+            return _NO_MODULE
+        return None

@@ -856,7 +856,9 @@ class PlayQueueImpl(PlayQueueController):
         Playback state is set to STOPPED with position 0. Every saved track
         comes back with its saved metadata and no module is asked: a track's
         module is needed only to play it, so one that is not ready yet, or
-        not there at all, costs the queue nothing.
+        not there at all, costs the queue nothing. A track with no enabled
+        module to serve it is shown unavailable at once rather than on its
+        first play; it still plays if its module is there when it is played.
 
         Args:
             state: The PlayQueueState to restore from
@@ -900,6 +902,10 @@ class PlayQueueImpl(PlayQueueController):
                 for track in state.track_list
             ]
         )
+        for index, track in enumerate(self.track_list):
+            reason = self._sources.unavailable_reason(track.id)
+            if reason is not None:
+                self._set_track_unavailable(index, True, reason)
 
         # Clamp to valid range now that track_list is populated
         if self.track_list:

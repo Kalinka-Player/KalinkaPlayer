@@ -85,6 +85,23 @@ async def test_the_modules_reason_reaches_the_queue():
         await sources.resolve(_track_id("localfiles", "t1"))
 
 
+def test_only_a_track_with_no_enabled_module_is_known_unavailable_unasked():
+    qobuz = Mock()
+    registry = _Registry({"qobuz": qobuz})
+    sources = ModuleTrackSources(registry)
+
+    assert sources.unavailable_reason(_track_id("qobuz", "q1")) is None
+    assert (
+        sources.unavailable_reason(_track_id("upnp", "u1"))
+        == "This track's source is not available"
+    )
+    qobuz.assert_not_called()
+    assert qobuz.mock_calls == []
+
+    registry.modules["upnp"] = _Module("upnp")
+    assert sources.unavailable_reason(_track_id("upnp", "u1")) is None
+
+
 def _prepared(interface, health=ModuleHealthState.READY) -> PreparedPlugin:
     return PreparedPlugin(
         plugin_class=Mock(),
