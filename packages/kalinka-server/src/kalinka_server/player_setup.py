@@ -54,6 +54,7 @@ from .renderer_registry import RendererRegistry
 from .renderer_sessions import SessionPool
 from .sdk_compat import plugin_sdk_mismatch
 from .text_embedder import SharedTextEmbedder
+from .track_sources import ModuleTrackSources
 from kalinka_plugin_sdk.api import PlayQueueController
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -147,6 +148,14 @@ class PreparedModuleCollection:
     # *before* the owning plugin acts on them (see _consume_one_shot_overrides).
     # None disables the disk persist (in-memory reset only — used by tests).
     overrides_file: str | None = None
+
+    def enabled_input_module(self, name: str) -> InputModule | None:
+        """The input module ``name`` while it is enabled and set up, else None."""
+        if name not in self.enabled_input_modules:
+            return None
+        prepared = self.prepared_input_modules.get(name)
+        interface = prepared.interface if prepared is not None else None
+        return interface if isinstance(interface, InputModule) else None
 
     def _update_enabled_input_modules(self):
         """Update the set of enabled input module names."""
@@ -770,6 +779,7 @@ async def setup(
             playqueue_eventbus,
             renderer_registry,
             renderer_sessions,
+            sources=ModuleTrackSources(modules),
             arbiter=arbiter,
         ),
         ext_device_eventbus=device_eventbus,

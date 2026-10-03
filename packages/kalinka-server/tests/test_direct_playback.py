@@ -39,7 +39,7 @@ from kalinka_plugin_sdk.ext_device_events import (
     ExtDeviceState,
     VolumeChangedEvent,
 )
-from kalinka_plugin_sdk.inputmodule import DirectUrl, Track, TrackInfo, TrackSource
+from kalinka_plugin_sdk.inputmodule import DirectUrl, Track, TrackSource
 from kalinka_server import renderer_player, state_keeper
 from kalinka_server.config_model import KalinkaConfig
 from kalinka_server.direct_playback import DirectPlaybackService
@@ -51,32 +51,11 @@ from kalinka_server.renderer_registry import RendererRegistry
 from kalinka_server.renderer_sessions import RendererBusy, SessionPool
 from kalinka_server.renderer_test_tone import TonePlayer
 
+from tests.fake_track_sources import FakeTrackSources, example_source, example_track
 from tests.sim_renderer import DURATION_MS, SimRenderer
 
 SETTLE_S = 0.2
 CONNECT_URL = "https://streaming.qobuz.test/111"
-
-
-def _queue_track(track_id: str, gate: asyncio.Event | None = None) -> TrackInfo:
-    entity = EntityId(id=track_id, type=EntityType.TRACK, source="test_source")
-
-    async def source_retriever() -> TrackSource:
-        if gate is not None:
-            await gate.wait()
-        return TrackSource(
-            source=DirectUrl(url=f"http://example/{track_id}.flac"), format="FLAC"
-        )
-
-    return TrackInfo(
-        id=entity,
-        metadata=Track(
-            id=entity,
-            title=f"track{track_id}",
-            duration=10,
-            album=Album(id=entity, title="album"),
-        ),
-        source_retriever=source_retriever,
-    )
 
 
 def _connect_track(track_id: str = "111") -> tuple[TrackSource, Track]:
@@ -151,9 +130,19 @@ def arbiter(emitter):
 
 
 @pytest.fixture
-async def queue(renderer, emitter, arbiter):
+def sources():
+    return FakeTrackSources()
+
+
+@pytest.fixture
+async def queue(renderer, emitter, arbiter, sources):
     playqueue = PlayQueueImpl(
-        KalinkaConfig(), emitter, renderer.registry, renderer.pool, arbiter=arbiter
+        KalinkaConfig(),
+        emitter,
+        renderer.registry,
+        renderer.pool,
+        sources=sources,
+        arbiter=arbiter,
     )
     await playqueue.__aenter__()
     yield playqueue
@@ -212,7 +201,7 @@ def _enqueued(renderer) -> list[str]:
 
 
 async def _play_queue(queue, renderer, *tracks: str) -> None:
-    await queue.add([_queue_track(t) for t in tracks])
+    await queue.add([example_track(t) for t in tracks])
     await queue.play()
     await asyncio.sleep(SETTLE_S)
     assert renderer.current is not None, "expected the queue to be playing"
@@ -314,7 +303,7 @@ async def test_playing_from_the_queue_takes_the_output_back(
     queue, renderer, direct, emitter, arbiter
 ):
     listener = Listener()
-    await queue.add([_queue_track("1")])
+    await queue.add([example_track("1")])
     hold = await _hold_and_play(direct, listener)
     emitter.reset_mock()
 
@@ -331,7 +320,7 @@ async def test_playing_from_the_queue_takes_the_output_back(
 
 
 async def test_a_revoked_hold_cannot_play(queue, renderer, direct):
-    await queue.add([_queue_track("1")])
+    await queue.add([example_track("1")])
     hold = await _hold_and_play(direct, Listener())
     await queue.play()
     await asyncio.sleep(SETTLE_S)
@@ -345,7 +334,7 @@ async def test_transport_controls_reach_the_plugin_not_the_renderer(
     queue, renderer, direct
 ):
     listener = Listener()
-    await queue.add([_queue_track("1"), _queue_track("2")])
+    await queue.add([example_track("1"), example_track("2")])
     await _hold_and_play(direct, listener)
     before = len(renderer.commands)
 
@@ -372,7 +361,7 @@ async def test_stop_gives_the_output_back_without_playing(
     queue, renderer, direct, arbiter
 ):
     listener = Listener()
-    await queue.add([_queue_track("1")])
+    await queue.add([example_track("1")])
     await _hold_and_play(direct, listener)
 
     await queue.stop()
@@ -385,7 +374,7 @@ async def test_stop_gives_the_output_back_without_playing(
 
 
 async def test_clients_asking_for_the_state_get_the_plugins(queue, direct):
-    await queue.add([_queue_track("1")])
+    await queue.add([example_track("1")])
     await _hold_and_play(direct, Listener())
 
     state = await queue.get_playback_state()
@@ -400,7 +389,7 @@ async def test_queue_edits_do_not_cover_the_plugins_playback(
     await _hold_and_play(direct, Listener())
     emitter.reset_mock()
 
-    await queue.add([_queue_track("1")])
+    await queue.add([example_track("1")])
     await queue.clear()
     await asyncio.sleep(SETTLE_S)
 
@@ -443,7 +432,7 @@ async def test_releasing_returns_the_output_to_the_queue(
     queue, renderer, direct, emitter, arbiter
 ):
     listener = Listener()
-    await queue.add([_queue_track("1")])
+    await queue.add([example_track("1")])
     hold = await _hold_and_play(direct, listener)
     emitter.reset_mock()
 
@@ -459,12 +448,19 @@ async def test_releasing_returns_the_output_to_the_queue(
 
 
 async def test_a_late_resolution_does_not_take_the_output_back(
-    queue, renderer, direct
+    queue, renderer, direct, sources
 ):
     """The queue was fetching a track's URL when the plugin took over; the
     answer arriving afterwards must not start the queue again."""
     gate = asyncio.Event()
-    await queue.add([_queue_track("1", gate)])
+    track = example_track("1")
+
+    async def held_back() -> TrackSource:
+        await gate.wait()
+        return await example_source(track.id)
+
+    sources.serve(track.id, held_back)
+    await queue.add([track])
     await queue.play()
     await asyncio.sleep(0.05)
     listener = Listener()
@@ -543,7 +539,14 @@ async def test_a_renderer_that_restarts_mid_track_carries_on(
 async def test_without_a_renderer_nothing_is_taken(emitter, arbiter, device_bus):
     registry = RendererRegistry(offline_timeout_s=30.0)
     pool = SessionPool(registry, "test-server-id")
-    playqueue = PlayQueueImpl(KalinkaConfig(), emitter, registry, pool, arbiter=arbiter)
+    playqueue = PlayQueueImpl(
+        KalinkaConfig(),
+        emitter,
+        registry,
+        pool,
+        sources=FakeTrackSources(),
+        arbiter=arbiter,
+    )
     await playqueue.__aenter__()
     try:
         direct = DirectPlaybackService(
@@ -718,7 +721,12 @@ async def test_a_client_joining_mid_hold_is_told_the_queue_is_not_playing(
     )
     arbiter = PlaybackArbiter(bus)
     queue = PlayQueueImpl(
-        KalinkaConfig(), bus, renderer.registry, renderer.pool, arbiter=arbiter
+        KalinkaConfig(),
+        bus,
+        renderer.registry,
+        renderer.pool,
+        sources=FakeTrackSources(),
+        arbiter=arbiter,
     )
     await queue.__aenter__()
     direct = DirectPlaybackService(
@@ -878,7 +886,7 @@ async def test_the_queue_plays_where_the_plugin_was_moved(
     queue, renderer, direct
 ):
     other = _second_renderer(renderer)
-    await queue.add([_queue_track("1")])
+    await queue.add([example_track("1")])
     await _hold_and_play(direct, Listener())
     await queue.switch_renderer("rid-b")
     await asyncio.sleep(SETTLE_S)

@@ -6,8 +6,7 @@ from unittest.mock import Mock
 import pytest
 
 from kalinka_plugin_sdk import EventEmitter, PlaybackStateChangedEvent
-from kalinka_plugin_sdk.datamodel import Album, EntityId, EntityType, PlayerStateEnum
-from kalinka_plugin_sdk.inputmodule import DirectUrl, Track, TrackInfo, TrackSource
+from kalinka_plugin_sdk.datamodel import PlayerStateEnum
 from kalinka_server.config_model import KalinkaConfig
 from kalinka_server.playqueue import PlayQueueImpl
 from kalinka_server.renderer_registry import (
@@ -16,25 +15,8 @@ from kalinka_server.renderer_registry import (
 )
 from kalinka_server.renderer_sessions import RendererBusy, SessionPool
 
+from tests.fake_track_sources import FakeTrackSources, example_track
 from tests.sim_renderer import SimRenderer
-
-
-def _track(track_id: str = "1") -> TrackInfo:
-    entity = EntityId(id=track_id, type=EntityType.TRACK, source="test_source")
-
-    async def source_retriever() -> TrackSource:
-        return TrackSource(source=DirectUrl(url=f"http://example/{track_id}.flac"), format="FLAC")
-
-    return TrackInfo(
-        id=entity,
-        metadata=Track(
-            id=entity,
-            title=f"track{track_id}",
-            duration=10,
-            album=Album(id=entity, title="album"),
-        ),
-        source_retriever=source_retriever,
-    )
 
 
 @pytest.fixture
@@ -57,7 +39,9 @@ def emitter():
 @pytest.fixture
 async def queue(renderers, emitter):
     registry, pool, _, _ = renderers
-    playqueue = PlayQueueImpl(KalinkaConfig(), emitter, registry, pool)
+    playqueue = PlayQueueImpl(
+        KalinkaConfig(), emitter, registry, pool, sources=FakeTrackSources()
+    )
     await playqueue.__aenter__()
     yield playqueue
     await playqueue.__aexit__(None, None, None)
@@ -72,7 +56,7 @@ def _states(emitter) -> list[PlayerStateEnum]:
 
 
 async def _play_on(queue, renderer) -> None:
-    await queue.add([_track()])
+    await queue.add([example_track()])
     await queue.play()
     await asyncio.sleep(0.2)
     assert renderer.current is not None, "expected playback to have started"

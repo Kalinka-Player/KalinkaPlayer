@@ -43,6 +43,7 @@ from kalinka_server.stream_state import (
 from kalinka_server.renderer_registry import RendererRegistry
 from kalinka_server.renderer_sessions import SessionPool
 
+from tests.fake_track_sources import FakeTrackSources
 from tests.sim_renderer import (
     BITS_PER_SAMPLE,
     CHANNELS,
@@ -130,8 +131,16 @@ def renderer():
 
 
 @pytest.fixture
-async def playqueue(config, event_emitter, renderer):
-    pq = PlayQueueImpl(config, event_emitter, renderer.registry, renderer.pool)
+def sources():
+    """Every track plays from URL1 unless a test serves it otherwise."""
+    return FakeTrackSources(default=lambda _track_id: url1())
+
+
+@pytest.fixture
+async def playqueue(config, event_emitter, renderer, sources):
+    pq = PlayQueueImpl(
+        config, event_emitter, renderer.registry, renderer.pool, sources=sources
+    )
     await pq.__aenter__()
 
     yield pq
@@ -380,14 +389,14 @@ async def test_play(event_emitter, playqueue):
 
 
 @pytest.mark.asyncio
-async def test_switch_track(event_emitter, playqueue):
+async def test_switch_track(event_emitter, playqueue, sources):
     track1 = TrackInfo(
         id=to_track_id("1"), metadata=create_track("1"), source_retriever=url1
     )
     track2 = TrackInfo(
         id=to_track_id("2"), metadata=create_track("2"), source_retriever=url2
     )
-    await playqueue.add([track1, track2])
+    await playqueue.add(sources.serving(track1, track2))
     await playqueue.play(0)
     await asyncio.sleep(0.2)
     await playqueue.play(1)
@@ -478,7 +487,7 @@ async def test_switch_track(event_emitter, playqueue):
 
 
 @pytest.mark.asyncio
-async def test_play_next(event_emitter, playqueue):
+async def test_play_next(event_emitter, playqueue, sources):
     track1 = TrackInfo(
         id=to_track_id("1"), metadata=create_track("1"), source_retriever=url1
     )
@@ -488,7 +497,7 @@ async def test_play_next(event_emitter, playqueue):
     track3 = TrackInfo(
         id=to_track_id("3"), metadata=create_track("3"), source_retriever=url3
     )
-    await playqueue.add([track1, track2, track3])
+    await playqueue.add(sources.serving(track1, track2, track3))
     await playqueue.play(0)
     await asyncio.sleep(0.2)
     await playqueue.play_next(1)
@@ -806,16 +815,9 @@ async def test_seek(event_emitter, playqueue):
 # ── Move track tests ──────────────────────────────────────────────────────────
 
 
-def make_tracks(n: int) -> list[TrackInfo]:
-    """Create n TrackInfo objects with distinct ids."""
-    return [
-        TrackInfo(
-            id=to_track_id(str(i)),
-            metadata=create_track(str(i)),
-            source_retriever=url1,
-        )
-        for i in range(1, n + 1)
-    ]
+def make_tracks(n: int) -> list[Track]:
+    """Create n tracks with distinct ids."""
+    return [create_track(str(i)) for i in range(1, n + 1)]
 
 
 def dispatched_events(mock_emitter) -> list:
@@ -1363,6 +1365,43 @@ async def test_add_insert_preserves_valid_prefetch(event_emitter, playqueue):
     assert len(playqueue.track_list) == 5
 
 
+@pytest.mark.asyncio
+async def test_a_queued_track_is_resolved_through_its_module_only_when_played(
+    playqueue, sources
+):
+    """A TrackInfo is still accepted, as callers of SDK 3.7 hand it over, but
+    only its metadata is kept: its retriever is never called."""
+
+    async def stale():
+        raise AssertionError("the queue must not use a TrackInfo's retriever")
+
+    info = TrackInfo(
+        id=to_track_id("1"), metadata=create_track("1"), source_retriever=stale
+    )
+    await playqueue.add([info, create_track("2")])
+
+    assert playqueue.track_list == [info.metadata, create_track("2")]
+    assert sources.resolved == []
+
+    index, source, _, failed = await playqueue._resolve_playable(0)
+
+    assert (index, failed) == (0, [])
+    assert source.source.url == URL1
+    assert sources.resolved == [to_track_id("1").to_string]
+
+
+@pytest.mark.asyncio
+async def test_a_track_info_without_metadata_is_not_queued(playqueue):
+    await playqueue.add(
+        [
+            TrackInfo(id=to_track_id("1"), metadata=None, source_retriever=url1),
+            create_track("2"),
+        ]
+    )
+
+    assert [track.id.id for track in playqueue.track_list] == ["2"]
+
+
 # ── Unavailable-track (link retrieval failure) tests ────────────────────────────
 
 
@@ -1370,25 +1409,23 @@ async def failing_url():
     raise KeyError("url")
 
 
-def make_tracks_with_failures(n: int, failing: set[int]) -> list[TrackInfo]:
-    """Create n TrackInfo objects; those at indices in ``failing`` raise on
-    link retrieval."""
-    return [
-        TrackInfo(
-            id=to_track_id(str(i + 1)),
-            metadata=create_track(str(i + 1)),
-            source_retriever=failing_url if i in failing else url1,
-        )
-        for i in range(n)
-    ]
+def make_tracks_with_failures(
+    sources: FakeTrackSources, n: int, failing: set[int]
+) -> list[Track]:
+    """Create n tracks; those at indices in ``failing`` raise on link
+    retrieval."""
+    tracks = make_tracks(n)
+    for i in failing:
+        sources.serve(tracks[i].id, failing_url)
+    return tracks
 
 
 @pytest.mark.asyncio
-async def test_resolve_playable_skips_failed_track(event_emitter, playqueue):
+async def test_resolve_playable_skips_failed_track(event_emitter, playqueue, sources):
     """A track whose URL can't be fetched is collected in ``failed`` and skipped;
     the next playable track is returned. The pure resolver mutates no state and
     dispatches no events (the commit step flags failures)."""
-    playqueue.track_list = make_tracks_with_failures(3, {0})
+    playqueue.track_list = make_tracks_with_failures(sources, 3, {0})
     event_emitter.reset_mock()
 
     index, track_url, track_ref, failed = await playqueue._resolve_playable(0, step=1)
@@ -1405,7 +1442,9 @@ async def test_resolve_playable_skips_failed_track(event_emitter, playqueue):
 
 
 @pytest.mark.asyncio
-async def test_resolve_playable_carries_the_module_reason(event_emitter, playqueue):
+async def test_resolve_playable_carries_the_module_reason(
+    event_emitter, playqueue, sources
+):
     """A SourceUnavailableError's message (user-presentable, e.g. an unmounted
     share) rides along with the failed index so the commit step can put it in
     the TrackUnavailableEvent."""
@@ -1413,8 +1452,8 @@ async def test_resolve_playable_carries_the_module_reason(event_emitter, playque
     async def unavailable():
         raise SourceUnavailableError("Music folder /mnt/nas is not available")
 
-    tracks = make_tracks_with_failures(2, set())
-    tracks[0] = tracks[0].model_copy(update={"source_retriever": unavailable})
+    tracks = make_tracks(2)
+    sources.serve(tracks[0].id, unavailable)
     playqueue.track_list = tracks
 
     index, _, _, failed = await playqueue._resolve_playable(0, step=1)
@@ -1424,7 +1463,9 @@ async def test_resolve_playable_carries_the_module_reason(event_emitter, playque
 
 
 @pytest.mark.asyncio
-async def test_resolve_playable_refuses_a_sequential_source(event_emitter, playqueue):
+async def test_resolve_playable_refuses_a_sequential_source(
+    event_emitter, playqueue, sources
+):
     """The queue resumes a track at an offset, which a sequential source
     cannot do; it plays only through its plugin's direct playback."""
 
@@ -1435,8 +1476,8 @@ async def test_resolve_playable_refuses_a_sequential_source(event_emitter, playq
             sequential=True,
         )
 
-    tracks = make_tracks_with_failures(2, set())
-    tracks[0] = tracks[0].model_copy(update={"source_retriever": live})
+    tracks = make_tracks(2)
+    sources.serve(tracks[0].id, live)
     playqueue.track_list = tracks
 
     index, _, _, failed = await playqueue._resolve_playable(0, step=1)
@@ -1446,9 +1487,11 @@ async def test_resolve_playable_refuses_a_sequential_source(event_emitter, playq
 
 
 @pytest.mark.asyncio
-async def test_resolve_playable_all_failed_returns_none(event_emitter, playqueue):
+async def test_resolve_playable_all_failed_returns_none(
+    event_emitter, playqueue, sources
+):
     """When every candidate fails, resolve returns (None, None, all-indices)."""
-    playqueue.track_list = make_tracks_with_failures(3, {0, 1, 2})
+    playqueue.track_list = make_tracks_with_failures(sources, 3, {0, 1, 2})
     event_emitter.reset_mock()
 
     index, track_url, track_ref, failed = await playqueue._resolve_playable(0, step=1)
@@ -1596,28 +1639,28 @@ async def test_play_next_out_of_range_index_is_noop(event_emitter, playqueue):
 # ── Off-lane URL resolution semantics ───────────────────────────────────────────
 #
 # These verify the *wiring* between PlayQueueImpl and its ResolutionSlot. They use
-# a never-resolving source_retriever so resolution stays in flight and nothing ever
+# a source that never resolves so resolution stays in flight and nothing ever
 # commits to the player. The slot mechanics themselves are unit-tested in
 # test_resolution_slot.py; end-to-end playback (commit → renderer enqueue) is
 # covered by the streaming tests above.
 
 
 async def _never_resolves():
-    """A source_retriever that blocks until its resolution task is cancelled."""
+    """A source that blocks until its resolution task is cancelled."""
     await asyncio.Event().wait()
 
 
+def _slow_track(sources: FakeTrackSources, id: str) -> Track:
+    track = create_track(id)
+    sources.serve(track.id, _never_resolves)
+    return track
+
+
 @pytest.mark.asyncio
-async def test_play_does_not_block_on_url_resolution(playqueue):
+async def test_play_does_not_block_on_url_resolution(playqueue, sources):
     """play() returns at once while the URL is still being fetched, and the
     serial command lane stays free for other commands."""
-    playqueue.track_list = [
-        TrackInfo(
-            id=to_track_id("1"),
-            metadata=create_track("1"),
-            source_retriever=_never_resolves,
-        )
-    ]
+    playqueue.track_list = [_slow_track(sources, "1")]
 
     await playqueue.play(0)
     assert playqueue._resolution.active  # in flight, not yet committed
@@ -1629,9 +1672,9 @@ async def test_play_does_not_block_on_url_resolution(playqueue):
 
 
 @pytest.mark.asyncio
-async def test_failed_play_emits_unavailable_event(event_emitter, playqueue):
+async def test_failed_play_emits_unavailable_event(event_emitter, playqueue, sources):
     """A play that runs to completion and fails to resolve flags the track."""
-    playqueue.track_list = make_tracks_with_failures(1, {0})
+    playqueue.track_list = make_tracks_with_failures(sources, 1, {0})
     event_emitter.reset_mock()
 
     await playqueue.play(0)
@@ -1645,21 +1688,12 @@ async def test_failed_play_emits_unavailable_event(event_emitter, playqueue):
 
 
 @pytest.mark.asyncio
-async def test_superseded_play_suppresses_unavailable_event(event_emitter, playqueue):
+async def test_superseded_play_suppresses_unavailable_event(
+    event_emitter, playqueue, sources
+):
     """A play whose resolution is superseded by a newer play fails silently:
     no TrackUnavailableEvent for the abandoned track."""
-    playqueue.track_list = [
-        TrackInfo(
-            id=to_track_id("1"),
-            metadata=create_track("1"),
-            source_retriever=_never_resolves,
-        ),
-        TrackInfo(
-            id=to_track_id("2"),
-            metadata=create_track("2"),
-            source_retriever=_never_resolves,
-        ),
-    ]
+    playqueue.track_list = [_slow_track(sources, "1"), _slow_track(sources, "2")]
     event_emitter.reset_mock()
 
     await playqueue.play(0)
@@ -1676,14 +1710,12 @@ async def test_superseded_play_suppresses_unavailable_event(event_emitter, playq
 
 
 @pytest.mark.asyncio
-async def test_structural_mutation_on_target_cancels_resolution(event_emitter, playqueue):
+async def test_structural_mutation_on_target_cancels_resolution(
+    event_emitter, playqueue, sources
+):
     """Removing a track at/before the resolution target cancels it silently."""
     tracks = make_tracks(4)
-    tracks[2] = TrackInfo(
-        id=to_track_id("slow"),
-        metadata=create_track("slow"),
-        source_retriever=_never_resolves,
-    )
+    tracks[2] = _slow_track(sources, "slow")
     playqueue.track_list = tracks
     event_emitter.reset_mock()
 
@@ -1701,14 +1733,10 @@ async def test_structural_mutation_on_target_cancels_resolution(event_emitter, p
 
 
 @pytest.mark.asyncio
-async def test_structural_mutation_after_target_keeps_resolution(playqueue):
+async def test_structural_mutation_after_target_keeps_resolution(playqueue, sources):
     """A removal entirely after the resolution target leaves it running."""
     tracks = make_tracks(4)
-    tracks[0] = TrackInfo(
-        id=to_track_id("slow"),
-        metadata=create_track("slow"),
-        source_retriever=_never_resolves,
-    )
+    tracks[0] = _slow_track(sources, "slow")
     playqueue.track_list = tracks
 
     await playqueue.play(0)
