@@ -22,7 +22,7 @@ Implemented:
 
 - **Search** — tracks, albums, artists, playlists (Jamendo `namesearch`).
 - **Browse** — a discovery root catalog (Popular Tracks, New Releases, Popular Albums, Popular Artists, Featured Playlists) and drill-down into albums, artists and playlists.
-- **Playback** — `get_track_info` returns metadata plus the streaming URL in the configured format.
+- **Playback** — `get_track_source` resolves a track's streaming URL in the configured format from its id alone, each time it is about to play; `get_track_info` returns metadata plus the same resolution.
 - **`get`** — detail lookup for a track / album / artist / playlist.
 - **Mood / AI search** (`ai_search`) — semantic search by mood or description ("something melancholic for tonight"). The query is embedded with the server's shared text embedder and KNN-matched (sqlite-vec) against precomputed embeddings of the [JamendoMaxCaps](https://huggingface.co/datasets/amaai-lab/JamendoMaxCaps) track captions — textual descriptions of the music, one vector per track. The prebuilt index (~140 MB) is downloaded on first use; no audio analysis runs on the device. Results surface as a "Discover on Jamendo" catalog in the app's AI Search.
 
