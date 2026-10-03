@@ -1,15 +1,19 @@
+import argparse
 import io
 import logging
 import logging.config
 import os
 import re
 import sys
+from types import SimpleNamespace
 
 import pytest
 
+from kalinka_server import __main__ as server_main
 from kalinka_server.logging_setup import (
     CREDENTIAL_CARRYING_LOGGERS,
     JournalFormatter,
+    configure_logging,
     make_formatter,
     make_handler,
     quiet_credential_carrying_loggers,
@@ -189,3 +193,76 @@ def test_a_request_line_is_logged_only_in_a_debug_run(uvicorn_loggers, debug):
 
     assert logging.getLogger("uvicorn.access").isEnabledFor(logging.INFO) is debug
     assert logging.getLogger("uvicorn.error").isEnabledFor(logging.INFO)
+
+
+@pytest.fixture
+def server_logging(uvicorn_loggers):
+    names = ["", *CREDENTIAL_CARRYING_LOGGERS]
+    saved = [(lg, lg.level, list(lg.handlers)) for lg in map(logging.getLogger, names)]
+    yield
+    for lg, level, handlers in saved:
+        lg.setLevel(level)
+        lg.handlers[:] = handlers
+
+
+def _uvicorn_is_configured():
+    error = logging.getLogger("uvicorn.error")
+    return bool(error.handlers) and not error.propagate
+
+
+@pytest.mark.parametrize("debug", [False, True])
+def test_configure_logging_sets_up_the_server_and_uvicorn_at_once(
+    server_logging, debug
+):
+    # pytest's own capture handlers would make basicConfig a no-op.
+    logging.getLogger().handlers.clear()
+    configure_logging(debug)
+
+    assert logging.getLogger().isEnabledFor(logging.DEBUG) is debug
+    assert logging.getLogger().handlers
+    assert _uvicorn_is_configured()
+    assert logging.getLogger("uvicorn.access").isEnabledFor(logging.INFO) is debug
+    assert not logging.getLogger("httpx").isEnabledFor(logging.INFO)
+
+
+async def test_main_configures_logging_before_the_plugins_start_and_never_again(
+    server_logging, monkeypatch
+):
+    """A dictConfig after plugin log listeners start can deadlock startup."""
+    seen = {}
+
+    async def create_app(*_args, **_kwargs):
+        seen["configured_before_app"] = _uvicorn_is_configured()
+        arbiter = SimpleNamespace(shutdown=None)
+        return SimpleNamespace(
+            state=SimpleNamespace(
+                player_context=SimpleNamespace(playback_arbiter=arbiter)
+            )
+        )
+
+    def uvicorn_config(_app, **kwargs):
+        seen["log_config"] = kwargs.get("log_config", "unset")
+        return SimpleNamespace()
+
+    class Server:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def serve(self):
+            pass
+
+    monkeypatch.setattr(
+        server_main,
+        "parse_args",
+        lambda: argparse.Namespace(debug=True, config="unused.cfg", state=None),
+    )
+    monkeypatch.setattr(server_main, "check_sdk_compatibility", lambda: None)
+    monkeypatch.setattr(server_main, "load_overrides", lambda _path: {})
+    monkeypatch.setattr(server_main, "get_ip_address", lambda _iface: "127.0.0.1")
+    monkeypatch.setattr(server_main, "create_app", create_app)
+    monkeypatch.setattr(server_main.uvicorn, "Config", uvicorn_config)
+    monkeypatch.setattr(server_main, "KalinkaServer", Server)
+
+    await server_main.main()
+
+    assert seen == {"configured_before_app": True, "log_config": None}
