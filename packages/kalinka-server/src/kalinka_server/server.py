@@ -99,6 +99,7 @@ from .renderer_core_settings import (
 from .renderer_prefs import RendererPreferences
 from .renderer_registry import RendererRegistry, RendererUnavailable
 from .renderer_sessions import (
+    CloseReason,
     RendererBusy,
     SessionNotActive,
     SessionOpenFailed,
@@ -429,6 +430,9 @@ async def create_app(
     renderer_upgrades = RendererUpgradeService(
         renderer_registry,
         lambda renderer_id: renderer_sessions.get(renderer_id) is not None,
+        lambda renderer_id: renderer_sessions.interrupt(
+            renderer_id, CloseReason.UPGRADING
+        ),
     )
     app.state.renderer_registry = renderer_registry
     app.state.renderer_sessions = renderer_sessions
@@ -552,9 +556,12 @@ async def create_app(
     async def _renderers_ready() -> bool:
         """Renderers go first: a release can move the protocol they speak, and
         one left behind on another machine has to be reachable to be fixed."""
-        return await renderer_upgrades.bring_forward(
-            update_check.checker.latest_renderer
+        checker = update_check.checker
+        progress = await renderer_upgrades.bring_forward(
+            checker.latest_renderer,
+            installer_covers_local=checker.installed_renderer is not None,
         )
+        return progress.done
 
     app.state.update_check_task = asyncio.create_task(
         update_check.checker.run(
@@ -1381,8 +1388,9 @@ async def create_app(
 
     @app.get("/renderer/list")
     async def renderer_list():
-        """Known renderers, their connection status, and which module controls
-        each one's volume, with the modules available to be picked."""
+        """Known renderers, their connection status, whether each runs on this
+        machine (``local``), and which module controls each one's volume, with
+        the modules available to be picked."""
         renderers = renderer_registry.list()
         behind = {
             candidate.renderer_id

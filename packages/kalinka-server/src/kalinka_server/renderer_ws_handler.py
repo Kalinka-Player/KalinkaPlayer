@@ -41,6 +41,7 @@ _CLOSE_REASON_TO_PB = {
     CloseReason.STALE: pb.SessionClose.REASON_STALE,
     CloseReason.CLOSED_BY_SERVER: pb.SessionClose.REASON_CLOSED_BY_SERVER,
     CloseReason.SHUTDOWN: pb.SessionClose.REASON_CLOSED_BY_SERVER,
+    CloseReason.UPGRADING: pb.SessionClose.REASON_CLOSED_BY_SERVER,
 }
 
 

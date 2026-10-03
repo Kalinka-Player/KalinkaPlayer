@@ -72,6 +72,9 @@ _QUIET_CLOSE_REASONS = {CloseReason.CLOSED_BY_SERVER, CloseReason.SHUTDOWN}
 # The renderer is there to play again as soon as it is asked.
 _RESUMABLE_CLOSE_REASONS = {CloseReason.RENDERER_RESTARTED}
 
+# Someone asked for the stop: the output still goes, but nothing went wrong.
+_REQUESTED_CLOSE_REASONS = {CloseReason.UPGRADING}
+
 # Playing as a listener would have it: a stall reports PREPARING.
 _PLAYING_STATES = (AudioGraphNodeState.PREPARING, AudioGraphNodeState.STREAMING)
 
@@ -344,15 +347,20 @@ class RendererPlayer:
             if inspect.isawaitable(result):
                 detach(result)
             return
-        logger.warning("Renderer session ended: %s", reason.value)
+        if reason in _REQUESTED_CLOSE_REASONS:
+            logger.info("Renderer session ended: %s", reason.value)
+            error = None
+        else:
+            logger.warning("Renderer session ended: %s", reason.value)
+            error = StreamError(
+                source=StreamErrorSource.AUDIO_OUTPUT,
+                message=f"renderer session ended ({reason.value})",
+            )
         self._publish(
             StreamState(
                 state=AudioGraphNodeState.STOPPED,
                 timestamp=time.monotonic_ns(),
-                error=StreamError(
-                    source=StreamErrorSource.AUDIO_OUTPUT,
-                    message=f"renderer session ended ({reason.value})",
-                ),
+                error=error,
             )
         )
         self._notify_session_lost(reason)

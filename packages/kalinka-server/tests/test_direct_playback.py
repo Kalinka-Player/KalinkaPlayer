@@ -48,7 +48,7 @@ from kalinka_server.playback_arbiter import PlaybackArbiter
 from kalinka_server.playqueue import PlayQueueImpl
 from kalinka_server.renderer_output_device import RendererVolumeDevice
 from kalinka_server.renderer_registry import RendererRegistry
-from kalinka_server.renderer_sessions import RendererBusy, SessionPool
+from kalinka_server.renderer_sessions import CloseReason, RendererBusy, SessionPool
 from kalinka_server.renderer_test_tone import TonePlayer
 
 from tests.sim_renderer import DURATION_MS, SimRenderer
@@ -503,6 +503,24 @@ async def test_a_lost_renderer_ends_the_hold(queue, renderer, direct, arbiter):
     assert listener.revoked == [RevokeReason.OUTPUT_LOST]
     assert not hold.active
     assert not arbiter.held_by_plugin
+
+
+async def test_a_renderer_stopped_for_its_upgrade_ends_the_hold(
+    queue, renderer, direct, arbiter, emitter
+):
+    """The output is going away to restart, as when it is lost, so the plugin
+    hears it the same way and clients see playback stop."""
+    listener = Listener()
+    hold = await _hold_and_play(direct, listener)
+
+    await renderer.pool.interrupt(SimRenderer.RENDERER_ID, CloseReason.UPGRADING)
+    await asyncio.sleep(SETTLE_S)
+
+    assert listener.revoked == [RevokeReason.OUTPUT_LOST]
+    assert not hold.active
+    assert not arbiter.held_by_plugin
+    assert renderer.session_id is None
+    assert _states(emitter)[-1].state == PlayerStateEnum.STOPPED
 
 
 async def test_a_renderer_that_restarts_mid_track_carries_on(

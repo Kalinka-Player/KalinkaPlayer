@@ -68,8 +68,13 @@ def register_upgrade_routes(
         reconnect.
 
         Renderers on other machines go first, as they do on the automatic
-        path: one asked here is still restarting into its new build, so
-        this answers 409 and the press is repeated once it is back.
+        path, except that the press is someone asking: playback on one that
+        is behind is stopped so it can take its upgrade, and once each has
+        taken it on this install upgrades alongside them. One that does not
+        — it refused, did not answer, or is still answering an earlier ask —
+        gets a 409 naming it and why. This machine's renderer is left to the
+        installer run where it came from the renderer package, which that run
+        upgrades; installed any other way, it is asked like the rest.
         """
         if not update_check.upgrade_supported():
             raise HTTPException(
@@ -82,20 +87,24 @@ def register_upgrade_routes(
             raise HTTPException(
                 status_code=400, detail="'version' is required"
             )
+        checker = update_check.checker
         rejection = update_check.validate_upgrade_request(
             target,
-            update_check.checker.latest,
+            checker.latest,
             get_version(),
-            update_check.checker.renderer_update_available(),
+            checker.renderer_update_available(),
         )
         if rejection:
             raise HTTPException(status_code=409, detail=rejection)
-        if not await renderer_upgrades.bring_forward(
-            update_check.checker.latest_renderer
-        ):
+        renderers = await renderer_upgrades.bring_forward(
+            checker.latest_renderer,
+            interrupt=True,
+            installer_covers_local=checker.installed_renderer is not None,
+        )
+        if renderers.holding:
             raise HTTPException(
                 status_code=409,
-                detail="Upgrading the renderers first; try again in a moment",
+                detail="Renderers upgrade first: " + "; ".join(renderers.holding),
             )
         try:
             update_check.request_upgrade()

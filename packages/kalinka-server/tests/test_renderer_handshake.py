@@ -90,6 +90,10 @@ async def _run(
         pool = SessionPool(registry, "test-server-id")
     registry.set_on_removed(pool.handle_renderer_removed)
     websocket = FakeWebSocket(incoming, **connection)
+
+    async def no_playback(_renderer_id: str) -> None:
+        pass
+
     await asyncio.wait_for(
         handle_renderer_connection(
             websocket,
@@ -97,7 +101,7 @@ async def _run(
             registry,
             pool,
             RendererConfigService(registry),
-            RendererUpgradeService(registry, lambda _: False),
+            RendererUpgradeService(registry, lambda _: False, no_playback),
         ),
         timeout=5,
     )
