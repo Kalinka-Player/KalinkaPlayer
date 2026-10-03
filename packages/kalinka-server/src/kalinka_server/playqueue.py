@@ -58,7 +58,7 @@ from .stream_state import (
     StreamState,
 )
 from .renderer_registry import RendererRegistry, RendererUnavailable
-from .renderer_sessions import SessionPool
+from .renderer_sessions import CloseReason, SessionPool
 from .tasks import detach
 
 
@@ -523,7 +523,27 @@ class PlayQueueImpl(PlayQueueController):
             before_claim=lambda _renderer_id: self._arbiter.acquire(self),
         )
         player.on_interrupted(self._resume_interrupted)
+        player.on_session_lost(lambda reason: self._session_lost(player, reason))
         return player
+
+    def _session_lost(
+        self, player: RendererPlayer, reason: Optional[CloseReason]
+    ) -> None:
+        """The session went without the queue asking, and the streams on it
+        went too. They are forgotten before the STOPPED that follows, which
+        would otherwise restart the queue on one of them. A session taken away
+        also takes a resolution still in flight, which would claim the
+        renderer straight back; one that only idled out lets it carry on."""
+        if player is not self._track_player:
+            return
+        if reason is not None:
+            self._resolution.supersede()
+        self._forget_streams()
+
+    def _forget_streams(self) -> None:
+        self.prepared_tracks.clear()
+        self.current_stream_id = None
+        self._cancel_prefetch_timer()
 
     async def _resume_interrupted(self, position_ms: int) -> None:
         """The same track on a fresh claim, from where it had reached."""
@@ -583,9 +603,7 @@ class PlayQueueImpl(PlayQueueController):
         )
         # Before the stop, not after: the STOPPED reaches _process_state_update
         # while `old` is still current, and a queued stream would restart it.
-        self.prepared_tracks.clear()
-        self.current_stream_id = None
-        self._cancel_prefetch_timer()
+        self._forget_streams()
 
         await old.release()
         await old.shutdown()
@@ -652,9 +670,7 @@ class PlayQueueImpl(PlayQueueController):
         # not restart the queue on a stream that is already on its way out,
         # and a resolution still in flight does not start one.
         self._resolution.supersede()
-        self.prepared_tracks.clear()
-        self.current_stream_id = None
-        self._cancel_prefetch_timer()
+        self._forget_streams()
         old = self._track_player
         held = old.renderer_id is not None
         self._track_player = self._new_player()

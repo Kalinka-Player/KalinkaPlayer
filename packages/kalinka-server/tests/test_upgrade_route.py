@@ -30,7 +30,7 @@ from kalinka_server.renderer_sessions import CloseReason, SessionPool
 from kalinka_server.renderer_upgrade import RendererUpgradeService
 from kalinka_server.upgrade_route import register_upgrade_routes
 
-from tests.sim_renderer import SimRenderer
+from tests.sim_renderer import DURATION_MS, SimRenderer
 
 SETTLE_S = 0.2
 RELEASE = "0.5.0"
@@ -215,6 +215,30 @@ async def test_the_stop_is_not_reported_as_a_fault(core, queue, emitter, fired):
 
     assert (await queue.get_playback_state()).message is None
     assert [state.message for state in _published(emitter)] == [None]
+
+
+async def test_a_press_in_a_tracks_last_seconds_does_not_start_the_next(
+    core, queue, fired
+):
+    """The next track is already queued on the renderer by then; the stop
+    must not read as the current one running out, or the queue claims the
+    renderer again just as it restarts into its upgrade."""
+    attic = _renderer(core, "attic-id", "Attic")
+    await queue.add([_track("1"), _track("2")])
+    await queue.play()
+    await asyncio.sleep(SETTLE_S)
+    attic.report_position(DURATION_MS - 2000)
+    await asyncio.sleep(SETTLE_S)
+    assert attic.queued, "the next track is prefetched in the last seconds"
+
+    response = await _press(core.app)
+    await asyncio.sleep(SETTLE_S)
+
+    assert response.status_code == 200
+    assert attic.upgrades == [RELEASE]
+    assert attic.session_id is None
+    assert core.pool.get("attic-id") is None
+    assert (await queue.get_playback_state()).state == PlayerStateEnum.STOPPED
 
 
 async def test_only_this_machines_renderer_behind_is_left_to_the_installer(
