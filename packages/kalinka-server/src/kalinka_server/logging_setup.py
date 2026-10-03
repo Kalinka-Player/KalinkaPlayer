@@ -1,6 +1,7 @@
 """Journald-aware log formatting shared by the server's entry points."""
 
 import logging
+import logging.config
 import os
 import sys
 from typing import IO, Any, Dict, Optional
@@ -24,6 +25,23 @@ def quiet_credential_carrying_loggers() -> None:
     """
     for name in CREDENTIAL_CARRYING_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
+
+
+def configure_logging(debug: bool) -> None:
+    """Configure all of the server's logging, uvicorn's included, at once.
+
+    @note Call it before anything starts a thread that logs, and give uvicorn
+        no ``log_config``. ``dictConfig`` holds logging's module lock while it
+        takes each handler's lock, and a log listener thread re-emitting a
+        record takes them in the opposite order, so a later reconfiguration
+        can deadlock the server's startup.
+    """
+    logging.config.dictConfig(uvicorn_log_config(debug))
+    logging.basicConfig(
+        level=logging.DEBUG if debug else logging.INFO,
+        handlers=[make_handler()],
+    )
+    quiet_credential_carrying_loggers()
 
 
 def uvicorn_log_config(debug: bool) -> Dict[str, Any]:
