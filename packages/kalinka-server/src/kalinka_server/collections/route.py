@@ -11,15 +11,15 @@ or the app reports a collection nobody made.
 """
 
 import logging
-from typing import Callable, Dict, List, Sequence, Tuple
+from typing import Callable, Dict, List, Tuple
 
 from fastapi import FastAPI, HTTPException
 from kalinka_plugin_sdk.datamodel import EntityId, EntityType, Track
-from kalinka_plugin_sdk.inputmodule import InputModule, TrackInfo
+from kalinka_plugin_sdk.inputmodule import InputModule
 from pydantic import BaseModel, Field
 
 from ..browse_source import BrowseSource
-from ..queue_add import track_infos_for
+from ..queue_add import tracks_for
 from .source import SOURCE_NAME, collection_id
 from .store import CollectionChanged, CollectionStore, NewEntry
 
@@ -155,19 +155,6 @@ def _entry_of(track: Track) -> NewEntry:
     )
 
 
-def _snapshots(infos: Sequence[TrackInfo]) -> List[NewEntry]:
-    """The rows to write for what a source handed back, leaving out anything
-    it described no further — a row with no snapshot never reads back."""
-    entries = [_entry_of(info.metadata) for info in infos if info.metadata is not None]
-    if len(entries) != len(infos):
-        logger.warning(
-            "Collections write: %d of %d tracks came back without metadata",
-            len(infos) - len(entries),
-            len(infos),
-        )
-    return entries
-
-
 def register_collection_routes(
     app: FastAPI,
     store: CollectionStore,
@@ -223,10 +210,10 @@ def register_collection_routes(
     async def rows_for(items: List[str]) -> List[NewEntry]:
         """What ``items`` comes to, as rows to store."""
         try:
-            infos = await track_infos_for(items, browse_source_for, module_for)
+            tracks = await tracks_for(items, browse_source_for, module_for)
         except ValueError as e:
             raise HTTPException(status_code=404, detail=f"Nothing to add: {e}")
-        return _snapshots(infos)
+        return [_entry_of(track) for track in tracks]
 
     @app.post("/collections/{entity_id}/entries")
     async def add_entries(entity_id: str, payload: EntriesWrite) -> EntriesAdded:
