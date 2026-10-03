@@ -230,6 +230,7 @@ def test_module_setup_constants():
         "search",
         "browse",
         "get_track_info",
+        "get_track_source",
         "list_favorite",
         "get_favorite_ids",
         "add_to_favorite",

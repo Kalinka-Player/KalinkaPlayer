@@ -1161,23 +1161,22 @@ class JamendoInputModule(InputModule):
 
     def _make_track_info(self, tid: str, metadata: Track) -> TrackInfo:
         """Build a TrackInfo whose link resolves via /tracks/file/ at play time."""
-
-        async def source_retriever() -> TrackSource:
-            url = await self.client.resolve_audio_url(tid, self.audio_format)
-            if not url:
-                # Raise rather than return an empty URL: the server treats any
-                # non-exception return as playable, so it would try to stream
-                # "". Raising lets it mark the track unavailable and skip it.
-                raise RuntimeError(
-                    f"Could not resolve audio URL for Jamendo track {tid}"
-                )
-            return TrackSource(source=DirectUrl(url=url), format=self.audio_mime)
-
         return TrackInfo(
             id=track_id(tid),
-            source_retriever=source_retriever,
+            source_retriever=lambda: self.get_track_source(tid),
             metadata=metadata,
         )
+
+    async def get_track_source(self, track_id: str) -> TrackSource:
+        url = await self.client.resolve_audio_url(track_id, self.audio_format)
+        if not url:
+            # Raise rather than return an empty URL: the server treats any
+            # non-exception return as playable, so it would try to stream
+            # "". Raising lets it mark the track unavailable and skip it.
+            raise RuntimeError(
+                f"Could not resolve audio URL for Jamendo track {track_id}"
+            )
+        return TrackSource(source=DirectUrl(url=url), format=self.audio_mime)
 
     def _placeholder_metadata(self, tid: str) -> Track:
         return Track(

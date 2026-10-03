@@ -7,7 +7,12 @@ from kalinka_plugin_sdk.datamodel import (
     Playlist,
 )
 from kalinka_plugin_sdk.filters import FilterQuery, FilterValueList
-from kalinka_plugin_sdk.inputmodule import InputModule, SearchType, TrackInfo
+from kalinka_plugin_sdk.inputmodule import (
+    InputModule,
+    SearchType,
+    TrackInfo,
+    TrackSource,
+)
 
 from .config_model import {{ cookiecutter.plugin_class_prefix }}Config
 
@@ -34,6 +39,9 @@ class {{ cookiecutter.plugin_class_prefix }}InputModule(InputModule):
         raise NotImplementedError
 
     async def get_track_info(self, track_ids: List[str]) -> List[TrackInfo]:
+        raise NotImplementedError
+
+    async def get_track_source(self, track_id: str) -> TrackSource:
         raise NotImplementedError
 
     async def list_favorite(

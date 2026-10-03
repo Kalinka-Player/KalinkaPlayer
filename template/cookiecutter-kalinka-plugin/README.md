@@ -147,6 +147,7 @@ Edit `src/your_plugin/your_plugin_input_module.py` and implement:
 - `search()` - Search for tracks, albums, artists, playlists
 - `browse()` - Browse music catalogs and collections
 - `get_track_info()` - Get detailed track information for playback
+- `get_track_source()` - Resolve where a track plays from, given its id
 - `list_favorite()` - List user favorites (tracks, albums, etc.)
 - `get_favorite_ids()` - Get all favorite IDs
 - `add_to_favorite()` - Add items to favorites

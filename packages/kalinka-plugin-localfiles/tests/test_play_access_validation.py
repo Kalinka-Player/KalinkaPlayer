@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Issue #60 (play side): access is validated whenever a track is played.
 
-The play queue calls ``source_retriever()`` to get a track's source and treats
-any exception as "track unavailable"; the server calls ``get_content_info()``
-again before serving the bytes. A track whose file has moved out of the
-configured music folders, or is no longer readable, must fail both — the
-retriever by raising, the content lookup by reporting the asset absent.
+The play queue calls ``get_track_source()`` (an older server, a TrackInfo's
+``source_retriever()``) to get a track's source and treats any exception as
+"track unavailable"; the server calls ``get_content_info()`` again before
+serving the bytes. A track whose file has moved out of the configured music
+folders, or is no longer readable, must fail both — the source lookup by
+raising, the content lookup by reporting the asset absent.
 """
 
 import pytest
@@ -20,12 +21,13 @@ from kalinka_plugin_localfiles.storage.local import LocalStorage
 
 
 class _FakeDb:
-    def __init__(self, track, root_signature=None):
+    def __init__(self, track, root_signature=None, good=True):
         self._track = track
         self._root_signature = root_signature
+        self._good = good
 
     def is_good(self):
-        return True
+        return self._good
 
     def get_root_signature(self, root):
         return self._root_signature
@@ -212,6 +214,73 @@ async def test_source_retriever_bounds_a_hung_stat(tmp_path, monkeypatch):
     [info] = await module.get_track_info(["track_1"])
     with pytest.raises(SourceUnavailableError, match="did not respond"):
         await info.source_retriever()
+
+
+@pytest.mark.asyncio
+async def test_track_source_names_an_asset_for_in_config_file(tmp_path):
+    music = tmp_path / "music"
+    music.mkdir()
+    path = music / "song.mp3"
+    path.write_bytes(b"x")
+
+    module = _module(tmp_path, [music], _track(path))
+    source = await module.get_track_source("track_1")
+    assert source.source == ModuleAsset(module="localfiles", asset_id="track_1")
+    assert source.format == "audio/mpeg"
+
+
+@pytest.mark.asyncio
+async def test_track_source_raises_for_out_of_config_file(tmp_path):
+    music = tmp_path / "music"
+    other = tmp_path / "other"
+    music.mkdir()
+    other.mkdir()
+    path = other / "song.mp3"
+    path.write_bytes(b"x")
+
+    module = _module(tmp_path, [music], _track(path))
+    with pytest.raises(PermissionError):
+        await module.get_track_source("track_1")
+
+
+@pytest.mark.asyncio
+async def test_track_source_reports_unmounted_root_as_transient(
+    tmp_path, monkeypatch
+):
+    music = tmp_path / "music"
+    path = music / "song.mp3"
+    _offline(monkeypatch)
+
+    module = _module(tmp_path, [music], _track(path))
+    with pytest.raises(SourceUnavailableError, match="not mounted it"):
+        await module.get_track_source("track_1")
+
+
+@pytest.mark.asyncio
+async def test_track_source_of_an_unknown_track_is_not_found(tmp_path):
+    music = tmp_path / "music"
+    music.mkdir()
+
+    module = _module(tmp_path, [music], _track(music / "song.mp3"))
+    with pytest.raises(LookupError, match="no_such_track"):
+        await module.get_track_source("no_such_track")
+
+
+@pytest.mark.asyncio
+async def test_track_source_waits_out_a_library_not_built_yet(tmp_path):
+    """The track may well be there once the index is: transient, not gone."""
+    music = tmp_path / "music"
+    music.mkdir()
+    config = LocalFilesConfig(
+        music_folders=[str(music)],
+        db_path=str(tmp_path / "localfiles.db"),
+        artwork_path=str(tmp_path / "artwork"),
+    )
+    module = LocalFilesInputModule(
+        config, _FakeDb(_track(music / "song.mp3"), good=False)
+    )
+    with pytest.raises(SourceUnavailableError, match="not ready"):
+        await module.get_track_source("track_1")
 
 
 @pytest.mark.asyncio
