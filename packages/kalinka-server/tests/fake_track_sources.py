@@ -1,6 +1,7 @@
 """The play queue's source resolver, faked for tests that drive a queue."""
 
 from collections.abc import Awaitable, Callable
+from typing import Optional
 
 from kalinka_plugin_sdk.datamodel import Album, EntityId, EntityType, Track
 from kalinka_plugin_sdk.inputmodule import DirectUrl, TrackInfo, TrackSource
@@ -52,3 +53,6 @@ class FakeTrackSources:
         if retriever is not None:
             return await retriever()
         return await self._default(track_id)
+
+    def unavailable_reason(self, track_id: EntityId) -> Optional[str]:
+        return None

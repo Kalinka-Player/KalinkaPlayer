@@ -210,7 +210,7 @@ async def test_restore_asks_no_module(state_file, restore):
 
 
 async def test_a_queue_restored_before_its_module_is_ready_plays_once_it_is(
-    state_file, restore
+    state_file, restore, bus
 ):
     saved = [_make_track(track_id, "qobuz") for track_id in ("a", "b", "c")]
     state_file.write_text(_saved_state(saved, index=1).model_dump_json())
@@ -222,6 +222,7 @@ async def test_a_queue_restored_before_its_module_is_ready_plays_once_it_is(
     listed = await queue.list(0, 10)
     assert listed.total == 3
     assert listed.items == saved
+    assert _unavailable(bus) == [False, False, False], "only a play can tell"
 
     qobuz.ready = True
     await queue.play()
@@ -300,6 +301,35 @@ async def test_a_track_without_its_module_stays_and_is_skipped(
     assert state.index == 1
     assert _unavailable(bus) == [True, False]
     assert (await queue.list(0, 10)).total == 2
+
+
+async def test_a_track_without_its_module_shows_unavailable_from_the_start(
+    state_file, restore, bus
+):
+    saved = [_make_track("a", "qobuz"), _make_track("c", "localfiles")]
+    state_file.write_text(_saved_state(saved).model_dump_json())
+
+    queue = await restore({"localfiles": _OlderModule("localfiles")})
+
+    assert _unavailable(bus) == [True, False]
+    assert queue._unavailable_indices == {0}
+
+
+async def test_a_track_flagged_for_a_missing_module_plays_once_it_is_there(
+    state_file, restore, bus
+):
+    """The flag shows what is known now; it never keeps a track from playing."""
+    state_file.write_text(_saved_state([_make_track("a", "qobuz")]).model_dump_json())
+    modules: dict[str, InputModule] = {}
+    queue = await restore(modules)
+    assert _unavailable(bus) == [True]
+
+    modules["qobuz"] = _OlderModule("qobuz")
+    await queue.play()
+    state = await _playing(queue)
+
+    assert state.stream_url == _url("a")
+    assert _unavailable(bus) == [False]
 
 
 async def test_a_track_gone_from_its_module_stays_and_is_skipped(
