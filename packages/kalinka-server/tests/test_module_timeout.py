@@ -83,6 +83,24 @@ def test_module_loads_on_a_python_without_protocol_attrs(monkeypatch):
     assert namespace["_PROTOCOL_METHODS"] == _PROTOCOL_METHODS
 
 
+class SlowSourceModule(SlowModule):
+    async def get_track_source(self, track_id):
+        await asyncio.sleep(0.2)
+        return track_id
+
+
+async def test_a_track_source_has_the_longer_budget():
+    proxy = TimeLimitedInputModule(SlowSourceModule(), "slowpoke", timeout_s=0.05)
+    assert await proxy.get_track_source("t1") == "t1"
+
+
+async def test_a_track_source_is_still_bounded(monkeypatch):
+    monkeypatch.setattr(module_timeout, "TRACK_SOURCE_TIMEOUT_S", 0.05)
+    proxy = TimeLimitedInputModule(SlowSourceModule(), "slowpoke", timeout_s=3)
+    with pytest.raises(TimeoutError, match="slowpoke.get_track_source exceeded"):
+        await proxy.get_track_source("t1")
+
+
 async def test_inherited_default_get_all_is_also_budgeted():
     # get_all is inherited from the SDK protocol default; through the proxy
     # it must still be subject to the same per-call budget.

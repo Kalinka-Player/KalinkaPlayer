@@ -2,7 +2,7 @@ import asyncio
 import logging
 import time
 from collections import OrderedDict
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Sequence
 from typing import Callable, Optional
 
 from kalinka_serialized.serial_executor import interrupt
@@ -60,16 +60,33 @@ from .stream_state import (
 from .renderer_registry import RendererRegistry, RendererUnavailable
 from .renderer_sessions import SessionPool
 from .tasks import detach
+from .track_sources import TrackSourceResolver
 
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
 PREFETCH_TIME_MS = 5000
 
-# Upper bound for a single source_retriever() call. Plugins set their own (smaller)
+# Upper bound for resolving a single track's source. Plugins set their own (smaller)
 # HTTP timeouts; this is a backstop so a misbehaving plugin can never pin the
 # resolution slot indefinitely. Generous enough to allow one in-plugin retry.
 SOURCE_RETRIEVAL_TIMEOUT_S = 8
+
+
+def _metadata_of(tracks: Sequence[Track | TrackInfo]) -> list[Track]:
+    """The tracks as the queue holds them: metadata only, since a track's
+    source is asked of its module each time it plays."""
+    kept: list[Track] = []
+    for track in tracks:
+        if isinstance(track, TrackInfo):
+            if track.metadata is None:
+                logger.warning(
+                    "Not queueing %s: it has no metadata", track.id.to_string
+                )
+                continue
+            track = track.metadata
+        kept.append(track)
+    return kept
 
 
 def _remap_index(idx: int, from_index: int, to_index: int) -> int:
@@ -88,8 +105,8 @@ def _remap_index(idx: int, from_index: int, to_index: int) -> int:
     return idx
 
 
-# State restore can involve many I/O calls; keep it outside the serial executor
-# so startup restore does not block the command lane.
+# State restore runs once at startup, before the queue takes any command, so it
+# stays outside the serial executor.
 @with_serial_executor
 class PlayQueueImpl(PlayQueueController):
     def __init__(
@@ -99,6 +116,7 @@ class PlayQueueImpl(PlayQueueController):
         renderer_registry: RendererRegistry,
         renderer_sessions: SessionPool,
         *,
+        sources: TrackSourceResolver,
         arbiter: Optional[PlaybackArbiter] = None,
     ):
         super().__init__()
@@ -106,6 +124,7 @@ class PlayQueueImpl(PlayQueueController):
         self._config = config
         self._registry = renderer_registry
         self._sessions = renderer_sessions
+        self._sources = sources
         # Playback state goes to clients through the arbiter, which drops it
         # while a plugin plays in the queue's place.
         self._arbiter = arbiter or PlaybackArbiter(event_emitter)
@@ -123,7 +142,7 @@ class PlayQueueImpl(PlayQueueController):
         self._track_player = self._new_player()
         self.current_track_id = 0
         self.current_format = None
-        self.track_list: list[TrackInfo] = []
+        self.track_list: list[Track] = []
 
         # Playback mode
         self.shuffle = False  # TODO
@@ -304,7 +323,7 @@ class PlayQueueImpl(PlayQueueController):
     # ------------------------------------------------------------------
     # Off-lane source resolution
     #
-    # source_retriever() is the only slow (network) operation in the playqueue.
+    # Resolving a track's source is the only slow (network) operation in the playqueue.
     # Running it inside the serial executor would freeze every other command and
     # the state-update interrupt lane while a streaming plugin times out. So each
     # command splits in two: a serialised entry point that kicks off the (slow)
@@ -663,10 +682,12 @@ class PlayQueueImpl(PlayQueueController):
         return held
 
     @serialised
-    async def add(self, tracks: list[TrackInfo], index: Optional[int] = None):
-        self._add(tracks, index)
+    async def add(
+        self, tracks: Sequence[Track | TrackInfo], index: Optional[int] = None
+    ):
+        self._add(_metadata_of(tracks), index)
 
-    def _add(self, tracks: list[TrackInfo], index: Optional[int] = None):
+    def _add(self, tracks: list[Track], index: Optional[int] = None):
         if len(tracks) == 0:
             return
 
@@ -796,8 +817,7 @@ class PlayQueueImpl(PlayQueueController):
     def _get_track_info(self, index: int) -> Optional[Track]:
         if index not in range(0, len(self.track_list)):
             return None
-        track_info: TrackInfo = self.track_list[index]
-        return track_info.metadata
+        return self.track_list[index]
 
     @serialised
     async def get_playback_state(self) -> PlaybackState:
@@ -826,16 +846,22 @@ class PlayQueueImpl(PlayQueueController):
     async def restore_from_state(
         self,
         state: PlayQueueState,
-        track_info_retriever: Callable[[EntityId], Awaitable[TrackInfo]],
+        track_info_retriever: Optional[
+            Callable[[EntityId], Awaitable[TrackInfo]]
+        ] = None,
     ) -> None:
         """Restore playqueue state from a PlayQueueState snapshot.
 
         Restores the playback mode, track list, and current track index.
-        Playback state is set to STOPPED with position 0.
+        Playback state is set to STOPPED with position 0. Every saved track
+        comes back with its saved metadata and no module is asked: a track's
+        module is needed only to play it, so one that is not ready yet, or
+        not there at all, costs the queue nothing.
 
         Args:
             state: The PlayQueueState to restore from
-            track_info_retriever: Async callback to retrieve TrackInfo from EntityId
+            track_info_retriever: Accepted from callers of SDK 3.7 and before;
+                not used
         """
         # Stop any current playback
         was_already_stopped = (
@@ -867,32 +893,13 @@ class PlayQueueImpl(PlayQueueController):
             self.repeat_single = state.playback_mode.repeat_single
             self.repeat_all = state.playback_mode.repeat_all
 
-        # Restore track list
-        if state.track_list:
-            track_infos = []
-            for track in state.track_list:
-                try:
-                    track_info = await track_info_retriever(track.id)
-                except Exception as e:
-                    logger.warning(f"Failed to retrieve track info for {track.id}: {e}")
-                    continue
-
-                # The saved snapshot is authoritative for metadata: a module
-                # may be unable to re-fetch it on restore (e.g. source-side
-                # indexing lag, where the module can still produce a playback
-                # source but not the title/artist/album). Use the module's
-                # TrackInfo only for playback (source_retriever) and keep the
-                # metadata the queue had when it was saved.
-                track_infos.append(
-                    TrackInfo(
-                        id=track.id,
-                        source_retriever=track_info.source_retriever,
-                        metadata=track,
-                    )
-                )
-
-            if track_infos:
-                self._add(track_infos)
+        # _unavailable_indices starts empty, so a saved flag would never clear.
+        self._add(
+            [
+                track.model_copy(update={"unavailable": False})
+                for track in state.track_list
+            ]
+        )
 
         # Clamp to valid range now that track_list is populated
         if self.track_list:
@@ -1015,14 +1022,16 @@ class PlayQueueImpl(PlayQueueController):
         user-presentable cause when the module offered one (a
         SourceUnavailableError) and None otherwise.
 
-        Bounded by SOURCE_RETRIEVAL_TIMEOUT_S so a plugin that ignores its own
-        HTTP timeout can never pin the resolution slot indefinitely. Runs
-        off-lane, so a slow fetch never blocks the serial executor.
+        The track's module is asked through the source resolver now, at play
+        time, never when the track was queued. Bounded by
+        SOURCE_RETRIEVAL_TIMEOUT_S so a plugin that ignores its own HTTP
+        timeout can never pin the resolution slot indefinitely. Runs off-lane,
+        so a slow fetch never blocks the serial executor.
         """
         try:
             track = self.track_list[index]
             source = await asyncio.wait_for(
-                track.source_retriever(), timeout=SOURCE_RETRIEVAL_TIMEOUT_S
+                self._sources.resolve(track.id), timeout=SOURCE_RETRIEVAL_TIMEOUT_S
             )
             if source.sequential:
                 logger.warning(
@@ -1052,8 +1061,8 @@ class PlayQueueImpl(PlayQueueController):
         (forward) or -1 (backward); any other value is normalised so the scan
         visits each track at most once. Returns
         ``(index, track_source, track_ref, failed)`` for the first track that yields
-        a source — ``track_ref`` is the TrackInfo whose retriever produced it, so
-        the commit can detect a concurrent reindex — or
+        a source — ``track_ref`` is the Track it was resolved for, so the
+        commit can detect a concurrent reindex — or
         ``(None, None, None, failed)`` if none do in that direction.
         Already-prepared tracks are returned from cache.
         """

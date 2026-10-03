@@ -32,6 +32,9 @@ logger = logging.getLogger(__name__.split(".")[-1])
 # Keep in sync with the latency contract stated on the SDK's InputModule
 # docstring — plugins size their backend HTTP timeouts against this.
 PLUGIN_CALL_TIMEOUT_S = 3.0
+# The same contract's longer budget for get_track_source, which may wait on
+# storage or a backend just before the renderer needs the track.
+TRACK_SOURCE_TIMEOUT_S = 8.0
 
 # From the class body, since typing's __protocol_attrs__ is 3.12+ only.
 _PROTOCOL_METHODS = tuple(
@@ -59,18 +62,22 @@ class TimeLimitedInputModule:
             setattr(self, name, bound)
 
     def _budgeted(self, attr, name):
+        timeout_s = (
+            TRACK_SOURCE_TIMEOUT_S if name == "get_track_source" else self._timeout_s
+        )
+
         @functools.wraps(attr)
         async def timed(*args, **kwargs):
             try:
-                return await asyncio.wait_for(attr(*args, **kwargs), self._timeout_s)
+                return await asyncio.wait_for(attr(*args, **kwargs), timeout_s)
             except asyncio.TimeoutError:
                 logger.warning(
                     "%s.%s exceeded the %.0fs per-call budget",
-                    self._label, name, self._timeout_s,
+                    self._label, name, timeout_s,
                 )
                 raise TimeoutError(
                     f"{self._label}.{name} exceeded the "
-                    f"{self._timeout_s:.0f}s per-call budget"
+                    f"{timeout_s:.0f}s per-call budget"
                 ) from None
 
         return timed

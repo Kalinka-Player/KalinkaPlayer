@@ -133,15 +133,7 @@ async def lifespan(app: FastAPI):
             app.state.device_router,
         )
 
-        await restore_state(
-            app.state.player_context.playqueue,
-            {
-                name: module.interface
-                for name, module in modules.prepared_input_modules.items()
-                if name in modules.enabled_input_modules
-                and isinstance(module.interface, InputModule)
-            },
-        )
+        await restore_state(app.state.player_context.playqueue)
         await app.state.player_context.playqueue.__aenter__()
 
         yield
@@ -527,12 +519,7 @@ async def create_app(
         return entry.source if entry is not None else None
 
     def _art_resource_resolver(entity_id: EntityId) -> Optional[InputModule]:
-        source = entity_id.source
-        if source not in modules.enabled_input_modules:
-            return None
-        plugin = modules.prepared_input_modules.get(source)
-        interface = plugin.interface if plugin is not None else None
-        return interface if isinstance(interface, InputModule) else None
+        return modules.enabled_input_module(entity_id.source)
 
     app.state.catalog_art = CatalogArtService(
         os.path.join(paths.cache_dir(), "catalog_art"),
