@@ -70,7 +70,8 @@ class MyDevice(ExternalOutputDevice):
 
 ### Core APIs
 - `ExternalPlayback` (3.7+): an input plugin whose engine owns audio output (for example Roon Bridge) acquires `InputPluginContext.external_playback`, then reports `PlaybackState` metadata and progress without opening a renderer. Its async `on_revoked` callback must stop external audio within three seconds, including an engine-termination fallback when network control fails. The server waits for that callback before handing playback to the next source. Do not reenter acquisition/release from that callback. Renderer selection changes revoke external playback rather than migrating it. `release()` is called after the plugin has stopped its own engine. Position is in milliseconds; report timestamps are assigned by the server. Older servers expose `None`.
-- `PlayQueueAPI`: Interface for playqueue operations
+- `InputModule.get_track_source(track_id)` (3.8+): where one of the module's tracks plays from, asked each time the track is about to play rather than when it is queued, so the queue keeps a track while its module is starting, offline or switched off. Raise `SourceUnavailableError` for a track that exists but cannot be served now, `LookupError` for one the module does not have. It has 8 seconds where other calls have 3. The default resolves through `get_track_info` and the track's `source_retriever`; override it to answer from the id alone.
+- `PlayQueueAPI`: Interface for playqueue operations. Since 3.8 `add` takes `Track`s, the queue asking each track's module for its source at play time; a `TrackInfo` passed to it keeps only its metadata.
 - `EventEmitterAPI`: Interface for dispatching events
 - `EventListenerAPI`: Interface for subscribing to events
 - `LoggerAPI`: Interface for logging
