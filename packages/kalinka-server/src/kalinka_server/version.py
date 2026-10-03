@@ -80,7 +80,9 @@ def get_version() -> str:
 # set_playback_mode still apply to the queue. PUT /renderer/active moves the
 # plugin's playback, which carries on where it had reached; the speaker test
 # ends it.
-REST_API_VERSION = "0.8"
+# 0.9: a /renderer/list entry says whether the renderer runs on the server's
+# own machine (`local`).
+REST_API_VERSION = "0.9"
 
 
 def get_rest_api_version() -> str:

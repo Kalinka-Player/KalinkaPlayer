@@ -6,8 +6,10 @@ this handshake exists to survive.
 """
 
 import asyncio
+import socket
 from unittest.mock import create_autospec
 
+import pytest
 from fastapi import WebSocketDisconnect
 
 from kalinka_server.config_model import KalinkaConfig
@@ -19,16 +21,21 @@ from kalinka_server.renderer_upgrade import RendererUpgradeService
 from kalinka_server.renderer_ws_handler import (
     PROTOCOL_VERSION,
     handle_renderer_connection,
+    runs_here,
 )
+
+SERVER_ADDR = ("192.168.50.85", 8000)
 
 
 class FakeWebSocket:
     """Feeds queued frames to the handler and records what it sends back."""
 
-    def __init__(self, incoming: list[pb.Envelope]):
+    def __init__(
+        self, incoming: list[pb.Envelope], client=("192.168.50.20", 51234)
+    ):
         self._incoming = list(incoming)
         self.sent: list[pb.Envelope] = []
-        self.scope = {"server": ("192.168.50.85", 8000)}
+        self.scope = {"server": SERVER_ADDR, "client": client}
         self.accepted = False
         self.closed = False
 
@@ -49,7 +56,11 @@ class FakeWebSocket:
         self.closed = True
 
 
-def _hello(min_version: int, max_version: int) -> pb.Envelope:
+def _hello(
+    min_version: int = PROTOCOL_VERSION,
+    max_version: int = PROTOCOL_VERSION,
+    hostname: str = "attic",
+) -> pb.Envelope:
     env = pb.Envelope()
     hello = env.hello
     hello.protocol_versions.min = min_version
@@ -60,6 +71,7 @@ def _hello(min_version: int, max_version: int) -> pb.Envelope:
     hello.software_version = "0.3.0"
     hello.kind = pb.RENDERER_KIND_NATIVE
     hello.platform.os = "linux"
+    hello.platform.hostname = hostname
     return env
 
 
@@ -71,13 +83,13 @@ def _volume_report() -> pb.Envelope:
 
 
 async def _run(
-    incoming: list[pb.Envelope], pool=None
+    incoming: list[pb.Envelope], pool=None, **connection
 ) -> tuple[FakeWebSocket, RendererRegistry]:
     registry = RendererRegistry(offline_timeout_s=30.0)
     if pool is None:
         pool = SessionPool(registry, "test-server-id")
     registry.set_on_removed(pool.handle_renderer_removed)
-    websocket = FakeWebSocket(incoming)
+    websocket = FakeWebSocket(incoming, **connection)
     await asyncio.wait_for(
         handle_renderer_connection(
             websocket,
@@ -133,3 +145,72 @@ async def test_a_compatible_renderer_is_reconciled_and_its_state_believed():
     )
     pool.reconcile.assert_awaited_once()
     pool.handle_state.assert_called_once()
+
+
+class TestThisMachinesRenderer:
+    """The server's own upgrade covers the renderer beside it, so the registry
+    has to know which one that is — from the name it reports and an address
+    only this machine connects from, together."""
+
+    @pytest.fixture(autouse=True)
+    def _host(self, monkeypatch):
+        monkeypatch.setattr(socket, "gethostname", lambda: "kalinka")
+
+    async def test_one_reaching_our_lan_address_from_it_is_local(self):
+        """The packaged renderer finds the server by mDNS, so it dials the LAN
+        address — and, running here, connects from that same address."""
+        _, registry = await _run(
+            [_hello(hostname="kalinka")], client=(SERVER_ADDR[0], 40000)
+        )
+        (entry,) = registry.list()
+        assert entry["local"] is True
+
+    async def test_a_namesake_behind_a_proxy_here_is_not(self):
+        """Through a reverse proxy on this machine every renderer connects
+        from loopback, the one on another default-named image included."""
+        _, registry = await _run(
+            [_hello(hostname="kalinka")], client=("127.0.0.1", 40000)
+        )
+        assert registry.list()[0]["local"] is False
+
+    async def test_a_namesake_on_another_machine_is_not(self):
+        """Every Kalinka image left at its default hostname is 'kalinka'."""
+        _, registry = await _run(
+            [_hello(hostname="kalinka")], client=("192.168.50.20", 40000)
+        )
+        assert registry.list()[0]["local"] is False
+
+    async def test_a_renderer_elsewhere_is_not(self):
+        _, registry = await _run([_hello(hostname="attic")])
+        assert registry.list()[0]["local"] is False
+
+    async def test_an_incompatible_one_is_still_recognised(self):
+        """Exactly the one the installer is about to bring forward."""
+        _, registry = await _run(
+            [_hello(PROTOCOL_VERSION + 5, PROTOCOL_VERSION + 6, "kalinka")],
+            client=(SERVER_ADDR[0], 40000),
+        )
+        assert registry.list()[0]["local"] is True
+
+
+@pytest.mark.parametrize(
+    "hostname, peer, dialed, local",
+    [
+        ("kalinka", (SERVER_ADDR[0], 1), SERVER_ADDR, True),
+        ("kalinka", ("192.168.50.20", 1), SERVER_ADDR, False),
+        # Loopback, as every peer of a reverse proxy on this machine is.
+        ("kalinka", ("127.0.0.1", 1), ("127.0.0.1", 8000), False),
+        ("kalinka", ("::1", 1), SERVER_ADDR, False),
+        ("kalinka", ("::ffff:127.0.0.1", 1), SERVER_ADDR, False),
+        # A renderer in a container of its own on this machine's address.
+        ("container", (SERVER_ADDR[0], 1), SERVER_ADDR, False),
+        # A renderer that does not say what it is called.
+        ("", (SERVER_ADDR[0], 1), SERVER_ADDR, False),
+        ("kalinka", None, SERVER_ADDR, False),
+        ("kalinka", (SERVER_ADDR[0], 1), None, False),
+        ("kalinka", ("testclient", 1), SERVER_ADDR, False),
+    ],
+)
+def test_runs_here(monkeypatch, hostname, peer, dialed, local):
+    monkeypatch.setattr(socket, "gethostname", lambda: "kalinka")
+    assert runs_here(hostname, peer, dialed) is local
