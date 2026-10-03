@@ -5,8 +5,11 @@ drains it, so message handling never stalls the socket read.
 """
 
 import asyncio
+import ipaddress
 import logging
+import socket
 import time
+from typing import Optional, Sequence
 
 from fastapi import WebSocket, WebSocketDisconnect
 from google.protobuf.message import DecodeError
@@ -38,11 +41,41 @@ _CLOSE_REASON_TO_PB = {
     CloseReason.STALE: pb.SessionClose.REASON_STALE,
     CloseReason.CLOSED_BY_SERVER: pb.SessionClose.REASON_CLOSED_BY_SERVER,
     CloseReason.SHUTDOWN: pb.SessionClose.REASON_CLOSED_BY_SERVER,
+    CloseReason.UPGRADING: pb.SessionClose.REASON_CLOSED_BY_SERVER,
 }
 
 
 def _kind_name(kind: int) -> str:
     return pb.RendererKind.Name(kind).removeprefix("RENDERER_KIND_").lower()
+
+
+def runs_here(
+    hostname: str,
+    peer: Optional[Sequence],
+    dialed: Optional[Sequence],
+) -> bool:
+    """Whether a renderer runs on this server's machine.
+
+    ``peer`` is the address the renderer connects from and ``dialed`` the one
+    it reached us on. A machine dialling one of its own addresses connects
+    from that same address, which is how the packaged renderer arrives: it
+    finds the server by mDNS. The name has to agree as well, but is never
+    enough alone, since every Kalinka image left at its default is called the
+    same. Loopback proves nothing: behind a proxy on this machine, every
+    renderer connects from it.
+    """
+    if not hostname or hostname != socket.gethostname() or not peer or not dialed:
+        return False
+    return peer[0] == dialed[0] and not _is_loopback(peer[0])
+
+
+def _is_loopback(host: str) -> bool:
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    mapped = getattr(address, "ipv4_mapped", None)
+    return (mapped or address).is_loopback
 
 
 class RendererSession(RendererLink):
@@ -244,6 +277,11 @@ async def handle_renderer_connection(
                     upgrade_supported=hello.upgrade_supported,
                     server_addr=(addr[0], addr[1]) if addr and addr[1] else None,
                     compatible=compatible,
+                    local=runs_here(
+                        hello.platform.hostname,
+                        websocket.scope.get("client"),
+                        addr,
+                    ),
                 )
                 registered_id = hello.renderer_id
                 registered_compatible = compatible

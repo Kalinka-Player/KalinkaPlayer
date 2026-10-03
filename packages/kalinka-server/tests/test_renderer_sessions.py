@@ -376,6 +376,35 @@ async def test_renderer_reported_error_closes_the_session():
 
 
 @pytest.mark.asyncio
+async def test_an_interrupt_tells_the_holder_and_the_renderer():
+    """Not the holder's own close, so it hears the reason as it would a loss;
+    the renderer is told too, since it refuses an upgrade while it holds one."""
+    registry, pool = make_pool()
+    ws = FakeWs(pool)
+    register(registry, ws)
+    session = await pool.open(RENDERER_ID)
+    closed: list = []
+    session.on_closed(lambda s, reason: closed.append(reason))
+
+    await pool.interrupt(RENDERER_ID, CloseReason.UPGRADING)
+
+    assert closed == [CloseReason.UPGRADING]
+    assert ws.closed == [(session.session_id, CloseReason.UPGRADING)]
+    assert pool.get(RENDERER_ID) is None
+
+
+@pytest.mark.asyncio
+async def test_interrupting_a_renderer_with_no_session_does_nothing():
+    registry, pool = make_pool()
+    ws = FakeWs(pool)
+    register(registry, ws)
+
+    await pool.interrupt(RENDERER_ID, CloseReason.UPGRADING)
+
+    assert ws.closed == []
+
+
+@pytest.mark.asyncio
 async def test_drop_while_opening_fails_the_open():
     registry, pool = make_pool(timeout_s=5.0)
     ws = FakeWs(pool)

@@ -67,6 +67,7 @@ class CloseReason(str, Enum):
     RENDERER_ERROR = "renderer_error"
     REJECTED_BY_RENDERER = "rejected_by_renderer"  # it is not running this session
     OPEN_FAILED = "open_failed"
+    UPGRADING = "upgrading"  # stopped so the renderer can install a release
 
 
 # The rest describe a renderer that already lost the session; telling it would
@@ -75,6 +76,7 @@ _WIRE_CLOSE_REASONS = {
     CloseReason.CLOSED_BY_SERVER,
     CloseReason.STALE,
     CloseReason.SHUTDOWN,
+    CloseReason.UPGRADING,
 }
 
 
@@ -641,6 +643,22 @@ class SessionPool:
             session.session_id,
             renderer_id,
         )
+
+    async def interrupt(self, renderer_id: str, reason: CloseReason) -> None:
+        """End the session on this renderer from outside whoever holds it.
+
+        The holder hears of it through on_closed with ``reason``, the way it
+        hears of a renderer loss, so its listeners are told playback stopped.
+        """
+        session = self._sessions.get(renderer_id)
+        if session is not None:
+            logger.info(
+                "Closing session %s on renderer %s (%s)",
+                session.session_id,
+                renderer_id,
+                reason.value,
+            )
+            await session.close(reason)
 
     def handle_renderer_removed(self, renderer_id: str, clean: bool = False) -> None:
         session = self._sessions.get(renderer_id)

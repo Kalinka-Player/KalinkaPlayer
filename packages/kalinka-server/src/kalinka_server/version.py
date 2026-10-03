@@ -80,7 +80,15 @@ def get_version() -> str:
 # set_playback_mode still apply to the queue. PUT /renderer/active moves the
 # plugin's playback, which carries on where it had reached; the speaker test
 # ends it.
-REST_API_VERSION = "0.8"
+# 0.9: a /renderer/list entry says whether the renderer runs on the server's
+# own machine (`local`). PUT /server/upgrade no longer refuses while a renderer
+# that is behind holds playback: it stops that playback, which clients see as
+# a STOPPED, asks the renderer to upgrade and goes ahead, leaving the server's
+# own renderer to the installer where it came from the renderer package. Its
+# 409 is left for a renderer that refused,
+# did not answer or is still answering an earlier ask, and `detail` names it
+# and says why.
+REST_API_VERSION = "0.9"
 
 
 def get_rest_api_version() -> str:
