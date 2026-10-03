@@ -22,6 +22,9 @@ class UpnpInput(InputModule):
     async def get_track_info(self, track_ids):
         return []
 
+    async def get_track_source(self, track_id):
+        raise LookupError("A UPnP track plays only from the controller that sent it")
+
     async def get(self, entity_id):
         raise KeyError(entity_id)
 

@@ -6,32 +6,14 @@ from unittest.mock import Mock
 import pytest
 
 from kalinka_plugin_sdk import EventEmitter, PlaybackStateChangedEvent
-from kalinka_plugin_sdk.datamodel import Album, EntityId, EntityType, PlayerStateEnum
-from kalinka_plugin_sdk.inputmodule import DirectUrl, Track, TrackInfo, TrackSource
+from kalinka_plugin_sdk.datamodel import PlayerStateEnum
 from kalinka_server.config_model import KalinkaConfig
 from kalinka_server.playqueue import PlayQueueImpl
 from kalinka_server.renderer_registry import RendererRegistry
 from kalinka_server.renderer_sessions import SessionPool
 
+from tests.fake_track_sources import FakeTrackSources, example_track
 from tests.sim_renderer import SimRenderer
-
-
-def _track(track_id: str) -> TrackInfo:
-    entity = EntityId(id=track_id, type=EntityType.TRACK, source="test_source")
-
-    async def source_retriever() -> TrackSource:
-        return TrackSource(source=DirectUrl(url=f"http://example/{track_id}.flac"), format="FLAC")
-
-    return TrackInfo(
-        id=entity,
-        metadata=Track(
-            id=entity,
-            title=f"track{track_id}",
-            duration=10,
-            album=Album(id=entity, title="album"),
-        ),
-        source_retriever=source_retriever,
-    )
 
 
 @pytest.fixture
@@ -52,7 +34,11 @@ def emitter():
 @pytest.fixture
 async def queue(renderer, emitter):
     playqueue = PlayQueueImpl(
-        KalinkaConfig(), emitter, renderer.registry, renderer.pool
+        KalinkaConfig(),
+        emitter,
+        renderer.registry,
+        renderer.pool,
+        sources=FakeTrackSources(),
     )
     await playqueue.__aenter__()
     yield playqueue
@@ -87,7 +73,7 @@ def _restore_link(renderer, session_id: str) -> None:
 
 
 async def _play(queue, renderer, *tracks: str) -> None:
-    await queue.add([_track(t) for t in tracks])
+    await queue.add([example_track(t) for t in tracks])
     await queue.play()
     await asyncio.sleep(0.2)
     assert renderer.current is not None
@@ -248,7 +234,7 @@ async def test_a_restart_while_paused_does_not_start_playing(
 
 
 async def test_a_restart_with_nothing_playing_claims_nothing(queue, renderer):
-    await queue.add([_track("1")])
+    await queue.add([example_track("1")])
     _drop_link(renderer)
     await asyncio.sleep(0.05)
     _restart(renderer)

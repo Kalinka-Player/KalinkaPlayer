@@ -289,6 +289,22 @@ async def test_link_raises_when_url_unresolved():
     infos = await m.get_track_info(["999"])
     with pytest.raises(RuntimeError):
         await infos[0].source_retriever()
+    with pytest.raises(RuntimeError):
+        await m.get_track_source("999")
+
+
+@pytest.mark.asyncio
+async def test_track_source_comes_from_the_id_alone():
+    # Played from a queue restored before anything was listed: no metadata
+    # lookup, just the file endpoint in the configured format.
+    config = JamendoConfig(client_id="x", audio_format=JamendoAudioFormat.FLAC)
+    client = PathClient({})
+    m = jm.JamendoInputModule(config, client)
+    source = await m.get_track_source("999")
+    assert source == TrackSource(
+        source=DirectUrl(url="https://files.test/999.flac"), format="audio/flac"
+    )
+    assert client.calls == []
 
 
 @pytest.mark.asyncio

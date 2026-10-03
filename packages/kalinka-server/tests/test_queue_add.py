@@ -13,9 +13,8 @@ from kalinka_plugin_sdk.datamodel import (
     EntityType,
     Track,
 )
-from kalinka_plugin_sdk.inputmodule import TrackInfo
 
-from kalinka_server.queue_add import track_infos_for
+from kalinka_server.queue_add import tracks_for
 
 
 def _track_id(source, local):
@@ -60,17 +59,16 @@ class _Module:
         self._missing = set(missing)
         self.asked = []
 
-    async def get_track_info(self, track_ids):
-        self.asked.append(list(track_ids))
+    async def get_all(self, entity_ids):
+        self.asked.append([entity_id.id for entity_id in entity_ids])
         return [
-            TrackInfo(
-                id=_track_id(self._name, local),
-                source_retriever=lambda: None,
-                metadata=None,
-            )
-            for local in track_ids
-            if local not in self._missing
+            _track_item(self._name, entity_id.id)
+            for entity_id in entity_ids
+            if entity_id.id not in self._missing
         ]
+
+    async def get_track_info(self, track_ids):
+        raise AssertionError("queue add must not ask for playback sources")
 
 
 def _resolvers(container, modules):
@@ -101,7 +99,7 @@ async def test_each_source_is_asked_for_its_own_ids_and_the_order_holds():
     }
     browse_source_for, module_for = _resolvers(container, modules)
 
-    tracks = await track_infos_for(
+    tracks = await tracks_for(
         ["kalinka:collections:playlist:c1"], browse_source_for, module_for
     )
 
@@ -120,11 +118,11 @@ async def test_a_track_id_needs_no_browse():
     modules = {"qobuz": _Module("qobuz")}
     browse_source_for, module_for = _resolvers(container, modules)
 
-    tracks = await track_infos_for(
+    tracks = await tracks_for(
         ["kalinka:qobuz:track:q1"], browse_source_for, module_for
     )
 
-    assert [track.id.id for track in tracks] == ["q1"]
+    assert tracks == [_track_item("qobuz", "q1").track]
     assert container.browsed == []
 
 
@@ -133,7 +131,7 @@ async def test_a_track_asked_for_twice_is_looked_up_once_and_added_twice():
     modules = {"qobuz": _Module("qobuz")}
     browse_source_for, module_for = _resolvers(container, modules)
 
-    tracks = await track_infos_for(
+    tracks = await tracks_for(
         ["kalinka:collections:playlist:c1"], browse_source_for, module_for
     )
 
@@ -146,7 +144,7 @@ async def test_a_track_a_source_does_not_return_is_left_out():
     modules = {"qobuz": _Module("qobuz", missing={"gone"})}
     browse_source_for, module_for = _resolvers(container, modules)
 
-    tracks = await track_infos_for(
+    tracks = await tracks_for(
         ["kalinka:collections:playlist:c1"], browse_source_for, module_for
     )
 
@@ -158,7 +156,7 @@ async def test_children_that_are_not_tracks_are_skipped():
     modules = {"qobuz": _Module("qobuz")}
     browse_source_for, module_for = _resolvers(container, modules)
 
-    tracks = await track_infos_for(
+    tracks = await tracks_for(
         ["kalinka:qobuz:album:a1"], browse_source_for, module_for
     )
 
@@ -170,7 +168,7 @@ async def test_a_source_that_cannot_be_reached_fails_the_add():
     browse_source_for, module_for = _resolvers(container, {})
 
     with pytest.raises(HTTPException):
-        await track_infos_for(
+        await tracks_for(
             ["kalinka:collections:playlist:c1"], browse_source_for, module_for
         )
 
@@ -180,6 +178,6 @@ async def test_containers_are_taken_in_one_page():
     modules = {"qobuz": _Module("qobuz")}
     browse_source_for, module_for = _resolvers(container, modules)
 
-    await track_infos_for(["kalinka:qobuz:album:a1"], browse_source_for, module_for)
+    await tracks_for(["kalinka:qobuz:album:a1"], browse_source_for, module_for)
 
     assert container.browsed == [("kalinka:qobuz:album:a1", 5000)]

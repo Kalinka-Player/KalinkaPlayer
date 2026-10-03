@@ -14,7 +14,6 @@ from kalinka_plugin_sdk.datamodel import (
     EntityType,
     Genre,
 )
-from kalinka_plugin_sdk.inputmodule import TrackInfo
 
 from kalinka_server.collections.route import register_collection_routes
 from kalinka_server.collections.store import CollectionStore
@@ -47,21 +46,20 @@ class FakeModule:
     def __init__(self, silent_about=()):
         self.silent_about = set(silent_about)
 
-    async def get_track_info(self, track_ids):
+    async def get_all(self, entity_ids):
         return [
-            TrackInfo(
-                id=EntityId(id=local, type=EntityType.TRACK, source="qobuz"),
-                source_retriever=_nothing,
-                metadata=None
-                if local in self.silent_about
-                else _snapshot(local),
+            BrowseItem(
+                id=entity_id,
+                name=entity_id.id,
+                can_add=True,
+                track=_snapshot(entity_id.id),
             )
-            for local in track_ids
+            for entity_id in entity_ids
+            if entity_id.id not in self.silent_about
         ]
 
-
-async def _nothing():
-    raise AssertionError("A collection never resolves audio")
+    async def get_track_source(self, track_id):
+        raise AssertionError("A collection never resolves audio")
 
 
 def _snapshot(local):

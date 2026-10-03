@@ -33,7 +33,7 @@ from kalinka_plugin_sdk.datamodel import (
 )
 from kalinka_plugin_sdk.ext_device import DeviceVolume
 from kalinka_plugin_sdk.ext_device_events import ExtDeviceEventType
-from kalinka_plugin_sdk.inputmodule import InputModule, SearchType, TrackInfo
+from kalinka_plugin_sdk.inputmodule import InputModule, SearchType
 from kalinka_plugin_sdk.events import (
     CurrentRendererChangedEvent,
     PlayQueueEventType,
@@ -57,7 +57,7 @@ from .log_export_route import register_log_export_routes
 from .log_export_service import ExportManager
 from .log_sources import FileCatalog, JournalCatalog
 from .logging_setup import stream_is_journal
-from .queue_add import track_infos_for
+from .queue_add import tracks_for
 from .search_route import register_search_routes
 from .suggestions import SuggestionEngine, SuggestionList
 from .merge_utils import get_favorite_ids_merged, k_way_merge_browse_items
@@ -133,15 +133,7 @@ async def lifespan(app: FastAPI):
             app.state.device_router,
         )
 
-        await restore_state(
-            app.state.player_context.playqueue,
-            {
-                name: module.interface
-                for name, module in modules.prepared_input_modules.items()
-                if name in modules.enabled_input_modules
-                and isinstance(module.interface, InputModule)
-            },
-        )
+        await restore_state(app.state.player_context.playqueue)
         await app.state.player_context.playqueue.__aenter__()
 
         yield
@@ -527,12 +519,7 @@ async def create_app(
         return entry.source if entry is not None else None
 
     def _art_resource_resolver(entity_id: EntityId) -> Optional[InputModule]:
-        source = entity_id.source
-        if source not in modules.enabled_input_modules:
-            return None
-        plugin = modules.prepared_input_modules.get(source)
-        interface = plugin.interface if plugin is not None else None
-        return interface if isinstance(interface, InputModule) else None
+        return modules.enabled_input_module(entity_id.source)
 
     app.state.catalog_art = CatalogArtService(
         os.path.join(paths.cache_dir(), "catalog_art"),
@@ -656,9 +643,7 @@ async def create_app(
 
     @app.post("/queue/add")
     async def add_entity_to_queue(ids: list[str], index: Optional[int] = None):
-        items: list[TrackInfo] = await track_infos_for(
-            ids, browse_source_from_id, enabled_input_module
-        )
+        items = await tracks_for(ids, browse_source_from_id, enabled_input_module)
 
         await player_context.playqueue.add(items, index)
         return {"message": "Items added to queue", "count": len(items)}

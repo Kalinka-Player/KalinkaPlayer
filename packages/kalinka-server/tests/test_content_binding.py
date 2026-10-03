@@ -23,7 +23,6 @@ from kalinka_plugin_sdk.datamodel import (
 from kalinka_plugin_sdk.inputmodule import (
     DirectUrl,
     ModuleAsset,
-    TrackInfo,
     TrackSource,
 )
 from kalinka_server.config_model import KalinkaConfig
@@ -31,34 +30,34 @@ from kalinka_server.playqueue import PlayQueueImpl
 from kalinka_server.renderer_registry import RendererRegistry
 from kalinka_server.renderer_sessions import SessionPool
 
+from tests.fake_track_sources import FakeTrackSources
 from tests.sim_renderer import SimRenderer
 
 
-def _track(source: TrackSource, track_id: str = "1") -> TrackInfo:
+async def _asset(track_id: EntityId) -> TrackSource:
+    return TrackSource(
+        source=ModuleAsset(module="localfiles", asset_id=track_id.id), format="FLAC"
+    )
+
+
+def _asset_track(track_id: str = "1") -> Track:
     entity = EntityId(id=track_id, type=EntityType.TRACK, source="localfiles")
-
-    async def source_retriever() -> TrackSource:
-        return source
-
-    return TrackInfo(
+    return Track(
         id=entity,
-        metadata=Track(
-            id=entity,
-            title=f"track{track_id}",
-            duration=10,
-            album=Album(id=entity, title="album"),
-        ),
-        source_retriever=source_retriever,
+        title=f"track{track_id}",
+        duration=10,
+        album=Album(id=entity, title="album"),
     )
 
 
-def _asset_track(track_id: str = "1") -> TrackInfo:
-    return _track(
-        TrackSource(
-            source=ModuleAsset(module="localfiles", asset_id=track_id), format="FLAC"
-        ),
-        track_id,
-    )
+def _cdn_track(sources: FakeTrackSources) -> Track:
+    track = _asset_track()
+
+    async def cdn() -> TrackSource:
+        return TrackSource(source=DirectUrl(url="https://cdn.test/1.mp3"), format="MP3")
+
+    sources.serve(track.id, cdn)
+    return track
 
 
 @pytest.fixture
@@ -81,9 +80,14 @@ def emitter():
 
 
 @pytest.fixture
-async def queue(renderers, emitter):
+def sources():
+    return FakeTrackSources(default=_asset)
+
+
+@pytest.fixture
+async def queue(renderers, emitter, sources):
     registry, pool, _, _ = renderers
-    playqueue = PlayQueueImpl(KalinkaConfig(), emitter, registry, pool)
+    playqueue = PlayQueueImpl(KalinkaConfig(), emitter, registry, pool, sources=sources)
     await playqueue.__aenter__()
     yield playqueue
     await playqueue.__aexit__(None, None, None)
@@ -122,11 +126,9 @@ async def test_the_same_asset_follows_the_renderer_it_moves_to(renderers, queue)
     assert _sources(second)[0].uri == "http://192.168.5.4:8000/content/localfiles/1"
 
 
-async def test_a_direct_url_reaches_the_renderer_untouched(renderers, queue):
+async def test_a_direct_url_reaches_the_renderer_untouched(renderers, queue, sources):
     _registry, _pool, first, _second = renderers
-    await queue.add(
-        [_track(TrackSource(source=DirectUrl(url="https://cdn.test/1.mp3"), format="MP3"))]
-    )
+    await queue.add([_cdn_track(sources)])
     await queue.play()
     await asyncio.sleep(0.2)
 
@@ -187,15 +189,11 @@ async def test_the_reported_url_follows_a_renderer_switch(renderers, queue):
     assert state.stream_url == "http://192.168.5.4:8000/content/localfiles/1"
 
 
-async def test_a_direct_url_is_reported_as_the_module_gave_it(renderers, queue):
+async def test_a_direct_url_is_reported_as_the_module_gave_it(
+    renderers, queue, sources
+):
     _registry, _pool, _first, _second = renderers
-    await queue.add(
-        [
-            _track(
-                TrackSource(source=DirectUrl(url="https://cdn.test/1.mp3"), format="MP3")
-            )
-        ]
-    )
+    await queue.add([_cdn_track(sources)])
     await queue.play()
     await asyncio.sleep(0.2)
 

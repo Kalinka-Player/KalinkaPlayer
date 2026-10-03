@@ -86,9 +86,9 @@ Collections answer `search` for the playlist kind only. The tracks inside are th
 
 ## 5. Playing a collection
 
-The queue holds `TrackInfo` objects, each carrying the retriever made by the source that produced it, so playback of a mixed list needs nothing new — *once the tracks are resolved by their owners*.
+The queue holds each track's metadata and asks the module named in the track's id for its source when the track plays, so playback of a mixed list needs nothing new — *once the tracks are looked up by their owners*.
 
-That was the one real gap. `POST /queue/add` browsed a container and then asked the *container's* module for every track id it found, which is right for an album and impossible for a collection. `queue_add.track_infos_for` now browses the container through its browse source, groups the tracks it finds by their own source, asks each owner once for the distinct ids it owns, and reassembles the original order.
+That was the one real gap. `POST /queue/add` browsed a container and then asked the *container's* module for every track id it found, which is right for an album and impossible for a collection. `queue_add.tracks_for` now browses the container through its browse source, groups the tracks it finds by their own source, asks each owner once through `get_all` for the distinct ids it owns, and reassembles the original order.
 
 A source that cannot be reached fails the whole add rather than silently queueing what is left: a gap in the middle of a list the user is watching is worse than an error. A track a source simply does not return is left out, with a warning naming the count.
 

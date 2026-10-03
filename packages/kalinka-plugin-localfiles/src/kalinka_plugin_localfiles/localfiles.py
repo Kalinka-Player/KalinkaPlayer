@@ -3,6 +3,7 @@ import logging
 import multiprocessing
 import os
 import time
+from functools import partial
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Callable, List, Dict, Optional, Tuple
@@ -714,34 +715,33 @@ class LocalFilesInputModule(InputModule):
             if track_id_str in track_dict:
                 track = track_dict[track_id_str]
                 track_metadata = self._create_track_metadata(track)
-
-                # Validating at play time guards the window between a
-                # folder-config change and the next index scan: raising here
-                # surfaces the track as unavailable instead of queueing a
-                # dead source.
-                def create_source_retriever(track_db_id, track_path, track_format):
-                    async def source_retriever():
-                        await self._await_readable(track_path)
-                        return TrackSource(
-                            source=ModuleAsset(
-                                module=self.module_name(), asset_id=track_db_id
-                            ),
-                            format=track_format,
-                        )
-
-                    return source_retriever
-
                 result.append(
                     TrackInfo(
                         id=track_id(track["id"]),
-                        source_retriever=create_source_retriever(
-                            track["id"], track["file_path"], track["format"]
-                        ),
+                        source_retriever=partial(self._source_of, track),
                         metadata=track_metadata,
                     )
                 )
 
         return result
+
+    async def get_track_source(self, track_id: str) -> TrackSource:
+        if not self.db_manager.is_good():
+            raise SourceUnavailableError(f"{self.display_name()} is not ready yet")
+        track = self.db_manager.get_track_by_id(track_id)
+        if not track:
+            raise LookupError(f"Track not found: {track_id}")
+        return await self._source_of(track)
+
+    async def _source_of(self, track: Dict) -> TrackSource:
+        # Validating at play time guards the window between a folder-config
+        # change and the next index scan: raising here surfaces the track as
+        # unavailable instead of handing the renderer a dead source.
+        await self._await_readable(track["file_path"])
+        return TrackSource(
+            source=ModuleAsset(module=self.module_name(), asset_id=track["id"]),
+            format=track["format"],
+        )
 
     def _require_readable(self, track_path: str) -> None:
         """Raise unless the file may still be served: inside a configured music
