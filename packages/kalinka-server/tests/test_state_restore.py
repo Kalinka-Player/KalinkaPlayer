@@ -107,17 +107,6 @@ class _OlderModule(InputModule):
         )
 
 
-class _Registry:
-    """The enabled modules by name, as the server's module collection
-    answers for them."""
-
-    def __init__(self, modules: dict[str, InputModule]):
-        self.modules = modules
-
-    def enabled_input_module(self, name: str) -> Optional[InputModule]:
-        return self.modules.get(name)
-
-
 def _saved_state(tracks: list[Track], index: int = 0) -> PlayQueueState:
     return PlayQueueState(
         playback_state=PlaybackState(state=PlayerStateEnum.STOPPED, index=index),
@@ -165,7 +154,7 @@ async def restore(renderer, bus):
             bus,
             renderer.registry,
             renderer.pool,
-            sources=ModuleTrackSources(_Registry(modules)),
+            sources=ModuleTrackSources(modules.get),
         )
         queues.append(queue)
         await state_keeper.restore_state(queue)
@@ -393,7 +382,7 @@ async def test_an_older_callers_retriever_is_not_used(renderer, bus):
         bus,
         renderer.registry,
         renderer.pool,
-        sources=ModuleTrackSources(_Registry({})),
+        sources=ModuleTrackSources({}.get),
     )
 
     async def retriever(entity_id):

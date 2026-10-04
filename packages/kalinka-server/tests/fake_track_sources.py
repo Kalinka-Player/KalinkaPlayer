@@ -5,6 +5,7 @@ from typing import Optional
 
 from kalinka_plugin_sdk.datamodel import Album, EntityId, EntityType, Track
 from kalinka_plugin_sdk.inputmodule import DirectUrl, TrackInfo, TrackSource
+from kalinka_server.track_sources import TrackSources
 
 Retriever = Callable[[], Awaitable[TrackSource]]
 
@@ -25,7 +26,7 @@ async def example_source(track_id: EntityId) -> TrackSource:
     )
 
 
-class FakeTrackSources:
+class FakeTrackSources(TrackSources):
     """Serves a track from the retriever registered for its id, or else from
     ``default``, which is given the id."""
 

@@ -779,7 +779,7 @@ async def setup(
             playqueue_eventbus,
             renderer_registry,
             renderer_sessions,
-            sources=ModuleTrackSources(modules),
+            sources=ModuleTrackSources(modules.enabled_input_module),
             arbiter=arbiter,
         ),
         ext_device_eventbus=device_eventbus,

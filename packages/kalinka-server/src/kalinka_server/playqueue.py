@@ -57,20 +57,19 @@ from .stream_state import (
     StreamErrorSource,
     StreamState,
 )
+from .module_timeout import TRACK_SOURCE_TIMEOUT_S
 from .renderer_registry import RendererRegistry, RendererUnavailable
 from .renderer_sessions import SessionPool
 from .tasks import detach
-from .track_sources import TrackSourceResolver
+from .track_sources import TrackSources
 
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
 PREFETCH_TIME_MS = 5000
 
-# Upper bound for resolving a single track's source. Plugins set their own (smaller)
-# HTTP timeouts; this is a backstop so a misbehaving plugin can never pin the
-# resolution slot indefinitely. Generous enough to allow one in-plugin retry.
-SOURCE_RETRIEVAL_TIMEOUT_S = 8
+# Above the module's own budget, so its timeout, which carries a reason, lands first.
+SOURCE_RETRIEVAL_TIMEOUT_S = TRACK_SOURCE_TIMEOUT_S + 2
 
 
 def _metadata_of(tracks: Sequence[Track | TrackInfo]) -> list[Track]:
@@ -116,7 +115,7 @@ class PlayQueueImpl(PlayQueueController):
         renderer_registry: RendererRegistry,
         renderer_sessions: SessionPool,
         *,
-        sources: TrackSourceResolver,
+        sources: TrackSources,
         arbiter: Optional[PlaybackArbiter] = None,
     ):
         super().__init__()
@@ -1030,9 +1029,9 @@ class PlayQueueImpl(PlayQueueController):
 
         The track's module is asked through the source resolver now, at play
         time, never when the track was queued. Bounded by
-        SOURCE_RETRIEVAL_TIMEOUT_S so a plugin that ignores its own HTTP
-        timeout can never pin the resolution slot indefinitely. Runs off-lane,
-        so a slow fetch never blocks the serial executor.
+        SOURCE_RETRIEVAL_TIMEOUT_S so a resolver that never answers can never
+        pin the resolution slot. Runs off-lane, so a slow fetch never blocks
+        the serial executor.
         """
         try:
             track = self.track_list[index]
