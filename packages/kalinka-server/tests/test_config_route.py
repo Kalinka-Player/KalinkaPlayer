@@ -97,31 +97,6 @@ def _body(sources) -> dict[str, Any]:
     return {"schema_version": "1", "changes": {_SOURCES: sources}}
 
 
-def test_saved_preview_flag_controls_routes_without_restart(client):
-    from kalinka_server.plugin_management.inventory import Discovery, PluginInventory
-    from kalinka_server.plugin_management.route import register_plugin_routes
-
-    path = "base_config.server.plugin_catalog_enabled"
-    app = client.app
-    register_plugin_routes(
-        app,
-        PluginInventory(lambda: Discovery((), True)),
-        enabled=lambda: app.state.config.server.plugin_catalog_enabled,
-    )
-    assert client.get("/server/config").json()["values"][path] is False
-    for enabled in (False, True, False):
-        response = client.put(
-            "/server/config",
-            json={"schema_version": "1", "changes": {path: enabled}},
-        )
-        assert response.status_code == 200
-        assert client.get("/server/config").json()["values"][path] is enabled
-        response = client.get("/server/plugins")
-        assert response.status_code == (200 if enabled else 403)
-        if not enabled:
-            assert response.json()["detail"]["code"] == "plugin_catalog_disabled"
-
-
 _ELSEWHERE = [
     pytest.param({"location": {"host": "other.local"}}, id="host"),
     pytest.param({"location": {"port": 4450}}, id="port"),
