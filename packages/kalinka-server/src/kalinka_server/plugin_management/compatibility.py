@@ -147,7 +147,27 @@ def _target_reasons(kind: str, required: list, actual: str | None) -> list:
     return []
 
 
-def _artifact_reasons(plugin: dict, artifact: dict, host: HostEnvironment) -> list:
+def _packaged_release(kind: str, native: str) -> Version | None:
+    """Release in an ``[epoch:]version[-revision]``; RPM requires the revision."""
+    epoch, _, version = native.rpartition(":")
+    if epoch and not epoch.isdigit():
+        return None
+    if "-" in version:
+        version, revision = version.rsplit("-", 1)
+        if not revision:
+            return None
+    elif kind == "rpm":
+        return None
+    try:
+        # Native packages spell a PEP 440 pre-release with a tilde: 1.0~rc1.
+        return Version(version.replace("~", ""))
+    except InvalidVersion:
+        return None
+
+
+def _artifact_reasons(
+    plugin: dict, release_version: Version, artifact: dict, host: HostEnvironment
+) -> list:
     kind = artifact["format"]
     if kind not in NATIVE_ARCHITECTURES:
         return [{"code": "unsupported_package_format", "format": kind}]
@@ -163,8 +183,8 @@ def _artifact_reasons(plugin: dict, artifact: dict, host: HostEnvironment) -> li
         declared_arch is None
         or artifact["architectures"] != [declared_arch]
         or package["name"] != plugin["distribution"]
+        or _packaged_release(kind, package["version"]) != release_version
         or artifact["filename"] != filename
-        or (kind == "rpm" and "-" not in version)
         or any(
             target["id"] not in NATIVE_DISTROS[kind] for target in artifact["targets"]
         )
@@ -240,8 +260,9 @@ def evaluate_release(
                 for problem in problems
             ]
     artifacts = []
+    release_version = Version(release["version"])
     for artifact in release["artifacts"]:
-        problems = _artifact_reasons(plugin, artifact, host)
+        problems = _artifact_reasons(plugin, release_version, artifact, host)
         artifacts.append(
             {
                 "filename": artifact["filename"],
