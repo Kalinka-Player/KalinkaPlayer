@@ -12,6 +12,38 @@ PipeWire's ALSA layer. No other backend is implemented, and the settings page
 offers ALSA as the only driver. The protocol itself does not assume ALSA — see
 [../../docs/native-renderer-design.md](../../docs/native-renderer-design.md).
 
+DSF (`.dsf`) and uncompressed DSDIFF (`.dff`) play as mono/stereo DSD through
+a direct ALSA hardware output. Select **DSD output** in renderer settings:
+Disabled (default), Automatic (verified native DSD only), Native DSD, or DoP.
+Use **Fixed** volume and set the listening level on your amplifier. Software
+volume, PCM conversion and resampling are not available for DSD. The renderer
+does not silently bypass an active volume control.
+
+**Bit depth** and **Sample rate** show the selected output's maximum PCM
+capabilities, for example **Up to 24 bit** and **Up to 192 kHz**. These are
+read-only summaries; unavailable capabilities are shown as **Unavailable**.
+A busy device may use its last successful probe; playback checks the actual
+hardware again. Changing the output device resets DSD to Disabled, so a DoP
+selection for one DAC does not carry over to another.
+
+DSD64/128/256 describe the source rate, while native DSD and DoP describe its
+transport. Packing preserves the original bits and rate. For example, DSD64
+uses a 176.4 kHz DoP carrier; DSD128 needs 352.8 kHz and DSD256 needs 705.6 kHz.
+DoP needs at least 24 significant carrier bits. A compatible PCM carrier does
+not establish that the DAC understands DoP: select DoP only for a DAC that
+does. Automatic never assumes DoP support. Unsupported rates or layouts
+produce a playback error without a PCM fallback. DST-compressed DFF, SACD
+ISOs and multichannel playback are not supported.
+
+Source state reports the one-bit DSD rate separately from the output's packed
+frame rate. Duration, seeking and HTTP ranges use the same playback graph as
+PCM tracks. Pauses use DSD silence, preserving the DoP marker sequence.
+
+Before relying on a particular DAC, check its reported capabilities, start
+with a known DSF/DFF file at an appropriate amplifier level, confirm the DAC's
+DSD/native or DoP indicator, then check seek, pause and PCM↔DSD transitions.
+Automated packing and protocol tests do not verify recognition by a real DAC.
+
 ## Build
 
 Dependencies (dev headers): protobuf (+ compiler), Boost (headers only — asio
@@ -86,6 +118,9 @@ the default is written to `config_overrides` in the state directory.
 | `renderer.name` | Announced name. Read-only for the run when `--name` was passed. |
 | `output.driver` | ALSA. The only choice today. |
 | `output.device` | ALSA PCM to open, chosen from the devices enumerated at request time. |
+| `output.bit_depth` | Read-only maximum significant PCM bit depth for the selected output, such as `Up to 24 bit`. |
+| `output.sample_rate` | Read-only maximum PCM sample rate for the selected output, such as `Up to 192 kHz`. |
+| `output.dsd_mode` | `disabled`, `auto` (native only), `native`, or explicitly selected `dop`. Requires fixed volume and direct hardware. Changing it stops playback. |
 | `output.volume_mode` | `auto`, `hardware` (card mixer), `software`, or `fixed` (ignore volume, play at full level — for an amp that sets the level itself). |
 | `output.session_start_volume_ceiling_percent` | Maximum allowed level when a renderer-controlled session starts. It lowers a louder existing level but never raises a quieter one. Fixed output bypasses it. |
 | `output.latency_ms`, `output.period_ms`, `output.format_change_delay_ms`, `output.reopen_on_format_change` | How the ALSA sink is opened and driven. |

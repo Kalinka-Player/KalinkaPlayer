@@ -174,3 +174,18 @@ def test_a_device_and_a_stream_that_both_say_nothing_do_not_agree():
     """Exclusive access with no format either side is a claim out of nothing:
     the zeros mean unreported, not two formats that happen to match."""
     assert not _path({}, {"access": "exclusive"})
+
+
+def test_dsd_source_rate_and_native_or_dop_carrier_are_lossless():
+    source = {"sample_rate_hz": 2822400, "bits_per_sample": 1,
+              "channels": 2, "sample_format": "DSD"}
+    for name, rate, bits in [("DSD_U32_LE", 88200, 1),
+                             ("DoP_S24_LE", 176400, 24),
+                             ("DoP_S32_LE", 176400, 24)]:
+        device = {"sample_rate_hz": rate, "bits_per_sample": bits,
+                  "channels": 2, "sample_format": name}
+        assert _path(source, {"format": device, "access": "exclusive"})
+        assert not _path(source, {"format": device, "access": "shared"})
+        assert not _path(source, {"format": device | {"sample_rate_hz": rate * 2},
+                                  "access": "exclusive"})
+    assert not _path(source, {"format": _CD, "access": "exclusive"})

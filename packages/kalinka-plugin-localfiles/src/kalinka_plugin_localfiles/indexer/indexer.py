@@ -27,6 +27,8 @@ from PIL import Image
 from mutagen.mp3 import MP3
 from mutagen.flac import FLAC
 from mutagen.id3 import ID3
+from mutagen.dsf import DSF
+from mutagen.dsdiff import DSDIFF
 
 from ..config_model import LocalFilesConfig
 from ..filename_model import get_parser, names_a_vinyl_side, parse_music_path
@@ -66,6 +68,7 @@ from ..utils.name_utils import (
     repair_tag_text,
 )
 from .cue import find_cue_for, parse_cue
+from .dsd import native_dsdiff_tags
 from .id_generator import (
     generate_artist_id,
     generate_album_id,
@@ -92,7 +95,7 @@ from ..clustering.classify import (  # noqa: E402
 )
 
 
-SUPPORTED_AUDIO_EXTENSIONS = {".mp3", ".flac"}
+SUPPORTED_AUDIO_EXTENSIONS = {".mp3", ".flac", ".dsf", ".dff"}
 
 # How often the file watcher checks whether a lost root came back.
 REARM_CHECK_INTERVAL_S = 15.0
@@ -1101,6 +1104,25 @@ class FileIndexer:
             elif "audio/flac" in mime_type:
                 with storage.open(file_path) as audio:
                     metadata = self._extract_flac_metadata(audio, metadata)
+            elif mime_type in ("audio/x-dsf", "audio/x-dff"):
+                with storage.open(file_path) as audio:
+                    reader = DSF if mime_type == "audio/x-dsf" else DSDIFF
+                    dsd = reader(audio)
+                    metadata = self._extract_id3_metadata(dsd, metadata, "dsd")
+                    if reader is DSDIFF:
+                        native_tags = native_dsdiff_tags(audio)
+                        metadata["raw_tags"].update(native_tags)
+                        for tag, field in (("DIAR", "artist"), ("DITI", "title")):
+                            if native_tags.get(tag) and not metadata.get(field):
+                                metadata[field] = native_tags[tag]
+                    # DSF's bits_per_sample field means bit order (1 or 8),
+                    # not audio precision. DSD always has one-bit samples.
+                    metadata["stream_info"].update(
+                        bits_per_sample=1,
+                        bitrate=dsd.info.sample_rate * dsd.info.channels,
+                        container="dsf" if reader is DSF else "dsdiff",
+                        compression=getattr(dsd.info, "compression", "DSD"),
+                    )
             else:
                 logger.warning(
                     f"Unsupported file format: {file_path}, format: {mime_type}"
@@ -1174,14 +1196,13 @@ class FileIndexer:
         Errors propagate to ``_extract_metadata``, which logs them once.
         """
         mp3 = MP3(audio)
-        # MP3 has already read the frames, and re-reading them would mean a
-        # second pass over the file — a second network read once the file is
-        # on a share. A missing ID3 header is a valid, fully supported case,
-        # reported as no tags at all: the audio plays fine, so fall back to
-        # an empty set and let the track be indexed from its filename rather
-        # than failing.
-        id3 = mp3.tags if mp3.tags is not None else ID3()
-        metadata["duration"] = int(mp3.info.length)
+        return self._extract_id3_metadata(mp3, metadata, "mp3")
+
+    def _extract_id3_metadata(self, audio_file, metadata: Dict, codec: str) -> Dict:
+        # Use tags the container reader already parsed, including on shares.
+        # Untagged MP3/DSF/DSDIFF files use the normal filename fallback.
+        id3 = audio_file.tags if audio_file.tags is not None else ID3()
+        metadata["duration"] = int(audio_file.info.length)
         if "TIT2" in id3:
             metadata["title"] = str(id3["TIT2"])
         if "TPE1" in id3:
@@ -1234,10 +1255,10 @@ class FileIndexer:
             if not key.startswith("APIC")
         }
         metadata["stream_info"] = {
-            "sample_rate": getattr(mp3.info, "sample_rate", None),
-            "channels": getattr(mp3.info, "channels", None),
-            "bitrate": getattr(mp3.info, "bitrate", None),
-            "codec": "mp3",
+            "sample_rate": getattr(audio_file.info, "sample_rate", None),
+            "channels": getattr(audio_file.info, "channels", None),
+            "bitrate": getattr(audio_file.info, "bitrate", None),
+            "codec": codec,
             "encoder": str(id3["TSSE"])
             if "TSSE" in id3
             else (str(id3["TENC"]) if "TENC" in id3 else None),
@@ -1341,6 +1362,9 @@ class FileIndexer:
             tags, cover_in = ID3, self._mp3_cover
         elif mime_type in ("audio/flac", "audio/x-flac"):
             tags, cover_in = FLAC, self._flac_cover
+        elif mime_type in ("audio/x-dsf", "audio/x-dff"):
+            tags = DSF if mime_type == "audio/x-dsf" else DSDIFF
+            cover_in = lambda audio: self._mp3_cover(audio.tags or ID3())
         else:
             return None
         with storage.open(file_path) as audio:

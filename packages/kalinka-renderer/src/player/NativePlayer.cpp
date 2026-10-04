@@ -7,6 +7,7 @@
 #include <cctype>
 #include <chrono>
 #include <span>
+#include <sstream>
 #include <string_view>
 #include <unordered_map>
 
@@ -14,6 +15,7 @@
 #include "../config/SettingsPersistence.h"
 #include "../native_player/AlsaDeviceEnumeration.h"
 #include "../native_player/AudioGraphHttpStream.h"
+#include "../native_player/DsdFormat.h"
 #include "StateTranslator.h"
 
 namespace asio = boost::asio;
@@ -41,6 +43,11 @@ AudioFormat formatOf(const pb::Source &source) {
              ? std::string_view{}
              : mime.substr(first, mime.find_last_not_of(" \t\r\n") - first + 1);
   static const std::unordered_map<std::string_view, AudioFormat> declared = {
+      {"audio/dsf", AudioFormat::FormatDsd},
+      {"audio/x-dsf", AudioFormat::FormatDsd},
+      {"audio/dff", AudioFormat::FormatDsd},
+      {"audio/x-dff", AudioFormat::FormatDsd},
+      {"audio/dsd", AudioFormat::FormatDsd},
       {"audio/mpeg", AudioFormat::FormatMpeg},
       {"audio/mp3", AudioFormat::FormatMpeg},
       {"audio/x-mp3", AudioFormat::FormatMpeg},
@@ -71,6 +78,8 @@ AudioFormat formatOf(const pb::Source &source) {
     return AudioFormat::FormatUnsupported;
   }
   const auto path = lower(source.uri().substr(0, source.uri().find_first_of("?#")));
+  if (path.ends_with(".dsf") || path.ends_with(".dff"))
+    return AudioFormat::FormatDsd;
   if (path.ends_with(".flac")) {
     return AudioFormat::FormatFlac;
   }
@@ -187,6 +196,7 @@ const Section kNetwork{"network", "Network",
 const std::map<std::string, std::string> &graphKeys() {
   static const std::map<std::string, std::string> keys{
       {"output.device", "output.alsa.device"},
+      {"output.dsd_mode", "output.dsd_mode"},
       {"output.latency_ms", "output.alsa.latency_ms"},
       {"output.period_ms", "output.alsa.period_ms"},
       {"output.format_change_delay_ms",
@@ -261,6 +271,13 @@ void declare(pb::ConfigSection &out, const Knob &knob,
 // A hand-edited stall timeout of 0 would switch stall detection off.
 bool knobTakes(const std::string &path, const std::string &value,
                std::string &error) {
+  if (path == "output.dsd_mode") {
+    if (value == "disabled" || value == "auto" || value == "native" ||
+        value == "dop")
+      return true;
+    error = "unknown DSD output mode";
+    return false;
+  }
   const Knob *knob = findKnob(path);
   if (knob == nullptr) {
     return true;
@@ -277,6 +294,7 @@ const std::map<std::string, std::string> &NativePlayer::defaultSettings() {
       {"output.driver", "alsa"},
       {"output.device", "default"},
       {"output.volume_mode", "auto"},
+      {"output.dsd_mode", "disabled"},
       {"output.session_start_volume_ceiling_percent", "30"},
       // What the server shipped while it did the playing, rather than the
       // sink's own 100/25.
@@ -664,7 +682,8 @@ void NativePlayer::fillConfig(pb::ConfigSection &out) const {
   device->set_title("Output device");
   device->set_description(
       "The sound card music plays through. Changing it stops what is "
-      "playing.");
+      "playing and resets DSD output to Disabled; select DSD again for the new "
+      "DAC.");
   device->set_type(pb::CONFIG_FIELD_TYPE_ENUM);
   device->set_value(settings_.at("output.device"));
   device->set_default_value("default");
@@ -701,6 +720,32 @@ void NativePlayer::fillConfig(pb::ConfigSection &out) const {
           "be unplugged or renamed.");
     }
   }
+
+  unsigned maxBits = 0;
+  unsigned maxRate = 0;
+  for (const auto &format : probeOutput(settings_.at("output.device")).formats) {
+    if (isDsd(format.sampleFormat))
+      continue;
+    maxBits = std::max(maxBits, format.bitsPerSample);
+    maxRate = std::max(maxRate, format.sampleRate);
+  }
+  auto addCapability = [&](const char *path, const char *title,
+                           const std::string &value) {
+    auto *field = out.add_fields();
+    field->set_path(path);
+    field->set_title(title);
+    field->set_type(pb::CONFIG_FIELD_TYPE_STRING);
+    field->set_read_only(true);
+    field->set_importance(pb::CONFIG_IMPORTANCE_SIMPLE);
+    field->set_value(value);
+  };
+  addCapability("output.bit_depth", "Bit depth",
+                maxBits ? "Up to " + std::to_string(maxBits) + " bit"
+                        : "Unavailable");
+  std::ostringstream sampleRate;
+  sampleRate << "Up to " << maxRate / 1000.0 << " kHz";
+  addCapability("output.sample_rate", "Sample rate",
+                maxRate ? sampleRate.str() : "Unavailable");
 
   pb::ConfigField *mode = out.add_fields();
   mode->set_path("output.volume_mode");
@@ -757,6 +802,31 @@ void NativePlayer::fillConfig(pb::ConfigSection &out) const {
   startCeiling->mutable_range()->set_step(1);
   startCeiling->set_widget(pb::CONFIG_WIDGET_SLIDER);
 
+  auto *dsd = out.add_fields();
+  dsd->set_path("output.dsd_mode");
+  dsd->set_title("DSD output");
+  dsd->set_type(pb::CONFIG_FIELD_TYPE_ENUM);
+  dsd->set_value(settings_.at("output.dsd_mode"));
+  dsd->set_default_value("disabled");
+  dsd->set_importance(pb::CONFIG_IMPORTANCE_SIMPLE);
+  dsd->set_apply(pb::APPLY_COST_INTERRUPTS_PLAYBACK);
+  dsd->set_description("Preserves the source DSD rate. Requires direct "
+                       "hardware and fixed volume "
+                       "(set listening level on your amplifier). Automatic "
+                       "uses verified native DSD only. "
+                       "Choose DoP only if your DAC supports it; PCM carrier "
+                       "support alone does not prove this. "
+                       "Unsupported rates fail without conversion to PCM.");
+  for (const auto &[value, label] : std::map<std::string, std::string>{
+           {"disabled", "Disabled"},
+           {"auto", "Automatic (native DSD)"},
+           {"native", "Native DSD"},
+           {"dop", "DoP (compatible DAC required)"}}) {
+    auto *option = dsd->add_options();
+    option->set_value(value);
+    option->set_label(label);
+  }
+
   for (const Knob &knob : kOutputKnobs) {
     declare(out, knob, settings_, defaultSettings());
   }
@@ -772,6 +842,11 @@ bool NativePlayer::applySetting(const std::string &path,
   auto setting = settings_.find(path);
   if (setting == settings_.end()) {
     error = "unknown setting";
+    return false;
+  }
+  if (path == "output.dsd_mode" && value != "disabled" && value != "auto" &&
+      value != "native" && value != "dop") {
+    error = "unknown DSD output mode";
     return false;
   }
   // Sizes and durations, which the graph reads as unsigned: a negative one
@@ -797,6 +872,8 @@ bool NativePlayer::applySetting(const std::string &path,
   }
 
   setting->second = value;
+  if (path == "output.device")
+    settings_.at("output.dsd_mode") = "disabled";
   persistOverrides();
   spdlog::info("Config {} = '{}'", path, value);
   if (readPerStream(path)) {

@@ -104,6 +104,41 @@ protected:
   LocalHttpServer server_{testFile("tone880.flac")};
 };
 
+TEST_F(NativePlayerSettingsTest, DsdSettingsExposeCapabilitiesAndPersistMode) {
+  const auto section = output();
+  EXPECT_EQ(field(section, "output.capabilities"), nullptr);
+  const auto *bitDepth = field(section, "output.bit_depth");
+  ASSERT_NE(bitDepth, nullptr);
+  EXPECT_TRUE(bitDepth->read_only());
+  EXPECT_THAT(bitDepth->value(), ::testing::MatchesRegex("Up to [0-9]+ bit"));
+  const auto *sampleRate = field(section, "output.sample_rate");
+  ASSERT_NE(sampleRate, nullptr);
+  EXPECT_TRUE(sampleRate->read_only());
+  EXPECT_THAT(sampleRate->value(),
+              ::testing::MatchesRegex("Up to [0-9]+(\\.[0-9]+)? kHz"));
+  const auto *dsd = field(section, "output.dsd_mode");
+  ASSERT_NE(dsd, nullptr);
+  EXPECT_EQ(dsd->value(), "disabled");
+  EXPECT_EQ(dsd->options_size(), 4);
+  EXPECT_EQ(dsd->apply(), pb::APPLY_COST_INTERRUPTS_PLAYBACK);
+  ASSERT_TRUE(player_->applyConfig("output.dsd_mode", "dop", error_));
+  EXPECT_EQ(loadSettingsOverrides().at("output.dsd_mode"), "dop");
+  player_.reset();
+  player_ = std::make_shared<NativePlayer>(ioc_);
+  EXPECT_EQ(field(output(), "output.dsd_mode")->value(), "dop");
+  EXPECT_FALSE(player_->applyConfig("output.dsd_mode", "pcm", error_));
+  ASSERT_TRUE(player_->applyConfig("output.device", "default", error_));
+  EXPECT_EQ(field(output(), "output.dsd_mode")->value(), "disabled");
+}
+
+TEST_F(NativePlayerSettingsTest, InvalidPersistedDsdModeUsesDisabled) {
+  saveSettingsOverrides(
+      {{"output.device", "null"}, {"output.dsd_mode", "pcm"}});
+  player_.reset();
+  player_ = std::make_shared<NativePlayer>(ioc_);
+  EXPECT_EQ(field(output(), "output.dsd_mode")->value(), "disabled");
+}
+
 TEST_F(NativePlayerSettingsTest, TheSinkIsBufferedAsTheServerUsedToBufferIt) {
   const pb::ConfigSection section = output();
 

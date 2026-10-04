@@ -4,10 +4,38 @@
 #include <cstddef>
 #include <cstdint>
 
-enum AudioSampleFormat { PCM16_LE, PCM24_LE, PCM32_LE, PCM24_3LE };
+enum AudioSampleFormat {
+  PCM16_LE,
+  PCM24_LE,
+  PCM32_LE,
+  PCM24_3LE,
+  DSD_U8,
+  DSD_U16_LE,
+  DSD_U32_LE,
+  DSD_U16_BE,
+  DSD_U32_BE,
+  DOP24_LE,
+  DOP24_3LE,
+  DOP32_LE
+};
+
+inline bool isDsd(AudioSampleFormat format) { return format >= DSD_U8; }
+inline bool isDop(AudioSampleFormat format) { return format >= DOP24_LE; }
 
 inline size_t sampleSize(AudioSampleFormat format) {
   switch (format) {
+  case DSD_U8:
+    return 1;
+  case DSD_U16_LE:
+  case DSD_U16_BE:
+    return 2;
+  case DSD_U32_LE:
+  case DSD_U32_BE:
+  case DOP24_LE:
+  case DOP32_LE:
+    return 4;
+  case DOP24_3LE:
+    return 3;
   case AudioSampleFormat::PCM16_LE:
     return 2;
   case AudioSampleFormat::PCM24_LE:
@@ -21,6 +49,8 @@ inline size_t sampleSize(AudioSampleFormat format) {
 }
 
 inline size_t sampleBits(AudioSampleFormat format) {
+  if (isDsd(format))
+    return isDop(format) ? 24 : 1;
   switch (format) {
   case AudioSampleFormat::PCM16_LE:
     return 16;
@@ -35,6 +65,22 @@ inline size_t sampleBits(AudioSampleFormat format) {
 
 inline const char *const sampleFormatToString(AudioSampleFormat format) {
   switch (format) {
+  case DSD_U8:
+    return "DSD_U8";
+  case DSD_U16_LE:
+    return "DSD_U16_LE";
+  case DSD_U32_LE:
+    return "DSD_U32_LE";
+  case DSD_U16_BE:
+    return "DSD_U16_BE";
+  case DSD_U32_BE:
+    return "DSD_U32_BE";
+  case DOP24_LE:
+    return "DoP_S24_LE";
+  case DOP24_3LE:
+    return "DoP_S24_3LE";
+  case DOP32_LE:
+    return "DoP_S32_LE";
   case AudioSampleFormat::PCM16_LE:
     return "PCM16_LE";
   case AudioSampleFormat::PCM24_LE:

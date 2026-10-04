@@ -1,5 +1,6 @@
 #include "AlsaAudioEmitter.h"
 #include "AudioSampleFormat.h"
+#include "DsdFormat.h"
 #include "Log.h"
 #include "PerfMon.h"
 #include "StateMonitor.h"
@@ -31,14 +32,8 @@ inline int log_on_error_impl(int err, const std::string &message) {
   return err;
 }
 
-// Every device is opened for stereo; nothing in the graph converts channels.
+// PCM retains its existing stereo route; DSD negotiates the source channels.
 constexpr unsigned int kDeviceChannels = 2;
-
-std::unordered_map<AudioSampleFormat, snd_pcm_format_t> ALSA_FORMAT_MAP = {
-    {AudioSampleFormat::PCM16_LE, SND_PCM_FORMAT_S16_LE},
-    {AudioSampleFormat::PCM24_LE, SND_PCM_FORMAT_S24_LE},
-    {AudioSampleFormat::PCM32_LE, SND_PCM_FORMAT_S32_LE},
-    {AudioSampleFormat::PCM24_3LE, SND_PCM_FORMAT_S24_3LE}};
 
 int xrun_recovery(snd_pcm_t *handle, int err) {
   if (err == -EPIPE) { /* under-run */
@@ -441,6 +436,8 @@ snd_pcm_sframes_t AlsaAudioEmitter::writeToAlsa(
   snd_pcm_uframes_t offset = 0, frames = framesToWrite;
   int err = snd_pcm_mmap_begin(pcmHandle, &my_areas, &offset, &frames);
   if (err < 0) {
+    if (isDsd(currentStreamAudioFormat.sampleFormat))
+      throw std::runtime_error("DSD output underrun; restart playback");
     if (xrun_recovery(pcmHandle, err) < 0) {
       throw std::runtime_error("Error in mmap begin: " +
                                std::string(snd_strerror(err)));
@@ -455,6 +452,8 @@ snd_pcm_sframes_t AlsaAudioEmitter::writeToAlsa(
 
   err = snd_pcm_mmap_commit(pcmHandle, offset, frames);
   if (static_cast<snd_pcm_uframes_t>(err) != frames || err < 0) {
+    if (isDsd(currentStreamAudioFormat.sampleFormat))
+      throw std::runtime_error("Incomplete DSD output write; restart playback");
     if (xrun_recovery(pcmHandle, err) < 0) {
       throw std::runtime_error("Error in mmap commit: " +
                                std::string(snd_strerror(err)));
@@ -482,8 +481,10 @@ AlsaAudioEmitter::readIntoAlsaFromStream(std::stop_token stopToken,
     if (paused) {
 
       framesRead += writeToAlsa(
-          frames, [](void *ptr, snd_pcm_uframes_t frames, size_t bytes) {
-            memset(ptr, 0, bytes);
+          frames, [this](void *ptr, snd_pcm_uframes_t frames, size_t bytes) {
+            memset(ptr, isDsd(currentStreamAudioFormat.sampleFormat) ? 0x69 : 0,
+                   bytes);
+            stampDop(ptr, frames);
             return frames;
           });
 
@@ -722,6 +723,17 @@ void AlsaAudioEmitter::setupAudioFormat(
   bufferSize = requestedBufferSize;
   periodSize = requestedPeriodSize;
 
+  if (isDsd(streamAudioFormat.sampleFormat)) {
+    if (!dsdAllowed.load())
+      throw std::runtime_error("DSD requires fixed output volume; set "
+                               "listening level on your amplifier");
+    if (deviceAccess() != DeviceAccess::Exclusive)
+      throw std::runtime_error("DSD requires a direct ALSA hardware device");
+  }
+  outputChannels = isDsd(streamAudioFormat.sampleFormat)
+                       ? streamAudioFormat.channels
+                       : kDeviceChannels;
+  dopFrame = 0;
   initHwParams(sampleRate, streamAudioFormat.sampleFormat);
   setSwParams();
 
@@ -732,7 +744,7 @@ void AlsaAudioEmitter::setupAudioFormat(
           ? sampleSubstitute[streamAudioFormat.sampleFormat]
           : streamAudioFormat.sampleFormat;
   const StreamAudioFormat opened{
-      sampleRate, kDeviceChannels,
+      sampleRate, outputChannels,
       static_cast<unsigned int>(sampleBits(deviceSampleFormat)),
       deviceSampleFormat};
   deviceInfo = DeviceInfo{opened, deviceAccess()};
@@ -799,8 +811,8 @@ void AlsaAudioEmitter::setSampleFormat(AudioSampleFormat requestedFormat,
                            : requestedFormat;
 
   while (true) {
-    auto alsaFormat = ALSA_FORMAT_MAP.at(formatToProbe);
-    int err = snd_pcm_hw_params_set_format(pcmHandle, params, alsaFormat);
+    int err = snd_pcm_hw_params_set_format(pcmHandle, params,
+                                           alsaFormat(formatToProbe));
     if (err >= 0) {
       break;
     }
@@ -852,23 +864,31 @@ void AlsaAudioEmitter::initHwParams(unsigned int &rate,
 
     /* set the count of channels */
     throw_on_error(
-        snd_pcm_hw_params_set_channels(pcmHandle, params, kDeviceChannels));
+        snd_pcm_hw_params_set_channels(pcmHandle, params, outputChannels));
 
     setSampleFormat(format, params);
 
-    // Enabled resampling
-    throw_on_error(snd_pcm_hw_params_set_rate_resample(pcmHandle, params, 1));
+    // DSD transport must never pass through ALSA resampling.
+    throw_on_error(snd_pcm_hw_params_set_rate_resample(pcmHandle, params,
+                                                       isDsd(format) ? 0 : 1));
 
     /* set the stream rate */
     rrate = rate;
-    throw_on_error(
-        snd_pcm_hw_params_set_rate_near(pcmHandle, params, &rrate, 0));
+    if (isDsd(format)) {
+      throw_on_error(snd_pcm_hw_params_set_rate(pcmHandle, params, rate, 0));
+    } else {
+      throw_on_error(
+          snd_pcm_hw_params_set_rate_near(pcmHandle, params, &rrate, 0));
+    }
 
     if (rrate != rate) {
       throw std::runtime_error("Rate doesn't match");
     }
 
     rate = rrate;
+    if (isDop(format) && snd_pcm_hw_params_get_sbits(params) < 24)
+      throw std::runtime_error(
+          "DoP requires at least 24 significant carrier bits");
     if (requestedPeriodSize == 0 || requestedBufferSize == 0) {
       setLatencyBasedBufferSize(params);
     } else {
@@ -959,6 +979,15 @@ void AlsaAudioEmitter::setLatencyBasedBufferSize(snd_pcm_hw_params_t *params) {
 
 size_t AlsaAudioEmitter::readAndConvertFrames(void *dest, size_t bytes) {
   const float gain = softwareGain.load(std::memory_order_relaxed);
+  if (isDsd(currentStreamAudioFormat.sampleFormat)) {
+    if (!dsdAllowed.load() || gain != 1.0f)
+      throw std::runtime_error(
+          "DSD requires fixed volume; software gain cannot alter DSD");
+    const auto count = inputNode->read(dest, bytes);
+    const auto frames = snd_pcm_bytes_to_frames(pcmHandle, count);
+    stampDop(dest, frames);
+    return frames;
+  }
 
   if (!sampleSubstitute.count(currentStreamAudioFormat.sampleFormat)) {
     size_t bytesRead = inputNode->read(dest, bytes);
@@ -990,4 +1019,13 @@ size_t AlsaAudioEmitter::readAndConvertFrames(void *dest, size_t bytes) {
       pcmHandle, snd_pcm_samples_to_bytes(pcmHandle, convertedSamples));
 
   return frames;
+}
+
+void AlsaAudioEmitter::stampDop(void *dest, size_t frames) {
+  const auto format = currentStreamAudioFormat.sampleFormat;
+  if (!isDop(format))
+    return;
+  stampDopMarkers({static_cast<uint8_t *>(dest),
+                   frames * outputChannels * sampleSize(format)},
+                  outputChannels, format, dopFrame);
 }

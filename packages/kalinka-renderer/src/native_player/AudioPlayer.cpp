@@ -3,6 +3,7 @@
 #include "AudioGraphHttpStream.h"
 #include "AudioStreamSwitcher.h"
 #include "Config.h"
+#include "DsdStreamDecoder.h"
 #include "FileInputNode.h"
 #include "FlacStreamDecoder.h"
 #include "Log.h"
@@ -172,6 +173,20 @@ struct StreamNodes {
   DecoderFactory decoderFor(const Config &config, const AudioFormat format,
                             size_t startOffsetMs) const {
     switch (format) {
+    case AudioFormat::FormatDsd:
+      return [id = id, config, startOffsetMs](auto input) {
+        auto select = [config](unsigned rate, unsigned channels) {
+          return chooseDsdOutput(
+              probeOutput(value_or(config, "output.alsa.device",
+                                   std::string("default"))),
+              value_or(config, "output.dsd_mode", std::string("disabled")),
+              rate, channels);
+        };
+        auto decoder =
+            std::make_shared<DsdStreamDecoder>(id, select, startOffsetMs);
+        decoder->connectTo(input);
+        return std::shared_ptr<AudioGraphOutputNode>(std::move(decoder));
+      };
     case AudioFormat::FormatFlac:
       return decoding<FlacStreamDecoder>(
           value_or(config, "decoder.flac.buffer_size", FLAC_BUFFER_SIZE),
@@ -222,6 +237,12 @@ AudioPlayer::AudioPlayer(const Config &config)
       streamSwitcher(std::make_shared<AudioStreamSwitcher>()) {
   std::erase_if(streamConfig,
                 [](const auto &entry) { return !isStreamKey(entry.first); });
+  if (value_or(config, "output.dsd_mode", std::string("disabled")) !=
+      "disabled") {
+    // Cache before PCM starts holding the device, so a queued DSD track can
+    // choose its packing without interrupting the track already playing.
+    probeOutput(value_or(config, "output.alsa.device", std::string("default")));
+  }
   // Renderer delta: no initLogger() — the renderer owns the spdlog setup.
   perfmon_print_periodically(5);
   // Volume handling stays "fixed" (no processing) until the local output device
@@ -253,6 +274,7 @@ bool AudioPlayer::configureVolume(const std::string &mode,
   }
 
   volumeMode = requested;
+  audioEmitter->setDsdAllowed(requested == VolumeMode::Fixed);
   // Only an active hardware backend needs to stay open and report external
   // changes. Software/fixed used the mixer above solely to establish unity.
   volumeControl =
@@ -407,7 +429,14 @@ bool AudioPlayer::setStreamConfig(const std::string &key,
 
 Config AudioPlayer::currentStreamConfig() {
   std::lock_guard<std::mutex> lock(streamConfigMutex_);
-  return streamConfig;
+  auto result = streamConfig;
+  // Immutable output settings are needed by DSD's transport packer. They do
+  // not become live stream knobs: changing either still rebuilds the graph.
+  result["output.alsa.device"] =
+      value_or(config, "output.alsa.device", std::string("default"));
+  result["output.dsd_mode"] =
+      value_or(config, "output.dsd_mode", std::string("disabled"));
+  return result;
 }
 
 void AudioPlayer::disconnectAllStreams() {

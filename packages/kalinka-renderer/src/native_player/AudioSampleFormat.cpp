@@ -7,6 +7,8 @@
 
 void convertToFormat(void *buffer, const int32_t *const samples[], size_t size,
                      AudioSampleFormat format) {
+  if (isDsd(format))
+    throw std::invalid_argument("PCM conversion cannot produce DSD");
   switch (format) {
   case AudioSampleFormat::PCM16_LE: {
     uint32_t *iBuffer = static_cast<uint32_t *>(buffer);
@@ -86,6 +88,8 @@ inline size_t putSample(uint8_t *dest, int32_t rawSample,
 size_t convertSampleFormat(const void *source, AudioSampleFormat sourceFormat,
                            size_t sourceSamples, void *dest,
                            AudioSampleFormat destFormat, size_t destSizeBytes) {
+  if (isDsd(sourceFormat) || isDsd(destFormat))
+    throw std::invalid_argument("DSD must use lossless transport packing");
 
   auto const destSampleBytes = sampleSize(destFormat);
   auto const sourceSampleBytes = sampleSize(sourceFormat);
@@ -131,6 +135,8 @@ void applyGainInPlace(void *buffer, size_t bytes, AudioSampleFormat format,
   if (gain >= 1.0f) {
     return;
   }
+  if (isDsd(format))
+    throw std::invalid_argument("Software gain cannot alter DSD");
   if (gain < 0.0f) {
     gain = 0.0f;
   }

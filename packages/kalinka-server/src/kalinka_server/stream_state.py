@@ -53,6 +53,7 @@ class AudioFormatInfo:
     sample_rate: int = 0
     channels: int = 0
     bits_per_sample: int = 0
+    sample_format: str = ""
 
 
 @dataclass
@@ -88,6 +89,22 @@ class StreamInfo:
         # Zero is "not reported", and two silences are not an agreement.
         if min(decoded.sample_rate, decoded.bits_per_sample, decoded.channels) <= 0:
             return False
+        if decoded.sample_format == "DSD":
+            bits = {
+                "DSD_U8": 8,
+                "DSD_U16_LE": 16,
+                "DSD_U16_BE": 16,
+                "DSD_U32_LE": 32,
+                "DSD_U32_BE": 32,
+                "DoP_S24_LE": 16,
+                "DoP_S24_3LE": 16,
+                "DoP_S32_LE": 16,
+            }.get(device.sample_format, 0)
+            return (
+                bits > 0
+                and decoded.sample_rate == device.sample_rate * bits
+                and decoded.channels == device.channels
+            )
         return (
             device.sample_rate == decoded.sample_rate
             and device.bits_per_sample == decoded.bits_per_sample
@@ -149,6 +166,7 @@ def to_audio_format(fmt: Optional[dict]) -> Optional[AudioFormatInfo]:
         sample_rate=fmt.get("sample_rate_hz", 0),
         channels=fmt.get("channels", 0),
         bits_per_sample=fmt.get("bits_per_sample", 0),
+        sample_format=fmt.get("sample_format", ""),
     )
 
 

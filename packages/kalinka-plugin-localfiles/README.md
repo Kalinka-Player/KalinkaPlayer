@@ -1,0 +1,19 @@
+# Local files
+
+The local library indexes MP3, FLAC, DSF (`.dsf`) and DSDIFF (`.dff`) files from
+local folders and configured network shares. DSD indexing reads ID3 tags,
+embedded artwork, duration and stream information. DSDIFF's native artist and
+title fields fill gaps in ID3 metadata. Untagged DSD uses the existing filename
+and folder extraction, and normal clustering, artwork and MusicBrainz
+processing continue unchanged.
+
+DSD audio is never converted to PCM for analysis. AcoustID/Chromaprint skips
+DSD before file staging or fingerprint generation. PCM-dependent audio
+embeddings are marked unsupported without retrying; metadata/text embeddings
+remain available. Existing PCM analysis is unchanged.
+
+Playback requires the renderer's DSD output setting and a compatible DAC.
+See the [renderer settings](../kalinka-renderer/README.md#settings). Native DSD
+and DoP preserve the source rate; there is no PCM fallback or DSD rate
+conversion. DST-compressed DFF can have its metadata indexed but is not
+playable by the renderer.
