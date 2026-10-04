@@ -7,15 +7,23 @@
 
 struct OutputCapabilities {
   DeviceAccess access = DeviceAccess::Unknown;
-  std::string status;
+  /// Why the device could not be opened; set only when access is Unknown.
+  std::string error;
   std::vector<StreamAudioFormat> formats;
 };
+
+/// Why a DSD source is refused while `output.dsd_mode` is "disabled".
+inline constexpr char DSD_DISABLED_ERROR[] =
+    "DSD playback is disabled in renderer settings";
+/// Why DSD is refused on an output that is not the card itself.
+inline constexpr char DSD_SHARED_OUTPUT_ERROR[] =
+    "DSD needs an output device marked (direct)";
 
 snd_pcm_format_t alsaFormat(AudioSampleFormat format);
 /// Whether @p mode is one of the `output.dsd_mode` setting's values.
 bool isDsdMode(const std::string &mode);
-// Nonblocking probe. A busy device may return its last successful probe,
-// labelled as cached; playback always validates the actual parameters again.
+// Nonblocking probe. A busy device returns its last successful probe, if any;
+// playback always validates the actual parameters again.
 OutputCapabilities probeOutput(const std::string &device);
 unsigned dsdBitsPerFrame(AudioSampleFormat format);
 StreamAudioFormat chooseDsdOutput(const OutputCapabilities &caps,

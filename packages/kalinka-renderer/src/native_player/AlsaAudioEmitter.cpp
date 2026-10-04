@@ -18,6 +18,11 @@
 #define log_on_error(func) log_on_error_impl(func, #func " failed")
 
 namespace {
+/// A setting refuses the stream; reported as is, never as an internal error.
+struct SettingsRefusal : std::runtime_error {
+  using std::runtime_error::runtime_error;
+};
+
 inline int throw_on_error_impl(int err, const std::string &message) {
   if (err < 0) {
     throw std::runtime_error(message + ": " + snd_strerror(err));
@@ -685,9 +690,11 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
     // Nothing is emitted after this, so the device has to go first or the
     // failure is the last state anyone sees and it names an open device.
     closeDevice();
+    const std::string message = ex.what();
+    const bool refused = dynamic_cast<const SettingsRefusal *>(&ex);
     setState({AudioGraphNodeState::ERROR,
               StreamError{StreamErrorSource::AUDIO_OUTPUT,
-                          "Internal error: " + std::string(ex.what())}});
+                          refused ? message : "Internal error: " + message}});
   }
 
   closeDevice();
@@ -725,10 +732,9 @@ void AlsaAudioEmitter::setupAudioFormat(
 
   if (isDsd(streamAudioFormat.sampleFormat)) {
     if (!dsdAllowed.load())
-      throw std::runtime_error("DSD requires fixed output volume; set "
-                               "listening level on your amplifier");
+      throw SettingsRefusal("DSD needs Volume control set to Fixed output");
     if (deviceAccess() != DeviceAccess::Exclusive)
-      throw std::runtime_error("DSD requires a direct ALSA hardware device");
+      throw SettingsRefusal(DSD_SHARED_OUTPUT_ERROR);
   }
   outputChannels = isDsd(streamAudioFormat.sampleFormat)
                        ? streamAudioFormat.channels

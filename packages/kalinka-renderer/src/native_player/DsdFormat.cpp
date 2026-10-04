@@ -34,6 +34,15 @@ snd_pcm_format_t alsaFormat(AudioSampleFormat f) {
   return SND_PCM_FORMAT_UNKNOWN;
 }
 
+namespace {
+std::string dsdRateName(unsigned rate) {
+  for (unsigned base : {44100u, 48000u})
+    if (rate % base == 0)
+      return "DSD" + std::to_string(rate / base);
+  return "DSD at " + std::to_string(rate) + " Hz";
+}
+} // namespace
+
 bool isDsdMode(const std::string &mode) {
   return mode == "disabled" || mode == "auto" || mode == "native" ||
          mode == "dop";
@@ -55,23 +64,13 @@ OutputCapabilities probeOutput(const std::string &device) {
                    SND_PCM_NONBLOCK | SND_PCM_NO_AUTO_RESAMPLE |
                        SND_PCM_NO_AUTO_FORMAT | SND_PCM_NO_AUTO_CHANNELS);
   if (error < 0) {
-    if (error == -EBUSY && cache.contains(device)) {
-      auto result = cache.at(device);
-      result.status =
-          "Device busy; last successful probe (rechecked at playback)";
-      return result;
-    }
-    return {DeviceAccess::Unknown,
-            std::string("Unavailable: ") + snd_strerror(error),
-            {}};
+    if (error == -EBUSY && cache.contains(device))
+      return cache.at(device);
+    return {DeviceAccess::Unknown, snd_strerror(error), {}};
   }
   OutputCapabilities result;
   result.access = snd_pcm_type(pcm) == SND_PCM_TYPE_HW ? DeviceAccess::Exclusive
                                                        : DeviceAccess::Shared;
-  result.status = result.access == DeviceAccess::Exclusive
-                      ? "Direct hardware"
-                      : "Shared/virtual output; these are route formats, not "
-                        "hardware capabilities. DSD unavailable";
   constexpr std::array rates{8000u,   11025u,   16000u,   22050u,   32000u,
                              44100u,  48000u,   64000u,   88200u,   96000u,
                              176400u, 192000u,  352800u,  384000u,  705600u,
@@ -131,12 +130,13 @@ StreamAudioFormat chooseDsdOutput(const OutputCapabilities &caps,
                                   const std::string &mode, unsigned rate,
                                   unsigned channels) {
   if (mode == "disabled")
-    throw std::runtime_error("DSD playback is disabled in renderer settings");
+    throw std::runtime_error(DSD_DISABLED_ERROR);
   if (!isDsdMode(mode))
     throw std::runtime_error("Invalid DSD output mode");
+  if (caps.access == DeviceAccess::Shared)
+    throw std::runtime_error(DSD_SHARED_OUTPUT_ERROR);
   if (caps.access != DeviceAccess::Exclusive)
-    throw std::runtime_error("DSD requires a direct ALSA hardware output: " +
-                             caps.status);
+    throw std::runtime_error("Output device unavailable: " + caps.error);
   for (const auto &f : caps.formats) {
     if (f.channels != channels)
       continue;
@@ -162,9 +162,9 @@ StreamAudioFormat chooseDsdOutput(const OutputCapabilities &caps,
       return format;
     }
   }
-  throw std::runtime_error(
-      "Output cannot carry this DSD rate/channel count using " + mode +
-      "; check renderer capabilities and DSD output settings. No PCM fallback");
+  throw std::runtime_error("This output cannot play " + dsdRateName(rate) +
+                           (channels == 1 ? " mono" : " stereo") + " as " +
+                           (mode == "dop" ? "DoP" : "native DSD"));
 }
 
 std::vector<uint8_t> packDsd(std::span<const uint8_t> input, unsigned channels,

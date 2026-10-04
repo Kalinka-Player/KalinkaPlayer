@@ -24,11 +24,13 @@ void num(Bytes &out, uint64_t n, unsigned width, bool little = false) {
   for (unsigned i = 0; i < width; ++i)
     out.push_back(n >> (8 * (little ? i : width - 1 - i)));
 }
-Bytes dsf(unsigned order = 8, unsigned channels = 2, unsigned rate = 2822400) {
+Bytes dsf(unsigned order = 8, unsigned channels = 2, unsigned rate = 2822400,
+          unsigned trailingBlocks = 0) {
+  const uint64_t data = uint64_t(channels) * 4096 * (1 + trailingBlocks);
   Bytes out;
   tag(out, "DSD ");
   num(out, 28, 8, true);
-  num(out, 92 + channels * 4096, 8, true);
+  num(out, 92 + data, 8, true);
   num(out, 0, 8, true);
   tag(out, "fmt ");
   num(out, 52, 8, true);
@@ -38,10 +40,11 @@ Bytes dsf(unsigned order = 8, unsigned channels = 2, unsigned rate = 2822400) {
   num(out, 4096, 4, true);
   num(out, 0, 4, true);
   tag(out, "data");
-  num(out, 12 + channels * 4096, 8, true);
+  num(out, 12 + data, 8, true);
   for (unsigned c = 0; c < channels; ++c)
     for (unsigned i = 0; i < 4096; ++i)
       out.push_back((i + 17 * c) & 255);
+  out.resize(out.size() + data - channels * 4096, 0x5a);
   return out;
 }
 Bytes chunk(const char *name, const Bytes &data) {
@@ -150,29 +153,48 @@ TEST(DsdPacking, FinalFrameUsesDsdSilence) {
             (Bytes{0x69, 1, 5, 0, 0x69, 0x81, 5, 0}));
   EXPECT_THROW(packDsd(Bytes{1}, 2, DSD_U8, 0), std::invalid_argument);
 }
+std::string refusal(const OutputCapabilities &caps, const char *mode,
+                    unsigned rate, unsigned channels) {
+  try {
+    chooseDsdOutput(caps, mode, rate, channels);
+  } catch (const std::runtime_error &ex) {
+    return ex.what();
+  }
+  return "accepted";
+}
 TEST(DsdCapabilities, ExactCombinationRequiredAndAutomaticNeverAssumesDop) {
   OutputCapabilities caps{
       DeviceAccess::Exclusive,
-      "test",
+      "",
       {{176400, 2, 24, PCM24_LE}, {88200, 2, 1, DSD_U32_LE, 2822400}}};
   EXPECT_EQ(chooseDsdOutput(caps, "auto", 2822400, 2).sampleFormat, DSD_U32_LE);
   EXPECT_EQ(chooseDsdOutput(caps, "dop", 2822400, 2).sampleFormat, DOP24_LE);
-  EXPECT_THROW(chooseDsdOutput(caps, "auto", 5644800, 2), std::runtime_error);
-  EXPECT_THROW(chooseDsdOutput(caps, "native", 2822400, 1), std::runtime_error);
-  EXPECT_THROW(chooseDsdOutput(caps, "disabled", 2822400, 2),
-               std::runtime_error);
+  EXPECT_EQ(refusal(caps, "auto", 5644800, 2),
+            "This output cannot play DSD128 stereo as native DSD");
+  EXPECT_EQ(refusal(caps, "native", 2822400, 1),
+            "This output cannot play DSD64 mono as native DSD");
+  EXPECT_EQ(refusal(caps, "dop", 5644800, 2),
+            "This output cannot play DSD128 stereo as DoP");
+  EXPECT_EQ(refusal(caps, "native", 3072000, 2),
+            "This output cannot play DSD64 stereo as native DSD");
+  EXPECT_EQ(refusal(caps, "disabled", 2822400, 2), DSD_DISABLED_ERROR);
   caps.formats.pop_back();
-  EXPECT_THROW(chooseDsdOutput(caps, "auto", 2822400, 2), std::runtime_error);
+  EXPECT_EQ(refusal(caps, "auto", 2822400, 2),
+            "This output cannot play DSD64 stereo as native DSD");
   caps.access = DeviceAccess::Shared;
-  EXPECT_THROW(chooseDsdOutput(caps, "dop", 2822400, 2), std::runtime_error);
+  EXPECT_EQ(refusal(caps, "dop", 2822400, 2), DSD_SHARED_OUTPUT_ERROR);
+  EXPECT_EQ(refusal({DeviceAccess::Unknown, "No such device", {}}, "native",
+                    2822400, 2),
+            "Output device unavailable: No such device");
 }
 TEST(DsdCapabilities, NullIsNotHardwareDsd) {
   const auto caps = probeOutput("null");
   EXPECT_EQ(caps.access, DeviceAccess::Shared);
   for (const auto &format : caps.formats)
     EXPECT_FALSE(isDsd(format.sampleFormat));
-  EXPECT_EQ(probeOutput("kalinka-device-that-does-not-exist").access,
-            DeviceAccess::Unknown);
+  const auto missing = probeOutput("kalinka-device-that-does-not-exist");
+  EXPECT_EQ(missing.access, DeviceAccess::Unknown);
+  EXPECT_FALSE(missing.error.empty());
 }
 TEST(DsdDecoder, DsfBlocksAndBothBitOrders) {
   for (auto order : {1u, 8u}) {
@@ -184,6 +206,14 @@ TEST(DsdDecoder, DsfBlocksAndBothBitOrders) {
     EXPECT_EQ(result[3], order == 1 ? 0x48 : 18);
     EXPECT_EQ(decoder.getState().streamInfo->durationMs(), 11u);
   }
+}
+TEST(DsdDecoder, DsfBlocksPastTheSampleCountAreNotPlayed) {
+  DsdStreamDecoder exact(1, select(DSD_U8));
+  exact.connectTo(std::make_shared<Input>(dsf()));
+  DsdStreamDecoder padded(1, select(DSD_U8));
+  padded.connectTo(std::make_shared<Input>(dsf(8, 2, 2822400, 1)));
+  EXPECT_EQ(drain(padded), drain(exact));
+  EXPECT_EQ(padded.getState().state, AudioGraphNodeState::FINISHED);
 }
 TEST(DsdDecoder, DffStreamsWithoutSeekingAndPacksDop) {
   DsdStreamDecoder decoder(1, select(DOP24_3LE));
@@ -244,10 +274,12 @@ TEST(DsdDecoder, MalformedAndCompressedFilesFailWithoutPcmFallback) {
   malformed[4] = 0xff;
   auto badChannels = dsf();
   badChannels[52] = 6;
+  auto overcounted = dsf();
+  overcounted[64] = 1;
   auto badSize = dff();
   badSize[4] = 0xff;
-  for (auto bytes : {truncated, malformed, badChannels, badSize, dff(true),
-                     Bytes{1, 2, 3}}) {
+  for (auto bytes : {truncated, malformed, badChannels, overcounted, badSize,
+                     dff(true), Bytes{1, 2, 3}}) {
     DsdStreamDecoder decoder(1, select(DSD_U8));
     decoder.connectTo(std::make_shared<Input>(bytes));
     EXPECT_TRUE(drain(decoder).empty());
@@ -295,6 +327,16 @@ TEST(DsdPacking, PcmOperationsRejectDsdAndLeaveBitsUntouched) {
                std::invalid_argument);
   EXPECT_EQ(source, (Bytes{1, 2, 3, 4}));
 }
+StreamState awaitError(AudioPlayer &player) {
+  const auto deadline = std::chrono::steady_clock::now() + 3s;
+  auto state = player.getState();
+  while (state.state != AudioGraphNodeState::ERROR &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(1ms);
+    state = player.getState();
+  }
+  return state;
+}
 TEST(DsdPlayback, OutputModeAndDeviceReachTheContainerReader) {
   const auto path = std::filesystem::temp_directory_path() /
                     ("kalinka-dsd-" + std::to_string(getpid()) + ".dsf");
@@ -303,25 +345,23 @@ TEST(DsdPlayback, OutputModeAndDeviceReachTheContainerReader) {
     const auto bytes = dsf();
     file.write(reinterpret_cast<const char *>(bytes.data()), bytes.size());
   }
-  for (const auto &mode : {"disabled", "dop"}) {
-    AudioPlayer player(
-        {{"output.alsa.device", "null"}, {"output.dsd_mode", mode}});
-    player.append(1, "file://" + path.string(), FormatDsd);
-    const auto deadline = std::chrono::steady_clock::now() + 3s;
-    auto state = player.getState();
-    while (state.state != AudioGraphNodeState::ERROR &&
-           std::chrono::steady_clock::now() < deadline) {
-      std::this_thread::sleep_for(1ms);
-      state = player.getState();
-    }
-    ASSERT_EQ(state.state, AudioGraphNodeState::ERROR);
-    ASSERT_TRUE(state.error);
-    EXPECT_NE(state.error->message.find(std::string(mode) == "dop"
-                                            ? "direct ALSA hardware"
-                                            : "disabled"),
-              std::string::npos);
-  }
+  AudioPlayer player(
+      {{"output.alsa.device", "null"}, {"output.dsd_mode", "dop"}});
+  player.append(1, "file://" + path.string(), FormatDsd);
+  const auto state = awaitError(player);
+  ASSERT_EQ(state.state, AudioGraphNodeState::ERROR);
+  ASSERT_TRUE(state.error);
+  EXPECT_EQ(state.error->message, DSD_SHARED_OUTPUT_ERROR);
   std::filesystem::remove(path);
+}
+TEST(DsdPlayback, DisabledOutputRefusesBeforeReadingTheFile) {
+  AudioPlayer player(
+      {{"output.alsa.device", "null"}, {"output.dsd_mode", "disabled"}});
+  player.append(1, "file:///nonexistent/track.dsf", FormatDsd);
+  const auto state = awaitError(player);
+  ASSERT_EQ(state.state, AudioGraphNodeState::ERROR);
+  ASSERT_TRUE(state.error);
+  EXPECT_EQ(state.error->message, DSD_DISABLED_ERROR);
 }
 
 TEST(DsdDecoder, StalledInputIsInterruptedBySeekAndDestruction) {
@@ -415,7 +455,7 @@ TEST(DsdPlayback, ActiveVolumeIsRefusedBeforeEmittingDsd) {
     }
     ASSERT_EQ(state.state, AudioGraphNodeState::ERROR);
     ASSERT_TRUE(state.error);
-    EXPECT_NE(state.error->message.find("requires fixed output volume"),
-              std::string::npos);
+    EXPECT_EQ(state.error->message,
+              "DSD needs Volume control set to Fixed output");
   }
 }

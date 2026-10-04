@@ -180,7 +180,8 @@ void DsdStreamDecoder::parseHeader() {
     require(sampleCount > 0 && sampleCount <= (uint64_t(1) << 48),
             "Invalid DSF sample count");
     const auto groups = ((sampleCount + 7) / 8 + blockSize - 1) / blockSize;
-    require(groups * blockSize * channels == length - 12,
+    // Some encoders write blocks past the sample count; those are never read.
+    require(groups * blockSize * channels <= length - 12,
             "DSF sample count exceeds data size");
   } else {
     require(id(header.data(), "FRM8"), "Not a DSF or DSDIFF file");
