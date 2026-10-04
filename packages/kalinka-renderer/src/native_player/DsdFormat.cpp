@@ -34,6 +34,11 @@ snd_pcm_format_t alsaFormat(AudioSampleFormat f) {
   return SND_PCM_FORMAT_UNKNOWN;
 }
 
+bool isDsdMode(const std::string &mode) {
+  return mode == "disabled" || mode == "auto" || mode == "native" ||
+         mode == "dop";
+}
+
 unsigned dsdBitsPerFrame(AudioSampleFormat format) {
   if (!isDsd(format) || !sampleSize(format))
     throw std::invalid_argument("Not a DSD transport");
@@ -127,7 +132,7 @@ StreamAudioFormat chooseDsdOutput(const OutputCapabilities &caps,
                                   unsigned channels) {
   if (mode == "disabled")
     throw std::runtime_error("DSD playback is disabled in renderer settings");
-  if (mode != "auto" && mode != "native" && mode != "dop")
+  if (!isDsdMode(mode))
     throw std::runtime_error("Invalid DSD output mode");
   if (caps.access != DeviceAccess::Exclusive)
     throw std::runtime_error("DSD requires a direct ALSA hardware output: " +

@@ -205,6 +205,24 @@ TEST(DsdDecoder, SeeksInsideDsfChannelBlocksAndRestartsAfterEof) {
   EXPECT_EQ(result[5], 37);
   EXPECT_EQ(decoder.streamReadPosition(), 2048);
 }
+TEST(DsdDecoder, FailedInputSeekIsReportedAsAFailedSeek) {
+  class ProbeOnlyInput : public Input {
+  public:
+    using Input::Input;
+    bool probed = false;
+    size_t seekTo(size_t n) override {
+      if (probed)
+        return size_t(-1);
+      probed = true;
+      return Input::seekTo(n);
+    }
+  };
+  DsdStreamDecoder decoder(1, select(DOP24_LE));
+  decoder.connectTo(std::make_shared<ProbeOnlyInput>(dsf()));
+  ASSERT_EQ(drain(decoder).size(), 16384u);
+  EXPECT_EQ(decoder.seekTo(10), size_t(-1));
+  EXPECT_EQ(decoder.getState().state, AudioGraphNodeState::ERROR);
+}
 TEST(DsdDecoder, StartOffsetUsesTransportFrames) {
   DsdStreamDecoder decoder(1, select(DSD_U32_LE), 1);
   decoder.connectTo(std::make_shared<Input>(dsf()));
