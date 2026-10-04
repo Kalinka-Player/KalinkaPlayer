@@ -9,6 +9,7 @@ import threading
 import requests
 from typing import Dict, Optional, List, Tuple
 
+from ..audio_formats import is_dsd
 from ..config_model import LocalFilesConfig
 from ..resolution.resolver import GUESSED
 from ..storage import build_resolver
@@ -126,6 +127,8 @@ class AcoustIdPlugin(EnricherPlugin):
         Returns:
             Tuple of (fingerprint, duration)
         """
+        if is_dsd(file_path):
+            return None, None
         storage = self.storage.for_path(file_path)
         try:
             if not storage.is_file(file_path):
@@ -684,6 +687,9 @@ class AcoustIdPlugin(EnricherPlugin):
         try:
             # Skip if track is already enriched or no file path
             if track.get("enriched") or not track.get("file_path"):
+                return None
+            # Chromaprint takes PCM; do not stage, decode or resample DSD.
+            if is_dsd(track["file_path"], track.get("format") or ""):
                 return None
 
             # Rescue mode (§6.3): the audio is consulted when no external

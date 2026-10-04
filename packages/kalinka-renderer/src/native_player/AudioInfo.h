@@ -35,6 +35,9 @@ struct StreamAudioFormat {
   unsigned int channels = 0;
   unsigned int bitsPerSample = 0;
   AudioSampleFormat sampleFormat;
+  // Nonzero for DSD: sampleRate counts packed transport frames, while this
+  // is the original one-bit audio rate. No resampling takes place.
+  unsigned int dsdSampleRate = 0;
 
   bool operator==(const StreamAudioFormat &other) const = default;
   bool operator!=(const StreamAudioFormat &other) const = default;

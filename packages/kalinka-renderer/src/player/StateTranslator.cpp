@@ -99,6 +99,12 @@ void fillPlaybackStateChanged(const StreamState &state,
   out.set_at_unix_ms(atUnixMs);
   if (state.streamInfo) {
     fillAudioFormat(state.streamInfo->format, *out.mutable_format());
+    if (state.streamInfo->format.dsdSampleRate) {
+      out.mutable_format()->set_sample_rate_hz(
+          state.streamInfo->format.dsdSampleRate);
+      out.mutable_format()->set_bits_per_sample(1);
+      out.mutable_format()->set_sample_format("DSD");
+    }
     if (const auto duration = state.streamInfo->durationMs()) {
       out.set_duration_ms(*duration);
     }

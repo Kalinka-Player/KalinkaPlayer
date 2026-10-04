@@ -26,6 +26,7 @@ import threading
 import time
 from typing import Optional
 
+from ..audio_formats import is_dsd
 from ..config_model import LocalFilesConfig
 from ..embedding_utils import (
     CLAP_MODEL_VERSION,
@@ -214,7 +215,7 @@ class EmbeddingWorker:
         @raise OSError If the bytes could not be read, which is the storage's
             failure and not the track's.
         """
-        if not self._audio_available:
+        if is_dsd(file_path) or not self._audio_available:
             return None
         try:
             t0 = time.monotonic()
@@ -310,6 +311,12 @@ class EmbeddingWorker:
             if file_path is None:
                 await self.db.fail_job(
                     job["id"], "track not found", cfg.max_job_attempts
+                )
+                continue
+            if is_dsd(file_path):
+                # Terminal for audio analysis; metadata/text jobs are separate.
+                await self.db.fail_job(
+                    job["id"], "DSD audio analysis requires PCM conversion", 1
                 )
                 continue
             if self._unreachable and self.storage.root_of(

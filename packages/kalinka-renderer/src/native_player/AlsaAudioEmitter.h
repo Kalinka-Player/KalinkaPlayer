@@ -53,6 +53,7 @@ public:
   // frames. 1.0 (the default) is a bit-perfect bypass. Thread-safe; the value
   // is read on the playback worker thread for each conversion.
   void setSoftwareVolume(float gain);
+  void setDsdAllowed(bool allowed) { dsdAllowed.store(allowed); }
 
   virtual ~AlsaAudioEmitter();
 
@@ -75,6 +76,9 @@ private:
   std::jthread playbackThread;
   std::atomic<bool> isWorkerRunning = false;
   std::atomic<float> softwareGain = 1.0f;
+  std::atomic<bool> dsdAllowed = true; // AudioPlayer starts in fixed mode.
+  uint64_t dopFrame = 0;
+  unsigned outputChannels = 2;
 
   StreamAudioFormat currentStreamAudioFormat;
   // What the open device took, which is not always what was asked for.
@@ -117,6 +121,7 @@ private:
   void setSwParams();
   void setLatencyBasedBufferSize(snd_pcm_hw_params_t *params);
   size_t readAndConvertFrames(void *dest, size_t bytes);
+  void stampDop(void *dest, size_t frames);
 
   void setupAudioFormat(const StreamAudioFormat &streamAudioFormat);
   snd_pcm_sframes_t queuedFrames();
