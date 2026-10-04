@@ -12,6 +12,8 @@ struct OutputCapabilities {
 };
 
 snd_pcm_format_t alsaFormat(AudioSampleFormat format);
+/// Whether @p mode is one of the `output.dsd_mode` setting's values.
+bool isDsdMode(const std::string &mode);
 // Nonblocking probe. A busy device may return its last successful probe,
 // labelled as cached; playback always validates the actual parameters again.
 OutputCapabilities probeOutput(const std::string &device);

@@ -266,7 +266,6 @@ void DsdStreamDecoder::seek(size_t frame) {
   setState(StreamState{AudioGraphNodeState::PREPARING});
   buffer.clear();
   buffer.resetEof();
-  seekSignal.respond(frame);
   nextByte = uint64_t(frame) * dsdBitsPerFrame(info.format.sampleFormat) / 8;
   const auto byte = dsf ? (nextByte / blockSize) * blockSize : nextByte;
   const auto offset = dataOffset + byte * channels;
@@ -275,6 +274,7 @@ void DsdStreamDecoder::seek(size_t frame) {
   startFrame = frame;
   bytesRead = 0;
   setState({AudioGraphNodeState::STREAMING, long(frame), info});
+  seekSignal.respond(frame);
 }
 std::vector<uint8_t> DsdStreamDecoder::readBlock() {
   const auto totalBytes = (sampleCount + 7) / 8;

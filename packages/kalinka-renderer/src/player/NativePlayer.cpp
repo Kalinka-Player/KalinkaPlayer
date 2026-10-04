@@ -272,8 +272,7 @@ void declare(pb::ConfigSection &out, const Knob &knob,
 bool knobTakes(const std::string &path, const std::string &value,
                std::string &error) {
   if (path == "output.dsd_mode") {
-    if (value == "disabled" || value == "auto" || value == "native" ||
-        value == "dop")
+    if (isDsdMode(value))
       return true;
     error = "unknown DSD output mode";
     return false;
@@ -844,8 +843,7 @@ bool NativePlayer::applySetting(const std::string &path,
     error = "unknown setting";
     return false;
   }
-  if (path == "output.dsd_mode" && value != "disabled" && value != "auto" &&
-      value != "native" && value != "dop") {
+  if (path == "output.dsd_mode" && !isDsdMode(value)) {
     error = "unknown DSD output mode";
     return false;
   }
