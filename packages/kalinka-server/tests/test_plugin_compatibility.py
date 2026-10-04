@@ -63,6 +63,15 @@ def plugin():
     }
 
 
+def release_at(plugin, version):
+    release = deepcopy(plugin["releases"][0])
+    release["version"] = version
+    artifact = release["artifacts"][0]
+    artifact["package"]["version"] = version
+    artifact["filename"] = f"kalinka-plugin-demo_{version}_all.deb"
+    return release
+
+
 def evaluate(plugin, host=HOST, renderers=()):
     return evaluate_release(
         plugin, plugin["releases"][0], host, renderers, channel="stable", now=NOW
@@ -211,6 +220,63 @@ def test_inconsistent_native_metadata_is_blocked(plugin, change):
     assert result["status"] == "blocked"
 
 
+def test_package_must_hold_the_advertised_release(plugin):
+    plugin["releases"][0]["version"] = "2.0.0"
+    result = annotated(plugin)["plugins"][0]["compatibility"]
+    assert result["latest_compatible_version"] is None
+    assert codes(result["releases"][0]["artifacts"][0]) == {"invalid_package_metadata"}
+
+
+@pytest.mark.parametrize(
+    "native,consistent",
+    [
+        ("1.0.0", True),
+        ("1.0.0-1", True),
+        ("2:1.0.0-1+deb13u1", True),
+        ("1.0", True),
+        ("1.0.0-", False),
+        ("x:1.0.0", False),
+        ("1.0.0~rc1", False),
+        ("1.0.1", False),
+    ],
+)
+def test_deb_version_forms(plugin, native, consistent):
+    artifact = plugin["releases"][0]["artifacts"][0]
+    artifact["package"]["version"] = native
+    artifact["filename"] = f"kalinka-plugin-demo_{native.split(':', 1)[-1]}_all.deb"
+    assert (evaluate(plugin)["status"] == "metadata_compatible") is consistent
+
+
+@pytest.mark.parametrize(
+    "release,native,consistent",
+    [
+        ("1.0.0", "0:1.0.0-1.fc44", True),
+        ("1.0.0", "1.0.0-1.fc44", True),
+        ("1.1.0rc1", "1.1.0~rc1-1.fc44", True),
+        ("1.0.0", "1.0.0", False),
+        ("1.0.0", "0:1.0.1-1.fc44", False),
+    ],
+)
+def test_rpm_version_forms(plugin, release, native, consistent):
+    release_record = plugin["releases"][0]
+    release_record["version"] = release
+    filename = f"kalinka-plugin-demo-{native.split(':', 1)[-1]}.noarch.rpm"
+    release_record["artifacts"][0].update(
+        format="rpm",
+        filename=filename,
+        package={
+            "name": "kalinka-plugin-demo",
+            "version": native,
+            "architecture": "noarch",
+        },
+        targets=[{"id": "fedora", "versions": ["44"]}],
+    )
+    host = replace(
+        HOST, package_format="rpm", distribution="fedora", distribution_version="44"
+    )
+    assert (evaluate(plugin, host)["status"] == "metadata_compatible") is consistent
+
+
 def test_wheel_does_not_fall_through_to_native_support(plugin):
     plugin["releases"][0]["artifacts"][0]["format"] = "wheel"
     assert codes(evaluate(plugin)["artifacts"][0]) == {"unsupported_package_format"}
@@ -253,8 +319,7 @@ def test_renderer_versions_require_live_known_evidence(plugin):
 
 
 def test_selects_older_compatible_release_and_reports_newer_blocked(plugin):
-    newer = deepcopy(plugin["releases"][0])
-    newer["version"] = "2.0.0"
+    newer = release_at(plugin, "2.0.0")
     newer["requires"]["sdk"] = ">=4,<5"
     plugin["releases"].append(newer)
     result = annotated(plugin)
@@ -278,8 +343,8 @@ def test_selects_older_compatible_release_and_reports_newer_blocked(plugin):
     ],
 )
 def test_unavailable_releases_are_not_candidates(plugin, change, reason):
-    newer = deepcopy(plugin["releases"][0])
-    newer.update({"version": "2.0.0", **change})
+    newer = release_at(plugin, change.get("version", "2.0.0"))
+    newer.update(change)
     plugin["releases"].append(newer)
     result = annotated(plugin)["plugins"][0]["compatibility"]
     assert result["latest_compatible_version"] == "1.0.0"
@@ -290,9 +355,7 @@ def test_unavailable_releases_are_not_candidates(plugin, change, reason):
 
 def test_version_ordering_is_numeric_not_lexical(plugin):
     for version in ("1.9", "1.10"):
-        release = deepcopy(plugin["releases"][0])
-        release["version"] = version
-        plugin["releases"].append(release)
+        plugin["releases"].append(release_at(plugin, version))
     assert (
         annotated(plugin)["plugins"][0]["compatibility"]["latest_compatible_version"]
         == "1.10"
