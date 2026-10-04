@@ -194,6 +194,10 @@ class InputModule(Protocol):
     - Providing track metadata and playback sources
     - Declaring what its catalogs can be filtered by, and honouring it
 
+    Implementations subclass this protocol rather than matching it
+    structurally: methods added in later 3.x releases ship a default body,
+    which only a subclass inherits.
+
     Latency contract: every call into this interface serves a real-time
     request, and the server enforces a hard per-call timeout (3 seconds;
     8 for :meth:`get_track_source`) on its side — a call that overruns is

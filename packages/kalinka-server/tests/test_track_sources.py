@@ -1,6 +1,5 @@
 """A queued track's source, asked of the module that owns it when it plays."""
 
-from typing import Optional
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -36,17 +35,9 @@ class _Module(InputModule):
         )
 
 
-class _Registry:
-    def __init__(self, modules: dict[str, InputModule]):
-        self.modules = modules
-
-    def enabled_input_module(self, name: str) -> Optional[InputModule]:
-        return self.modules.get(name)
-
-
 async def test_a_track_is_asked_of_the_module_that_owns_it():
     qobuz, library = _Module("qobuz"), _Module("localfiles")
-    sources = ModuleTrackSources(_Registry({"qobuz": qobuz, "localfiles": library}))
+    sources = ModuleTrackSources({"qobuz": qobuz, "localfiles": library}.get)
 
     source = await sources.resolve(_track_id("qobuz", "q1"))
 
@@ -56,19 +47,19 @@ async def test_a_track_is_asked_of_the_module_that_owns_it():
 
 
 async def test_a_track_whose_module_is_not_enabled_is_unavailable_for_now():
-    sources = ModuleTrackSources(_Registry({}))
+    sources = ModuleTrackSources({}.get)
 
     with pytest.raises(SourceUnavailableError, match="source is not available"):
         await sources.resolve(_track_id("qobuz", "q1"))
 
 
 async def test_a_module_switched_on_after_the_track_was_queued_serves_it():
-    registry = _Registry({})
-    sources = ModuleTrackSources(registry)
+    enabled: dict[str, InputModule] = {}
+    sources = ModuleTrackSources(enabled.get)
     with pytest.raises(SourceUnavailableError):
         await sources.resolve(_track_id("qobuz", "q1"))
 
-    registry.modules["qobuz"] = _Module("qobuz")
+    enabled["qobuz"] = _Module("qobuz")
 
     source = await sources.resolve(_track_id("qobuz", "q1"))
     assert source.source.url == "https://qobuz.test/q1"
@@ -79,16 +70,59 @@ async def test_the_modules_reason_reaches_the_queue():
     library.get_track_source = AsyncMock(
         side_effect=SourceUnavailableError("Music folder /mnt/nas is not available")
     )
-    sources = ModuleTrackSources(_Registry({"localfiles": library}))
+    sources = ModuleTrackSources({"localfiles": library}.get)
 
     with pytest.raises(SourceUnavailableError, match="^Music folder /mnt/nas"):
         await sources.resolve(_track_id("localfiles", "t1"))
 
 
+class _FailingModule(_Module):
+    def __init__(self, error: Exception):
+        super().__init__("qobuz")
+        self.error = error
+
+    def display_name(self) -> str:
+        return "Qobuz"
+
+    async def get_track_source(self, track_id):
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        TimeoutError("qobuz.get_track_source exceeded the 8s per-call budget"),
+        RuntimeError("401 for https://qobuz.test/file?user_auth_token=s3cret"),
+        KeyError("url"),
+    ],
+)
+async def test_any_other_failure_reaches_the_user_with_the_modules_name(
+    error, caplog
+):
+    sources = ModuleTrackSources({"qobuz": _FailingModule(error)}.get)
+
+    with pytest.raises(SourceUnavailableError) as raised:
+        await sources.resolve(_track_id("qobuz", "q1"))
+
+    assert str(raised.value) == "Qobuz cannot play this track right now"
+    assert raised.value.__cause__ is error
+    assert type(error).__name__ in caplog.text
+    assert "s3cret" not in caplog.text
+
+
+async def test_a_track_the_module_no_longer_has_stays_a_lookup_error():
+    sources = ModuleTrackSources(
+        {"qobuz": _FailingModule(LookupError("Track not found: q1"))}.get
+    )
+
+    with pytest.raises(LookupError):
+        await sources.resolve(_track_id("qobuz", "q1"))
+
+
 def test_only_a_track_with_no_enabled_module_is_known_unavailable_unasked():
     qobuz = Mock()
-    registry = _Registry({"qobuz": qobuz})
-    sources = ModuleTrackSources(registry)
+    enabled: dict[str, InputModule] = {"qobuz": qobuz}
+    sources = ModuleTrackSources(enabled.get)
 
     assert sources.unavailable_reason(_track_id("qobuz", "q1")) is None
     assert (
@@ -98,7 +132,7 @@ def test_only_a_track_with_no_enabled_module_is_known_unavailable_unasked():
     qobuz.assert_not_called()
     assert qobuz.mock_calls == []
 
-    registry.modules["upnp"] = _Module("upnp")
+    enabled["upnp"] = _Module("upnp")
     assert sources.unavailable_reason(_track_id("upnp", "u1")) is None
 
 
