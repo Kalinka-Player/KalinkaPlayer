@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <expected>
 #include <functional>
 
 namespace {
@@ -46,16 +47,17 @@ float percentToGain(int percent) {
 }
 
 /**
- * @brief Stands in for a source no decoder can play.
+ * @brief Stands in for a source this player cannot play.
  *
- * Reports a decoder error under its own stream id and yields no data, so a
- * queued source fails only once it becomes current, as a decoder error would.
+ * Reports @p reason as a decoder error under its own stream id and yields no
+ * data, so a queued source fails only once it becomes current, as a decoder
+ * error would. The source itself is never opened.
  */
 class UnsupportedStreamNode : public AudioGraphOutputNode {
 public:
-  explicit UnsupportedStreamNode(StreamId id) : AudioGraphNode(id) {
+  UnsupportedStreamNode(StreamId id, std::string reason) : AudioGraphNode(id) {
     setState({AudioGraphNodeState::ERROR,
-              {StreamErrorSource::DECODER, "Unsupported stream format"}});
+              {StreamErrorSource::DECODER, std::move(reason)}});
   }
 
   size_t read(void *, size_t) override { return 0; }
@@ -141,7 +143,8 @@ struct StreamNodes {
 
     const auto decoder = decoderFor(config, format, startOffsetMs);
     if (!decoder) {
-      nodeChain.emplace_back(std::make_shared<UnsupportedStreamNode>(id));
+      nodeChain.emplace_back(
+          std::make_shared<UnsupportedStreamNode>(id, decoder.error()));
       return;
     }
 
@@ -163,17 +166,22 @@ struct StreamNodes {
                    AudioGraphHttpStream::DEFAULT_MAX_REDIRECTS)));
     }
 
-    nodeChain.emplace_back(decoder(nodeChain.back()));
+    nodeChain.emplace_back((*decoder)(nodeChain.back()));
   }
 
   using DecoderFactory = std::function<std::shared_ptr<AudioGraphOutputNode>(
       std::shared_ptr<AudioGraphOutputNode>)>;
 
-  /// Builds the decoder for `format` onto an input; empty when none exists.
-  DecoderFactory decoderFor(const Config &config, const AudioFormat format,
-                            size_t startOffsetMs) const {
+  /// Builds the decoder for `format` onto an input, or says why `config`
+  /// cannot play it, decided before any input is opened.
+  std::expected<DecoderFactory, std::string>
+  decoderFor(const Config &config, const AudioFormat format,
+             size_t startOffsetMs) const {
     switch (format) {
     case AudioFormat::FormatDsd:
+      if (value_or(config, "output.dsd_mode", std::string("disabled")) ==
+          "disabled")
+        return std::unexpected(DSD_DISABLED_ERROR);
       return [id = id, config, startOffsetMs](auto input) {
         auto select = [config](unsigned rate, unsigned channels) {
           return chooseDsdOutput(
@@ -200,7 +208,7 @@ struct StreamNodes {
           value_or(config, "decoder.vorbis.buffer_size", VORBIS_BUFFER_SIZE),
           startOffsetMs);
     default:
-      return {};
+      return std::unexpected("Unsupported stream format");
     }
   }
 

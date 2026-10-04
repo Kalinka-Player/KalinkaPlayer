@@ -593,6 +593,7 @@ TEST_F(NativePlayerStreamTest, UnsupportedSourcesFailBeforeOpeningTheStream) {
   struct SourceCase {
     const char *mime;
     const char *path;
+    const char *error = "Unsupported stream format";
   };
   const SourceCase cases[] = {
       {"audio/aac", "/whole"},
@@ -601,6 +602,9 @@ TEST_F(NativePlayerStreamTest, UnsupportedSourcesFailBeforeOpeningTheStream) {
       {"audio/not-flac", "/whole"},
       {"", "/whole"},
       {"application/octet-stream", "/whole?name=track.flac"},
+      {"audio/x-dsf", "/whole",
+       "DSD playback is disabled in renderer settings"},
+      {"", "/track.dff", "DSD playback is disabled in renderer settings"},
   };
   for (const auto &test : cases) {
     SCOPED_TRACE(std::string(test.mime) + " " + test.path);
@@ -623,13 +627,13 @@ TEST_F(NativePlayerStreamTest, UnsupportedSourcesFailBeforeOpeningTheStream) {
     player_->fillSnapshot(snapshot);
     EXPECT_EQ(snapshot.playback_state(), pb::PLAYBACK_STATE_ERROR);
     EXPECT_EQ(snapshot.error().source(), pb::ERROR_SOURCE_DECODER);
-    EXPECT_EQ(snapshot.error().message(), "Unsupported stream format");
+    EXPECT_EQ(snapshot.error().message(), test.error);
     EXPECT_EQ(snapshot.current_source().source_token(), source.source_token());
     EXPECT_FALSE(snapshot.position_valid());
     EXPECT_TRUE(std::any_of(states.begin(), states.end(), [&](const auto &state) {
       return state.state() == pb::PLAYBACK_STATE_ERROR &&
              state.source_token() == source.source_token() &&
-             state.error().message() == "Unsupported stream format";
+             state.error().message() == test.error;
     }));
     EXPECT_EQ(server_.requestsTo(test.path), 0);
     player_->setStateSink({});
