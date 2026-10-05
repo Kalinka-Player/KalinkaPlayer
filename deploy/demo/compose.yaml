@@ -8,6 +8,9 @@ services:
       dockerfile: deploy/demo/Containerfile
     environment:
       JAMENDO_CLIENT_ID: ${JAMENDO_CLIENT_ID:?set JAMENDO_CLIENT_ID in .env}
+      # Only Caddy can reach the server, so trust its X-Forwarded-For: the
+      # per-visitor rate limit needs each visitor's own address.
+      FORWARDED_ALLOW_IPS: "*"
     volumes:
       - kalinka-state:/var/lib/kalinka
     expose:

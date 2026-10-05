@@ -5,13 +5,15 @@ A public, read-only Kalinka server that anyone can try from the app's "Try demo 
 ## What visitors can and cannot do
 
 - Browse, search and play Jamendo's catalogue. Mood search works too.
-- Use the queue: add, remove, reorder, play, pause, seek, skip, shuffle and repeat.
+- Use the queue: add, remove, reorder, play, pause, seek, skip, shuffle and repeat. The queue holds up to 100 tracks.
 - Change the volume number. Nothing is heard, so it only moves the slider.
 - Look at every setting. Saving, restarting, upgrading, favourites, playlists, collections and renderer changes are all refused with `403 {"detail": {"code": "demo_read_only", ...}}`.
 
 Playback is simulated inside the server by an output named "Demo output". It keeps time like a real renderer, so tracks end and the next one starts. No renderer can connect from outside: the server refuses `/renderer/ws` in demo mode.
 
 Every visitor shares the same queue and the same volume number.
+
+Each visitor's changes are rate-limited: a burst of 20, then one every 3 seconds. Going over is answered `429` with `Retry-After`. The server tells visitors apart by address, so behind a reverse proxy it must trust the proxy's `X-Forwarded-For` header: the compose file sets uvicorn's `FORWARDED_ALLOW_IPS` for that. Reads, including search, are not limited.
 
 ## The demo flag
 
@@ -34,6 +36,8 @@ The `kalinka-state` volume keeps the Jamendo mood index and the text model, whic
 ## Behind another reverse proxy
 
 The app needs WebSockets on `/queue/ws` and `/device/ws`, and unbuffered streaming on `/queue/events` and `/device/events`. For nginx that means `proxy_http_version 1.1`, the `Upgrade` and `Connection` headers, `proxy_buffering off`, and a long `proxy_read_timeout`.
+
+The proxy must set `X-Forwarded-For` to the visitor's address, replacing any value the visitor sent, and the server must trust it through `FORWARDED_ALLOW_IPS`. Otherwise every visitor shares one rate limit.
 
 ## Trying it locally
 

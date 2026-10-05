@@ -53,7 +53,12 @@ from .collections.source import CollectionsSource
 from .collections.store import CollectionStore
 from .config_secrets import secret_values
 from .content_route import register_content_route
-from .demo_mode import DemoReadOnlyGate, page_banners
+from .demo_mode import (
+    DemoReadOnlyGate,
+    DemoWriteThrottle,
+    page_banners,
+    refuse_beyond_queue_limit,
+)
 from .demo_renderer import DemoRenderer
 from .log_export_route import register_log_export_routes
 from .log_export_service import ExportManager
@@ -426,6 +431,9 @@ async def create_app(
     app.add_middleware(
         DemoReadOnlyGate, enabled=lambda: app.state.config.server.demo_mode
     )
+    app.add_middleware(
+        DemoWriteThrottle, enabled=lambda: app.state.config.server.demo_mode
+    )
     app.state.config = config
     app.state.bind_host = bind_host
     app.state.overrides_file = overrides_file
@@ -701,9 +709,13 @@ async def create_app(
 
     @app.post("/queue/add")
     async def add_entity_to_queue(ids: list[str], index: Optional[int] = None):
+        playqueue = player_context.playqueue
+        demo_mode = app.state.config.server.demo_mode
+        await refuse_beyond_queue_limit(demo_mode, playqueue, len(ids))
         items = await tracks_for(ids, browse_source_from_id, enabled_input_module)
+        await refuse_beyond_queue_limit(demo_mode, playqueue, len(items))
 
-        await player_context.playqueue.add(items, index)
+        await playqueue.add(items, index)
         return {"message": "Items added to queue", "count": len(items)}
 
     @app.put("/queue/play")
