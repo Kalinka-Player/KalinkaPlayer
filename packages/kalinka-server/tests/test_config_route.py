@@ -66,6 +66,8 @@ def client(tmp_path, library):
     app.state.config = KalinkaConfig()
     app.state.schema_version = "1"
     app.state.dynamic_paths = frozenset()
+    app.state.readonly_paths = frozenset()
+    app.state.page_banners = []
     app.state.dynamic_field_registry = {}
     app.state.options_registry = OptionsRegistry()
     app.state.overrides = {}

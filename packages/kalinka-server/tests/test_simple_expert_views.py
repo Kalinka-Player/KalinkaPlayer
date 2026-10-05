@@ -29,8 +29,9 @@ from kalinka_server.config_model import KalinkaConfig
 from kalinka_server.config_schema_processor import (
     _importance_from_extras,
     build_presentation,
+    readonly_paths,
 )
-from kalinka_server.presentation_schema import Importance
+from kalinka_server.presentation_schema import Banner, Importance
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +192,39 @@ def test_plugin_catalog_preview_is_off_and_expert_only():
     assert field.label == "Plugin catalog preview"
     assert field.setup.value == "hidden"
     assert not field.readonly
+
+
+def test_demo_mode_is_off_expert_only_and_read_only():
+    schema = build_presentation(base_config=KalinkaConfig(), input_modules={}, devices={})
+    path = "base_config.server.demo_mode"
+    assert path not in _all_field_paths_in_pages(schema.pages)
+    field = next(field for field in schema.expert_fields if field.path == path)
+    assert field.default is False
+    assert field.readonly
+    assert readonly_paths(schema) == {path}
+
+
+def test_a_field_tagged_readonly_is_read_only_without_being_frozen():
+    class _Plugin(ModuleConfig):
+        locked: int = Field(default=1, json_schema_extra={"readonly": True})
+        open_: int = Field(default=2)
+
+    schema = build_presentation(
+        base_config=KalinkaConfig(), input_modules={"p": _Plugin(name="p")}, devices={}
+    )
+    assert "input_modules.p.locked" in readonly_paths(schema)
+    assert "input_modules.p.open_" not in readonly_paths(schema)
+
+
+def test_page_banners_follow_the_declared_ones_and_count_towards_the_version():
+    config = KalinkaConfig()
+    plain = build_presentation(base_config=config, input_modules={}, devices={})
+    banner = Banner(title="Demo server", text="Simulated")
+    shown = build_presentation(
+        base_config=config, input_modules={}, devices={}, page_banners=[banner]
+    )
+    assert _general_page(shown).banners[-1] == banner
+    assert shown.schema_version != plain.schema_version
 
 
 # ---------------------------------------------------------------------------

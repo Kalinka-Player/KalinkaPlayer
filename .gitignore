@@ -89,6 +89,9 @@ kalinka-player-*
 # ...but GitHub metadata (issue templates, workflows) is safe to track
 !.github/**/*.yml
 !.github/**/*.yaml
+# The demo's template holds no secret: the entrypoint fills in the client id
+!deploy/demo/kalinka_conf.cfg
+!deploy/demo/compose.yaml
 
 # Temporary files
 *.tmp

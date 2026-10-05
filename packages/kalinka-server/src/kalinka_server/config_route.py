@@ -42,9 +42,9 @@ def register_config_routes(
 
     @param modules Read on every request, as its plugins can be set up again
         while the server runs.
-    @note Reads ``schema_version``, ``dynamic_paths``,
-        ``dynamic_field_registry``, ``options_registry``, ``overrides`` and
-        ``overrides_file`` off ``app.state`` per request.
+    @note Reads ``schema_version``, ``dynamic_paths``, ``readonly_paths``,
+        ``page_banners``, ``dynamic_field_registry``, ``options_registry``,
+        ``overrides`` and ``overrides_file`` off ``app.state`` per request.
     """
 
     def _partition_modules_and_devices():
@@ -85,6 +85,7 @@ def register_config_routes(
             input_modules_with_errors=err_in,
             devices_with_errors=err_dev,
             dynamic_field_registry=app.state.dynamic_field_registry,
+            page_banners=app.state.page_banners,
         )
         return schema.model_dump(mode="json")
 
@@ -128,7 +129,10 @@ def register_config_routes(
         """
         try:
             changes = changes_from_payload(
-                payload, app.state.schema_version, app.state.dynamic_paths
+                payload,
+                app.state.schema_version,
+                app.state.dynamic_paths,
+                app.state.readonly_paths,
             )
             return changes, await validate_changes(changes, _config_targets())
         except ConfigWriteError as exc:

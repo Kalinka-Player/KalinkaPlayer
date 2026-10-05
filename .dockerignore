@@ -1,0 +1,12 @@
+.venv*
+tmp
+models
+debs
+**/__pycache__
+**/*.egg-info
+packages/kalinka-server/build
+packages/kalinka-image/out
+packages/kalinka-renderer/build*
+packages/kalinka-renderer/*.rpm
+packages/kalinka-renderer/*.deb
+deploy/demo/.env
