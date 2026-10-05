@@ -1,0 +1,3 @@
+{$DEMO_HOST} {
+	reverse_proxy kalinka:8000
+}

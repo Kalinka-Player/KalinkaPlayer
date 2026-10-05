@@ -23,6 +23,7 @@ from kalinka_server.config_validation import (
     ConfigTargets,
     ConfigWriteError,
     DynamicFieldError,
+    ReadOnlyFieldError,
     StaleSchemaError,
     apply_change,
     blocking,
@@ -117,6 +118,17 @@ class TestWhatTheBodyMustBe:
                 {"input_modules.localfiles.storage.status_view"},
             )
         assert caught.value.status_code == 400
+
+    def test_a_read_only_value_cannot_be_written(self):
+        with pytest.raises(ReadOnlyFieldError) as caught:
+            changes_from_payload(
+                {"changes": {"base_config.server.port": 1, "base_config.server.demo_mode": True}},
+                "v1",
+                (),
+                {"base_config.server.demo_mode"},
+            )
+        assert caught.value.status_code == 400
+        assert "demo_mode" in str(caught.value)
 
 
 class TestWhichFieldAPathNames:

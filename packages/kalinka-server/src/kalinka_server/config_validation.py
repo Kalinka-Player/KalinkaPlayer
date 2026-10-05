@@ -62,8 +62,15 @@ class DynamicFieldError(ConfigWriteError):
     """A change targets a value the owning plugin resolves for itself."""
 
 
+class ReadOnlyFieldError(ConfigWriteError):
+    """A change targets a value only the overrides file may set."""
+
+
 def changes_from_payload(
-    payload: Any, schema_version: str, dynamic_paths: Iterable[str]
+    payload: Any,
+    schema_version: str,
+    dynamic_paths: Iterable[str],
+    readonly_paths: Iterable[str] = (),
 ) -> dict[str, Any]:
     """The change map out of a config write body.
 
@@ -88,11 +95,16 @@ def changes_from_payload(
         raise ConfigWriteError("'changes' must be a JSON object")
 
     dynamic = frozenset(dynamic_paths)
+    readonly = frozenset(readonly_paths)
     for key in changes:
         if key in dynamic:
             raise DynamicFieldError(
                 f"'{key}' is a dynamic (plugin-resolved) field and cannot be "
                 "written via /server/config"
+            )
+        if key in readonly:
+            raise ReadOnlyFieldError(
+                f"'{key}' is read-only and cannot be written via /server/config"
             )
     return changes
 
