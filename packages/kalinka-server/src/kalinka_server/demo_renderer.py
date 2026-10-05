@@ -106,7 +106,8 @@ class DemoRenderer:
         # None while the clock is stopped: paused, or nothing playing.
         self._started_at_ms: int | None = None
         self._finish: Cancellable | None = None
-        self._finished = False
+        # What a snapshot reports with nothing playing: the last of these sent.
+        self._resting = pb.PLAYBACK_STATE_STOPPED
         self._volume = 40
 
     def connect(self) -> None:
@@ -173,7 +174,7 @@ class DemoRenderer:
         elif op == "stop":
             self._drop_queued()
             ended = self._end_current()
-            if ended is not None:
+            if ended is not None or self._resting != pb.PLAYBACK_STATE_STOPPED:
                 self._emit(pb.PLAYBACK_STATE_STOPPED, None, 0)
         elif op == "pause":
             self._pause()
@@ -240,7 +241,6 @@ class DemoRenderer:
         previous, self._current = self._current, token
         if previous is not None:
             self._forget(previous)
-        self._finished = False
         self._base_ms = self._sources[token].start_offset_ms
         self._started_at_ms = self._clock.now_ms()
         changed = pb.SourceChanged(source_token=token, at_unix_ms=self._clock.unix_ms())
@@ -302,7 +302,6 @@ class DemoRenderer:
         position = self._position_ms()
         self._current = None
         self._started_at_ms = None
-        self._finished = True
         self._emit(pb.PLAYBACK_STATE_FINISHED, ended, position)
         self._forget(ended)
 
@@ -328,7 +327,7 @@ class DemoRenderer:
     def _reset(self) -> None:
         self._drop_queued()
         self._end_current()
-        self._finished = False
+        self._resting = pb.PLAYBACK_STATE_STOPPED
 
     def _cancel_finish(self) -> None:
         if self._finish is not None:
@@ -336,6 +335,8 @@ class DemoRenderer:
             self._finish = None
 
     def _emit(self, state: int, token: str | None, position_ms: int) -> None:
+        if state in (pb.PLAYBACK_STATE_FINISHED, pb.PLAYBACK_STATE_STOPPED):
+            self._resting = state
         message = pb.PlaybackStateChanged(
             state=state,
             position_ms=position_ms,
@@ -364,10 +365,8 @@ class DemoRenderer:
             duration = self._durations.get(self._current)
             if duration:
                 snapshot.duration_ms = duration
-        elif self._finished:
-            snapshot.playback_state = pb.PLAYBACK_STATE_FINISHED
         else:
-            snapshot.playback_state = pb.PLAYBACK_STATE_STOPPED
+            snapshot.playback_state = self._resting
         snapshot.queued_source_tokens.extend(self._queued)
         self._fill_volume(snapshot.volume)
         return snapshot

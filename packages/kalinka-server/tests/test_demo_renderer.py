@@ -127,6 +127,11 @@ async def _session(rig: Rig):
     return session
 
 
+async def _snapshot_state(rig: Rig, session) -> int:
+    await session.request_snapshot()
+    return rig.wire.of(StateChange.SNAPSHOT)[-1].playback_state
+
+
 async def test_a_source_plays_for_its_length(rig):
     rig.durations["1"] = 3000
     session = await _session(rig)
@@ -240,6 +245,7 @@ async def test_removing_the_current_source_hands_over_or_finishes(rig):
     await session.remove_source("2")
     assert rig.wire.states() == [(FINISHED, 0, "2")]
     assert rig.clock.pending == []
+    assert await _snapshot_state(rig, session) == FINISHED
 
 
 async def test_removing_a_queued_source_leaves_the_current_one_playing(rig):
@@ -268,6 +274,24 @@ async def test_clearing_or_stopping_ends_playback_and_its_clock(rig, command, re
     await getattr(session, command)()
     assert rig.wire.states() == [(rest, 0, "")]
     assert rig.clock.pending == []
+    assert await _snapshot_state(rig, session) == rest
+
+
+async def test_a_stop_after_the_last_source_ran_out_rests_in_stopped(rig):
+    rig.durations["1"] = 1000
+    session = await _session(rig)
+    await session.enqueue_source("http://x/1", source_token="1")
+    rig.clock.advance(1000)
+    assert await _snapshot_state(rig, session) == FINISHED
+    rig.wire.clear()
+
+    await session.stop()
+    assert rig.wire.states() == [(STOPPED, 0, "")]
+    assert await _snapshot_state(rig, session) == STOPPED
+
+    rig.wire.clear()
+    await session.stop()
+    assert rig.wire.states() == []
 
 
 async def test_closing_the_session_ends_playback_and_its_clock(rig):
