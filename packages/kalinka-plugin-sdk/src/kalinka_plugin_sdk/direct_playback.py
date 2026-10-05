@@ -53,6 +53,17 @@ class TransportRequest:
     position_ms: Optional[int] = None
 
 
+@dataclass(frozen=True)
+class OutputCapabilities:
+    """SDK 3.9: what the output acquire() would take can play, as the server knows it.
+
+    ``dsd`` is True while the renderer is set to output DSD, False when it is
+    not or has no such setting, and None when the server could not ask it.
+    """
+
+    dsd: Optional[bool] = None
+
+
 class OutputUnavailable(RuntimeError):
     """No renderer can be played through right now; the message says why."""
 
@@ -187,5 +198,14 @@ class DirectPlayback(Protocol):
         A second acquire by the same plugin ends its first hold.
 
         @throw OutputUnavailable when no renderer can be played through.
+        """
+        ...
+
+    async def output_capabilities(self) -> OutputCapabilities:
+        """SDK 3.9: what the output acquire() would take can play right now.
+
+        Asks the renderer without taking the output, so call it when the
+        answer is needed rather than on every state update. Never raises: a
+        renderer that cannot be asked yields fields of None.
         """
         ...
