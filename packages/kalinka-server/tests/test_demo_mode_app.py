@@ -1,7 +1,10 @@
 """A demo server built by the production app: what it serves, what it refuses,
 and what it tells a client about itself."""
 
+import re
+
 import pytest
+from fastapi.routing import APIWebSocketRoute
 
 from kalinka_server import server, update_check
 from kalinka_server.config_model import KalinkaConfig
@@ -9,6 +12,24 @@ from tests.app_harness import isolate_app, running
 
 DEMO_FLAG = "base_config.server.demo_mode"
 CATALOG_FLAG = "base_config.server.plugin_catalog_enabled"
+
+# Every change a demo server lets through. A route added later that changes
+# something is refused, or joins this list on purpose.
+LET_THROUGH = {
+    ("POST", "/queue/add"),
+    ("PUT", "/queue/play"),
+    ("PUT", "/queue/pause"),
+    ("PUT", "/queue/next"),
+    ("PUT", "/queue/prev"),
+    ("PUT", "/queue/stop"),
+    ("PUT", "/queue/current_track/seek"),
+    ("PUT", "/queue/mode"),
+    ("PUT", "/queue/clear"),
+    ("POST", "/queue/remove"),
+    ("PUT", "/queue/move"),
+    ("PUT", "/device/set_volume"),
+}
+SOCKETS = {"/queue/ws", "/device/ws", "/renderer/ws"}
 
 
 @pytest.fixture
@@ -77,7 +98,31 @@ async def test_a_demo_server_refuses_every_change_but_the_queue(isolated):
             "/server/config/validate",
             json={"schema_version": schema_version, "changes": {CATALOG_FLAG: True}},
         )
-        assert dry_run.status_code == 200
+        assert _refused(dry_run)
+
+
+def _changes(app) -> set[tuple[str, str]]:
+    """Every (method, path) the app serves that is not a read."""
+    app.openapi_schema = None
+    return {
+        (method.upper(), path)
+        for path, operations in app.openapi()["paths"].items()
+        for method in operations
+        if method not in ("get", "head", "options")
+    }
+
+
+async def test_whatever_the_client_a_demo_server_changes_only_the_queue(isolated):
+    app = await _app(isolated, demo=True)
+    async with running(app) as client:
+        changes = _changes(app)
+        assert LET_THROUGH <= changes
+        for method, path in sorted(changes - LET_THROUGH):
+            concrete = re.sub(r"\{[^}]+\}", "x", path)
+            response = await client.request(method, concrete)
+            assert _refused(response), (method, path, response.status_code)
+        sockets = {r.path for r in app.routes if isinstance(r, APIWebSocketRoute)}
+        assert sockets == SOCKETS
 
 
 async def test_a_demo_server_says_what_it_is(isolated):

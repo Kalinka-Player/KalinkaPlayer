@@ -428,11 +428,12 @@ async def create_app(
     bind_host: str | None = None,
 ):
     app = FastAPI(lifespan=lifespan)
-    app.add_middleware(
-        DemoReadOnlyGate, enabled=lambda: app.state.config.server.demo_mode
-    )
+    # The gate is added last so it runs first: a refused change costs no token.
     app.add_middleware(
         DemoWriteThrottle, enabled=lambda: app.state.config.server.demo_mode
+    )
+    app.add_middleware(
+        DemoReadOnlyGate, enabled=lambda: app.state.config.server.demo_mode
     )
     app.state.config = config
     app.state.bind_host = bind_host
