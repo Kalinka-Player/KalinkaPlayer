@@ -92,7 +92,9 @@ def get_version() -> str:
 # {"detail": {"code": "demo_read_only", "message"}}, refuses /renderer/ws,
 # reports upgrade_supported false, carries a General-page banner, and plays
 # through the simulated renderer `demo-output`, which reports a length and no
-# format.
+# format. It answers a POST /queue/add past its queue limit with 409
+# `demo_queue_full`, and a visitor's changes past its rate limit with 429
+# `demo_rate_limited` and Retry-After.
 REST_API_VERSION = "0.10"
 
 

@@ -2,13 +2,18 @@
 
 Every write outside the queue and playback plane is answered 403 before it
 reaches a route, and no renderer may register from outside, so the server stays
-as it was deployed whoever connects to it.
+as it was deployed whoever connects to it. What is let through is bounded: each
+visitor's changes are rate-limited and the shared queue has a fixed size.
 """
 
 from __future__ import annotations
 
+import math
+import time
 from collections.abc import Callable
 
+from fastapi import HTTPException
+from kalinka_plugin_sdk.api import PlayQueueController
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -23,6 +28,23 @@ REFUSAL = {
         "settings, favourites, playlists and collections cannot be changed here."
     ),
 }
+
+QUEUE_LIMIT = 100
+QUEUE_FULL = {
+    "code": "demo_queue_full",
+    "message": (
+        f"The demo queue holds up to {QUEUE_LIMIT} tracks. Remove some, or "
+        "clear the queue, to add more."
+    ),
+}
+
+THROTTLED = {
+    "code": "demo_rate_limited",
+    "message": "Too many changes at once. Wait a moment and try again.",
+}
+_WRITE_BURST = 20
+_WRITE_INTERVAL_S = 3.0
+_MAX_TRACKED_CLIENTS = 4096
 
 _BANNER = Banner(
     title="Demo server",
@@ -45,6 +67,22 @@ def is_write_allowed(method: str, path: str) -> bool:
     if method.upper() in _READS:
         return True
     return path.startswith("/queue/") or path in _WRITABLE_PATHS
+
+
+async def refuse_beyond_queue_limit(
+    demo_mode: bool, playqueue: PlayQueueController, adding: int
+) -> None:
+    """Refuse, on a demo server, an add that would take the shared queue past
+    QUEUE_LIMIT tracks.
+
+    @param adding Ids or tracks: checked on the ids first, since every id costs
+        its source a lookup, and again on the tracks they expanded to.
+    """
+    if not demo_mode:
+        return
+    queued = (await playqueue.list(offset=0, limit=0)).total
+    if queued + adding > QUEUE_LIMIT:
+        raise HTTPException(status_code=409, detail=QUEUE_FULL)
 
 
 def page_banners(config: KalinkaConfig) -> list[Banner]:
@@ -83,4 +121,88 @@ class DemoReadOnlyGate:
         ):
             await send({"type": "websocket.close", "code": _POLICY_VIOLATION})
             return
+        await self._app(scope, receive, send)
+
+
+class ClientRate:
+    """A token bucket per client: ``burst`` requests at once, then one every
+    ``interval_s``.
+
+    Only clients still owed tokens are worth remembering, so a full bucket is
+    forgotten once the table grows past a bound.
+    """
+
+    def __init__(
+        self,
+        burst: int = _WRITE_BURST,
+        interval_s: float = _WRITE_INTERVAL_S,
+        now: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._burst = burst
+        self._interval_s = interval_s
+        self._now = now
+        self._buckets: dict[str, tuple[float, float]] = {}
+
+    def take(self, client: str) -> float:
+        """Spend one of ``client``'s tokens: 0 when it may go ahead, otherwise
+        the seconds until it may."""
+        now = self._now()
+        tokens = self._tokens(client, now)
+        if tokens < 1:
+            return (1 - tokens) * self._interval_s
+        self._buckets[client] = (tokens - 1, now)
+        if len(self._buckets) > _MAX_TRACKED_CLIENTS:
+            self._forget_full(now)
+        return 0.0
+
+    def _tokens(self, client: str, now: float) -> float:
+        held = self._buckets.get(client)
+        if held is None:
+            return float(self._burst)
+        tokens, at = held
+        return min(self._burst, tokens + (now - at) / self._interval_s)
+
+    def _forget_full(self, now: float) -> None:
+        for client in list(self._buckets):
+            if self._tokens(client, now) >= self._burst:
+                del self._buckets[client]
+
+
+class DemoWriteThrottle:
+    """ASGI middleware rate-limiting each visitor's changes on a demo server.
+
+    Reads pass untouched. A change over the limit is answered
+    ``429 {"detail": THROTTLED}`` with ``Retry-After``. Visitors are told apart
+    by address, so behind a reverse proxy the server must trust its forwarded
+    header (uvicorn's ``FORWARDED_ALLOW_IPS``).
+
+    @param enabled Asked on every request, as for DemoReadOnlyGate.
+    """
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        enabled: Callable[[], bool],
+        rate: ClientRate | None = None,
+    ) -> None:
+        self._app = app
+        self._enabled = enabled
+        self._rate = rate if rate is not None else ClientRate()
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            scope["type"] == "http"
+            and scope["method"].upper() not in _READS
+            and self._enabled()
+        ):
+            client = scope.get("client")
+            wait_s = self._rate.take(client[0] if client else "")
+            if wait_s > 0:
+                refusal = JSONResponse(
+                    {"detail": THROTTLED},
+                    status_code=429,
+                    headers={"Retry-After": str(math.ceil(wait_s))},
+                )
+                await refusal(scope, receive, send)
+                return
         await self._app(scope, receive, send)
