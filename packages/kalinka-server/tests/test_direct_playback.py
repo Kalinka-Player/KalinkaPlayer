@@ -22,6 +22,7 @@ from kalinka_plugin_sdk.datamodel import (
 )
 from kalinka_plugin_sdk.direct_playback import (
     HoldEnded,
+    OutputCapabilities,
     OutputUnavailable,
     RevokeReason,
     TransportKind,
@@ -46,6 +47,7 @@ from kalinka_server.direct_playback import DirectPlaybackService
 from kalinka_server.external_playback import ExternalPlaybackService
 from kalinka_server.playback_arbiter import PlaybackArbiter
 from kalinka_server.playqueue import PlayQueueImpl
+from kalinka_server.renderer_config import RendererConfigService
 from kalinka_server.renderer_output_device import RendererVolumeDevice
 from kalinka_server.renderer_registry import RendererRegistry
 from kalinka_server.renderer_sessions import RendererBusy, SessionPool
@@ -164,11 +166,19 @@ def device_bus():
 
 
 @pytest.fixture
-def direct(renderer, arbiter, router, device_bus, queue):
+def configs(renderer):
+    configs = RendererConfigService(renderer.registry, timeout_s=0.2)
+    renderer.configs = configs
+    return configs
+
+
+@pytest.fixture
+def direct(renderer, configs, arbiter, router, device_bus, queue):
     return DirectPlaybackService(
         "qobuz",
         config=KalinkaConfig(),
         registry=renderer.registry,
+        renderer_configs=configs,
         pool=renderer.pool,
         arbiter=arbiter,
         device_router=lambda: router,
@@ -553,6 +563,7 @@ async def test_without_a_renderer_nothing_is_taken(emitter, arbiter, device_bus)
             "qobuz",
             config=KalinkaConfig(),
             registry=registry,
+            renderer_configs=RendererConfigService(registry),
             pool=pool,
             arbiter=arbiter,
             device_router=lambda: FakeRouter(),
@@ -561,8 +572,44 @@ async def test_without_a_renderer_nothing_is_taken(emitter, arbiter, device_bus)
         with pytest.raises(OutputUnavailable):
             await direct.acquire("Qobuz Connect", Listener())
         assert not arbiter.held_by_plugin
+        assert await direct.output_capabilities() == OutputCapabilities()
     finally:
         await playqueue.__aexit__(None, None, None)
+
+
+@pytest.mark.parametrize(
+    "dsd_mode,dsd",
+    [
+        ("auto", True),
+        ("native", True),
+        ("dop", True),
+        ("disabled", False),
+        ("", False),
+        (None, False),
+    ],
+)
+async def test_the_renderer_dsd_setting_is_told_without_taking_the_output(
+    renderer, direct, arbiter, dsd_mode, dsd
+):
+    renderer.dsd_mode = dsd_mode
+    assert await direct.output_capabilities() == OutputCapabilities(dsd=dsd)
+    assert renderer.session_id is None
+    assert not arbiter.held_by_plugin
+
+
+async def test_a_renderer_that_does_not_answer_leaves_dsd_unknown(renderer, direct):
+    renderer.configs = None
+    assert await direct.output_capabilities() == OutputCapabilities()
+
+
+async def test_a_socket_failing_mid_question_leaves_dsd_unknown(
+    renderer, direct, monkeypatch
+):
+    async def closed(message_id):
+        raise RuntimeError("Cannot call send once a close message has been sent")
+
+    monkeypatch.setattr(renderer, "send_config_request", closed)
+    assert await direct.output_capabilities() == OutputCapabilities()
 
 
 async def test_a_renderer_another_core_holds_refuses(
@@ -733,6 +780,7 @@ async def test_a_client_joining_mid_hold_is_told_the_queue_is_not_playing(
         "qobuz",
         config=KalinkaConfig(),
         registry=renderer.registry,
+        renderer_configs=RendererConfigService(renderer.registry),
         pool=renderer.pool,
         arbiter=arbiter,
         device_router=lambda: FakeRouter(),

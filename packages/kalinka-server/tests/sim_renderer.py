@@ -65,9 +65,11 @@ class SimRenderer:
         # Set accept=False to play a renderer another Core already holds.
         self.accept = True
         self.busy_owner = "another-core"
-        # A RendererConfigService to answer config updates through; without it
-        # updates are recorded but never acknowledged (the caller times out).
+        # A RendererConfigService to answer config requests and updates
+        # through; without it they are never acknowledged (the caller times out).
         self.configs = None
+        # None plays a renderer with no DSD setting at all.
+        self.dsd_mode: Optional[str] = "disabled"
         self._message_id = 0
         # The address this renderer reached the server on, as the ws handler
         # records it; content URLs are minted against it.
@@ -172,6 +174,20 @@ class SimRenderer:
     def next_message_id(self) -> int:
         self._message_id += 1
         return self._message_id
+
+    async def send_config_request(self, message_id: int) -> None:
+        if self.configs is None:
+            return
+        snapshot = pb.ConfigSnapshot()
+        section = snapshot.sections.add()
+        section.path = "output"
+        if self.dsd_mode is not None:
+            field = section.fields.add()
+            field.path = "output.dsd_mode"
+            field.type = pb.CONFIG_FIELD_TYPE_ENUM
+            field.value = self.dsd_mode
+            field.default_value = "disabled"
+        self.configs.handle_reply(self.RENDERER_ID, self, message_id, snapshot)
 
     async def send_config_update(self, message_id: int, changes: dict) -> None:
         self.config_updates.append(dict(changes))

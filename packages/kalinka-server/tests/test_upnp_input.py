@@ -21,7 +21,7 @@ pytest_plugins = ["tests.test_direct_playback"]
 
 
 @pytest.fixture
-async def upnp(renderer, arbiter, router, device_bus, queue):
+async def upnp(renderer, configs, arbiter, router, device_bus, queue):
     device = await RendererVolumeDevice(
         renderer.registry, renderer.pool, device_bus
     ).start()
@@ -30,6 +30,7 @@ async def upnp(renderer, arbiter, router, device_bus, queue):
         "upnp",
         config=KalinkaConfig(),
         registry=renderer.registry,
+        renderer_configs=configs,
         pool=renderer.pool,
         arbiter=arbiter,
         device_router=lambda: router,

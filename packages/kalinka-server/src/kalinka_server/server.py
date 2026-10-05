@@ -463,6 +463,7 @@ async def create_app(
         renderer_registry,
         renderer_prefs,
         renderer_sessions,
+        renderer_configs,
         app.state.overrides_file,
     )
     logger.info("Input modules found: %s", list(modules.prepared_input_modules.keys()))

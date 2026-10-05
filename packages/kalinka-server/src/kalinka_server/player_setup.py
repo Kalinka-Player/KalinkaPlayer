@@ -48,6 +48,7 @@ from .module_timeout import TimeLimitedInputModule
 from .output_device_router import OutputDeviceRouter
 from .playback_arbiter import PlaybackArbiter
 from .playqueue import PlayQueueImpl
+from .renderer_config import RendererConfigService
 from .renderer_output_device import RendererOutputPlugin
 from .renderer_prefs import RendererPreferences
 from .renderer_registry import RendererRegistry
@@ -745,6 +746,7 @@ async def setup(
     renderer_registry: RendererRegistry,
     renderer_prefs: RendererPreferences,
     renderer_sessions: SessionPool,
+    renderer_configs: RendererConfigService,
     overrides_file: str | None = None,
 ) -> PlayerContext:
     """Setup the player components.
@@ -808,6 +810,7 @@ async def setup(
         plugin_id,
         config=config,
         registry=renderer_registry,
+        renderer_configs=renderer_configs,
         pool=renderer_sessions,
         arbiter=arbiter,
         device_router=lambda: player_context.device_router,

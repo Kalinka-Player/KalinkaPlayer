@@ -27,6 +27,7 @@ from kalinka_plugin_sdk.datamodel import (
 from kalinka_plugin_sdk.direct_playback import (
     DirectPlaybackListener,
     HoldEnded,
+    OutputCapabilities,
     OutputUnavailable,
     RevokeReason,
     TransportRequest,
@@ -44,6 +45,7 @@ from .module_timeout import PLUGIN_CALL_TIMEOUT_S
 from .output_device_router import OutputDeviceRouter
 from .playback_arbiter import PlaybackArbiter
 from .playback_view import to_audio_info, to_state_name
+from .renderer_config import RendererConfigService, setting_value
 from .renderer_player import RendererPlayer
 from .renderer_registry import RendererRegistry, RendererUnavailable
 from .renderer_sessions import (
@@ -57,6 +59,9 @@ from .stream_state import AudioGraphNodeState, StateMonitor, StreamState
 logger = logging.getLogger(__name__.split(".")[-1])
 
 DeviceEvents = EventBus[ExtDeviceState, ExtDeviceEventType, ExtDeviceEvent]
+
+# The native renderer's documented setting; the protocol carries no capabilities yet.
+DSD_MODE_PATH = "output.dsd_mode"
 
 
 class _ListenerBridge:
@@ -469,6 +474,7 @@ class DirectPlaybackService:
         *,
         config: KalinkaConfig,
         registry: RendererRegistry,
+        renderer_configs: RendererConfigService,
         pool: SessionPool,
         arbiter: PlaybackArbiter,
         device_router: Callable[[], Optional[OutputDeviceRouter]],
@@ -477,6 +483,7 @@ class DirectPlaybackService:
         self._plugin_id = plugin_id
         self._config = config
         self._registry = registry
+        self._renderer_configs = renderer_configs
         self._pool = pool
         self._arbiter = arbiter
         self._device_router = device_router
@@ -522,3 +529,21 @@ class DirectPlaybackService:
         self._session = session
         logger.info("%s took renderer %s", self._plugin_id, renderer_id)
         return session
+
+    async def output_capabilities(self) -> OutputCapabilities:
+        renderer_id = self._registry.active_id()
+        if renderer_id is None:
+            return OutputCapabilities()
+        try:
+            settings = await self._renderer_configs.get(renderer_id)
+        except (RendererUnavailable, asyncio.TimeoutError):
+            return OutputCapabilities()
+        except Exception as exc:  # noqa: BLE001 - the SDK promises this never raises
+            logger.warning(
+                "Could not ask renderer %s for its settings (%s)",
+                renderer_id,
+                type(exc).__name__,
+            )
+            return OutputCapabilities()
+        dsd_mode = setting_value(settings, DSD_MODE_PATH)
+        return OutputCapabilities(dsd=dsd_mode not in (None, "", "disabled"))
