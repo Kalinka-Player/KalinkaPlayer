@@ -269,6 +269,9 @@ def test_boolean_schema_version_is_not_a_version(payload):
 
 def test_mutation_during_read_is_not_a_match(payload, monkeypatch):
     _, roots = payload
+    init = roots["python"] / "demo/__init__.py"
+    # Installed files predate the check; a coarse clock stamps same-tick writes alike.
+    os.utime(init, ns=(0, 0))
     original_read = os.read
     modified = False
 
@@ -279,7 +282,7 @@ def test_mutation_during_read_is_not_a_match(payload, monkeypatch):
             modified = True
             # Change already-read bytes: checking the digest alone would miss
             # this, so inode/stat stability must also be checked.
-            (roots["python"] / "demo/__init__.py").write_bytes(b"x" * len(data))
+            init.write_bytes(b"x" * len(data))
         return data
 
     monkeypatch.setattr(os, "read", racing_read)
