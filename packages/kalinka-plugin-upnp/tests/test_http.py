@@ -203,9 +203,28 @@ async def test_unsupported_media_does_not_interrupt_current_playback(
     direct.sessions[0].release.assert_not_called()
 
 
+async def test_dsd_url_without_metadata_is_played(client, receiver, direct):
+    uri = "http://media.test/Track%2001.dsf"
+    assert (
+        await action(
+            client,
+            receiver,
+            AVT,
+            "SetAVTransportURI",
+            {"InstanceID": 0, "CurrentURI": uri, "CurrentURIMetaData": ""},
+        )
+        == {}
+    )
+    await action(client, receiver, AVT, "Play", {"InstanceID": 0, "Speed": 1})
+    source = direct.sessions[0].play.call_args.args[0]
+    assert source.source.url == uri
+    assert source.format == "audio/x-dsf"
+
+
 async def test_connection_and_rendering_controls(client, receiver, direct):
     protocols = await action(client, receiver, CM, "GetProtocolInfo", {})
     assert "http-get:*:audio/flac:*" in protocols["Sink"]
+    assert "http-get:*:audio/x-dsf:*" in protocols["Sink"]
     assert "audio/aac" not in protocols["Sink"]
     assert await action(client, receiver, CM, "GetCurrentConnectionIDs", {}) == {
         "ConnectionIDs": "0"

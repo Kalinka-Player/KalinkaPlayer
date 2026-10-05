@@ -6,10 +6,20 @@ the configured device name in a UPnP control app on the same network.
 
 The controller supplies an HTTP(S) audio URL and optional DIDL-Lite metadata.
 The selected renderer fetches the resource directly; the plugin does not
-download, transcode, or add it to the Kalinka queue. MP3, FLAC, and Ogg/Vorbis
-are advertised, matching the native renderer's decoders. Extensionless URLs
-need a supported MIME type in the matching DIDL `res` element. The URL must
-be reachable from the renderer and support byte ranges for seeking.
+download, transcode, or add it to the Kalinka queue. MP3, FLAC, Ogg/Vorbis,
+DSF (`.dsf`) and DSDIFF (`.dff`) are advertised, matching the native renderer's
+decoders. Extensionless URLs need a supported MIME type in the matching DIDL
+`res` element. The URL must be reachable from the renderer and support byte
+ranges for seeking.
+
+DSD playback requires the renderer's DSD output setting, a direct hardware
+output and Fixed volume, and is limited to mono/stereo DSF and uncompressed
+DSDIFF; DST-compressed `.dff` is refused. See the
+[renderer settings](../kalinka-renderer/README.md#settings).
+DSD is advertised whatever those settings are, so a controller that would
+convert DSD to PCM for a renderer without it sends DSD instead. If the renderer
+cannot play it, the transport stops with `ERROR_OCCURRED` and Kalinka's player
+state gives the renderer's reason.
 
 `Play` takes exclusive control through SDK `DirectPlayback`. Kalinka's queue
 keeps its contents. Queue playback, another input taking control, renderer
