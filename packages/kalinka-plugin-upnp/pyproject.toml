@@ -20,7 +20,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    "kalinka-plugin-sdk>=3.6,<4",
+    "kalinka-plugin-sdk>=3.9,<4",
     "aiohttp>=3.10,<4",
     "defusedxml>=0.7,<1",
 ]

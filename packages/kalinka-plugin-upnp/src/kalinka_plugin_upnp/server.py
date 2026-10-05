@@ -12,7 +12,15 @@ from .discovery import SERVER, Discovery
 from .events import Eventing
 from .media import UpnpError
 from .playback import Playback
-from .services import SERVICES, SOAP, Services, description, soap_fault, soap_response
+from .services import (
+    CM,
+    SERVICES,
+    SOAP,
+    Services,
+    description,
+    soap_fault,
+    soap_response,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +83,8 @@ class Receiver:
         return self.xml_response(self.service(request).scpd())
 
     async def subscribe(self, request):
-        self.service(request)
+        if self.service(request) is CM and request.method == "SUBSCRIBE":
+            await self.services.refresh_dsd()
         return await self.eventing.handle(request)
 
     async def control(self, request):

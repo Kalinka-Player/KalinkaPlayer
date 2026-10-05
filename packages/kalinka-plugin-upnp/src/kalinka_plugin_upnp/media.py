@@ -38,7 +38,7 @@ MIME_TYPES = {
     "audio/dsd": "audio/dsd",
     "audio/x-dsd": "audio/dsd",
 }
-SINK_PROTOCOL_INFO = ",".join(f"http-get:*:{mime}:*" for mime in MIME_TYPES)
+DSD_FORMATS = frozenset({"audio/x-dsf", "audio/x-dff", "audio/dsd"})
 EXTENSION_TYPES = {
     "mp3": "audio/mpeg",
     "flac": "audio/flac",
@@ -47,6 +47,15 @@ EXTENSION_TYPES = {
     "dsf": "audio/x-dsf",
     "dff": "audio/x-dff",
 }
+
+
+def sink_protocol_info(dsd: bool) -> str:
+    """The SinkProtocolInfo to advertise; DSD only while the renderer outputs it."""
+    return ",".join(
+        f"http-get:*:{mime}:*"
+        for mime, sent in MIME_TYPES.items()
+        if dsd or sent not in DSD_FORMATS
+    )
 
 
 class UpnpError(Exception):

@@ -3,16 +3,26 @@ from pathlib import Path
 
 import pytest
 from kalinka_plugin_upnp.media import (
+    DSD_FORMATS,
     MIME_TYPES,
     Media,
     UpnpError,
     format_time,
     parse_time,
+    sink_protocol_info,
 )
 
 NATIVE_PLAYER = Path(__file__).resolve().parents[2].joinpath(
     "kalinka-renderer", "src", "player", "NativePlayer.cpp"
 )
+DSD_TYPES = [
+    "audio/x-dsf",
+    "audio/dsf",
+    "audio/x-dff",
+    "audio/dff",
+    "audio/dsd",
+    "audio/x-dsd",
+]
 DIDL = """<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"
  xmlns:dc="http://purl.org/dc/elements/1.1/"
  xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">
@@ -56,21 +66,29 @@ def test_didl_uses_the_matching_resource_and_maps_metadata():
     assert media.metadata == DIDL
 
 
-@pytest.mark.parametrize(
-    "declared",
-    [
-        "audio/x-dsf",
-        "audio/dsf",
-        "audio/x-dff",
-        "audio/dff",
-        "audio/dsd",
-        "audio/x-dsd",
-    ],
-)
+@pytest.mark.parametrize("declared", DSD_TYPES)
 def test_declared_dsd_reaches_the_renderer_as_dsd(declared, renderer_formats):
     metadata = DIDL.replace("audio/flac", declared)
     media = Media.parse("http://media.test/audio?key=secret&id=42", metadata)
     assert renderer_formats[media.source.format] == "FormatDsd"
+
+
+def test_dsd_is_advertised_only_while_the_renderer_outputs_it():
+    advertised = {
+        dsd: {entry.split(":")[2] for entry in sink_protocol_info(dsd).split(",")}
+        for dsd in (False, True)
+    }
+    assert advertised[True] == MIME_TYPES.keys()
+    assert advertised[True] - advertised[False] == set(DSD_TYPES)
+
+
+def test_every_type_the_renderer_plays_as_dsd_waits_for_dsd_output(
+    renderer_formats,
+):
+    sent_as_dsd = {
+        sent for sent in MIME_TYPES.values() if renderer_formats[sent] == "FormatDsd"
+    }
+    assert sent_as_dsd == DSD_FORMATS
 
 
 def test_every_type_sent_to_the_renderer_selects_the_declared_decoder(

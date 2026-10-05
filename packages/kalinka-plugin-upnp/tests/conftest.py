@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from kalinka_plugin_sdk.datamodel import DeviceVolume
-from kalinka_plugin_sdk.direct_playback import RevokeReason
+from kalinka_plugin_sdk.direct_playback import OutputCapabilities, RevokeReason
 
 
 class FakeHold:
@@ -33,6 +33,12 @@ class FakeDirect:
     def __init__(self):
         self.sessions = []
         self.acquire = AsyncMock(side_effect=self._acquire)
+        self.output_capabilities = AsyncMock(
+            return_value=OutputCapabilities(dsd=False)
+        )
+
+    def set_dsd(self, dsd):
+        self.output_capabilities.return_value = OutputCapabilities(dsd=dsd)
 
     async def _acquire(self, title, listener):
         hold = FakeHold(listener)

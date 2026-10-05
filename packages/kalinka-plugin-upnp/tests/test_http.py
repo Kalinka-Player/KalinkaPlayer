@@ -6,10 +6,11 @@ from xml.etree import ElementTree as ET
 import pytest
 from aiohttp import ClientSession, web
 from kalinka_plugin_sdk.datamodel import DeviceVolume, PlaybackState, PlayerStateEnum
+from kalinka_plugin_sdk.direct_playback import OutputCapabilities
 from kalinka_plugin_upnp.media import Media
 from kalinka_plugin_upnp.server import Receiver
 from kalinka_plugin_upnp.services import AVT, CM, DEVICE_TYPE, RCS, SERVICES, SOAP
-from test_media import DIDL
+from test_media import DIDL, DSD_TYPES
 
 
 @pytest.fixture
@@ -203,7 +204,97 @@ async def test_unsupported_media_does_not_interrupt_current_playback(
     direct.sessions[0].release.assert_not_called()
 
 
+@pytest.mark.parametrize("dsd", [None, False, True])
+async def test_dsd_is_advertised_only_while_the_renderer_outputs_it(
+    client, receiver, direct, dsd
+):
+    direct.set_dsd(dsd)
+    protocols = await action(client, receiver, CM, "GetProtocolInfo", {})
+    advertised = {entry.split(":")[2] for entry in protocols["Sink"].split(",")}
+    assert "audio/flac" in advertised
+    assert advertised & set(DSD_TYPES) == (set(DSD_TYPES) if dsd else set())
+
+
+async def test_a_server_that_cannot_answer_leaves_dsd_unadvertised(
+    client, receiver, direct
+):
+    direct.output_capabilities.side_effect = AttributeError
+    protocols = await action(client, receiver, CM, "GetProtocolInfo", {})
+    assert "audio/flac" in protocols["Sink"]
+    assert "audio/x-dsf" not in protocols["Sink"]
+    async with client.request(
+        "SUBSCRIBE",
+        endpoint(receiver, "/ConnectionManager/event"),
+        headers={"NT": "upnp:event", "CALLBACK": "<http://127.0.0.1:9/>"},
+    ) as response:
+        assert response.status == 200
+
+
+async def test_an_answer_overtaken_by_a_later_question_is_not_kept(receiver, direct):
+    gates = {False: asyncio.Event(), True: asyncio.Event()}
+    answers = iter(gates)
+
+    async def answer():
+        dsd = next(answers)
+        await gates[dsd].wait()
+        return OutputCapabilities(dsd=dsd)
+
+    direct.output_capabilities.side_effect = answer
+    before_the_switch = asyncio.create_task(receiver.services.refresh_dsd())
+    after_the_switch = asyncio.create_task(receiver.services.refresh_dsd())
+    await asyncio.sleep(0)
+    gates[True].set()
+    await after_the_switch
+    gates[False].set()
+    await before_the_switch
+    assert receiver.services.dsd is True
+
+
+async def test_dsd_is_refused_while_the_renderer_does_not_output_it(
+    client, receiver, direct
+):
+    await set_uri(client, receiver)
+    await action(client, receiver, AVT, "Play", {"InstanceID": 0, "Speed": 1})
+    for name, prefix in (
+        ("SetAVTransportURI", "Current"),
+        ("SetNextAVTransportURI", "Next"),
+    ):
+        arguments = {
+            "InstanceID": 0,
+            f"{prefix}URI": "http://media.test/a.dsf",
+            f"{prefix}URIMetaData": "",
+        }
+        assert await action(client, receiver, AVT, name, arguments, status=500) == "714"
+    assert receiver.playback.active
+    assert receiver.playback.current.uri == "http://media.test/audio?key=secret&id=42"
+    assert receiver.playback.next is None
+    direct.sessions[0].play.assert_awaited_once()
+    direct.sessions[0].release.assert_not_called()
+
+
+async def test_controllers_are_told_when_dsd_output_changes(
+    client, receiver, direct, callback
+):
+    url, notifications = callback
+    direct.set_dsd(True)
+    async with client.request(
+        "SUBSCRIBE",
+        endpoint(receiver, "/ConnectionManager/event"),
+        headers={"NT": "upnp:event", "CALLBACK": f"<{url}>"},
+    ) as response:
+        assert response.status == 200
+    _, body = await notification(notifications)
+    assert "audio/x-dsf" in ET.fromstring(body).findtext(".//SinkProtocolInfo")
+    direct.set_dsd(False)
+    await action(client, receiver, CM, "GetProtocolInfo", {})
+    _, body = await notification(notifications)
+    sink = ET.fromstring(body).findtext(".//SinkProtocolInfo")
+    assert "audio/flac" in sink
+    assert "audio/x-dsf" not in sink
+
+
 async def test_dsd_url_without_metadata_is_played(client, receiver, direct):
+    direct.set_dsd(True)
     uri = "http://media.test/Track%2001.dsf"
     assert (
         await action(
@@ -224,7 +315,6 @@ async def test_dsd_url_without_metadata_is_played(client, receiver, direct):
 async def test_connection_and_rendering_controls(client, receiver, direct):
     protocols = await action(client, receiver, CM, "GetProtocolInfo", {})
     assert "http-get:*:audio/flac:*" in protocols["Sink"]
-    assert "http-get:*:audio/x-dsf:*" in protocols["Sink"]
     assert "audio/aac" not in protocols["Sink"]
     assert await action(client, receiver, CM, "GetCurrentConnectionIDs", {}) == {
         "ConnectionIDs": "0"

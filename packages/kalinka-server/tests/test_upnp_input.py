@@ -7,7 +7,7 @@ import pytest
 pytest.importorskip("kalinka_plugin_upnp")
 
 from kalinka_plugin_sdk.direct_playback import TransportKind, TransportRequest
-from kalinka_plugin_upnp.media import Media
+from kalinka_plugin_upnp.media import Media, UpnpError
 from kalinka_plugin_upnp.playback import Playback
 from kalinka_plugin_upnp.services import Services
 from kalinka_server import renderer_player
@@ -83,6 +83,31 @@ async def test_upnp_controls_the_renderer_and_yields_to_queue(
     await asyncio.sleep(0.05)
     assert not arbiter.control.is_exclusive
     assert _enqueued(renderer)[-1] == "http://example/queued.flac"
+
+
+async def test_dsd_waits_for_the_renderer_dsd_output_setting(upnp, renderer, arbiter):
+    services = Services(upnp)
+    dsf = {
+        "InstanceID": "0",
+        "CurrentURI": "http://media.test/song.dsf",
+        "CurrentURIMetaData": "",
+    }
+
+    async def sink():
+        protocols = await services.dispatch("ConnectionManager", "GetProtocolInfo", {})
+        return protocols["Sink"]
+
+    assert "audio/x-dsf" not in await sink()
+    with pytest.raises(UpnpError) as refused:
+        await services.dispatch("AVTransport", "SetAVTransportURI", dsf)
+    assert refused.value.code == 714
+    assert upnp.current is None
+
+    renderer.dsd_mode = "native"
+    assert "http-get:*:audio/x-dsf:*" in await sink()
+    await services.dispatch("AVTransport", "SetAVTransportURI", dsf)
+    assert upnp.current.source.format == "audio/x-dsf"
+    assert not arbiter.control.is_exclusive
 
 
 async def test_upnp_next_track_is_queued_on_renderer_and_idle_releases(
