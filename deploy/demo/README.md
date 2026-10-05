@@ -27,7 +27,7 @@ You need a Jamendo client id from the [Jamendo developer portal](https://devport
 
 Caddy terminates TLS and obtains the certificate. The server itself speaks plain HTTP on port 8000 inside the compose network.
 
-The entrypoint writes the client id into `/etc/kalinka/kalinka_conf.cfg` inside the container, readable only by the server's user. Do not bind-mount `/etc/kalinka` from the host. `JAMENDO_CLIENT_ID_FILE` can name a secrets file instead of passing the id in the environment.
+The entrypoint writes the client id into `/etc/kalinka/kalinka_conf.cfg` inside the container, readable only by the server's user. Do not bind-mount `/etc/kalinka` from the host.
 
 The `kalinka-state` volume keeps the Jamendo mood index and the text model, which download on the first mood search, and the queue across restarts.
 
