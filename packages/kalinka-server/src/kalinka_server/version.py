@@ -87,8 +87,8 @@ def get_version() -> str:
 # the implemented capabilities.
 # 0.10: a settings field may be `readonly` without being `dynamic`; PUT
 # /server/config refuses such a path with 400. base_config.server.demo_mode
-# marks a public demo server: it answers every write outside /queue/*, PUT
-# /device/set_volume and POST /server/config/validate with 403
+# marks a public demo server: it answers every write outside /queue/* and PUT
+# /device/set_volume, the settings dry run included, with 403
 # {"detail": {"code": "demo_read_only", "message"}}, refuses /renderer/ws,
 # reports upgrade_supported false, carries a General-page banner, and plays
 # through the simulated renderer `demo-output`, which reports a length and no

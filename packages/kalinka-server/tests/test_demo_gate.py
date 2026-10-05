@@ -18,7 +18,6 @@ from kalinka_server.demo_mode import REFUSAL, DemoReadOnlyGate, is_write_allowed
         ("PUT", "/queue/play"),
         ("PUT", "/queue/current_track/seek"),
         ("PUT", "/device/set_volume"),
-        ("POST", "/server/config/validate"),
     ],
 )
 def test_listening_and_queueing_pass(method, path):
@@ -29,6 +28,7 @@ def test_listening_and_queueing_pass(method, path):
     "method, path",
     [
         ("PUT", "/server/config"),
+        ("POST", "/server/config/validate"),
         ("PUT", "/server/restart"),
         ("PUT", "/server/upgrade"),
         ("POST", "/server/test_tone"),

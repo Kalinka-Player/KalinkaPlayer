@@ -56,14 +56,18 @@ _BANNER = Banner(
 )
 
 _READS = frozenset({"GET", "HEAD", "OPTIONS"})
-_WRITABLE_PATHS = frozenset({"/device/set_volume", "/server/config/validate"})
+_WRITABLE_PATHS = frozenset({"/device/set_volume"})
 _RENDERER_SOCKET = "/renderer/ws"
 _POLICY_VIOLATION = 1008
 
 
 def is_write_allowed(method: str, path: str) -> bool:
-    """Whether a demo server serves an HTTP request: reads, the queue, the
-    volume, and the settings dry run, which changes nothing."""
+    """Whether a demo server serves an HTTP request: reads, the queue and the
+    volume.
+
+    The settings dry run is refused too. It saves nothing, but a plugin's
+    check may reach out to whatever a visitor typed, such as a network share.
+    """
     if method.upper() in _READS:
         return True
     return path.startswith("/queue/") or path in _WRITABLE_PATHS
