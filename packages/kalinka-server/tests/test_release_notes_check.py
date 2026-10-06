@@ -89,6 +89,9 @@ def test_the_notes_the_workflows_and_the_docs_are_all_checked_for_links():
     assert set(check.RELEASE_WORKFLOWS) <= set(linkers)
     assert {
         check.IMAGE_NOTES,
+        ".github/workflows/image-build.yml",
+        ".github/workflows/image-release.yml",
+        ".github/workflows/supervisor-release.yml",
         "README.md",
         "docs/log-export-design.md",
         "packages/kalinka-image/README.md",

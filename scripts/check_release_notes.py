@@ -31,11 +31,13 @@ from typing import Iterator, List, Mapping, NamedTuple, Optional, Set
 REPO = Path(__file__).resolve().parents[1]
 GUIDE = "docs/installation.md"
 IMAGE_NOTES = "scripts/image-release-notes.sh"
-IMAGE_WORKFLOW = ".github/workflows/image-release.yml"
+IMAGE_WORKFLOW = ".github/workflows/image-build.yml"
 RELEASE_WORKFLOWS = (
     IMAGE_WORKFLOW,
+    ".github/workflows/image-release.yml",
     ".github/workflows/release.yml",
     ".github/workflows/renderer-release.yml",
+    ".github/workflows/supervisor-release.yml",
 )
 DOCS = ("*.md", "docs/*.md", "packages/*/*.md")
 
