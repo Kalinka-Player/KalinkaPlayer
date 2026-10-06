@@ -1,20 +1,19 @@
 name: Image boot test
 
-# Builds the PC image a pull request would release and boots it in QEMU twice,
-# through UEFI with Secure Boot on and through a legacy BIOS, since the one
-# image installs GRUB for both. A boot passes when the server answers; the
-# disk the Secure Boot run leaves is then checked for what the first boot did
-# and what the image carries. A VM has no Wi-Fi hardware, so for Wi-Fi the
-# check that wpasupplicant is installed is as far as this goes.
-#
-# No container: the build needs loop devices and mounts on the host.
+# Boots the same DietPi UEFI image as releases. Physical radio E2E is separate.
 
 on:
   pull_request:
     paths:
       - 'packages/kalinka-image/**'
+      - 'packages/kalinka-supervisor/**'
+      - 'scripts/install-release.sh'
+      - 'scripts/install-supervisor.sh'
+      - 'scripts/install-renderer.sh'
       - '.github/actions/build-image/**'
       - '.github/workflows/image-pr.yml'
+      - '.github/workflows/image-build.yml'
+      - '.github/workflows/supervisor-packages.yml'
 
 permissions:
   contents: read
@@ -27,7 +26,7 @@ jobs:
   boot:
     name: Build and boot the PC image
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 120
     env:
       DEBIAN_FRONTEND: noninteractive
     steps:
@@ -38,11 +37,11 @@ jobs:
         with:
           target: amd64
 
-      - name: Install QEMU, OVMF and sbverify
+      - name: Install QEMU and OVMF
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 qemu-utils ovmf sbsigntool
+            qemu-system-x86 qemu-utils ovmf
 
       - name: Enable KVM
         run: |
@@ -52,29 +51,26 @@ jobs:
           sudo udevadm trigger --name-match=kvm
 
       # Larger than the image, so the first boot has a disk to grow into.
-      - name: Put the image on an 8 GB disk
+      - name: Put the image on a 12 GB disk
         id: disk
         run: |
           xz -dc out/*-amd64.img.xz > "$RUNNER_TEMP/kalinka.img"
-          qemu-img resize -f raw "$RUNNER_TEMP/kalinka.img" 8G
+          qemu-img resize -f raw "$RUNNER_TEMP/kalinka.img" 12G
 
-      - name: Boot through UEFI with Secure Boot
+      - name: Boot through UEFI
+        env:
+          OVMF_CODE: /usr/share/OVMF/OVMF_CODE_4M.fd
+          OVMF_VARS: /usr/share/OVMF/OVMF_VARS_4M.fd
         run: |
           packages/kalinka-image/tests/vm/boot.sh \
-            "$RUNNER_TEMP/kalinka.img" uefi-secure-boot "$RUNNER_TEMP/secure-boot"
+            "$RUNNER_TEMP/kalinka.img" uefi "$RUNNER_TEMP/uefi"
 
       # Also after a failed boot: what the image carries is often the reason.
-      - name: Inspect the disk the Secure Boot run left
+      - name: Inspect the disk after first boot
         if: ${{ !cancelled() && steps.disk.outcome == 'success' }}
         run: |
           sudo packages/kalinka-image/tests/vm/inspect.sh \
-            "$RUNNER_TEMP/secure-boot/disk.img" "$RUNNER_TEMP/secure-boot/journal"
-
-      - name: Boot through a legacy BIOS
-        if: ${{ !cancelled() && steps.disk.outcome == 'success' }}
-        run: |
-          packages/kalinka-image/tests/vm/boot.sh \
-            "$RUNNER_TEMP/kalinka.img" bios "$RUNNER_TEMP/bios"
+            "$RUNNER_TEMP/uefi/disk.img" "$RUNNER_TEMP/uefi/journal"
 
       - name: Upload the boot logs
         if: failure()
@@ -82,7 +78,6 @@ jobs:
         with:
           name: image-boot-logs
           path: |
-            ${{ runner.temp }}/secure-boot
-            ${{ runner.temp }}/bios
+            ${{ runner.temp }}/uefi
             !${{ runner.temp }}/**/disk.img
           if-no-files-found: ignore

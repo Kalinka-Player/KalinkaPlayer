@@ -21,6 +21,9 @@
 #   base_seal                the identities the base regenerates on first boot
 #
 # Env:
+#   IMAGE_KEEP_FAILED   retain scratch files after a failure for diagnosis (default: 0)
+#   IMAGE_WORK_DIR      scratch filesystem with room for the image (default: /var/tmp)
+#   SUPERVISOR_DEB      prebuilt package; otherwise compile from this checkout
 #   IMAGE_SIZE          image size before first-boot growth (default: 4GiB)
 #   OUT_DIR             where the .img.xz lands (default: ./out)
 #   XZ_LEVEL            xz compression preset (default: -6)
@@ -38,7 +41,7 @@ IMAGE_SIZE="${IMAGE_SIZE:-4GiB}"
 OUT_DIR="${OUT_DIR:-$SCRIPT_DIR/out}"
 XZ_LEVEL="${XZ_LEVEL:--6}"
 
-for lib in common chroot-aids kalinka seal; do
+for lib in common chroot-aids kalinka seal supervisor; do
   # shellcheck source=/dev/null
   . "$SCRIPT_DIR/lib/$lib.sh"
 done
@@ -56,11 +59,20 @@ KALINKA_VERSION="${2:-}"
 . "$SCRIPT_DIR/lib/base-$TARGET_BASE.sh"
 
 require_root
-require_host_tools sfdisk losetup blkid xz "${BASE_HOST_TOOLS[@]}"
+# Bind mounts must not propagate into the host or another concurrent build.
+if [ "${KALINKA_IMAGE_MOUNT_NAMESPACE:-0}" != 1 ]; then
+  exec unshare --mount --propagation private \
+    env KALINKA_IMAGE_MOUNT_NAMESPACE=1 "$SCRIPT_DIR/build-image.sh" "$@"
+fi
+require_host_tools sfdisk losetup blkid xz dpkg-deb "${BASE_HOST_TOOLS[@]}"
 base_check_host
+if [ -z "${SUPERVISOR_DEB:-}" ]; then
+  command -v "${GO:-go}" >/dev/null || die 'Go 1.25 or newer is required (or set SUPERVISOR_DEB)'
+fi
 require_foreign_arch_support "$TARGET_ARCH"
 
 start_work
+build_supervisor
 base_create_image
 mount_chroot_filesystems
 snapshot_packages
@@ -74,6 +86,8 @@ base_install_packages
 install_kalinka "$KALINKA_VERSION"
 verify_kalinka
 base_finish
+install_supervisor
+verify_supervisor
 
 stop_build_aids
 seal_rootfs

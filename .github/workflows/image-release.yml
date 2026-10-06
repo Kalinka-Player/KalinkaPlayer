@@ -3,7 +3,7 @@ name: Image release
 # Builds and publishes the ready-to-flash appliance images for a
 # `kalinka-image-vX.Y.Z` tag, with the server, every first-party plugin, the
 # browser player and the renderer already installed: two for the Raspberry Pi
-# on DietPi, one for x86-64 on a minimal Debian 13.
+# and one for x86-64 UEFI, all based on DietPi (Debian 13).
 #
 # The images have their own release train because they change for reasons the
 # app bundle does not — a Debian point release, a new DietPi, a first-boot fix —
@@ -25,6 +25,9 @@ on:
       tag:
         description: 'Existing kalinka-image-v* tag to build and publish'
         required: true
+      supervisor_version:
+        description: 'Supervisor package version (empty uses a CI test version)'
+        required: false
       kalinka_version:
         description: 'Kalinka release to install (default: the latest published)'
         required: false
@@ -36,39 +39,22 @@ env:
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
-  image:
-    name: Image (${{ matrix.target }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: rpi234
-            runner: ubuntu-24.04-arm
-          - target: rpi5
-            runner: ubuntu-24.04-arm
-          - target: amd64
-            runner: ubuntu-24.04
-    runs-on: ${{ matrix.runner }}
-    env:
-      DEBIAN_FRONTEND: noninteractive
+  validate:
+    runs-on: ubuntu-24.04
     steps:
-      - name: Checkout (tag)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
-
-      - name: Test and build the image
-        uses: ./.github/actions/build-image
-        with:
-          target: ${{ matrix.target }}
-          kalinka-version: ${{ github.event.inputs.kalinka_version }}
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: image-${{ matrix.target }}
-          path: out/*
-          if-no-files-found: error
+          fetch-depth: 0
+      - name: Match the requested tag to this workflow ref
+        run: |
+          case "$TAG" in kalinka-image-v*) ;; *) exit 1;; esac
+          test "$(git rev-parse "$TAG^{commit}")" = "$GITHUB_SHA"
+  image:
+    needs: validate
+    uses: ./.github/workflows/image-build.yml
+    with:
+      kalinka_version: ${{ github.event.inputs.kalinka_version || '' }}
+      supervisor_version: ${{ github.event.inputs.supervisor_version || '' }}
 
   release:
     name: Publish release
@@ -88,7 +74,7 @@ jobs:
       - name: Gather images and checksums
         run: |
           mkdir -p release
-          find artifacts -name '*.img.xz' -exec cp -n {} release/ \;
+          find artifacts \( -name '*.img.xz' -o -name '*.manifest.json' \) -exec cp -n {} release/ \;
           # One SHA256SUMS for the release replaces the per-image files the
           # build wrote for whoever runs it by hand.
           (cd release && sha256sum ./* > SHA256SUMS)

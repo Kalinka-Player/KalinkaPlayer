@@ -29,13 +29,13 @@ Ready-to-flash images of Kalinka Player with the server, every first-party plugi
 |---|---|---|
 | `…-rpi234-arm64.img.xz` | Raspberry Pi 3, 4, 400, Zero 2 W, CM3 and CM4 | DietPi (Debian 13) |
 | `…-rpi5-arm64.img.xz` | Raspberry Pi 5, 500 and CM5 | DietPi (Debian 13) |
-| `…-amd64.img.xz` | Any x86-64 PC or virtual machine, UEFI or BIOS | Debian 13 |
+| `…-amd64.img.xz` | x86-64 PC or virtual machine, UEFI (Secure Boot off) | DietPi (Debian 13) |
 
 The Raspberry Pi images play through DAC HATs as well as USB DACs. A HAT with an ID chip is set up by itself.
 
 To flash an image and start it, follow [Install the server](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#install-the-server). For Wi-Fi, a login or a DAC HAT without an ID chip, change [Settings on the card](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#settings-on-the-card) before the first start.
 
-On the Raspberry Pi images, DietPi's update notices stay on, its survey is off, and logs are kept on disk rather than in memory.
+On all images, DietPi's update notices stay on, its survey is off, and logs are kept on disk rather than in memory.
 
 Verify downloads with `sha256sum -c SHA256SUMS --ignore-missing`.
 EOF

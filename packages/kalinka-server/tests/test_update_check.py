@@ -90,7 +90,7 @@ class TestIsNewer:
 
 class TestInstalledRendererVersion:
     def test_reports_the_installed_package_version(self, monkeypatch):
-        run = _FakeRun(stdout="0.2.0\n")
+        run = _FakeRun(stdout="installed 0.2.0\n")
         monkeypatch.setattr(update_check.subprocess, "run", run)
         assert installed_renderer_version() == "0.2.0"
         assert run.commands[0][:2] == ["dpkg-query", "-W"]
@@ -104,6 +104,10 @@ class TestInstalledRendererVersion:
     def test_none_when_a_known_package_has_no_version(self, monkeypatch):
         # dpkg-query succeeds with an empty Version for a purged package.
         monkeypatch.setattr(update_check.subprocess, "run", _FakeRun(stdout=""))
+        assert installed_renderer_version() is None
+
+    def test_removed_package_is_not_installed(self, monkeypatch):
+        monkeypatch.setattr(update_check.subprocess, "run", _FakeRun(stdout="config-files 0.2.0"))
         assert installed_renderer_version() is None
 
     def test_none_without_dpkg(self, monkeypatch):
@@ -434,3 +438,42 @@ class TestRendererUpdateAvailable:
         monkeypatch.setattr(update_check, "get_version", lambda: "3.3.0")
         assert not checker.bundle_update_available()
         assert checker.update_available()
+
+class TestSupervisorUpdates:
+    async def test_supervisor_only_update_is_offered(self, monkeypatch):
+        checker = UpdateChecker()
+        monkeypatch.setattr(update_check, 'get_version', lambda: '5.7.0')
+        monkeypatch.setattr(update_check, 'installed_renderer_version', lambda: None)
+        monkeypatch.setattr(update_check, 'installed_supervisor_version', lambda: '0.1.0')
+        async def fetch():
+            return _feed('kalinka-supervisor-v0.2.0', 'kalinka-v5.7.0')
+        monkeypatch.setattr(checker, '_fetch', fetch)
+        await checker.check_now()
+        assert checker.update_available()
+        assert checker.supervisor_update_available()
+        assert checker.latest_supervisor == '0.2.0'
+        assert checker.installed_supervisor == '0.1.0'
+        assert validate_upgrade_request('5.7.0', checker.latest, '5.7.0', supervisor_stale=True) is None
+        assert validate_upgrade_request('5.6.0', checker.latest, '5.7.0', supervisor_stale=True) is not None
+
+    async def test_absent_supervisor_is_not_an_update(self, monkeypatch):
+        checker = UpdateChecker()
+        monkeypatch.setattr(update_check, 'installed_renderer_version', lambda: None)
+        monkeypatch.setattr(update_check, 'installed_supervisor_version', lambda: None)
+        async def fetch():
+            return _feed('kalinka-supervisor-v0.2.0')
+        monkeypatch.setattr(checker, '_fetch', fetch)
+        await checker.check_now()
+        assert not checker.supervisor_update_available()
+
+    async def test_supervisor_release_survives_feed_rotation(self, monkeypatch):
+        checker = UpdateChecker()
+        monkeypatch.setattr(update_check, 'installed_renderer_version', lambda: None)
+        monkeypatch.setattr(update_check, 'installed_supervisor_version', lambda: '0.1.0~ci.4')
+        feeds = iter([_feed('kalinka-supervisor-v0.1.0'), _feed('kalinka-v5.7.0')])
+        async def fetch():
+            return next(feeds)
+        monkeypatch.setattr(checker, '_fetch', fetch)
+        await checker.check_now()
+        await checker.check_now()
+        assert checker.supervisor_update_available()

@@ -4,21 +4,21 @@
 # default port. The guest is then powered off through its power button, so the
 # disk left behind is one a clean shutdown wrote.
 #
-# Usage: boot.sh <image> <uefi-secure-boot|bios> <dir>
+# Usage: boot.sh <image> <uefi|uefi-secure-boot|bios> <dir>
 #
 # <dir> receives disk.img, the copy that booted, with serial.log and qemu.log.
 # When the server never answers it also gets screen.png: past the firmware and
 # GRUB, the kernel writes only to the screen.
 #
 # Env:
-#   OVMF_CODE, OVMF_VARS  Secure Boot firmware, and a variable store with
-#                         Microsoft's keys enrolled (default: Ubuntu's ovmf)
+#   OVMF_CODE, OVMF_VARS  firmware and matching variable store
+#                         (default: Ubuntu plain UEFI)
 #   BOOT_TIMEOUT          seconds the server has to answer (default: 600)
 #   HOST_PORT             host port forwarded to the server's (default: 18000)
 set -euo pipefail
 
-OVMF_CODE="${OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.secboot.fd}"
-OVMF_VARS="${OVMF_VARS:-/usr/share/OVMF/OVMF_VARS_4M.ms.fd}"
+OVMF_CODE="${OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}"
+OVMF_VARS="${OVMF_VARS:-/usr/share/OVMF/OVMF_VARS_4M.fd}"
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-600}"
 HOST_PORT="${HOST_PORT:-18000}"
 SERVER_PORT=8000
@@ -26,7 +26,7 @@ SHUTDOWN_TIMEOUT=120
 
 die() { echo "boot: $*" >&2; exit 1; }
 
-[ $# -eq 3 ] || die "usage: boot.sh <image> <uefi-secure-boot|bios> <dir>"
+[ $# -eq 3 ] || die "usage: boot.sh <image> <uefi|uefi-secure-boot|bios> <dir>"
 IMAGE="$1" FIRMWARE="$2" DIR="$3"
 [ -r "$IMAGE" ] || die "cannot read $IMAGE"
 
@@ -47,6 +47,13 @@ case "$FIRMWARE" in
     FIRMWARE_ARGS=(
       -machine q35,smm=on
       -global driver=cfi.pflash01,property=secure,value=on
+      -drive "if=pflash,format=raw,unit=0,readonly=on,file=$OVMF_CODE"
+      -drive "if=pflash,format=raw,unit=1,file=$RUNTIME/vars.fd"
+    ) ;;
+  uefi)
+    cp "$OVMF_VARS" "$RUNTIME/vars.fd"
+    FIRMWARE_ARGS=(
+      -machine q35
       -drive "if=pflash,format=raw,unit=0,readonly=on,file=$OVMF_CODE"
       -drive "if=pflash,format=raw,unit=1,file=$RUNTIME/vars.fd"
     ) ;;

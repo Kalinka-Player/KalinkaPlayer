@@ -1,0 +1,48 @@
+name: Supervisor release
+on:
+  push:
+    tags: ['kalinka-supervisor-v*']
+permissions:
+  contents: write
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - id: version
+        run: echo "version=${GITHUB_REF_NAME#kalinka-supervisor-v}" >> "$GITHUB_OUTPUT"
+  packages:
+    needs: version
+    uses: ./.github/workflows/supervisor-packages.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+  release:
+    needs: packages
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: supervisor-packages
+          path: release
+      - name: Publish packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'EOF'
+          Independent Kalinka supervisor: BLE box setup with DietPi and NetworkManager backends.
+
+          Download the matching amd64/arm64 Debian package and verify it against SHA256SUMS.
+          Install with `sudo apt install ./kalinka-supervisor_*.deb`.
+          Existing supervisor installations update through the normal Kalinka server upgrade flow.
+          EOF
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --latest=false \
+              --title "Kalinka Supervisor ${GITHUB_REF_NAME#kalinka-supervisor-v}" --notes-file notes.md
+          fi
+          gh release upload "$GITHUB_REF_NAME" release/* --clobber
+      - name: Keep the app bundle as Latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/pin-latest-release.sh

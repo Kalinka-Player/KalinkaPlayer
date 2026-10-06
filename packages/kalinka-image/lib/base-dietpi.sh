@@ -12,9 +12,18 @@ DIETPI_URL=https://dietpi.com/downloads/images
 DIETPI_SIGNER=974105F494304547F1A9E5E00442B9ADE65643FE
 DIETPI_KEY="$SCRIPT_DIR/keys/dietpi.asc"
 DIETPI_CACHE="${DIETPI_CACHE:-$SCRIPT_DIR/cache}"
-DIETPI_BOOT_MOUNT=/boot/firmware
+DIETPI_BOOT_MOUNT="${DIETPI_BOOT_MOUNT:-/boot/firmware}"
+DIETPI_SETTINGS_MOUNT="${DIETPI_SETTINGS_MOUNT:-$DIETPI_BOOT_MOUNT}"
+DIETPI_LAYOUT="${DIETPI_LAYOUT:-rpi}"
 # python3 for install-release.sh, adduser for the postinsts, ALSA to pick a card offline, SFTP for Dropbear.
-DIETPI_PACKAGES="python3 adduser alsa-utils openssh-sftp-server"
+DIETPI_PACKAGES="python3 adduser alsa-utils openssh-sftp-server
+                 bluez
+                 iw wpasupplicant wireless-regdb rfkill iproute2"
+if [ "$DIETPI_LAYOUT" = rpi ]; then
+  DIETPI_PACKAGES+=" pi-bluetooth bluez-firmware"
+else
+  DIETPI_PACKAGES+=" libpam-systemd"
+fi
 DIETPI_ALSA_ID=5
 DIETPI_RAMLOG_ID=103
 
@@ -25,9 +34,11 @@ declare -A DIETPI_SETTINGS=(
   [AUTO_SETUP_AUTOMATED]=0
   [SURVEY_OPTED_IN]=0
   [AUTO_SETUP_LOGGING_INDEX]=0
+  # Bluetooth uses the Pi's UART; a serial login must not claim it at boot.
+  [CONFIG_SERIAL_CONSOLE_ENABLE]=0
 )
 
-BASE_HOST_TOOLS=(curl gpg gpgv e2fsck resize2fs fatlabel)
+BASE_HOST_TOOLS=(python3 curl gpg gpgv e2fsck resize2fs fatlabel)
 
 # shellcheck source=../overlays/dietpi/usr/lib/kalinka-image/dietpi-conf.sh
 . "$SCRIPT_DIR/overlays/dietpi/usr/lib/kalinka-image/dietpi-conf.sh"
@@ -89,25 +100,65 @@ grow_root_partition() {
   [ "$(sfdisk --disk-id "$image")" = "$id" ] || die "growing the root partition changed the disk id"
 }
 
+# Preserve the trailing setup FAT volume until DietPi imports it on first boot.
+grow_uefi_partition() {
+  local image="$1" size="$2" table setup_start setup_size root_start new_start root_size scratch
+  table="$(sfdisk --json "$image")"
+  read -r root_start setup_start setup_size < <(python3 -c '
+import json, sys
+p = json.load(sys.stdin)["partitiontable"]
+assert p["label"] == "gpt" and p["sectorsize"] == 512 and len(p["partitions"]) == 3
+parts = p["partitions"]
+assert parts[0]["type"].upper() == "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
+assert parts[1]["type"].upper() == "0FC63DAF-8483-4772-8E79-3D69D8477DE4"
+assert parts[1]["start"] + parts[1]["size"] <= parts[2]["start"]
+print(parts[1]["start"], parts[2]["start"], parts[2]["size"])
+' <<<"$table") || die 'unexpected DietPi UEFI partition layout'
+  [ "$(blkid -p -O "$((setup_start * 512))" -S "$((setup_size * 512))" -s LABEL -o value "$image")" = DIETPISETUP ] \
+    || die 'the trailing UEFI partition is not DIETPISETUP'
+  scratch="$(mktemp)"
+  dd if="$image" of="$scratch" bs=512 skip="$setup_start" count="$setup_size" status=none
+  truncate -s ">$size" "$image"
+  new_start=$(( ($(stat -c %s "$image") / 512 - 33 - setup_size) / 2048 * 2048 ))
+  [ "$new_start" -ge "$setup_start" ] || die 'cannot shrink the DietPi setup partition'
+  printf '%s,%s\n' "$new_start" "$setup_size" | sfdisk --quiet --no-reread --no-tell-kernel -N 3 "$image"
+  dd if="$scratch" of="$image" bs=512 seek="$new_start" conv=notrunc status=none
+  rm -f "$scratch"
+  root_size=$((new_start - root_start))
+  printf ',%s\n' "$root_size" | sfdisk --quiet --no-reread --no-tell-kernel -N 2 "$image"
+}
+
 base_create_image() {
   fetch_dietpi_image
   log "Unpacking and growing $DIETPI_IMAGE to $IMAGE_SIZE"
   xz -dc "$DIETPI_CACHE/$DIETPI_IMAGE.img.xz" > "$IMAGE"
-  grow_root_partition "$IMAGE" "$IMAGE_SIZE"
+  if [ "$DIETPI_LAYOUT" = uefi ]; then
+    grow_uefi_partition "$IMAGE" "$IMAGE_SIZE"
+  else
+    grow_root_partition "$IMAGE" "$IMAGE_SIZE"
+  fi
   attach_image 1 2
   e2fsck -fy "$ROOT_DEV" || [ $? -le 1 ] || die "the DietPi root filesystem does not check clean"
   resize2fs "$ROOT_DEV"
   # Nothing mounts it by label, and a named drive is easier to find on a desktop.
-  fatlabel "$BOOT_DEV" "$BOOT_LABEL" >/dev/null
+  if [ "$DIETPI_LAYOUT" = rpi ]; then fatlabel "$BOOT_DEV" "$BOOT_LABEL" >/dev/null; fi
 
   mkdir -p "$ROOTFS"
   mount_at "$ROOT_DEV" "$ROOTFS"
   mount_at "$BOOT_DEV" "$ROOTFS$DIETPI_BOOT_MOUNT"
+  if [ "$DIETPI_LAYOUT" = uefi ]; then
+    mkdir -p "$ROOTFS$DIETPI_SETTINGS_MOUNT"
+    mount_at "${LOOP}p3" "$ROOTFS$DIETPI_SETTINGS_MOUNT"
+  fi
   # DietPi's /tmp is a tmpfs at run time; the directory beneath it is closed to apt's sandbox.
   mount_at -t tmpfs -o mode=1777 tmpfs "$ROOTFS/tmp"
 
-  grep -q "root=PARTUUID=$(blkid -s PARTUUID -o value "$ROOT_DEV") " "$ROOTFS$DIETPI_BOOT_MOUNT/cmdline.txt" \
-    || die "cmdline.txt does not name this root partition"
+  if [ "$DIETPI_LAYOUT" = rpi ]; then
+    grep -q "root=PARTUUID=$(blkid -s PARTUUID -o value "$ROOT_DEV") " "$ROOTFS$DIETPI_BOOT_MOUNT/cmdline.txt" \
+      || die "cmdline.txt does not name this root partition"
+  else
+    [ -s "$ROOTFS$DIETPI_BOOT_MOUNT/EFI/BOOT/BOOTX64.EFI" ] || die 'no removable-media UEFI loader'
+  fi
   grep -q "^UUID=$(blkid -s UUID -o value "$ROOT_DEV") / " "$ROOTFS/etc/fstab" \
     || die "fstab does not name this root filesystem"
   # shellcheck source=/dev/null
@@ -142,10 +193,10 @@ base_install_packages() {
 apply_dietpi_settings() {
   local root="$1" key
   for key in "${!DIETPI_SETTINGS[@]}"; do
-    dietpi_conf_set "$root$DIETPI_BOOT_MOUNT/dietpi.txt" "$key" "${DIETPI_SETTINGS[$key]}"
+    dietpi_conf_set "$root$DIETPI_SETTINGS_MOUNT/dietpi.txt" "$key" "${DIETPI_SETTINGS[$key]}"
   done
   # First boot imports the card's copy only over an older one; a password may wait here.
-  cat "$root$DIETPI_BOOT_MOUNT/dietpi.txt" > "$root/boot/dietpi.txt"
+  cat "$root$DIETPI_SETTINGS_MOUNT/dietpi.txt" > "$root/boot/dietpi.txt"
   chmod 600 "$root/boot/dietpi.txt"
   touch -d @0 "$root/boot/dietpi.txt"
 }
@@ -171,8 +222,12 @@ configure_dietpi_files() {
 base_finish() {
   log "Setting DietPi up for Kalinka"
   mark_kernel unhold
-  install_overlay dietpi
-  in_chroot systemctl enable kalinka-soundcard.service
+  if [ "$DIETPI_LAYOUT" = rpi ]; then
+    install_overlay dietpi
+    in_chroot systemctl enable kalinka-soundcard.service
+  else
+    in_chroot systemctl unmask systemd-logind.service
+  fi
   in_chroot systemctl disable dietpi-ramlog.service
   configure_dietpi_files "$ROOTFS"
   # A locked password still lets an SSH key from AUTO_SETUP_SSH_PUBKEY in.
@@ -184,7 +239,7 @@ base_finish() {
 
 verify_dietpi_setup() {
   local key copy
-  for copy in "$ROOTFS$DIETPI_BOOT_MOUNT/dietpi.txt" "$ROOTFS/boot/dietpi.txt"; do
+  for copy in "$ROOTFS$DIETPI_SETTINGS_MOUNT/dietpi.txt" "$ROOTFS/boot/dietpi.txt"; do
     for key in "${!DIETPI_SETTINGS[@]}"; do
       [ "$(dietpi_conf_get "$copy" "$key")" = "${DIETPI_SETTINGS[$key]}" ] \
         || die "$key did not take in $copy"
@@ -197,7 +252,8 @@ verify_dietpi_setup() {
   [ "$(cat "$ROOTFS/boot/dietpi/.install_stage")" = -1 ] \
     || die "DietPi no longer thinks it has never booted"
   require_enabled local-fs.target dietpi-fs_partition_resize.service
-  require_enabled multi-user.target dietpi-firstboot.service kalinka-soundcard.service
+  require_enabled multi-user.target dietpi-firstboot.service
+  if [ "$DIETPI_LAYOUT" = rpi ]; then require_enabled multi-user.target kalinka-soundcard.service; fi
   [ -x "$ROOTFS/usr/lib/sftp-server" ] || die "no /usr/lib/sftp-server, where Dropbear looks for SFTP"
   require_disabled multi-user.target dietpi-ramlog.service
   [ "$(kernel_packages)" = "$(cat "$WORK/kernel.before")" ] \

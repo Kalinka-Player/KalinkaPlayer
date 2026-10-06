@@ -1,5 +1,13 @@
 # First-run Wi-Fi and Bluetooth playback — design
 
+> **2026-10-06: implementation supersedes this proposal.** See
+> [BLE provisioning](ble-provisioning.md) for the deployed protocol and app flow,
+> and [Kalinka Supervisor](supervisor.md) for the independent Go service,
+> DietPi/NetworkManager backends, hardening and recovery roadmap.
+> Bluetooth playback stays separate. The Python daemon, playback-first
+> dependency graph, package estimates and execution plan below are historical
+> design context, not current implementation instructions.
+
 A Kalinka image gets onto Wi-Fi only if someone edits a file on its card before the first boot. That works for a person who flashes their own card and knows where to look. It does not work for a box sold ready-made, which comes with no card the buyer is meant to edit, no keyboard and no screen. It also fails on the PC image, whose settings partition is an EFI partition that desktops hide. The app cannot help either: its setup wizard starts by finding the server on the network, which is the very thing that is missing.
 
 This document compares three ways out, and settles the Bluetooth stack that the chosen one shares with Bluetooth playback. Bluetooth LE provisioning from the app is built for boxes nobody flashes, on the Pi images first (§5, §6). The same stack makes the box a Bluetooth speaker: a phone paired with it plays through Kalinka's output (§7). Playback is the priority, so the stack is chosen for it and the plan builds it first (§2.7, §13). Raspberry Pi Imager's own customisation is honoured on the Pi images as a separate convenience for people who flash their own card, and nothing else waits for it (§4). The hotspot with a captive page is not built (§8). Setup leaves the audio path, the REST/WebSocket API, the renderer protocol and the plugin SDK as they are. Playback adds a WAV decoder to the renderer, and additive pieces to the SDK and to the settings schema (§7.7).

@@ -6,10 +6,10 @@ API rate limit. ``GET /server/update`` serves the cached result only and
 never does network I/O. With ``server.auto_upgrade`` on, the task also
 fires the upgrade itself during quiet hours while playback is stopped.
 
-Two release trains are watched, because one installer run covers both: the
+Three release trains are watched, because one installer run covers all three: the
 ``kalinka-v*`` app bundle, and the ``kalinka-renderer-v*`` renderer package
-installed on this machine. Renderers on other boxes are upgraded by running
-the installer there and are none of this module's business.
+and ``kalinka-supervisor-v*`` supervisor installed on this machine.
+Renderers on other boxes are upgraded by running the installer there.
 
 ``PUT /server/upgrade`` must name the version the client is upgrading to;
 it is rejected unless that matches the cached latest release, so a stale
@@ -44,6 +44,8 @@ logger = logging.getLogger(__name__)
 _BUNDLE_TAG_PREFIX = "kalinka-v"
 _RENDERER_TAG_PREFIX = "kalinka-renderer-v"
 _RENDERER_PACKAGE = "kalinka-renderer"
+_SUPERVISOR_TAG_PREFIX = "kalinka-supervisor-v"
+_SUPERVISOR_PACKAGE = "kalinka-supervisor"
 _TICK_INTERVAL = 3600  # check hourly; also guarantees ticks inside quiet hours
 _QUIET_HOURS = range(3, 6)  # local time — auto-upgrade fires in [3:00, 6:00)
 
@@ -106,26 +108,30 @@ def is_newer(latest: str, current: str) -> bool:
         return False
 
 
-def installed_renderer_version() -> str | None:
-    """Version of the renderer package installed here, None if there is none.
-
-    dpkg only: the upgrade path installs debs, so a machine that can
-    upgrade at all has dpkg. Anywhere else this reads as "no renderer
-    here", which leaves the renderer out of the upgrade decision.
-    """
+def installed_package_version(package: str) -> str | None:
+    """Version of an installed Debian package, excluding removed packages."""
     try:
         query = subprocess.run(
-            ["dpkg-query", "-W", "-f=${Version}", _RENDERER_PACKAGE],
+            ["dpkg-query", "-W", "-f=${db:Status-Status} ${Version}", package],
             capture_output=True,
             text=True,
             timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        logger.debug("Cannot query the installed renderer: %s", e)
+        logger.debug("Cannot query the installed package: %s", e)
         return None
     if query.returncode != 0:
         return None
-    return query.stdout.strip() or None
+    status, _, version = query.stdout.strip().partition(" ")
+    return version if status == "installed" and version else None
+
+
+def installed_renderer_version() -> str | None:
+    return installed_package_version(_RENDERER_PACKAGE)
+
+
+def installed_supervisor_version() -> str | None:
+    return installed_package_version(_SUPERVISOR_PACKAGE)
 
 
 def deb_is_newer(candidate: str, installed: str) -> bool:
@@ -143,7 +149,7 @@ def deb_is_newer(candidate: str, installed: str) -> bool:
             timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        logger.warning("Cannot compare renderer versions: %s", e)
+        logger.warning("Cannot compare Debian package versions: %s", e)
         return False
     return compare.returncode == 0
 
@@ -160,19 +166,20 @@ def validate_upgrade_request(
     latest: str | None,
     current: str,
     renderer_stale: bool = False,
+    supervisor_stale: bool = False,
 ) -> str | None:
     """Reason a PUT /server/upgrade must be rejected, or None to proceed.
 
     The client echoes the bundle version it saw in GET /server/update; no
     known release, nothing left to upgrade, or a different release
     published since all reject rather than firing the installer again.
-    ``renderer_stale`` keeps the request valid when the bundle is already
-    current and only the local renderer is behind — one installer run
-    covers both, so the echoed version stays the bundle's either way.
+    The package-stale flags keep requests valid when Core is current but
+    the renderer or supervisor needs updating. The echoed version remains
+    the bundle version, matching the existing app protocol.
     """
     if not latest:
         return "No update available"
-    if not is_newer(latest, current) and not renderer_stale:
+    if not is_newer(latest, current) and not renderer_stale and not supervisor_stale:
         return "No update available"
     if target != latest:
         return (
@@ -197,6 +204,9 @@ class UpdateChecker:
         self._latest_renderer: str | None = None
         self._installed_renderer: str | None = None
         self._renderer_stale = False
+        self._latest_supervisor: str | None = None
+        self._installed_supervisor: str | None = None
+        self._supervisor_stale = False
         self._last_auto_attempt: date | None = None
 
     @property
@@ -214,10 +224,22 @@ class UpdateChecker:
         """Renderer version installed here as of the last check."""
         return self._installed_renderer
 
+    @property
+    def latest_supervisor(self) -> str | None:
+        return self._latest_supervisor
+
+    @property
+    def installed_supervisor(self) -> str | None:
+        return self._installed_supervisor
+
+    def supervisor_update_available(self) -> bool:
+        return self._supervisor_stale
+
     def update_available(self) -> bool:
         """Whether an installer run would bring anything newer to this box."""
         return (
             self.bundle_update_available() or self.renderer_update_available()
+            or self.supervisor_update_available()
         )
 
     def bundle_update_available(self) -> bool:
@@ -234,22 +256,30 @@ class UpdateChecker:
         return self._renderer_stale
 
     async def check_now(self) -> str | None:
-        """Refresh both release trains and the local renderer version.
+        """Refresh release trains and installed package versions.
 
         Returns the latest bundle release, or None when the feed could not
         be read. The renderer verdict is settled here rather than on read,
         so asking for it costs no process and never blocks a request.
         """
         self._installed_renderer = installed_renderer_version()
+        self._installed_supervisor = installed_supervisor_version()
         feed = await self._fetch()
         if feed is None:
             return None
         latest = latest_release_version(feed, _BUNDLE_TAG_PREFIX)
         renderer = latest_release_version(feed, _RENDERER_TAG_PREFIX)
+        supervisor = latest_release_version(feed, _SUPERVISOR_TAG_PREFIX)
         if latest:
             self._latest = latest
         if renderer:
             self._latest_renderer = renderer
+        if supervisor:
+            self._latest_supervisor = supervisor
+        self._supervisor_stale = bool(
+            self._installed_supervisor and self._latest_supervisor
+            and deb_is_newer(self._latest_supervisor, self._installed_supervisor)
+        )
         self._renderer_stale = bool(
             self._installed_renderer
             and self._latest_renderer
@@ -325,11 +355,12 @@ class UpdateChecker:
             logger.error("Auto-upgrade trigger failed: %s", e)
             return
         logger.info(
-            "Auto-upgrade requested (server %s, renderer %s)",
+            "Auto-upgrade requested (server %s, renderer %s, supervisor %s)",
             self._latest if self.bundle_update_available() else "current",
             self._latest_renderer
             if self.renderer_update_available()
             else "current",
+            self._latest_supervisor if self.supervisor_update_available() else "current",
         )
 
     async def _fetch(self) -> str | None:
