@@ -141,6 +141,10 @@ func TestDietPiJoinAndRollback(t *testing.T) {
 					_ = os.WriteFile(d.Transaction.Paths[3], []byte("candidate interfaces"), 0600)
 				}
 				if name == "systemctl" && len(args) > 0 && args[0] == "--no-block" {
+					deadline, ok := ctx.Deadline()
+					if !ok || time.Until(deadline) <= 50*time.Second || time.Until(deadline) > RollbackTimeout {
+						t.Error("rollback must use the shared 55-second budget independently of join cancellation")
+					}
 					b, _ := os.ReadFile(d.Transaction.Paths[3])
 					if string(b) != files[d.Transaction.Paths[3]] {
 						t.Error("restart before restored configuration")

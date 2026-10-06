@@ -90,7 +90,7 @@ func (d *DietPi) takeDown(ctx context.Context) error {
 	return nil
 }
 func (d *DietPi) rollback() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), RollbackTimeout)
 	defer cancel()
 	if err := d.takeDown(ctx); err != nil {
 		return err

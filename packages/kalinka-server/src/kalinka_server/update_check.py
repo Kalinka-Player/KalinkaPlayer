@@ -233,7 +233,8 @@ class UpdateChecker:
         return self._installed_supervisor
 
     def supervisor_update_available(self) -> bool:
-        return self._supervisor_stale
+        """Offer a package update only when the upgrade API has a bundle target."""
+        return bool(self._latest and self._supervisor_stale)
 
     def update_available(self) -> bool:
         """Whether an installer run would bring anything newer to this box."""
@@ -251,9 +252,9 @@ class UpdateChecker:
 
         A machine with no renderer installed is not missing an update: the
         installer would be adding one, which is an install decision, not an
-        upgrade.
+        upgrade. The upgrade API also needs a known bundle target.
         """
-        return self._renderer_stale
+        return bool(self._latest and self._renderer_stale)
 
     async def check_now(self) -> str | None:
         """Refresh release trains and installed package versions.

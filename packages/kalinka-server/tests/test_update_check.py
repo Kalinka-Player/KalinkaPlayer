@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 
+import pytest
+
 from kalinka_server import update_check
 from kalinka_server.update_check import (
     _BUNDLE_TAG_PREFIX,
@@ -440,6 +442,38 @@ class TestRendererUpdateAvailable:
         assert checker.update_available()
 
 class TestSupervisorUpdates:
+    @pytest.mark.parametrize("package", ["renderer", "supervisor"])
+    async def test_package_update_waits_for_a_bundle_target(self, monkeypatch, package):
+        checker = UpdateChecker()
+        monkeypatch.setattr(update_check, "get_version", lambda: "5.7.0")
+        monkeypatch.setattr(update_check, "installed_renderer_version", lambda: "0.1.0")
+        monkeypatch.setattr(update_check, "installed_supervisor_version", lambda: "0.1.0")
+        feeds = iter([
+            _feed(f"kalinka-{package}-v0.2.0"),
+            _feed("kalinka-v5.7.0"),
+            _feed(f"kalinka-{package}-v0.2.0"),
+        ])
+
+        async def fetch():
+            return next(feeds)
+
+        monkeypatch.setattr(checker, "_fetch", fetch)
+        await checker.check_now()
+        assert checker.latest is None
+        assert getattr(checker, f"latest_{package}") == "0.2.0"
+        assert not checker.update_available()
+        assert not checker.renderer_update_available()
+        assert not checker.supervisor_update_available()
+
+        for _ in range(2):
+            await checker.check_now()
+            assert checker.update_available()
+            assert validate_upgrade_request(
+                checker.latest, checker.latest, "5.7.0",
+                checker.renderer_update_available(),
+                checker.supervisor_update_available(),
+            ) is None
+
     async def test_supervisor_only_update_is_offered(self, monkeypatch):
         checker = UpdateChecker()
         monkeypatch.setattr(update_check, 'get_version', lambda: '5.7.0')

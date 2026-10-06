@@ -256,7 +256,7 @@ func (n *NetworkManager) Join(ctx context.Context, c protocol.Command, progress 
 	}
 	defer func() {
 		if result != nil {
-			rollback, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			rollback, cancel := context.WithTimeout(context.Background(), RollbackTimeout)
 			defer cancel()
 			if n.rollback(rollback) != nil {
 				result = protocol.Storage
