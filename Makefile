@@ -1,6 +1,6 @@
 ## KalinkaPlayer Development Makefile
 
-.PHONY: clean test test-playqueue test-plugin-template system-test bench-sdd help venv-env kalinka-server-deb kalinka-server-rpm kalinka-plugins-deb build-all-deb copy-debs build-env dev-setup dev-run renderer-build renderer-clean renderer-deb renderer-rpm proto image-rpi234 image-rpi5 image-amd64 image-test
+.PHONY: supervisor-build supervisor-test supervisor-deb clean test test-playqueue test-plugin-template system-test bench-sdd help venv-env kalinka-server-deb kalinka-server-rpm kalinka-plugins-deb build-all-deb copy-debs build-env dev-setup dev-run renderer-build renderer-clean renderer-deb renderer-rpm proto image-rpi234 image-rpi5 image-amd64 image-test
 
 ## --- Local-from-source dev environment (no root, no systemd) ------------------
 ## Everything lands in a per-user fakeroot under $(KALINKA_PREFIX) instead of the
@@ -225,9 +225,20 @@ build-all-deb: kalinka-server-deb kalinka-plugins-deb renderer-deb copy-debs
 	@echo "All deb packages built successfully!"
 	@echo "Debs moved to debs/ directory"
 
+## Independent Go supervisor: no Python environment is needed.
+GO ?= go
+supervisor-build:
+	@GO="$(GO)" packages/kalinka-supervisor/build.sh
+
+supervisor-test:
+	@cd packages/kalinka-supervisor && "$(GO)" test -race ./... && "$(GO)" vet ./...
+
+supervisor-deb:
+	@GO="$(GO)" packages/kalinka-supervisor/build-deb.sh
+
 ## --- Appliance images (packages/kalinka-image) ---------------------------------
 ## Bootable images with the whole player already installed: DietPi for the
-## Raspberry Pi, Debian for a PC. All need root for loop devices and mounts,
+## Raspberry Pi and x86-64 UEFI PCs. All need root for loop devices and mounts,
 ## and building for another architecture needs qemu-user-static registered
 ## with binfmt_misc:
 ##   sudo make image-rpi234               # latest published release
@@ -250,11 +261,12 @@ image-test:
 	@if command -v podman >/dev/null 2>&1 || command -v docker >/dev/null 2>&1; then \
 		engine=$$(command -v podman || command -v docker); \
 		echo "Running the image tests in debian:trixie via $$(basename $$engine)"; \
-		$$engine run --rm -v "$(CURDIR)/$(IMAGE_DIR):/img:z" -w /img \
+		$$engine run --rm -v "$(CURDIR)/$(IMAGE_DIR):/packages/kalinka-image:z" \
+			-v "$(CURDIR)/packages/kalinka-supervisor:/packages/kalinka-supervisor:z" -w /packages/kalinka-image \
 			-e KALINKA_IMAGE_TEST_DISPOSABLE=1 -e DEBIAN_FRONTEND=noninteractive \
 			debian:trixie bash -c 'apt-get update -qq >/dev/null && \
 				apt-get install -y -qq --no-install-recommends \
-					openssh-client openssl passwd python3 util-linux fdisk tzdata gpg gpg-agent gpgv >/dev/null && \
+					openssh-client openssl passwd python3 util-linux fdisk dosfstools tzdata gpg gpg-agent gpgv >/dev/null && \
 				bash tests/run-tests.sh'; \
 	else \
 		echo "No podman or docker: running only the tests that need neither root nor a container."; \

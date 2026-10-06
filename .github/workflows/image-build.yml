@@ -1,0 +1,74 @@
+name: DietPi E2E images
+on:
+  workflow_dispatch:
+    inputs:
+      kalinka_version:
+        description: 'Core release to install (empty uses latest)'
+        required: false
+        default: ''
+      supervisor_version:
+        description: 'Supervisor package version (empty uses a CI test version)'
+        required: false
+        default: ''
+  workflow_call:
+    inputs:
+      kalinka_version:
+        type: string
+        required: false
+        default: ''
+      supervisor_version:
+        type: string
+        required: false
+        default: ''
+permissions:
+  contents: read
+jobs:
+  supervisor:
+    uses: ./.github/workflows/supervisor-packages.yml
+    with:
+      version: ${{ inputs.supervisor_version }}
+  image:
+    needs: supervisor
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: rpi234
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - target: rpi5
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - target: amd64
+            arch: amd64
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: supervisor-packages
+          path: supervisor-packages
+      - name: Select the verified package
+        id: supervisor
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          cd supervisor-packages
+          sha256sum -c SHA256SUMS
+          packages=(kalinka-supervisor_*_"$ARCH".deb)
+          test "${#packages[@]}" = 1
+          echo "deb=$PWD/${packages[0]}" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/build-image
+        with:
+          target: ${{ matrix.target }}
+          kalinka-version: ${{ inputs.kalinka_version }}
+          supervisor-deb: ${{ steps.supervisor.outputs.deb }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.target }}
+          path: out/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

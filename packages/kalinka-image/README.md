@@ -2,13 +2,13 @@
 
 Bootable images with the whole player already installed and enabled: the server, all four first-party plugins, the plugin SDK, the browser player and the renderer that drives the sound card. Power one on and it plays — there is no install step and no login needed to use it.
 
-Three targets, built by the same script on one of two bases:
+Three targets, all built from signed DietPi images:
 
 | Target | Hardware | Base | Boots via |
 |---|---|---|---|
 | `rpi234` | Raspberry Pi 3, 4, 400, Zero 2 W, CM3 and CM4 | DietPi | the Pi's own firmware and the Raspberry Pi kernel |
 | `rpi5` | Raspberry Pi 5, 500 and CM5 | DietPi | the Pi's own firmware and the Raspberry Pi kernel |
-| `amd64` | any x86-64 PC or virtual machine | Debian, from debootstrap | GRUB, UEFI or BIOS, from one image |
+| `amd64` | x86-64 PC or virtual machine with UEFI | DietPi Native PC UEFI | GRUB and UEFI (Secure Boot disabled) |
 
 The Pi images are built on [DietPi](https://dietpi.com) because it carries the Raspberry Pi kernel, whose drivers and overlays are what DAC HATs need; Debian's own kernel has neither.
 
@@ -30,7 +30,7 @@ sudo make image-amd64 KALINKA_VERSION=4.3.2   # a specific one
 
 Building for an architecture other than the host's needs `qemu-user-static` registered with `binfmt_misc`; the script says so if it is missing. CI avoids the question by building each image on a runner of its own architecture.
 
-`IMAGE_SIZE`, `OUT_DIR` and `XZ_LEVEL` override the defaults for every target, `SUITE` and `MIRROR` for the Debian one. The DietPi downloads are kept in `cache/` (`DIETPI_CACHE`) and fetched again only when dietpi.com has a newer image. dietpi.com replaces its images in place, so the build logs the sha256 of the one it used, and `DIETPI_SHA256` makes it insist on a particular one. Images land in `out/`.
+`IMAGE_SIZE`, `OUT_DIR` and `XZ_LEVEL` override the defaults. CI uses 8 GiB; scratch images live in `/var/tmp`, overridable with `IMAGE_WORK_DIR`. That filesystem needs enough free disk space for the uncompressed image. Each build uses a private mount namespace. Set `IMAGE_KEEP_FAILED=1` to retain a failed build’s scratch directory for diagnosis. The DietPi downloads are kept in `cache/` (`DIETPI_CACHE`) and fetched again only when dietpi.com has a newer image. dietpi.com replaces its images in place, so the build logs the sha256 of the one it used, and `DIETPI_SHA256` makes it insist on a particular one. Images land in `out/`.
 
 ```sh
 make image-test    # the test suite, in a throwaway Debian container
@@ -42,7 +42,7 @@ make image-test    # the test suite, in a throwaway Debian container
 
 Kalinka itself is installed by running the repository's own [`scripts/install-release.sh`](../../scripts/install-release.sh) inside the chroot, which is what keeps the image honest: it installs exactly what `curl … | sudo bash` installs on anyone else's machine, picks up the browser player from the app repo and the renderer package for this distro and architecture, and needs no second copy of that logic here. The build then fails unless the server's venv builds, `fpcalc` fingerprints a test tone, and both the server and the renderer are enabled.
 
-No install in the build takes recommends. `install-release.sh` passes `--no-install-recommends` itself, and the build turns them off for its own installs, so what the image needs of them is named instead: `fpcalc` for AcoustID fingerprinting and the toolchain below by `install-release.sh`, and on the PC image `wpasupplicant` for Wi-Fi, `libpam-systemd` so an SSH session is a logind session that a reboot ends cleanly, and the signed GRUB and shim for Secure Boot.
+No install in the build takes recommends. `install-release.sh` passes `--no-install-recommends` itself, and the build turns them off for its own installs, so what the image needs of them is named instead: `fpcalc` for AcoustID fingerprinting and the toolchain below by `install-release.sh`, `wpasupplicant`, BlueZ and the supervisor for nearby setup. The x86 image also includes `libpam-systemd` and unmasks `systemd-logind` for login sessions and the VM/PC power button.
 
 The reason is graphics. `fpcalc` links ffmpeg; ffmpeg's `libavutil` hard-depends `libva2` and `libvdpau1`; each of those Recommends a video-acceleration driver, which pulls Mesa and a 118 MB `libLLVM` onto a machine with no display. Refusing packages does not keep that out: both Recommends read `<name>-all | <virtual>`, and the Mesa drivers, the Intel ones and NVIDIA's all *Provide* that virtual, so apt only moves on to the next provider. With recommends off none of them has a way in, and neither do the cellular modem stack behind NetworkManager and X forwarding behind sshd. `libva2` and `libvdpau1` themselves stay: ffmpeg needs them, they are small, and VA-API with no driver behind it is what any headless machine does anyway. The setting is lifted before the image is sealed — it was about keeping this build lean, not about what you may install later.
 
@@ -52,15 +52,21 @@ Two things happen in the chroot that would not happen on a real machine. `policy
 
 The server's venv is built during the image build rather than on first start, so a machine that never reaches PyPI still comes up playing, and a Pi saves several minutes on its first boot.
 
-### The Debian base
-
-[`lib/base-debootstrap.sh`](lib/base-debootstrap.sh) builds the system from nothing. The target supplies the partition table, the kernel and firmware packages, and a `target_install_bootloader` that makes the image bootable *and proves it did*: the amd64 target fails the build if GRUB wrote the loop device it was built on into its config instead of a UUID, or if no shim stands in front of GRUB for Secure Boot. An image that builds and does not boot is the expensive failure here, so the check is in the build rather than in a later boot test.
-
-A minimal Debian has no first-boot provisioning of its own, so [`overlays/debootstrap/`](overlays/debootstrap) brings it: `growroot.sh` grows the root filesystem into the media on every boot, and `firstboot.sh` gives the machine host keys and a machine-id of its own, then applies `kalinka-firstboot.conf` from the boot partition whenever one is there. A setting that cannot be applied is logged and the rest still are, and the file is shredded either way, since FAT keeps no permissions to hide a Wi-Fi password behind.
-
 ### The DietPi base
 
-[`lib/base-dietpi.sh`](lib/base-dietpi.sh) starts from DietPi's published image instead. It checks the image's signature against the key in [`keys/dietpi.asc`](keys/dietpi.asc) and insists the signing key is the one pinned in `DIETPI_SIGNER`. It then grows the image to `IMAGE_SIZE` without changing the disk id, which is how the Pi's `cmdline.txt` finds the root partition, and names the FAT partition KALINKA-BT.
+All images support **Set up a box** through the installed Kalinka app.
+Select the box over Bluetooth, choose a nearby WPA2 network and enter its
+password. The box reports join progress; failures offer Retry, and Back
+returns to network selection. It advertises setup when it has no LAN connection and
+returns to normal discovery after joining. New boxes continue into the
+existing first-run wizard. See
+[BLE provisioning](../../docs/ble-provisioning.md) for the service, protocol,
+supported networks, and the laptop test launcher
+`../kalinka-supervisor/run-test.sh`. All three targets install a package-managed static Go
+`kalinka-supervisor.service` using DietPi’s ifupdown/wpa_supplicant backend.
+The same package also supports NetworkManager on other distributions. It has no Python runtime dependency.
+
+[`lib/base-dietpi.sh`](lib/base-dietpi.sh) starts from DietPi's published image instead. It checks the image's signature against the key in [`keys/dietpi.asc`](keys/dietpi.asc) and insists the signing key is the one pinned in `DIETPI_SIGNER`. It then grows the image to `IMAGE_SIZE` without changing the disk id, which is how the Pi's `cmdline.txt` finds the root partition, and names the Pi FAT partition KALINKA-BT. On x86, the EFI partition stays intact and the trailing `DIETPISETUP` FAT partition moves to the end of the enlarged image. DietPi imports its settings, deletes that temporary partition and expands root on first boot.
 
 The packages are brought up to date, but the kernel stays the one DietPi shipped and tested. APT would otherwise move it as a side effect: the toolchain brings `linux-libc-dev`, which is built from the same source as the kernel, and APT upgrades a source's packages together. The build turns that off for its own installs, and holds the kernel packages while it upgrades, since a rebuilt kernel keeps its package name; it fails if the kernel moved anyway. The hold is lifted before the image is sealed, so DietPi's own updates move the kernel later.
 
@@ -97,4 +103,26 @@ ALSA is installed, and marked installed for DietPi's own tools, so choosing a so
 
 The last three edit `/etc`, so they skip themselves unless `KALINKA_IMAGE_TEST_DISPOSABLE=1` says the system is throwaway. `make image-test` supplies that by running them in a container.
 
-[`tests/vm/`](tests/vm) boots a built PC image, and [`image-pr.yml`](../../.github/workflows/image-pr.yml) runs it on every pull request that touches the image. `boot.sh` starts a copy in QEMU, under UEFI with Secure Boot on or under a legacy BIOS, passes once the server answers, and powers the guest off. `inspect.sh` then reads the disk offline: the root partition and filesystem grown into the disk, both first-boot units succeeded, the kernel saw Secure Boot on, an initrd, `wpasupplicant`, and a signed shim in front of GRUB. `boot.sh` needs KVM, QEMU and OVMF, and `OVMF_CODE` and `OVMF_VARS` point it at the firmware on a host that is not Ubuntu; `inspect.sh` needs root, `sbverify` and `dpkg-query`.
+[`tests/vm/`](tests/vm) boots a copy of the PC image under UEFI with Secure Boot disabled. The test waits for Core's HTTP endpoint, shuts down cleanly, then checks the expanded filesystem, DietPi first-boot completion, networking packages and supervisor installation offline. `boot.sh` needs KVM, QEMU and OVMF; set `OVMF_CODE` and `OVMF_VARS` to your host's plain UEFI firmware. `inspect.sh` needs root. The old debootstrap first-boot tests remain for the retained library, which no current target uses.
+
+`test_dietpi_uefi.sh` verifies that expanding the GPT image preserves the setup partition's bytes and every partition identifier. `test_supervisor_image.sh` checks radio settings and service ordering.
+
+### Building the supervisor
+
+Install Go 1.25 or newer on the build host (or pass `GO=/absolute/path/to/go`
+to the image build). Without `SUPERVISOR_DEB=/absolute/path/to/package.deb`, the build compiles the supervisor for the target with
+`CGO_ENABLED=0` before creating the image. No Go compiler or Go modules are
+installed inside the image. CI installs Go and runs `make supervisor-test`.
+See [the supervisor documentation](../../docs/supervisor.md) for local builds,
+a separate Debian package, service hardening and future recovery capabilities.
+
+## CI and E2E artifacts
+
+- `supervisor-packages.yml` tests Go and the installer, then cross-compiles `amd64` and `arm64` Debian packages and checksums.
+- `supervisor-release.yml` publishes those packages for a `kalinka-supervisor-vX.Y.Z` tag. It does not change the app bundle's Latest badge.
+- `image-build.yml` is the manual **DietPi E2E images** workflow. It builds packages first, then the three images on native runners. Download the `image-amd64`, `image-rpi234` and `image-rpi5` artifacts. Each contains the compressed disk, checksum and version manifest; artifacts are retained for 14 days.
+- `image-release.yml` reuses the same build before publishing an image release. `image-pr.yml` builds and boots x86 on relevant pull requests.
+
+Core and renderer come from published releases; supervisor comes from the selected checkout. An empty supervisor version creates `0.1.0~ci.…`, which upgrades to the first `0.1.0` release. Use an explicit version for subsequent release trains. Nothing in the E2E workflow publishes a release.
+
+For a provisioning test, import the x86 disk into a UEFI VM, disable Secure Boot, and pass through dedicated USB Wi-Fi and Bluetooth adapters. Disconnect the VM's virtual Ethernet so it is actually offline. The phone should discover the box, configure Wi-Fi and reach Core on the resulting address. NAT Ethernet tests Core boot, but cannot test a real Wi-Fi join or LAN mDNS. Pi radio firmware still requires a Pi test.

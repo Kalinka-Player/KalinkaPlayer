@@ -1103,6 +1103,9 @@ async def create_app(
             "renderer_current_version": checker.installed_renderer,
             "renderer_latest_version": checker.latest_renderer,
             "renderer_update_available": checker.renderer_update_available(),
+            "supervisor_current_version": checker.installed_supervisor,
+            "supervisor_latest_version": checker.latest_supervisor,
+            "supervisor_update_available": checker.supervisor_update_available(),
             "upgrade_supported": not app.state.config.server.demo_mode
             and update_check.upgrade_supported(),
         }
@@ -1146,6 +1149,7 @@ async def create_app(
             update_check.checker.latest,
             get_version(),
             update_check.checker.renderer_update_available(),
+            update_check.checker.supervisor_update_available(),
         )
         if rejection:
             raise HTTPException(status_code=409, detail=rejection)

@@ -218,6 +218,17 @@ for url in "${URLS[@]}"; do
   download "$url" "$TMPDIR_DL/$name"
 done
 
+# Existing supervisor installations join this upgrade; ordinary servers stay unchanged.
+if [ "${SKIP_SUPERVISOR:-0}" != 1 ] && \
+   [ "$(dpkg-query -W -f='${db:Status-Status}' kalinka-supervisor 2>/dev/null || true)" = installed ]; then
+  supervisor_script="$(dirname "${BASH_SOURCE[0]}")/install-supervisor.sh"
+  if [ ! -r "$supervisor_script" ]; then
+    supervisor_script="$TMPDIR_DL/install-supervisor.sh"
+    fetch "${KALINKA_SUPERVISOR_INSTALLER:-https://raw.githubusercontent.com/$REPO/main/scripts/install-supervisor.sh}" > "$supervisor_script"
+  fi
+  ALLOW_MISSING_RELEASE=1 bash "$supervisor_script"
+fi
+
 # --- renderer -----------------------------------------------------------------
 # Ahead of the bundle, because a release can move the renderer protocol and a
 # renderer speaks the version before its own as well as its own: new renderer

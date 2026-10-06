@@ -1,0 +1,45 @@
+[Unit]
+Description=Kalinka Supervisor
+After=dietpi-preboot.service dietpi-firstboot.service kalinka-firstboot.service bluetooth.service NetworkManager.service
+Wants=bluetooth.service
+StartLimitIntervalSec=0
+# This iteration only runs provisioning; a later supervisor can run without BLE or Wi-Fi.
+ConditionPathIsDirectory=/sys/class/bluetooth/hci0
+ConditionPathExistsGlob=/sys/class/net/*/wireless
+
+[Service]
+Type=notify
+NotifyAccess=main
+EnvironmentFile=-/etc/default/kalinka-supervisor
+# The root mount is intentionally read-only; writes use the paths below.
+Environment=G_CHECK_ROOTFS_RW_VERIFIED=1
+Environment=G_INTERACTIVE=0
+ExecCondition=/usr/lib/kalinka-supervisor/kalinka-supervisor --check-enabled
+ExecStart=/usr/lib/kalinka-supervisor/kalinka-supervisor provision --backend auto
+Restart=on-failure
+RestartSec=10
+WatchdogSec=60
+TimeoutStartSec=100
+TimeoutStopSec=130
+RuntimeDirectory=kalinka-supervisor
+RuntimeDirectoryMode=0700
+StateDirectory=kalinka-supervisor
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# DietPi's own networking tool updates these files; NM writes via its daemon.
+ReadWritePaths=/var/lib/kalinka-supervisor /run
+ReadWritePaths=-/etc/network -/etc/wpa_supplicant -/etc/resolv.conf -/etc/dhcp
+ReadWritePaths=-/boot -/var/lib/dietpi -/var/lib/dhcp -/var/lib/kalinka-image
+
+[Install]
+# A radio that appears after boot reaches one of these targets; the conditions are rechecked then.
+WantedBy=multi-user.target bluetooth.target kalinka-wireless.target

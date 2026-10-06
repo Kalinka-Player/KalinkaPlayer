@@ -30,10 +30,22 @@ image_name() {
 
 publish_image() {
   log "Compressing"
-  local version name
+  local version name supervisor renderer
   version="$(in_chroot dpkg-query -W -f='${Version}' kalinka-server)"
   name="$(image_name "$version" "$TARGET" "$TARGET_ARCH")"
   mkdir -p "$OUT_DIR"
+  supervisor="$(in_chroot dpkg-query -W -f='${Version}' kalinka-supervisor)"
+  renderer="$(in_chroot dpkg-query -W -f='${Version}' kalinka-renderer)"
+  python3 - "$OUT_DIR/$name.manifest.json" "$TARGET" "$TARGET_ARCH" "$version" "$supervisor" "$renderer" \
+    "$DIETPI_IMAGE" "$DIETPI_VERSION" "$(sha256sum "$DIETPI_CACHE/$DIETPI_IMAGE.img.xz" | cut -d' ' -f1)" <<'PYMANIFEST'
+import datetime, json, pathlib, sys
+path, target, arch, core, supervisor, renderer, base, base_version, base_sha = sys.argv[1:]
+data = dict(target=target, architecture=arch, core_version=core,
+            supervisor_version=supervisor, renderer_version=renderer,
+            dietpi_image=base, dietpi_version=base_version, dietpi_sha256=base_sha,
+            built_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
+pathlib.Path(path).write_text(json.dumps(data, indent=2) + "\n")
+PYMANIFEST
   detach_image
   xz "$XZ_LEVEL" --threads=0 --stdout "$IMAGE" > "$OUT_DIR/$name.xz"
   ( cd "$OUT_DIR" && sha256sum "$name.xz" > "$name.xz.sha256" )
