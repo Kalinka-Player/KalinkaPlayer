@@ -24,6 +24,7 @@ type nmFake struct {
 	committed, deleted, restored bool
 	failSave                     bool
 	cancel                       context.CancelFunc
+	rollbackRemaining            time.Duration
 }
 
 func (b *nmFake) Close() error { return nil }
@@ -86,6 +87,8 @@ func (b *nmFake) Call(ctx context.Context, path dbus.ObjectPath, method string, 
 		b.committed = true
 		return []any{map[string]dbus.Variant{}}, nil
 	case nmConnection + ".Delete":
+		deadline, _ := ctx.Deadline()
+		b.rollbackRemaining = time.Until(deadline)
 		if path != "/candidate" {
 			b.t.Fatal("deleted pre-existing profile")
 		}
@@ -131,6 +134,9 @@ func TestNMStagingAndRollback(t *testing.T) {
 			} else {
 				if err == nil || b.committed || !b.deleted || !b.restored {
 					t.Fatalf("rollback failed %v", err)
+				}
+				if b.rollbackRemaining <= 50*time.Second || b.rollbackRemaining > RollbackTimeout {
+					t.Fatal("rollback must use the shared 55-second budget independently of join cancellation")
 				}
 				if scenario == "wrong_password" && err != protocol.WrongPassword {
 					t.Fatal("reason lost")

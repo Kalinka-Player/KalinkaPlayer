@@ -17,6 +17,7 @@ Environment=G_INTERACTIVE=0
 ExecCondition=/usr/lib/kalinka-supervisor/kalinka-supervisor --check-enabled
 ExecStart=/usr/lib/kalinka-supervisor/kalinka-supervisor provision --backend auto
 Restart=on-failure
+RestartPreventExitStatus=78
 RestartSec=10
 WatchdogSec=60
 TimeoutStartSec=100

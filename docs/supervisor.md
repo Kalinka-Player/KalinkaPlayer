@@ -25,6 +25,11 @@ version. The Debian package is written under the module's `build/` directory.
 It depends on BlueZ and networking tools, with `network-manager | ifupdown` as
 alternatives. An existing DietPi ifupdown installation satisfies that dependency;
 installing the supervisor does not require migrating DietPi to NetworkManager.
+Generic ifupdown hosts are not supported: outside DietPi, install
+`network-manager` explicitly even if ifupdown satisfies apt's alternative.
+Startup checks the selected backend's executable and reports a missing backend
+with exit status 78; systemd does not restart that configuration error. After
+installing the missing backend, start the supervisor again.
 The DietPi backend also requires DietPi's own `dietpi-network apply --no-restart`
 API. The package enables the service for boot; start it after installation with
 `sudo systemctl start kalinka-supervisor`. Pi image builds additionally enable
@@ -107,6 +112,11 @@ it does not authorize future destructive recovery. Disabling setup through
 Core's existing Python update checker watches `kalinka-supervisor-v*` alongside Core and renderer releases. A newer supervisor alone makes the existing update action available. The root-side upgrade script still runs `install-release.sh`; that calls `install-supervisor.sh` only when the supervisor is already installed. Ordinary Core installations do not acquire a supervisor implicitly.
 
 The helper chooses the matching `amd64` or `arm64` package, verifies its release checksum and Debian package identity, refuses downgrades, then lets apt install it. The package's post-install hook reloads systemd and restarts an already running supervisor. Persistent setup rollback records and Wi-Fi daemons survive that restart. A checksum fetched from the same HTTPS release detects corruption; it is not an independent publisher signature.
+
+Package releases remain cached when the feed rotates, but renderer/supervisor
+update offers require a known Core bundle target for the existing upgrade API.
+A cold feed containing only package releases therefore offers no upgrade until
+a bundle target is known.
 
 Supervisor releases use their own tags and workflow; image builds consume the package job's artifact. See [image builds](../packages/kalinka-image/README.md#ci-and-e2e-artifacts). The update-check integration ships with the next Core release; images built with an older published Core need that Core update before supervisor-only notifications appear.
 

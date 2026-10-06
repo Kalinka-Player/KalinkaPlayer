@@ -19,6 +19,9 @@ import (
 	"kalinka/supervisor/internal/protocol"
 )
 
+// RollbackTimeout leaves cancellation and polling headroom within the app's 75-second reset wait.
+const RollbackTimeout = 55 * time.Second
+
 // Backend owns recovery before setup and rollback before returning a join error.
 type Backend interface {
 	Address(context.Context) (string, error)

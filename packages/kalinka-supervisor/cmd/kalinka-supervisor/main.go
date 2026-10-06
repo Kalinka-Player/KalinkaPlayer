@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
@@ -131,6 +132,23 @@ func enabled() bool {
 	r := regexp.MustCompile(`(?m)^\s*KALINKA_BLE_SETUP\s*=\s*['"]?0['"]?\s*(?:#.*)?$`)
 	return !r.Match(b)
 }
+
+func backendProblem(o options, lookPath func(string) (string, error)) string {
+	if o.test {
+		return ""
+	}
+	tool := "NetworkManager"
+	message := "NetworkManager is required outside DietPi; install network-manager. Generic ifupdown is not supported."
+	if o.backend == "dietpi" {
+		tool = "/boot/dietpi/dietpi-network"
+		message = "The DietPi backend requires /boot/dietpi/dietpi-network."
+	}
+	if _, err := lookPath(tool); err != nil {
+		return message
+	}
+	return ""
+}
+
 func serve(ctx context.Context, o options) error {
 	if err := system.PrivateDir(o.runtime); err != nil {
 		return err
@@ -246,6 +264,10 @@ func main() {
 	if !o.test && !o.always && !enabled() {
 		slog.Info("Nearby setup disabled")
 		return
+	}
+	if problem := backendProblem(o, exec.LookPath); problem != "" {
+		slog.Error(problem)
+		os.Exit(78)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

@@ -318,6 +318,13 @@ Status stays `joining` while the backend cancels/restores, then becomes `idle`
 when a new scan/join is safe. Further writes are rejected while restoration is
 running. No saved network is removed by opening the picker.
 
+Both backends allow up to 55 seconds for rollback. Clients wait at least 75
+seconds after submitting `change_network` before reporting a reset timeout,
+leaving 20 seconds for cancellation cleanup and BLE status polling. A client
+must wait for the server's idle/failed status rather than treating elapsed
+time as permission to send another join. Startup crash recovery has its own
+deadline and completes before setup is advertised.
+
 ## Verification
 
 `make supervisor-test` runs Go protocol conformance, lifecycle, persistence,
