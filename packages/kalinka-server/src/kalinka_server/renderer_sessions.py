@@ -367,6 +367,7 @@ class SessionPool:
         self.server_id = server_id
         self._timeout_s = timeout_s
         self._sessions: dict[str, PlaybackSession] = {}
+        self._upgrade_guard: Callable[[str], bool] = lambda _: False
         self._open_hooks: list[Callable] = []
         self._volume_policy: Callable[
             [str], SessionVolumePolicy
@@ -398,12 +399,21 @@ class SessionPool:
     def get(self, renderer_id: str) -> Optional[PlaybackSession]:
         return self._sessions.get(renderer_id)
 
+    def set_upgrade_guard(self, upgrading: Callable[[str], bool]) -> None:
+        """Prevent new playback claims while an upgrade is being requested or installed."""
+        self._upgrade_guard = upgrading
+
     def list(self) -> list[dict]:
         return [session.to_dict() for session in self._sessions.values()]
 
     async def open(
         self, renderer_id: str, *, announce: bool = True
     ) -> PlaybackSession:
+        if self._upgrade_guard(renderer_id):
+            raise RendererBusy(
+                f"renderer {renderer_id} is upgrading",
+                owner_server_id=self.server_id,
+            )
         ws = self._registry.require_session(renderer_id)
         if renderer_id in self._sessions:
             raise RendererBusy(

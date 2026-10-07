@@ -7,24 +7,28 @@ is carried by every protocol version for that reason, and this service sends it
 over the raw link rather than the drivable one.
 
 Two rules keep an upgrade from being disruptive: a renderer running a playback
-session is never asked (it would cut the track off mid-play), and a renderer
-that cannot install a release of itself is never offered one.
+session is not asked unless someone pressed upgrade (it would cut the track
+off mid-play), and a renderer that cannot install a release of itself is never
+offered one.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from dataclasses import dataclass
-from typing import Callable, Optional
+import time
+from dataclasses import dataclass, field
+from typing import Awaitable, Callable, Optional
 
 from .renderer_link import RendererLink
-from .renderer_registry import RendererRegistry, RendererUnavailable
+from .renderer_registry import RendererRecord, RendererRegistry, RendererUnavailable
 from .renderer_replies import PendingReplies
 from .update_check import is_newer
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
 DEFAULT_TIMEOUT_S = 10.0
+INSTALL_TIMEOUT_S = 15 * 60.0
 
 
 class UpgradeRefused(Exception):
@@ -39,6 +43,37 @@ class UpgradeCandidate:
     friendly_name: str
     installed_version: str
     busy: bool
+    local: bool
+
+    @property
+    def name(self) -> str:
+        """What a person knows it by."""
+        return self.friendly_name or self.renderer_id
+
+
+@dataclass(frozen=True)
+class FleetProgress:
+    """Where the renderers stand once :meth:`RendererUpgradeService.bring_forward`
+    has been through them."""
+
+    # Renderers that took the upgrade on and are installing it now.
+    upgrading: list[str] = field(default_factory=list)
+    # Why each of the others is not on its way, in words fit for a person.
+    holding: list[str] = field(default_factory=list)
+
+    @property
+    def done(self) -> bool:
+        """No renderer was behind, so none was asked and none holds back."""
+        return not self.upgrading and not self.holding
+
+
+@dataclass(frozen=True)
+class AcceptedUpgrade:
+    name: str
+    target: str
+    previous_version: str
+    expires_at: float
+    record: RendererRecord
 
 
 class RendererUpgradeService:
@@ -48,14 +83,58 @@ class RendererUpgradeService:
         self,
         registry: RendererRegistry,
         is_busy: Callable[[str], bool],
+        stop_playback: Callable[[str], Awaitable[None]],
         timeout_s: float = DEFAULT_TIMEOUT_S,
+        install_timeout_s: float = INSTALL_TIMEOUT_S,
     ):
-        """``is_busy`` says whether playback is running on a renderer — the
-        one question this service asks about sessions, so it depends on that
-        rather than on the pool that answers it."""
+        """``is_busy`` says whether playback is running on a renderer and
+        ``stop_playback`` ends it, telling whoever was playing — all this
+        service needs of sessions, so it depends on those rather than on the
+        pool that does them."""
         self._registry = registry
         self._is_busy = is_busy
+        self._stop_playback = stop_playback
         self._pending = PendingReplies("upgrade", timeout_s)
+        self._install_timeout_s = install_timeout_s
+        self._accepted: dict[str, AcceptedUpgrade] = {}
+        self._requesting: set[str] = set()
+        registry.add_observer(self._refresh_accepted)
+
+    def _refresh_accepted(self) -> None:
+        for renderer_id, accepted in list(self._accepted.items()):
+            record = self._registry.get(renderer_id)
+            if (
+                record is None
+                or record is accepted.record
+                or record.session is None
+                or not record.software_version
+            ):
+                continue
+            if accepted.target:
+                installed = record.software_version
+                confirmed = (
+                    _release_of(installed) == _release_of(accepted.target)
+                    and not version_is_newer(accepted.target, installed)
+                ) or version_is_newer(installed, accepted.target)
+            else:
+                confirmed = version_is_newer(
+                    record.software_version, accepted.previous_version
+                )
+            if confirmed:
+                del self._accepted[renderer_id]
+
+    def is_upgrading(self, renderer_id: str) -> bool:
+        """Guard playback claims through the stop, request and installation.
+
+        A failed install becomes retryable after the deadline. Its outstanding
+        confirmation still blocks the server upgrade, even if the registry has
+        since forgotten the disconnected renderer.
+        """
+        self._refresh_accepted()
+        accepted = self._accepted.get(renderer_id)
+        return renderer_id in self._requesting or (
+            accepted is not None and time.monotonic() < accepted.expires_at
+        )
 
     def candidates(self, latest_version: Optional[str]) -> list[UpgradeCandidate]:
         """Connected native renderers behind ``latest_version`` that could take
@@ -91,74 +170,159 @@ class RendererUpgradeService:
                     friendly_name=record.friendly_name,
                     installed_version=record.software_version,
                     busy=self._is_busy(record.renderer_id),
+                    local=record.local,
                 )
             )
         return found
 
-    async def bring_forward(self, latest_version: Optional[str]) -> bool:
+    async def bring_forward(
+        self,
+        latest_version: Optional[str],
+        *,
+        interrupt: bool = False,
+        installer_covers_local: bool = False,
+    ) -> FleetProgress:
         """Upgrade every renderer ``latest_version`` would bring forward.
 
-        Returns whether nothing needed doing. False means one was asked and
-        has not come back yet, so a caller with its own upgrade to make — the
-        Core, whose next release may move the protocol — should look again
-        later rather than moving past them. One that is playing is left for
-        that later look; one that cannot install a release of itself is said
+        For a caller with its own upgrade to make: the Core, whose next
+        release may move the protocol. Accepted renderers stay `upgrading`
+        until they register on the target version, even across a disconnect.
+        A renderer that cannot be asked is `holding`. Only `done` lets the
+        server start its own installer. They are asked all at once, so the caller
+        waits for the slowest answer rather than for the sum of them.
+
+        ``installer_covers_local`` says the caller's own installer run also
+        upgrades the renderer on this machine, as it does where the renderer
+        package is installed; that renderer is then left to it. Otherwise it
+        is asked like any other.
+
+        A renderer that is playing is left for that later look, unless
+        ``interrupt`` says someone asked for the upgrade: then its playback
+        is stopped first. One that cannot install a release of itself is said
         out loud and not waited for, because no later look would change it.
         """
-        for stranded in self.stranded(latest_version):
+
+        def ours(candidate: UpgradeCandidate) -> bool:
+            return not (candidate.local and installer_covers_local)
+
+        for stranded in filter(ours, self.stranded(latest_version)):
             logger.warning(
                 "Renderer '%s' is on %s and cannot upgrade itself",
-                stranded.friendly_name,
+                stranded.name,
                 stranded.installed_version,
             )
-        behind = self.candidates(latest_version)
-        if not behind or latest_version is None:
-            return True
-        for candidate in behind:
-            if candidate.busy:
-                logger.info(
-                    "Renderer '%s' is playing; leaving its upgrade for later",
-                    candidate.friendly_name,
+        if latest_version is None:
+            return FleetProgress()
+        self._refresh_accepted()
+        # Accepted renderers remain part of the gate while disconnected. A
+        # lost socket (including Goodbye/reaping) is not proof of installation.
+        for renderer_id in list(self._accepted):
+            record = self._registry.get(renderer_id)
+            if not self.is_upgrading(renderer_id) and record and record.session:
+                del self._accepted[renderer_id]
+        waiting = dict(self._accepted)
+        asking = set(self._requesting)
+        behind = [
+            candidate
+            for candidate in filter(ours, self.candidates(latest_version))
+            if candidate.renderer_id not in waiting
+            and candidate.renderer_id not in asking
+        ]
+        reasons = await asyncio.gather(
+            *(
+                self._bring_one(candidate, latest_version, interrupt)
+                for candidate in behind
+            )
+        )
+        progress = FleetProgress(
+            upgrading=[
+                candidate.name
+                for candidate, reason in zip(behind, reasons)
+                if reason is None
+            ],
+            holding=[reason for reason in reasons if reason is not None],
+        )
+        for renderer_id, accepted in waiting.items():
+            if renderer_id not in self._accepted:
+                continue  # confirmed while another renderer was answering
+            if self.is_upgrading(renderer_id):
+                progress.upgrading.append(accepted.name)
+            else:
+                progress.holding.append(
+                    f"{accepted.name} did not return on "
+                    f"{accepted.target or 'a newer version'}; "
+                    "retry its renderer upgrade"
                 )
-                continue
-            try:
-                await self.upgrade(candidate.renderer_id, latest_version)
-            except Exception as e:  # noqa: BLE001 — one bad renderer, not all
-                logger.warning(
-                    "Renderer '%s' did not take the upgrade: %s",
-                    candidate.friendly_name,
-                    e,
-                )
-        return False
+        for renderer_id in asking:
+            record = self._registry.get(renderer_id)
+            name = (record.friendly_name if record else None) or renderer_id
+            progress.holding.append(f"{name} is already upgrading")
+        return progress
 
-    async def upgrade(self, renderer_id: str, target_version: str) -> str:
+    async def _bring_one(
+        self, candidate: UpgradeCandidate, latest_version: str, interrupt: bool
+    ) -> Optional[str]:
+        """None once the renderer has taken the upgrade on, otherwise why it
+        has not, in words fit for a person."""
+        name = candidate.name
+        if candidate.busy and not interrupt:
+            logger.info("Renderer '%s' is playing; leaving its upgrade for later", name)
+            return f"{name} is playing"
+        try:
+            await self.upgrade(
+                candidate.renderer_id, latest_version, interrupt=interrupt
+            )
+        except Exception as e:  # noqa: BLE001 — one bad renderer, not all
+            logger.warning("Renderer '%s' did not take the upgrade: %s", name, e)
+            if isinstance(e, UpgradeRefused):
+                return str(e)
+            if isinstance(e, RendererUnavailable):
+                return f"{name} is not connected"
+            return f"{name} did not answer"
+        return None
+
+    async def upgrade(
+        self, renderer_id: str, target_version: str, *, interrupt: bool = False
+    ) -> str:
         """Ask one renderer to install ``target_version``; returns its detail.
 
-        Raises :class:`RendererUnavailable` when it is not connected and
-        :class:`UpgradeRefused` when it declines — a session running on it,
-        or an install that cannot replace itself.
+        Playback running on it is stopped first when ``interrupt`` is set and
+        refused otherwise. Raises :class:`RendererUnavailable` when it is not
+        connected and :class:`UpgradeRefused` when it declines — a session
+        running on it, or an install that cannot replace itself.
         """
-        record = self._registry.get(renderer_id)
-        if record is None or record.session is None:
-            # Named, not numbered: these reach a person, who knows the
-            # renderer by what it calls itself and never by its id.
-            name = record.friendly_name if record else renderer_id
-            raise RendererUnavailable(f"{name} is not connected")
+        record = self._askable(renderer_id)
         name = record.friendly_name or renderer_id
-        if not record.upgrade_supported:
-            raise UpgradeRefused(f"{name} cannot install a release of itself")
-        if self._is_busy(renderer_id):
-            raise UpgradeRefused(f"{name} is playing right now")
-        if self._pending.waiting_on(record.session):
-            # Two triggers would install twice, and the second would land on a
-            # box already restarting into the first.
+        if self.is_upgrading(renderer_id):
             raise UpgradeRefused(f"{name} is already upgrading")
+        # Reserve before stopping: vacate() yields, so another press or a
+        # queued player command must not claim this renderer in that gap.
+        self._requesting.add(renderer_id)
+        try:
+            return await self._upgrade(renderer_id, target_version, interrupt)
+        finally:
+            self._requesting.discard(renderer_id)
+
+    async def _upgrade(
+        self, renderer_id: str, target_version: str, interrupt: bool
+    ) -> str:
+        record = self._askable(renderer_id)
+        name = record.friendly_name or renderer_id
+        if self._is_busy(renderer_id):
+            if not interrupt:
+                raise UpgradeRefused(f"{name} is playing right now")
+            logger.info("Stopping playback on renderer '%s' to upgrade it", name)
+            # The renderer refuses an upgrade while a session runs on it.
+            await self._stop_playback(renderer_id)
+            # The stop yields: meanwhile the renderer may have gone, returned
+            # as another build, or been asked by another trigger.
+            record = self._askable(renderer_id, known_as=name)
+            name = record.friendly_name or renderer_id
+        link = record.session
         result = await self._pending.request(
             renderer_id,
-            record.session,
-            lambda message_id: record.session.send_upgrade(
-                message_id, target_version
-            ),
+            link,
+            lambda message_id: link.send_upgrade(message_id, target_version),
         )
         if not result.accepted:
             raise UpgradeRefused(
@@ -166,6 +330,14 @@ class RendererUpgradeService:
                 if result.detail
                 else f"{name} refused the upgrade"
             )
+        self._accepted[renderer_id] = AcceptedUpgrade(
+            name,
+            target_version,
+            record.software_version,
+            time.monotonic() + self._install_timeout_s,
+            record,
+        )
+        self._refresh_accepted()
         logger.info(
             "Renderer '%s' (id=%s) is upgrading to %s",
             record.friendly_name,
@@ -173,6 +345,27 @@ class RendererUpgradeService:
             target_version or "the latest release",
         )
         return result.detail
+
+    def _askable(
+        self, renderer_id: str, known_as: Optional[str] = None
+    ) -> RendererRecord:
+        """The renderer's record if it may be asked now; raises why not.
+
+        ``known_as`` names it should its record be gone."""
+        record = self._registry.get(renderer_id)
+        if record is None or record.session is None:
+            # Named, not numbered: these reach a person, who knows the
+            # renderer by what it calls itself and never by its id.
+            name = (record.friendly_name if record else None) or known_as or renderer_id
+            raise RendererUnavailable(f"{name} is not connected")
+        name = record.friendly_name or renderer_id
+        if not record.upgrade_supported:
+            raise UpgradeRefused(f"{name} cannot install a release of itself")
+        if self._pending.waiting_on(record.session):
+            # Two triggers would install twice, and the second would land on a
+            # box already restarting into the first.
+            raise UpgradeRefused(f"{name} is already upgrading")
+        return record
 
     def handle_reply(
         self, renderer_id: str, link: RendererLink, in_reply_to: int, message

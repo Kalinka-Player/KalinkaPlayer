@@ -98,6 +98,7 @@ void ProtocolSession::onUp() {
   }
 
   utsname u{};
+  hello->mutable_platform()->set_machine_id(identity_.machineId);
   if (uname(&u) == 0) {
     pb::Platform *platform = hello->mutable_platform();
     platform->set_os("linux");

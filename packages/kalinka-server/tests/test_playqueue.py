@@ -30,6 +30,7 @@ from kalinka_plugin_sdk import (
     RequestMoreTracksEvent,
     EventEmitter,
 )
+from kalinka_server import renderer_player
 from kalinka_server.config_model import KalinkaConfig
 from kalinka_server.playqueue import PlayQueueImpl
 from kalinka_server.stream_state import (
@@ -1837,3 +1838,53 @@ async def test_a_known_length_still_schedules_a_prefetch(playqueue):
 
     assert playqueue._prefetch_task is not None
     playqueue._cancel_prefetch_timer()
+
+
+async def _in_a_tracks_last_seconds(playqueue, renderer) -> None:
+    await playqueue.add(
+        [
+            TrackInfo(
+                id=to_track_id("1"), metadata=create_track("1"), source_retriever=url1
+            ),
+            TrackInfo(
+                id=to_track_id("2"), metadata=create_track("2"), source_retriever=url2
+            ),
+        ]
+    )
+    await playqueue.play()
+    await asyncio.sleep(0.2)
+    renderer.report_position(DURATION_MS - 2000)
+    await asyncio.sleep(0.2)
+    assert renderer.queued, "the next track is prefetched in the last seconds"
+
+
+@pytest.mark.asyncio
+async def test_a_pause_that_idles_out_near_the_end_stays_stopped(
+    playqueue, renderer, monkeypatch
+):
+    """The prefetched next track went with the released session, so the
+    STOPPED reporting the release must not start it by itself."""
+    monkeypatch.setattr(renderer_player, "PAUSE_RELEASE_TIMEOUT_S", 0.1)
+    await _in_a_tracks_last_seconds(playqueue, renderer)
+
+    await playqueue.pause(True)
+    await asyncio.sleep(0.5)
+
+    assert renderer.session_id is None
+    assert (await playqueue.get_playback_state()).state == PlayerStateEnum.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_a_renderer_lost_near_the_end_leaves_the_queue_stopped(
+    playqueue, renderer
+):
+    """The next play opens a fresh session; the loss does not."""
+    await _in_a_tracks_last_seconds(playqueue, renderer)
+    opened = len(renderer.volume_policies)
+
+    renderer.pool.handle_renderer_removed(renderer.RENDERER_ID)
+    await asyncio.sleep(0.2)
+
+    assert len(renderer.volume_policies) == opened, "no session was reopened"
+    assert renderer.pool.get(renderer.RENDERER_ID) is None
+    assert (await playqueue.get_playback_state()).state == PlayerStateEnum.STOPPED

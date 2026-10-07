@@ -56,6 +56,8 @@ class RendererRecord:
     compatible: bool = True
     # Whether the renderer can install a new release of itself on request.
     upgrade_supported: bool = False
+    # Runs on this server's machine, whose own installer run upgrades it.
+    local: bool = False
     # What it last said it can play; None from a renderer too old to say.
     capabilities: Optional[OutputCapabilities] = None
     # The renderer's connection while it has one; compared by identity.
@@ -134,6 +136,7 @@ class RendererRegistry:
         server_addr: Optional[tuple[str, int]] = None,
         compatible: bool = True,
         upgrade_supported: bool = False,
+        local: bool = False,
         capabilities: Optional[OutputCapabilities] = None,
     ) -> RegistrationKind:
         self._cancel_reap(renderer_id)
@@ -172,13 +175,15 @@ class RendererRegistry:
             session=session,
             compatible=compatible,
             upgrade_supported=upgrade_supported,
+            local=local,
             capabilities=capabilities,
         )
         logger.info(
-            "Renderer %s: '%s' (%s, id=%s)",
+            "Renderer %s: '%s' (%s%s, id=%s)",
             registration.value,
             friendly_name,
             kind,
+            ", on this machine" if local else "",
             renderer_id,
         )
         self._publish_topology()
@@ -241,6 +246,9 @@ class RendererRegistry:
         self._last_current = None
         self._publish_topology()
 
+    def _by_name(self) -> list[RendererRecord]:
+        return sorted(self._renderers.values(), key=lambda r: r.friendly_name)
+
     def add_observer(self, observer: Callable[[], None]) -> None:
         """Also call ``observer`` whenever what plays where may have moved.
 
@@ -268,12 +276,7 @@ class RendererRegistry:
             observer()
 
     def _descriptors(self) -> list[RendererDescriptor]:
-        return [
-            record.descriptor()
-            for record in sorted(
-                self._renderers.values(), key=lambda r: r.friendly_name
-            )
-        ]
+        return [record.descriptor() for record in self._by_name()]
 
     def _publish_topology(self) -> None:
         """Membership or status moved, which can move the current pair too."""
@@ -391,12 +394,13 @@ class RendererRegistry:
         active = self.active_id()
         selected = self.selected_id
         return [
-            descriptor.model_dump()
+            record.descriptor().model_dump()
             | {
-                "active": descriptor.renderer_id == active,
-                "selected": descriptor.renderer_id == selected,
+                "active": record.renderer_id == active,
+                "selected": record.renderer_id == selected,
+                "local": record.local,
             }
-            for descriptor in self._descriptors()
+            for record in self._by_name()
         ]
 
     def _spawn_replace(self, session: RendererLink) -> None:

@@ -95,7 +95,13 @@ def get_version() -> str:
 # format. It answers a POST /queue/add past its queue limit with 409
 # `demo_queue_full`, and a visitor's changes past its rate limit with 429
 # `demo_rate_limited` and Retry-After.
-REST_API_VERSION = "0.10"
+# 0.11: /renderer/list reports `local`, proved by the optional machine identity
+# in renderer Hello. A manual server upgrade vacates busy renderers, reports
+# STOPPED without a playback fault, and answers `upgrading` while their installs
+# finish. Core waits for confirmed target versions before starting its installer;
+# the packaged renderer on its own host is covered by that installer. Refusals
+# name the renderer and reason. Automatic upgrades still defer busy renderers.
+REST_API_VERSION = "0.11"
 
 
 def get_rest_api_version() -> str:

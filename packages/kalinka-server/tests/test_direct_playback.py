@@ -1328,3 +1328,34 @@ async def test_cancelled_next_cannot_start_later(queue, renderer, direct, action
     await asyncio.sleep(SETTLE_S)
     assert renderer.current is None
     assert listener.started_next == []
+
+
+async def test_a_manual_upgrade_hands_the_plugin_back_normally(
+    queue, renderer, direct, arbiter
+):
+    from kalinka_server.renderer_proto import renderer_pb2 as pb
+    from kalinka_server.renderer_upgrade import RendererUpgradeService
+
+    listener = Listener()
+    hold = await _hold_and_play(direct, listener)
+    renderer.registry.get(renderer.RENDERER_ID).upgrade_supported = True
+    service = RendererUpgradeService(
+        renderer.registry,
+        lambda rid: renderer.pool.get(rid) is not None,
+        arbiter.vacate,
+    )
+    renderer.pool.set_upgrade_guard(service.is_upgrading)
+
+    async def send_upgrade(message_id, target):
+        assert renderer.session_id is None
+        service.handle_reply(
+            renderer.RENDERER_ID, renderer, message_id,
+            pb.UpgradeResult(accepted=True, detail="upgrading"),
+        )
+
+    renderer.send_upgrade = send_upgrade
+    await service.upgrade(renderer.RENDERER_ID, "99.0.0", interrupt=True)
+    await asyncio.sleep(0.05)
+    assert listener.revoked == [RevokeReason.OTHER_HOLDER]
+    assert not hold.active
+    assert renderer.pool.get(renderer.RENDERER_ID) is None

@@ -66,6 +66,7 @@ from .log_sources import FileCatalog, JournalCatalog
 from .logging_setup import stream_is_journal
 from .queue_add import tracks_for
 from .search_route import register_search_routes
+from .upgrade_route import register_upgrade_routes
 from .suggestions import SuggestionEngine, SuggestionList
 from .merge_utils import get_favorite_ids_merged, k_way_merge_browse_items
 from .dynamic_field_registry import build_dynamic_field_registry
@@ -170,6 +171,7 @@ async def lifespan(app: FastAPI):
             "suggestions_task",
             "catalog_art_task",
             "update_check_task",
+            "upgrade_task",
             "plugin_catalog_task",
         ):
             task = getattr(app.state, attr, None)
@@ -470,10 +472,21 @@ async def create_app(
     renderer_registry.set_on_removed(renderer_sessions.handle_renderer_removed)
     renderer_configs = RendererConfigService(renderer_registry)
     output_capabilities = OutputCapabilityTracker(renderer_registry)
+
+    async def stop_for_upgrade(renderer_id: str) -> None:
+        # The arbiter drains the queue's sender and hands plugins back normally.
+        await player_context.playback_arbiter.vacate(renderer_id)
+        # A speaker test is not an arbiter owner, but can also hold a session.
+        session = renderer_sessions.get(renderer_id)
+        if session is not None:
+            await session.close()
+
     renderer_upgrades = RendererUpgradeService(
         renderer_registry,
         lambda renderer_id: renderer_sessions.get(renderer_id) is not None,
+        stop_for_upgrade,
     )
+    renderer_sessions.set_upgrade_guard(renderer_upgrades.is_upgrading)
     app.state.renderer_registry = renderer_registry
     app.state.renderer_sessions = renderer_sessions
     app.state.renderer_configs = renderer_configs
@@ -604,9 +617,12 @@ async def create_app(
     async def _renderers_ready() -> bool:
         """Renderers go first: a release can move the protocol they speak, and
         one left behind on another machine has to be reachable to be fixed."""
-        return await renderer_upgrades.bring_forward(
-            update_check.checker.latest_renderer
+        checker = update_check.checker
+        progress = await renderer_upgrades.bring_forward(
+            checker.latest_renderer,
+            installer_covers_local=checker.installed_renderer is not None,
         )
+        return progress.done
 
     app.state.update_check_task = asyncio.create_task(
         update_check.checker.run(
@@ -1083,92 +1099,9 @@ async def create_app(
             },
         }
 
-    @app.get("/server/update")
-    def get_update_info():
-        """Report whether a newer release is available for this machine.
-
-        Served entirely from the daily background check's cache — never
-        does network I/O. The app should show its upgrade banner only
-        when both ``update_available`` and ``upgrade_supported`` are
-        true (dev installs report ``upgrade_supported: false``);
-        dismissing the banner is purely client-side state.
-
-        ``update_available`` covers the whole install — one upgrade run
-        also brings the renderer on this machine up to date, and the
-        ``renderer_*`` fields say where that one stands. ``latest_version``
-        stays the bundle's, and is what PUT /server/upgrade expects back.
-        """
-        checker = update_check.checker
-        return {
-            "current_version": get_version(),
-            "latest_version": checker.latest,
-            "update_available": checker.update_available(),
-            "renderer_current_version": checker.installed_renderer,
-            "renderer_latest_version": checker.latest_renderer,
-            "renderer_update_available": checker.renderer_update_available(),
-            "supervisor_current_version": checker.installed_supervisor,
-            "supervisor_latest_version": checker.latest_supervisor,
-            "supervisor_update_available": checker.supervisor_update_available(),
-            "upgrade_supported": not app.state.config.server.demo_mode
-            and update_check.upgrade_supported(),
-        }
-
-    @app.put("/server/upgrade")
-    async def upgrade_server(payload: Dict[str, Any]):
-        """Upgrade this install to the release named in ``{"version": ...}``.
-
-        The version must be the one currently advertised as
-        ``latest_version`` by GET /server/update; a stale banner, or a
-        retry once there is nothing left to upgrade, gets a 409 instead
-        of firing the installer again.
-
-        Touches the trigger file watched by the root-owned
-        kalinka-upgrade.path unit; its oneshot fetches the published
-        installer from kalinkaplayer.com and runs it, which upgrades the
-        bundle, the web player and this machine's renderer together, and
-        the new package's postinst restarts kalinka.service — so a
-        successful upgrade looks to clients like a (long) restart.
-        Progress and failure detail stay in the systemd journal; the app
-        confirms the outcome by re-reading /server/version after
-        reconnect.
-
-        Renderers on other machines go first, as they do on the automatic
-        path: one asked here is still restarting into its new build, so
-        this answers 409 and the press is repeated once it is back.
-        """
-        if not update_check.upgrade_supported():
-            raise HTTPException(
-                status_code=501,
-                detail="Upgrade is not supported on this install "
-                "(root-side upgrade units are missing)",
-            )
-        target = str(payload.get("version") or "")
-        if not target:
-            raise HTTPException(
-                status_code=400, detail="'version' is required"
-            )
-        rejection = update_check.validate_upgrade_request(
-            target,
-            update_check.checker.latest,
-            get_version(),
-            update_check.checker.renderer_update_available(),
-            update_check.checker.supervisor_update_available(),
-        )
-        if rejection:
-            raise HTTPException(status_code=409, detail=rejection)
-        if not await _renderers_ready():
-            raise HTTPException(
-                status_code=409,
-                detail="Upgrading the renderers first; try again in a moment",
-            )
-        try:
-            update_check.request_upgrade()
-        except OSError as e:
-            logger.error("Failed to write upgrade trigger: %s", e)
-            raise HTTPException(
-                status_code=500, detail="Failed to request upgrade"
-            ) from e
-        return {"message": "upgrading"}
+    register_upgrade_routes(
+        app, renderer_upgrades, demo_mode=lambda: app.state.config.server.demo_mode
+    )
 
     @app.put("/server/restart")
     async def restart_server(payload: Optional[Dict[str, Any]] = None):
@@ -1528,8 +1461,9 @@ async def create_app(
 
     @app.get("/renderer/list")
     async def renderer_list():
-        """Known renderers, their connection status, and which module controls
-        each one's volume, with the modules available to be picked."""
+        """Known renderers, their connection status, whether each runs on this
+        machine (``local``), and which module controls each one's volume, with
+        the modules available to be picked."""
         renderers = renderer_registry.list()
         behind = {
             candidate.renderer_id

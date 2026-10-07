@@ -7,6 +7,7 @@ drains it, so message handling never stalls the socket read.
 import asyncio
 import logging
 import time
+from pathlib import Path
 
 from fastapi import WebSocket, WebSocketDisconnect
 from google.protobuf.message import DecodeError
@@ -44,6 +45,22 @@ _CLOSE_REASON_TO_PB = {
 
 def _kind_name(kind: int) -> str:
     return pb.RendererKind.Name(kind).removeprefix("RENDERER_KIND_").lower()
+
+
+def runs_here(machine_id: str) -> bool:
+    """Only a shared machine identity exempts a renderer from the upgrade gate.
+
+    Older renderers without it go first and must confirm their new version;
+    neither a proxy's address nor a shared default hostname proves locality.
+    """
+    if len(machine_id) != 32 or not all(c in "0123456789abcdef" for c in machine_id):
+        return False
+    if machine_id == "0" * 32:
+        return False
+    try:
+        return machine_id == Path("/etc/machine-id").read_text().strip()
+    except OSError:
+        return False
 
 
 def _capabilities(capabilities: pb.Capabilities) -> OutputCapabilities:
@@ -249,6 +266,7 @@ async def handle_renderer_connection(
                     upgrade_supported=hello.upgrade_supported,
                     server_addr=(addr[0], addr[1]) if addr and addr[1] else None,
                     compatible=compatible,
+                    local=runs_here(hello.platform.machine_id),
                     capabilities=(
                         _capabilities(hello.capabilities)
                         if compatible and hello.HasField("capabilities")

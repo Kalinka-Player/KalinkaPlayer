@@ -12,6 +12,7 @@
 struct Identity {
   std::string rendererId;  ///< Persistent, shared with every Core.
   std::string instanceId;  ///< Fresh each start.
+  std::string machineId;   ///< /etc/machine-id, or empty when unavailable.
 
   /**
    * @brief Read rendererId from
