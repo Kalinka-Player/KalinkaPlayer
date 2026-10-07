@@ -162,7 +162,6 @@ if(GTest_FOUND)
     src/net/WsTransport.cpp
     src/player/NativePlayer.cpp
     src/player/StateTranslator.cpp
-    tests/test_alsa_device_naming.cpp
     tests/test_audio_player.cpp
     tests/test_capability_service.cpp
     tests/test_config_service.cpp
@@ -182,6 +181,7 @@ if(GTest_FOUND)
     tests/test_volume_monitor_lifetime.cpp
     tests/test_ws_transport.cpp
     tests/native_player/AlsaAudioEmitter_test.cpp
+    tests/native_player/AlsaDeviceEnumeration_test.cpp
     tests/native_player/AudioGraphHttpStream_test.cpp
     tests/native_player/AudioInfo_test.cpp
     tests/native_player/AudioPlayer_test.cpp
