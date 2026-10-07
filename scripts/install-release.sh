@@ -44,6 +44,10 @@
 #                    (only needed to test an unmerged change)
 #   GITHUB_TOKEN     optional, only to avoid the 60-req/hr anonymous API limit
 #   NO_APT_UPDATE    set to 1 to skip `apt-get update` before installing
+#   KALINKA_REINSTALL set to 1 to repair rather than upgrade: packages already
+#                    at the release's version are installed again, and the
+#                    server's Python environment is rebuilt from its wheels.
+#                    The supervisor's Reinstall runs the installer this way.
 #
 # The download runs as your user; only the install step uses sudo. Running the
 # whole script under sudo is fine too.
@@ -311,11 +315,22 @@ fi
 # The bundle's postinst starts kalinka.service, which looks for fpcalc and the toolchain only then.
 install_extras
 
+BUNDLE_OPTS=()
+if [ "${KALINKA_REINSTALL:-0}" = 1 ]; then
+  BUNDLE_OPTS=(--reinstall)
+  echo ">> Rebuilding the server's Python environment ..."
+  # The bundle's postinst restarts the server, whose bootstrap recreates a missing environment.
+  $SUDO systemctl stop kalinka.service 2>/dev/null || true
+  # Should the install fail, the server is still started rather than left stopped.
+  trap 'cleanup; $SUDO systemctl --no-block start kalinka.service 2>/dev/null || true' EXIT
+  $SUDO rm -rf /opt/kalinka/venv
+fi
+
 echo ">> Installing ${#URLS[@]} package(s) with apt ..."
 # apt resolves install order among the bundle packages (server depends on the
 # SDK) and pulls system dependencies from the configured repos. A leading ./ or
 # absolute path tells apt these are local files, not repo package names.
-if ! $SUDO "${APT_INSTALL[@]}" "$TMPDIR_DL"/*.deb; then
+if ! $SUDO "${APT_INSTALL[@]}" "${BUNDLE_OPTS[@]}" "$TMPDIR_DL"/*.deb; then
   echo ">> apt-get install failed; falling back to dpkg -i + apt-get -f install"
   $SUDO dpkg -i "$TMPDIR_DL"/*.deb || true
   $SUDO "${APT_INSTALL[@]}" -f
