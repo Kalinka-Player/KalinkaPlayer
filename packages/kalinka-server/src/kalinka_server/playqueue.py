@@ -435,6 +435,18 @@ class PlayQueueImpl(PlayQueueController):
         self.current_format = track_source.format
         self._request_more_tracks()
 
+    def stream_duration_ms(self, stream_id: Optional[int]) -> Optional[int]:
+        """How long the track behind an appended or playing stream runs, as
+        its metadata says; None when the stream is not ours or has no length."""
+        index = self._prepared_index_of(stream_id)
+        playing = self.current_stream_id
+        if index is None and playing is not None and stream_id == playing:
+            index = self.current_track_id
+        if index is None or index >= len(self.track_list):
+            return None
+        duration_s = self.track_list[index].duration
+        return duration_s * 1000 if duration_s else None
+
     def _prepared_index_of(self, stream_id: Optional[int]) -> Optional[int]:
         if stream_id is None:
             return None

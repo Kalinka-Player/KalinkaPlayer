@@ -32,7 +32,7 @@ require_foreign_arch_support() {
 }
 
 start_work() {
-  WORK="$(mktemp -d)"
+  WORK="$(mktemp -d "${IMAGE_WORK_DIR:-/var/tmp}/kalinka-image.XXXXXXXX")"
   ROOTFS="$WORK/rootfs"
   IMAGE="$WORK/kalinka.img"
   LOOP=""
@@ -48,7 +48,11 @@ cleanup() {
     umount -l "${MOUNTED[i]}" 2>/dev/null
   done
   [ -n "$LOOP" ] && losetup -d "$LOOP" 2>/dev/null
-  rm -rf "$WORK"
+  if [ "$status" -ne 0 ] && [ "${IMAGE_KEEP_FAILED:-0}" = 1 ]; then
+    echo "build-image: retained failed build at $WORK" >&2
+  else
+    rm -rf "$WORK"
+  fi
   exit $status
 }
 

@@ -1,0 +1,38 @@
+# The demo server behind Caddy, which obtains the certificate for DEMO_HOST.
+# JAMENDO_CLIENT_ID (and optionally DEMO_HOST) come from a .env file beside
+# this one, which is never committed.
+services:
+  kalinka:
+    build:
+      context: ../..
+      dockerfile: deploy/demo/Containerfile
+    environment:
+      JAMENDO_CLIENT_ID: ${JAMENDO_CLIENT_ID:?set JAMENDO_CLIENT_ID in .env}
+      # Only Caddy can reach the server, so trust its X-Forwarded-For: the
+      # per-visitor rate limit needs each visitor's own address.
+      FORWARDED_ALLOW_IPS: "*"
+    volumes:
+      - kalinka-state:/var/lib/kalinka
+    expose:
+      - "8000"
+    restart: unless-stopped
+
+  caddy:
+    image: docker.io/library/caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DEMO_HOST: ${DEMO_HOST:-demo.kalinkaplayer.com}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - kalinka
+    restart: unless-stopped
+
+volumes:
+  kalinka-state:
+  caddy-data:
+  caddy-config:

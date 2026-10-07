@@ -44,7 +44,7 @@ from kalinka_plugin_sdk import paths
 from .config_model import KalinkaConfig
 from .config_overrides import save_overrides
 from .config_route import register_config_routes
-from .config_schema_processor import build_presentation, module_icon
+from .config_schema_processor import build_presentation, module_icon, readonly_paths
 from .catalog_art_service import CatalogArtService
 from .browse_route import register_browse_routes
 from .browse_source import BrowseSource, BrowseSourceRegistry, RegisteredSource
@@ -53,6 +53,13 @@ from .collections.source import CollectionsSource
 from .collections.store import CollectionStore
 from .config_secrets import secret_values
 from .content_route import register_content_route
+from .demo_mode import (
+    DemoReadOnlyGate,
+    DemoWriteThrottle,
+    page_banners,
+    refuse_beyond_queue_limit,
+)
+from .demo_renderer import DemoRenderer
 from .log_export_route import register_log_export_routes
 from .log_export_service import ExportManager
 from .log_sources import FileCatalog, JournalCatalog
@@ -91,6 +98,7 @@ from .renderer_link import RendererLink
 from .renderer_ws_handler import handle_renderer_connection
 from .renderer_config import RendererConfigService
 from .output_capabilities import OutputCapabilityTracker
+from .stream_state import to_stream_id
 from .renderer_core_settings import (
     DEVICE_MODULE_PATH,
     RENDERER_ITSELF,
@@ -142,6 +150,8 @@ async def lifespan(app: FastAPI):
 
         await restore_state(app.state.player_context.playqueue)
         await app.state.player_context.playqueue.__aenter__()
+        if app.state.demo_renderer is not None:
+            app.state.demo_renderer.connect()
 
         # Public metadata browsing is independent of signed update authorization.
         # Do not block startup or GET requests on an upstream network fetch.
@@ -193,6 +203,9 @@ async def lifespan(app: FastAPI):
         renderer_sessions = getattr(app.state, "renderer_sessions", None)
         if renderer_sessions is not None:
             await renderer_sessions.shutdown()
+        demo_renderer = getattr(app.state, "demo_renderer", None)
+        if demo_renderer is not None:
+            await demo_renderer.shutdown()
         renderer_registry = getattr(app.state, "renderer_registry", None)
         if renderer_registry is not None:
             await renderer_registry.shutdown()
@@ -416,6 +429,13 @@ async def create_app(
     bind_host: str | None = None,
 ):
     app = FastAPI(lifespan=lifespan)
+    # The gate is added last so it runs first: a refused change costs no token.
+    app.add_middleware(
+        DemoWriteThrottle, enabled=lambda: app.state.config.server.demo_mode
+    )
+    app.add_middleware(
+        DemoReadOnlyGate, enabled=lambda: app.state.config.server.demo_mode
+    )
     app.state.config = config
     app.state.bind_host = bind_host
     app.state.overrides_file = overrides_file
@@ -470,6 +490,18 @@ async def create_app(
     )
     logger.info("Input modules found: %s", list(modules.prepared_input_modules.keys()))
     app.state.player_context = player_context
+    app.state.demo_renderer = (
+        DemoRenderer(
+            renderer_registry,
+            renderer_sessions,
+            renderer_configs,
+            lambda token: player_context.playqueue.stream_duration_ms(
+                to_stream_id(token)
+            ),
+        )
+        if config.server.demo_mode
+        else None
+    )
 
     # Renderer topology rides the queue event bus, so clients stop polling
     # /renderer/list to notice a renderer coming or going.
@@ -578,7 +610,8 @@ async def create_app(
 
     app.state.update_check_task = asyncio.create_task(
         update_check.checker.run(
-            lambda: app.state.config.server.auto_upgrade,
+            lambda: app.state.config.server.auto_upgrade
+            and not app.state.config.server.demo_mode,
             _playback_stopped,
             _renderers_ready,
         )
@@ -616,6 +649,7 @@ async def create_app(
     # *choices* rather than *values*; bound to the plugins below, once
     # the schema that declares which fields want them exists.
     app.state.options_registry = OptionsRegistry()
+    app.state.page_banners = page_banners(config)
     _initial_ok_in = {
         name: m.plugin_context.config
         for name, m in modules.prepared_input_modules.items()
@@ -643,8 +677,10 @@ async def create_app(
         input_modules_with_errors=_initial_err_in,
         devices_with_errors=_initial_err_dev,
         dynamic_field_registry=app.state.dynamic_field_registry,
+        page_banners=app.state.page_banners,
     )
     app.state.schema_version = _initial_schema.schema_version
+    app.state.readonly_paths = readonly_paths(_initial_schema)
     register_plugin_options(
         app.state.options_registry,
         _initial_schema,
@@ -677,9 +713,13 @@ async def create_app(
 
     @app.post("/queue/add")
     async def add_entity_to_queue(ids: list[str], index: Optional[int] = None):
+        playqueue = player_context.playqueue
+        demo_mode = app.state.config.server.demo_mode
+        await refuse_beyond_queue_limit(demo_mode, playqueue, len(ids))
         items = await tracks_for(ids, browse_source_from_id, enabled_input_module)
+        await refuse_beyond_queue_limit(demo_mode, playqueue, len(items))
 
-        await player_context.playqueue.add(items, index)
+        await playqueue.add(items, index)
         return {"message": "Items added to queue", "count": len(items)}
 
     @app.put("/queue/play")
@@ -1066,7 +1106,11 @@ async def create_app(
             "renderer_current_version": checker.installed_renderer,
             "renderer_latest_version": checker.latest_renderer,
             "renderer_update_available": checker.renderer_update_available(),
-            "upgrade_supported": update_check.upgrade_supported(),
+            "supervisor_current_version": checker.installed_supervisor,
+            "supervisor_latest_version": checker.latest_supervisor,
+            "supervisor_update_available": checker.supervisor_update_available(),
+            "upgrade_supported": not app.state.config.server.demo_mode
+            and update_check.upgrade_supported(),
         }
 
     @app.put("/server/upgrade")
@@ -1108,6 +1152,7 @@ async def create_app(
             update_check.checker.latest,
             get_version(),
             update_check.checker.renderer_update_available(),
+            update_check.checker.supervisor_update_available(),
         )
         if rejection:
             raise HTTPException(status_code=409, detail=rejection)

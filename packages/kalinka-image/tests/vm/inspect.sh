@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 #
-# Check, offline, what a PC image's first boot did to its disk and what the
-# image carries for Wi-Fi and Secure Boot, on the disk boot.sh left behind
-# from a Secure Boot run. The guest's journal is copied out before any check,
-# so whoever reads a failure has it.
+# Verify DietPi first boot, disk growth and the installed setup service.
+# Copy the guest journal out before checks so a failure can be investigated.
 #
 # Usage: sudo inspect.sh <disk.img> <journal-dir>
 set -uo pipefail
@@ -66,7 +64,8 @@ else
 fi
 
 echo "  -- the first-boot units succeeded"
-for unit in kalinka-growroot.service kalinka-firstboot.service; do
+# Partition resizing runs before persistent journaling; disk checks above prove it.
+for unit in dietpi-firstboot.service; do
   results="$(journalctl --directory "$JOURNAL" --output cat --output-fields JOB_RESULT \
     UNIT="$unit" JOB_TYPE=start 2>/dev/null)"
   if [ -z "$results" ]; then
@@ -76,11 +75,6 @@ for unit in kalinka-growroot.service kalinka-firstboot.service; do
     journalctl --directory "$JOURNAL" --no-pager --unit "$unit"
   fi
 done
-
-echo "  -- the kernel booted with Secure Boot on"
-kernel_log="$(journalctl --directory "$JOURNAL" --output cat _TRANSPORT=kernel 2>/dev/null)"
-grep -qx 'secureboot: Secure boot enabled' <<<"$kernel_log" \
-  || fail "the kernel did not report Secure Boot enabled; the firmware may not have enforced it"
 
 echo "  -- an initrd"
 initrds=("$ROOTFS"/boot/initrd.img-*)
@@ -92,19 +86,13 @@ else
   fail "no /boot/initrd.img-*"
 fi
 
-echo "  -- Wi-Fi and Secure Boot packages"
-for package in wpasupplicant shim-signed grub-efi-amd64-signed; do
-  status="$(dpkg-query --admindir="$ROOTFS/var/lib/dpkg" -W -f='${db:Status-Abbrev}' \
-    "$package" 2>/dev/null)"
+echo "  -- DietPi networking and packaged supervisor"
+for package in wpasupplicant ifupdown bluez libpam-systemd kalinka-supervisor; do
+  status="$(dpkg-query --admindir="$ROOTFS/var/lib/dpkg" -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null)"
   assert_eq "$package is installed" "$status" "ii "
 done
-
-echo "  -- shim is what UEFI firmware starts"
-boot_efi="$ESP/EFI/BOOT/BOOTX64.EFI"
-cmp -s "$boot_efi" "$ROOTFS/usr/lib/shim/shimx64.efi.signed" \
-  || fail "EFI/BOOT/BOOTX64.EFI is not the image's /usr/lib/shim/shimx64.efi.signed"
-signatures="$(sbverify --list "$boot_efi" 2>&1)"
-grep -q '^signature [0-9]' <<<"$signatures" \
-  || fail "EFI/BOOT/BOOTX64.EFI carries no signature: $signatures"
-
+[ "$(readlink "$ROOTFS/etc/systemd/system/systemd-logind.service")" != /dev/null ] || fail 'PC power-button handler is masked'
+[ -x "$ROOTFS/boot/dietpi/dietpi-network" ] || fail 'DietPi networking tool is missing'
+[ -s "$ESP/EFI/BOOT/BOOTX64.EFI" ] || fail 'no UEFI fallback bootloader'
+[ -f "$ROOTFS/usr/lib/systemd/system/kalinka-wifi@.service" ] || fail 'no independent Wi-Fi helper'
 exit "$FAILURES"

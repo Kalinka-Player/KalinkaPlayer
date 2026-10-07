@@ -48,7 +48,7 @@ import json
 import logging
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Iterable, List, Union, get_origin, get_args
+from typing import Any, Iterable, List, Sequence, Union, get_origin, get_args
 
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
@@ -319,7 +319,7 @@ def _build_field_spec(
         widget=widget,
         type=wire_type,
         default=None if is_secret(field) else field.default,
-        readonly=bool(field.frozen),
+        readonly=bool(field.frozen) or extras.get("readonly") is True,
         dynamic_options=_dynamic_options_from_extras(extras, widget, path),
         importance=_importance_from_extras(extras),
         setup=setup,
@@ -831,6 +831,11 @@ def _collect_fields_from_pages(pages: list[PageSpec]) -> list[FieldSpec]:
     return unique
 
 
+def readonly_paths(schema: PresentationSchema) -> frozenset[str]:
+    """Every field path the schema shows and PUT /server/config refuses."""
+    return frozenset(f.path for f in schema.expert_fields if f.readonly)
+
+
 # ---------------------------------------------------------------------------
 # Flat values emitter
 # ---------------------------------------------------------------------------
@@ -963,7 +968,14 @@ def build_presentation(
     input_modules_with_errors: dict[str, tuple[ModuleConfig, str]] | None = None,
     devices_with_errors: dict[str, tuple[ModuleConfig, str]] | None = None,
     dynamic_field_registry: dict[str, DynamicFieldEntry] | None = None,
+    page_banners: Sequence[Banner] = (),
 ) -> PresentationSchema:
+    """The settings pages and the flat expert list for the running config.
+
+    @param page_banners Shown on the General page after the ones
+        ``base_config`` declares. They count towards ``schema_version``, so
+        callers that must agree on the version pass the same ones.
+    """
     input_modules_with_errors = input_modules_with_errors or {}
     devices_with_errors = devices_with_errors or {}
     registry = dynamic_field_registry or {}
@@ -973,7 +985,7 @@ def build_presentation(
     general_banners_raw = getattr(base_config.__class__, "__page_banners__", [])
     general_banners = [
         b if isinstance(b, Banner) else Banner(**b) for b in general_banners_raw
-    ]
+    ] + list(page_banners)
 
     general_page = PageSpec(
         id="general",

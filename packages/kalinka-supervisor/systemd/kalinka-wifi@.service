@@ -1,0 +1,14 @@
+[Unit]
+Description=Kalinka Wi-Fi interface %I
+After=network-pre.target
+Conflicts=ifup@%i.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+UMask=0077
+NoNewPrivileges=yes
+ExecStart=/sbin/ifup --force %I
+ExecStop=/sbin/ifdown --force %I
+TimeoutStartSec=90
+TimeoutStopSec=20

@@ -24,7 +24,7 @@ install_kalinka() {
   install -d "$ROOTFS/tmp/kalinka-install"
   install -m 755 "$REPO_ROOT/scripts/install-release.sh" \
     "$REPO_ROOT/scripts/install-renderer.sh" "$ROOTFS/tmp/kalinka-install/"
-  in_chroot env NO_APT_UPDATE=1 /tmp/kalinka-install/install-release.sh ${version:+"$version"}
+  in_chroot env SKIP_SUPERVISOR=1 NO_APT_UPDATE=1 /tmp/kalinka-install/install-release.sh ${version:+"$version"}
   rm -rf "$ROOTFS/tmp/kalinka-install"
 }
 

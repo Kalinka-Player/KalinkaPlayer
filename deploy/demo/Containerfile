@@ -1,0 +1,28 @@
+# The public demo server: the Kalinka server and the Jamendo plugin, with no
+# renderer. Build from the repository root, with its history and tags, so the
+# packages know their version:
+#   docker build -f deploy/demo/Containerfile -t kalinka-demo .
+
+FROM docker.io/library/python:3.13-slim AS build
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential git \
+    && rm -rf /var/lib/apt/lists/*
+COPY . /src
+WORKDIR /src
+RUN pip wheel --no-cache-dir --wheel-dir /wheels \
+        packages/kalinka-plugin-sdk \
+        packages/kalinka-server \
+        packages/kalinka-plugin-jamendo
+
+FROM docker.io/library/python:3.13-slim
+RUN useradd --system --no-create-home --shell /usr/sbin/nologin kalinka \
+    && install -d -o kalinka -g kalinka \
+        /etc/kalinka /var/lib/kalinka /var/cache/kalinka /var/log/kalinka /run/kalinka
+RUN --mount=type=bind,from=build,source=/wheels,target=/wheels \
+    pip install --no-cache-dir --no-index /wheels/*.whl
+COPY deploy/demo/kalinka_conf.cfg /opt/kalinka-demo/kalinka_conf.cfg
+COPY deploy/demo/entrypoint.sh /usr/local/bin/kalinka-demo
+USER kalinka
+EXPOSE 8000
+VOLUME /var/lib/kalinka
+ENTRYPOINT ["kalinka-demo"]

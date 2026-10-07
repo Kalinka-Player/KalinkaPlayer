@@ -1,0 +1,559 @@
+{
+  "commands": [
+    {
+      "raw": "{\"v\":1,\"op\":\"join\",\"ssid\":\"Café & home\",\"password\":\"dummy-passphrase\",\"country\":\"GB\"}",
+      "valid": true
+    },
+    {
+      "raw": "{\"v\":1,\"op\":\"scan\",\"country\":\"GB\"}",
+      "valid": true
+    },
+    {
+      "raw": "{\"v\":1,\"op\":\"networks\",\"page\":9}",
+      "valid": true
+    },
+    {
+      "raw": "{\"v\":1,\"op\":\"complete\"}",
+      "valid": true
+    },
+    {
+      "raw": "{\"v\":1,\"op\":\"change_network\"}",
+      "valid": true
+    },
+    {
+      "raw": "{\"v\":true,\"op\":\"complete\"}",
+      "valid": false
+    },
+    {
+      "raw": "{\"v\":1.0,\"op\":\"complete\"}",
+      "valid": false
+    },
+    {
+      "raw": "{\"v\":1,\"op\":\"networks\",\"page\":true}",
+      "valid": false
+    },
+    {
+      "raw": "{\"v\":1,\"op\":\"networks\",\"page\":10}",
+      "valid": false
+    },
+    {
+      "raw": "{\"v\":1,\"op\":\"scan\",\"country\":\"gb\"}",
+      "valid": false
+    },
+    {
+      "raw": "null",
+      "valid": false
+    },
+    {
+      "raw": "[]",
+      "valid": false
+    },
+    {
+      "raw": "{\"v\":1,\"op\":\"join\",\"ssid\":\"ééééééééééééééééé\",\"password\":\"dummy-passphrase\",\"country\":\"GB\"}",
+      "valid": false
+    },
+    {
+      "raw": "{\"v\":1,\"op\":\"join\",\"ssid\":\"bad\\nssid\",\"password\":\"dummy-passphrase\",\"country\":\"GB\"}",
+      "valid": false
+    },
+    {
+      "raw": "{\"v\":1,\"op\":\"join\",\"ssid\":\"Café & home\",\"password\":\"short\",\"country\":\"GB\"}",
+      "valid": false
+    },
+    {
+      "raw": "{\"v\":1,\"op\":\"join\",\"ssid\":\"Café & home\",\"password\":\"éééééééééé\",\"country\":\"GB\"}",
+      "valid": false
+    },
+    {
+      "raw": "{\"v\":1,\"op\":\"join\",\"ssid\":\"Café & home\",\"password\":\"dummy-passphrase\",\"country\":null}",
+      "valid": false
+    }
+  ],
+  "statuses": [
+    {
+      "state": 0,
+      "reason": 0,
+      "test": false,
+      "hex": "011d0000c00002051f40"
+    },
+    {
+      "state": 0,
+      "reason": 1,
+      "test": false,
+      "hex": "011d0001c00002051f40"
+    },
+    {
+      "state": 0,
+      "reason": 2,
+      "test": false,
+      "hex": "011d0002c00002051f40"
+    },
+    {
+      "state": 0,
+      "reason": 3,
+      "test": false,
+      "hex": "011d0003c00002051f40"
+    },
+    {
+      "state": 0,
+      "reason": 4,
+      "test": false,
+      "hex": "011d0004c00002051f40"
+    },
+    {
+      "state": 0,
+      "reason": 5,
+      "test": false,
+      "hex": "011d0005c00002051f40"
+    },
+    {
+      "state": 0,
+      "reason": 6,
+      "test": false,
+      "hex": "011d0006c00002051f40"
+    },
+    {
+      "state": 0,
+      "reason": 7,
+      "test": false,
+      "hex": "011d0007c00002051f40"
+    },
+    {
+      "state": 1,
+      "reason": 0,
+      "test": false,
+      "hex": "011d0100c00002051f40"
+    },
+    {
+      "state": 1,
+      "reason": 1,
+      "test": false,
+      "hex": "011d0101c00002051f40"
+    },
+    {
+      "state": 1,
+      "reason": 2,
+      "test": false,
+      "hex": "011d0102c00002051f40"
+    },
+    {
+      "state": 1,
+      "reason": 3,
+      "test": false,
+      "hex": "011d0103c00002051f40"
+    },
+    {
+      "state": 1,
+      "reason": 4,
+      "test": false,
+      "hex": "011d0104c00002051f40"
+    },
+    {
+      "state": 1,
+      "reason": 5,
+      "test": false,
+      "hex": "011d0105c00002051f40"
+    },
+    {
+      "state": 1,
+      "reason": 6,
+      "test": false,
+      "hex": "011d0106c00002051f40"
+    },
+    {
+      "state": 1,
+      "reason": 7,
+      "test": false,
+      "hex": "011d0107c00002051f40"
+    },
+    {
+      "state": 2,
+      "reason": 0,
+      "test": false,
+      "hex": "011d0200c00002051f40"
+    },
+    {
+      "state": 2,
+      "reason": 1,
+      "test": false,
+      "hex": "011d0201c00002051f40"
+    },
+    {
+      "state": 2,
+      "reason": 2,
+      "test": false,
+      "hex": "011d0202c00002051f40"
+    },
+    {
+      "state": 2,
+      "reason": 3,
+      "test": false,
+      "hex": "011d0203c00002051f40"
+    },
+    {
+      "state": 2,
+      "reason": 4,
+      "test": false,
+      "hex": "011d0204c00002051f40"
+    },
+    {
+      "state": 2,
+      "reason": 5,
+      "test": false,
+      "hex": "011d0205c00002051f40"
+    },
+    {
+      "state": 2,
+      "reason": 6,
+      "test": false,
+      "hex": "011d0206c00002051f40"
+    },
+    {
+      "state": 2,
+      "reason": 7,
+      "test": false,
+      "hex": "011d0207c00002051f40"
+    },
+    {
+      "state": 3,
+      "reason": 0,
+      "test": false,
+      "hex": "011d0300c00002051f40"
+    },
+    {
+      "state": 3,
+      "reason": 1,
+      "test": false,
+      "hex": "011d0301c00002051f40"
+    },
+    {
+      "state": 3,
+      "reason": 2,
+      "test": false,
+      "hex": "011d0302c00002051f40"
+    },
+    {
+      "state": 3,
+      "reason": 3,
+      "test": false,
+      "hex": "011d0303c00002051f40"
+    },
+    {
+      "state": 3,
+      "reason": 4,
+      "test": false,
+      "hex": "011d0304c00002051f40"
+    },
+    {
+      "state": 3,
+      "reason": 5,
+      "test": false,
+      "hex": "011d0305c00002051f40"
+    },
+    {
+      "state": 3,
+      "reason": 6,
+      "test": false,
+      "hex": "011d0306c00002051f40"
+    },
+    {
+      "state": 3,
+      "reason": 7,
+      "test": false,
+      "hex": "011d0307c00002051f40"
+    },
+    {
+      "state": 4,
+      "reason": 0,
+      "test": false,
+      "hex": "011d0400c00002051f40"
+    },
+    {
+      "state": 4,
+      "reason": 1,
+      "test": false,
+      "hex": "011d0401c00002051f40"
+    },
+    {
+      "state": 4,
+      "reason": 2,
+      "test": false,
+      "hex": "011d0402c00002051f40"
+    },
+    {
+      "state": 4,
+      "reason": 3,
+      "test": false,
+      "hex": "011d0403c00002051f40"
+    },
+    {
+      "state": 4,
+      "reason": 4,
+      "test": false,
+      "hex": "011d0404c00002051f40"
+    },
+    {
+      "state": 4,
+      "reason": 5,
+      "test": false,
+      "hex": "011d0405c00002051f40"
+    },
+    {
+      "state": 4,
+      "reason": 6,
+      "test": false,
+      "hex": "011d0406c00002051f40"
+    },
+    {
+      "state": 4,
+      "reason": 7,
+      "test": false,
+      "hex": "011d0407c00002051f40"
+    },
+    {
+      "state": 0,
+      "reason": 0,
+      "test": true,
+      "hex": "011f0000c00002051f40"
+    },
+    {
+      "state": 0,
+      "reason": 1,
+      "test": true,
+      "hex": "011f0001c00002051f40"
+    },
+    {
+      "state": 0,
+      "reason": 2,
+      "test": true,
+      "hex": "011f0002c00002051f40"
+    },
+    {
+      "state": 0,
+      "reason": 3,
+      "test": true,
+      "hex": "011f0003c00002051f40"
+    },
+    {
+      "state": 0,
+      "reason": 4,
+      "test": true,
+      "hex": "011f0004c00002051f40"
+    },
+    {
+      "state": 0,
+      "reason": 5,
+      "test": true,
+      "hex": "011f0005c00002051f40"
+    },
+    {
+      "state": 0,
+      "reason": 6,
+      "test": true,
+      "hex": "011f0006c00002051f40"
+    },
+    {
+      "state": 0,
+      "reason": 7,
+      "test": true,
+      "hex": "011f0007c00002051f40"
+    },
+    {
+      "state": 1,
+      "reason": 0,
+      "test": true,
+      "hex": "011f0100c00002051f40"
+    },
+    {
+      "state": 1,
+      "reason": 1,
+      "test": true,
+      "hex": "011f0101c00002051f40"
+    },
+    {
+      "state": 1,
+      "reason": 2,
+      "test": true,
+      "hex": "011f0102c00002051f40"
+    },
+    {
+      "state": 1,
+      "reason": 3,
+      "test": true,
+      "hex": "011f0103c00002051f40"
+    },
+    {
+      "state": 1,
+      "reason": 4,
+      "test": true,
+      "hex": "011f0104c00002051f40"
+    },
+    {
+      "state": 1,
+      "reason": 5,
+      "test": true,
+      "hex": "011f0105c00002051f40"
+    },
+    {
+      "state": 1,
+      "reason": 6,
+      "test": true,
+      "hex": "011f0106c00002051f40"
+    },
+    {
+      "state": 1,
+      "reason": 7,
+      "test": true,
+      "hex": "011f0107c00002051f40"
+    },
+    {
+      "state": 2,
+      "reason": 0,
+      "test": true,
+      "hex": "011f0200c00002051f40"
+    },
+    {
+      "state": 2,
+      "reason": 1,
+      "test": true,
+      "hex": "011f0201c00002051f40"
+    },
+    {
+      "state": 2,
+      "reason": 2,
+      "test": true,
+      "hex": "011f0202c00002051f40"
+    },
+    {
+      "state": 2,
+      "reason": 3,
+      "test": true,
+      "hex": "011f0203c00002051f40"
+    },
+    {
+      "state": 2,
+      "reason": 4,
+      "test": true,
+      "hex": "011f0204c00002051f40"
+    },
+    {
+      "state": 2,
+      "reason": 5,
+      "test": true,
+      "hex": "011f0205c00002051f40"
+    },
+    {
+      "state": 2,
+      "reason": 6,
+      "test": true,
+      "hex": "011f0206c00002051f40"
+    },
+    {
+      "state": 2,
+      "reason": 7,
+      "test": true,
+      "hex": "011f0207c00002051f40"
+    },
+    {
+      "state": 3,
+      "reason": 0,
+      "test": true,
+      "hex": "011f0300c00002051f40"
+    },
+    {
+      "state": 3,
+      "reason": 1,
+      "test": true,
+      "hex": "011f0301c00002051f40"
+    },
+    {
+      "state": 3,
+      "reason": 2,
+      "test": true,
+      "hex": "011f0302c00002051f40"
+    },
+    {
+      "state": 3,
+      "reason": 3,
+      "test": true,
+      "hex": "011f0303c00002051f40"
+    },
+    {
+      "state": 3,
+      "reason": 4,
+      "test": true,
+      "hex": "011f0304c00002051f40"
+    },
+    {
+      "state": 3,
+      "reason": 5,
+      "test": true,
+      "hex": "011f0305c00002051f40"
+    },
+    {
+      "state": 3,
+      "reason": 6,
+      "test": true,
+      "hex": "011f0306c00002051f40"
+    },
+    {
+      "state": 3,
+      "reason": 7,
+      "test": true,
+      "hex": "011f0307c00002051f40"
+    },
+    {
+      "state": 4,
+      "reason": 0,
+      "test": true,
+      "hex": "011f0400c00002051f40"
+    },
+    {
+      "state": 4,
+      "reason": 1,
+      "test": true,
+      "hex": "011f0401c00002051f40"
+    },
+    {
+      "state": 4,
+      "reason": 2,
+      "test": true,
+      "hex": "011f0402c00002051f40"
+    },
+    {
+      "state": 4,
+      "reason": 3,
+      "test": true,
+      "hex": "011f0403c00002051f40"
+    },
+    {
+      "state": 4,
+      "reason": 4,
+      "test": true,
+      "hex": "011f0404c00002051f40"
+    },
+    {
+      "state": 4,
+      "reason": 5,
+      "test": true,
+      "hex": "011f0405c00002051f40"
+    },
+    {
+      "state": 4,
+      "reason": 6,
+      "test": true,
+      "hex": "011f0406c00002051f40"
+    },
+    {
+      "state": 4,
+      "reason": 7,
+      "test": true,
+      "hex": "011f0407c00002051f40"
+    }
+  ],
+  "pages": [
+    "{\"v\":1,\"id\":0,\"state\":\"idle\",\"reason\":null,\"page\":0,\"pages\":1,\"networks\":[]}",
+    "{\"v\":1,\"id\":1,\"state\":\"ready\",\"reason\":null,\"page\":0,\"pages\":2,\"networks\":[{\"ssid\":\"Café & home\",\"signal\":-42,\"security\":\"wpa2\"},{\"ssid\":\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\",\"signal\":-42,\"security\":\"wpa2\"},{\"ssid\":\"\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\",\"signal\":-42,\"security\":\"wpa2\"}]}",
+    "{\"v\":1,\"id\":1,\"state\":\"ready\",\"reason\":null,\"page\":1,\"pages\":2,\"networks\":[{\"ssid\":\"fourth\",\"signal\":-42,\"security\":\"wpa2\"}]}"
+  ]
+}

@@ -15,6 +15,8 @@ recognized by the presentation emitter:
                    render among the parent's, where it is declared. For a
                    group without its own ``enabled`` toggle, whose field
                    titles read on their own.
+    readonly     — True: shown, never written through PUT /server/config;
+                   only the overrides file sets it
 
 The default tier for unmarked fields is EXPERT — they're reachable only
 through the about:config-style search. To put a field on the main
@@ -130,6 +132,17 @@ class ServerConfig(BaseModel):
             "help": (
                 "Set when the app's first-run setup wizard finishes — "
                 "reset to run the wizard again from a newly connected app"
+            ),
+        },
+    )
+    demo_mode: bool = Field(
+        default=False,
+        title="Demo mode",
+        json_schema_extra={
+            "readonly": True,
+            "help": (
+                "A public demo server: playback and the queue work, every "
+                "other change is refused"
             ),
         },
     )

@@ -49,7 +49,7 @@ The image is a complete system with Kalinka already installed. You write it to a
 **You need:**
 
 - a Raspberry Pi 3, 4, 400, 5 or Zero 2 W, or a Compute Module 3, 4 or 5, and its power supply;
-- a microSD card of 8 GB or more, or a USB SSD. **Everything on it will be erased.** Kalinka uses all the space on the card, so buy a larger one if you plan to keep music on it;
+- a microSD card of 16 GB or more, or a USB SSD. **Everything on it will be erased.** Kalinka uses all the space on the card, so buy a larger one if you plan to keep music on it;
 - a network cable, if you can: it is the simplest way to connect. Wi-Fi works too, but needs [one setting on the card](#settings-on-the-card);
 - a computer to write the card with;
 - something to play through: a DAC HAT or a USB DAC. The Pi's own headphone socket and HDMI work too on a Pi 3 or 4, once you [turn them on](#settings-on-the-card).
@@ -99,12 +99,12 @@ Put the card in the Pi, connect the network cable and your DAC, and plug in the 
 
 This turns a spare 64-bit PC into a Kalinka player. The simplest way is to write the image to a USB stick or USB disk and start the PC from it. The PC's own disk is not touched. A small USB SSD lasts longer than a cheap stick.
 
-**You need:** a 64-bit PC (almost any Intel or AMD PC from the last 15 years), a USB stick or disk of 8 GB or more (**it will be erased**), and a network cable if you can.
+**You need:** a 64-bit PC (almost any Intel or AMD PC from the last 15 years), a USB stick or disk of 16 GB or more (**it will be erased**), and a network cable if you can.
 
 1. **Download:** from the [image releases](https://github.com/Kalinka-Player/KalinkaPlayer/releases?q=kalinka-image-v&expanded=true), download the file that ends in **`-amd64.img.xz`** (about 500 MB).
 2. **Write it** to the USB stick with [balenaEtcher](https://etcher.balena.io/) (**Flash from file**, **Select target**, **Flash!**) or with Raspberry Pi Imager (**Use custom**, as in [option A](#2-write-it-to-the-card)).
 3. **Optional:** add the [settings file](#on-the-pc-image) for Wi-Fi or a login.
-4. **Start the PC from the stick.** Plug it in, switch the PC on, and press the boot menu key straight away. This is usually F12, F11, F10, F8 or Esc, depending on the maker. Choose the USB drive from the menu. To start from it every time, move USB to the top of the boot order in the PC's BIOS or UEFI settings. Secure Boot can stay on.
+4. **Start the PC from the stick.** Plug it in, switch the PC on, and press the boot menu key straight away. This is usually F12, F11, F10, F8 or Esc, depending on the maker. Choose the USB drive from the menu. To start from it every time, move USB to the top of the boot order in the PC's BIOS or UEFI settings. Use UEFI mode and disable Secure Boot for the DietPi image.
 5. Go on to [Get a remote](#get-a-remote).
 
 <details>
@@ -126,8 +126,8 @@ The PC image also runs as a virtual machine. This suits a home server that is on
 
 - **Use a bridged network, not NAT.** Your phone has to reach the VM directly, and the app finds the server by listening on the local network. Choose **Bridged Adapter** in VirtualBox, a **bridge** device in virt-manager, **vmbr0** in Proxmox (the default), or an **External** switch in Hyper-V. If the VM's screen shows an address starting with `10.0.2.` (VirtualBox, QEMU) or `192.168.122.` (virt-manager), or the VM uses Hyper-V's **Default Switch**, it is on NAT.
 - **Sound needs a plan.** A VM usually cannot reach your DAC. The usual setup is to let the VM be the server and [add an output](#add-more-outputs) on a small box next to your amplifier. You can also pass a USB DAC through to the VM. The VM's virtual sound card does appear as an output, but it plays through the host's sound system, so it is not bit-perfect.
-- **Make the disk bigger before the first start.** The image is only 4 GB. Enlarge the virtual disk to 16 GB or more, or more again if you will keep music inside the VM. Kalinka grows into the extra space every time it starts, so you can enlarge the disk again later.
-- **Give it 2 CPU cores and 2 GB of memory,** or 4 GB for AI search. UEFI and BIOS both work, and so does Secure Boot.
+- **Make the disk bigger before the first start.** The current build is 8 GiB. Enlarge the virtual disk to 16 GB or more, or more again if you will keep music inside the VM. DietPi expands the filesystem on first boot.
+- **Give it 2 CPU cores and 2 GB of memory,** or 4 GB for AI search. Choose UEFI firmware and disable Secure Boot; the DietPi image does not support legacy BIOS.
 
 **1. Download and unpack** the file that ends in **`-amd64.img.xz`** from the [image releases](https://github.com/Kalinka-Player/KalinkaPlayer/releases?q=kalinka-image-v&expanded=true). On Linux or macOS run `xz -d kalinka-*-amd64.img.xz`; on Windows, [7-Zip](https://www.7-zip.org/) unpacks it. You get a `.img` file, which is a raw disk image.
 
@@ -135,10 +135,10 @@ The PC image also runs as a virtual machine. This suits a home server that is on
 
 | Software | How |
 |---|---|
-| **virt-manager / QEMU** | `qemu-img convert -f raw -O qcow2 kalinka.img kalinka.qcow2` and then `qemu-img resize kalinka.qcow2 32G`. Create a VM with **Import existing disk image** and choose **Debian 13**. |
+| **virt-manager / QEMU** | `qemu-img convert -f raw -O qcow2 kalinka.img kalinka.qcow2` and then `qemu-img resize kalinka.qcow2 32G`. Create a VM with **Import existing disk image** and choose **Debian 13**, then select UEFI firmware before starting it. |
 | **Proxmox VE** | Create a VM with no disk, then on the host run `qm disk import <vm-id> kalinka.img local-lvm`. Attach the imported disk, make it the boot disk, and resize it under **Hardware**. |
-| **VirtualBox** | `VBoxManage convertfromraw kalinka.img kalinka.vdi --format VDI` and then `VBoxManage modifymedium disk kalinka.vdi --resize 32768`. Create a **Linux / Debian (64-bit)** VM that uses this disk, and set its network to **Bridged Adapter**. |
-| **Hyper-V** | `qemu-img convert -f raw -O vhdx kalinka.img kalinka.vhdx`. Create a **Generation 2** VM that uses this disk, and set its Secure Boot template to **Microsoft UEFI Certificate Authority**. |
+| **VirtualBox** | `VBoxManage convertfromraw kalinka.img kalinka.vdi --format VDI` and then `VBoxManage modifymedium disk kalinka.vdi --resize 32768`. Create a **Linux / Debian (64-bit)** VM that uses this disk, enable EFI, and set its network to **Bridged Adapter**. |
+| **Hyper-V** | `qemu-img convert -f raw -O vhdx kalinka.img kalinka.vhdx`. Create a **Generation 2** VM that uses this disk, and disable Secure Boot. |
 
 **3. Start the VM.** Its screen shows the address to open, as described in [Get a remote](#get-a-remote).
 
@@ -229,7 +229,7 @@ To upgrade later, install the newer `.rpm` the same way.
 
 The Kalinka images come with **no login and no Wi-Fi**. A published image cannot carry a password, because everyone who downloads it would get the same one. Kalinka plays music without either. You need them only to put the player on Wi-Fi, or to log in to it, for example to copy music onto it. On a Raspberry Pi, the same place also names a DAC HAT.
 
-To get at the settings, unplug the card after writing it and plug it back in. A drive called **KALINKA-BT** appears. On the PC image it stays hidden; see *The drive does not appear* under [On the PC image](#on-the-pc-image).
+To get at the settings, unplug the card after writing it and plug it back in. A drive called **KALINKA-BT** appears. The DietPi PC image instead has a small **DIETPISETUP** volume for the same settings.
 
 > **Windows may say the disk needs formatting. Click Cancel.** That message is about the part of the card that Windows cannot read, and formatting would erase the image. macOS may say a disk is not readable: click **Ignore**.
 
@@ -281,62 +281,13 @@ In `dietpi.txt`, remove the `#` in front of `AUTO_SETUP_SSH_PUBKEY=` and put the
 
 ### On the PC image
 
-Put a small text file called `kalinka-firstboot.conf` on the KALINKA-BT drive before the first start:
+The current PC image uses DietPi too. Before its first boot, open the small **DIETPISETUP** FAT volume and edit `dietpi.txt` and `dietpi-wifi.txt` as described above. Sound-card HAT settings apply only to a Pi. DietPi imports these files and removes the temporary setup partition on first boot.
 
-1. The drive holds a file called `kalinka-firstboot.conf.example`. **Copy it** and name the copy exactly `kalinka-firstboot.conf`. Windows hides file extensions by default, so check the name does not end in `.txt`.
-2. Open the copy in a text editor. Every line in it is explained. A line that starts with `#` is ignored, so remove the `#` from each line you fill in and leave the rest alone. Keep `PASSWORD_HASH` commented out unless you put a real hash in it, because a set `PASSWORD_HASH` wins over `PASSWORD`. For example:
+You can also use **Set up a box** in the phone app when the PC has supported Wi-Fi and Bluetooth adapters. In a VM, pass through USB adapters; the virtual Ethernet interface is not a Wi-Fi radio. Disconnect virtual Ethernet while testing offline setup.
 
-   ```sh
-   USERNAME=kalinka
-   PASSWORD='choose-a-password'
-   WIFI_SSID='Your network name'
-   WIFI_PASSWORD='your Wi-Fi password'
-   WIFI_COUNTRY=GB
-   ```
+If the volume does not appear, use the disk utility to mount the partition labelled `DIETPISETUP` (partition 3), leaving the EFI and Linux root partitions alone. On Linux, `lsblk -o NAME,LABEL` identifies it. After the first boot, change settings through `dietpi-config` after logging in, or use the app's nearby setup when offline.
 
-   `WIFI_COUNTRY` is your two-letter country code: GB, US, DE, FR and so on. Leave out whatever you do not need. With a network cable, the three Wi-Fi lines can go. `TIMEZONE`, for example `TIMEZONE=Europe/London`, sets the player's clock; without it the player runs on UTC.
-
-3. Save the file, eject the drive safely, and start the PC.
-
-The player reads the file on its first start, applies it, and then **deletes it**, because a Wi-Fi password should not stay on the drive. If the file is still there after the first start, the player could not read it at all.
-
-The same file also works later. Put it back on a player that is already in use and restart it.
-
-<details>
-<summary>The drive does not appear</summary>
-
-On the PC image, **KALINKA-BT** is an EFI boot partition. Windows, macOS and Linux desktops all keep those hidden, so mount it by hand.
-
-**Linux:** `lsblk -o NAME,LABEL` shows which partition is labelled KALINKA-BT, for example `sdb2`. Then:
-
-```bash
-sudo mount /dev/sdb2 /mnt
-sudo cp /mnt/kalinka-firstboot.conf.example /mnt/kalinka-firstboot.conf
-sudo nano /mnt/kalinka-firstboot.conf
-sudo umount /mnt
-```
-
-**macOS:** `diskutil list` shows the partition labelled KALINKA-BT, for example `disk4s2`. `sudo diskutil mount disk4s2` mounts it at `/Volumes/KALINKA-BT`; copy and edit the file there with `sudo cp` and `sudo nano`, then `diskutil unmount disk4s2`.
-
-**Windows:** open a Command Prompt **as administrator** and run `diskpart`, then:
-
-```text
-list volume
-select volume <number of the ~512 MB FAT32 volume labelled KALINKA-BT>
-assign letter=K
-exit
-```
-
-Open **Notepad as administrator**, open `K:\kalinka-firstboot.conf.example`, and use **Save as** to save it as `K:\kalinka-firstboot.conf`, with **Save as type** set to **All files**. File Explorer cannot open this drive, but an administrator Notepad can.
-
-</details>
-
-<details>
-<summary>More secure alternatives to a plain-text password</summary>
-
-Instead of `PASSWORD`, use `PASSWORD_HASH` with a hash made by `openssl passwd -6`. The password itself then never touches the drive. To log in with an SSH key, set `SSH_AUTHORIZED_KEY` to the whole line from your `.pub` file. The example file explains both options.
-
-</details>
+Older Debian PC images used `kalinka-firstboot.conf` on KALINKA-BT. That file is not used by the new DietPi images.
 
 ## Get a remote
 
@@ -456,7 +407,7 @@ A renderer that nobody looks after can also update itself every night, without t
 sudo systemctl enable --now kalinka-renderer-upgrade.timer
 ```
 
-On the images, the operating system under Kalinka is an ordinary Debian, or DietPi on a Raspberry Pi. If you have a login, update it now and then: `sudo apt update && sudo apt full-upgrade` on the PC image, `dietpi-update` and then the same `apt` command on a Pi.
+All current images use DietPi. With a login, use `dietpi-update` and then `apt update && apt full-upgrade` to update the operating system.
 
 ## Troubleshooting
 

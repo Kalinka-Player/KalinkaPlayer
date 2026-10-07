@@ -22,7 +22,7 @@ BASE_HOST_TOOLS=(debootstrap mkfs.ext4 mkfs.vfat)
 
 # What no Kalinka package pulls in: a way in, onto the network and into the whole card, and ALSA's tools.
 BASE_PACKAGES="ca-certificates curl openssl sudo openssh-server libpam-systemd
-               network-manager wpasupplicant iw wireless-regdb
+               network-manager wpasupplicant iw wireless-regdb bluez
                cloud-guest-utils dosfstools e2fsprogs
                systemd-timesyncd dbus tzdata
                python3 python3-venv python3-pip
