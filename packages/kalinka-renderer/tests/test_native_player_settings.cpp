@@ -148,6 +148,9 @@ TEST_F(NativePlayerSettingsTest, DsdIsTakenWhileTheDsdModeIsNotDisabled) {
 // A new card may hold the level differently, through a mixer or in software,
 // and a Core only learns the volume when it is told.
 TEST_F(NativePlayerSettingsTest, ANewDeviceRestatesTheVolume) {
+  // Landing on the null device keeps the test off whatever card CI has.
+  ASSERT_TRUE(player_->applyConfig("output.device", "default", error_))
+      << error_;
   std::vector<pb::VolumeChanged> told;
   player_->setStateSink([&told](pb::Envelope &env) {
     if (env.has_volume_changed()) {
@@ -155,8 +158,7 @@ TEST_F(NativePlayerSettingsTest, ANewDeviceRestatesTheVolume) {
     }
   });
 
-  ASSERT_TRUE(player_->applyConfig("output.device", "default", error_))
-      << error_;
+  ASSERT_TRUE(player_->applyConfig("output.device", "null", error_)) << error_;
 
   ASSERT_EQ(told.size(), 1u);
   pb::StateSnapshot snapshot;
