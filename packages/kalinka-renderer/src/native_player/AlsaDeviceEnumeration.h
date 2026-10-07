@@ -16,8 +16,8 @@
 /// `description` says what that mode costs — bit-perfect, resampled,
 /// or shared.
 ///
-/// `ioid` is "Output", "Input", or empty (= both). The Python layer
-/// filters to outputs.
+/// `ioid` is "Output", "Input", or empty (= both). The caller filters to
+/// outputs.
 struct AlsaPcmDevice {
   std::string name;
   std::string label;
@@ -32,11 +32,35 @@ struct AlsaPcmDevice {
 AlsaPcmDevice describeAlsaPcm(const std::string &name,
                               const std::string &alsaDescription);
 
-/// Enumerate every PCM hint ALSA exposes for the current system.
+/// A playback PCM on a sound card, as the card's control interface reports it.
+struct AlsaCardPcm {
+  int device = 0;
+  std::string name;      ///< "USB Audio"; some drivers leave it empty.
+  bool capture = false;  ///< The same device also records.
+};
+
+/// A sound card and its playback PCMs.
+struct AlsaCard {
+  std::string id;    ///< Kernel text id ("AUDIO"), the CARD= of a PCM name.
+  std::string name;  ///< "SMSL USB AUDIO".
+  std::vector<AlsaCardPcm> playback;
+};
+
+/// Add the `hw:` and `plughw:` names of every card PCM that `hinted` lacks.
 ///
-/// Returns an empty vector if libasound is unavailable or the hint
-/// API fails. The caller is responsible for filtering (e.g. dropping
-/// the noisy `front:`/`surround*:`/`iec958:` virtual variants).
+/// Whether ALSA hints those names at all is the distribution's choice
+/// (`defaults.namehint.extended`; Fedora ships it off), so a list built from
+/// hints alone can miss every card. Entries come out as ALSA would hint them:
+/// per card, all `hw:` then all `plughw:`, appended after `hinted`.
+std::vector<AlsaPcmDevice> withCardPcms(std::vector<AlsaPcmDevice> hinted,
+                                        const std::vector<AlsaCard> &cards);
+
+/// Enumerate every PCM ALSA hints, plus the direct and converted names of
+/// each card's playback PCMs.
+///
+/// Returns an empty vector if libasound is unavailable. The caller is
+/// responsible for filtering (e.g. dropping the noisy
+/// `front:`/`surround*:`/`iec958:` virtual variants).
 ///
 /// Fast — a few milliseconds typical — so safe to call per-request
 /// when servicing /server/config.

@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "../src/native_player/AlsaDeviceEnumeration.h"
+#include "AlsaDeviceEnumeration.h"
 
 namespace {
 
@@ -71,6 +71,71 @@ TEST(AlsaDeviceNaming, AnAsideOnAnUnknownDeviceStillLeavesTheNameAlone) {
 TEST(AlsaDeviceNaming, ANameWithoutAHintStillGetsItsMode) {
   const AlsaPcmDevice device = describeAlsaPcm("hw:CARD=Gone,DEV=0", "");
   EXPECT_EQ(device.label, "hw:CARD=Gone,DEV=0 (direct)");
+}
+
+// What Fedora's ALSA hints with PipeWire installed: no hw: or plughw: at all.
+std::vector<AlsaPcmDevice> hintsWithoutCards() {
+  return {describeAlsaPcm("null", ""), describeAlsaPcm("pipewire", ""),
+          describeAlsaPcm("default", ""),
+          describeAlsaPcm("sysdefault:CARD=AUDIO",
+                          "SMSL USB AUDIO, USB Audio\nDefault Audio Device")};
+}
+
+const AlsaCard kSmsl{"AUDIO", "SMSL USB AUDIO", {{0, "USB Audio", false}}};
+
+std::vector<std::string> names(const std::vector<AlsaPcmDevice> &devices) {
+  std::vector<std::string> out;
+  for (const AlsaPcmDevice &device : devices) {
+    out.push_back(device.name);
+  }
+  return out;
+}
+
+TEST(AlsaCardPcms, ACardAlsaDidNotHintIsStillOfferedDirectAndConverted) {
+  const std::vector<AlsaPcmDevice> devices =
+      withCardPcms(hintsWithoutCards(), {kSmsl});
+  ASSERT_EQ(devices.size(), 6u);
+  EXPECT_EQ(devices[4].name, "hw:CARD=AUDIO,DEV=0");
+  EXPECT_EQ(devices[4].label, "SMSL USB AUDIO (direct)");
+  EXPECT_EQ(devices[4].ioid, "Output");
+  EXPECT_EQ(devices[5].name, "plughw:CARD=AUDIO,DEV=0");
+  EXPECT_EQ(devices[5].label, "SMSL USB AUDIO (converted)");
+}
+
+TEST(AlsaCardPcms, AHintedPcmKeepsItsHintAndIsNotRepeated) {
+  std::vector<AlsaPcmDevice> hinted = hintsWithoutCards();
+  AlsaPcmDevice hint = describeAlsaPcm(
+      "hw:CARD=AUDIO,DEV=0",
+      "SMSL USB AUDIO, USB Audio\nDirect hardware device without any "
+      "conversions");
+  hint.ioid = "Output";
+  hinted.push_back(hint);
+
+  const std::vector<AlsaPcmDevice> devices = withCardPcms(hinted, {kSmsl});
+  EXPECT_EQ(names(devices),
+            (std::vector<std::string>{"null", "pipewire", "default",
+                                      "sysdefault:CARD=AUDIO",
+                                      "hw:CARD=AUDIO,DEV=0",
+                                      "plughw:CARD=AUDIO,DEV=0"}));
+}
+
+TEST(AlsaCardPcms, EachCardListsItsDirectPcmsBeforeItsConvertedOnes) {
+  const AlsaCard laptop{"sofhdadsp", "sof-hda-dsp",
+                        {{0, "", true}, {3, "HDMI 1", false}}};
+  const std::vector<AlsaPcmDevice> devices =
+      withCardPcms({}, {laptop, kSmsl});
+  EXPECT_EQ(names(devices),
+            (std::vector<std::string>{
+                "hw:CARD=sofhdadsp,DEV=0", "hw:CARD=sofhdadsp,DEV=3",
+                "plughw:CARD=sofhdadsp,DEV=0", "plughw:CARD=sofhdadsp,DEV=3",
+                "hw:CARD=AUDIO,DEV=0", "plughw:CARD=AUDIO,DEV=0"}));
+}
+
+TEST(AlsaCardPcms, APcmThatAlsoRecordsIsMarkedForBothDirections) {
+  const AlsaCard card{"PCH", "HDA Intel PCH", {{0, "ALC3246 Analog", true}}};
+  for (const AlsaPcmDevice &device : withCardPcms({}, {card})) {
+    EXPECT_EQ(device.ioid, "") << device.name;
+  }
 }
 
 }  // namespace

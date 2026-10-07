@@ -6,7 +6,9 @@
 #include <cctype>
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -23,6 +25,11 @@ using CString = std::unique_ptr<char, CFree>;
 CString getHint(const void *hint, const char *key) {
   return CString(snd_device_name_get_hint(hint, key));
 }
+
+struct CtlClose {
+  void operator()(snd_ctl_t *ctl) const noexcept { snd_ctl_close(ctl); }
+};
+using Ctl = std::unique_ptr<snd_ctl_t, CtlClose>;
 
 std::vector<std::string> splitLines(const char *raw) {
   std::vector<std::string> lines;
@@ -203,6 +210,80 @@ Wording wordingFor(const std::string &name) {
   return {};
 }
 
+std::vector<AlsaPcmDevice> hintedPcms() {
+  std::vector<AlsaPcmDevice> out;
+  void **hints = nullptr;
+  // -1 == all cards; "pcm" == interface family.
+  if (snd_device_name_hint(-1, "pcm", &hints) < 0 || !hints) {
+    return out;
+  }
+  for (void **h = hints; *h; ++h) {
+    CString name = getHint(*h, "NAME");
+    CString desc = getHint(*h, "DESC");
+    CString ioid = getHint(*h, "IOID");
+    if (!name) continue;
+    AlsaPcmDevice device =
+        describeAlsaPcm(std::string(name.get()),
+                        desc ? std::string(desc.get()) : std::string());
+    device.ioid = ioid ? std::string(ioid.get()) : std::string();
+    out.push_back(std::move(device));
+  }
+  snd_device_name_free_hint(hints);
+  return out;
+}
+
+// Mirrors what ALSA's own name hints accept: subdevice 0, and no modem or
+// digitiser PCMs.
+std::optional<std::string> pcmName(snd_ctl_t *ctl, int device,
+                                   snd_pcm_stream_t stream) {
+  snd_pcm_info_t *info = nullptr;
+  snd_pcm_info_alloca(&info);
+  snd_pcm_info_set_device(info, device);
+  snd_pcm_info_set_subdevice(info, 0);
+  snd_pcm_info_set_stream(info, stream);
+  if (snd_ctl_pcm_info(ctl, info) < 0) return std::nullopt;
+  const snd_pcm_class_t pcmClass = snd_pcm_info_get_class(info);
+  if (pcmClass == SND_PCM_CLASS_MODEM || pcmClass == SND_PCM_CLASS_DIGITIZER) {
+    return std::nullopt;
+  }
+  return std::string(snd_pcm_info_get_name(info));
+}
+
+std::optional<AlsaCard> readCard(int index) {
+  snd_ctl_t *raw = nullptr;
+  if (snd_ctl_open(&raw, ("hw:" + std::to_string(index)).c_str(), 0) < 0) {
+    return std::nullopt;
+  }
+  Ctl ctl(raw);
+  snd_ctl_card_info_t *info = nullptr;
+  snd_ctl_card_info_alloca(&info);
+  if (snd_ctl_card_info(ctl.get(), info) < 0) return std::nullopt;
+
+  AlsaCard card{snd_ctl_card_info_get_id(info),
+                snd_ctl_card_info_get_name(info), {}};
+  int device = -1;
+  while (snd_ctl_pcm_next_device(ctl.get(), &device) >= 0 && device >= 0) {
+    std::optional<std::string> name =
+        pcmName(ctl.get(), device, SND_PCM_STREAM_PLAYBACK);
+    if (!name) continue;
+    card.playback.push_back(
+        {device, std::move(*name),
+         pcmName(ctl.get(), device, SND_PCM_STREAM_CAPTURE).has_value()});
+  }
+  return card;
+}
+
+std::vector<AlsaCard> listAlsaCards() {
+  std::vector<AlsaCard> cards;
+  int index = -1;
+  while (snd_card_next(&index) >= 0 && index >= 0) {
+    if (std::optional<AlsaCard> card = readCard(index)) {
+      cards.push_back(std::move(*card));
+    }
+  }
+  return cards;
+}
+
 }  // namespace
 
 AlsaPcmDevice describeAlsaPcm(const std::string &name,
@@ -239,24 +320,28 @@ AlsaPcmDevice describeAlsaPcm(const std::string &name,
   return out;
 }
 
+std::vector<AlsaPcmDevice> withCardPcms(std::vector<AlsaPcmDevice> hinted,
+                                        const std::vector<AlsaCard> &cards) {
+  std::unordered_set<std::string> known;
+  for (const AlsaPcmDevice &device : hinted) {
+    known.insert(device.name);
+  }
+  for (const AlsaCard &card : cards) {
+    for (const char *access : {"hw", "plughw"}) {
+      for (const AlsaCardPcm &pcm : card.playback) {
+        std::string name = std::string(access) + ":CARD=" + card.id +
+                           ",DEV=" + std::to_string(pcm.device);
+        if (!known.insert(name).second) continue;
+        AlsaPcmDevice device =
+            describeAlsaPcm(name, card.name + ", " + pcm.name);
+        device.ioid = pcm.capture ? "" : "Output";
+        hinted.push_back(std::move(device));
+      }
+    }
+  }
+  return hinted;
+}
+
 std::vector<AlsaPcmDevice> listAlsaPcmDevices() {
-  std::vector<AlsaPcmDevice> out;
-  void **hints = nullptr;
-  // -1 == all cards; "pcm" == interface family.
-  if (snd_device_name_hint(-1, "pcm", &hints) < 0 || !hints) {
-    return out;
-  }
-  for (void **h = hints; *h; ++h) {
-    CString name = getHint(*h, "NAME");
-    CString desc = getHint(*h, "DESC");
-    CString ioid = getHint(*h, "IOID");
-    if (!name) continue;
-    AlsaPcmDevice device =
-        describeAlsaPcm(std::string(name.get()),
-                        desc ? std::string(desc.get()) : std::string());
-    device.ioid = ioid ? std::string(ioid.get()) : std::string();
-    out.push_back(std::move(device));
-  }
-  snd_device_name_free_hint(hints);
-  return out;
+  return withCardPcms(hintedPcms(), listAlsaCards());
 }
