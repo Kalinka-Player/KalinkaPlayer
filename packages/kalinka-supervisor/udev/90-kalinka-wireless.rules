@@ -1,1 +1,0 @@
-ACTION=="add", SUBSYSTEM=="net", ENV{DEVTYPE}=="wlan", TAG+="systemd", ENV{SYSTEMD_WANTS}+="kalinka-wireless.target"

@@ -54,9 +54,6 @@ install_supervisor() {
 verify_supervisor() {
   [ "$(in_chroot dpkg-query -W -f='${db:Status-Status}' kalinka-supervisor)" = installed ] || die 'supervisor is not package-managed'
   require_enabled multi-user.target kalinka-supervisor.service
-  require_enabled bluetooth.target kalinka-supervisor.service
-  require_enabled kalinka-wireless.target kalinka-supervisor.service
-  [ -f "$ROOTFS/usr/lib/udev/rules.d/90-kalinka-wireless.rules" ] || die 'no late Wi-Fi trigger'
   [ -x "$ROOTFS/usr/lib/kalinka-supervisor/kalinka-supervisor" ] || die 'no supervisor binary'
   in_chroot /usr/lib/kalinka-supervisor/kalinka-supervisor --version
   if [ "${DIETPI_LAYOUT:-}" = rpi ]; then

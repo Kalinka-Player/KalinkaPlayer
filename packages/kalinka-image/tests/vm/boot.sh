@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # Boot a copy of a PC image in QEMU and pass once the server answers on its
-# default port. The guest is then powered off through its power button, so the
-# disk left behind is one a clean shutdown wrote.
+# default port. The supervisor's control API then powers the guest off, so the
+# disk left behind is one a clean shutdown wrote; the power button is only the
+# fallback when that fails.
 #
 # Usage: boot.sh <image> <uefi|uefi-secure-boot|bios> <dir>
 #
@@ -15,13 +16,16 @@
 #                         (default: Ubuntu plain UEFI)
 #   BOOT_TIMEOUT          seconds the server has to answer (default: 600)
 #   HOST_PORT             host port forwarded to the server's (default: 18000)
+#   HOST_CONTROL_PORT     host port forwarded to the supervisor's (default: 18001)
 set -euo pipefail
 
 OVMF_CODE="${OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}"
 OVMF_VARS="${OVMF_VARS:-/usr/share/OVMF/OVMF_VARS_4M.fd}"
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-600}"
 HOST_PORT="${HOST_PORT:-18000}"
+HOST_CONTROL_PORT="${HOST_CONTROL_PORT:-18001}"
 SERVER_PORT=8000
+CONTROL_PORT=8001
 SHUTDOWN_TIMEOUT=120
 
 die() { echo "boot: $*" >&2; exit 1; }
@@ -91,13 +95,33 @@ PY
 
 qemu_running() { kill -0 "$QEMU_PID" 2>/dev/null; }
 
-power_off() {
-  qmp system_powerdown || return
+wait_for_exit() {
   local deadline=$((SECONDS + SHUTDOWN_TIMEOUT))
   while qemu_running; do
     [ "$SECONDS" -lt "$deadline" ] || return 1
     sleep 1
   done
+}
+
+power_off() {
+  qmp system_powerdown || return
+  wait_for_exit
+}
+
+# The guest has no radios, so this exercises the always-on supervisor: it must
+# read Core's identity and be allowed to drive systemd.
+power_off_through_supervisor() {
+  local control="http://127.0.0.1:$HOST_CONTROL_PORT" info server_id
+  info="$(curl -fsS --max-time 5 "$control/info")" || { echo "boot: the control API did not answer" >&2; return 1; }
+  echo "boot: the supervisor answered: $info"
+  curl -fsS --max-time 5 "$control/" | grep -q '<title>Kalinka Supervisor</title>' \
+    || { echo "boot: the supervisor serves no control page" >&2; return 1; }
+  server_id="$(python3 -c 'import json, sys; print(json.load(sys.stdin)["server_id"] or "")' <<<"$info")"
+  [ -n "$server_id" ] || { echo "boot: the supervisor cannot read Core's identity" >&2; return 1; }
+  curl -fsS --max-time 10 -H 'Content-Type: application/json' \
+    -d "{\"server_id\": \"$server_id\"}" "$control/v1/actions/poweroff" || return 1
+  echo
+  wait_for_exit
 }
 
 mkdir -p "$DIR"
@@ -110,7 +134,7 @@ qemu-system-x86_64 \
   "${FIRMWARE_ARGS[@]}" \
   -enable-kvm -cpu host -smp 2 -m 2048 -nographic \
   -drive "file=$DIR/disk.img,format=raw,if=virtio" \
-  -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$HOST_PORT-:$SERVER_PORT" \
+  -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$HOST_PORT-:$SERVER_PORT,hostfwd=tcp:127.0.0.1:$HOST_CONTROL_PORT-:$CONTROL_PORT" \
   -serial "file:$DIR/serial.log" -monitor none \
   -qmp "unix:$RUNTIME/qmp.sock,server=on,wait=off" \
   > "$DIR/qemu.log" 2>&1 < /dev/null &
@@ -137,7 +161,10 @@ if [ -z "$version" ]; then
 fi
 echo "boot: the server answered after $((SECONDS - started))s: $version"
 
-power_off || die "the guest did not power off within ${SHUTDOWN_TIMEOUT}s"
+if ! power_off_through_supervisor; then
+  power_off || echo "boot: the guest did not power off either" >&2
+  die "the supervisor did not power the guest off within ${SHUTDOWN_TIMEOUT}s"
+fi
 wait "$QEMU_PID" || die "QEMU exited with status $?"
 QEMU_PID=""
 echo "boot: powered off"

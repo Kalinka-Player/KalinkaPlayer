@@ -289,6 +289,17 @@ If the volume does not appear, use the disk utility to mount the partition label
 
 Older Debian PC images used `kalinka-firstboot.conf` on KALINKA-BT. That file is not used by the new DietPi images.
 
+### The control page
+
+The images have a second page, at `http://<address>:8001`, for example `http://192.168.1.50:8001`. It comes from the Kalinka supervisor, so it keeps working when the server itself has stopped responding.
+
+- **What it shows:** whether the server is running, the versions of Kalinka and its plugins, and how much memory and processor time Kalinka is using.
+- **What it can do:** restart the server, restart the player, switch it off safely before you unplug it, or reinstall Kalinka from kalinkaplayer.com when nothing else helps. Each one asks you to confirm first.
+- **Reinstalling** keeps your settings and music. It takes several minutes, and the page shows its progress.
+- **In the Kalinka app:** go to **Settings › General › Box** to restart the player, switch it off, or open this page. If the server stops answering, the app offers to restart it.
+
+Like the server, the page answers anyone on your local network, and nobody outside it. If you run a firewall on the player, let TCP port 8001 through from your network. To turn the page off, add the line `KALINKA_CONTROL_API=0` to `dietpi.txt`. [The supervisor's control page and API](supervisor-control.md) describes it in full.
+
 ## Get a remote
 
 Give the player a couple of minutes after you switch it on. Then connect to it in one of two ways.

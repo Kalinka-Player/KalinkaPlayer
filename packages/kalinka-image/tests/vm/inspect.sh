@@ -95,4 +95,10 @@ done
 [ -x "$ROOTFS/boot/dietpi/dietpi-network" ] || fail 'DietPi networking tool is missing'
 [ -s "$ESP/EFI/BOOT/BOOTX64.EFI" ] || fail 'no UEFI fallback bootloader'
 [ -f "$ROOTFS/usr/lib/systemd/system/kalinka-wifi@.service" ] || fail 'no independent Wi-Fi helper'
+
+echo "  -- the supervisor ran without radios and powered the guest off"
+supervisor_log="$(journalctl --directory "$JOURNAL" --output cat --no-pager --unit kalinka-supervisor.service 2>/dev/null)"
+grep -q 'Control API listening on 0.0.0.0:8001' <<<"$supervisor_log" || fail 'the control API never listened'
+grep -q 'Nearby setup waiting.*no Bluetooth adapter' <<<"$supervisor_log" || fail 'nearby setup did not wait for a radio'
+grep -q 'path=/v1/actions/poweroff .*outcome=accepted' <<<"$supervisor_log" || fail 'no accepted power-off in the audit log'
 exit "$FAILURES"

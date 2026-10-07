@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Kalinka Supervisor</title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<svg class="sprite" aria-hidden="true">
+  <symbol id="i-restart" viewBox="0 0 24 24"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4.5v4.5H15"/></symbol>
+  <symbol id="i-reboot" viewBox="0 0 24 24"><path d="M4.5 11A7.5 7.5 0 0 1 17.3 6.7L19.5 9"/><path d="M19.5 4.5V9H15"/><path d="M19.5 13a7.5 7.5 0 0 1-12.8 4.3L4.5 15"/><path d="M4.5 19.5V15H9"/></symbol>
+  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3.5v8"/><path d="M6.7 6.6a7.5 7.5 0 1 0 10.6 0"/></symbol>
+  <symbol id="i-reinstall" viewBox="0 0 24 24"><path d="M12 3.5v11"/><path d="M7.5 10l4.5 4.5 4.5-4.5"/><path d="M4.5 16.5v3h15v-3"/></symbol>
+  <symbol id="i-open" viewBox="0 0 24 24"><path d="M14 4.5h5.5V10"/><path d="M19.5 4.5L11 13"/><path d="M17.5 14v4.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1H10"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 8.5v5"/><path d="M12 16.8v.2"/><path d="M10.3 4.2L2.8 17.5a2 2 0 0 0 1.7 3h15a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0z"/></symbol>
+</svg>
+
+<header class="bar">
+  <img class="wordmark" src="/logo.svg" alt="Kalinka">
+  <span class="eyebrow">Supervisor</span>
+  <span class="bar-host" id="bar-host"></span>
+</header>
+
+<main class="page">
+  <div class="notice notice-error" id="unreachable" hidden>
+    <svg class="glyph"><use href="#i-alert"/></svg>
+    <span>The supervisor is not answering. The figures below are from the last time it did.</span>
+  </div>
+
+  <section class="card hero">
+    <div class="hero-text">
+      <span class="pill" id="core-pill"><span class="dot"></span><span id="core-label">Checking the server…</span></span>
+      <h1 id="hero-title">Kalinka</h1>
+      <p class="muted" id="hero-sub"></p>
+    </div>
+    <a class="button accent" id="open-core" href="/" hidden>
+      <svg class="glyph"><use href="#i-open"/></svg><span>Open Kalinka</span>
+    </a>
+  </section>
+
+  <div class="notices" id="notices"></div>
+
+  <section class="card">
+    <h2 class="label">Controls</h2>
+    <div class="actions">
+      <article class="action">
+        <span class="tile"><svg class="glyph"><use href="#i-restart"/></svg></span>
+        <div class="action-text"><h3>Restart server</h3><p>Starts Kalinka's server again. Playback stops for a moment.</p></div>
+        <button class="button neutral" type="button" data-action="restart_core">Restart</button>
+      </article>
+      <article class="action">
+        <span class="tile"><svg class="glyph"><use href="#i-reboot"/></svg></span>
+        <div class="action-text"><h3>Restart the box</h3><p>Reboots the whole player. It is back in a minute or two.</p></div>
+        <button class="button neutral" type="button" data-action="reboot">Restart</button>
+      </article>
+      <article class="action">
+        <span class="tile danger"><svg class="glyph"><use href="#i-power"/></svg></span>
+        <div class="action-text"><h3>Power off</h3><p>Shuts the player down safely, so it can be unplugged.</p></div>
+        <button class="button neutral" type="button" data-action="poweroff">Power off</button>
+      </article>
+      <article class="action">
+        <span class="tile danger"><svg class="glyph"><use href="#i-reinstall"/></svg></span>
+        <div class="action-text"><h3>Reinstall Kalinka</h3><p>Downloads the installer from kalinkaplayer.com and installs Kalinka again. Settings and music stay.</p></div>
+        <button class="button neutral" type="button" data-action="reinstall">Reinstall</button>
+      </article>
+    </div>
+  </section>
+
+  <div class="grid">
+    <section class="card">
+      <h2 class="label">Resources</h2>
+      <div class="figures">
+        <div class="figure"><span class="figure-value" id="fig-memory">–</span><span class="figure-label">Kalinka memory</span></div>
+        <div class="figure"><span class="figure-value" id="fig-cpu">–</span><span class="figure-label">Kalinka CPU</span></div>
+        <div class="figure"><span class="figure-value" id="fig-host-cpu">–</span><span class="figure-label">Whole box CPU</span></div>
+      </div>
+      <table class="services">
+        <thead><tr><th>Service</th><th>State</th><th class="num">Memory</th><th class="num">CPU</th></tr></thead>
+        <tbody id="services"></tbody>
+      </table>
+      <p class="footnote">CPU is averaged over the last minute, as a share of the whole box.</p>
+    </section>
+
+    <section class="card">
+      <h2 class="label">This box</h2>
+      <dl class="facts" id="host"></dl>
+      <div class="meter"><div class="meter-head"><span>Memory in use</span><span id="mem-text"></span></div><div class="meter-track"><div class="meter-fill" id="mem-fill"></div></div></div>
+      <div class="meter"><div class="meter-head"><span>Disk in use</span><span id="disk-text"></span></div><div class="meter-track"><div class="meter-fill" id="disk-fill"></div></div></div>
+    </section>
+
+    <section class="card">
+      <h2 class="label">Software</h2>
+      <dl class="versions" id="packages"></dl>
+      <p class="empty" id="packages-empty" hidden>No Kalinka packages are installed through apt on this box.</p>
+    </section>
+
+    <section class="card">
+      <h2 class="label">Plugins</h2>
+      <dl class="versions" id="plugins"></dl>
+      <p class="empty" id="plugins-empty" hidden>No plugins were found in the server's Python environment.</p>
+      <p class="footnote" id="python"></p>
+    </section>
+  </div>
+
+  <footer class="foot" id="foot"></footer>
+</main>
+
+<div class="scrim" id="confirm" hidden>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <span class="tile big" id="confirm-tile"><svg class="glyph"><use id="confirm-icon" href="#i-restart"/></svg></span>
+    <h2 class="dialog-title" id="confirm-title"></h2>
+    <p class="dialog-body" id="confirm-body"></p>
+    <div class="dialog-buttons">
+      <button class="button neutral" type="button" id="confirm-cancel">Cancel</button>
+      <button class="button accent" type="button" id="confirm-go"></button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="progress" hidden>
+  <div class="progress">
+    <span class="tile big working" id="progress-tile"><svg class="glyph"><use id="progress-icon" href="#i-restart"/></svg></span>
+    <h2 class="dialog-title" id="progress-title"></h2>
+    <p class="dialog-body" id="progress-body"></p>
+    <div class="bar-track"><div class="bar-fill" id="progress-fill"></div></div>
+    <pre class="log" id="progress-log" hidden></pre>
+    <button class="link" type="button" id="progress-dismiss">Dismiss</button>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" hidden></div>
+
+<template id="service-row">
+  <tr><td class="service-name"></td><td><span class="chip"></span></td><td class="num mem"></td><td class="num cpu"></td></tr>
+</template>
+<template id="fact">
+  <div class="fact"><dt></dt><dd></dd></div>
+</template>
+</body>
+</html>

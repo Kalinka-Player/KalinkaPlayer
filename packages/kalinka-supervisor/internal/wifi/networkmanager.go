@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/godbus/dbus/v5"
+	"kalinka/supervisor/internal/dbusx"
 	"kalinka/supervisor/internal/protocol"
 )
 
@@ -21,24 +22,6 @@ const (
 	nmConnection = nm + ".Settings.Connection"
 )
 
-// Bus limits the D-Bus surface used by NetworkManager and makes it testable.
-type Bus interface {
-	Call(context.Context, dbus.ObjectPath, string, ...any) ([]any, error)
-	Close() error
-}
-type systemBus struct{ conn *dbus.Conn }
-
-func (b *systemBus) Call(ctx context.Context, path dbus.ObjectPath, method string, args ...any) ([]any, error) {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	c := b.conn.Object(nm, path).CallWithContext(ctx, method, 0, args...)
-	if c.Err != nil {
-		return nil, protocol.Unavailable
-	}
-	return c.Body, nil
-}
-func (b *systemBus) Close() error { return b.conn.Close() }
-
 type settings map[string]map[string]dbus.Variant
 
 func v(x any) dbus.Variant { return dbus.MakeVariant(x) }
@@ -50,7 +33,7 @@ func value[T any](props map[string]dbus.Variant, key string) T {
 // NetworkManager stages a new profile and never edits a pre-existing profile.
 type NetworkManager struct {
 	Interface, Journal string
-	Bus                Bus
+	Bus                dbusx.Bus
 	device             dbus.ObjectPath
 	Timeout, Poll      time.Duration
 }
@@ -75,11 +58,11 @@ func (n *NetworkManager) props(ctx context.Context, path dbus.ObjectPath, iface 
 }
 func (n *NetworkManager) Recover(ctx context.Context) error {
 	if n.Bus == nil {
-		conn, err := dbus.ConnectSystemBus()
+		bus, err := dbusx.System(nm)
 		if err != nil {
 			return protocol.Unavailable
 		}
-		n.Bus = &systemBus{conn}
+		n.Bus = bus
 	}
 	if n.Interface == "" {
 		body, err := n.call(ctx, nmRoot, nm+".GetDevices")

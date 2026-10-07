@@ -4,7 +4,6 @@ package machine
 import (
 	"context"
 	"encoding/hex"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -12,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"kalinka/supervisor/internal/coreconf"
 	"kalinka/supervisor/internal/protocol"
 )
 
@@ -24,8 +24,9 @@ type Wifi interface {
 
 // Config controls image policy; AlwaysAdvertise is only for explicit local tests.
 type Config struct {
-	IdentityFile, Marker                 string
-	Port                                 uint16
+	IdentityFile, Marker string
+	// Port is asked on every status read, so a Core that moved is reported where it now listens.
+	Port                                 func() uint16
 	Test, AlwaysAdvertise                bool
 	Now                                  func() time.Time
 	BootGrace, LossGrace, HandoffTimeout time.Duration
@@ -57,8 +58,8 @@ func New(parent context.Context, wifi Wifi, cfg Config) *Machine {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	if cfg.Port == 0 {
-		cfg.Port = 8000
+	if cfg.Port == nil {
+		cfg.Port = func() uint16 { return 8000 }
 	}
 	if cfg.BootGrace == 0 {
 		cfg.BootGrace = 30 * time.Second
@@ -92,20 +93,18 @@ func (m *Machine) update(state, reason byte, address string) {
 func (m *Machine) Status() []byte {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return protocol.Status(m.state, m.reason, m.address, m.cfg.Port, m.cfg.Test)
+	return protocol.Status(m.state, m.reason, m.address, m.cfg.Port(), m.cfg.Test)
 }
 func (m *Machine) Progress() []byte { m.mu.Lock(); defer m.mu.Unlock(); return []byte{1, m.stage} }
+
+// ChangingNetwork reports whether a join or its rollback is underway, which a reboot would interrupt.
+func (m *Machine) ChangingNetwork() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.state == protocol.Joining || m.resetting
+}
 func (m *Machine) Identity() []byte {
-	f, err := os.Open(m.cfg.IdentityFile)
-	if err != nil {
-		return []byte{}
-	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, 65))
-	if err != nil || len(b) > 64 {
-		return []byte{}
-	}
-	s := strings.ReplaceAll(strings.TrimSpace(string(b)), "-", "")
+	s := strings.ReplaceAll(coreconf.ServerID(m.cfg.IdentityFile), "-", "")
 	v, err := hex.DecodeString(s)
 	if err != nil || len(v) != 16 {
 		return []byte{}

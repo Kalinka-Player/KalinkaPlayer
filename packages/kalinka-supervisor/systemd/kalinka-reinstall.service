@@ -1,0 +1,15 @@
+[Unit]
+Description=Reinstall Kalinka from the published installer
+
+[Service]
+Type=oneshot
+# Same bound as kalinka-upgrade.service: apt and source builds on a Pi have none that is safe.
+TimeoutStartSec=infinity
+StateDirectory=kalinka-supervisor
+StateDirectoryMode=0700
+LogsDirectory=kalinka-supervisor
+StandardOutput=truncate:/var/log/kalinka-supervisor/reinstall.log
+StandardError=inherit
+ExecStart=/usr/lib/kalinka-supervisor/reinstall.sh
+# The unit's own result is gone once systemd unloads it; the supervisor reads this instead.
+ExecStopPost=/bin/sh -c 'echo "$SERVICE_RESULT" > /var/lib/kalinka-supervisor/reinstall-result'

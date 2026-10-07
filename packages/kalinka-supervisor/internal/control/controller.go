@@ -1,0 +1,219 @@
+package control
+
+import (
+	"context"
+	"sync"
+	"time"
+)
+
+// Action names one privileged operation a client may request.
+type Action string
+
+const (
+	RestartCore Action = "restart_core"
+	Reboot      Action = "reboot"
+	PowerOff    Action = "poweroff"
+	Reinstall   Action = "reinstall"
+)
+
+// Supported lists every action this protocol version serves, in the order /info reports them.
+var Supported = []Action{RestartCore, Reboot, PowerOff, Reinstall}
+
+// target returns the shutdown target of an action that ends the supervisor along with the host.
+func (a Action) target() (Target, bool) {
+	switch a {
+	case Reboot:
+		return RebootTarget, true
+	case PowerOff:
+		return PowerOffTarget, true
+	}
+	return "", false
+}
+
+// Refusal codes; each is a fixed, client-facing reason an action did not run.
+const (
+	CodeBusy          = "busy"
+	CodeShuttingDown  = "shutting_down"
+	CodeUpgrade       = "upgrade_in_progress"
+	CodeNetworkChange = "network_change_in_progress"
+	CodeTooSoon       = "too_soon"
+	CodeUnavailable   = "unavailable"
+)
+
+// Refusal says why an action did not run, and when to retry if that is known.
+type Refusal struct {
+	Code       string
+	RetryAfter time.Duration
+}
+
+func (r *Refusal) Error() string { return r.Code }
+
+func refuse(code string) error { return &Refusal{Code: code} }
+
+// NetworkActivity reports whether a network change that a shutdown or reinstall would interrupt is underway.
+type NetworkActivity interface {
+	ChangingNetwork() bool
+}
+
+// Operation is an admitted action. Exactly one Run must follow Begin; the
+// controller admits nothing else until it returns.
+type Operation interface {
+	Run(context.Context) error
+}
+
+// Status is a point-in-time view of what the controller looks after.
+// Reinstall is "running", "succeeded", "failed" or "idle"; ReinstallFinished
+// is when the last one ended, zero if none has.
+type Status struct {
+	Core              string
+	Upgrading         bool
+	Pending           Action
+	Reinstall         string
+	ReinstallFinished time.Time
+}
+
+// Controller admits one privileged operation at a time and decides whether
+// each may run now. Future operations are serialized through it as well.
+// Safe for concurrent use.
+type Controller struct {
+	systemd         Systemd
+	network         NetworkActivity
+	reinstalls      ReinstallRecord
+	now             func() time.Time
+	restartInterval time.Duration
+
+	mu          sync.Mutex
+	running     bool
+	pending     Action
+	lastRestart time.Time
+}
+
+// NewController takes network as nil when nearby setup is off.
+func NewController(s Systemd, network NetworkActivity, reinstalls ReinstallRecord, now func() time.Time) *Controller {
+	return &Controller{systemd: s, network: network, reinstalls: reinstalls, now: now, restartInterval: 15 * time.Second}
+}
+
+// Begin admits a, or returns a *Refusal saying why it may not run now.
+func (c *Controller) Begin(ctx context.Context, a Action) (Operation, error) {
+	if err := c.reserve(a); err != nil {
+		return nil, err
+	}
+	if err := c.admit(ctx, a); err != nil {
+		c.mu.Lock()
+		c.running = false
+		c.mu.Unlock()
+		return nil, err
+	}
+	return &operation{c, a}, nil
+}
+
+func (c *Controller) reserve(a Action) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch {
+	case c.pending != "":
+		return refuse(CodeShuttingDown)
+	case c.running:
+		return refuse(CodeBusy)
+	}
+	if a == RestartCore && !c.lastRestart.IsZero() {
+		if wait := c.lastRestart.Add(c.restartInterval).Sub(c.now()); wait > 0 {
+			return &Refusal{Code: CodeTooSoon, RetryAfter: wait}
+		}
+	}
+	c.running = true
+	return nil
+}
+
+func (c *Controller) admit(ctx context.Context, a Action) error {
+	installing, err := c.installing(ctx)
+	if err != nil {
+		return err
+	}
+	if installing != "" {
+		return refuse(CodeUpgrade)
+	}
+	if a == RestartCore {
+		return nil
+	}
+	// Core being mid-start blocks nothing: a wedged bootstrap is a main reason to reboot or reinstall.
+	if c.network != nil && c.network.ChangingNetwork() {
+		return refuse(CodeNetworkChange)
+	}
+	target, terminal := a.target()
+	if !terminal {
+		return nil
+	}
+	if c.systemd.CheckTarget(ctx, target) != nil {
+		return refuse(CodeUnavailable)
+	}
+	c.mu.Lock()
+	c.pending = a
+	c.mu.Unlock()
+	return nil
+}
+
+type operation struct {
+	c      *Controller
+	action Action
+}
+
+func (o *operation) Run(ctx context.Context) error {
+	c := o.c
+	var err error
+	if target, terminal := o.action.target(); terminal {
+		err = c.systemd.Shutdown(ctx, target)
+	} else if o.action == Reinstall {
+		err = c.systemd.Reinstall(ctx)
+	} else {
+		err = c.systemd.RestartCore(ctx)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.running = false
+	if err != nil {
+		c.pending = ""
+		return refuse(CodeUnavailable)
+	}
+	if o.action == RestartCore {
+		c.lastRestart = c.now()
+	}
+	return nil
+}
+
+// installing names the first of UpgradeUnits that is busy, or "" when none is.
+func (c *Controller) installing(ctx context.Context) (string, error) {
+	for _, unit := range UpgradeUnits {
+		state, err := c.systemd.Unit(ctx, unit)
+		if err != nil {
+			return "", refuse(CodeUnavailable)
+		}
+		if state.Busy() {
+			return unit, nil
+		}
+	}
+	return "", nil
+}
+
+// Status never waits for an operation in progress.
+func (c *Controller) Status(ctx context.Context) (Status, error) {
+	core, err := c.systemd.Unit(ctx, CoreUnit)
+	if err != nil {
+		return Status{}, refuse(CodeUnavailable)
+	}
+	installing, err := c.installing(ctx)
+	if err != nil {
+		return Status{}, err
+	}
+	s := Status{Core: core.Active, Upgrading: installing != "", Reinstall: "running"}
+	if installing != ReinstallUnit {
+		s.Reinstall, s.ReinstallFinished = c.reinstalls.Outcome()
+		if s.Reinstall == "" {
+			s.Reinstall = "idle"
+		}
+	}
+	c.mu.Lock()
+	s.Pending = c.pending
+	c.mu.Unlock()
+	return s, nil
+}
