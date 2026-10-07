@@ -67,6 +67,39 @@ TEST(AudioSampleFormatTest, ConvertPCM16ToPCM24) {
   }
 }
 
+// A DAC that only takes S32 still plays 16-bit bit-perfectly: the sample moves
+// to the top 16 bits and nothing below it is invented.
+TEST(AudioSampleFormatTest, ConvertPCM16ToPCM32KeepsEveryBit) {
+  const std::vector<int16_t> sourceSamples = {1000, -1000, 32767, -32768, -1};
+  std::vector<int32_t> destSamples(sourceSamples.size());
+
+  const size_t convertedSamples = convertSampleFormat(
+      sourceSamples.data(), AudioSampleFormat::PCM16_LE, sourceSamples.size(),
+      destSamples.data(), AudioSampleFormat::PCM32_LE,
+      destSamples.size() * sizeof(int32_t));
+
+  ASSERT_EQ(convertedSamples, sourceSamples.size());
+  for (size_t i = 0; i < sourceSamples.size(); ++i) {
+    EXPECT_EQ(destSamples[i], int32_t{sourceSamples[i]} * 65536) << "i = " << i;
+    EXPECT_EQ(destSamples[i] >> 16, sourceSamples[i]) << "i = " << i;
+  }
+}
+
+TEST(AudioSampleFormatTest, A16BitStreamIsOfferedEveryWiderContainer) {
+  std::vector<AudioSampleFormat> tried;
+  for (auto format = pcmFallback(PCM16_LE); format;
+       format = pcmFallback(*format)) {
+    tried.push_back(*format);
+  }
+  EXPECT_EQ(tried, (std::vector<AudioSampleFormat>{PCM24_LE, PCM32_LE,
+                                                   PCM24_3LE}));
+}
+
+TEST(AudioSampleFormatTest, DsdHasNoPcmFallback) {
+  EXPECT_FALSE(pcmFallback(DSD_U32_BE).has_value());
+  EXPECT_FALSE(pcmFallback(DOP32_LE).has_value());
+}
+
 TEST(AudioSampleFormatTest, ConvertPCM24ToPCM32) {
   std::vector<int32_t> sourceSamples = {1000000, 0x1000000 - 1000000, 8388607,
                                         0x1000000 - 8388608};

@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
 enum AudioSampleFormat {
   PCM16_LE,
@@ -91,6 +92,24 @@ inline const char *const sampleFormatToString(AudioSampleFormat format) {
     return "PCM24_3LE";
   default:
     return "Unknown";
+  }
+}
+
+/// @brief The next on-wire format to offer a device that refused @p format.
+///
+/// Each step holds every bit the pipeline keeps in the format before it, so
+/// convertSampleFormat() carries samples across with their values unchanged.
+/// @return std::nullopt for DSD, and once no PCM container is left to try.
+inline std::optional<AudioSampleFormat> pcmFallback(AudioSampleFormat format) {
+  switch (format) {
+  case AudioSampleFormat::PCM16_LE:
+    return AudioSampleFormat::PCM24_LE;
+  case AudioSampleFormat::PCM24_LE:
+    return AudioSampleFormat::PCM32_LE;
+  case AudioSampleFormat::PCM32_LE:
+    return AudioSampleFormat::PCM24_3LE;
+  default:
+    return std::nullopt;
   }
 }
 

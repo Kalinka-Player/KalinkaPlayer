@@ -749,9 +749,10 @@ void AlsaAudioEmitter::setupAudioFormat(
       sampleSubstitute.count(streamAudioFormat.sampleFormat)
           ? sampleSubstitute[streamAudioFormat.sampleFormat]
           : streamAudioFormat.sampleFormat;
+  // A fallback container only pads, so the device gets the stream's bits.
   const StreamAudioFormat opened{
       sampleRate, outputChannels,
-      static_cast<unsigned int>(sampleBits(deviceSampleFormat)),
+      static_cast<unsigned int>(sampleBits(streamAudioFormat.sampleFormat)),
       deviceSampleFormat};
   deviceInfo = DeviceInfo{opened, deviceAccess()};
 
@@ -816,26 +817,18 @@ void AlsaAudioEmitter::setSampleFormat(AudioSampleFormat requestedFormat,
                            ? sampleSubstitute[requestedFormat]
                            : requestedFormat;
 
-  while (true) {
-    int err = snd_pcm_hw_params_set_format(pcmHandle, params,
-                                           alsaFormat(formatToProbe));
-    if (err >= 0) {
-      break;
+  while (snd_pcm_hw_params_set_format(pcmHandle, params,
+                                      alsaFormat(formatToProbe)) < 0) {
+    const std::optional<AudioSampleFormat> next = pcmFallback(formatToProbe);
+    if (!next) {
+      throw std::runtime_error(
+          std::string("Output device takes no format that carries ") +
+          sampleFormatToString(requestedFormat));
     }
-
-    switch (formatToProbe) {
-    case AudioSampleFormat::PCM24_LE:
-      spdlog::warn("PCM24_LE not supported, trying PCM32_LE");
-      formatToProbe = AudioSampleFormat::PCM32_LE;
-      break;
-    case AudioSampleFormat::PCM32_LE:
-      spdlog::warn("PCM32_LE not supported, trying PCM24_3LE");
-      formatToProbe = AudioSampleFormat::PCM24_3LE;
-      break;
-    default:
-      throw std::runtime_error("Unsupported sample format, format=" +
-                               std::to_string(static_cast<int>(formatToProbe)));
-    }
+    spdlog::warn("{} not supported, trying {}",
+                 sampleFormatToString(formatToProbe),
+                 sampleFormatToString(*next));
+    formatToProbe = *next;
   }
 
   if (requestedFormat != formatToProbe) {
