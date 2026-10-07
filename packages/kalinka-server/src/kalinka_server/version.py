@@ -101,6 +101,15 @@ def get_version() -> str:
 # finish. Core waits for confirmed target versions before starting its installer;
 # the packaged renderer on its own host is covered by that installer. Refusals
 # name the renderer and reason. Automatic upgrades still defer busy renderers.
+# Also 0.11: a catalog whose preview type is `folder` is a folder of a file-backed
+# source, listing its subfolders and then the tracks directly in it; adding
+# one takes every track below it, subfolders included, in the order the
+# folders list them. My Library is now such a catalog, `files`:
+# the music sources, or the one source's folders, under its playlists. A
+# second card, `recent`, lists the newest albums and singles. The per-kind
+# shelves are no longer listed, though their catalogs still answer. POST
+# /queue/add refuses an add that would take the queue past 1000 tracks with
+# 409 {"detail": {"code": "queue_full", "message"}}, adding nothing.
 REST_API_VERSION = "0.11"
 
 

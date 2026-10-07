@@ -12,13 +12,12 @@ import math
 import time
 from collections.abc import Callable
 
-from fastapi import HTTPException
-from kalinka_plugin_sdk.api import PlayQueueController
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .config_model import KalinkaConfig
 from .presentation_schema import Banner, Severity
+from .queue_limit import QueueLimit
 
 REFUSAL_CODE = "demo_read_only"
 REFUSAL = {
@@ -37,6 +36,8 @@ QUEUE_FULL = {
         "clear the queue, to add more."
     ),
 }
+#: The shared queue's limit, well under an ordinary server's.
+DEMO_QUEUE = QueueLimit(QUEUE_LIMIT, QUEUE_FULL)
 
 THROTTLED = {
     "code": "demo_rate_limited",
@@ -71,22 +72,6 @@ def is_write_allowed(method: str, path: str) -> bool:
     if method.upper() in _READS:
         return True
     return path.startswith("/queue/") or path in _WRITABLE_PATHS
-
-
-async def refuse_beyond_queue_limit(
-    demo_mode: bool, playqueue: PlayQueueController, adding: int
-) -> None:
-    """Refuse, on a demo server, an add that would take the shared queue past
-    QUEUE_LIMIT tracks.
-
-    @param adding Ids or tracks: checked on the ids first, since every id costs
-        its source a lookup, and again on the tracks they expanded to.
-    """
-    if not demo_mode:
-        return
-    queued = (await playqueue.list(offset=0, limit=0)).total
-    if queued + adding > QUEUE_LIMIT:
-        raise HTTPException(status_code=409, detail=QUEUE_FULL)
 
 
 def page_banners(config: KalinkaConfig) -> list[Banner]:

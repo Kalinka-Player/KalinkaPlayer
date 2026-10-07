@@ -10,13 +10,14 @@ from fastapi.testclient import TestClient
 from kalinka_server import demo_mode, server
 from kalinka_server.config_model import KalinkaConfig
 from kalinka_server.demo_mode import (
+    DEMO_QUEUE,
     QUEUE_FULL,
     QUEUE_LIMIT,
     THROTTLED,
     ClientRate,
     DemoWriteThrottle,
-    refuse_beyond_queue_limit,
 )
+from kalinka_server.queue_limit import QUEUE
 from tests.app_harness import isolate_app, running
 
 
@@ -108,22 +109,18 @@ class _Queue:
 
 
 async def test_an_add_that_fits_the_queue_passes():
-    await refuse_beyond_queue_limit(True, _Queue(QUEUE_LIMIT - 5), 5)
+    await DEMO_QUEUE.refuse_past(_Queue(QUEUE_LIMIT - 5), 5)
 
 
 async def test_an_add_past_the_queue_limit_is_refused():
     with pytest.raises(HTTPException) as refused:
-        await refuse_beyond_queue_limit(True, _Queue(QUEUE_LIMIT - 5), 6)
+        await DEMO_QUEUE.refuse_past(_Queue(QUEUE_LIMIT - 5), 6)
     assert refused.value.status_code == 409
     assert refused.value.detail == QUEUE_FULL
 
 
-async def test_an_ordinary_server_has_no_queue_limit():
-    class Unasked:
-        async def list(self, offset, limit):
-            raise AssertionError("an ordinary server never counts its queue")
-
-    await refuse_beyond_queue_limit(False, Unasked(), QUEUE_LIMIT * 10)
+def test_the_demo_queue_is_shorter_than_an_ordinary_one():
+    assert DEMO_QUEUE.tracks < QUEUE.tracks
 
 
 @pytest.fixture
