@@ -4,8 +4,9 @@ import shutil
 import sqlite3
 import logging
 from dataclasses import dataclass
-from typing import List, Dict, Optional, Any, Tuple
+from typing import List, Dict, Optional, Any, Sequence, Tuple
 import time
+from functools import lru_cache
 from pathlib import Path
 
 from .config_model import LocalFilesConfig
@@ -139,6 +140,153 @@ KINDS: Dict[str, _KindQuery] = {
         genre_predicate="has_genre(NULL, ?)",
     ),
 }
+
+
+def folder_prefix(folder: str) -> str:
+    """``folder`` as the start every path inside it shares.
+
+    @note A root that already ends in the separator — ``/`` — keeps the one
+        it has, or nothing would lie inside it.
+    """
+    return folder if folder.endswith("/") else folder + "/"
+
+
+@dataclass(frozen=True)
+class FolderSummary:
+    """What a folder holds: its direct children counted, and every track
+    beneath it however deep."""
+
+    direct_folders: int
+    direct_tracks: int
+    direct_duration: int
+    total_tracks: int
+
+
+@dataclass(frozen=True)
+class _FolderRange:
+    """The tracks under a folder as a range of ``tracks.file_path``.
+
+    A range rather than ``LIKE``, so a ``%`` or ``_`` in a folder name is
+    literal and the index serves it: everything under ``/a/`` sorts after
+    ``/a/`` and before ``/a0``, ``0`` being the character after ``/``.
+    ``tail_start`` is where a path's part below the folder begins, counted
+    from 1 in characters as ``substr`` counts them.
+    """
+
+    lo: str
+    hi: str
+    tail_start: int
+
+    @classmethod
+    def of(cls, folder: str) -> "_FolderRange":
+        prefix = folder_prefix(folder)
+        return cls(lo=prefix, hi=prefix[:-1] + "0", tail_start=len(prefix) + 1)
+
+    def params(self, **extra: Any) -> Dict[str, Any]:
+        return {"lo": self.lo, "hi": self.hi, "tail_start": self.tail_start, **extra}
+
+
+@lru_cache(maxsize=4096)
+def _name_order(name: str) -> Tuple[str, str]:
+    """How a folder listing orders a name: regardless of case, then as is.
+    Cached, since a walk meets each folder's name once per track in it."""
+    return fold_for_match(name), name
+
+
+def _listing_order(rest: str) -> Tuple[Tuple[int, str, str], ...]:
+    """Where a path below a folder comes as the folder listings show it,
+    read down through its subfolders: each folder's subfolders before its own
+    tracks, both by name regardless of case."""
+    *folders, name = rest.split("/")
+    return (
+        *((0, *_name_order(part)) for part in folders),
+        (1, *_name_order(name)),
+    )
+
+
+#: A folder holding at most this many tracks is ordered in one go; a larger
+#: one is walked a subfolder at a time, so a walk that stops at its limit
+#: reads about that many tracks rather than the whole of a large library.
+_ORDERED_IN_ONE = 2000
+
+
+#: Each track under the folder, as its path below it.
+_BELOW = """
+    below AS (
+        SELECT substr(t.file_path, :tail_start) AS rest, t.file_path AS path,
+               t.duration AS duration
+        FROM tracks t
+        WHERE t.file_path > :lo AND t.file_path < :hi
+    )"""
+
+#: Each track inside a subfolder, by that subfolder's name and its path
+#: below it.
+_NESTED = """
+    nested AS (
+        SELECT substr(rest, 1, instr(rest, '/') - 1) AS name,
+               substr(rest, instr(rest, '/') + 1) AS deeper, duration
+        FROM below WHERE instr(rest, '/') > 0
+    )"""
+
+#: Each track under the folder that shows a cover, the album's before its own.
+_COVERS = """
+    covers AS (
+        SELECT substr(t.file_path, :tail_start) AS rest, t.file_path AS path,
+               CASE WHEN NULLIF(a.image_url, '') IS NOT NULL
+                    THEN 'album' ELSE 'track' END AS kind,
+               COALESCE(NULLIF(a.image_url, ''), NULLIF(t.image_url, ''))
+                   AS image
+        FROM tracks t JOIN albums a ON t.album_id = a.id
+        WHERE t.file_path > :lo AND t.file_path < :hi
+    )"""
+
+
+def _summary_columns(rest: str) -> str:
+    """A :class:`FolderSummary` as aggregates over ``rest``, each track's path
+    below the folder summarised."""
+    direct = f"instr({rest}, '/') = 0"
+    return f"""
+        COUNT(*) AS total_tracks,
+        COALESCE(SUM({direct}), 0) AS direct_tracks,
+        COALESCE(SUM(CASE WHEN {direct} THEN duration END), 0)
+            AS direct_duration,
+        COUNT(DISTINCT CASE WHEN NOT {direct}
+            THEN substr({rest}, 1, instr({rest}, '/') - 1) END)
+            AS direct_folders"""
+
+
+def _summary_of(row: sqlite3.Row) -> FolderSummary:
+    return FolderSummary(
+        direct_folders=row["direct_folders"],
+        direct_tracks=row["direct_tracks"],
+        direct_duration=row["direct_duration"],
+        total_tracks=row["total_tracks"],
+    )
+
+
+def _materialised(
+    cursor: sqlite3.Cursor, page: List[Tuple[str, str]]
+) -> List[Tuple[str, Dict]]:
+    """The full rows behind a page of ``(kind, id)``, in the page's order, one
+    query per kind. An id whose row has gone since the page was cut is left
+    out."""
+    rows: Dict[Tuple[str, str], Dict] = {}
+    for kind in dict.fromkeys(kind for kind, _ in page):
+        ids = [id for k, id in page if k == kind]
+        query = KINDS[kind]
+        placeholders = ",".join("?" for _ in ids)
+        cursor.execute(
+            f"SELECT {query.columns} FROM {query.source}"
+            f" WHERE {query.id_expr} IN ({placeholders})",
+            ids,
+        )
+        for row in cursor.fetchall():
+            rows[(kind, row["id"])] = dict(row)
+    return [(kind, rows[(kind, id)]) for kind, id in page if (kind, id) in rows]
+
+
+def _image_id(image_url: str) -> str:
+    return image_url[: -len(".jpg")] if image_url.endswith(".jpg") else image_url
 
 
 @dataclass(frozen=True)
@@ -853,27 +1001,236 @@ class LocalFilesInputModuleDb:
                 (*params, limit, offset),
             )
             page = [(row["kind"], row["id"]) for row in cursor.fetchall()]
-
-            rows: Dict[Tuple[str, str], Dict] = {}
-            for kind in wanted:
-                ids = [id for k, id in page if k == kind]
-                if not ids:
-                    continue
-                query = KINDS[kind]
-                placeholders = ",".join("?" for _ in ids)
-                cursor.execute(
-                    f"SELECT {query.columns} FROM {query.source}"
-                    f" WHERE {query.id_expr} IN ({placeholders})",
-                    ids,
-                )
-                for row in cursor.fetchall():
-                    rows[(kind, row["id"])] = dict(row)
-
-            return [
-                (kind, rows[(kind, id)]) for kind, id in page if (kind, id) in rows
-            ], total
+            return _materialised(cursor, page), total
         finally:
             conn.close()
+
+    def list_recently_added(
+        self, offset: int = 0, limit: int = 50
+    ) -> Tuple[List[Tuple[str, Dict]], int]:
+        """One page of what arrived in the library most recently, newest
+        first, as ``(kind, row)`` pairs: each album as one entry dated by its
+        first file, and each track that belongs to no album on its own.
+
+        Dated by when a file was first indexed, which a re-tag or a move does
+        not change, so an album the enricher touched does not resurface.
+        """
+        arrivals = """
+            SELECT 'album' AS kind, t.album_id AS id,
+                   MIN(lf.first_indexed) AS added
+            FROM tracks t JOIN library_file lf ON lf.file_id = t.id
+            WHERE t.album_id != 'unknown_album'
+            GROUP BY t.album_id
+            UNION ALL
+            SELECT 'track', t.id, lf.first_indexed
+            FROM tracks t JOIN library_file lf ON lf.file_id = t.id
+            WHERE t.album_id = 'unknown_album'
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT COUNT(*) AS count FROM ({arrivals})")
+            total = cursor.fetchone()["count"]
+            cursor.execute(
+                f"{arrivals} ORDER BY added DESC, kind, id LIMIT ? OFFSET ?",
+                (limit, offset),
+            )
+            page = [(row["kind"], row["id"]) for row in cursor.fetchall()]
+            return _materialised(cursor, page), total
+        finally:
+            conn.close()
+
+    def get_folder_summary(self, folder: str) -> FolderSummary:
+        """What ``folder`` holds, from the tracks indexed under it."""
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                f"WITH {_BELOW} SELECT {_summary_columns('rest')} FROM below",
+                _FolderRange.of(folder).params(),
+            ).fetchone()
+            return _summary_of(row)
+        finally:
+            conn.close()
+
+    def list_subfolders(
+        self, folder: str, offset: int = 0, limit: int = 50
+    ) -> Tuple[List[Tuple[str, FolderSummary]], int]:
+        """One page of the folders directly in ``folder`` that hold indexed
+        tracks, by name regardless of case, each with what it holds; and how
+        many there are.
+
+        One grouped pass over the folder's tracks answers every row's summary,
+        so a page costs the same however many folders it shows.
+        """
+        params = _FolderRange.of(folder).params(limit=limit, offset=offset)
+        conn = self._get_connection()
+        try:
+            total = conn.execute(
+                f"WITH {_BELOW}, {_NESTED} SELECT COUNT(DISTINCT name) FROM nested",
+                params,
+            ).fetchone()[0]
+            rows = conn.execute(
+                f"""
+                WITH {_BELOW}, {_NESTED}
+                SELECT name, {_summary_columns('deeper')}
+                FROM nested
+                GROUP BY name
+                ORDER BY fold(name), name
+                LIMIT :limit OFFSET :offset
+                """,
+                params,
+            ).fetchall()
+            return [(row["name"], _summary_of(row)) for row in rows], total
+        finally:
+            conn.close()
+
+    def list_track_ids_under(self, folder: str, limit: int) -> List[str]:
+        """Up to ``limit`` tracks below ``folder``, subfolders included, in
+        the order the folder listings show them.
+
+        That order is per path segment, which SQL cannot sort by, so tracks
+        are ordered here; see :data:`_ORDERED_IN_ONE` for how many at once.
+        """
+        conn = self._get_connection()
+        try:
+            return self._track_ids_under(conn, folder, limit)
+        finally:
+            conn.close()
+
+    def _track_ids_under(
+        self, conn: sqlite3.Connection, folder: str, limit: int
+    ) -> List[str]:
+        span = _FolderRange.of(folder)
+        below = "FROM tracks t WHERE t.file_path > :lo AND t.file_path < :hi"
+        count = conn.execute(f"SELECT COUNT(*) {below}", span.params()).fetchone()[0]
+        if count <= _ORDERED_IN_ONE:
+            rows = conn.execute(
+                f"SELECT t.id AS id, substr(t.file_path, :tail_start) AS rest {below}",
+                span.params(),
+            ).fetchall()
+            ordered = sorted(rows, key=lambda row: _listing_order(row["rest"]))
+            return [row["id"] for row in ordered[:limit]]
+
+        ids: List[str] = []
+        names = conn.execute(
+            f"""
+            WITH {_BELOW}
+            SELECT DISTINCT substr(rest, 1, instr(rest, '/') - 1) AS name
+            FROM below WHERE instr(rest, '/') > 0
+            """,
+            span.params(),
+        ).fetchall()
+        prefix = folder_prefix(folder)
+        for name in sorted((row["name"] for row in names), key=_name_order):
+            if len(ids) >= limit:
+                return ids
+            ids += self._track_ids_under(conn, prefix + name, limit - len(ids))
+        if len(ids) < limit:
+            own = conn.execute(
+                f"SELECT t.id AS id, substr(t.file_path, :tail_start) AS rest {below}"
+                " AND instr(substr(t.file_path, :tail_start), '/') = 0",
+                span.params(),
+            ).fetchall()
+            ordered = sorted(own, key=lambda row: _name_order(row["rest"]))
+            ids += [row["id"] for row in ordered[: limit - len(ids)]]
+        return ids
+
+    def list_folder_tracks(
+        self, folder: str, offset: int = 0, limit: int = 50
+    ) -> Tuple[List[Dict], int]:
+        """One page of the tracks directly in ``folder``, by file name
+        regardless of case; and how many there are."""
+        query = KINDS["track"]
+        where = (
+            "t.file_path > :lo AND t.file_path < :hi"
+            " AND instr(substr(t.file_path, :tail_start), '/') = 0"
+        )
+        params = _FolderRange.of(folder).params(limit=limit, offset=offset)
+        conn = self._get_connection()
+        try:
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM {query.source} WHERE {where}", params
+            ).fetchone()[0]
+            rows = conn.execute(
+                f"""
+                SELECT {query.columns} FROM {query.source}
+                WHERE {where}
+                ORDER BY fold(substr(t.file_path, :tail_start)), t.file_path
+                LIMIT :limit OFFSET :offset
+                """,
+                params,
+            ).fetchall()
+            return [dict(row) for row in rows], total
+        finally:
+            conn.close()
+
+    def get_folder_covers(
+        self, folder: str, per_folder: int
+    ) -> List[Tuple[str, str]]:
+        """The first ``per_folder`` distinct covers under ``folder`` in path
+        order, as ``(kind, image id)`` where kind is ``album`` or ``track``."""
+        return self._covers(folder, "''", "1", (), per_folder).get("", [])
+
+    def get_subfolder_covers(
+        self, folder: str, names: Sequence[str], per_folder: int
+    ) -> Dict[str, List[Tuple[str, str]]]:
+        """:meth:`get_folder_covers` for each of the folders ``names`` directly
+        in ``folder``, in one query."""
+        if not names:
+            return {}
+        return self._covers(
+            folder,
+            "substr(rest, 1, instr(rest, '/') - 1)",
+            "instr(rest, '/') > 0",
+            names,
+            per_folder,
+        )
+
+    def _covers(
+        self,
+        folder: str,
+        name_expr: str,
+        inside: str,
+        names: Sequence[str],
+        per_folder: int,
+    ) -> Dict[str, List[Tuple[str, str]]]:
+        wanted = {f"n{index}": name for index, name in enumerate(names)}
+        among = (
+            f" AND {name_expr} IN ({', '.join(':' + key for key in wanted)})"
+            if wanted
+            else ""
+        )
+        conn = self._get_connection()
+        try:
+            rows = conn.execute(
+                f"""
+                WITH {_COVERS},
+                distinct_covers AS (
+                    SELECT {name_expr} AS name, kind, image, MIN(path) AS first_path
+                    FROM covers
+                    WHERE image IS NOT NULL AND {inside}{among}
+                    GROUP BY name, kind, image
+                ),
+                ranked AS (
+                    SELECT name, kind, image, first_path, ROW_NUMBER() OVER (
+                        PARTITION BY name ORDER BY first_path
+                    ) AS rank
+                    FROM distinct_covers
+                )
+                SELECT name, kind, image FROM ranked
+                WHERE rank <= :per_folder
+                ORDER BY name, first_path
+                """,
+                _FolderRange.of(folder).params(per_folder=per_folder, **wanted),
+            ).fetchall()
+        finally:
+            conn.close()
+        covers: Dict[str, List[Tuple[str, str]]] = {}
+        for row in rows:
+            covers.setdefault(row["name"], []).append(
+                (row["kind"], _image_id(row["image"]))
+            )
+        return covers
 
     def get_album_tracks(
         self, album_id: str, offset: int = 0, limit: int = 50

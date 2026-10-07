@@ -8,6 +8,8 @@ that lives with the storage interface and is covered by
 ``test_storage_availability``.
 """
 
+import pytest
+
 from kalinka_plugin_localfiles.storage import RootStatus, root_of
 from kalinka_plugin_localfiles.storage.local import LocalStorage
 from kalinka_plugin_localfiles.utils.mount_status import (
@@ -16,6 +18,7 @@ from kalinka_plugin_localfiles.utils.mount_status import (
     covering_mount,
     list_mounts,
     probe_root,
+    share_protocol,
 )
 
 # A realistic mountinfo snapshot: root fs, an autofs-managed NFS share that
@@ -187,3 +190,19 @@ def test_format_root_status_flags_a_mount_identity_mismatch():
     text = _format_root_status(status, "nfs4 192.168.1.5:/export", 15)
     assert "**Not available**" in text
     assert "nfs4 192.168.1.5:/export" in text
+
+
+@pytest.mark.parametrize(
+    ("fs_type", "protocol"),
+    [
+        ("cifs", "SMB"),
+        ("smb3", "SMB"),
+        ("nfs", "NFS"),
+        ("nfs4", "NFS"),
+        ("fuse.sshfs", None),
+        ("ext4", None),
+        ("autofs", None),
+    ],
+)
+def test_a_share_is_named_by_the_protocol_it_is_mounted_with(fs_type, protocol):
+    assert share_protocol(fs_type) == protocol

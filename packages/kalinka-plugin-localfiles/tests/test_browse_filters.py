@@ -6,7 +6,7 @@ import asyncio
 import sqlite3
 
 import pytest
-from kalinka_plugin_sdk.datamodel import EntityId, EntityType
+from kalinka_plugin_sdk.datamodel import EntityId, EntityType, PreviewType
 from kalinka_plugin_sdk.filters import FilterQuery, UnsupportedFilter
 
 from kalinka_plugin_localfiles.config_model import LocalFilesConfig
@@ -225,6 +225,7 @@ def module(tmp_path, db):
 
     module = LocalFilesInputModule.__new__(LocalFilesInputModule)
     module.db_manager = db
+    module._music_folders = []
     return module
 
 
@@ -232,27 +233,23 @@ def _root_card(module):
     from kalinka_plugin_localfiles import localfiles as lf
 
     root = lf.LocalFilesInputModule._browse_root(module, 0, 10)
-    assert len(root.items) == 1
+    assert [item.id.id for item in root.items] == ["files", "recent"]
     return root.items[0]
 
 
-def test_root_offers_the_library_as_one_catalog(module):
+def test_root_offers_the_library_as_one_catalog_of_its_folders(module):
     card = _root_card(module)
 
-    assert card.id.id == "library"
+    assert card.id.id == "files"
     assert card.catalog.title == "My Library"
-    assert {spec.id for spec in card.catalog.filters} == {"q", "type", "genre"}
+    assert card.catalog.preview_config.type is PreviewType.FOLDER
+    assert card.catalog.filters == []
 
 
-def test_the_library_carries_a_shelf_per_kind_it_holds(module):
+def test_the_library_carries_its_playlists(module):
     sections = _root_card(module).sections
 
-    assert [section.id.id for section in sections] == [
-        "artists",
-        "albums",
-        "tracks",
-        "playlists",
-    ]
+    assert [section.id.id for section in sections] == ["playlists"]
     assert all(section.can_browse for section in sections)
 
 
@@ -261,9 +258,6 @@ def test_shelves_declare_what_they_can_filter(module):
         section.id.id: {spec.id for spec in section.catalog.filters}
         for section in _root_card(module).sections
     }
-    assert declared["albums"] == {"q", "genre"}
-    assert declared["artists"] == {"q", "genre"}
-    assert declared["tracks"] == {"q", "genre"}
     # Declared so the shelf answers a genre query like the others — a playlist
     # carries none, so one it must satisfy leaves it empty.
     assert declared["playlists"] == {"q", "genre"}

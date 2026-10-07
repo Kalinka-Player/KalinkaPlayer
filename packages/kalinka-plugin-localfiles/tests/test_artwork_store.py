@@ -18,6 +18,7 @@ from kalinka_plugin_localfiles.utils.artwork_store import (
     save_artwork_images,
     store_artwork_from_file,
     store_artwork_images,
+    store_decoded_image,
 )
 
 
@@ -119,3 +120,12 @@ def test_without_an_origin_only_the_entity_is_named(tmp_path, caplog):
 
     [record] = caplog.records
     assert "Error saving artwork for album album_1: " in record.getMessage()
+
+
+def test_a_size_that_cannot_be_moved_into_place_leaves_no_partial_file(tmp_path):
+    (tmp_path / "album" / "x_small.jpg").mkdir(parents=True)
+
+    outcome = store_decoded_image(Image.new("RGB", (10, 10)), tmp_path, "x", "album")
+
+    assert outcome is ArtworkSave.IO_FAILED
+    assert not list((tmp_path / "album").glob("*.tmp"))

@@ -6,7 +6,7 @@ import time
 from functools import partial
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Callable, List, Dict, Optional, Tuple
+from typing import Any, Callable, List, Dict, Optional, Tuple
 import mimetypes
 
 from fastapi import HTTPException
@@ -53,19 +53,34 @@ from kalinka_plugin_sdk.filters import (
     FilterValueList,
     UnsupportedFilter,
 )
+from .folder_ids import decode_folder_id, encode_folder_id
+from .utils.artwork_store import (
+    ArtworkSave,
+    artwork_file,
+    served_cover,
+    store_decoded_image,
+)
+from .utils.cover_collage import compose_cover
+from .utils.folder_collage import FOLDER_ART, FolderCovers
 from .utils.id_generator import generate_playlist_id
-from .utils.image_utils import create_playlist_cover_collage
+from .utils.mount_status import covering_mount, is_network_fs, share_protocol
 from .storage import (
+    SMB_SCHEME,
     FileStat,
     StorageResolver,
     build_resolver,
     library_roots,
     media_type_of,
+    parse,
+    root_of,
+    scheme_of,
 )
 from .input_module_db import (
+    FolderSummary,
     ListingFilter,
     LocalFilesInputModuleDb,
     fold_for_match,
+    folder_prefix,
     genre_parts,
 )
 
@@ -102,6 +117,13 @@ PLAYLIST_SHELF_FILTERS = [_text_filter("names and descriptions"), GENRE_FILTER]
 LIBRARY_FILTERS = [_text_filter("your library"), TYPE_FILTER, GENRE_FILTER]
 
 LIBRARY_ENDPOINT = "library"
+FILES_ENDPOINT = "files"
+RECENT_ENDPOINT = "recent"
+FOLDER_ENDPOINT_PREFIX = "folder."
+
+#: Covers looked up for a composed cover: enough to fill a mosaic past a few
+#: whose files are missing.
+COVER_CANDIDATES = 8
 
 _AI_CARD_TITLE = f"FROM {DISPLAY_NAME.upper()}"
 
@@ -238,6 +260,81 @@ def catalog_id(id: str) -> EntityId:
     return EntityId(id=id, type=EntityType.CATALOG, source="localfiles")
 
 
+def folder_id(path: str) -> EntityId:
+    return catalog_id(FOLDER_ENDPOINT_PREFIX + encode_folder_id(path))
+
+
+def _folder_preview() -> Preview:
+    return Preview(
+        type=PreviewType.FOLDER,
+        icon="folder",
+        items_count=3,
+        rows_count=1,
+        card_size=CardSize.SMALL,
+    )
+
+
+def _counted(count: int, noun: str) -> str:
+    return f"{count} {noun}{'' if count == 1 else 's'}"
+
+
+def _total_duration(seconds: int) -> str:
+    hours, minutes = seconds // 3600, seconds % 3600 // 60
+    if hours:
+        return f"{hours} hr {minutes} min" if minutes else f"{hours} hr"
+    return f"{minutes} min" if minutes else f"{seconds} sec"
+
+
+def _folder_description(summary: FolderSummary) -> str:
+    """What is directly in a folder: "2 folders · 5 tracks · 45 min"."""
+    parts = []
+    if summary.direct_folders:
+        parts.append(_counted(summary.direct_folders, "folder"))
+    if summary.direct_tracks:
+        parts.append(_counted(summary.direct_tracks, "track"))
+    if summary.direct_duration:
+        parts.append(_total_duration(summary.direct_duration))
+    return " · ".join(parts)
+
+
+def _root_name(root: str) -> str:
+    return root.rstrip("/").rsplit("/", 1)[-1] or root
+
+
+def _source_description(root: str) -> str:
+    """What a music source is and where: "On this server · /mnt/usb"."""
+    if scheme_of(root) == SMB_SCHEME:
+        share = parse(root)
+        return f"SMB share on {share.authority} · {share.path}"
+    mount = covering_mount(root)
+    if mount is None or not is_network_fs(mount.fs_type):
+        return f"On this server · {root}"
+    protocol = share_protocol(mount.fs_type)
+    kind = f"{protocol} share" if protocol else "network share"
+    return f"Mounted {kind} · {root}"
+
+
+_Page = Tuple[List[Any], int]
+
+
+def _concatenated_pages(
+    first: Callable[[int, int], _Page],
+    second: Callable[[int, int], _Page],
+    offset: int,
+    limit: int,
+) -> Tuple[List[Any], List[Any], int]:
+    """One window over two listings shown back to back, as the rows it takes
+    from each and their joint total. Each listing is asked for one page as
+    ``(offset, limit) -> (rows, total)``."""
+    head, head_total = first(offset, limit)
+    remaining = limit - len(head)
+    if remaining > 0:
+        tail, tail_total = second(max(0, offset - head_total), remaining)
+    else:
+        tail, tail_total = [], second(0, 0)[1]
+    return head, tail, head_total + tail_total
+
+
 def artist_display_name(name: Optional[str]) -> str:
     """A row the enricher has not reached yet may have no artist name;
     browse output still needs one."""
@@ -275,6 +372,8 @@ class LocalFilesInputModule(InputModule):
         os.makedirs(self.artwork_path / "album", exist_ok=True)
         os.makedirs(self.artwork_path / "artist", exist_ok=True)
         os.makedirs(self.artwork_path / "playlist", exist_ok=True)
+        os.makedirs(self.artwork_path / FOLDER_ART, exist_ok=True)
+        self._folder_covers = FolderCovers(self.artwork_path, self._covers_of_folder)
 
         # Initialize mime types for serving files
         mimetypes.init()
@@ -477,6 +576,14 @@ class LocalFilesInputModule(InputModule):
 
         if endpoint == "root":
             return self._browse_root(offset, limit)
+        if endpoint == FILES_ENDPOINT:
+            return self._browse_library_folders(offset, limit)
+        if endpoint == RECENT_ENDPOINT:
+            return self._browse_recent(offset, limit)
+        if endpoint.startswith(FOLDER_ENDPOINT_PREFIX):
+            return self._browse_folder(
+                endpoint[len(FOLDER_ENDPOINT_PREFIX) :], offset, limit
+            )
         if endpoint == LIBRARY_ENDPOINT:
             return self._browse_library(
                 _filtered_kinds(filter), offset, limit, listing
@@ -490,22 +597,6 @@ class LocalFilesInputModule(InputModule):
             return self._browse_artist_tracks(ep[1], offset, limit)
         logger.warning(f"Unknown catalog endpoint: {endpoint}")
         return EmptyList(offset, limit)
-
-    def _library_catalog(self) -> Catalog:
-        return Catalog(
-            id=catalog_id(LIBRARY_ENDPOINT),
-            title="My Library",
-            filters=LIBRARY_FILTERS,
-            description="Everything in your music folders",
-            preview_config=Preview(
-                type=PreviewType.TILE,
-                icon="library",
-                items_count=10,
-                rows_count=1,
-                card_size=CardSize.SMALL,
-            ),
-            role=CatalogRole.LIBRARY,
-        )
 
     def _section_card(self, section: _LibrarySection) -> Optional[BrowseItem]:
         """The section as a browsable shelf, or None when it holds nothing."""
@@ -538,30 +629,66 @@ class LocalFilesInputModule(InputModule):
             ),
         )
 
+    def _library_card(self) -> BrowseItem:
+        """The library as its folders, over a shelf of its playlists when it
+        has any. It is never added whole; its sources and folders are."""
+        playlists = self._section_card(SECTION_BY_ENDPOINT["playlists"])
+        id = catalog_id(FILES_ENDPOINT)
+        return BrowseItem(
+            id=id,
+            name="My Library",
+            can_browse=True,
+            can_add=False,
+            subname="Everything in your music folders",
+            catalog=Catalog(
+                id=id,
+                title="My Library",
+                description="Everything in your music folders",
+                preview_config=Preview(
+                    type=PreviewType.FOLDER,
+                    icon="library",
+                    items_count=10,
+                    rows_count=1,
+                    card_size=CardSize.SMALL,
+                ),
+                role=CatalogRole.LIBRARY,
+            ),
+            sections=[playlists] if playlists else None,
+        )
+
+    def _recent_card(self) -> BrowseItem:
+        id = catalog_id(RECENT_ENDPOINT)
+        return BrowseItem(
+            id=id,
+            name="Recently added",
+            can_browse=True,
+            can_add=False,
+            subname="Newest albums and singles",
+            catalog=Catalog(
+                id=id,
+                title="Recently added",
+                description="Newest albums and singles",
+                preview_config=Preview(
+                    type=PreviewType.IMAGE_TEXT,
+                    icon="recent",
+                    items_count=10,
+                    rows_count=1,
+                    card_size=CardSize.SMALL,
+                ),
+                role=CatalogRole.LIBRARY,
+            ),
+        )
+
     def _browse_root(self, offset: int, limit: int) -> BrowseItemList:
-        """The module's one catalog: the library, with a shelf per kind it holds."""
+        """The module's catalogs: the library as its folders, and what arrived
+        in it last. Neither is offered while the library holds no tracks."""
         if not self.db_manager.is_good():
             logger.warning("Database is not initialized or corrupted")
             return EmptyList(0, 0)
-
-        cards = (self._section_card(section) for section in LIBRARY_SECTIONS)
-        sections = [card for card in cards if card is not None]
-        if not sections:
+        if self.db_manager.get_kind_total("track") == 0:
             return EmptyList(offset, limit)
 
-        catalog = self._library_catalog()
-        items = [
-            BrowseItem(
-                id=catalog.id,
-                name=catalog.title,
-                can_browse=True,
-                can_add=False,
-                subname=catalog.description,
-                catalog=catalog,
-                sections=sections,
-            )
-        ]
-
+        items = [self._library_card(), self._recent_card()]
         return BrowseItemList(
             offset=offset,
             limit=limit,
@@ -656,30 +783,86 @@ class LocalFilesInputModule(InputModule):
             logger.warning("Database is not initialized or corrupted")
             return EmptyList(0, 0)
 
-        # Fetch albums first; albums_total tells us where the window crosses
-        # into the orphan-tracks section.
-        albums, albums_total = self.db_manager.get_artist_albums(id, offset, limit)
+        albums, tracks, total = _concatenated_pages(
+            partial(self.db_manager.get_artist_albums, id),
+            partial(self.db_manager.get_artist_orphan_tracks, id),
+            offset,
+            limit,
+        )
+        items = [self._create_album_browse_item(album) for album in albums]
+        items += [self._create_track_browse_item(track) for track in tracks]
+        return BrowseItemList(offset=offset, limit=limit, total=total, items=items)
 
-        items: List[BrowseItem] = [
-            self._create_album_browse_item(album) for album in albums
+    def _library_roots(self) -> List[Tuple[str, FolderSummary]]:
+        """Each music source that holds indexed tracks, with what it holds."""
+        summaries = [
+            (root, self.db_manager.get_folder_summary(root))
+            for root in self._music_folders
         ]
+        return [(root, summary) for root, summary in summaries if summary.total_tracks]
 
-        # If the window extends past the albums, fill the remainder with
-        # orphan tracks at offset (offset - albums_total).
-        remaining = limit - len(items)
-        track_offset = max(0, offset - albums_total)
-        orphans_total = 0
-        if remaining > 0:
-            tracks, orphans_total = self.db_manager.get_artist_orphan_tracks(
-                id, track_offset, remaining
+    def _browse_library_folders(self, offset: int, limit: int) -> BrowseItemList:
+        """The top of the library's folders: each music source as a folder, or
+        what is in the source when there is only one, so a library kept in
+        one place opens on its own folders."""
+        roots = self._library_roots()
+        if len(roots) == 1:
+            return self._folder_listing(roots[0][0], offset, limit)
+        items = [
+            self._create_folder_browse_item(
+                root,
+                _root_name(root),
+                summary,
+                self.db_manager.get_folder_covers(root, COVER_CANDIDATES),
+                subname=_source_description(root),
             )
-            for track in tracks:
-                items.append(self._create_track_browse_item(track))
-        else:
-            # Still need orphans_total for the overall total.
-            _, orphans_total = self.db_manager.get_artist_orphan_tracks(id, 0, 0)
+            for root, summary in roots[offset : offset + limit]
+        ]
+        return BrowseItemList(offset=offset, limit=limit, total=len(roots), items=items)
 
-        total = albums_total + orphans_total
+    def _covers_of_folder(self, path: str) -> Optional[List[Tuple[str, str]]]:
+        """The covers a folder of the library is listed with, or None for a
+        folder outside every music source."""
+        if root_of(path, self._music_folders) is None:
+            return None
+        return self.db_manager.get_folder_covers(path, COVER_CANDIDATES)
+
+    def _browse_folder(self, local_id: str, offset: int, limit: int) -> BrowseItemList:
+        """A folder of the library, named by its id. Only one inside a music
+        source is listed."""
+        path = decode_folder_id(local_id)
+        if path is None or root_of(path, self._music_folders) is None:
+            logger.debug("No such folder in the library: %s", local_id)
+            return EmptyList(offset, limit)
+        return self._folder_listing(path, offset, limit)
+
+    def _folder_listing(self, path: str, offset: int, limit: int) -> BrowseItemList:
+        """A folder's subfolders by name, then the tracks directly in it by
+        file name, as one listing of what is indexed."""
+        folders, tracks, total = _concatenated_pages(
+            partial(self.db_manager.list_subfolders, path),
+            partial(self.db_manager.list_folder_tracks, path),
+            offset,
+            limit,
+        )
+        covers = self.db_manager.get_subfolder_covers(
+            path, [name for name, _ in folders], COVER_CANDIDATES
+        )
+        prefix = folder_prefix(path)
+        items = [
+            self._create_folder_browse_item(
+                prefix + name, name, summary, covers.get(name, [])
+            )
+            for name, summary in folders
+        ]
+        items += [self._create_track_browse_item(track) for track in tracks]
+        return BrowseItemList(offset=offset, limit=limit, total=total, items=items)
+
+    def _browse_recent(self, offset: int, limit: int) -> BrowseItemList:
+        """What arrived in the library last: albums, and tracks that belong to
+        none."""
+        rows, total = self.db_manager.list_recently_added(offset, limit)
+        items = [self._create_kind_browse_item(kind, row) for kind, row in rows]
         return BrowseItemList(offset=offset, limit=limit, total=total, items=items)
 
     def _browse_playlist(
@@ -970,6 +1153,25 @@ class LocalFilesInputModule(InputModule):
             items=values[offset : offset + limit],
         )
 
+    async def tracks_to_add(
+        self, entity_id: EntityId, limit: int
+    ) -> Optional[List[EntityId]]:
+        """A folder adds everything below it, though its listing shows only
+        the level it is on. The library as a whole adds nothing: every
+        source at once is more than one add should take."""
+        if entity_id.type != EntityType.CATALOG:
+            return None
+        if entity_id.id == FILES_ENDPOINT:
+            return []
+        if not entity_id.id.startswith(FOLDER_ENDPOINT_PREFIX):
+            return None
+        path = decode_folder_id(entity_id.id[len(FOLDER_ENDPOINT_PREFIX) :])
+        if path is None or root_of(path, self._music_folders) is None:
+            return []
+        return [
+            track_id(id) for id in self.db_manager.list_track_ids_under(path, limit)
+        ]
+
     async def get(self, entity_id: EntityId) -> BrowseItem:
         """Get details for a specific entity by ID"""
         if not self.db_manager.is_good():
@@ -1182,29 +1384,25 @@ class LocalFilesInputModule(InputModule):
         return playlist_obj
 
     def _generate_playlist_cover(self, playlist_id: str) -> Optional[str]:
+        """Compose a playlist's cover from its first albums' covers, saved
+        under the playlist's id.
+
+        @return The playlist id the cover is saved under, or None when none
+            of those albums has a cover to compose from.
         """
-        Generate a cover image for a playlist based on its tracks.
-
-        For playlists with tracks from 4 or more different albums, creates a 2x2 collage.
-        For playlists with fewer unique albums, copies the album cover of the first track.
-
-        Args:
-            playlist_id: The ID of the playlist
-
-        Returns:
-            True if the cover was generated successfully, False otherwise
-        """
-        # Get up to 4 distinct album IDs from the playlist
-        album_ids = self.db_manager.get_playlist_track_album_ids(playlist_id, limit=4)
-
-        if not album_ids:
-            logger.warning(
-                f"No tracks in playlist {playlist_id} to generate cover image"
-            )
+        album_ids = self.db_manager.get_playlist_track_album_ids(
+            playlist_id, limit=COVER_CANDIDATES
+        )
+        sources = [
+            artwork_file(self.artwork_path, "album", album_id, "large")
+            for album_id in album_ids
+        ]
+        cover = compose_cover([source for source in sources if source.exists()])
+        if cover is None:
+            logger.warning(f"No album covers in playlist {playlist_id} to compose")
             return None
-
-        # Create the cover image
-        return create_playlist_cover_collage(album_ids, self.artwork_path, playlist_id)
+        saved = store_decoded_image(cover, self.artwork_path, playlist_id, "playlist")
+        return playlist_id if saved is ArtworkSave.SAVED else None
 
     async def playlist_remove_tracks(
         self, id: str, playlist_track_ids: List[str]
@@ -1357,6 +1555,34 @@ class LocalFilesInputModule(InputModule):
             sections=sections_obj,
         )
 
+    def _create_folder_browse_item(
+        self,
+        path: str,
+        name: str,
+        summary: FolderSummary,
+        covers: List[Tuple[str, str]],
+        subname: Optional[str] = None,
+    ) -> BrowseItem:
+        """A folder as a catalog in the folder layout. Adding it takes
+        every track below it, subfolders included.
+
+        @param subname In place of how many tracks are under it."""
+        id = folder_id(path)
+        return BrowseItem(
+            id=id,
+            name=name,
+            can_browse=True,
+            can_add=summary.total_tracks > 0,
+            subname=subname or _counted(summary.total_tracks, "track"),
+            catalog=Catalog(
+                id=id,
+                title=name,
+                image=self._folder_covers.cover_of(path, covers),
+                description=_folder_description(summary),
+                preview_config=_folder_preview(),
+            ),
+        )
+
     def _create_artist_browse_item(self, artist: Dict) -> BrowseItem:
         """Create a BrowseItem for an artist"""
         # Zero albums reads as missing rather than "0 albums": an artist whose
@@ -1475,17 +1701,12 @@ class LocalFilesInputModule(InputModule):
         if not image_url:
             return None
         image_base = image_url.replace(".jpg", "")
-        thumbnail_path = (
-            self.artwork_path / entity_type / f"{image_base}_thumbnail.jpg"
+        thumbnail = artwork_file(
+            self.artwork_path, entity_type, image_base, "thumbnail"
         )
-        if not thumbnail_path.exists():
+        if not thumbnail.exists():
             return None
-        base = f"/resource/{entity_type}/{image_base}"
-        return CoverImage(
-            thumbnail=f"{base}_thumbnail.jpg",
-            small=f"{base}_small.jpg",
-            large=f"{base}_large.jpg",
-        )
+        return served_cover(entity_type, image_base)
 
     def _get_album_image_urls(self, album_id: str) -> Optional[CoverImage]:
         """Get image URLs for an album"""
@@ -1514,8 +1735,11 @@ class LocalFilesInputModule(InputModule):
 
     async def get_resource_path(self, id: str) -> str | None:
         """Get full path to a resource"""
-        # Assuming the ID is the file path
-        resource_path = (Path(self.artwork_path) / id).resolve()
+        if id.startswith(f"{FOLDER_ART}/"):
+            return await self._folder_covers.path_of(id)
+        resource_path = (self.artwork_path / id).resolve()
+        if not resource_path.is_relative_to(self.artwork_path):
+            return None
         return resource_path.as_posix() if resource_path.exists() else None
 
     async def get_indexer_status(self) -> dict:
