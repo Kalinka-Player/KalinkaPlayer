@@ -194,6 +194,17 @@ def test_plugin_catalog_preview_is_off_and_expert_only():
     assert not field.readonly
 
 
+def test_port_is_expert_only():
+    """Changing the port strands every client given the address by hand,
+    so it stays off the main settings page."""
+    schema = build_presentation(base_config=KalinkaConfig(), input_modules={}, devices={})
+    path = "base_config.server.port"
+    assert path not in _all_field_paths_in_pages(schema.pages)
+    field = next(field for field in schema.expert_fields if field.path == path)
+    assert field.importance is Importance.EXPERT
+    assert field.default == 8000
+
+
 def test_demo_mode_is_off_expert_only_and_read_only():
     schema = build_presentation(base_config=KalinkaConfig(), input_modules={}, devices={})
     path = "base_config.server.demo_mode"
