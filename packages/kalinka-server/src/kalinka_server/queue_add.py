@@ -1,7 +1,9 @@
 """Turning what a client asked to play into tracks the queue can hold.
 
-A container is expanded by browsing it, and every track that comes back is
-looked up through the source that owns *it* — not through the container's. The
+A container is expanded by its source — by browsing it, unless the source
+says adding it takes more than its listing shows, as a folder does — and every
+track that comes back is looked up through the source that owns *it*, not
+through the container's. The
 two are the same source for an album, and need not be for a collection, whose
 rows come from wherever they were collected. Looking up by the container would
 ask one source for another's ids.
@@ -14,7 +16,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from typing import Callable, Dict, List, Sequence
+from typing import Callable, Dict, List, Optional, Sequence
 
 from kalinka_plugin_sdk.datamodel import EntityId, EntityType, Track
 from kalinka_plugin_sdk.inputmodule import InputModule
@@ -49,11 +51,10 @@ async def tracks_for(
         if entity_id.type == EntityType.TRACK:
             wanted.append(entity_id)
             continue
-        listing = await browse_source_for(entity_id).browse(
-            entity_id, offset=0, limit=CONTAINER_LIMIT
-        )
         wanted.extend(
-            item.id for item in listing.items if item.id.type == EntityType.TRACK
+            track
+            for track in await _contents(browse_source_for(entity_id), entity_id)
+            if track.type == EntityType.TRACK
         )
 
     by_source: Dict[str, Dict[str, EntityId]] = defaultdict(dict)
@@ -78,3 +79,14 @@ async def tracks_for(
             len(wanted),
         )
     return tracks
+
+
+async def _contents(source: BrowseSource, container: EntityId) -> List[EntityId]:
+    """What adding ``container`` takes, as its source says or else as it lists."""
+    listed: Optional[List[EntityId]] = await source.tracks_to_add(
+        container, CONTAINER_LIMIT
+    )
+    if listed is not None:
+        return listed[:CONTAINER_LIMIT]
+    listing = await source.browse(container, offset=0, limit=CONTAINER_LIMIT)
+    return [item.id for item in listing.items]

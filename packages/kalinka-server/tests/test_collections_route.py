@@ -26,6 +26,9 @@ class FakeSource:
 
     ALBUM = "kalinka:qobuz:album:al-1"
 
+    async def tracks_to_add(self, entity_id, limit):
+        return None
+
     async def browse(self, entity_id, offset=0, limit=50, filter=None):
         items = [
             BrowseItem(

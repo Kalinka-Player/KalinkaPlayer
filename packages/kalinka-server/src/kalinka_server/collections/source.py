@@ -203,6 +203,11 @@ class CollectionsSource:
     ) -> BrowseItemList:
         return await self._browse_shelf(offset, limit, FilterQuery({}))
 
+    async def tracks_to_add(
+        self, entity_id: EntityId, limit: int
+    ) -> Optional[List[EntityId]]:
+        return None
+
     def _root(self, offset: int, limit: int) -> BrowseItemList:
         items = [self._shelf_item()]
         return BrowseItemList(

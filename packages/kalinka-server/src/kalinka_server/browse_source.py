@@ -58,6 +58,10 @@ class BrowseSource(Protocol):
         self, offset: int = 0, limit: int = 25
     ) -> BrowseItemList: ...
 
+    async def tracks_to_add(
+        self, entity_id: EntityId, limit: int
+    ) -> Optional[List[EntityId]]: ...
+
 
 @dataclass(frozen=True)
 class RegisteredSource:
