@@ -1,10 +1,13 @@
 # Kalinka Supervisor
 
 `kalinka-supervisor` replaces the experimental Python provisioning service.
-This iteration provides nearby box setup. It runs independently of Core,
-its Python interpreter, its virtual environment and its plugins. Core still
-owns HTTP, mDNS, its identity and the existing OOBE. No app protocol change is
-required; see [the BLE contract and test flow](ble-provisioning.md).
+It provides nearby box setup and a LAN [control page and API](supervisor-control.md)
+on port 8001. They show how the box is doing, and restart Core, reboot or power
+off the box, or reinstall Kalinka. It runs independently
+of Core, its Python interpreter, its virtual environment and its plugins.
+Core still owns its HTTP API, mDNS, its identity and the existing OOBE. Nearby
+setup needs no app protocol change; see
+[the BLE contract and test flow](ble-provisioning.md).
 
 ## Build and install
 
@@ -27,22 +30,23 @@ alternatives. An existing DietPi ifupdown installation satisfies that dependency
 installing the supervisor does not require migrating DietPi to NetworkManager.
 Generic ifupdown hosts are not supported: outside DietPi, install
 `network-manager` explicitly even if ifupdown satisfies apt's alternative.
-Startup checks the selected backend's executable and reports a missing backend
-with exit status 78; systemd does not restart that configuration error. After
-installing the missing backend, start the supervisor again.
+Without the selected backend's executable, nearby setup stays off and the
+journal says what to install; the rest of the supervisor keeps running, and
+setup starts by itself once the backend appears.
 The DietPi backend also requires DietPi's own `dietpi-network apply --no-restart`
-API. The package enables the service for boot; start it after installation with
-`sudo systemctl start kalinka-supervisor`. Pi image builds additionally enable
-UART Bluetooth, firmware and the radio settings needed for first boot.
+API. The package enables and starts the service. Pi image builds additionally
+enable UART Bluetooth, firmware and the radio settings needed for first boot.
 
 All image targets install an architecture-specific Debian package containing the same static Go service. `--backend auto`
 selects DietPi when `/boot/dietpi/dietpi-network` exists, otherwise NetworkManager.
-Use `--backend dietpi` or `--backend nm` to select explicitly. The current unit
-skips provisioning on machines without `hci0` or without a wireless interface;
-override the condition and `--adapter` together for a differently numbered
-adapter. A radio that appears after boot still starts it: `bluetooth.target`
-for the adapter, and `kalinka-wireless.target`, pulled in by a udev rule, for
-the Wi-Fi interface. Monitoring will later run independently of radio hardware.
+Use `--backend dietpi` or `--backend nm` to select explicitly. The service runs
+on every box, radios or not. Nearby setup is a component inside it. It starts
+while the adapter (`--adapter`, default `hci0`) and a wireless interface exist,
+and stops when either goes away. This is checked every two seconds, so a radio
+that appears after boot needs no restart. A setup failure restarts only that
+component, after 10 seconds. `KALINKA_BLE_SETUP=0` turns setup off and
+`KALINKA_CONTROL_API=0` turns the control API off. Both are read from the
+environment or `/boot/dietpi.txt`, and with both off the service exits.
 
 ## Current boundaries
 
@@ -53,7 +57,12 @@ the Wi-Fi interface. Monitoring will later run independently of radio hardware.
 | `internal/wifi` | Native NetworkManager D-Bus and DietPi supplicant/ifupdown transactions |
 | `internal/gatt` | BlueZ exports, pairing policy and advertisement lifecycle |
 | `internal/system` | Private directories, process lock, systemd readiness and watchdog |
-| `cmd/kalinka-supervisor` | Configuration, backend selection and process lifecycle |
+| `internal/provision` | Nearby setup as one restartable component: its radio gate, recovery and BLE loop |
+| `internal/control` | The control page and API: action policy, systemd operations, reinstall record, HTTP layer, embedded page and listener binding |
+| `internal/dashboard` | What runs on the box and what it costs, from /proc, cgroups, dpkg and Core's environment; never from Core itself |
+| `internal/coreconf` | Core's interface, port and identity, read from its files without Core running |
+| `internal/dbusx` | The system-bus call surface shared by NetworkManager and systemd |
+| `cmd/kalinka-supervisor` | Options, component supervision and process lifecycle |
 
 The machine depends on a small networking interface, not D-Bus or shell tools.
 Backend failures return fixed reason codes. Cancellation does not open a new
@@ -86,8 +95,17 @@ same adapter/interface.
   Commands are bounded to 512 bytes, partial writes expire, and one phone owns
   each operation/result. Long reads use bounded per-reader snapshots.
 - OS calls, scans, joins and rollback have deadlines. Subprocess cancellation
-  kills the process group. Startup recovers pending transactions before BLE
-  becomes available. systemd restarts failures and watches the event loop.
+  kills the process group. Setup recovers pending transactions before BLE
+  becomes available. The process restarts a failed setup component itself;
+  systemd restarts the process and watches the setup loop, whose stall stops
+  the watchdog ping.
+- The control page and API answer local peers only, cannot be framed by other
+  sites, and offer a closed set of typed actions;
+  [their trust model](supervisor-control.md#trust-model) lists the rest.
+- Reinstall runs in its own unit, `kalinka-reinstall.service`, which the
+  supervisor package ships with its script. It never runs a script from Core's
+  installation, which may be what is broken, and it is not confined by the
+  supervisor's sandbox, as installing packages needs the whole system.
 - The root unit uses `ProtectSystem=strict`, private temporary storage,
   `ProtectHome`, `NoNewPrivileges`, restricted address families and explicit
   writable networking/state paths. `/run` and DietPi's configuration paths must
@@ -111,7 +129,7 @@ it does not authorize future destructive recovery. Disabling setup through
 
 Core's existing Python update checker watches `kalinka-supervisor-v*` alongside Core and renderer releases. A newer supervisor alone makes the existing update action available. The root-side upgrade script still runs `install-release.sh`; that calls `install-supervisor.sh` only when the supervisor is already installed. Ordinary Core installations do not acquire a supervisor implicitly.
 
-The helper chooses the matching `amd64` or `arm64` package, verifies its release checksum and Debian package identity, refuses downgrades, then lets apt install it. The package's post-install hook reloads systemd and restarts an already running supervisor. Persistent setup rollback records and Wi-Fi daemons survive that restart. A checksum fetched from the same HTTPS release detects corruption; it is not an independent publisher signature.
+The helper chooses the matching `amd64` or `arm64` package, verifies its release checksum and Debian package identity, refuses downgrades, then lets apt install it. The package's post-install hook reloads systemd, re-enables the unit and restarts the supervisor, which also starts it on boxes where older packages left it off for lack of radios. Neither step can fail the Core upgrade that installs the package. Persistent setup rollback records and Wi-Fi daemons survive that restart. A checksum fetched from the same HTTPS release detects corruption; it is not an independent publisher signature.
 
 Package releases remain cached when the feed rotates, but renderer/supervisor
 update offers require a known Core bundle target for the existing upgrade API.
@@ -122,9 +140,9 @@ Supervisor releases use their own tags and workflow; image builds consume the pa
 
 ## Becoming a supervisor
 
-The executable and state namespace are renamed now; broader supervision is a
-separate iteration. Keep these additions behind interfaces separate from the
-provisioning machine:
+The supervisor runs on every box, with nearby setup as one component and the
+control page and API as another. Keep these additions behind interfaces
+separate from the provisioning machine:
 
 1. A health collector checks link/address, Core's systemd state and HTTP health,
    disk space and recent fixed-category failures. It should distinguish missing
@@ -132,16 +150,23 @@ provisioning machine:
    diagnostic state, not an automatic reinstall loop.
 2. A recovery policy exposes a small list of typed actions: retry networking,
    restart Core, restore a known-good release, and repair Core's environment.
-   Serialize actions with provisioning and record outcomes without secrets.
-   No endpoint accepts arbitrary commands, paths or package URLs.
-3. An embedded recovery page and read-only health API continue working when
-   Core is absent. BLE can advertise an additional recovery capability without
-   changing the existing Wi-Fi UUIDs. Destructive or privileged HTTP actions
-   require explicit authenticated authorization; an IP address, BLE pairing or
-   a button in the page is not sufficient. Define credential enrollment and
-   physical-presence recovery before exposing these actions to the LAN.
-4. Core repair uses an independently stored, verified offline release bundle
-   and Python runtime when interpreter recovery is required. Build a replacement
+   No endpoint accepts arbitrary commands, paths or package URLs. The control
+   API's `Controller` already admits one action at a time, refuses during
+   installs, keeps reboot, power-off and reinstall off a Wi-Fi join or
+   rollback, and audits outcomes without secrets. Restarting Core, rebooting,
+   powering off and an online reinstall are delivered; the remaining actions
+   join it.
+3. The embedded control page and its dashboard keep working when Core is
+   absent. BLE can advertise an additional recovery capability without
+   changing the existing Wi-Fi UUIDs. The page's actions are served without
+   authentication: the box is on a trusted LAN, a decision recorded with
+   [its trust model](supervisor-control.md#trust-model). Each further action
+   that can destroy data restates that decision in its own threat model before
+   it ships.
+4. Today's reinstall repairs Core online: it fetches the published release and
+   rebuilds Core's environment from its wheels, so it needs the network and a
+   working system Python. Offline repair uses an independently stored, verified
+   release bundle and Python runtime when interpreter recovery is required. Build a replacement
    environment alongside the current one, verify it, switch atomically, health
    check and roll back. A wheel cache alone cannot repair a broken interpreter.
    Supervisor must never execute its own code from Core's environment.
@@ -149,9 +174,9 @@ provisioning machine:
 6. Before adding release checks to Go, support offline recovery from one retained known-good Core build. Stage verified packages, wheels and any required Python runtime outside Core's venv. Promote a candidate only after a sustained healthy period **and actual successful use**, such as playback; process startup alone is not enough. Keep the previous known-good build until that confirmation, make promotion atomic, and never overwrite it with a failed update. A recovery request restores that exact retained build without checking GitHub or upgrading packages. Bound retained storage and version the manifest so future update ownership can change without losing recovery data.
 7. Updating the supervisor itself remains package-managed. A future signed-release updater needs its own rollback and startup-health mechanism; a broken supervisor cannot restore itself by executing its broken binary. systemd or an independent installer must retain that responsibility.
 
-No recovery HTTP server, Core restart policy, venv rebuild, local admin socket
-or self-updater is exposed in this iteration. These need their own threat model
-and failure-injection tests before they gain root actions.
+Beyond the control page's four actions, no offline release restore, local
+admin socket or self-updater exists yet. These need their own threat model and
+failure-injection tests before they gain root actions.
 
 Bluetooth playback stays in a separate component. This service unregisters
 only its own GATT application, advertisement and agent; it never shuts down
@@ -164,13 +189,16 @@ connections/profiles; neither belongs in the other's lifecycle.
 
 `make supervisor-test` runs the race detector and `go vet`. Tests cover captured
 Python protocol outputs, credential redaction, phone ownership across disconnect,
-rollback before retry, persistence recovery, DietPi control operations and
-NetworkManager profile staging. `tests/capture_reference.py` documents how the
-frozen Python fixture was produced; Python is not required to run the Go tests.
+rollback before retry, persistence recovery, DietPi control operations,
+NetworkManager profile staging, the setup component's gate and restarts, and
+the control API (see [its testing notes](supervisor-control.md#testing)).
+`tests/capture_reference.py` documents how the frozen Python fixture was
+produced; Python is not required to run the Go tests.
 
-Local `run-test.sh` uses real encrypted BLE and simulated Wi-Fi. `run-live.sh`
-uses real NetworkManager and changes the laptop network. The read-only host
-NetworkManager smoke test is opt-in, documented in the BLE guide.
+Local `run-test.sh` uses real encrypted BLE and simulated Wi-Fi and control
+actions. `run-live.sh` uses real NetworkManager and changes the laptop network,
+with the control API off. The read-only host NetworkManager smoke test is
+opt-in, documented in the BLE guide.
 
 A passing recorder test or ARM64 cross-build does not validate a DietPi radio,
 DHCP hooks or the unit's writable-path allowlist on a running image. Before

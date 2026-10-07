@@ -84,8 +84,9 @@ The app's join wait is 100 seconds; its subsequent handoff wait is 150 seconds.
 The daemon remains idle while online and resumes advertising after a later
 network loss. It unregisters only its own GATT application, advertisement and
 pairing agent. It leaves BlueZ, the adapter and existing bonds in place, so
-future Bluetooth playback can share the stack. It neither monitors nor
-restarts the Core in this iteration.
+future Bluetooth playback can share the stack. It does not monitor Core;
+restarting Core on request belongs to the supervisor's
+[control API](supervisor-control.md).
 
 ## Try it on a Linux laptop
 
@@ -114,7 +115,8 @@ run the already-built launcher with `sudo packages/kalinka-supervisor/run-test.s
 The test temporarily uses the adapter's alias and default pairing agent;
 exiting restores the alias and unregisters its own objects. Use a phone or a
 second Bluetooth adapter as the client; the same adapter cannot test an
-over-the-air connection to itself. Ctrl-C stops the receiver.
+over-the-air connection to itself. Ctrl-C stops the receiver. The launcher
+also serves the control API on port 8001, with simulated actions.
 
 Useful options, passed after the script name:
 
@@ -144,7 +146,8 @@ Use `packages/kalinka-supervisor/run-live.sh` for an end-to-end test that actual
 laptop's network. This is a separate backend for NetworkManager (for example,
 Fedora); DietPi images keep their ifupdown/supplicant backend. Do not use
 `--test` for this test. The live receiver advertises even while already online,
-and the app shows real networks with no simulated-network badge.
+and the app shows real networks with no simulated-network badge. It turns the
+control API off: run as root, that would reboot the laptop for real.
 
 Start a Core in a dedicated local prefix, then point BLE at its identity and
 configuration so the app can verify the network handoff:

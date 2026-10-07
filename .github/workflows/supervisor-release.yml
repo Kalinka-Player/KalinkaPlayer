@@ -31,7 +31,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > notes.md <<'EOF'
-          Independent Kalinka supervisor: BLE box setup with DietPi and NetworkManager backends.
+          Independent Kalinka supervisor: BLE box setup with DietPi and NetworkManager backends,
+          and a LAN control page on port 8001: the box's state and versions, and restart,
+          reboot, power off and reinstall.
 
           Download the matching amd64/arm64 Debian package and verify it against SHA256SUMS.
           Install with `sudo apt install ./kalinka-supervisor_*.deb`.

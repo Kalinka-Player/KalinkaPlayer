@@ -20,10 +20,17 @@ grep -q 'console=tty1 root=PARTUUID=test quiet' "$root/boot/firmware/cmdline.txt
 grep -q '^AutoEnable=true$' "$root/etc/bluetooth/main.conf"
 unit="$pkg_dir/../kalinka-supervisor/systemd/kalinka-supervisor.service"
 ! grep -q 'network-online.target' "$unit"
-grep -q '^WantedBy=multi-user.target bluetooth.target kalinka-wireless.target$' "$unit"
-grep -q '^ConditionPathExistsGlob=/sys/class/net/\*/wireless$' "$unit"
-grep -q '^StopWhenUnneeded=yes$' "$pkg_dir/../kalinka-supervisor/systemd/kalinka-wireless.target"
-grep -q 'SUBSYSTEM=="net", ENV{DEVTYPE}=="wlan", .*ENV{SYSTEMD_WANTS}+="kalinka-wireless.target"' \
-  "$pkg_dir/../kalinka-supervisor/udev/90-kalinka-wireless.rules"
+# Always on: the process starts nearby setup itself once a radio appears.
+grep -q '^WantedBy=multi-user.target$' "$unit"
+! grep -q '^Condition\|^ExecCondition' "$unit"
+[ ! -e "$pkg_dir/../kalinka-supervisor/systemd/kalinka-wireless.target" ]
+[ ! -e "$pkg_dir/../kalinka-supervisor/udev" ]
 grep -q '^After=dietpi-preboot.service dietpi-firstboot.service kalinka-firstboot.service bluetooth.service NetworkManager.service$' "$unit"
-echo 'Provisioning radios, independent service ordering and pairing configuration: passed'
+deb="$pkg_dir/../kalinka-supervisor/build-deb.sh"
+grep -q '^  systemctl reenable kalinka-supervisor.service || true$' "$deb"
+grep -q '^  systemctl --no-block restart kalinka-supervisor.service || true$' "$deb"
+# Reinstall runs from the supervisor's own package, never from Core's installation.
+grep -q 'install -m 755 "$pkg_dir/reinstall.sh" "$stage/usr/lib/kalinka-supervisor/"' "$deb"
+grep -q '^Depends: .*\bcurl\b' "$deb"
+grep -q '^ExecStart=/usr/lib/kalinka-supervisor/reinstall.sh$' "$pkg_dir/../kalinka-supervisor/systemd/kalinka-reinstall.service"
+echo 'Provisioning radios, always-on supervisor, packaging and pairing configuration: passed'

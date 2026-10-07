@@ -29,6 +29,8 @@ The server exposes a REST API (FastAPI) plus WebSocket channels for live state. 
 | Server    | `GET /server/{config,config/schema,version,modules,optional_packages}`, `PUT /server/{config,restart}`, `GET /indexer/status`, `GET /resource/{file}` |
 | Live      | `WS /queue/ws`, `WS /device/ws`, plus SSE-style `GET /queue/events`, `GET /device/events` |
 
+On image boxes, `kalinka-supervisor` serves a separate [control page and API](supervisor-control.md) on port 8001, independent of the server: the page at `/`, `GET /info` (version and protocol), `GET /v1/{status,dashboard,reinstall/log}`, and `POST /v1/actions/{restart_core,reboot,poweroff,reinstall}`.
+
 ## Configuration & tuning
 
 - The server reads `kalinka_conf.cfg` (JSON): `/etc/kalinka/kalinka_conf.cfg` in production, `$KALINKA_PREFIX/etc/kalinka/kalinka_conf.cfg` from a source checkout. Plugin settings live in the same file, which holds only the values changed from their defaults, so a missing file means a server running on defaults.

@@ -2,6 +2,7 @@ package machine
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"kalinka/supervisor/internal/protocol"
 	"os"
@@ -96,7 +97,13 @@ func TestChangeWaitsForRollback(t *testing.T) {
 	m := New(context.Background(), f, Config{Test: true})
 	defer m.Close()
 	_, _ = m.Tick(context.Background())
+	if m.ChangingNetwork() {
+		t.Fatal("idle machine reports a network change")
+	}
 	_ = send(m, "a", joinCommand)
+	if !m.ChangingNetwork() {
+		t.Fatal("join not reported as a network change")
+	}
 	if err := send(m, "a", `{"v":1,"op":"change_network"}`); err != nil {
 		t.Fatal(err)
 	}
@@ -104,8 +111,14 @@ func TestChangeWaitsForRollback(t *testing.T) {
 	if err := send(m, "a", joinCommand); err != protocol.Busy {
 		t.Fatal("new join during rollback")
 	}
+	if !m.ChangingNetwork() {
+		t.Fatal("rollback not reported as a network change")
+	}
 	close(rollback)
 	await(t, func() bool { return m.Status()[2] == protocol.Idle })
+	if m.ChangingNetwork() {
+		t.Fatal("network change outlived its rollback")
+	}
 }
 func TestOfflinePolicyAndIdentity(t *testing.T) {
 	now := time.Unix(1000, 0)
@@ -158,6 +171,15 @@ func TestNetworkPagesMatchPython(t *testing.T) {
 		if got := string(m.Networks()); got != gold.Pages[page+1] {
 			t.Fatalf("page differs: %s", got)
 		}
+	}
+}
+func TestStatusFollowsCorePort(t *testing.T) {
+	port := uint16(8000)
+	m := New(context.Background(), &fakeWifi{}, Config{Test: true, Port: func() uint16 { return port }})
+	defer m.Close()
+	port = 8123
+	if got := binary.BigEndian.Uint16(m.Status()[8:]); got != 8123 {
+		t.Fatalf("status port = %d", got)
 	}
 }
 func makeRepeat(b byte, n int) []byte {

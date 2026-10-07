@@ -65,6 +65,9 @@ supported networks, and the laptop test launcher
 `../kalinka-supervisor/run-test.sh`. All three targets install a package-managed static Go
 `kalinka-supervisor.service` using DietPi’s ifupdown/wpa_supplicant backend.
 The same package also supports NetworkManager on other distributions. It has no Python runtime dependency.
+The service runs on every box, radios or not, and also serves the
+[control page](../../docs/supervisor-control.md) on port 8001: the box's state
+and versions, and restart, reboot, power off and reinstall.
 
 [`lib/base-dietpi.sh`](lib/base-dietpi.sh) starts from DietPi's published image instead. It checks the image's signature against the key in [`keys/dietpi.asc`](keys/dietpi.asc) and insists the signing key is the one pinned in `DIETPI_SIGNER`. It then grows the image to `IMAGE_SIZE` without changing the disk id, which is how the Pi's `cmdline.txt` finds the root partition, and names the Pi FAT partition KALINKA-BT. On x86, the EFI partition stays intact and the trailing `DIETPISETUP` FAT partition moves to the end of the enlarged image. DietPi imports its settings, deletes that temporary partition and expands root on first boot.
 
@@ -103,9 +106,9 @@ ALSA is installed, and marked installed for DietPi's own tools, so choosing a so
 
 The last three edit `/etc`, so they skip themselves unless `KALINKA_IMAGE_TEST_DISPOSABLE=1` says the system is throwaway. `make image-test` supplies that by running them in a container.
 
-[`tests/vm/`](tests/vm) boots a copy of the PC image under UEFI with Secure Boot disabled. The test waits for Core's HTTP endpoint, shuts down cleanly, then checks the expanded filesystem, DietPi first-boot completion, networking packages and supervisor installation offline. `boot.sh` needs KVM, QEMU and OVMF; set `OVMF_CODE` and `OVMF_VARS` to your host's plain UEFI firmware. `inspect.sh` needs root. The old debootstrap first-boot tests remain for the retained library, which no current target uses.
+[`tests/vm/`](tests/vm) boots a copy of the PC image under UEFI with Secure Boot disabled. The test waits for Core's HTTP endpoint, then powers the guest off through the supervisor's control API, falling back to the power button. Offline, it checks the expanded filesystem, DietPi first-boot completion, networking packages, the supervisor installation, and the supervisor's journal: the control API listened, setup waited for a radio, and the power-off was accepted. `boot.sh` needs KVM, QEMU and OVMF; set `OVMF_CODE` and `OVMF_VARS` to your host's plain UEFI firmware. `inspect.sh` needs root. The old debootstrap first-boot tests remain for the retained library, which no current target uses.
 
-`test_dietpi_uefi.sh` verifies that expanding the GPT image preserves the setup partition's bytes and every partition identifier. `test_supervisor_image.sh` checks radio settings and service ordering.
+`test_dietpi_uefi.sh` verifies that expanding the GPT image preserves the setup partition's bytes and every partition identifier. `test_supervisor_image.sh` checks radio settings, service ordering, the always-on unit and its package hooks.
 
 ### Building the supervisor
 
