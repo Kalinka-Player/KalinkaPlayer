@@ -12,11 +12,14 @@ from kalinka_plugin_sdk.datamodel import (
     BrowseItem,
     BrowseItemList,
     Catalog,
+    CatalogRole,
     CoverImage,
     EntityId,
     EntityType,
     Owner,
     Playlist,
+    Preview,
+    PreviewType,
     Track,
 )
 
@@ -223,6 +226,27 @@ def test_decorate_skips_items_with_own_image(tmp_path):
     )
     svc.decorate(result)
     assert svc._queue.qsize() == 0
+
+
+def test_decorate_leaves_a_folder_to_its_source_and_the_client(tmp_path):
+    svc = _service(tmp_path)
+    item = _catalog_item("folder.L211c2lj", preview=Preview(type=PreviewType.FOLDER))
+    svc._entries[item.id.to_string] = {"file": "abc.jpg", "next_check_at": 0.0}
+
+    svc.decorate(BrowseItemList(offset=0, limit=10, total=1, items=[item]))
+
+    assert item.catalog.image is None
+    assert svc._queue.empty()
+
+
+def test_a_library_of_folders_on_a_home_surface_still_gets_its_card(tmp_path):
+    svc = _service(tmp_path)
+    item = _catalog_item("files", preview=Preview(type=PreviewType.FOLDER))
+    item.catalog.role = CatalogRole.LIBRARY
+
+    svc.decorate(BrowseItemList(offset=0, limit=10, total=1, items=[item]))
+
+    assert svc._queue.qsize() == 1
 
 
 def test_decorate_fills_url_once_generated(tmp_path):
@@ -492,6 +516,45 @@ async def test_process_textual_when_children_are_catalogs(tmp_path):
     await svc._process(cat_id, render.ArtStyle.CARD, textual=True)
     # Cover-less catalogs still get a background-only tile.
     assert (svc._dir / svc._entries[cat_id]["file"]).is_file()
+
+
+async def test_a_page_of_folders_lends_the_card_their_covers(tmp_path, monkeypatch):
+    def _folder(local):
+        eid = EntityId(id=local, type=EntityType.CATALOG, source="localfiles")
+        image = CoverImage(large=f"/resource/album/{local}_large.jpg")
+        return BrowseItem(
+            id=eid,
+            name=local,
+            can_browse=True,
+            catalog=Catalog(
+                id=eid,
+                title=local,
+                image=image,
+                preview_config=Preview(type=PreviewType.FOLDER),
+            ),
+        )
+
+    covers = {
+        **_covers_on_disk(tmp_path, "rock", color=(200, 50, 50)),
+        **_covers_on_disk(tmp_path, "jazz", color=(50, 50, 200)),
+    }
+    module = _FakeModule([_folder("rock"), _folder("jazz")], covers)
+    svc = _service(tmp_path, resolver=lambda eid: module)
+    composed: list[list] = []
+
+    def _spy(covers, names, seed, **kwargs):
+        composed.append(list(covers))
+        return render.render_catalog_art(covers, names, seed, **kwargs)
+
+    monkeypatch.setattr(
+        "kalinka_server.catalog_art_service.render_catalog_art", _spy
+    )
+
+    await svc._process(
+        "kalinka:localfiles:catalog:files", render.ArtStyle.CARD, textual=False
+    )
+
+    assert len(composed[0]) == 2
 
 
 async def test_process_empty_page_still_makes_background_tile(tmp_path):
