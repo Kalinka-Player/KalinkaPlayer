@@ -179,6 +179,11 @@ class PreviewType(str, Enum):
     CARD = "card"
     # No preview items (section displays only an image or text)
     NONE = "none"
+    # File browser: subfolders, each a catalog of this same type, then the
+    # tracks directly in the folder. The UI shows one folder at a time under
+    # a breadcrumb of the folders enclosing it, and the source supplies each
+    # folder's art.
+    FOLDER = "folder"
 
 
 class PreviewContentType(str, Enum):
