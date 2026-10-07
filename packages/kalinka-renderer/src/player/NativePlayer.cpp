@@ -421,6 +421,10 @@ void NativePlayer::rebuildPlayer() {
   changed->set_position_valid(false);
   changed->set_at_unix_ms(nowUnixMs());
   emit(env);
+  if (player_) {
+    // The new device may set the level elsewhere: a mixer, software, or none.
+    emitVolume(player_->getVolume(), false);
+  }
 }
 
 void NativePlayer::startPumps() {
