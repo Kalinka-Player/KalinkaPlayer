@@ -2,6 +2,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <charconv>
 #include <functional>
 
@@ -102,8 +103,10 @@ bool fieldAccepts(const pb::ConfigField &field, const std::string &value,
 }
 
 ConfigService::ConfigService(
-    std::vector<std::shared_ptr<ConfigContributor>> contributors)
-    : contributors_(std::move(contributors)) {}
+    std::vector<std::shared_ptr<ConfigContributor>> contributors,
+    std::function<void()> onApplied)
+    : contributors_(std::move(contributors)),
+      onApplied_(std::move(onApplied)) {}
 
 void ConfigService::fillSnapshot(pb::ConfigSnapshot &out) const {
   for (const auto &contributor : contributors_) {
@@ -157,4 +160,10 @@ void ConfigService::apply(const pb::ConfigUpdate &update,
     }
   }
   out.set_config_version(after.config_version());
+
+  const auto &outcomes = out.outcomes();
+  if (onApplied_ && std::any_of(outcomes.begin(), outcomes.end(),
+                                [](const auto &o) { return o.applied(); })) {
+    onApplied_();
+  }
 }

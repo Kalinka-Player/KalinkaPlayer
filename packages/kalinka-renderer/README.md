@@ -120,7 +120,7 @@ the default is written to `config_overrides` in the state directory.
 | `output.device` | ALSA PCM to open, chosen from the devices enumerated at request time. |
 | `output.bit_depth` | Read-only maximum significant PCM bit depth for the selected output, such as `Up to 24 bit`. |
 | `output.sample_rate` | Read-only maximum PCM sample rate for the selected output, such as `Up to 192 kHz`. |
-| `output.dsd_mode` | `disabled`, `auto` (native only), `native`, or explicitly selected `dop`. Requires fixed volume and direct hardware. Changing it stops playback. |
+| `output.dsd_mode` | `disabled`, `auto` (native only), `native`, or explicitly selected `dop`. Requires fixed volume and direct hardware. Changing it stops playback, and every connected Core is told whether DSD is now taken. |
 | `output.volume_mode` | `auto`, `hardware` (card mixer), `software`, or `fixed` (ignore volume, play at full level — for an amp that sets the level itself). |
 | `output.session_start_volume_ceiling_percent` | Maximum allowed level when a renderer-controlled session starts. It lowers a louder existing level but never raises a quieter one. Fixed output bypasses it. |
 | `output.latency_ms`, `output.period_ms`, `output.format_change_delay_ms`, `output.reopen_on_format_change` | How the ALSA sink is opened and driven. |

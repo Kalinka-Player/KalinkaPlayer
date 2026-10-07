@@ -163,14 +163,17 @@ int main(int argc, char **argv) {
 
   asio::io_context ioc;
   auto player = std::make_shared<NativePlayer>(ioc);
+  auto capabilities = std::make_shared<CapabilityService>(player);
   RendererServices services{
       std::make_shared<SessionManager>(
           ioc, std::chrono::seconds(opts.sessionGraceSeconds), player),
       std::make_shared<ConfigService>(
           std::vector<std::shared_ptr<ConfigContributor>>{
               name, player, player->bufferSettings(),
-              player->networkSettings()}),
+              player->networkSettings()},
+          [capabilities] { capabilities->refresh(); }),
       std::make_shared<TriggerFileUpgradeService>(),
+      capabilities,
   };
   ConnectionManager manager(ioc, identity, name->value(), services);
 

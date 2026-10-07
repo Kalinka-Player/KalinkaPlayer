@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "capabilities/CapabilityService.h"
 #include "player/Player.h"
 #include "session/SessionTransport.h"
 
@@ -140,4 +141,15 @@ public:
     return true;
   }
   void onSessionClosed() override { ++sessionClosed; }
+};
+
+/// Says whatever a test sets.
+class FakeCapabilitySource : public CapabilitySource {
+public:
+  bool dsd = false;
+
+  void
+  fillCapabilities(kalinka::renderer::v1::Capabilities &out) const override {
+    out.set_dsd(dsd);
+  }
 };

@@ -10,6 +10,7 @@
 #include <thread>
 #include <vector>
 
+#include "../capabilities/CapabilityService.h"
 #include "../native_player/AudioPlayer.h"
 #include "../native_player/StateMonitor.h"
 #include "Player.h"
@@ -44,6 +45,9 @@
  * The config plane's paths are the renderer's own; the keys the graph is built
  * with are the backend's, and stay behind them.
  *
+ * Capabilities: DSD is taken while `output.dsd_mode` is anything but
+ * "disabled"; the output a track meets can still refuse it.
+ *
  * If the graph cannot be built (no ALSA), the renderer stays up: commands
  * that need audio answer with PLAYBACK_STATE_ERROR, exactly like a track
  * that failed, and the next device change retries.
@@ -51,6 +55,7 @@
  * @note All Player methods on the io_context thread, per the contract.
  */
 class NativePlayer : public Player,
+                     public CapabilitySource,
                      public std::enable_shared_from_this<NativePlayer> {
 public:
   explicit NativePlayer(boost::asio::io_context &ioc);
@@ -73,6 +78,8 @@ public:
   bool applyConfig(const std::string &path, const std::string &value,
                    std::string &error) override;
   void fillSnapshot(kalinka::renderer::v1::StateSnapshot &out) const override;
+  void
+  fillCapabilities(kalinka::renderer::v1::Capabilities &out) const override;
 
   /**
    * @brief The buffering section, declared apart from the sink it feeds.

@@ -93,9 +93,11 @@ target_link_libraries(kalinka_native_player PUBLIC
 )
 
 # --- kalinka_renderer_core: everything that decides --------------------------
-# The session, config, upgrade and protocol planes — no live sockets,
-# discovery or daemon plumbing, so unit tests link exactly what they exercise.
+# The session, config, upgrade, capability and protocol planes — no live
+# sockets, discovery or daemon plumbing, so unit tests link exactly what they
+# exercise.
 add_library(kalinka_renderer_core STATIC
+  src/capabilities/CapabilityService.cpp
   src/config/ConfigService.cpp
   src/net/ProtocolSession.cpp
   src/session/Session.cpp
@@ -162,6 +164,7 @@ if(GTest_FOUND)
     src/player/StateTranslator.cpp
     tests/test_alsa_device_naming.cpp
     tests/test_audio_player.cpp
+    tests/test_capability_service.cpp
     tests/test_config_service.cpp
     tests/test_core_grouper.cpp
     tests/test_decoder_start_offset.cpp

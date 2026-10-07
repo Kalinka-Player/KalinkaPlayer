@@ -96,11 +96,14 @@ protected:
   Identity identity{"rid-1", "iid-1"};
   std::shared_ptr<FakeUpgradeService> upgrade =
       std::make_shared<FakeUpgradeService>();
+  std::shared_ptr<FakeCapabilitySource> capabilities =
+      std::make_shared<FakeCapabilitySource>();
   RendererServices services{
       std::make_shared<SessionManager>(ioc, 60s, player),
       std::make_shared<ConfigService>(
           std::vector<std::shared_ptr<ConfigContributor>>{player}),
       upgrade,
+      std::make_shared<CapabilityService>(capabilities),
   };
 };
 
@@ -131,6 +134,81 @@ TEST_F(ProtocolSessionTest, HelloBroadcastsTheRunningSession) {
   const pb::Hello &hello = wire.sent[0].hello();
   EXPECT_EQ(hello.active_session_id(), "sid-1");
   EXPECT_EQ(hello.session_owner_server_id(), "owner-1");
+}
+
+TEST_F(ProtocolSessionTest, HelloSaysWhatTheRendererCanPlay) {
+  FakeWire wire;
+  auto protocol = makeProtocol(wire);
+  capabilities->dsd = true;
+
+  protocol->onUp();
+
+  const pb::Hello &hello = wire.sent[0].hello();
+  ASSERT_TRUE(hello.has_capabilities());
+  EXPECT_TRUE(hello.capabilities().dsd());
+}
+
+TEST_F(ProtocolSessionTest, WithoutACapabilityPlaneHelloSaysNothingOfThem) {
+  services.capabilities.reset();
+  FakeWire wire;
+  auto protocol = makeProtocol(wire);
+
+  protocol->onUp();
+
+  EXPECT_FALSE(wire.sent[0].hello().has_capabilities());
+}
+
+TEST_F(ProtocolSessionTest, EveryWelcomedCoreIsToldWhenCapabilitiesChange) {
+  FakeWire first;
+  FakeWire second;
+  auto toFirst = makeProtocol(first);
+  auto toSecond = makeProtocol(second);
+  toFirst->onUp();
+  welcome(*toFirst, "server-1");
+  toSecond->onUp();
+  welcome(*toSecond, "server-2");
+
+  capabilities->dsd = true;
+  services.capabilities->refresh();
+  services.capabilities->refresh();
+
+  for (const FakeWire *wire : {&first, &second}) {
+    ASSERT_EQ(wire->sent.size(), 2u);
+    ASSERT_TRUE(wire->sent[1].has_capabilities_changed());
+    EXPECT_TRUE(wire->sent[1].capabilities_changed().capabilities().dsd());
+  }
+}
+
+TEST_F(ProtocolSessionTest, AChangeDuringTheHandshakeFollowsTheWelcome) {
+  FakeWire wire;
+  auto protocol = makeProtocol(wire);
+  protocol->onUp();
+
+  capabilities->dsd = true;
+  services.capabilities->refresh();
+  ASSERT_EQ(wire.sent.size(), 1u);
+  welcome(*protocol, "server-1");
+
+  ASSERT_EQ(wire.sent.size(), 2u);
+  EXPECT_TRUE(wire.sent[1].capabilities_changed().capabilities().dsd());
+}
+
+TEST_F(ProtocolSessionTest, ALinkThatWasDownHearsOfAChangeInItsNextHello) {
+  FakeWire wire;
+  auto protocol = makeProtocol(wire);
+  protocol->onUp();
+  welcome(*protocol, "server-1");
+  protocol->onDown();
+  wire.up = false;
+
+  capabilities->dsd = true;
+  services.capabilities->refresh();
+  wire.up = true;
+  protocol->onUp();
+  welcome(*protocol, "server-1");
+
+  ASSERT_EQ(wire.sent.size(), 2u);
+  EXPECT_TRUE(wire.sent[1].hello().capabilities().dsd());
 }
 
 TEST_F(ProtocolSessionTest, SessionOpenBeforeWelcomeIsRefused) {

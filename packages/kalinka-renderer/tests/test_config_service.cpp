@@ -216,6 +216,29 @@ TEST_F(ConfigServiceTest, PlayerRefusalIsReportedPerPath) {
   EXPECT_EQ(result.effect(), pb::APPLY_COST_UNSPECIFIED);  // nothing happened
 }
 
+TEST_F(ConfigServiceTest, AWriteThatAppliedSomethingIsAnnouncedOnce) {
+  int announced = 0;
+  ConfigService watched{{player}, [&announced] { ++announced; }};
+  pb::ConfigUpdate update;
+  pb::ConfigUpdate::Setting *unknown = update.add_settings();
+  unknown->set_path("output.nonexistent");
+  unknown->set_value("1");
+  pb::ConfigResult refused;
+  watched.apply(update, refused);
+  EXPECT_EQ(announced, 0);
+
+  pb::ConfigUpdate::Setting *buffer = update.add_settings();
+  buffer->set_path("output.buffer_ms");
+  buffer->set_value("200");
+  pb::ConfigUpdate::Setting *exclusive = update.add_settings();
+  exclusive->set_path("output.exclusive");
+  exclusive->set_value("true");
+  pb::ConfigResult applied;
+  watched.apply(update, applied);
+
+  EXPECT_EQ(announced, 1);
+}
+
 TEST_F(ConfigServiceTest, EffectIsTheWorstAmongTheSettingsActuallyApplied) {
   pb::ConfigUpdate update;
   pb::ConfigUpdate::Setting *buffer = update.add_settings();
