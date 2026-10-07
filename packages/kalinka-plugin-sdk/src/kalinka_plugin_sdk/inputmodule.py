@@ -498,6 +498,29 @@ class InputModule(Protocol):
         )
         return [r for r in results if isinstance(r, BrowseItem)]
 
+    async def tracks_to_add(
+        self, entity_id: EntityId, limit: int
+    ) -> Optional[List[EntityId]]:
+        """The tracks adding a container takes, in play order (SDK 3.9+).
+
+        Adding a container to the queue or to a collection otherwise takes the
+        tracks among its listing's items. Override where adding means more
+        than that listing shows: a folder lists only its own level, yet adding
+        it takes everything below it.
+
+        Args:
+            entity_id (EntityId): The container being added
+            limit (int): The most tracks the caller will take
+
+        Returns:
+            Optional[List[EntityId]]: At most ``limit`` track ids, or None to
+            leave it to the container's listing
+
+        Must complete within the server's per-call timeout (see the
+        class docstring's latency contract).
+        """
+        return None
+
     async def playlist_user_list(
         self, offset: int = 0, limit: int = 25
     ) -> BrowseItemList:
