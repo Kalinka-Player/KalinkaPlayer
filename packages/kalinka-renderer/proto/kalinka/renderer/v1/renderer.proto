@@ -121,6 +121,9 @@ message Platform {
   string arch = 3;           // "aarch64", "x86_64"
   string hostname = 4;
   string audio_backend = 5;  // "alsa"
+  // Optional /etc/machine-id; Core uses it only to recognise its own host.
+  // Missing on older renderers, which must upgrade before Core does.
+  string machine_id = 6;
 }
 
 // ============================================================================

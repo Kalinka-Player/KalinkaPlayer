@@ -93,7 +93,7 @@ protected:
 
   boost::asio::io_context ioc;
   std::shared_ptr<FakePlayer> player = std::make_shared<FakePlayer>();
-  Identity identity{"rid-1", "iid-1"};
+  Identity identity{"rid-1", "iid-1", "1234567890abcdef1234567890abcdef"};
   std::shared_ptr<FakeUpgradeService> upgrade =
       std::make_shared<FakeUpgradeService>();
   std::shared_ptr<FakeCapabilitySource> capabilities =
@@ -117,6 +117,7 @@ TEST_F(ProtocolSessionTest, HelloGoesOutWhenTheLinkComesUp) {
   const pb::Hello &hello = wire.sent[0].hello();
   EXPECT_EQ(hello.renderer_id(), "rid-1");
   EXPECT_EQ(hello.instance_id(), "iid-1");
+  EXPECT_EQ(hello.platform().machine_id(), identity.machineId);
   EXPECT_EQ(hello.friendly_name(), "Unit Renderer");
   EXPECT_EQ(hello.protocol_versions().min(), kMinRendererProtocolVersion);
   EXPECT_EQ(hello.protocol_versions().max(), kMaxRendererProtocolVersion);

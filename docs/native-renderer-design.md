@@ -366,7 +366,15 @@ before relying on multi-interface discovery.
 1. On every link-up, send `Hello` **first**, before anything else. A second
    `Hello` on one connection is a protocol error and the Core will close.
 2. `Hello` must carry `protocol_versions`, `renderer_id`, `instance_id`,
-   `friendly_name`, `software_version` and `kind`. `platform` is informational.
+   `friendly_name`, `software_version` and `kind`.
+   - `platform.machine_id` optionally carries the Linux `/etc/machine-id` (32
+     lowercase hexadecimal characters). Core compares it with its own identity
+     to recognise a renderer covered by the host's package installer. Hostnames
+     and connection addresses are not used for that decision. Leave it empty
+     when unavailable; older renderers without it upgrade separately, and Core
+     waits for their confirmed version before starting its own installer. This
+     additive field does not change the protocol version. The identity is not
+     exposed through Core's renderer list; the list reports only `local`.
    - `protocol_versions` is the range you speak, and the Core picks a version
      inside it. Advertise every version you still handle, not only the newest:
      the reference renderer sends the `kMin`/`kMax` pair from

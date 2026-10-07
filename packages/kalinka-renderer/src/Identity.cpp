@@ -61,5 +61,13 @@ std::string loadOrCreateRendererId() {
 }  // namespace
 
 Identity Identity::load() {
-  return Identity{loadOrCreateRendererId(), generateUuid()};
+  std::ifstream in("/etc/machine-id");
+  std::string machineId;
+  in >> machineId;
+  if (machineId.size() != 32 ||
+      machineId.find_first_not_of("0123456789abcdef") != std::string::npos ||
+      machineId == std::string(32, '0')) {
+    machineId.clear();
+  }
+  return Identity{loadOrCreateRendererId(), generateUuid(), machineId};
 }

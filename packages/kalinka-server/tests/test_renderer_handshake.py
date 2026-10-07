@@ -6,8 +6,10 @@ this handshake exists to survive.
 """
 
 import asyncio
+from pathlib import Path
 from unittest.mock import create_autospec
 
+import pytest
 from fastapi import WebSocketDisconnect
 from kalinka_plugin_sdk.direct_playback import OutputCapabilities
 
@@ -20,16 +22,19 @@ from kalinka_server.renderer_upgrade import RendererUpgradeService
 from kalinka_server.renderer_ws_handler import (
     PROTOCOL_VERSION,
     handle_renderer_connection,
+    runs_here,
 )
+
+SERVER_ADDR = ("192.168.50.85", 8000)
 
 
 class FakeWebSocket:
     """Feeds queued frames to the handler and records what it sends back."""
 
-    def __init__(self, incoming: list[pb.Envelope]):
+    def __init__(self, incoming: list[pb.Envelope], client=("192.168.50.20", 51234)):
         self._incoming = list(incoming)
         self.sent: list[pb.Envelope] = []
-        self.scope = {"server": ("192.168.50.85", 8000)}
+        self.scope = {"server": SERVER_ADDR, "client": client}
         self.accepted = False
         self.closed = False
 
@@ -50,7 +55,11 @@ class FakeWebSocket:
         self.closed = True
 
 
-def _hello(min_version: int, max_version: int) -> pb.Envelope:
+def _hello(
+    min_version: int = PROTOCOL_VERSION,
+    max_version: int = PROTOCOL_VERSION,
+    hostname: str = "attic",
+) -> pb.Envelope:
     env = pb.Envelope()
     hello = env.hello
     hello.protocol_versions.min = min_version
@@ -61,6 +70,7 @@ def _hello(min_version: int, max_version: int) -> pb.Envelope:
     hello.software_version = "0.3.0"
     hello.kind = pb.RENDERER_KIND_NATIVE
     hello.platform.os = "linux"
+    hello.platform.hostname = hostname
     return env
 
 
@@ -72,13 +82,17 @@ def _volume_report() -> pb.Envelope:
 
 
 async def _run(
-    incoming: list[pb.Envelope], pool=None
+    incoming: list[pb.Envelope], pool=None, **connection
 ) -> tuple[FakeWebSocket, RendererRegistry]:
     registry = RendererRegistry(offline_timeout_s=30.0)
     if pool is None:
         pool = SessionPool(registry, "test-server-id")
     registry.set_on_removed(pool.handle_renderer_removed)
-    websocket = FakeWebSocket(incoming)
+    websocket = FakeWebSocket(incoming, **connection)
+
+    async def no_playback(_renderer_id: str) -> None:
+        pass
+
     await asyncio.wait_for(
         handle_renderer_connection(
             websocket,
@@ -86,7 +100,7 @@ async def _run(
             registry,
             pool,
             RendererConfigService(registry),
-            RendererUpgradeService(registry, lambda _: False),
+            RendererUpgradeService(registry, lambda _: False, no_playback),
         ),
         timeout=5,
     )
@@ -94,7 +108,9 @@ async def _run(
 
 
 async def test_incompatible_renderer_registers_and_is_told_our_version():
-    websocket, registry = await _run([_hello(PROTOCOL_VERSION + 5, PROTOCOL_VERSION + 6)])
+    websocket, registry = await _run(
+        [_hello(PROTOCOL_VERSION + 5, PROTOCOL_VERSION + 6)]
+    )
 
     (entry,) = registry.list()
     assert entry["renderer_id"] == "old-rid"
@@ -134,6 +150,50 @@ async def test_a_compatible_renderer_is_reconciled_and_its_state_believed():
     )
     pool.reconcile.assert_awaited_once()
     pool.handle_state.assert_called_once()
+
+
+MACHINE_ID = "1234567890abcdef1234567890abcdef"
+
+
+@pytest.mark.parametrize(
+    "client", [("127.0.0.1", 40000), ("::1", 40000), (SERVER_ADDR[0], 40000)]
+)
+@pytest.mark.parametrize("hostname", ["kalinka", "kalinka.local", "renamed-host"])
+async def test_machine_identity_recognises_local_renderer(
+    monkeypatch, client, hostname
+):
+    monkeypatch.setattr(Path, "read_text", lambda _: MACHINE_ID + "\n")
+    hello = _hello(hostname=hostname)
+    hello.hello.platform.machine_id = MACHINE_ID
+    _, registry = await _run([hello], client=client)
+    assert registry.list()[0]["local"] is True
+
+
+@pytest.mark.parametrize("machine_id", ["", "f" * 32, "0" * 32, "uninitialized", "bad"])
+async def test_a_proxy_or_shared_hostname_does_not_prove_locality(
+    monkeypatch, machine_id
+):
+    monkeypatch.setattr(Path, "read_text", lambda _: MACHINE_ID)
+    hello = _hello(hostname="kalinka")
+    hello.hello.platform.machine_id = machine_id
+    _, registry = await _run([hello], client=(SERVER_ADDR[0], 40000))
+    assert registry.list()[0]["local"] is False
+
+
+async def test_an_incompatible_local_renderer_is_recognised(monkeypatch):
+    monkeypatch.setattr(Path, "read_text", lambda _: MACHINE_ID)
+    hello = _hello(PROTOCOL_VERSION + 5, PROTOCOL_VERSION + 6)
+    hello.hello.platform.machine_id = MACHINE_ID
+    _, registry = await _run([hello])
+    assert registry.list()[0]["local"] is True
+
+
+def test_missing_machine_identity_is_not_local(monkeypatch):
+    def missing(_):
+        raise FileNotFoundError
+
+    monkeypatch.setattr(Path, "read_text", missing)
+    assert not runs_here(MACHINE_ID)
 
 
 def _capabilities_changed(dsd: bool) -> pb.Envelope:

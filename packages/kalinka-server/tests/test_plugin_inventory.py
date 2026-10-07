@@ -305,4 +305,4 @@ def test_read_only_routes_fail_closed_without_trust():
         "/server/plugins/operations",
     ):
         assert client.post(path, json={"verified": True}).status_code in {404, 405}
-    assert get_rest_api_version() == "0.10"
+    assert get_rest_api_version() == "0.11"
