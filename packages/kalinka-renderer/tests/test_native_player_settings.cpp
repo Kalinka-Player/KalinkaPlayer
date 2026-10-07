@@ -145,6 +145,27 @@ TEST_F(NativePlayerSettingsTest, DsdIsTakenWhileTheDsdModeIsNotDisabled) {
   EXPECT_FALSE(dsd());
 }
 
+// A new card may hold the level differently, through a mixer or in software,
+// and a Core only learns the volume when it is told.
+TEST_F(NativePlayerSettingsTest, ANewDeviceRestatesTheVolume) {
+  std::vector<pb::VolumeChanged> told;
+  player_->setStateSink([&told](pb::Envelope &env) {
+    if (env.has_volume_changed()) {
+      told.push_back(env.volume_changed());
+    }
+  });
+
+  ASSERT_TRUE(player_->applyConfig("output.device", "default", error_))
+      << error_;
+
+  ASSERT_EQ(told.size(), 1u);
+  pb::StateSnapshot snapshot;
+  player_->fillSnapshot(snapshot);
+  EXPECT_EQ(told.back().volume().backend(), snapshot.volume().backend());
+  EXPECT_EQ(told.back().volume().current(), snapshot.volume().current());
+  EXPECT_FALSE(told.back().external());
+}
+
 TEST_F(NativePlayerSettingsTest, InvalidPersistedDsdModeUsesDisabled) {
   saveSettingsOverrides(
       {{"output.device", "null"}, {"output.dsd_mode", "pcm"}});
