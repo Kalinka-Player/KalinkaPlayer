@@ -27,6 +27,7 @@ class Receiver:
         self.client = self.eventing = self.discovery = self.runner = self.publisher = (
             None
         )
+        self.unwatch = None
         self.dirty = set()
         self.last_events = {}
         self.closed = False
@@ -45,6 +46,7 @@ class Receiver:
             self.client = ClientSession(timeout=ClientTimeout(total=3), trust_env=False)
             self.eventing = Eventing(self.client, self.services.event)
             self.playback.start()
+            self._watch_output()
             self.runner = web.AppRunner(self.app, access_log=None, shutdown_timeout=2)
             await self.runner.setup()
             site = web.TCPSite(self.runner, self.host, self.port)
@@ -61,6 +63,13 @@ class Receiver:
         except BaseException:
             await self.close()
             raise
+
+    def _watch_output(self):
+        watch = getattr(self.playback.direct, "watch_output_capabilities", None)
+        if watch is None:  # a server before SDK 3.9 cannot tell; DSD stays off
+            logger.warning("UPnP cannot learn whether the renderer outputs DSD")
+            return
+        self.unwatch = watch(self.services)
 
     async def device_description(self, request):
         return self.xml_response(description(self.name, self.udn))
@@ -150,6 +159,8 @@ class Receiver:
         if self.closed:
             return
         self.closed = True
+        if self.unwatch:
+            self.unwatch()
         if self.publisher:
             self.publisher.cancel()
             await asyncio.gather(self.publisher, return_exceptions=True)

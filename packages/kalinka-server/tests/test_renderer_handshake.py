@@ -9,6 +9,7 @@ import asyncio
 from unittest.mock import create_autospec
 
 from fastapi import WebSocketDisconnect
+from kalinka_plugin_sdk.direct_playback import OutputCapabilities
 
 from kalinka_server.config_model import KalinkaConfig
 from kalinka_server.renderer_config import RendererConfigService
@@ -133,3 +134,35 @@ async def test_a_compatible_renderer_is_reconciled_and_its_state_believed():
     )
     pool.reconcile.assert_awaited_once()
     pool.handle_state.assert_called_once()
+
+
+def _capabilities_changed(dsd: bool) -> pb.Envelope:
+    env = pb.Envelope()
+    env.capabilities_changed.capabilities.dsd = dsd
+    return env
+
+
+async def test_what_hello_says_the_renderer_plays_is_kept():
+    hello = _hello(PROTOCOL_VERSION, PROTOCOL_VERSION)
+    hello.hello.capabilities.dsd = True
+    _, registry = await _run([hello])
+    assert registry.get("old-rid").capabilities == OutputCapabilities(dsd=True)
+
+
+async def test_a_renderer_too_old_to_say_what_it_plays_is_not_guessed_at():
+    _, registry = await _run([_hello(PROTOCOL_VERSION, PROTOCOL_VERSION)])
+    assert registry.get("old-rid").capabilities is None
+
+
+async def test_a_change_in_what_the_renderer_plays_is_believed():
+    hello = _hello(PROTOCOL_VERSION, PROTOCOL_VERSION)
+    hello.hello.capabilities.dsd = False
+    _, registry = await _run([hello, _capabilities_changed(True)])
+    assert registry.get("old-rid").capabilities == OutputCapabilities(dsd=True)
+
+
+async def test_an_incompatible_renderer_is_not_believed_about_what_it_plays():
+    hello = _hello(PROTOCOL_VERSION + 5, PROTOCOL_VERSION + 6)
+    hello.hello.capabilities.dsd = True
+    _, registry = await _run([hello, _capabilities_changed(True)])
+    assert registry.get("old-rid").capabilities is None

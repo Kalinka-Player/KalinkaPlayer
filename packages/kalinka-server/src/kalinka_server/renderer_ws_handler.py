@@ -10,6 +10,7 @@ import time
 
 from fastapi import WebSocket, WebSocketDisconnect
 from google.protobuf.message import DecodeError
+from kalinka_plugin_sdk.direct_playback import OutputCapabilities
 
 from .config_model import KalinkaConfig
 from .renderer_proto import renderer_pb2 as pb
@@ -43,6 +44,10 @@ _CLOSE_REASON_TO_PB = {
 
 def _kind_name(kind: int) -> str:
     return pb.RendererKind.Name(kind).removeprefix("RENDERER_KIND_").lower()
+
+
+def _capabilities(capabilities: pb.Capabilities) -> OutputCapabilities:
+    return OutputCapabilities(dsd=capabilities.dsd)
 
 
 class RendererSession(RendererLink):
@@ -244,6 +249,11 @@ async def handle_renderer_connection(
                     upgrade_supported=hello.upgrade_supported,
                     server_addr=(addr[0], addr[1]) if addr and addr[1] else None,
                     compatible=compatible,
+                    capabilities=(
+                        _capabilities(hello.capabilities)
+                        if compatible and hello.HasField("capabilities")
+                        else None
+                    ),
                 )
                 registered_id = hello.renderer_id
                 registered_compatible = compatible
@@ -287,6 +297,12 @@ async def handle_renderer_connection(
                     session,
                     env.in_reply_to,
                     getattr(env, payload),
+                )
+            elif payload == "capabilities_changed":
+                registry.update_capabilities(
+                    registered_id or "",
+                    session,
+                    _capabilities(env.capabilities_changed.capabilities),
                 )
             elif payload == "command_rejected":
                 sessions.handle_rejection(

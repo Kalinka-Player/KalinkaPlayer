@@ -31,7 +31,7 @@ class KalinkaPluginUpnp(InputModulePlugin):
     """Start the receiver when enabled and release its hold when unloaded."""
 
     PLUGIN_ID = "upnp"
-    REQUIRES_SDK = ">=3.6,<4"
+    REQUIRES_SDK = ">=3.9,<4"
     CONFIG_MODEL = UpnpConfig
     DYNAMIC_FIELDS: ClassVar[dict[str, DynamicFieldDecl]] = {
         "receiver_status": DynamicFieldDecl(
@@ -54,7 +54,7 @@ class KalinkaPluginUpnp(InputModulePlugin):
             return
         if context.direct_playback is None:
             raise PluginSetupException(
-                "UPnP requires Kalinka direct playback and SDK 3.6 or later"
+                "UPnP requires Kalinka direct playback and SDK 3.9 or later"
             )
         try:
             udn = await asyncio.to_thread(

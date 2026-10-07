@@ -6,10 +6,26 @@ the configured device name in a UPnP control app on the same network.
 
 The controller supplies an HTTP(S) audio URL and optional DIDL-Lite metadata.
 The selected renderer fetches the resource directly; the plugin does not
-download, transcode, or add it to the Kalinka queue. MP3, FLAC, and Ogg/Vorbis
-are advertised, matching the native renderer's decoders. Extensionless URLs
-need a supported MIME type in the matching DIDL `res` element. The URL must
-be reachable from the renderer and support byte ranges for seeking.
+download, transcode, or add it to the Kalinka queue. MP3, FLAC and Ogg/Vorbis
+are advertised, matching the native renderer's decoders, and DSF (`.dsf`) and
+DSDIFF (`.dff`) while the renderer outputs DSD. Extensionless URLs need a
+supported MIME type in the matching DIDL `res` element. The URL must be
+reachable from the renderer and support byte ranges for seeking.
+
+DSD playback requires the renderer's DSD output setting, a direct hardware
+output and Fixed volume, and is limited to mono/stereo DSF and uncompressed
+DSDIFF; DST-compressed `.dff` is refused. See the
+[renderer settings](../kalinka-renderer/README.md#settings).
+While DSD output is Disabled, its default, DSD is neither advertised nor
+accepted: a controller that converts DSD to PCM for such a renderer keeps
+doing so, and one that sends DSD anyway gets fault 714 without interrupting
+playback. The renderer tells Kalinka whenever the setting changes, from any
+Kalinka server, and the plugin events the new protocol list to ConnectionManager
+subscribers at once; playback moving to another renderer does the same. A
+renderer from 0.7.0 or earlier does not say, so DSD is not offered through it.
+With DSD output on, a track the renderer still cannot play
+stops the transport with `ERROR_OCCURRED`, and Kalinka's player state gives the
+renderer's reason. This requires SDK 3.9.
 
 `Play` takes exclusive control through SDK `DirectPlayback`. Kalinka's queue
 keeps its contents. Queue playback, another input taking control, renderer

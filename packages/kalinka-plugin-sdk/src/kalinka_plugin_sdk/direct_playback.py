@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Optional, Protocol
+from typing import Any, Callable, Optional, Protocol
 
 from .datamodel import DeviceVolume, PlaybackState, Track
 from .inputmodule import TrackSource
@@ -51,6 +51,18 @@ class TransportRequest:
 
     kind: TransportKind
     position_ms: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class OutputCapabilities:
+    """SDK 3.9: what the output acquire() would take can play, as the server knows it.
+
+    ``dsd`` is True while the renderer takes DSD, False while it does not, and
+    None while the server does not know: no renderer is connected, or it is too
+    old to say.
+    """
+
+    dsd: Optional[bool] = None
 
 
 class OutputUnavailable(RuntimeError):
@@ -98,6 +110,18 @@ class DirectPlaybackListener(Protocol):
         Once as the hold starts, then on every change: a client's, the
         plugin's own set_volume echoed back, or a knob on the device itself.
         """
+        ...
+
+
+class OutputCapabilitiesListener(Protocol):
+    """SDK 3.9: what the server tells a plugin watching the output. May be async.
+
+    Calls arrive in order, one at a time, each within the per-call budget of
+    an InputModule call.
+    """
+
+    def on_output_capabilities(self, capabilities: OutputCapabilities) -> Any:
+        """What the output can play: once on watching, then on every change."""
         ...
 
 
@@ -187,5 +211,19 @@ class DirectPlayback(Protocol):
         A second acquire by the same plugin ends its first hold.
 
         @throw OutputUnavailable when no renderer can be played through.
+        """
+        ...
+
+    def watch_output_capabilities(
+        self, listener: OutputCapabilitiesListener
+    ) -> Callable[[], None]:
+        """SDK 3.9: follow what the output acquire() would take can play.
+
+        The listener is told at once, then whenever the answer changes: the
+        renderer's settings are changed, it reconnects, or playback moves to
+        another renderer. Watching never takes the output. A plugin keeps the
+        last answer: the server tells it of every change it learns of.
+
+        @return A function that stops the calls; calling it again does nothing.
         """
         ...

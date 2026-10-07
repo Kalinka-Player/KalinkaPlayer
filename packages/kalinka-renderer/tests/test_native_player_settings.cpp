@@ -131,6 +131,20 @@ TEST_F(NativePlayerSettingsTest, DsdSettingsExposeCapabilitiesAndPersistMode) {
   EXPECT_EQ(field(output(), "output.dsd_mode")->value(), "disabled");
 }
 
+TEST_F(NativePlayerSettingsTest, DsdIsTakenWhileTheDsdModeIsNotDisabled) {
+  auto dsd = [this] {
+    pb::Capabilities capabilities;
+    player_->fillCapabilities(capabilities);
+    return capabilities.dsd();
+  };
+  EXPECT_FALSE(dsd());
+  ASSERT_TRUE(player_->applyConfig("output.dsd_mode", "native", error_));
+  EXPECT_TRUE(dsd());
+  // A new device is never assumed to take DSD.
+  ASSERT_TRUE(player_->applyConfig("output.device", "default", error_));
+  EXPECT_FALSE(dsd());
+}
+
 TEST_F(NativePlayerSettingsTest, InvalidPersistedDsdModeUsesDisabled) {
   saveSettingsOverrides(
       {{"output.device", "null"}, {"output.dsd_mode", "pcm"}});

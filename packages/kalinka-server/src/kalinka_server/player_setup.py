@@ -45,6 +45,7 @@ from .config_secrets import is_private_path, loggable
 from .direct_playback import DirectPlaybackService
 from .external_playback import ExternalPlaybackService
 from .module_timeout import TimeLimitedInputModule
+from .output_capabilities import OutputCapabilityTracker
 from .output_device_router import OutputDeviceRouter
 from .playback_arbiter import PlaybackArbiter
 from .playqueue import PlayQueueImpl
@@ -745,6 +746,7 @@ async def setup(
     renderer_registry: RendererRegistry,
     renderer_prefs: RendererPreferences,
     renderer_sessions: SessionPool,
+    output_capabilities: OutputCapabilityTracker,
     overrides_file: str | None = None,
 ) -> PlayerContext:
     """Setup the player components.
@@ -808,6 +810,7 @@ async def setup(
         plugin_id,
         config=config,
         registry=renderer_registry,
+        capabilities=output_capabilities,
         pool=renderer_sessions,
         arbiter=arbiter,
         device_router=lambda: player_context.device_router,

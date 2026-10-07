@@ -1,6 +1,28 @@
-import pytest
-from kalinka_plugin_upnp.media import Media, UpnpError, format_time, parse_time
+import re
+from pathlib import Path
 
+import pytest
+from kalinka_plugin_upnp.media import (
+    DSD_FORMATS,
+    MIME_TYPES,
+    Media,
+    UpnpError,
+    format_time,
+    parse_time,
+    sink_protocol_info,
+)
+
+NATIVE_PLAYER = Path(__file__).resolve().parents[2].joinpath(
+    "kalinka-renderer", "src", "player", "NativePlayer.cpp"
+)
+DSD_TYPES = [
+    "audio/x-dsf",
+    "audio/dsf",
+    "audio/x-dff",
+    "audio/dff",
+    "audio/dsd",
+    "audio/x-dsd",
+]
 DIDL = """<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"
  xmlns:dc="http://purl.org/dc/elements/1.1/"
  xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">
@@ -11,6 +33,21 @@ DIDL = """<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"
   <res protocolInfo="http-get:*:audio/flac:*" duration="1:02:03.125">http://media.test/audio?key=secret&amp;id=42</res>
  </item>
 </DIDL-Lite>"""
+
+
+@pytest.fixture(scope="module")
+def format_of():
+    """The body of the renderer's formatOf, which picks a decoder per source."""
+    source = NATIVE_PLAYER.read_text()
+    start = source.index("AudioFormat formatOf(")
+    return source[start : source.index("\n}\n", start)]
+
+
+@pytest.fixture(scope="module")
+def renderer_formats(format_of):
+    formats = dict(re.findall(r'\{"([^"]+)",\s*AudioFormat::(\w+)\}', format_of))
+    assert formats
+    return formats
 
 
 def test_didl_uses_the_matching_resource_and_maps_metadata():
@@ -29,6 +66,54 @@ def test_didl_uses_the_matching_resource_and_maps_metadata():
     assert media.metadata == DIDL
 
 
+@pytest.mark.parametrize("declared", DSD_TYPES)
+def test_declared_dsd_reaches_the_renderer_as_dsd(declared, renderer_formats):
+    metadata = DIDL.replace("audio/flac", declared)
+    media = Media.parse("http://media.test/audio?key=secret&id=42", metadata)
+    assert renderer_formats[media.source.format] == "FormatDsd"
+
+
+def test_dsd_is_advertised_only_while_the_renderer_outputs_it():
+    advertised = {
+        dsd: {entry.split(":")[2] for entry in sink_protocol_info(dsd).split(",")}
+        for dsd in (False, True)
+    }
+    assert advertised[True] == MIME_TYPES.keys()
+    assert advertised[True] - advertised[False] == set(DSD_TYPES)
+
+
+def test_every_type_the_renderer_plays_as_dsd_waits_for_dsd_output(
+    renderer_formats,
+):
+    sent_as_dsd = {
+        sent for sent in MIME_TYPES.values() if renderer_formats[sent] == "FormatDsd"
+    }
+    assert sent_as_dsd == DSD_FORMATS
+
+
+def test_every_type_sent_to_the_renderer_selects_the_declared_decoder(
+    renderer_formats,
+):
+    for declared, sent in MIME_TYPES.items():
+        assert sent in renderer_formats, sent
+        if declared in renderer_formats:
+            assert renderer_formats[sent] == renderer_formats[declared], declared
+
+
+def test_every_type_the_renderer_decodes_is_accepted(renderer_formats):
+    assert {name for name in renderer_formats if "/" in name} <= MIME_TYPES.keys()
+
+
+def test_every_url_suffix_the_renderer_decodes_is_accepted(
+    format_of, renderer_formats
+):
+    suffixes = re.findall(r'ends_with\("\.(\w+)"\)', format_of)
+    assert suffixes
+    for suffix in suffixes:
+        media = Media.parse(f"http://media.test/a.{suffix}", "")
+        assert media.source.format in renderer_formats, suffix
+
+
 @pytest.mark.parametrize(
     "extension,format",
     [
@@ -36,6 +121,8 @@ def test_didl_uses_the_matching_resource_and_maps_metadata():
         ("flac", "audio/flac"),
         ("ogg", "audio/ogg"),
         ("oga", "audio/ogg"),
+        ("dsf", "audio/x-dsf"),
+        ("DFF", "audio/x-dff"),
     ],
 )
 def test_missing_metadata_uses_url_path(extension, format):

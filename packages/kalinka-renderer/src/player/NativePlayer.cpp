@@ -1028,3 +1028,7 @@ void NativePlayer::fillSnapshot(pb::StateSnapshot &out) const {
     }
   }
 }
+
+void NativePlayer::fillCapabilities(pb::Capabilities &out) const {
+  out.set_dsd(settings_.at("output.dsd_mode") != "disabled");
+}

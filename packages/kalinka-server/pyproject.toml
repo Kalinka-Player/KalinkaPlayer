@@ -50,8 +50,8 @@ dependencies = [
     # Renderer protocol (renderer_ws_handler.py). The committed generated
     # bindings (renderer_proto/) pin the runtime floor; `make proto` regenerates.
     "protobuf>=7.35,<8",
-    # >=3.8: InputModule.get_track_source, asked when a queued track plays.
-    "kalinka-plugin-sdk>=3.8,<4",
+    # >=3.9: DirectPlayback.watch_output_capabilities, what the renderer can play.
+    "kalinka-plugin-sdk>=3.9,<4",
 ]
 dynamic = ["version"]
 

@@ -68,7 +68,12 @@ ProtocolSession::ProtocolSession(std::string name, const Identity &identity,
     : name_(std::move(name)), identity_(identity),
       friendlyName_(std::move(friendlyName)), services_(std::move(services)) {}
 
-void ProtocolSession::bind(Wire wire) { wire_ = std::move(wire); }
+void ProtocolSession::bind(Wire wire) {
+  wire_ = std::move(wire);
+  if (services_.capabilities) {
+    services_.capabilities->addListener(weak_from_this());
+  }
+}
 
 void ProtocolSession::onUp() {
   pb::Envelope env;
@@ -82,6 +87,10 @@ void ProtocolSession::onUp() {
   hello->set_friendly_name(friendlyName_);
   hello->set_software_version(KALINKA_RENDERER_VERSION);
   hello->set_kind(pb::RENDERER_KIND_NATIVE);
+  capabilitiesMoved_ = false;
+  if (services_.capabilities) {
+    *hello->mutable_capabilities() = services_.capabilities->current();
+  }
   if (const auto session = services_.sessions->current()) {
     // Reported to every Core; only its owner acts on it.
     hello->set_active_session_id(session->sessionId());
@@ -164,6 +173,9 @@ void ProtocolSession::handleWelcome(const pb::Welcome &welcome) {
   spdlog::info("[{}] Registered: server '{}' version {} (api {}, protocol v{})",
                name_, welcome.server_name(), welcome.server_version(),
                welcome.api_version(), welcome.protocol_version());
+  if (capabilitiesMoved_) {
+    sendCapabilities(services_.capabilities->current());
+  }
   if (!coreSpeaksOurProtocol_) {
     spdlog::warn(
         "[{}] Server speaks protocol v{}, this renderer speaks {}-{}; staying "
@@ -353,6 +365,21 @@ bool ProtocolSession::sendSessionMessage(pb::Envelope &env) {
 }
 
 void ProtocolSession::onSessionClosed() { session_.reset(); }
+
+void ProtocolSession::onCapabilitiesChanged(
+    const pb::Capabilities &capabilities) {
+  if (!welcomed_) {
+    capabilitiesMoved_ = true;
+    return;
+  }
+  sendCapabilities(capabilities);
+}
+
+void ProtocolSession::sendCapabilities(const pb::Capabilities &capabilities) {
+  pb::Envelope env;
+  *env.mutable_capabilities_changed()->mutable_capabilities() = capabilities;
+  sendEnvelope(env);
+}
 
 void ProtocolSession::sendEnvelope(pb::Envelope &env) {
   env.set_message_id(nextMessageId_++);

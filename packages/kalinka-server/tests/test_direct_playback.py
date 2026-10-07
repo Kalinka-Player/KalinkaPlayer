@@ -22,6 +22,7 @@ from kalinka_plugin_sdk.datamodel import (
 )
 from kalinka_plugin_sdk.direct_playback import (
     HoldEnded,
+    OutputCapabilities,
     OutputUnavailable,
     RevokeReason,
     TransportKind,
@@ -44,6 +45,7 @@ from kalinka_server import renderer_player, state_keeper
 from kalinka_server.config_model import KalinkaConfig
 from kalinka_server.direct_playback import DirectPlaybackService
 from kalinka_server.external_playback import ExternalPlaybackService
+from kalinka_server.output_capabilities import OutputCapabilityTracker
 from kalinka_server.playback_arbiter import PlaybackArbiter
 from kalinka_server.playqueue import PlayQueueImpl
 from kalinka_server.renderer_output_device import RendererVolumeDevice
@@ -99,6 +101,14 @@ class Listener:
 
     def on_volume(self, volume):
         self.volumes.append(volume)
+
+
+class CapabilitiesListener:
+    def __init__(self):
+        self.told: list[OutputCapabilities] = []
+
+    async def on_output_capabilities(self, capabilities):
+        self.told.append(capabilities)
 
 
 class FakeRouter:
@@ -164,11 +174,17 @@ def device_bus():
 
 
 @pytest.fixture
-def direct(renderer, arbiter, router, device_bus, queue):
+def capabilities(renderer):
+    return OutputCapabilityTracker(renderer.registry)
+
+
+@pytest.fixture
+def direct(renderer, capabilities, arbiter, router, device_bus, queue):
     return DirectPlaybackService(
         "qobuz",
         config=KalinkaConfig(),
         registry=renderer.registry,
+        capabilities=capabilities,
         pool=renderer.pool,
         arbiter=arbiter,
         device_router=lambda: router,
@@ -553,6 +569,7 @@ async def test_without_a_renderer_nothing_is_taken(emitter, arbiter, device_bus)
             "qobuz",
             config=KalinkaConfig(),
             registry=registry,
+            capabilities=OutputCapabilityTracker(registry),
             pool=pool,
             arbiter=arbiter,
             device_router=lambda: FakeRouter(),
@@ -561,8 +578,33 @@ async def test_without_a_renderer_nothing_is_taken(emitter, arbiter, device_bus)
         with pytest.raises(OutputUnavailable):
             await direct.acquire("Qobuz Connect", Listener())
         assert not arbiter.held_by_plugin
+        watcher = CapabilitiesListener()
+        stop = direct.watch_output_capabilities(watcher)
+        await asyncio.sleep(SETTLE_S)
+        assert watcher.told == [OutputCapabilities()]
+        stop()
     finally:
         await playqueue.__aexit__(None, None, None)
+
+
+async def test_a_plugin_follows_what_the_renderer_plays_without_taking_it(
+    renderer, direct, arbiter
+):
+    renderer.announce_capabilities(OutputCapabilities(dsd=True))
+    watcher = CapabilitiesListener()
+
+    stop = direct.watch_output_capabilities(watcher)
+    renderer.announce_capabilities(OutputCapabilities(dsd=False))
+    await asyncio.sleep(SETTLE_S)
+    assert watcher.told == [OutputCapabilities(dsd=True), OutputCapabilities(dsd=False)]
+    assert renderer.session_id is None
+    assert not arbiter.held_by_plugin
+
+    renderer.announce_capabilities(OutputCapabilities(dsd=True))
+    stop()
+    renderer.announce_capabilities(OutputCapabilities(dsd=False))
+    await asyncio.sleep(SETTLE_S)
+    assert watcher.told == [OutputCapabilities(dsd=True), OutputCapabilities(dsd=False)]
 
 
 async def test_a_renderer_another_core_holds_refuses(
@@ -733,6 +775,7 @@ async def test_a_client_joining_mid_hold_is_told_the_queue_is_not_playing(
         "qobuz",
         config=KalinkaConfig(),
         registry=renderer.registry,
+        capabilities=OutputCapabilityTracker(renderer.registry),
         pool=renderer.pool,
         arbiter=arbiter,
         device_router=lambda: FakeRouter(),

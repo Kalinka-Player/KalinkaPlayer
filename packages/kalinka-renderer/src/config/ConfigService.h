@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -22,8 +23,13 @@
  */
 class ConfigService {
 public:
+  /**
+   * @param onApplied Called after a write that applied anything, once all of
+   *                  it is in effect: one setting can move what others report.
+   */
   explicit ConfigService(
-      std::vector<std::shared_ptr<ConfigContributor>> contributors);
+      std::vector<std::shared_ptr<ConfigContributor>> contributors,
+      std::function<void()> onApplied = {});
 
   /**
    * @brief Schema and current values together, so one round trip is a whole
@@ -53,4 +59,5 @@ public:
 
 private:
   std::vector<std::shared_ptr<ConfigContributor>> contributors_;
+  std::function<void()> onApplied_;
 };

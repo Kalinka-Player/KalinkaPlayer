@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Awaitable, Callable, Optional
 
+from kalinka_plugin_sdk.direct_playback import OutputCapabilities
 from kalinka_plugin_sdk.events import RendererDescriptor
 
 from .renderer_link import RendererLink
@@ -55,6 +56,8 @@ class RendererRecord:
     compatible: bool = True
     # Whether the renderer can install a new release of itself on request.
     upgrade_supported: bool = False
+    # What it last said it can play; None from a renderer too old to say.
+    capabilities: Optional[OutputCapabilities] = None
     # The renderer's connection while it has one; compared by identity.
     session: Optional[RendererLink] = field(default=None, repr=False)
 
@@ -107,6 +110,7 @@ class RendererRegistry:
         ] = None
         # None until the first report, so subscribing always states the pair.
         self._last_current: Optional[tuple[Optional[str], Optional[str]]] = None
+        self._observers: list[Callable[[], None]] = []
         self._renderers: dict[str, RendererRecord] = {}
         self._reap_tasks: dict[str, asyncio.Task] = {}
         self._replace_tasks: set[asyncio.Task] = set()
@@ -130,6 +134,7 @@ class RendererRegistry:
         server_addr: Optional[tuple[str, int]] = None,
         compatible: bool = True,
         upgrade_supported: bool = False,
+        capabilities: Optional[OutputCapabilities] = None,
     ) -> RegistrationKind:
         self._cancel_reap(renderer_id)
         now = time.time()
@@ -167,6 +172,7 @@ class RendererRegistry:
             session=session,
             compatible=compatible,
             upgrade_supported=upgrade_supported,
+            capabilities=capabilities,
         )
         logger.info(
             "Renderer %s: '%s' (%s, id=%s)",
@@ -235,6 +241,32 @@ class RendererRegistry:
         self._last_current = None
         self._publish_topology()
 
+    def add_observer(self, observer: Callable[[], None]) -> None:
+        """Also call ``observer`` whenever what plays where may have moved.
+
+        That is a renderer coming, going or reconnecting, a change in what one
+        can play, a selection, or a session taken or given up. It is told
+        nothing: it reads back what it needs, and must not block.
+        """
+        self._observers.append(observer)
+
+    def update_capabilities(
+        self,
+        renderer_id: str,
+        session: RendererLink,
+        capabilities: OutputCapabilities,
+    ) -> None:
+        """What the renderer can play changed; a replaced link is not believed."""
+        record = self._renderers.get(renderer_id)
+        if record is None or record.session is not session:
+            return
+        record.capabilities = capabilities
+        self._notify_observers()
+
+    def _notify_observers(self) -> None:
+        for observer in self._observers:
+            observer()
+
     def _descriptors(self) -> list[RendererDescriptor]:
         return [
             record.descriptor()
@@ -253,6 +285,7 @@ class RendererRegistry:
             self._on_renderers_changed(self._descriptors())
 
     def _publish_current(self) -> None:
+        self._notify_observers()
         current = (self.active_id(), self.selected_id)
         if current == self._last_current:
             return

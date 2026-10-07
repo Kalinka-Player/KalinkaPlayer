@@ -9,7 +9,7 @@ from kalinka_plugin_sdk.datamodel import DeviceVolume, PlaybackState, PlayerStat
 from kalinka_plugin_upnp.media import Media
 from kalinka_plugin_upnp.server import Receiver
 from kalinka_plugin_upnp.services import AVT, CM, DEVICE_TYPE, RCS, SERVICES, SOAP
-from test_media import DIDL
+from test_media import DIDL, DSD_TYPES
 
 
 @pytest.fixture
@@ -201,6 +201,98 @@ async def test_unsupported_media_does_not_interrupt_current_playback(
     )
     assert receiver.playback.active
     direct.sessions[0].release.assert_not_called()
+
+
+@pytest.mark.parametrize("dsd", [None, False, True])
+async def test_dsd_is_advertised_only_while_the_renderer_outputs_it(
+    client, receiver, direct, dsd
+):
+    direct.set_dsd(dsd)
+    protocols = await action(client, receiver, CM, "GetProtocolInfo", {})
+    advertised = {entry.split(":")[2] for entry in protocols["Sink"].split(",")}
+    assert "audio/flac" in advertised
+    assert advertised & set(DSD_TYPES) == (set(DSD_TYPES) if dsd else set())
+
+
+async def test_a_server_that_cannot_tell_leaves_dsd_unadvertised(client):
+    older = SimpleNamespace(acquire=AsyncMock())
+    receiver = Receiver(older, "Kalinka", "127.0.0.1", 0, "uuid:test-device")
+    await receiver.start(advertise=False)
+    try:
+        protocols = await action(client, receiver, CM, "GetProtocolInfo", {})
+        assert "audio/flac" in protocols["Sink"]
+        assert "audio/x-dsf" not in protocols["Sink"]
+    finally:
+        await receiver.close()
+
+
+async def test_a_closed_receiver_stops_watching_the_output(direct):
+    receiver = Receiver(direct, "Kalinka", "127.0.0.1", 0, "uuid:test-device")
+    await receiver.start(advertise=False)
+    assert direct.watchers == [receiver.services]
+    await receiver.close()
+    assert direct.watchers == []
+
+
+async def test_dsd_is_refused_while_the_renderer_does_not_output_it(
+    client, receiver, direct
+):
+    await set_uri(client, receiver)
+    await action(client, receiver, AVT, "Play", {"InstanceID": 0, "Speed": 1})
+    for name, prefix in (
+        ("SetAVTransportURI", "Current"),
+        ("SetNextAVTransportURI", "Next"),
+    ):
+        arguments = {
+            "InstanceID": 0,
+            f"{prefix}URI": "http://media.test/a.dsf",
+            f"{prefix}URIMetaData": "",
+        }
+        assert await action(client, receiver, AVT, name, arguments, status=500) == "714"
+    assert receiver.playback.active
+    assert receiver.playback.current.uri == "http://media.test/audio?key=secret&id=42"
+    assert receiver.playback.next is None
+    direct.sessions[0].play.assert_awaited_once()
+    direct.sessions[0].release.assert_not_called()
+
+
+async def test_controllers_are_told_when_dsd_output_changes(
+    client, receiver, direct, callback
+):
+    url, notifications = callback
+    direct.set_dsd(True)
+    async with client.request(
+        "SUBSCRIBE",
+        endpoint(receiver, "/ConnectionManager/event"),
+        headers={"NT": "upnp:event", "CALLBACK": f"<{url}>"},
+    ) as response:
+        assert response.status == 200
+    _, body = await notification(notifications)
+    assert "audio/x-dsf" in ET.fromstring(body).findtext(".//SinkProtocolInfo")
+    direct.set_dsd(False)
+    _, body = await notification(notifications)
+    sink = ET.fromstring(body).findtext(".//SinkProtocolInfo")
+    assert "audio/flac" in sink
+    assert "audio/x-dsf" not in sink
+
+
+async def test_dsd_url_without_metadata_is_played(client, receiver, direct):
+    direct.set_dsd(True)
+    uri = "http://media.test/Track%2001.dsf"
+    assert (
+        await action(
+            client,
+            receiver,
+            AVT,
+            "SetAVTransportURI",
+            {"InstanceID": 0, "CurrentURI": uri, "CurrentURIMetaData": ""},
+        )
+        == {}
+    )
+    await action(client, receiver, AVT, "Play", {"InstanceID": 0, "Speed": 1})
+    source = direct.sessions[0].play.call_args.args[0]
+    assert source.source.url == uri
+    assert source.format == "audio/x-dsf"
 
 
 async def test_connection_and_rendering_controls(client, receiver, direct):

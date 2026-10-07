@@ -31,8 +31,31 @@ MIME_TYPES = {
     "audio/vorbis": "audio/ogg",
     "audio/x-vorbis": "audio/ogg",
     "audio/x-vorbis+ogg": "audio/ogg",
+    "audio/dsf": "audio/x-dsf",
+    "audio/x-dsf": "audio/x-dsf",
+    "audio/dff": "audio/x-dff",
+    "audio/x-dff": "audio/x-dff",
+    "audio/dsd": "audio/dsd",
+    "audio/x-dsd": "audio/dsd",
 }
-SINK_PROTOCOL_INFO = ",".join(f"http-get:*:{mime}:*" for mime in MIME_TYPES)
+DSD_FORMATS = frozenset({"audio/x-dsf", "audio/x-dff", "audio/dsd"})
+EXTENSION_TYPES = {
+    "mp3": "audio/mpeg",
+    "flac": "audio/flac",
+    "ogg": "audio/ogg",
+    "oga": "audio/ogg",
+    "dsf": "audio/x-dsf",
+    "dff": "audio/x-dff",
+}
+
+
+def sink_protocol_info(dsd: bool) -> str:
+    """The SinkProtocolInfo to advertise; DSD only while the renderer outputs it."""
+    return ",".join(
+        f"http-get:*:{mime}:*"
+        for mime, sent in MIME_TYPES.items()
+        if dsd or sent not in DSD_FORMATS
+    )
 
 
 class UpnpError(Exception):
@@ -126,12 +149,7 @@ class Media:
                 pass
         if mime in ("", "*", "application/octet-stream"):
             extension = unquote(url.path).rsplit(".", 1)[-1].lower()
-            mime = {
-                "mp3": "audio/mpeg",
-                "flac": "audio/flac",
-                "ogg": "audio/ogg",
-                "oga": "audio/ogg",
-            }.get(extension, "")
+            mime = EXTENSION_TYPES.get(extension, "")
         if mime not in MIME_TYPES:
             raise UpnpError(714, "Illegal MIME-type")
 

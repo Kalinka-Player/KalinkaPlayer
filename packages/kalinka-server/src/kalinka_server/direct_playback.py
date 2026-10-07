@@ -27,6 +27,7 @@ from kalinka_plugin_sdk.datamodel import (
 from kalinka_plugin_sdk.direct_playback import (
     DirectPlaybackListener,
     HoldEnded,
+    OutputCapabilitiesListener,
     OutputUnavailable,
     RevokeReason,
     TransportRequest,
@@ -41,6 +42,7 @@ from kalinka_plugin_sdk.inputmodule import TrackSource
 
 from .config_model import KalinkaConfig
 from .module_timeout import PLUGIN_CALL_TIMEOUT_S
+from .output_capabilities import OutputCapabilityTracker
 from .output_device_router import OutputDeviceRouter
 from .playback_arbiter import PlaybackArbiter
 from .playback_view import to_audio_info, to_state_name
@@ -78,6 +80,10 @@ class _ListenerBridge:
     def close(self) -> None:
         """Deliver what is queued, then stop."""
         self._calls.put_nowait(None)
+
+    def cancel(self) -> None:
+        """Stop now; what is queued is never delivered."""
+        self._task.cancel()
 
     async def _deliver(self) -> None:
         while True:
@@ -469,6 +475,7 @@ class DirectPlaybackService:
         *,
         config: KalinkaConfig,
         registry: RendererRegistry,
+        capabilities: OutputCapabilityTracker,
         pool: SessionPool,
         arbiter: PlaybackArbiter,
         device_router: Callable[[], Optional[OutputDeviceRouter]],
@@ -477,6 +484,7 @@ class DirectPlaybackService:
         self._plugin_id = plugin_id
         self._config = config
         self._registry = registry
+        self._capabilities = capabilities
         self._pool = pool
         self._arbiter = arbiter
         self._device_router = device_router
@@ -522,3 +530,17 @@ class DirectPlaybackService:
         self._session = session
         logger.info("%s took renderer %s", self._plugin_id, renderer_id)
         return session
+
+    def watch_output_capabilities(
+        self, listener: OutputCapabilitiesListener
+    ) -> Callable[[], None]:
+        bridge = _ListenerBridge(listener, self._plugin_id)
+        stop_watching = self._capabilities.watch(
+            lambda capabilities: bridge.send("on_output_capabilities", capabilities)
+        )
+
+        def stop() -> None:
+            stop_watching()
+            bridge.cancel()
+
+        return stop

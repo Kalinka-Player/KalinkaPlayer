@@ -149,11 +149,11 @@ classDiagram
     MdnsDiscovery ..> ConnectionManager : endpoints
 ```
 
-`RendererServices` bundles the two shared planes — `SessionManager` and
-`ConfigService` — so every connection reaches them without `main()` re-threading
-constructors.
+`RendererServices` bundles the shared planes — `SessionManager`,
+`ConfigService`, `UpgradeService` and `CapabilityService` — so every connection
+reaches them without `main()` re-threading constructors.
 
-### 2.2 The two planes
+### 2.2 The planes
 
 **Session plane.** Who owns the audio graph, and playback itself. One session at
 a time, opened and closed by a Core.
@@ -165,6 +165,11 @@ name individual paths — so a stale page cannot clobber a field it did not touc
 The renderer owns the values, because Core-side storage would mean whichever
 Core connected last decides, and a renderer with no Core would have no settings
 at all.
+
+**Capability plane.** What the renderer can play right now — today, whether it
+takes DSD. Pushed rather than asked: stated in `Hello`, and restated to every
+connected Core whenever a settings write moves it, whichever Core wrote. A Core
+never reads it out of the settings, whose paths and values are the renderer's.
 
 ### 2.3 Layering
 
@@ -372,6 +377,8 @@ before relying on multi-interface discovery.
      renderer restarted rather than merely reconnected.
    - Registering a `renderer_id` that another live connection already holds
      retires that older connection with `Goodbye(REPLACED)`.
+   - `capabilities` says what you can play now (§4.8). A Core assumes nothing
+     of a renderer that leaves it out.
 3. If a session is running, `Hello` also carries `active_session_id` and
    `session_owner_server_id`. This is broadcast to *every* Core; only the owner
    acts on it. This is the reconnect half of session survival.
@@ -503,13 +510,25 @@ Report, with `Envelope.session_id` set:
   schema, then passes selected values back verbatim; in particular, it does not
   interpret `output.volume_mode` when opening a session.
 
-### 4.8 Goodbye
+### 4.8 Capabilities
+
+- State what you can play in `Hello.capabilities`, and send
+  `CapabilitiesChanged` to every welcomed Core whenever any of it changes,
+  whichever Core's write changed it. Both carry the whole `Capabilities`, never
+  a delta.
+- `dsd`: whether DSD sources are taken at all. The reference renderer says true
+  while `output.dsd_mode` is anything but `disabled`; a track can still fail on
+  the output it meets.
+- A change between `Hello` and `Welcome` goes out as a `CapabilitiesChanged`
+  right after `Welcome`, since nothing may come before it.
+
+### 4.9 Goodbye
 
 Send `Goodbye(REASON_SHUTDOWN)` before closing cleanly. Expect
 `Goodbye(VERSION_UNSUPPORTED | MALFORMED | REPLACED | REJECTED)` from a Core,
 and treat the first and the last as terminal for that endpoint.
 
-### 4.9 Not required
+### 4.10 Not required
 
 Multi-room synchronisation, authentication or pairing, an application-level
 ping/pong (the protocol has none — a dead link is discovered by the WebSocket
@@ -573,8 +592,9 @@ Under `<KALINKA_PREFIX>/var/lib/kalinka-renderer` (`KALINKA_PREFIX` defaults to
 transport (reconnect, generation fencing, queue bounds), protocol session
 (handshake, gating, config routing), session and manager (ownership, grace,
 reattach, shutdown ordering), config service (validation, apply costs),
-state translation, ALSA device naming, and the audio graph — switching,
-concurrency, decoder start offsets, volume-monitor lifetime.
+capability plane (who is told, and when), state translation, ALSA device
+naming, and the audio graph — switching, concurrency, decoder start offsets,
+volume-monitor lifetime.
 
 Playback tests run against the ALSA `null` device, which consumes frames as
 fast as they are written; the cases whose subject is real-time playback skip

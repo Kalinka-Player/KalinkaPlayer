@@ -3,9 +3,10 @@
 // One Envelope per binary WebSocket message on ws://<core>/renderer/ws.
 // This file carries the registration handshake (Hello -> Welcome), the
 // playback-session lifecycle, playback commands, state reporting, renderer
-// configuration and Goodbye. Reserved numbers are never reused, so later
-// additions extend rather than renumber. What an implementation must do with
-// these messages is docs/native-renderer-design.md §4.
+// configuration, what the renderer can play, and Goodbye. Reserved numbers are
+// never reused, so later additions extend rather than renumber. What an
+// implementation must do with these messages is docs/native-renderer-design.md
+// §4.
 
 syntax = "proto3";
 
@@ -35,6 +36,7 @@ message Envelope {
     VolumeChanged volume_changed = 1005;
     PlaybackError playback_error = 1008;
     CommandRejected command_rejected = 1009;
+    CapabilitiesChanged capabilities_changed = 1010;
     SessionOpenResult session_open_result = 1012;
     SessionClosed session_closed = 1014;
     ConfigSnapshot config_snapshot = 1015;
@@ -54,7 +56,7 @@ message Envelope {
 
   // 1004 was audio_format_changed: a format only ever accompanied a state,
   // so it rides on PlaybackStateChanged instead.
-  // 1010 / 1011 stay held for capabilities_changed / ownership_changed.
+  // 1011 stays held for ownership_changed.
   // 1006 / 1007 were output_devices_changed / selected_device_changed: the
   // device list is configuration, not state, and lives in ConfigSnapshot now.
   // They stay held in case hot-plug ever needs to be pushed.
@@ -206,7 +208,9 @@ message Hello {
   string software_version = 5;
   RendererKind kind = 6;
   Platform platform = 7;
-  // 8-10 held for capabilities / supported_controls / state (full design).
+  // What the renderer can play now; absent from a renderer that predates it.
+  Capabilities capabilities = 8;
+  // 9-10 held for supported_controls / state (full design).
 
   // Playback session the renderer is currently running, if any. Reported to
   // every Core; only the one whose server_id matches acts on it.
@@ -218,6 +222,19 @@ message Hello {
   // some other way (flatpak, from source), which a Core must not offer to
   // upgrade.
   bool upgrade_supported = 13;
+}
+
+// What the renderer can play right now, stated whole every time: in Hello, then
+// in a CapabilitiesChanged to every welcomed Core whenever it changes, whichever
+// Core's settings write changed it.
+message Capabilities {
+  // DSD sources are taken rather than refused outright. A given track can
+  // still fail on the output it meets.
+  bool dsd = 1;
+}
+
+message CapabilitiesChanged {
+  Capabilities capabilities = 1;
 }
 
 // Core's response to a valid Hello.
