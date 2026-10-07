@@ -150,9 +150,10 @@ class RendererVolumeDevice(ExternalOutputDevice):
         return None
 
     def supported_functions(self) -> list[SupportedFunction]:
+        # Fixed output still reads: backend none is how clients know it is bit-perfect.
         if self._volume_for(self._registry.active_id()).supported:
             return [SupportedFunction.GET_VOLUME, SupportedFunction.SET_VOLUME]
-        return []
+        return [SupportedFunction.GET_VOLUME]
 
     # ------------------------------------------------------------------ internals
     async def _on_session_open(self, session: PlaybackSession) -> None:

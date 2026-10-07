@@ -167,7 +167,7 @@ async def test_unsupported_volume_reported(renderer, bus):
     try:
         session = await renderer.pool.open(SimRenderer.RENDERER_ID)
         await asyncio.sleep(SETTLE_S)
-        assert device.supported_functions() == []
+        assert device.supported_functions() == [SupportedFunction.GET_VOLUME]
         assert (await device.get_volume()).supported is False
         await session.close()
     finally:

@@ -3,7 +3,7 @@
 import asyncio
 
 from kalinka_eventbus import EventBus
-from kalinka_plugin_sdk.datamodel import DeviceVolume
+from kalinka_plugin_sdk.datamodel import DeviceVolume, VolumeBackend
 from kalinka_plugin_sdk.ext_device import SupportedFunction
 from kalinka_plugin_sdk.ext_device_events import (
     ExtDeviceEvent,
@@ -17,9 +17,12 @@ from kalinka_server.player_setup import (
     volume_control_modules,
 )
 from kalinka_server.output_device_router import OutputDeviceRouter
+from kalinka_server.renderer_output_device import RendererVolumeDevice
 from kalinka_server.renderer_prefs import RendererPreferences
 from kalinka_server.renderer_registry import RendererRegistry
-from kalinka_server.renderer_sessions import SessionVolumePolicy
+from kalinka_server.renderer_sessions import SessionPool, SessionVolumePolicy
+
+from tests.sim_renderer import SimRenderer
 
 
 class _Device:
@@ -344,6 +347,39 @@ async def test_resync_publishes_the_new_owners_state():
     await router.resync()
     assert bus.get_snapshot().volume.current_volume == 70
     await registry.shutdown()
+
+
+async def test_resync_keeps_a_fixed_renderers_untouched_volume():
+    """Fixed output has no level to set, yet backend none is what tells a client
+    the samples are untouched; a switch's resync must not blank it to unknown."""
+    registry = RendererRegistry(offline_timeout_s=30.0)
+    pool = SessionPool(registry, "test-server-id")
+    renderer = SimRenderer(registry, pool)
+    renderer.volume = 100
+    renderer.volume_supported = False
+    renderer.connect()
+    registry.select(SimRenderer.RENDERER_ID)
+    bus = _bus()
+    device = await RendererVolumeDevice(registry, pool, bus).start()
+    router = OutputDeviceRouter(
+        registry,
+        RendererPreferences(),
+        lambda: {"kalinka-renderer": _prepared(device)},
+        bus,
+    )
+    try:
+        session = await pool.open(SimRenderer.RENDERER_ID)
+        await asyncio.sleep(0.05)
+        await router.resync()
+
+        volume = bus.get_snapshot().volume
+        assert volume.backend is VolumeBackend.NONE
+        assert volume.supported is False
+        await session.close()
+    finally:
+        await device.shutdown()
+        bus.close()
+        await registry.shutdown()
 
 
 async def test_resync_reports_no_volume_when_the_owner_is_down():
