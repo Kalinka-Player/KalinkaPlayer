@@ -410,6 +410,14 @@ async def init_db(db_path: str) -> None:
             """
         )
 
+        # Tracks by location — a folder's contents are a range of it.
+        await cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_tracks_file_path
+            ON tracks (file_path)
+            """
+        )
+
         # ---------------------------------------------------------------
         # Views
         # ---------------------------------------------------------------

@@ -34,6 +34,8 @@ _NETWORK_FS = {
     "afpfs",
 }
 
+_SMB_FS = {"cifs", "smb3", "smbfs"}
+
 
 @dataclass(frozen=True)
 class Mount:
@@ -124,6 +126,14 @@ def is_network_fs(fs_type: str) -> bool:
     """Whether a server, rather than a disk on this machine, answers for a
     filesystem of this type."""
     return fs_type.startswith("nfs") or fs_type in _NETWORK_FS
+
+
+def share_protocol(fs_type: str) -> Optional[str]:
+    """The protocol a user knows a mounted share by, as "SMB" or "NFS"; None
+    for any other filesystem."""
+    if fs_type.startswith("nfs"):
+        return "NFS"
+    return "SMB" if fs_type in _SMB_FS else None
 
 
 def autofs_pending(root: str, mounts: Optional[list[Mount]] = None) -> bool:

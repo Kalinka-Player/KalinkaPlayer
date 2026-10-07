@@ -15,9 +15,12 @@ from __future__ import annotations
 import io
 import logging
 import os
+import threading
 from enum import Enum, auto
+from pathlib import Path
 from typing import BinaryIO, Optional, Tuple, Union
 
+from kalinka_plugin_sdk.datamodel import CoverImage
 from PIL import Image
 
 from .watched_file import WatchedFile
@@ -26,6 +29,24 @@ logger = logging.getLogger(__name__.split(".")[-1])
 
 _SIZES = (("thumbnail", 50), ("small", 230), ("large", 600))
 _LARGEST = max(size for _, size in _SIZES)
+
+
+def artwork_file(
+    artwork_path: Union[str, os.PathLike], entity_type: str, image_id: str, size: str
+) -> Path:
+    """Where one size of a stored image set is."""
+    return Path(artwork_path) / entity_type / f"{image_id}_{size}.jpg"
+
+
+def served_cover(entity_type: str, image_id: str) -> CoverImage:
+    """The URLs the server answers a stored image set at, through the
+    module's ``get_resource_path``."""
+    base = f"/resource/{entity_type}/{image_id}"
+    return CoverImage(
+        thumbnail=f"{base}_thumbnail.jpg",
+        small=f"{base}_small.jpg",
+        large=f"{base}_large.jpg",
+    )
 
 
 class ArtworkSave(Enum):
@@ -71,7 +92,9 @@ def store_artwork_images(
     try:
         with Image.open(io.BytesIO(image_data)) as img:
             decoded = _decoded(img, None)
-            return _save_resized(decoded, artwork_path, entity_id, entity_type, origin)
+            return store_decoded_image(
+                decoded, artwork_path, entity_id, entity_type, origin
+            )
     except Exception as e:  # noqa: BLE001 - reported as the outcome
         _log_failure(entity_type, entity_id, origin, e)
         return ArtworkSave.UNDECODABLE
@@ -107,7 +130,9 @@ def store_artwork_from_file(
         with Image.open(watched) as img:
             img.draft("RGB", (_LARGEST, _LARGEST))
             decoded = _decoded(img, box)
-            return _save_resized(decoded, artwork_path, entity_id, entity_type, origin)
+            return store_decoded_image(
+                decoded, artwork_path, entity_id, entity_type, origin
+            )
     except Exception as e:  # noqa: BLE001 - reported as the outcome
         _log_failure(entity_type, entity_id, origin, e)
         if watched.read_error is not None:
@@ -152,28 +177,40 @@ def _cropped(
     )
 
 
-def _save_resized(
+def store_decoded_image(
     img: Image.Image,
     artwork_path: Union[str, os.PathLike],
     entity_id: str,
     entity_type: str,
-    origin: Optional[str],
+    origin: Optional[str] = None,
 ) -> ArtworkSave:
     """Write one decoded RGB image out in every size. Never raises: the
     picture is already decoded, so a failure here is the artwork
-    directory's."""
+    directory's.
+
+    Each size is written beside its name and moved into place, so a reader
+    never sees one half written — the server sending a cover composed a
+    moment ago included.
+    """
     try:
         dir_path = os.path.join(artwork_path, entity_type)
         os.makedirs(dir_path, exist_ok=True)
         for suffix, size in _SIZES:
             copy = img.copy()
             copy.thumbnail((size, size), Image.Resampling.LANCZOS)
-            copy.save(
-                os.path.join(dir_path, f"{entity_id}_{suffix}.jpg"),
-                "JPEG",
-                quality=90,
-            )
+            _write_jpeg(copy, os.path.join(dir_path, f"{entity_id}_{suffix}.jpg"))
     except Exception as e:  # noqa: BLE001 - reported as the outcome
         _log_failure(entity_type, entity_id, origin, e)
         return ArtworkSave.IO_FAILED
     return ArtworkSave.SAVED
+
+
+def _write_jpeg(img: Image.Image, target: str) -> None:
+    partial = f"{target}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        img.save(partial, "JPEG", quality=90)
+        os.replace(partial, target)
+    except BaseException:
+        if os.path.exists(partial):
+            os.unlink(partial)
+        raise
