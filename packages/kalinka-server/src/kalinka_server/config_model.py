@@ -90,10 +90,13 @@ class ServerConfig(BaseModel):
         default=8000,
         title="Port",
         json_schema_extra={
-            "help": "Port the app uses to connect to this server",
+            "help": (
+                "Port the app uses to connect to this server. After a change, "
+                "apps, browsers and renderers given this address by hand must "
+                "be pointed at the new port"
+            ),
             "widget": "number_input",
             "constraints": {"ge": 1, "le": 65535},
-            **_SIMPLE,
         },
     )
     log_level: LogLevel = Field(
