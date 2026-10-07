@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from kalinka_plugin_sdk.direct_playback import OutputCapabilities
 from kalinka_server.renderer_proto import renderer_pb2 as pb
 from kalinka_server.renderer_registry import RendererRegistry
 from kalinka_server.renderer_sessions import SessionPool
@@ -65,11 +66,13 @@ class SimRenderer:
         # Set accept=False to play a renderer another Core already holds.
         self.accept = True
         self.busy_owner = "another-core"
-        # A RendererConfigService to answer config requests and updates
-        # through; without it they are never acknowledged (the caller times out).
+        # A RendererConfigService to answer config updates through; without it
+        # updates are recorded but never acknowledged (the caller times out).
         self.configs = None
-        # None plays a renderer with no DSD setting at all.
-        self.dsd_mode: Optional[str] = "disabled"
+        # What Hello says it can play; None plays a renderer too old to say.
+        self.capabilities: Optional[OutputCapabilities] = OutputCapabilities(
+            dsd=False
+        )
         self._message_id = 0
         # The address this renderer reached the server on, as the ws handler
         # records it; content URLs are minted against it.
@@ -86,6 +89,7 @@ class SimRenderer:
             session=self,
             compatible=compatible,
             server_addr=self.server_addr,
+            capabilities=self.capabilities,
         )
 
     # ------------------------------------------------------------------
@@ -175,20 +179,6 @@ class SimRenderer:
         self._message_id += 1
         return self._message_id
 
-    async def send_config_request(self, message_id: int) -> None:
-        if self.configs is None:
-            return
-        snapshot = pb.ConfigSnapshot()
-        section = snapshot.sections.add()
-        section.path = "output"
-        if self.dsd_mode is not None:
-            field = section.fields.add()
-            field.path = "output.dsd_mode"
-            field.type = pb.CONFIG_FIELD_TYPE_ENUM
-            field.value = self.dsd_mode
-            field.default_value = "disabled"
-        self.configs.handle_reply(self.RENDERER_ID, self, message_id, snapshot)
-
     async def send_config_update(self, message_id: int, changes: dict) -> None:
         self.config_updates.append(dict(changes))
         if self.configs is None:
@@ -217,6 +207,11 @@ class SimRenderer:
         else:
             self.finished = True
             self._emit_state(pb.PLAYBACK_STATE_FINISHED, ended)
+
+    def announce_capabilities(self, capabilities: OutputCapabilities) -> None:
+        """What it can play changed, as its CapabilitiesChanged says."""
+        self.capabilities = capabilities
+        self.registry.update_capabilities(self.RENDERER_ID, self, capabilities)
 
     def report_position(self, position_ms: int) -> None:
         """The current track has reached position_ms."""

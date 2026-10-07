@@ -3,6 +3,7 @@
 import asyncio
 
 import pytest
+from kalinka_plugin_sdk.direct_playback import OutputCapabilities
 
 from kalinka_server.renderer_registry import (
     RegistrationKind,
@@ -412,3 +413,57 @@ async def test_claiming_and_releasing_a_session_tell_clients():
     registry.session_released("rid-b")
     assert events == [("current", "rid-a", "rid-a")]
     await registry.shutdown()
+
+
+async def test_an_observer_hears_of_a_reconnect_clients_are_not_told_of():
+    registry = RendererRegistry()
+    _register(registry, object())
+    events = _wire(registry)
+    links = []
+    registry.add_observer(lambda: links.append(registry.live_session("rid-1")))
+    replacement = object()
+
+    _register(registry, replacement)
+
+    assert [e[0] for e in events] == ["renderers"]
+    assert links == [replacement]
+
+
+async def test_an_observer_hears_of_every_move_of_playback():
+    registry = RendererRegistry(offline_timeout_s=60)
+    a = object()
+    _register(registry, a, renderer_id="rid-a")
+    _register(registry, object(), renderer_id="rid-b")
+    moves = []
+    registry.add_observer(lambda: moves.append(registry.active_id()))
+
+    registry.select("rid-b")
+    registry.session_claimed("rid-a")
+    registry.session_released("rid-a")
+    registry.disconnect("rid-a", a, clean=True)
+
+    assert moves == ["rid-b", "rid-a", "rid-b", "rid-b"]
+    await registry.shutdown()
+
+
+async def test_what_a_renderer_says_it_plays_is_kept_and_observed():
+    registry = RendererRegistry()
+    link = object()
+    registry.register(
+        renderer_id="rid-1",
+        instance_id="inst-1",
+        friendly_name="Test Renderer",
+        software_version="0.1.0",
+        kind="native",
+        platform={},
+        session=link,
+        capabilities=OutputCapabilities(dsd=False),
+    )
+    told = []
+    registry.add_observer(lambda: told.append(registry.get("rid-1").capabilities))
+
+    registry.update_capabilities("rid-1", link, OutputCapabilities(dsd=True))
+    registry.update_capabilities("rid-1", object(), OutputCapabilities(dsd=False))
+    registry.update_capabilities("nobody", link, OutputCapabilities(dsd=False))
+
+    assert told == [OutputCapabilities(dsd=True)]

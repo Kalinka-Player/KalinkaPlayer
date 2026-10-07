@@ -4,6 +4,8 @@ import logging
 from dataclasses import dataclass, field
 from xml.etree import ElementTree as ET
 
+from kalinka_plugin_sdk.direct_playback import OutputCapabilities
+
 from .media import (
     DSD_FORMATS,
     Media,
@@ -345,23 +347,13 @@ class Services:
     def __init__(self, playback: Playback):
         self.playback = playback
         self.dsd = False
-        self._dsd_asked = 0
 
-    async def refresh_dsd(self):
-        """Ask whether the renderer outputs DSD; a change is evented to controllers."""
-        self._dsd_asked += 1
-        asked = self._dsd_asked
-        try:
-            dsd = (await self.playback.direct.output_capabilities()).dsd is True
-        except Exception as exc:  # noqa: BLE001 - an older server lacks the call
-            logger.warning("UPnP could not ask about DSD (%s)", type(exc).__name__)
-            dsd = False
-        # Answers can arrive out of order; one asked before a later question
-        # may predate a change of DSD mode.
-        if asked == self._dsd_asked and dsd != self.dsd:
+    def on_output_capabilities(self, capabilities: OutputCapabilities):
+        """Offer DSD only while the renderer outputs it; a change is evented."""
+        dsd = capabilities.dsd is True
+        if dsd != self.dsd:
             self.dsd = dsd
             self.playback.changed(CM.name)
-        return dsd
 
     def snapshot(self, service):
         p = self.playback
@@ -459,11 +451,7 @@ class Services:
                     arguments[f"{prefix}URIMetaData"],
                 )
                 media = Media.parse(uri, metadata) if uri else None
-                if (
-                    media
-                    and media.source.format in DSD_FORMATS
-                    and not await self.refresh_dsd()
-                ):
+                if media and media.source.format in DSD_FORMATS and not self.dsd:
                     logger.info("UPnP refused DSD: renderer DSD output is not on")
                     raise UpnpError(714, "DSD output is not on at the renderer")
                 await p.command("set_uri" if prefix == "Current" else "set_next", media)
@@ -499,8 +487,6 @@ class Services:
                 name == "SelectPreset" and arguments["PresetName"] != "FactoryDefaults"
             ):
                 raise UpnpError(701, "Invalid Name")
-        elif name == "GetProtocolInfo":
-            await self.refresh_dsd()
         elif name == "GetCurrentConnectionInfo":
             if int(arguments["ConnectionID"]) != 0:
                 raise UpnpError(706, "Invalid connection reference")

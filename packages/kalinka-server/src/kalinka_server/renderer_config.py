@@ -100,19 +100,6 @@ def snapshot_to_dict(snapshot) -> dict:
     }
 
 
-def setting_value(snapshot: dict, path: str) -> Optional[str]:
-    """A field's value in a settings payload, or None when the renderer has none."""
-    return next(
-        (
-            field["value"]
-            for section in snapshot["sections"]
-            for field in section["fields"]
-            if field["path"] == path
-        ),
-        None,
-    )
-
-
 def result_to_dict(result) -> dict:
     return {
         "config_version": result.config_version,

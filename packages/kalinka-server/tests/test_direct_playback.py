@@ -45,9 +45,9 @@ from kalinka_server import renderer_player, state_keeper
 from kalinka_server.config_model import KalinkaConfig
 from kalinka_server.direct_playback import DirectPlaybackService
 from kalinka_server.external_playback import ExternalPlaybackService
+from kalinka_server.output_capabilities import OutputCapabilityTracker
 from kalinka_server.playback_arbiter import PlaybackArbiter
 from kalinka_server.playqueue import PlayQueueImpl
-from kalinka_server.renderer_config import RendererConfigService
 from kalinka_server.renderer_output_device import RendererVolumeDevice
 from kalinka_server.renderer_registry import RendererRegistry
 from kalinka_server.renderer_sessions import RendererBusy, SessionPool
@@ -101,6 +101,14 @@ class Listener:
 
     def on_volume(self, volume):
         self.volumes.append(volume)
+
+
+class CapabilitiesListener:
+    def __init__(self):
+        self.told: list[OutputCapabilities] = []
+
+    async def on_output_capabilities(self, capabilities):
+        self.told.append(capabilities)
 
 
 class FakeRouter:
@@ -166,19 +174,17 @@ def device_bus():
 
 
 @pytest.fixture
-def configs(renderer):
-    configs = RendererConfigService(renderer.registry, timeout_s=0.2)
-    renderer.configs = configs
-    return configs
+def capabilities(renderer):
+    return OutputCapabilityTracker(renderer.registry)
 
 
 @pytest.fixture
-def direct(renderer, configs, arbiter, router, device_bus, queue):
+def direct(renderer, capabilities, arbiter, router, device_bus, queue):
     return DirectPlaybackService(
         "qobuz",
         config=KalinkaConfig(),
         registry=renderer.registry,
-        renderer_configs=configs,
+        capabilities=capabilities,
         pool=renderer.pool,
         arbiter=arbiter,
         device_router=lambda: router,
@@ -563,7 +569,7 @@ async def test_without_a_renderer_nothing_is_taken(emitter, arbiter, device_bus)
             "qobuz",
             config=KalinkaConfig(),
             registry=registry,
-            renderer_configs=RendererConfigService(registry),
+            capabilities=OutputCapabilityTracker(registry),
             pool=pool,
             arbiter=arbiter,
             device_router=lambda: FakeRouter(),
@@ -572,44 +578,33 @@ async def test_without_a_renderer_nothing_is_taken(emitter, arbiter, device_bus)
         with pytest.raises(OutputUnavailable):
             await direct.acquire("Qobuz Connect", Listener())
         assert not arbiter.held_by_plugin
-        assert await direct.output_capabilities() == OutputCapabilities()
+        watcher = CapabilitiesListener()
+        stop = direct.watch_output_capabilities(watcher)
+        await asyncio.sleep(SETTLE_S)
+        assert watcher.told == [OutputCapabilities()]
+        stop()
     finally:
         await playqueue.__aexit__(None, None, None)
 
 
-@pytest.mark.parametrize(
-    "dsd_mode,dsd",
-    [
-        ("auto", True),
-        ("native", True),
-        ("dop", True),
-        ("disabled", False),
-        ("", False),
-        (None, False),
-    ],
-)
-async def test_the_renderer_dsd_setting_is_told_without_taking_the_output(
-    renderer, direct, arbiter, dsd_mode, dsd
+async def test_a_plugin_follows_what_the_renderer_plays_without_taking_it(
+    renderer, direct, arbiter
 ):
-    renderer.dsd_mode = dsd_mode
-    assert await direct.output_capabilities() == OutputCapabilities(dsd=dsd)
+    renderer.announce_capabilities(OutputCapabilities(dsd=True))
+    watcher = CapabilitiesListener()
+
+    stop = direct.watch_output_capabilities(watcher)
+    renderer.announce_capabilities(OutputCapabilities(dsd=False))
+    await asyncio.sleep(SETTLE_S)
+    assert watcher.told == [OutputCapabilities(dsd=True), OutputCapabilities(dsd=False)]
     assert renderer.session_id is None
     assert not arbiter.held_by_plugin
 
-
-async def test_a_renderer_that_does_not_answer_leaves_dsd_unknown(renderer, direct):
-    renderer.configs = None
-    assert await direct.output_capabilities() == OutputCapabilities()
-
-
-async def test_a_socket_failing_mid_question_leaves_dsd_unknown(
-    renderer, direct, monkeypatch
-):
-    async def closed(message_id):
-        raise RuntimeError("Cannot call send once a close message has been sent")
-
-    monkeypatch.setattr(renderer, "send_config_request", closed)
-    assert await direct.output_capabilities() == OutputCapabilities()
+    renderer.announce_capabilities(OutputCapabilities(dsd=True))
+    stop()
+    renderer.announce_capabilities(OutputCapabilities(dsd=False))
+    await asyncio.sleep(SETTLE_S)
+    assert watcher.told == [OutputCapabilities(dsd=True), OutputCapabilities(dsd=False)]
 
 
 async def test_a_renderer_another_core_holds_refuses(
@@ -780,7 +775,7 @@ async def test_a_client_joining_mid_hold_is_told_the_queue_is_not_playing(
         "qobuz",
         config=KalinkaConfig(),
         registry=renderer.registry,
-        renderer_configs=RendererConfigService(renderer.registry),
+        capabilities=OutputCapabilityTracker(renderer.registry),
         pool=renderer.pool,
         arbiter=arbiter,
         device_router=lambda: FakeRouter(),

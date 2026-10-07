@@ -19,9 +19,11 @@ DSDIFF; DST-compressed `.dff` is refused. See the
 While DSD output is Disabled, its default, DSD is neither advertised nor
 accepted: a controller that converts DSD to PCM for such a renderer keeps
 doing so, and one that sends DSD anyway gets fault 714 without interrupting
-playback. The plugin asks the renderer when a controller reads the protocol
-list, subscribes to ConnectionManager or sends a DSD track, and events a change
-to subscribers. With DSD output on, a track the renderer still cannot play
+playback. The renderer tells Kalinka whenever the setting changes, from any
+Kalinka server, and the plugin events the new protocol list to ConnectionManager
+subscribers at once; playback moving to another renderer does the same. A
+renderer from 0.7.0 or earlier does not say, so DSD is not offered through it.
+With DSD output on, a track the renderer still cannot play
 stops the transport with `ERROR_OCCURRED`, and Kalinka's player state gives the
 renderer's reason. This requires SDK 3.9.
 

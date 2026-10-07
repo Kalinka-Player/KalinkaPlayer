@@ -12,15 +12,7 @@ from .discovery import SERVER, Discovery
 from .events import Eventing
 from .media import UpnpError
 from .playback import Playback
-from .services import (
-    CM,
-    SERVICES,
-    SOAP,
-    Services,
-    description,
-    soap_fault,
-    soap_response,
-)
+from .services import SERVICES, SOAP, Services, description, soap_fault, soap_response
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +27,7 @@ class Receiver:
         self.client = self.eventing = self.discovery = self.runner = self.publisher = (
             None
         )
+        self.unwatch = None
         self.dirty = set()
         self.last_events = {}
         self.closed = False
@@ -53,6 +46,7 @@ class Receiver:
             self.client = ClientSession(timeout=ClientTimeout(total=3), trust_env=False)
             self.eventing = Eventing(self.client, self.services.event)
             self.playback.start()
+            self._watch_output()
             self.runner = web.AppRunner(self.app, access_log=None, shutdown_timeout=2)
             await self.runner.setup()
             site = web.TCPSite(self.runner, self.host, self.port)
@@ -70,6 +64,13 @@ class Receiver:
             await self.close()
             raise
 
+    def _watch_output(self):
+        watch = getattr(self.playback.direct, "watch_output_capabilities", None)
+        if watch is None:  # a server before SDK 3.9 cannot tell; DSD stays off
+            logger.warning("UPnP cannot learn whether the renderer outputs DSD")
+            return
+        self.unwatch = watch(self.services)
+
     async def device_description(self, request):
         return self.xml_response(description(self.name, self.udn))
 
@@ -83,8 +84,7 @@ class Receiver:
         return self.xml_response(self.service(request).scpd())
 
     async def subscribe(self, request):
-        if self.service(request) is CM and request.method == "SUBSCRIBE":
-            await self.services.refresh_dsd()
+        self.service(request)
         return await self.eventing.handle(request)
 
     async def control(self, request):
@@ -159,6 +159,8 @@ class Receiver:
         if self.closed:
             return
         self.closed = True
+        if self.unwatch:
+            self.unwatch()
         if self.publisher:
             self.publisher.cancel()
             await asyncio.gather(self.publisher, return_exceptions=True)

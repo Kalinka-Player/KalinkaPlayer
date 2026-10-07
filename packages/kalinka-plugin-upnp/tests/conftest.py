@@ -33,12 +33,16 @@ class FakeDirect:
     def __init__(self):
         self.sessions = []
         self.acquire = AsyncMock(side_effect=self._acquire)
-        self.output_capabilities = AsyncMock(
-            return_value=OutputCapabilities(dsd=False)
-        )
+        self.watchers = []
+
+    def watch_output_capabilities(self, listener):
+        self.watchers.append(listener)
+        listener.on_output_capabilities(OutputCapabilities())
+        return lambda: self.watchers.remove(listener)
 
     def set_dsd(self, dsd):
-        self.output_capabilities.return_value = OutputCapabilities(dsd=dsd)
+        for listener in self.watchers:
+            listener.on_output_capabilities(OutputCapabilities(dsd=dsd))
 
     async def _acquire(self, title, listener):
         hold = FakeHold(listener)

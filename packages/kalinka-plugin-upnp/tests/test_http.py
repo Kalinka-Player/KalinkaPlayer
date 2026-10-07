@@ -6,7 +6,6 @@ from xml.etree import ElementTree as ET
 import pytest
 from aiohttp import ClientSession, web
 from kalinka_plugin_sdk.datamodel import DeviceVolume, PlaybackState, PlayerStateEnum
-from kalinka_plugin_sdk.direct_playback import OutputCapabilities
 from kalinka_plugin_upnp.media import Media
 from kalinka_plugin_upnp.server import Receiver
 from kalinka_plugin_upnp.services import AVT, CM, DEVICE_TYPE, RCS, SERVICES, SOAP
@@ -215,39 +214,24 @@ async def test_dsd_is_advertised_only_while_the_renderer_outputs_it(
     assert advertised & set(DSD_TYPES) == (set(DSD_TYPES) if dsd else set())
 
 
-async def test_a_server_that_cannot_answer_leaves_dsd_unadvertised(
-    client, receiver, direct
-):
-    direct.output_capabilities.side_effect = AttributeError
-    protocols = await action(client, receiver, CM, "GetProtocolInfo", {})
-    assert "audio/flac" in protocols["Sink"]
-    assert "audio/x-dsf" not in protocols["Sink"]
-    async with client.request(
-        "SUBSCRIBE",
-        endpoint(receiver, "/ConnectionManager/event"),
-        headers={"NT": "upnp:event", "CALLBACK": "<http://127.0.0.1:9/>"},
-    ) as response:
-        assert response.status == 200
+async def test_a_server_that_cannot_tell_leaves_dsd_unadvertised(client):
+    older = SimpleNamespace(acquire=AsyncMock())
+    receiver = Receiver(older, "Kalinka", "127.0.0.1", 0, "uuid:test-device")
+    await receiver.start(advertise=False)
+    try:
+        protocols = await action(client, receiver, CM, "GetProtocolInfo", {})
+        assert "audio/flac" in protocols["Sink"]
+        assert "audio/x-dsf" not in protocols["Sink"]
+    finally:
+        await receiver.close()
 
 
-async def test_an_answer_overtaken_by_a_later_question_is_not_kept(receiver, direct):
-    gates = {False: asyncio.Event(), True: asyncio.Event()}
-    answers = iter(gates)
-
-    async def answer():
-        dsd = next(answers)
-        await gates[dsd].wait()
-        return OutputCapabilities(dsd=dsd)
-
-    direct.output_capabilities.side_effect = answer
-    before_the_switch = asyncio.create_task(receiver.services.refresh_dsd())
-    after_the_switch = asyncio.create_task(receiver.services.refresh_dsd())
-    await asyncio.sleep(0)
-    gates[True].set()
-    await after_the_switch
-    gates[False].set()
-    await before_the_switch
-    assert receiver.services.dsd is True
+async def test_a_closed_receiver_stops_watching_the_output(direct):
+    receiver = Receiver(direct, "Kalinka", "127.0.0.1", 0, "uuid:test-device")
+    await receiver.start(advertise=False)
+    assert direct.watchers == [receiver.services]
+    await receiver.close()
+    assert direct.watchers == []
 
 
 async def test_dsd_is_refused_while_the_renderer_does_not_output_it(
@@ -286,7 +270,6 @@ async def test_controllers_are_told_when_dsd_output_changes(
     _, body = await notification(notifications)
     assert "audio/x-dsf" in ET.fromstring(body).findtext(".//SinkProtocolInfo")
     direct.set_dsd(False)
-    await action(client, receiver, CM, "GetProtocolInfo", {})
     _, body = await notification(notifications)
     sink = ET.fromstring(body).findtext(".//SinkProtocolInfo")
     assert "audio/flac" in sink

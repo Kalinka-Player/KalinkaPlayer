@@ -90,6 +90,7 @@ from .device_ws_handler import (
 from .renderer_link import RendererLink
 from .renderer_ws_handler import handle_renderer_connection
 from .renderer_config import RendererConfigService
+from .output_capabilities import OutputCapabilityTracker
 from .renderer_core_settings import (
     DEVICE_MODULE_PATH,
     RENDERER_ITSELF,
@@ -448,6 +449,7 @@ async def create_app(
     renderer_sessions = SessionPool(renderer_registry, get_server_id())
     renderer_registry.set_on_removed(renderer_sessions.handle_renderer_removed)
     renderer_configs = RendererConfigService(renderer_registry)
+    output_capabilities = OutputCapabilityTracker(renderer_registry)
     renderer_upgrades = RendererUpgradeService(
         renderer_registry,
         lambda renderer_id: renderer_sessions.get(renderer_id) is not None,
@@ -463,7 +465,7 @@ async def create_app(
         renderer_registry,
         renderer_prefs,
         renderer_sessions,
-        renderer_configs,
+        output_capabilities,
         app.state.overrides_file,
     )
     logger.info("Input modules found: %s", list(modules.prepared_input_modules.keys()))
