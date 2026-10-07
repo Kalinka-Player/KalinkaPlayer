@@ -317,8 +317,8 @@ TEST_F(AlsaAudioEmitterTest, a_playing_state_names_what_the_device_opened) {
       waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING);
   ASSERT_TRUE(state.streamInfo.has_value());
   ASSERT_TRUE(state.deviceInfo.has_value());
-  // The null device takes whatever it is handed, so the two agree here. The
-  // field earns its place on a device that substitutes, which this is not.
+  // The null device takes whatever it is handed. On an S32-only DAC the 16-bit
+  // sine is padded, and the bits must still agree or bit-perfect reads false.
   EXPECT_EQ(state.deviceInfo->format.sampleRate,
             state.streamInfo->format.sampleRate);
   EXPECT_EQ(state.deviceInfo->format.bitsPerSample,
