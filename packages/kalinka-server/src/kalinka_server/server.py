@@ -54,10 +54,10 @@ from .collections.store import CollectionStore
 from .config_secrets import secret_values
 from .content_route import register_content_route
 from .demo_mode import (
+    DEMO_QUEUE,
     DemoReadOnlyGate,
     DemoWriteThrottle,
     page_banners,
-    refuse_beyond_queue_limit,
 )
 from .demo_renderer import DemoRenderer
 from .log_export_route import register_log_export_routes
@@ -65,6 +65,7 @@ from .log_export_service import ExportManager
 from .log_sources import FileCatalog, JournalCatalog
 from .logging_setup import stream_is_journal
 from .queue_add import tracks_for
+from .queue_limit import QUEUE
 from .search_route import register_search_routes
 from .upgrade_route import register_upgrade_routes
 from .suggestions import SuggestionEngine, SuggestionList
@@ -730,10 +731,10 @@ async def create_app(
     @app.post("/queue/add")
     async def add_entity_to_queue(ids: list[str], index: Optional[int] = None):
         playqueue = player_context.playqueue
-        demo_mode = app.state.config.server.demo_mode
-        await refuse_beyond_queue_limit(demo_mode, playqueue, len(ids))
+        limit = DEMO_QUEUE if app.state.config.server.demo_mode else QUEUE
+        await limit.refuse_past(playqueue, len(ids))
         items = await tracks_for(ids, browse_source_from_id, enabled_input_module)
-        await refuse_beyond_queue_limit(demo_mode, playqueue, len(items))
+        await limit.refuse_past(playqueue, len(items))
 
         await playqueue.add(items, index)
         return {"message": "Items added to queue", "count": len(items)}
