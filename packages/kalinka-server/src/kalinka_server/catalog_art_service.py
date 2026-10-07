@@ -110,6 +110,19 @@ def _style_of(item: BrowseItem) -> ArtStyle:
     return ArtStyle.COVER if item.playlist is not None else ArtStyle.CARD
 
 
+def _is_folder(item: BrowseItem) -> bool:
+    preview = item.catalog.preview_config if item.catalog else None
+    return preview is not None and preview.type == PreviewType.FOLDER
+
+
+def _source_owns_art(item: BrowseItem) -> bool:
+    """A folder listed as a row has art its source composed, or none for the
+    client to draw: a card made from its first page would be neither. A
+    folder catalog that stands on a home surface — it has a role — is a card
+    like any other."""
+    return _is_folder(item) and item.catalog.role is None
+
+
 def _textual_hint(item: BrowseItem) -> bool:
     preview = item.catalog.preview_config if item.catalog else None
     if preview is None:
@@ -216,7 +229,12 @@ class CatalogArtService:
         """Fill in generated art URLs on catalog items that have no image of
         their own; enqueue (re-)generation where needed. Never blocks."""
         for item in result.items:
-            if item.catalog is None or not item.can_browse or _has_image(item):
+            if (
+                item.catalog is None
+                or not item.can_browse
+                or _has_image(item)
+                or _source_owns_art(item)
+            ):
                 continue
             # A list with nothing in it has nothing to compose; its cover is
             # the client's to draw.
@@ -305,7 +323,10 @@ class CatalogArtService:
             # items -> a background-only tile now, covers added on a later retry.
             logger.debug("Catalog art browse failed for %s: %r", cat_id, exc)
 
-        catalog_children = sum(1 for item in items if item.catalog is not None)
+        # A folder carries covers of its own, so a page of them is no index.
+        catalog_children = sum(
+            1 for item in items if item.catalog is not None and not _is_folder(item)
+        )
         textual = not cover_style and (textual or catalog_children > len(items) / 2)
 
         wanted = COVER_TILES if cover_style else MAX_COVERS
