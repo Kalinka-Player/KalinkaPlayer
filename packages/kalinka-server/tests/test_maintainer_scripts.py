@@ -186,6 +186,7 @@ if [ "$1" = -s ]; then
   exit 0
 fi
 echo "$*" >> "$STUB_STATE/apt-get.log"
+[ "${STUB_REPAIR_FAILS:-0}" = 1 ] && [[ " $* " == *" -f "* ]] && exit 100
 names=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -218,6 +219,7 @@ grep -qxF "$pkg" "$STUB_STATE/installed" || exit 1
 case "$2" in *Status*) printf 'install ok installed' ;; *) echo "   $pkg 9.9.9" ;; esac
 """,
     "sudo": '#!/usr/bin/env bash\nexec "$@"\n',
+    "systemctl": '#!/usr/bin/env bash\necho "$*" >> "$STUB_STATE/systemctl.log"\n',
 }
 
 
@@ -263,9 +265,14 @@ def _install_release(
     (state / "release.json").write_text(json.dumps(release))
     (state / "unknown").write_text("".join(f"{name}\n" for name in unknown))
     (state / "installed").write_text("".join(f"{name}\n" for name in installed))
+    # A reinstall removes the server's environment, so the script only reaches its copy here.
+    script = tmp_path / "install-release.sh"
+    script.write_text(
+        INSTALL_RELEASE.read_text().replace("/opt/kalinka", f"{tmp_path}/opt/kalinka")
+    )
 
     result = subprocess.run(
-        ["bash", str(INSTALL_RELEASE)],
+        ["bash", str(script)],
         capture_output=True,
         text=True,
         env={
@@ -444,3 +451,81 @@ def test_no_display_for_this_machine_still_installs_the_rest(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "kalinka-server_9.9.9_all.deb" in _bundle_debs(calls)
     assert "no kalinka-kiosk package for arm64" in result.stderr
+
+
+def test_a_reinstall_repairs_a_box_already_on_the_release(tmp_path):
+    """The supervisor's Reinstall: apt skips a deb at the installed version
+    unless told otherwise, and bootstrap only recreates an environment that
+    is missing, so a plain rerun would leave a broken box broken."""
+    venv = tmp_path / "opt" / "kalinka" / "venv"
+    (venv / "bin").mkdir(parents=True)
+
+    result, calls, _ = _install_release(tmp_path, env={"KALINKA_REINSTALL": "1"})
+
+    assert result.returncode == 0, result.stderr
+    bundle = [c for c in calls if any(a.endswith(".deb") for a in c)]
+    assert bundle and all("--reinstall" in c for c in bundle)
+    assert not any("--reinstall" in c for c in calls if c not in bundle)
+    assert not venv.exists()
+    systemctl = (tmp_path / "state" / "systemctl.log").read_text().splitlines()
+    assert systemctl[0] == "stop kalinka.service"
+    assert systemctl[-1] == "--no-block start kalinka.service"
+
+
+def test_a_failed_reinstall_does_not_leave_the_server_stopped(tmp_path):
+    """Both apt and the dpkg fallback refuse: the script fails, but the server
+    is started again, and its bootstrap rebuilds the environment it lost."""
+    (tmp_path / "opt" / "kalinka" / "venv").mkdir(parents=True)
+
+    result, _, _ = _install_release(
+        tmp_path,
+        bundle_fails=True,
+        env={"KALINKA_REINSTALL": "1", "STUB_REPAIR_FAILS": "1"},
+    )
+
+    assert result.returncode != 0
+    systemctl = (tmp_path / "state" / "systemctl.log").read_text().splitlines()
+    assert systemctl[-1] == "--no-block start kalinka.service"
+
+
+def test_an_upgrade_keeps_the_environment(tmp_path):
+    venv = tmp_path / "opt" / "kalinka" / "venv"
+    (venv / "bin").mkdir(parents=True)
+
+    result, calls, _ = _install_release(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert not any("--reinstall" in c for c in calls)
+    assert venv.exists()
+    assert not (tmp_path / "state" / "systemctl.log").exists()
+
+
+def test_a_reinstall_installs_the_renderer_again(tmp_path):
+    binv = _stub_bin(tmp_path, installed_version="0.4.0")
+    log = tmp_path / "apt-get.log"
+    (binv / "apt-get").write_text(f'#!/usr/bin/env bash\necho "$*" >> "{log}"\n')
+    text = INSTALL_RENDERER.read_text()
+    start = text.index("  APT_OPTS=(-o DPkg::Lock::Timeout=300)")
+    end = text.index("else\n  echo \">> Installing with dnf ...\"")
+    harness = tmp_path / "block.sh"
+    harness.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        'die() { echo "error: $*" >&2; exit 1; }\n'
+        'SUDO=""\nTMPDIR_DL="/tmp"\nNAME="kalinka-renderer-0.4.0.debian-13.arm64.deb"\n'
+        'PLATFORM="debian-13"\nARCH="arm64"\nTAG="kalinka-renderer-v0.4.0"\n'
+        + text[start:end]
+    )
+
+    result = subprocess.run(
+        ["bash", str(harness)],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{binv}:{os.environ['PATH']}",
+            "KALINKA_REINSTALL": "1",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--reinstall" in log.read_text().split()

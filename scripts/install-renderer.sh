@@ -17,6 +17,7 @@
 # Env:
 #   KALINKA_REPO   owner/repo to pull the release from (default: madenvel/KalinkaPlayer)
 #   GITHUB_TOKEN   optional, only to avoid the 60-req/hr anonymous API limit
+#   KALINKA_REINSTALL  set to 1 to install the deb again when that version is already there
 #
 # The download runs as your user; only the install step uses sudo. Running the
 # whole script under sudo is fine too.
@@ -153,6 +154,7 @@ download "$URL" "$TMPDIR_DL/$NAME"
 # --- install ------------------------------------------------------------------
 if [ "$FORMAT" = deb ]; then
   APT_OPTS=(-o DPkg::Lock::Timeout=300)
+  [ "${KALINKA_REINSTALL:-0}" != 1 ] || APT_OPTS+=(--reinstall)
   echo ">> Installing with apt ..."
   if ! $SUDO apt-get "${APT_OPTS[@]}" install -y --no-install-recommends "$TMPDIR_DL/$NAME"; then
     # apt finishes configuring whatever else the box left half-installed, and
