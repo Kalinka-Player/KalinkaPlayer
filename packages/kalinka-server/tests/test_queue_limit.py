@@ -49,3 +49,17 @@ async def test_a_server_refuses_more_ids_than_its_queue_holds(isolated):
         refused = await client.post("/queue/add", json=ids)
         assert refused.status_code == 409
         assert refused.json() == {"detail": QUEUE_FULL}
+
+
+async def test_a_server_refuses_one_id_that_expands_past_its_queue(
+    isolated, monkeypatch
+):
+    async def a_big_folder(ids, *_):
+        return [object()] * (QUEUE_LIMIT + 1)
+
+    monkeypatch.setattr(server, "tracks_for", a_big_folder)
+    app = await server.create_app(str(isolated / "overrides.json"), KalinkaConfig(), {})
+    async with running(app) as client:
+        refused = await client.post("/queue/add", json=["kalinka:localfiles:folder:1"])
+        assert refused.status_code == 409
+        assert refused.json() == {"detail": QUEUE_FULL}

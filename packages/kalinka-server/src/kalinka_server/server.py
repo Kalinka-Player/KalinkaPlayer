@@ -728,15 +728,18 @@ async def create_app(
     async def read_queue_list(offset: int = 0, limit: int = 10):
         return await player_context.playqueue.list(offset=offset, limit=limit)
 
+    queue_adding = asyncio.Lock()
+
     @app.post("/queue/add")
     async def add_entity_to_queue(ids: list[str], index: Optional[int] = None):
         playqueue = player_context.playqueue
         limit = DEMO_QUEUE if app.state.config.server.demo_mode else QUEUE
         await limit.refuse_past(playqueue, len(ids))
         items = await tracks_for(ids, browse_source_from_id, enabled_input_module)
-        await limit.refuse_past(playqueue, len(items))
-
-        await playqueue.add(items, index)
+        # Concurrent adds that each fit must not together pass the limit.
+        async with queue_adding:
+            await limit.refuse_past(playqueue, len(items))
+            await playqueue.add(items, index)
         return {"message": "Items added to queue", "count": len(items)}
 
     @app.put("/queue/play")
