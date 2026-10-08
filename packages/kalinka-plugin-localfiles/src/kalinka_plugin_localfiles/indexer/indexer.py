@@ -74,7 +74,7 @@ from ..utils.name_utils import (
 )
 from .cue import find_cue_for, parse_cue
 from .dsd import native_dsdiff_tags
-from .ogg import NoVorbisStream, open_ogg_vorbis
+from .ogg import NoVorbisStream, open_ogg_vorbis, open_ogg_vorbis_tags
 from .id_generator import (
     generate_artist_id,
     generate_album_id,
@@ -119,6 +119,12 @@ class _TagFormat:
     extract: Callable[["FileIndexer", Any, BinaryIO, Dict], Dict]
     #: The front cover in the parsed file, or None.
     cover: Callable[[Any], Optional[bytes]]
+    #: Whether the file is opened with read-ahead, which a reader of small,
+    #: scattered spans does without: on a share it costs 1 MiB a seek.
+    read_ahead: bool = True
+    #: Parses just enough of an open file for ``cover``, where ``read`` does
+    #: more than that, such as timing the audio; None to use ``read``.
+    read_tags: Optional[Callable[[BinaryIO], Any]] = None
 
 
 # How often the file watcher checks whether a lost root came back.
@@ -1127,7 +1133,7 @@ class FileIndexer:
                     f"Unsupported file format: {file_path}, format: {mime_type}"
                 )
                 return None
-            with storage.open(file_path) as audio:
+            with storage.open(file_path, read_ahead=tag_format.read_ahead) as audio:
                 parsed = tag_format.read(audio)
                 metadata = tag_format.extract(
                     self, parsed, audio, {"format": mime_type}
@@ -1435,7 +1441,11 @@ class FileIndexer:
         "audio/mpeg": _TagFormat(MP3, _extract_mp3_metadata, _id3_cover),
         "audio/flac": _TagFormat(FLAC, _extract_flac_metadata, _flac_cover),
         "audio/ogg": _TagFormat(
-            open_ogg_vorbis, _extract_ogg_vorbis_metadata, _vorbis_cover
+            open_ogg_vorbis,
+            _extract_ogg_vorbis_metadata,
+            _vorbis_cover,
+            read_ahead=False,
+            read_tags=open_ogg_vorbis_tags,
         ),
         "audio/x-dsf": _TagFormat(DSF, _extract_dsf_metadata, _id3_cover),
         "audio/x-dff": _TagFormat(DSDIFF, _extract_dsdiff_metadata, _id3_cover),
@@ -1453,10 +1463,11 @@ class FileIndexer:
         _, tag_format = self._tag_format_of(file_path)
         if tag_format is None:
             return None
-        with storage.open(file_path) as audio:
+        read = tag_format.read_tags or tag_format.read
+        with storage.open(file_path, read_ahead=tag_format.read_ahead) as audio:
             watched = WatchedFile(audio)
             try:
-                return tag_format.cover(tag_format.read(watched))
+                return tag_format.cover(read(watched))
             except Exception as e:
                 if watched.read_error is not None:
                     raise watched.read_error from None
