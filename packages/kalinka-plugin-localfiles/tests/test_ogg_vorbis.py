@@ -26,7 +26,11 @@ from kalinka_plugin_localfiles.indexer.indexer import (
     is_supported_audio_file,
 )
 from kalinka_plugin_localfiles.indexer.indexer_db import AsyncIndexerDb
-from kalinka_plugin_localfiles.indexer.ogg import starts_vorbis_stream, vorbis_length
+from kalinka_plugin_localfiles.indexer.ogg import (
+    _mode_blockflags,
+    starts_vorbis_stream,
+    vorbis_length,
+)
 from kalinka_plugin_localfiles.input_module_db import LocalFilesInputModuleDb
 from kalinka_plugin_localfiles.localfiles import LocalFilesInputModule
 from kalinka_plugin_localfiles.storage.local import LocalStorage
@@ -38,6 +42,10 @@ LADDER = (
     / "data"
     / "ladder.ogg"
 )
+LADDER_RATE = 22050
+#: What libvorbisfile's ov_pcm_total gives for ladder.ogg, as the renderer's
+#: VorbisStreamDecoder test checks.
+LADDER_FRAMES = LADDER_RATE * 6
 LOCAL = LocalStorage()
 TAGS = {
     "title": "Ladder",
@@ -118,24 +126,80 @@ def _indexer(tmp_path):
     return FileIndexer(LocalFilesConfig(db_path=str(tmp_path / "db")), None)
 
 
-def _reserialed(data, serial):
-    """The same stream under another serial number, as a later link."""
-    stream, pages = io.BytesIO(data), []
+def _pages(data):
+    stream = io.BytesIO(data)
     while True:
         try:
-            page = OggPage(stream)
+            yield OggPage(stream)
         except EOFError:
-            return b"".join(pages)
+            return
+
+
+def _reserialed(data, serial):
+    """The same stream under another serial number, as a later link."""
+    pages = list(_pages(data))
+    for page in pages:
         page.serial = serial
-        pages.append(page.write())
+    return b"".join(page.write() for page in pages)
+
+
+def _recorded_mid_stream(data, frames):
+    """The same stream as if its recording began ``frames`` into it: every
+    audio page's position raised by that much."""
+    pages = list(_pages(data))
+    for page in pages:
+        if page.position > 0:
+            page.position += frames
+    return b"".join(page.write() for page in pages)
+
+
+def _setup_header(data):
+    return next(
+        packet
+        for packet in OggPage.to_packets(list(_pages(data)))
+        if packet.startswith(b"\x05vorbis")
+    )
+
+
+def _with_setup_body_zeroed(data):
+    pages = list(_pages(data))
+    for page in pages:
+        page.packets = [
+            packet[:7] + bytes(len(packet) - 7)
+            if packet.startswith(b"\x05vorbis")
+            else packet
+            for packet in page.packets
+        ]
+    return b"".join(page.write() for page in pages)
+
+
+def _setup_with_modes(flags):
+    """A setup header that ends in a mode table of ``flags``, after bytes
+    standing in for its codebooks, floors and residues."""
+    fields = [(len(flags) - 1, 6)]
+    for mapping, flag in enumerate(flags):
+        fields += [(flag, 1), (0, 16), (0, 16), (mapping % 2, 8)]
+    fields.append((1, 1))
+    head = b"\x05vorbis" + b"\xa5" * 32
+    bits, at = int.from_bytes(head, "little"), len(head) * 8
+    for value, width in fields:
+        bits |= value << at
+        at += width
+    return bits.to_bytes((at + 7) // 8, "little")
+
+
+def _identification(sample_rate):
+    """A Vorbis identification header: stereo, blocks of 256 and 2048."""
+    fields = struct.pack("<IBI3iBB", 0, 2, sample_rate, 0, 0, 0, 0xB8, 1)
+    return b"\x01vorbis" + fields
 
 
 def _timed_link(serial, sample_rate, pages):
     """A Vorbis link of ``pages`` tenth-of-a-second pages with no real audio
     in them, which is all timing it needs."""
-    ident = b"\x01vorbis" + struct.pack("<IBI3iB", 0, 2, sample_rate, 0, 0, 0, 0xB8)
     head = OggPage()
-    head.serial, head.first, head.packets = serial, True, [ident + b"\x01"]
+    head.serial, head.first = serial, True
+    head.packets = [_identification(sample_rate)]
     out = [head.write()]
     for n in range(1, pages + 1):
         page = OggPage()
@@ -146,12 +210,52 @@ def _timed_link(serial, sample_rate, pages):
     return b"".join(out)
 
 
+#: Audio packets in mode 0 and mode 1 of a link from ``_link_pages``.
+SHORT, LONG = b"\x00", b"\x02"
+
+
+def _page(packets, position=-1, continued=False, complete=True):
+    page = OggPage()
+    page.packets, page.position = packets, position
+    page.continued, page.complete = continued, complete
+    return page
+
+
+def _link_pages(modes, audio_pages):
+    """The pages of a 22050 Hz link whose setup header holds ``modes``,
+    then ``audio_pages``."""
+    head = OggPage()
+    head.first, head.packets = True, [_identification(22050)]
+    comment = b"\x03vorbis" + struct.pack("<II", 0, 0) + b"\x01"
+    headers = _page([comment, _setup_with_modes(modes)], position=0)
+    pages = [head, headers, *audio_pages]
+    for sequence, page in enumerate(pages):
+        page.serial, page.sequence = 1, sequence
+    return pages
+
+
+def _decoded(*blocks):
+    """What audio packets of ``blocks`` samples each decode to, as
+    libvorbisfile counts them: nothing for the first."""
+    return sum((before + block) // 4 for before, block in zip(blocks, blocks[1:]))
+
+
+def _written(pages, damaged=None):
+    """``pages`` as a file, the one at index ``damaged`` failing its checksum."""
+    out = [page.write() for page in pages]
+    if damaged is not None:
+        out[damaged] = out[damaged][:-1] + bytes([out[damaged][-1] ^ 0xFF])
+    return b"".join(out)
+
+
 class _CountingFile(io.BytesIO):
     read_bytes = 0
+    reads = 0
 
     def read(self, size=-1):
         data = super().read(size)
         self.read_bytes += len(data)
+        self.reads += 1
         return data
 
 
@@ -318,6 +422,146 @@ def test_a_chained_file_is_timed_over_every_link(tmp_path):
 
     assert metadata["duration"] == 18
     assert metadata["title"] == "Ladder"
+
+
+def test_a_link_recorded_mid_stream_is_timed_from_where_it_starts(tmp_path):
+    """The renderer plays such a link for only as long as was recorded;
+    mutagen times it from position 0, as if from the start of the stream."""
+    ladder = LADDER.read_bytes()
+    first = _reserialed(_recorded_mid_stream(ladder, 3 * LADDER_RATE), 1)
+    assert OggVorbis(io.BytesIO(first)).info.length == 9
+    path = tmp_path / "rip.ogg"
+    path.write_bytes(first + _reserialed(ladder, 2))
+
+    with open(path, "rb") as audio:
+        length = vorbis_length(audio)
+
+    assert length == pytest.approx(
+        2 * LADDER_FRAMES / LADDER_RATE, abs=1 / LADDER_RATE
+    )
+    assert _indexer(tmp_path)._extract_metadata(LOCAL, str(path))["duration"] == 12
+
+
+def test_a_link_whose_setup_header_cannot_be_read_is_timed_from_0():
+    data = _recorded_mid_stream(LADDER.read_bytes(), 3 * LADDER_RATE)
+
+    assert vorbis_length(io.BytesIO(_with_setup_body_zeroed(data))) == 9
+
+
+def test_a_cover_is_not_read_again_to_time_the_file(tmp_path):
+    """Its tags were read from the comment header already, and a share
+    would otherwise send every cover twice."""
+    cover = bytes(range(256)) * 2400
+    path = _vorbis(tmp_path / "ladder.ogg", pictures=[_picture_comment(3, cover)])
+    audio = _CountingFile(_recorded_mid_stream(path.read_bytes(), LADDER_RATE))
+
+    assert vorbis_length(audio) == pytest.approx(6, abs=1 / LADDER_RATE)
+    assert audio.read_bytes < len(cover) // 4
+
+
+def _long_link():
+    """A link recorded mid-stream that runs past a read window, so that its
+    last page is a read of its own."""
+    filler = [_page([bytes(8000)]) for _ in range(4)]
+    pages = [_page([SHORT, LONG], 10000), *filler, _page([SHORT], 40000)]
+    return _written(_link_pages([0, 1], pages))
+
+
+LONG_LINK_SECONDS = (40000 - 10000 + _decoded(256, 2048)) / 22050
+
+
+def test_the_setup_and_first_audio_pages_come_with_the_opening_ones():
+    """Each read is a round trip to a share. Past the last page, the two
+    reads that find how the link opens hold its setup header and first audio
+    page as well."""
+    audio = _CountingFile(_long_link())
+
+    assert vorbis_length(audio) == LONG_LINK_SECONDS
+    assert audio.reads == 3
+
+
+def test_where_each_links_audio_starts_costs_no_read_of_its_own(monkeypatch):
+    """It is found ahead of the bisection for where the link ends, which
+    would otherwise have the opening pages read again."""
+    link = _long_link()
+    data = b"".join(_reserialed(link, serial) for serial in (1, 2, 3))
+    timed = _CountingFile(data)
+
+    assert vorbis_length(timed) == pytest.approx(3 * LONG_LINK_SECONDS)
+
+    monkeypatch.setattr(
+        "kalinka_plugin_localfiles.indexer.ogg._audio_start", lambda *_: 0
+    )
+    untimed = _CountingFile(data)
+    vorbis_length(untimed)
+
+    assert timed.reads == untimed.reads
+
+
+def test_the_mode_table_is_read_from_the_end_of_the_setup_header():
+    """libvorbis, which encoded the renderer's fixture, writes one mode for
+    short blocks and one for long."""
+    assert _mode_blockflags(_setup_header(LADDER.read_bytes())) == [0, 1]
+
+
+@pytest.mark.parametrize("flags", [[1], [1, 0, 1], [0, 1] * 32], ids=["1", "3", "64"])
+def test_a_mode_table_of_any_size_is_read(flags):
+    assert _mode_blockflags(_setup_with_modes(flags)) == flags
+
+
+@pytest.mark.parametrize(
+    "packet",
+    [
+        b"",
+        b"\x05vorbis" + bytes(64),
+        b"\x03vorbis" + _setup_with_modes([0, 1])[7:],
+    ],
+    ids=["empty", "no-table", "comment-header"],
+)
+def test_a_packet_with_no_mode_table_has_no_modes(packet):
+    assert _mode_blockflags(packet) is None
+
+
+def test_a_packets_mode_is_read_as_libvorbisfile_reads_it():
+    """With three modes libvorbis reads the mode in one bit where the
+    decoder reads two, so 0x04 is mode 0, a short block, not mode 2."""
+    pages = _link_pages(
+        [0, 1, 1],
+        [_page([b"\x04", b"\x04", LONG], 10000), _page([SHORT], 40000)],
+    )
+    start = 10000 - _decoded(256, 256, 2048)
+
+    assert vorbis_length(io.BytesIO(_written(pages))) == (40000 - start) / 22050
+
+
+def test_a_page_that_fails_its_checksum_loses_its_packets_as_in_libogg():
+    """libogg passes over the page, and at the gap in the page numbers drops
+    the packet it began; the block before the gap still counts."""
+    pages = _link_pages(
+        [0, 1],
+        [
+            _page([SHORT, SHORT]),
+            _page([LONG, LONG + bytes(254)], complete=False),
+            _page([bytes(10), SHORT], 10000, continued=True),
+            _page([SHORT], 40000),
+        ],
+    )
+    start = 10000 - _decoded(256, 256, 2048, 2048, 256)
+    start_past_the_gap = 10000 - _decoded(256, 256, 256)
+
+    whole = _written(pages)
+    damaged = _written(pages, damaged=3)
+
+    assert vorbis_length(io.BytesIO(whole)) == (40000 - start) / 22050
+    assert vorbis_length(io.BytesIO(damaged)) == (40000 - start_past_the_gap) / 22050
+
+
+def test_bytes_between_pages_are_passed_over():
+    data = _recorded_mid_stream(LADDER.read_bytes(), 3 * LADDER_RATE)
+    first_audio = next(page.offset for page in _pages(data) if page.position > 0)
+    data = data[:first_audio] + b"not a page" * 100 + data[first_audio:]
+
+    assert vorbis_length(io.BytesIO(data)) == pytest.approx(6, abs=1 / LADDER_RATE)
 
 
 def test_each_link_is_timed_at_its_own_rate_from_a_few_small_reads():
