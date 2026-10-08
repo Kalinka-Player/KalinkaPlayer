@@ -1,11 +1,16 @@
 # Local files
 
-The local library indexes MP3, FLAC, DSF (`.dsf`) and DSDIFF (`.dff`) files from
-local folders and configured network shares. DSD indexing reads ID3 tags,
-embedded artwork, duration and stream information. DSDIFF's native artist and
-title fields fill gaps in ID3 metadata. Untagged DSD uses the existing filename
-and folder extraction, and normal clustering, artwork and MusicBrainz
-processing continue unchanged.
+The local library indexes MP3, FLAC, Ogg Vorbis (`.ogg`, `.oga`), DSF (`.dsf`)
+and DSDIFF (`.dff`) files from local folders and configured network shares.
+Ogg Vorbis tags and `METADATA_BLOCK_PICTURE` covers are read like FLAC's, with
+the older `COVERART` comment as a fallback cover. An Ogg file holding Opus or
+FLAC instead is left out with a warning in the log, because the renderer plays
+only Vorbis from an Ogg container.
+
+DSD indexing reads ID3 tags, embedded artwork, duration and stream information.
+DSDIFF's native artist and title fields fill gaps in ID3 metadata. Untagged DSD
+uses the existing filename and folder extraction, and normal clustering,
+artwork and MusicBrainz processing continue unchanged.
 
 DSD audio is never converted to PCM for analysis. AcoustID/Chromaprint skips
 DSD before file staging or fingerprint generation. PCM-dependent audio
