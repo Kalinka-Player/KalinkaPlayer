@@ -5,6 +5,7 @@ import asyncio
 import pytest
 from kalinka_plugin_sdk.direct_playback import OutputCapabilities
 
+from kalinka_server.renderer_prefs import RendererPreferences
 from kalinka_server.renderer_registry import (
     RegistrationKind,
     RendererRegistry,
@@ -138,7 +139,8 @@ async def test_live_session_replaced_and_stale_disconnect_ignored():
     assert record.session is new
 
 
-async def test_selection_wins_while_connected_and_survives_offline():
+async def test_selection_holds_through_an_offline_spell():
+    """A hiccup or an upgrade must fail playback, not move it to another room."""
     registry = RendererRegistry(offline_timeout_s=60)
     a, b = object(), object()
     _register(registry, a, renderer_id="rid-a")
@@ -151,15 +153,160 @@ async def test_selection_wins_while_connected_and_survives_offline():
     assert entries["rid-b"]["active"] and entries["rid-b"]["selected"]
     assert not entries["rid-a"]["active"] and not entries["rid-a"]["selected"]
 
-    # Selected renderer offline: fall back, but the pin is not forgotten.
     registry.disconnect("rid-b", b, clean=False)
-    assert registry.active_id() == "rid-a"
+    assert registry.active_id() == "rid-b"
+    with pytest.raises(RendererUnavailable):
+        registry.require_session("rid-b")
     _register(registry, object(), renderer_id="rid-b")
     assert registry.active_id() == "rid-b"
 
     registry.select(None)
     assert registry.active_id() == "rid-a"
     await registry.shutdown()
+
+
+async def test_with_nothing_selected_playback_moves_off_an_offline_renderer():
+    registry = RendererRegistry(offline_timeout_s=60)
+    a = object()
+    _register(registry, a, renderer_id="rid-a")
+    _register(registry, object(), renderer_id="rid-b")
+
+    registry.disconnect("rid-a", a, clean=False)
+
+    assert registry.active_id() == "rid-b"
+    await registry.shutdown()
+
+
+async def test_a_selected_renderer_that_says_goodbye_stays_listed_offline():
+    """An upgrading renderer leaves cleanly; it is still where the user wants
+    the music."""
+    removed = []
+    registry = RendererRegistry(offline_timeout_s=60)
+    registry.set_on_removed(lambda rid, clean: removed.append((rid, clean)))
+    link = object()
+    _register(registry, link)
+    _register(registry, object(), renderer_id="rid-other")
+    registry.select("rid-1")
+
+    registry.disconnect("rid-1", link, clean=True)
+
+    assert removed == [("rid-1", True)]
+    assert registry.get("rid-1").status == RendererStatus.OFFLINE
+    assert registry.active_id() == "rid-1"
+    assert _register(registry, object(), instance_id="inst-2") == (
+        RegistrationKind.RESTART
+    )
+    await registry.shutdown()
+
+
+async def test_a_selected_renderer_outlives_its_reap_but_its_session_does_not():
+    removed = []
+    registry = RendererRegistry(offline_timeout_s=0.05)
+    registry.set_on_removed(lambda rid, clean: removed.append((rid, clean)))
+    link = object()
+    _register(registry, link)
+    registry.select("rid-1")
+    registry.disconnect("rid-1", link, clean=False)
+
+    await asyncio.sleep(0.1)
+
+    assert removed == [("rid-1", False)]
+    (entry,) = registry.list()
+    assert entry["status"] == "offline"
+    assert entry["active"] and entry["selected"]
+
+
+async def test_a_restored_selection_is_listed_offline_under_its_last_name():
+    """After a server restart the pinned renderer may not be back yet; playback
+    must fail on it by name, not land elsewhere or on a bare id."""
+    prefs = RendererPreferences()
+    prefs.set_selected("rid-1", "Living Room")
+    registry = RendererRegistry(prefs=prefs)
+    _register(registry, object(), renderer_id="rid-other")
+
+    entries = {e["renderer_id"]: e for e in registry.list()}
+    assert entries["rid-1"]["status"] == "offline"
+    assert entries["rid-1"]["friendly_name"] == "Living Room"
+    assert entries["rid-1"]["active"] and entries["rid-1"]["selected"]
+    with pytest.raises(RendererUnavailable, match="^Living Room is not connected$"):
+        registry.require_session("rid-1")
+
+    assert _register(registry, object()) == RegistrationKind.RESTART
+    assert registry.get("rid-1").status == RendererStatus.CONNECTED
+    assert registry.active_id() == "rid-1"
+    await registry.shutdown()
+
+
+async def test_a_selection_never_heard_by_name_falls_back():
+    """A pin saved before names were kept has nothing to list it by."""
+    prefs = RendererPreferences()
+    prefs.set_selected("rid-1")
+    registry = RendererRegistry(prefs=prefs)
+    _register(registry, object(), renderer_id="rid-other")
+
+    assert registry.get("rid-1") is None
+    assert registry.active_id() == "rid-other"
+
+    _register(registry, object())
+    assert registry.active_id() == "rid-1"
+    assert prefs.selected_renderer_name == "Test Renderer"
+    await registry.shutdown()
+
+
+async def test_the_selected_renderer_s_name_is_kept_current():
+    prefs = RendererPreferences()
+    registry = RendererRegistry(prefs=prefs)
+    _register(registry, object())
+
+    registry.select("rid-1")
+    assert prefs.selected_renderer_name == "Test Renderer"
+
+    registry.register(
+        renderer_id="rid-1",
+        instance_id="inst-1",
+        friendly_name="Kitchen",
+        software_version="0.1.0",
+        kind="native",
+        platform={},
+        session=object(),
+    )
+    assert prefs.selected_renderer_name == "Kitchen"
+
+    registry.select(None)
+    assert prefs.selected_renderer_name is None
+    await registry.shutdown()
+
+
+async def test_selecting_elsewhere_drops_a_renderer_kept_only_for_the_pin():
+    registry = RendererRegistry(offline_timeout_s=60)
+    link = object()
+    _register(registry, link)
+    _register(registry, object(), renderer_id="rid-other")
+    registry.select("rid-1")
+    registry.disconnect("rid-1", link, clean=True)
+    events = _wire(registry)
+
+    registry.select("rid-other")
+
+    assert registry.get("rid-1") is None
+    assert [e[0] for e in events] == ["renderers", "current"]
+    assert [row.renderer_id for row in events[0][1]] == ["rid-other"]
+    await registry.shutdown()
+
+
+async def test_selecting_elsewhere_leaves_a_pending_reap_to_run_its_course():
+    registry = RendererRegistry(offline_timeout_s=0.05)
+    link = object()
+    _register(registry, link)
+    _register(registry, object(), renderer_id="rid-other")
+    registry.select("rid-1")
+    registry.disconnect("rid-1", link, clean=False)
+
+    registry.select("rid-other")
+    assert registry.get("rid-1").status == RendererStatus.OFFLINE
+
+    await asyncio.sleep(0.1)
+    assert registry.get("rid-1") is None
 
 
 async def test_resolve_active_answers_without_committing_the_choice():
@@ -171,7 +318,7 @@ async def test_resolve_active_answers_without_committing_the_choice():
 
     assert registry.resolve_active("rid-b") == "rid-b"
     assert registry.resolve_active(None) == "rid-a"  # automatic
-    assert registry.resolve_active("rid-gone") == "rid-a"  # unknown: fall back
+    assert registry.resolve_active("rid-gone") == "rid-a"  # unlisted: fall back
     assert registry.active_id() == "rid-a"  # nothing was pinned
     await registry.shutdown()
 
@@ -313,11 +460,17 @@ async def test_incompatible_renderer_is_listed_but_never_played_to():
     assert registry.active_id() == "new-rid"
 
 
-async def test_selecting_an_incompatible_renderer_does_not_send_playback_there():
+async def test_a_selected_renderer_that_turns_incompatible_keeps_the_pin():
+    """Upgraded past what this Core speaks: playback fails there instead of
+    moving to another room."""
     registry = RendererRegistry()
+    _register(registry, object(), renderer_id="new-rid", instance_id="inst-new")
+    _register(registry, object(), renderer_id="old-rid", instance_id="inst-old")
+    registry.select("old-rid")
+
     registry.register(
         renderer_id="old-rid",
-        instance_id="inst-old",
+        instance_id="inst-old2",
         friendly_name="Old Renderer",
         software_version="0.3.0",
         kind="native",
@@ -325,10 +478,10 @@ async def test_selecting_an_incompatible_renderer_does_not_send_playback_there()
         session=object(),
         compatible=False,
     )
-    _register(registry, object(), renderer_id="new-rid", instance_id="inst-new")
 
-    registry.select("old-rid")
-    assert registry.active_id() == "new-rid"
+    assert registry.active_id() == "old-rid"
+    with pytest.raises(RendererUnavailable):
+        registry.require_session("old-rid")
 
 
 async def test_driving_an_incompatible_renderer_is_refused_not_left_hanging():
@@ -351,10 +504,10 @@ async def test_driving_an_incompatible_renderer_is_refused_not_left_hanging():
 
 
 async def test_a_renderer_returning_mid_playback_does_not_take_the_audio_back():
-    """A browser tab reload while music plays: the pinned renderer drops, the
-    track resumes on the fallback, and the tab comes back. Resolution prefers
-    the pin again, but the audio is on the fallback — saying otherwise leaves
-    every client naming a renderer that is silent."""
+    """The pinned renderer drops mid-track and playback is moved to another
+    one; then the pinned renderer comes back. Resolution prefers the pin
+    again, but the audio is elsewhere — saying otherwise leaves every client
+    naming a renderer that is silent."""
     registry = RendererRegistry(offline_timeout_s=60)
     web = object()
     _register(registry, object(), renderer_id="rid-hifi")
@@ -367,7 +520,7 @@ async def test_a_renderer_returning_mid_playback_does_not_take_the_audio_back():
     registry.disconnect("rid-web", web, clean=False)
     assert registry.active_id() == "rid-web"
 
-    # The interrupted track resumes on the only renderer left.
+    # The track is moved to the other renderer.
     registry.session_released("rid-web")
     registry.session_claimed("rid-hifi")
     assert registry.active_id() == "rid-hifi"

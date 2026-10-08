@@ -594,8 +594,7 @@ class PlayQueueImpl(PlayQueueController):
             self._registry.get(renderer_id) if renderer_id is not None else None
         )
         if record is not None and not record.compatible:
-            # Resolution skips it, so accepting the pin would leave playback
-            # elsewhere while the client believed it had moved.
+            # Pinned, every play would fail there; refuse now, saying why.
             raise RendererUnavailable(
                 f"{record.friendly_name or renderer_id} speaks a protocol this "
                 f"server does not, and cannot play until it is upgraded"

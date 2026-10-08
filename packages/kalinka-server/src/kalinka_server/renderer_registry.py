@@ -2,6 +2,9 @@
 
 Same instance_id on return = reconnect; new instance_id = restart. A dropped
 link goes OFFLINE and is reaped after a timeout; a Goodbye removes at once.
+The selected renderer is the exception: it stays listed, offline, until the
+selection moves off it — across a server restart too, under the name it last
+gave.
 """
 
 from __future__ import annotations
@@ -122,6 +125,25 @@ class RendererRegistry:
         self._prefs = prefs if prefs is not None else RendererPreferences()
         # The renderer playback holds a session on, while it holds one.
         self._playing_on: Optional[str] = None
+        self._restore_selected()
+
+    def _restore_selected(self) -> None:
+        """List the selected renderer offline until it connects, so the pin
+        has something to stand on. One never heard by name is not listed."""
+        renderer_id = self._prefs.selected_renderer_id
+        name = self._prefs.selected_renderer_name
+        if renderer_id is None or not name:
+            return
+        self._renderers[renderer_id] = RendererRecord(
+            renderer_id=renderer_id,
+            instance_id="",
+            friendly_name=name,
+            software_version="",
+            kind="",
+            platform={},
+            connected_at=0.0,
+            last_seen=0.0,
+        )
 
     def register(
         self,
@@ -178,6 +200,8 @@ class RendererRegistry:
             local=local,
             capabilities=capabilities,
         )
+        if renderer_id == self.selected_id:
+            self._prefs.set_selected(renderer_id, friendly_name)
         logger.info(
             "Renderer %s: '%s' (%s%s, id=%s)",
             registration.value,
@@ -197,13 +221,10 @@ class RendererRegistry:
         record.session = None
         record.last_seen = time.time()
         if clean:
-            del self._renderers[renderer_id]
             logger.info(
-                "Renderer '%s' (id=%s) left cleanly; removed",
-                record.friendly_name,
-                renderer_id,
+                "Renderer '%s' (id=%s) left cleanly", record.friendly_name, renderer_id
             )
-            self._notify_removed(renderer_id, clean=True)
+            self._give_up(record, clean=True)
             self._publish_topology()
             return
         logger.info(
@@ -224,6 +245,42 @@ class RendererRegistry:
         if self._on_removed is not None:
             self._on_removed(renderer_id, clean)
 
+    def _give_up(self, record: RendererRecord, clean: bool) -> None:
+        """The renderer is not coming back on its own: end what it held, and
+        drop it unless it is the selected one, which stays listed offline."""
+        if record.renderer_id == self.selected_id:
+            logger.info(
+                "Renderer '%s' (id=%s) kept offline: it is the selected output",
+                record.friendly_name,
+                record.renderer_id,
+            )
+        else:
+            del self._renderers[record.renderer_id]
+            logger.info(
+                "Renderer '%s' (id=%s) removed",
+                record.friendly_name,
+                record.renderer_id,
+            )
+        self._notify_removed(record.renderer_id, clean)
+
+    def _drop_if_given_up(self, renderer_id: Optional[str]) -> bool:
+        """An offline renderer with no reap pending was kept only for the
+        selection that just moved off it. True when it was dropped."""
+        record = self._renderers.get(renderer_id) if renderer_id else None
+        if (
+            record is None
+            or record.session is not None
+            or record.renderer_id in self._reap_tasks
+        ):
+            return False
+        del self._renderers[record.renderer_id]
+        logger.info(
+            "Renderer '%s' (id=%s) removed: no longer selected",
+            record.friendly_name,
+            record.renderer_id,
+        )
+        return True
+
     def set_on_changed(
         self,
         *,
@@ -234,7 +291,8 @@ class RendererRegistry:
 
         ``renderers`` takes the full descriptor snapshot whenever membership or
         status moves; ``current`` takes (active, selected) when that pair moves
-        — a renderer going offline shifts playback with no selection touched.
+        — with nothing selected, a renderer going offline shifts playback with
+        no selection touched.
         Both fire here as well, so a subscriber starts from the truth instead of
         from its first change: a selection restored from prefs has to reach
         clients before any renderer connects.
@@ -321,7 +379,8 @@ class RendererRegistry:
         rather than left waiting for a timeout."""
         record = self._renderers.get(renderer_id)
         if record is None or record.session is None:
-            raise RendererUnavailable(f"renderer {renderer_id} is not connected")
+            name = (record.friendly_name if record else None) or renderer_id
+            raise RendererUnavailable(f"{name} is not connected")
         if not record.compatible:
             raise RendererUnavailable(
                 f"renderer {renderer_id} speaks a protocol this server does not"
@@ -337,10 +396,16 @@ class RendererRegistry:
 
     def select(self, renderer_id: Optional[str]) -> None:
         """Pin playback to a renderer; None returns to automatic."""
-        self._prefs.set_selected(renderer_id)
+        previous = self._prefs.selected_renderer_id
+        record = self._renderers.get(renderer_id) if renderer_id else None
+        self._prefs.set_selected(
+            renderer_id, record.friendly_name if record else None
+        )
         logger.info(
             "Renderer selection: %s", renderer_id if renderer_id else "automatic"
         )
+        if previous != renderer_id and self._drop_if_given_up(previous):
+            self._publish_renderers()
         self._publish_current()
 
     @property
@@ -353,12 +418,12 @@ class RendererRegistry:
         A held session settles it: that renderer is where the audio *is*, and a
         renderer arriving mid-playback must not move the answer out from under
         it. With none held, resolution decides — the selected renderer while it
-        is connected and speaks our protocol, otherwise the first that is. A
-        selected renderer that is offline is not forgotten — it wins again when
-        it returns."""
+        is listed, even offline or speaking a protocol we do not, so a hiccup or
+        an upgrade fails playback rather than moving it to another room.
+        Otherwise the first playable renderer takes it."""
         # Not filtered by `playable`: a renderer whose link dropped mid-track
         # keeps its session for the moment it may return, and playback has not
-        # gone anywhere else meanwhile. Reaping drops it from the map, and
+        # gone anywhere else meanwhile. Reaping ends that session, and
         # resolution takes over again.
         if self._playing_on in self._renderers:
             return self._playing_on
@@ -385,8 +450,7 @@ class RendererRegistry:
     def resolve_active(self, selected_id: Optional[str]) -> Optional[str]:
         """What :meth:`active_id` would return for a given selection. Lets a
         caller see where playback is headed before committing the choice."""
-        record = self._renderers.get(selected_id) if selected_id else None
-        if record is not None and record.playable:
+        if selected_id is not None and selected_id in self._renderers:
             return selected_id
         return self._first_playable_id()
 
@@ -435,14 +499,13 @@ class RendererRegistry:
         self._reap_tasks.pop(renderer_id, None)
         record = self._renderers.get(renderer_id)
         if record is not None and record.session is None:
-            del self._renderers[renderer_id]
             logger.info(
-                "Renderer '%s' (id=%s) did not return within %.0fs; removed",
+                "Renderer '%s' (id=%s) did not return within %.0fs",
                 record.friendly_name,
                 renderer_id,
                 self.offline_timeout_s,
             )
-            self._notify_removed(renderer_id, clean=False)
+            self._give_up(record, clean=False)
             self._publish_topology()
 
     async def shutdown(self) -> None:
