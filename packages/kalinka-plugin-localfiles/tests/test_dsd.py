@@ -82,7 +82,7 @@ def fixture(kind, tagged=True, order=1, rate=2822400):
 def test_extracts_tags_and_artwork_over_storage(tmp_path, kind, tagged):
     payload = fixture(kind, tagged)
     storage = SimpleNamespace(
-        open=lambda _: io.BytesIO(payload),
+        open=lambda _, **__: io.BytesIO(payload),
         is_file=lambda _: False,
         listdir=lambda _: [],
     )
@@ -117,7 +117,7 @@ def test_extracts_tags_and_artwork_over_storage(tmp_path, kind, tagged):
 def test_dsf_bit_order_is_not_audio_precision(tmp_path, order):
     fi = FileIndexer(LocalFilesConfig(db_path=str(tmp_path / "db")), None)
     storage = SimpleNamespace(
-        open=lambda _: io.BytesIO(fixture("dsf", order=order, rate=11289600)),
+        open=lambda _, **__: io.BytesIO(fixture("dsf", order=order, rate=11289600)),
         is_file=lambda _: False,
         listdir=lambda _: [],
     )
@@ -224,7 +224,9 @@ def test_dff_native_artist_title_and_id3_precedence(tmp_path, tagged):
     native = chunk(b"DIAR", struct.pack(">I", 13) + b"Native artist")
     native += chunk(b"DITI", struct.pack(">I", 12) + b"Native title")
     data = chunk(b"FRM8", body + chunk(b"DIIN", native))
-    storage = SimpleNamespace(open=lambda _: io.BytesIO(data), listdir=lambda _: [])
+    storage = SimpleNamespace(
+        open=lambda _, **__: io.BytesIO(data), listdir=lambda _: []
+    )
     fi = FileIndexer(LocalFilesConfig(db_path=str(tmp_path / "db")), None)
     meta = fi._extract_metadata(storage, "/music/test.dff")
     assert meta["artist"] == ("The Artist" if tagged else "Native artist")

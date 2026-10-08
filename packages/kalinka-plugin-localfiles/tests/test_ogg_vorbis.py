@@ -26,7 +26,7 @@ from kalinka_plugin_localfiles.indexer.indexer import (
     is_supported_audio_file,
 )
 from kalinka_plugin_localfiles.indexer.indexer_db import AsyncIndexerDb
-from kalinka_plugin_localfiles.indexer.ogg import starts_vorbis_stream
+from kalinka_plugin_localfiles.indexer.ogg import starts_vorbis_stream, vorbis_length
 from kalinka_plugin_localfiles.input_module_db import LocalFilesInputModuleDb
 from kalinka_plugin_localfiles.localfiles import LocalFilesInputModule
 from kalinka_plugin_localfiles.storage.local import LocalStorage
@@ -116,6 +116,43 @@ def _ogg_flac():
 
 def _indexer(tmp_path):
     return FileIndexer(LocalFilesConfig(db_path=str(tmp_path / "db")), None)
+
+
+def _reserialed(data, serial):
+    """The same stream under another serial number, as a later link."""
+    stream, pages = io.BytesIO(data), []
+    while True:
+        try:
+            page = OggPage(stream)
+        except EOFError:
+            return b"".join(pages)
+        page.serial = serial
+        pages.append(page.write())
+
+
+def _timed_link(serial, sample_rate, pages):
+    """A Vorbis link of ``pages`` tenth-of-a-second pages with no real audio
+    in them, which is all timing it needs."""
+    ident = b"\x01vorbis" + struct.pack("<IBI3iB", 0, 2, sample_rate, 0, 0, 0, 0xB8)
+    head = OggPage()
+    head.serial, head.first, head.packets = serial, True, [ident + b"\x01"]
+    out = [head.write()]
+    for n in range(1, pages + 1):
+        page = OggPage()
+        page.serial, page.sequence, page.packets = serial, n, [bytes(4000)]
+        page.position = n * sample_rate // 10
+        page.last = n == pages
+        out.append(page.write())
+    return b"".join(out)
+
+
+class _CountingFile(io.BytesIO):
+    read_bytes = 0
+
+    def read(self, size=-1):
+        data = super().read(size)
+        self.read_bytes += len(data)
+        return data
 
 
 @pytest.mark.parametrize(
@@ -264,6 +301,87 @@ def test_the_legacy_coverart_comment_is_a_cover_too(tmp_path):
     assert "coverart" not in metadata["raw_tags"]
 
 
+def test_a_single_stream_is_timed_as_mutagen_times_it(tmp_path):
+    path = _vorbis(tmp_path / "ladder.ogg")
+
+    with open(path, "rb") as audio:
+        assert vorbis_length(audio) == OggVorbis(path).info.length
+
+
+def test_a_chained_file_is_timed_over_every_link(tmp_path):
+    """mutagen stops at the end of the first link; the renderer plays on."""
+    link = _vorbis(tmp_path / "ladder.ogg").read_bytes()
+    path = tmp_path / "rip.ogg"
+    path.write_bytes(b"".join(_reserialed(link, serial) for serial in (1, 2, 3)))
+
+    metadata = _indexer(tmp_path)._extract_metadata(LOCAL, str(path))
+
+    assert metadata["duration"] == 18
+    assert metadata["title"] == "Ladder"
+
+
+def test_each_link_is_timed_at_its_own_rate_from_a_few_small_reads():
+    links = [(1, 44100, 1500), (2, 22050, 1000), (3, 48000, 1200)]
+    audio = _CountingFile(b"".join(_timed_link(*link) for link in links))
+
+    assert vorbis_length(audio) == pytest.approx(150 + 100 + 120)
+    assert audio.read_bytes < len(audio.getvalue()) // 10
+
+
+class _ShortReadFile(io.BytesIO):
+    """A raw share handle, which answers at most one SMB READ per call."""
+
+    def read(self, size=-1):
+        return super().read(min(size, 4096) if size >= 0 else 4096)
+
+
+def test_a_chain_is_timed_through_reads_that_come_back_short():
+    links = [(1, 44100, 1500), (2, 22050, 1000), (3, 48000, 1200)]
+    audio = _ShortReadFile(b"".join(_timed_link(*link) for link in links))
+
+    assert vorbis_length(audio) == pytest.approx(150 + 100 + 120)
+
+
+def test_an_ogg_file_is_read_without_read_ahead(tmp_path):
+    """Its pages and a chain's bisection are small, scattered reads, and
+    read-ahead turns each into 1 MiB from a share."""
+    path = _vorbis(tmp_path / "ladder.ogg", pictures=[_picture_comment(3, b"x")])
+    opens = []
+
+    def open_(file_path, *, read_ahead=True):
+        opens.append(read_ahead)
+        return open(file_path, "rb")
+
+    storage = SimpleNamespace(open=open_, listdir=lambda _: [])
+    fi = _indexer(tmp_path)
+
+    assert fi._extract_metadata(storage, str(path))["duration"] == 6
+    assert fi._embedded_art(storage, str(path)) == b"x"
+    assert opens == [False, False]
+
+
+class _HeadOnlyFile(io.BytesIO):
+    """A file on a share that answers for its first half only."""
+
+    def read(self, size=-1):
+        stop = len(self.getvalue()) if size < 0 else self.tell() + size
+        if stop > len(self.getvalue()) // 2:
+            raise OSError("host is down")
+        return super().read(size)
+
+
+def test_a_cover_is_read_without_timing_the_file(tmp_path):
+    """Timing reads back from the end of every link; the cover sits in the
+    opening pages."""
+    front = _cover_png((120, 0, 60))
+    data = _vorbis(
+        tmp_path / "ladder.ogg", pictures=[_picture_comment(3, front)]
+    ).read_bytes()
+    storage = SimpleNamespace(open=lambda _, **__: _HeadOnlyFile(data))
+
+    assert _indexer(tmp_path)._embedded_art(storage, "smb://nas/ladder.ogg") == front
+
+
 class _DroppingFile(io.BytesIO):
     """A file on a share that stops answering after the first page header."""
 
@@ -277,7 +395,7 @@ def test_a_share_that_drops_mid_read_is_not_taken_for_another_codec(tmp_path):
     """mutagen reports the failed read as a missing Vorbis stream, which
     would otherwise set a file that is fine aside until it changes."""
     data = _vorbis(tmp_path / "ladder.ogg").read_bytes()
-    storage = SimpleNamespace(open=lambda _: _DroppingFile(data))
+    storage = SimpleNamespace(open=lambda _, **__: _DroppingFile(data))
 
     with pytest.raises(OSError, match="host is down"):
         _indexer(tmp_path)._extract_metadata(storage, "smb://nas/music/ladder.ogg")
