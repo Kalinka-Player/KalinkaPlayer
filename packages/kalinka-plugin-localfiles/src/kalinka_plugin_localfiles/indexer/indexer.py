@@ -12,6 +12,7 @@ from typing import (
     Any,
     AsyncIterator,
     BinaryIO,
+    Callable,
     Dict,
     Iterable,
     List,
@@ -25,7 +26,7 @@ from pathlib import Path
 from PIL import Image
 
 from mutagen.mp3 import MP3
-from mutagen.flac import FLAC
+from mutagen.flac import FLAC, Picture
 from mutagen.id3 import ID3
 from mutagen.dsf import DSF
 from mutagen.dsdiff import DSDIFF
@@ -1271,60 +1272,78 @@ class FileIndexer:
         Errors propagate to ``_extract_metadata``, which logs them once.
         """
         flac = FLAC(audio)
-        metadata["duration"] = int(flac.info.length)
-        if "title" in flac:
-            metadata["title"] = flac["title"][0]
-        if "artist" in flac:
-            metadata["artist"] = flac["artist"][0]
-        if "album" in flac:
-            metadata["album"] = flac["album"][0]
-        if "tracknumber" in flac:
-            track_str = flac["tracknumber"][0]
+        return self._extract_vorbis_comment_metadata(
+            flac, metadata, "flac", self._flac_cover
+        )
+
+    def _extract_vorbis_comment_metadata(
+        self,
+        audio_file,
+        metadata: Dict,
+        codec: str,
+        cover_in: Callable[[Any], Optional[bytes]],
+    ) -> Dict:
+        """Fill ``metadata`` from a file tagged with Vorbis comments.
+
+        @param audio_file The mutagen file: its comments read as a mapping of
+            lower-case keys to lists of values, whatever the container.
+        @param cover_in Reads the front cover out of ``audio_file``, which
+            each container keeps in its own way.
+        """
+        metadata["duration"] = int(audio_file.info.length)
+        if "title" in audio_file:
+            metadata["title"] = audio_file["title"][0]
+        if "artist" in audio_file:
+            metadata["artist"] = audio_file["artist"][0]
+        if "album" in audio_file:
+            metadata["album"] = audio_file["album"][0]
+        if "tracknumber" in audio_file:
+            track_str = audio_file["tracknumber"][0]
             if "/" in track_str:
                 track_str = track_str.split("/")[0]
             try:
                 metadata["track_number"] = int(track_str)
             except ValueError:
                 pass
-        if "discnumber" in flac:
-            disc_str = flac["discnumber"][0]
+        if "discnumber" in audio_file:
+            disc_str = audio_file["discnumber"][0]
             if "/" in disc_str:
                 disc_str = disc_str.split("/")[0]
             try:
                 metadata["disc_number"] = int(disc_str)
             except ValueError:
                 pass
-        if "date" in flac:
+        if "date" in audio_file:
             try:
-                metadata["year"] = int(flac["date"][0].split("-")[0])
+                metadata["year"] = int(audio_file["date"][0].split("-")[0])
             except (ValueError, IndexError):
                 pass
-        if "genre" in flac:
-            metadata["genre"] = flac["genre"][0]
-        if "replaygain_track_gain" in flac:
-            gain_str = flac["replaygain_track_gain"][0]
+        if "genre" in audio_file:
+            metadata["genre"] = audio_file["genre"][0]
+        if "replaygain_track_gain" in audio_file:
+            gain_str = audio_file["replaygain_track_gain"][0]
             try:
                 metadata["replaygain_gain"] = float(gain_str.replace(" dB", ""))
             except ValueError:
                 pass
-        if "replaygain_track_peak" in flac:
-            peak_str = flac["replaygain_track_peak"][0]
+        if "replaygain_track_peak" in audio_file:
+            peak_str = audio_file["replaygain_track_peak"][0]
             try:
                 metadata["replaygain_peak"] = float(peak_str)
             except ValueError:
                 pass
-        cover = self._flac_cover(flac)
+        cover = cover_in(audio_file)
         if cover is not None:
             metadata["album_art"] = cover
         # Every Vorbis comment verbatim (incl. albumartist/compilation) +
         # stream info. Keys can repeat, so values are lists.
-        metadata["raw_tags"] = {key: list(flac[key]) for key in flac.keys()}
+        metadata["raw_tags"] = {key: list(audio_file[key]) for key in audio_file.keys()}
         metadata["stream_info"] = {
-            "sample_rate": getattr(flac.info, "sample_rate", None),
-            "bits_per_sample": getattr(flac.info, "bits_per_sample", None),
-            "channels": getattr(flac.info, "channels", None),
-            "codec": "flac",
-            "encoder": flac["encoder"][0] if "encoder" in flac else None,
+            "sample_rate": getattr(audio_file.info, "sample_rate", None),
+            "bits_per_sample": getattr(audio_file.info, "bits_per_sample", None),
+            "channels": getattr(audio_file.info, "channels", None),
+            "codec": codec,
+            "encoder": audio_file["encoder"][0] if "encoder" in audio_file else None,
         }
         return metadata
 
@@ -1337,16 +1356,20 @@ class FileIndexer:
         return None
 
     @staticmethod
-    def _flac_cover(flac) -> Optional[bytes]:
-        """Front-cover bytes from a FLAC picture block, or None.
+    def _front_cover(pictures: List[Picture]) -> Optional[bytes]:
+        """Front-cover bytes from FLAC picture blocks, or None.
 
         Prefers picture type 3 (cover front), falls back to the first picture.
         """
-        pictures = flac.pictures
         for pic in pictures:
             if pic.type == 3:
                 return pic.data
         return pictures[0].data if pictures else None
+
+    @classmethod
+    def _flac_cover(cls, flac) -> Optional[bytes]:
+        """Front-cover bytes from a FLAC file's picture blocks, or None."""
+        return cls._front_cover(flac.pictures)
 
     def _embedded_art(
         self, storage: FileStorage, file_path: str
