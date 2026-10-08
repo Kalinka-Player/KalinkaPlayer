@@ -318,6 +318,7 @@ Give the player a couple of minutes after you switch it on. Then connect to it i
 **With a web browser.** Open `http://<address>:8000`, for example `http://192.168.1.50:8000`. Type the `http://` and the `:8000` in full. To find the address:
 
 - the Kalinka app shows it under the server's name;
+- a player started from a Kalinka image also answers to `kalinka.local`, so `http://kalinka.local:8000` works from most computers and phones without looking anything up. A second image player on the same network becomes `kalinka-2.local`;
 - your router's web page lists connected devices, and the player appears as **kalinka**;
 - a screen plugged into the player shows it:
 

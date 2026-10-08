@@ -15,9 +15,10 @@ DIETPI_CACHE="${DIETPI_CACHE:-$SCRIPT_DIR/cache}"
 DIETPI_BOOT_MOUNT="${DIETPI_BOOT_MOUNT:-/boot/firmware}"
 DIETPI_SETTINGS_MOUNT="${DIETPI_SETTINGS_MOUNT:-$DIETPI_BOOT_MOUNT}"
 DIETPI_LAYOUT="${DIETPI_LAYOUT:-rpi}"
-# python3 for install-release.sh, adduser for the postinsts, ALSA to pick a card offline, SFTP for Dropbear.
+# python3 for install-release.sh, adduser for the postinsts, ALSA to pick a card offline, SFTP for Dropbear,
+# avahi to answer for kalinka.local.
 DIETPI_PACKAGES="python3 adduser alsa-utils openssh-sftp-server
-                 bluez
+                 bluez avahi-daemon
                  iw wpasupplicant wireless-regdb rfkill iproute2"
 if [ "$DIETPI_LAYOUT" = rpi ]; then
   DIETPI_PACKAGES+=" pi-bluetooth bluez-firmware"

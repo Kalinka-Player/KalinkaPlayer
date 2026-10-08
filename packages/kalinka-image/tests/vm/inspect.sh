@@ -87,7 +87,7 @@ else
 fi
 
 echo "  -- DietPi networking and packaged supervisor"
-for package in wpasupplicant ifupdown bluez libpam-systemd kalinka-supervisor; do
+for package in wpasupplicant ifupdown bluez avahi-daemon libpam-systemd kalinka-supervisor; do
   status="$(dpkg-query --admindir="$ROOTFS/var/lib/dpkg" -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null)"
   assert_eq "$package is installed" "$status" "ii "
 done

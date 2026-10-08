@@ -23,7 +23,7 @@ esac
 
 # Quoted, so the backticks stay Markdown.
 sed "s|/blob/main/docs/|/blob/$tag/docs/|g" <<'EOF'
-Ready-to-flash images of Kalinka Player with the server, every first-party plugin, the browser player and the renderer already installed and enabled. Power one on, open `http://<its-ip>:8000` in a browser, and it plays — no install step, no login needed.
+Ready-to-flash images of Kalinka Player with the server, every first-party plugin, the browser player and the renderer already installed and enabled. Power one on, open `http://kalinka.local:8000` (or `http://<its-ip>:8000`) in a browser, and it plays — no install step, no login needed.
 
 | Image | For | Built on |
 |---|---|---|
