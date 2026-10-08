@@ -10,8 +10,10 @@ Tests for the indexer's broken-file handling (issue #63):
   4. A later successful index clears the failure record.
 """
 
+import dataclasses
 import io
 import os
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -181,6 +183,18 @@ async def test_subsecond_mtime_change_is_retried(indexer, monkeypatch):
     assert calls["n"] == 2
 
 
+def _reading_mp3_with(monkeypatch, reader):
+    entry = FileIndexer._TAG_FORMATS["audio/mpeg"]
+    monkeypatch.setitem(
+        FileIndexer._TAG_FORMATS, "audio/mpeg", dataclasses.replace(entry, read=reader)
+    )
+
+
+_STORAGE = SimpleNamespace(
+    open=lambda _path, **_: io.BytesIO(b"an mp3"), listdir=lambda _path: []
+)
+
+
 def test_mp3_without_id3_header_is_supported(monkeypatch):
     """A tagless MP3 must extract (duration only), not raise.
 
@@ -197,21 +211,20 @@ def test_mp3_without_id3_header_is_supported(monkeypatch):
             self.info = FakeInfo()
             self.tags = None
 
-    monkeypatch.setattr(indexer_mod, "MP3", FakeMP3)
+    _reading_mp3_with(monkeypatch, FakeMP3)
     monkeypatch.setattr(indexer_mod, "ID3", dict)
 
-    metadata = fi._extract_mp3_metadata(
-        io.BytesIO(b"no tags here"), {"format": "audio/mpeg"}
-    )
+    metadata = fi._extract_metadata(_STORAGE, "/music/song.mp3")
     assert metadata["duration"] == 200
     assert "title" not in metadata
     assert "artist" not in metadata
+    assert "album_art" not in metadata
 
 
 def test_an_mp3_is_read_once(monkeypatch):
-    """Tags come off the object ``MP3`` already built. Re-parsing them meant
-    a second pass over the file, which on a share is a second network read
-    of a buffer that was just discarded."""
+    """Tags and cover come off the object ``MP3`` already built. Re-parsing
+    them meant a second pass over the file, which on a share is a second
+    network read of a buffer that was just discarded."""
     fi = FileIndexer.__new__(FileIndexer)
     reads = {"n": 0}
 
@@ -227,11 +240,9 @@ def test_an_mp3_is_read_once(monkeypatch):
     def refuse(*args):
         raise AssertionError("the frames were parsed a second time")
 
-    monkeypatch.setattr(indexer_mod, "MP3", FakeMP3)
+    _reading_mp3_with(monkeypatch, FakeMP3)
     monkeypatch.setattr(indexer_mod, "ID3", refuse)
 
-    metadata = fi._extract_mp3_metadata(
-        io.BytesIO(b"tagged"), {"format": "audio/mpeg"}
-    )
+    metadata = fi._extract_metadata(_STORAGE, "/music/song.mp3")
     assert reads["n"] == 1
     assert metadata["title"] == "Come Together"
