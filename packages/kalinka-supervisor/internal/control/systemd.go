@@ -25,7 +25,7 @@ var errReply = errors.New("unexpected systemd reply")
 const ReinstallUnit = "kalinka-reinstall.service"
 
 // UpgradeUnits install packages; restarting or shutting down under them can leave a broken installation.
-var UpgradeUnits = []string{ReinstallUnit, "kalinka-upgrade.service", "kalinka-renderer-upgrade.service"}
+var UpgradeUnits = []string{ReinstallUnit, "kalinka-upgrade.service", "kalinka-renderer-upgrade.service", "kalinka-restart.service"}
 
 // Target is a systemd shutdown target.
 type Target string

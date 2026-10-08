@@ -127,6 +127,31 @@ it does not authorize future destructive recovery. Disabling setup through
 
 ## Package updates today
 
+On an existing Debian-based installation, **Settings › EXPERT › Manage this
+box** (`base_config.server.manage_box`) opts into Supervisor. It is absent
+from the simple Server section. **Apply** saves the preference and restarts
+Kalinka, not the operating system. When enabled it installs Supervisor only
+if missing; when disabled it removes that package, preserving networking
+dependencies and persistent setup data. Internet access and a published
+Supervisor release for amd64 or arm64 are required to install.
+
+The separate read-only `base_config.server.supervisor_status` appears in the
+normal **Settings › General › Server** section and reports the actual package
+version or absence, pending work and the last failed attempt.
+An installed package is not a claim that its service is running or reachable;
+the app continues to discover the controls through the Supervisor API. With
+no saved preference, existing images and manual installations show the toggle
+enabled, and ordinary servers show it disabled. A failure leaves the requested
+preference visible alongside the actual state; restart from the app to retry.
+
+The Debian package adds a pre-start step to `kalinka-restart.service`, using
+system Python and a root-owned copy of the verified release installer. Only
+the saved boolean is accepted; commands, package names and URLs cannot be
+provided through settings. Package work runs outside Core's filesystem sandbox
+and stops Core before making changes. The restart proceeds even if package
+work fails. Ordinary boots and upgrades do not run this step, so a failed
+network request cannot create a startup retry loop.
+
 Core's existing Python update checker watches `kalinka-supervisor-v*` alongside Core and renderer releases. A newer supervisor alone makes the existing update action available. The root-side upgrade script still runs `install-release.sh`; that calls `install-supervisor.sh` only when the supervisor is already installed. Ordinary Core installations do not acquire a supervisor implicitly.
 
 The helper chooses the matching `amd64` or `arm64` package, verifies its release checksum and Debian package identity, refuses downgrades, then lets apt install it. The package's post-install hook reloads systemd, re-enables the unit and restarts the supervisor, which also starts it on boxes where older packages left it off for lack of radios. Neither step can fail the Core upgrade that installs the package. Persistent setup rollback records and Wi-Fi daemons survive that restart. A checksum fetched from the same HTTPS release detects corruption; it is not an independent publisher signature.
