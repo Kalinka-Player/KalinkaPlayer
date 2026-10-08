@@ -26,6 +26,18 @@ def test_values_survive_a_reload(tmp_path):
     assert reloaded.volume_control("rid-1") is None
 
 
+def test_the_selected_renderer_s_name_survives_a_reload(tmp_path):
+    path = str(tmp_path / "renderers.json")
+    RendererPreferences(path).set_selected("rid-1", "Living Room")
+
+    reloaded = RendererPreferences(path)
+    assert reloaded.selected_renderer_id == "rid-1"
+    assert reloaded.selected_renderer_name == "Living Room"
+
+    reloaded.set_selected(None, "Living Room")
+    assert RendererPreferences(path).selected_renderer_name is None
+
+
 def test_clearing_a_mapping_drops_the_entry(tmp_path):
     path = str(tmp_path / "renderers.json")
     prefs = RendererPreferences(path)

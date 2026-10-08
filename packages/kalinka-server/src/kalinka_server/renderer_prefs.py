@@ -25,6 +25,7 @@ class RendererPreferences:
     def __init__(self, path: Optional[str] = None):
         self._path = path
         self._selected_renderer_id: Optional[str] = None
+        self._selected_renderer_name: Optional[str] = None
         self._renderers: dict[str, dict[str, Any]] = {}
         if path:
             self._load()
@@ -34,6 +35,11 @@ class RendererPreferences:
     def selected_renderer_id(self) -> Optional[str]:
         return self._selected_renderer_id
 
+    @property
+    def selected_renderer_name(self) -> Optional[str]:
+        """What the selected renderer last called itself; None if never heard."""
+        return self._selected_renderer_name
+
     def volume_control(self, renderer_id: str) -> Optional[str]:
         """Plugin id of the module that owns this renderer's volume, or None
         when the renderer controls its own."""
@@ -42,14 +48,23 @@ class RendererPreferences:
     def to_dict(self) -> dict:
         return {
             "selected_renderer_id": self._selected_renderer_id,
+            "selected_renderer_name": self._selected_renderer_name,
             "renderers": {k: dict(v) for k, v in self._renderers.items()},
         }
 
     # ---------------------------------------------------------------- writing
-    def set_selected(self, renderer_id: Optional[str]) -> None:
-        if renderer_id == self._selected_renderer_id:
+    def set_selected(
+        self, renderer_id: Optional[str], name: Optional[str] = None
+    ) -> None:
+        if renderer_id is None:
+            name = None
+        if (renderer_id, name) == (
+            self._selected_renderer_id,
+            self._selected_renderer_name,
+        ):
             return
         self._selected_renderer_id = renderer_id
+        self._selected_renderer_name = name
         self._save()
 
     def set_volume_control(self, renderer_id: str, module: Optional[str]) -> None:
@@ -84,6 +99,10 @@ class RendererPreferences:
             return
         selected = data.get("selected_renderer_id")
         self._selected_renderer_id = selected if isinstance(selected, str) else None
+        name = data.get("selected_renderer_name")
+        self._selected_renderer_name = (
+            name if isinstance(name, str) and self._selected_renderer_id else None
+        )
         renderers = data.get("renderers")
         if isinstance(renderers, dict):
             self._renderers = {

@@ -187,18 +187,33 @@ async def test_switching_with_nothing_playing_selects_but_claims_nothing(
     assert second.session_id is None
 
 
-async def test_selecting_an_offline_renderer_leaves_playback_where_it_is(
-    queue, renderers
-):
-    """It resolves back to the renderer already playing, so there is nothing to
-    move. The pin still remembers it for when it returns."""
+async def test_switching_to_an_offline_renderer_is_refused(queue, renderers):
+    """It cannot be claimed, so playback stays where it is and so does the pin."""
     registry, _pool, first, second = renderers
     await _play_on(queue, first)
-    registry.disconnect("rid-b", second, clean=True)
+    registry.disconnect("rid-b", second, clean=False)
 
-    await queue.switch_renderer("rid-b")
+    with pytest.raises(RendererUnavailable):
+        await queue.switch_renderer("rid-b")
 
     assert first.current is not None
     assert first.session_id is not None
     assert registry.active_id() == "rid-a"
-    assert registry.selected_id == "rid-b"
+    assert registry.selected_id is None
+
+
+async def test_playback_on_an_offline_selected_renderer_fails_rather_than_moves(
+    queue, renderers, emitter
+):
+    registry, _pool, first, second = renderers
+    await queue.switch_renderer("rid-b")
+    registry.disconnect("rid-b", second, clean=True)
+
+    await queue.add([example_track()])
+    await queue.play()
+    await asyncio.sleep(0.2)
+
+    assert PlayerStateEnum.ERROR in _states(emitter)
+    assert registry.active_id() == "rid-b"
+    assert first.session_id is None
+    assert first.current is None
