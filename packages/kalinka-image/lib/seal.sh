@@ -36,11 +36,11 @@ publish_image() {
   mkdir -p "$OUT_DIR"
   supervisor="$(in_chroot dpkg-query -W -f='${Version}' kalinka-supervisor)"
   renderer="$(in_chroot dpkg-query -W -f='${Version}' kalinka-renderer)"
-  python3 - "$OUT_DIR/$name.manifest.json" "$TARGET" "$TARGET_ARCH" "$version" "$supervisor" "$renderer" \
+  python3 - "$OUT_DIR/$name.manifest.json" "$TARGET" "$TARGET_ARCH" "${TARGET_DISPLAY:-0}" "$version" "$supervisor" "$renderer" \
     "$DIETPI_IMAGE" "$DIETPI_VERSION" "$(sha256sum "$DIETPI_CACHE/$DIETPI_IMAGE.img.xz" | cut -d' ' -f1)" <<'PYMANIFEST'
 import datetime, json, pathlib, sys
-path, target, arch, core, supervisor, renderer, base, base_version, base_sha = sys.argv[1:]
-data = dict(target=target, architecture=arch, core_version=core,
+path, target, arch, display, core, supervisor, renderer, base, base_version, base_sha = sys.argv[1:]
+data = dict(target=target, architecture=arch, display=display == "1", core_version=core,
             supervisor_version=supervisor, renderer_version=renderer,
             dietpi_image=base, dietpi_version=base_version, dietpi_sha256=base_sha,
             built_at=datetime.datetime.now(datetime.timezone.utc).isoformat())

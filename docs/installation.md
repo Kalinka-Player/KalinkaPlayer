@@ -61,7 +61,9 @@ Open the [Kalinka image releases](https://github.com/Kalinka-Player/KalinkaPlaye
 - **`-rpi5-arm64.img.xz`** for a Raspberry Pi 5, 500 or CM5;
 - **`-rpi234-arm64.img.xz`** for any other Pi: 3, 4, 400, Zero 2 W, CM3 or CM4.
 
-It is about 500 MB. Do not unpack it: the writing tools read it as it is.
+With a screen attached to the Pi, take the **`-display`** image for the same board instead: `-rpi5-display-arm64.img.xz` or `-rpi234-display-arm64.img.xz`. It is the same player with the now-playing display already installed and switched on: the cover, the track and touch controls on an HDMI screen or the official touchscreen from the first start, with no download after flashing. To turn the display off later, use the app: **Settings › EXPERT › Now-playing display on this machine**.
+
+It is about 500 MB, a little more for a `-display` image. Do not unpack it: the writing tools read it as it is.
 
 #### 2. Write it to the card
 
@@ -434,7 +436,7 @@ All current images use DietPi. With a login, use `dietpi-update` and then `apt u
 
 **The browser cannot connect.** Wait two minutes after switching the player on. Type `http://`, not `https://`, and add `:8000` at the end.
 
-**The Pi does not start.** Check you wrote the right image: `rpi5` for a Pi 5, `rpi234` for the others. Write the card again, and try another card if that fails. Use the official power supply.
+**The Pi does not start.** Check you wrote the right image: `rpi5` for a Pi 5, `rpi234` for the others (with or without `-display`). Write the card again, and try another card if that fails. Use the official power supply.
 
 **Wi-Fi or the login does not work.** On a Pi, check that `AUTO_SETUP_NET_WIFI_ENABLED=1` is set and that the network name and password in `dietpi-wifi.txt` are between the quotes. The Pi removes the files from the card after its first start, so write the card again to try once more. On the PC image, look at the drive again: if `kalinka-firstboot.conf` is still there, the player could not read it. Check that the file name is exactly right, with no hidden `.txt` on the end, and that any value containing spaces is inside quotes. Then start the player again. If the file is gone but the login still fails, a line was left starting with `#`, or `PASSWORD_HASH` held the example's placeholder: write the file again with those fixed.
 

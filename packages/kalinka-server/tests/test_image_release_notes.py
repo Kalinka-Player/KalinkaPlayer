@@ -62,7 +62,13 @@ def test_the_notes_leave_writing_and_setting_up_an_image_to_the_guide():
 
 def test_the_notes_keep_what_only_the_release_page_can_say():
     notes = _notes()
-    for image in ("-rpi234-arm64.img.xz", "-rpi5-arm64.img.xz", "-amd64.img.xz"):
+    for image in (
+        "-rpi234-arm64.img.xz",
+        "-rpi5-arm64.img.xz",
+        "-rpi234-display-arm64.img.xz",
+        "-rpi5-display-arm64.img.xz",
+        "-amd64.img.xz",
+    ):
         assert image in notes
     assert "sha256sum -c SHA256SUMS --ignore-missing" in notes
 

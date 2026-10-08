@@ -39,6 +39,12 @@ jobs:
           - target: rpi5
             arch: arm64
             runner: ubuntu-24.04-arm
+          - target: rpi234-display
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - target: rpi5-display
+            arch: arm64
+            runner: ubuntu-24.04-arm
           - target: amd64
             arch: amd64
             runner: ubuntu-24.04
