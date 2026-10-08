@@ -9,6 +9,7 @@ import time
 import logging
 import asyncio
 import multiprocessing
+from dataclasses import dataclass
 from typing import (
     Any,
     AsyncIterator,
@@ -29,7 +30,6 @@ from PIL import Image
 from mutagen import MutagenError
 from mutagen.mp3 import MP3
 from mutagen.flac import FLAC, Picture
-from mutagen.ogg import OggPage
 from mutagen.oggvorbis import OggVorbis
 from mutagen.id3 import ID3
 from mutagen.dsf import DSF
@@ -74,6 +74,7 @@ from ..utils.name_utils import (
 )
 from .cue import find_cue_for, parse_cue
 from .dsd import native_dsdiff_tags
+from .ogg import NoVorbisStream, open_ogg_vorbis
 from .id_generator import (
     generate_artist_id,
     generate_album_id,
@@ -104,6 +105,21 @@ SUPPORTED_AUDIO_EXTENSIONS = {".mp3", ".flac", ".ogg", ".oga", ".dsf", ".dff"}
 
 # Base64 images, kept out of the evidence as APIC frames are for ID3.
 _PICTURE_COMMENTS = ("metadata_block_picture", "coverart")
+
+
+@dataclass(frozen=True)
+class _TagFormat:
+    """How one kind of audio file is read, for its metadata and for its
+    cover alike, so a format is added in one place."""
+
+    #: Parses an open file with mutagen, raising when it is not this kind.
+    read: Callable[[BinaryIO], Any]
+    #: Fills metadata from the indexer, the parsed file, the open file and
+    #: the metadata so far.
+    extract: Callable[["FileIndexer", Any, BinaryIO, Dict], Dict]
+    #: The front cover in the parsed file, or None.
+    cover: Callable[[Any], Optional[bytes]]
+
 
 # How often the file watcher checks whether a lost root came back.
 REARM_CHECK_INTERVAL_S = 15.0
@@ -1088,6 +1104,12 @@ class FileIndexer:
         string ("Â.Öîé" / "&amp;" / "В.Цой" all read right afterwards)."""
         return repair_tag_text(text, self.config.legacy_tag_encoding)
 
+    def _tag_format_of(self, file_path: str) -> Tuple[str, Optional[_TagFormat]]:
+        """The media type a file is recorded with, and how it is read, or
+        None for a type this module cannot read."""
+        mime_type = media_type_of(file_path) or "application/octet-stream"
+        return mime_type, self._TAG_FORMATS.get(mime_type)
+
     def _extract_metadata(
         self, storage: FileStorage, file_path: str
     ) -> Optional[Dict]:
@@ -1099,57 +1121,29 @@ class FileIndexer:
             track until the file itself changes.
         """
         try:
-            mime_type = media_type_of(file_path) or "application/octet-stream"
-            if mime_type == "audio/x-flac":
-                mime_type = "audio/flac"
-
-            metadata = {
-                "format": mime_type,
-            }
-            if "audio/mpeg" in mime_type:
-                with storage.open(file_path) as audio:
-                    metadata = self._extract_mp3_metadata(audio, metadata)
-            elif "audio/flac" in mime_type:
-                with storage.open(file_path) as audio:
-                    metadata = self._extract_flac_metadata(audio, metadata)
-            elif mime_type == "audio/ogg":
-                with storage.open(file_path) as audio:
-                    if not self._starts_vorbis_stream(audio):
-                        logger.warning(
-                            "Not indexing %s: it holds no Vorbis stream, and "
-                            "Vorbis is the only codec in Ogg the renderer plays",
-                            file_path,
-                        )
-                        return None
-                    audio.seek(0)
-                    metadata = self._extract_ogg_vorbis_metadata(audio, metadata)
-            elif mime_type in ("audio/x-dsf", "audio/x-dff"):
-                with storage.open(file_path) as audio:
-                    reader = DSF if mime_type == "audio/x-dsf" else DSDIFF
-                    dsd = reader(audio)
-                    metadata = self._extract_id3_metadata(dsd, metadata, "dsd")
-                    if reader is DSDIFF:
-                        native_tags = native_dsdiff_tags(audio)
-                        metadata["raw_tags"].update(native_tags)
-                        for tag, field in (("DIAR", "artist"), ("DITI", "title")):
-                            if native_tags.get(tag) and not metadata.get(field):
-                                metadata[field] = native_tags[tag]
-                    # DSF's bits_per_sample field means bit order (1 or 8),
-                    # not audio precision. DSD always has one-bit samples.
-                    metadata["stream_info"].update(
-                        bits_per_sample=1,
-                        bitrate=dsd.info.sample_rate * dsd.info.channels,
-                        container="dsf" if reader is DSF else "dsdiff",
-                        compression=getattr(dsd.info, "compression", "DSD"),
-                    )
-            else:
+            mime_type, tag_format = self._tag_format_of(file_path)
+            if tag_format is None:
                 logger.warning(
                     f"Unsupported file format: {file_path}, format: {mime_type}"
                 )
                 return None
-            if metadata is not None:
-                self._augment_with_cue(storage, file_path, metadata)
+            with storage.open(file_path) as audio:
+                parsed = tag_format.read(audio)
+                metadata = tag_format.extract(
+                    self, parsed, audio, {"format": mime_type}
+                )
+                cover = tag_format.cover(parsed)
+            if cover is not None:
+                metadata["album_art"] = cover
+            self._augment_with_cue(storage, file_path, metadata)
             return metadata
+        except NoVorbisStream:
+            logger.warning(
+                "Not indexing %s: it holds no Vorbis stream, and "
+                "Vorbis is the only codec in Ogg the renderer plays",
+                file_path,
+            )
+            return None
         except Exception as e:
             failure = storage_failure(e)
             if failure is not None:
@@ -1209,13 +1203,35 @@ class FileIndexer:
             if m:
                 metadata["year"] = int(m.group())
 
-    def _extract_mp3_metadata(self, audio: BinaryIO, metadata: Dict) -> Dict:
-        """Extract metadata from an open MP3 file.
-
-        Errors propagate to ``_extract_metadata``, which logs them once.
-        """
-        mp3 = MP3(audio)
+    def _extract_mp3_metadata(self, mp3: MP3, audio: BinaryIO, metadata: Dict) -> Dict:
         return self._extract_id3_metadata(mp3, metadata, "mp3")
+
+    def _extract_dsf_metadata(self, dsf: DSF, audio: BinaryIO, metadata: Dict) -> Dict:
+        return self._extract_dsd_metadata(dsf, metadata, "dsf")
+
+    def _extract_dsdiff_metadata(
+        self, dsdiff: DSDIFF, audio: BinaryIO, metadata: Dict
+    ) -> Dict:
+        """DSDIFF's own artist and title fill what its ID3 tag leaves out."""
+        metadata = self._extract_dsd_metadata(dsdiff, metadata, "dsdiff")
+        native_tags = native_dsdiff_tags(audio)
+        metadata["raw_tags"].update(native_tags)
+        for tag, field in (("DIAR", "artist"), ("DITI", "title")):
+            if native_tags.get(tag) and not metadata.get(field):
+                metadata[field] = native_tags[tag]
+        return metadata
+
+    def _extract_dsd_metadata(self, dsd, metadata: Dict, container: str) -> Dict:
+        metadata = self._extract_id3_metadata(dsd, metadata, "dsd")
+        # DSF's bits_per_sample field means bit order (1 or 8),
+        # not audio precision. DSD always has one-bit samples.
+        metadata["stream_info"].update(
+            bits_per_sample=1,
+            bitrate=dsd.info.sample_rate * dsd.info.channels,
+            container=container,
+            compression=getattr(dsd.info, "compression", "DSD"),
+        )
+        return metadata
 
     def _extract_id3_metadata(self, audio_file, metadata: Dict, codec: str) -> Dict:
         # Use tags the container reader already parsed, including on shares.
@@ -1263,9 +1279,6 @@ class FileIndexer:
                 metadata["replaygain_peak"] = float(peak_str)
             except ValueError:
                 pass
-        cover = self._mp3_cover(id3)
-        if cover is not None:
-            metadata["album_art"] = cover
         # Verbatim text frames (incl. TPE2 album-artist, TCMP compilation) +
         # stream info for the clusterer. Binary frames (APIC) skipped.
         metadata["raw_tags"] = {
@@ -1284,61 +1297,26 @@ class FileIndexer:
         }
         return metadata
 
-    def _extract_flac_metadata(self, audio: BinaryIO, metadata: Dict) -> Dict:
-        """Extract metadata from an open FLAC file.
+    def _extract_flac_metadata(
+        self, flac: FLAC, audio: BinaryIO, metadata: Dict
+    ) -> Dict:
+        return self._extract_vorbis_comment_metadata(flac, metadata, "flac")
 
-        Errors propagate to ``_extract_metadata``, which logs them once.
-        """
-        flac = FLAC(audio)
-        return self._extract_vorbis_comment_metadata(
-            flac, metadata, "flac", self._flac_cover
-        )
-
-    @staticmethod
-    def _starts_vorbis_stream(audio: BinaryIO) -> bool:
-        """Whether one of an Ogg file's streams is Vorbis, told from the
-        opening pages alone.
-
-        Every stream's first page precedes all other pages, so an Opus or
-        FLAC file is turned away without being read to the end, which is
-        what mutagen does while it looks for a Vorbis header.
-        """
-        try:
-            page = OggPage(audio)
-            while page.first:
-                if page.packets and page.packets[0].startswith(b"\x01vorbis"):
-                    return True
-                page = OggPage(audio)
-        except EOFError:
-            pass
-        return False
-
-    def _extract_ogg_vorbis_metadata(self, audio: BinaryIO, metadata: Dict) -> Dict:
-        """Extract metadata from an open Ogg Vorbis file.
-
-        Errors propagate to ``_extract_metadata``, which logs them once.
-        """
-        vorbis = OggVorbis(audio)
-        metadata = self._extract_vorbis_comment_metadata(
-            vorbis, metadata, "vorbis", self._vorbis_cover
-        )
+    def _extract_ogg_vorbis_metadata(
+        self, vorbis: OggVorbis, audio: BinaryIO, metadata: Dict
+    ) -> Dict:
+        metadata = self._extract_vorbis_comment_metadata(vorbis, metadata, "vorbis")
         # A header with no bitrate fields reads as 0, which is not a bitrate.
         metadata["stream_info"]["bitrate"] = vorbis.info.bitrate or None
         return metadata
 
     def _extract_vorbis_comment_metadata(
-        self,
-        audio_file,
-        metadata: Dict,
-        codec: str,
-        cover_in: Callable[[Any], Optional[bytes]],
+        self, audio_file, metadata: Dict, codec: str
     ) -> Dict:
         """Fill ``metadata`` from a file tagged with Vorbis comments.
 
         @param audio_file The mutagen file: its comments read as a mapping of
             lower-case keys to lists of values, whatever the container.
-        @param cover_in Reads the front cover out of ``audio_file``, which
-            each container keeps in its own way.
         """
         metadata["duration"] = int(audio_file.info.length)
         if "title" in audio_file:
@@ -1382,9 +1360,6 @@ class FileIndexer:
                 metadata["replaygain_peak"] = float(peak_str)
             except ValueError:
                 pass
-        cover = cover_in(audio_file)
-        if cover is not None:
-            metadata["album_art"] = cover
         # Every Vorbis comment verbatim (incl. albumartist/compilation) +
         # stream info. Keys can repeat, so values are lists.
         metadata["raw_tags"] = {
@@ -1402,8 +1377,11 @@ class FileIndexer:
         return metadata
 
     @staticmethod
-    def _mp3_cover(id3) -> Optional[bytes]:
-        """Front-cover bytes from an ID3 tag set, or None."""
+    def _id3_cover(audio_file) -> Optional[bytes]:
+        """Front-cover bytes from a file's ID3 tag, or None."""
+        id3 = audio_file.tags
+        if id3 is None:
+            return None
         for tag in ("APIC:", "APIC:Cover", "APIC:CoverFront"):
             if tag in id3:
                 return id3[tag].data
@@ -1420,13 +1398,13 @@ class FileIndexer:
                 return pic.data
         return pictures[0].data if pictures else None
 
-    @classmethod
-    def _flac_cover(cls, flac) -> Optional[bytes]:
+    @staticmethod
+    def _flac_cover(flac) -> Optional[bytes]:
         """Front-cover bytes from a FLAC file's picture blocks, or None."""
-        return cls._front_cover(flac.pictures)
+        return FileIndexer._front_cover(flac.pictures)
 
-    @classmethod
-    def _vorbis_cover(cls, vorbis) -> Optional[bytes]:
+    @staticmethod
+    def _vorbis_cover(vorbis) -> Optional[bytes]:
         """Front-cover bytes from an Ogg Vorbis file's base64
         ``METADATA_BLOCK_PICTURE`` comments, or failing those the legacy
         ``COVERART`` one, or None.
@@ -1440,7 +1418,7 @@ class FileIndexer:
                 pictures.append(Picture(base64.b64decode(encoded)))
             except (ValueError, MutagenError):
                 continue
-        cover = cls._front_cover([p for p in pictures if p.data])
+        cover = FileIndexer._front_cover([p for p in pictures if p.data])
         if cover is not None:
             return cover
         for encoded in vorbis.get("coverart", []):
@@ -1452,6 +1430,17 @@ class FileIndexer:
                 return data
         return None
 
+    #: How each media type ``_tag_format_of`` names is read.
+    _TAG_FORMATS = {
+        "audio/mpeg": _TagFormat(MP3, _extract_mp3_metadata, _id3_cover),
+        "audio/flac": _TagFormat(FLAC, _extract_flac_metadata, _flac_cover),
+        "audio/ogg": _TagFormat(
+            open_ogg_vorbis, _extract_ogg_vorbis_metadata, _vorbis_cover
+        ),
+        "audio/x-dsf": _TagFormat(DSF, _extract_dsf_metadata, _id3_cover),
+        "audio/x-dff": _TagFormat(DSDIFF, _extract_dsdiff_metadata, _id3_cover),
+    }
+
     def _embedded_art(
         self, storage: FileStorage, file_path: str
     ) -> Optional[bytes]:
@@ -1461,22 +1450,13 @@ class FileIndexer:
         @raise OSError If the file cannot be read, which says nothing about
             its tags — though the tag reader reports it as a tag error.
         """
-        mime_type = media_type_of(file_path) or ""
-        if "audio/mpeg" in mime_type:
-            tags, cover_in = ID3, self._mp3_cover
-        elif mime_type in ("audio/flac", "audio/x-flac"):
-            tags, cover_in = FLAC, self._flac_cover
-        elif mime_type == "audio/ogg":
-            tags, cover_in = OggVorbis, self._vorbis_cover
-        elif mime_type in ("audio/x-dsf", "audio/x-dff"):
-            tags = DSF if mime_type == "audio/x-dsf" else DSDIFF
-            cover_in = lambda audio: self._mp3_cover(audio.tags or ID3())
-        else:
+        _, tag_format = self._tag_format_of(file_path)
+        if tag_format is None:
             return None
         with storage.open(file_path) as audio:
             watched = WatchedFile(audio)
             try:
-                return cover_in(tags(watched))
+                return tag_format.cover(tag_format.read(watched))
             except Exception as e:
                 if watched.read_error is not None:
                     raise watched.read_error from None

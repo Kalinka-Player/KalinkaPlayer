@@ -8,8 +8,10 @@ its per-file album row.
 import errno
 import io
 import os
+import shutil
 import sqlite3
 from contextlib import closing
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -43,6 +45,13 @@ async def indexer(tmp_path):
 
 
 LOCAL = LocalStorage()
+LADDER_MP3 = (
+    Path(__file__).resolve().parents[2]
+    / "kalinka-renderer"
+    / "tests"
+    / "data"
+    / "ladder.mp3"
+)
 
 
 def _cover_png(color):
@@ -367,6 +376,7 @@ async def test_backfill_skips_artless_and_unavailable(indexer):
 async def test_embedded_art_reads_mp3_apic(indexer):
     fi, db, music_dir, config = indexer
     path = music_dir / "single.mp3"
+    shutil.copyfile(LADDER_MP3, path)
     from mutagen.id3 import APIC, ID3
 
     id3 = ID3()

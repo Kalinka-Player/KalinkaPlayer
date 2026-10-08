@@ -26,6 +26,7 @@ from kalinka_plugin_localfiles.indexer.indexer import (
     is_supported_audio_file,
 )
 from kalinka_plugin_localfiles.indexer.indexer_db import AsyncIndexerDb
+from kalinka_plugin_localfiles.indexer.ogg import starts_vorbis_stream
 from kalinka_plugin_localfiles.input_module_db import LocalFilesInputModuleDb
 from kalinka_plugin_localfiles.localfiles import LocalFilesInputModule
 from kalinka_plugin_localfiles.storage.local import LocalStorage
@@ -234,7 +235,7 @@ def test_a_vorbis_stream_after_another_streams_first_page_is_found(tmp_path):
     other.first = True
     other.packets = [b"\x80theora"]
 
-    assert FileIndexer._starts_vorbis_stream(io.BytesIO(other.write() + vorbis))
+    assert starts_vorbis_stream(io.BytesIO(other.write() + vorbis))
 
 
 def test_a_damaged_vorbis_file_is_not_blamed_on_its_codec(tmp_path, caplog):
