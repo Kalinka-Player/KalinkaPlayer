@@ -10,6 +10,7 @@ on:
       - 'scripts/install-release.sh'
       - 'scripts/install-supervisor.sh'
       - 'scripts/install-renderer.sh'
+      - 'scripts/tag_version.sh'
       - '.github/actions/build-image/**'
       - '.github/workflows/image-pr.yml'
       - '.github/workflows/image-build.yml'
@@ -31,6 +32,8 @@ jobs:
       DEBIAN_FRONTEND: noninteractive
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Test and build the image
         uses: ./.github/actions/build-image

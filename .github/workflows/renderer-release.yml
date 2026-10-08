@@ -159,6 +159,15 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
+      # The sandbox builds a copy of the package without git to ask.
+      - name: Stamp the version
+        env:
+          MANIFEST: packages/kalinka-renderer/flatpak/io.github.madenvel.KalinkaRenderer.yml
+        run: |
+          VERSION="${TAG#kalinka-renderer-v}"
+          sed -i "/^  - name: kalinka-renderer\$/,/^    sources:/ s|^      - -DCMAKE_BUILD_TYPE=Release\$|&\n      - -DKALINKA_VERSION=$VERSION|" "$MANIFEST"
+          grep -qx -- "      - -DKALINKA_VERSION=$VERSION" "$MANIFEST"
+
       - name: Build flatpak bundle
         uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:

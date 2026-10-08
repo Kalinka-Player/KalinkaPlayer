@@ -31,7 +31,7 @@ build_supervisor() {
     cp "$SUPERVISOR_DEB" "$WORK/kalinka-supervisor.deb"
   else
     log "Building the supervisor package ($TARGET_ARCH)"
-    VERSION="${SUPERVISOR_VERSION:-0.1.0~local}" GOARCH="$TARGET_ARCH" \
+    VERSION="${SUPERVISOR_VERSION:-}" GOARCH="$TARGET_ARCH" \
       OUT_DIR="$WORK" "$SCRIPT_DIR/../kalinka-supervisor/build-deb.sh"
     mv "$WORK"/kalinka-supervisor_*_"$TARGET_ARCH".deb "$WORK/kalinka-supervisor.deb"
   fi

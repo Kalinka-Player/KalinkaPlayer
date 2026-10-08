@@ -1,11 +1,38 @@
 cmake_minimum_required(VERSION 3.16)
-project(kalinka-renderer VERSION 0.3.0 LANGUAGES CXX)
+project(kalinka-renderer LANGUAGES CXX)
 
-# What the binary announces to a Core and logs at startup. The packaging
-# scripts pass the version the package carries, so a build off a release says
-# which commit it came from; a plain build is the release being worked towards.
-set(KALINKA_VERSION "${PROJECT_VERSION}" CACHE STRING
-    "Version the renderer reports")
+# Packaging passes -DKALINKA_VERSION on each configure; cached, it would
+# outlive the commit it named, so a plain build asks git instead.
+set(renderer_version "${KALINKA_VERSION}")
+unset(KALINKA_VERSION CACHE)
+if(NOT renderer_version)
+  execute_process(
+    COMMAND bash -c ". scripts/version.sh && renderer_version"
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE renderer_version
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE version_result
+    ERROR_QUIET)
+  if(version_result EQUAL 0 AND renderer_version)
+    execute_process(
+      COMMAND git rev-parse --path-format=absolute --git-path logs/HEAD
+      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+      OUTPUT_VARIABLE head_log
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET)
+    if(EXISTS "${head_log}")
+      # Re-derive after every commit or checkout, not just the first configure.
+      set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${head_log}")
+    endif()
+  else()
+    # Unparseable, so a Core never takes it for a release to upgrade from.
+    set(renderer_version "unknown")
+  endif()
+endif()
+message(STATUS "kalinka-renderer version: ${renderer_version}")
+# Only these sources, so a new version recompiles two files, not the targets.
+set_source_files_properties(src/main.cpp src/net/ProtocolSession.cpp PROPERTIES
+  COMPILE_DEFINITIONS KALINKA_RENDERER_VERSION="${renderer_version}")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -104,9 +131,6 @@ add_library(kalinka_renderer_core STATIC
   src/session/SessionManager.cpp
   src/upgrade/TriggerFileUpgradeService.cpp
 )
-target_compile_definitions(kalinka_renderer_core PRIVATE
-  KALINKA_RENDERER_VERSION="${KALINKA_VERSION}"
-)
 target_include_directories(kalinka_renderer_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
@@ -134,9 +158,6 @@ add_executable(kalinka-renderer
   src/player/NativePlayer.cpp
   src/player/StateTranslator.cpp
   src/player/StubPlayer.cpp
-)
-target_compile_definitions(kalinka-renderer PRIVATE
-  KALINKA_RENDERER_VERSION="${KALINKA_VERSION}"
 )
 target_include_directories(kalinka-renderer SYSTEM PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/mdns

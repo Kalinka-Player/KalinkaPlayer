@@ -19,6 +19,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: packages/kalinka-supervisor/go.mod
@@ -31,7 +33,7 @@ jobs:
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
         run: |
-          export VERSION="${REQUESTED_VERSION:-0.1.0~ci.${GITHUB_RUN_NUMBER}+g${GITHUB_SHA:0:8}}"
+          export VERSION="$REQUESTED_VERSION"
           for arch in amd64 arm64; do
             GOARCH="$arch" make supervisor-deb
           done

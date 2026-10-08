@@ -3,7 +3,8 @@ set -euo pipefail
 pkg_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 arch="${GOARCH:-$(dpkg --print-architecture)}"
 case "$arch" in amd64|arm64) ;; *) echo 'Supported package architectures: amd64, arm64' >&2; exit 1;; esac
-version="${VERSION:-0.1.0}"
+. "$pkg_dir/../../scripts/tag_version.sh"
+version="${VERSION:-$(tag_version kalinka-supervisor-v)}"
 out_dir="${OUT_DIR:-$pkg_dir/build}"
 dpkg --validate-version "$version"
 stage="$(mktemp -d)"
