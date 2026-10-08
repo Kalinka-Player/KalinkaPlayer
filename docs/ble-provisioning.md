@@ -184,7 +184,7 @@ NetworkManager's [AddConnection2 and Update2 flags](https://www.networkmanager.d
 
 ## DietPi integration
 
-The `rpi234` and `rpi5` image builds install the static Go supervisor, BlueZ, Pi
+The `rpi234` and `rpi5` image builds (and their `-display` variants) install the static Go supervisor, BlueZ, Pi
 Bluetooth firmware/UART support, and the Wi-Fi tools. The build removes
 DietPi's Bluetooth/Wi-Fi disable overlays and blacklists, enables the UART
 initialisation and provisioning units, and checks for the noninteractive

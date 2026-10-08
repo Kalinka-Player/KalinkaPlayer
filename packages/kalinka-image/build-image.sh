@@ -9,7 +9,8 @@
 #
 # A target, targets/<name>.sh, names the hardware. It sets TARGET_ARCH (the
 # dpkg architecture) and TARGET_BASE, the system Kalinka is installed on; the
-# base, lib/base-<name>.sh, says what else a target must provide. Every base
+# base, lib/base-<name>.sh, says what else a target must provide. TARGET_DISPLAY=1
+# adds the now-playing display on an attached screen (lib/display.sh). Every base
 # implements the same steps:
 #
 #   BASE_HOST_TOOLS          host commands the base needs
@@ -41,7 +42,7 @@ IMAGE_SIZE="${IMAGE_SIZE:-4GiB}"
 OUT_DIR="${OUT_DIR:-$SCRIPT_DIR/out}"
 XZ_LEVEL="${XZ_LEVEL:--6}"
 
-for lib in common chroot-aids kalinka seal supervisor; do
+for lib in common chroot-aids display kalinka seal supervisor; do
   # shellcheck source=/dev/null
   . "$SCRIPT_DIR/lib/$lib.sh"
 done
@@ -83,11 +84,14 @@ start_build_aids
 
 in_chroot apt-get update --error-on=any
 base_install_packages
+configure_display_setting "$ROOTFS"
 install_kalinka "$KALINKA_VERSION"
 verify_kalinka
 base_finish
 install_supervisor
 verify_supervisor
+configure_display_boot "$ROOTFS"
+verify_display
 
 stop_build_aids
 seal_rootfs

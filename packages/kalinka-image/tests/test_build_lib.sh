@@ -23,6 +23,8 @@ assert_eq "a PC is named by its architecture alone" \
   "$(image_name 5.1.0 amd64 amd64)" "kalinka-5.1.0-amd64.img"
 assert_eq "a board by its target and architecture" \
   "$(image_name 5.1.0 rpi234 arm64)" "kalinka-5.1.0-rpi234-arm64.img"
+assert_eq "a display variant by its whole target name" \
+  "$(image_name 5.1.0 rpi5-display arm64)" "kalinka-5.1.0-rpi5-display-arm64.img"
 
 echo "  -- a resolv.conf that is a file"
 mkdir -p "$ROOTFS/etc"

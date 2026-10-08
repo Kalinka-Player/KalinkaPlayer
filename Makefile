@@ -1,6 +1,6 @@
 ## KalinkaPlayer Development Makefile
 
-.PHONY: supervisor-build supervisor-test supervisor-deb clean test test-playqueue test-plugin-template system-test bench-sdd help venv-env kalinka-server-deb kalinka-server-rpm kalinka-plugins-deb build-all-deb copy-debs build-env dev-setup dev-run renderer-build renderer-clean renderer-deb renderer-rpm proto image-rpi234 image-rpi5 image-amd64 image-test
+.PHONY: supervisor-build supervisor-test supervisor-deb clean test test-playqueue test-plugin-template system-test bench-sdd help venv-env kalinka-server-deb kalinka-server-rpm kalinka-plugins-deb build-all-deb copy-debs build-env dev-setup dev-run renderer-build renderer-clean renderer-deb renderer-rpm proto image-rpi234 image-rpi5 image-rpi234-display image-rpi5-display image-amd64 image-test
 
 ## --- Local-from-source dev environment (no root, no systemd) ------------------
 ## Everything lands in a per-user fakeroot under $(KALINKA_PREFIX) instead of the
@@ -238,9 +238,9 @@ supervisor-deb:
 
 ## --- Appliance images (packages/kalinka-image) ---------------------------------
 ## Bootable images with the whole player already installed: DietPi for the
-## Raspberry Pi and x86-64 UEFI PCs. All need root for loop devices and mounts,
-## and building for another architecture needs qemu-user-static registered
-## with binfmt_misc:
+## Raspberry Pi (headless, or -display with the now-playing screen) and x86-64
+## UEFI PCs. All need root for loop devices and mounts, and building for
+## another architecture needs qemu-user-static registered with binfmt_misc:
 ##   sudo make image-rpi234               # latest published release
 ##   sudo make image-rpi5 KALINKA_VERSION=4.3.2
 IMAGE_DIR := packages/kalinka-image
@@ -251,6 +251,12 @@ image-rpi234:
 
 image-rpi5:
 	@$(IMAGE_DIR)/build-image.sh rpi5 $(KALINKA_VERSION)
+
+image-rpi234-display:
+	@$(IMAGE_DIR)/build-image.sh rpi234-display $(KALINKA_VERSION)
+
+image-rpi5-display:
+	@$(IMAGE_DIR)/build-image.sh rpi5-display $(KALINKA_VERSION)
 
 image-amd64:
 	@$(IMAGE_DIR)/build-image.sh amd64 $(KALINKA_VERSION)
@@ -292,6 +298,8 @@ help:
 	@echo "  build-all-deb     Build all deb packages (server, plugins, renderer) and move to debs/"
 	@echo "  image-rpi234      Build the Raspberry Pi 3/4/400/Zero 2 W image (needs root)"
 	@echo "  image-rpi5        Build the Raspberry Pi 5 image (needs root)"
+	@echo "  image-rpi234-display  The rpi234 image with the now-playing display (needs root)"
+	@echo "  image-rpi5-display    The rpi5 image with the now-playing display (needs root)"
 	@echo "  image-amd64       Build the x86-64 appliance image (needs root)"
 	@echo "  image-test        Run the appliance image tests"
 	@echo "  copy-debs         Move built deb packages to debs/ directory"

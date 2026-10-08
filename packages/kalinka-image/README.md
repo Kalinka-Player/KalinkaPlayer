@@ -2,13 +2,17 @@
 
 Bootable images with the whole player already installed and enabled: the server, all four first-party plugins, the plugin SDK, the browser player and the renderer that drives the sound card. Power one on and it plays — there is no install step and no login needed to use it.
 
-Three targets, all built from signed DietPi images:
+Five targets, all built from signed DietPi images:
 
 | Target | Hardware | Base | Boots via |
 |---|---|---|---|
 | `rpi234` | Raspberry Pi 3, 4, 400, Zero 2 W, CM3 and CM4 | DietPi | the Pi's own firmware and the Raspberry Pi kernel |
 | `rpi5` | Raspberry Pi 5, 500 and CM5 | DietPi | the Pi's own firmware and the Raspberry Pi kernel |
+| `rpi234-display` | as `rpi234`, with the now-playing display on an attached screen | DietPi | as `rpi234` |
+| `rpi5-display` | as `rpi5`, with the now-playing display on an attached screen | DietPi | as `rpi5` |
 | `amd64` | x86-64 PC or virtual machine with UEFI | DietPi Native PC UEFI | GRUB and UEFI (Secure Boot disabled) |
+
+A `-display` target sets `TARGET_DISPLAY=1` and is otherwise the same image. [`lib/display.sh`](lib/display.sh) installs `kalinka-kiosk` (the app drawn through flutter-pi, straight to KMS with no X or Wayland), switches on the KMS driver DietPi ships commented out in `config.txt`, drops DietPi's 16 MB GPU split so the firmware default applies, and writes `base_config.display.enabled: true` into `/etc/kalinka/kalinka_conf.cfg`. That file is written before the server is installed, so the server's postinst hands it to `kalusr`; a file the server cannot read is one its next settings save replaces. The build fails unless the kiosk package is installed, its units are enabled, the driver is on and the setting is readable by the server, and a headless build fails if the kiosk package got in.
 
 The Pi images are built on [DietPi](https://dietpi.com) because it carries the Raspberry Pi kernel, whose drivers and overlays are what DAC HATs need; Debian's own kernel has neither.
 
@@ -25,6 +29,7 @@ Every build needs root, for loop devices and mounts:
 ```sh
 sudo make image-rpi234                        # the latest published release
 sudo make image-rpi5
+sudo make image-rpi5-display                  # with the now-playing display
 sudo make image-amd64 KALINKA_VERSION=4.3.2   # a specific one
 ```
 
@@ -40,11 +45,13 @@ make image-test    # the test suite, in a throwaway Debian container
 
 [`build-image.sh`](build-image.sh) runs the steps in a fixed order and knows nothing about any one system. A target in [`targets/`](targets) names the hardware and a base; the base, `lib/base-<name>.sh`, supplies how that system is created, configured, finished and sealed. The rest is shared in [`lib/`](lib): the loop device and mounts, the chroot aids, installing and checking Kalinka, and sealing and compressing.
 
-Kalinka itself is installed by running the repository's own [`scripts/install-release.sh`](../../scripts/install-release.sh) inside the chroot, which is what keeps the image honest: it installs exactly what `curl … | sudo bash` installs on anyone else's machine, picks up the browser player from the app repo and the renderer package for this distro and architecture, and needs no second copy of that logic here. The build then fails unless the server's venv builds, `fpcalc` fingerprints a test tone, and both the server and the renderer are enabled.
+Kalinka itself is installed by running the repository's own [`scripts/install-release.sh`](../../scripts/install-release.sh) inside the chroot, which is what keeps the image honest: it installs exactly what `curl … | sudo bash` installs on anyone else's machine, picks up the browser player from the app repo and the renderer package for this distro and architecture, and needs no second copy of that logic here. The build then fails unless the server's venv builds, `fpcalc` fingerprints a test tone, and both the server and the renderer are enabled. A `-display` build passes `KALINKA_DISPLAY=1`, which adds the kiosk package from the same app release.
 
 No install in the build takes recommends. `install-release.sh` passes `--no-install-recommends` itself, and the build turns them off for its own installs, so what the image needs of them is named instead: `fpcalc` for AcoustID fingerprinting and the toolchain below by `install-release.sh`, `wpasupplicant`, BlueZ and the supervisor for nearby setup. The x86 image also includes `libpam-systemd` and unmasks `systemd-logind` for login sessions and the VM/PC power button.
 
 The reason is graphics. `fpcalc` links ffmpeg; ffmpeg's `libavutil` hard-depends `libva2` and `libvdpau1`; each of those Recommends a video-acceleration driver, which pulls Mesa and a 118 MB `libLLVM` onto a machine with no display. Refusing packages does not keep that out: both Recommends read `<name>-all | <virtual>`, and the Mesa drivers, the Intel ones and NVIDIA's all *Provide* that virtual, so apt only moves on to the next provider. With recommends off none of them has a way in, and neither do the cellular modem stack behind NetworkManager and X forwarding behind sshd. `libva2` and `libvdpau1` themselves stay: ffmpeg needs them, they are small, and VA-API with no driver behind it is what any headless machine does anyway. The setting is lifted before the image is sealed — it was about keeping this build lean, not about what you may install later.
+
+The `-display` images carry Mesa and `libLLVM` on purpose: the kiosk package hard-depends on Mesa's DRI and GLES drivers to draw at all, so recommends being off does not keep them out, and should not. That weight is why the headless images stay the default.
 
 The C/C++ toolchain does stay, at about 300 MB: `install-release.sh` asks for it by name, because `kalinka.service` expects to be able to build an optional package from source when Smart Search wants one that has no prebuilt wheel for this architecture.
 
@@ -98,6 +105,7 @@ ALSA is installed, and marked installed for DietPi's own tools, so choosing a so
 - **`test_targets.sh`** checks that every target names a base that exists and sets what that base needs, applies each Debian target's partition table, and checks that `TARGET_BOOT_PART` really is the FAT partition, that `TARGET_ROOT_PART` really is the Linux one and is last (nothing after it could grow), and that the target fills in the whole contract. Needs no privileges.
 - **`test_build_lib.sh`** checks the published file names, that the image's own `resolv.conf` — file, symlink or none — comes back exactly as it was, that an overlay leaves the image's own directory modes alone, and that unit links are read as links rather than resolved on the build host.
 - **`test_dietpi_conf.sh`** checks reading and writing `dietpi.txt` the way DietPi does, and every change the build makes to DietPi's files, on a copy shaped like the real ones.
+- **`test_display_image.sh`** checks the display image's edits on a `config.txt` shaped like DietPi's: the KMS line switched on once, the GPU split gone, the setting written and kept private, existing settings kept, nothing done for a headless target, and that each `-display` target builds on the same DietPi image as its headless one.
 - **`test_dietpi_image.sh`** grows a partition table without losing the disk id, refuses anything but a two-partition MBR image, accepts a signature only from the pinned key — not from a second key in the same keyring — and holds exactly the installed kernel packages, by name and version.
 - **`test_growroot.sh`** runs the grow step against faked SD, SATA and NVMe device names, and against media the image already fills.
 - **`test_systemctl_shim.sh`** pins down which verbs reach the real `systemctl` and which are swallowed.
@@ -123,7 +131,7 @@ a separate Debian package, service hardening and future recovery capabilities.
 
 - `supervisor-packages.yml` tests Go and the installer, then cross-compiles `amd64` and `arm64` Debian packages and checksums.
 - `supervisor-release.yml` publishes those packages for a `kalinka-supervisor-vX.Y.Z` tag. It does not change the app bundle's Latest badge.
-- `image-build.yml` is the manual **DietPi E2E images** workflow. It builds packages first, then the three images on native runners. Download the `image-amd64`, `image-rpi234` and `image-rpi5` artifacts. Each contains the compressed disk, checksum and version manifest; artifacts are retained for 14 days.
+- `image-build.yml` is the manual **DietPi E2E images** workflow. It builds packages first, then the five images on native runners. Download the `image-amd64`, `image-rpi234`, `image-rpi5`, `image-rpi234-display` and `image-rpi5-display` artifacts. Each contains the compressed disk, checksum and version manifest; artifacts are retained for 14 days.
 - `image-release.yml` reuses the same build before publishing an image release. `image-pr.yml` builds and boots x86 on relevant pull requests.
 
 Core and renderer come from published releases; supervisor comes from the selected checkout. An empty supervisor version is counted from the last `kalinka-supervisor-v*` tag, as `0.2.1~dev3+g1a2b3c4` three commits past `0.2.0`: above that release and below the next one. A checkout without that tag, such as a shallow clone, needs `SUPERVISOR_VERSION` set. Nothing in the E2E workflow publishes a release.

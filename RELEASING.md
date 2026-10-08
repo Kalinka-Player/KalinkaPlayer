@@ -12,7 +12,7 @@ There are four independent things to version, and they work differently:
 | **App bundle** | `kalinka-server`, `kalinka-plugin-localfiles`, `kalinka-plugin-musiccast`, `kalinka-plugin-dummydevice`, `kalinka-plugin-jamendo`, `kalinka-plugin-upnp` | A single `kalinka-vX.Y.Z` git tag (via setuptools_scm) | **Yes** |
 | **Renderer** | `kalinka-renderer` (deb/rpm/flatpak) | Its own `kalinka-renderer-vX.Y.Z` git tag | **Yes** (its own) |
 | **Plugin SDK** | `kalinka-plugin-sdk` | Its **own SemVer** — a constant in source | **No** |
-| **Appliance images** | `kalinka-*-rpi234-arm64.img.xz`, `kalinka-*-rpi5-arm64.img.xz`, `kalinka-*-amd64.img.xz` | Their own `kalinka-image-vX.Y.Z` git tag | **Yes** (its own) |
+| **Appliance images** | `kalinka-*-rpi234-arm64.img.xz`, `kalinka-*-rpi5-arm64.img.xz`, `kalinka-*-rpi234-display-arm64.img.xz`, `kalinka-*-rpi5-display-arm64.img.xz`, `kalinka-*-amd64.img.xz` | Their own `kalinka-image-vX.Y.Z` git tag | **Yes** (its own) |
 
 - The **app bundle** is lockstep: one tag versions the server and all
   first-party plugins together.
@@ -142,14 +142,14 @@ make renderer-rpm    # -> packages/kalinka-renderer/*.rpm
 
 ## Release the appliance images
 
-Ready-to-flash images with the whole player already installed — two for the Raspberry Pi, built on DietPi, and one for x86-64 on Debian. See [`packages/kalinka-image/README.md`](packages/kalinka-image/README.md) for what is in them and how they are built.
+Ready-to-flash images with the whole player already installed — four for the Raspberry Pi (headless, and `-display` with the now-playing screen), built on DietPi, and one for x86-64 on Debian. See [`packages/kalinka-image/README.md`](packages/kalinka-image/README.md) for what is in them and how they are built.
 
 1. Tag and push. The version is the image train's own, not the app bundle's:
    ```bash
    git tag kalinka-image-v1.0.0
    git push origin kalinka-image-v1.0.0
    ```
-   `image-release.yml` builds each image on a runner of its own architecture — nothing is emulated — and publishes all three to the tag's own release, never marked "latest".
+   `image-release.yml` builds each image on a runner of its own architecture — nothing is emulated — and publishes all five to the tag's own release, never marked "latest".
 
    The workflow writes the release notes with [`scripts/image-release-notes.sh`](scripts/image-release-notes.sh): the table of images, what the Pi images carry, the checksum line, and links to *Install the server* and *Settings on the card* in [`docs/installation.md`](docs/installation.md) as it stands at the tag. How to write an image and set it up lives in that guide and nowhere else. Keep it out of the notes: a copy there once told PC users something the guide had already corrected. `make test` fails if a heading the notes link to is renamed. It also runs [`scripts/check_release_notes.py`](scripts/check_release_notes.py), which fails when a heading linked from a release workflow, the docs or the guide itself is renamed, when the notes lose the image table, a row for an image the workflow builds or the checksum line, when they link anything but the release's tag, or when a step comes back into them.
 
@@ -159,7 +159,7 @@ Ready-to-flash images with the whole player already installed — two for the Ra
    gh release edit kalinka-image-vX.Y.Z --notes-file notes.md
    ```
 
-2. **Pick the app-bundle release to bake in.** The tag push installs whatever is the latest published `kalinka-v*` at build time, which is usually what you want. To pin a specific one, run the workflow by hand instead (**Actions → Image release → Run workflow**) with `kalinka_version` set; it also takes the existing tag to publish under. The image filename carries the version that actually landed inside it, not the one that was asked for.
+2. **Pick the app-bundle release to bake in.** The tag push installs whatever is the latest published `kalinka-v*` at build time, which is usually what you want. The `-display` images also take `kalinka-kiosk_*_arm64.deb` from that app release, and fail to build if it has none. To pin a specific one, run the workflow by hand instead (**Actions → Image release → Run workflow**) with `kalinka_version` set; it also takes the existing tag to publish under. The image filename carries the version that actually landed inside it, not the one that was asked for.
 
 3. Cut an image release when the OS side changes — a Debian point release or a DietPi release worth picking up, a first-boot or partitioning fix — or when the app bundle has moved far enough that a freshly flashed card would otherwise spend its first boot upgrading. Not on every app release: the images auto-upgrade like any other install.
 
@@ -167,6 +167,7 @@ Local builds (needs root, and `qemu-user-static` under `binfmt_misc` to cross-bu
 ```bash
 sudo make image-rpi234
 sudo make image-rpi5
+sudo make image-rpi5-display
 sudo make image-amd64 KALINKA_VERSION=4.3.2
 make image-test
 ```

@@ -29,9 +29,13 @@ Ready-to-flash images of Kalinka Player with the server, every first-party plugi
 |---|---|---|
 | `…-rpi234-arm64.img.xz` | Raspberry Pi 3, 4, 400, Zero 2 W, CM3 and CM4 | DietPi (Debian 13) |
 | `…-rpi5-arm64.img.xz` | Raspberry Pi 5, 500 and CM5 | DietPi (Debian 13) |
+| `…-rpi234-display-arm64.img.xz` | The same boards as `rpi234`, showing what's playing on an attached screen | DietPi (Debian 13) |
+| `…-rpi5-display-arm64.img.xz` | The same boards as `rpi5`, showing what's playing on an attached screen | DietPi (Debian 13) |
 | `…-amd64.img.xz` | x86-64 PC or virtual machine, UEFI (Secure Boot off) | DietPi (Debian 13) |
 
 The Raspberry Pi images play through DAC HATs as well as USB DACs. A HAT with an ID chip is set up by itself.
+
+A `-display` image is the same player with the now-playing display already installed and switched on: plug in an HDMI or DSI screen and it shows the cover, the track and touch controls from the first start. Without a screen, pick the image without `-display`; it is smaller.
 
 To flash an image and start it, follow [Install the server](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#install-the-server). For Wi-Fi, a login or a DAC HAT without an ID chip, change [Settings on the card](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#settings-on-the-card) before the first start.
 
