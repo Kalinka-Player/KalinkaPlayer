@@ -7,7 +7,6 @@ from functools import partial
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Callable, List, Dict, Optional, Tuple
-import mimetypes
 
 from fastapi import HTTPException
 from .config_model import DISPLAY_NAME, LocalFilesConfig
@@ -374,10 +373,6 @@ class LocalFilesInputModule(InputModule):
         os.makedirs(self.artwork_path / "playlist", exist_ok=True)
         os.makedirs(self.artwork_path / FOLDER_ART, exist_ok=True)
         self._folder_covers = FolderCovers(self.artwork_path, self._covers_of_folder)
-
-        # Initialize mime types for serving files
-        mimetypes.init()
-        mimetypes.add_type("audio/flac", ".flac")
 
     @property
     def _storage(self) -> StorageResolver:

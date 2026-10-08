@@ -271,10 +271,10 @@ def media_type_of(path: str) -> Optional[str]:
     decides which tag reader runs and what a renderer is told it is playing,
     so getting it from the name is not optional.
     """
-    from ..audio_formats import DSD_MEDIA_TYPES
+    from ..audio_formats import MEDIA_TYPES
 
     suffix = os.path.splitext(path)[1].lower()
-    return DSD_MEDIA_TYPES.get(suffix) or mimetypes.guess_type(os.path.basename(path))[0]
+    return MEDIA_TYPES.get(suffix) or mimetypes.guess_type(os.path.basename(path))[0]
 
 
 def root_of(path: str, roots: Iterable[str]) -> Optional[str]:

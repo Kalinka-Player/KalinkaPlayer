@@ -9,6 +9,7 @@ collapses the ``//`` after the scheme and quietly turns the share into a
 directory name.
 """
 
+import mimetypes
 import os
 
 import pytest
@@ -183,6 +184,28 @@ class TestTheParsedFormSurvivesPathArithmetic:
 
     def test_a_local_path_reads_the_same_way(self):
         assert media_type_of("/mnt/nas/music/Bonus #1.mp3") == "audio/mpeg"
+
+    @pytest.mark.parametrize("name", ["Symphony #5.ogg", "Symphony #5.OGA"])
+    def test_ogg_is_named_without_the_hosts_type_table(self, name, monkeypatch):
+        """Python's own table has no Ogg, and a minimal host has no
+        /etc/mime.types to add it, yet the type picks the tag reader and is
+        what the renderer is told it is playing."""
+        monkeypatch.setattr(mimetypes, "guess_type", lambda *_a, **_k: (None, None))
+        assert media_type_of(f"smb://host/share/{name}") == "audio/ogg"
+
+    @pytest.mark.parametrize(
+        "name, media_type",
+        [("Symphony #5.flac", "audio/flac"), ("Symphony #5.mp3", "audio/mpeg")],
+    )
+    def test_the_hosts_own_name_for_a_format_does_not_win(
+        self, name, media_type, monkeypatch
+    ):
+        """An older /etc/mime.types calls FLAC audio/x-flac; the indexer and
+        the renderer are told the same name on every host."""
+        monkeypatch.setattr(
+            mimetypes, "guess_type", lambda *_a, **_k: ("audio/x-other", None)
+        )
+        assert media_type_of(f"smb://host/share/{name}") == media_type
 
     def test_a_name_with_no_extension_has_no_type(self):
         assert media_type_of("smb://nas/music/README") is None
