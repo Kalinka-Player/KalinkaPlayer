@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import base64
 import os
 import re
 import sys
@@ -25,8 +26,11 @@ from pathlib import Path
 
 from PIL import Image
 
+from mutagen import MutagenError
 from mutagen.mp3 import MP3
 from mutagen.flac import FLAC, Picture
+from mutagen.ogg import OggPage
+from mutagen.oggvorbis import OggVorbis
 from mutagen.id3 import ID3
 from mutagen.dsf import DSF
 from mutagen.dsdiff import DSDIFF
@@ -96,7 +100,10 @@ from ..clustering.classify import (  # noqa: E402
 )
 
 
-SUPPORTED_AUDIO_EXTENSIONS = {".mp3", ".flac", ".dsf", ".dff"}
+SUPPORTED_AUDIO_EXTENSIONS = {".mp3", ".flac", ".ogg", ".oga", ".dsf", ".dff"}
+
+# Base64 images, kept out of the evidence as APIC frames are for ID3.
+_PICTURE_COMMENTS = ("metadata_block_picture", "coverart")
 
 # How often the file watcher checks whether a lost root came back.
 REARM_CHECK_INTERVAL_S = 15.0
@@ -1105,6 +1112,17 @@ class FileIndexer:
             elif "audio/flac" in mime_type:
                 with storage.open(file_path) as audio:
                     metadata = self._extract_flac_metadata(audio, metadata)
+            elif mime_type == "audio/ogg":
+                with storage.open(file_path) as audio:
+                    if not self._starts_vorbis_stream(audio):
+                        logger.warning(
+                            "Not indexing %s: it holds no Vorbis stream, and "
+                            "Vorbis is the only codec in Ogg the renderer plays",
+                            file_path,
+                        )
+                        return None
+                    audio.seek(0)
+                    metadata = self._extract_ogg_vorbis_metadata(audio, metadata)
             elif mime_type in ("audio/x-dsf", "audio/x-dff"):
                 with storage.open(file_path) as audio:
                     reader = DSF if mime_type == "audio/x-dsf" else DSDIFF
@@ -1276,6 +1294,38 @@ class FileIndexer:
             flac, metadata, "flac", self._flac_cover
         )
 
+    @staticmethod
+    def _starts_vorbis_stream(audio: BinaryIO) -> bool:
+        """Whether one of an Ogg file's streams is Vorbis, told from the
+        opening pages alone.
+
+        Every stream's first page precedes all other pages, so an Opus or
+        FLAC file is turned away without being read to the end, which is
+        what mutagen does while it looks for a Vorbis header.
+        """
+        try:
+            page = OggPage(audio)
+            while page.first:
+                if page.packets and page.packets[0].startswith(b"\x01vorbis"):
+                    return True
+                page = OggPage(audio)
+        except EOFError:
+            pass
+        return False
+
+    def _extract_ogg_vorbis_metadata(self, audio: BinaryIO, metadata: Dict) -> Dict:
+        """Extract metadata from an open Ogg Vorbis file.
+
+        Errors propagate to ``_extract_metadata``, which logs them once.
+        """
+        vorbis = OggVorbis(audio)
+        metadata = self._extract_vorbis_comment_metadata(
+            vorbis, metadata, "vorbis", self._vorbis_cover
+        )
+        # A header with no bitrate fields reads as 0, which is not a bitrate.
+        metadata["stream_info"]["bitrate"] = vorbis.info.bitrate or None
+        return metadata
+
     def _extract_vorbis_comment_metadata(
         self,
         audio_file,
@@ -1337,7 +1387,11 @@ class FileIndexer:
             metadata["album_art"] = cover
         # Every Vorbis comment verbatim (incl. albumartist/compilation) +
         # stream info. Keys can repeat, so values are lists.
-        metadata["raw_tags"] = {key: list(audio_file[key]) for key in audio_file.keys()}
+        metadata["raw_tags"] = {
+            key: list(audio_file[key])
+            for key in audio_file.keys()
+            if key not in _PICTURE_COMMENTS
+        }
         metadata["stream_info"] = {
             "sample_rate": getattr(audio_file.info, "sample_rate", None),
             "bits_per_sample": getattr(audio_file.info, "bits_per_sample", None),
@@ -1371,6 +1425,33 @@ class FileIndexer:
         """Front-cover bytes from a FLAC file's picture blocks, or None."""
         return cls._front_cover(flac.pictures)
 
+    @classmethod
+    def _vorbis_cover(cls, vorbis) -> Optional[bytes]:
+        """Front-cover bytes from an Ogg Vorbis file's base64
+        ``METADATA_BLOCK_PICTURE`` comments, or failing those the legacy
+        ``COVERART`` one, or None.
+
+        A comment that will not decode is passed over: it is one tag among
+        many, and must not cost the track the rest.
+        """
+        pictures = []
+        for encoded in vorbis.get("metadata_block_picture", []):
+            try:
+                pictures.append(Picture(base64.b64decode(encoded)))
+            except (ValueError, MutagenError):
+                continue
+        cover = cls._front_cover([p for p in pictures if p.data])
+        if cover is not None:
+            return cover
+        for encoded in vorbis.get("coverart", []):
+            try:
+                data = base64.b64decode(encoded)
+            except ValueError:
+                continue
+            if data:
+                return data
+        return None
+
     def _embedded_art(
         self, storage: FileStorage, file_path: str
     ) -> Optional[bytes]:
@@ -1385,6 +1466,8 @@ class FileIndexer:
             tags, cover_in = ID3, self._mp3_cover
         elif mime_type in ("audio/flac", "audio/x-flac"):
             tags, cover_in = FLAC, self._flac_cover
+        elif mime_type == "audio/ogg":
+            tags, cover_in = OggVorbis, self._vorbis_cover
         elif mime_type in ("audio/x-dsf", "audio/x-dff"):
             tags = DSF if mime_type == "audio/x-dsf" else DSDIFF
             cover_in = lambda audio: self._mp3_cover(audio.tags or ID3())

@@ -32,7 +32,7 @@ _EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif")
 #: folder whether or not this library can play the format.
 _AUDIO_EXTENSIONS = (
     ".flac", ".mp3", ".m4a", ".wav", ".aiff", ".aif", ".ape", ".wv",
-    ".ogg", ".opus", ".wma", ".dsf", ".dff", ".mpc", ".alac",
+    ".ogg", ".oga", ".opus", ".wma", ".dsf", ".dff", ".mpc", ".alac",
 )
 
 #: The memory guard, applied to the directory entry before the file is

@@ -304,7 +304,9 @@ class TestASubfolderThatIsAnotherAlbum:
 
         assert _name(find_folder_cover(LOCAL, str(tmp_path))) == "abbey_1.jpg"
 
-    @pytest.mark.parametrize("audio", ["01.dsf", "01.ape", "01.m4a", "01.wv"])
+    @pytest.mark.parametrize(
+        "audio", ["01.dsf", "01.ape", "01.m4a", "01.wv", "01.oga"]
+    )
     def test_music_this_library_cannot_play_still_marks_a_folder(
         self, tmp_path, audio
     ):
