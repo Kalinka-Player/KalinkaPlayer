@@ -115,6 +115,33 @@ class ServerConfig(BaseModel):
             **_SIMPLE,
         },
     )
+    manage_box: bool = Field(
+        default=False,
+        title="Manage this box",
+        json_schema_extra={
+            "importance": "expert",
+            "help": (
+                "Apply and restart to install box management if it is missing, "
+                "or remove it when turned off. Enables the box dashboard, "
+                "reboot, power off and nearby setup. Requires an internet "
+                "connection to install. Supervisor status shows what is "
+                "actually installed."
+            ),
+        },
+    )
+    supervisor_status: str = Field(
+        default="Not checked",
+        title="Supervisor status",
+        json_schema_extra={
+            **_SIMPLE,
+            "readonly": True,
+            "help": (
+                "Installed package state and the result of the last box "
+                "management change. An installed supervisor may still be "
+                "stopped or unreachable."
+            ),
+        },
+    )
     plugin_catalog_enabled: bool = Field(
         default=False,
         title="Plugin catalog preview",

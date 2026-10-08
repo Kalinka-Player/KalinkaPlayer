@@ -5,13 +5,17 @@ A write is judged whole before any of it is kept (:mod:`config_validation`),
 and the dry run answers what the save would.
 """
 
+import asyncio
 import logging
+import subprocess
+from pathlib import Path
 from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
-from kalinka_plugin_sdk import ConfigIssue
+from kalinka_plugin_sdk import ConfigIssue, paths
 
+from . import supervisor_management
 from .config_model import KalinkaConfig
 from .config_overrides import save_overrides, store_override
 from .config_schema_processor import (
@@ -46,6 +50,17 @@ def register_config_routes(
         ``page_banners``, ``dynamic_field_registry``, ``options_registry``,
         ``overrides`` and ``overrides_file`` off ``app.state`` per request.
     """
+
+    # An image or a manual installation is already opted in. Only an explicit
+    # saved preference overrides the package state; a new default must never
+    # uninstall Supervisor from existing boxes.
+    if "manage_box" not in config.server.model_fields_set:
+        try:
+            config.server.manage_box = (
+                supervisor_management.installed_version() is not None
+            )
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            logger.warning("Could not determine the installed Supervisor state")
 
     def _partition_modules_and_devices():
         successful_input_modules = {
@@ -102,6 +117,11 @@ def register_config_routes(
         # so hot-plug is reflected without a schema bump. Each entry is
         # a list of {value, label} option specs.
         enum_options = await build_enum_options(app.state.options_registry)
+        known.values[supervisor_management.STATUS_PATH] = await asyncio.to_thread(
+            supervisor_management.status_text,
+            config.server.manage_box,
+            Path(paths.state_dir()),
+        )
         return {
             "schema_version": app.state.schema_version,
             "values": known.values,
@@ -134,7 +154,20 @@ def register_config_routes(
                 app.state.dynamic_paths,
                 app.state.readonly_paths,
             )
-            return changes, await validate_changes(changes, _config_targets())
+            issues = await validate_changes(changes, _config_targets())
+            if supervisor_management.MANAGE_PATH in changes:
+                reason = await asyncio.to_thread(
+                    supervisor_management.unavailable_reason
+                )
+                if reason:
+                    issues.append(
+                        ConfigIssue(
+                            path=supervisor_management.MANAGE_PATH,
+                            severity="error",
+                            message=reason,
+                        )
+                    )
+            return changes, issues
         except ConfigWriteError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
@@ -181,6 +214,10 @@ def register_config_routes(
         applied: Dict[str, Any] = {}
         committed = []
         targets = _config_targets()
+        previous_manage_box = config.server.manage_box
+        previous_manage_override = app.state.overrides.get(
+            supervisor_management.MANAGE_PATH
+        )
         try:
             for key, value in changes.items():
                 try:
@@ -213,6 +250,23 @@ def register_config_routes(
                         app.state.overrides_file,
                         exc,
                     )
+                    if supervisor_management.MANAGE_PATH in applied:
+                        # The privileged helper consumes the saved preference.
+                        # Do not show an unsaved request as pending work, or let
+                        # an unrelated later save accidentally persist it.
+                        config.server.manage_box = previous_manage_box
+                        if previous_manage_override is None:
+                            app.state.overrides.pop(
+                                supervisor_management.MANAGE_PATH, None
+                            )
+                        else:
+                            app.state.overrides[supervisor_management.MANAGE_PATH] = (
+                                previous_manage_override
+                            )
+                        raise HTTPException(
+                            status_code=500,
+                            detail="Could not save box management settings; restart was not requested.",
+                        ) from exc
 
         ok_in, _err_in, ok_dev, _err_dev = _partition_modules_and_devices()
         known = build_static_values(config, ok_in, ok_dev)

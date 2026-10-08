@@ -212,7 +212,7 @@ def test_demo_mode_is_off_expert_only_and_read_only():
     field = next(field for field in schema.expert_fields if field.path == path)
     assert field.default is False
     assert field.readonly
-    assert readonly_paths(schema) == {path}
+    assert path in readonly_paths(schema)
 
 
 def test_a_field_tagged_readonly_is_read_only_without_being_frozen():

@@ -293,6 +293,13 @@ Older Debian PC images used `kalinka-firstboot.conf` on KALINKA-BT. That file is
 
 The images have a second page, at `http://<address>:8001`, for example `http://192.168.1.50:8001`. It comes from the Kalinka supervisor, so it keeps working when the server itself has stopped responding.
 
+On a server installed with the script, enable **Settings › EXPERT › Manage
+this box**, then **Apply** to add it. Kalinka restarts while Supervisor is
+installed; the whole computer does not reboot. **Supervisor status** shows
+whether it is actually installed and reports a failed attempt. Turning the
+option off and applying removes Supervisor and its box controls. Images
+already have it, so their option starts enabled.
+
 - **What it shows:** whether the server is running, the versions of Kalinka and its plugins, and how much memory and processor time Kalinka is using.
 - **What it can do:** restart the server, restart the player, switch it off safely before you unplug it, or reinstall Kalinka from kalinkaplayer.com when nothing else helps. Each one asks you to confirm first.
 - **Reinstalling** keeps your settings and music. It takes several minutes, and the page shows its progress.
