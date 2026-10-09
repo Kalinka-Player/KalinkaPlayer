@@ -111,10 +111,12 @@ power_off() {
 # The guest has no radios, so this exercises the always-on supervisor: it must
 # read Core's identity and be allowed to drive systemd.
 power_off_through_supervisor() {
-  local control="http://127.0.0.1:$HOST_CONTROL_PORT" info server_id
+  local control="http://127.0.0.1:$HOST_CONTROL_PORT" info page server_id
   info="$(curl -fsS --max-time 5 "$control/info")" || { echo "boot: the control API did not answer" >&2; return 1; }
   echo "boot: the supervisor answered: $info"
-  curl -fsS --max-time 5 "$control/" | grep -q '<title>Kalinka Supervisor</title>' \
+  # Not piped: grep -q exiting early fails curl's write, and pipefail with it.
+  page="$(curl -fsS --max-time 5 "$control/")" || { echo "boot: the control page did not answer" >&2; return 1; }
+  grep -q '<title>Kalinka Supervisor</title>' <<<"$page" \
     || { echo "boot: the supervisor serves no control page" >&2; return 1; }
   server_id="$(python3 -c 'import json, sys; print(json.load(sys.stdin)["server_id"] or "")' <<<"$info")"
   [ -n "$server_id" ] || { echo "boot: the supervisor cannot read Core's identity" >&2; return 1; }
