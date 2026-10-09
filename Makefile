@@ -245,6 +245,8 @@ supervisor-deb:
 ##   sudo make image-rpi5 KALINKA_VERSION=4.3.2
 IMAGE_DIR := packages/kalinka-image
 KALINKA_VERSION ?=
+# Docker Hub's anonymous pull limit fails shared CI runners.
+IMAGE_TEST_BASE ?= public.ecr.aws/docker/library/debian:trixie
 
 image-rpi234:
 	@$(IMAGE_DIR)/build-image.sh rpi234 $(KALINKA_VERSION)
@@ -266,11 +268,11 @@ image-amd64:
 image-test:
 	@if command -v podman >/dev/null 2>&1 || command -v docker >/dev/null 2>&1; then \
 		engine=$$(command -v podman || command -v docker); \
-		echo "Running the image tests in debian:trixie via $$(basename $$engine)"; \
+		echo "Running the image tests in $(IMAGE_TEST_BASE) via $$(basename $$engine)"; \
 		$$engine run --rm -v "$(CURDIR)/$(IMAGE_DIR):/packages/kalinka-image:z" \
 			-v "$(CURDIR)/packages/kalinka-supervisor:/packages/kalinka-supervisor:z" -w /packages/kalinka-image \
 			-e KALINKA_IMAGE_TEST_DISPOSABLE=1 -e DEBIAN_FRONTEND=noninteractive \
-			debian:trixie bash -c 'apt-get update -qq >/dev/null && \
+			$(IMAGE_TEST_BASE) bash -c 'apt-get update -qq >/dev/null && \
 				apt-get install -y -qq --no-install-recommends \
 					openssh-client openssl passwd python3 util-linux fdisk dosfstools tzdata gpg gpg-agent gpgv >/dev/null && \
 				bash tests/run-tests.sh'; \
