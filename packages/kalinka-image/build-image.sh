@@ -52,6 +52,8 @@ TARGET="${1:-}"
 [ -r "$SCRIPT_DIR/targets/$TARGET.sh" ] || die "unknown target '$TARGET'"
 KALINKA_VERSION="${2:-}"
 
+# Only a target may ask for the display, never the caller's environment.
+TARGET_DISPLAY=0
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/targets/$TARGET.sh"
 [ -r "$SCRIPT_DIR/lib/base-$TARGET_BASE.sh" ] \

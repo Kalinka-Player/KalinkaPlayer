@@ -185,6 +185,17 @@ def test_a_built_target_missing_from_the_table_is_flagged():
     ]
 
 
+def test_a_variant_row_does_not_stand_in_for_its_base_target():
+    notes = "".join(
+        line
+        for line in NOTES.splitlines(keepends=True)
+        if "-rpi5-arm64.img.xz` |" not in line
+    )
+    assert _messages(notes) == [
+        "the table has no row for `rpi5`, which the workflow builds"
+    ]
+
+
 def test_a_target_the_workflow_starts_building_needs_a_row():
     workflow = WORKFLOW.replace(
         "          - target: amd64\n",

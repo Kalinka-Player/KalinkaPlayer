@@ -2,8 +2,8 @@ name: Image release
 
 # Builds and publishes the ready-to-flash appliance images for a
 # `kalinka-image-vX.Y.Z` tag, with the server, every first-party plugin, the
-# browser player and the renderer already installed: two for the Raspberry Pi
-# and one for x86-64 UEFI, all based on DietPi (Debian 13).
+# browser player and the renderer already installed: four for the Raspberry Pi
+# (headless and -display) and one for x86-64 UEFI, all based on DietPi (Debian 13).
 #
 # The images have their own release train because they change for reasons the
 # app bundle does not — a Debian point release, a new DietPi, a first-boot fix —
