@@ -7,8 +7,11 @@ diagnostics and recovery actions are future work.
 ## Flow
 
 The image runs `kalinka-supervisor.service` independently of the player. After
-30 seconds without a usable IPv4 address on a physical LAN interface it
-advertises `Kalinka-XXXX`, where XXXX is the Bluetooth adapter address suffix.
+30 seconds without a usable IPv4 address on a physical LAN interface that
+carries the IPv4 default route, it advertises `Kalinka-XXXX`, where XXXX is the
+Bluetooth adapter address suffix. An interface without that route, such as a
+cable straight to an amplifier, does not keep setup closed when Wi-Fi breaks;
+a box on a LAN with no gateway at all counts as offline and advertises too.
 On a box which has previously connected, the grace period is five minutes.
 An internet outage does not trigger setup. A returning Ethernet or Wi-Fi
 connection closes setup automatically when no join is in progress.

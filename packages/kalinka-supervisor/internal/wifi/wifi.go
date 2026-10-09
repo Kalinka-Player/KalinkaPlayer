@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -52,22 +53,47 @@ func Pause(ctx context.Context, d time.Duration) error {
 		return nil
 	}
 }
-func LANAddress(_ context.Context, device string) (string, error) {
-	interfaces, err := net.Interfaces()
+
+// Host is the box an address is looked up on. Root prefixes /proc and /sys,
+// and Interfaces and Addrs stand in for the kernel's, so tests can stage a box.
+type Host struct {
+	Root       string
+	Interfaces func() ([]net.Interface, error)
+	Addrs      func(*net.Interface) ([]net.Addr, error)
+}
+
+// LANAddress is Host.Address on the running box.
+func LANAddress(ctx context.Context, device string) (string, error) {
+	return Host{Root: "/", Interfaces: net.Interfaces, Addrs: (*net.Interface).Addrs}.Address(ctx, device)
+}
+
+// Address returns the first global IPv4 address on a physical interface that
+// is up with a link, or "": on device when one is named, otherwise on an
+// interface carrying an IPv4 default route. One without it, like a cable to an
+// amplifier, is taken to reach no phone, which is wrong only on a LAN with no
+// gateway at all.
+func (h Host) Address(_ context.Context, device string) (string, error) {
+	interfaces, err := h.Interfaces()
 	if err != nil {
 		return "", protocol.Unavailable
 	}
+	candidates := map[string]bool{device: true}
+	if device == "" {
+		if candidates, err = h.defaultRouted(); err != nil {
+			return "", err
+		}
+	}
 	for _, iface := range interfaces {
-		if device != "" && iface.Name != device {
+		if !candidates[iface.Name] {
 			continue
 		}
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagRunning == 0 || iface.Flags&net.FlagLoopback != 0 {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join("/sys/class/net", iface.Name, "device")); err != nil {
+		if _, err := os.Stat(filepath.Join(h.Root, "sys/class/net", iface.Name, "device")); err != nil {
 			continue
 		}
-		addresses, err := iface.Addrs()
+		addresses, err := h.Addrs(&iface)
 		if err != nil {
 			continue
 		}
@@ -79,6 +105,22 @@ func LANAddress(_ context.Context, device string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// defaultRouted names the interfaces that /proc/net/route gives an IPv4 default route.
+// Its Flags column is no filter: the kernel sets RTF_UP on every route it lists there.
+func (h Host) defaultRouted() (map[string]bool, error) {
+	table, err := os.ReadFile(filepath.Join(h.Root, "proc/net/route"))
+	if err != nil {
+		return nil, protocol.Unavailable
+	}
+	routed := map[string]bool{}
+	for _, line := range strings.Split(string(table), "\n") {
+		if f := strings.Fields(line); len(f) >= 8 && f[1] == "00000000" && f[7] == "00000000" {
+			routed[f[0]] = true
+		}
+	}
+	return routed, nil
 }
 func strongest(networks []protocol.Network) []protocol.Network {
 	found := map[string]protocol.Network{}

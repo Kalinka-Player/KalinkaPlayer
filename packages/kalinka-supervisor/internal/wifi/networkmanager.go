@@ -36,10 +36,11 @@ type NetworkManager struct {
 	Bus                dbusx.Bus
 	device             dbus.ObjectPath
 	Timeout, Poll      time.Duration
+	AddressFor         func(context.Context, string) (string, error)
 }
 
 func NewNetworkManager(iface, state string) *NetworkManager {
-	return &NetworkManager{Interface: iface, Journal: filepath.Join(state, "networkmanager-rollback.json"), Timeout: 75 * time.Second, Poll: 500 * time.Millisecond}
+	return &NetworkManager{Interface: iface, Journal: filepath.Join(state, "networkmanager-rollback.json"), Timeout: 75 * time.Second, Poll: 500 * time.Millisecond, AddressFor: LANAddress}
 }
 func (n *NetworkManager) call(ctx context.Context, path dbus.ObjectPath, method string, args ...any) ([]any, error) {
 	body, err := n.Bus.Call(ctx, path, method, args...)
@@ -91,7 +92,7 @@ func (n *NetworkManager) Recover(ctx context.Context) error {
 	}
 	return n.rollback(ctx)
 }
-func (n *NetworkManager) Address(ctx context.Context) (string, error) { return LANAddress(ctx, "") }
+func (n *NetworkManager) Address(ctx context.Context) (string, error) { return n.AddressFor(ctx, "") }
 func (n *NetworkManager) deviceAddress(ctx context.Context) (string, error) {
 	p, err := n.props(ctx, n.device, nmDevice)
 	if err != nil {
