@@ -70,7 +70,7 @@ type Bluez struct {
 	chars                                    []*characteristic
 	status                                   *characteristic
 	signals                                  chan *dbus.Signal
-	Name                                     string
+	name                                     string
 	mu                                       sync.Mutex
 	registered, advertising, agentRegistered bool
 	oldAlias                                 string
@@ -105,7 +105,7 @@ func New(ctx context.Context, m *machine.Machine, adapter string) (*Bluez, error
 	if len(s) < 4 {
 		return fail()
 	}
-	b.Name = "Kalinka-" + s[len(s)-4:]
+	b.name = "Kalinka-" + s[len(s)-4:]
 	if err = b.export(service, "org.bluez.GattService1", nil, func() map[string]dbus.Variant {
 		return map[string]dbus.Variant{"UUID": dbus.MakeVariant(protocol.ServiceUUID), "Primary": dbus.MakeVariant(true)}
 	}); err != nil {
@@ -135,7 +135,7 @@ func New(ctx context.Context, m *machine.Machine, adapter string) (*Bluez, error
 		return fail()
 	}
 	if err = b.export(advert, "org.bluez.LEAdvertisement1", &advertisement{b}, func() map[string]dbus.Variant {
-		return map[string]dbus.Variant{"Type": dbus.MakeVariant("peripheral"), "ServiceUUIDs": dbus.MakeVariant([]string{protocol.ServiceUUID}), "LocalName": dbus.MakeVariant(b.Name)}
+		return map[string]dbus.Variant{"Type": dbus.MakeVariant("peripheral"), "ServiceUUIDs": dbus.MakeVariant([]string{protocol.ServiceUUID}), "LocalName": dbus.MakeVariant(b.name)}
 	}); err != nil {
 		return fail()
 	}
@@ -188,6 +188,9 @@ func (b *Bluez) get(parent context.Context, key string) (dbus.Variant, error) {
 func (b *Bluez) set(ctx context.Context, key string, value any) error {
 	return b.call(ctx, b.adapter, properties+".Set", "org.bluez.Adapter1", key, dbus.MakeVariant(value))
 }
+
+// Name is what setup advertises: Kalinka- and the last four hex digits of the adapter's address.
+func (b *Bluez) Name() string { return b.name }
 func (b *Bluez) Enable(ctx context.Context) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -208,7 +211,7 @@ func (b *Bluez) Enable(ctx context.Context) error {
 	if err = b.set(ctx, "Powered", true); err != nil {
 		return err
 	}
-	if err = b.set(ctx, "Alias", b.Name); err != nil {
+	if err = b.set(ctx, "Alias", b.name); err != nil {
 		return err
 	}
 	if err = b.set(ctx, "Pairable", true); err != nil {
@@ -245,7 +248,7 @@ func (b *Bluez) Disable(ctx context.Context) {
 	}
 	if b.changedAdapter {
 		alias, err := b.get(ctx, "Alias")
-		if err == nil && alias.Value() == b.Name {
+		if err == nil && alias.Value() == b.name {
 			_ = b.set(ctx, "Alias", b.oldAlias)
 			_ = b.set(ctx, "Pairable", b.oldPairable)
 		}
