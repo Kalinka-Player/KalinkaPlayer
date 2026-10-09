@@ -8,7 +8,7 @@ from fastapi import HTTPException
 
 from kalinka_server import server
 from kalinka_server.config_model import KalinkaConfig
-from kalinka_server.queue_limit import QUEUE, QUEUE_FULL, QUEUE_LIMIT
+from kalinka_server.queue_limit import QUEUE, QUEUE_FULL, QUEUE_LIMIT, TOO_MANY_TO_PLAY
 from tests.app_harness import isolate_app, running
 
 
@@ -34,6 +34,17 @@ async def test_an_add_one_past_the_limit_is_refused():
         await QUEUE.refuse_past(_Queue(QUEUE_LIMIT - 10), 11)
     assert refused.value.status_code == 409
     assert refused.value.detail == QUEUE_FULL
+
+
+def test_a_replacement_that_fills_the_queue_exactly_passes():
+    QUEUE.refuse_replacement(QUEUE_LIMIT)
+
+
+def test_a_replacement_one_past_the_limit_is_refused():
+    with pytest.raises(HTTPException) as refused:
+        QUEUE.refuse_replacement(QUEUE_LIMIT + 1)
+    assert refused.value.status_code == 409
+    assert refused.value.detail == TOO_MANY_TO_PLAY
 
 
 @pytest.fixture

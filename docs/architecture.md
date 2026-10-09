@@ -21,13 +21,15 @@ The server exposes a REST API (FastAPI) plus WebSocket channels for live state. 
 
 | Area      | Endpoints (examples) |
 |-----------|----------------------|
-| Queue     | `GET /queue/{list,state,control}`, `POST /queue/add`, `PUT /queue/{play,pause,next,prev,stop}`, `PUT /queue/current_track/seek`, `PUT /queue/{mode,clear,move}`, `POST /queue/remove` |
+| Queue     | `GET /queue/{list,state,control}`, `POST /queue/{add,replace}`, `PUT /queue/{play,pause,next,prev,stop}`, `PUT /queue/current_track/seek`, `PUT /queue/{mode,clear,move}`, `POST /queue/remove` |
 | Browse    | `GET /browse`, `GET /browse/{id}`, `GET /get/{entity_id}`, `GET /genre/list` |
 | Search    | `GET /search/{search_type}/{query}` (fuzzy), `GET /ai_search?query=...` (semantic) |
 | Library   | `GET /favorite/list/{type}`, `PUT /favorite/add/{id}`, playlists (`/playlist/{create,update,delete,list,add_tracks,remove_tracks}`) |
 | Devices   | `GET /device/list`, `GET/PUT /device/{get,set}_volume` |
 | Server    | `GET /server/{config,config/schema,version,modules,optional_packages}`, `PUT /server/{config,restart}`, `GET /indexer/status`, `GET /resource/{file}` |
 | Live      | `WS /queue/ws`, `WS /device/ws`, plus SSE-style `GET /queue/events`, `GET /device/events` |
+
+`POST /queue/add` takes a JSON list of entity ids, tracks or containers such as albums, playlists and folders, which it expands to their tracks, and appends them or inserts them at `?index=`. `POST /queue/replace` takes the same list without an index and replaces the queue with it in one request, which is what a client's play-now calls. Past the queue limit (1,000 tracks, 100 on a demo server) both answer 409 and change nothing; for a replacement only the new tracks count. A clear followed by an add would instead have emptied the queue before the add was refused. A replacement that comes to no tracks, such as an empty folder, answers 422 with the code `no_tracks` and also leaves the queue alone. Servers before API 0.12 answer `/queue/replace` with 405 from their browser-player mount at `/`, or with 404 where they have no such mount.
 
 On image boxes, `kalinka-supervisor` serves a separate [control page and API](supervisor-control.md) on port 8001, independent of the server: the page at `/`, `GET /info` (version and protocol), `GET /v1/{status,dashboard,reinstall/log}`, and `POST /v1/actions/{restart_core,reboot,poweroff,reinstall}`.
 

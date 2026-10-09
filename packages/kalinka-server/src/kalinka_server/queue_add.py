@@ -28,6 +28,11 @@ logger = logging.getLogger(__name__.split(".")[-1])
 # A container's tracks are taken in one page; beyond this a client pages itself.
 CONTAINER_LIMIT = 5000
 
+NO_TRACKS = {
+    "code": "no_tracks",
+    "message": "There are no tracks here to play. The queue was left as it was.",
+}
+
 
 async def tracks_for(
     ids: Sequence[str],
