@@ -37,7 +37,7 @@ def _seed_manifest(manifests_dir: Path) -> None:
                 "schema": 1,
                 "packages": {
                     "numpy": {
-                        "pip_spec": "numpy==1.26.4",
+                        "pip_spec": "numpy==2.4.6",
                         "description": "x",
                     },
                     "tokenizers": {
@@ -114,7 +114,7 @@ def test_pending_file_is_reserved_before_pip_runs(env):
     assert rc == 0
     assert len(env["invocations"]) == 1
     pip_spec, pending_visible_during_pip = env["invocations"][0]
-    assert pip_spec == "numpy==1.26.4"
+    assert pip_spec == "numpy==2.4.6"
     assert pending_visible_during_pip is False, (
         "pending_installs.json should be moved aside before pip runs"
     )
@@ -158,12 +158,12 @@ def test_pip_installs_wheels_only(monkeypatch):
 
     monkeypatch.setattr(install_pending.subprocess, "run", fake_run)
 
-    PIP_INSTALL("numpy==2.4.2")
+    PIP_INSTALL("numpy==2.4.6")
 
     [cmd] = commands
     assert cmd[:4] == [sys.executable, "-m", "pip", "install"]
     assert "--only-binary=:all:" in cmd
-    assert cmd[-1] == "numpy==2.4.2"
+    assert cmd[-1] == "numpy==2.4.6"
 
 
 ABSENT_SPEC = "kalinka-absent-package==1.0"
