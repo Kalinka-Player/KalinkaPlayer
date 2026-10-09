@@ -33,6 +33,22 @@ std::vector<uint8_t> fileContent(const std::string &path) {
   return {std::istreambuf_iterator<char>(file),
           std::istreambuf_iterator<char>()};
 }
+
+/// Takes what the default logger writes for as long as it lives.
+class CapturedLog {
+public:
+  CapturedLog() : previous(spdlog::default_logger()) {
+    spdlog::set_default_logger(std::make_shared<spdlog::logger>(
+        "captured", std::make_shared<spdlog::sinks::ostream_sink_mt>(out)));
+  }
+  ~CapturedLog() { spdlog::set_default_logger(previous); }
+
+  std::string str() const { return out.str(); }
+
+private:
+  std::ostringstream out;
+  std::shared_ptr<spdlog::logger> previous;
+};
 } // namespace
 
 class AudioGraphHttpStreamTest : public ::testing::Test {
@@ -255,18 +271,13 @@ TEST_F(AudioGraphHttpStreamTest,
        redirect_errors_do_not_expose_url_in_logs_or_state) {
   const std::string secret = "private-redirect-token";
   const auto path = "/redirect/302/" + secret + "://example.com/audio.flac";
-  std::ostringstream log;
-  auto sink = std::make_shared<spdlog::sinks::ostream_sink_mt>(log);
-  const auto previousLogger = spdlog::default_logger();
-  spdlog::set_default_logger(
-      std::make_shared<spdlog::logger>("redirect-test", sink));
+  CapturedLog log;
   StreamState state(AudioGraphNodeState::PREPARING);
   {
     AudioGraphHttpStream stream(1, server.url(path), bufferSize);
     state = waitForStatus(stream, AudioGraphNodeState::ERROR,
                           std::chrono::seconds(5));
   }
-  spdlog::set_default_logger(previousLogger);
 
   ASSERT_TRUE(state.error);
   EXPECT_THAT(state.error->message,
