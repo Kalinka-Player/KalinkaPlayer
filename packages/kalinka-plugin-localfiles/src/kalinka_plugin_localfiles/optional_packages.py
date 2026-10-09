@@ -27,7 +27,8 @@ MANIFEST_SCHEMA_VERSION = 1
 # subfeature bookkeeping in module_setup.py.
 OPTIONAL_PACKAGES: dict[str, OptionalPackageSpec] = {
     # install_pending builds nothing from source, so every pin here needs a
-    # wheel for Python 3.11 to 3.13 on aarch64 and x86_64.
+    # wheel for Python 3.11 to 3.14 on aarch64 and x86_64; the server's
+    # test_optional_package_wheels.py checks that on PyPI.
     "numpy": OptionalPackageSpec(
         pip_spec="numpy==2.4.6",
         description=(
