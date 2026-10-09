@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"kalinka/supervisor/internal/protocol"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -218,108 +217,5 @@ func TestRunnerRedactsErrorsAndBoundsCancellation(t *testing.T) {
 	_, err = Run(context.Background(), 20*time.Millisecond, "sh", "-c", "sleep 30 & wait")
 	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 2*time.Second {
 		t.Fatal("child process not cancelled")
-	}
-}
-
-const (
-	routeHeader = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
-	wlanDefault = "wlan0\t00000000\t0101A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0\n"
-	wlanSubnet  = "wlan0\t0001A8C0\t00000000\t0001\t0\t0\t600\t00FFFFFF\t0\t0\t0\n"
-	cableSubnet = "eth0\t000A0A0A\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0\n"
-	ethDefault  = "eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n"
-	ethSubnet   = "eth0\t0001A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n"
-)
-
-type stagedLink struct {
-	name      string
-	flags     net.Flags
-	physical  bool
-	addresses []string
-}
-
-func stageHost(t *testing.T, routes string, links ...stagedLink) Host {
-	t.Helper()
-	root := t.TempDir()
-	if err := AtomicWrite(filepath.Join(root, "proc/net/route"), []byte(routeHeader+routes), 0600); err != nil {
-		t.Fatal(err)
-	}
-	var interfaces []net.Interface
-	addresses := map[string][]net.Addr{}
-	for _, l := range links {
-		dir := filepath.Join(root, "sys/class/net", l.name)
-		if l.physical {
-			dir = filepath.Join(dir, "device")
-		}
-		if err := os.MkdirAll(dir, 0700); err != nil {
-			t.Fatal(err)
-		}
-		interfaces = append(interfaces, net.Interface{Name: l.name, Flags: l.flags})
-		for _, cidr := range l.addresses {
-			ip, network, err := net.ParseCIDR(cidr)
-			if err != nil {
-				t.Fatal(err)
-			}
-			addresses[l.name] = append(addresses[l.name], &net.IPNet{IP: ip, Mask: network.Mask})
-		}
-	}
-	return Host{
-		Root:       root,
-		Interfaces: func() ([]net.Interface, error) { return interfaces, nil },
-		Addrs:      func(i *net.Interface) ([]net.Addr, error) { return addresses[i.Name], nil },
-	}
-}
-func TestAddressCountsOnlyARoutedPhysicalInterface(t *testing.T) {
-	up := net.FlagUp | net.FlagRunning
-	lo := stagedLink{"lo", up | net.FlagLoopback, false, []string{"127.0.0.1/8"}}
-	cable := stagedLink{"eth0", up, true, []string{"10.10.10.1/24"}}
-	wlan := stagedLink{"wlan0", up, true, []string{"192.168.1.20/24"}}
-	unaddressed := stagedLink{"wlan0", up, true, nil}
-	for _, c := range []struct {
-		name, routes, device, want string
-		links                      []stagedLink
-	}{
-		{"Wi-Fi beside a cable to an amplifier", wlanDefault + cableSubnet + wlanSubnet, "", "192.168.1.20", []stagedLink{lo, cable, wlan}},
-		{"routed Wi-Fi without an address beside the cable", wlanDefault + cableSubnet, "", "", []stagedLink{lo, cable, unaddressed}},
-		{"only the cable once Wi-Fi breaks", cableSubnet, "", "", []stagedLink{lo, cable, unaddressed}},
-		{"single interface", wlanDefault + wlanSubnet, "", "192.168.1.20", []stagedLink{lo, wlan}},
-		{"default route on loopback", "lo\t00000000\t00000000\t0001\t0\t0\t0\t00000000\t0\t0\t0\n", "", "", []stagedLink{{"lo", up | net.FlagLoopback, true, []string{"192.0.2.9/32"}}}},
-		{"default route on a virtual interface", "tun0\t00000000\t00000000\t0001\t0\t0\t0\t00000000\t0\t0\t0\n", "", "", []stagedLink{lo, {"tun0", up, false, []string{"10.8.0.2/24"}}}},
-		{"half of the address space is no default route", "wlan0\t00000000\t0101A8C0\t0003\t0\t0\t0\t00000080\t0\t0\t0\n", "", "", []stagedLink{lo, wlan}},
-		{"named device without a default route", wlanDefault + cableSubnet + wlanSubnet, "eth0", "10.10.10.1", []stagedLink{lo, cable, wlan}},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			host := stageHost(t, c.routes, c.links...)
-			if got, err := host.Address(context.Background(), c.device); err != nil || got != c.want {
-				t.Fatalf("address %q error %v, want %q", got, err, c.want)
-			}
-		})
-	}
-}
-func TestAddressReadsRoutesOnlyWithoutADevice(t *testing.T) {
-	host := stageHost(t, "", stagedLink{"eth0", net.FlagUp | net.FlagRunning, true, []string{"10.10.10.1/24"}})
-	if err := os.Remove(filepath.Join(host.Root, "proc/net/route")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := host.Address(context.Background(), ""); err != protocol.Unavailable {
-		t.Fatalf("unreadable route table gave %v", err)
-	}
-	if got, err := host.Address(context.Background(), "eth0"); err != nil || got != "10.10.10.1" {
-		t.Fatalf("named device %q error %v", got, err)
-	}
-}
-func TestBackendsCountAnyRoutedInterface(t *testing.T) {
-	host := stageHost(t, ethDefault+ethSubnet,
-		stagedLink{"eth0", net.FlagUp | net.FlagRunning, true, []string{"192.168.1.30/24"}},
-		stagedLink{"wlan0", net.FlagUp, true, nil})
-	d, err := NewDietPi("wlan0", t.TempDir(), t.TempDir(), t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	n := NewNetworkManager("wlan0", t.TempDir())
-	d.AddressFor, n.AddressFor = host.Address, host.Address
-	for _, b := range []Backend{d, n} {
-		if got, err := b.Address(context.Background()); err != nil || got != "192.168.1.30" {
-			t.Fatalf("%T address %q error %v", b, got, err)
-		}
 	}
 }

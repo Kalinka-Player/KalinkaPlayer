@@ -6,9 +6,8 @@ import (
 	"encoding/json"
 	"kalinka/supervisor/internal/protocol"
 	"kalinka/supervisor/internal/wifi"
-	"net"
+	"kalinka/supervisor/internal/wifi/wifitest"
 	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -186,31 +185,11 @@ func TestStatusFollowsCorePort(t *testing.T) {
 	}
 }
 func TestSetupOpensWhenOnlyAnUnroutedCableRemains(t *testing.T) {
-	root := t.TempDir()
-	for _, name := range []string{"eth0", "wlan0"} {
-		if err := os.MkdirAll(filepath.Join(root, "sys/class/net", name, "device"), 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	route := func(table string) {
-		t.Helper()
-		header := "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
-		if err := wifi.AtomicWrite(filepath.Join(root, "proc/net/route"), []byte(header+table), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	addresses := map[string][]net.Addr{
-		"eth0":  {&net.IPNet{IP: net.IPv4(10, 10, 10, 1), Mask: net.CIDRMask(24, 32)}},
-		"wlan0": {&net.IPNet{IP: net.IPv4(192, 168, 1, 20), Mask: net.CIDRMask(24, 32)}},
-	}
-	up := net.FlagUp | net.FlagRunning
-	host := wifi.Host{
-		Root:       root,
-		Interfaces: func() ([]net.Interface, error) { return []net.Interface{{Name: "eth0", Flags: up}, {Name: "wlan0", Flags: up}}, nil },
-		Addrs:      func(i *net.Interface) ([]net.Addr, error) { return addresses[i.Name], nil },
-	}
+	box := wifitest.Stage(t, wifitest.WlanDefault+wifitest.CableSubnet,
+		wifitest.Link{Name: "eth0", Flags: wifitest.Up, Physical: true, Addresses: []string{"10.10.10.1/24"}},
+		wifitest.Link{Name: "wlan0", Flags: wifitest.Up, Physical: true, Wireless: true, Addresses: []string{"192.168.1.20/24"}})
 	backend := wifi.NewNetworkManager("wlan0", t.TempDir())
-	backend.AddressFor = host.Address
+	backend.AddressFor = box.Address
 	now := time.Unix(1000, 0)
 	m := New(context.Background(), backend, Config{Now: func() time.Time { return now }})
 	defer m.Close()
@@ -220,14 +199,12 @@ func TestSetupOpensWhenOnlyAnUnroutedCableRemains(t *testing.T) {
 			t.Fatalf("active=%v error=%v", got, err)
 		}
 	}
-	cable := "eth0\t000A0A0A\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0\n"
-	route("wlan0\t00000000\t0101A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0\n" + cable)
 	tick(false)
 	if m.Status()[2] != protocol.Online {
 		t.Fatal("Wi-Fi with the default route did not count as online")
 	}
-	route(cable)
-	delete(addresses, "wlan0")
+	box.Route(t, wifitest.CableSubnet)
+	box.Unaddress("wlan0")
 	now = now.Add(299 * time.Second)
 	tick(false)
 	now = now.Add(time.Second)
