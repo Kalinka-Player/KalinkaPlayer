@@ -4,8 +4,8 @@ A plugin declares a static allow-list as a class attribute:
 
     class MyPlugin(InputModulePlugin):
         OPTIONAL_PACKAGES: ClassVar[dict[str, OptionalPackageSpec]] = {
-            "numpy": OptionalPackageSpec(
-                pip_spec="numpy==2.4.6",
+            "soundfile": OptionalPackageSpec(
+                pip_spec="soundfile==0.13.1",
                 description="Used by AI search",
             ),
         }
@@ -40,9 +40,11 @@ class OptionalPackageSpec(BaseModel):
 
     pip_spec: str = Field(
         ...,
-        description="Pip requirement specifier, e.g. 'numpy==2.4.6'. It is "
-        "installed from a wheel only, so it must name a release with one for "
-        "every Python and architecture the plugin runs on.",
+        description="Pip requirement specifier, e.g. 'soundfile==0.13.1'. It "
+        "is installed from a wheel only, so it must name a release with one "
+        "for every Python and architecture the plugin runs on. A package the "
+        "server itself depends on takes the server's own requirement, so "
+        "installing it never moves the server's copy.",
     )
     description: str = Field(
         ...,
