@@ -22,6 +22,10 @@
  * `Accept-Ranges: none`; `/held` does as `/whole` does, but sends only the
  * first HELD_BYTES until release() is called; any other path is a 404.
  * `/strict-ranged` returns 416 for ranges extending past EOF, like BubbleUPnP.
+ * `/refuses-ranges` answers any Range request with a bare 416 and a plain GET
+ * with the whole file, chunked and of unstated length, as BubbleUPnP's
+ * AudioCast does. `/ranged-once` answers its first request as `/ranged` does
+ * and every later one with a 416, as a server does whose file was cut short.
  *
  * The routes that stall answer as `/ranged` does, but send the headers and only
  * part of the body, then hold the connection open without a word until the
@@ -31,7 +35,9 @@
  * nothing at all to its first request, not even the headers.
  * `/forgets-ranges` stalls its first response as `/stall-often` does, then
  * answers every request after it with a 200 and the whole file, as a server
- * does that ignores Range.
+ * does that ignores Range. `/refuses-a-resume` stalls its first response as
+ * `/stall-often` does, then answers as `/refuses-ranges` does, so the resume
+ * after that stall is refused before any request has succeeded.
  *
  * `/fail-once` answers its first request with a bare 503, then as `/ranged`
  * does; `/slow-missing` is a 404 whose few bytes of body take TRICKLE_TIME to

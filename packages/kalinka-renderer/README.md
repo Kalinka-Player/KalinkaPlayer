@@ -140,7 +140,11 @@ count. Other codecs in an Ogg container, such as Opus, are not supported.
 HTTP streams follow up to three HTTP or HTTPS redirects per request by default,
 configurable with `network.max_redirects`. Range requests, retries, and seeks
 start from the original URL so a controller such as BubbleUPnP can issue a fresh
-temporary media URL each time.
+temporary media URL each time. A server that answers the first range with
+`416 Range Not Satisfiable`, as BubbleUPnP's AudioCast does for its live
+capture, is asked again without a range and read from the start to its end. It
+cannot be sought unless that answer offers ranges after all. Any other 416, to a
+resume, a seek, or once a request has succeeded, fails the track.
 
 ## Run
 

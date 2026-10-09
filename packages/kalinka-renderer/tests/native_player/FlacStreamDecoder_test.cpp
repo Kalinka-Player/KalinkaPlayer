@@ -1,3 +1,4 @@
+#include "AudioGraphHttpStream.h"
 #include "FileInputNode.h"
 #include "FlacStreamDecoder.h"
 
@@ -8,6 +9,7 @@
 
 #include "ErrorFakeNode.h"
 #include "LiveInputNode.h"
+#include "LocalHttpServer.h"
 #include "TestHelpers.h"
 
 class FlacStreamDecoderTest : public ::testing::Test {
@@ -117,6 +119,23 @@ TEST_F(FlacStreamDecoderTest, seek_after_the_decoder_has_stopped_returns) {
   EXPECT_TRUE(returnsWithin(
       [flacStreamDecoder] { flacStreamDecoder->seekTo(0); },
       std::chrono::milliseconds(2000)));
+}
+
+TEST_F(FlacStreamDecoderTest, plays_to_the_end_from_a_server_that_refuses_every_range) {
+  LocalHttpServer server(testFile("tone440.flac"));
+  auto source = std::make_shared<AudioGraphHttpStream>(
+      1, server.url("/refuses-ranges"), 2 * bufferSize, bufferSize);
+  auto decoder = std::make_shared<FlacStreamDecoder>(1, bufferSize);
+  decoder->connectTo(source);
+  uint8_t data[1000];
+  size_t total = 0;
+  while (decoder->waitForData() != 0) {
+    total += decoder->read(data, sizeof(data));
+  }
+
+  EXPECT_EQ(decoder->getState().state, AudioGraphNodeState::FINISHED);
+  EXPECT_EQ(total, 44100u * 4);
+  decoder->disconnect(source);
 }
 
 TEST_F(FlacStreamDecoderTest, starts_before_a_live_producer_sends_the_rest) {

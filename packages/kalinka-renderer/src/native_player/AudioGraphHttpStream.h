@@ -16,6 +16,10 @@
  * Follows HTTP(S) redirects up to the configured limit. Each range, retry, or
  * seek starts from the original URL so temporary media URLs can be refreshed.
  *
+ * A server that answers 416 to a range from byte 0 before any request has
+ * succeeded, as one serving a live capture does, is asked again without a range
+ * and read to its end; any other 416 is an error.
+ *
  * A stop or a seek wakes the request immediately, even when its sender has
  * gone quiet or the reader is waiting to retry a failed request.
  */
@@ -75,7 +79,8 @@ private:
   void emptyBufferCallback(Buffer<uint8_t> &buffer);
   size_t headerCallback(char *buffer, size_t size, size_t nitems);
 
-  void handleSeekSignal(size_t position);
+  /// @return Whether the seek was taken; a refused one leaves the offset as is.
+  bool handleSeekSignal(size_t position);
   void performRequest(std::stop_token stopToken);
 
   curlpp::Easy request;

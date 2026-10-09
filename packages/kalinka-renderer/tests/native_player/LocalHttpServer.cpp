@@ -176,6 +176,23 @@ Reply answer(const Request &request, const std::string &body, bool first) {
   if (target == "/ranged" || target == "/strict-ranged") {
     return {ranged(request, body, target == "/strict-ranged")};
   }
+  if (target == "/refuses-a-resume" && first) {
+    return stalled(ranged(request, body), LocalHttpServer::STALL_OFTEN_BYTES);
+  }
+  if (target == "/refuses-ranges" || target == "/refuses-a-resume") {
+    if (request.count(http::field::range) != 0) {
+      return {respond(request, http::status::range_not_satisfiable)};
+    }
+    Response response = respond(request, http::status::ok, body);
+    response.erase(http::field::content_length);
+    response.keep_alive(false);
+    response.chunked(true);
+    return {std::move(response)};
+  }
+  if (target == "/ranged-once") {
+    return {first ? ranged(request, body)
+                  : respond(request, http::status::range_not_satisfiable)};
+  }
   if (target == "/whole" || target == "/held") {
     Response response = respond(request, http::status::ok, body);
     response.set(http::field::accept_ranges, "none");
