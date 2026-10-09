@@ -19,6 +19,9 @@ Exit codes:
 The helper never blocks the system: if pip itself fails, the failure is
 logged to last_install.json and the helper exits 0 so kalinka.service
 still starts. The server can read last_install.json to surface results.
+pip installs wheels only, so a failed entry whose package has no wheel for
+this machine says so in its ``reason``, once every index pip asked has
+answered.
 """
 
 from __future__ import annotations
@@ -26,17 +29,38 @@ from __future__ import annotations
 import json
 import logging
 import os
+import platform
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 from .logging_setup import make_handler
 
 
 logger = logging.getLogger("install_pending")
 logging.basicConfig(level=logging.INFO, handlers=[make_handler()])
+
+# pip's own wording. The package it names may be a dependency of the spec.
+_NOT_FOUND = re.compile(r"No matching distribution found for (.+)")
+# pip's debug log names each index page it asks for, and logs it fetched
+# only once the index answered with a listing.
+_PAGE_ASKED = re.compile(r"Getting page (\S+)")
+_PAGE_ANSWERED = re.compile(r"Fetched page (\S+) as ")
+_PAGE_ABSENT = re.compile(r"Could not fetch URL (\S+): 404 ")
+
+
+class PipRun(NamedTuple):
+    """One pip install: its exit code, its stderr, and, when it failed, its
+    debug log, which is empty when pip wrote none."""
+
+    returncode: int
+    stderr: str
+    log: str
 
 
 def _load_manifests(manifests_dir: Path) -> dict[str, dict]:
@@ -77,17 +101,80 @@ def _load_manifests(manifests_dir: Path) -> dict[str, dict]:
     return registry
 
 
-def _pip_install(pip_spec: str) -> subprocess.CompletedProcess:
+def _pip_install(pip_spec: str) -> PipRun:
     """Invoke pip install for a single package spec.
 
     Transitive deps are accepted by design — pinning every transitive of
-    e.g. essentia-tensorflow is impractical, and the static allow-list +
-    version pin on the top-level spec is the security boundary we care
-    about.
+    e.g. essentia-tensorflow is impractical, and the static allow-list of
+    top-level specs is the security boundary we care about. Wheels only: a
+    source build holds kalinka.service's start for as long as a compile
+    takes on a Pi, and needs a toolchain on the box.
     """
-    cmd = [sys.executable, "-m", "pip", "install", "--no-input", pip_spec]
-    logger.info("Running: %s", " ".join(cmd))
-    return subprocess.run(cmd, capture_output=True, text=True)
+    with tempfile.TemporaryDirectory(prefix="install_pending.") as scratch:
+        log_path = Path(scratch) / "pip.log"
+        cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--no-input",
+            "--only-binary=:all:",
+            "--log",
+            str(log_path),
+            pip_spec,
+        ]
+        logger.info("Running: %s", " ".join(cmd))
+        completed = subprocess.run(cmd, capture_output=True, text=True)
+        log = ""
+        if completed.returncode != 0:
+            try:
+                log = log_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                pass
+    return PipRun(completed.returncode, completed.stderr, log)
+
+
+def _every_index_answered(pip_log: str) -> bool:
+    """Whether pip heard back from every index page it asked for; a 4xx or
+    5xx answer, or none, ends in the same not-found error as a missing
+    wheel. A 404 still counts once another index listed the project, as
+    when bootstrap.sh's piwheels has no page for a package PyPI carries."""
+    asked = set(_PAGE_ASKED.findall(pip_log))
+    answered = set(_PAGE_ANSWERED.findall(pip_log))
+    listed = {_project_of(page) for page in answered}
+    absent = {
+        page for page in _PAGE_ABSENT.findall(pip_log) if _project_of(page) in listed
+    }
+    return bool(pip_log) and asked <= answered | absent
+
+
+def _project_of(page: str) -> str:
+    return page.rstrip("/").rsplit("/", 1)[-1]
+
+
+def _no_wheel_reason(run: PipRun) -> str | None:
+    """Name the package pip found no wheel of for this machine, when that is
+    known to be why it failed."""
+    not_found = _NOT_FOUND.search(run.stderr or "")
+    if not_found is None or not _every_index_answered(run.log):
+        return None
+    python = f"{sys.version_info.major}.{sys.version_info.minor}"
+    machine = _wheel_machine(platform.machine(), sys.maxsize > 2**32)
+    return (
+        f"No prebuilt {not_found.group(1).strip()} for Python {python} "
+        f"on {machine}"
+    )
+
+
+def _wheel_machine(kernel_machine: str, python_is_64bit: bool) -> str:
+    """The architecture pip wants wheels for. A 32-bit Python on a 64-bit
+    kernel, as on 32-bit Raspberry Pi OS on a Pi 4 or 5, runs armv7l or
+    i686 code though the kernel reports aarch64 or x86_64."""
+    if python_is_64bit:
+        return kernel_machine
+    return {"aarch64": "armv7l", "x86_64": "i686"}.get(
+        kernel_machine, kernel_machine
+    )
 
 
 def main(argv: list[str]) -> int:
@@ -124,8 +211,8 @@ def main(argv: list[str]) -> int:
             pass
         return 1
 
-    # Move the pending file aside *before* we touch pip. A long source-
-    # build install can outlast systemd's TimeoutStartSec, an apt deb
+    # Move the pending file aside *before* we touch pip. A long download
+    # on a slow link can outlast systemd's TimeoutStartSec, an apt deb
     # upgrade, or a hand-pulled power plug — and on any of those the
     # next bootstrap would otherwise re-find the same pending file and
     # restart the install from scratch, infinite loop. The
@@ -175,6 +262,9 @@ def main(argv: list[str]) -> int:
         else:
             entry["status"] = "failed"
             entry["stderr"] = (completed.stderr or "").strip()[-4000:]
+            reason = _no_wheel_reason(completed)
+            if reason is not None:
+                entry["reason"] = reason
             logger.error(
                 "pip install %s failed (rc=%d): %s",
                 pip_spec,

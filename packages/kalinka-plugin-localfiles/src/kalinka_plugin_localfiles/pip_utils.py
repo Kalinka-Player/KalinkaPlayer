@@ -45,7 +45,16 @@ def ensure_package(
     t0 = time.monotonic()
     try:
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", pip_spec],
+            # Wheels only, as install_pending: a box may have no compiler.
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--no-input",
+                "--only-binary=:all:",
+                pip_spec,
+            ],
             check=True,
             capture_output=True,
             text=True,

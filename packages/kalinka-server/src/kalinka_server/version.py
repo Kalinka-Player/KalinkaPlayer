@@ -120,7 +120,10 @@ def get_version() -> str:
 # "message"}}, also leaving the queue as it was. A server before 0.12 answers
 # the route with 405 from its browser-player mount at "/", or with 404 where it
 # has no such mount.
-REST_API_VERSION = "0.12"
+# 0.13: optional packages install from wheels only. A failed entry in GET
+# /server/optional_packages' last_install results whose package has no wheel
+# for the server's Python and architecture carries a `reason` naming all three.
+REST_API_VERSION = "0.13"
 
 
 def get_rest_api_version() -> str:
