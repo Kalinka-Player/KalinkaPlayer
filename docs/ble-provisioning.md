@@ -10,8 +10,11 @@ The image runs `kalinka-supervisor.service` independently of the player. After
 30 seconds without a usable IPv4 address on a physical LAN interface that
 carries the IPv4 default route, it advertises `Kalinka-XXXX`, where XXXX is the
 Bluetooth adapter address suffix. An interface without that route, such as a
-cable straight to an amplifier, does not keep setup closed when Wi-Fi breaks;
-a box on a LAN with no gateway at all counts as offline and advertises too.
+cable straight to an amplifier, does not keep setup closed when Wi-Fi breaks.
+When no physical interface carries the default route (a LAN with no gateway,
+a VPN or a separate routing table holding it), the Wi-Fi interface counts
+instead, so a wired box on a LAN with no gateway advertises while a Wi-Fi one
+does not.
 On a box which has previously connected, the grace period is five minutes.
 An internet outage does not trigger setup. A returning Ethernet or Wi-Fi
 connection closes setup automatically when no join is in progress.

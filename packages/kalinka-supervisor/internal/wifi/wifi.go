@@ -69,31 +69,26 @@ func LANAddress(ctx context.Context, device string) (string, error) {
 
 // Address returns the first global IPv4 address on a physical interface that
 // is up with a link, or "": on device when one is named, otherwise on an
-// interface carrying an IPv4 default route. One without it, like a cable to an
-// amplifier, is taken to reach no phone, which is wrong only on a LAN with no
-// gateway at all.
+// interface carrying an IPv4 default route. A cable to an amplifier carries
+// none, so it alone does not count the box online. When no such interface
+// carries one (a LAN without a gateway, a VPN or another routing table holding
+// it, an unreadable route table), Wi-Fi counts instead, being what setup repairs.
 func (h Host) Address(_ context.Context, device string) (string, error) {
 	interfaces, err := h.Interfaces()
 	if err != nil {
 		return "", protocol.Unavailable
 	}
-	candidates := map[string]bool{device: true}
-	if device == "" {
-		if candidates, err = h.defaultRouted(); err != nil {
-			return "", err
+	var links []net.Interface
+	for _, iface := range interfaces {
+		if (device == "" || iface.Name == device) && h.physicalLink(iface) {
+			links = append(links, iface)
 		}
 	}
-	for _, iface := range interfaces {
-		if !candidates[iface.Name] {
-			continue
-		}
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagRunning == 0 || iface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		if _, err := os.Stat(filepath.Join(h.Root, "sys/class/net", iface.Name, "device")); err != nil {
-			continue
-		}
-		addresses, err := h.Addrs(&iface)
+	if device == "" {
+		links = h.phoneFacing(links)
+	}
+	for i := range links {
+		addresses, err := h.Addrs(&links[i])
 		if err != nil {
 			continue
 		}
@@ -106,21 +101,49 @@ func (h Host) Address(_ context.Context, device string) (string, error) {
 	}
 	return "", nil
 }
+func (h Host) physicalLink(iface net.Interface) bool {
+	if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagRunning == 0 || iface.Flags&net.FlagLoopback != 0 {
+		return false
+	}
+	return h.sysfs(iface.Name, "device")
+}
+func (h Host) sysfs(iface, entry string) bool {
+	_, err := os.Stat(filepath.Join(h.Root, "sys/class/net", iface, entry))
+	return err == nil
+}
+
+// phoneFacing keeps the links carrying an IPv4 default route, or the wireless
+// ones when none does.
+func (h Host) phoneFacing(links []net.Interface) []net.Interface {
+	routed := h.defaultRouted()
+	var picked, wireless []net.Interface
+	for _, link := range links {
+		if routed[link.Name] {
+			picked = append(picked, link)
+		} else if h.sysfs(link.Name, "phy80211") {
+			wireless = append(wireless, link)
+		}
+	}
+	if len(picked) == 0 {
+		return wireless
+	}
+	return picked
+}
 
 // defaultRouted names the interfaces that /proc/net/route gives an IPv4 default route.
 // Its Flags column is no filter: the kernel sets RTF_UP on every route it lists there.
-func (h Host) defaultRouted() (map[string]bool, error) {
+func (h Host) defaultRouted() map[string]bool {
+	routed := map[string]bool{}
 	table, err := os.ReadFile(filepath.Join(h.Root, "proc/net/route"))
 	if err != nil {
-		return nil, protocol.Unavailable
+		return routed
 	}
-	routed := map[string]bool{}
 	for _, line := range strings.Split(string(table), "\n") {
 		if f := strings.Fields(line); len(f) >= 8 && f[1] == "00000000" && f[7] == "00000000" {
 			routed[f[0]] = true
 		}
 	}
-	return routed, nil
+	return routed
 }
 func strongest(networks []protocol.Network) []protocol.Network {
 	found := map[string]protocol.Network{}
