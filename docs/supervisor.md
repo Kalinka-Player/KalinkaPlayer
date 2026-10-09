@@ -215,8 +215,9 @@ connections/profiles; neither belongs in the other's lifecycle.
 `make supervisor-test` runs the race detector and `go vet`. Tests cover captured
 Python protocol outputs, credential redaction, phone ownership across disconnect,
 rollback before retry, persistence recovery, DietPi control operations,
-NetworkManager profile staging, the setup component's gate and restarts, and
-the control API (see [its testing notes](supervisor-control.md#testing)).
+NetworkManager profile staging, which interfaces count as online on a staged
+route table, the setup component's gate and restarts, and the control API
+(see [its testing notes](supervisor-control.md#testing)).
 `tests/capture_reference.py` documents how the frozen Python fixture was
 produced; Python is not required to run the Go tests.
 
