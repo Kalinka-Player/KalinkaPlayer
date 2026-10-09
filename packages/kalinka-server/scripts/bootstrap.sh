@@ -24,14 +24,11 @@ chmod 755 "$CACHE_DIR" "$PIP_CACHE_DIR" || true
 # compile as kalusr (who already owns /var/cache/kalinka thanks to
 # CacheDirectory=kalinka in the unit).
 
-# Prefer prebuilt ARM wheels from piwheels (Raspberry-Pi-specific
-# mirror) so numpy / librosa / scipy / numba don't compile from source
-# on a Pi — that takes 5-15 minutes per package and is the main reason
-# install_pending used to blow systemd's start timeout. piwheels only
-# returns matches for the cp* + linux_armv*l platform tags it builds
-# for; on non-ARM hardware (or for packages it lacks) pip simply
-# moves on to PyPI. Override either URL via the systemd unit's
-# Environment= directive if you need a different mirror.
+# Include piwheels' 32-bit ARM wheels alongside PyPI's wheels. pip considers
+# both indexes and selects a compatible release; index order is not priority.
+# All installs below require wheels, including dependencies of bundled wheels,
+# so an unavailable wheel fails instead of compiling during service startup.
+# Override either URL via the systemd unit's Environment= directive if needed.
 export PIP_INDEX_URL="${PIP_INDEX_URL:-https://www.piwheels.org/simple}"
 export PIP_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL:-https://pypi.org/simple}"
 
@@ -48,7 +45,8 @@ shopt -s nullglob
 wheels=( "$WHEELS_DIR"/*.whl )
 if [ ${#wheels[@]} -gt 0 ]; then
   echo "[bootstrap] Installing wheels: ${wheels[*]}"
-  if ! "$VENV_DIR/bin/pip" install --quiet --upgrade "${wheels[@]}"; then
+  if ! "$VENV_DIR/bin/pip" install --quiet --upgrade --no-input \
+      --only-binary=:all: "${wheels[@]}"; then
     # One wheel pip cannot place must not cost the server its startup. A plugin
     # from outside the bundle is left behind by an SDK major — its pin excludes
     # the SDK now shipping, and resolving the whole directory at once turns that
@@ -66,7 +64,8 @@ if [ ${#wheels[@]} -gt 0 ]; then
       case "${wheel##*/}" in kalinka_plugin_sdk-*) ;; *) ordered+=( "$wheel" ) ;; esac
     done
     for wheel in "${ordered[@]}"; do
-      "$VENV_DIR/bin/pip" install --quiet --upgrade "$wheel" \
+      "$VENV_DIR/bin/pip" install --quiet --upgrade --no-input \
+        --only-binary=:all: "$wheel" \
         || echo "[bootstrap] skipped ${wheel##*/}" >&2
     done
   fi
