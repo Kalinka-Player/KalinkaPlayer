@@ -718,7 +718,7 @@ async def test_the_speaker_test_displaces_the_plugin_and_says_so(
     await tones.shutdown()
 
 
-async def test_a_hold_is_not_saved_with_the_queue(tmp_path):
+async def test_a_hold_is_not_saved_with_the_queue(tmp_path, monkeypatch):
     bus = EventBus[PlayQueueState, PlayQueueEventType, PlayQueueEvent](  # type: ignore[type-var]
         initial_state=PlayQueueState(
             playback_state=PlaybackState(),
@@ -735,7 +735,7 @@ async def test_a_hold_is_not_saved_with_the_queue(tmp_path):
     )
     assert bus.get_snapshot().playback_control.is_exclusive
     path = tmp_path / "state.json"
-    state_keeper.set_state_file(str(path))
+    monkeypatch.setattr(state_keeper, "STATE_FILE", str(path))
 
     await state_keeper.save_state(bus)
     bus.close()
