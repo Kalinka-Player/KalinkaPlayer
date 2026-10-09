@@ -107,6 +107,124 @@ func TestChangingNetwork(t *testing.T) {
 	}
 }
 
+func TestOpenSetup(t *testing.T) {
+	s := New(Options{}, nil)
+	if s.Available() || s.OpenSetup(time.Minute) != protocol.Unavailable {
+		t.Fatal("OpenSetup answered while setup is not running")
+	}
+	m := machine.New(context.Background(), joiningWifi{}, machine.Config{})
+	defer m.Close()
+	s.machine.Store(m)
+	if !s.Available() {
+		t.Fatal("running setup reported unavailable")
+	}
+	if err := s.OpenSetup(time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if active, err := m.Tick(context.Background()); !active || err != nil {
+		t.Fatalf("setup not opened before its boot grace: active=%v error=%v", active, err)
+	}
+}
+
+type fakeRadio struct{}
+
+func (fakeRadio) Name() string                 { return "Kalinka-TEST" }
+func (fakeRadio) Enable(context.Context) error { return nil }
+func (fakeRadio) Disable(context.Context)      {}
+func (fakeRadio) Close()                       {}
+func (fakeRadio) Events(ctx context.Context) error {
+	<-ctx.Done()
+	return nil
+}
+
+func eventually(t *testing.T, check func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !check() {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func simulated() *Service {
+	return New(Options{Test: true, TestAddress: "192.0.2.1"}, nil)
+}
+
+func TestSetupOpensOnlyOnceItsRadioIsUp(t *testing.T) {
+	s := simulated()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	s.openRadio = func(ctx context.Context, _ *machine.Machine, _ string) (peripheral, error) {
+		close(entered)
+		select {
+		case <-release:
+			return fakeRadio{}, nil
+		case <-ctx.Done():
+			return nil, protocol.Unavailable
+		}
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+	<-entered
+	if s.Available() || s.OpenSetup(time.Minute) != protocol.Unavailable {
+		t.Fatal("setup answered before its radio was up")
+	}
+	close(release)
+	eventually(t, s.Available)
+	if err := s.OpenSetup(time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if s.Available() {
+		t.Fatal("a stopped service reports setup available")
+	}
+}
+
+func TestWindowSurvivesARestart(t *testing.T) {
+	s := simulated()
+	s.openRadio = func(context.Context, *machine.Machine, string) (peripheral, error) { return fakeRadio{}, nil }
+	start := func() (stop func() error) {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- s.Run(ctx) }()
+		eventually(t, s.Available)
+		return func() error { cancel(); return <-done }
+	}
+	stop := start()
+	if err := s.OpenSetup(10 * time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	opened := s.machine.Load().Window()
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+	stop = start()
+	defer stop()
+	if got := s.machine.Load().Window(); !got.Equal(opened) {
+		t.Fatalf("the restart lost the window: %v, want %v", got, opened)
+	}
+}
+
+func TestFailedRadioKeepsTheWindow(t *testing.T) {
+	s := simulated()
+	s.openRadio = func(context.Context, *machine.Machine, string) (peripheral, error) { return nil, protocol.Unavailable }
+	until := time.Now().Add(time.Hour)
+	s.window = until
+	if err := s.Run(context.Background()); err != protocol.Unavailable {
+		t.Fatalf("Run without a radio = %v", err)
+	}
+	if !s.window.Equal(until) || s.Available() {
+		t.Fatalf("after the radio failed: window %v, available %v", s.window, s.Available())
+	}
+}
+
 func TestWedged(t *testing.T) {
 	s := New(Options{}, nil)
 	now := time.Now()

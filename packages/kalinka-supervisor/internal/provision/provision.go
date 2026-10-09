@@ -11,6 +11,7 @@ import (
 
 	"kalinka/supervisor/internal/gatt"
 	"kalinka/supervisor/internal/machine"
+	"kalinka/supervisor/internal/protocol"
 	"kalinka/supervisor/internal/wifi"
 )
 
@@ -21,20 +22,40 @@ type Options struct {
 	TestResult, TestAddress                                   string
 }
 
+// peripheral is the Bluetooth LE side of setup that Run drives; *gatt.Bluez is the production one.
+type peripheral interface {
+	Name() string
+	Enable(context.Context) error
+	Disable(context.Context)
+	Events(context.Context) error
+	Close()
+}
+
 // Service runs nearby setup until it fails or its context ends. Run is called
-// by one goroutine at a time; ChangingNetwork and Wedged are safe from any
-// goroutine.
+// by one goroutine at a time; ChangingNetwork, Available, OpenSetup and Wedged
+// are safe from any goroutine.
 type Service struct {
 	opts       Options
 	port       func() uint16
+	openRadio  func(context.Context, *machine.Machine, string) (peripheral, error)
 	machine    atomic.Pointer[machine.Machine]
 	recovering atomic.Bool
 	beat       atomic.Int64
+	// window is the setup window the last machine left for the next; only Run touches it.
+	window time.Time
 }
 
 // New returns a stopped service. port is asked for Core's HTTP port whenever setup reports it.
 func New(o Options, port func() uint16) *Service {
-	return &Service{opts: o, port: port}
+	return &Service{opts: o, port: port, openRadio: openBluez}
+}
+
+func openBluez(ctx context.Context, m *machine.Machine, adapter string) (peripheral, error) {
+	b, err := gatt.New(ctx, m, adapter)
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
 }
 
 // Blocked returns why setup cannot run on this host now, or "" when it can.
@@ -72,6 +93,24 @@ func (s *Service) ChangingNetwork() bool {
 	return m != nil && m.ChangingNetwork()
 }
 
+// Available reports whether OpenSetup can reach setup now. It cannot while
+// setup is stopped, recovering an interrupted join, or bringing its radio up.
+func (s *Service) Available() bool {
+	return s.machine.Load() != nil
+}
+
+// OpenSetup makes setup available for d even while the box is online, and
+// keeps it so across a restart of Run. It returns protocol.Unavailable while
+// Available is false, and protocol.Busy while a phone is scanning, joining or
+// handing off.
+func (s *Service) OpenSetup(d time.Duration) error {
+	m := s.machine.Load()
+	if m == nil {
+		return protocol.Unavailable
+	}
+	return m.Open(d)
+}
+
 // Wedged reports whether the setup loop has stopped ticking for longer than limit. Startup and a stopped service are not wedged.
 func (s *Service) Wedged(now time.Time, limit time.Duration) bool {
 	beat := s.beat.Load()
@@ -94,7 +133,8 @@ func (s *Service) backend() (wifi.Backend, error) {
 }
 
 // Run recovers any interrupted network change, then serves setup over BLE
-// while the host is offline. It returns nil when ctx ends.
+// while the host is offline or OpenSetup holds it open. It returns nil when
+// ctx ends.
 func (s *Service) Run(ctx context.Context) error {
 	o := s.opts
 	backend, err := s.backend()
@@ -121,16 +161,20 @@ func (s *Service) Run(ctx context.Context) error {
 			}
 		}
 	}
-	m := machine.New(ctx, backend, machine.Config{IdentityFile: o.IdentityFile, Marker: marker, Port: s.port, Test: o.Test, AlwaysAdvertise: o.AlwaysAdvertise})
-	s.machine.Store(m)
-	defer s.machine.Store(nil)
-	// Closing waits out a rollback, which must stay visible to ChangingNetwork until then.
-	defer m.Close()
-	radio, err := gatt.New(ctx, m, o.Adapter)
+	m := machine.New(ctx, backend, machine.Config{IdentityFile: o.IdentityFile, Marker: marker, Port: s.port, Test: o.Test, AlwaysAdvertise: o.AlwaysAdvertise, Window: s.window})
+	defer func() {
+		// Closing waits out a rollback, which must stay visible to ChangingNetwork until then.
+		m.Close()
+		s.window = m.Window()
+		s.machine.Store(nil)
+	}()
+	radio, err := s.openRadio(ctx, m, o.Adapter)
 	if err != nil {
 		return err
 	}
 	defer radio.Close()
+	// Published only now, so OpenSetup never answers for a radio that did not come up.
+	s.machine.Store(m)
 	eventsCtx, stopEvents := context.WithCancel(ctx)
 	defer stopEvents()
 	events := make(chan error, 1)
@@ -149,7 +193,7 @@ func (s *Service) Run(ctx context.Context) error {
 			if err = radio.Enable(ctx); err != nil {
 				return err
 			}
-			slog.Info("Nearby setup available", "name", radio.Name)
+			slog.Info("Nearby setup available", "name", radio.Name())
 			advertising = true
 		} else if !active && advertising {
 			radio.Disable(ctx)
