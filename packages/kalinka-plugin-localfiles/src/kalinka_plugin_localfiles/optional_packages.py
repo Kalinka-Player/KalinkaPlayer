@@ -26,8 +26,10 @@ MANIFEST_SCHEMA_VERSION = 1
 # functionality needs these packages" — see KalinkaPluginLocalFiles
 # subfeature bookkeeping in module_setup.py.
 OPTIONAL_PACKAGES: dict[str, OptionalPackageSpec] = {
+    # install_pending builds nothing from source, so every pin here needs a
+    # wheel for Python 3.11 to 3.13 on aarch64 and x86_64.
     "numpy": OptionalPackageSpec(
-        pip_spec="numpy==1.26.4",
+        pip_spec="numpy==2.4.6",
         description=(
             "Numerical core required by the searcher's mood ranking, "
             "CLAP audio embedding (embedder), and the enricher's generated "
