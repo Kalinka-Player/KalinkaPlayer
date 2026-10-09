@@ -1,5 +1,5 @@
 # kalinka_plugin_sdk/api.py
-from collections.abc import Awaitable, Callable, Coroutine, Iterable
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Sequence
 from enum import Enum
 from typing import Any, Generic, Literal, Optional, Protocol, TypeVar, Union
 
@@ -93,6 +93,17 @@ class PlayQueueController(Protocol):
         Stops the playback if it is active.
         """
         ...
+
+    async def replace(self, tracks: Sequence[Track | TrackInfo]) -> None:
+        """SDK 3.10: clear the queue and add ``tracks`` in its place.
+
+        The server's queue does both as one command, so no other caller finds
+        the queue empty in between, and its playback state goes straight to the
+        new first track. This default, which a queue written before 3.10
+        inherits, clears and then adds.
+        """
+        await self.clear()
+        await self.add(list(tracks))
 
     def move(self, from_index: int, to_index: int) -> Coroutine[Any, Any, None]:
         """Move the track at from_index to to_index, shifting others as needed."""
