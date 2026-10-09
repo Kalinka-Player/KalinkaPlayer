@@ -1,4 +1,5 @@
-"""Every package a plugin offers to install has a wheel for each box.
+"""Every package a plugin offers to install has a wheel for each box, and
+installing it leaves what the server installed alone.
 
 install_pending installs them with --only-binary=:all:, so a pin with no
 wheel for a box's Python and architecture fails there instead of compiling.
@@ -11,13 +12,18 @@ from __future__ import annotations
 import socket
 import subprocess
 import sys
+import tomllib
 from importlib.metadata import entry_points
+from pathlib import Path
 
 import pytest
 from kalinka_plugin_localfiles.optional_packages import (
     OPTIONAL_PACKAGES as LOCALFILES_OPTIONAL_PACKAGES,
 )
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
+SERVER_PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
 PYPI = "https://pypi.org/simple"
 # Each Python with the glibc of the system that ships it: Debian 12, Ubuntu
 # 24.04, Debian 13 under Raspberry Pi OS, DietPi and the images, and Fedora 43
@@ -91,6 +97,21 @@ def test_every_plugins_optional_packages_are_checked():
     assert {
         spec.pip_spec for spec in LOCALFILES_OPTIONAL_PACKAGES.values()
     } <= set(specs)
+
+
+def test_a_package_the_server_requires_is_offered_on_its_terms():
+    """The server installs its own dependencies unpinned; a pin on an
+    optional package would move that copy when someone asks for it."""
+    project = tomllib.loads(SERVER_PYPROJECT.read_text())["project"]
+    server = {
+        canonicalize_name(requirement.name): requirement.specifier
+        for requirement in map(Requirement, project["dependencies"])
+    }
+
+    for offered in map(Requirement, optional_package_specs()):
+        name = canonicalize_name(offered.name)
+        if name in server:
+            assert offered.specifier == server[name], offered
 
 
 def test_pip_takes_the_check_as_written():

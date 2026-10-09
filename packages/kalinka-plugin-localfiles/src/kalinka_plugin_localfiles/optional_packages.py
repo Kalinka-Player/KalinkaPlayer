@@ -26,11 +26,9 @@ MANIFEST_SCHEMA_VERSION = 1
 # functionality needs these packages" — see KalinkaPluginLocalFiles
 # subfeature bookkeeping in module_setup.py.
 OPTIONAL_PACKAGES: dict[str, OptionalPackageSpec] = {
-    # install_pending builds nothing from source, so every pin here needs a
-    # wheel for Python 3.11 to 3.14 on aarch64 and x86_64; the server's
-    # test_optional_package_wheels.py checks that on PyPI.
+    # The server's own deps keep its specs, so an install never moves its copy.
     "numpy": OptionalPackageSpec(
-        pip_spec="numpy==2.4.6",
+        pip_spec="numpy>=1.24",
         description=(
             "Numerical core required by the searcher's mood ranking, "
             "CLAP audio embedding (embedder), and the enricher's generated "
@@ -38,7 +36,7 @@ OPTIONAL_PACKAGES: dict[str, OptionalPackageSpec] = {
         ),
     ),
     "onnxruntime": OptionalPackageSpec(
-        pip_spec="onnxruntime==1.24.4",
+        pip_spec="onnxruntime>=1.17",
         description=(
             "ONNX inference runtime for the CLAP audio/text encoder used "
             "by AI search."
@@ -61,7 +59,7 @@ OPTIONAL_PACKAGES: dict[str, OptionalPackageSpec] = {
         ),
     ),
     "tokenizers": OptionalPackageSpec(
-        pip_spec="tokenizers==0.22.2",
+        pip_spec="tokenizers>=0.15",
         description="HuggingFace tokenizers used by the CLAP text encoder.",
     ),
 }
