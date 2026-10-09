@@ -159,7 +159,7 @@ Ready-to-flash images with the whole player already installed — four for the R
    gh release edit kalinka-image-vX.Y.Z --notes-file notes.md
    ```
 
-2. **Pick the app-bundle release to bake in.** The tag push installs whatever is the latest published `kalinka-v*` at build time, which is usually what you want. The `-display` images also take `kalinka-kiosk_*_arm64.deb` from that app release, and fail to build if it has none. To pin a specific one, run the workflow by hand instead (**Actions → Image release → Run workflow**) with `kalinka_version` set; it also takes the existing tag to publish under. The image filename carries the version that actually landed inside it, not the one that was asked for.
+2. **Pick the app-bundle release to bake in.** The tag push installs whatever is the latest published `kalinka-v*` at build time, which is usually what you want. The `-display` images also take `kalinka-kiosk_*_arm64.deb` from the latest app release that has one, the same way the browser player is picked, whatever `kalinka_version` says, and fail to build if no app release has it. To pin a specific one, run the workflow by hand instead (**Actions → Image release → Run workflow**) with `kalinka_version` set; it also takes the existing tag to publish under. The image filename carries the version that actually landed inside it, not the one that was asked for.
 
 3. Cut an image release when the OS side changes — a Debian point release or a DietPi release worth picking up, a first-boot or partitioning fix — or when the app bundle has moved far enough that a freshly flashed card would otherwise spend its first boot upgrading. Not on every app release: the images auto-upgrade like any other install.
 

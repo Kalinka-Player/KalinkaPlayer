@@ -139,7 +139,8 @@ def image_notes_problems(script: str, workflow: str) -> Iterator[Problem]:
     if not targets:
         yield problem(f"no `target:` in {IMAGE_WORKFLOW} to check the table against")
     for target in targets:
-        if not re.search(rf"^\|.*-{re.escape(target)}[-.]", notes, re.MULTILINE):
+        row = rf"^\|.*-{re.escape(target)}(-[a-z0-9_]+)?\.img\b"
+        if not re.search(row, notes, re.MULTILINE):
             yield problem(
                 f"the table has no row for `{target}`, which the workflow builds"
             )

@@ -1,30 +1,23 @@
 # shellcheck shell=bash
-# The now-playing display on a Pi's own screen: kalinka-kiosk, drawn through
-# flutter-pi. Defines only; every step is a no-op unless the target sets
-# TARGET_DISPLAY=1.
+# The now-playing display (kalinka-kiosk) for TARGET_DISPLAY=1 targets. Defines only.
 
-KMS_OVERLAY_RE='^[[:blank:]]*dtoverlay=vc4-kms-v3d([,[:blank:]].*)?$'
+KMS_OVERLAY='dtoverlay=vc4-kms-v3d([,[:blank:]].*)?'
+KMS_OVERLAY_RE="^[[:blank:]]*$KMS_OVERLAY\$"
 
 display_target() { [ "${TARGET_DISPLAY:-0}" = 1 ]; }
 
-# DietPi ships the KMS driver commented out and 16 MB of GPU memory, which
-# suit a box with no screen. flutter-pi needs KMS; the firmware's own memory
-# split is what Raspberry Pi OS runs it with.
+# flutter-pi needs KMS, which DietPi ships commented out beside a 16 MB GPU split.
 configure_display_boot() {
   display_target || return 0
   local conf="$1/boot/firmware/config.txt"
   [ -f "$conf" ] || die "no $conf to turn the display driver on in"
   sed -Ei '/^[[:blank:]]*gpu_mem(_[0-9]+)?[[:blank:]]*=/d' "$conf"
   grep -Eq "$KMS_OVERLAY_RE" "$conf" && return 0
-  if grep -Eq '^[[:blank:]]*#[[:blank:]]*dtoverlay=vc4-kms-v3d([,[:blank:]].*)?$' "$conf"; then
-    sed -Ei '0,/^[[:blank:]]*#[[:blank:]]*(dtoverlay=vc4-kms-v3d([,[:blank:]].*)?)$/s//\1/' "$conf"
-  else
-    printf '\n[all]\ndtoverlay=vc4-kms-v3d,noaudio\n' >> "$conf"
-  fi
+  sed -Ei "0,/^[[:blank:]]*#[[:blank:]]*($KMS_OVERLAY)\$/s//\\1/" "$conf"
+  grep -Eq "$KMS_OVERLAY_RE" "$conf" || printf '\n[all]\ndtoverlay=vc4-kms-v3d,noaudio\n' >> "$conf"
 }
 
-# Written before the server is installed: its postinst hands /etc/kalinka to
-# kalusr, and a file the server cannot read is one its next save replaces.
+# Before the server installs, so its postinst hands the file to kalusr.
 configure_display_setting() {
   display_target || return 0
   install -d "$1/etc/kalinka"
