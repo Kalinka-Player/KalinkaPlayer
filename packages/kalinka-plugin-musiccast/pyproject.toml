@@ -27,6 +27,7 @@ dependencies = [
     # and REQUIRES_SDK keep it off an SDK major it was not built for.
     "kalinka-plugin-sdk>=3,<4",
     "ssdpy>=0.4.0",
+    "ifaddr>=0.2.0",
 ]
 
 [project.optional-dependencies]

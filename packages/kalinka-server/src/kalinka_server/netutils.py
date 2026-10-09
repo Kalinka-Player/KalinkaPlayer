@@ -1,36 +1,35 @@
 import socket
 import fcntl
 import struct
-import netifaces
+import ifaddr
 
 
-def get_all_ip_addresses() -> list[str]:
+def get_interface_ip_mappings() -> dict[str, list[str]]:
     """
-    Get all available IP addresses from all network interfaces.
-    Excludes loopback addresses (127.x.x.x).
+    Get a mapping of network interface names to their IP addresses.
+    Excludes loopback interfaces.
     Returns:
-        List of IP addresses in quad-dotted notation.
+        Dictionary mapping interface names to all their IPv4 addresses.
     """
-    ip_addresses = []
+    interface_ips: dict[str, list[str]] = {}
 
-    for interface in netifaces.interfaces():
-        try:
-            # Skip loopback interface
-            if interface == "lo":
-                continue
-
-            addrs = netifaces.ifaddresses(interface)
-            # Check if interface has IPv4 addresses
-            if netifaces.AF_INET in addrs:
-                for addr_info in addrs[netifaces.AF_INET]:
-                    ip = addr_info.get("addr")
-                    if ip and not ip.startswith("127."):
-                        ip_addresses.append(ip)
-        except (KeyError, ValueError):
-            # Skip interfaces that don't have proper addressing
+    for adapter in ifaddr.get_adapters():
+        if adapter.name == "lo":
             continue
 
-    return ip_addresses
+        addresses: list[str] = []
+        for ip in adapter.ips:
+            # ifaddr gives an IPv4 address as a string, an IPv6 one as a tuple.
+            if (
+                isinstance(ip.ip, str)
+                and not ip.ip.startswith("127.")
+                and ip.ip not in addresses
+            ):
+                addresses.append(ip.ip)
+        if addresses:
+            interface_ips[adapter.name] = addresses
+
+    return interface_ips
 
 
 def server_base_url(server_addr: tuple[str, int]) -> str:

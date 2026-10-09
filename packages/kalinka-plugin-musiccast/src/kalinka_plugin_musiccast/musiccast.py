@@ -20,7 +20,7 @@ from kalinka_plugin_sdk.ext_device_events import (
     ExtDeviceState,
     VolumeChangedEvent,
 )
-import netifaces
+import ifaddr
 from ssdpy import SSDPClient
 
 from kalinka_plugin_sdk.api import EventEmitter, EventListener, ReplayEvent
@@ -73,17 +73,16 @@ def get_network_interfaces():
     """Get all active network interfaces with their IP addresses"""
 
     interfaces = []
-    for interface_name in netifaces.interfaces():
-        try:
-            addresses = netifaces.ifaddresses(interface_name)
-            if netifaces.AF_INET in addresses:
-                for addr_info in addresses[netifaces.AF_INET]:
-                    ip = addr_info.get("addr")
-                    if ip and not ip.startswith("127.") and ip != "0.0.0.0":
-                        interfaces.append((interface_name, ip))
-                        logger.debug(f"Found interface {interface_name}: {ip}")
-        except (KeyError, ValueError):
-            continue
+    for adapter in ifaddr.get_adapters():
+        for ip in adapter.ips:
+            # ifaddr gives an IPv4 address as a string, an IPv6 one as a tuple.
+            if (
+                isinstance(ip.ip, str)
+                and not ip.ip.startswith("127.")
+                and ip.ip != "0.0.0.0"
+            ):
+                interfaces.append((adapter.name, ip.ip))
+                logger.debug(f"Found interface {adapter.name}: {ip.ip}")
 
     # Final fallback: use default interface
     if not interfaces:

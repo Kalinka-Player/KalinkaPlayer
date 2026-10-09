@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 
 from .config_model import KalinkaConfig
+from .netutils import get_interface_ip_mappings
 from .renderer_ws_handler import PROTOCOL_VERSION as RENDERER_PROTOCOL_VERSION
 from .server_identity import get_server_id
 from .version import get_version, get_rest_api_version
@@ -12,7 +13,6 @@ from zeroconf import IPVersion, ServiceInfo
 from zeroconf.asyncio import AsyncZeroconf
 
 import socket
-import netifaces
 
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -53,36 +53,6 @@ def _endpoint_name(interface_name: str, ip_address: str, address_count: int) -> 
     if address_count == 1:
         return interface_name
     return f"{interface_name}-{socket.inet_aton(ip_address).hex()}"
-
-
-def get_interface_ip_mappings() -> dict[str, list[str]]:
-    """
-    Get a mapping of network interface names to their IP addresses.
-    Excludes loopback interfaces.
-    Returns:
-        Dictionary mapping interface names to all their IPv4 addresses.
-    """
-    interface_ips: dict[str, list[str]] = {}
-
-    for interface in netifaces.interfaces():
-        try:
-            # Skip loopback interface
-            if interface == "lo":
-                continue
-
-            addrs = netifaces.ifaddresses(interface)
-            addresses = []
-            for addr_info in addrs.get(netifaces.AF_INET, []):
-                ip = addr_info.get("addr")
-                if ip and not ip.startswith("127.") and ip not in addresses:
-                    addresses.append(ip)
-            if addresses:
-                interface_ips[interface] = addresses
-        except (KeyError, ValueError):
-            # Skip interfaces that don't have proper addressing
-            continue
-
-    return interface_ips
 
 
 def get_service_info(
@@ -131,7 +101,7 @@ class _Announcement:
 
 class ServiceDiscovery:
     # Reaction time to address changes; the scan itself is a cheap
-    # netifaces call, no sockets are touched unless something changed.
+    # getifaddrs call, no sockets are touched unless something changed.
     RESCAN_INTERVAL_S = 10.0
 
     def __init__(
@@ -191,8 +161,8 @@ class ServiceDiscovery:
                 )
                 return []
             # This is the authoritative listener selected by __main__. Avoid
-            # relying on netifaces address ordering when an interface owns
-            # several addresses.
+            # relying on the order an interface reports its addresses in when
+            # it owns several.
             interface_ips = {bound_interface: [bind_host]}
             configured_interface = bound_interface
 

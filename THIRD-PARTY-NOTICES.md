@@ -30,7 +30,7 @@ These are system libraries resolved at build time; the Debian, RPM and Flatpak p
 
 ## Python dependencies
 
-Installed from PyPI at build or install time, not redistributed in source form. Principal ones: FastAPI, Starlette, Uvicorn and Pydantic (MIT); zeroconf, ssdpy, netifaces, aiosqlite, musicbrainzngs and watchfiles (LGPL/MIT/BSD per project); Mutagen (GPL-2.0-or-later); Pillow (MIT-CMU); httpx, requests, PyYAML, schedule, rapidfuzz and sqlite-vec (MIT/Apache-2.0/BSD per project). Each package carries its own license metadata in the installed environment.
+Installed from PyPI at build or install time, not redistributed in source form. Principal ones: FastAPI, Starlette, Uvicorn and Pydantic (MIT); zeroconf, ssdpy, ifaddr, aiosqlite, musicbrainzngs and watchfiles (LGPL/MIT/BSD per project); Mutagen (GPL-2.0-or-later); Pillow (MIT-CMU); httpx, requests, PyYAML, schedule, rapidfuzz and sqlite-vec (MIT/Apache-2.0/BSD per project). Each package carries its own license metadata in the installed environment.
 
 ## Downloaded at runtime
 

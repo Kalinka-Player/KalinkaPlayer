@@ -9,6 +9,7 @@ import pytest
 from kalinka_server import service_discovery
 from kalinka_server.config_model import KalinkaConfig
 from kalinka_server.service_discovery import ServiceDiscovery, get_service_info
+from tests.ifaddr_fake import fake_adapters
 
 SERVER_ID = "9f1c9f2e-1111-2222-3333-444455556666"
 
@@ -31,28 +32,22 @@ def addresses_of(info):
     return [socket.inet_ntoa(addr) for addr in info.addresses]
 
 
-def test_interface_mapping_keeps_every_distinct_ipv4_address(monkeypatch):
-    monkeypatch.setattr(
-        service_discovery.netifaces,
-        "interfaces",
-        lambda: ["lo", "eth0"],
-    )
-    monkeypatch.setattr(
-        service_discovery.netifaces,
-        "ifaddresses",
-        lambda interface: {
-            service_discovery.netifaces.AF_INET: [
-                {"addr": "192.168.1.20"},
-                {"addr": "10.20.0.15"},
-                {"addr": "192.168.1.20"},
-                {"addr": "127.0.0.2"},
-            ]
+def test_announcements_follow_the_interfaces_the_machine_reports(monkeypatch):
+    fake_adapters(
+        monkeypatch,
+        {
+            "lo": ["127.0.0.1"],
+            "eth0": ["192.168.1.20", ("fe80::1", 0, 2)],
+            "wlan0": ["10.20.0.15"],
         },
     )
 
-    assert service_discovery.get_interface_ip_mappings() == {
-        "eth0": ["192.168.1.20", "10.20.0.15"]
-    }
+    discovery = ServiceDiscovery(KalinkaConfig(), bind_host="0.0.0.0")
+
+    assert [(a.interface, a.ip_address) for a in discovery.announcements] == [
+        ("eth0", "192.168.1.20"),
+        ("wlan0", "10.20.0.15"),
+    ]
 
 
 def test_one_single_address_instance_per_interface(two_interfaces):
