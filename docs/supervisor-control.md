@@ -31,10 +31,15 @@ Core's files are damaged. It follows the app's dark style.
   - a pending shutdown;
   - a failed Core;
   - a last reinstall that failed, with its log.
-- **Controls.** Restart server, Restart the box, Power off and Reinstall
-  Kalinka. Each asks for confirmation first, then follows the result:
+- **Controls.** Restart server, Restart the box, Change Wi-Fi, Power off and
+  Reinstall Kalinka. Each asks for confirmation first, then follows the
+  result:
   - **Restart server:** until Core runs again.
   - **Restart the box:** until the box answers again; then it reloads.
+  - **Change Wi-Fi:** says that nearby setup is open, and to choose **Set up a
+    box** in the app on a phone near the box within 10 minutes. The row shows
+    only while `/v1/status` says the action can reach setup, and the page
+    takes the window's length from there too.
   - **Power off:** until it stops answering.
   - **Reinstall:** shows the installer's output live, until it succeeds or
     fails.
@@ -401,6 +406,13 @@ belongs in that change's threat model.
   unprivileged run simulates them too, because only root may drive systemd.
   `run-live.sh` turns the page and API off, since as root they would act on the
   laptop.
+
+  **Change Wi-Fi** is not simulated, but `run-test.sh` advertises all the
+  time, so it changes nothing there. To watch its window, run
+  `packages/kalinka-supervisor/build/kalinka-supervisor --backend nm` as
+  yourself on an online NetworkManager laptop. Setup stays closed until the
+  page opens it, then advertises for 10 minutes. A join from the phone changes
+  the laptop's Wi-Fi for real, as with `run-live.sh`.
 - **VM.** The PC image's VM boot test:
   1. loads the page and reads `/info`;
   2. powers the guest off through `POST /v1/actions/poweroff`.
