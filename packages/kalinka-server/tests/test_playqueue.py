@@ -1078,6 +1078,77 @@ async def test_clear_while_playing_does_not_autoadvance(event_emitter, playqueue
 
 
 @pytest.mark.asyncio
+async def test_replace_swaps_the_queue_for_the_new_tracks(event_emitter, playqueue):
+    await playqueue.add(make_tracks(3))
+    await asyncio.sleep(0)
+    playqueue.current_track_id = 2
+    event_emitter.reset_mock()
+    new = [create_track(name) for name in ("8", "7")]
+
+    await playqueue.replace(new)
+
+    assert playqueue.track_list == new
+    assert playqueue.current_track_id == 0
+    removed, added = [
+        event
+        for event in dispatched_events(event_emitter)
+        if isinstance(event, (TracksRemovedEvent, TracksAddedEvent))
+    ]
+    assert isinstance(removed, TracksRemovedEvent)
+    assert removed.indices == [2, 1, 0]
+    assert isinstance(added, TracksAddedEvent)
+    assert added.tracks == new
+    assert added.index == 0
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_queue_replaced_reports_only_the_new_first_track(
+    event_emitter, playqueue
+):
+    await playqueue.add(make_tracks(3))
+    await asyncio.sleep(0)
+    event_emitter.reset_mock()
+    new = [create_track(name) for name in ("8", "7")]
+
+    await playqueue.replace(new)
+
+    reported = [
+        event.state
+        for event in dispatched_events(event_emitter)
+        if isinstance(event, PlaybackStateChangedEvent)
+    ]
+    assert [state.current_track for state in reported] == [new[0]]
+    assert reported[0].state == PlayerStateEnum.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_a_reader_never_finds_the_queue_empty_during_a_replace(playqueue):
+    await playqueue.add(make_tracks(3))
+    await asyncio.sleep(0)
+
+    _, seen = await asyncio.gather(
+        playqueue.replace(make_tracks(2)), playqueue.list(offset=0, limit=10)
+    )
+
+    assert seen.total == 2
+
+
+@pytest.mark.asyncio
+async def test_replace_while_playing_does_not_autoadvance(playqueue):
+    """The teardown FINISHED lands after the new tracks are in, as it may after
+    a clear and an add."""
+    await playqueue.add(make_tracks(3))
+    await asyncio.sleep(0)
+    playqueue.current_stream_id = 123
+
+    await playqueue.replace(make_tracks(2))
+    await playqueue._process_state_update(_finished_state())
+
+    assert playqueue.current_track_id == 0
+    assert not playqueue._resolution.active
+
+
+@pytest.mark.asyncio
 async def test_move_unrelated_tracks_no_state_change_event(event_emitter, playqueue):
     """Moving tracks that don't affect the current index emits only TrackMovedEvent."""
     # Queue: [0,1,2,3], current=0. Move 2→3: current stays at 0.

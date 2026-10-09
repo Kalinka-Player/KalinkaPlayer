@@ -1014,7 +1014,7 @@ class PlayQueueImpl(PlayQueueController):
     async def clear(self):
         self._clear()
 
-    def _clear(self):
+    def _clear(self, report_stop: bool = True):
         was_already_stopped = (
             self._track_player.get_state().state == AudioGraphNodeState.STOPPED
         )
@@ -1033,7 +1033,7 @@ class PlayQueueImpl(PlayQueueController):
         self.event_emitter.dispatch(
             TracksRemovedEvent(indices=[i for i in range(list_len - 1, -1, -1)])
         )
-        if was_already_stopped:
+        if was_already_stopped and report_stop:
             self._arbiter.report(
                 self,
                 PlaybackState(
@@ -1044,6 +1044,15 @@ class PlayQueueImpl(PlayQueueController):
                     timestamp_ns=time.monotonic_ns(),
                 ),
             )
+
+    @serialised
+    async def replace(self, tracks: Sequence[Track | TrackInfo]):
+        """Clear the queue and add ``tracks`` as one command, so no other
+        command finds the queue empty in between."""
+        kept = _metadata_of(tracks)
+        # The add reports the new first track, so the empty queue goes unreported.
+        self._clear(report_stop=not kept)
+        self._add(kept)
 
     def _estimated_progress(self, stream_state: StreamState) -> int:
         return stream_state.position_at(time.monotonic_ns())
