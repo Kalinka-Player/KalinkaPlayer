@@ -404,6 +404,27 @@ TEST_F(AudioPlayerTest, test_protocol_detection) {
   EXPECT_TRUE(reported(seen, AudioGraphNodeState::FINISHED));
 }
 
+TEST_F(AudioPlayerTest, plays_flac_from_a_server_that_refuses_every_range) {
+  // The fixture's 384000-byte chunk is the first range AudioCast refused.
+  auto monitor = audioPlayer.monitor();
+  audioPlayer.append(29, server.url("/refuses-ranges"));
+
+  std::vector<StreamState> seen;
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(20);
+  while (!reported(seen, AudioGraphNodeState::FINISHED) &&
+         !reported(seen, AudioGraphNodeState::ERROR) &&
+         std::chrono::steady_clock::now() < deadline) {
+    const auto states = drainStates(*monitor);
+    seen.insert(seen.end(), states.begin(), states.end());
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+
+  expectPlayedInTurn(seen, {29});
+  EXPECT_FALSE(reported(seen, AudioGraphNodeState::ERROR));
+  EXPECT_TRUE(reported(seen, AudioGraphNodeState::FINISHED));
+}
+
 TEST_F(AudioPlayerTest, a_stream_key_set_later_reaches_the_next_stream) {
   ASSERT_TRUE(audioPlayer.setStreamConfig("input.http.stall_timeout", "1"));
   auto monitor = audioPlayer.monitor();

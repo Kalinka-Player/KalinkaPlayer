@@ -488,6 +488,93 @@ TEST_F(AudioGraphHttpStreamTest, seek_near_eof_reads_remaining_bytes_on_strict_s
                          expected.begin() + position));
 }
 
+TEST_F(AudioGraphHttpStreamTest, server_that_refuses_every_range_is_read_without_one) {
+  CapturedLog log;
+  StreamState streaming(AudioGraphNodeState::PREPARING);
+  std::vector<uint8_t> content;
+  StreamState finished(AudioGraphNodeState::PREPARING);
+  {
+    AudioGraphHttpStream stream(1, server.url("/refuses-ranges"), bufferSize,
+                                bufferSize / 2);
+    streaming = waitForStatus(stream, AudioGraphNodeState::STREAMING,
+                              std::chrono::seconds(5));
+    content = readToEnd(stream);
+    finished = stream.getState();
+  }
+
+  ASSERT_TRUE(streaming.streamInfo.has_value());
+  EXPECT_EQ(streaming.streamInfo->streamSize, 0u);
+  EXPECT_EQ(finished.state, AudioGraphNodeState::FINISHED);
+  EXPECT_TRUE(content == fileContent(file));
+  EXPECT_EQ(server.requestsTo("/refuses-ranges"), 2u);
+  EXPECT_THAT(log.str(), ::testing::HasSubstr("refused the first byte range"));
+  EXPECT_THAT(log.str(), ::testing::Not(::testing::HasSubstr("not satisfiable")));
+  EXPECT_THAT(log.str(), ::testing::Not(::testing::HasSubstr("[error]")));
+  EXPECT_THAT(log.str(), ::testing::Not(::testing::HasSubstr("[critical]")));
+}
+
+TEST_F(AudioGraphHttpStreamTest, server_that_refuses_every_range_refuses_a_seek) {
+  const auto expected = fileContent(file);
+  AudioGraphHttpStream stream(1, server.url("/refuses-ranges"), bufferSize,
+                              bufferSize / 2);
+  ASSERT_TRUE(readToEnd(stream) == expected);
+
+  EXPECT_EQ(stream.seekTo(expected.size() / 2), expected.size());
+
+  EXPECT_TRUE(readToEnd(stream).empty());
+  EXPECT_EQ(stream.getState().state, AudioGraphNodeState::FINISHED);
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  EXPECT_EQ(server.requestsTo("/refuses-ranges"), 2u);
+}
+
+TEST_F(AudioGraphHttpStreamTest, range_refused_once_data_has_arrived_is_an_error) {
+  AudioGraphHttpStream stream(1, server.url("/ranged-once"), bufferSize,
+                              bufferSize / 2);
+
+  const auto state = waitForStatus(stream, AudioGraphNodeState::ERROR,
+                                   std::chrono::seconds(5));
+
+  ASSERT_EQ(state.state, AudioGraphNodeState::ERROR);
+  ASSERT_TRUE(state.error.has_value());
+  EXPECT_THAT(state.error->message,
+              ::testing::HasSubstr("Request range not satisfiable"));
+  EXPECT_EQ(server.requestsTo("/ranged-once"), 2u);
+}
+
+TEST_F(AudioGraphHttpStreamTest, range_refused_on_a_resume_is_an_error) {
+  // Only the resume's offset sets this 416 apart from a refusal of every range.
+  AudioGraphHttpStream stream(1, server.url("/refuses-a-resume"), bufferSize, 0,
+                              stallTimeout);
+
+  const auto content = readToEnd(stream);
+
+  const auto state = stream.getState();
+  ASSERT_EQ(state.state, AudioGraphNodeState::ERROR);
+  ASSERT_TRUE(state.error.has_value());
+  EXPECT_THAT(state.error->message,
+              ::testing::HasSubstr(
+                  "Request range not satisfiable, " +
+                  std::to_string(LocalHttpServer::STALL_OFTEN_BYTES) + "/"));
+  EXPECT_EQ(content.size(), LocalHttpServer::STALL_OFTEN_BYTES);
+  EXPECT_EQ(server.requestsTo("/refuses-a-resume"), 2u);
+}
+
+TEST_F(AudioGraphHttpStreamTest, strict_server_refusing_the_first_range_still_seeks) {
+  const auto expected = fileContent(file);
+  // Reaching past the end of the file is what a strict server refuses.
+  AudioGraphHttpStream stream(1, server.url("/strict-ranged"), bufferSize,
+                              expected.size() * 2);
+  ASSERT_TRUE(readToEnd(stream) == expected);
+  const size_t position = expected.size() / 2;
+
+  ASSERT_EQ(stream.seekTo(position), position);
+
+  EXPECT_TRUE(readToEnd(stream) ==
+              std::vector<uint8_t>(expected.begin() + position, expected.end()));
+  EXPECT_EQ(stream.getState().state, AudioGraphNodeState::FINISHED);
+  EXPECT_EQ(server.requestsTo("/strict-ranged"), 3u);
+}
+
 TEST_F(AudioGraphHttpStreamTest, stalled_transfer_ends_in_timeout_error) {
   // Every attempt stalls: the first request and the three retries.
   const size_t attempts = 4;

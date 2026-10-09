@@ -168,10 +168,10 @@ size_t AudioGraphHttpStream::headerCallback(char *buffer, size_t size,
   return totalSize;
 }
 
-void AudioGraphHttpStream::handleSeekSignal(size_t position) {
+bool AudioGraphHttpStream::handleSeekSignal(size_t position) {
   if (!acceptRange && position != 0) {
     seekRequestSignal.respond(offset);
-    return;
+    return false;
   }
 
   buffer.clear();
@@ -184,6 +184,7 @@ void AudioGraphHttpStream::handleSeekSignal(size_t position) {
     setState(StreamState(AudioGraphNodeState::PREPARING));
   }
   seekRequestSignal.respond(offset);
+  return true;
 }
 
 void AudioGraphHttpStream::reader(std::stop_token stopToken) {
@@ -194,11 +195,14 @@ void AudioGraphHttpStream::reader(std::stop_token stopToken) {
       readContentChunks(stopToken);
       buffer.setEof();
       spdlog::debug("Finished reading content");
-      auto seekValue = seekRequestSignal.waitValue(stopToken);
+      std::optional<size_t> seekValue;
+      // Reading after a refused seek would fetch the whole stream to skip it.
+      do {
+        seekValue = seekRequestSignal.waitValue(stopToken);
+      } while (seekValue && !handleSeekSignal(*seekValue));
       if (!seekValue) {
         break;
       }
-      handleSeekSignal(*seekValue);
     }
   } catch (curlpp::LibcurlRuntimeError &ex) {
     if (!stopToken.stop_requested()) {
@@ -278,6 +282,12 @@ void AudioGraphHttpStream::readContentChunks(std::stop_token stopToken) {
       break;
     } else if (responseCode == 206) {
       continue;
+    } else if (responseCode == 416 && acceptRange && !hasReadHeader &&
+               offset == 0) {
+      // A live capture refuses every range, a strict server an over-long one.
+      spdlog::info("Server refused the first byte range; reading the stream "
+                   "without ranges");
+      acceptRange = false;
     } else if (responseCode == 416) {
       throw std::runtime_error("Request range not satisfiable, " +
                                std::to_string(offset) + "/" +
