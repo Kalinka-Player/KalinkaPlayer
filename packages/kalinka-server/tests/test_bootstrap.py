@@ -8,8 +8,13 @@ in one pip transaction turns one unusable plugin into a server that never
 starts. That is a real failure, seen on 4.3.0.
 """
 
+import io
+import json
 import os
 import subprocess
+import sys
+import tarfile
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -96,3 +101,119 @@ def test_a_resolvable_set_is_installed_in_one_go(install_dir, tmp_path):
     assert result.returncode == 0, result.stderr
     assert len(calls) == 1
     assert "installing them singly" not in result.stderr
+
+
+def _wheel(directory, name, version, requires=()):
+    """A real, empty pure-Python wheel, without invoking a build tool."""
+    filename = f"{name}-{version}-py3-none-any.whl"
+    metadata_dir = f"{name}-{version}.dist-info"
+    with zipfile.ZipFile(directory / filename, "w") as wheel:
+        wheel.writestr(
+            f"{metadata_dir}/METADATA",
+            f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n"
+            + "".join(f"Requires-Dist: {spec}\n" for spec in requires),
+        )
+        wheel.writestr(
+            f"{metadata_dir}/WHEEL",
+            "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        )
+        wheel.writestr(f"{metadata_dir}/RECORD", "")
+    return filename
+
+
+def _source_release(directory, name, version):
+    """An sdist that records any attempt to run its build backend."""
+    files = {
+        "pyproject.toml": (
+            '[build-system]\nrequires = []\nbuild-backend = "backend"\n'
+            'backend-path = ["."]\n'
+        ),
+        "backend.py": (
+            "import os\nfrom pathlib import Path\n"
+            "def get_requires_for_build_wheel(config_settings=None):\n"
+            "    Path(os.environ['KALINKA_TEST_BUILD_ATTEMPT']).touch()\n"
+            "    raise RuntimeError('bootstrap attempted a source build')\n"
+        ),
+    }
+    with tarfile.open(directory / f"{name}-{version}.tar.gz", "w:gz") as archive:
+        for filename, content in files.items():
+            data = content.encode()
+            member = tarfile.TarInfo(f"{name}-{version}/{filename}")
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+
+
+@pytest.mark.parametrize("fallback", [False, True], ids=["batch", "fallback"])
+def test_bootstrap_installs_available_wheels_without_building_sources(
+    tmp_path, fallback
+):
+    """Real pip must skip a newer sdist, including when a broken plugin forces
+    bootstrap to retry wheels singly. A source-only dependency stays absent."""
+    install = tmp_path / "install"
+    wheels = install / "wheels"
+    wheels.mkdir(parents=True)
+    index = tmp_path / "index"
+    index.mkdir()
+    venv = install / "venv"
+    subprocess.run(
+        [sys.executable, "-m", "venv", str(venv)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    _wheel(wheels, "bootstrap_probe", "1.0", ["bootstrap_dependency>=1"])
+    _wheel(index, "bootstrap_dependency", "1.0")
+    _source_release(index, "bootstrap_dependency", "2.0")
+    if fallback:
+        broken = _wheel(
+            wheels, "bootstrap_broken_plugin", "1.0", ["bootstrap_source_only==1.0"]
+        )
+        _source_release(index, "bootstrap_source_only", "1.0")
+
+    build_attempt = tmp_path / "build-attempt"
+    env = {
+        key: value for key, value in os.environ.items()
+        if not key.startswith("PIP_")
+    }
+    env.update(
+        {
+            "KALINKA_INSTALL_DIR": str(install),
+            "KALINKA_CACHE_DIR": str(tmp_path / "cache"),
+            "KALINKA_STATE_DIR": str(tmp_path / "state"),
+            "KALINKA_TEST_BUILD_ATTEMPT": str(build_attempt),
+            "PIP_CONFIG_FILE": os.devnull,
+            "PIP_NO_INDEX": "1",
+            "PIP_FIND_LINKS": str(index),
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        }
+    )
+    result = subprocess.run(
+        ["bash", str(BOOTSTRAP)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not build_attempt.exists(), result.stderr
+    installed = subprocess.run(
+        [str(venv / "bin" / "pip"), "list", "--format=json"],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    packages = {
+        p["name"].replace("_", "-"): p["version"]
+        for p in json.loads(installed.stdout)
+    }
+    assert packages["bootstrap-probe"] == "1.0"
+    assert packages["bootstrap-dependency"] == "1.0"
+    assert "bootstrap-source-only" not in packages
+    assert "bootstrap-broken-plugin" not in packages
+    if fallback:
+        assert f"skipped {broken}" in result.stderr
+    else:
+        assert "installing them singly" not in result.stderr

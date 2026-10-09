@@ -35,12 +35,10 @@ ExecStart=/opt/kalinka/venv/bin/kalinka-server \
   --state  /var/lib/kalinka/kalinka_state.json
 
 # Default TimeoutStartSec (90s) is far too tight when bootstrap.sh
-# downloads optional packages over a slow link, or resolves a bundled
-# wheel's dependency that has no wheel for this box and so builds from
-# source. systemd kills ExecStartPre on timeout, which then loops via
-# Restart=on-failure and you never finish the install. `infinity`
-# is honest about there being no safe upper bound for either on slow
-# hardware; a wedged install is recoverable with `systemctl stop kalinka`.
+# downloads packages over a slow link. Installs require prebuilt wheels,
+# but downloads can still exceed 90s. systemd kills ExecStartPre on timeout,
+# which then loops via Restart=on-failure and you never finish the install.
+# A wedged install is recoverable with `systemctl stop kalinka`.
 TimeoutStartSec=infinity
 
 Restart=on-failure
