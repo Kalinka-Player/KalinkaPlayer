@@ -15,6 +15,7 @@ from kalinka_server.demo_mode import REFUSAL, DemoReadOnlyGate, is_write_allowed
         ("HEAD", "/content/jamendo/1"),
         ("OPTIONS", "/collections"),
         ("POST", "/queue/add"),
+        ("POST", "/queue/replace"),
         ("PUT", "/queue/play"),
         ("PUT", "/queue/current_track/seek"),
         ("PUT", "/device/set_volume"),

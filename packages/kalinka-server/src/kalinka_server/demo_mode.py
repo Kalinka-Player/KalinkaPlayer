@@ -36,8 +36,14 @@ QUEUE_FULL = {
         "clear the queue, to add more."
     ),
 }
+TOO_MANY_TO_PLAY = {
+    "code": QUEUE_FULL["code"],
+    "message": (
+        f"The demo queue holds up to {QUEUE_LIMIT} tracks. Choose fewer to play."
+    ),
+}
 #: The shared queue's limit, well under an ordinary server's.
-DEMO_QUEUE = QueueLimit(QUEUE_LIMIT, QUEUE_FULL)
+DEMO_QUEUE = QueueLimit(QUEUE_LIMIT, QUEUE_FULL, TOO_MANY_TO_PLAY)
 
 THROTTLED = {
     "code": "demo_rate_limited",

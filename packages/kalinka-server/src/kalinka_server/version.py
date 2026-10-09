@@ -110,7 +110,17 @@ def get_version() -> str:
 # shelves are no longer listed, though their catalogs still answer. POST
 # /queue/add refuses an add that would take the queue past 1000 tracks with
 # 409 {"detail": {"code": "queue_full", "message"}}, adding nothing.
-REST_API_VERSION = "0.11"
+# 0.12: POST /queue/replace takes the body /queue/add takes, without an index,
+# and replaces the queue with those tracks in one request. Only the new tracks
+# count against the queue limit; past it the answer is 409 with /queue/add's
+# code (`queue_full`, or `demo_queue_full` on a demo server) but a message of
+# its own, which does not suggest clearing the queue, and the queue is left as
+# it was. Ids that come to no tracks, an empty album or folder or ids no
+# source still has, are answered 422 {"detail": {"code": "no_tracks",
+# "message"}}, also leaving the queue as it was. A server before 0.12 answers
+# the route with 405 from its browser-player mount at "/", or with 404 where it
+# has no such mount.
+REST_API_VERSION = "0.12"
 
 
 def get_rest_api_version() -> str:

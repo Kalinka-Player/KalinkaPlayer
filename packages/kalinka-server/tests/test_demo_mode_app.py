@@ -17,6 +17,7 @@ CATALOG_FLAG = "base_config.server.plugin_catalog_enabled"
 # something is refused, or joins this list on purpose.
 LET_THROUGH = {
     ("POST", "/queue/add"),
+    ("POST", "/queue/replace"),
     ("PUT", "/queue/play"),
     ("PUT", "/queue/pause"),
     ("PUT", "/queue/next"),

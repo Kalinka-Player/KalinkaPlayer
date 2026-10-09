@@ -64,7 +64,7 @@ from .log_export_route import register_log_export_routes
 from .log_export_service import ExportManager
 from .log_sources import FileCatalog, JournalCatalog
 from .logging_setup import stream_is_journal
-from .queue_add import tracks_for
+from .queue_add import NO_TRACKS, tracks_for
 from .queue_limit import QUEUE
 from .search_route import register_search_routes
 from .upgrade_route import register_upgrade_routes
@@ -741,6 +741,25 @@ async def create_app(
             await limit.refuse_past(playqueue, len(items))
             await playqueue.add(items, index)
         return {"message": "Items added to queue", "count": len(items)}
+
+    @app.post("/queue/replace")
+    async def replace_queue(ids: list[str]):
+        """Replace the queue with the tracks behind ``ids``, taken as by
+        /queue/add. Only the new tracks count against the queue limit, and ids
+        that come to no tracks are refused with 422. A refused or failed
+        replacement leaves the queue as it was, and no other request finds it
+        empty on the way."""
+        playqueue = player_context.playqueue
+        limit = DEMO_QUEUE if app.state.config.server.demo_mode else QUEUE
+        limit.refuse_replacement(len(ids))
+        items = await tracks_for(ids, browse_source_from_id, enabled_input_module)
+        if not items:
+            raise HTTPException(status_code=422, detail=NO_TRACKS)
+        limit.refuse_replacement(len(items))
+        # Else an add that passed its check could land on the new tracks.
+        async with queue_adding:
+            await playqueue.replace(items)
+        return {"message": "Queue replaced", "count": len(items)}
 
     @app.put("/queue/play")
     async def queue_play(index: Union[int, None] = None):
