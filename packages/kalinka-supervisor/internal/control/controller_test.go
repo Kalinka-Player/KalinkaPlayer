@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"kalinka/supervisor/internal/protocol"
 )
 
 type fakeSystemd struct {
@@ -65,7 +67,65 @@ func (c *clock) Now() time.Time { return c.now }
 
 func newController(s *fakeSystemd, network NetworkActivity) (*Controller, *clock) {
 	c := &clock{time.Unix(1000, 0)}
-	return NewController(s, network, ReinstallRecord{}, c.Now), c
+	return NewController(s, network, ReinstallRecord{}, nil, c.Now), c
+}
+
+type sshSetupFunc func(context.Context, protocol.Secret) error
+
+func (f sshSetupFunc) Enable(ctx context.Context, password protocol.Secret) error {
+	return f(ctx, password)
+}
+
+func TestSSHSetupSharesActionPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name, unit, want string
+		network          NetworkActivity
+		pending          Action
+	}{
+		{name: "available"},
+		{name: "installing", unit: ReinstallUnit, want: CodeUpgrade},
+		{name: "previous helper still running", unit: "kalinka-ssh-setup.service", want: CodeBusy},
+		{name: "changing network", network: fakeNetwork(true), want: CodeNetworkChange},
+		{name: "shutting down", pending: Reboot, want: CodeShuttingDown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &fakeSystemd{units: map[string]UnitState{tc.unit: {Active: "active"}}}
+			c, _ := newController(s, tc.network)
+			c.pending = tc.pending
+			called := false
+			c.ssh = sshSetupFunc(func(context.Context, protocol.Secret) error { called = true; return nil })
+			if err := c.EnableSSH(context.Background(), protocol.NewSecret("test-only-password")); code(err) != tc.want {
+				t.Fatalf("refusal = %s, want %s", code(err), tc.want)
+			}
+			if called != (tc.want == "") {
+				t.Fatalf("setup called = %v", called)
+			}
+			if c.running {
+				t.Fatal("setup did not release the action lock")
+			}
+		})
+	}
+}
+
+func TestSSHSetupExcludesOtherActionsAndReleasesLockOnFailure(t *testing.T) {
+	c, _ := newController(&fakeSystemd{}, nil)
+	c.ssh = sshSetupFunc(func(context.Context, protocol.Secret) error {
+		for _, action := range Supported {
+			if _, err := c.Begin(context.Background(), action); code(err) != CodeBusy {
+				t.Fatalf("%s was not excluded", action)
+			}
+		}
+		if err := c.EnableSSH(context.Background(), protocol.NewSecret("another-password")); code(err) != CodeBusy {
+			t.Fatal("parallel SSH setup was admitted")
+		}
+		return errors.New("setup failed")
+	})
+	if c.EnableSSH(context.Background(), protocol.NewSecret("test-only-password")) == nil {
+		t.Fatal("failure was lost")
+	}
+	if err := perform(c, RestartCore); err != nil {
+		t.Fatalf("setup did not release the action lock: %v", err)
+	}
 }
 
 func code(err error) string {
@@ -273,7 +333,7 @@ func TestReinstallStatus(t *testing.T) {
 	dir := t.TempDir()
 	record := ReinstallRecord{ResultFile: filepath.Join(dir, "reinstall-result")}
 	s := &fakeSystemd{}
-	c := NewController(s, nil, record, time.Now)
+	c := NewController(s, nil, record, nil, time.Now)
 	status := func() Status {
 		t.Helper()
 		st, err := c.Status(context.Background())

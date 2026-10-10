@@ -66,7 +66,7 @@ func (b *Binding) Reconcile(core coreconf.Config) string {
 		Handler:           b.handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      3 * phaseTimeout,
+		WriteTimeout:      sshSetupTimeout + 2*phaseTimeout,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    8 << 10,
 	}

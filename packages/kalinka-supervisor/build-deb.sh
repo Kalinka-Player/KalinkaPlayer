@@ -12,14 +12,14 @@ trap 'rm -rf "$stage"' EXIT
 chmod 755 "$stage"
 mkdir -p "$stage/DEBIAN" "$stage/usr/lib/kalinka-supervisor" "$stage/usr/lib/systemd/system" "$out_dir"
 GOARCH="$arch" VERSION="$version" "$pkg_dir/build.sh" "$stage/usr/lib/kalinka-supervisor/kalinka-supervisor"
-install -m 755 "$pkg_dir/reinstall.sh" "$stage/usr/lib/kalinka-supervisor/"
+install -m 755 "$pkg_dir/reinstall.sh" "$pkg_dir/ssh-setup.sh" "$stage/usr/lib/kalinka-supervisor/"
 install -m 644 "$pkg_dir/systemd/"* "$stage/usr/lib/systemd/system/"
 cat > "$stage/DEBIAN/control" <<CONTROL
 Package: kalinka-supervisor
 Version: $version
 Architecture: $arch
 Maintainer: Dmitry Savin <envelsavinds@gmail.com>
-Depends: bluez, dbus, systemd, curl, network-manager | ifupdown, wpasupplicant, iw, rfkill, iproute2
+Depends: bluez, dbus, systemd, curl, network-manager | ifupdown, wpasupplicant, iw, rfkill, iproute2, passwd, sudo
 Description: Independent Kalinka supervisor, nearby box setup and LAN control page
  Static Go service for BLE provisioning with NetworkManager or DietPi networking,
  and a recovery page on the local network: status, restart, reboot, power off

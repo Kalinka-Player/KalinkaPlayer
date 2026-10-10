@@ -179,6 +179,7 @@ function renderStatus() {
     const offered = info && info.actions.includes(button.dataset.action);
     button.disabled = locked || !offered;
   }
+  byId("ssh-enable").disabled = locked;
 }
 
 function fact(list, label, value) {
@@ -499,6 +500,23 @@ async function showFailedLog() {
 }
 
 function init() {
+  const password = byId("ssh-password");
+  const confirmation = byId("ssh-password-confirm");
+  const validatePasswords = () => {
+    password.setCustomValidity(password.value && !/^[\x20-\x7e]{12,128}$/.test(password.value)
+      ? "Use 12–128 characters from an English keyboard." : "");
+    confirmation.setCustomValidity(confirmation.value && password.value !== confirmation.value
+      ? "The passwords do not match." : "");
+  };
+  password.addEventListener("input", validatePasswords);
+  confirmation.addEventListener("input", validatePasswords);
+  byId("ssh-form").addEventListener("submit", () => {
+    busy = true;
+    byId("ssh-progress").hidden = false;
+    renderStatus();
+  });
+  const command = byId("ssh-command");
+  if (command) command.textContent = `ssh ${command.dataset.username}@${location.hostname.replace(/^\[|\]$/g, "")}`;
   for (const button of document.querySelectorAll("[data-action]")) {
     button.addEventListener("click", () => confirmAction(button.dataset.action));
   }

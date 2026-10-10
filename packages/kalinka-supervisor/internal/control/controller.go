@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"kalinka/supervisor/internal/protocol"
 )
 
 // Action names one privileged operation a client may request.
@@ -18,6 +20,13 @@ const (
 
 // Supported lists every action this protocol version serves, in the order /info reports them.
 var Supported = []Action{RestartCore, Reboot, PowerOff, Reinstall}
+
+const enableSSH Action = "enable_ssh"
+
+// SSHSetup enables the dashboard's fixed administrator account and SSH service.
+type SSHSetup interface {
+	Enable(context.Context, protocol.Secret) error
+}
 
 // target returns the shutdown target of an action that ends the supervisor along with the host.
 func (a Action) target() (Target, bool) {
@@ -79,6 +88,7 @@ type Controller struct {
 	systemd         Systemd
 	network         NetworkActivity
 	reinstalls      ReinstallRecord
+	ssh             SSHSetup
 	now             func() time.Time
 	restartInterval time.Duration
 
@@ -89,8 +99,27 @@ type Controller struct {
 }
 
 // NewController takes network as nil when nearby setup is off.
-func NewController(s Systemd, network NetworkActivity, reinstalls ReinstallRecord, now func() time.Time) *Controller {
-	return &Controller{systemd: s, network: network, reinstalls: reinstalls, now: now, restartInterval: 15 * time.Second}
+func NewController(s Systemd, network NetworkActivity, reinstalls ReinstallRecord, ssh SSHSetup, now func() time.Time) *Controller {
+	return &Controller{systemd: s, network: network, reinstalls: reinstalls, ssh: ssh, now: now, restartInterval: 15 * time.Second}
+}
+
+// EnableSSH shares the action lock and admission policy without adding a protocol action.
+func (c *Controller) EnableSSH(ctx context.Context, password protocol.Secret) error {
+	if err := c.reserve(enableSSH); err != nil {
+		return err
+	}
+	defer func() {
+		c.mu.Lock()
+		c.running = false
+		c.mu.Unlock()
+	}()
+	if err := c.admit(ctx, enableSSH); err != nil {
+		return err
+	}
+	if c.ssh == nil {
+		return refuse(CodeUnavailable)
+	}
+	return c.ssh.Enable(ctx, password)
 }
 
 // Begin admits a, or returns a *Refusal saying why it may not run now.
@@ -126,6 +155,13 @@ func (c *Controller) reserve(a Action) error {
 }
 
 func (c *Controller) admit(ctx context.Context, a Action) error {
+	setup, err := c.systemd.Unit(ctx, "kalinka-ssh-setup.service")
+	if err != nil {
+		return refuse(CodeUnavailable)
+	}
+	if setup.Busy() {
+		return refuse(CodeBusy)
+	}
 	installing, err := c.installing(ctx)
 	if err != nil {
 		return err

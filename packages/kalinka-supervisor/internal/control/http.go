@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"kalinka/supervisor/internal/coreconf"
+	"kalinka/supervisor/internal/protocol"
 )
 
 const (
@@ -50,7 +51,7 @@ var outcomes = map[string]struct {
 
 // pagePolicy keeps the page to its own files and out of other sites' frames, where a click could be hijacked.
 const pagePolicy = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; " +
-	"connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+	"connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 
 // Coordinator admits and runs privileged operations; Controller is the production one.
 type Coordinator interface {
@@ -67,6 +68,8 @@ type HandlerConfig struct {
 	Setup        func() string
 	Dashboard    func(context.Context) any
 	Reinstalls   ReinstallRecord
+	EnableSSH    func(context.Context, protocol.Secret) error
+	Simulated    bool
 }
 
 type handler struct {
@@ -109,6 +112,20 @@ func (h *handler) serve(w http.ResponseWriter, r *http.Request) string {
 			return fail(w, "origin_not_allowed")
 		}
 		w.Header().Set("Access-Control-Allow-Origin", origin)
+	}
+	if r.URL.Path == "/" {
+		w.Header().Set("Allow", "GET, HEAD, POST, OPTIONS")
+		switch r.Method {
+		case http.MethodGet, http.MethodHead:
+			return h.page(w, r, http.StatusOK, "")
+		case http.MethodPost:
+			return h.enableSSH(w, r)
+		case http.MethodOptions:
+			w.WriteHeader(http.StatusNoContent)
+			return ""
+		default:
+			return fail(w, "method_not_allowed")
+		}
 	}
 	rt, ok := h.route(r.URL.Path)
 	if !ok {
