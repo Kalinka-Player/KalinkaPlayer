@@ -560,7 +560,7 @@ two things that graph deliberately lacks:
 pinned: every `AudioGraphNodeState`, `StreamErrorSource` and `VolumeBackend`
 maps to exactly one protocol value, as pure functions with no other inputs.
 
-The graph itself: HTTP or file input → FLAC/MP3 decoder → buffer →
+The graph itself: HTTP or file input → FLAC/MP3/Vorbis/DSD decoder → buffer →
 `AudioStreamSwitcher` (gapless) → `AlsaAudioEmitter`, with `AlsaVolumeControl`
 alongside for hardware or software level, and `StateMonitor` reporting.
 
