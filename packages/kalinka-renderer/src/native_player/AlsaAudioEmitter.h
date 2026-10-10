@@ -92,6 +92,7 @@ private:
   snd_pcm_t *pcmHandle = nullptr;
   std::vector<pollfd> ufds;
   std::unordered_map<AudioSampleFormat, AudioSampleFormat> sampleSubstitute;
+  std::vector<uint8_t> conversionScratch;
 
   Signal<size_t> seekRequestSignal;
   Signal<bool> pauseRequestSignal;

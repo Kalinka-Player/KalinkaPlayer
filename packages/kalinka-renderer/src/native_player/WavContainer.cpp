@@ -26,8 +26,7 @@ ContainerFormat::Header WavContainer::parseHeader(ByteReader &source) {
     std::array<uint8_t, 8> chunk;
     source.readExact(chunk.data(), chunk.size());
     const uint64_t size = number(chunk.data() + 4, 4);
-    const auto padded = size + (size & 1);
-    require(padded <= end - source.position(), "Invalid WAV chunk size");
+    require(size <= end - source.position(), "Invalid WAV chunk size");
     if (tagged(chunk.data(), "data")) {
       require(haveFormat, "WAV data precedes its format");
       require(size % sourceFrameBytes == 0, "Incomplete WAV audio frame");
@@ -35,6 +34,9 @@ ContainerFormat::Header WavContainer::parseHeader(ByteReader &source) {
       return {{format, StreamType::FRAMES, static_cast<unsigned long>(frames)},
               size};
     }
+    // Writers drop the pad byte after the audio, never before it.
+    const auto padded = size + (size & 1);
+    require(padded <= end - source.position(), "Invalid WAV chunk size");
     require(source.position() + padded <= MAX_HEADER_BYTES,
             "WAV header is too large");
     if (tagged(chunk.data(), "fmt ")) {

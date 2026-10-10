@@ -1006,7 +1006,8 @@ size_t AlsaAudioEmitter::readAndConvertFrames(void *dest, size_t bytes) {
   const auto width = sampleSize(destFormat);
   const size_t sourceSamples =
       snd_pcm_bytes_to_samples(pcmHandle, bytes) / copies;
-  std::vector<uint8_t> source(sourceSamples * sampleSize(sourceFormat));
+  auto &source = conversionScratch;
+  source.resize(sourceSamples * sampleSize(sourceFormat));
   const auto count =
       inputNode->read(source.data(), source.size()) / sampleSize(sourceFormat);
   auto *out = static_cast<uint8_t *>(dest);

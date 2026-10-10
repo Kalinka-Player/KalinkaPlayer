@@ -142,6 +142,19 @@ TEST(WavDecoder, RefusesMetadataThatPushesTheAudioPastTheLimit) {
   EXPECT_EQ(decoder.getState().error->message, "WAV header is too large");
 }
 
+TEST(WavDecoder, PlaysOddSizedAudioWithoutItsPadByte) {
+  // 24-bit mono with an odd frame count: drop the pad and the LIST chunk
+  // after the audio, and let the RIFF size stop at the last sample.
+  auto bytes = wav_test::file(24, 96000, 1, 3);
+  bytes.resize(bytes.size() - 13);
+  for (unsigned i = 0; i < 4; ++i)
+    bytes[4 + i] = (bytes.size() - 8) >> (8 * i);
+  ContainerStreamDecoder decoder(1, wav(), 1024);
+  decoder.connectTo(std::make_shared<BytesInput>(bytes, true, true));
+  EXPECT_EQ(drain(decoder), expected(3, 1));
+  EXPECT_EQ(decoder.getState().state, AudioGraphNodeState::FINISHED);
+}
+
 TEST(WavDecoder, EmptyAudioFinishes) {
   ContainerStreamDecoder empty(1, wav(), 1024);
   empty.connectTo(
