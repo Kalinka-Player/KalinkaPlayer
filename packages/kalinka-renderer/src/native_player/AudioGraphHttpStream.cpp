@@ -4,6 +4,7 @@
 #include <curlpp/Options.hpp>
 #include <curlpp/Types.hpp>
 #include <curlpp/cURLpp.hpp>
+#include <curlpp/internal/CurlHandle.hpp>
 
 #include <boost/algorithm/string.hpp>
 #include <functional>
@@ -29,6 +30,9 @@ AudioGraphHttpStream::AudioGraphHttpStream(std::optional<StreamId> streamId,
       chunkSize(chunkSize),
       stallTimeout(std::max(stallTimeout, std::chrono::seconds::zero())),
       maxRedirects(std::max(maxRedirects, 0L)) {
+  if (!multi) {
+    throw std::runtime_error("Could not initialize HTTP transfer");
+  }
   readerThread =
       std::jthread(std::bind_front(&AudioGraphHttpStream::reader, this));
 }
@@ -285,7 +289,11 @@ void AudioGraphHttpStream::readContentChunks(std::stop_token stopToken) {
       spdlog::warn(
           "HTTP GET request failed with code {}, retrying {} more times",
           responseCode, numRetries);
-      std::this_thread::sleep_for(std::chrono::seconds(1));
+      std::mutex mutex;
+      std::condition_variable_any wakeup;
+      std::unique_lock lock(mutex);
+      wakeup.wait_for(lock, combinedStopToken.get_token(),
+                     std::chrono::seconds(1), [] { return false; });
     } else {
       throw std::runtime_error("HTTP GET request failed with code " +
                                std::to_string(responseCode));
@@ -319,7 +327,7 @@ int AudioGraphHttpStream::readSingleChunk(std::stop_token stopToken) {
   }
 
   request.setOpt(new curlpp::options::ConnectTimeout(10));
-  // Called about once a second while nothing arrives, unlike WriteCallback.
+  // Progress callbacks still enforce the stall timeout during an idle poll.
   request.setOpt(new curlpp::options::NoProgress(false));
   curl_easy_setopt(request.getHandle(), CURLOPT_XFERINFOFUNCTION,
                    &AudioGraphHttpStream::transferInfoCallback);
@@ -334,7 +342,7 @@ int AudioGraphHttpStream::readSingleChunk(std::stop_token stopToken) {
   silentSince = std::chrono::steady_clock::now();
   bytesToSkip = offset;
   try {
-    request.perform();
+    performRequest(stopToken);
   } catch (const curlpp::LibcurlRuntimeError &ex) {
     if (ex.whatCode() == CURLE_ABORTED_BY_CALLBACK && stalled()) {
       throw curlpp::LibcurlRuntimeError(
@@ -351,6 +359,50 @@ int AudioGraphHttpStream::readSingleChunk(std::stop_token stopToken) {
     hasReadHeader = true;
   }
   return responseCode;
+}
+
+void AudioGraphHttpStream::performRequest(std::stop_token stopToken) {
+  auto check = [](CURLMcode code) {
+    if (code != CURLM_OK) {
+      throw std::runtime_error(std::string("HTTP transfer failed: ") +
+                               curl_multi_strerror(code));
+    }
+  };
+  check(curl_multi_add_handle(multi.get(), request.getHandle()));
+  auto remove = [this](CURL *handle) {
+    curl_multi_remove_handle(multi.get(), handle);
+  };
+  // The Easy handle outlives this association with the multi handle.
+  std::unique_ptr<CURL, decltype(remove)> attached(request.getHandle(), remove);
+  auto cancelled = combineStopTokens(stopToken, seekRequestSignal.getStopToken());
+  // Only wakeup may run off the reader thread; destroy it before detaching.
+  std::stop_callback wakeup(cancelled.get_token(), [this] {
+    curl_multi_wakeup(multi.get());
+  });
+  int running = 1;
+  while (running) {
+    if (cancelled.get_token().stop_requested()) {
+      throw curlpp::LibcurlRuntimeError("HTTP transfer cancelled",
+                                       CURLE_ABORTED_BY_CALLBACK);
+    }
+    check(curl_multi_perform(multi.get(), &running));
+    if (running) {
+      check(curl_multi_poll(multi.get(), nullptr, 0, 1000, nullptr));
+    }
+  }
+  // curlpp defers callback exceptions until the transfer's caller returns.
+  request.getCurlHandle().throwException();
+  int remaining = 0;
+  while (auto *message = curl_multi_info_read(multi.get(), &remaining)) {
+    if (message->msg == CURLMSG_DONE) {
+      if (message->data.result != CURLE_OK) {
+        throw curlpp::LibcurlRuntimeError("HTTP transfer failed",
+                                         message->data.result);
+      }
+      return;
+    }
+  }
+  throw std::runtime_error("HTTP transfer ended without a completion result");
 }
 
 size_t AudioGraphHttpStream::read(void *data, size_t size) {
