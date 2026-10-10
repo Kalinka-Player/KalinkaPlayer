@@ -191,9 +191,13 @@ def register_upgrade_routes(
         """Ask one renderer to install the latest published release.
 
         Answers as soon as the renderer has taken the request on; it then
-        restarts and re-registers, which is what reports the outcome. Refused
-        while a playback session is running on it, and for a renderer that
-        cannot install a release of itself.
+        restarts and re-registers, which is what reports the outcome. The
+        press is someone asking, so a playback session on it, a paused one
+        included, is stopped first, as PUT /server/upgrade does. A renderer
+        already upgrading, one that cannot install a release of itself, or one
+        playing that is already on that release, is refused before anything is
+        stopped. One that refuses, goes away or does not answer after its
+        session was stopped is left stopped, as the server's press leaves it.
         """
         latest = update_check.checker.latest_renderer
         if not latest:
@@ -201,7 +205,9 @@ def register_upgrade_routes(
                 status_code=409, detail="No renderer release is known yet"
             )
         try:
-            detail = await renderer_upgrades.upgrade(renderer_id, latest)
+            detail = await renderer_upgrades.upgrade(
+                renderer_id, latest, interrupt=True
+            )
         except RendererUnavailable as e:
             raise HTTPException(status_code=404, detail=str(e))
         except UpgradeRefused as e:

@@ -1,10 +1,11 @@
-"""PUT /server/upgrade pressed while a renderer that is behind holds music.
+"""PUT /server/upgrade and POST /renderer/{id}/upgrade pressed while a
+renderer that is behind holds music.
 
-The press is someone asking for the upgrade, so a paused queue no longer
-refuses it: playback there stops, as clients are told, the renderer is asked,
-and the server follows after the renderer confirms its target version. The
-renderer beside the server is left to the installer the press fires. Driven
-through the real session pool and play
+Either press is someone asking for the upgrade, so a paused queue no longer
+refuses it: playback there stops, as clients are told, and the renderer is
+asked. After the server's press the server follows once the renderer confirms
+its target version, and the renderer beside the server is left to the
+installer that press fires. Driven through the real session pool and play
 queue, against simulated renderers that refuse an upgrade while they hold a
 session, as the binary does.
 """
@@ -44,10 +45,19 @@ class UpgradableRenderer(SimRenderer):
     """A renderer behind the release that takes an upgrade as the binary
     does: never while it holds a playback session."""
 
-    def __init__(self, core, renderer_id: str, name: str, *, local: bool = False):
+    def __init__(
+        self,
+        core,
+        renderer_id: str,
+        name: str,
+        *,
+        local: bool = False,
+        upgrade_supported: bool = True,
+    ):
         super().__init__(core.registry, core.pool, renderer_id)
         self.name = name
         self.local = local
+        self.upgrade_supported = upgrade_supported
         self.version = "0.4.0"
         self.service: RendererUpgradeService = core.service
         self.upgrades: list[str] = []
@@ -64,7 +74,7 @@ class UpgradableRenderer(SimRenderer):
             session=self,
             compatible=compatible,
             server_addr=self.server_addr,
-            upgrade_supported=True,
+            upgrade_supported=self.upgrade_supported,
             local=self.local,
         )
 
@@ -183,10 +193,15 @@ def _renderer(core, renderer_id: str, name: str, **kwargs) -> UpgradableRenderer
     return renderer
 
 
-async def _pause_on(queue, renderer) -> None:
+async def _play_on(queue, renderer) -> None:
     await queue.add([_track("1"), _track("2")])
     await queue.play()
     await asyncio.sleep(SETTLE_S)
+    assert (await queue.get_playback_state()).state == PlayerStateEnum.PLAYING
+
+
+async def _pause_on(queue, renderer) -> None:
+    await _play_on(queue, renderer)
     await queue.pause(True)
     await asyncio.sleep(SETTLE_S)
     assert (await queue.get_playback_state()).state == PlayerStateEnum.PAUSED
@@ -198,6 +213,13 @@ async def _press(app):
         transport=ASGITransport(app=app), base_url="http://kalinka"
     ) as client:
         return await client.put("/server/upgrade", json={"version": RELEASE})
+
+
+async def _press_renderer(app, renderer_id: str):
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://kalinka"
+    ) as client:
+        return await client.post(f"/renderer/{renderer_id}/upgrade")
 
 
 async def _report(app) -> dict:
@@ -253,21 +275,24 @@ async def test_the_stop_is_not_reported_as_a_fault(core, queue, emitter, fired):
     assert [state.message for state in _published(emitter)] == [None]
 
 
+@pytest.mark.parametrize(
+    "press",
+    [_press, lambda app: _press_renderer(app, "attic-id")],
+    ids=["server", "renderer"],
+)
 async def test_a_press_in_a_tracks_last_seconds_does_not_start_the_next(
-    core, queue, fired
+    core, queue, fired, press
 ):
     """The next track is already queued on the renderer by then; the stop
     must not read as the current one running out, or the queue claims the
     renderer again just as it restarts into its upgrade."""
     attic = _renderer(core, "attic-id", "Attic")
-    await queue.add([_track("1"), _track("2")])
-    await queue.play()
-    await asyncio.sleep(SETTLE_S)
+    await _play_on(queue, attic)
     attic.report_position(DURATION_MS - 2000)
     await asyncio.sleep(SETTLE_S)
     assert attic.queued, "the next track is prefetched in the last seconds"
 
-    response = await _press(core.app)
+    response = await press(core.app)
     await asyncio.sleep(SETTLE_S)
 
     assert response.status_code == 200
@@ -275,6 +300,10 @@ async def test_a_press_in_a_tracks_last_seconds_does_not_start_the_next(
     assert attic.session_id is None
     assert core.pool.get("attic-id") is None
     assert (await queue.get_playback_state()).state == PlayerStateEnum.STOPPED
+    attic.version = RELEASE
+    attic.connect()
+    await asyncio.sleep(SETTLE_S)
+    assert attic.session_id is None, "the music does not start by itself"
 
 
 async def test_only_this_machines_renderer_behind_is_left_to_the_installer(
@@ -476,3 +505,117 @@ async def test_a_failed_host_install_can_be_retried_after_the_deadline(
     assert (await _press(core.app)).status_code == 200
     assert (await _press(core.app)).status_code == 200
     assert fired == [True, True]
+
+
+@pytest.mark.parametrize("hold", [_pause_on, _play_on], ids=["paused", "playing"])
+async def test_a_renderers_own_press_stops_its_session_and_upgrades_it(
+    core, queue, emitter, checker, hold
+):
+    attic = _renderer(core, "attic-id", "Attic")
+    await hold(queue, attic)
+    emitter.reset_mock()
+
+    response = await _press_renderer(core.app, "attic-id")
+    await asyncio.sleep(SETTLE_S)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "renderer_id": "attic-id",
+        "version": RELEASE,
+        "detail": "upgrading",
+    }
+    assert attic.upgrades == [RELEASE]
+    assert attic.refused == []
+    assert core.pool.get("attic-id") is None
+    assert (await queue.get_playback_state()).state == PlayerStateEnum.STOPPED
+    assert [(state.state, state.message) for state in _published(emitter)] == [
+        (PlayerStateEnum.STOPPED, None)
+    ]
+
+
+async def test_a_renderers_own_press_without_a_session_only_upgrades_it(
+    core, queue, emitter, checker
+):
+    attic = _renderer(core, "attic-id", "Attic")
+    emitter.reset_mock()
+
+    response = await _press_renderer(core.app, "attic-id")
+    await asyncio.sleep(SETTLE_S)
+
+    assert response.status_code == 200
+    assert attic.upgrades == [RELEASE]
+    assert _published(emitter) == []
+
+
+async def test_a_second_press_on_an_upgrading_renderer_is_refused(core, checker):
+    attic = _renderer(core, "attic-id", "Attic")
+    assert (await _press_renderer(core.app, "attic-id")).status_code == 200
+
+    response = await _press_renderer(core.app, "attic-id")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Attic is already upgrading"
+    assert attic.upgrades == [RELEASE]
+
+
+async def test_a_renderer_that_cannot_install_itself_keeps_its_session(
+    core, queue, checker
+):
+    attic = _renderer(core, "attic-id", "Attic", upgrade_supported=False)
+    await _pause_on(queue, attic)
+
+    response = await _press_renderer(core.app, "attic-id")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Attic cannot install a release of itself"
+    assert attic.upgrades == [] and attic.refused == []
+    assert attic.session_id is not None
+    assert (await queue.get_playback_state()).state == PlayerStateEnum.PAUSED
+
+
+async def test_a_stale_press_on_an_up_to_date_renderer_keeps_its_session(
+    core, queue, checker
+):
+    # Its own nightly timer brought it forward after the app last listed it.
+    attic = UpgradableRenderer(core, "attic-id", "Attic")
+    attic.version = RELEASE
+    attic.connect()
+    await _pause_on(queue, attic)
+
+    response = await _press_renderer(core.app, "attic-id")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Attic is playing and already up to date"
+    assert attic.upgrades == [] and attic.refused == []
+    assert attic.session_id is not None
+    assert (await queue.get_playback_state()).state == PlayerStateEnum.PAUSED
+
+
+class FullRenderer(UpgradableRenderer):
+    """Refuses every upgrade, session or not, as a box out of disk space does."""
+
+    async def send_upgrade(self, message_id: int, target_version: str) -> None:
+        self.refused.append(target_version)
+        result = pb.UpgradeResult(detail="not enough disk space")
+        self.service.handle_reply(self.RENDERER_ID, self, message_id, result)
+
+
+async def test_a_refusal_after_the_stop_leaves_the_music_stopped(
+    core, queue, emitter, checker
+):
+    attic = FullRenderer(core, "attic-id", "Attic")
+    attic.connect()
+    await _pause_on(queue, attic)
+    emitter.reset_mock()
+
+    response = await _press_renderer(core.app, "attic-id")
+    await asyncio.sleep(SETTLE_S)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Attic refused: not enough disk space"
+    assert attic.refused == [RELEASE]
+    assert attic.session_id is None
+    assert (await queue.get_playback_state()).state == PlayerStateEnum.STOPPED
+    assert [(state.state, state.message) for state in _published(emitter)] == [
+        (PlayerStateEnum.STOPPED, None)
+    ]

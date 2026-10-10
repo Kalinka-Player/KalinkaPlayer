@@ -157,7 +157,14 @@ def get_version() -> str:
 # home screen lists `catalogs` among its `capabilities`; nothing infers it from
 # browsing, so a receiver lists none. GET /browse pages the source roots by
 # `offset` and `limit`, where it listed every source whatever was asked.
-REST_API_VERSION = "0.18"
+# 0.19: POST /renderer/{id}/upgrade stops a playback session on the renderer, a
+# paused one included, as PUT /server/upgrade does, where it answered 409;
+# clients see STOPPED without a fault. Before stopping anything it still
+# answers 409 for a renderer already upgrading, one that cannot install a
+# release of itself, or one playing that is already on the latest release. A
+# renderer that refuses (409 "<name> refused: ..."), goes away (404) or does
+# not answer (504) once its session is stopped is left stopped.
+REST_API_VERSION = "0.19"
 
 
 def get_rest_api_version() -> str:

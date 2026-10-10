@@ -248,7 +248,7 @@ writing the version it was told to install into `/run/kalinka-renderer/upgrade-r
 
 There are two ways in, and the second exists because the first can be cut off:
 
-- **From a Core.** `POST /renderer/<id>/upgrade` sends an Upgrade message down the renderer's own connection. It is carried by every protocol version, so it still reaches a renderer whose protocol the Core no longer speaks — the case where nothing else can. The renderer refuses while a playback session is running.
+- **From a Core.** `POST /renderer/<id>/upgrade` sends an Upgrade message down the renderer's own connection. It is carried by every protocol version, so it still reaches a renderer whose protocol the Core no longer speaks — the case where nothing else can. The renderer refuses while a playback session is running, so the Core stops its own session there first.
 - **On its own.** `systemctl enable --now kalinka-renderer-upgrade.timer` has the box install the latest published renderer nightly, with no Core involved at all. Shipped inert, because it restarts the renderer to apply — which is why it runs in the small hours. Enable it on a renderer whose Core is not reliably reachable, or where nobody will be around to press the button.
 
 ## Test
