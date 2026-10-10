@@ -1,4 +1,5 @@
-"""``/server/update`` and ``/server/upgrade``: this install's own upgrade.
+"""``/server/update`` and ``/server/upgrade``: this install's own upgrade;
+``/renderer/{id}/upgrade``: one renderer's.
 
 What is published comes from :mod:`update_check`'s cache; the renderers this
 Core drives are brought forward through :class:`RendererUpgradeService`
@@ -13,7 +14,8 @@ from typing import Any, Callable, Dict
 from fastapi import FastAPI, HTTPException
 
 from . import update_check
-from .renderer_upgrade import INSTALL_TIMEOUT_S, RendererUpgradeService
+from .renderer_registry import RendererUnavailable
+from .renderer_upgrade import INSTALL_TIMEOUT_S, RendererUpgradeService, UpgradeRefused
 from .version import get_version
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -26,7 +28,7 @@ def register_upgrade_routes(
     *,
     demo_mode: Callable[[], bool] = lambda: False,
 ) -> None:
-    """Mount the update report and the upgrade trigger on ``app``."""
+    """Mount the update report and the upgrade triggers on ``app``."""
     lock = asyncio.Lock()
     requested_at = None
     app.state.upgrade_task = None
@@ -183,3 +185,27 @@ def register_upgrade_routes(
                     )
                 )
         return {"message": "upgrading"}
+
+    @app.post("/renderer/{renderer_id}/upgrade")
+    async def renderer_upgrade(renderer_id: str):
+        """Ask one renderer to install the latest published release.
+
+        Answers as soon as the renderer has taken the request on; it then
+        restarts and re-registers, which is what reports the outcome. Refused
+        while a playback session is running on it, and for a renderer that
+        cannot install a release of itself.
+        """
+        latest = update_check.checker.latest_renderer
+        if not latest:
+            raise HTTPException(
+                status_code=409, detail="No renderer release is known yet"
+            )
+        try:
+            detail = await renderer_upgrades.upgrade(renderer_id, latest)
+        except RendererUnavailable as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except UpgradeRefused as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="The renderer did not answer")
+        return {"renderer_id": renderer_id, "version": latest, "detail": detail}
