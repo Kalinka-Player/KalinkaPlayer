@@ -143,14 +143,13 @@ void applyGainInPlace(void *buffer, size_t bytes, AudioSampleFormat format,
   case PCM_FLOAT32_LE: {
     auto *samples = reinterpret_cast<float *>(ptr);
     for (size_t i = 0; i < bytes / sizeof(float); ++i)
-      samples[i] =
-          gain == 0.0f ? 0.0f : static_cast<float>(double(samples[i]) * gain);
+      samples[i] = static_cast<float>(double(samples[i]) * gain);
     break;
   }
   case PCM_FLOAT64_LE: {
     auto *samples = reinterpret_cast<double *>(ptr);
     for (size_t i = 0; i < bytes / sizeof(double); ++i)
-      samples[i] = gain == 0.0f ? 0.0 : samples[i] * double(gain);
+      samples[i] *= double(gain);
     break;
   }
   case PCM16_LE: {
