@@ -10,6 +10,8 @@ enum AudioSampleFormat {
   PCM24_LE,
   PCM32_LE,
   PCM24_3LE,
+  PCM_FLOAT32_LE,
+  PCM_FLOAT64_LE,
   DSD_U8,
   DSD_U16_LE,
   DSD_U32_LE,
@@ -41,7 +43,10 @@ inline size_t sampleSize(AudioSampleFormat format) {
     return 2;
   case AudioSampleFormat::PCM24_LE:
   case AudioSampleFormat::PCM32_LE:
+  case AudioSampleFormat::PCM_FLOAT32_LE:
     return 4;
+  case AudioSampleFormat::PCM_FLOAT64_LE:
+    return 8;
   case AudioSampleFormat::PCM24_3LE:
     return 3;
   default:
@@ -57,8 +62,12 @@ inline size_t sampleBits(AudioSampleFormat format) {
     return 16;
   case AudioSampleFormat::PCM24_LE:
   case AudioSampleFormat::PCM24_3LE:
-  case AudioSampleFormat::PCM32_LE:
     return 24;
+  case AudioSampleFormat::PCM32_LE:
+  case AudioSampleFormat::PCM_FLOAT32_LE:
+    return 32;
+  case AudioSampleFormat::PCM_FLOAT64_LE:
+    return 64;
   default:
     return 0;
   }
@@ -90,6 +99,10 @@ inline const char *const sampleFormatToString(AudioSampleFormat format) {
     return "PCM32_LE";
   case AudioSampleFormat::PCM24_3LE:
     return "PCM24_3LE";
+  case AudioSampleFormat::PCM_FLOAT32_LE:
+    return "PCM_FLOAT32_LE";
+  case AudioSampleFormat::PCM_FLOAT64_LE:
+    return "PCM_FLOAT64_LE";
   default:
     return "Unknown";
   }
@@ -97,16 +110,20 @@ inline const char *const sampleFormatToString(AudioSampleFormat format) {
 
 /// @brief The next on-wire format to offer a device that refused @p format.
 ///
-/// Each step holds every bit the pipeline keeps in the format before it, so
-/// convertSampleFormat() carries samples across with their values unchanged.
+/// Each step holds every significant source bit. Pass the original precision
+/// when walking the chain: a 24-bit source can use packed S24 after S32 fails,
+/// but a true 32-bit source cannot. Float requires a matching output format.
 /// @return std::nullopt for DSD, and once no PCM container is left to try.
-inline std::optional<AudioSampleFormat> pcmFallback(AudioSampleFormat format) {
+inline std::optional<AudioSampleFormat> pcmFallback(AudioSampleFormat format,
+                                                    unsigned sourceBits) {
   switch (format) {
   case AudioSampleFormat::PCM16_LE:
     return AudioSampleFormat::PCM24_LE;
   case AudioSampleFormat::PCM24_LE:
     return AudioSampleFormat::PCM32_LE;
   case AudioSampleFormat::PCM32_LE:
+    if (sourceBits > 24)
+      return std::nullopt;
     return AudioSampleFormat::PCM24_3LE;
   default:
     return std::nullopt;

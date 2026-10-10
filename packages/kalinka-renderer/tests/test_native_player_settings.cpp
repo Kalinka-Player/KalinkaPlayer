@@ -13,6 +13,7 @@
 
 #include "LocalHttpServer.h"
 #include "TestHelpers.h"
+#include "WavTestData.h"
 #include "config/ConfigService.h"
 #include "config/SettingsPersistence.h"
 #include "player/NativePlayer.h"
@@ -267,7 +268,7 @@ TEST_F(NativePlayerSettingsTest, BufferingIsItsOwnSection) {
   const pb::ConfigSection section = buffers();
 
   EXPECT_EQ(section.path(), "buffers");
-  EXPECT_EQ(section.fields_size(), 5);
+  EXPECT_EQ(section.fields_size(), 7);
   for (const pb::ConfigField &knob : section.fields()) {
     EXPECT_TRUE(knob.path().starts_with("buffers."));
     EXPECT_FALSE(knob.value().empty()) << knob.path();
@@ -517,6 +518,19 @@ TEST_F(NativePlayerSettingsTest, VorbisBufferCanBeConfiguredAndPersisted) {
   EXPECT_EQ(loadSettingsOverrides().at("buffers.vorbis"), "200000");
 }
 
+TEST_F(NativePlayerSettingsTest, DsdBufferIsPersistedAndReachesTheNextTrack) {
+  ASSERT_TRUE(player_->bufferSettings()->applyConfig("buffers.dsd", "200000",
+                                                     error_))
+      << error_;
+
+  const pb::ConfigSection section = buffers();
+  const pb::ConfigField *knob = field(section, "buffers.dsd");
+  ASSERT_NE(knob, nullptr);
+  EXPECT_EQ(knob->value(), "200000");
+  EXPECT_EQ(knob->apply(), pb::APPLY_COST_INSTANT);
+  EXPECT_EQ(loadSettingsOverrides().at("buffers.dsd"), "200000");
+}
+
 TEST_F(NativePlayerSettingsTest, SupportedSourcesPlayThroughTheProtocolAdapter) {
   using namespace std::chrono_literals;
   struct SourceCase {
@@ -558,13 +572,25 @@ TEST_F(NativePlayerSettingsTest, SupportedSourcesPlayThroughTheProtocolAdapter) 
       {"mp3", "track", "ladder.mp3"},
       {"", "track.mp3", "ladder.mp3"},
       {"application/octet-stream", "track.MP3?token=opaque#fragment", "ladder.mp3"},
+      {"audio/wav", "track", "generated.wav"},
+      {"audio/x-wav", "track", "generated.wav"},
+      {"audio/wave", "track", "generated.wav"},
+      {"audio/vnd.wave", "track", "generated.wav"},
+      {" Audio/WAV ; rate=22050", "track.mp3", "generated.wav"},
+      {"wav", "track", "generated.wav"},
+      {"", "track.wav", "generated.wav"},
+      {"", "track.wave", "generated.wav"},
+      {"application/octet-stream", "track.WAV?token=opaque#fragment", "generated.wav"},
   };
   auto work = boost::asio::make_work_guard(ioc_);
   for (const auto &test : cases) {
     SCOPED_TRACE(std::string(test.mime) + " " + test.name);
     const auto path = prefix_ / test.name;
-    fs::copy_file(fs::path(KALINKA_TEST_DATA_DIR) / test.fixture, path,
-                  fs::copy_options::overwrite_existing);
+    if (std::string(test.fixture) == "generated.wav")
+      wav_test::write(path, wav_test::file(24, 22050, 2, 22050 * 3));
+    else
+      fs::copy_file(fs::path(KALINKA_TEST_DATA_DIR) / test.fixture, path,
+                    fs::copy_options::overwrite_existing);
     std::vector<pb::PlaybackStateChanged> states;
     player_->setStateSink([&](pb::Envelope &env) {
       if (env.has_playback_state_changed()) {

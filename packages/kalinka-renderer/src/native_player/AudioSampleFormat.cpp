@@ -41,21 +41,18 @@ void convertToFormat(void *buffer, const int32_t *const samples[], size_t size,
 
 namespace {
 inline int32_t getSample(const uint8_t *source, AudioSampleFormat format) {
-  int32_t result = 0;
+  // A full-width signed sample keeps the low eight bits of true S32 audio.
+  uint32_t result = 0;
+  for (size_t i = 0; i < sampleSize(format); ++i)
+    result |= uint32_t(source[i]) << (8 * i);
   switch (format) {
   case PCM16_LE:
-    result = *reinterpret_cast<const int16_t *>(source);
-    return (result << 8);
+    return static_cast<int32_t>(result << 16);
   case PCM24_LE:
-    result = (*reinterpret_cast<const int32_t *>(source) & 0xffffff);
-    result |= (0xff000000 * (result & 0x800000));
-    return result;
-  case PCM32_LE:
-    result = *reinterpret_cast<const int32_t *>(source) >> 8;
-    return result;
   case PCM24_3LE:
-    result = ((source[0] << 8) | (source[1] << 16) | (source[2] << 24)) >> 8;
-    return result;
+    return static_cast<int32_t>(result << 8);
+  case PCM32_LE:
+    return static_cast<int32_t>(result);
   default:
     break;
   }
@@ -64,24 +61,23 @@ inline int32_t getSample(const uint8_t *source, AudioSampleFormat format) {
 
 inline size_t putSample(uint8_t *dest, int32_t rawSample,
                         AudioSampleFormat format) {
+  uint32_t value = static_cast<uint32_t>(rawSample);
   switch (format) {
   case PCM16_LE:
-    *reinterpret_cast<int16_t *>(dest) = (rawSample >> 8) & 0xffff;
-    return 2u;
+    value >>= 16;
+    break;
   case PCM24_LE:
-    *reinterpret_cast<int32_t *>(dest) = rawSample & 0xffffff;
-    return 4u;
-  case PCM32_LE:
-    *reinterpret_cast<int32_t *>(dest) = rawSample << 8;
-    return 4u;
   case PCM24_3LE:
-    *dest++ = rawSample & 0xff;
-    *dest++ = (rawSample >> 8) & 0xff;
-    *dest = (rawSample >> 16) & 0xff;
-    return 3u;
+    value >>= 8;
+    break;
+  case PCM32_LE:
+    break;
   default:
     throw std::runtime_error("putSample: Unsupported format");
   }
+  for (size_t i = 0; i < sampleSize(format); ++i)
+    dest[i] = value >> (8 * i);
+  return sampleSize(format);
 }
 } // namespace
 
@@ -101,6 +97,9 @@ size_t convertSampleFormat(const void *source, AudioSampleFormat sourceFormat,
     memcpy(dest, source, minBytesToCopy);
     return minBytesToCopy / sourceSampleBytes;
   }
+  if (sourceFormat == PCM_FLOAT32_LE || sourceFormat == PCM_FLOAT64_LE ||
+      destFormat == PCM_FLOAT32_LE || destFormat == PCM_FLOAT64_LE)
+    throw std::invalid_argument("Float PCM requires a matching output format");
 
   const uint8_t *sourcePtr = static_cast<const uint8_t *>(source);
   uint8_t *destPtr = static_cast<uint8_t *>(dest);
@@ -118,13 +117,11 @@ size_t convertSampleFormat(const void *source, AudioSampleFormat sourceFormat,
 
 namespace {
 // Scale a signed integer sample by `gain` and clamp to a `bits`-wide range.
-// (getSample()/putSample() are not reused here: their PCM24_LE path does not
-// sign-extend, which is fine for bit-pattern format conversion but wrong for an
-// arithmetic multiply.)
-inline long scaleClamp(long sample, double gain, int bits) {
-  const long maxv = (1L << (bits - 1)) - 1;
-  const long minv = -(1L << (bits - 1));
-  long scaled = std::lround(static_cast<double>(sample) * gain);
+// 64-bit arithmetic: a 32-bit range overflows `long` where it is 32 bits wide.
+inline int64_t scaleClamp(int64_t sample, double gain, int bits) {
+  const int64_t maxv = (int64_t(1) << (bits - 1)) - 1;
+  const int64_t minv = -(int64_t(1) << (bits - 1));
+  const int64_t scaled = std::llround(static_cast<double>(sample) * gain);
   return std::clamp(scaled, minv, maxv);
 }
 } // namespace
@@ -143,6 +140,19 @@ void applyGainInPlace(void *buffer, size_t bytes, AudioSampleFormat format,
 
   uint8_t *ptr = static_cast<uint8_t *>(buffer);
   switch (format) {
+  case PCM_FLOAT32_LE: {
+    auto *samples = reinterpret_cast<float *>(ptr);
+    for (size_t i = 0; i < bytes / sizeof(float); ++i)
+      samples[i] =
+          gain == 0.0f ? 0.0f : static_cast<float>(double(samples[i]) * gain);
+    break;
+  }
+  case PCM_FLOAT64_LE: {
+    auto *samples = reinterpret_cast<double *>(ptr);
+    for (size_t i = 0; i < bytes / sizeof(double); ++i)
+      samples[i] = gain == 0.0f ? 0.0 : samples[i] * double(gain);
+    break;
+  }
   case PCM16_LE: {
     int16_t *samples = reinterpret_cast<int16_t *>(ptr);
     const size_t count = bytes / sizeof(int16_t);

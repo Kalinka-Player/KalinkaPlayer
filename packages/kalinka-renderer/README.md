@@ -3,7 +3,7 @@
 The playback end of Kalinka. A standalone C++ binary that finds Kalinka Cores
 on the network, accepts a playback session from one of them, and plays what it
 is told to play through the local sound card. Core keeps the play queue, the
-library and the UI; the audio graph — HTTP fetch, FLAC/MP3/Ogg Vorbis decode,
+library and the UI; the audio graph — HTTP fetch, FLAC/WAV/MP3/Ogg Vorbis decode,
 buffering, output and volume — lives here.
 
 Output is **ALSA only**, which covers any Linux sink ALSA can reach: a card's
@@ -12,12 +12,51 @@ PipeWire's ALSA layer. No other backend is implemented, and the settings page
 offers ALSA as the only driver. The protocol itself does not assume ALSA — see
 [../../docs/native-renderer-design.md](../../docs/native-renderer-design.md).
 
+WAV (`.wav`, `.wave`, `audio/wav`, `audio/x-wav`, `audio/wave`, or
+`audio/vnd.wave`) supports mono/stereo RIFF/WAVE with 16/24/32-bit integer PCM
+and 32/64-bit IEEE float. Both ordinary and WAVE_FORMAT_EXTENSIBLE headers
+are supported, including 24 valid bits in a 32-bit container. The decoder
+preserves sample rate and significant bits; 24-bit/96 kHz and 24-bit/192 kHz
+are covered by automated decoder and ALSA output tests. Mono plays through
+both speakers. Unknown metadata chunks and their padding are skipped, as
+long as the audio starts within the first 64 MB of the file.
+Local files and HTTP streams use the same graph. Seeking and start offsets
+require a seekable source; sequential HTTP streams play from the beginning.
+RF64, big-endian RIFX, compressed WAV, 8-bit PCM and multichannel WAV are not
+supported.
+
+Integer output negotiation only accepts containers that preserve the source
+precision. True 32-bit PCM requires 32 significant output bits. Float samples
+retain their original representation and require the matching ALSA float
+format; they are not implicitly quantized to integer PCM. A shared ALSA route
+may perform additional conversions beyond the renderer's view.
+
+Software volume uses a cubic 0–100% gain curve, with a float gain coefficient
+and double-precision multiplication. Integer samples are rounded and clamped
+at the negotiated 16/24/32-bit precision without dithering; float samples are
+written at their original float precision. Float32 has 24 significant binary
+digits; float64 has 53. Processing does not change sample rate. At 100%, the
+sample-processing stage is bypassed; fixed output also uses unity gain.
+
+For the [JAS Hi-Res AUDIO requirements](https://www.jas-audio.or.jp/english/hi-res-logo-en),
+FLAC and WAV playback at 24-bit/96 kHz are both required, alongside suitable
+I/O, DSP and D/A conversion where applicable. The automated output tests use
+ALSA `null` and `file`: they check the negotiated format and compare captured
+output samples byte for byte, without a physical DAC.
+Hardware qualification still needs a documented 24-bit/96 kHz output run on
+the target device and confirmation of its DAC capability. Use the actual
+output format reported during playback, not only the device's maximum
+capability summary. Logo qualification also requires JAS licensing and the
+applicant's listening evaluation process.
+
 DSF (`.dsf`) and uncompressed DSDIFF (`.dff`) play as mono/stereo DSD through
 a direct ALSA hardware output. Select **DSD output** in renderer settings:
 Disabled (default), Automatic (verified native DSD only), Native DSD, or DoP.
 Use **Fixed** volume and set the listening level on your amplifier. Software
 volume, PCM conversion and resampling are not available for DSD. The renderer
-does not silently bypass an active volume control.
+does not silently bypass an active volume control. DSDIFF metadata chunks
+before the audio are skipped, as long as the audio starts within the first
+64 MB of the file.
 
 **Bit depth** and **Sample rate** show the selected output's maximum PCM
 capabilities, for example **Up to 24 bit** and **Up to 192 kHz**. These are
