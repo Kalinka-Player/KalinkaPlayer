@@ -192,7 +192,7 @@ async def test_unsupported_media_does_not_interrupt_current_playback(
             "SetAVTransportURI",
             {
                 "InstanceID": 0,
-                "CurrentURI": "http://media.test/file.wav",
+                "CurrentURI": "http://media.test/file.aac",
                 "CurrentURIMetaData": "",
             },
             status=500,
@@ -211,6 +211,7 @@ async def test_dsd_is_advertised_only_while_the_renderer_outputs_it(
     protocols = await action(client, receiver, CM, "GetProtocolInfo", {})
     advertised = {entry.split(":")[2] for entry in protocols["Sink"].split(",")}
     assert "audio/flac" in advertised
+    assert "audio/wav" in advertised
     assert advertised & set(DSD_TYPES) == (set(DSD_TYPES) if dsd else set())
 
 

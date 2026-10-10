@@ -119,6 +119,8 @@ def test_every_url_suffix_the_renderer_decodes_is_accepted(
     [
         ("MP3", "audio/mpeg"),
         ("flac", "audio/flac"),
+        ("WAV", "audio/wav"),
+        ("wave", "audio/wav"),
         ("ogg", "audio/ogg"),
         ("oga", "audio/ogg"),
         ("dsf", "audio/x-dsf"),
