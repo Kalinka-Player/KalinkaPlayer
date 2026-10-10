@@ -366,6 +366,7 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
         # Cached so transitions to/from unreachable can be dispatched only
         # on actual state changes (no event spam every retry).
         self._device_power_on: bool = False
+        self._pending_power_on: bool = False
         # Placeholder volume used before discovery completes and after the
         # device disappears. supported=False keeps the UI from offering
         # volume controls until we actually know the device is reachable.
@@ -417,14 +418,20 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
             status["power"] == "on" and status["input"] == self.connected_input
         )
         self.ready = True
+        was_power_on = self._device_power_on
         self._device_power_on = power_on_now
 
         # Always emit so subscribers see supported=True even on the first
         # successful connection (the seeded initial state had supported=False).
         self.event_emitter.dispatch(VolumeChangedEvent(volume=self.volume))
-        self.event_emitter.dispatch(
-            DevicePowerStateChangedEvent(power_on=power_on_now)
-        )
+        # Initial standby is already the seeded state, not a new power-off.
+        # Dispatching it during first playback makes automation stop the source.
+        if power_on_now != was_power_on:
+            self.event_emitter.dispatch(
+                DevicePowerStateChangedEvent(power_on=power_on_now)
+            )
+        if self._pending_power_on:
+            await self.power_on()
 
     async def run_discovery(self) -> bool:
         """Run SSDP discovery. Returns True if a device was found and
@@ -1111,17 +1118,23 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
 
     async def power_on(self) -> None:
         if not self.ready:
+            # Playback can begin before discovery completes. Apply its power
+            # request when the first successful status probe makes us ready.
+            self._pending_power_on = True
             return
 
         if await self.is_power_on():
+            self._pending_power_on = False
             return
         await self._request_musiccast(f"/{self.zone_name}/setPower?power=on")
         await self._set_input()
+        self._pending_power_on = False
         if not self._device_power_on:
             self._device_power_on = True
             self.event_emitter.dispatch(DevicePowerStateChangedEvent(power_on=True))
 
     async def power_off(self) -> None:
+        self._pending_power_on = False
         if not self.ready:
             return
         await self._request_musiccast(f"/{self.zone_name}/setPower?power=standby")

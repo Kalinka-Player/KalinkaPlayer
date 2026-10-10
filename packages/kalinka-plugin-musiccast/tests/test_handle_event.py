@@ -1,13 +1,16 @@
-"""Unit tests for KalinkaPluginMusiccastDevice._handle_event power-state dispatch."""
+"""Power-state discovery, startup requests and MusicCast event dispatch."""
 
 from __future__ import annotations
 
 import pytest
-from unittest.mock import MagicMock, call
+from unittest.mock import AsyncMock, MagicMock, call
 
 from kalinka_plugin_sdk.datamodel import VolumeBackend
 from kalinka_plugin_sdk.ext_device import DeviceVolume
-from kalinka_plugin_sdk.ext_device_events import DevicePowerStateChangedEvent
+from kalinka_plugin_sdk.ext_device_events import (
+    DevicePowerStateChangedEvent,
+    VolumeChangedEvent,
+)
 
 from kalinka_plugin_musiccast.config_model import KalinkaPluginMusiccastConfig
 from kalinka_plugin_musiccast.musiccast import KalinkaPluginMusiccastDevice
@@ -28,6 +31,67 @@ def device():
     dev.volume = DeviceVolume(max_volume=60, current_volume=30, volume_gain=0)
     dev._device_power_on = False
     return dev
+
+
+async def test_initial_standby_does_not_stop_new_playback(device):
+    device._get_status = AsyncMock(
+        return_value={
+            "power": "standby", "input": "netusb", "volume": 30, "max_volume": 60,
+        }
+    )
+    await device.get_ready()
+    assert not any(
+        isinstance(c.args[0], DevicePowerStateChangedEvent)
+        for c in device.event_emitter.dispatch.call_args_list
+    )
+    device.event_emitter.dispatch.assert_called_once_with(
+        VolumeChangedEvent(volume=device.volume)
+    )
+    assert device.volume.supported
+
+
+@pytest.mark.parametrize(
+    "was_on, reported, expected",
+    [(False, "on", True), (True, "standby", False)],
+)
+async def test_discovery_still_reports_real_power_transitions(
+    device, was_on, reported, expected
+):
+    device._device_power_on = was_on
+    device._get_status = AsyncMock(
+        return_value={
+            "power": reported, "input": "netusb", "volume": 30, "max_volume": 60,
+        }
+    )
+    await device.get_ready()
+    device.event_emitter.dispatch.assert_any_call(
+        DevicePowerStateChangedEvent(power_on=expected)
+    )
+
+
+async def test_power_requested_before_discovery_is_applied_when_ready(device):
+    device._get_status = AsyncMock(
+        return_value={
+            "power": "standby", "input": "netusb", "volume": 30, "max_volume": 60,
+        }
+    )
+    device._request_musiccast = AsyncMock()
+    device._set_input = AsyncMock()
+    await device.power_on()
+    device._request_musiccast.assert_not_called()
+    await device.get_ready()
+    device._request_musiccast.assert_awaited_once_with("/main/setPower?power=on")
+    device._set_input.assert_awaited_once()
+    device.event_emitter.dispatch.assert_any_call(
+        DevicePowerStateChangedEvent(power_on=True)
+    )
+    assert not device._pending_power_on
+
+
+async def test_power_off_cancels_pre_discovery_power_request(device):
+    await device.power_on()
+    await device.power_off()
+    assert not device._pending_power_on
 
 
 @pytest.mark.unit
