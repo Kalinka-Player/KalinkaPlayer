@@ -93,6 +93,9 @@ Otherwise, [change the settings on the card](#settings-on-the-card) for any of t
 - a **login** to the Pi, so you can copy music onto it over the network or use SSH;
 - a **DAC HAT without an ID chip**, or the Pi's own headphone socket or HDMI.
 
+You can also create a login after installation through **SSH access** on
+[the control page](#the-control-page), once the player is on your network.
+
 #### 4. Switch it on
 
 Put the card in the Pi, connect the network cable and your DAC, and plug in the power. Give it a couple of minutes to start. If you named a sound card on the card, it restarts once on its own to switch it on. Then go on to [Get a remote](#get-a-remote).
@@ -231,6 +234,8 @@ To upgrade later, install the newer `.rpm` the same way.
 
 The Kalinka images come with **no login and no Wi-Fi**. A published image cannot carry a password, because everyone who downloads it would get the same one. Kalinka plays music without either. You need them only to put the player on Wi-Fi, or to log in to it, for example to copy music onto it. On a Raspberry Pi, the same place also names a DAC HAT.
 
+For a login after installation, use **SSH access** on [the control page](#the-control-page). You do not need to edit the card for that.
+
 To get at the settings, unplug the card after writing it and plug it back in. A drive called **KALINKA-BT** appears. The DietPi PC image instead has a small **DIETPISETUP** volume for the same settings.
 
 > **Windows may say the disk needs formatting. Click Cancel.** That message is about the part of the card that Windows cannot read, and formatting would erase the image. macOS may say a disk is not readable: click **Ignore**.
@@ -305,9 +310,12 @@ already have it, so their option starts enabled.
 - **What it shows:** whether the server is running, the versions of Kalinka and its plugins, and how much memory and processor time Kalinka is using.
 - **What it can do:** restart the server, restart the player, switch it off safely before you unplug it, or reinstall Kalinka from kalinkaplayer.com when nothing else helps. Each one asks you to confirm first.
 - **Reinstalling** keeps your settings and music. It takes several minutes, and the page shows its progress.
+- **SSH access:** after installation, enter and confirm a password under **SSH access**, then choose **Set password and enable SSH**. This creates the `kalinka-admin` login with administrator access and keeps SSH enabled after a restart. Connect with `ssh kalinka-admin@<address>` and use `sudo -i` when you need a root shell. Submitting the form again changes that account's password. Existing logins are kept.
 - **In the Kalinka app:** go to **Settings › General › Box** to restart the player, switch it off, or open this page. If the server stops answering, the app offers to restart it.
 
 Like the server, the page answers anyone on your local network, and nobody outside it. If you run a firewall on the player, let TCP port 8001 through from your network. To turn the page off, add the line `KALINKA_CONTROL_API=0` to `dietpi.txt`. [The supervisor's control page and API](supervisor-control.md) describes it in full.
+
+SSH setup uses the image's installed SSH server (Dropbear on DietPi or OpenSSH on Debian). On a custom installation, an SSH server must already be installed and permit password logins. The dashboard uses HTTP: set this up on a trusted network and choose a password you do not use elsewhere. Anyone who can use the dashboard can set this administrator password.
 
 ## Get a remote
 

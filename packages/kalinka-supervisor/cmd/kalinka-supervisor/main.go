@@ -22,6 +22,7 @@ import (
 	"kalinka/supervisor/internal/dashboard"
 	"kalinka/supervisor/internal/protocol"
 	"kalinka/supervisor/internal/provision"
+	"kalinka/supervisor/internal/sshaccess"
 	"kalinka/supervisor/internal/system"
 )
 
@@ -184,7 +185,8 @@ func run(ctx context.Context, o options, setupOn, apiOn bool) error {
 			return state.Active, err
 		})
 		components.Go(func() { board.Run(ctx, 5*time.Second) })
-		controller := control.NewController(systemd, network, reinstalls, time.Now)
+		simulated := o.Test || os.Geteuid() != 0
+		controller := control.NewController(systemd, network, reinstalls, sshaccess.New(simulated), time.Now)
 		binding = control.NewBinding(o.listenPort, control.NewHandler(controller, control.HandlerConfig{
 			Version:      version,
 			ServerIDFile: o.IdentityFile,
@@ -192,6 +194,8 @@ func run(ctx context.Context, o options, setupOn, apiOn bool) error {
 			Setup:        setup.Phase,
 			Dashboard:    func(ctx context.Context) any { return board.Snapshot(ctx) },
 			Reinstalls:   reinstalls,
+			EnableSSH:    controller.EnableSSH,
+			Simulated:    simulated,
 		}))
 		defer binding.Close()
 	}

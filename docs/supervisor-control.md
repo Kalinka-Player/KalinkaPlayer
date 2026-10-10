@@ -7,6 +7,7 @@
 - restart Core;
 - reboot the box or power it off;
 - reinstall Kalinka;
+- set up an SSH administrator login through the dashboard form;
 - tell which supervisor and protocol version it is talking to.
 
 The page and API run in the supervisor process, not in Core, so they keep
@@ -53,6 +54,22 @@ Core's files are damaged. It follows the app's dark style.
     `dist-info` metadata the way Core's own inventory finds them, without
     importing anything.
 
+**SSH access** is a dashboard form, outside the versioned API. Enter and
+confirm a new password of 12–128 printable ASCII characters, then submit
+**Set password and enable SSH**. It creates `kalinka-admin` with a home,
+a Bash shell and membership in `sudo`, sets its password, and enables and
+starts the installed Dropbear or OpenSSH service. An already running SSH
+server takes precedence. Existing accounts are kept; a pre-existing
+`kalinka-admin` is updated only if it belongs to this setup flow. Repeating
+the form resets that account's password. Custom SSH authentication policies
+are kept, so password authentication must be allowed for this login.
+
+The form posts to `/` and requires the dashboard's exact Origin and the
+box's identity. Success redirects back to the page with connection
+instructions; errors return the page with an explanation and empty password
+fields. `/info` and `/v1/actions/` are unchanged. Test and unprivileged runs
+simulate setup and label the result accordingly.
+
 ## Trust model
 
 **The page and API have no authentication.** The box sits on a trusted local
@@ -62,15 +79,15 @@ was a deliberate decision. What the supervisor does instead is narrow who can
 reach it and what they can make it do:
 
 - **A closed set of actions.** Unit names, targets and the installer URL are
-  constants; request data only selects an action. Nothing accepts a command, a
-  path or a package name.
+  constants. The SSH form accepts a password for one fixed account. Nothing
+  accepts a command, a path or a package name.
 - **Local peers only.** The peer address must be loopback, link-local,
   private (RFC 1918) or in 100.64.0.0/10, where VPN overlays such as Tailscale
   put LAN peers. A forwarded port does not expose the API to the internet.
   Anything else gets 403 `not_local`.
 - **No help for hostile web pages.** A page in the user's browser is not
   covered by the trusted-LAN premise.
-  - Actions require `Content-Type: application/json`, parsed strictly, which
+  - API actions require `Content-Type: application/json`, parsed strictly, which
     forces a CORS preflight.
   - Only pages the box serves may call the API: the supervisor's own page, and
     the web player Core serves on the same host.
@@ -87,6 +104,22 @@ reach it and what they can make it do:
   and timeouts on reading, writing and idling. Responses are never cached.
 - **An audit line per action:** the path, the peer address and the outcome
   code. The body is never logged.
+
+The SSH form grants administrator access under this same trusted-LAN model:
+anyone who can reach the dashboard can set the administrator's password.
+The page uses HTTP, so this password should not be reused elsewhere. Form
+posts require an exact same-origin header, including the port; absent or
+`null` origins are refused because ordinary HTML forms do not preflight.
+The password reaches a fixed helper through a pipe, never through command
+arguments, environment variables, logs or a temporary file. Only the normal
+system password hash persists.
+
+SSH setup shares the controller's operation lock and refuses requests during
+package installs and network setup. `systemd-run` executes the packaged helper as a
+short-lived `kalinka-ssh-setup.service`, leaving the supervisor's filesystem
+sandbox intact. systemd bounds the helper's runtime to 20 seconds; the
+dashboard waits up to 30 seconds. Other actions also refuse while that unit
+is busy, including after a supervisor restart.
 
 ## Discovering the supervisor
 
@@ -119,6 +152,7 @@ older than this API. Ordinary Core installations have no supervisor.
 | Method | Path | Answer |
 |---|---|---|
 | GET, HEAD | `/` | The control page, with `/app.js`, `/style.css`, `/logo.svg` and `/icon.svg` |
+| POST | `/` | Dashboard SSH form; HTML errors or a 303 redirect on success, outside the versioned API |
 | GET, HEAD | `/info` | Discovery, above |
 | GET, HEAD | `/v1/status` | The status object below |
 | GET, HEAD | `/v1/dashboard` | The dashboard object below |
@@ -316,6 +350,7 @@ belongs in that change's threat model.
 - **Unit tests.** `make supervisor-test` covers:
   - the policy and the HTTP layer;
   - the page and its security headers;
+  - SSH form validation, origin checks, action serialization, secret handling and the helper with simulated account/service tools;
   - the host and origin rules;
   - the systemd calls against a fake bus;
   - the reinstall record and unit;

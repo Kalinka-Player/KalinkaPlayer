@@ -71,6 +71,30 @@
     </div>
   </section>
 
+  <section class="card" id="ssh" {{if not .SSH}}hidden{{end}}>
+    <h2 class="label">SSH access</h2>
+    <p class="muted">Set up a login to configure this box or copy music onto it. The administrator account is <code>{{.Username}}</code>. SSH stays on after a restart.</p>
+    <p class="footnote">Use this on a trusted local network. This dashboard uses HTTP, so choose a password you do not use elsewhere.</p>
+    {{if .Simulated}}<p class="notice notice-wait">Preview mode: SSH setup is simulated. No account or service will change.</p>{{end}}
+    {{if .Error}}<p class="notice notice-error" role="alert">{{.Error}}</p>{{end}}
+    {{if .SSHEnabled}}
+    <div class="notice notice-ok" role="status">
+      {{if .Simulated}}<span>SSH setup simulated successfully.</span>{{else}}<span>SSH is enabled. Connect with <code id="ssh-command" data-username="{{.Username}}"></code> and use the password you just set. Run <code>sudo -i</code> for administrative tasks.</span>{{end}}
+    </div>
+    {{end}}
+    <form id="ssh-form" action="/" method="post">
+      <input type="hidden" name="action" value="enable_ssh">
+      <input type="hidden" name="server_id" value="{{.ServerID}}">
+      <div class="ssh-fields">
+        <label for="ssh-password">New password<input id="ssh-password" name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required aria-describedby="ssh-password-help"></label>
+        <label for="ssh-password-confirm">Confirm password<input id="ssh-password-confirm" name="password_confirm" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></label>
+      </div>
+      <p class="footnote" id="ssh-password-help">Use 12–128 characters: letters, numbers, spaces or symbols from an English keyboard. Submitting again replaces this account's password.</p>
+      <button class="button accent" type="submit" id="ssh-enable">Set password and enable SSH</button>
+      <span class="muted" id="ssh-progress" role="status" hidden>Setting up SSH…</span>
+    </form>
+  </section>
+
   <div class="grid">
     <section class="card">
       <h2 class="label">Resources</h2>
