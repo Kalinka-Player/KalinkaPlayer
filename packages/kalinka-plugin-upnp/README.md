@@ -6,7 +6,7 @@ the configured device name in a UPnP control app on the same network.
 
 The controller supplies an HTTP(S) audio URL and optional DIDL-Lite metadata.
 The selected renderer fetches the resource directly; the plugin does not
-download, transcode, or add it to the Kalinka queue. MP3, FLAC and Ogg/Vorbis
+download, transcode, or add it to the Kalinka queue. MP3, FLAC, WAV and Ogg/Vorbis
 are advertised, matching the native renderer's decoders, and DSF (`.dsf`) and
 DSDIFF (`.dff`) while the renderer outputs DSD. Extensionless URLs need a
 supported MIME type in the matching DIDL `res` element. The URL must be
