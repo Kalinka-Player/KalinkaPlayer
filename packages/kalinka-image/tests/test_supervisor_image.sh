@@ -29,8 +29,38 @@ grep -q '^After=dietpi-preboot.service dietpi-firstboot.service kalinka-firstboo
 deb="$pkg_dir/../kalinka-supervisor/build-deb.sh"
 grep -q '^  systemctl reenable kalinka-supervisor.service || true$' "$deb"
 grep -q '^  systemctl --no-block restart kalinka-supervisor.service || true$' "$deb"
-# Reinstall runs from the supervisor's own package, never from Core's installation.
-grep -q 'install -m 755 "$pkg_dir/reinstall.sh" "$stage/usr/lib/kalinka-supervisor/"' "$deb"
-grep -q '^Depends: .*\bcurl\b' "$deb"
 grep -q '^ExecStart=/usr/lib/kalinka-supervisor/reinstall.sh$' "$pkg_dir/../kalinka-supervisor/systemd/kalinka-reinstall.service"
+
+# Compilation is tested separately; exercise the actual package assembly here.
+cat > "$root/go" <<'GO'
+#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -o ]; then
+    printf '#!/bin/sh\nexit 0\n' > "$2"
+    chmod 755 "$2"
+    exit 0
+  fi
+  shift
+done
+exit 1
+GO
+chmod 755 "$root/go"
+GO="$root/go" GOARCH=amd64 VERSION=0.0.0 OUT_DIR="$root/deb" bash "$deb"
+package="$root/deb/kalinka-supervisor_0.0.0_amd64.deb"
+dpkg-deb --extract "$package" "$root/package"
+for helper in reinstall ssh-setup; do
+  installed="$root/package/usr/lib/kalinka-supervisor/$helper.sh"
+  if [ ! -x "$installed" ]; then
+    echo "Missing executable supervisor helper: $helper.sh" >&2
+    exit 1
+  fi
+  cmp "$pkg_dir/../kalinka-supervisor/$helper.sh" "$installed"
+done
+dependencies="$(dpkg-deb --field "$package" Depends)"
+for dependency in curl passwd sudo; do
+  if ! grep -Eq "(^|, )$dependency(,| |$)" <<< "$dependencies"; then
+    echo "Missing supervisor dependency: $dependency" >&2
+    exit 1
+  fi
+done
 echo 'Provisioning radios, always-on supervisor, packaging and pairing configuration: passed'
