@@ -10,6 +10,7 @@ from typing import BinaryIO
 from mutagen.wave import WAVE
 
 _PCM_GUID = bytes.fromhex("0100000000001000800000aa00389b71")
+_MAX_HEADER_BYTES = 64 << 20
 
 
 class UnsupportedWave(ValueError):
@@ -29,8 +30,8 @@ def open_pcm_wave(audio: BinaryIO) -> WAVE:
         if len(chunk) != 8:
             raise UnsupportedWave("Truncated WAV header")
         name, size = struct.unpack("<4sI", chunk)
-        next_chunk = audio.tell() + size + (size & 1)
-        if next_chunk > end:
+        start = audio.tell()
+        if start + size > end:
             raise UnsupportedWave("Invalid WAV chunk size")
         if name == b"fmt ":
             if bits is not None or size < 16:
@@ -67,7 +68,7 @@ def open_pcm_wave(audio: BinaryIO) -> WAVE:
         elif name == b"data":
             if bits is None or size % block_align:
                 raise UnsupportedWave("Invalid WAV audio data")
-            data_end = audio.tell() + size
+            data_end = start + size
             audio.seek(0, 2)
             if data_end > audio.tell():
                 raise UnsupportedWave("Truncated WAV audio data")
@@ -76,5 +77,10 @@ def open_pcm_wave(audio: BinaryIO) -> WAVE:
             wav.info.bits_per_sample = bits
             wav.info.audio_format = encoding
             return wav
+        next_chunk = start + size + (size & 1)
+        if next_chunk > end:
+            raise UnsupportedWave("Invalid WAV chunk size")
+        if next_chunk > _MAX_HEADER_BYTES:
+            raise UnsupportedWave("WAV header is too large")
         audio.seek(next_chunk)
     raise UnsupportedWave("Missing WAV audio data")
