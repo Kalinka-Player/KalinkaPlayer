@@ -270,7 +270,8 @@ image-test:
 		engine=$$(command -v podman || command -v docker); \
 		echo "Running the image tests in $(IMAGE_TEST_BASE) via $$(basename $$engine)"; \
 		$$engine run --rm -v "$(CURDIR)/$(IMAGE_DIR):/packages/kalinka-image:z" \
-			-v "$(CURDIR)/packages/kalinka-supervisor:/packages/kalinka-supervisor:z" -w /packages/kalinka-image \
+			-v "$(CURDIR)/packages/kalinka-supervisor:/packages/kalinka-supervisor:z" \
+			-v "$(CURDIR)/scripts:/scripts:ro,z" -w /packages/kalinka-image \
 			-e KALINKA_IMAGE_TEST_DISPOSABLE=1 -e DEBIAN_FRONTEND=noninteractive \
 			$(IMAGE_TEST_BASE) bash -c 'apt-get update -qq >/dev/null && \
 				apt-get install -y -qq --no-install-recommends \
