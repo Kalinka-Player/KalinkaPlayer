@@ -287,9 +287,11 @@ class RendererUpgradeService:
         """Ask one renderer to install ``target_version``; returns its detail.
 
         Playback running on it is stopped first when ``interrupt`` is set and
-        refused otherwise. Raises :class:`RendererUnavailable` when it is not
+        it is not known to be on ``target_version`` already, and refused
+        otherwise. Raises :class:`RendererUnavailable` when it is not
         connected and :class:`UpgradeRefused` when it declines — a session
-        running on it, or an install that cannot replace itself.
+        running on it, one it is playing already on ``target_version``, or an
+        install that cannot replace itself.
         """
         record = self._askable(renderer_id)
         name = record.friendly_name or renderer_id
@@ -311,6 +313,11 @@ class RendererUpgradeService:
         if self._is_busy(renderer_id):
             if not interrupt:
                 raise UpgradeRefused(f"{name} is playing right now")
+            if record.software_version and not version_is_newer(
+                target_version, record.software_version
+            ):
+                # Nothing to install is no reason to cut the music off.
+                raise UpgradeRefused(f"{name} is playing and already up to date")
             logger.info("Stopping playback on renderer '%s' to upgrade it", name)
             # The renderer refuses an upgrade while a session runs on it.
             await self._stop_playback(renderer_id)

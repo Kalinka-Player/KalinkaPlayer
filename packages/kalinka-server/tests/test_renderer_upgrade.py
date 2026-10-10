@@ -159,6 +159,24 @@ async def test_an_interrupt_stops_playback_before_asking():
     assert detail == "upgrading"
 
 
+async def test_an_interrupt_leaves_an_up_to_date_renderer_playing():
+    _, service, link = _registry_with(busy=True, version="0.4.0")
+
+    with pytest.raises(UpgradeRefused, match="already up to date"):
+        await service.upgrade("rid-1", "0.4.0", interrupt=True)
+    assert link.requested == []
+    assert link.stopped == 0
+
+
+async def test_an_interrupt_still_asks_a_renderer_that_never_said_its_version():
+    _, service, link = _registry_with(busy=True, version="")
+
+    await service.upgrade("rid-1", "0.4.0", interrupt=True)
+
+    assert link.stopped == 1
+    assert link.requested == ["0.4.0"]
+
+
 async def test_an_interrupt_leaves_an_idle_renderer_alone():
     _, service, link = _registry_with()
 
