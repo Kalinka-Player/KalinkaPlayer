@@ -19,6 +19,14 @@ On a box which has previously connected, the grace period is five minutes.
 An internet outage does not trigger setup. A returning Ethernet or Wi-Fi
 connection closes setup automatically when no join is in progress.
 
+A box that is still online can be moved to another network too. **Change
+Wi-Fi** on its [control page](supervisor-control.md) opens setup for 10
+minutes; then use **Set up a box** in the app as below. The box stays on its
+current network until the phone starts a join; its Wi-Fi then leaves that
+network while it tries the new one, and a join that fails rolls back to it.
+Once the 10 minutes are over, setup closes again unless the box has gone
+offline.
+
 In the installed app, **Set up a box** is available alongside normal
 network discovery, including when other players are visible. The wizard has
 two steps: select a nearby box and press **Connect**, then choose its Wi-Fi
@@ -87,9 +95,10 @@ Setup remains available for three minutes after joining, including after a
 BLE disconnect. A successful app handoff sends `complete` to close it sooner.
 The app's join wait is 100 seconds; its subsequent handoff wait is 150 seconds.
 
-The daemon remains idle while online and resumes advertising after a later
-network loss. It unregisters only its own GATT application, advertisement and
-pairing agent. It leaves BlueZ, the adapter and existing bonds in place, so
+The daemon remains idle while online, unless the control page opens setup,
+and resumes advertising after a later network loss. It unregisters only its
+own GATT application, advertisement and pairing agent. It leaves BlueZ, the
+adapter and existing bonds in place, so
 future Bluetooth playback can share the stack. It does not monitor Core;
 restarting Core on request belongs to the supervisor's
 [control API](supervisor-control.md).

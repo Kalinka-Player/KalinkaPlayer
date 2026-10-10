@@ -30,6 +30,8 @@ type Config struct {
 	Test, AlwaysAdvertise                bool
 	Now                                  func() time.Time
 	BootGrace, LossGrace, HandoffTimeout time.Duration
+	// Window holds setup open until then, as Open does, so a window outlives the machine that granted it.
+	Window time.Time
 }
 
 // Machine serializes input and guards all state shared with backend workers.
@@ -72,7 +74,11 @@ func New(parent context.Context, wifi Wifi, cfg Config) *Machine {
 	}
 	ctx, cancel := context.WithCancel(parent)
 	_, err := os.Stat(cfg.Marker)
-	return &Machine{ctx: ctx, cancel: cancel, wifi: wifi, cfg: cfg, seen: cfg.Marker != "" && err == nil, offlineSince: cfg.Now(), scanState: "idle", networks: []protocol.Network{}, Changes: make(chan struct{}, 1)}
+	m := &Machine{ctx: ctx, cancel: cancel, wifi: wifi, cfg: cfg, seen: cfg.Marker != "" && err == nil, offlineSince: cfg.Now(), scanState: "idle", networks: []protocol.Network{}, Changes: make(chan struct{}, 1)}
+	if cfg.Now().Before(cfg.Window) {
+		m.hold(cfg.Window)
+	}
+	return m
 }
 func (m *Machine) changed() {
 	select {
@@ -102,6 +108,39 @@ func (m *Machine) ChangingNetwork() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.state == protocol.Joining || m.resetting
+}
+
+// Open keeps setup available for d whatever the network, so a box that is
+// online can be moved to another one; its current network stays until a join
+// replaces it. Once d has passed, an online box closes setup as usual.
+func (m *Machine) Open(d time.Duration) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return protocol.Unavailable
+	}
+	// A handoff closes setup when it ends, so it would not keep this window; a phone's scan, join or rollback finishes first.
+	if m.state == protocol.Joining || m.state == protocol.Joined || m.scanState == "scanning" || m.resetting {
+		return protocol.Busy
+	}
+	m.hold(m.cfg.Now().Add(d))
+	return nil
+}
+
+// Window returns when setup stops being held open, which is in the past or zero when nothing holds it.
+func (m *Machine) Window() time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.setupUntil
+}
+
+// hold keeps setup available until then whatever the network; the caller holds mu or is New.
+func (m *Machine) hold(until time.Time) {
+	m.setupUntil = until
+	if !m.active {
+		m.update(protocol.Idle, 0, "")
+		m.active = true
+	}
 }
 func (m *Machine) Identity() []byte {
 	s := strings.ReplaceAll(coreconf.ServerID(m.cfg.IdentityFile), "-", "")
@@ -187,7 +226,10 @@ func (m *Machine) Write(device string, data []byte) error {
 			m.scanReason = nil
 			m.networks = []protocol.Network{}
 			m.scanPage = 0
-			m.setupUntil = m.cfg.Now().Add(m.cfg.HandoffTimeout)
+			// A window Open granted outlasts the rollback's own.
+			if until := m.cfg.Now().Add(m.cfg.HandoffTimeout); until.After(m.setupUntil) {
+				m.setupUntil = until
+			}
 			m.completed = false
 			m.owner = ""
 			m.stage = protocol.Preparing
@@ -321,6 +363,8 @@ func (m *Machine) Tick(ctx context.Context) (bool, error) {
 		m.owner = ""
 		m.frames.Clear()
 		m.active = false
+		// The handoff ends any window, which would otherwise hold setup closed if the new network drops.
+		m.setupUntil = time.Time{}
 		state := protocol.Idle
 		if address != "" {
 			state = protocol.Online

@@ -15,6 +15,7 @@
   <symbol id="i-reboot" viewBox="0 0 24 24"><path d="M4.5 11A7.5 7.5 0 0 1 17.3 6.7L19.5 9"/><path d="M19.5 4.5V9H15"/><path d="M19.5 13a7.5 7.5 0 0 1-12.8 4.3L4.5 15"/><path d="M4.5 19.5V15H9"/></symbol>
   <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3.5v8"/><path d="M6.7 6.6a7.5 7.5 0 1 0 10.6 0"/></symbol>
   <symbol id="i-reinstall" viewBox="0 0 24 24"><path d="M12 3.5v11"/><path d="M7.5 10l4.5 4.5 4.5-4.5"/><path d="M4.5 16.5v3h15v-3"/></symbol>
+  <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M2.5 8.9a13.5 13.5 0 0 1 19 0"/><path d="M5.6 12.1a9 9 0 0 1 12.8 0"/><path d="M8.8 15.3a4.5 4.5 0 0 1 6.4 0"/><path d="M12 18.4v.2"/></symbol>
   <symbol id="i-open" viewBox="0 0 24 24"><path d="M14 4.5h5.5V10"/><path d="M19.5 4.5L11 13"/><path d="M17.5 14v4.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1H10"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
   <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 8.5v5"/><path d="M12 16.8v.2"/><path d="M10.3 4.2L2.8 17.5a2 2 0 0 0 1.7 3h15a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0z"/></symbol>
@@ -57,6 +58,11 @@
         <span class="tile"><svg class="glyph"><use href="#i-reboot"/></svg></span>
         <div class="action-text"><h3>Restart the box</h3><p>Reboots the whole player. It is back in a minute or two.</p></div>
         <button class="button neutral" type="button" data-action="reboot">Restart</button>
+      </article>
+      <article class="action" id="wifi-setup" hidden>
+        <span class="tile"><svg class="glyph"><use href="#i-wifi"/></svg></span>
+        <div class="action-text"><h3>Change Wi-Fi</h3><p>Lets the Kalinka app on a phone nearby move the box to another network over Bluetooth.</p></div>
+        <button class="button neutral" type="button" data-action="wifi_setup">Change</button>
       </article>
       <article class="action">
         <span class="tile danger"><svg class="glyph"><use href="#i-power"/></svg></span>

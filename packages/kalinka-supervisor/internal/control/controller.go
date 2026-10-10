@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -16,10 +17,14 @@ const (
 	Reboot      Action = "reboot"
 	PowerOff    Action = "poweroff"
 	Reinstall   Action = "reinstall"
+	WifiSetup   Action = "wifi_setup"
 )
 
 // Supported lists every action this protocol version serves, in the order /info reports them.
-var Supported = []Action{RestartCore, Reboot, PowerOff, Reinstall}
+var Supported = []Action{RestartCore, Reboot, PowerOff, Reinstall, WifiSetup}
+
+// setupWindow is how long WifiSetup keeps nearby setup open.
+const setupWindow = 10 * time.Minute
 
 const enableSSH Action = "enable_ssh"
 
@@ -41,12 +46,14 @@ func (a Action) target() (Target, bool) {
 
 // Refusal codes; each is a fixed, client-facing reason an action did not run.
 const (
-	CodeBusy          = "busy"
-	CodeShuttingDown  = "shutting_down"
-	CodeUpgrade       = "upgrade_in_progress"
-	CodeNetworkChange = "network_change_in_progress"
-	CodeTooSoon       = "too_soon"
-	CodeUnavailable   = "unavailable"
+	CodeBusy             = "busy"
+	CodeShuttingDown     = "shutting_down"
+	CodeUpgrade          = "upgrade_in_progress"
+	CodeNetworkChange    = "network_change_in_progress"
+	CodeTooSoon          = "too_soon"
+	CodeUnavailable      = "unavailable"
+	CodeSetupUnavailable = "setup_unavailable"
+	CodeSetupInUse       = "setup_in_use"
 )
 
 // Refusal says why an action did not run, and when to retry if that is known.
@@ -59,9 +66,16 @@ func (r *Refusal) Error() string { return r.Code }
 
 func refuse(code string) error { return &Refusal{Code: code} }
 
-// NetworkActivity reports whether a network change that a shutdown or reinstall would interrupt is underway.
-type NetworkActivity interface {
+// NearbySetup is the part of nearby BLE setup that actions coordinate with.
+type NearbySetup interface {
+	// ChangingNetwork reports whether a network change that a shutdown or reinstall would interrupt is underway.
 	ChangingNetwork() bool
+	// Available reports whether OpenSetup can reach setup now.
+	Available() bool
+	// OpenSetup makes setup available for d even while the box is online. It
+	// returns protocol.Busy while a phone is using setup, and
+	// protocol.Unavailable while Available is false.
+	OpenSetup(d time.Duration) error
 }
 
 // Operation is an admitted action. Exactly one Run must follow Begin; the
@@ -72,13 +86,15 @@ type Operation interface {
 
 // Status is a point-in-time view of what the controller looks after.
 // Reinstall is "running", "succeeded", "failed" or "idle"; ReinstallFinished
-// is when the last one ended, zero if none has.
+// is when the last one ended, zero if none has. WifiSetup is whether that
+// action can reach nearby setup now.
 type Status struct {
 	Core              string
 	Upgrading         bool
 	Pending           Action
 	Reinstall         string
 	ReinstallFinished time.Time
+	WifiSetup         bool
 }
 
 // Controller admits one privileged operation at a time and decides whether
@@ -86,7 +102,7 @@ type Status struct {
 // Safe for concurrent use.
 type Controller struct {
 	systemd         Systemd
-	network         NetworkActivity
+	setup           NearbySetup
 	reinstalls      ReinstallRecord
 	ssh             SSHSetup
 	now             func() time.Time
@@ -98,9 +114,9 @@ type Controller struct {
 	lastRestart time.Time
 }
 
-// NewController takes network as nil when nearby setup is off.
-func NewController(s Systemd, network NetworkActivity, reinstalls ReinstallRecord, ssh SSHSetup, now func() time.Time) *Controller {
-	return &Controller{systemd: s, network: network, reinstalls: reinstalls, ssh: ssh, now: now, restartInterval: 15 * time.Second}
+// NewController takes setup as nil when nearby setup is off.
+func NewController(s Systemd, setup NearbySetup, reinstalls ReinstallRecord, ssh SSHSetup, now func() time.Time) *Controller {
+	return &Controller{systemd: s, setup: setup, reinstalls: reinstalls, ssh: ssh, now: now, restartInterval: 15 * time.Second}
 }
 
 // EnableSSH shares the action lock and admission policy without adding a protocol action.
@@ -172,8 +188,11 @@ func (c *Controller) admit(ctx context.Context, a Action) error {
 	if a == RestartCore {
 		return nil
 	}
+	if a == WifiSetup && c.setup == nil {
+		return refuse(CodeSetupUnavailable)
+	}
 	// Core being mid-start blocks nothing: a wedged bootstrap is a main reason to reboot or reinstall.
-	if c.network != nil && c.network.ChangingNetwork() {
+	if c.setup != nil && c.setup.ChangingNetwork() {
 		return refuse(CodeNetworkChange)
 	}
 	target, terminal := a.target()
@@ -196,6 +215,33 @@ type operation struct {
 
 func (o *operation) Run(ctx context.Context) error {
 	c := o.c
+	err := o.perform(ctx)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.running = false
+	if err != nil {
+		c.pending = ""
+		return err
+	}
+	if o.action == RestartCore {
+		c.lastRestart = c.now()
+	}
+	return nil
+}
+
+// perform carries out the action, or returns a *Refusal saying why it did not happen.
+func (o *operation) perform(ctx context.Context) error {
+	c := o.c
+	if o.action == WifiSetup {
+		err := c.setup.OpenSetup(setupWindow)
+		switch {
+		case err == nil:
+			return nil
+		case errors.Is(err, protocol.Busy):
+			return refuse(CodeSetupInUse)
+		}
+		return refuse(CodeSetupUnavailable)
+	}
 	var err error
 	if target, terminal := o.action.target(); terminal {
 		err = c.systemd.Shutdown(ctx, target)
@@ -204,15 +250,8 @@ func (o *operation) Run(ctx context.Context) error {
 	} else {
 		err = c.systemd.RestartCore(ctx)
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.running = false
 	if err != nil {
-		c.pending = ""
 		return refuse(CodeUnavailable)
-	}
-	if o.action == RestartCore {
-		c.lastRestart = c.now()
 	}
 	return nil
 }
@@ -241,7 +280,7 @@ func (c *Controller) Status(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	s := Status{Core: core.Active, Upgrading: installing != "", Reinstall: "running"}
+	s := Status{Core: core.Active, Upgrading: installing != "", Reinstall: "running", WifiSetup: c.setup != nil && c.setup.Available()}
 	if installing != ReinstallUnit {
 		s.Reinstall, s.ReinstallFinished = c.reinstalls.Outcome()
 		if s.Reinstall == "" {

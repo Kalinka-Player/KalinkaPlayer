@@ -57,17 +57,26 @@ func (f *fakeSystemd) Unit(_ context.Context, name string) (UnitState, error) {
 	return UnitState{Active: "inactive"}, nil
 }
 
-type fakeNetwork bool
+type fakeSetup struct {
+	changing, available bool
+	err                 error
+	opened              []time.Duration
+}
 
-func (n fakeNetwork) ChangingNetwork() bool { return bool(n) }
+func (s *fakeSetup) ChangingNetwork() bool { return s.changing }
+func (s *fakeSetup) Available() bool       { return s.available }
+func (s *fakeSetup) OpenSetup(d time.Duration) error {
+	s.opened = append(s.opened, d)
+	return s.err
+}
 
 type clock struct{ now time.Time }
 
 func (c *clock) Now() time.Time { return c.now }
 
-func newController(s *fakeSystemd, network NetworkActivity) (*Controller, *clock) {
+func newController(s *fakeSystemd, setup NearbySetup) (*Controller, *clock) {
 	c := &clock{time.Unix(1000, 0)}
-	return NewController(s, network, ReinstallRecord{}, nil, c.Now), c
+	return NewController(s, setup, ReinstallRecord{}, nil, c.Now), c
 }
 
 type sshSetupFunc func(context.Context, protocol.Secret) error
@@ -79,18 +88,18 @@ func (f sshSetupFunc) Enable(ctx context.Context, password protocol.Secret) erro
 func TestSSHSetupSharesActionPolicy(t *testing.T) {
 	for _, tc := range []struct {
 		name, unit, want string
-		network          NetworkActivity
+		setup            NearbySetup
 		pending          Action
 	}{
 		{name: "available"},
 		{name: "installing", unit: ReinstallUnit, want: CodeUpgrade},
 		{name: "previous helper still running", unit: "kalinka-ssh-setup.service", want: CodeBusy},
-		{name: "changing network", network: fakeNetwork(true), want: CodeNetworkChange},
+		{name: "changing network", setup: &fakeSetup{changing: true}, want: CodeNetworkChange},
 		{name: "shutting down", pending: Reboot, want: CodeShuttingDown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := &fakeSystemd{units: map[string]UnitState{tc.unit: {Active: "active"}}}
-			c, _ := newController(s, tc.network)
+			c, _ := newController(s, tc.setup)
 			c.pending = tc.pending
 			called := false
 			c.ssh = sshSetupFunc(func(context.Context, protocol.Secret) error { called = true; return nil })
@@ -204,15 +213,69 @@ func TestCoreStartingDoesNotBlockShutdown(t *testing.T) {
 }
 
 func TestNetworkChangeBlocksAllButRestart(t *testing.T) {
-	for _, a := range []Action{Reboot, PowerOff, Reinstall} {
-		c, _ := newController(&fakeSystemd{}, fakeNetwork(true))
-		if got := code(perform(c, a)); got != CodeNetworkChange {
-			t.Fatalf("%s: %q", a, got)
+	for _, a := range []Action{Reboot, PowerOff, Reinstall, WifiSetup} {
+		setup := &fakeSetup{changing: true}
+		c, _ := newController(&fakeSystemd{}, setup)
+		if got := code(perform(c, a)); got != CodeNetworkChange || len(setup.opened) != 0 {
+			t.Fatalf("%s: %q, setup opened %v", a, got, setup.opened)
 		}
 	}
-	c, _ := newController(&fakeSystemd{}, fakeNetwork(true))
+	c, _ := newController(&fakeSystemd{}, &fakeSetup{changing: true})
 	if err := perform(c, RestartCore); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWifiSetupOpensNearbySetup(t *testing.T) {
+	s := &fakeSystemd{}
+	setup := &fakeSetup{}
+	c, _ := newController(s, setup)
+	if err := perform(c, WifiSetup); err != nil {
+		t.Fatal(err)
+	}
+	if len(setup.opened) != 1 || setup.opened[0] != 10*time.Minute {
+		t.Fatalf("setup opened for %v", setup.opened)
+	}
+	if len(s.calls) != 0 {
+		t.Fatalf("opening setup reached systemd: %v", s.calls)
+	}
+	if st, _ := c.Status(context.Background()); st.Pending != "" {
+		t.Fatalf("opening setup is pending like a shutdown: %+v", st)
+	}
+	if err := perform(c, WifiSetup); err != nil {
+		t.Fatalf("setup cannot be opened again: %v", err)
+	}
+}
+
+func TestWifiSetupRefusals(t *testing.T) {
+	c, _ := newController(&fakeSystemd{}, nil)
+	if got := code(perform(c, WifiSetup)); got != CodeSetupUnavailable {
+		t.Fatalf("setup off: %q", got)
+	}
+	for _, tc := range []struct {
+		name  string
+		setup *fakeSetup
+		units map[string]UnitState
+		want  string
+		asked int
+	}{
+		{"setup not running", &fakeSetup{err: protocol.Unavailable}, nil, CodeSetupUnavailable, 1},
+		{"a phone using setup", &fakeSetup{err: protocol.Busy}, nil, CodeSetupInUse, 1},
+		{"network change", &fakeSetup{changing: true}, nil, CodeNetworkChange, 0},
+		{"upgrade", &fakeSetup{}, map[string]UnitState{UpgradeUnits[0]: {Active: "activating"}}, CodeUpgrade, 0},
+	} {
+		s := &fakeSystemd{units: tc.units}
+		c, _ := newController(s, tc.setup)
+		if got := code(perform(c, WifiSetup)); got != tc.want {
+			t.Fatalf("%s: %q", tc.name, got)
+		}
+		if len(s.calls) != 0 || len(tc.setup.opened) != tc.asked {
+			t.Fatalf("%s: systemd calls %v, setup opened %v", tc.name, s.calls, tc.setup.opened)
+		}
+		s.units = nil
+		if err := perform(c, RestartCore); err != nil {
+			t.Fatalf("%s: refusal left the controller reserved: %v", tc.name, err)
+		}
 	}
 }
 
@@ -326,6 +389,23 @@ func TestStatus(t *testing.T) {
 	st, err := c.Status(context.Background())
 	if err != nil || st != (Status{Core: "failed", Upgrading: true, Reinstall: "idle"}) {
 		t.Fatalf("status = %+v, %v", st, err)
+	}
+}
+
+func TestStatusSaysWhetherSetupCanOpen(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup NearbySetup
+		want  bool
+	}{
+		{"setup off", nil, false},
+		{"radio not up", &fakeSetup{}, false},
+		{"radio up", &fakeSetup{available: true}, true},
+	} {
+		c, _ := newController(&fakeSystemd{}, tc.setup)
+		if st, err := c.Status(context.Background()); err != nil || st.WifiSetup != tc.want {
+			t.Fatalf("%s: status = %+v, %v", tc.name, st, err)
+		}
 	}
 }
 

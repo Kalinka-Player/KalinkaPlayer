@@ -31,7 +31,7 @@ The server exposes a REST API (FastAPI) plus WebSocket channels for live state. 
 
 `POST /queue/add` takes a JSON list of entity ids, tracks or containers such as albums, playlists and folders, which it expands to their tracks, and appends them or inserts them at `?index=`. `POST /queue/replace` takes the same list without an index and replaces the queue with it in one request, which is what a client's play-now calls. Past the queue limit (1,000 tracks, 100 on a demo server) both answer 409 and change nothing; for a replacement only the new tracks count. A clear followed by an add would instead have emptied the queue before the add was refused. A replacement that comes to no tracks, such as an empty folder, answers 422 with the code `no_tracks` and also leaves the queue alone. Servers before API 0.12 answer `/queue/replace` with 405 from their browser-player mount at `/`, or with 404 where they have no such mount.
 
-On image boxes, `kalinka-supervisor` serves a separate [control page and API](supervisor-control.md) on port 8001, independent of the server: the page at `/`, `GET /info` (version and protocol), `GET /v1/{status,dashboard,reinstall/log}`, and `POST /v1/actions/{restart_core,reboot,poweroff,reinstall}`.
+On image boxes, `kalinka-supervisor` serves a separate [control page and API](supervisor-control.md) on port 8001, independent of the server: the page at `/`, `GET /info` (version and protocol), `GET /v1/{status,dashboard,reinstall/log}`, and `POST /v1/actions/{restart_core,reboot,poweroff,reinstall,wifi_setup}`.
 
 ## Configuration & tuning
 
