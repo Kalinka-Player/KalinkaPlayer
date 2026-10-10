@@ -532,17 +532,17 @@ AlsaAudioEmitter::readIntoAlsaFromStream(std::stop_token stopToken,
 
 size_t AlsaAudioEmitter::waitForInputData(std::stop_token stopToken,
                                           snd_pcm_uframes_t frames) {
+  const auto sourceBytes = frames * currentStreamAudioFormat.channels *
+                           sampleSize(currentStreamAudioFormat.sampleFormat);
   if (snd_pcm_state(pcmHandle) == SND_PCM_STATE_RUNNING) {
     snd_pcm_sframes_t delayFrames = 0;
     log_on_error(snd_pcm_delay(pcmHandle, &delayFrames));
     auto timeout = framesToTimeMs(std::max(
         0l, delayFrames - static_cast<snd_pcm_sframes_t>(2 * periodSize)));
-    return inputNode->waitForDataFor(
-        stopToken, timeout, snd_pcm_frames_to_bytes(pcmHandle, frames));
+    return inputNode->waitForDataFor(stopToken, timeout, sourceBytes);
   }
 
-  return inputNode->waitForData(stopToken,
-                                snd_pcm_frames_to_bytes(pcmHandle, frames));
+  return inputNode->waitForData(stopToken, sourceBytes);
 }
 
 std::chrono::milliseconds
@@ -740,20 +740,16 @@ void AlsaAudioEmitter::setupAudioFormat(
                        ? streamAudioFormat.channels
                        : kDeviceChannels;
   dopFrame = 0;
-  initHwParams(sampleRate, streamAudioFormat.sampleFormat);
+  initHwParams(sampleRate, streamAudioFormat.sampleFormat,
+               streamAudioFormat.bitsPerSample);
   setSwParams();
 
   currentStreamAudioFormat = streamAudioFormat;
   // initHwParams settles the rate; setSampleFormat any substitution.
-  const AudioSampleFormat deviceSampleFormat =
-      sampleSubstitute.count(streamAudioFormat.sampleFormat)
-          ? sampleSubstitute[streamAudioFormat.sampleFormat]
-          : streamAudioFormat.sampleFormat;
   // A fallback container only pads, so the device gets the stream's bits.
   const StreamAudioFormat opened{
-      sampleRate, outputChannels,
-      static_cast<unsigned int>(sampleBits(streamAudioFormat.sampleFormat)),
-      deviceSampleFormat};
+      sampleRate, outputChannels, streamAudioFormat.bitsPerSample,
+      deviceFormatFor(streamAudioFormat.sampleFormat)};
   deviceInfo = DeviceInfo{opened, deviceAccess()};
 
   int count = throw_on_error(snd_pcm_poll_descriptors_count(pcmHandle));
@@ -812,14 +808,16 @@ void PlayedFramesCounter::reset() {
 }
 
 void AlsaAudioEmitter::setSampleFormat(AudioSampleFormat requestedFormat,
-                                       snd_pcm_hw_params_t *params) {
-  auto formatToProbe = sampleSubstitute.count(requestedFormat)
-                           ? sampleSubstitute[requestedFormat]
-                           : requestedFormat;
+                                       snd_pcm_hw_params_t *params,
+                                       unsigned significantBits) {
+  // A substitution used by a previous 24-in-32 stream may discard real bits
+  // from a later 32-bit stream. Negotiate anew for each source format/rate.
+  sampleSubstitute.erase(requestedFormat);
+  auto formatToProbe = requestedFormat;
 
   while (snd_pcm_hw_params_set_format(pcmHandle, params,
                                       alsaFormat(formatToProbe)) < 0) {
-    const std::optional<AudioSampleFormat> next = pcmFallback(formatToProbe);
+    const auto next = pcmFallback(formatToProbe, significantBits);
     if (!next) {
       throw std::runtime_error(
           std::string("Output device takes no format that carries ") +
@@ -840,7 +838,8 @@ void AlsaAudioEmitter::setSampleFormat(AudioSampleFormat requestedFormat,
 }
 
 void AlsaAudioEmitter::initHwParams(unsigned int &rate,
-                                    AudioSampleFormat format) {
+                                    AudioSampleFormat format,
+                                    unsigned significantBits) {
 
   unsigned int rrate;
   int dir = 0;
@@ -865,7 +864,7 @@ void AlsaAudioEmitter::initHwParams(unsigned int &rate,
     throw_on_error(
         snd_pcm_hw_params_set_channels(pcmHandle, params, outputChannels));
 
-    setSampleFormat(format, params);
+    setSampleFormat(format, params, significantBits);
 
     // DSD transport must never pass through ALSA resampling.
     throw_on_error(snd_pcm_hw_params_set_rate_resample(pcmHandle, params,
@@ -885,9 +884,13 @@ void AlsaAudioEmitter::initHwParams(unsigned int &rate,
     }
 
     rate = rrate;
-    if (isDop(format) && snd_pcm_hw_params_get_sbits(params) < 24)
+    const int deviceBits = throw_on_error(snd_pcm_hw_params_get_sbits(params));
+    if (isDop(format) && deviceBits < 24)
       throw std::runtime_error(
           "DoP requires at least 24 significant carrier bits");
+    if (!isDsd(format) && deviceBits < static_cast<int>(significantBits))
+      throw std::runtime_error(
+          "Output device cannot preserve source PCM precision");
     if (requestedPeriodSize == 0 || requestedBufferSize == 0) {
       setLatencyBasedBufferSize(params);
     } else {
@@ -988,36 +991,46 @@ size_t AlsaAudioEmitter::readAndConvertFrames(void *dest, size_t bytes) {
     return frames;
   }
 
-  if (!sampleSubstitute.count(currentStreamAudioFormat.sampleFormat)) {
-    size_t bytesRead = inputNode->read(dest, bytes);
-    // Apply software volume in the on-wire format ALSA will play. Unity (the
-    // common case) is a no-op, so bit-perfect playback is preserved.
-    applyGainInPlace(dest, bytesRead, currentStreamAudioFormat.sampleFormat,
-                     gain);
+  const auto sourceFormat = currentStreamAudioFormat.sampleFormat;
+  const auto destFormat = deviceFormatFor(sourceFormat);
+  // A mono stream plays each sample in every output channel.
+  const unsigned copies =
+      currentStreamAudioFormat.channels == 1 ? outputChannels : 1;
+  if (sourceFormat == destFormat && copies == 1) {
+    const size_t bytesRead = inputNode->read(dest, bytes);
+    // Unity gain (the common case) is a no-op, so playback stays bit-perfect.
+    applyGainInPlace(dest, bytesRead, sourceFormat, gain);
     return snd_pcm_bytes_to_frames(pcmHandle, bytesRead);
   }
 
-  auto sourceFormat = currentStreamAudioFormat.sampleFormat;
-  auto destFormat = sampleSubstitute[currentStreamAudioFormat.sampleFormat];
-  size_t destSampleCount = snd_pcm_bytes_to_samples(pcmHandle, bytes);
-  size_t sourceBytesToRead = destSampleCount * sampleSize(sourceFormat);
+  const auto width = sampleSize(destFormat);
+  const size_t sourceSamples =
+      snd_pcm_bytes_to_samples(pcmHandle, bytes) / copies;
+  std::vector<uint8_t> source(sourceSamples * sampleSize(sourceFormat));
+  const auto count =
+      inputNode->read(source.data(), source.size()) / sampleSize(sourceFormat);
+  auto *out = static_cast<uint8_t *>(dest);
+  const auto converted = convertSampleFormat(source.data(), sourceFormat, count,
+                                             out, destFormat, count * width);
+  if (copies > 1) {
+    // Work backwards so expansion cannot overwrite unexpanded samples.
+    for (size_t i = converted; i > 0; --i) {
+      auto *first = out + (i - 1) * copies * width;
+      std::memmove(first, out + (i - 1) * width, width);
+      for (unsigned c = 1; c < copies; ++c)
+        std::memcpy(first + c * width, first, width);
+    }
+  }
+  // Gain is applied on the samples handed to ALSA, in the on-wire format.
+  applyGainInPlace(out, converted * copies * width, destFormat, gain);
+  return converted * copies / outputChannels;
+}
 
-  std::vector<uint8_t> sampleBuffer(sourceBytesToRead);
-  size_t bytesRead = inputNode->read(sampleBuffer.data(), sourceBytesToRead);
-  size_t sampleCount = bytesRead / sampleSize(sourceFormat);
-
-  size_t convertedSamples = convertSampleFormat(
-      sampleBuffer.data(), sourceFormat, sampleCount, dest, destFormat, bytes);
-  assert(convertedSamples == sampleCount);
-
-  // Gain is applied after format conversion, on the samples handed to ALSA.
-  applyGainInPlace(dest, convertedSamples * sampleSize(destFormat), destFormat,
-                   gain);
-
-  auto frames = snd_pcm_bytes_to_frames(
-      pcmHandle, snd_pcm_samples_to_bytes(pcmHandle, convertedSamples));
-
-  return frames;
+AudioSampleFormat
+AlsaAudioEmitter::deviceFormatFor(AudioSampleFormat streamFormat) const {
+  const auto substitute = sampleSubstitute.find(streamFormat);
+  return substitute == sampleSubstitute.end() ? streamFormat
+                                              : substitute->second;
 }
 
 void AlsaAudioEmitter::stampDop(void *dest, size_t frames) {

@@ -20,7 +20,8 @@ enum AudioFormat {
   FormatMpeg,
   FormatVorbis,
   FormatUnsupported,
-  FormatDsd
+  FormatDsd,
+  FormatWav
 };
 
 using StreamId = size_t;

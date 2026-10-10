@@ -87,8 +87,8 @@ TEST(AudioSampleFormatTest, ConvertPCM16ToPCM32KeepsEveryBit) {
 
 TEST(AudioSampleFormatTest, A16BitStreamIsOfferedEveryWiderContainer) {
   std::vector<AudioSampleFormat> tried;
-  for (auto format = pcmFallback(PCM16_LE); format;
-       format = pcmFallback(*format)) {
+  for (auto format = pcmFallback(PCM16_LE, 16); format;
+       format = pcmFallback(*format, 16)) {
     tried.push_back(*format);
   }
   EXPECT_EQ(tried, (std::vector<AudioSampleFormat>{PCM24_LE, PCM32_LE,
@@ -96,8 +96,31 @@ TEST(AudioSampleFormatTest, A16BitStreamIsOfferedEveryWiderContainer) {
 }
 
 TEST(AudioSampleFormatTest, DsdHasNoPcmFallback) {
-  EXPECT_FALSE(pcmFallback(DSD_U32_BE).has_value());
-  EXPECT_FALSE(pcmFallback(DOP32_LE).has_value());
+  EXPECT_FALSE(pcmFallback(DSD_U32_BE, 1).has_value());
+  EXPECT_FALSE(pcmFallback(DOP32_LE, 24).has_value());
+}
+
+TEST(AudioSampleFormatTest, True32BitAndFloatHaveNoLossyFallback) {
+  EXPECT_EQ(sampleBits(PCM32_LE), 32u);
+  EXPECT_FALSE(pcmFallback(PCM32_LE, 32));
+  EXPECT_EQ(pcmFallback(PCM32_LE, 24), PCM24_3LE);
+  EXPECT_FALSE(pcmFallback(PCM_FLOAT32_LE, 32));
+  EXPECT_FALSE(pcmFallback(PCM_FLOAT64_LE, 64));
+}
+
+TEST(AudioSampleFormatTest, GainRetainsTrue32BitLowBitsAndFloatPrecision) {
+  std::vector<int32_t> integer{3, -3, 2147483647, -2147483647 - 1};
+  const auto original = integer;
+  applyGainInPlace(integer.data(), integer.size() * 4, PCM32_LE, 1.0f);
+  EXPECT_EQ(integer, original);
+  applyGainInPlace(integer.data(), integer.size() * 4, PCM32_LE, 0.5f);
+  EXPECT_EQ(integer, (std::vector<int32_t>{2, -2, 1073741824, -1073741824}));
+  std::vector<float> floating{0.125f, -0.5f, 0x1p-30f, 1.0f};
+  applyGainInPlace(floating.data(), floating.size() * 4, PCM_FLOAT32_LE, 0.5f);
+  EXPECT_EQ(floating, (std::vector<float>{0.0625f, -0.25f, 0x1p-31f, 0.5f}));
+  std::vector<double> wide{0x1.0000000000001p-1, -0x1p-60};
+  applyGainInPlace(wide.data(), wide.size() * 8, PCM_FLOAT64_LE, 0.5f);
+  EXPECT_EQ(wide, (std::vector<double>{0x1.0000000000001p-2, -0x1p-61}));
 }
 
 TEST(AudioSampleFormatTest, ConvertPCM24ToPCM32) {

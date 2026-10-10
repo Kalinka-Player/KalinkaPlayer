@@ -115,12 +115,15 @@ private:
   /// Whether the open device is ours alone, as ALSA reports its PCM type.
   DeviceAccess deviceAccess() const;
 
-  void initHwParams(unsigned int &rate, AudioSampleFormat format);
+  void initHwParams(unsigned int &rate, AudioSampleFormat format,
+                    unsigned significantBits);
   void setSampleFormat(AudioSampleFormat requestedFormat,
-                       snd_pcm_hw_params_t *params);
+                       snd_pcm_hw_params_t *params, unsigned significantBits);
   void setSwParams();
   void setLatencyBasedBufferSize(snd_pcm_hw_params_t *params);
   size_t readAndConvertFrames(void *dest, size_t bytes);
+  /// The on-wire format the open device plays a stream's samples in.
+  AudioSampleFormat deviceFormatFor(AudioSampleFormat streamFormat) const;
   void stampDop(void *dest, size_t frames);
 
   void setupAudioFormat(const StreamAudioFormat &streamAudioFormat);

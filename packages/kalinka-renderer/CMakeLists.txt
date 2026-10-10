@@ -71,8 +71,9 @@ add_library(kalinka_native_player STATIC
   src/native_player/AudioStreamSwitcher.cpp
   src/native_player/Buffer.cpp
   src/native_player/Config.cpp
+  src/native_player/ContainerStreamDecoder.cpp
+  src/native_player/DsdContainer.cpp
   src/native_player/DsdFormat.cpp
-  src/native_player/DsdStreamDecoder.cpp
   src/native_player/FlacStreamDecoder.cpp
   src/native_player/Log.cpp
   src/native_player/Mp3StreamDecoder.cpp
@@ -80,6 +81,7 @@ add_library(kalinka_native_player STATIC
   src/native_player/StateMonitor.cpp
   src/native_player/StreamState.cpp
   src/native_player/VorbisStreamDecoder.cpp
+  src/native_player/WavContainer.cpp
 )
 target_link_libraries(kalinka_native_player PUBLIC
   ALSA::ALSA
@@ -188,7 +190,8 @@ if(GTest_FOUND)
     tests/native_player/AudioSampleFormat_test.cpp
     tests/native_player/AudioStreamSwitcher_test.cpp
     tests/native_player/Buffer_test.cpp
-    tests/native_player/DsdStreamDecoder_test.cpp
+    tests/native_player/ContainerStreamDecoder_test.cpp
+    tests/native_player/DsdContainer_test.cpp
     tests/native_player/FileInputNode_test.cpp
     tests/native_player/FlacStreamDecoder_test.cpp
     tests/native_player/LocalHttpServer.cpp
@@ -198,6 +201,7 @@ if(GTest_FOUND)
     tests/native_player/StateMonitor_test.cpp
     tests/native_player/Utils_test.cpp
     tests/native_player/VorbisStreamDecoder_test.cpp
+    tests/native_player/WavContainer_test.cpp
     tests/native_player/integration_test.cpp
   )
   target_link_libraries(kalinka-renderer-tests PRIVATE

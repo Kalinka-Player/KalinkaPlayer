@@ -20,6 +20,10 @@ snd_pcm_format_t alsaFormat(AudioSampleFormat f) {
   case PCM32_LE:
   case DOP32_LE:
     return SND_PCM_FORMAT_S32_LE;
+  case PCM_FLOAT32_LE:
+    return SND_PCM_FORMAT_FLOAT_LE;
+  case PCM_FLOAT64_LE:
+    return SND_PCM_FORMAT_FLOAT64_LE;
   case DSD_U8:
     return SND_PCM_FORMAT_DSD_U8;
   case DSD_U16_LE:

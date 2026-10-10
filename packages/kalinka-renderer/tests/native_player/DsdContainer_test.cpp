@@ -2,20 +2,22 @@
 #include "AudioGraphHttpStream.h"
 #include "AudioPlayer.h"
 #include "AudioSampleFormat.h"
-#include "DsdStreamDecoder.h"
+#include "ContainerTestSupport.h"
+#include "DsdContainer.h"
+#include "DsdFormat.h"
 #include "LocalHttpServer.h"
 #include "player/StateTranslator.h"
-#include <array>
-#include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <future>
 #include <gtest/gtest.h>
 #include <unistd.h>
 
 namespace {
-using Bytes = std::vector<uint8_t>;
+using container_test::Bytes;
+using container_test::BytesInput;
+using container_test::drain;
 using namespace std::chrono_literals;
+constexpr size_t BUFFER_SIZE = 65536;
 void append(Bytes &out, std::span<const uint8_t> data) {
   out.insert(out.end(), data.begin(), data.end());
 }
@@ -77,57 +79,14 @@ Bytes dff(bool dst = false) {
   append(body, chunk("DSD ", {0x01, 0x81, 0x02, 0x82, 0x03, 0x83, 0x04, 0x84}));
   return chunk("FRM8", body);
 }
-class Input : public AudioGraphOutputNode {
-public:
-  Bytes bytes;
-  size_t position = 0;
-  bool seekable;
-  explicit Input(Bytes data, bool seekable = true)
-      : bytes(std::move(data)), seekable(seekable) {
-    setState({AudioGraphNodeState::STREAMING, 0,
-              StreamInfo{.streamType = StreamType::BYTES,
-                         .streamSize = bytes.size()}});
-  }
-  size_t read(void *dest, size_t n) override {
-    n = std::min({n, bytes.size() - position, size_t(13)});
-    std::memcpy(dest, bytes.data() + position, n);
-    position += n;
-    return n;
-  }
-  size_t waitForData(std::stop_token, size_t n) override {
-    return std::min(n, bytes.size() - position);
-  }
-  size_t waitForDataFor(std::stop_token t, std::chrono::milliseconds,
-                        size_t n) override {
-    return waitForData(t, n);
-  }
-  size_t seekTo(size_t n) override {
-    if (!seekable || n > bytes.size())
-      return size_t(-1);
-    position = n;
-    return n;
-  }
-};
-DsdStreamDecoder::SelectOutput select(AudioSampleFormat format) {
+DsdContainer::SelectOutput select(AudioSampleFormat format) {
   return [format](unsigned rate, unsigned channels) {
     return StreamAudioFormat{rate / dsdBitsPerFrame(format), channels, 1,
                              format, rate};
   };
 }
-Bytes drain(DsdStreamDecoder &node) {
-  Bytes result;
-  std::array<uint8_t, 2400> data;
-  const auto deadline = std::chrono::steady_clock::now() + 3s;
-  while (std::chrono::steady_clock::now() < deadline) {
-    if (node.waitForDataFor({}, 50ms, 1)) {
-      auto n = node.read(data.data(), data.size());
-      append(result, {data.data(), n});
-    } else if (node.getState().state == AudioGraphNodeState::FINISHED ||
-               node.getState().state == AudioGraphNodeState::ERROR)
-      return result;
-  }
-  ADD_FAILURE() << "DSD decoder did not finish";
-  return result;
+std::unique_ptr<ContainerFormat> dsd(AudioSampleFormat format) {
+  return std::make_unique<DsdContainer>(select(format));
 }
 } // namespace
 
@@ -198,8 +157,8 @@ TEST(DsdCapabilities, NullIsNotHardwareDsd) {
 }
 TEST(DsdDecoder, DsfBlocksAndBothBitOrders) {
   for (auto order : {1u, 8u}) {
-    DsdStreamDecoder decoder(1, select(DSD_U8));
-    decoder.connectTo(std::make_shared<Input>(dsf(order)));
+    ContainerStreamDecoder decoder(1, dsd(DSD_U8), BUFFER_SIZE);
+    decoder.connectTo(std::make_shared<BytesInput>(dsf(order)));
     const auto result = drain(decoder);
     ASSERT_EQ(result.size(), 8192u);
     EXPECT_EQ(result[2], order == 1 ? 0x80 : 1);
@@ -208,23 +167,23 @@ TEST(DsdDecoder, DsfBlocksAndBothBitOrders) {
   }
 }
 TEST(DsdDecoder, DsfBlocksPastTheSampleCountAreNotPlayed) {
-  DsdStreamDecoder exact(1, select(DSD_U8));
-  exact.connectTo(std::make_shared<Input>(dsf()));
-  DsdStreamDecoder padded(1, select(DSD_U8));
-  padded.connectTo(std::make_shared<Input>(dsf(8, 2, 2822400, 1)));
+  ContainerStreamDecoder exact(1, dsd(DSD_U8), BUFFER_SIZE);
+  exact.connectTo(std::make_shared<BytesInput>(dsf()));
+  ContainerStreamDecoder padded(1, dsd(DSD_U8), BUFFER_SIZE);
+  padded.connectTo(std::make_shared<BytesInput>(dsf(8, 2, 2822400, 1)));
   EXPECT_EQ(drain(padded), drain(exact));
   EXPECT_EQ(padded.getState().state, AudioGraphNodeState::FINISHED);
 }
 TEST(DsdDecoder, DffStreamsWithoutSeekingAndPacksDop) {
-  DsdStreamDecoder decoder(1, select(DOP24_3LE));
-  decoder.connectTo(std::make_shared<Input>(dff(), false));
+  ContainerStreamDecoder decoder(1, dsd(DOP24_3LE), BUFFER_SIZE);
+  decoder.connectTo(std::make_shared<BytesInput>(dff(), false));
   EXPECT_EQ(drain(decoder),
             (Bytes{2, 1, 5, 0x82, 0x81, 5, 4, 3, 0xfa, 0x84, 0x83, 0xfa}));
   EXPECT_EQ(decoder.seekTo(0), size_t(-1));
 }
 TEST(DsdDecoder, SeeksInsideDsfChannelBlocksAndRestartsAfterEof) {
-  DsdStreamDecoder decoder(1, select(DOP24_LE));
-  decoder.connectTo(std::make_shared<Input>(dsf()));
+  ContainerStreamDecoder decoder(1, dsd(DOP24_LE), BUFFER_SIZE);
+  decoder.connectTo(std::make_shared<BytesInput>(dsf()));
   ASSERT_EQ(drain(decoder).size(), 16384u);
   ASSERT_EQ(decoder.seekTo(10), 10u);
   const auto result = drain(decoder);
@@ -235,35 +194,17 @@ TEST(DsdDecoder, SeeksInsideDsfChannelBlocksAndRestartsAfterEof) {
   EXPECT_EQ(result[5], 37);
   EXPECT_EQ(decoder.streamReadPosition(), 2048);
 }
-TEST(DsdDecoder, FailedInputSeekIsReportedAsAFailedSeek) {
-  class ProbeOnlyInput : public Input {
-  public:
-    using Input::Input;
-    bool probed = false;
-    size_t seekTo(size_t n) override {
-      if (probed)
-        return size_t(-1);
-      probed = true;
-      return Input::seekTo(n);
-    }
-  };
-  DsdStreamDecoder decoder(1, select(DOP24_LE));
-  decoder.connectTo(std::make_shared<ProbeOnlyInput>(dsf()));
-  ASSERT_EQ(drain(decoder).size(), 16384u);
-  EXPECT_EQ(decoder.seekTo(10), size_t(-1));
-  EXPECT_EQ(decoder.getState().state, AudioGraphNodeState::ERROR);
-}
 TEST(DsdDecoder, StartOffsetUsesTransportFrames) {
-  DsdStreamDecoder decoder(1, select(DSD_U32_LE), 1);
-  decoder.connectTo(std::make_shared<Input>(dsf()));
+  ContainerStreamDecoder decoder(1, dsd(DSD_U32_LE), BUFFER_SIZE, 1);
+  decoder.connectTo(std::make_shared<BytesInput>(dsf()));
   const auto result = drain(decoder);
   ASSERT_EQ(result.size(), (1024u - 88) * 8);
   EXPECT_EQ(result[0], 99);
   EXPECT_EQ(result[3], 96);
 }
 TEST(DsdDecoder, MonoAndHigherRate) {
-  DsdStreamDecoder decoder(1, select(DSD_U16_BE));
-  decoder.connectTo(std::make_shared<Input>(dsf(8, 1, 11289600)));
+  ContainerStreamDecoder decoder(1, dsd(DSD_U16_BE), BUFFER_SIZE);
+  decoder.connectTo(std::make_shared<BytesInput>(dsf(8, 1, 11289600)));
   ASSERT_EQ(drain(decoder).size(), 4096u);
   EXPECT_EQ(decoder.getState().streamInfo->format.dsdSampleRate, 11289600u);
 }
@@ -280,11 +221,26 @@ TEST(DsdDecoder, MalformedAndCompressedFilesFailWithoutPcmFallback) {
   badSize[4] = 0xff;
   for (auto bytes : {truncated, malformed, badChannels, overcounted, badSize,
                      dff(true), Bytes{1, 2, 3}}) {
-    DsdStreamDecoder decoder(1, select(DSD_U8));
-    decoder.connectTo(std::make_shared<Input>(bytes));
+    ContainerStreamDecoder decoder(1, dsd(DSD_U8), BUFFER_SIZE);
+    decoder.connectTo(std::make_shared<BytesInput>(bytes));
     EXPECT_TRUE(drain(decoder).empty());
     EXPECT_EQ(decoder.getState().state, AudioGraphNodeState::ERROR);
   }
+}
+TEST(DsdDecoder, RefusesMetadataThatPushesTheAudioPastTheLimit) {
+  Bytes body;
+  tag(body, "DSD ");
+  tag(body, "JUNK");
+  num(body, container::MAX_HEADER_BYTES, 8);
+  Bytes file;
+  tag(file, "FRM8");
+  num(file, body.size() + container::MAX_HEADER_BYTES, 8);
+  append(file, body);
+  ContainerStreamDecoder decoder(1, dsd(DSD_U8), BUFFER_SIZE);
+  decoder.connectTo(std::make_shared<BytesInput>(file, true, false));
+  EXPECT_TRUE(drain(decoder).empty());
+  ASSERT_TRUE(decoder.getState().error);
+  EXPECT_EQ(decoder.getState().error->message, "DSD header is too large");
 }
 TEST(DsdState, SourceAndCarrierRatesAreDistinct) {
   StreamInfo info{{176400, 2, 1, DOP24_LE, 2822400}, FRAMES, 176400};
@@ -364,39 +320,6 @@ TEST(DsdPlayback, DisabledOutputRefusesBeforeReadingTheFile) {
   EXPECT_EQ(state.error->message, DSD_DISABLED_ERROR);
 }
 
-TEST(DsdDecoder, StalledInputIsInterruptedBySeekAndDestruction) {
-  class StalledInput : public Input {
-  public:
-    using Input::Input;
-    std::promise<void> blocked;
-    bool notified = false;
-    size_t waitForData(std::stop_token token, size_t n) override {
-      if (position < 92)
-        return Input::waitForData(token, n);
-      if (!notified) {
-        notified = true;
-        blocked.set_value();
-      }
-      std::mutex mutex;
-      std::condition_variable_any changed;
-      std::unique_lock lock(mutex);
-      changed.wait(lock, token, [] { return false; });
-      return 0;
-    }
-  };
-  auto input = std::make_shared<StalledInput>(dsf());
-  auto decoder = std::make_unique<DsdStreamDecoder>(1, select(DOP24_LE));
-  decoder->connectTo(input);
-  ASSERT_EQ(input->blocked.get_future().wait_for(1s),
-            std::future_status::ready);
-  auto seek =
-      std::async(std::launch::async, [&] { return decoder->seekTo(100); });
-  ASSERT_EQ(seek.wait_for(1s), std::future_status::ready);
-  EXPECT_EQ(seek.get(), 100u);
-  auto stop = std::async(std::launch::async, [&] { decoder.reset(); });
-  EXPECT_EQ(stop.wait_for(1s), std::future_status::ready);
-}
-
 TEST(DsdCapabilities, DopNeedsTwentyFourSignificantBits) {
   OutputCapabilities caps{
       DeviceAccess::Exclusive, "test", {{176400, 2, 16, PCM32_LE}}};
@@ -418,7 +341,7 @@ TEST(DsdDecoder, HttpRangeSeekingAndSequentialPlaybackUseExistingInput) {
     for (const auto &route : {"/ranged", "/whole"}) {
       auto input = std::make_shared<AudioGraphHttpStream>(1, server.url(route),
                                                           32768, 4096);
-      DsdStreamDecoder decoder(1, select(DOP24_LE));
+      ContainerStreamDecoder decoder(1, dsd(DOP24_LE), BUFFER_SIZE);
       decoder.connectTo(input);
       EXPECT_EQ(drain(decoder).size(), 16384u);
       if (std::string(route) == "/ranged") {
@@ -430,7 +353,7 @@ TEST(DsdDecoder, HttpRangeSeekingAndSequentialPlaybackUseExistingInput) {
     }
     auto missing = std::make_shared<AudioGraphHttpStream>(
         2, server.url("/missing"), 32768, 4096);
-    DsdStreamDecoder decoder(2, select(DOP24_LE));
+    ContainerStreamDecoder decoder(2, dsd(DOP24_LE), BUFFER_SIZE);
     decoder.connectTo(missing);
     EXPECT_TRUE(drain(decoder).empty());
     ASSERT_TRUE(decoder.getState().error);
@@ -441,8 +364,9 @@ TEST(DsdDecoder, HttpRangeSeekingAndSequentialPlaybackUseExistingInput) {
 
 TEST(DsdPlayback, ActiveVolumeIsRefusedBeforeEmittingDsd) {
   for (auto format : {DSD_U8, DOP24_LE}) {
-    auto decoder = std::make_shared<DsdStreamDecoder>(1, select(format));
-    decoder->connectTo(std::make_shared<Input>(dsf()));
+    auto decoder =
+        std::make_shared<ContainerStreamDecoder>(1, dsd(format), BUFFER_SIZE);
+    decoder->connectTo(std::make_shared<BytesInput>(dsf()));
     AlsaAudioEmitter output(Config{{"output.alsa.device", "null"}});
     output.setDsdAllowed(false);
     output.connectTo(decoder);

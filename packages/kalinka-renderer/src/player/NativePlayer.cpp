@@ -60,6 +60,11 @@ AudioFormat formatOf(const pb::Source &source) {
       {"audio/x-flac", AudioFormat::FormatFlac},
       {"application/x-flac", AudioFormat::FormatFlac},
       {"flac", AudioFormat::FormatFlac},
+      {"audio/wav", AudioFormat::FormatWav},
+      {"audio/x-wav", AudioFormat::FormatWav},
+      {"audio/wave", AudioFormat::FormatWav},
+      {"audio/vnd.wave", AudioFormat::FormatWav},
+      {"wav", AudioFormat::FormatWav},
       {"audio/ogg", AudioFormat::FormatVorbis},
       {"audio/x-ogg", AudioFormat::FormatVorbis},
       {"application/ogg", AudioFormat::FormatVorbis},
@@ -85,6 +90,9 @@ AudioFormat formatOf(const pb::Source &source) {
   }
   if (path.ends_with(".mp3")) {
     return AudioFormat::FormatMpeg;
+  }
+  if (path.ends_with(".wav") || path.ends_with(".wave")) {
+    return AudioFormat::FormatWav;
   }
   if (path.ends_with(".ogg") || path.ends_with(".oga")) {
     return AudioFormat::FormatVorbis;
@@ -161,6 +169,12 @@ const Knob kBufferKnobs[] = {
     {"buffers.vorbis", "Ogg Vorbis buffer",
      "Decoded audio held ahead for Ogg Vorbis playback, in bytes.",
      pb::CONFIG_FIELD_TYPE_INT, "bytes", {64000, 33554432}},
+    {"buffers.wav", "WAV buffer",
+     "Decoded audio held ahead for WAV playback, in bytes.",
+     pb::CONFIG_FIELD_TYPE_INT, "bytes", {64000, 33554432}},
+    {"buffers.dsd", "DSD buffer",
+     "Audio held ahead for DSF and DSDIFF playback, in bytes.",
+     pb::CONFIG_FIELD_TYPE_INT, "bytes", {64000, 33554432}},
 };
 
 const Knob kNetworkKnobs[] = {
@@ -208,6 +222,8 @@ const std::map<std::string, std::string> &graphKeys() {
       {"buffers.flac", "decoder.flac.buffer_size"},
       {"buffers.mpeg", "decoder.mpeg.buffer_size"},
       {"buffers.vorbis", "decoder.vorbis.buffer_size"},
+      {"buffers.wav", "decoder.wav.buffer_size"},
+      {"buffers.dsd", "decoder.dsd.buffer_size"},
       {"network.stall_timeout_s", "input.http.stall_timeout"},
       {"network.max_redirects", "input.http.max_redirects"},
   };
@@ -307,6 +323,8 @@ const std::map<std::string, std::string> &NativePlayer::defaultSettings() {
       {"buffers.flac", "1536000"},
       {"buffers.mpeg", "768000"},
       {"buffers.vorbis", "768000"},
+      {"buffers.wav", "1536000"},
+      {"buffers.dsd", "1536000"},
       {"network.stall_timeout_s",
        std::to_string(AudioGraphHttpStream::DEFAULT_STALL_TIMEOUT.count())},
       {"network.max_redirects",

@@ -3,7 +3,9 @@
 #include "AudioGraphHttpStream.h"
 #include "AudioStreamSwitcher.h"
 #include "Config.h"
-#include "DsdStreamDecoder.h"
+#include "ContainerStreamDecoder.h"
+#include "DsdContainer.h"
+#include "DsdFormat.h"
 #include "FileInputNode.h"
 #include "FlacStreamDecoder.h"
 #include "Log.h"
@@ -12,6 +14,7 @@
 #include "SineWaveNode.h"
 #include "StateMonitor.h"
 #include "VorbisStreamDecoder.h"
+#include "WavContainer.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -26,6 +29,8 @@ namespace {
 const size_t FLAC_BUFFER_SIZE = 1536000;
 const size_t MPEG_BUFFER_SIZE = 768000;
 const size_t VORBIS_BUFFER_SIZE = 768000;
+const size_t WAV_BUFFER_SIZE = 1536000;
+const size_t DSD_BUFFER_SIZE = 1536000;
 // 750KB, 50% of flac buffer size
 // approx. flac compression ratio is 50%
 const size_t HTTP_BUFFER_SIZE = 768000;
@@ -182,19 +187,15 @@ struct StreamNodes {
       if (value_or(config, "output.dsd_mode", std::string("disabled")) ==
           "disabled")
         return std::unexpected(DSD_DISABLED_ERROR);
-      return [id = id, config, startOffsetMs](auto input) {
-        auto select = [config](unsigned rate, unsigned channels) {
-          return chooseDsdOutput(
-              probeOutput(value_or(config, "output.alsa.device",
-                                   std::string("default"))),
-              value_or(config, "output.dsd_mode", std::string("disabled")),
-              rate, channels);
-        };
-        auto decoder =
-            std::make_shared<DsdStreamDecoder>(id, select, startOffsetMs);
-        decoder->connectTo(input);
-        return std::shared_ptr<AudioGraphOutputNode>(std::move(decoder));
-      };
+      return containing<DsdContainer>(
+          value_or(config, "decoder.dsd.buffer_size", DSD_BUFFER_SIZE),
+          startOffsetMs, [config](unsigned rate, unsigned channels) {
+            return chooseDsdOutput(
+                probeOutput(value_or(config, "output.alsa.device",
+                                     std::string("default"))),
+                value_or(config, "output.dsd_mode", std::string("disabled")),
+                rate, channels);
+          });
     case AudioFormat::FormatFlac:
       return decoding<FlacStreamDecoder>(
           value_or(config, "decoder.flac.buffer_size", FLAC_BUFFER_SIZE),
@@ -202,6 +203,10 @@ struct StreamNodes {
     case AudioFormat::FormatMpeg:
       return decoding<Mp3StreamDecoder>(
           value_or(config, "decoder.mpeg.buffer_size", MPEG_BUFFER_SIZE),
+          startOffsetMs);
+    case AudioFormat::FormatWav:
+      return containing<WavContainer>(
+          value_or(config, "decoder.wav.buffer_size", WAV_BUFFER_SIZE),
           startOffsetMs);
     case AudioFormat::FormatVorbis:
       return decoding<VorbisStreamDecoder>(
@@ -215,10 +220,29 @@ struct StreamNodes {
   template <typename Decoder>
   DecoderFactory decoding(size_t bufferSize, size_t startOffsetMs) const {
     return [id = id, bufferSize, startOffsetMs](auto input) {
-      auto decoder = std::make_shared<Decoder>(id, bufferSize, startOffsetMs);
-      decoder->connectTo(input);
-      return std::shared_ptr<AudioGraphOutputNode>(std::move(decoder));
+      return connected(std::make_shared<Decoder>(id, bufferSize, startOffsetMs),
+                       input);
     };
+  }
+
+  /// A ContainerStreamDecoder around the `Format` that `args` construct.
+  template <typename Format, typename... Args>
+  DecoderFactory containing(size_t bufferSize, size_t startOffsetMs,
+                            Args... args) const {
+    return [id = id, bufferSize, startOffsetMs, args...](auto input) {
+      return connected(
+          std::make_shared<ContainerStreamDecoder>(
+              id, std::make_unique<Format>(args...), bufferSize, startOffsetMs),
+          input);
+    };
+  }
+
+  template <typename Decoder>
+  static std::shared_ptr<AudioGraphOutputNode>
+  connected(std::shared_ptr<Decoder> decoder,
+            std::shared_ptr<AudioGraphOutputNode> input) {
+    decoder->connectTo(std::move(input));
+    return decoder;
   }
 
   StreamNodes(StreamNodes &&other)
