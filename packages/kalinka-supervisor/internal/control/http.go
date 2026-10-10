@@ -46,6 +46,8 @@ var outcomes = map[string]struct {
 	CodeNetworkChange:        {http.StatusConflict, "Nearby setup is changing the network; try again when it finishes"},
 	CodeTooSoon:              {http.StatusTooManyRequests, "Core was restarted moments ago"},
 	CodeUnavailable:          {http.StatusServiceUnavailable, "systemd did not carry out the request"},
+	CodeSetupUnavailable:     {http.StatusConflict, "Nearby setup is not running on this box"},
+	CodeSetupInUse:           {http.StatusConflict, "A phone is using nearby setup; try again when it finishes"},
 	"log_unreadable":         {http.StatusInternalServerError, "The reinstall log could not be read"},
 }
 
@@ -196,7 +198,8 @@ func (h *handler) status(w http.ResponseWriter, r *http.Request) string {
 	}
 	reply(w, http.StatusOK, map[string]any{
 		"core": s.Core, "core_port": h.cfg.CorePort(), "upgrading": s.Upgrading, "setup": h.cfg.Setup(), "pending": pending,
-		"reinstall": map[string]any{"state": s.Reinstall, "finished_at": finished},
+		"reinstall":  map[string]any{"state": s.Reinstall, "finished_at": finished},
+		"wifi_setup": map[string]any{"available": s.WifiSetup, "window_seconds": int(setupWindow.Seconds())},
 	}, false)
 	return ""
 }

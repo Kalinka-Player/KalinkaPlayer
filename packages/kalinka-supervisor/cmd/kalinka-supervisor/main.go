@@ -162,10 +162,10 @@ func run(ctx context.Context, o options, setupOn, apiOn bool) error {
 	defer cancel()
 	setup := &componentState{name: "Nearby setup"}
 	var service *provision.Service
-	var network control.NetworkActivity
+	var nearby control.NearbySetup
 	if setupOn {
 		service = provision.New(o.Options, func() uint16 { return uint16(corePort()) })
-		network = service
+		nearby = service
 		components.Go(func() {
 			supervise(ctx, component{
 				blocked: func() string { return provision.Blocked(o.Options, "/", exec.LookPath) },
@@ -186,7 +186,7 @@ func run(ctx context.Context, o options, setupOn, apiOn bool) error {
 		})
 		components.Go(func() { board.Run(ctx, 5*time.Second) })
 		simulated := o.Test || os.Geteuid() != 0
-		controller := control.NewController(systemd, network, reinstalls, sshaccess.New(simulated), time.Now)
+		controller := control.NewController(systemd, nearby, reinstalls, sshaccess.New(simulated), time.Now)
 		binding = control.NewBinding(o.listenPort, control.NewHandler(controller, control.HandlerConfig{
 			Version:      version,
 			ServerIDFile: o.IdentityFile,

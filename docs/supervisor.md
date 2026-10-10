@@ -3,7 +3,8 @@
 `kalinka-supervisor` replaces the experimental Python provisioning service.
 It provides nearby box setup and a LAN [control page and API](supervisor-control.md)
 on port 8001. They show how the box is doing, and restart Core, reboot or power
-off the box, or reinstall Kalinka. It runs independently
+off the box, reinstall Kalinka, or open nearby setup so the box can move to
+another Wi-Fi network. It runs independently
 of Core, its Python interpreter, its virtual environment and its plugins.
 Core still owns its HTTP API, mDNS, its identity and the existing OOBE. Nearby
 setup needs no app protocol change; see
@@ -121,9 +122,11 @@ same adapter/interface.
   network service, not a sandbox against a compromised root/kernel.
 
 BLE Just Works encryption does not prove ownership or prevent active
-man-in-the-middle attacks. This iteration authorizes nearby setup while offline;
-it does not authorize future destructive recovery. Disabling setup through
-`KALINKA_BLE_SETUP=0` still works in DietPi configuration or the unit environment.
+man-in-the-middle attacks. This iteration authorizes nearby setup while offline,
+and for 10 minutes after a LAN client asks for it through the control API's
+`wifi_setup`; it does not authorize future destructive recovery. Disabling
+setup through `KALINKA_BLE_SETUP=0` still works in DietPi configuration or the
+unit environment.
 
 ## Package updates today
 
@@ -177,10 +180,10 @@ separate from the provisioning machine:
    restart Core, restore a known-good release, and repair Core's environment.
    No endpoint accepts arbitrary commands, paths or package URLs. The control
    API's `Controller` already admits one action at a time, refuses during
-   installs, keeps reboot, power-off and reinstall off a Wi-Fi join or
-   rollback, and audits outcomes without secrets. Restarting Core, rebooting,
-   powering off and an online reinstall are delivered; the remaining actions
-   join it.
+   installs, keeps reboot, power-off, reinstall and opening setup off a Wi-Fi
+   join or rollback, and audits outcomes without secrets. Restarting Core, rebooting,
+   powering off, an online reinstall and opening nearby setup are delivered;
+   the remaining actions join it.
 3. The embedded control page and its dashboard keep working when Core is
    absent. BLE can advertise an additional recovery capability without
    changing the existing Wi-Fi UUIDs. The page's actions are served without
@@ -199,7 +202,7 @@ separate from the provisioning machine:
 6. Before adding release checks to Go, support offline recovery from one retained known-good Core build. Stage verified packages, wheels and any required Python runtime outside Core's venv. Promote a candidate only after a sustained healthy period **and actual successful use**, such as playback; process startup alone is not enough. Keep the previous known-good build until that confirmation, make promotion atomic, and never overwrite it with a failed update. A recovery request restores that exact retained build without checking GitHub or upgrading packages. Bound retained storage and version the manifest so future update ownership can change without losing recovery data.
 7. Updating the supervisor itself remains package-managed. A future signed-release updater needs its own rollback and startup-health mechanism; a broken supervisor cannot restore itself by executing its broken binary. systemd or an independent installer must retain that responsibility.
 
-Beyond the control page's four actions, no offline release restore, local
+Beyond the control page's five actions, no offline release restore, local
 admin socket or self-updater exists yet. These need their own threat model and
 failure-injection tests before they gain root actions.
 

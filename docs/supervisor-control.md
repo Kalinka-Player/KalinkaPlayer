@@ -7,6 +7,7 @@
 - restart Core;
 - reboot the box or power it off;
 - reinstall Kalinka;
+- open nearby setup, to move the box to another Wi-Fi network;
 - set up an SSH administrator login through the dashboard form;
 - tell which supervisor and protocol version it is talking to.
 
@@ -104,6 +105,13 @@ reach it and what they can make it do:
   and timeouts on reading, writing and idling. Responses are never cached.
 - **An audit line per action:** the path, the peer address and the outcome
   code. The body is never logged.
+- **Nearby setup on demand.** `wifi_setup` opens the BLE setup that a box
+  otherwise offers only while it is offline. Its pairing is Just Works, which
+  does not prove who is pairing, so while it is open anyone within Bluetooth
+  range could move the box to a network of their own. It closes after 10
+  minutes, and asking for it takes the same LAN access that can already
+  reboot or reinstall the box. `KALINKA_BLE_SETUP=0` turns it off along with
+  the rest of nearby setup.
 
 The SSH form grants administrator access under this same trusted-LAN model:
 anyone who can reach the dashboard can set the administrator's password.
@@ -129,7 +137,7 @@ is busy, including after a supervisor restart.
 {"name": "kalinka-supervisor", "version": "0.2.0",
  "protocol": 1, "min_protocol": 1,
  "server_id": "ee4d496c-3f6c-4388-a02e-f6a2f17829cd",
- "actions": ["restart_core", "reboot", "poweroff", "reinstall"]}
+ "actions": ["restart_core", "reboot", "poweroff", "reinstall", "wifi_setup"]}
 ```
 
 - `version` is the package version.
@@ -161,6 +169,7 @@ older than this API. Ordinary Core installations have no supervisor.
 | POST | `/v1/actions/reboot` | 202 `{"action": "reboot"}`, then the box reboots |
 | POST | `/v1/actions/poweroff` | 202 `{"action": "poweroff"}`, then the box powers off |
 | POST | `/v1/actions/reinstall` | 202 `{"action": "reinstall"}` once the reinstall has been queued |
+| POST | `/v1/actions/wifi_setup` | 202 `{"action": "wifi_setup"}` once nearby setup is open |
 | OPTIONS | any API path | CORS preflight |
 
 `GET /v1/status` returns:
@@ -168,7 +177,8 @@ older than this API. Ordinary Core installations have no supervisor.
 ```json
 {"core": "active", "core_port": 8000, "upgrading": false,
  "setup": "waiting", "pending": null,
- "reinstall": {"state": "failed", "finished_at": "2026-10-07T09:30:00Z"}}
+ "reinstall": {"state": "failed", "finished_at": "2026-10-07T09:30:00Z"},
+ "wifi_setup": {"available": false, "window_seconds": 600}}
 ```
 
 | Field | Meaning |
@@ -179,6 +189,8 @@ older than this API. Ordinary Core installations have no supervisor.
 | `pending` | `reboot` or `poweroff` once accepted, otherwise `null` |
 | `reinstall.state` | `running`, `succeeded`, `failed`, or `idle` if none has run |
 | `reinstall.finished_at` | When the last reinstall ended, or `null` |
+| `wifi_setup.available` | Whether `wifi_setup` can reach nearby setup now. It is `false` while setup is off, recovering an interrupted join, or bringing its radio up, even when `setup` is `running` |
+| `wifi_setup.window_seconds` | How long `wifi_setup` keeps nearby setup open |
 
 `GET /v1/dashboard` returns `host`, `services`, `kalinka` (the totals),
 `packages`, `plugins` and `python`. A figure the box cannot provide is `null`;
@@ -238,6 +250,23 @@ so it works when Core's own files are what is broken:
 The reinstall runs as long as it needs; apt and source builds on a Pi have no
 safe bound. While it runs, `upgrading` is true and every other action waits.
 
+**`wifi_setup`** opens [nearby setup](ble-provisioning.md) for 10 minutes
+(`wifi_setup.window_seconds`), even while the box is online, so the app on a
+phone near it can connect the box to another Wi-Fi network. Nothing is
+forgotten: the box stays on its current network until a phone starts a join,
+its Wi-Fi leaves that network while it tries the new one, and a join that
+fails rolls back to it. When the 10 minutes are over, an online box stops
+advertising. A scan, join or handoff already underway finishes first; a phone
+that is connected but has not started one loses setup. Asking again starts
+the 10 minutes over.
+
+The action needs nearby setup running with its radio up, which takes a
+Bluetooth adapter, a Wi-Fi interface and `KALINKA_BLE_SETUP` left on;
+`wifi_setup.available` says when that is. If setup restarts during the 10
+minutes, for instance after a Bluetooth error, it opens again for what is
+left of them. It is how a box whose old network still works, or one kept
+online by an Ethernet cable, changes networks without SSH.
+
 ## Refusals
 
 Every error has Core's shape, `{"detail": {"code": "...", "message": "..."}}`:
@@ -254,7 +283,9 @@ Every error has Core's shape, `{"detail": {"code": "...", "message": "..."}}`:
 | 409 | `busy` | Another action is still being carried out |
 | 409 | `shutting_down` | A reboot or power-off has been accepted |
 | 409 | `upgrade_in_progress` | `kalinka-reinstall.service`, `kalinka-upgrade.service` or `kalinka-renderer-upgrade.service` is running, stopping or queued |
-| 409 | `network_change_in_progress` | Reboot, power-off or reinstall while nearby setup is joining a network or rolling one back |
+| 409 | `network_change_in_progress` | Reboot, power-off, reinstall or `wifi_setup` while nearby setup is joining a network or rolling one back |
+| 409 | `setup_unavailable` | `wifi_setup` while `wifi_setup.available` is `false`: nearby setup is turned off, lacks a Bluetooth adapter or Wi-Fi interface, or is starting or restarting |
+| 409 | `setup_in_use` | `wifi_setup` while a phone is scanning or handing off through nearby setup |
 | 415 | `unsupported_media_type` | An action without `Content-Type: application/json` |
 | 429 | `too_soon` | A `restart_core` within 15 s of one that succeeded; `Retry-After` says when |
 | 500 | `log_unreadable` | The reinstall log exists but could not be read |
@@ -266,8 +297,9 @@ installation. A wedged one needs SSH or a power cycle. Core itself starting
 does **not** block a reboot or a reinstall, because a `bootstrap.sh` stuck
 installing packages is one of the main reasons to use either.
 
-Reboot, power-off and reinstall wait for a Wi-Fi join or rollback to finish.
-A restart of Core does not, as it leaves the network alone.
+Reboot, power-off, reinstall and `wifi_setup` wait for a Wi-Fi join or
+rollback to finish. A restart of Core does not, as it leaves the network
+alone.
 
 ## Where it listens
 
@@ -329,6 +361,10 @@ follow the same steps:
    - **`reinstall`:** poll `/v1/status` until `reinstall.state` leaves
      `running`, showing `/v1/reinstall/log` meanwhile.
    - **`poweroff`:** there is nothing to wait for.
+   - **`wifi_setup`:** offer it only while `/v1/status` reports
+     `wifi_setup.available`. There is nothing to wait for: send the user to
+     **Set up a box** in the app, on a phone near the box, within
+     `wifi_setup.window_seconds`.
 4. **Handle refusals.** Treat 409 and 429 as "not now": show the reason and
    keep the button. A 503 means systemd refused, so offer the action again.
 
