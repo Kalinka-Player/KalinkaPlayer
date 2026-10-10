@@ -17,7 +17,7 @@ from kalinka_plugin_localfiles.indexer.indexer import (
     is_supported_audio_file,
 )
 from kalinka_plugin_localfiles.indexer.indexer_db import AsyncIndexerDb
-from kalinka_plugin_localfiles.indexer.wav import open_pcm_wave
+from kalinka_plugin_localfiles.indexer.wav import UnsupportedWave, open_pcm_wave
 from kalinka_plugin_localfiles.storage import media_type_of
 
 
@@ -133,6 +133,23 @@ def test_wide_pcm_metadata(tmp_path, encoding, bits):
     metadata = fi._extract_metadata(storage, "wide.wav")
     assert metadata["stream_info"]["bits_per_sample"] == bits
     assert metadata["stream_info"]["codec"] == ("pcm_float" if encoding == 3 else "pcm")
+
+
+def test_odd_sized_audio_without_its_pad_byte_is_accepted():
+    # 24-bit mono, three frames: nine audio bytes and no pad after them.
+    body = fixture(bits=24, channels=1, rate=3)
+    body = body[: body.index(b"data") + 8 + 9]
+    body = b"RIFF" + struct.pack("<I", len(body) - 8) + body[8:]
+    wav = open_pcm_wave(io.BytesIO(body))
+    assert wav.info.bits_per_sample == 24
+    assert wav.info.channels == 1
+
+
+def test_metadata_past_the_renderer_limit_is_not_indexed():
+    body = bytearray(fixture())
+    body[7] = body[43] = 0x04  # The JUNK chunk and RIFF claim 64 MB more.
+    with pytest.raises(UnsupportedWave, match="header is too large"):
+        open_pcm_wave(io.BytesIO(bytes(body)))
 
 
 @pytest.mark.parametrize(
