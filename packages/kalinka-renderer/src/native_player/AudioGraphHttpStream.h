@@ -16,8 +16,8 @@
  * Follows HTTP(S) redirects up to the configured limit. Each range, retry, or
  * seek starts from the original URL so temporary media URLs can be refreshed.
  *
- * A stop or a seek interrupts a request within about a second, even one whose
- * sender has gone quiet.
+ * A stop or a seek wakes the request immediately, even when its sender has
+ * gone quiet or the reader is waiting to retry a failed request.
  */
 class AudioGraphHttpStream : public AudioGraphOutputNode {
 public:
@@ -76,8 +76,12 @@ private:
   size_t headerCallback(char *buffer, size_t size, size_t nitems);
 
   void handleSeekSignal(size_t position);
+  void performRequest(std::stop_token stopToken);
 
   curlpp::Easy request;
+  // Keep the connection cache across range requests, retries and seeks.
+  std::unique_ptr<CURLM, decltype(&curl_multi_cleanup)> multi{
+      curl_multi_init(), &curl_multi_cleanup};
 };
 
 #endif

@@ -46,6 +46,15 @@ protected:
   const std::chrono::seconds stallTimeout{1};
 
   void SetUp() override {}
+
+  bool waitForRequest(const std::string &path) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (server.requestsTo(path) == 0 &&
+           std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return server.requestsTo(path) == 1;
+  }
 };
 
 TEST_F(AudioGraphHttpStreamTest, constructor_destructor) {
@@ -620,25 +629,28 @@ TEST_F(AudioGraphHttpStreamTest, stopping_a_stalled_stream_is_prompt) {
   auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(
       1, server.url("/stall"), bufferSize);
   waitForStatus(*audioGraphHttpStream, AudioGraphNodeState::STREAMING);
+  // Let the callback return so cancellation has to wake a quiet socket.
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
   const auto stopping = std::chrono::steady_clock::now();
   audioGraphHttpStream.reset();
 
   EXPECT_LT(std::chrono::steady_clock::now() - stopping,
-            std::chrono::seconds(3));
+            std::chrono::milliseconds(250));
 }
 
 TEST_F(AudioGraphHttpStreamTest, seeking_a_stalled_stream_is_prompt) {
   auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(
       1, server.url("/stall-once"), bufferSize);
   waitForStatus(*audioGraphHttpStream, AudioGraphNodeState::STREAMING);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
   const auto expected = fileContent(file);
   const size_t position = expected.size() / 2;
 
   const auto seeking = std::chrono::steady_clock::now();
   EXPECT_EQ(audioGraphHttpStream->seekTo(position), position);
   EXPECT_LT(std::chrono::steady_clock::now() - seeking,
-            std::chrono::seconds(3));
+            std::chrono::milliseconds(250));
 
   const auto content = readToEnd(*audioGraphHttpStream);
   EXPECT_EQ(audioGraphHttpStream->getState().state,
@@ -646,6 +658,29 @@ TEST_F(AudioGraphHttpStreamTest, seeking_a_stalled_stream_is_prompt) {
   ASSERT_EQ(content.size(), expected.size() - position);
   EXPECT_TRUE(std::equal(content.begin(), content.end(),
                          expected.begin() + position));
+}
+
+TEST_F(AudioGraphHttpStreamTest, stop_wakes_request_before_headers) {
+  auto stream = std::make_unique<AudioGraphHttpStream>(
+      1, server.url("/silent-once"), bufferSize);
+  ASSERT_TRUE(waitForRequest("/silent-once"));
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const auto stopping = std::chrono::steady_clock::now();
+  stream.reset();
+  EXPECT_LT(std::chrono::steady_clock::now() - stopping,
+            std::chrono::milliseconds(250));
+}
+
+TEST_F(AudioGraphHttpStreamTest, stop_wakes_http_retry_backoff) {
+  auto stream = std::make_unique<AudioGraphHttpStream>(
+      1, server.url("/fail-once"), bufferSize);
+  ASSERT_TRUE(waitForRequest("/fail-once"));
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const auto stopping = std::chrono::steady_clock::now();
+  stream.reset();
+  EXPECT_LT(std::chrono::steady_clock::now() - stopping,
+            std::chrono::milliseconds(250));
+  EXPECT_EQ(server.requestsTo("/fail-once"), 1u);
 }
 
 TEST_F(AudioGraphHttpStreamTest, stalls_between_progress_do_not_use_up_retries) {

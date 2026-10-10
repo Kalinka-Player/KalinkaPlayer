@@ -44,7 +44,7 @@ find_package(Boost CONFIG REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(Threads REQUIRED)
 find_package(ALSA REQUIRED)
-find_package(CURL REQUIRED)
+find_package(CURL 7.68 REQUIRED) # curl_multi_wakeup for prompt stream cancellation
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FLACPP REQUIRED IMPORTED_TARGET flac++)
 pkg_check_modules(VORBISFILE REQUIRED IMPORTED_TARGET vorbisfile)
