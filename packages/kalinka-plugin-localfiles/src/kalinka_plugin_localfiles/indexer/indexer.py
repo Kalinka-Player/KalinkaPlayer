@@ -75,6 +75,7 @@ from ..utils.name_utils import (
 from .cue import find_cue_for, parse_cue
 from .dsd import native_dsdiff_tags
 from .ogg import NoVorbisStream, open_ogg_vorbis, open_ogg_vorbis_tags
+from .wav import UnsupportedWave, open_pcm_wave
 from .id_generator import (
     generate_artist_id,
     generate_album_id,
@@ -101,7 +102,9 @@ from ..clustering.classify import (  # noqa: E402
 )
 
 
-SUPPORTED_AUDIO_EXTENSIONS = {".mp3", ".flac", ".ogg", ".oga", ".dsf", ".dff"}
+SUPPORTED_AUDIO_EXTENSIONS = {
+    ".mp3", ".flac", ".wav", ".wave", ".ogg", ".oga", ".dsf", ".dff"
+}
 
 # Base64 images, kept out of the evidence as APIC frames are for ID3.
 _PICTURE_COMMENTS = ("metadata_block_picture", "coverart")
@@ -1150,6 +1153,9 @@ class FileIndexer:
                 file_path,
             )
             return None
+        except UnsupportedWave as e:
+            logger.warning("Not indexing %s: %s", file_path, e)
+            return None
         except Exception as e:
             failure = storage_failure(e)
             if failure is not None:
@@ -1214,6 +1220,15 @@ class FileIndexer:
 
     def _extract_dsf_metadata(self, dsf: DSF, audio: BinaryIO, metadata: Dict) -> Dict:
         return self._extract_dsd_metadata(dsf, metadata, "dsf")
+
+    def _extract_wav_metadata(self, wav, audio: BinaryIO, metadata: Dict) -> Dict:
+        codec = "pcm_float" if wav.info.audio_format == 3 else "pcm"
+        metadata = self._extract_id3_metadata(wav, metadata, codec)
+        metadata["stream_info"].update(
+            bits_per_sample=wav.info.bits_per_sample,
+            container="wav",
+        )
+        return metadata
 
     def _extract_dsdiff_metadata(
         self, dsdiff: DSDIFF, audio: BinaryIO, metadata: Dict
@@ -1440,6 +1455,7 @@ class FileIndexer:
     _TAG_FORMATS = {
         "audio/mpeg": _TagFormat(MP3, _extract_mp3_metadata, _id3_cover),
         "audio/flac": _TagFormat(FLAC, _extract_flac_metadata, _flac_cover),
+        "audio/wav": _TagFormat(open_pcm_wave, _extract_wav_metadata, _id3_cover),
         "audio/ogg": _TagFormat(
             open_ogg_vorbis,
             _extract_ogg_vorbis_metadata,

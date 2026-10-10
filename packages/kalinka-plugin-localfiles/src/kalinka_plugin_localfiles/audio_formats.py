@@ -11,6 +11,8 @@ MEDIA_TYPES = {
     **DSD_MEDIA_TYPES,
     ".mp3": "audio/mpeg",
     ".flac": "audio/flac",
+    ".wav": "audio/wav",
+    ".wave": "audio/wav",
     ".ogg": "audio/ogg",
     ".oga": "audio/ogg",
 }
