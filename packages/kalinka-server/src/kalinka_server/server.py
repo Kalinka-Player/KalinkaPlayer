@@ -111,7 +111,7 @@ from .renderer_sessions import (
     SessionOpenFailed,
     SessionPool,
 )
-from .renderer_upgrade import RendererUpgradeService, UpgradeRefused
+from .renderer_upgrade import RendererUpgradeService
 from .renderer_test_tone import (
     TONE_DIR,
     TONE_MOUNT_NAME,
@@ -1519,30 +1519,6 @@ async def create_app(
             "renderers": renderers,
             "volume_control_modules": _volume_control_modules(),
         }
-
-    @app.post("/renderer/{renderer_id}/upgrade")
-    async def renderer_upgrade(renderer_id: str):
-        """Ask one renderer to install the latest published release.
-
-        Answers as soon as the renderer has taken the request on; it then
-        restarts and re-registers, which is what reports the outcome. Refused
-        while a playback session is running on it, and for a renderer that
-        cannot install a release of itself.
-        """
-        latest = update_check.checker.latest_renderer
-        if not latest:
-            raise HTTPException(
-                status_code=409, detail="No renderer release is known yet"
-            )
-        try:
-            detail = await renderer_upgrades.upgrade(renderer_id, latest)
-        except RendererUnavailable as e:
-            raise HTTPException(status_code=404, detail=str(e))
-        except UpgradeRefused as e:
-            raise HTTPException(status_code=409, detail=str(e))
-        except asyncio.TimeoutError:
-            raise HTTPException(status_code=504, detail="The renderer did not answer")
-        return {"renderer_id": renderer_id, "version": latest, "detail": detail}
 
     @app.get("/renderer/sessions")
     async def renderer_session_list():
