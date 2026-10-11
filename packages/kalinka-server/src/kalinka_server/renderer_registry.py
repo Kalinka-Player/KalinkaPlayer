@@ -55,6 +55,9 @@ class RendererRecord:
     # The server (host, port) the renderer dialed to register — an address it
     # provably reaches, which no server-side guess can promise.
     server_addr: Optional[tuple[str, int]] = None
+    # The IPv4 address it connected from, where a client finds the supervisor
+    # of a box that runs only a renderer; None for a loopback or other address.
+    address: Optional[str] = None
     # False when the renderer's protocol range excludes this Core's version.
     compatible: bool = True
     # Whether the renderer can install a new release of itself on request.
@@ -156,6 +159,7 @@ class RendererRegistry:
         platform: dict[str, str],
         session: RendererLink,
         server_addr: Optional[tuple[str, int]] = None,
+        address: Optional[str] = None,
         compatible: bool = True,
         upgrade_supported: bool = False,
         local: bool = False,
@@ -194,6 +198,7 @@ class RendererRegistry:
             connected_at=connected_at,
             last_seen=now,
             server_addr=server_addr,
+            address=address,
             session=session,
             compatible=compatible,
             upgrade_supported=upgrade_supported,
@@ -463,6 +468,7 @@ class RendererRegistry:
                 "active": record.renderer_id == active,
                 "selected": record.renderer_id == selected,
                 "local": record.local,
+                "address": record.address,
             }
             for record in self._by_name()
         ]

@@ -5,9 +5,11 @@ drains it, so message handling never stalls the socket read.
 """
 
 import asyncio
+import ipaddress
 import logging
 import time
 from pathlib import Path
+from typing import Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
 from google.protobuf.message import DecodeError
@@ -61,6 +63,21 @@ def runs_here(machine_id: str) -> bool:
         return machine_id == Path("/etc/machine-id").read_text().strip()
     except OSError:
         return False
+
+
+def lan_address(host: Optional[str]) -> Optional[str]:
+    """The peer's address as a client on the network can reach it: IPv4, as the
+    box's supervisor listens, and never loopback, which names the client's own
+    machine rather than the renderer's."""
+    try:
+        ip = ipaddress.ip_address(host or "")
+    except ValueError:
+        return None
+    if ip.version == 6:
+        ip = ip.ipv4_mapped
+    if ip is None or ip.is_loopback or ip.is_unspecified:
+        return None
+    return str(ip)
 
 
 def _capabilities(capabilities: pb.Capabilities) -> OutputCapabilities:
@@ -249,6 +266,7 @@ async def handle_renderer_connection(
                     )
                 # The accepted socket's local address — what the renderer dialed.
                 addr = websocket.scope.get("server")
+                peer = websocket.scope.get("client")
                 registry.register(
                     renderer_id=hello.renderer_id,
                     instance_id=hello.instance_id,
@@ -265,6 +283,7 @@ async def handle_renderer_connection(
                     session=session,
                     upgrade_supported=hello.upgrade_supported,
                     server_addr=(addr[0], addr[1]) if addr and addr[1] else None,
+                    address=lan_address(peer[0] if peer else None),
                     compatible=compatible,
                     local=runs_here(hello.platform.machine_id),
                     capabilities=(

@@ -188,6 +188,24 @@ async def test_an_incompatible_local_renderer_is_recognised(monkeypatch):
     assert registry.list()[0]["local"] is True
 
 
+@pytest.mark.parametrize(
+    "client, address",
+    [
+        (("192.168.50.20", 51234), "192.168.50.20"),
+        (("::ffff:192.168.50.21", 51234), "192.168.50.21"),
+        (("127.0.0.1", 40000), None),
+        (("::1", 40000), None),
+        (("fe80::1", 40000), None),
+        (None, None),
+    ],
+)
+async def test_the_renderer_is_listed_at_the_address_it_connected_from(
+    client, address
+):
+    _, registry = await _run([_hello()], client=client)
+    assert registry.list()[0]["address"] == address
+
+
 def test_missing_machine_identity_is_not_local(monkeypatch):
     def missing(_):
         raise FileNotFoundError
