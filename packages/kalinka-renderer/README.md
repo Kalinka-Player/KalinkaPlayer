@@ -236,4 +236,7 @@ app bundle — and install with:
 
 The server's own installer runs that script for the machine it installs on, so
 a stock install already has a local renderer and upgrades it along with the
-server. Boxes that only render run the script themselves.
+server. Boxes that only render run the script themselves. With
+`KALINKA_SUPERVISOR=1` it also installs the supervisor, on Debian-based
+systems, which lets the app set such a Pi up for its DAC HAT
+([the sound card](../../docs/supervisor-control.md#the-sound-card)).
