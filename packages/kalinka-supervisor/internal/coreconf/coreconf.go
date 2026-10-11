@@ -1,4 +1,5 @@
-// Package coreconf reads the Core settings the supervisor follows, without needing Core to run.
+// Package coreconf reads the Core settings the supervisor follows, and the
+// identities of the box's Kalinka services, without needing any of them to run.
 package coreconf
 
 import (
@@ -8,16 +9,33 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	DefaultPath   = "/etc/kalinka/kalinka_conf.cfg"
-	IdentityPath  = "/var/lib/kalinka/server_id"
-	AllInterfaces = "all"
+	DefaultPath          = "/etc/kalinka/kalinka_conf.cfg"
+	IdentityPath         = "/var/lib/kalinka/server_id"
+	RendererIdentityPath = "/var/lib/kalinka-renderer/renderer_id"
+	AllInterfaces        = "all"
+	// Unit is Core's systemd unit.
+	Unit = "kalinka.service"
 )
+
+// unitDirs are where a package may install Core's unit; Debian's goes to /etc.
+var unitDirs = []string{"etc/systemd/system", "usr/lib/systemd/system", "lib/systemd/system"}
+
+// Installed reports whether Core is installed under root: a box may run only a renderer.
+func Installed(root string) bool {
+	for _, dir := range unitDirs {
+		if _, err := os.Stat(filepath.Join(root, dir, Unit)); err == nil {
+			return true
+		}
+	}
+	return false
+}
 
 // Config is the part of Core's configuration that decides where Core listens.
 type Config struct {
@@ -58,8 +76,8 @@ func Read(path string) (Config, error) {
 	return c, nil
 }
 
-// ServerID returns Core's identity from path, or "" when Core has not created one or it is not plausible.
-func ServerID(path string) string {
+// ReadID returns the identity a Kalinka service stored at path, or "" when it has not created one or it is not plausible.
+func ReadID(path string) string {
 	f, err := os.Open(path)
 	if err != nil {
 		return ""

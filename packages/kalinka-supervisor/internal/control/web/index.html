@@ -17,6 +17,7 @@
   <symbol id="i-reinstall" viewBox="0 0 24 24"><path d="M12 3.5v11"/><path d="M7.5 10l4.5 4.5 4.5-4.5"/><path d="M4.5 16.5v3h15v-3"/></symbol>
   <symbol id="i-open" viewBox="0 0 24 24"><path d="M14 4.5h5.5V10"/><path d="M19.5 4.5L11 13"/><path d="M17.5 14v4.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1H10"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-sound" viewBox="0 0 24 24"><path d="M4.5 9.5h3l4.5-4v13l-4.5-4h-3z"/><path d="M15.5 9a4 4 0 0 1 0 6"/><path d="M18 6.5a7.5 7.5 0 0 1 0 11"/></symbol>
   <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 8.5v5"/><path d="M12 16.8v.2"/><path d="M10.3 4.2L2.8 17.5a2 2 0 0 0 1.7 3h15a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0z"/></symbol>
 </svg>
 
@@ -69,6 +70,17 @@
         <button class="button neutral" type="button" data-action="reinstall">Reinstall</button>
       </article>
     </div>
+  </section>
+
+  <section class="card" id="soundcard" hidden>
+    <h2 class="label">Sound card</h2>
+    <dl class="facts" id="soundcard-facts"></dl>
+    <p class="notice notice-wait" id="soundcard-hint" hidden></p>
+    <div class="pick">
+      <label for="soundcard-select">Set this box up for<select id="soundcard-select"></select></label>
+      <button class="button accent" type="button" id="soundcard-apply">Apply</button>
+    </div>
+    <p class="footnote">A HAT with an ID chip sets itself up. For any other, choose it here: the box restarts once if its boot configuration has to change.</p>
   </section>
 
   <section class="card" id="ssh" {{if not .SSH}}hidden{{end}}>

@@ -96,7 +96,13 @@ To refresh the key when DietPi rotates it, fetch it by fingerprint (`https://key
 
 ### Sound cards on the Pi images
 
-ALSA is installed, and marked installed for DietPi's own tools, so choosing a sound card never needs a network. A DAC HAT with an ID EEPROM needs nothing: the Pi firmware loads its overlay at boot, and with onboard audio off in DietPi's `config.txt` it becomes the default card. For a HAT without one, `CONFIG_SOUNDCARD=` in `dietpi.txt` names it, and `kalinka-soundcard.service` hands it to DietPi's `dietpi-set_hardware` before the renderer starts, restarting once if the boot configuration changed. `none` is not handed on, since DietPi's handling of it removes ALSA, but it does make the hook forget the last card, so naming that card again applies it again. The values that download something — `allo-piano*` firmware, the `-eq` variants — need a network the first time, so the hook waits for one. The Pi 5 has no 3.5 mm output.
+ALSA is installed, and marked installed for DietPi's own tools, so choosing a sound card never needs a network. A DAC HAT with a compliant ID EEPROM needs nothing: the Pi firmware loads its overlay at boot, and with onboard audio off in DietPi's `config.txt` it becomes the default card.
+
+Any other HAT can be chosen two ways. Before the first start, `CONFIG_SOUNDCARD=` in `dietpi.txt` names it, and `kalinka-soundcard.service` applies it before the renderer starts, restarting once if the boot configuration changed. After the first start, the app or the supervisor's control page sets it, through the same helper. The unit and its helper, `soundcard.sh`, ship in the supervisor package, which the build installs; `install_supervisor` enables the unit, as the package's own hook cannot in the build chroot.
+
+The helper hands the cards DietPi knows to DietPi's `dietpi-set_hardware`, and sets up the others, such as `i2s-dac`, by editing `config.txt` itself. `none` is not handed on, since DietPi's handling of it removes ALSA, but it does make the helper forget the last card, so naming that card again applies it again. The values that download something — `allo-piano*` firmware, the `-eq` variants — need a network the first time, so the boot unit waits for one; the app does not offer them. The Pi 5 has no 3.5 mm output.
+
+The build switches the HAT's I2C bus on (`dtparam=i2c_arm=on`) and loads `i2c-dev` at boot, so the supervisor can read a HAT's chips and suggest boards that carry no ID chip. A device that uses GPIO 2 or 3 for something else, such as a power button on GPIO 3, then needs that line removed.
 
 ## Tests
 
@@ -110,13 +116,13 @@ ALSA is installed, and marked installed for DietPi's own tools, so choosing a so
 - **`test_growroot.sh`** runs the grow step against faked SD, SATA and NVMe device names, and against media the image already fills.
 - **`test_systemctl_shim.sh`** pins down which verbs reach the real `systemctl` and which are swallowed.
 - **`test_firstboot.sh`** runs the Debian image's first boot for real — a real `useradd`, a real `ssh-keygen` — and checks the account, the key, the Wi-Fi profile and its permissions, that two machines get different host keys, that a file saved on Windows or holding a setting that fails is still applied as far as it can be, and that the configuration file does not survive being read.
-- **`test_soundcard.sh`** runs the sound-card hook against a stand-in for DietPi's tool: applied once, one restart only when the boot configuration changed, nothing for `none` beyond forgetting the last card, and ordered after the network.
+- **`test_soundcard.sh`**, for the sound-card helper, is in the supervisor package with the helper; `make supervisor-test` runs it.
 
 The last three edit `/etc`, so they skip themselves unless `KALINKA_IMAGE_TEST_DISPOSABLE=1` says the system is throwaway. `make image-test` supplies that by running them in a container.
 
 [`tests/vm/`](tests/vm) boots a copy of the PC image under UEFI with Secure Boot disabled. The test waits for Core's HTTP endpoint, then powers the guest off through the supervisor's control API, falling back to the power button. Offline, it checks the expanded filesystem, DietPi first-boot completion, networking packages, the supervisor installation, and the supervisor's journal: the control API listened, setup waited for a radio, and the power-off was accepted. `boot.sh` needs KVM, QEMU and OVMF; set `OVMF_CODE` and `OVMF_VARS` to your host's plain UEFI firmware. `inspect.sh` needs root. The old debootstrap first-boot tests remain for the retained library, which no current target uses.
 
-`test_dietpi_uefi.sh` verifies that expanding the GPT image preserves the setup partition's bytes and every partition identifier. `test_supervisor_image.sh` checks radio settings, service ordering, the always-on unit and its package hooks.
+`test_dietpi_uefi.sh` verifies that expanding the GPT image preserves the setup partition's bytes and every partition identifier. `test_supervisor_image.sh` checks radio settings, the HAT's I2C bus, service ordering, the always-on unit, the sound-card helper in the package, and its package hooks.
 
 ### Building the supervisor
 

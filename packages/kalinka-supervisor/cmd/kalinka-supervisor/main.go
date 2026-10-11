@@ -22,6 +22,7 @@ import (
 	"kalinka/supervisor/internal/dashboard"
 	"kalinka/supervisor/internal/protocol"
 	"kalinka/supervisor/internal/provision"
+	"kalinka/supervisor/internal/soundcard"
 	"kalinka/supervisor/internal/sshaccess"
 	"kalinka/supervisor/internal/system"
 )
@@ -36,7 +37,7 @@ const (
 
 type options struct {
 	provision.Options
-	config               string
+	config, rendererID   string
 	corePort, listenPort int
 	version              bool
 }
@@ -48,6 +49,7 @@ func parse(args []string) (options, error) {
 	f.StringVar(&o.Interface, "interface", "", "Wi-Fi interface (auto-detected by default)")
 	f.StringVar(&o.Adapter, "adapter", "hci0", "BlueZ adapter")
 	f.StringVar(&o.IdentityFile, "server-id-file", coreconf.IdentityPath, "Core identity file")
+	f.StringVar(&o.rendererID, "renderer-id-file", coreconf.RendererIdentityPath, "Renderer identity file")
 	f.StringVar(&o.config, "server-config", coreconf.DefaultPath, "Core configuration file")
 	f.StringVar(&o.State, "state-dir", "", "Private persistent supervisor state directory")
 	f.StringVar(&o.Runtime, "runtime-dir", "", "Private runtime directory")
@@ -186,16 +188,20 @@ func run(ctx context.Context, o options, setupOn, apiOn bool) error {
 		})
 		components.Go(func() { board.Run(ctx, 5*time.Second) })
 		simulated := o.Test || os.Geteuid() != 0
-		controller := control.NewController(systemd, network, reinstalls, sshaccess.New(simulated), time.Now)
+		controller := control.NewController(systemd, network, reinstalls, sshaccess.New(simulated), soundcard.NewApplier(simulated), time.Now)
 		binding = control.NewBinding(o.listenPort, control.NewHandler(controller, control.HandlerConfig{
-			Version:      version,
-			ServerIDFile: o.IdentityFile,
-			CorePort:     corePort,
-			Setup:        setup.Phase,
-			Dashboard:    func(ctx context.Context) any { return board.Snapshot(ctx) },
-			Reinstalls:   reinstalls,
-			EnableSSH:    controller.EnableSSH,
-			Simulated:    simulated,
+			Version:        version,
+			ServerIDFile:   o.IdentityFile,
+			RendererIDFile: o.rendererID,
+			// A simulated run shows every control, whatever the machine it runs on has installed.
+			CoreInstalled: func() bool { return simulated || coreconf.Installed("/") },
+			Soundcards:    soundcard.New("/", soundcard.OpenI2C),
+			CorePort:      corePort,
+			Setup:         setup.Phase,
+			Dashboard:     func(ctx context.Context) any { return board.Snapshot(ctx) },
+			Reinstalls:    reinstalls,
+			EnableSSH:     controller.EnableSSH,
+			Simulated:     simulated,
 		}))
 		defer binding.Close()
 	}

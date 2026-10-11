@@ -7,11 +7,12 @@ import (
 	"log/slog"
 
 	"github.com/godbus/dbus/v5"
+	"kalinka/supervisor/internal/coreconf"
 	"kalinka/supervisor/internal/dbusx"
 )
 
 const (
-	CoreUnit     = "kalinka.service"
+	CoreUnit     = coreconf.Unit
 	systemd1     = "org.freedesktop.systemd1"
 	manager      = dbus.ObjectPath("/org/freedesktop/systemd1")
 	managerIface = systemd1 + ".Manager"

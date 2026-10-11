@@ -6,22 +6,39 @@ import (
 	"time"
 
 	"kalinka/supervisor/internal/protocol"
+	"kalinka/supervisor/internal/soundcard"
 )
 
 // Action names one privileged operation a client may request.
 type Action string
 
 const (
-	RestartCore Action = "restart_core"
-	Reboot      Action = "reboot"
-	PowerOff    Action = "poweroff"
-	Reinstall   Action = "reinstall"
+	RestartCore  Action = "restart_core"
+	Reboot       Action = "reboot"
+	PowerOff     Action = "poweroff"
+	Reinstall    Action = "reinstall"
+	SetSoundcard Action = "set_soundcard"
 )
 
 // Supported lists every action this protocol version serves, in the order /info reports them.
-var Supported = []Action{RestartCore, Reboot, PowerOff, Reinstall}
+var Supported = []Action{RestartCore, Reboot, PowerOff, Reinstall, SetSoundcard}
 
 const enableSSH Action = "enable_ssh"
+
+// helperUnits run the packaged helpers; while one is busy, no other action may start.
+var helperUnits = []string{"kalinka-ssh-setup.service", soundcard.BootUnit, soundcard.ApplyUnit}
+
+// Request is an admitted action's input: the action, and the card set_soundcard makes the box's own.
+type Request struct {
+	Action    Action
+	Soundcard string
+}
+
+// SoundcardApplier makes a catalogued sound card the box's own.
+type SoundcardApplier interface {
+	// Apply reports whether the boot configuration changed, so the card loads only after a restart.
+	Apply(ctx context.Context, name string) (bool, error)
+}
 
 // SSHSetup enables the dashboard's fixed administrator account and SSH service.
 type SSHSetup interface {
@@ -39,6 +56,9 @@ func (a Action) target() (Target, bool) {
 	return "", false
 }
 
+// needsCore reports whether the action acts on Core, which a box running only a renderer does not have.
+func (a Action) needsCore() bool { return a == RestartCore || a == Reinstall }
+
 // Refusal codes; each is a fixed, client-facing reason an action did not run.
 const (
 	CodeBusy          = "busy"
@@ -47,6 +67,7 @@ const (
 	CodeNetworkChange = "network_change_in_progress"
 	CodeTooSoon       = "too_soon"
 	CodeUnavailable   = "unavailable"
+	CodeSoundcard     = "soundcard_failed"
 )
 
 // Refusal says why an action did not run, and when to retry if that is known.
@@ -64,10 +85,13 @@ type NetworkActivity interface {
 	ChangingNetwork() bool
 }
 
-// Operation is an admitted action. Exactly one Run must follow Begin; the
-// controller admits nothing else until it returns.
+// Operation is an admitted action. Exactly one Run must follow Begin. Run
+// names the shutdown the action ends in, or "" for none; a named one is
+// started by exactly one Shutdown, once the reply is on the wire. The
+// controller admits nothing else until the last of them returns.
 type Operation interface {
-	Run(context.Context) error
+	Run(context.Context) (Target, error)
+	Shutdown(context.Context) error
 }
 
 // Status is a point-in-time view of what the controller looks after.
@@ -89,6 +113,7 @@ type Controller struct {
 	network         NetworkActivity
 	reinstalls      ReinstallRecord
 	ssh             SSHSetup
+	soundcards      SoundcardApplier
 	now             func() time.Time
 	restartInterval time.Duration
 
@@ -99,8 +124,8 @@ type Controller struct {
 }
 
 // NewController takes network as nil when nearby setup is off.
-func NewController(s Systemd, network NetworkActivity, reinstalls ReinstallRecord, ssh SSHSetup, now func() time.Time) *Controller {
-	return &Controller{systemd: s, network: network, reinstalls: reinstalls, ssh: ssh, now: now, restartInterval: 15 * time.Second}
+func NewController(s Systemd, network NetworkActivity, reinstalls ReinstallRecord, ssh SSHSetup, soundcards SoundcardApplier, now func() time.Time) *Controller {
+	return &Controller{systemd: s, network: network, reinstalls: reinstalls, ssh: ssh, soundcards: soundcards, now: now, restartInterval: 15 * time.Second}
 }
 
 // EnableSSH shares the action lock and admission policy without adding a protocol action.
@@ -113,7 +138,7 @@ func (c *Controller) EnableSSH(ctx context.Context, password protocol.Secret) er
 		c.running = false
 		c.mu.Unlock()
 	}()
-	if err := c.admit(ctx, enableSSH); err != nil {
+	if err := c.admit(ctx, Request{Action: enableSSH}); err != nil {
 		return err
 	}
 	if c.ssh == nil {
@@ -122,18 +147,18 @@ func (c *Controller) EnableSSH(ctx context.Context, password protocol.Secret) er
 	return c.ssh.Enable(ctx, password)
 }
 
-// Begin admits a, or returns a *Refusal saying why it may not run now.
-func (c *Controller) Begin(ctx context.Context, a Action) (Operation, error) {
-	if err := c.reserve(a); err != nil {
+// Begin admits r, or returns a *Refusal saying why it may not run now.
+func (c *Controller) Begin(ctx context.Context, r Request) (Operation, error) {
+	if err := c.reserve(r.Action); err != nil {
 		return nil, err
 	}
-	if err := c.admit(ctx, a); err != nil {
+	if err := c.admit(ctx, r); err != nil {
 		c.mu.Lock()
 		c.running = false
 		c.mu.Unlock()
 		return nil, err
 	}
-	return &operation{c, a}, nil
+	return &operation{c: c, req: r}, nil
 }
 
 func (c *Controller) reserve(a Action) error {
@@ -154,13 +179,16 @@ func (c *Controller) reserve(a Action) error {
 	return nil
 }
 
-func (c *Controller) admit(ctx context.Context, a Action) error {
-	setup, err := c.systemd.Unit(ctx, "kalinka-ssh-setup.service")
-	if err != nil {
-		return refuse(CodeUnavailable)
-	}
-	if setup.Busy() {
-		return refuse(CodeBusy)
+func (c *Controller) admit(ctx context.Context, r Request) error {
+	a := r.Action
+	for _, unit := range helperUnits {
+		state, err := c.systemd.Unit(ctx, unit)
+		if err != nil {
+			return refuse(CodeUnavailable)
+		}
+		if state.Busy() {
+			return refuse(CodeBusy)
+		}
 	}
 	installing, err := c.installing(ctx)
 	if err != nil {
@@ -175,6 +203,16 @@ func (c *Controller) admit(ctx context.Context, a Action) error {
 	// Core being mid-start blocks nothing: a wedged bootstrap is a main reason to reboot or reinstall.
 	if c.network != nil && c.network.ChangingNetwork() {
 		return refuse(CodeNetworkChange)
+	}
+	if a == SetSoundcard {
+		if c.soundcards == nil {
+			return refuse(CodeUnavailable)
+		}
+		// Checked first: a card applied without the restart it needs would stay silent.
+		if c.systemd.CheckTarget(ctx, RebootTarget) != nil {
+			return refuse(CodeUnavailable)
+		}
+		return nil
 	}
 	target, terminal := a.target()
 	if !terminal {
@@ -191,28 +229,60 @@ func (c *Controller) admit(ctx context.Context, a Action) error {
 
 type operation struct {
 	c      *Controller
-	action Action
+	req    Request
+	target Target
 }
 
-func (o *operation) Run(ctx context.Context) error {
+func (o *operation) Run(ctx context.Context) (Target, error) {
 	c := o.c
-	var err error
-	if target, terminal := o.action.target(); terminal {
-		err = c.systemd.Shutdown(ctx, target)
-	} else if o.action == Reinstall {
-		err = c.systemd.Reinstall(ctx)
-	} else {
-		err = c.systemd.RestartCore(ctx)
+	switch o.req.Action {
+	case Reboot, PowerOff:
+		o.target, _ = o.req.Action.target()
+		return o.target, nil
+	case SetSoundcard:
+		return o.setSoundcard(ctx)
+	case Reinstall:
+		return "", o.finish(c.systemd.Reinstall(ctx))
 	}
+	err := c.systemd.RestartCore(ctx)
+	if err == nil {
+		c.mu.Lock()
+		c.lastRestart = c.now()
+		c.mu.Unlock()
+	}
+	return "", o.finish(err)
+}
+
+func (o *operation) setSoundcard(ctx context.Context) (Target, error) {
+	c := o.c
+	reboot, err := c.soundcards.Apply(ctx, o.req.Soundcard)
+	if err != nil {
+		o.finish(nil)
+		return "", refuse(CodeSoundcard)
+	}
+	if !reboot {
+		return "", o.finish(nil)
+	}
+	c.mu.Lock()
+	c.pending = Reboot
+	c.mu.Unlock()
+	o.target = RebootTarget
+	return o.target, nil
+}
+
+func (o *operation) Shutdown(ctx context.Context) error {
+	return o.finish(o.c.systemd.Shutdown(ctx, o.target))
+}
+
+// finish releases the controller; a failure also abandons any pending shutdown, so the action can be retried.
+func (o *operation) finish(err error) error {
+	c := o.c
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.running = false
 	if err != nil {
 		c.pending = ""
 		return refuse(CodeUnavailable)
-	}
-	if o.action == RestartCore {
-		c.lastRestart = c.now()
 	}
 	return nil
 }

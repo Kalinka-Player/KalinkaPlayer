@@ -16,6 +16,7 @@ import (
 
 	"kalinka/supervisor/internal/coreconf"
 	"kalinka/supervisor/internal/protocol"
+	"kalinka/supervisor/internal/soundcard"
 )
 
 const (
@@ -25,20 +26,23 @@ const (
 	maxBody     = 1024
 	// Each phase gets its own deadline, together under the server's write timeout.
 	phaseTimeout = 5 * time.Second
-	accepted     = "accepted"
+	// soundcardTimeout bounds the helper, which systemd stops after 80 seconds.
+	soundcardTimeout = 90 * time.Second
+	accepted         = "accepted"
 )
 
 var outcomes = map[string]struct {
 	status  int
 	message string
 }{
-	"invalid_request":        {http.StatusBadRequest, "The request body must be a JSON object with only server_id"},
+	"invalid_request":        {http.StatusBadRequest, "The request body must be a JSON object with only the box's identity and, for set_soundcard, a sound card name"},
 	"not_local":              {http.StatusForbidden, "Only the local network may use this API"},
 	"host_not_allowed":       {http.StatusForbidden, "Address this box by its IP address or local name"},
 	"origin_not_allowed":     {http.StatusForbidden, "Only pages served by this box may use this API"},
 	"not_found":              {http.StatusNotFound, "No such resource"},
 	"method_not_allowed":     {http.StatusMethodNotAllowed, "Method not allowed"},
-	"wrong_server":           {http.StatusConflict, "server_id does not name this box"},
+	"wrong_server":           {http.StatusConflict, "server_id or renderer_id does not name this box"},
+	"unknown_soundcard":      {http.StatusUnprocessableEntity, "This box cannot be set up for that sound card; /v1/soundcard lists the ones it can"},
 	"unsupported_media_type": {http.StatusUnsupportedMediaType, "The request body must be application/json"},
 	CodeBusy:                 {http.StatusConflict, "Another action is in progress"},
 	CodeShuttingDown:         {http.StatusConflict, "The box is already restarting or powering off"},
@@ -46,6 +50,7 @@ var outcomes = map[string]struct {
 	CodeNetworkChange:        {http.StatusConflict, "Nearby setup is changing the network; try again when it finishes"},
 	CodeTooSoon:              {http.StatusTooManyRequests, "Core was restarted moments ago"},
 	CodeUnavailable:          {http.StatusServiceUnavailable, "systemd did not carry out the request"},
+	CodeSoundcard:            {http.StatusInternalServerError, "The sound card could not be set up; the supervisor's journal says why"},
 	"log_unreadable":         {http.StatusInternalServerError, "The reinstall log could not be read"},
 }
 
@@ -55,21 +60,33 @@ const pagePolicy = "default-src 'none'; script-src 'self'; style-src 'self'; img
 
 // Coordinator admits and runs privileged operations; Controller is the production one.
 type Coordinator interface {
-	Begin(context.Context, Action) (Operation, error)
+	Begin(context.Context, Request) (Operation, error)
 	Status(context.Context) (Status, error)
+}
+
+// Soundcards is what the API knows about the box's sound card and which
+// cards it may be asked for; soundcard.Detector is the production one.
+type Soundcards interface {
+	Supported() bool
+	Offers(name string) bool
+	Report() soundcard.Report
 }
 
 // HandlerConfig is what the HTTP layer reports and checks besides the actions themselves.
 // Dashboard returns a JSON-encodable snapshot of the box.
 type HandlerConfig struct {
-	Version      string
-	ServerIDFile string
-	CorePort     func() int
-	Setup        func() string
-	Dashboard    func(context.Context) any
-	Reinstalls   ReinstallRecord
-	EnableSSH    func(context.Context, protocol.Secret) error
-	Simulated    bool
+	Version        string
+	ServerIDFile   string
+	RendererIDFile string
+	// CoreInstalled is false on a box that runs only a renderer.
+	CoreInstalled func() bool
+	Soundcards    Soundcards
+	CorePort      func() int
+	Setup         func() string
+	Dashboard     func(context.Context) any
+	Reinstalls    ReinstallRecord
+	EnableSSH     func(context.Context, protocol.Secret) error
+	Simulated     bool
 }
 
 type handler struct {
@@ -155,9 +172,11 @@ func (h *handler) route(path string) (route, bool) {
 		return route{http.MethodGet, h.dashboard}, true
 	case path == "/v1/reinstall/log":
 		return route{http.MethodGet, h.reinstallLog}, true
+	case path == "/v1/soundcard" && h.cfg.Soundcards != nil:
+		return route{http.MethodGet, h.soundcard}, true
 	case strings.HasPrefix(path, "/v1/actions/"):
 		a := Action(strings.TrimPrefix(path, "/v1/actions/"))
-		if !slices.Contains(Supported, a) {
+		if !slices.Contains(h.actions(), a) {
 			return route{}, false
 		}
 		return route{http.MethodPost, func(w http.ResponseWriter, r *http.Request) string { return h.act(w, r, a) }}, true
@@ -168,16 +187,37 @@ func (h *handler) route(path string) (route, bool) {
 	return route{}, false
 }
 
+// actions is what this box can do: one without Core has no Core to restart
+// or reinstall, and only a Raspberry Pi has a sound card to choose.
+func (h *handler) actions() []Action {
+	return slices.DeleteFunc(slices.Clone(Supported), func(a Action) bool {
+		if a == SetSoundcard {
+			return h.cfg.Soundcards == nil || !h.cfg.Soundcards.Supported()
+		}
+		return a.needsCore() && h.cfg.CoreInstalled != nil && !h.cfg.CoreInstalled()
+	})
+}
+
 func (h *handler) info(w http.ResponseWriter, _ *http.Request) string {
-	var id *string
-	if s := coreconf.ServerID(h.cfg.ServerIDFile); s != "" {
-		id = &s
-	}
 	reply(w, http.StatusOK, map[string]any{
 		"name": "kalinka-supervisor", "version": h.cfg.Version,
 		"protocol": Protocol, "min_protocol": MinProtocol,
-		"server_id": id, "actions": Supported,
+		"server_id":   nullable(coreconf.ReadID(h.cfg.ServerIDFile)),
+		"renderer_id": nullable(coreconf.ReadID(h.cfg.RendererIDFile)),
+		"actions":     h.actions(),
 	}, false)
+	return ""
+}
+
+func nullable(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func (h *handler) soundcard(w http.ResponseWriter, _ *http.Request) string {
+	reply(w, http.StatusOK, h.cfg.Soundcards.Report(), false)
 	return ""
 }
 
@@ -217,44 +257,92 @@ func (h *handler) reinstallLog(w http.ResponseWriter, _ *http.Request) string {
 	return ""
 }
 
+// identity names the box an action is meant for, so a stale address cannot act on another one.
+type identity struct {
+	ServerID   *string `json:"server_id"`
+	RendererID *string `json:"renderer_id"`
+}
+
+type soundcardBody struct {
+	identity
+	Soundcard *string `json:"soundcard"`
+}
+
+// identified reports whether id names this box: by its server where it has
+// one, otherwise by its renderer. A renderer named alongside a server must
+// be this box's too.
+func (h *handler) identified(id identity) bool {
+	server, renderer := coreconf.ReadID(h.cfg.ServerIDFile), coreconf.ReadID(h.cfg.RendererIDFile)
+	matches := func(sent *string, want string) bool { return sent == nil && want == "" || sent != nil && *sent == want }
+	switch {
+	case server != "":
+		return matches(id.ServerID, server) && (id.RendererID == nil || *id.RendererID == renderer)
+	case renderer != "":
+		return id.ServerID == nil && matches(id.RendererID, renderer)
+	}
+	return id.ServerID == nil && id.RendererID == nil
+}
+
+func decode(w http.ResponseWriter, r *http.Request, v any) bool {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(v) == nil && decoder.Decode(&struct{}{}) == io.EOF
+}
+
 func (h *handler) act(w http.ResponseWriter, r *http.Request, a Action) string {
 	if media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || media != "application/json" {
 		return fail(w, "unsupported_media_type")
 	}
-	var body struct {
-		ServerID *string `json:"server_id"`
-	}
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
-	decoder.DisallowUnknownFields()
-	if decoder.Decode(&body) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+	req := Request{Action: a}
+	var id identity
+	if a == SetSoundcard {
+		var body soundcardBody
+		if !decode(w, r, &body) || body.Soundcard == nil || !soundcard.ValidName(*body.Soundcard) {
+			return fail(w, "invalid_request")
+		}
+		id, req.Soundcard = body.identity, *body.Soundcard
+	} else if !decode(w, r, &id) {
 		return fail(w, "invalid_request")
 	}
-	want := coreconf.ServerID(h.cfg.ServerIDFile)
-	if (body.ServerID == nil) != (want == "") || body.ServerID != nil && *body.ServerID != want {
+	if !h.identified(id) {
 		return fail(w, "wrong_server")
+	}
+	if a == SetSoundcard && !h.cfg.Soundcards.Offers(req.Soundcard) {
+		return fail(w, "unknown_soundcard")
 	}
 	// Not the request's context: a client hanging up must not abandon an admitted operation midway.
 	admitting, stopAdmitting := context.WithTimeout(context.Background(), phaseTimeout)
 	defer stopAdmitting()
-	op, err := h.coord.Begin(admitting, a)
+	op, err := h.coord.Begin(admitting, req)
 	if err != nil {
 		return refusal(w, err)
 	}
-	running, stopRunning := context.WithTimeout(context.Background(), phaseTimeout)
+	limit := phaseTimeout
+	if a == SetSoundcard {
+		limit = soundcardTimeout
+	}
+	running, stopRunning := context.WithTimeout(context.Background(), limit)
 	defer stopRunning()
 	// A reinstall only queues its unit here; the work runs, and reports, from there.
-	if _, terminal := a.target(); terminal {
-		// The reply must be on the wire before shutdown starts taking the network down.
-		reply(w, http.StatusAccepted, map[string]Action{"action": a}, true)
-		if op.Run(running) != nil {
-			return "failed"
-		}
-		return accepted
-	}
-	if err = op.Run(running); err != nil {
+	target, err := op.Run(running)
+	if err != nil {
 		return refusal(w, err)
 	}
-	reply(w, http.StatusAccepted, map[string]Action{"action": a}, false)
+	answer := map[string]any{"action": a}
+	if a == SetSoundcard {
+		answer["reboot"] = target != ""
+	}
+	if target == "" {
+		reply(w, http.StatusAccepted, answer, false)
+		return accepted
+	}
+	// The reply must be on the wire before shutdown starts taking the network down.
+	reply(w, http.StatusAccepted, answer, true)
+	shutting, stopShutting := context.WithTimeout(context.Background(), phaseTimeout)
+	defer stopShutting()
+	if op.Shutdown(shutting) != nil {
+		return "failed"
+	}
 	return accepted
 }
 
