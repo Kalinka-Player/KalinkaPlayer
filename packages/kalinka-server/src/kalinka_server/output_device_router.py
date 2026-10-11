@@ -166,14 +166,29 @@ class OutputDeviceRouter:
         self._prefs = prefs
         self._devices = devices
         self._bus = bus
+        self._external = None
+
+    def set_external(self, owner, plugin_id: str, device: ExternalOutputDevice) -> None:
+        """Use an external engine's controls for the lifetime of its hold."""
+        self._external = (owner, plugin_id, device)
+
+    def clear_external(self, owner) -> None:
+        if self._external is not None and self._external[0] is owner:
+            self._external = None
 
     def current_name(self) -> str:
         """Plugin id of the module in charge, delegated or not."""
         active = self._registry.active_id()
         delegate = self._prefs.volume_control(active) if active else None
-        return delegate or RendererOutputPlugin.PLUGIN_ID
+        if delegate:
+            return delegate
+        if self._external is not None and self._external[0].active:
+            return self._external[1]
+        return RendererOutputPlugin.PLUGIN_ID
 
     def current(self) -> Optional[ExternalOutputDevice]:
+        if self._external is not None and self.current_name() == self._external[1]:
+            return self._external[2]
         prepared = self._devices().get(self.current_name())
         if prepared is None or prepared.health_state is not ModuleHealthState.READY:
             return None
