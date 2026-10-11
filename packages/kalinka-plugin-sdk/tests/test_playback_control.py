@@ -53,7 +53,14 @@ def test_the_wire_names_the_mode_and_the_plugin():
         "mode": "exclusive",
         "plugin_id": "qobuz",
         "title": "Qobuz Connect",
+        "seekable": True,
     }
+
+
+def test_the_wire_says_when_the_holder_cannot_seek():
+    control = PlaybackControl.exclusive("airplay", "AirPlay", seekable=False)
+
+    assert control.model_dump(mode="json")["seekable"] is False
 
 
 def test_exclusive_control_must_name_the_plugin():

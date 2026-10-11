@@ -123,7 +123,10 @@ def get_version() -> str:
 # 0.13: optional packages install from wheels only. A failed entry in GET
 # /server/optional_packages' last_install results whose package has no wheel
 # for the server's Python and architecture carries a `reason` naming all three.
-REST_API_VERSION = "0.13"
+# 0.14: PlaybackControl carries `seekable`, false while the plugin holding the
+# output cannot seek, as AirPlay cannot; clients then offer no position
+# control, and a seek sent anyway is dropped.
+REST_API_VERSION = "0.14"
 
 
 def get_rest_api_version() -> str:

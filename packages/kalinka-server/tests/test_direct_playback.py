@@ -347,7 +347,7 @@ async def test_a_revoked_hold_cannot_play(queue, renderer, direct):
 
 
 async def test_transport_controls_reach_the_plugin_not_the_renderer(
-    queue, renderer, direct
+    queue, renderer, direct, arbiter
 ):
     listener = Listener()
     await queue.add([example_track("1"), example_track("2")])
@@ -370,7 +370,24 @@ async def test_transport_controls_reach_the_plugin_not_the_renderer(
     ]
     assert listener.commands[2].position_ms == 1234
     assert len(renderer.commands) == before
+    assert arbiter.control.seekable
     assert queue.current_track_id == 0
+
+
+async def test_a_hold_that_cannot_seek_says_so_and_drops_seeks(
+    queue, renderer, direct, arbiter
+):
+    listener = Listener()
+    hold = await direct.acquire("AirPlay", listener, seekable=False)
+    await hold.play(*_connect_track())
+    await asyncio.sleep(SETTLE_S)
+    assert not arbiter.control.seekable
+
+    await queue.seek(1234)
+    await queue.pause(True)
+    await asyncio.sleep(SETTLE_S)
+
+    assert [c.kind for c in listener.commands] == [TransportKind.PAUSE]
 
 
 async def test_stop_gives_the_output_back_without_playing(

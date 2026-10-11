@@ -217,12 +217,16 @@ class DirectPlayback(Protocol):
     """Offered on InputPluginContext.direct_playback by servers that support it."""
 
     async def acquire(
-        self, title: str, listener: DirectPlaybackListener
+        self, title: str, listener: DirectPlaybackListener, *, seekable: bool = True
     ) -> DirectPlaybackSession:
         """Take the output from whoever plays through it.
 
         ``title`` is what clients badge the playback with ("Qobuz Connect").
         A second acquire by the same plugin ends its first hold.
+
+        ``seekable=False``, SDK 3.11, is for playback no client can seek, such
+        as a receiver's live stream: clients are told to offer no position
+        control, and their SEEK requests never reach the listener.
 
         @throw OutputUnavailable when no renderer can be played through.
         """
