@@ -340,9 +340,10 @@ function renderSoundcard(sc) {
   if (!offered) return;
   const facts = byId("soundcard-facts");
   facts.replaceChildren();
-  fact(facts, "DAC", sc.name || "None found");
+  fact(facts, "Sound card", sc.name || "No HAT found");
   fact(facts, "Set up for", sc.configured ? cardLabel(sc.configured) : "Nothing chosen");
-  fact(facts, "Playing through", sc.active ? `${sc.active.name} · ${sc.active.pcm}` : "No card is up");
+  // A USB DAC is never reported here, so the line is left out rather than calling the box silent.
+  fact(facts, "Playing through", sc.active ? `${sc.active.name} · ${sc.active.pcm}` : "");
   const hint = soundcardHint(sc);
   byId("soundcard-hint").hidden = hint === "";
   byId("soundcard-hint").textContent = hint;

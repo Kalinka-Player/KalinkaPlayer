@@ -39,6 +39,10 @@ if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
   if [ -x /boot/dietpi/func/dietpi-set_hardware ]; then
     systemctl enable kalinka-soundcard.service || true
   fi
+  # The image's unit stayed active after its run, which the supervisor reads as busy until a restart.
+  if [ "$(systemctl show --property=SubState --value kalinka-soundcard.service 2>/dev/null)" = exited ]; then
+    systemctl stop kalinka-soundcard.service || true
+  fi
   # Core's upgrade installs this package under set -e: a start failure must not abort it.
   systemctl --no-block restart kalinka-supervisor.service || true
 fi

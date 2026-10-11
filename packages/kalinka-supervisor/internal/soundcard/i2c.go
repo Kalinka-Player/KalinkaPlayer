@@ -27,11 +27,11 @@ var probes = []probe{
 	{addr: 0x4c, reg: 40, values: []uint8{0x02}, cards: []string{"rpi-dacplus", "rpi-dacpro", "iqaudio-dacplus"}},
 }
 
-// probeBus returns the cards whose chips answer, or none when the bus cannot be opened.
-func probeBus(open func() (Bus, error)) []string {
+// probeBus returns the cards whose chips answer, and whether the bus could be opened.
+func probeBus(open func() (Bus, error)) ([]string, bool) {
 	bus, err := open()
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	defer bus.Close()
 	var found []string
@@ -40,5 +40,5 @@ func probeBus(open func() (Bus, error)) []string {
 			found = append(found, p.cards...)
 		}
 	}
-	return found
+	return found, true
 }

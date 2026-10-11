@@ -401,6 +401,21 @@ func TestReinstallIsNotTerminal(t *testing.T) {
 	}
 }
 
+func TestBootSoundcardHoldsActionsOffOnlyWhileItRuns(t *testing.T) {
+	waiting := &fakeSystemd{units: map[string]UnitState{"kalinka-soundcard.service": {Active: "inactive", Queued: true}}}
+	c, _ := newController(waiting, nil)
+	if err := perform(c, Reboot); err != nil {
+		t.Fatalf("a hook still waiting for the network held off a reboot: %v", err)
+	}
+	running := &fakeSystemd{units: map[string]UnitState{"kalinka-soundcard.service": {Active: "activating"}}}
+	c, _ = newController(running, nil)
+	for _, a := range Supported {
+		if got := code(perform(c, a)); got != CodeBusy {
+			t.Fatalf("%s while the hook runs: %q", a, got)
+		}
+	}
+}
+
 func TestSoundcardWithoutRestart(t *testing.T) {
 	s := &fakeSystemd{}
 	c, _ := newController(s, nil)

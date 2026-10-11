@@ -179,6 +179,20 @@ func TestReportForASelfConfiguringHAT(t *testing.T) {
 	}
 }
 
+func TestAnotherHATDoesNotNameTheSoundCard(t *testing.T) {
+	b := pi(t, "Raspberry Pi 5 Model B Rev 1.0")
+	b.hat("Raspberry Pi Ltd.", "Raspberry Pi M.2 HAT+")
+	b.write("proc/asound/cards", hdmiCards)
+	if r := New(b.root, noBus).Report(); r.Name != nil {
+		t.Fatalf("name = %q", *r.Name)
+	}
+	b.write(configTxt, "dtparam=audio=off\ndtoverlay=hifiberry-dacplus-std\n")
+	b.write("proc/asound/cards", hdmiCards+hifiberryCard)
+	if r := New(b.root, noBus).Report(); r.Name == nil || *r.Name != "HiFiBerry DAC+ Standard, Amp2 or Amp4" {
+		t.Fatalf("name = %v", r.Name)
+	}
+}
+
 func TestReportProbesTheBusOnce(t *testing.T) {
 	b := pi(t, "Raspberry Pi 4 Model B Rev 1.4")
 	b.write("proc/asound/cards", hdmiCards)
@@ -193,6 +207,32 @@ func TestReportProbesTheBusOnce(t *testing.T) {
 	}
 	if opened != 1 || !bus.closed {
 		t.Fatalf("bus opened %d times, closed %v", opened, bus.closed)
+	}
+}
+
+func TestReportTriesTheBusAgainUntilItOpens(t *testing.T) {
+	b := pi(t, "Raspberry Pi 4 Model B Rev 1.4")
+	b.write("proc/asound/cards", hdmiCards)
+	bus := &fakeBus{registers: map[[2]uint8]uint8{{0x3b, 1}: 0x88}}
+	opened, missing := 0, true
+	d := New(b.root, func() (Bus, error) {
+		opened++
+		if missing {
+			return nil, os.ErrNotExist
+		}
+		return bus, nil
+	})
+	if r := d.Report(); len(r.Suggested) != 0 {
+		t.Fatalf("suggested without a bus: %v", r.Suggested)
+	}
+	missing = false
+	for range 2 {
+		if r := d.Report(); len(r.Suggested) == 0 || r.Suggested[0] != "hifiberry-digi" {
+			t.Fatalf("suggested once the bus appeared: %v", r.Suggested)
+		}
+	}
+	if opened != 2 {
+		t.Fatalf("bus opened %d times", opened)
 	}
 }
 

@@ -286,7 +286,7 @@ which the supervisor writes for the card chosen in the app or on the page.
 | Field | Meaning |
 |---|---|
 | `supported` | `false` off a Raspberry Pi, or without `/boot/firmware/config.txt`; every other field is then empty |
-| `name` | The DAC as a person would call it: from its ID chip, else the configured card's label, else ALSA's card name; `null` when none is known |
+| `name` | The DAC as a person would call it: from the HAT's ID chip when that HAT is the sound card, else the configured card's label, else ALSA's card name; `null` when none is known. Another board's chip, such as a PoE or M.2 HAT's, never names it |
 | `hat` | What the HAT's ID chip says, from `/proc/device-tree/hat`; `null` without one |
 | `configured` | The catalogued card the boot configuration sets up, or `null` |
 | `active` | The ALSA card that came up for it: `id`, `name` and `pcm`, the name the renderer opens it by |

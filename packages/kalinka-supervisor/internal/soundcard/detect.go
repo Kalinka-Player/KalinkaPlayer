@@ -12,7 +12,7 @@ import (
 type Report struct {
 	// Supported is false off a Raspberry Pi, where no card can be chosen.
 	Supported bool `json:"supported"`
-	// Name is the DAC as a person would call it, from its ID chip, the configured choice or ALSA, in that order.
+	// Name is the DAC as a person would call it, from the sound card's ID chip, the configured choice or ALSA, in that order.
 	Name       *string  `json:"name"`
 	HAT        *HAT     `json:"hat"`
 	Configured *string  `json:"configured"`
@@ -27,8 +27,9 @@ type Detector struct {
 	root    string
 	openBus func() (Bus, error)
 
-	probeOnce sync.Once
-	probed    []string
+	probeMu sync.Mutex
+	probed  []string
+	read    bool
 }
 
 // New reads the box under root ("/" in production); openBus reaches the HAT's I2C bus.
@@ -80,8 +81,9 @@ func (d *Detector) Report() Report {
 }
 
 // guesses names the cards the hardware points to. The I2C bus is only read
-// when no card came up and no ID chip settled it, and only once: a HAT cannot
-// change without a restart.
+// when no card came up and no ID chip settled it, and only until it has been
+// read once: a HAT cannot change without a restart, but the bus may appear
+// after the supervisor starts.
 func (d *Detector) guesses(hat *HAT, active *Active) []string {
 	if hat != nil {
 		if s := hat.suggestion(); s != "" {
@@ -94,7 +96,11 @@ func (d *Detector) guesses(hat *HAT, active *Active) []string {
 	if active != nil {
 		return nil
 	}
-	d.probeOnce.Do(func() { d.probed = probeBus(d.openBus) })
+	d.probeMu.Lock()
+	defer d.probeMu.Unlock()
+	if !d.read {
+		d.probed, d.read = probeBus(d.openBus)
+	}
 	return d.probed
 }
 
@@ -112,7 +118,8 @@ func offered(guesses []string, options []Card) []string {
 func name(hat *HAT, configured string, active *Active) *string {
 	var n string
 	switch card, known := Lookup(configured); {
-	case hat != nil:
+	// Other boards carry ID chips too, such as a PoE or M.2 HAT; only one that is the sound card names it.
+	case hat != nil && (hat.suggestion() != "" || configured == "" && active != nil):
 		n = hat.Name()
 	case known:
 		n = card.Label
