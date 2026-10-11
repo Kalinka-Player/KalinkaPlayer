@@ -31,6 +31,7 @@ type Snapshot struct {
 
 type Host struct {
 	Hostname        string     `json:"hostname"`
+	Model           string     `json:"model"`
 	OS              string     `json:"os"`
 	DietPi          string     `json:"dietpi"`
 	Kernel          string     `json:"kernel"`

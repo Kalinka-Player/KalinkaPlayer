@@ -38,7 +38,7 @@ All of them must be on the same home network. They find each other by themselves
 
 **Not sure?** If you have a Raspberry Pi, use the image (A): it has the fewest steps.
 
-**Using a DAC HAT?** The Raspberry Pi images have the drivers for DAC HATs (HiFiBerry, IQaudio, Allo, JustBoom and similar boards), with nothing to install. A HAT with an ID chip on it is set up by itself. For one without, you add one line to the card before the first start; see [Settings on the card](#settings-on-the-card).
+**Using a DAC HAT?** The Raspberry Pi images have the drivers for DAC HATs (HiFiBerry, IQaudio, Allo, JustBoom and similar boards), with nothing to install. A HAT with an ID chip on it is set up by itself. For one without, choose it in the app after the first start, under **Settings › General › Box › Sound card**, or add one line to the card before it; see [Settings on the card](#settings-on-the-card).
 
 Kalinka needs a 64-bit system. Playback and the library run in 512 MB of memory, and 1 GB is comfortable. AI search needs more: 2 GB should work, and 4 GB is what has been tested, so leave it off on a Pi 3 or Zero 2 W. See the [requirements](../README.md#-requirements) for details.
 
@@ -85,16 +85,17 @@ Install [Raspberry Pi Imager](https://www.raspberrypi.com/software/) (Windows, m
 
 #### 3. Wi-Fi, a login or a DAC HAT? Change a setting on the card
 
-Skip this step if the Pi will use a network cable, you have no need to log in to it, and it plays through a USB DAC or a HAT with an ID chip.
+Skip this step if the Pi will use a network cable and you have no need to log in to it. A DAC HAT can be chosen in the app after the first start.
 
 Otherwise, [change the settings on the card](#settings-on-the-card) for any of these:
 
 - the Pi on **Wi-Fi**;
 - a **login** to the Pi, so you can copy music onto it over the network or use SSH;
-- a **DAC HAT without an ID chip**, or the Pi's own headphone socket or HDMI.
+- a **DAC HAT without an ID chip**, or the Pi's own headphone socket or HDMI, if you want it playing from the first start.
 
 You can also create a login after installation through **SSH access** on
 [the control page](#the-control-page), once the player is on your network.
+The sound card can be chosen then too: see [Choose the sound card](#choose-the-sound-card).
 
 #### 4. Switch it on
 
@@ -277,6 +278,16 @@ Save both files, eject the card safely, and start the Pi. It reads the files on 
 
 The first start restarts the Pi once to switch the sound card on. A USB DAC needs no setting: pick it in the output's settings in the app.
 
+#### Choose the sound card
+
+Once the Pi is running, choose the sound card in the app instead: **Settings › General › Box › Sound card**. The same choice is on [the control page](#the-control-page).
+
+- **Found on this box** lists what the Pi detected. A HAT with an ID chip names itself. For most others, Kalinka recognises the chip on the board, which several makers use, so pick your board among the few it lists.
+- **Every other card** is grouped by maker: HiFiBerry, Raspberry Pi and IQaudIO, Allo, JustBoom and more. A board that is not listed but sends plain I²S, such as one built on a PCM5102A chip, works as **Generic I2S DAC**.
+- **Apply** writes the choice to the Pi's boot settings. When that changes them, the Pi restarts once, which takes a minute or two. The app then plays through the new card on that Pi.
+
+The row shows the DAC's name once the Pi knows it. For a Pi that runs only an output, see [Add more outputs](#add-more-outputs).
+
 **Logging in.** With a password set, log in over SSH as `root` or `dietpi`, for example `ssh root@<address>`. The first login starts DietPi's own setup, which updates the system and may restart it. Kalinka does not need it and keeps working through it.
 
 <details>
@@ -309,9 +320,10 @@ already have it, so their option starts enabled.
 
 - **What it shows:** whether the server is running, the versions of Kalinka and its plugins, and how much memory and processor time Kalinka is using.
 - **What it can do:** restart the server, restart the player, switch it off safely before you unplug it, or reinstall Kalinka from kalinkaplayer.com when nothing else helps. Each one asks you to confirm first.
+- **Sound card:** on a Raspberry Pi, the DAC it found and the card it is set up for, with every card it can be set up for. See [Choose the sound card](#choose-the-sound-card).
 - **Reinstalling** keeps your settings and music. It takes several minutes, and the page shows its progress.
 - **SSH access:** after installation, enter and confirm a password under **SSH access**, then choose **Set password and enable SSH**. This creates the `kalinka-admin` login with administrator access and keeps SSH enabled after a restart. Connect with `ssh kalinka-admin@<address>` and use `sudo -i` when you need a root shell. Submitting the form again changes that account's password. Existing logins are kept.
-- **In the Kalinka app:** go to **Settings › General › Box** to restart the player, switch it off, or open this page. If the server stops answering, the app offers to restart it.
+- **In the Kalinka app:** go to **Settings › General › Box** to choose the sound card, restart the player, switch it off, or open this page. If the server stops answering, the app offers to restart it.
 
 Like the server, the page answers anyone on your local network, and nobody outside it. If you run a firewall on the player, let TCP port 8001 through from your network. To turn the page off, add the line `KALINKA_CONTROL_API=0` to `dietpi.txt`. [The supervisor's control page and API](supervisor-control.md) describes it in full.
 
@@ -421,6 +433,13 @@ A few things to know:
 
 - The renderer must be on the **same network** as the server. Guest Wi-Fi, Wi-Fi with "client isolation" turned on, and separate VLANs all block it; see [Troubleshooting](#troubleshooting). Once it has found the server, it connects out to it, so nothing needs opening in the other direction.
 - For an extra output, use plain Raspberry Pi OS Lite or DietPi with the renderer command, **not** a second Kalinka image. The image always includes a server too, and a second server would then appear in the app.
+- **A Pi with a DAC HAT** can be set up from the app too. Install the supervisor along with the renderer:
+
+  ```bash
+  curl -fsSL https://kalinkaplayer.com/install-renderer.sh | sudo env KALINKA_SUPERVISOR=1 bash
+  ```
+
+  The output's **gear** then shows **Sound card**, as described in [Choose the sound card](#choose-the-sound-card). Detecting a HAT's chip needs the Pi's I²C bus on, which Raspberry Pi OS leaves off; without it, the full list is still there. The supervisor also serves [the control page](#the-control-page) on that Pi, without the server's controls.
 - There is no renderer for Windows or macOS yet. On those computers, use a browser tab as the output.
 - Other Linux systems can run the renderer as a flatpak, which has to be [built from source](../packages/kalinka-renderer/flatpak/README.md) for now. A renderer installed that way, or built from source, cannot replace itself, so it is never offered an upgrade.
 
@@ -448,7 +467,7 @@ All current images use DietPi. With a login, use `dietpi-update` and then `apt u
 
 **Wi-Fi or the login does not work.** On a Pi, check that `AUTO_SETUP_NET_WIFI_ENABLED=1` is set and that the network name and password in `dietpi-wifi.txt` are between the quotes. The Pi removes the files from the card after its first start, so write the card again to try once more. On the PC image, look at the drive again: if `kalinka-firstboot.conf` is still there, the player could not read it. Check that the file name is exactly right, with no hidden `.txt` on the end, and that any value containing spaces is inside quotes. Then start the player again. If the file is gone but the login still fails, a line was left starting with `#`, or `PASSWORD_HASH` held the example's placeholder: write the file again with those fixed.
 
-**No outputs in the list, or no sound.** The output runs as a service of its own. On the player, `systemctl status kalinka-renderer` should say `active (running)`. If it says the unit could not be found, no output is installed on that machine: run the renderer command from [Add more outputs](#add-more-outputs) there. If there is no sound, open the output's gear and try another sound device: HDMI, the headphone socket and a USB DAC are separate devices. On a Pi, the headphone socket and HDMI stay off, and a HAT without an ID chip stays silent, until `CONFIG_SOUNDCARD` names them ([Settings on the card](#settings-on-the-card)). Once the Pi is running, change that line in `/boot/dietpi.txt` and restart it. Until an output works, you can listen in the browser.
+**No outputs in the list, or no sound.** The output runs as a service of its own. On the player, `systemctl status kalinka-renderer` should say `active (running)`. If it says the unit could not be found, no output is installed on that machine: run the renderer command from [Add more outputs](#add-more-outputs) there. If there is no sound, open the output's gear and try another sound device: HDMI, the headphone socket and a USB DAC are separate devices. On a Pi, the headphone socket and HDMI stay off, and a HAT without an ID chip stays silent, until you [choose the sound card](#choose-the-sound-card) in the app. If the app shows no **Sound card** row, `CONFIG_SOUNDCARD` in `/boot/dietpi.txt` names it too ([Settings on the card](#settings-on-the-card)); restart the Pi after changing it. Until an output works, you can listen in the browser.
 
 **An output on another machine does not appear.** On that machine, run `sudo journalctl -u kalinka-renderer -f`. A line containing `[Discovery] Found` means it has seen the server. No such line means the network is blocking discovery, and a line about `renderer_proto` means that server does not accept renderers at all. Put both machines on the same network, or point the renderer at the server's address directly:
 

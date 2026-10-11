@@ -10,33 +10,54 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"kalinka/supervisor/internal/soundcard"
 )
 
-const testID = "ee4d496c-3f6c-4388-a02e-f6a2f17829cd"
+const (
+	testID     = "ee4d496c-3f6c-4388-a02e-f6a2f17829cd"
+	rendererID = "5c0ffee0-1d2e-4a3b-8c4d-5e6f7a8b9c0d"
+)
 
 type fakeCoordinator struct {
-	begun  []Action
-	refuse error
-	run    func(context.Context) error
-	status Status
+	begun    []Request
+	refuse   error
+	run      func(context.Context) (Target, error)
+	shutdown func(context.Context) error
+	status   Status
 }
 
-type runFunc func(context.Context) error
+type fakeOperation struct {
+	c   *fakeCoordinator
+	req Request
+}
 
-func (f runFunc) Run(ctx context.Context) error { return f(ctx) }
+// Run names the shutdown a terminal action ends in, as the controller does, unless the test says otherwise.
+func (o fakeOperation) Run(ctx context.Context) (Target, error) {
+	if o.c.run != nil {
+		return o.c.run(ctx)
+	}
+	target, _ := o.req.Action.target()
+	return target, nil
+}
 
-func (f *fakeCoordinator) Begin(_ context.Context, a Action) (Operation, error) {
-	f.begun = append(f.begun, a)
+func (o fakeOperation) Shutdown(ctx context.Context) error {
+	if o.c.shutdown != nil {
+		return o.c.shutdown(ctx)
+	}
+	return nil
+}
+
+func (f *fakeCoordinator) Begin(_ context.Context, r Request) (Operation, error) {
+	f.begun = append(f.begun, r)
 	if f.refuse != nil {
 		return nil, f.refuse
 	}
-	if f.run != nil {
-		return runFunc(f.run), nil
-	}
-	return runFunc(func(context.Context) error { return nil }), nil
+	return fakeOperation{f, r}, nil
 }
 func (f *fakeCoordinator) Status(context.Context) (Status, error) {
 	if f.refuse != nil {
@@ -45,21 +66,62 @@ func (f *fakeCoordinator) Status(context.Context) (Status, error) {
 	return f.status, nil
 }
 
-func newTestHandler(t *testing.T, coord Coordinator, identity bool) http.Handler {
+type fakeSoundcards struct {
+	supported bool
+	offered   []string
+}
+
+func (f *fakeSoundcards) Supported() bool { return f.supported }
+func (f *fakeSoundcards) Offers(name string) bool {
+	return f.supported && slices.Contains(f.offered, name)
+}
+func (f *fakeSoundcards) Report() soundcard.Report {
+	name := "HiFiBerry Digi2 Pro"
+	return soundcard.Report{Supported: f.supported, Name: &name, Suggested: []string{"hifiberry-digi-pro"}, Options: []soundcard.Card{{Name: "hifiberry-digi-pro", Label: "HiFiBerry Digi+ Pro or Digi2 Pro", Vendor: "HiFiBerry", Kind: soundcard.Digital}}}
+}
+
+// testBox is the box a handler serves: which identities it has, whether Core is installed, and its sound card.
+type testBox struct {
+	server, renderer bool
+	noCore           bool
+	cards            Soundcards
+}
+
+func pi() *fakeSoundcards {
+	return &fakeSoundcards{supported: true, offered: []string{"hifiberry-digi", "none"}}
+}
+
+func newTestHandler(t *testing.T, coord Coordinator, server bool) http.Handler {
+	return newBoxHandler(t, coord, testBox{server: server, cards: pi()})
+}
+
+func newBoxHandler(t *testing.T, coord Coordinator, box testBox) http.Handler {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "server_id")
-	if identity {
-		if err := os.WriteFile(path, []byte(testID+"\n"), 0600); err != nil {
-			t.Fatal(err)
+	write := func(name, id string) string {
+		path := filepath.Join(dir, name)
+		if id != "" {
+			if err := os.WriteFile(path, []byte(id+"\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
 		}
+		return path
+	}
+	server, renderer := "", ""
+	if box.server {
+		server = testID
+	}
+	if box.renderer {
+		renderer = rendererID
 	}
 	return NewHandler(coord, HandlerConfig{
-		Version: "1.2.3", ServerIDFile: path,
-		CorePort:   func() int { return 8000 },
-		Setup:      func() string { return "waiting" },
-		Dashboard:  func(context.Context) any { return map[string]string{"host": "kalinka"} },
-		Reinstalls: ReinstallRecord{LogFile: filepath.Join(dir, "reinstall.log")},
+		Version: "1.2.3", ServerIDFile: write("server_id", server), RendererIDFile: write("renderer_id", renderer),
+		CoreInstalled: func() bool { return !box.noCore },
+		Soundcards:    box.cards,
+		CorePort:      func() int { return 8000 },
+		Setup:         func() string { return "waiting" },
+		Dashboard:     func(context.Context) any { return map[string]string{"host": "kalinka"} },
+		Reinstalls:    ReinstallRecord{LogFile: filepath.Join(dir, "reinstall.log")},
 	})
 }
 
@@ -88,18 +150,23 @@ func detail(t *testing.T, w *httptest.ResponseRecorder) (int, string) {
 }
 
 func TestInfo(t *testing.T) {
-	for _, identity := range []bool{true, false} {
-		w := serve(newTestHandler(t, &fakeCoordinator{}, identity), http.MethodGet, "/info", "")
+	for _, box := range []testBox{{server: true, renderer: true}, {server: true}, {renderer: true}, {}} {
+		box.cards = pi()
+		w := serve(newBoxHandler(t, &fakeCoordinator{}, box), http.MethodGet, "/info", "")
 		var info map[string]any
 		if err := json.Unmarshal(w.Body.Bytes(), &info); err != nil || w.Code != http.StatusOK {
 			t.Fatalf("info: %d %s", w.Code, w.Body)
 		}
 		want := map[string]any{
 			"name": "kalinka-supervisor", "version": "1.2.3", "protocol": 1.0, "min_protocol": 1.0,
-			"actions": []any{"restart_core", "reboot", "poweroff", "reinstall"}, "server_id": nil,
+			"actions":   []any{"restart_core", "reboot", "poweroff", "reinstall", "set_soundcard"},
+			"server_id": nil, "renderer_id": nil,
 		}
-		if identity {
+		if box.server {
 			want["server_id"] = testID
+		}
+		if box.renderer {
+			want["renderer_id"] = rendererID
 		}
 		got, _ := json.Marshal(info)
 		expected, _ := json.Marshal(want)
@@ -133,33 +200,56 @@ func TestStatusReply(t *testing.T) {
 func TestActionRequests(t *testing.T) {
 	withType := func(v string) func(*http.Request) { return func(r *http.Request) { r.Header.Set("Content-Type", v) } }
 	idBody := `{"server_id":"` + testID + `"}`
+	rendererBody := `{"renderer_id":"` + rendererID + `"}`
+	card := func(id, name string) string { return `{` + id + `,"soundcard":` + name + `}` }
+	serverID, rendererIDField := `"server_id":"`+testID+`"`, `"renderer_id":"`+rendererID+`"`
+	server, rendererOnly, both, blank := testBox{server: true}, testBox{renderer: true}, testBox{server: true, renderer: true}, testBox{}
 	for _, tc := range []struct {
-		name     string
-		identity bool
-		path     string
-		body     string
-		edit     []func(*http.Request)
-		status   int
-		code     string
+		name   string
+		box    testBox
+		path   string
+		body   string
+		edit   []func(*http.Request)
+		status int
+		code   string
 	}{
-		{"accepted", true, "/v1/actions/restart_core", idBody, nil, 202, ""},
-		{"charset parameter", true, "/v1/actions/reboot", idBody, []func(*http.Request){withType("application/json; charset=utf-8")}, 202, ""},
-		{"no identity yet", false, "/v1/actions/poweroff", `{}`, nil, 202, ""},
-		{"identity missing from body", true, "/v1/actions/reboot", `{}`, nil, 409, "wrong_server"},
-		{"other box", true, "/v1/actions/reboot", `{"server_id":"other"}`, nil, 409, "wrong_server"},
-		{"identity where none exists", false, "/v1/actions/reboot", idBody, nil, 409, "wrong_server"},
-		{"no content type", true, "/v1/actions/reboot", idBody, []func(*http.Request){withType("")}, 415, "unsupported_media_type"},
-		{"simple-request smuggling", true, "/v1/actions/reboot", idBody, []func(*http.Request){withType("text/plain; x=application/json")}, 415, "unsupported_media_type"},
-		{"unknown field", true, "/v1/actions/reboot", `{"server_id":"` + testID + `","force":true}`, nil, 400, "invalid_request"},
-		{"trailing data", true, "/v1/actions/reboot", idBody + `{}`, nil, 400, "invalid_request"},
-		{"not an object", true, "/v1/actions/reboot", `[]`, nil, 400, "invalid_request"},
-		{"oversized", true, "/v1/actions/reboot", `{"server_id":"` + strings.Repeat("a", 2048) + `"}`, nil, 400, "invalid_request"},
-		{"unknown action", true, "/v1/actions/format_disk", idBody, nil, 404, "not_found"},
-		{"unknown path", true, "/v2/actions/reboot", idBody, nil, 404, "not_found"},
+		{"accepted", server, "/v1/actions/restart_core", idBody, nil, 202, ""},
+		{"charset parameter", server, "/v1/actions/reboot", idBody, []func(*http.Request){withType("application/json; charset=utf-8")}, 202, ""},
+		{"no identity yet", blank, "/v1/actions/poweroff", `{}`, nil, 202, ""},
+		{"identity missing from body", server, "/v1/actions/reboot", `{}`, nil, 409, "wrong_server"},
+		{"other box", server, "/v1/actions/reboot", `{"server_id":"other"}`, nil, 409, "wrong_server"},
+		{"identity where none exists", blank, "/v1/actions/reboot", idBody, nil, 409, "wrong_server"},
+		{"renderer-only box", rendererOnly, "/v1/actions/reboot", rendererBody, nil, 202, ""},
+		{"renderer-only box named by a server", rendererOnly, "/v1/actions/reboot", idBody, nil, 409, "wrong_server"},
+		{"renderer-only box named by nothing", rendererOnly, "/v1/actions/reboot", `{}`, nil, 409, "wrong_server"},
+		{"another renderer", rendererOnly, "/v1/actions/reboot", `{"renderer_id":"other"}`, nil, 409, "wrong_server"},
+		{"server box named by its renderer alone", both, "/v1/actions/reboot", rendererBody, nil, 409, "wrong_server"},
+		{"server box named by both", both, "/v1/actions/reboot", `{` + serverID + `,` + rendererIDField + `}`, nil, 202, ""},
+		{"server box with another box's renderer", both, "/v1/actions/reboot", `{` + serverID + `,"renderer_id":"other"}`, nil, 409, "wrong_server"},
+		{"no content type", server, "/v1/actions/reboot", idBody, []func(*http.Request){withType("")}, 415, "unsupported_media_type"},
+		{"simple-request smuggling", server, "/v1/actions/reboot", idBody, []func(*http.Request){withType("text/plain; x=application/json")}, 415, "unsupported_media_type"},
+		{"unknown field", server, "/v1/actions/reboot", `{"server_id":"` + testID + `","force":true}`, nil, 400, "invalid_request"},
+		{"a card for another action", server, "/v1/actions/reboot", card(serverID, `"hifiberry-digi"`), nil, 400, "invalid_request"},
+		{"trailing data", server, "/v1/actions/reboot", idBody + `{}`, nil, 400, "invalid_request"},
+		{"not an object", server, "/v1/actions/reboot", `[]`, nil, 400, "invalid_request"},
+		{"oversized", server, "/v1/actions/reboot", `{"server_id":"` + strings.Repeat("a", 2048) + `"}`, nil, 400, "invalid_request"},
+		{"unknown action", server, "/v1/actions/format_disk", idBody, nil, 404, "not_found"},
+		{"unknown path", server, "/v2/actions/reboot", idBody, nil, 404, "not_found"},
+		{"sound card", server, "/v1/actions/set_soundcard", card(serverID, `"hifiberry-digi"`), nil, 202, ""},
+		{"sound card on a renderer-only box", rendererOnly, "/v1/actions/set_soundcard", card(rendererIDField, `"none"`), nil, 202, ""},
+		{"sound card for another box", server, "/v1/actions/set_soundcard", card(`"server_id":"other"`, `"hifiberry-digi"`), nil, 409, "wrong_server"},
+		{"sound card not named", server, "/v1/actions/set_soundcard", idBody, nil, 400, "invalid_request"},
+		{"sound card that is no name", server, "/v1/actions/set_soundcard", card(serverID, `5`), nil, 400, "invalid_request"},
+		{"sound card that is a path", server, "/v1/actions/set_soundcard", card(serverID, `"../../etc/passwd"`), nil, 400, "invalid_request"},
+		{"sound card with an option", server, "/v1/actions/set_soundcard", `{` + serverID + `,"soundcard":"hifiberry-digi","force":true}`, nil, 400, "invalid_request"},
+		{"sound card this box does not offer", server, "/v1/actions/set_soundcard", card(serverID, `"justboom-dac"`), nil, 422, "unknown_soundcard"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			coord := &fakeCoordinator{}
-			w := serve(newTestHandler(t, coord, tc.identity), http.MethodPost, tc.path, tc.body, tc.edit...)
+			if tc.box.cards == nil {
+				tc.box.cards = pi()
+			}
+			w := serve(newBoxHandler(t, coord, tc.box), http.MethodPost, tc.path, tc.body, tc.edit...)
 			if status, code := detail(t, w); status != tc.status || code != tc.code {
 				t.Fatalf("got %d %q: %s", status, code, w.Body)
 			}
@@ -167,6 +257,59 @@ func TestActionRequests(t *testing.T) {
 				t.Fatalf("coordinator asked %v", coord.begun)
 			}
 		})
+	}
+}
+
+func TestActionReplies(t *testing.T) {
+	coord := &fakeCoordinator{}
+	h := newTestHandler(t, coord, true)
+	if w := serve(h, http.MethodPost, "/v1/actions/restart_core", `{"server_id":"`+testID+`"}`); strings.TrimSpace(w.Body.String()) != `{"action":"restart_core"}` {
+		t.Fatalf("restart reply = %s", w.Body)
+	}
+	w := serve(h, http.MethodPost, "/v1/actions/set_soundcard", `{"server_id":"`+testID+`","soundcard":"hifiberry-digi"}`)
+	if w.Code != 202 || strings.TrimSpace(w.Body.String()) != `{"action":"set_soundcard","reboot":false}` {
+		t.Fatalf("sound card reply = %d %s", w.Code, w.Body)
+	}
+	if got := coord.begun[len(coord.begun)-1]; got != (Request{Action: SetSoundcard, Soundcard: "hifiberry-digi"}) {
+		t.Fatalf("coordinator asked %+v", got)
+	}
+}
+
+func TestActionsFollowWhatTheBoxHas(t *testing.T) {
+	actions := func(box testBox) []any {
+		var info struct{ Actions []any }
+		_ = json.Unmarshal(serve(newBoxHandler(t, &fakeCoordinator{}, box), http.MethodGet, "/info", "").Body.Bytes(), &info)
+		return info.Actions
+	}
+	if got := actions(testBox{renderer: true, noCore: true, cards: pi()}); !slices.Equal(got, []any{"reboot", "poweroff", "set_soundcard"}) {
+		t.Fatalf("a box with only a renderer offers %v", got)
+	}
+	if got := actions(testBox{server: true, cards: &fakeSoundcards{}}); slices.Contains(got, any("set_soundcard")) {
+		t.Fatalf("a box that is no Pi offers %v", got)
+	}
+	if got := actions(testBox{server: true}); slices.Contains(got, any("set_soundcard")) {
+		t.Fatalf("a supervisor without sound-card support offers %v", got)
+	}
+	coord := &fakeCoordinator{}
+	h := newBoxHandler(t, coord, testBox{renderer: true, noCore: true, cards: &fakeSoundcards{}})
+	for _, action := range []string{"restart_core", "reinstall", "set_soundcard"} {
+		if status, code := detail(t, serve(h, http.MethodPost, "/v1/actions/"+action, `{"renderer_id":"`+rendererID+`"}`)); status != 404 || code != "not_found" {
+			t.Errorf("%s on a box that cannot = %d %s", action, status, code)
+		}
+	}
+	if len(coord.begun) != 0 {
+		t.Fatalf("coordinator asked %v", coord.begun)
+	}
+}
+
+func TestSoundcardReport(t *testing.T) {
+	w := serve(newTestHandler(t, &fakeCoordinator{}, true), http.MethodGet, "/v1/soundcard", "")
+	want := `{"supported":true,"name":"HiFiBerry Digi2 Pro","hat":null,"configured":null,"active":null,"suggested":["hifiberry-digi-pro"],"options":[{"name":"hifiberry-digi-pro","label":"HiFiBerry Digi+ Pro or Digi2 Pro","vendor":"HiFiBerry","kind":"digital"}]}`
+	if w.Code != 200 || strings.TrimSpace(w.Body.String()) != want || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("report = %d %s", w.Code, w.Body)
+	}
+	if status, code := detail(t, serve(newBoxHandler(t, &fakeCoordinator{}, testBox{server: true}), http.MethodGet, "/v1/soundcard", "")); status != 404 || code != "not_found" {
+		t.Fatalf("without sound-card support = %d %s", status, code)
 	}
 }
 
@@ -182,6 +325,12 @@ func TestMethods(t *testing.T) {
 	if w := serve(h, http.MethodHead, "/info", ""); w.Code != 200 {
 		t.Fatalf("HEAD info = %d", w.Code)
 	}
+	if w := serve(h, http.MethodGet, "/v1/soundcard", ""); w.Code != 200 {
+		t.Fatalf("GET soundcard = %d", w.Code)
+	}
+	if status, code := detail(t, serve(h, http.MethodPost, "/v1/soundcard", `{}`)); status != 405 || code != "method_not_allowed" {
+		t.Fatalf("POST soundcard = %d %s", status, code)
+	}
 }
 
 func TestRefusals(t *testing.T) {
@@ -196,13 +345,14 @@ func TestRefusals(t *testing.T) {
 		{refuse(CodeNetworkChange), 409, ""},
 		{&Refusal{Code: CodeTooSoon, RetryAfter: 9200 * time.Millisecond}, 429, "10"},
 		{refuse(CodeUnavailable), 503, ""},
+		{refuse(CodeSoundcard), 500, ""},
 	} {
 		w := serve(newTestHandler(t, &fakeCoordinator{refuse: tc.refusal}, true), http.MethodPost, "/v1/actions/restart_core", `{"server_id":"`+testID+`"}`)
 		if status, code := detail(t, w); status != tc.status || code != tc.refusal.Error() || w.Header().Get("Retry-After") != tc.retryAfter {
 			t.Fatalf("%v: %d %s retry %q", tc.refusal, status, code, w.Header().Get("Retry-After"))
 		}
 	}
-	failing := &fakeCoordinator{run: func(context.Context) error { return refuse(CodeUnavailable) }}
+	failing := &fakeCoordinator{run: func(context.Context) (Target, error) { return "", refuse(CodeUnavailable) }}
 	if status, code := detail(t, serve(newTestHandler(t, failing, true), http.MethodPost, "/v1/actions/restart_core", `{"server_id":"`+testID+`"}`)); status != 503 || code != CodeUnavailable {
 		t.Fatalf("failed restart = %d %s", status, code)
 	}
@@ -244,36 +394,51 @@ func TestRequestOrigin(t *testing.T) {
 }
 
 func TestShutdownReplyArrivesBeforeShutdown(t *testing.T) {
-	release := make(chan struct{})
-	ran := make(chan struct{})
-	coord := &fakeCoordinator{run: func(context.Context) error {
-		<-release
-		close(ran)
-		return nil
-	}}
-	server := httptest.NewServer(newTestHandler(t, coord, true))
-	defer server.Close()
-	replied := make(chan string, 1)
-	go func() {
-		resp, err := http.Post(server.URL+"/v1/actions/poweroff", "application/json", strings.NewReader(`{"server_id":"`+testID+`"}`))
-		if err != nil {
-			replied <- err.Error()
-			return
-		}
-		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
-		replied <- resp.Status + " " + strings.TrimSpace(string(body))
-	}()
-	select {
-	case got := <-replied:
-		if got != `202 Accepted {"action":"poweroff"}` {
-			t.Fatalf("reply = %s", got)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("reply held back until the shutdown ran")
+	for _, tc := range []struct {
+		name, path, body, want string
+		run                    func(context.Context) (Target, error)
+	}{
+		{name: "power off", path: "/v1/actions/poweroff", body: `{"server_id":"` + testID + `"}`, want: `202 Accepted {"action":"poweroff"}`},
+		{
+			name: "a sound card that needs a restart", path: "/v1/actions/set_soundcard",
+			body: `{"server_id":"` + testID + `","soundcard":"hifiberry-digi"}`,
+			want: `202 Accepted {"action":"set_soundcard","reboot":true}`,
+			run:  func(context.Context) (Target, error) { return RebootTarget, nil },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			release := make(chan struct{})
+			ran := make(chan struct{})
+			coord := &fakeCoordinator{run: tc.run, shutdown: func(context.Context) error {
+				<-release
+				close(ran)
+				return nil
+			}}
+			server := httptest.NewServer(newTestHandler(t, coord, true))
+			defer server.Close()
+			replied := make(chan string, 1)
+			go func() {
+				resp, err := http.Post(server.URL+tc.path, "application/json", strings.NewReader(tc.body))
+				if err != nil {
+					replied <- err.Error()
+					return
+				}
+				defer resp.Body.Close()
+				body, _ := io.ReadAll(resp.Body)
+				replied <- resp.Status + " " + strings.TrimSpace(string(body))
+			}()
+			select {
+			case got := <-replied:
+				if got != tc.want {
+					t.Fatalf("reply = %s", got)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("reply held back until the shutdown ran")
+			}
+			close(release)
+			<-ran
+		})
 	}
-	close(release)
-	<-ran
 }
 
 func TestAuditLine(t *testing.T) {
@@ -367,7 +532,7 @@ func TestThePageMayAct(t *testing.T) {
 		r.Header.Set("Origin", "http://kalinka.local:8001")
 	}
 	w := serve(newTestHandler(t, coord, true), http.MethodPost, "/v1/actions/reinstall", `{"server_id":"`+testID+`"}`, page)
-	if w.Code != 202 || len(coord.begun) != 1 || coord.begun[0] != Reinstall {
+	if w.Code != 202 || len(coord.begun) != 1 || coord.begun[0].Action != Reinstall {
 		t.Fatalf("the supervisor's own page was refused: %d %s", w.Code, w.Body)
 	}
 }

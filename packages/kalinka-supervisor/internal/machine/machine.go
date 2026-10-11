@@ -104,7 +104,7 @@ func (m *Machine) ChangingNetwork() bool {
 	return m.state == protocol.Joining || m.resetting
 }
 func (m *Machine) Identity() []byte {
-	s := strings.ReplaceAll(coreconf.ServerID(m.cfg.IdentityFile), "-", "")
+	s := strings.ReplaceAll(coreconf.ReadID(m.cfg.IdentityFile), "-", "")
 	v, err := hex.DecodeString(s)
 	if err != nil || len(v) != 16 {
 		return []byte{}

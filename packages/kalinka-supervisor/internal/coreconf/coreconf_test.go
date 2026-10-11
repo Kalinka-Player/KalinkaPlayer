@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func TestServerID(t *testing.T) {
+func TestReadID(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, body string) string {
 		t.Helper()
@@ -18,14 +18,31 @@ func TestServerID(t *testing.T) {
 		}
 		return path
 	}
-	if got := ServerID(write("id", "ee4d496c-3f6c-4388-a02e-f6a2f17829cd\n")); got != "ee4d496c-3f6c-4388-a02e-f6a2f17829cd" {
-		t.Fatalf("ServerID = %q", got)
+	if got := ReadID(write("id", "ee4d496c-3f6c-4388-a02e-f6a2f17829cd\n")); got != "ee4d496c-3f6c-4388-a02e-f6a2f17829cd" {
+		t.Fatalf("ReadID = %q", got)
 	}
-	if got := ServerID(write("oversized", strings.Repeat("a", 65))); got != "" {
+	if got := ReadID(write("oversized", strings.Repeat("a", 65))); got != "" {
 		t.Fatalf("oversized identity accepted: %q", got)
 	}
-	if got := ServerID(filepath.Join(dir, "missing")); got != "" {
+	if got := ReadID(filepath.Join(dir, "missing")); got != "" {
 		t.Fatalf("missing identity = %q", got)
+	}
+}
+
+func TestInstalled(t *testing.T) {
+	for _, dir := range append([]string{""}, unitDirs...) {
+		root := t.TempDir()
+		if dir != "" {
+			if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, dir, Unit), []byte("[Unit]\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := Installed(root); got != (dir != "") {
+			t.Errorf("Core's unit in %q: installed = %v", dir, got)
+		}
 	}
 }
 

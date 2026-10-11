@@ -25,6 +25,18 @@ configure_supervisor_radios() {
   sed -i '/^\[General\]/a JustWorksRepairing = always' "$conf"
 }
 
+# The supervisor reads a HAT's chips over I2C to suggest boards that carry no ID chip.
+configure_soundcard_detection() {
+  local config="$1/boot/firmware/config.txt"
+  if grep -Eq '^[[:blank:]#]*dtparam=i2c_arm=' "$config"; then
+    sed -Ei 's/^[[:blank:]#]*dtparam=i2c_arm=.*/dtparam=i2c_arm=on/' "$config"
+  else
+    printf '[all]\ndtparam=i2c_arm=on\n' >> "$config"
+  fi
+  mkdir -p "$1/etc/modules-load.d"
+  printf 'i2c-dev\n' > "$1/etc/modules-load.d/kalinka-soundcard.conf"
+}
+
 build_supervisor() {
   if [ -n "${SUPERVISOR_DEB:-}" ]; then
     [ -f "$SUPERVISOR_DEB" ] || die 'SUPERVISOR_DEB does not exist'
@@ -48,6 +60,9 @@ install_supervisor() {
   if [ "${DIETPI_LAYOUT:-}" = rpi ]; then
     in_chroot systemctl enable hciuart.service
     in_chroot systemctl disable serial-getty@ttyAMA0.service
+    # The package's own enable skips the build chroot, which has no running systemd.
+    in_chroot systemctl enable kalinka-soundcard.service
+    configure_soundcard_detection "$ROOTFS"
   fi
 }
 
@@ -61,6 +76,10 @@ verify_supervisor() {
       "$ROOTFS/boot/firmware/config.txt" || die 'a setup radio is disabled'
     [ ! -f "$ROOTFS/etc/modprobe.d/dietpi-disable_bluetooth.conf" ] || die 'Bluetooth is blacklisted'
     [ ! -f "$ROOTFS/etc/modprobe.d/dietpi-disable_wifi.conf" ] || die 'Wi-Fi is blacklisted'
+    require_enabled multi-user.target kalinka-soundcard.service
+    [ -x "$ROOTFS/usr/lib/kalinka-supervisor/soundcard.sh" ] || die 'no sound card helper'
+    grep -q '^dtparam=i2c_arm=on$' "$ROOTFS/boot/firmware/config.txt" || die 'the HAT I2C bus is off'
+    grep -qx 'i2c-dev' "$ROOTFS/etc/modules-load.d/kalinka-soundcard.conf" || die 'i2c-dev is not loaded at boot'
   fi
   if [ "$TARGET_BASE" = dietpi ]; then
     grep -q -- '--no-restart' "$ROOTFS/boot/dietpi/dietpi-network" \

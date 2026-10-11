@@ -5,6 +5,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let info = null;
 let status = null;
+let soundcard = null;
 let busy = false;
 // Each progress flow polls until a newer flow, or a dismiss, takes over.
 let flow = 0;
@@ -16,6 +17,8 @@ const UNIT_NAMES = {
   "kalinka-upgrade.service": "Upgrade",
   "kalinka-renderer-upgrade.service": "Renderer upgrade",
   "kalinka-reinstall.service": "Reinstall",
+  "kalinka-soundcard.service": "Sound card",
+  "kalinka-soundcard-apply.service": "Sound card setup",
 };
 
 const STATES = {
@@ -60,7 +63,18 @@ const ACTIONS = {
     go: "Reinstall",
     follow: followReinstall,
   },
+  set_soundcard: {
+    icon: "i-sound",
+    title: "Change the sound card?",
+    body: (label) => `Sets the box up for ${label}. If its boot configuration has to change, the box restarts once, which takes a minute or two.`,
+    go: "Apply",
+    during: { title: "Setting up the sound card", body: "Writing the boot configuration…" },
+    follow: followSoundcard,
+  },
 };
+
+// Pickers group a maker's boards, then the Pi's own outputs, then no HAT at all.
+const SOUNDCARD_GROUPS = { onboard: "The Pi's own outputs", none: "No HAT" };
 
 function unitName(unit) {
   if (UNIT_NAMES[unit]) return UNIT_NAMES[unit];
@@ -111,14 +125,21 @@ async function getLog() {
   return response.ok ? response.text() : "";
 }
 
-async function post(action) {
-  const body = info && info.server_id ? { server_id: info.server_id } : {};
+// The box's identity, so an address that now leads to another box acts on nothing.
+function identity() {
+  const id = {};
+  if (info && info.server_id) id.server_id = info.server_id;
+  if (info && info.renderer_id) id.renderer_id = info.renderer_id;
+  return id;
+}
+
+async function post(action, extra = {}) {
   const response = await fetch(`/v1/actions/${action}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ ...identity(), ...extra }),
   });
-  if (response.status === 202) return;
+  if (response.status === 202) return response.json();
   let message = "The supervisor did not accept the request.";
   try {
     message = (await response.json()).detail.message;
@@ -166,20 +187,28 @@ function renderNotices() {
   }
 }
 
+// A box that runs only a renderer has no server to restart or reinstall.
+function serverInstalled() {
+  return !info || info.actions.includes("restart_core");
+}
+
 function renderStatus() {
   const [label, look] = status ? stateLook(status.core) : ["Unknown", "off"];
-  byId("core-pill").className = `pill ${look}`;
-  byId("core-label").textContent = status ? `Server ${label.toLowerCase()}` : "Checking the server…";
+  byId("core-pill").className = `pill ${serverInstalled() ? look : "off"}`;
+  byId("core-label").textContent = !serverInstalled() ? "Renderer only"
+    : status ? `Server ${label.toLowerCase()}` : "Checking the server…";
   const open = byId("open-core");
-  open.hidden = !status || status.core !== "active";
+  open.hidden = !serverInstalled() || !status || status.core !== "active";
   if (status) open.href = `${location.protocol}//${location.hostname}:${status.core_port}/`;
   renderNotices();
   const locked = !status || status.upgrading || status.pending != null || busy;
   for (const button of document.querySelectorAll("[data-action]")) {
     const offered = info && info.actions.includes(button.dataset.action);
     button.disabled = locked || !offered;
+    button.closest(".action").hidden = info != null && !offered;
   }
   byId("ssh-enable").disabled = locked;
+  byId("soundcard-apply").disabled = locked || !soundcardChanged();
 }
 
 function fact(list, label, value) {
@@ -241,6 +270,7 @@ function renderDashboard(d) {
   const host = byId("host");
   host.replaceChildren();
   fact(host, "Name", h.hostname);
+  fact(host, "Model", h.model);
   fact(host, "System", h.dietpi ? `DietPi ${h.dietpi} · ${h.os}` : h.os);
   fact(host, "Kernel", h.kernel);
   fact(host, "Up for", h.uptime_seconds ? duration(h.uptime_seconds) : "");
@@ -264,6 +294,90 @@ async function refreshStatus() {
     byId("unreachable").hidden = busy;
   }
   renderStatus();
+}
+
+function cardLabel(name) {
+  const option = soundcard && soundcard.options.find((o) => o.name === name);
+  return option ? option.label : name;
+}
+
+function soundcardChoice() {
+  return byId("soundcard-select").value;
+}
+
+function soundcardChanged() {
+  return soundcard != null && soundcardChoice() !== "" && soundcardChoice() !== soundcard.configured;
+}
+
+function soundcardHint(sc) {
+  if (sc.configured && !sc.active) {
+    return "No sound card came up for this choice. Check that the HAT sits firmly on the pins, or choose another.";
+  }
+  if (sc.suggested.length === 1 && sc.suggested[0] !== sc.configured) {
+    return `This looks like a ${cardLabel(sc.suggested[0])}. Apply it to switch it on.`;
+  }
+  if (sc.suggested.length > 1 && !sc.active) {
+    return "The chip on this HAT is used by several boards. The likely ones are listed first: choose yours.";
+  }
+  if (sc.hat && sc.active && !sc.configured && sc.suggested.length === 0) {
+    return "This HAT set itself up from its ID chip. Nothing needs choosing.";
+  }
+  return "";
+}
+
+function option(card, detected) {
+  const node = document.createElement("option");
+  node.value = card.name;
+  node.textContent = detected ? `${card.label} (detected)` : card.label;
+  return node;
+}
+
+function renderSoundcard(sc) {
+  const previous = soundcard ? soundcardChoice() : "";
+  soundcard = sc;
+  const offered = sc.supported && info != null && info.actions.includes("set_soundcard");
+  byId("soundcard").hidden = !offered;
+  if (!offered) return;
+  const facts = byId("soundcard-facts");
+  facts.replaceChildren();
+  fact(facts, "DAC", sc.name || "None found");
+  fact(facts, "Set up for", sc.configured ? cardLabel(sc.configured) : "Nothing chosen");
+  fact(facts, "Playing through", sc.active ? `${sc.active.name} · ${sc.active.pcm}` : "No card is up");
+  const hint = soundcardHint(sc);
+  byId("soundcard-hint").hidden = hint === "";
+  byId("soundcard-hint").textContent = hint;
+
+  const select = byId("soundcard-select");
+  const groups = new Map();
+  const detected = sc.options.filter((o) => sc.suggested.includes(o.name));
+  if (detected.length) groups.set("Found on this box", detected.map((o) => option(o, true)));
+  for (const o of sc.options) {
+    const group = SOUNDCARD_GROUPS[o.kind] || o.vendor;
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group).push(option(o, false));
+  }
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Choose a sound card…";
+  placeholder.disabled = true;
+  select.replaceChildren(placeholder);
+  for (const [label, options] of groups) {
+    const node = document.createElement("optgroup");
+    node.label = label;
+    node.append(...options);
+    select.append(node);
+  }
+  const keep = [previous, sc.suggested[0], sc.configured].find((name) => name && sc.options.some((o) => o.name === name));
+  select.value = keep || "";
+  renderStatus();
+}
+
+async function refreshSoundcard() {
+  try {
+    renderSoundcard(await getJSON("/v1/soundcard"));
+  } catch (_) {
+    // An older supervisor has no sound card to report; the card stays hidden.
+  }
 }
 
 async function refreshDashboard() {
@@ -293,17 +407,17 @@ function toast(message) {
   }, 6000);
 }
 
-function confirmAction(action) {
+function confirmAction(action, extra = {}, subject = "") {
   const a = ACTIONS[action];
   byId("confirm-tile").className = `tile big${a.danger ? " danger" : ""}`;
   byId("confirm-icon").setAttribute("href", `#${a.icon}`);
   byId("confirm-title").textContent = a.title;
-  byId("confirm-body").textContent = a.body;
+  byId("confirm-body").textContent = typeof a.body === "function" ? a.body(subject) : a.body;
   const go = byId("confirm-go");
   go.textContent = a.go;
   go.onclick = () => {
     closeConfirm();
-    start(action);
+    start(action, extra);
   };
   byId("confirm").hidden = false;
   byId("confirm-cancel").focus();
@@ -313,15 +427,19 @@ function closeConfirm() {
   byId("confirm").hidden = true;
 }
 
-async function start(action) {
+async function start(action, extra) {
   const before = status;
+  const a = ACTIONS[action];
+  if (a.during) showProgress(a.during);
+  let result;
   try {
-    await post(action);
+    result = await post(action, extra);
   } catch (e) {
+    if (a.during) hideProgress();
     toast(e.message);
     return;
   }
-  ACTIONS[action].follow(before);
+  a.follow(before, result);
 }
 
 function showProgress({ title, body, log = false }) {
@@ -432,6 +550,15 @@ async function followReboot() {
   }
 }
 
+function followSoundcard(_, result) {
+  if (result.reboot) {
+    followReboot();
+    return;
+  }
+  finishProgress({ ok: true, title: "Sound card set up", body: "No restart was needed. If the app plays through another device, choose this one in the output's settings." });
+  refreshSoundcard();
+}
+
 async function followPowerOff() {
   const token = ++flow;
   showProgress({ title: "Powering off", body: "The player is shutting down…" });
@@ -520,6 +647,9 @@ function init() {
   for (const button of document.querySelectorAll("[data-action]")) {
     button.addEventListener("click", () => confirmAction(button.dataset.action));
   }
+  byId("soundcard-select").addEventListener("change", renderStatus);
+  byId("soundcard-apply").addEventListener("click", () =>
+    confirmAction("set_soundcard", { soundcard: soundcardChoice() }, cardLabel(soundcardChoice())));
   byId("confirm-cancel").addEventListener("click", closeConfirm);
   byId("confirm").addEventListener("click", (e) => {
     if (e.target === byId("confirm")) closeConfirm();
@@ -533,6 +663,7 @@ function init() {
       info = i;
       byId("foot").textContent = `Kalinka Supervisor ${i.version} · control protocol ${i.protocol}`;
       renderStatus();
+      poll(refreshSoundcard, 15000);
     })
     .catch(() => {
       byId("unreachable").hidden = false;

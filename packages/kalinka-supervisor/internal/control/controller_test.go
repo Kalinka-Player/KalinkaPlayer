@@ -65,9 +65,20 @@ type clock struct{ now time.Time }
 
 func (c *clock) Now() time.Time { return c.now }
 
+type fakeApplier struct {
+	reboot  bool
+	err     error
+	applied []string
+}
+
+func (f *fakeApplier) Apply(_ context.Context, name string) (bool, error) {
+	f.applied = append(f.applied, name)
+	return f.reboot, f.err
+}
+
 func newController(s *fakeSystemd, network NetworkActivity) (*Controller, *clock) {
 	c := &clock{time.Unix(1000, 0)}
-	return NewController(s, network, ReinstallRecord{}, nil, c.Now), c
+	return NewController(s, network, ReinstallRecord{}, nil, &fakeApplier{}, c.Now), c
 }
 
 type sshSetupFunc func(context.Context, protocol.Secret) error
@@ -85,6 +96,8 @@ func TestSSHSetupSharesActionPolicy(t *testing.T) {
 		{name: "available"},
 		{name: "installing", unit: ReinstallUnit, want: CodeUpgrade},
 		{name: "previous helper still running", unit: "kalinka-ssh-setup.service", want: CodeBusy},
+		{name: "sound card applied at boot", unit: "kalinka-soundcard.service", want: CodeBusy},
+		{name: "sound card being applied", unit: "kalinka-soundcard-apply.service", want: CodeBusy},
 		{name: "changing network", network: fakeNetwork(true), want: CodeNetworkChange},
 		{name: "shutting down", pending: Reboot, want: CodeShuttingDown},
 	} {
@@ -111,7 +124,7 @@ func TestSSHSetupExcludesOtherActionsAndReleasesLockOnFailure(t *testing.T) {
 	c, _ := newController(&fakeSystemd{}, nil)
 	c.ssh = sshSetupFunc(func(context.Context, protocol.Secret) error {
 		for _, action := range Supported {
-			if _, err := c.Begin(context.Background(), action); code(err) != CodeBusy {
+			if _, err := c.Begin(context.Background(), request(action)); code(err) != CodeBusy {
 				t.Fatalf("%s was not excluded", action)
 			}
 		}
@@ -139,12 +152,22 @@ func code(err error) string {
 	return ""
 }
 
+// request asks for a, naming a card for the one action that takes it.
+func request(a Action) Request {
+	return Request{Action: a, Soundcard: "hifiberry-digi"}
+}
+
+// perform carries a out as the HTTP layer does: Run, then the shutdown it names.
 func perform(c *Controller, a Action) error {
-	op, err := c.Begin(context.Background(), a)
+	op, err := c.Begin(context.Background(), request(a))
 	if err != nil {
 		return err
 	}
-	return op.Run(context.Background())
+	target, err := op.Run(context.Background())
+	if err != nil || target == "" {
+		return err
+	}
+	return op.Shutdown(context.Background())
 }
 
 func TestActionsReachSystemd(t *testing.T) {
@@ -182,7 +205,7 @@ func TestUpgradeRefusesEveryAction(t *testing.T) {
 				if got := code(perform(c, a)); got != CodeUpgrade {
 					t.Fatalf("%s %+v %s: %q", unit, state, a, got)
 				}
-				if len(s.calls) != 0 {
+				if len(s.calls) != 0 || len(c.soundcards.(*fakeApplier).applied) != 0 {
 					t.Fatalf("acted during an upgrade: %v", s.calls)
 				}
 			}
@@ -204,7 +227,7 @@ func TestCoreStartingDoesNotBlockShutdown(t *testing.T) {
 }
 
 func TestNetworkChangeBlocksAllButRestart(t *testing.T) {
-	for _, a := range []Action{Reboot, PowerOff, Reinstall} {
+	for _, a := range []Action{Reboot, PowerOff, Reinstall, SetSoundcard} {
 		c, _ := newController(&fakeSystemd{}, fakeNetwork(true))
 		if got := code(perform(c, a)); got != CodeNetworkChange {
 			t.Fatalf("%s: %q", a, got)
@@ -253,7 +276,7 @@ func TestRestartRateLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	clk.now = clk.now.Add(5 * time.Second)
-	_, err := c.Begin(context.Background(), RestartCore)
+	_, err := c.Begin(context.Background(), request(RestartCore))
 	var r *Refusal
 	if !errors.As(err, &r) || r.Code != CodeTooSoon || r.RetryAfter != 10*time.Second {
 		t.Fatalf("second restart = %v", err)
@@ -282,12 +305,15 @@ func TestFailedRestartCanBeRetriedAtOnce(t *testing.T) {
 func TestOneOperationAtATime(t *testing.T) {
 	s := &fakeSystemd{block: make(chan struct{})}
 	c, _ := newController(s, nil)
-	op, err := c.Begin(context.Background(), RestartCore)
+	op, err := c.Begin(context.Background(), request(RestartCore))
 	if err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error)
-	go func() { done <- op.Run(context.Background()) }()
+	go func() {
+		_, err := op.Run(context.Background())
+		done <- err
+	}()
 	if got := code(perform(c, Reboot)); got != CodeBusy {
 		t.Fatalf("second operation = %q", got)
 	}
@@ -333,7 +359,7 @@ func TestReinstallStatus(t *testing.T) {
 	dir := t.TempDir()
 	record := ReinstallRecord{ResultFile: filepath.Join(dir, "reinstall-result")}
 	s := &fakeSystemd{}
-	c := NewController(s, nil, record, nil, time.Now)
+	c := NewController(s, nil, record, nil, nil, time.Now)
 	status := func() Status {
 		t.Helper()
 		st, err := c.Status(context.Background())
@@ -372,5 +398,101 @@ func TestReinstallIsNotTerminal(t *testing.T) {
 	s.units = map[string]UnitState{ReinstallUnit: {Active: "activating"}}
 	if got := code(perform(c, RestartCore)); got != CodeUpgrade {
 		t.Fatalf("restart while reinstalling = %q", got)
+	}
+}
+
+func TestSoundcardWithoutRestart(t *testing.T) {
+	s := &fakeSystemd{}
+	c, _ := newController(s, nil)
+	op, err := c.Begin(context.Background(), Request{Action: SetSoundcard, Soundcard: "i2s-dac"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target, err := op.Run(context.Background()); target != "" || err != nil {
+		t.Fatalf("Run = %q, %v", target, err)
+	}
+	if applied := c.soundcards.(*fakeApplier).applied; len(applied) != 1 || applied[0] != "i2s-dac" {
+		t.Fatalf("applied %v", applied)
+	}
+	if len(s.calls) != 1 || s.calls[0] != "check reboot.target" {
+		t.Fatalf("calls %v", s.calls)
+	}
+	if st, _ := c.Status(context.Background()); st.Pending != "" {
+		t.Fatalf("a card that needs no restart left %q pending", st.Pending)
+	}
+	if err := perform(c, RestartCore); err != nil {
+		t.Fatalf("the controller was not released: %v", err)
+	}
+}
+
+func TestSoundcardRestartFlowsThroughPending(t *testing.T) {
+	s := &fakeSystemd{}
+	c, _ := newController(s, nil)
+	c.soundcards = &fakeApplier{reboot: true}
+	op, err := c.Begin(context.Background(), request(SetSoundcard))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target, err := op.Run(context.Background()); target != RebootTarget || err != nil {
+		t.Fatalf("Run = %q, %v", target, err)
+	}
+	if st, _ := c.Status(context.Background()); st.Pending != Reboot {
+		t.Fatalf("pending = %q", st.Pending)
+	}
+	for _, a := range Supported {
+		if got := code(perform(c, a)); got != CodeShuttingDown {
+			t.Fatalf("%s while the box restarts for its card: %q", a, got)
+		}
+	}
+	if err := op.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"check reboot.target", "shutdown reboot.target"}; len(s.calls) != 2 || s.calls[0] != want[0] || s.calls[1] != want[1] {
+		t.Fatalf("calls %v", s.calls)
+	}
+}
+
+func TestSoundcardRestartRefusedBySystemd(t *testing.T) {
+	s := &fakeSystemd{}
+	c, _ := newController(s, nil)
+	c.soundcards = &fakeApplier{reboot: true}
+	s.actErr = errors.New("denied")
+	if got := code(perform(c, SetSoundcard)); got != CodeUnavailable {
+		t.Fatalf("refused restart = %q", got)
+	}
+	if st, _ := c.Status(context.Background()); st.Pending != "" {
+		t.Fatal("a refused restart stayed pending")
+	}
+	s.actErr = nil
+	if err := perform(c, Reboot); err != nil {
+		t.Fatalf("the restart cannot be retried: %v", err)
+	}
+}
+
+func TestSoundcardFailureReleasesTheController(t *testing.T) {
+	c, _ := newController(&fakeSystemd{}, nil)
+	c.soundcards = &fakeApplier{reboot: true, err: errors.New("helper failed")}
+	if got := code(perform(c, SetSoundcard)); got != CodeSoundcard {
+		t.Fatalf("failed apply = %q", got)
+	}
+	if st, _ := c.Status(context.Background()); st.Pending != "" {
+		t.Fatal("a failed apply left a restart pending")
+	}
+	if err := perform(c, RestartCore); err != nil {
+		t.Fatalf("the controller was not released: %v", err)
+	}
+}
+
+func TestSoundcardNeedsARestartToBePossible(t *testing.T) {
+	applier := &fakeApplier{}
+	c, _ := newController(&fakeSystemd{checkErr: errors.New("no target")}, nil)
+	c.soundcards = applier
+	if got := code(perform(c, SetSoundcard)); got != CodeUnavailable || len(applier.applied) != 0 {
+		t.Fatalf("applied %v without a way to restart: %q", applier.applied, got)
+	}
+	c, _ = newController(&fakeSystemd{}, nil)
+	c.soundcards = nil
+	if got := code(perform(c, SetSoundcard)); got != CodeUnavailable {
+		t.Fatalf("without an applier = %q", got)
 	}
 }

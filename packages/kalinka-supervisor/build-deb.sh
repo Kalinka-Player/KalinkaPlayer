@@ -12,7 +12,8 @@ trap 'rm -rf "$stage"' EXIT
 chmod 755 "$stage"
 mkdir -p "$stage/DEBIAN" "$stage/usr/lib/kalinka-supervisor" "$stage/usr/lib/systemd/system" "$out_dir"
 GOARCH="$arch" VERSION="$version" "$pkg_dir/build.sh" "$stage/usr/lib/kalinka-supervisor/kalinka-supervisor"
-install -m 755 "$pkg_dir/reinstall.sh" "$pkg_dir/ssh-setup.sh" "$stage/usr/lib/kalinka-supervisor/"
+install -m 755 "$pkg_dir/reinstall.sh" "$pkg_dir/ssh-setup.sh" "$pkg_dir/soundcard.sh" "$stage/usr/lib/kalinka-supervisor/"
+install -m 644 "$pkg_dir/dietpi-conf.sh" "$stage/usr/lib/kalinka-supervisor/"
 install -m 644 "$pkg_dir/systemd/"* "$stage/usr/lib/systemd/system/"
 cat > "$stage/DEBIAN/control" <<CONTROL
 Package: kalinka-supervisor
@@ -22,8 +23,8 @@ Maintainer: Dmitry Savin <envelsavinds@gmail.com>
 Depends: bluez, dbus, systemd, curl, network-manager | ifupdown, wpasupplicant, iw, rfkill, iproute2, passwd, sudo
 Description: Independent Kalinka supervisor, nearby box setup and LAN control page
  Static Go service for BLE provisioning with NetworkManager or DietPi networking,
- and a recovery page on the local network: status, restart, reboot, power off
- and reinstall.
+ and a recovery page on the local network: status, restart, reboot, power off,
+ reinstall and, on a Raspberry Pi, choosing the sound card.
 CONTROL
 cat > "$stage/DEBIAN/postinst" <<'HOOK'
 #!/bin/sh
@@ -34,6 +35,10 @@ if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
   systemctl daemon-reload
   # Older packages also linked the unit into radio targets; reenable drops those links.
   systemctl reenable kalinka-supervisor.service || true
+  # dietpi.txt names a sound card only where DietPi's own tool can apply it.
+  if [ -x /boot/dietpi/func/dietpi-set_hardware ]; then
+    systemctl enable kalinka-soundcard.service || true
+  fi
   # Core's upgrade installs this package under set -e: a start failure must not abort it.
   systemctl --no-block restart kalinka-supervisor.service || true
 fi
@@ -43,6 +48,7 @@ cat > "$stage/DEBIAN/prerm" <<'HOOK'
 set -e
 if [ "$1" = remove ] && [ -d /run/systemd/system ]; then
   systemctl disable --now kalinka-supervisor.service
+  systemctl disable kalinka-soundcard.service || true
 fi
 HOOK
 cat > "$stage/DEBIAN/postrm" <<'HOOK'

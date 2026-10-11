@@ -29,7 +29,7 @@ func (h *handler) page(w http.ResponseWriter, r *http.Request, status int, messa
 		SSH, Simulated, SSHEnabled bool
 		ServerID, Username, Error  string
 	}{h.cfg.EnableSSH != nil, h.cfg.Simulated, r.URL.Query().Get("ssh") == "enabled",
-		coreconf.ServerID(h.cfg.ServerIDFile), sshaccess.Username, message})
+		coreconf.ReadID(h.cfg.ServerIDFile), sshaccess.Username, message})
 	if err != nil {
 		return fail(w, "not_found")
 	}
@@ -76,7 +76,7 @@ func (h *handler) enableSSH(w http.ResponseWriter, r *http.Request) string {
 	if r.PostForm.Get("action") != string(enableSSH) {
 		return reject(http.StatusBadRequest, "invalid_request", "Unknown dashboard action.")
 	}
-	if r.PostForm.Get("server_id") != coreconf.ServerID(h.cfg.ServerIDFile) {
+	if r.PostForm.Get("server_id") != coreconf.ReadID(h.cfg.ServerIDFile) {
 		return reject(http.StatusConflict, "wrong_server", "The box's identity changed. Check its address and try again.")
 	}
 	password := r.PostForm.Get("password")

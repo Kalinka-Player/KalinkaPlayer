@@ -18,6 +18,15 @@ grep -q 'console=tty1 root=PARTUUID=test quiet' "$root/boot/firmware/cmdline.txt
 [ ! -e "$root/etc/modprobe.d/dietpi-disable_wifi.conf" ]
 [ "$(grep -c '^JustWorksRepairing = always$' "$root/etc/bluetooth/main.conf")" = 1 ]
 grep -q '^AutoEnable=true$' "$root/etc/bluetooth/main.conf"
+printf '#dtparam=i2c_arm=off\n#dtparam=i2c_arm_baudrate=100000\n' >> "$root/boot/firmware/config.txt"
+configure_soundcard_detection "$root"
+configure_soundcard_detection "$root"
+[ "$(grep -c '^dtparam=i2c_arm=on$' "$root/boot/firmware/config.txt")" = 1 ]
+grep -q '^#dtparam=i2c_arm_baudrate=100000$' "$root/boot/firmware/config.txt"
+[ "$(cat "$root/etc/modules-load.d/kalinka-soundcard.conf")" = i2c-dev ]
+printf 'dtparam=audio=off\n' > "$root/boot/firmware/config.txt"
+configure_soundcard_detection "$root"
+[ "$(cat "$root/boot/firmware/config.txt")" = "$(printf 'dtparam=audio=off\n[all]\ndtparam=i2c_arm=on')" ]
 unit="$pkg_dir/../kalinka-supervisor/systemd/kalinka-supervisor.service"
 ! grep -q 'network-online.target' "$unit"
 # Always on: the process starts nearby setup itself once a radio appears.
@@ -48,7 +57,7 @@ chmod 755 "$root/go"
 GO="$root/go" GOARCH=amd64 VERSION=0.0.0 OUT_DIR="$root/deb" bash "$deb"
 package="$root/deb/kalinka-supervisor_0.0.0_amd64.deb"
 dpkg-deb --extract "$package" "$root/package"
-for helper in reinstall ssh-setup; do
+for helper in reinstall ssh-setup soundcard; do
   installed="$root/package/usr/lib/kalinka-supervisor/$helper.sh"
   if [ ! -x "$installed" ]; then
     echo "Missing executable supervisor helper: $helper.sh" >&2
@@ -56,6 +65,9 @@ for helper in reinstall ssh-setup; do
   fi
   cmp "$pkg_dir/../kalinka-supervisor/$helper.sh" "$installed"
 done
+cmp "$pkg_dir/../kalinka-supervisor/dietpi-conf.sh" "$root/package/usr/lib/kalinka-supervisor/dietpi-conf.sh"
+[ -f "$root/package/usr/lib/systemd/system/kalinka-soundcard.service" ]
+grep -q '^    systemctl enable kalinka-soundcard.service || true$' "$deb"
 dependencies="$(dpkg-deb --field "$package" Depends)"
 for dependency in curl passwd sudo; do
   if ! grep -Eq "(^|, )$dependency(,| |$)" <<< "$dependencies"; then
@@ -63,4 +75,4 @@ for dependency in curl passwd sudo; do
     exit 1
   fi
 done
-echo 'Provisioning radios, always-on supervisor, packaging and pairing configuration: passed'
+echo 'Provisioning radios, HAT detection, always-on supervisor, packaging and pairing configuration: passed'

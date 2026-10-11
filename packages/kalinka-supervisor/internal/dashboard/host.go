@@ -6,10 +6,12 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"kalinka/supervisor/internal/devicetree"
 )
 
 func (c *Collector) host() Host {
-	h := Host{OS: c.osName(), DietPi: c.dietPi(), Kernel: c.firstLine("proc/sys/kernel/osrelease"), CPUs: c.cpus()}
+	h := Host{Model: devicetree.Model(c.root), OS: c.osName(), DietPi: c.dietPi(), Kernel: c.firstLine("proc/sys/kernel/osrelease"), CPUs: c.cpus()}
 	h.Hostname, _ = c.hostname()
 	if f := strings.Fields(c.firstLine("proc/uptime")); len(f) > 0 {
 		h.UptimeSeconds, _ = strconv.ParseFloat(f[0], 64)

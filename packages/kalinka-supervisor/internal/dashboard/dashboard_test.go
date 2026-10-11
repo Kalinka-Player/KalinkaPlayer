@@ -34,6 +34,7 @@ func stage(t *testing.T) box {
 	b.write("proc/uptime", "93784.21 180000.00\n")
 	b.write("proc/loadavg", "0.25 0.50 1.00 1/200 4242\n")
 	b.write("proc/sys/kernel/osrelease", "6.12.47+rpt-rpi-v8\n")
+	b.write("proc/device-tree/model", "Raspberry Pi 4 Model B Rev 1.4\x00")
 	b.write("etc/os-release", "NAME=\"Debian GNU/Linux\"\nPRETTY_NAME=\"Debian GNU/Linux 13 (trixie)\"\n")
 	b.write("boot/dietpi/.version", "G_DIETPI_VERSION_CORE=9\nG_DIETPI_VERSION_SUB=17\nG_DIETPI_VERSION_RC=2\n")
 	b.write("sys/class/thermal/thermal_zone0/temp", "48312\n")
@@ -84,7 +85,8 @@ func TestSnapshotReadsTheBox(t *testing.T) {
 	s := newCollector(b).Snapshot(context.Background())
 
 	h := s.Host
-	if h.Hostname != "kalinka-kitchen" || h.OS != "Debian GNU/Linux 13 (trixie)" || h.DietPi != "v9.17.2" || h.Kernel != "6.12.47+rpt-rpi-v8" {
+	if h.Hostname != "kalinka-kitchen" || h.OS != "Debian GNU/Linux 13 (trixie)" || h.DietPi != "v9.17.2" || h.Kernel != "6.12.47+rpt-rpi-v8" ||
+		h.Model != "Raspberry Pi 4 Model B Rev 1.4" {
 		t.Fatalf("host identity = %+v", h)
 	}
 	if h.CPUs != 2 || h.UptimeSeconds != 93784.21 || h.Load != [3]float64{0.25, 0.5, 1} {

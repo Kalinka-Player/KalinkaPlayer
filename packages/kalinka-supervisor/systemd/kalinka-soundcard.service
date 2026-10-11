@@ -8,9 +8,9 @@ Before=kalinka-renderer.service
 ConditionPathExists=/boot/dietpi/func/dietpi-set_hardware
 
 [Service]
+# No RemainAfterExit: the supervisor refuses its actions while this unit is active.
 Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/lib/kalinka-image/soundcard.sh
+ExecStart=/usr/lib/kalinka-supervisor/soundcard.sh boot
 
 [Install]
 WantedBy=multi-user.target

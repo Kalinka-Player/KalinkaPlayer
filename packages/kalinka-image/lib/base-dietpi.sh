@@ -41,8 +41,8 @@ declare -A DIETPI_SETTINGS=(
 
 BASE_HOST_TOOLS=(python3 curl gpg gpgv e2fsck resize2fs fatlabel)
 
-# shellcheck source=../overlays/dietpi/usr/lib/kalinka-image/dietpi-conf.sh
-. "$SCRIPT_DIR/overlays/dietpi/usr/lib/kalinka-image/dietpi-conf.sh"
+# shellcheck source=../../kalinka-supervisor/dietpi-conf.sh
+. "$SCRIPT_DIR/../kalinka-supervisor/dietpi-conf.sh"
 
 base_check_host() {
   [ -r "$DIETPI_KEY" ] || die "no DietPi signing key at $DIETPI_KEY"
@@ -225,7 +225,6 @@ base_finish() {
   mark_kernel unhold
   if [ "$DIETPI_LAYOUT" = rpi ]; then
     install_overlay dietpi
-    in_chroot systemctl enable kalinka-soundcard.service
   else
     in_chroot systemctl unmask systemd-logind.service
   fi
@@ -254,7 +253,6 @@ verify_dietpi_setup() {
     || die "DietPi no longer thinks it has never booted"
   require_enabled local-fs.target dietpi-fs_partition_resize.service
   require_enabled multi-user.target dietpi-firstboot.service
-  if [ "$DIETPI_LAYOUT" = rpi ]; then require_enabled multi-user.target kalinka-soundcard.service; fi
   [ -x "$ROOTFS/usr/lib/sftp-server" ] || die "no /usr/lib/sftp-server, where Dropbear looks for SFTP"
   require_disabled multi-user.target dietpi-ramlog.service
   [ "$(kernel_packages)" = "$(cat "$WORK/kernel.before")" ] \

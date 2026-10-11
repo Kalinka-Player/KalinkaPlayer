@@ -231,7 +231,7 @@ supervisor-build:
 	@GO="$(GO)" packages/kalinka-supervisor/build.sh
 
 supervisor-test:
-	@cd packages/kalinka-supervisor && "$(GO)" test -race ./... && "$(GO)" vet ./...
+	@cd packages/kalinka-supervisor && "$(GO)" test -race ./... && "$(GO)" vet ./... && bash tests/test_soundcard.sh
 
 supervisor-deb:
 	@GO="$(GO)" packages/kalinka-supervisor/build-deb.sh

@@ -3,7 +3,8 @@
 `kalinka-supervisor` replaces the experimental Python provisioning service.
 It provides nearby box setup and a LAN [control page and API](supervisor-control.md)
 on port 8001. They show how the box is doing, and restart Core, reboot or power
-off the box, or reinstall Kalinka. It runs independently
+off the box, reinstall Kalinka, or set a Raspberry Pi up for its sound card.
+It runs independently
 of Core, its Python interpreter, its virtual environment and its plugins.
 Core still owns its HTTP API, mDNS, its identity and the existing OOBE. Nearby
 setup needs no app protocol change; see
@@ -34,8 +35,12 @@ Without the selected backend's executable, nearby setup stays off and the
 journal says what to install; the rest of the supervisor keeps running, and
 setup starts by itself once the backend appears.
 The DietPi backend also requires DietPi's own `dietpi-network apply --no-restart`
-API. The package enables and starts the service. Pi image builds additionally
-enable UART Bluetooth, firmware and the radio settings needed for first boot.
+API. The package enables and starts the service. It also carries the sound
+card helper and `kalinka-soundcard.service`, which applies `CONFIG_SOUNDCARD`
+from `dietpi.txt` at boot; the package enables that unit where DietPi's
+`dietpi-set_hardware` exists. Pi image builds additionally enable UART
+Bluetooth, firmware and the radio settings needed for first boot, and switch
+the HAT's I2C bus on for sound card detection.
 
 All image targets install an architecture-specific Debian package containing the same static Go service. `--backend auto`
 selects DietPi when `/boot/dietpi/dietpi-network` exists, otherwise NetworkManager.
@@ -60,7 +65,9 @@ environment or `/boot/dietpi.txt`, and with both off the service exits.
 | `internal/provision` | Nearby setup as one restartable component: its radio gate, recovery and BLE loop |
 | `internal/control` | The control page and API: action policy, systemd operations, reinstall record, HTTP layer, embedded page and listener binding |
 | `internal/dashboard` | What runs on the box and what it costs, from /proc, cgroups, dpkg and Core's environment; never from Core itself |
-| `internal/coreconf` | Core's interface, port and identity, read from its files without Core running |
+| `internal/soundcard` | The sound cards a Pi can be set up for, which one it has, from the device tree, ALSA and the HAT's I2C bus, and applying a choice through the packaged helper |
+| `internal/devicetree` | The board model and HAT identity the firmware leaves in the device tree |
+| `internal/coreconf` | Core's interface, port and identity, the renderer's identity, and whether Core is installed, read from files without either running |
 | `internal/dbusx` | The system-bus call surface shared by NetworkManager and systemd |
 | `cmd/kalinka-supervisor` | Options, component supervision and process lifecycle |
 
@@ -99,6 +106,12 @@ same adapter/interface.
   becomes available. The process restarts a failed setup component itself;
   systemd restarts the process and watches the setup loop, whose stall stops
   the watchdog ping.
+- A sound card change runs the packaged `soundcard.sh` as the transient
+  `kalinka-soundcard-apply.service`, started through `systemd-run` like SSH
+  setup, so outside the sandbox: it edits the boot partition,
+  `/etc/modprobe.d` and `/etc/asound.conf`. The supervisor itself only reads
+  the device tree, ALSA's card list, the boot partition and a few registers
+  on the HAT's I2C bus. The only input is a name from its own catalog.
 - The control page and API answer local peers only, cannot be framed by other
   sites, and offer a closed set of typed actions;
   [their trust model](supervisor-control.md#trust-model) lists the rest.
@@ -177,10 +190,10 @@ separate from the provisioning machine:
    restart Core, restore a known-good release, and repair Core's environment.
    No endpoint accepts arbitrary commands, paths or package URLs. The control
    API's `Controller` already admits one action at a time, refuses during
-   installs, keeps reboot, power-off and reinstall off a Wi-Fi join or
-   rollback, and audits outcomes without secrets. Restarting Core, rebooting,
-   powering off and an online reinstall are delivered; the remaining actions
-   join it.
+   installs, keeps reboot, power-off, reinstall and sound card changes off a
+   Wi-Fi join or rollback, and audits outcomes without secrets. Restarting
+   Core, rebooting, powering off, an online reinstall and setting the sound
+   card are delivered; the remaining actions join it.
 3. The embedded control page and its dashboard keep working when Core is
    absent. BLE can advertise an additional recovery capability without
    changing the existing Wi-Fi UUIDs. The page's actions are served without
@@ -199,7 +212,7 @@ separate from the provisioning machine:
 6. Before adding release checks to Go, support offline recovery from one retained known-good Core build. Stage verified packages, wheels and any required Python runtime outside Core's venv. Promote a candidate only after a sustained healthy period **and actual successful use**, such as playback; process startup alone is not enough. Keep the previous known-good build until that confirmation, make promotion atomic, and never overwrite it with a failed update. A recovery request restores that exact retained build without checking GitHub or upgrading packages. Bound retained storage and version the manifest so future update ownership can change without losing recovery data.
 7. Updating the supervisor itself remains package-managed. A future signed-release updater needs its own rollback and startup-health mechanism; a broken supervisor cannot restore itself by executing its broken binary. systemd or an independent installer must retain that responsibility.
 
-Beyond the control page's four actions, no offline release restore, local
+Beyond the control page's actions, no offline release restore, local
 admin socket or self-updater exists yet. These need their own threat model and
 failure-injection tests before they gain root actions.
 

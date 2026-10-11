@@ -7,6 +7,7 @@
 - restart Core;
 - reboot the box or power it off;
 - reinstall Kalinka;
+- on a Raspberry Pi, set the box up for its sound card, such as a DAC HAT;
 - set up an SSH administrator login through the dashboard form;
 - tell which supervisor and protocol version it is talking to.
 
@@ -16,7 +17,9 @@ configuration and identity files, but never need Core to be running.
 
 The supervisor runs on every image box, with or without radios. Nearby BLE
 setup is one component inside it, started when an adapter and a Wi-Fi
-interface are present; see [the supervisor](supervisor.md).
+interface are present; see [the supervisor](supervisor.md). A box that runs
+only a renderer can have one too, installed with the renderer; it then offers
+no server controls.
 
 ## The control page
 
@@ -37,6 +40,11 @@ Core's files are damaged. It follows the app's dark style.
   - **Power off:** until it stops answering.
   - **Reinstall:** shows the installer's output live, until it succeeds or
     fails.
+- **Sound card**, on a Raspberry Pi. The DAC the box found, what the boot
+  configuration sets up, and the ALSA card that came up. A list of every card
+  the box can be set up for, with the ones it detected first, and **Apply**,
+  which restarts the box once when the boot configuration has to change. See
+  [the sound card](#the-sound-card).
 - **Resources.** Memory and CPU for Kalinka as a whole, then per service:
   - **Services:** the server, the renderer and the supervisor, plus any other
     Kalinka unit while it runs, such as an upgrade or the Wi-Fi helper.
@@ -79,8 +87,10 @@ was a deliberate decision. What the supervisor does instead is narrow who can
 reach it and what they can make it do:
 
 - **A closed set of actions.** Unit names, targets and the installer URL are
-  constants. The SSH form accepts a password for one fixed account. Nothing
-  accepts a command, a path or a package name.
+  constants. The SSH form accepts a password for one fixed account, and
+  `set_soundcard` accepts one sound card name from the supervisor's own
+  catalog, which the box must offer: its overlay has to be on the boot
+  partition. Nothing accepts a command, a path or a package name.
 - **Local peers only.** The peer address must be loopback, link-local,
   private (RFC 1918) or in 100.64.0.0/10, where VPN overlays such as Tailscale
   put LAN peers. A forwarded port does not expose the API to the internet.
@@ -97,11 +107,16 @@ reach it and what they can make it do:
   - Every response forbids framing (`frame-ancestors 'none'`, `X-Frame-Options:
     DENY`), so another site cannot overlay the controls and steal a click. A
     content security policy keeps the page to its own files.
-- **The right box.** An action must repeat the box's `server_id`, so a stale
-  address left by a DHCP change cannot act on a different Kalinka box. This
-  is a guard, not a credential.
+- **The right box.** An action must repeat the box's `server_id`, or its
+  `renderer_id` on a box that runs only a renderer, so a stale address left
+  by a DHCP change cannot act on a different Kalinka box. This is a guard,
+  not a credential.
 - **Bounded requests.** 1 KiB bodies with no unknown fields, 8 KiB headers,
   and timeouts on reading, writing and idling. Responses are never cached.
+- **Hardware stays read-only to the supervisor.** It reads the device tree,
+  ALSA's card list and the boot partition, and reads a few registers on the
+  HAT's I2C bus. Every change to the boot configuration runs in a helper
+  unit outside its sandbox.
 - **An audit line per action:** the path, the peer address and the outcome
   code. The body is never logged.
 
@@ -129,13 +144,19 @@ is busy, including after a supervisor restart.
 {"name": "kalinka-supervisor", "version": "0.2.0",
  "protocol": 1, "min_protocol": 1,
  "server_id": "ee4d496c-3f6c-4388-a02e-f6a2f17829cd",
- "actions": ["restart_core", "reboot", "poweroff", "reinstall"]}
+ "renderer_id": "5c0ffee0-1d2e-4a3b-8c4d-5e6f7a8b9c0d",
+ "actions": ["restart_core", "reboot", "poweroff", "reinstall", "set_soundcard"]}
 ```
 
 - `version` is the package version.
 - `server_id` is Core's identity from `/var/lib/kalinka/server_id`, or `null`
   before Core has created it.
-- `actions` lists what this supervisor can do.
+- `renderer_id` is the renderer's identity from
+  `/var/lib/kalinka-renderer/renderer_id`, or `null` where no renderer has
+  created one. It is the `renderer_id` Core lists the renderer under.
+- `actions` lists what this box can do. A box without Core offers no
+  `restart_core` or `reinstall`, and only a Raspberry Pi offers
+  `set_soundcard`.
 
 **Negotiation** works like the renderer's Hello range. A client that speaks
 protocols `a` to `b` uses `v = min(b, protocol)`. It is compatible when
@@ -157,10 +178,12 @@ older than this API. Ordinary Core installations have no supervisor.
 | GET, HEAD | `/v1/status` | The status object below |
 | GET, HEAD | `/v1/dashboard` | The dashboard object below |
 | GET, HEAD | `/v1/reinstall/log` | The last 64 KiB of the last reinstall's output, as text; empty if none has run |
+| GET, HEAD | `/v1/soundcard` | The sound card object below |
 | POST | `/v1/actions/restart_core` | 202 `{"action": "restart_core"}` once systemd has queued the restart |
 | POST | `/v1/actions/reboot` | 202 `{"action": "reboot"}`, then the box reboots |
 | POST | `/v1/actions/poweroff` | 202 `{"action": "poweroff"}`, then the box powers off |
 | POST | `/v1/actions/reinstall` | 202 `{"action": "reinstall"}` once the reinstall has been queued |
+| POST | `/v1/actions/set_soundcard` | 202 `{"action": "set_soundcard", "reboot": true}` once the card is set up; when `reboot` is true, the box then restarts |
 | OPTIONS | any API path | CORS preflight |
 
 `GET /v1/status` returns:
@@ -185,8 +208,10 @@ older than this API. Ordinary Core installations have no supervisor.
 for example, CPU stays `null` until two samples a few seconds apart exist.
 Memory is in bytes and CPU in percent of the whole box.
 
-An action's body is `{"server_id": "<id from /info>"}`, or `{}` while
-`/info` reports `null`:
+An action's body names the box. On a box with Core it is
+`{"server_id": "<id from /info>"}`, and may add the `renderer_id` too. On a
+box that runs only a renderer it is `{"renderer_id": "<id from /info>"}`.
+While `/info` reports neither, it is `{}`:
 
 ```sh
 curl -H 'Content-Type: application/json' \
@@ -238,26 +263,103 @@ so it works when Core's own files are what is broken:
 The reinstall runs as long as it needs; apt and source builds on a Pi have no
 safe bound. While it runs, `upgrading` is true and every other action waits.
 
+## The sound card
+
+A Raspberry Pi plays through a DAC HAT once its firmware loads the HAT's
+device-tree overlay, named by a `dtoverlay=` line in
+`/boot/firmware/config.txt`. A HAT with a compliant ID chip, such as
+Raspberry Pi's own DACs, names its overlay itself. Any other needs that line,
+which the supervisor writes for the card chosen in the app or on the page.
+
+`GET /v1/soundcard` returns what the box knows:
+
+```json
+{"supported": true, "name": "HiFiBerry Digi2 Pro",
+ "hat": {"vendor": "HiFiBerry", "product": "Digi2 Pro", "product_id": "0x0003",
+         "product_ver": "0x0001", "uuid": "6f7e6e2a-0c8b-4f0e-9d7a-2c1b8d2f3a4b"},
+ "configured": null, "active": null,
+ "suggested": ["hifiberry-digi-pro"],
+ "options": [{"name": "hifiberry-digi-pro", "label": "HiFiBerry Digi+ Pro or Digi2 Pro",
+              "vendor": "HiFiBerry", "kind": "digital"}]}
+```
+
+| Field | Meaning |
+|---|---|
+| `supported` | `false` off a Raspberry Pi, or without `/boot/firmware/config.txt`; every other field is then empty |
+| `name` | The DAC as a person would call it: from its ID chip, else the configured card's label, else ALSA's card name; `null` when none is known |
+| `hat` | What the HAT's ID chip says, from `/proc/device-tree/hat`; `null` without one |
+| `configured` | The catalogued card the boot configuration sets up, or `null` |
+| `active` | The ALSA card that came up for it: `id`, `name` and `pcm`, the name the renderer opens it by |
+| `suggested` | The cards the hardware points to, most likely first |
+| `options` | Every card this box can be set up for: `name`, `label`, `vendor` and `kind` (`dac`, `digital`, `amp`, `onboard` or `none`) |
+
+**Detection** reads, in order:
+
+1. **ALSA's card list.** The first card that is not the Pi's own output, USB
+   or virtual is the HAT's. For the Pi's own outputs, `active` is the output
+   chosen.
+2. **The boot configuration.** The first catalogued overlay in `config.txt`.
+   On DietPi, `CONFIG_SOUNDCARD` in `/boot/dietpi.txt` tells the Pi's two own
+   outputs apart.
+3. **The HAT's ID chip.** HiFiBerry's chips name the board without setting
+   it up, so the supervisor maps the product to its overlay, as HiFiBerry's
+   own tools do. Raspberry Pi's and IQaudIO's chips set the board up
+   themselves, so nothing is suggested.
+4. **The I2C bus**, only while no card came up and no chip settled it. The
+   supervisor reads a few registers on `/dev/i2c-1`, as HiFiBerry's own
+   detection does. A chip that answers names the DAC chip, not the board, so
+   the suggestion lists every catalogued board built on it. The images
+   switch the bus on; elsewhere it may be off, and the full list remains.
+
+**`set_soundcard`** takes `{"server_id": "…", "soundcard": "<name>"}`, with
+a name from `options`. The supervisor runs
+`/usr/lib/kalinka-supervisor/soundcard.sh apply <name>` as the transient
+`kalinka-soundcard-apply.service`, outside its sandbox, and waits for it, for
+at most 90 seconds:
+
+- **On DietPi**, the cards DietPi knows go through its own
+  `dietpi-set_hardware soundcard`, which also writes `CONFIG_SOUNDCARD`.
+- **Elsewhere, and for cards DietPi does not know** such as `i2s-dac`, the
+  helper edits `config.txt` itself: it removes every audio overlay it could
+  have written, switches the Pi's own audio off, and adds the card's
+  `dtoverlay=` line where every board reads it.
+- **For the boards HiFiBerry's tools treat so**, it also adds
+  `force_eeprom_read=0`, so the chip's own overlay does not load on top. It
+  removes that line for any other card.
+- `none` removes the HAT's overlay. It is never handed to DietPi, whose
+  handling of it removes ALSA.
+
+The reply says whether the boot configuration changed. When it did, the box
+restarts after the reply, exactly as for `reboot`: `pending` is `reboot`
+meanwhile. The firmware loads the overlay at that boot, and the card appears
+in `active` and in the renderer's list of output devices.
+
+At boot on DietPi, `kalinka-soundcard.service` runs the same helper for the
+card `CONFIG_SOUNDCARD` names on the card, before the renderer starts, and
+restarts once if that changed the boot configuration.
+
 ## Refusals
 
 Every error has Core's shape, `{"detail": {"code": "...", "message": "..."}}`:
 
 | Status | Code | When |
 |---|---|---|
-| 400 | `invalid_request` | The body is not a JSON object with only `server_id`, or is over 1 KiB |
+| 400 | `invalid_request` | The body is not a JSON object with only the box's identity and, for `set_soundcard`, a `soundcard` name, or is over 1 KiB |
 | 403 | `not_local` | The peer is not on a local network |
 | 403 | `host_not_allowed` | The `Host` name could be a DNS-rebinding page's |
 | 403 | `origin_not_allowed` | A page this box did not serve |
-| 404 | `not_found` | An unknown path or action |
+| 404 | `not_found` | An unknown path, or an action this box does not offer |
 | 405 | `method_not_allowed` | The wrong method; `Allow` names the right one |
-| 409 | `wrong_server` | `server_id` is missing, or does not name this box |
-| 409 | `busy` | Another action is still being carried out |
+| 409 | `wrong_server` | `server_id` or `renderer_id` is missing, or does not name this box |
+| 409 | `busy` | Another action, the SSH helper or a sound card helper is still running |
 | 409 | `shutting_down` | A reboot or power-off has been accepted |
 | 409 | `upgrade_in_progress` | `kalinka-reinstall.service`, `kalinka-upgrade.service` or `kalinka-renderer-upgrade.service` is running, stopping or queued |
 | 409 | `network_change_in_progress` | Reboot, power-off or reinstall while nearby setup is joining a network or rolling one back |
 | 415 | `unsupported_media_type` | An action without `Content-Type: application/json` |
+| 422 | `unknown_soundcard` | A sound card this box does not offer |
 | 429 | `too_soon` | A `restart_core` within 15 s of one that succeeded; `Retry-After` says when |
 | 500 | `log_unreadable` | The reinstall log exists but could not be read |
+| 500 | `soundcard_failed` | The sound card helper failed; the supervisor's journal has its output |
 | 503 | `unavailable` | systemd did not answer, or refused |
 
 The upgrade refusal protects package installs. The upgrade and reinstall
@@ -266,8 +368,9 @@ installation. A wedged one needs SSH or a power cycle. Core itself starting
 does **not** block a reboot or a reinstall, because a `bootstrap.sh` stuck
 installing packages is one of the main reasons to use either.
 
-Reboot, power-off and reinstall wait for a Wi-Fi join or rollback to finish.
-A restart of Core does not, as it leaves the network alone.
+Reboot, power-off, reinstall and a sound card change wait for a Wi-Fi join
+or rollback to finish. A restart of Core does not, as it leaves the network
+alone.
 
 ## Where it listens
 
@@ -302,6 +405,12 @@ The Kalinka app shows the box under **Settings › General › Box**:
   dashboard and reinstalling, so the app has no copy of either.
 - **Restart the box** and **Power off** run through the app's own
   confirmation dialogs.
+- **Sound card**, on a Raspberry Pi, shows the DAC's name and opens a picker
+  with the detected cards first. After the restart a change needs, the app
+  points the box's own renderer at the new card.
+
+An output's own settings show the same **Sound card** row for a box that
+runs only a renderer and has a supervisor.
 
 When Core stops answering, the app's "unavailable" card and the Settings
 placeholder offer **Restart server** through the supervisor.
@@ -319,7 +428,13 @@ follow the same steps:
    The app records that id under the server's address on every connect.
    While Core is down, it can then still tell its own box from another one
    that has taken over the address.
-2. **Act.** Send the action with that `server_id`.
+
+   **A renderer's box.** For a renderer whose `local` is true, the box is
+   Core's own. For any other, `GET /renderer/list` gives its `address`, the
+   IPv4 address it connected from. Probe `http://<address>:8001/info`, and
+   use the box only if its `renderer_id` is the renderer's own.
+2. **Act.** Send the action with that `server_id`, or the `renderer_id` on a
+   box without Core.
 3. **Wait for the result:**
    - **`restart_core`:** first check `/v1/status`, and leave a Core that is
      `activating` to finish starting: on a Pi that takes up to a minute.
@@ -329,8 +444,15 @@ follow the same steps:
    - **`reinstall`:** poll `/v1/status` until `reinstall.state` leaves
      `running`, showing `/v1/reinstall/log` meanwhile.
    - **`poweroff`:** there is nothing to wait for.
+   - **`set_soundcard`:** the reply arrives once the card is set up. When
+     its `reboot` is true, wait as for `reboot`, then poll `/v1/soundcard`
+     until `active` is set. Point the box's renderer at `active.pcm` by
+     setting its `output.device` through Core's
+     `PUT /renderer/{id}/config`.
 4. **Handle refusals.** Treat 409 and 429 as "not now": show the reason and
    keep the button. A 503 means systemd refused, so offer the action again.
+   A 422 means the box cannot take that sound card; read `/v1/soundcard`
+   again.
 
 The web player runs on Core's port. A request from it to port 8001 is
 cross-origin, and the API allows exactly that origin.
@@ -354,11 +476,17 @@ belongs in that change's threat model.
   - the host and origin rules;
   - the systemd calls against a fake bus;
   - the reinstall record and unit;
+  - the sound card: the catalog against the overlays the images ship,
+    detection against staged boxes and a fake I2C bus, and the packaged
+    helper setting up every catalogued card so that detection reads it back;
   - the dashboard against a staged box;
   - the binding, and the composed process serving and stopping.
 
   The installer's reinstall mode is covered in
-  `packages/kalinka-server/tests/test_maintainer_scripts.py`.
+  `packages/kalinka-server/tests/test_maintainer_scripts.py`. The sound card
+  helper's boot and apply modes, with DietPi's tool stubbed, are covered by
+  `packages/kalinka-supervisor/tests/test_soundcard.sh`, which
+  `make supervisor-test` runs too.
 - **Host check.** `KALINKA_TEST_HOST_SYSTEMD=1 go test ./internal/control`
   reads unit state from the host's real systemd, and never acts on it.
 - **Laptop run.** `run-test.sh` serves the page with simulated actions. Any
