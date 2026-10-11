@@ -50,8 +50,8 @@ dependencies = [
     # Renderer protocol (renderer_ws_handler.py). The committed generated
     # bindings (renderer_proto/) pin the runtime floor; `make proto` regenerates.
     "protobuf>=7.35,<8",
-    # >=3.10: PlayQueueController.replace, which POST /queue/replace calls.
-    "kalinka-plugin-sdk>=3.10,<4",
+    # >=3.11: ExternalVolumeControl for external engine volume routing.
+    "kalinka-plugin-sdk>=3.11,<4",
 ]
 dynamic = ["version"]
 
