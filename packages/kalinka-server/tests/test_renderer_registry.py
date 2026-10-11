@@ -49,6 +49,25 @@ async def test_the_dialed_server_address_rides_each_registration():
     assert registry.get("rid-1").server_addr == ("10.0.0.7", 8000)
 
 
+async def test_the_list_says_where_each_renderer_connected_from():
+    """A client reaches the supervisor of a box that runs only a renderer there."""
+    registry = RendererRegistry()
+    registry.register(
+        renderer_id="rid-1",
+        instance_id="inst-1",
+        friendly_name="Living room",
+        software_version="0.1.0",
+        kind="native",
+        platform={"os": "linux"},
+        session=object(),
+        address="192.168.50.30",
+    )
+    _register(registry, object(), renderer_id="rid-2")
+    entries = {e["renderer_id"]: e for e in registry.list()}
+    assert entries["rid-1"]["address"] == "192.168.50.30"
+    assert entries["rid-2"]["address"] is None
+
+
 async def test_unclean_disconnect_goes_offline_then_reaped():
     registry = RendererRegistry(offline_timeout_s=0.05)
     session = object()
