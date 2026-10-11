@@ -7,11 +7,21 @@ import logging
 import time
 from collections.abc import Callable
 
-from kalinka_plugin_sdk.datamodel import PlaybackControl, PlaybackState, PlayerStateEnum
+from kalinka_plugin_sdk.datamodel import (
+    DeviceVolume,
+    PlaybackControl,
+    PlaybackState,
+    PlayerStateEnum,
+)
 from kalinka_plugin_sdk.direct_playback import HoldEnded, RevokeReason, TransportRequest
-from kalinka_plugin_sdk.external_playback import ExternalPlaybackListener
+from kalinka_plugin_sdk.external_playback import (
+    ExternalPlaybackListener,
+    ExternalVolumeControl,
+)
 
+from .external_volume import ExternalVolumeDevice
 from .module_timeout import PLUGIN_CALL_TIMEOUT_S
+from .output_device_router import OutputDeviceRouter
 from .playback_arbiter import PlaybackArbiter
 
 logger = logging.getLogger(__name__)
@@ -25,6 +35,8 @@ class ExternalSession:
         listener: ExternalPlaybackListener,
         arbiter: PlaybackArbiter,
         renderer_id: str | None,
+        router: OutputDeviceRouter | None = None,
+        volume_control: ExternalVolumeControl | None = None,
     ) -> None:
         self.control: PlaybackControl = PlaybackControl.exclusive(plugin_id, title)
         self.renderer_id: str | None = renderer_id
@@ -36,6 +48,13 @@ class ExternalSession:
         self._worker: asyncio.Task[None] = asyncio.create_task(self._deliver_commands())
         self._teardown: asyncio.Task[None] | None = None
         self._release_task: asyncio.Task[None] | None = None
+        self._router = router
+        self._volume_tasks: set[asyncio.Task] = set()
+        self._volume_device = (
+            ExternalVolumeDevice(self, volume_control, router)
+            if volume_control is not None and router is not None
+            else None
+        )
 
     @property
     def active(self) -> bool:
@@ -54,6 +73,13 @@ class ExternalSession:
 
     async def release(self) -> None:
         await self._release(None)
+
+    def report_volume(self, volume: DeviceVolume) -> None:
+        if not self.active:
+            raise HoldEnded("external playback has ended")
+        if self._volume_device is None:
+            raise ValueError("acquire with volume_control before reporting volume")
+        self._volume_device.report(volume)
 
     async def preempt(self, reason: RevokeReason) -> None:
         # Arbiter handovers own the switch and hold its lock. Never release
@@ -84,6 +110,19 @@ class ExternalSession:
             await self._arbiter.release(self)
 
     async def _stop(self, reason: RevokeReason | None, from_command: bool) -> None:
+        tasks = list(self._volume_tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if self._router is not None and self._volume_device is not None:
+            self._router.clear_external(self)
+            try:
+                # Restoring UI state must not delay stopping the audio engine
+                # if the renderer/amp's volume query is slow or disconnected.
+                async with asyncio.timeout(0.2):
+                    await self._router.resync()
+            except Exception:
+                logger.exception("Could not restore output volume state")
         if not from_command:
             self._worker.cancel()
             await asyncio.gather(self._worker, return_exceptions=True)
@@ -130,21 +169,46 @@ class ExternalPlaybackService:
         plugin_id: str,
         arbiter: PlaybackArbiter,
         renderer_id: Callable[[], str | None] = lambda: None,
+        router: OutputDeviceRouter | None = None,
     ) -> None:
         self._plugin_id: str = plugin_id
         self._arbiter: PlaybackArbiter = arbiter
         self._renderer_id: Callable[[], str | None] = renderer_id
         self._lock: asyncio.Lock = asyncio.Lock()
+        self._router = router
+
+    @property
+    def supports_volume(self) -> bool:
+        return self._router is not None
 
     async def acquire(
-        self, title: str, listener: ExternalPlaybackListener
+        self,
+        title: str,
+        listener: ExternalPlaybackListener,
+        *,
+        volume_control: ExternalVolumeControl | None = None,
     ) -> ExternalSession:
         async with self._lock:
             session = ExternalSession(
-                self._plugin_id, title, listener, self._arbiter, self._renderer_id()
+                self._plugin_id,
+                title,
+                listener,
+                self._arbiter,
+                self._renderer_id(),
+                self._router,
+                volume_control,
             )
             try:
                 await self._arbiter.acquire(session)
+                if (
+                    session.active
+                    and self._arbiter.owns(session)
+                    and session._volume_device is not None
+                ):
+                    self._router.set_external(
+                        session, self._plugin_id, session._volume_device
+                    )
+                    await self._router.resync()
             except BaseException:
                 await session.release()
                 raise
