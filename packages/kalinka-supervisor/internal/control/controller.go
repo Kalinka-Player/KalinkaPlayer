@@ -26,7 +26,7 @@ var Supported = []Action{RestartCore, Reboot, PowerOff, Reinstall, SetSoundcard}
 const enableSSH Action = "enable_ssh"
 
 // helperUnits run the packaged helpers; while one is busy, no other action may start.
-var helperUnits = []string{"kalinka-ssh-setup.service", soundcard.BootUnit, soundcard.ApplyUnit}
+var helperUnits = []string{"kalinka-ssh-setup.service", soundcard.ApplyUnit}
 
 // Request is an admitted action's input: the action, and the card set_soundcard makes the box's own.
 type Request struct {
@@ -189,6 +189,14 @@ func (c *Controller) admit(ctx context.Context, r Request) error {
 		if state.Busy() {
 			return refuse(CodeBusy)
 		}
+	}
+	// The boot hook waits for the network at every boot; only its run, not that wait, holds actions off.
+	boot, err := c.systemd.Unit(ctx, soundcard.BootUnit)
+	if err != nil {
+		return refuse(CodeUnavailable)
+	}
+	if boot.Running() {
+		return refuse(CodeBusy)
 	}
 	installing, err := c.installing(ctx)
 	if err != nil {

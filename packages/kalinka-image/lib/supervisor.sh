@@ -31,6 +31,9 @@ configure_soundcard_detection() {
   if grep -Eq '^[[:blank:]#]*dtparam=i2c_arm=' "$config"; then
     sed -Ei 's/^[[:blank:]#]*dtparam=i2c_arm=.*/dtparam=i2c_arm=on/' "$config"
   else
+    if [ -s "$config" ] && [ -n "$(tail -c1 "$config")" ]; then
+      printf '\n' >> "$config"
+    fi
     printf '[all]\ndtparam=i2c_arm=on\n' >> "$config"
   fi
   mkdir -p "$1/etc/modules-load.d"

@@ -27,6 +27,9 @@ grep -q '^#dtparam=i2c_arm_baudrate=100000$' "$root/boot/firmware/config.txt"
 printf 'dtparam=audio=off\n' > "$root/boot/firmware/config.txt"
 configure_soundcard_detection "$root"
 [ "$(cat "$root/boot/firmware/config.txt")" = "$(printf 'dtparam=audio=off\n[all]\ndtparam=i2c_arm=on')" ]
+printf 'dtparam=audio=off' > "$root/boot/firmware/config.txt"
+configure_soundcard_detection "$root"
+[ "$(cat "$root/boot/firmware/config.txt")" = "$(printf 'dtparam=audio=off\n[all]\ndtparam=i2c_arm=on')" ]
 unit="$pkg_dir/../kalinka-supervisor/systemd/kalinka-supervisor.service"
 ! grep -q 'network-online.target' "$unit"
 # Always on: the process starts nearby setup itself once a radio appears.
@@ -68,6 +71,7 @@ done
 cmp "$pkg_dir/../kalinka-supervisor/dietpi-conf.sh" "$root/package/usr/lib/kalinka-supervisor/dietpi-conf.sh"
 [ -f "$root/package/usr/lib/systemd/system/kalinka-soundcard.service" ]
 grep -q '^    systemctl enable kalinka-soundcard.service || true$' "$deb"
+grep -q '^    systemctl stop kalinka-soundcard.service || true$' "$deb"
 dependencies="$(dpkg-deb --field "$package" Depends)"
 for dependency in curl passwd sudo; do
   if ! grep -Eq "(^|, )$dependency(,| |$)" <<< "$dependencies"; then

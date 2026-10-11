@@ -44,7 +44,12 @@ type UnitState struct {
 
 // Busy reports whether the unit is running, stopping, or has a job waiting to start it.
 func (u UnitState) Busy() bool {
-	return u.Queued || u.Active != "inactive" && u.Active != "failed"
+	return u.Queued || u.Running()
+}
+
+// Running reports whether the unit is starting, running or stopping, leaving out a job still waiting to start it.
+func (u UnitState) Running() bool {
+	return u.Active != "inactive" && u.Active != "failed"
 }
 
 // Systemd is the fixed set of unit operations the supervisor performs.
