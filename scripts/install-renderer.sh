@@ -18,6 +18,8 @@
 #   KALINKA_REPO   owner/repo to pull the release from (default: madenvel/KalinkaPlayer)
 #   GITHUB_TOKEN   optional, only to avoid the 60-req/hr anonymous API limit
 #   KALINKA_REINSTALL  set to 1 to install the deb again when that version is already there
+#   KALINKA_SUPERVISOR set to 1 to install the supervisor too, so the app can set
+#                      up this box's sound card (Debian-based systems only)
 #
 # The download runs as your user; only the install step uses sudo. Running the
 # whole script under sudo is fine too.
@@ -57,6 +59,10 @@ elif have rpm; then
   esac
 else
   die "neither dpkg nor rpm found — install the flatpak instead (see packages/kalinka-renderer/flatpak/README.md)"
+fi
+
+if [ "${KALINKA_SUPERVISOR:-0}" = 1 ] && [ "$FORMAT" != deb ]; then
+  die "the supervisor is packaged for Debian-based systems only; leave KALINKA_SUPERVISOR unset"
 fi
 
 have python3 || die "python3 is required to parse the release metadata"
@@ -182,6 +188,19 @@ EOF
 else
   echo ">> Installing with dnf ..."
   $SUDO dnf install -y "$TMPDIR_DL/$NAME"
+fi
+
+# --- supervisor (opt-in) ------------------------------------------------------
+# A box that runs only a renderer has no server to set its sound card up from;
+# the supervisor does it, as on the images.
+if [ "${KALINKA_SUPERVISOR:-0}" = 1 ]; then
+  echo ">> Installing the supervisor ..."
+  supervisor_script="$(dirname "${BASH_SOURCE[0]:-.}")/install-supervisor.sh"
+  if [ ! -f "${BASH_SOURCE[0]:-}" ] || [ ! -r "$supervisor_script" ]; then
+    supervisor_script="$TMPDIR_DL/install-supervisor.sh"
+    fetch "${KALINKA_SUPERVISOR_INSTALLER:-https://raw.githubusercontent.com/$REPO/main/scripts/install-supervisor.sh}" > "$supervisor_script"
+  fi
+  KALINKA_REPO="$REPO" bash "$supervisor_script"
 fi
 
 echo

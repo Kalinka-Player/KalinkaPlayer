@@ -162,6 +162,63 @@ def test_the_renderer_takes_no_recommends(tmp_path):
     assert "--no-install-recommends" in log.read_text().split()
 
 
+def _renderer_block(tmp_path, start, end, env, prelude=""):
+    """Run one block of install-renderer.sh from start up to end, extracted
+    because the script reaches it only after a release lookup."""
+    text = INSTALL_RENDERER.read_text()
+    block = text[text.index(start) : text.index(end)]
+    harness = tmp_path / "block.sh"
+    harness.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        'die() { echo "error: $*" >&2; exit 1; }\n' + prelude + block
+    )
+    return subprocess.run(
+        ["bash", str(harness)],
+        capture_output=True,
+        text=True,
+        env={**os.environ, **env},
+    )
+
+
+SUPERVISOR_BLOCK = ("# --- supervisor (opt-in)", 'echo\necho ">> Done.')
+
+
+@pytest.mark.parametrize("wanted", ["1", "0", None])
+def test_a_renderer_box_gets_a_supervisor_only_on_request(tmp_path, wanted):
+    """The app sets up a renderer-only box's sound card through its supervisor."""
+    log = tmp_path / "supervisor.log"
+    (tmp_path / "install-supervisor.sh").write_text(
+        f'echo "KALINKA_REPO=$KALINKA_REPO" >> "{log}"\n'
+    )
+    env = {} if wanted is None else {"KALINKA_SUPERVISOR": wanted}
+    result = _renderer_block(
+        tmp_path, *SUPERVISOR_BLOCK, env, prelude='REPO="owner/repo"\n'
+    )
+
+    assert result.returncode == 0, result.stderr
+    if wanted == "1":
+        assert log.read_text() == "KALINKA_REPO=owner/repo\n"
+    else:
+        assert not log.exists()
+
+
+def test_a_supervisor_is_refused_before_anything_installs_where_it_has_no_package(
+    tmp_path,
+):
+    start = 'if [ "${KALINKA_SUPERVISOR:-0}" = 1 ] && [ "$FORMAT" != deb ]'
+    for fmt, code in (("rpm", 1), ("deb", 0)):
+        result = _renderer_block(
+            tmp_path,
+            start,
+            "have python3 || die",
+            {"KALINKA_SUPERVISOR": "1"},
+            prelude=f"FORMAT={fmt}\n",
+        )
+        assert result.returncode == code, result.stderr
+        if code:
+            assert "Debian-based systems only" in result.stderr
+
+
 EXTRAS = {"libchromaprint-tools", "build-essential", "python3-dev"}
 
 EITHER_PATH = pytest.mark.parametrize(
