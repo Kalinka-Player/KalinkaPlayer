@@ -30,6 +30,7 @@ from kalinka_plugin_sdk.direct_playback import (
     OutputCapabilitiesListener,
     OutputUnavailable,
     RevokeReason,
+    TransportKind,
     TransportRequest,
 )
 from kalinka_plugin_sdk.ext_device_events import (
@@ -128,6 +129,7 @@ class HolderSession:
         title: str,
         listener: DirectPlaybackListener,
         *,
+        seekable: bool = True,
         config: KalinkaConfig,
         registry: RendererRegistry,
         pool: SessionPool,
@@ -136,7 +138,7 @@ class HolderSession:
         device_events: DeviceEvents,
     ):
         self._plugin_id = plugin_id
-        self._control = PlaybackControl.exclusive(plugin_id, title)
+        self._control = PlaybackControl.exclusive(plugin_id, title, seekable=seekable)
         self._arbiter = arbiter
         self._router = device_router
         self._device_events = device_events
@@ -291,6 +293,8 @@ class HolderSession:
     def handle_command(self, request: TransportRequest) -> bool:
         if self._ended:
             return False
+        if request.kind is TransportKind.SEEK and not self._control.seekable:
+            return True
         self._bridge.send("on_command", request)
         return True
 
@@ -510,7 +514,7 @@ class DirectPlaybackService:
         self._session: Optional[HolderSession] = None
 
     async def acquire(
-        self, title: str, listener: DirectPlaybackListener
+        self, title: str, listener: DirectPlaybackListener, *, seekable: bool = True
     ) -> HolderSession:
         if self._session is not None:
             await self._session.release()
@@ -522,6 +526,7 @@ class DirectPlaybackService:
             self._plugin_id,
             title,
             listener,
+            seekable=seekable,
             config=self._config,
             registry=self._registry,
             pool=self._pool,

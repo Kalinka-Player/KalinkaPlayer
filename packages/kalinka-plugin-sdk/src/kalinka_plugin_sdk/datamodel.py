@@ -830,11 +830,15 @@ class PlaybackControl(BaseModel):
         plugin_id (Optional[str]): The plugin holding the output; EXCLUSIVE only
         title (Optional[str]): What clients call its playback ("Qobuz
             Connect"); EXCLUSIVE only
+        seekable (bool): SDK 3.11: False while the plugin's playback cannot
+            seek, as a receiver's live stream cannot; clients then offer no
+            position control
     """
 
     mode: PlaybackControlMode = PlaybackControlMode.QUEUE
     plugin_id: Optional[str] = None
     title: Optional[str] = None
+    seekable: bool = True
 
     @model_validator(mode="after")
     def _names_the_plugin_only_when_exclusive(self) -> "PlaybackControl":
@@ -850,8 +854,15 @@ class PlaybackControl(BaseModel):
         return cls()
 
     @classmethod
-    def exclusive(cls, plugin_id: str, title: str) -> "PlaybackControl":
-        return cls(mode=PlaybackControlMode.EXCLUSIVE, plugin_id=plugin_id, title=title)
+    def exclusive(
+        cls, plugin_id: str, title: str, *, seekable: bool = True
+    ) -> "PlaybackControl":
+        return cls(
+            mode=PlaybackControlMode.EXCLUSIVE,
+            plugin_id=plugin_id,
+            title=title,
+            seekable=seekable,
+        )
 
     @property
     def is_exclusive(self) -> bool:
