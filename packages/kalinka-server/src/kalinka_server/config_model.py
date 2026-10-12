@@ -149,8 +149,9 @@ class ServerConfig(BaseModel):
             "importance": "expert",
             "help": (
                 "Show Plugins in the server menu and fetch the public catalog. "
-                "Experimental, read-only browsing; installation and updates "
-                "are not available. Disabled by default."
+                "Experimental. A Debian-packaged server also installs and "
+                "removes catalog plugins from there, restarting to do so; "
+                "catalog signatures are not verified yet. Disabled by default."
             ),
         },
     )

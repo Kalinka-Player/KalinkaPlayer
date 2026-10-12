@@ -90,7 +90,8 @@ case "$1" in
     ;;
 
   triggered)
-    echo "[triggered] Restarting $UNIT_NAME to pick up new wheels..."
-    systemctl restart "$UNIT_NAME" || true
+    # A Core stopped for a package operation is started once, afterwards, by whoever stopped it.
+    echo "[triggered] Restarting $UNIT_NAME if it is running..."
+    systemctl try-restart "$UNIT_NAME" || true
     ;;
 esac

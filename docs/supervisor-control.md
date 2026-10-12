@@ -7,6 +7,7 @@
 - restart Core;
 - reboot the box or power it off;
 - reinstall Kalinka;
+- remove a plugin package, so a plugin that breaks Core can go without Core's help;
 - on a Raspberry Pi, set the box up for its sound card, such as a DAC HAT;
 - set up an SSH administrator login through the dashboard form;
 - tell which supervisor and protocol version it is talking to.
@@ -32,7 +33,8 @@ Core's files are damaged. It follows the app's dark style.
   - a running upgrade or reinstall;
   - a pending shutdown;
   - a failed Core;
-  - a last reinstall that failed, with its log.
+  - a last reinstall that failed, with its log;
+  - a plugin removal under way, or a last one that failed, with its log.
 - **Controls.** Restart server, Restart the box, Power off and Reinstall
   Kalinka. Each asks for confirmation first, then follows the result:
   - **Restart server:** until Core runs again.
@@ -58,9 +60,7 @@ Core's files are damaged. It follows the app's dark style.
 - **Software and plugins.**
   - **Packages:** every installed `kalinka*` Debian package, read from dpkg's
     database.
-  - **Plugins:** every plugin in Core's Python environment, read from its
-    `dist-info` metadata the way Core's own inventory finds them, without
-    importing anything.
+  - **Plugins:** every installed `kalinka-plugin-*` Debian package other than the SDK, each with a **Remove** button, followed by any plugin in Core's Python environment that no package accounts for, read from its `dist-info` metadata the way Core's own inventory finds them, without importing anything. Remove asks for confirmation, then follows the removal with its output until it succeeds or fails, and Core starts again either way. There is no install here: installing is Core's job, from the app, and the supervisor only takes away what is already on the box.
 
 **SSH access** is a dashboard form, outside the versioned API. Enter and
 confirm a new password of 12–128 printable ASCII characters, then submit
@@ -90,7 +90,10 @@ reach it and what they can make it do:
   constants. The SSH form accepts a password for one fixed account, and
   `set_soundcard` accepts one sound card name from the supervisor's own
   catalog, which the box must offer: its overlay has to be on the boot
-  partition. Nothing accepts a command, a path or a package name.
+  partition. Nothing accepts a command or a path. The one package name
+  accepted, by `remove_plugin`, must be an installed `kalinka-plugin-*`
+  package other than the SDK, and the removal unit checks it again and
+  refuses to take any other package along.
 - **Local peers only.** The peer address must be loopback, link-local,
   private (RFC 1918) or in 100.64.0.0/10, where VPN overlays such as Tailscale
   put LAN peers. A forwarded port does not expose the API to the internet.
@@ -145,7 +148,7 @@ is busy, including after a supervisor restart.
  "protocol": 1, "min_protocol": 1,
  "server_id": "ee4d496c-3f6c-4388-a02e-f6a2f17829cd",
  "renderer_id": "5c0ffee0-1d2e-4a3b-8c4d-5e6f7a8b9c0d",
- "actions": ["restart_core", "reboot", "poweroff", "reinstall", "set_soundcard"]}
+ "actions": ["restart_core", "reboot", "poweroff", "reinstall", "set_soundcard", "remove_plugin"]}
 ```
 
 - `version` is the package version.
@@ -178,11 +181,13 @@ older than this API. Ordinary Core installations have no supervisor.
 | GET, HEAD | `/v1/status` | The status object below |
 | GET, HEAD | `/v1/dashboard` | The dashboard object below |
 | GET, HEAD | `/v1/reinstall/log` | The last 64 KiB of the last reinstall's output, as text; empty if none has run |
+| GET, HEAD | `/v1/plugin-removal/log` | The same for the last plugin removal |
 | GET, HEAD | `/v1/soundcard` | The sound card object below |
 | POST | `/v1/actions/restart_core` | 202 `{"action": "restart_core"}` once systemd has queued the restart |
 | POST | `/v1/actions/reboot` | 202 `{"action": "reboot"}`, then the box reboots |
 | POST | `/v1/actions/poweroff` | 202 `{"action": "poweroff"}`, then the box powers off |
 | POST | `/v1/actions/reinstall` | 202 `{"action": "reinstall"}` once the reinstall has been queued |
+| POST | `/v1/actions/remove_plugin` | 202 `{"action": "remove_plugin", "package": "..."}` once the removal has been queued; the body also names the `package` |
 | POST | `/v1/actions/set_soundcard` | 202 `{"action": "set_soundcard", "reboot": true}` once the card is set up; when `reboot` is true, the box then restarts |
 | OPTIONS | any API path | CORS preflight |
 
@@ -191,7 +196,9 @@ older than this API. Ordinary Core installations have no supervisor.
 ```json
 {"core": "active", "core_port": 8000, "upgrading": false,
  "setup": "waiting", "pending": null,
- "reinstall": {"state": "failed", "finished_at": "2026-10-07T09:30:00Z"}}
+ "reinstall": {"state": "failed", "finished_at": "2026-10-07T09:30:00Z"},
+ "plugin_removal": {"state": "succeeded", "package": "kalinka-plugin-qobuz",
+                    "finished_at": "2026-10-12T15:02:00Z"}}
 ```
 
 | Field | Meaning |
@@ -202,6 +209,9 @@ older than this API. Ordinary Core installations have no supervisor.
 | `pending` | `reboot` or `poweroff` once accepted, otherwise `null` |
 | `reinstall.state` | `running`, `succeeded`, `failed`, or `idle` if none has run |
 | `reinstall.finished_at` | When the last reinstall ended, or `null` |
+| `plugin_removal.state` | The same for the last plugin removal |
+| `plugin_removal.package` | The package the last removal was asked for, or `null` |
+| `plugin_removal.finished_at` | When the last removal ended, or `null` |
 
 `GET /v1/dashboard` returns `host`, `services`, `kalinka` (the totals),
 `packages`, `plugins` and `python`. A figure the box cannot provide is `null`;
@@ -211,7 +221,8 @@ Memory is in bytes and CPU in percent of the whole box.
 An action's body names the box. On a box with Core it is
 `{"server_id": "<id from /info>"}`, and may add the `renderer_id` too. On a
 box that runs only a renderer it is `{"renderer_id": "<id from /info>"}`.
-While `/info` reports neither, it is `{}`:
+While `/info` reports neither, it is `{}`. `remove_plugin` adds `"package"`,
+and no other action accepts it:
 
 ```sh
 curl -H 'Content-Type: application/json' \
@@ -262,6 +273,8 @@ so it works when Core's own files are what is broken:
 
 The reinstall runs as long as it needs; apt and source builds on a Pi have no
 safe bound. While it runs, `upgrading` is true and every other action waits.
+
+**`remove_plugin`** writes the package name to `/var/lib/kalinka-supervisor/plugin-removal-request`, a file only root reads, and starts `kalinka-plugin-removal.service`, which ships with the supervisor package. The unit's script checks the name again, that dpkg lists the package as installed, and that apt's simulation would remove nothing else, since removing a package the server depends on would take the server with it. It then stops Core, runs `apt-get remove`, and starts Core again with `--no-block`, failure or not, so the box is never left silent. The plugin's own prerm uninstalls it from Core's environment; its settings in Core's configuration stay. Output goes to `/var/log/kalinka-supervisor/plugin-removal.log` and the result to `/var/lib/kalinka-supervisor/plugin-removal-result`, which `plugin_removal` reports. While the unit runs, `upgrading` is true and every other action waits. The unit does not wait for a Wi-Fi join, as a restart of Core does not. A box without Core offers no `remove_plugin`.
 
 ## The sound card
 
@@ -373,12 +386,14 @@ Every error has Core's shape, `{"detail": {"code": "...", "message": "..."}}`:
 | 409 | `wrong_server` | `server_id` or `renderer_id` is missing, or does not name this box |
 | 409 | `busy` | Another action, the SSH helper or a sound card helper is still running, or, for `set_soundcard`, the boot hook is still waiting to apply its card |
 | 409 | `shutting_down` | A reboot or power-off has been accepted |
-| 409 | `upgrade_in_progress` | `kalinka-reinstall.service`, `kalinka-upgrade.service` or `kalinka-renderer-upgrade.service` is running, stopping or queued |
+| 409 | `upgrade_in_progress` | `kalinka-reinstall.service`, `kalinka-plugin-removal.service`, `kalinka-upgrade.service` or `kalinka-renderer-upgrade.service` is running, stopping or queued |
+| 400 | `invalid_package` | `remove_plugin` named something other than a `kalinka-plugin-*` package, or named the SDK |
+| 409 | `not_installed` | `remove_plugin` named a package dpkg does not list as installed |
 | 409 | `network_change_in_progress` | Reboot, power-off or reinstall while nearby setup is joining a network or rolling one back |
 | 415 | `unsupported_media_type` | An action without `Content-Type: application/json` |
 | 422 | `unknown_soundcard` | A sound card this box does not offer |
 | 429 | `too_soon` | A `restart_core` within 15 s of one that succeeded; `Retry-After` says when |
-| 500 | `log_unreadable` | The reinstall log exists but could not be read |
+| 500 | `log_unreadable` | The reinstall or removal log exists but could not be read |
 | 500 | `soundcard_failed` | The sound card helper failed; the supervisor's journal has its output |
 | 503 | `unavailable` | systemd did not answer, or refused |
 
@@ -463,6 +478,8 @@ follow the same steps:
    - **`reboot`:** wait for `/info` to answer again.
    - **`reinstall`:** poll `/v1/status` until `reinstall.state` leaves
      `running`, showing `/v1/reinstall/log` meanwhile.
+   - **`remove_plugin`:** the same with `plugin_removal.state` and
+     `/v1/plugin-removal/log`, then wait for `core` to be `active` again.
    - **`poweroff`:** there is nothing to wait for.
    - **`set_soundcard`:** the reply arrives once the card is set up. When
      its `reboot` is true, wait as for `reboot`, then poll `/v1/soundcard`
@@ -479,11 +496,13 @@ cross-origin, and the API allows exactly that origin.
 
 ## Extending it
 
-New privileged operations, such as restoring a known-good release or
-installing a single package, go through the same `Controller` in
-`internal/control`. It admits one operation at a time, refuses during
-installs, and coordinates with nearby setup. Adding one to `actions` keeps
-protocol 1. An operation that has to run inside the supervisor rather than in
+New privileged operations, such as restoring a known-good release, go
+through the same `Controller` in `internal/control`. It admits one operation
+at a time, refuses during installs, and coordinates with nearby setup. Adding
+one to `actions` keeps protocol 1, as `remove_plugin` did. An operation that
+takes a parameter follows that one's pattern: a narrow shape checked in the
+controller, handed to a unit of its own through a root-only file, and checked
+again by the unit's script. An operation that has to run inside the supervisor rather than in
 a unit of its own would need the unit's `ProtectSystem=strict` relaxed, which
 belongs in that change's threat model.
 
@@ -493,6 +512,7 @@ belongs in that change's threat model.
   - the policy and the HTTP layer;
   - the page and its security headers;
   - SSH form validation, origin checks, action serialization, secret handling and the helper with simulated account/service tools;
+  - plugin removal: the package rules, the request file, the unit and its script against simulated apt, dpkg and systemctl;
   - the host and origin rules;
   - the systemd calls against a fake bus;
   - the reinstall record and unit;

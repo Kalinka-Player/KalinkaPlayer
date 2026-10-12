@@ -35,7 +35,7 @@ var outcomes = map[string]struct {
 	status  int
 	message string
 }{
-	"invalid_request":        {http.StatusBadRequest, "The request body must be a JSON object with only the box's identity and, for set_soundcard, a sound card name"},
+	"invalid_request":        {http.StatusBadRequest, "The request body must be a JSON object with only the box's identity and, for set_soundcard, a sound card name, or, for remove_plugin, a package name"},
 	"not_local":              {http.StatusForbidden, "Only the local network may use this API"},
 	"host_not_allowed":       {http.StatusForbidden, "Address this box by its IP address or local name"},
 	"origin_not_allowed":     {http.StatusForbidden, "Only pages served by this box may use this API"},
@@ -51,7 +51,9 @@ var outcomes = map[string]struct {
 	CodeTooSoon:              {http.StatusTooManyRequests, "Core was restarted moments ago"},
 	CodeUnavailable:          {http.StatusServiceUnavailable, "systemd did not carry out the request"},
 	CodeSoundcard:            {http.StatusInternalServerError, "The sound card could not be set up; the supervisor's journal says why"},
-	"log_unreadable":         {http.StatusInternalServerError, "The reinstall log could not be read"},
+	CodeInvalidPackage:       {http.StatusBadRequest, "The package is not a Kalinka plugin this supervisor may remove"},
+	CodeNotInstalled:         {http.StatusConflict, "No such plugin package is installed"},
+	"log_unreadable":         {http.StatusInternalServerError, "The log could not be read"},
 }
 
 // pagePolicy keeps the page to its own files and out of other sites' frames, where a click could be hijacked.
@@ -84,7 +86,8 @@ type HandlerConfig struct {
 	CorePort      func() int
 	Setup         func() string
 	Dashboard     func(context.Context) any
-	Reinstalls    ReinstallRecord
+	Reinstalls    Record
+	Removals      PluginRemovals
 	EnableSSH     func(context.Context, protocol.Secret) error
 	Simulated     bool
 }
@@ -171,7 +174,9 @@ func (h *handler) route(path string) (route, bool) {
 	case path == "/v1/dashboard":
 		return route{http.MethodGet, h.dashboard}, true
 	case path == "/v1/reinstall/log":
-		return route{http.MethodGet, h.reinstallLog}, true
+		return route{http.MethodGet, func(w http.ResponseWriter, _ *http.Request) string { return serveLog(w, h.cfg.Reinstalls) }}, true
+	case path == "/v1/plugin-removal/log":
+		return route{http.MethodGet, func(w http.ResponseWriter, _ *http.Request) string { return serveLog(w, h.cfg.Removals.Record) }}, true
 	case path == "/v1/soundcard" && h.cfg.Soundcards != nil:
 		return route{http.MethodGet, h.soundcard}, true
 	case strings.HasPrefix(path, "/v1/actions/"):
@@ -230,15 +235,21 @@ func (h *handler) status(w http.ResponseWriter, r *http.Request) string {
 	if s.Pending != "" {
 		pending = &s.Pending
 	}
-	var finished *time.Time
-	if !s.ReinstallFinished.IsZero() {
-		finished = &s.ReinstallFinished
-	}
+	removal := outcomeJSON(s.PluginRemoval)
+	removal["package"] = nullable(s.RemovedPackage)
 	reply(w, http.StatusOK, map[string]any{
 		"core": s.Core, "core_port": h.cfg.CorePort(), "upgrading": s.Upgrading, "setup": h.cfg.Setup(), "pending": pending,
-		"reinstall": map[string]any{"state": s.Reinstall, "finished_at": finished},
+		"reinstall": outcomeJSON(s.Reinstall), "plugin_removal": removal,
 	}, false)
 	return ""
+}
+
+func outcomeJSON(o Outcome) map[string]any {
+	var finished *time.Time
+	if !o.Finished.IsZero() {
+		finished = &o.Finished
+	}
+	return map[string]any{"state": o.State, "finished_at": finished}
 }
 
 func (h *handler) dashboard(w http.ResponseWriter, r *http.Request) string {
@@ -246,8 +257,8 @@ func (h *handler) dashboard(w http.ResponseWriter, r *http.Request) string {
 	return ""
 }
 
-func (h *handler) reinstallLog(w http.ResponseWriter, _ *http.Request) string {
-	b, err := h.cfg.Reinstalls.Tail(64 << 10)
+func serveLog(w http.ResponseWriter, r Record) string {
+	b, err := r.Tail(64 << 10)
 	if err != nil {
 		return fail(w, "log_unreadable")
 	}
@@ -266,6 +277,11 @@ type identity struct {
 type soundcardBody struct {
 	identity
 	Soundcard *string `json:"soundcard"`
+}
+
+type packageBody struct {
+	identity
+	Package *string `json:"package"`
 }
 
 // identified reports whether id names this box: by its server where it has
@@ -301,6 +317,12 @@ func (h *handler) act(w http.ResponseWriter, r *http.Request, a Action) string {
 			return fail(w, "invalid_request")
 		}
 		id, req.Soundcard = body.identity, *body.Soundcard
+	} else if a == RemovePlugin {
+		var body packageBody
+		if !decode(w, r, &body) || body.Package == nil {
+			return fail(w, "invalid_request")
+		}
+		id, req.Package = body.identity, *body.Package
 	} else if !decode(w, r, &id) {
 		return fail(w, "invalid_request")
 	}
@@ -323,7 +345,7 @@ func (h *handler) act(w http.ResponseWriter, r *http.Request, a Action) string {
 	}
 	running, stopRunning := context.WithTimeout(context.Background(), limit)
 	defer stopRunning()
-	// A reinstall only queues its unit here; the work runs, and reports, from there.
+	// A reinstall or removal only queues its unit here; the work runs, and reports, from there.
 	target, err := op.Run(running)
 	if err != nil {
 		return refusal(w, err)
@@ -331,6 +353,9 @@ func (h *handler) act(w http.ResponseWriter, r *http.Request, a Action) string {
 	answer := map[string]any{"action": a}
 	if a == SetSoundcard {
 		answer["reboot"] = target != ""
+	}
+	if a == RemovePlugin {
+		answer["package"] = req.Package
 	}
 	if target == "" {
 		reply(w, http.StatusAccepted, answer, false)

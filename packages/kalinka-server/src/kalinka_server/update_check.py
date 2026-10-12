@@ -156,7 +156,20 @@ def deb_is_newer(candidate: str, installed: str) -> bool:
 
 def request_upgrade() -> None:
     """Touch the trigger watched by kalinka-upgrade.path. Raises OSError."""
-    trigger = Path(paths.run_dir()) / "upgrade-request"
+    _touch_trigger("upgrade-request")
+
+
+def request_restart() -> None:
+    """Touch the trigger watched by kalinka-restart.path. Raises OSError.
+
+    The root-owned kalinka-restart.service it fires runs the package helpers
+    and then restarts kalinka.service; Core exits when systemd stops it.
+    """
+    _touch_trigger("restart-request")
+
+
+def _touch_trigger(name: str) -> None:
+    trigger = Path(paths.run_dir()) / name
     trigger.parent.mkdir(parents=True, exist_ok=True)
     trigger.touch()
 

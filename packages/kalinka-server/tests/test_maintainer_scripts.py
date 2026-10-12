@@ -586,3 +586,41 @@ def test_a_reinstall_installs_the_renderer_again(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert "--reinstall" in log.read_text().split()
+
+
+POSTINST = REPO / "packages" / "kalinka-server" / "DEBIAN" / "postinst"
+BUILD_DEB = REPO / "packages" / "kalinka-server" / "scripts" / "build_deb.sh"
+PLUGINS_DROPIN = (
+    REPO / "packages" / "kalinka-server" / "scripts" / "kalinka-restart-plugins.conf"
+)
+
+
+def test_plugin_trigger_restarts_only_a_running_server(tmp_path):
+    """A Core stopped for a package operation is started once, afterwards, by
+    the restart service that stopped it, not by every plugin package's
+    trigger in between."""
+    binv = tmp_path / "bin"
+    binv.mkdir()
+    log = tmp_path / "systemctl.log"
+    stub = binv / "systemctl"
+    stub.write_text(f'#!/usr/bin/env bash\necho "$@" >> "{log}"\n')
+    stub.chmod(0o755)
+
+    result = _run(
+        POSTINST,
+        "triggered",
+        "kalinka-server-restart",
+        env={"PATH": f"{binv}:{os.environ['PATH']}"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines() == ["try-restart kalinka.service"]
+
+
+def test_restart_service_runs_the_plugin_helper_before_core():
+    dropin = PLUGINS_DROPIN.read_text()
+    assert (
+        "ExecStartPre=-/opt/kalinka/venv/bin/python "
+        "-m kalinka_server.plugin_management.operations" in dropin
+    )
+    assert "kalinka-restart.service.d/plugins.conf" in BUILD_DEB.read_text()

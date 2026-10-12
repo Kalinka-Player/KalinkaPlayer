@@ -121,7 +121,8 @@ func newBoxHandler(t *testing.T, coord Coordinator, box testBox) http.Handler {
 		CorePort:      func() int { return 8000 },
 		Setup:         func() string { return "waiting" },
 		Dashboard:     func(context.Context) any { return map[string]string{"host": "kalinka"} },
-		Reinstalls:    ReinstallRecord{LogFile: filepath.Join(dir, "reinstall.log")},
+		Reinstalls:    Record{LogFile: filepath.Join(dir, "reinstall.log")},
+		Removals:      PluginRemovals{Record: Record{LogFile: filepath.Join(dir, "plugin-removal.log")}},
 	})
 }
 
@@ -159,7 +160,7 @@ func TestInfo(t *testing.T) {
 		}
 		want := map[string]any{
 			"name": "kalinka-supervisor", "version": "1.2.3", "protocol": 1.0, "min_protocol": 1.0,
-			"actions":   []any{"restart_core", "reboot", "poweroff", "reinstall", "set_soundcard"},
+			"actions":   []any{"restart_core", "reboot", "poweroff", "reinstall", "set_soundcard", "remove_plugin"},
 			"server_id": nil, "renderer_id": nil,
 		}
 		if box.server {
@@ -181,15 +182,24 @@ func TestInfo(t *testing.T) {
 
 func TestStatusReply(t *testing.T) {
 	finished := time.Date(2026, 10, 7, 9, 30, 0, 0, time.UTC)
-	coord := &fakeCoordinator{status: Status{Core: "failed", Upgrading: true, Pending: PowerOff, Reinstall: "failed", ReinstallFinished: finished}}
+	coord := &fakeCoordinator{status: Status{
+		Core: "failed", Upgrading: true, Pending: PowerOff,
+		Reinstall:     Outcome{"failed", finished},
+		PluginRemoval: Outcome{"succeeded", finished.Add(time.Hour)}, RemovedPackage: "kalinka-plugin-qobuz",
+	}}
 	w := serve(newTestHandler(t, coord, true), http.MethodGet, "/v1/status", "")
-	want := `{"core":"failed","core_port":8000,"pending":"poweroff","reinstall":{"finished_at":"2026-10-07T09:30:00Z","state":"failed"},"setup":"waiting","upgrading":true}`
+	want := `{"core":"failed","core_port":8000,"pending":"poweroff",` +
+		`"plugin_removal":{"finished_at":"2026-10-07T10:30:00Z","package":"kalinka-plugin-qobuz","state":"succeeded"},` +
+		`"reinstall":{"finished_at":"2026-10-07T09:30:00Z","state":"failed"},"setup":"waiting","upgrading":true}`
 	if got := strings.TrimSpace(w.Body.String()); got != want {
 		t.Fatalf("status = %s", got)
 	}
-	coord.status = Status{Core: "active"}
-	if got := serve(newTestHandler(t, coord, true), http.MethodGet, "/v1/status", "").Body.String(); !strings.Contains(got, `"pending":null`) {
-		t.Fatalf("status = %s", got)
+	coord.status = Status{Core: "active", Reinstall: Outcome{State: "idle"}, PluginRemoval: Outcome{State: "idle"}}
+	got := serve(newTestHandler(t, coord, true), http.MethodGet, "/v1/status", "").Body.String()
+	for _, field := range []string{`"pending":null`, `"plugin_removal":{"finished_at":null,"package":null,"state":"idle"}`} {
+		if !strings.Contains(got, field) {
+			t.Fatalf("status = %s", got)
+		}
 	}
 	coord.refuse = refuse(CodeUnavailable)
 	if code, c := detail(t, serve(newTestHandler(t, coord, true), http.MethodGet, "/v1/status", "")); code != 503 || c != CodeUnavailable {
@@ -346,6 +356,8 @@ func TestRefusals(t *testing.T) {
 		{&Refusal{Code: CodeTooSoon, RetryAfter: 9200 * time.Millisecond}, 429, "10"},
 		{refuse(CodeUnavailable), 503, ""},
 		{refuse(CodeSoundcard), 500, ""},
+		{refuse(CodeInvalidPackage), 400, ""},
+		{refuse(CodeNotInstalled), 409, ""},
 	} {
 		w := serve(newTestHandler(t, &fakeCoordinator{refuse: tc.refusal}, true), http.MethodPost, "/v1/actions/restart_core", `{"server_id":"`+testID+`"}`)
 		if status, code := detail(t, w); status != tc.status || code != tc.refusal.Error() || w.Header().Get("Retry-After") != tc.retryAfter {
@@ -511,7 +523,7 @@ func TestReinstallLog(t *testing.T) {
 	log := filepath.Join(dir, "reinstall.log")
 	h := NewHandler(&fakeCoordinator{}, HandlerConfig{
 		ServerIDFile: filepath.Join(dir, "server_id"), CorePort: func() int { return 8000 },
-		Reinstalls: ReinstallRecord{LogFile: log},
+		Reinstalls: Record{LogFile: log},
 	})
 	if w := serve(h, http.MethodGet, "/v1/reinstall/log", ""); w.Code != 200 || w.Body.Len() != 0 {
 		t.Fatalf("no reinstall yet = %d %q", w.Code, w.Body)
@@ -534,5 +546,58 @@ func TestThePageMayAct(t *testing.T) {
 	w := serve(newTestHandler(t, coord, true), http.MethodPost, "/v1/actions/reinstall", `{"server_id":"`+testID+`"}`, page)
 	if w.Code != 202 || len(coord.begun) != 1 || coord.begun[0].Action != Reinstall {
 		t.Fatalf("the supervisor's own page was refused: %d %s", w.Code, w.Body)
+	}
+}
+
+func TestRemovalRequests(t *testing.T) {
+	idBody := `{"server_id":"` + testID + `"}`
+	withPackage := `{"server_id":"` + testID + `","package":"kalinka-plugin-qobuz"}`
+	for _, tc := range []struct {
+		name, path, body string
+		status           int
+		code             string
+	}{
+		{"accepted", "/v1/actions/remove_plugin", withPackage, 202, ""},
+		{"without a package", "/v1/actions/remove_plugin", idBody, 400, "invalid_request"},
+		{"package on another action", "/v1/actions/reboot", withPackage, 400, "invalid_request"},
+		{"renderer-only box", "/v1/actions/remove_plugin", withPackage, 404, "not_found"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			coord := &fakeCoordinator{}
+			box := testBox{server: true, cards: pi(), noCore: tc.name == "renderer-only box"}
+			w := serve(newBoxHandler(t, coord, box), http.MethodPost, tc.path, tc.body)
+			if status, code := detail(t, w); status != tc.status || code != tc.code {
+				t.Fatalf("got %d %q: %s", status, code, w.Body)
+			}
+			if tc.status != 202 {
+				if len(coord.begun) != 0 {
+					t.Fatalf("coordinator asked %v", coord.begun)
+				}
+				return
+			}
+			want := Request{Action: RemovePlugin, Package: "kalinka-plugin-qobuz"}
+			if len(coord.begun) != 1 || coord.begun[0] != want || strings.TrimSpace(w.Body.String()) != `{"action":"remove_plugin","package":"kalinka-plugin-qobuz"}` {
+				t.Fatalf("removal asked %+v, answered %s", coord.begun, w.Body)
+			}
+		})
+	}
+}
+
+func TestPluginRemovalLog(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "plugin-removal.log")
+	h := NewHandler(&fakeCoordinator{}, HandlerConfig{
+		ServerIDFile: filepath.Join(dir, "server_id"), CorePort: func() int { return 8000 },
+		Removals: PluginRemovals{Record: Record{LogFile: log}},
+	})
+	if w := serve(h, http.MethodGet, "/v1/plugin-removal/log", ""); w.Code != 200 || w.Body.Len() != 0 {
+		t.Fatalf("no removal yet = %d %q", w.Code, w.Body)
+	}
+	if err := os.WriteFile(log, []byte(">> Removing kalinka-plugin-qobuz\n>> Removed kalinka-plugin-qobuz\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	w := serve(h, http.MethodGet, "/v1/plugin-removal/log", "")
+	if w.Code != 200 || w.Header().Get("Content-Type") != "text/plain; charset=utf-8" || !strings.HasSuffix(w.Body.String(), ">> Removed kalinka-plugin-qobuz\n") {
+		t.Fatalf("log = %d %q", w.Code, w.Body)
 	}
 }

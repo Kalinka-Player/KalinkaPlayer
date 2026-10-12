@@ -125,7 +125,21 @@ def get_version() -> str:
 # for the server's Python and architecture carries a `reason` naming all three.
 # 0.14: PlaybackControl carries `seekable`, false while the plugin holding the
 # output cannot seek, as AirPlay cannot; clients then offer no position
-# control, and a seek sent anyway is dropped.
+# control, and a seek sent anyway is dropped. Also 0.14: a Debian-packaged
+# server installs, updates and removes catalog plugins. /server/version's
+# plugin_management.installation and update_checks are true where it can;
+# then POST /server/plugins/{id}/install, /update and /uninstall answer 202
+# {"status": "restarting", ...} and the server restarts to carry the
+# operation out, so a client follows it as it follows PUT /server/restart.
+# Refusals carry {"detail": {"code", "message"}}: 404 unknown_plugin; 409
+# bundle_managed, already_installed, not_installed, incompatible, up_to_date,
+# unsupported_package, operation_in_progress; 500 restart_failed; 503
+# installer_unavailable, catalog_unavailable.
+# GET /server/plugins/updates answers {"status": "available", "updates":
+# [{plugin_id, distribution, version, installed_version}]} for installed
+# packages with a newer compatible release, by dpkg's ordering; GET
+# /server/plugins reports the helper's record of the last operation as
+# `last_operation`.
 REST_API_VERSION = "0.14"
 
 

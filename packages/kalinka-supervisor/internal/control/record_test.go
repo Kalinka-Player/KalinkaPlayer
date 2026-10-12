@@ -31,9 +31,33 @@ func TestReinstallUnitWritesWhatTheRecordReads(t *testing.T) {
 	}
 }
 
-func TestReinstallOutcome(t *testing.T) {
+func TestPluginRemovalUnitWritesWhatTheRecordReads(t *testing.T) {
+	b, err := os.ReadFile("../../systemd/" + PluginRemovalUnit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit := string(b)
+	removals := NewPluginRemovals("/var/lib/kalinka-supervisor")
+	for _, line := range []string{
+		"StandardOutput=truncate:" + removals.LogFile,
+		`ExecStopPost=/bin/sh -c 'echo "$SERVICE_RESULT" > ` + removals.ResultFile + `'`,
+		"ExecStart=/usr/lib/kalinka-supervisor/remove-plugin.sh " + removals.RequestFile,
+		"TimeoutStartSec=infinity",
+		"Type=oneshot",
+	} {
+		if !strings.Contains(unit, "\n"+line+"\n") {
+			t.Errorf("%s lacks %q", PluginRemovalUnit, line)
+		}
+	}
+	deb, err := os.ReadFile("../../build-deb.sh")
+	if err != nil || !strings.Contains(string(deb), `"$pkg_dir/remove-plugin.sh"`) {
+		t.Fatal("the package does not ship remove-plugin.sh")
+	}
+}
+
+func TestOutcome(t *testing.T) {
 	dir := t.TempDir()
-	r := ReinstallRecord{ResultFile: filepath.Join(dir, "reinstall-result")}
+	r := Record{ResultFile: filepath.Join(dir, "reinstall-result")}
 	if outcome, at := r.Outcome(); outcome != "" || !at.IsZero() {
 		t.Fatalf("no reinstall yet = %q %v", outcome, at)
 	}
@@ -47,9 +71,9 @@ func TestReinstallOutcome(t *testing.T) {
 	}
 }
 
-func TestReinstallTailStartsAtALine(t *testing.T) {
+func TestTailStartsAtALine(t *testing.T) {
 	dir := t.TempDir()
-	r := ReinstallRecord{LogFile: filepath.Join(dir, "reinstall.log")}
+	r := Record{LogFile: filepath.Join(dir, "reinstall.log")}
 	if b, err := r.Tail(64); err != nil || b != nil {
 		t.Fatalf("missing log = %q, %v", b, err)
 	}
@@ -66,5 +90,25 @@ func TestReinstallTailStartsAtALine(t *testing.T) {
 	}
 	if b, _ := r.Tail(1 << 20); len(b) != 200 {
 		t.Fatalf("whole log = %d bytes", len(b))
+	}
+}
+
+func TestPluginRemovalRequestIsRootOnly(t *testing.T) {
+	removals := NewPluginRemovals(t.TempDir())
+	if removals.Package() != "" {
+		t.Fatal("a package before any request")
+	}
+	if err := removals.Request("kalinka-plugin-qobuz"); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(removals.RequestFile)
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("request file mode = %v, %v", info.Mode(), err)
+	}
+	if b, _ := os.ReadFile(removals.RequestFile); string(b) != "kalinka-plugin-qobuz\n" {
+		t.Fatalf("request = %q", b)
+	}
+	if removals.Package() != "kalinka-plugin-qobuz" {
+		t.Fatalf("package = %q", removals.Package())
 	}
 }

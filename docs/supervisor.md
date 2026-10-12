@@ -3,8 +3,8 @@
 `kalinka-supervisor` replaces the experimental Python provisioning service.
 It provides nearby box setup and a LAN [control page and API](supervisor-control.md)
 on port 8001. They show how the box is doing, and restart Core, reboot or power
-off the box, reinstall Kalinka, or set a Raspberry Pi up for its sound card.
-It runs independently
+off the box, reinstall Kalinka, remove a plugin package, or set a Raspberry Pi
+up for its sound card. It runs independently
 of Core, its Python interpreter, its virtual environment and its plugins.
 Core still owns its HTTP API, mDNS, its identity and the existing OOBE. Nearby
 setup needs no app protocol change; see

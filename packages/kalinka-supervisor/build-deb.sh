@@ -12,7 +12,7 @@ trap 'rm -rf "$stage"' EXIT
 chmod 755 "$stage"
 mkdir -p "$stage/DEBIAN" "$stage/usr/lib/kalinka-supervisor" "$stage/usr/lib/systemd/system" "$out_dir"
 GOARCH="$arch" VERSION="$version" "$pkg_dir/build.sh" "$stage/usr/lib/kalinka-supervisor/kalinka-supervisor"
-install -m 755 "$pkg_dir/reinstall.sh" "$pkg_dir/ssh-setup.sh" "$pkg_dir/soundcard.sh" "$stage/usr/lib/kalinka-supervisor/"
+install -m 755 "$pkg_dir/reinstall.sh" "$pkg_dir/ssh-setup.sh" "$pkg_dir/soundcard.sh" "$pkg_dir/remove-plugin.sh" "$stage/usr/lib/kalinka-supervisor/"
 install -m 644 "$pkg_dir/dietpi-conf.sh" "$pkg_dir/boot-config.sh" "$stage/usr/lib/kalinka-supervisor/"
 install -m 644 "$pkg_dir/systemd/"* "$stage/usr/lib/systemd/system/"
 cat > "$stage/DEBIAN/control" <<CONTROL
@@ -24,7 +24,7 @@ Depends: bluez, dbus, systemd, curl, network-manager | ifupdown, wpasupplicant, 
 Description: Independent Kalinka supervisor, nearby box setup and LAN control page
  Static Go service for BLE provisioning with NetworkManager or DietPi networking,
  and a recovery page on the local network: status, restart, reboot, power off,
- reinstall and, on a Raspberry Pi, choosing the sound card.
+ reinstall, plugin removal and, on a Raspberry Pi, choosing the sound card.
 CONTROL
 cat > "$stage/DEBIAN/postinst" <<'HOOK'
 #!/bin/sh
