@@ -20,6 +20,7 @@ const UNIT_NAMES = {
   "kalinka-reinstall.service": "Reinstall",
   "kalinka-soundcard.service": "Sound card",
   "kalinka-soundcard-apply.service": "Sound card setup",
+  "kalinka-plugin-removal.service": "Plugin removal",
 };
 
 const STATES = {
@@ -72,10 +73,27 @@ const ACTIONS = {
     during: { title: "Setting up the sound card", body: "Writing the boot configuration…" },
     follow: followSoundcard,
   },
+  remove_plugin: {
+    icon: "i-remove",
+    danger: true,
+    title: (name) => `Remove ${name}?`,
+    body: (name) => `The ${name} plugin's package is removed and the server starts again without it. Its settings stay, and it can be installed again from the app. Playback stops until the server is back.`,
+    go: "Remove",
+    follow: followRemoval,
+  },
 };
 
 // Pickers group a maker's boards, then the Pi's own outputs, then no HAT at all.
 const SOUNDCARD_GROUPS = { onboard: "The Pi's own outputs", none: "No HAT" };
+
+// A plugin package the supervisor may remove: never the SDK the server depends on.
+function removable(name) {
+  return /^kalinka-plugin-[a-z0-9][a-z0-9+.-]*$/.test(name) && name !== "kalinka-plugin-sdk";
+}
+
+function pluginName(name) {
+  return name.replace(/^kalinka[-_]plugin[-_]/i, "");
+}
 
 function unitName(unit) {
   if (UNIT_NAMES[unit]) return UNIT_NAMES[unit];
@@ -121,8 +139,8 @@ async function getJSON(path) {
   return response.json();
 }
 
-async function getLog() {
-  const response = await fetch("/v1/reinstall/log", { cache: "no-store" });
+async function getLog(unit) {
+  const response = await fetch(`/v1/${unit}/log`, { cache: "no-store" });
   return response.ok ? response.text() : "";
 }
 
@@ -174,18 +192,28 @@ function renderNotices() {
   const s = status;
   if (s.pending === "poweroff") list.append(notice("wait", "The box is powering off."));
   if (s.pending === "reboot") list.append(notice("wait", "The box is restarting."));
+  const removal = s.plugin_removal;
+  const removing = pluginName(removal.package || "a plugin");
   if (s.reinstall.state === "running") {
     list.append(notice("wait", "Kalinka is being reinstalled.", { label: "Show progress", onClick: () => followReinstall(null) }));
+  } else if (removal.state === "running") {
+    list.append(notice("wait", `${removing} is being removed.`, { label: "Show progress", onClick: () => followRemoval(null, { package: removal.package || "" }) }));
   } else if (s.upgrading) {
     list.append(notice("wait", "Packages are being installed. The controls wait until that finishes."));
   }
   if (s.reinstall.state === "failed") {
-    const at = s.reinstall.finished_at ? ` on ${new Date(s.reinstall.finished_at).toLocaleString()}` : "";
-    list.append(notice("error", `The last reinstall failed${at}.`, { label: "Show log", onClick: showFailedLog }));
+    list.append(notice("error", `The last reinstall failed${finishedAt(s.reinstall)}.`, { label: "Show log", onClick: () => showFailedLog("reinstall", "The last reinstall failed", "Reinstall again once the cause is fixed.") }));
+  }
+  if (removal.state === "failed") {
+    list.append(notice("error", `Removing ${removing} failed${finishedAt(removal)}.`, { label: "Show log", onClick: () => showFailedLog("plugin-removal", "The plugin was not removed", "Try again once the cause is fixed.") }));
   }
   if (s.core === "failed") {
-    list.append(notice("error", "Kalinka's server stopped after an error. Restarting it often helps; if it keeps failing, reinstall."));
+    list.append(notice("error", "Kalinka's server stopped after an error. Restarting it often helps; if it keeps failing, reinstall or remove the plugin that broke it."));
   }
+}
+
+function finishedAt(outcome) {
+  return outcome.finished_at ? ` on ${new Date(outcome.finished_at).toLocaleString()}` : "";
 }
 
 // A box that runs only a renderer has no server to restart or reinstall.
@@ -202,14 +230,23 @@ function renderStatus() {
   open.hidden = !serverInstalled() || !status || status.core !== "active";
   if (status) open.href = `${location.protocol}//${location.hostname}:${status.core_port}/`;
   renderNotices();
-  const locked = !status || status.upgrading || status.pending != null || busy;
+  lockActions();
+  byId("soundcard-apply").disabled = locked() || !soundcardChanged();
+}
+
+function locked() {
+  return !status || status.upgrading || status.pending != null || busy;
+}
+
+// Every control waits while something privileged runs, and stays off when this box does not offer it.
+function lockActions() {
   for (const button of document.querySelectorAll("[data-action]")) {
     const offered = info && info.actions.includes(button.dataset.action);
-    button.disabled = locked || !offered;
-    button.closest(".action").hidden = info != null && !offered;
+    button.disabled = locked() || !offered;
+    const row = button.closest(".action");
+    if (row) row.hidden = info != null && !offered;
   }
-  byId("ssh-enable").disabled = locked;
-  byId("soundcard-apply").disabled = locked || !soundcardChanged();
+  byId("ssh-enable").disabled = locked();
 }
 
 function fact(list, label, value) {
@@ -283,8 +320,27 @@ function renderDashboard(d) {
   meter("disk", h.disk_total - h.disk_free, h.disk_total);
 
   versions("packages", d.packages, (name) => name);
-  versions("plugins", d.plugins, (name) => name.replace(/^kalinka[-_]plugin[-_]/i, ""));
+  renderPlugins(d);
   byId("python").textContent = d.python ? `Python ${d.python} in the server's environment` : "";
+}
+
+// Plugin packages, each with Remove, then what is in the server's environment without a package of its own.
+function renderPlugins(d) {
+  const list = byId("plugins");
+  list.replaceChildren();
+  const packages = d.packages.filter((p) => removable(p.name));
+  const packaged = new Set(packages.map((p) => pluginName(p.name).replace(/_/g, "-")));
+  for (const p of packages) {
+    const row = byId("plugin-row").content.firstElementChild.cloneNode(true);
+    row.querySelector("dt").textContent = pluginName(p.name);
+    row.querySelector(".version").textContent = p.version;
+    row.querySelector("button").addEventListener("click", () => confirmAction("remove_plugin", { package: p.name }, pluginName(p.name)));
+    list.append(row);
+  }
+  const unpackaged = d.plugins.filter((p) => !packaged.has(pluginName(p.name).replace(/_/g, "-")));
+  for (const p of unpackaged) fact(list, pluginName(p.name), p.version);
+  byId("plugins-empty").hidden = list.children.length > 0;
+  lockActions();
 }
 
 async function refreshStatus() {
@@ -424,8 +480,9 @@ function confirmAction(action, extra = {}, subject = "") {
   const a = ACTIONS[action];
   byId("confirm-tile").className = `tile big${a.danger ? " danger" : ""}`;
   byId("confirm-icon").setAttribute("href", `#${a.icon}`);
-  byId("confirm-title").textContent = a.title;
-  byId("confirm-body").textContent = typeof a.body === "function" ? a.body(subject) : a.body;
+  const text = (value) => (typeof value === "function" ? value(subject) : value);
+  byId("confirm-title").textContent = text(a.title);
+  byId("confirm-body").textContent = text(a.body);
   const go = byId("confirm-go");
   go.textContent = a.go;
   go.onclick = () => {
@@ -603,22 +660,44 @@ async function followReinstall(before) {
     body: "Downloading and installing. This takes several minutes, and this page can stay open.",
     log: true,
   });
+  await followUnit(token, "reinstall", previous, "Waiting for the installer to start…", {
+    ok: { title: "Kalinka reinstalled", body: "The server is starting again with a fresh installation." },
+    failed: { title: "The reinstall failed", body: "The installer's output is below." },
+  });
+}
+
+// The accepted request names the package; a notice for a removal already under way names it from the status.
+async function followRemoval(before, result) {
+  const token = ++flow;
+  const name = pluginName(result.package) || "the plugin";
+  const previous = (before || status || { plugin_removal: {} }).plugin_removal.finished_at;
+  showProgress({
+    title: `Removing ${name}`,
+    body: "The package is being removed, and the server starts again without it.",
+    log: true,
+  });
+  await followUnit(token, "plugin-removal", previous, "Waiting for the removal to start…", {
+    ok: { title: `${name} removed`, body: "The server is starting again without it." },
+    failed: { title: `${name} was not removed`, body: "The output is below." },
+  });
+  refreshDashboard();
+}
+
+// Polls until the unit's outcome changes from what it was before the action, showing its log meanwhile.
+async function followUnit(token, unit, previous, waiting, ends) {
+  const field = unit.replace("-", "_");
   let seenRunning = false;
   while (token === flow) {
     try {
-      const [s, log] = await Promise.all([getJSON("/v1/status"), getLog()]);
+      const [s, log] = await Promise.all([getJSON("/v1/status"), getLog(unit)]);
       if (token !== flow) return;
       status = s;
-      showLogText(log, "Waiting for the installer to start…");
-      const r = s.reinstall;
+      showLogText(log, waiting);
+      const r = s[field];
       if (r.state === "running") {
         seenRunning = true;
       } else if (r.state !== "idle" && (seenRunning || r.finished_at !== previous)) {
-        if (r.state === "succeeded") {
-          finishProgress({ ok: true, title: "Kalinka reinstalled", body: "The server is starting again with a fresh installation." });
-        } else {
-          finishProgress({ ok: false, title: "The reinstall failed", body: "The installer's output is below." });
-        }
+        finishProgress({ ok: r.state === "succeeded", ...(r.state === "succeeded" ? ends.ok : ends.failed) });
         return;
       }
     } catch (_) {
@@ -628,12 +707,12 @@ async function followReinstall(before) {
   }
 }
 
-async function showFailedLog() {
+async function showFailedLog(unit, title, advice) {
   ++flow;
-  showProgress({ title: "The last reinstall failed", body: "", log: true });
-  finishProgress({ ok: false, title: "The last reinstall failed", body: "Its output is below. Reinstall again once the cause is fixed." });
+  showProgress({ title, body: "", log: true });
+  finishProgress({ ok: false, title, body: `Its output is below. ${advice}` });
   try {
-    showLogText(await getLog(), "No output was recorded.");
+    showLogText(await getLog(unit), "No output was recorded.");
   } catch (_) {
     showLogText("", "The log could not be read.");
   }
@@ -657,7 +736,7 @@ function init() {
   });
   const command = byId("ssh-command");
   if (command) command.textContent = `ssh ${command.dataset.username}@${location.hostname.replace(/^\[|\]$/g, "")}`;
-  for (const button of document.querySelectorAll("[data-action]")) {
+  for (const button of document.querySelectorAll(".actions [data-action]")) {
     button.addEventListener("click", () => confirmAction(button.dataset.action));
   }
   byId("soundcard-select").addEventListener("change", renderStatus);

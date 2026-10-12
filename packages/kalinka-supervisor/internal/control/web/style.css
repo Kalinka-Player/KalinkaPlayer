@@ -181,6 +181,8 @@ body {
 .fact dt { color: var(--text-secondary); font-size: 14px; }
 .fact dd { margin: 0; text-align: right; font-size: 14px; overflow-wrap: anywhere; }
 .versions .fact dd { font: 500 13px var(--mono); color: var(--gold); }
+.plugin dd { display: flex; align-items: center; gap: 14px; }
+.plugin .button { padding: 7px 12px; border-radius: 9px; font-size: 13px; }
 .empty, .footnote { margin: 0; font-size: 13px; color: var(--text-muted); }
 .footnote { margin-top: 14px; }
 

@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"errors"
+	"regexp"
 	"sync"
 	"time"
 
@@ -19,20 +20,31 @@ const (
 	PowerOff     Action = "poweroff"
 	Reinstall    Action = "reinstall"
 	SetSoundcard Action = "set_soundcard"
+	RemovePlugin Action = "remove_plugin"
 )
 
 // Supported lists every action this protocol version serves, in the order /info reports them.
-var Supported = []Action{RestartCore, Reboot, PowerOff, Reinstall, SetSoundcard}
+var Supported = []Action{RestartCore, Reboot, PowerOff, Reinstall, SetSoundcard, RemovePlugin}
 
 const enableSSH Action = "enable_ssh"
 
 // helperUnits run the packaged helpers; while one is busy, no other action may start.
 var helperUnits = []string{"kalinka-ssh-setup.service", soundcard.ApplyUnit}
 
-// Request is an admitted action's input: the action, and the card set_soundcard makes the box's own.
+// Request is an admitted action's input: the action, the card set_soundcard
+// makes the box's own, and the installed plugin package remove_plugin takes away.
 type Request struct {
 	Action    Action
 	Soundcard string
+	Package   string
+}
+
+var pluginPackage = regexp.MustCompile(`^kalinka-plugin-[a-z0-9][a-z0-9+.-]*$`)
+
+// RemovablePackage reports whether name is a plugin package the supervisor
+// may remove: one a plugin ships as, never the SDK the server depends on.
+func RemovablePackage(name string) bool {
+	return len(name) <= 100 && name != "kalinka-plugin-sdk" && pluginPackage.MatchString(name)
 }
 
 // SoundcardApplier makes a catalogued sound card the box's own.
@@ -58,17 +70,19 @@ func (a Action) target() (Target, bool) {
 }
 
 // needsCore reports whether the action acts on Core, which a box running only a renderer does not have.
-func (a Action) needsCore() bool { return a == RestartCore || a == Reinstall }
+func (a Action) needsCore() bool { return a == RestartCore || a == Reinstall || a == RemovePlugin }
 
 // Refusal codes; each is a fixed, client-facing reason an action did not run.
 const (
-	CodeBusy          = "busy"
-	CodeShuttingDown  = "shutting_down"
-	CodeUpgrade       = "upgrade_in_progress"
-	CodeNetworkChange = "network_change_in_progress"
-	CodeTooSoon       = "too_soon"
-	CodeUnavailable   = "unavailable"
-	CodeSoundcard     = "soundcard_failed"
+	CodeBusy           = "busy"
+	CodeShuttingDown   = "shutting_down"
+	CodeUpgrade        = "upgrade_in_progress"
+	CodeNetworkChange  = "network_change_in_progress"
+	CodeTooSoon        = "too_soon"
+	CodeUnavailable    = "unavailable"
+	CodeSoundcard      = "soundcard_failed"
+	CodeInvalidPackage = "invalid_package"
+	CodeNotInstalled   = "not_installed"
 )
 
 // Refusal says why an action did not run, and when to retry if that is known.
@@ -95,15 +109,38 @@ type Operation interface {
 	Shutdown(context.Context) error
 }
 
+// Outcome is where a unit of its own stands: "running", "succeeded", "failed"
+// or "idle" if it has never run; Finished is when its last run ended, zero if
+// none has.
+type Outcome struct {
+	State    string
+	Finished time.Time
+}
+
 // Status is a point-in-time view of what the controller looks after.
-// Reinstall is "running", "succeeded", "failed" or "idle"; ReinstallFinished
-// is when the last one ended, zero if none has.
+// RemovedPackage names the package of the last plugin removal, "" if none
+// has been asked for.
 type Status struct {
-	Core              string
-	Upgrading         bool
-	Pending           Action
-	Reinstall         string
-	ReinstallFinished time.Time
+	Core           string
+	Upgrading      bool
+	Pending        Action
+	Reinstall      Outcome
+	PluginRemoval  Outcome
+	RemovedPackage string
+}
+
+// Config is what a Controller drives and consults.
+type Config struct {
+	Systemd Systemd
+	// Network is nil when nearby setup is off.
+	Network    NetworkActivity
+	Reinstalls Record
+	Removals   PluginRemovals
+	// Installed reports whether a Debian package is installed on the box.
+	Installed  func(string) bool
+	SSH        SSHSetup
+	Soundcards SoundcardApplier
+	Now        func() time.Time
 }
 
 // Controller admits one privileged operation at a time and decides whether
@@ -112,7 +149,9 @@ type Status struct {
 type Controller struct {
 	systemd         Systemd
 	network         NetworkActivity
-	reinstalls      ReinstallRecord
+	reinstalls      Record
+	removals        PluginRemovals
+	installed       func(string) bool
 	ssh             SSHSetup
 	soundcards      SoundcardApplier
 	now             func() time.Time
@@ -124,9 +163,11 @@ type Controller struct {
 	lastRestart time.Time
 }
 
-// NewController takes network as nil when nearby setup is off.
-func NewController(s Systemd, network NetworkActivity, reinstalls ReinstallRecord, ssh SSHSetup, soundcards SoundcardApplier, now func() time.Time) *Controller {
-	return &Controller{systemd: s, network: network, reinstalls: reinstalls, ssh: ssh, soundcards: soundcards, now: now, restartInterval: 15 * time.Second}
+func NewController(c Config) *Controller {
+	return &Controller{
+		systemd: c.Systemd, network: c.Network, reinstalls: c.Reinstalls, removals: c.Removals, installed: c.Installed,
+		ssh: c.SSH, soundcards: c.Soundcards, now: c.Now, restartInterval: 15 * time.Second,
+	}
 }
 
 // EnableSSH shares the action lock and admission policy without adding a protocol action.
@@ -150,6 +191,14 @@ func (c *Controller) EnableSSH(ctx context.Context, password protocol.Secret) er
 
 // Begin admits r, or returns a *Refusal saying why it may not run now.
 func (c *Controller) Begin(ctx context.Context, r Request) (Operation, error) {
+	if r.Action == RemovePlugin {
+		if !RemovablePackage(r.Package) {
+			return nil, refuse(CodeInvalidPackage)
+		}
+		if c.installed == nil || !c.installed(r.Package) {
+			return nil, refuse(CodeNotInstalled)
+		}
+	}
 	if err := c.reserve(r.Action); err != nil {
 		return nil, err
 	}
@@ -204,10 +253,11 @@ func (c *Controller) admit(ctx context.Context, r Request) error {
 	if err != nil {
 		return err
 	}
-	if installing != "" {
+	if len(installing) > 0 {
 		return refuse(CodeUpgrade)
 	}
-	if a == RestartCore {
+	// Both leave the network alone, so a Wi-Fi join in progress does not hold them.
+	if a == RestartCore || a == RemovePlugin {
 		return nil
 	}
 	// Core being mid-start blocks nothing: a wedged bootstrap is a main reason to reboot or reinstall.
@@ -253,6 +303,11 @@ func (o *operation) Run(ctx context.Context) (Target, error) {
 		return o.setSoundcard(ctx)
 	case Reinstall:
 		return "", o.finish(c.systemd.Reinstall(ctx))
+	case RemovePlugin:
+		if err := c.removals.Request(o.req.Package); err != nil {
+			return "", o.finish(err)
+		}
+		return "", o.finish(c.systemd.RemovePlugin(ctx))
 	}
 	err := c.systemd.RestartCore(ctx)
 	if err == nil {
@@ -301,18 +356,19 @@ func (o *operation) finish(err error) error {
 	return nil
 }
 
-// installing names the first of UpgradeUnits that is busy, or "" when none is.
-func (c *Controller) installing(ctx context.Context) (string, error) {
+// installing names the UpgradeUnits that are busy.
+func (c *Controller) installing(ctx context.Context) (map[string]bool, error) {
+	busy := map[string]bool{}
 	for _, unit := range UpgradeUnits {
 		state, err := c.systemd.Unit(ctx, unit)
 		if err != nil {
-			return "", refuse(CodeUnavailable)
+			return nil, refuse(CodeUnavailable)
 		}
 		if state.Busy() {
-			return unit, nil
+			busy[unit] = true
 		}
 	}
-	return "", nil
+	return busy, nil
 }
 
 // Status never waits for an operation in progress.
@@ -325,15 +381,26 @@ func (c *Controller) Status(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	s := Status{Core: core.Active, Upgrading: installing != "", Reinstall: "running"}
-	if installing != ReinstallUnit {
-		s.Reinstall, s.ReinstallFinished = c.reinstalls.Outcome()
-		if s.Reinstall == "" {
-			s.Reinstall = "idle"
-		}
+	s := Status{
+		Core:           core.Active,
+		Upgrading:      len(installing) > 0,
+		Reinstall:      outcome(c.reinstalls, installing[ReinstallUnit]),
+		PluginRemoval:  outcome(c.removals.Record, installing[PluginRemovalUnit]),
+		RemovedPackage: c.removals.Package(),
 	}
 	c.mu.Lock()
 	s.Pending = c.pending
 	c.mu.Unlock()
 	return s, nil
+}
+
+func outcome(r Record, running bool) Outcome {
+	if running {
+		return Outcome{State: "running"}
+	}
+	state, finished := r.Outcome()
+	if state == "" {
+		state = "idle"
+	}
+	return Outcome{state, finished}
 }

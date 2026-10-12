@@ -189,7 +189,17 @@ func run(ctx context.Context, o options, setupOn, apiOn bool) error {
 		components.Go(func() { board.Run(ctx, 5*time.Second) })
 		simulated := o.Test || os.Geteuid() != 0
 		cards := soundcard.New("/", soundcard.OpenI2C)
-		controller := control.NewController(systemd, network, reinstalls, sshaccess.New(simulated), soundcard.NewApplier(simulated, cards.HATCard), time.Now)
+		removals := control.NewPluginRemovals(o.State)
+		controller := control.NewController(control.Config{
+			Systemd:    systemd,
+			Network:    network,
+			Reinstalls: reinstalls,
+			Removals:   removals,
+			Installed:  board.PackageInstalled,
+			SSH:        sshaccess.New(simulated),
+			Soundcards: soundcard.NewApplier(simulated, cards.HATCard),
+			Now:        time.Now,
+		})
 		binding = control.NewBinding(o.listenPort, control.NewHandler(controller, control.HandlerConfig{
 			Version:        version,
 			ServerIDFile:   o.IdentityFile,
@@ -201,6 +211,7 @@ func run(ctx context.Context, o options, setupOn, apiOn bool) error {
 			Setup:         setup.Phase,
 			Dashboard:     func(ctx context.Context) any { return board.Snapshot(ctx) },
 			Reinstalls:    reinstalls,
+			Removals:      removals,
 			EnableSSH:     controller.EnableSSH,
 			Simulated:     simulated,
 		}))

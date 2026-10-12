@@ -318,7 +318,7 @@ whether it is actually installed and reports a failed attempt. Turning the
 option off and applying removes Supervisor and its box controls. Images
 already have it, so their option starts enabled.
 
-- **What it shows:** whether the server is running, the versions of Kalinka and its plugins, and how much memory and processor time Kalinka is using.
+- **What it shows:** whether the server is running, the versions of Kalinka and its plugins, and how much memory and processor time Kalinka is using. Each plugin package has a Remove button, so a plugin that stops the server from starting can be taken away without it.
 - **What it can do:** restart the server, restart the player, switch it off safely before you unplug it, or reinstall Kalinka from kalinkaplayer.com when nothing else helps. Each one asks you to confirm first.
 - **Sound card:** on a Raspberry Pi, the DAC it found and the card it is set up for, with every card it can be set up for. See [Choose the sound card](#choose-the-sound-card).
 - **Reinstalling** keeps your settings and music. It takes several minutes, and the page shows its progress.

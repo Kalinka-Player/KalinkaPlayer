@@ -38,6 +38,10 @@ func (f *fakeSystemd) Reinstall(context.Context) error {
 	f.record("reinstall")
 	return f.actErr
 }
+func (f *fakeSystemd) RemovePlugin(context.Context) error {
+	f.record("remove plugin")
+	return f.actErr
+}
 func (f *fakeSystemd) CheckTarget(_ context.Context, t Target) error {
 	f.record("check " + string(t))
 	return f.checkErr
@@ -77,9 +81,35 @@ func (f *fakeApplier) Apply(_ context.Context, name string) (bool, error) {
 	return f.reboot, f.err
 }
 
+// stateDir holds a directory per controller the tests build, for its removal request file.
+var stateDir string
+
+func TestMain(m *testing.M) {
+	var err error
+	if stateDir, err = os.MkdirTemp("", "control-test"); err != nil {
+		panic(err)
+	}
+	code := m.Run()
+	os.RemoveAll(stateDir)
+	os.Exit(code)
+}
+
+// newController builds a box on which every package is installed.
 func newController(s *fakeSystemd, network NetworkActivity) (*Controller, *clock) {
 	c := &clock{time.Unix(1000, 0)}
-	return NewController(s, network, ReinstallRecord{}, nil, &fakeApplier{}, c.Now), c
+	dir, err := os.MkdirTemp(stateDir, "box")
+	if err != nil {
+		panic(err)
+	}
+	return NewController(Config{
+		Systemd: s, Network: network, Removals: NewPluginRemovals(dir),
+		Installed: func(string) bool { return true }, Soundcards: &fakeApplier{}, Now: c.Now,
+	}), c
+}
+
+// withPlugin makes pkg the only package installed on c's box.
+func withPlugin(c *Controller, pkg string) {
+	c.installed = func(name string) bool { return name == pkg }
 }
 
 type sshSetupFunc func(context.Context, protocol.Secret) error
@@ -153,9 +183,13 @@ func code(err error) string {
 	return ""
 }
 
-// request asks for a, naming a card for the one action that takes it.
+// request asks for a, naming a card or a package for the actions that take one.
 func request(a Action) Request {
-	return Request{Action: a, Soundcard: "hifiberry-digi"}
+	r := Request{Action: a, Soundcard: "hifiberry-digi"}
+	if a == RemovePlugin {
+		r.Package = "kalinka-plugin-qobuz"
+	}
+	return r
 }
 
 // perform carries a out as the HTTP layer does: Run, then the shutdown it names.
@@ -180,6 +214,7 @@ func TestActionsReachSystemd(t *testing.T) {
 		{Reboot, []string{"check reboot.target", "shutdown reboot.target"}},
 		{PowerOff, []string{"check poweroff.target", "shutdown poweroff.target"}},
 		{Reinstall, []string{"reinstall"}},
+		{RemovePlugin, []string{"remove plugin"}},
 	} {
 		s := &fakeSystemd{}
 		c, _ := newController(s, nil)
@@ -234,9 +269,11 @@ func TestNetworkChangeBlocksAllButRestart(t *testing.T) {
 			t.Fatalf("%s: %q", a, got)
 		}
 	}
-	c, _ := newController(&fakeSystemd{}, fakeNetwork(true))
-	if err := perform(c, RestartCore); err != nil {
-		t.Fatal(err)
+	for _, a := range []Action{RestartCore, RemovePlugin} {
+		c, _ := newController(&fakeSystemd{}, fakeNetwork(true))
+		if err := perform(c, a); err != nil {
+			t.Fatalf("%s: %v", a, err)
+		}
 	}
 }
 
@@ -348,19 +385,19 @@ func TestSystemdUnavailable(t *testing.T) {
 }
 
 func TestStatus(t *testing.T) {
-	s := &fakeSystemd{units: map[string]UnitState{CoreUnit: {Active: "failed"}, UpgradeUnits[1]: {Active: "activating"}}}
+	s := &fakeSystemd{units: map[string]UnitState{CoreUnit: {Active: "failed"}, "kalinka-upgrade.service": {Active: "activating"}}}
 	c, _ := newController(s, nil)
 	st, err := c.Status(context.Background())
-	if err != nil || st != (Status{Core: "failed", Upgrading: true, Reinstall: "idle"}) {
+	if err != nil || st != (Status{Core: "failed", Upgrading: true, Reinstall: Outcome{State: "idle"}, PluginRemoval: Outcome{State: "idle"}}) {
 		t.Fatalf("status = %+v, %v", st, err)
 	}
 }
 
 func TestReinstallStatus(t *testing.T) {
 	dir := t.TempDir()
-	record := ReinstallRecord{ResultFile: filepath.Join(dir, "reinstall-result")}
+	record := Record{ResultFile: filepath.Join(dir, "reinstall-result")}
 	s := &fakeSystemd{}
-	c := NewController(s, nil, record, nil, nil, time.Now)
+	c := NewController(Config{Systemd: s, Reinstalls: record, Now: time.Now})
 	status := func() Status {
 		t.Helper()
 		st, err := c.Status(context.Background())
@@ -369,11 +406,11 @@ func TestReinstallStatus(t *testing.T) {
 		}
 		return st
 	}
-	if st := status(); st.Reinstall != "idle" || !st.ReinstallFinished.IsZero() {
+	if st := status(); st.Reinstall.State != "idle" || !st.Reinstall.Finished.IsZero() {
 		t.Fatalf("before any reinstall: %+v", st)
 	}
 	s.units = map[string]UnitState{ReinstallUnit: {Active: "activating"}}
-	if st := status(); st.Reinstall != "running" || !st.Upgrading {
+	if st := status(); st.Reinstall.State != "running" || !st.Upgrading || st.PluginRemoval.State != "idle" {
 		t.Fatalf("while reinstalling: %+v", st)
 	}
 	s.units = nil
@@ -381,7 +418,7 @@ func TestReinstallStatus(t *testing.T) {
 		if err := os.WriteFile(record.ResultFile, []byte(result), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if st := status(); st.Reinstall != want || st.ReinstallFinished.IsZero() {
+		if st := status(); st.Reinstall.State != want || st.Reinstall.Finished.IsZero() {
 			t.Fatalf("after %q: %+v", result, st)
 		}
 	}
@@ -524,5 +561,78 @@ func TestSoundcardNeedsARestartToBePossible(t *testing.T) {
 	c.soundcards = nil
 	if got := code(perform(c, SetSoundcard)); got != CodeUnavailable {
 		t.Fatalf("without an applier = %q", got)
+	}
+}
+
+func TestPluginRemovalWritesTheRequestBeforeStartingTheUnit(t *testing.T) {
+	s := &fakeSystemd{}
+	c, _ := newController(s, nil)
+	withPlugin(c, "kalinka-plugin-qobuz")
+	if err := perform(c, RemovePlugin); err != nil {
+		t.Fatal(err)
+	}
+	if c.removals.Package() != "kalinka-plugin-qobuz" || len(s.calls) != 1 || s.calls[0] != "remove plugin" {
+		t.Fatalf("request %q, calls %v", c.removals.Package(), s.calls)
+	}
+	st, _ := c.Status(context.Background())
+	if st.RemovedPackage != "kalinka-plugin-qobuz" || st.Pending != "" {
+		t.Fatalf("status = %+v", st)
+	}
+	s.units = map[string]UnitState{PluginRemovalUnit: {Active: "activating"}}
+	st, _ = c.Status(context.Background())
+	if st.PluginRemoval.State != "running" || !st.Upgrading || st.Reinstall.State != "idle" {
+		t.Fatalf("while removing: %+v", st)
+	}
+	if got := code(perform(c, RestartCore)); got != CodeUpgrade {
+		t.Fatalf("restart while removing = %q", got)
+	}
+	s.units = nil
+	if err := os.WriteFile(c.removals.ResultFile, []byte("exit-code\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	st, _ = c.Status(context.Background())
+	if st.PluginRemoval.State != "failed" || st.PluginRemoval.Finished.IsZero() || st.RemovedPackage != "kalinka-plugin-qobuz" {
+		t.Fatalf("after failure: %+v", st)
+	}
+}
+
+func TestPluginRemovalRefusesWhatIsNotAnInstalledPlugin(t *testing.T) {
+	for _, tc := range []struct{ pkg, want string }{
+		{"kalinka-plugin-spotify", CodeNotInstalled},
+		{"kalinka-plugin-sdk", CodeInvalidPackage},
+		{"kalinka-server", CodeInvalidPackage},
+		{"", CodeInvalidPackage},
+	} {
+		s := &fakeSystemd{}
+		c, _ := newController(s, nil)
+		withPlugin(c, "kalinka-plugin-qobuz")
+		c.installed = func(name string) bool {
+			return name == "kalinka-plugin-qobuz" || name == "kalinka-plugin-sdk" || name == "kalinka-server"
+		}
+		_, err := c.Begin(context.Background(), Request{Action: RemovePlugin, Package: tc.pkg})
+		if code(err) != tc.want {
+			t.Errorf("%q = %q, want %q", tc.pkg, code(err), tc.want)
+		}
+		if len(s.calls) != 0 || c.removals.Package() != "" || c.running {
+			t.Errorf("%q: acted or stayed reserved", tc.pkg)
+		}
+	}
+	c, _ := newController(&fakeSystemd{}, nil)
+	c.installed = nil
+	if got := code(perform(c, RemovePlugin)); got != CodeNotInstalled {
+		t.Fatalf("without a package database = %q", got)
+	}
+}
+
+func TestFailedPluginRemovalStartCanBeRetried(t *testing.T) {
+	s := &fakeSystemd{actErr: errors.New("denied")}
+	c, _ := newController(s, nil)
+	withPlugin(c, "kalinka-plugin-qobuz")
+	if got := code(perform(c, RemovePlugin)); got != CodeUnavailable {
+		t.Fatalf("failed start = %q", got)
+	}
+	s.actErr = nil
+	if err := perform(c, RemovePlugin); err != nil {
+		t.Fatalf("retry: %v", err)
 	}
 }

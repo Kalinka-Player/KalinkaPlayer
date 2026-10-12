@@ -59,7 +59,9 @@ Description: <Short description>
 activate-noawait kalinka-server-restart
 ```
 
-This is the **only action** the plugin needs to request on install. dpkg will activate the `kalinka-server-restart` trigger, and the kalinka-server package handles restarting the service — **once**, even if multiple plugin packages are installed in the same `dpkg` invocation.
+This is the **only action** the plugin needs to request on install. dpkg will activate the `kalinka-server-restart` trigger, and the kalinka-server package handles restarting the service — **once**, even if multiple plugin packages are installed in the same `dpkg` invocation. Removal activates it too, so the server comes back without the plugin.
+
+The server's trigger handler runs `systemctl try-restart`: a running server restarts, a stopped one stays stopped. Kalinka's own package operations, an install or removal asked for from the app or a removal from the supervisor's page, stop the server first and start it once afterwards, so the plugin's trigger does not start it a second time half way through.
 
 ---
 
@@ -93,7 +95,7 @@ Make the script executable (`chmod 755`).
 |------|-------|
 | `dpkg -i plugin-a.deb plugin-b.deb` | dpkg installs both packages, both activate `kalinka-server-restart` |
 | dpkg processes pending triggers | kalinka-server's `postinst triggered` is called **once** |
-| `postinst` runs `systemctl restart kalinka.service` | Service restarts |
+| `postinst` runs `systemctl try-restart kalinka.service` | A running service restarts |
 | `ExecStartPre=+/opt/kalinka/bootstrap.sh` | Bootstrap pip-installs all wheels in `/opt/kalinka/wheels/` |
 | `ExecStart` | Server starts with new plugin available |
 

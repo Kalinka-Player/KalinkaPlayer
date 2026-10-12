@@ -15,6 +15,7 @@
   <symbol id="i-reboot" viewBox="0 0 24 24"><path d="M4.5 11A7.5 7.5 0 0 1 17.3 6.7L19.5 9"/><path d="M19.5 4.5V9H15"/><path d="M19.5 13a7.5 7.5 0 0 1-12.8 4.3L4.5 15"/><path d="M4.5 19.5V15H9"/></symbol>
   <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3.5v8"/><path d="M6.7 6.6a7.5 7.5 0 1 0 10.6 0"/></symbol>
   <symbol id="i-reinstall" viewBox="0 0 24 24"><path d="M12 3.5v11"/><path d="M7.5 10l4.5 4.5 4.5-4.5"/><path d="M4.5 16.5v3h15v-3"/></symbol>
+  <symbol id="i-remove" viewBox="0 0 24 24"><path d="M5 7h14"/><path d="M9.5 7V4.5h5V7"/><path d="M7 7l1 12.5h8L17 7"/><path d="M10 10.5v6"/><path d="M14 10.5v6"/></symbol>
   <symbol id="i-open" viewBox="0 0 24 24"><path d="M14 4.5h5.5V10"/><path d="M19.5 4.5L11 13"/><path d="M17.5 14v4.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1H10"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
   <symbol id="i-sound" viewBox="0 0 24 24"><path d="M4.5 9.5h3l4.5-4v13l-4.5-4h-3z"/><path d="M15.5 9a4 4 0 0 1 0 6"/><path d="M18 6.5a7.5 7.5 0 0 1 0 11"/></symbol>
@@ -138,7 +139,7 @@
     <section class="card">
       <h2 class="label">Plugins</h2>
       <dl class="versions" id="plugins"></dl>
-      <p class="empty" id="plugins-empty" hidden>No plugins were found in the server's Python environment.</p>
+      <p class="empty" id="plugins-empty" hidden>No plugins are installed on this box.</p>
       <p class="footnote" id="python"></p>
     </section>
   </div>
@@ -176,6 +177,9 @@
 </template>
 <template id="fact">
   <div class="fact"><dt></dt><dd></dd></div>
+</template>
+<template id="plugin-row">
+  <div class="fact plugin"><dt></dt><dd><span class="version"></span><button class="button neutral" type="button" data-action="remove_plugin">Remove</button></dd></div>
 </template>
 </body>
 </html>

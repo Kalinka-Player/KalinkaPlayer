@@ -131,6 +131,8 @@ from .plugin_management.inventory import (
 )
 from .plugin_management.route import register_plugin_routes
 from .plugin_management.catalog import PublicCatalog
+from .plugin_management.compatibility import CatalogCompatibility
+from .plugin_management.operations import PluginOperations, installation_supported
 
 
 @asynccontextmanager
@@ -451,12 +453,26 @@ async def create_app(
     app.state.plugin_catalog = PublicCatalog.from_environment(
         enabled=plugin_catalog_enabled
     )
+
+    def known_renderers() -> tuple:
+        return tuple(app.state.renderer_registry.list())
+
+    plugin_compatibility = CatalogCompatibility()
+    app.state.plugin_operations = PluginOperations(
+        app.state.plugin_catalog,
+        plugin_compatibility,
+        known_renderers,
+        supported=lambda: not app.state.config.server.demo_mode
+        and installation_supported(),
+    )
     register_plugin_routes(
         app,
         app.state.plugin_inventory,
         app.state.plugin_catalog,
         enabled=plugin_catalog_enabled,
-        renderers=lambda: tuple(app.state.renderer_registry.list()),
+        compatibility=plugin_compatibility,
+        renderers=known_renderers,
+        operations=app.state.plugin_operations,
     )
     # Renderer services exist before the play queue: playback runs through a
     # renderer session, so the queue needs the registry and the session pool.
@@ -1118,6 +1134,7 @@ async def create_app(
             "name": "kalinka-player",
             "plugin_management": {
                 **PLUGIN_MANAGEMENT_CAPABILITIES,
+                **app.state.plugin_operations.capabilities(),
                 "enabled": app.state.config.server.plugin_catalog_enabled,
             },
         }
@@ -1228,16 +1245,10 @@ async def create_app(
                     accepted,
                 )
 
-        # Touch the trigger file watched by kalinka-restart.path. systemd's
-        # path unit fires the (root-owned) kalinka-restart.service oneshot,
-        # which runs `systemctl restart kalinka.service`. We exit only when
-        # systemd sends SIGTERM, letting the lifespan teardown run normally.
-        trigger = Path(paths.run_dir()) / "restart-request"
         try:
-            trigger.parent.mkdir(parents=True, exist_ok=True)
-            trigger.touch()
+            update_check.request_restart()
         except OSError as e:
-            logger.error("Failed to write restart trigger %s: %s", trigger, e)
+            logger.error("Failed to write restart trigger: %s", e)
             raise HTTPException(
                 status_code=500, detail="Failed to request restart"
             ) from e

@@ -105,6 +105,11 @@ func (c *Collector) Run(ctx context.Context, interval time.Duration) {
 	}
 }
 
+// PackageInstalled reports whether dpkg lists name as an installed kalinka* package.
+func (c *Collector) PackageInstalled(name string) bool {
+	return slices.ContainsFunc(c.software().packages, func(p Package) bool { return p.Name == name })
+}
+
 func (c *Collector) Snapshot(ctx context.Context) Snapshot {
 	sw := c.software()
 	s := Snapshot{Host: c.host(), Packages: sw.packages, Plugins: sw.plugins, Python: sw.python}
