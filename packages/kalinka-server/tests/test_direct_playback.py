@@ -954,6 +954,100 @@ async def test_sequential_source_reports_timeline_offset(queue, renderer, direct
     assert enqueue.enqueue_source.source.start_offset_ms == 0
 
 
+def _sequential_track(title: str) -> Track:
+    entity = EntityId(id=title, type=EntityType.TRACK, source="airplay")
+    return Track(
+        id=entity, title=title, duration=200, album=Album(id=entity, title=title)
+    )
+
+
+async def _play_sequential(direct, listener):
+    hold = await direct.acquire("AirPlay", listener)
+    source, track = _connect_track()
+    await hold.play(source.model_copy(update={"sequential": True}), track)
+    await asyncio.sleep(SETTLE_S)
+    return hold
+
+
+async def test_show_changes_the_track_without_touching_what_plays(
+    queue, renderer, direct, emitter
+):
+    listener = Listener()
+    hold = await _play_sequential(direct, listener)
+    renderer.report_position(50000)
+    await asyncio.sleep(0.05)
+    commands = len(renderer.commands)
+
+    await hold.show(_sequential_track("Second"), 0)
+    await asyncio.sleep(0.05)
+
+    assert len(renderer.commands) == commands
+    for state in (listener.states[-1], _states(emitter)[-1]):
+        assert state.current_track.title == "Second"
+        assert 0 <= state.position < 1000
+    renderer.report_position(150000)
+    await asyncio.sleep(0.05)
+    assert listener.states[-1].current_track.title == "Second"
+    # Shown at 0 once the renderer had played on somewhat past 50000.
+    assert 90000 < listener.states[-1].position <= 100000
+
+
+async def test_a_track_shown_while_paused_keeps_its_position(queue, renderer, direct):
+    listener = Listener()
+    hold = await _play_sequential(direct, listener)
+    renderer.position_ms = 20000
+    await hold.pause()
+    await asyncio.sleep(SETTLE_S)
+
+    await hold.show(_sequential_track("Second"), 7000)
+    await asyncio.sleep(0.05)
+
+    assert listener.states[-1].state == PlayerStateEnum.PAUSED
+    assert listener.states[-1].position == 7000
+
+
+async def test_playing_again_drops_what_show_set(queue, renderer, direct):
+    listener = Listener()
+    hold = await _play_sequential(direct, listener)
+    await hold.show(_sequential_track("Second"), 600000)
+
+    source, track = _connect_track("222")
+    await hold.play(source.model_copy(update={"sequential": True}), track)
+    await asyncio.sleep(SETTLE_S)
+
+    assert listener.states[-1].current_track == track
+    assert listener.states[-1].position < 600000
+
+
+async def test_a_seekable_source_keeps_its_own_timeline(queue, renderer, direct):
+    hold = await _hold_and_play(direct, Listener())
+    with pytest.raises(ValueError):
+        await hold.show(_sequential_track("Shown"), 600000)
+    assert hold.state.current_track.title == "Connect song"
+
+
+async def test_show_needs_something_playing_and_a_live_hold(queue, renderer, direct):
+    hold = await direct.acquire("AirPlay", Listener())
+    with pytest.raises(ValueError):
+        await hold.show(_sequential_track("Second"), 0)
+    await hold.release()
+    with pytest.raises(HoldEnded):
+        await hold.show(_sequential_track("Second"), 0)
+
+
+async def test_show_is_refused_once_the_stream_has_finished(queue, renderer, direct):
+    listener = Listener()
+    hold = await _play_sequential(direct, listener)
+    renderer.finish_current()
+    await asyncio.sleep(SETTLE_S)
+    assert listener.finished == 1
+    states = len(listener.states)
+
+    with pytest.raises(ValueError):
+        await hold.show(_sequential_track("Second"), 0)
+    assert len(listener.states) == states
+
+
 async def test_sequential_source_is_revoked_on_replay(queue, renderer, direct):
     listener = Listener()
     hold = await direct.acquire('Spotify Connect', listener)

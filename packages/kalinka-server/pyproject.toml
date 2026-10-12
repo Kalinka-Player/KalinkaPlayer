@@ -50,7 +50,8 @@ dependencies = [
     # Renderer protocol (renderer_ws_handler.py). The committed generated
     # bindings (renderer_proto/) pin the runtime floor; `make proto` regenerates.
     "protobuf>=7.35,<8",
-    # >=3.11: ExternalVolumeControl for external engine volume routing.
+    # >=3.11: ExternalVolumeControl for external engine volume routing, and
+    # DirectPlaybackSession.show, which the direct playback hold implements.
     "kalinka-plugin-sdk>=3.11,<4",
 ]
 dynamic = ["version"]

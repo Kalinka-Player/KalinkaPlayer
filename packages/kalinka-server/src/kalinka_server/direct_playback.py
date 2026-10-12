@@ -151,12 +151,15 @@ class HolderSession:
         self._swap = asyncio.Lock()
         self._track: Optional[Track] = None
         self._source: Optional[TrackSource] = None
+        # Added to the renderer's position: the source's own offset, or what show() set.
+        self._timeline_offset_ms = 0
         self._queued: Optional[_QueuedSource] = None
         self._stream_id: Optional[int] = None
         self._next_stream_id = 0
         self._state = PlaybackState(
             state=PlayerStateEnum.STOPPED, timestamp_ns=time.monotonic_ns()
         )
+        self._reached: Optional[StreamState] = None
         self._ended = False
         self._teardown: Optional[asyncio.Future] = None
         self._consumer = asyncio.get_running_loop().create_task(self._consume())
@@ -188,7 +191,20 @@ class HolderSession:
         if source.sequential and start_offset_ms:
             raise ValueError("a sequential source starts at its first byte")
         self._clear_next()
+        self._timeline_offset_ms = source.timeline_offset_ms
         self._start(source, track, start_offset_ms)
+
+    async def show(self, track: Track, position_ms: int) -> None:
+        self._require_active()
+        if self._source is None or self._reached is None:
+            raise ValueError("nothing plays to show a track for")
+        if not self._source.sequential:
+            raise ValueError("only a sequential source moves on by itself")
+        self._track = track
+        self._timeline_offset_ms = position_ms - self._reached.position_at(
+            time.monotonic_ns()
+        )
+        self._publish(self._reached)
 
     async def set_next(
         self, source: Optional[TrackSource], track: Optional[Track] = None
@@ -226,6 +242,7 @@ class HolderSession:
         self._clear_next()
         stream_id, self._stream_id = self._stream_id, None
         self._source = None
+        self._timeline_offset_ms = 0
         if stream_id is not None:
             self._player.remove(stream_id)
         self._publish(
@@ -411,6 +428,7 @@ class HolderSession:
                 previous = self._stream_id
                 self._stream_id = queued.stream_id
                 self._source, self._track = queued.source, queued.track
+                self._timeline_offset_ms = queued.source.timeline_offset_ms
                 self._queued = None
                 if previous is not None:
                     self._player.remove(previous)
@@ -424,6 +442,7 @@ class HolderSession:
                     continue
                 if self._queued is not None:
                     continue
+                self._reached = None
                 # The plugin decides whether to play, stop, or release.
                 self._bridge.send("on_finished")
                 continue
@@ -445,13 +464,12 @@ class HolderSession:
     def _publish(self, state: StreamState) -> None:
         # Timestamped control points let plugins advance their own clocks,
         # just like the play queue. Quiet playback needs no renderer polling.
+        self._reached = state
         self._state = PlaybackState(
             state=to_state_name(state.state),
             current_track=self._track,
             index=None,
-            position=state.position_at(time.monotonic_ns()) + (
-                self._source.timeline_offset_ms if self._source else 0
-            ),
+            position=state.position_at(time.monotonic_ns()) + self._timeline_offset_ms,
             message=state.error.message if state.error else None,
             audio_info=to_audio_info(state.stream_info),
             mime_type=self._source.format if self._source else None,

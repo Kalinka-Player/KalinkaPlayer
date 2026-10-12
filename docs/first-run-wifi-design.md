@@ -507,7 +507,7 @@ phone ──A2DP──▶ bluez-alsa ──PCM──▶ plugin ──live audio/
 - The plugin takes the output when the phone's player reports `playing` over AVRCP (BlueZ's `MediaPlayer1.Status`) and audio arrives. Audio alone is not enough: a notification sound opens an A2DP stream too, and must not stop what the queue is playing. While the plugin does not hold the output, it reads the phone's audio and drops it, so that bluez-alsa does not back up.
 - The last to press play wins, as with a Connect receiver. Play on the phone takes the output from the queue. Play from the queue ends the hold (`QUEUE_PLAY`), and the plugin sends the phone an AVRCP Pause, so the phone's player shows paused rather than playing to nothing.
 - Pause, resume, next and previous from the app (`TransportRequest`) go to the phone as AVRCP commands. Seek is refused, as it is for every sequential source.
-- Clients see AVRCP's title, artist, album, duration and position. A phone moves on to the next track without breaking its stream, so the plugin has to change what clients see without replacing what plays. `DirectPlaybackSession` cannot do that today: `play()` replaces the source, and a sequential source starts again from its first byte. SDK 3.6 adds `show(track, position_ms)` for it (issue 6). There is no cover art. AVRCP carries it over OBEX, which would need `bluez-obexd`, and that does not earn its place.
+- Clients see AVRCP's title, artist, album, duration and position. A phone moves on to the next track without breaking its stream, so the plugin has to change what clients see without replacing what plays. `play()` cannot: it replaces the source, and a sequential source starts again from its first byte. `DirectPlaybackSession.show(track, position_ms)`, added in SDK 3.11 for AirPlay, does it. There is no cover art. AVRCP carries it over OBEX, which would need `bluez-obexd`, and that does not earn its place.
 - **Volume.** With AVRCP absolute volume, the phone's volume keys set the output's volume through `set_volume`: the hardware mixer, the amplifier's device plugin, or software volume if the user chose it. The output's volume goes back to the phone's slider through `on_volume`, whether it changed in the app or on the amplifier's knob. A phone without absolute volume scales its own samples, and nothing on the box can prevent that.
 - The hold ends when the phone disconnects, or when it stays paused past the server's idle limit (`IDLE`).
 
@@ -546,7 +546,7 @@ Both buttons are neutral compact `KalinkaButton`s, so the palette's one berry fi
 The contracts it touches, all additively:
 
 - The renderer accepts `audio/wav`. Its protocol does not change.
-- SDK 3.6: `DirectPlaybackSession.show(track, position_ms)`, and `action` fields in a plugin's settings, with the method each one runs.
+- SDK: `action` fields in a plugin's settings, with the method each one runs. `DirectPlaybackSession.show(track, position_ms)` is already there, since 3.11.
 - REST: one call that runs a settings action, and a minor step of `REST_API_VERSION`. An older app draws a widget it does not know as a text field, so the server marks an action field read-only. In such an app it shows as an empty row that cannot be saved.
 
 Where it runs:
