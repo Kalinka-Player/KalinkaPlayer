@@ -13,13 +13,25 @@ type Report struct {
 	// Supported is false off a Raspberry Pi, where no card can be chosen.
 	Supported bool `json:"supported"`
 	// Name is the DAC as a person would call it, from the sound card's ID chip, the configured choice or ALSA, in that order.
-	Name       *string  `json:"name"`
-	HAT        *HAT     `json:"hat"`
-	Configured *string  `json:"configured"`
-	Active     *Active  `json:"active"`
-	Suggested  []string `json:"suggested"`
-	Options    []Card   `json:"options"`
+	Name       *string `json:"name"`
+	HAT        *HAT    `json:"hat"`
+	Configured *string `json:"configured"`
+	// ConfiguredBy says what sets the configured card up; null when nothing is configured.
+	ConfiguredBy *Setup  `json:"configured_by"`
+	Active       *Active `json:"active"`
+	// USB lists the USB audio cards plugged in, which play with nothing set up.
+	USB       []Active `json:"usb"`
+	Suggested []string `json:"suggested"`
+	Options   []Card   `json:"options"`
 }
+
+// Setup is what sets a card up: the boot configuration, or the firmware from the HAT's ID chip.
+type Setup string
+
+const (
+	ByBootConfig Setup = "boot_config"
+	ByHAT        Setup = "hat"
+)
 
 // Detector reads a box for the sound card it has and the ones it could be set
 // up for. Safe for concurrent use.
@@ -63,18 +75,31 @@ func (d *Detector) Offers(name string) bool {
 	return slices.ContainsFunc(d.Options(), func(c Card) bool { return c.Name == name })
 }
 
+// HATCard names the card the firmware sets up from the fitted HAT's ID chip, or "".
+func (d *Detector) HATCard() string {
+	if hat := readHAT(d.root); hat != nil {
+		return hat.card
+	}
+	return ""
+}
+
 func (d *Detector) Report() Report {
-	r := Report{Suggested: []string{}, Options: []Card{}}
+	r := Report{USB: []Active{}, Suggested: []string{}, Options: []Card{}}
 	if r.Supported = d.Supported(); !r.Supported {
 		return r
 	}
 	r.Options = d.options()
 	r.HAT = readHAT(d.root)
-	configured := configured(d.root)
-	if configured != "" {
-		r.Configured = &configured
+	configured, by := configured(d.root), ByBootConfig
+	if configured == "" && r.HAT != nil && r.HAT.card != "" {
+		configured, by = r.HAT.card, ByHAT
 	}
-	r.Active = activeCard(readCards(d.root), configured)
+	if configured != "" {
+		r.Configured, r.ConfiguredBy = &configured, &by
+	}
+	cards := readCards(d.root)
+	r.Active = activeCard(cards, configured)
+	r.USB = usbCards(cards)
 	r.Suggested = offered(d.guesses(r.HAT, r.Active), r.Options)
 	r.Name = name(r.HAT, configured, r.Active)
 	return r
@@ -86,11 +111,11 @@ func (d *Detector) Report() Report {
 // after the supervisor starts.
 func (d *Detector) guesses(hat *HAT, active *Active) []string {
 	if hat != nil {
+		if hat.card != "" || hat.selfConfiguring() {
+			return nil
+		}
 		if s := hat.suggestion(); s != "" {
 			return []string{s}
-		}
-		if hat.selfConfiguring() {
-			return nil
 		}
 	}
 	if active != nil {
@@ -119,7 +144,7 @@ func name(hat *HAT, configured string, active *Active) *string {
 	var n string
 	switch card, known := Lookup(configured); {
 	// Other boards carry ID chips too, such as a PoE or M.2 HAT; only one that is the sound card names it.
-	case hat != nil && (hat.suggestion() != "" || configured == "" && active != nil):
+	case hat != nil && (hat.card != "" || hat.suggestion() != "" || configured == "" && active != nil):
 		n = hat.Name()
 	case known:
 		n = card.Label

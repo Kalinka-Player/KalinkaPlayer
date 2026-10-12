@@ -319,7 +319,7 @@ function soundcardHint(sc) {
   if (sc.suggested.length > 1 && !sc.active) {
     return "The chip on this HAT is used by several boards. The likely ones are listed first: choose yours.";
   }
-  if (sc.hat && sc.active && !sc.configured && sc.suggested.length === 0) {
+  if (sc.hat && sc.active && (!sc.configured || sc.configured_by === "hat") && sc.suggested.length === 0) {
     return "This HAT set itself up from its ID chip. Nothing needs choosing.";
   }
   return "";
@@ -340,10 +340,12 @@ function renderSoundcard(sc) {
   if (!offered) return;
   const facts = byId("soundcard-facts");
   facts.replaceChildren();
-  fact(facts, "Sound card", sc.name || "No HAT found");
-  fact(facts, "Set up for", sc.configured ? cardLabel(sc.configured) : "Nothing chosen");
-  // A USB DAC is never reported here, so the line is left out rather than calling the box silent.
+  // Without an ID chip the bus names a DAC chip at most, which several boards carry.
+  fact(facts, "Sound card", sc.name || (sc.suggested.length ? "A DAC HAT, model unknown" : "No HAT found"));
+  const setUp = sc.configured_by === "hat" ? ", by its ID chip" : "";
+  fact(facts, "Set up for", sc.configured ? cardLabel(sc.configured) + setUp : "Nothing chosen");
   fact(facts, "Playing through", sc.active ? `${sc.active.name} · ${sc.active.pcm}` : "");
+  fact(facts, "USB", sc.usb.map((card) => `${card.name} · ${card.pcm}`).join(", "));
   const hint = soundcardHint(sc);
   byId("soundcard-hint").hidden = hint === "";
   byId("soundcard-hint").textContent = hint;

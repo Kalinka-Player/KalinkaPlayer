@@ -4,8 +4,11 @@
 #
 #   soundcard.sh boot           Apply CONFIG_SOUNDCARD from DietPi's dietpi.txt
 #                               once, restarting if the boot configuration changed.
-#   soundcard.sh apply <name>   Apply <name>, then print "changed" or "unchanged".
-#                               Never restarts: the supervisor does, after replying.
+#   soundcard.sh apply <name> [<hat-card>]
+#                               Apply <name>, then print "changed" or "unchanged".
+#                               <hat-card> is the card the firmware sets up from the
+#                               HAT's ID chip, if any. Never restarts: the supervisor
+#                               does, after replying.
 #
 # Exit status: 0 done, 1 failed, 2 unknown name or usage, 75 another run holds the lock.
 set -euo pipefail
@@ -17,6 +20,7 @@ SET_HARDWARE="$ROOT/boot/dietpi/func/dietpi-set_hardware"
 STATE="$ROOT/var/lib/kalinka-supervisor/soundcard"
 IMAGE_STATE="$ROOT/var/lib/kalinka-image/soundcard"
 LOCK="$ROOT/run/lock/kalinka-soundcard.lock"
+NAME='^[a-z0-9][a-z0-9.-]{0,47}$'
 
 # Every overlay this helper may have written, so a new choice replaces the old one.
 AUDIO_OVERLAYS='hifiberry-[a-z0-9-]+|iqaudio-[a-z0-9-]+|rpi-dacplus|rpi-dacpro|rpi-digiampplus|rpi-codeczero|allo-[a-z0-9-]+|justboom-[a-z0-9-]+|i-sabre-q2m|applepi-dac|dionaudio-[a-z0-9-]+|i2s-dac|i2s-master-dac'
@@ -29,7 +33,7 @@ export G_INTERACTIVE=0
 log() { echo "kalinka-soundcard: $*" >&2; }
 
 usage() {
-  echo "usage: $0 boot | apply <name>" >&2
+  echo "usage: $0 boot | apply <name> [<hat-card>]" >&2
   exit 2
 }
 
@@ -50,7 +54,7 @@ native_handles() {
 }
 
 # HiFiBerry's own setup tool stops the firmware reading these boards' ID
-# chips, whose overlay would otherwise load on top of the configured one.
+# chips, whose overlay older firmware would otherwise load on top of the configured one.
 eeprom_off() {
   case "$1" in
     hifiberry-amp100|hifiberry-amp3|hifiberry-dacplushd|hifiberry-digi-pro|hifiberry-dacplus-std) return 0 ;;
@@ -89,10 +93,18 @@ set_onboard_audio() {
   fi
 }
 
+# Stops the firmware loading the card a HAT's ID chip names when another is chosen.
 set_eeprom_read() {
+  local name="$1" hat="$2"
   sed -Ei '/^[[:blank:]]*force_eeprom_read=0[[:blank:]]*\r?$/d' "$CONFIG"
-  if eeprom_off "$1"; then
+  if { [ -n "$hat" ] && [ "$name" != "$hat" ]; } || { [ -z "$hat" ] && eeprom_off "$name"; }; then
     append_line force_eeprom_read=0
+  fi
+}
+
+record_choice() {
+  if [ -f "$DIETPI_TXT" ]; then
+    dietpi_conf_set "$DIETPI_TXT" CONFIG_SOUNDCARD "$1"
   fi
 }
 
@@ -116,19 +128,21 @@ apply_native() {
 
 # Applies a card, by whichever way knows it; anything else is DietPi's to interpret.
 apply_card() {
-  local name="$1"
-  if [ "$name" != none ] && [ -x "$SET_HARDWARE" ] && { dietpi_handles "$name" || ! native_handles "$name"; }; then
+  local name="$1" hat="${2:-}"
+  if [ "$name" = "$hat" ]; then
+    # The firmware sets this card up from the chip; any overlay written for it would load a second copy.
+    remove_audio_overlays
+    record_choice "$name"
+  elif [ "$name" != none ] && [ -x "$SET_HARDWARE" ] && { dietpi_handles "$name" || ! native_handles "$name"; }; then
     # What DietPi does not know of, such as i2s-dac, its reset leaves behind.
     remove_audio_overlays
     "$SET_HARDWARE" soundcard "$name" >&2
   else
     native_handles "$name" || { log "no way to set up '$name'"; return 2; }
     apply_native "$name"
-    if [ -f "$DIETPI_TXT" ]; then
-      dietpi_conf_set "$DIETPI_TXT" CONFIG_SOUNDCARD "$name"
-    fi
+    record_choice "$name"
   fi
-  set_eeprom_read "$name"
+  set_eeprom_read "$name" "$hat"
   mkdir -p "$(dirname "$STATE")"
   if [ "$name" = none ]; then
     rm -f "$STATE"
@@ -153,6 +167,8 @@ adopt_image_state() {
 
 boot() {
   local wanted before
+  # DietPi on a PC names sound cards too, but only a Pi has a card to set up here.
+  [ -f "$CONFIG" ] || return 0
   wanted="$(dietpi_conf_get "$DIETPI_TXT" CONFIG_SOUNDCARD)"
   # DietPi's "none" also purges alsa-utils, which Kalinka keeps; a card named again later is applied again.
   case "$wanted" in
@@ -170,13 +186,14 @@ boot() {
 }
 
 apply() {
-  local name="$1" before
-  [[ "$name" =~ ^[a-z0-9][a-z0-9.-]{0,47}$ ]] || usage
+  local name="$1" hat="$2" before
+  [[ "$name" =~ $NAME ]] || usage
+  [ -z "$hat" ] || [[ "$hat" =~ $NAME ]] || usage
   # Only the verdict goes to standard output; what the tools print is diagnostics.
   exec 3>&1 1>&2
   before="$(boot_fingerprint)"
   log "applying the sound card '$name'"
-  apply_card "$name"
+  apply_card "$name" "$hat"
   if [ "$before" != "$(boot_fingerprint)" ]; then
     sync
     echo changed >&3
@@ -193,10 +210,10 @@ case "${1:-}" in
     boot
     ;;
   apply)
-    [ $# -eq 2 ] || usage
+    [ $# -eq 2 ] || [ $# -eq 3 ] || usage
     lock
     adopt_image_state
-    apply "$2"
+    apply "$2" "${3:-}"
     ;;
   *) usage ;;
 esac

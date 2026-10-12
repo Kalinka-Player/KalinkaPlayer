@@ -77,7 +77,7 @@ func (f *fakeSoundcards) Offers(name string) bool {
 }
 func (f *fakeSoundcards) Report() soundcard.Report {
 	name := "HiFiBerry Digi2 Pro"
-	return soundcard.Report{Supported: f.supported, Name: &name, Suggested: []string{"hifiberry-digi-pro"}, Options: []soundcard.Card{{Name: "hifiberry-digi-pro", Label: "HiFiBerry Digi+ Pro or Digi2 Pro", Vendor: "HiFiBerry", Kind: soundcard.Digital}}}
+	return soundcard.Report{Supported: f.supported, Name: &name, USB: []soundcard.Active{}, Suggested: []string{"hifiberry-digi-pro"}, Options: []soundcard.Card{{Name: "hifiberry-digi-pro", Label: "HiFiBerry Digi+ Pro or Digi2 Pro", Vendor: "HiFiBerry", Kind: soundcard.Digital}}}
 }
 
 // testBox is the box a handler serves: which identities it has, whether Core is installed, and its sound card.
@@ -304,7 +304,7 @@ func TestActionsFollowWhatTheBoxHas(t *testing.T) {
 
 func TestSoundcardReport(t *testing.T) {
 	w := serve(newTestHandler(t, &fakeCoordinator{}, true), http.MethodGet, "/v1/soundcard", "")
-	want := `{"supported":true,"name":"HiFiBerry Digi2 Pro","hat":null,"configured":null,"active":null,"suggested":["hifiberry-digi-pro"],"options":[{"name":"hifiberry-digi-pro","label":"HiFiBerry Digi+ Pro or Digi2 Pro","vendor":"HiFiBerry","kind":"digital"}]}`
+	want := `{"supported":true,"name":"HiFiBerry Digi2 Pro","hat":null,"configured":null,"configured_by":null,"active":null,"usb":[],"suggested":["hifiberry-digi-pro"],"options":[{"name":"hifiberry-digi-pro","label":"HiFiBerry Digi+ Pro or Digi2 Pro","vendor":"HiFiBerry","kind":"digital"}]}`
 	if w.Code != 200 || strings.TrimSpace(w.Body.String()) != want || w.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("report = %d %s", w.Code, w.Body)
 	}

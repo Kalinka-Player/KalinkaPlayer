@@ -267,18 +267,22 @@ safe bound. While it runs, `upgrading` is true and every other action waits.
 
 A Raspberry Pi plays through a DAC HAT once its firmware loads the HAT's
 device-tree overlay, named by a `dtoverlay=` line in
-`/boot/firmware/config.txt`. A HAT with a compliant ID chip, such as
-Raspberry Pi's own DACs, names its overlay itself. Any other needs that line,
-which the supervisor writes for the card chosen in the app or on the page.
+`/boot/firmware/config.txt`. The firmware also loads it from the HAT's ID
+chip: from the chip itself on Raspberry Pi's own DACs, or from the
+firmware's table of boards, which lists most HiFiBerry boards. Any other HAT
+needs that line, which the supervisor writes for the card chosen in the app
+or on the page.
 
 `GET /v1/soundcard` returns what the box knows:
 
 ```json
 {"supported": true, "name": "HiFiBerry Digi2 Pro",
- "hat": {"vendor": "HiFiBerry", "product": "Digi2 Pro", "product_id": "0x0003",
-         "product_ver": "0x0001", "uuid": "6f7e6e2a-0c8b-4f0e-9d7a-2c1b8d2f3a4b"},
- "configured": null, "active": null,
- "suggested": ["hifiberry-digi-pro"],
+ "hat": {"vendor": "HiFiBerry", "product": "Digi2 Pro", "product_id": "0x0000",
+         "product_ver": "0x0000", "uuid": "5af941bb-4dcf-4eac-82a8-e36e84fcabef"},
+ "configured": "hifiberry-digi-pro", "configured_by": "hat",
+ "active": {"id": "sndrpihifiberry", "name": "snd_rpi_hifiberry_digi",
+            "pcm": "hw:CARD=sndrpihifiberry,DEV=0"},
+ "usb": [], "suggested": [],
  "options": [{"name": "hifiberry-digi-pro", "label": "HiFiBerry Digi+ Pro or Digi2 Pro",
               "vendor": "HiFiBerry", "kind": "digital"}]}
 ```
@@ -288,8 +292,10 @@ which the supervisor writes for the card chosen in the app or on the page.
 | `supported` | `false` off a Raspberry Pi, or without `/boot/firmware/config.txt`; every other field is then empty |
 | `name` | The DAC as a person would call it: from the HAT's ID chip when that HAT is the sound card, else the configured card's label, else ALSA's card name; `null` when none is known. Another board's chip, such as a PoE or M.2 HAT's, never names it |
 | `hat` | What the HAT's ID chip says, from `/proc/device-tree/hat`; `null` without one |
-| `configured` | The catalogued card the boot configuration sets up, or `null` |
+| `configured` | The catalogued card the boot configuration sets up, else the one the firmware sets up from the HAT's ID chip; `null` for neither |
+| `configured_by` | `boot_config` or `hat`, what sets `configured` up; `null` when nothing is configured |
 | `active` | The ALSA card that came up for it: `id`, `name` and `pcm`, the name the renderer opens it by |
+| `usb` | The USB audio cards plugged in, in the same shape. They play with nothing set up, so no choice here concerns them; the output's own settings pick one |
 | `suggested` | The cards the hardware points to, most likely first |
 | `options` | Every card this box can be set up for: `name`, `label`, `vendor` and `kind` (`dac`, `digital`, `amp`, `onboard` or `none`) |
 
@@ -301,10 +307,14 @@ which the supervisor writes for the card chosen in the app or on the page.
 2. **The boot configuration.** The first catalogued overlay in `config.txt`.
    On DietPi, `CONFIG_SOUNDCARD` in `/boot/dietpi.txt` tells the Pi's two own
    outputs apart.
-3. **The HAT's ID chip.** HiFiBerry's chips name the board without setting
-   it up, so the supervisor maps the product to its overlay, as HiFiBerry's
-   own tools do. Raspberry Pi's and IQaudIO's chips set the board up
-   themselves, so nothing is suggested.
+3. **The HAT's ID chip.** The firmware sets a board up from its chip when
+   its table, `overlays/hat_map.dtb`, lists the board's UUID, or its vendor
+   and product, and the overlay the table names is on the card. That card is
+   then `configured` by `hat`, and nothing is suggested. Raspberry Pi's and
+   IQaudIO's chips name their overlay themselves, so nothing is suggested
+   either. For a HiFiBerry board the table does not list, as on older
+   firmware, the supervisor maps the product to its overlay, as HiFiBerry's
+   own tools do.
 4. **The I2C bus**, only while no card came up and no chip settled it. The
    supervisor reads a few registers on `/dev/i2c-1`, as HiFiBerry's own
    detection does. A chip that answers names the DAC chip, not the board, so
@@ -313,9 +323,10 @@ which the supervisor writes for the card chosen in the app or on the page.
 
 **`set_soundcard`** takes `{"server_id": "…", "soundcard": "<name>"}`, with
 a name from `options`. The supervisor runs
-`/usr/lib/kalinka-supervisor/soundcard.sh apply <name>` as the transient
-`kalinka-soundcard-apply.service`, outside its sandbox, and waits for it, for
-at most 90 seconds:
+`/usr/lib/kalinka-supervisor/soundcard.sh apply <name> [<hat-card>]` as the
+transient `kalinka-soundcard-apply.service`, outside its sandbox, and waits
+for it, for at most 90 seconds. `<hat-card>` is the card the firmware sets up
+from the HAT's ID chip, when there is one:
 
 - **On DietPi**, the cards DietPi knows go through its own
   `dietpi-set_hardware soundcard`, which also writes `CONFIG_SOUNDCARD`.
@@ -323,9 +334,12 @@ at most 90 seconds:
   helper edits `config.txt` itself: it removes every audio overlay it could
   have written, switches the Pi's own audio off, and adds the card's
   `dtoverlay=` line where every board reads it.
-- **For the boards HiFiBerry's tools treat so**, it also adds
-  `force_eeprom_read=0`, so the chip's own overlay does not load on top. It
-  removes that line for any other card.
+- **The card the firmware sets up from the HAT's ID chip** is left to the
+  chip: the helper removes any audio overlay and `force_eeprom_read=0` that
+  would load a second card, and touches nothing else. Any other card on such
+  a box adds `force_eeprom_read=0`, so the chip's own overlay does not load
+  on top. Without such a chip, that line is added for the boards HiFiBerry's
+  tools treat so, and removed for any other card.
 - `none` removes the HAT's overlay. It is never handed to DietPi, whose
   handling of it removes ALSA.
 
@@ -334,7 +348,7 @@ restarts after the reply, exactly as for `reboot`: `pending` is `reboot`
 meanwhile. The firmware loads the overlay at that boot, and the card appears
 in `active` and in the renderer's list of output devices.
 
-At boot on DietPi, `kalinka-soundcard.service` runs the same helper for the
+At boot on a Pi running DietPi, `kalinka-soundcard.service` runs the same helper for the
 card `CONFIG_SOUNDCARD` names on the card, before the renderer starts, and
 restarts once if that changed the boot configuration.
 

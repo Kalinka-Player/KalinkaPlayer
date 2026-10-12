@@ -27,11 +27,15 @@ const keptOutput = 4096
 // partition, /etc/modprobe.d and /etc/asound.conf, all read-only in there.
 type Applier struct {
 	simulated bool
+	hatCard   func() string
 	run       func(*exec.Cmd) error
 }
 
-func NewApplier(simulated bool) *Applier {
-	return &Applier{simulated: simulated, run: func(cmd *exec.Cmd) error { return cmd.Run() }}
+// NewApplier applies cards for real unless simulated; hatCard names the card
+// the firmware sets up from the fitted HAT's ID chip, which no other may load
+// on top of. Detector.HATCard is the production one.
+func NewApplier(simulated bool, hatCard func() string) *Applier {
+	return &Applier{simulated: simulated, hatCard: hatCard, run: func(cmd *exec.Cmd) error { return cmd.Run() }}
 }
 
 // Apply reports whether the boot configuration changed, in which case the card loads only after a restart.
@@ -47,6 +51,9 @@ func (a *Applier) Apply(ctx context.Context, name string) (bool, error) {
 	args := []string{"--quiet", "--wait", "--pipe", "--collect",
 		"--unit=" + strings.TrimSuffix(ApplyUnit, ".service"), "--service-type=exec",
 		"--property=RuntimeMaxSec=80s", "--property=TimeoutStopSec=5s", HelperPath, "apply", card.Name}
+	if chip := a.hatCard(); chip != "" {
+		args = append(args, chip)
+	}
 	cmd := exec.CommandContext(ctx, "systemd-run", args...)
 	verdict, diagnostics := &tail{}, &tail{}
 	cmd.Stdout, cmd.Stderr = verdict, diagnostics

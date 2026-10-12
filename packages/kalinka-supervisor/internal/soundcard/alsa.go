@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// Active is the ALSA card the configured choice produced, as the renderer can open it.
+// Active is an ALSA card that came up, as the renderer can open it.
 type Active struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
@@ -21,6 +21,8 @@ type alsaCard struct {
 	id, driver   string
 	name         string
 	usb, virtual bool
+	// plays is whether the card has a playback device; a USB webcam's has none.
+	plays bool
 }
 
 func (c alsaCard) hdmi() bool {
@@ -80,8 +82,11 @@ func readCards(root string) []alsaCard {
 	defer f.Close()
 	cards := parseCards(f)
 	for i := range cards {
-		_, err := os.Stat(filepath.Join(root, "proc/asound", "card"+strconv.Itoa(cards[i].index), "usbid"))
+		dir := filepath.Join(root, "proc/asound", "card"+strconv.Itoa(cards[i].index))
+		_, err := os.Stat(filepath.Join(dir, "usbid"))
 		cards[i].usb = err == nil
+		playback, _ := filepath.Glob(filepath.Join(dir, "pcm*p"))
+		cards[i].plays = len(playback) > 0
 	}
 	return cards
 }
@@ -103,4 +108,14 @@ func activeCard(cards []alsaCard, configured string) *Active {
 		}
 	}
 	return nil
+}
+
+func usbCards(cards []alsaCard) []Active {
+	found := []Active{}
+	for _, c := range cards {
+		if c.usb && c.plays {
+			found = append(found, *c.active())
+		}
+	}
+	return found
 }

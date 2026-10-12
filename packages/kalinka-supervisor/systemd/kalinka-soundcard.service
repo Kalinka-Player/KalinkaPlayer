@@ -6,6 +6,8 @@ Wants=network-online.target
 After=network-online.target
 Before=kalinka-renderer.service
 ConditionPathExists=/boot/dietpi/func/dietpi-set_hardware
+# DietPi runs on PCs too; only a Pi has a boot configuration to load a HAT from.
+ConditionPathExists=/boot/firmware/config.txt
 
 [Service]
 # No RemainAfterExit: the supervisor refuses its actions while this unit is active.
