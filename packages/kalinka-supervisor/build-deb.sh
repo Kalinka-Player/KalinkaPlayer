@@ -13,7 +13,7 @@ chmod 755 "$stage"
 mkdir -p "$stage/DEBIAN" "$stage/usr/lib/kalinka-supervisor" "$stage/usr/lib/systemd/system" "$out_dir"
 GOARCH="$arch" VERSION="$version" "$pkg_dir/build.sh" "$stage/usr/lib/kalinka-supervisor/kalinka-supervisor"
 install -m 755 "$pkg_dir/reinstall.sh" "$pkg_dir/ssh-setup.sh" "$pkg_dir/soundcard.sh" "$stage/usr/lib/kalinka-supervisor/"
-install -m 644 "$pkg_dir/dietpi-conf.sh" "$stage/usr/lib/kalinka-supervisor/"
+install -m 644 "$pkg_dir/dietpi-conf.sh" "$pkg_dir/boot-config.sh" "$stage/usr/lib/kalinka-supervisor/"
 install -m 644 "$pkg_dir/systemd/"* "$stage/usr/lib/systemd/system/"
 cat > "$stage/DEBIAN/control" <<CONTROL
 Package: kalinka-supervisor

@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -190,12 +191,13 @@ func (c *Controller) admit(ctx context.Context, r Request) error {
 			return refuse(CodeBusy)
 		}
 	}
-	// The boot hook waits for the network at every boot; only its run, not that wait, holds actions off.
+	// The boot hook waits for the network at every boot. Only its run holds actions off; its wait holds off
+	// just a change of card, which would race it for the helper.
 	boot, err := c.systemd.Unit(ctx, soundcard.BootUnit)
 	if err != nil {
 		return refuse(CodeUnavailable)
 	}
-	if boot.Running() {
+	if boot.Running() || r.Action == SetSoundcard && boot.Busy() {
 		return refuse(CodeBusy)
 	}
 	installing, err := c.installing(ctx)
@@ -264,6 +266,10 @@ func (o *operation) Run(ctx context.Context) (Target, error) {
 func (o *operation) setSoundcard(ctx context.Context) (Target, error) {
 	c := o.c
 	reboot, err := c.soundcards.Apply(ctx, o.req.Soundcard)
+	if errors.Is(err, soundcard.ErrBusy) {
+		o.finish(nil)
+		return "", refuse(CodeBusy)
+	}
 	if err != nil {
 		o.finish(nil)
 		return "", refuse(CodeSoundcard)

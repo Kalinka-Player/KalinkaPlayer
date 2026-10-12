@@ -350,7 +350,13 @@ in `active` and in the renderer's list of output devices.
 
 At boot on a Pi running DietPi, `kalinka-soundcard.service` runs the same helper for the
 card `CONFIG_SOUNDCARD` names on the card, before the renderer starts, and
-restarts once if that changed the boot configuration.
+restarts once if that changed the boot configuration. While it runs, every
+action is refused as `busy`. While it still waits for the network, only
+`set_soundcard` is, since the two would contend for the helper.
+
+When `force_eeprom_read=0` hides the HAT's ID chip, the helper remembers
+which card the chip set up. Choosing that card again hands it back to the
+chip rather than writing an overlay that would load a second copy.
 
 ## Refusals
 
@@ -365,7 +371,7 @@ Every error has Core's shape, `{"detail": {"code": "...", "message": "..."}}`:
 | 404 | `not_found` | An unknown path, or an action this box does not offer |
 | 405 | `method_not_allowed` | The wrong method; `Allow` names the right one |
 | 409 | `wrong_server` | `server_id` or `renderer_id` is missing, or does not name this box |
-| 409 | `busy` | Another action, the SSH helper or a sound card helper is still running |
+| 409 | `busy` | Another action, the SSH helper or a sound card helper is still running, or, for `set_soundcard`, the boot hook is still waiting to apply its card |
 | 409 | `shutting_down` | A reboot or power-off has been accepted |
 | 409 | `upgrade_in_progress` | `kalinka-reinstall.service`, `kalinka-upgrade.service` or `kalinka-renderer-upgrade.service` is running, stopping or queued |
 | 409 | `network_change_in_progress` | Reboot, power-off or reinstall while nearby setup is joining a network or rolling one back |
