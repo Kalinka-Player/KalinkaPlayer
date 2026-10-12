@@ -34,6 +34,8 @@ const STATES = {
 
 const SETUP = { running: "On", waiting: "Waiting", off: "Off" };
 
+const WIFI_FALLBACK = "If the new network does not connect, the box goes back to the current one.";
+
 const ACTIONS = {
   restart_core: {
     icon: "i-restart",
@@ -48,6 +50,15 @@ const ACTIONS = {
     body: "The whole player restarts. Playback stops, and the box is back in a minute or two.",
     go: "Restart",
     follow: followReboot,
+  },
+  wifi_setup: {
+    icon: "i-wifi",
+    title: "Change Wi-Fi?",
+    get body() {
+      return `For the next ${setupWindow()}, the Kalinka app on a phone near the box can connect it to another Wi-Fi network over Bluetooth: choose Set up a box. ${WIFI_FALLBACK}`;
+    },
+    go: "Open setup",
+    follow: followWifiSetup,
   },
   poweroff: {
     icon: "i-power",
@@ -131,6 +142,11 @@ function duration(seconds) {
   if (d) return `${d} day${d === 1 ? "" : "s"} ${h} h`;
   if (h) return `${h} h ${m} min`;
   return `${m} min`;
+}
+
+function setupWindow() {
+  const minutes = Math.round(status.wifi_setup.window_seconds / 60);
+  return `${minutes} minute${minutes === 1 ? "" : "s"}`;
 }
 
 async function getJSON(path) {
@@ -246,6 +262,8 @@ function lockActions() {
     const row = button.closest(".action");
     if (row) row.hidden = info != null && !offered;
   }
+  // /info lists Change Wi-Fi wherever setup may run; only the status says it can reach setup now.
+  if (!status || !status.wifi_setup.available) byId("wifi-setup").hidden = true;
   byId("ssh-enable").disabled = locked();
 }
 
@@ -650,6 +668,16 @@ async function followPowerOff() {
       return;
     }
   }
+}
+
+function followWifiSetup() {
+  ++flow;
+  showProgress({ title: "Nearby setup is open", body: "" });
+  finishProgress({
+    ok: true,
+    title: "Nearby setup is open",
+    body: `On a phone near the box, open the Kalinka app and choose Set up a box within the next ${setupWindow()}. ${WIFI_FALLBACK}`,
+  });
 }
 
 async function followReinstall(before) {

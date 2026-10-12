@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -535,6 +537,24 @@ func TestPageAssetsStayWithinItsPolicy(t *testing.T) {
 		if strings.Contains(serve(h, http.MethodGet, svg, "").Body.String(), "style=") {
 			t.Errorf("%s colours itself with inline CSS, which its policy refuses", svg)
 		}
+	}
+}
+
+func TestPageOffersEveryAction(t *testing.T) {
+	h := newTestHandler(t, &fakeCoordinator{}, true)
+	page := serve(h, http.MethodGet, "/", "").Body.String()
+	script := serve(h, http.MethodGet, "/app.js", "").Body.String()
+	for _, a := range Supported {
+		// The sound card picker asks for its action itself instead of carrying data-action.
+		if !strings.Contains(page, `data-action="`+string(a)+`"`) && !strings.Contains(script, `confirmAction("`+string(a)+`"`) {
+			t.Errorf("the page has no control for %s", a)
+		}
+		if !regexp.MustCompile(`(?m)^  ` + regexp.QuoteMeta(string(a)) + `: \{$`).MatchString(script) {
+			t.Errorf("app.js has no ACTIONS entry for %s", a)
+		}
+	}
+	if window := fmt.Sprintf("%d minutes", int(setupWindow.Minutes())); strings.Contains(page+script, window) || !strings.Contains(script, "window_seconds") {
+		t.Error("the page states the setup window itself instead of reading it from /v1/status")
 	}
 }
 
