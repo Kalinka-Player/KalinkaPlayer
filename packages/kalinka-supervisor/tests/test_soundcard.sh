@@ -125,6 +125,15 @@ assert_contains "and loaded with a restart" "$CALLS" "systemctl --no-block reboo
 STUB_EDIT=0 boot_with 'CONFIG_SOUNDCARD=hw:1,0\n'
 assert_contains "while a name only DietPi understands still goes to DietPi" "$CALLS" "soundcard hw:1,0"
 
+echo "  -- at boot on a PC, which DietPi runs on too"
+reset_box
+dietpi
+rm "$CONFIG"
+boot_with 'CONFIG_SOUNDCARD=usb-dac\n'
+assert_eq "succeeds" "$STATUS" 0
+assert_eq "and does nothing" "$CALLS" ""
+assert_no_file "writing no Pi boot configuration" "$CONFIG"
+
 echo "  -- a box the image set up before the helper moved"
 reset_box
 dietpi
@@ -162,6 +171,19 @@ assert_eq "no HAT leaves the Pi's own audio off" "$(config)" \
   "$(printf 'dtparam=audio=off\ndtoverlay=vc4-kms-v3d,cma-384')"
 assert_no_file "and forgets the card" "$STATE"
 
+echo "  -- a HAT the firmware sets up from its ID chip"
+printf 'dtparam=audio=on\ndtoverlay=hifiberry-digi-pro\nforce_eeprom_read=0\n' > "$CONFIG"
+run apply hifiberry-digi-pro hifiberry-digi-pro
+assert_eq "choosing its card hands it back to the chip, leaving the Pi's own audio be" "$(config)" "dtparam=audio=on"
+assert_eq "which loads at the next start" "$OUT" "changed"
+assert_eq "remembers it" "$(cat "$STATE")" hifiberry-digi-pro
+run apply hifiberry-digi-pro hifiberry-digi-pro
+assert_eq "choosing it again changes nothing" "$OUT" "unchanged"
+run apply hifiberry-digi hifiberry-digi-pro
+assert_contains "another card stops the firmware reading the chip, whatever HiFiBerry's tools say" "$(config)" "force_eeprom_read=0"
+run apply none hifiberry-digi-pro
+assert_eq "and so does no HAT" "$(config)" "$(printf 'dtparam=audio=off\nforce_eeprom_read=0')"
+
 echo "  -- the supervisor applying a card on DietPi"
 reset_box
 dietpi
@@ -178,11 +200,14 @@ run apply none
 assert_not_contains "never hands none to DietPi, which would purge ALSA" "$CALLS" "dietpi-set_hardware"
 assert_contains "but records it" "$(cat "$ROOT/boot/dietpi.txt")" "CONFIG_SOUNDCARD=none"
 assert_not_contains "and removes the card" "$(config)" "dtoverlay=hifiberry-digi"
+run apply hifiberry-digi-pro hifiberry-digi-pro
+assert_not_contains "leaves the card the chip sets up to the chip, not to DietPi" "$CALLS" "dietpi-set_hardware"
+assert_contains "but records it" "$(cat "$ROOT/boot/dietpi.txt")" "CONFIG_SOUNDCARD=hifiberry-digi-pro"
 
 echo "  -- what the helper refuses"
 reset_box
 no_dietpi
-for args in "apply hw:1,0" "apply format-disk" "apply" "apply a b" "" "reboot"; do
+for args in "apply hw:1,0" "apply format-disk" "apply" "apply a b" "apply hifiberry-digi ../x" "apply hifiberry-digi a b" "" "reboot"; do
   # shellcheck disable=SC2086  # each case is a word list
   run $args
   assert_eq "'$args' is refused as unknown" "$STATUS" 2
@@ -205,6 +230,7 @@ assert_contains "waits for DietPi to know the hardware and import dietpi.txt" \
 assert_contains "and for the network, which some cards fetch firmware over" "$unit" "After=network-online.target"
 assert_contains "pulling it in" "$unit" "Wants=network-online.target"
 assert_contains "runs before the renderer opens a sound card" "$unit" "Before=kalinka-renderer.service"
+assert_contains "runs only on a Pi, though DietPi runs on PCs too" "$unit" "ConditionPathExists=/boot/firmware/config.txt"
 assert_contains "runs the packaged helper" "$unit" "ExecStart=/usr/lib/kalinka-supervisor/soundcard.sh boot"
 assert_not_contains "and does not stay active, which would hold off every supervisor action" "$unit" "RemainAfterExit="
 

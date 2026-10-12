@@ -1,5 +1,6 @@
 // Package devicetree reads the strings the firmware leaves in the kernel's
-// device tree, such as the board model and a HAT's identity.
+// device tree, such as the board model and a HAT's identity, and the
+// flattened device trees it ships, such as its table of HATs.
 package devicetree
 
 import (

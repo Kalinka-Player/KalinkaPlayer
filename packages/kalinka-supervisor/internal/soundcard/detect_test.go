@@ -7,6 +7,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"kalinka/supervisor/internal/devicetree"
+	"kalinka/supervisor/internal/devicetree/devicetreetest"
 )
 
 type box struct {
@@ -44,7 +47,21 @@ func (b box) hat(vendor, product string) {
 	b.write("proc/device-tree/hat/uuid", "6f7e6e2a-0c8b-4f0e-9d7a-2c1b8d2f3a4b\x00")
 }
 
+// hatMap stages the firmware's own table of HATs it sets up from their ID chips.
+func (b box) hatMap(entries ...devicetree.Node) {
+	b.write(hatMap, string(devicetreetest.Blob(entries...)))
+}
+
+// mapEntry is a table entry for the UUID box.hat stages.
+func mapEntry(overlay string) devicetree.Node {
+	return devicetree.Node{Name: "board", Props: map[string][]byte{
+		"uuid":    devicetreetest.Cells(0x6f7e6e2a, 0x0c8b4f0e, 0x9d7a2c1b, 0x8d2f3a4b),
+		"overlay": devicetreetest.String(overlay),
+	}}
+}
+
 const (
+	digiCard  = " 1 [sndrpihifiberry]: RPi-WM8804 - snd_rpi_hifiberry_digi\n                      snd_rpi_hifiberry_digi\n"
 	hdmiCards = " 0 [vc4hdmi0       ]: vc4-hdmi - vc4-hdmi-0\n                      vc4-hdmi-0\n" +
 		" 1 [vc4hdmi1       ]: vc4-hdmi - vc4-hdmi-1\n                      vc4-hdmi-1\n"
 	hifiberryCard = " 2 [sndrpihifiberry]: RPi-simple - snd_rpi_hifiberry_dacplus\n                      snd_rpi_hifiberry_dacplus\n"
@@ -89,7 +106,7 @@ func TestNotAPi(t *testing.T) {
 	b.write(configTxt, "dtparam=audio=off\n")
 	d := New(b.root, noBus)
 	r := d.Report()
-	if d.Supported() || r.Supported || len(r.Options) != 0 || r.Suggested == nil || r.Options == nil || r.Name != nil {
+	if d.Supported() || r.Supported || len(r.Options) != 0 || r.Suggested == nil || r.Options == nil || r.USB == nil || r.Name != nil {
 		t.Fatalf("report off a Pi = %+v", r)
 	}
 	if d.Offers(None) {
@@ -133,7 +150,7 @@ func TestReportForAHATWithNothingConfigured(t *testing.T) {
 	if r.HAT == nil || r.HAT.Product != "Digi2 Pro" || r.HAT.ProductID != "0x0003" || r.HAT.UUID == "" {
 		t.Fatalf("hat = %+v", r.HAT)
 	}
-	if r.Configured != nil || r.Active != nil || !slices.Equal(r.Suggested, []string{"hifiberry-digi-pro"}) {
+	if r.Configured != nil || r.ConfiguredBy != nil || r.Active != nil || !slices.Equal(r.Suggested, []string{"hifiberry-digi-pro"}) {
 		t.Fatalf("report = %+v", r)
 	}
 	if r.Name == nil || *r.Name != "HiFiBerry Digi2 Pro" {
@@ -147,8 +164,8 @@ func TestReportForAConfiguredHAT(t *testing.T) {
 	b.write("proc/asound/cards", hdmiCards+hifiberryCard)
 	opened := 0
 	r := New(b.root, opens(&fakeBus{}, &opened)).Report()
-	if r.Configured == nil || *r.Configured != "hifiberry-dacplus-std" {
-		t.Fatalf("configured = %v", r.Configured)
+	if r.Configured == nil || *r.Configured != "hifiberry-dacplus-std" || r.ConfiguredBy == nil || *r.ConfiguredBy != ByBootConfig {
+		t.Fatalf("configured = %v by %v", r.Configured, r.ConfiguredBy)
 	}
 	if r.Active == nil || *r.Active != (Active{ID: "sndrpihifiberry", Name: "snd_rpi_hifiberry_dacplus", PCM: "hw:CARD=sndrpihifiberry,DEV=0"}) {
 		t.Fatalf("active = %+v", r.Active)
@@ -158,6 +175,93 @@ func TestReportForAConfiguredHAT(t *testing.T) {
 	}
 	if len(r.Suggested) != 0 || opened != 0 {
 		t.Fatalf("a working card sent detection to the bus: %v, %d opens", r.Suggested, opened)
+	}
+}
+
+func TestReportForAHATTheFirmwareSetsUp(t *testing.T) {
+	b := pi(t, "Raspberry Pi 4 Model B Rev 1.5")
+	b.hat("HiFiBerry", "Digi2 Pro")
+	b.hatMap(mapEntry("hifiberry-digi-pro"))
+	b.write("proc/asound/cards", hdmiCards+digiCard)
+	opened := 0
+	d := New(b.root, opens(&fakeBus{}, &opened))
+	r := d.Report()
+	if r.Configured == nil || *r.Configured != "hifiberry-digi-pro" || r.ConfiguredBy == nil || *r.ConfiguredBy != ByHAT {
+		t.Fatalf("configured = %v by %v", r.Configured, r.ConfiguredBy)
+	}
+	if len(r.Suggested) != 0 || opened != 0 {
+		t.Fatalf("a card the firmware set up was suggested again: %v, %d bus opens", r.Suggested, opened)
+	}
+	if r.Name == nil || *r.Name != "HiFiBerry Digi2 Pro" || r.Active == nil || r.Active.PCM != "hw:CARD=sndrpihifiberry,DEV=0" {
+		t.Fatalf("report = %+v", r)
+	}
+	if got := d.HATCard(); got != "hifiberry-digi-pro" {
+		t.Fatalf("HAT card = %q", got)
+	}
+	b.write(configTxt, "dtparam=audio=off\ndtoverlay=hifiberry-digi\n")
+	if r := d.Report(); r.Configured == nil || *r.Configured != "hifiberry-digi" || *r.ConfiguredBy != ByBootConfig {
+		t.Fatalf("an overlay in config.txt lost to the chip: %v", r.Configured)
+	}
+}
+
+func TestATableTheFirmwareCannotFollowSetsNothingUp(t *testing.T) {
+	b := pi(t, "Raspberry Pi 4 Model B Rev 1.5")
+	b.hat("HiFiBerry", "DSP 2x4")
+	b.write("proc/asound/cards", hdmiCards)
+	for _, table := range []string{
+		string(devicetreetest.Blob(mapEntry("hifiberry-dacplus-dsp"))),
+		string(devicetreetest.Blob(mapEntry("hifiberry-dacplusdsp")))[:60],
+		"",
+	} {
+		b.write(hatMap, table)
+		d := New(b.root, noBus)
+		r := d.Report()
+		if r.Configured != nil || !slices.Equal(r.Suggested, []string{"hifiberry-dacplusdsp"}) || d.HATCard() != "" {
+			t.Fatalf("report with table %q = %+v", table, r)
+		}
+	}
+}
+
+func TestATableEntryForAnotherBoardSetsUpNoSoundCard(t *testing.T) {
+	b := pi(t, "Raspberry Pi 5 Model B Rev 1.0")
+	b.hat("Hailo Technologies", "Raspberry Pi AI Hat, Model Hailo-8")
+	b.hatMap(devicetree.Node{Name: "hailo-8", Props: map[string][]byte{
+		"vendor":  devicetreetest.String("Hailo Technologies"),
+		"product": devicetreetest.String("Raspberry Pi AI Hat, Model Hailo-8"),
+		"overlay": devicetreetest.String("none,pciex1,pciex1_gen=3"),
+	}})
+	b.write("proc/asound/cards", hdmiCards)
+	d := New(b.root, noBus)
+	if r := d.Report(); r.Configured != nil || r.Name != nil || d.HATCard() != "" {
+		t.Fatalf("report = %+v", r)
+	}
+}
+
+func TestHATMapMatching(t *testing.T) {
+	hat := &HAT{Vendor: "Raspberry Pi", Product: "Sense HAT", ProductVer: "0x0002", UUID: "6f7e6e2a-0c8b-4f0e-9d7a-2c1b8d2f3a4b"}
+	byBoard := func(props map[string][]byte) devicetree.Node {
+		props["vendor"], props["product"] = devicetreetest.String("Raspberry Pi"), devicetreetest.String("Sense HAT")
+		return devicetree.Node{Name: "sensehat", Props: props}
+	}
+	for _, tc := range []struct {
+		name  string
+		entry devicetree.Node
+		hat   HAT
+		want  bool
+	}{
+		{"its UUID", mapEntry("x"), *hat, true},
+		{"its UUID in capitals", mapEntry("x"), HAT{UUID: strings.ToUpper(hat.UUID)}, true},
+		{"another UUID", mapEntry("x"), HAT{Vendor: hat.Vendor, Product: hat.Product, UUID: "00000000-0000-0000-0000-000000000000"}, false},
+		{"its vendor and product", byBoard(map[string][]byte{}), *hat, true},
+		{"its version", byBoard(map[string][]byte{"pver": devicetreetest.Cells(2)}), *hat, true},
+		{"another version", byBoard(map[string][]byte{"pver": devicetreetest.Cells(1)}), *hat, false},
+		{"a version the chip does not give", byBoard(map[string][]byte{"pver": devicetreetest.Cells(2)}), HAT{Vendor: hat.Vendor, Product: hat.Product}, false},
+		{"another product", byBoard(map[string][]byte{}), HAT{Vendor: hat.Vendor, Product: "Sense HAT v3"}, false},
+		{"neither", devicetree.Node{Props: map[string][]byte{"overlay": devicetreetest.String("x")}}, *hat, false},
+	} {
+		if got := mapped(tc.entry, &tc.hat); got != tc.want {
+			t.Errorf("%s: matched %v", tc.name, got)
+		}
 	}
 }
 
@@ -287,10 +391,18 @@ func TestParseCards(t *testing.T) {
 
 func TestUSBCardsAreNoHAT(t *testing.T) {
 	b := pi(t, "Raspberry Pi 4 Model B Rev 1.4")
-	b.write("proc/asound/cards", " 0 [D50s           ]: USB-Audio - Topping D50s\n                      Topping D50s at usb-0000:01:00.0-1.3, high speed\n")
+	b.write("proc/asound/cards", " 0 [D50s           ]: USB-Audio - Topping D50s\n                      Topping D50s at usb-0000:01:00.0-1.3, high speed\n"+
+		" 1 [C920           ]: USB-Audio - HD Pro Webcam C920\n                      HD Pro Webcam C920 at usb-0000:01:00.0-1.4, high speed\n")
 	b.write("proc/asound/card0/usbid", "152a:8750\n")
-	if r := New(b.root, noBus).Report(); r.Active != nil {
+	b.write("proc/asound/card0/pcm0p/info", "")
+	b.write("proc/asound/card1/usbid", "046d:082d\n")
+	b.write("proc/asound/card1/pcm0c/info", "")
+	r := New(b.root, noBus).Report()
+	if r.Active != nil {
 		t.Fatalf("a USB DAC was taken for a HAT: %+v", r.Active)
+	}
+	if !slices.Equal(r.USB, []Active{{ID: "D50s", Name: "Topping D50s", PCM: "hw:CARD=D50s,DEV=0"}}) || r.Name != nil {
+		t.Fatalf("usb = %+v, name = %v", r.USB, r.Name)
 	}
 }
 

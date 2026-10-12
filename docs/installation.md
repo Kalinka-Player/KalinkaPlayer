@@ -282,11 +282,11 @@ The first start restarts the Pi once to switch the sound card on. A USB DAC need
 
 Once the Pi is running, choose the sound card in the app instead: **Settings › General › Box › Sound card**. The same choice is on [the control page](#the-control-page).
 
-- **Found on this box** lists what the Pi detected. A HAT with an ID chip names itself. For most others, Kalinka recognises the chip on the board, which several makers use, so pick your board among the few it lists.
+- **Found on this box** lists what the Pi detected. A HAT with an ID chip names itself, and one the Pi already set up from that chip shows as chosen, with nothing to do. For most others, Kalinka recognises the chip on the board, which several makers use, so pick your board among the few it lists.
 - **Every other card** is grouped by maker: HiFiBerry, Raspberry Pi and IQaudIO, Allo, JustBoom and more. A board that is not listed but sends plain I²S, such as one built on a PCM5102A chip, works as **Generic I2S DAC**.
 - **Apply** writes the choice to the Pi's boot settings. When that changes them, the Pi restarts once, which takes a minute or two. The app then plays through the new card on that Pi.
 
-The row shows the DAC's name once the Pi knows it. For a Pi that runs only an output, see [Add more outputs](#add-more-outputs).
+The row shows the DAC's name once the Pi knows it. A USB DAC needs nothing here: the row names it, and you choose it in the output's own settings. For a Pi that runs only an output, see [Add more outputs](#add-more-outputs).
 
 **Logging in.** With a password set, log in over SSH as `root` or `dietpi`, for example `ssh root@<address>`. The first login starts DietPi's own setup, which updates the system and may restart it. Kalinka does not need it and keeps working through it.
 

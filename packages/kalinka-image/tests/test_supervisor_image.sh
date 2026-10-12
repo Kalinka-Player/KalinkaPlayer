@@ -71,6 +71,8 @@ done
 cmp "$pkg_dir/../kalinka-supervisor/dietpi-conf.sh" "$root/package/usr/lib/kalinka-supervisor/dietpi-conf.sh"
 [ -f "$root/package/usr/lib/systemd/system/kalinka-soundcard.service" ]
 grep -q '^    systemctl enable kalinka-soundcard.service || true$' "$deb"
+# DietPi on a PC has DietPi's tool but no HAT to load.
+grep -qF 'if [ -x /boot/dietpi/func/dietpi-set_hardware ] && [ -f /boot/firmware/config.txt ]; then' "$deb"
 grep -q '^    systemctl stop kalinka-soundcard.service || true$' "$deb"
 dependencies="$(dpkg-deb --field "$package" Depends)"
 for dependency in curl passwd sudo; do

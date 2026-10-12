@@ -35,8 +35,8 @@ if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
   systemctl daemon-reload
   # Older packages also linked the unit into radio targets; reenable drops those links.
   systemctl reenable kalinka-supervisor.service || true
-  # dietpi.txt names a sound card only where DietPi's own tool can apply it.
-  if [ -x /boot/dietpi/func/dietpi-set_hardware ]; then
+  # dietpi.txt names a sound card only where DietPi's own tool can apply it, and only a Pi loads one.
+  if [ -x /boot/dietpi/func/dietpi-set_hardware ] && [ -f /boot/firmware/config.txt ]; then
     systemctl enable kalinka-soundcard.service || true
   fi
   # The image's unit stayed active after its run, which the supervisor reads as busy until a restart.

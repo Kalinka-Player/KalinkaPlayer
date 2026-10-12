@@ -188,14 +188,15 @@ func run(ctx context.Context, o options, setupOn, apiOn bool) error {
 		})
 		components.Go(func() { board.Run(ctx, 5*time.Second) })
 		simulated := o.Test || os.Geteuid() != 0
-		controller := control.NewController(systemd, network, reinstalls, sshaccess.New(simulated), soundcard.NewApplier(simulated), time.Now)
+		cards := soundcard.New("/", soundcard.OpenI2C)
+		controller := control.NewController(systemd, network, reinstalls, sshaccess.New(simulated), soundcard.NewApplier(simulated, cards.HATCard), time.Now)
 		binding = control.NewBinding(o.listenPort, control.NewHandler(controller, control.HandlerConfig{
 			Version:        version,
 			ServerIDFile:   o.IdentityFile,
 			RendererIDFile: o.rendererID,
 			// A simulated run shows every control, whatever the machine it runs on has installed.
 			CoreInstalled: func() bool { return simulated || coreconf.Installed("/") },
-			Soundcards:    soundcard.New("/", soundcard.OpenI2C),
+			Soundcards:    cards,
 			CorePort:      corePort,
 			Setup:         setup.Phase,
 			Dashboard:     func(ctx context.Context) any { return board.Snapshot(ctx) },

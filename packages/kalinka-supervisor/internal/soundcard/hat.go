@@ -13,11 +13,14 @@ type HAT struct {
 	ProductID  string `json:"product_id"`
 	ProductVer string `json:"product_ver"`
 	UUID       string `json:"uuid"`
+
+	// card is the catalogued card the firmware sets up from this chip by its own table, or "".
+	card string
 }
 
 // hifiberryProducts maps HiFiBerry's ID-chip product names to their overlays,
-// as HiFiBerry's own detect-hifiberry does: their chips name the board but
-// do not switch it on.
+// as HiFiBerry's own detect-hifiberry does, for firmware whose table does not
+// list the board yet: there the chip names the board but does not switch it on.
 var hifiberryProducts = map[string]string{
 	"Amp100":       "hifiberry-amp100",
 	"DAC+ ADC Pro": "hifiberry-dacplusadcpro",
@@ -48,7 +51,12 @@ func readHAT(root string) *HAT {
 		v, _ := devicetree.Property(root, "hat/"+name)
 		return v
 	}
-	return &HAT{Vendor: read("vendor"), Product: product, ProductID: read("product_id"), ProductVer: read("product_ver"), UUID: read("uuid")}
+	hat := &HAT{Vendor: read("vendor"), Product: product, ProductID: read("product_id"), ProductVer: read("product_ver"), UUID: read("uuid")}
+	// The table can name an overlay the firmware lacks, which then loads nothing.
+	if card, ok := Lookup(mappedOverlay(root, hat)); ok && card.HAT() && overlayPresent(root, card.Name) {
+		hat.card = card.Name
+	}
+	return hat
 }
 
 // suggestion names the card a HiFiBerry chip asks for, or "" when there is none to make.

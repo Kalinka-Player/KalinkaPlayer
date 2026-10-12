@@ -25,6 +25,8 @@ func helperRun(stdout, stderr string, fail bool, ran *[]string) func(*exec.Cmd) 
 	}
 }
 
+func noChip() string { return "" }
+
 func TestApply(t *testing.T) {
 	for _, tc := range []struct {
 		name, stdout string
@@ -41,7 +43,7 @@ func TestApply(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var ran []string
-			a := &Applier{run: helperRun(tc.stdout, "", tc.fail, &ran)}
+			a := &Applier{hatCard: noChip, run: helperRun(tc.stdout, "", tc.fail, &ran)}
 			reboot, err := a.Apply(context.Background(), "hifiberry-digi")
 			if reboot != tc.reboot || !errors.Is(err, tc.err) {
 				t.Fatalf("Apply = %v, %v", reboot, err)
@@ -52,7 +54,7 @@ func TestApply(t *testing.T) {
 
 func TestApplyCommand(t *testing.T) {
 	var ran []string
-	a := &Applier{run: helperRun("changed\n", "", false, &ran)}
+	a := &Applier{hatCard: noChip, run: helperRun("changed\n", "", false, &ran)}
 	if _, err := a.Apply(context.Background(), "hifiberry-digi"); err != nil {
 		t.Fatal(err)
 	}
@@ -64,18 +66,29 @@ func TestApplyCommand(t *testing.T) {
 	}
 }
 
+func TestApplyNamesTheCardTheHATsChipSetsUp(t *testing.T) {
+	var ran []string
+	a := &Applier{hatCard: func() string { return "hifiberry-digi-pro" }, run: helperRun("unchanged\n", "", false, &ran)}
+	if _, err := a.Apply(context.Background(), "hifiberry-dacplus-std"); err != nil {
+		t.Fatal(err)
+	}
+	if tailArgs := ran[len(ran)-4:]; !slices.Equal(tailArgs, []string{HelperPath, "apply", "hifiberry-dacplus-std", "hifiberry-digi-pro"}) {
+		t.Fatalf("helper arguments = %q", tailArgs)
+	}
+}
+
 func TestApplyRefusesWhatIsNotCatalogued(t *testing.T) {
 	ran := []string{}
-	a := &Applier{run: helperRun("changed\n", "", false, &ran)}
+	a := &Applier{hatCard: noChip, run: helperRun("changed\n", "", false, &ran)}
 	for _, name := range []string{"hifiberry-dacplus", "--help", "none;reboot"} {
 		if _, err := a.Apply(context.Background(), name); !errors.Is(err, ErrApply) || len(ran) != 0 {
 			t.Fatalf("%q ran %q", name, ran)
 		}
 	}
-	if reboot, err := NewApplier(true).Apply(context.Background(), "hifiberry-digi"); reboot || err != nil {
+	if reboot, err := NewApplier(true, noChip).Apply(context.Background(), "hifiberry-digi"); reboot || err != nil {
 		t.Fatalf("simulated apply = %v, %v", reboot, err)
 	}
-	if _, err := NewApplier(true).Apply(context.Background(), "unknown"); !errors.Is(err, ErrApply) {
+	if _, err := NewApplier(true, noChip).Apply(context.Background(), "unknown"); !errors.Is(err, ErrApply) {
 		t.Fatal("a simulated run accepted an unknown card")
 	}
 }
@@ -87,7 +100,7 @@ func TestApplyReportsTheHelpersOutputTail(t *testing.T) {
 	defer slog.SetDefault(previous)
 	var ran []string
 	noise := strings.Repeat("x", 2*keptOutput)
-	a := &Applier{run: helperRun("", noise+"dietpi-set_hardware: no such card", true, &ran)}
+	a := &Applier{hatCard: noChip, run: helperRun("", noise+"dietpi-set_hardware: no such card", true, &ran)}
 	if _, err := a.Apply(context.Background(), "hifiberry-digi"); err == nil {
 		t.Fatal("failure lost")
 	}
