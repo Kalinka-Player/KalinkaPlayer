@@ -166,6 +166,20 @@ class DirectPlaybackSession(Protocol):
         """
         ...
 
+    async def show(self, track: Track, position_ms: int) -> None:
+        """SDK 3.11: show ``track`` at ``position_ms`` without touching what plays.
+
+        For a continuous stream whose content moves on by itself, as an
+        AirPlay or Bluetooth sender's does at a track change. From now on
+        clients are shown ``track``, with the position counting on from
+        ``position_ms`` as the source plays. play() shows its own track and
+        timeline again.
+
+        Raises ValueError while nothing plays, and for a source that is not
+        sequential: one that can seek keeps its own timeline.
+        """
+        ...
+
     async def pause(self) -> None: ...
 
     async def resume(self) -> None: ...
