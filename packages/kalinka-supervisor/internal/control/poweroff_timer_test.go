@@ -80,7 +80,7 @@ func TestPowerOffTimerRespectsBusyGuardsAndRechecksBeforeRetry(t *testing.T) {
 	for _, guard := range []string{"upgrade", "reinstall", "network", "helper"} {
 		t.Run(guard, func(t *testing.T) {
 			systemd := &fakeSystemd{units: map[string]UnitState{}}
-			network := fakeNetwork(guard == "network")
+			setup := &fakeSetup{changing: guard == "network"}
 			switch guard {
 			case "upgrade":
 				systemd.units[UpgradeUnits[0]] = UnitState{Active: "active"}
@@ -89,7 +89,7 @@ func TestPowerOffTimerRespectsBusyGuardsAndRechecksBeforeRetry(t *testing.T) {
 			case "helper":
 				systemd.units[helperUnits[0]] = UnitState{Active: "activating"}
 			}
-			controller, _ := newController(systemd, network)
+			controller, _ := newController(systemd, setup)
 			due := true
 			timer := timerServer(t, controller, func(w http.ResponseWriter, r *http.Request) {
 				_, _ = w.Write([]byte(`{"server_id":"box-1","due":` + strconv.FormatBool(due) + `}`))
@@ -99,7 +99,7 @@ func TestPowerOffTimerRespectsBusyGuardsAndRechecksBeforeRetry(t *testing.T) {
 				t.Fatalf("shutdown during %s: %v", guard, systemd.calls)
 			}
 			systemd.units = map[string]UnitState{}
-			controller.network = nil
+			controller.setup = nil
 			due = false
 			timer.check(context.Background())
 			if len(systemd.calls) != 0 {

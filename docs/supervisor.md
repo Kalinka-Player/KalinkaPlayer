@@ -3,8 +3,9 @@
 `kalinka-supervisor` replaces the experimental Python provisioning service.
 It provides nearby box setup and a LAN [control page and API](supervisor-control.md)
 on port 8001. They show how the box is doing, and restart Core, reboot or power
-off the box, reinstall Kalinka, remove a plugin package, or set a Raspberry Pi
-up for its sound card. It runs independently
+off the box, reinstall Kalinka, remove a plugin package, set a Raspberry Pi
+up for its sound card, or open nearby setup so the box can move to another
+Wi-Fi network. It runs independently
 of Core, its Python interpreter, its virtual environment and its plugins.
 Core still owns its HTTP API, mDNS, its identity and the existing OOBE. Nearby
 setup needs no app protocol change; see
@@ -134,9 +135,11 @@ same adapter/interface.
   network service, not a sandbox against a compromised root/kernel.
 
 BLE Just Works encryption does not prove ownership or prevent active
-man-in-the-middle attacks. This iteration authorizes nearby setup while offline;
-it does not authorize future destructive recovery. Disabling setup through
-`KALINKA_BLE_SETUP=0` still works in DietPi configuration or the unit environment.
+man-in-the-middle attacks. This iteration authorizes nearby setup while offline,
+and for 10 minutes after a LAN client asks for it through the control API's
+`wifi_setup`; it does not authorize future destructive recovery. Disabling
+setup through `KALINKA_BLE_SETUP=0` still works in DietPi configuration or the
+unit environment.
 
 ## Package updates today
 
@@ -190,10 +193,11 @@ separate from the provisioning machine:
    restart Core, restore a known-good release, and repair Core's environment.
    No endpoint accepts arbitrary commands, paths or package URLs. The control
    API's `Controller` already admits one action at a time, refuses during
-   installs, keeps reboot, power-off, reinstall and sound card changes off a
-   Wi-Fi join or rollback, and audits outcomes without secrets. Restarting
-   Core, rebooting, powering off, an online reinstall and setting the sound
-   card are delivered; the remaining actions join it.
+   installs, keeps reboot, power-off, reinstall, sound card changes and
+   opening setup off a Wi-Fi join or rollback, and audits outcomes without
+   secrets. Restarting Core, rebooting, powering off, an online reinstall,
+   setting the sound card and opening nearby setup are delivered; the
+   remaining actions join it.
 3. The embedded control page and its dashboard keep working when Core is
    absent. BLE can advertise an additional recovery capability without
    changing the existing Wi-Fi UUIDs. The page's actions are served without

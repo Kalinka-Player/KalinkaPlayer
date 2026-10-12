@@ -9,6 +9,7 @@
 - reinstall Kalinka;
 - remove a plugin package, so a plugin that breaks Core can go without Core's help;
 - on a Raspberry Pi, set the box up for its sound card, such as a DAC HAT;
+- open nearby setup, to move the box to another Wi-Fi network;
 - set up an SSH administrator login through the dashboard form;
 - tell which supervisor and protocol version it is talking to.
 
@@ -122,6 +123,13 @@ reach it and what they can make it do:
   unit outside its sandbox.
 - **An audit line per action:** the path, the peer address and the outcome
   code. The body is never logged.
+- **Nearby setup on demand.** `wifi_setup` opens the BLE setup that a box
+  otherwise offers only while it is offline. Its pairing is Just Works, which
+  does not prove who is pairing, so while it is open anyone within Bluetooth
+  range could move the box to a network of their own. It closes after 10
+  minutes, and asking for it takes the same LAN access that can already
+  reboot or reinstall the box. `KALINKA_BLE_SETUP=0` turns it off along with
+  the rest of nearby setup.
 
 The SSH form grants administrator access under this same trusted-LAN model:
 anyone who can reach the dashboard can set the administrator's password.
@@ -148,7 +156,8 @@ is busy, including after a supervisor restart.
  "protocol": 1, "min_protocol": 1,
  "server_id": "ee4d496c-3f6c-4388-a02e-f6a2f17829cd",
  "renderer_id": "5c0ffee0-1d2e-4a3b-8c4d-5e6f7a8b9c0d",
- "actions": ["restart_core", "reboot", "poweroff", "reinstall", "set_soundcard", "remove_plugin"],
+ "actions": ["restart_core", "reboot", "poweroff", "reinstall", "set_soundcard", "remove_plugin",
+             "wifi_setup"],
  "poweroff_timer": true}
 ```
 
@@ -219,6 +228,7 @@ invokes systemd.
 | POST | `/v1/actions/reinstall` | 202 `{"action": "reinstall"}` once the reinstall has been queued |
 | POST | `/v1/actions/remove_plugin` | 202 `{"action": "remove_plugin", "package": "..."}` once the removal has been queued; the body also names the `package` |
 | POST | `/v1/actions/set_soundcard` | 202 `{"action": "set_soundcard", "reboot": true}` once the card is set up; when `reboot` is true, the box then restarts |
+| POST | `/v1/actions/wifi_setup` | 202 `{"action": "wifi_setup"}` once nearby setup is open |
 | OPTIONS | any API path | CORS preflight |
 
 `GET /v1/status` returns:
@@ -228,7 +238,8 @@ invokes systemd.
  "setup": "waiting", "pending": null,
  "reinstall": {"state": "failed", "finished_at": "2026-10-07T09:30:00Z"},
  "plugin_removal": {"state": "succeeded", "package": "kalinka-plugin-qobuz",
-                    "finished_at": "2026-10-12T15:02:00Z"}}
+                    "finished_at": "2026-10-12T15:02:00Z"},
+ "wifi_setup": {"available": false, "window_seconds": 600}}
 ```
 
 | Field | Meaning |
@@ -242,6 +253,8 @@ invokes systemd.
 | `plugin_removal.state` | The same for the last plugin removal |
 | `plugin_removal.package` | The package the last removal was asked for, or `null` |
 | `plugin_removal.finished_at` | When the last removal ended, or `null` |
+| `wifi_setup.available` | Whether `wifi_setup` can reach nearby setup now. It is `false` while setup is off, recovering an interrupted join, or bringing its radio up, even when `setup` is `running` |
+| `wifi_setup.window_seconds` | How long `wifi_setup` keeps nearby setup open |
 
 `GET /v1/dashboard` returns `host`, `services`, `kalinka` (the totals),
 `packages`, `plugins` and `python`. A figure the box cannot provide is `null`;
@@ -305,6 +318,24 @@ The reinstall runs as long as it needs; apt and source builds on a Pi have no
 safe bound. While it runs, `upgrading` is true and every other action waits.
 
 **`remove_plugin`** writes the package name to `/var/lib/kalinka-supervisor/plugin-removal-request`, a file only root reads, and starts `kalinka-plugin-removal.service`, which ships with the supervisor package. The unit's script checks the name again, that dpkg lists the package as installed, and that apt's simulation would remove nothing else, since removing a package the server depends on would take the server with it. It then stops Core, runs `apt-get remove`, and starts Core again with `--no-block`, failure or not, so the box is never left silent. The plugin's own prerm uninstalls it from Core's environment; its settings in Core's configuration stay. Output goes to `/var/log/kalinka-supervisor/plugin-removal.log` and the result to `/var/lib/kalinka-supervisor/plugin-removal-result`, which `plugin_removal` reports. While the unit runs, `upgrading` is true and every other action waits. The unit does not wait for a Wi-Fi join, as a restart of Core does not. A box without Core offers no `remove_plugin`.
+
+**`wifi_setup`** opens [nearby setup](ble-provisioning.md) for 10 minutes
+(`wifi_setup.window_seconds`), even while the box is online, so the app on a
+phone near it can connect the box to another Wi-Fi network. Nothing is
+forgotten: the box stays on its current network until a phone starts a join,
+its Wi-Fi leaves that network while it tries the new one, and a join that
+fails rolls back to it. When the 10 minutes are over, an online box stops
+advertising. A scan, join or handoff already underway finishes first; a phone
+that is connected but has not started one loses setup. Asking again starts
+the 10 minutes over.
+
+The action needs nearby setup running with its radio up, which takes a
+Bluetooth adapter, a Wi-Fi interface and `KALINKA_BLE_SETUP` left on;
+`wifi_setup.available` says when that is. If setup restarts during the 10
+minutes, for instance after a Bluetooth error, it opens again for what is
+left of them. It is how a box whose old network still works, or one kept
+online by an Ethernet cable, changes networks without SSH. A box that runs
+only a renderer offers it too.
 
 ## The sound card
 
@@ -419,7 +450,9 @@ Every error has Core's shape, `{"detail": {"code": "...", "message": "..."}}`:
 | 409 | `upgrade_in_progress` | `kalinka-reinstall.service`, `kalinka-plugin-removal.service`, `kalinka-upgrade.service` or `kalinka-renderer-upgrade.service` is running, stopping or queued |
 | 400 | `invalid_package` | `remove_plugin` named something other than a `kalinka-plugin-*` package, or named the SDK |
 | 409 | `not_installed` | `remove_plugin` named a package dpkg does not list as installed |
-| 409 | `network_change_in_progress` | Reboot, power-off or reinstall while nearby setup is joining a network or rolling one back |
+| 409 | `network_change_in_progress` | Reboot, power-off, reinstall, `set_soundcard` or `wifi_setup` while nearby setup is joining a network or rolling one back |
+| 409 | `setup_unavailable` | `wifi_setup` while `wifi_setup.available` is `false`: nearby setup is turned off, lacks a Bluetooth adapter or Wi-Fi interface, or is starting or restarting |
+| 409 | `setup_in_use` | `wifi_setup` while a phone is scanning or handing off through nearby setup |
 | 415 | `unsupported_media_type` | An action without `Content-Type: application/json` |
 | 422 | `unknown_soundcard` | A sound card this box does not offer |
 | 429 | `too_soon` | A `restart_core` within 15 s of one that succeeded; `Retry-After` says when |
@@ -433,9 +466,9 @@ installation. A wedged one needs SSH or a power cycle. Core itself starting
 does **not** block a reboot or a reinstall, because a `bootstrap.sh` stuck
 installing packages is one of the main reasons to use either.
 
-Reboot, power-off, reinstall and a sound card change wait for a Wi-Fi join
-or rollback to finish. A restart of Core does not, as it leaves the network
-alone.
+Reboot, power-off, reinstall, a sound card change and `wifi_setup` wait for a
+Wi-Fi join or rollback to finish. A restart of Core does not, as it leaves the
+network alone.
 
 ## Where it listens
 
@@ -516,6 +549,10 @@ follow the same steps:
      until `active` is set. Point the box's renderer at `active.pcm` by
      setting its `output.device` through Core's
      `PUT /renderer/{id}/config`.
+   - **`wifi_setup`:** offer it only while `/v1/status` reports
+     `wifi_setup.available`. There is nothing to wait for: send the user to
+     **Set up a box** in the app, on a phone near the box, within
+     `wifi_setup.window_seconds`.
 4. **Handle refusals.** Treat 409 and 429 as "not now": show the reason and
    keep the button. A 503 means systemd refused, so offer the action again.
    A 422 means the box cannot take that sound card; read `/v1/soundcard`

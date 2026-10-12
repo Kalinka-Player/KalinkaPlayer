@@ -161,7 +161,7 @@ func TestInfo(t *testing.T) {
 		}
 		want := map[string]any{
 			"name": "kalinka-supervisor", "version": "1.2.3", "protocol": 1.0, "min_protocol": 1.0,
-			"actions":   []any{"restart_core", "reboot", "poweroff", "reinstall", "set_soundcard", "remove_plugin"},
+			"actions":   []any{"restart_core", "reboot", "poweroff", "reinstall", "set_soundcard", "remove_plugin", "wifi_setup"},
 			"server_id": nil, "renderer_id": nil,
 			"poweroff_timer": true,
 		}
@@ -185,20 +185,24 @@ func TestInfo(t *testing.T) {
 func TestStatusReply(t *testing.T) {
 	finished := time.Date(2026, 10, 7, 9, 30, 0, 0, time.UTC)
 	coord := &fakeCoordinator{status: Status{
-		Core: "failed", Upgrading: true, Pending: PowerOff,
+		Core: "failed", Upgrading: true, Pending: PowerOff, WifiSetup: true,
 		Reinstall:     Outcome{"failed", finished},
 		PluginRemoval: Outcome{"succeeded", finished.Add(time.Hour)}, RemovedPackage: "kalinka-plugin-qobuz",
 	}}
 	w := serve(newTestHandler(t, coord, true), http.MethodGet, "/v1/status", "")
 	want := `{"core":"failed","core_port":8000,"pending":"poweroff",` +
 		`"plugin_removal":{"finished_at":"2026-10-07T10:30:00Z","package":"kalinka-plugin-qobuz","state":"succeeded"},` +
-		`"reinstall":{"finished_at":"2026-10-07T09:30:00Z","state":"failed"},"setup":"waiting","upgrading":true}`
+		`"reinstall":{"finished_at":"2026-10-07T09:30:00Z","state":"failed"},"setup":"waiting","upgrading":true,` +
+		`"wifi_setup":{"available":true,"window_seconds":600}}`
 	if got := strings.TrimSpace(w.Body.String()); got != want {
 		t.Fatalf("status = %s", got)
 	}
 	coord.status = Status{Core: "active", Reinstall: Outcome{State: "idle"}, PluginRemoval: Outcome{State: "idle"}}
 	got := serve(newTestHandler(t, coord, true), http.MethodGet, "/v1/status", "").Body.String()
-	for _, field := range []string{`"pending":null`, `"plugin_removal":{"finished_at":null,"package":null,"state":"idle"}`} {
+	for _, field := range []string{
+		`"pending":null`, `"plugin_removal":{"finished_at":null,"package":null,"state":"idle"}`,
+		`"wifi_setup":{"available":false,"window_seconds":600}`,
+	} {
 		if !strings.Contains(got, field) {
 			t.Fatalf("status = %s", got)
 		}
@@ -293,7 +297,7 @@ func TestActionsFollowWhatTheBoxHas(t *testing.T) {
 		_ = json.Unmarshal(serve(newBoxHandler(t, &fakeCoordinator{}, box), http.MethodGet, "/info", "").Body.Bytes(), &info)
 		return info.Actions
 	}
-	if got := actions(testBox{renderer: true, noCore: true, cards: pi()}); !slices.Equal(got, []any{"reboot", "poweroff", "set_soundcard"}) {
+	if got := actions(testBox{renderer: true, noCore: true, cards: pi()}); !slices.Equal(got, []any{"reboot", "poweroff", "set_soundcard", "wifi_setup"}) {
 		t.Fatalf("a box with only a renderer offers %v", got)
 	}
 	if got := actions(testBox{server: true, cards: &fakeSoundcards{}}); slices.Contains(got, any("set_soundcard")) {
@@ -360,6 +364,8 @@ func TestRefusals(t *testing.T) {
 		{refuse(CodeSoundcard), 500, ""},
 		{refuse(CodeInvalidPackage), 400, ""},
 		{refuse(CodeNotInstalled), 409, ""},
+		{refuse(CodeSetupUnavailable), 409, ""},
+		{refuse(CodeSetupInUse), 409, ""},
 	} {
 		w := serve(newTestHandler(t, &fakeCoordinator{refuse: tc.refusal}, true), http.MethodPost, "/v1/actions/restart_core", `{"server_id":"`+testID+`"}`)
 		if status, code := detail(t, w); status != tc.status || code != tc.refusal.Error() || w.Header().Get("Retry-After") != tc.retryAfter {
@@ -369,6 +375,25 @@ func TestRefusals(t *testing.T) {
 	failing := &fakeCoordinator{run: func(context.Context) (Target, error) { return "", refuse(CodeUnavailable) }}
 	if status, code := detail(t, serve(newTestHandler(t, failing, true), http.MethodPost, "/v1/actions/restart_core", `{"server_id":"`+testID+`"}`)); status != 503 || code != CodeUnavailable {
 		t.Fatalf("failed restart = %d %s", status, code)
+	}
+}
+
+func TestWifiSetupRequest(t *testing.T) {
+	body := `{"server_id":"` + testID + `"}`
+	coord := &fakeCoordinator{}
+	w := serve(newTestHandler(t, coord, true), http.MethodPost, "/v1/actions/wifi_setup", body)
+	if w.Code != 202 || strings.TrimSpace(w.Body.String()) != `{"action":"wifi_setup"}` || len(coord.begun) != 1 || !reflect.DeepEqual(coord.begun[0], Request{Action: WifiSetup}) {
+		t.Fatalf("wifi_setup = %d %s", w.Code, w.Body)
+	}
+	for code, want := range map[string]string{
+		CodeSetupUnavailable: `{"detail":{"code":"setup_unavailable","message":"Nearby setup is not running on this box"}}`,
+		CodeSetupInUse:       `{"detail":{"code":"setup_in_use","message":"A phone is using nearby setup; try again when it finishes"}}`,
+	} {
+		refusing := &fakeCoordinator{run: func(context.Context) (Target, error) { return "", refuse(code) }}
+		w = serve(newTestHandler(t, refusing, true), http.MethodPost, "/v1/actions/wifi_setup", body)
+		if got := strings.TrimSpace(w.Body.String()); w.Code != 409 || got != want {
+			t.Fatalf("wifi_setup refused with %s = %d %s", code, w.Code, got)
+		}
 	}
 }
 

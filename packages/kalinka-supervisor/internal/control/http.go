@@ -53,6 +53,8 @@ var outcomes = map[string]struct {
 	CodeSoundcard:            {http.StatusInternalServerError, "The sound card could not be set up; the supervisor's journal says why"},
 	CodeInvalidPackage:       {http.StatusBadRequest, "The package is not a Kalinka plugin this supervisor may remove"},
 	CodeNotInstalled:         {http.StatusConflict, "No such plugin package is installed"},
+	CodeSetupUnavailable:     {http.StatusConflict, "Nearby setup is not running on this box"},
+	CodeSetupInUse:           {http.StatusConflict, "A phone is using nearby setup; try again when it finishes"},
 	"log_unreadable":         {http.StatusInternalServerError, "The log could not be read"},
 }
 
@@ -241,6 +243,7 @@ func (h *handler) status(w http.ResponseWriter, r *http.Request) string {
 	reply(w, http.StatusOK, map[string]any{
 		"core": s.Core, "core_port": h.cfg.CorePort(), "upgrading": s.Upgrading, "setup": h.cfg.Setup(), "pending": pending,
 		"reinstall": outcomeJSON(s.Reinstall), "plugin_removal": removal,
+		"wifi_setup": map[string]any{"available": s.WifiSetup, "window_seconds": int(setupWindow.Seconds())},
 	}, false)
 	return ""
 }

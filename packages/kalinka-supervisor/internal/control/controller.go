@@ -21,10 +21,14 @@ const (
 	Reinstall    Action = "reinstall"
 	SetSoundcard Action = "set_soundcard"
 	RemovePlugin Action = "remove_plugin"
+	WifiSetup    Action = "wifi_setup"
 )
 
 // Supported lists every action this protocol version serves, in the order /info reports them.
-var Supported = []Action{RestartCore, Reboot, PowerOff, Reinstall, SetSoundcard, RemovePlugin}
+var Supported = []Action{RestartCore, Reboot, PowerOff, Reinstall, SetSoundcard, RemovePlugin, WifiSetup}
+
+// setupWindow is how long WifiSetup keeps nearby setup open.
+const setupWindow = 10 * time.Minute
 
 const enableSSH Action = "enable_ssh"
 
@@ -76,15 +80,17 @@ func (a Action) needsCore() bool { return a == RestartCore || a == Reinstall || 
 
 // Refusal codes; each is a fixed, client-facing reason an action did not run.
 const (
-	CodeBusy           = "busy"
-	CodeShuttingDown   = "shutting_down"
-	CodeUpgrade        = "upgrade_in_progress"
-	CodeNetworkChange  = "network_change_in_progress"
-	CodeTooSoon        = "too_soon"
-	CodeUnavailable    = "unavailable"
-	CodeSoundcard      = "soundcard_failed"
-	CodeInvalidPackage = "invalid_package"
-	CodeNotInstalled   = "not_installed"
+	CodeBusy             = "busy"
+	CodeShuttingDown     = "shutting_down"
+	CodeUpgrade          = "upgrade_in_progress"
+	CodeNetworkChange    = "network_change_in_progress"
+	CodeTooSoon          = "too_soon"
+	CodeUnavailable      = "unavailable"
+	CodeSoundcard        = "soundcard_failed"
+	CodeInvalidPackage   = "invalid_package"
+	CodeNotInstalled     = "not_installed"
+	CodeSetupUnavailable = "setup_unavailable"
+	CodeSetupInUse       = "setup_in_use"
 )
 
 // Refusal says why an action did not run, and when to retry if that is known.
@@ -97,9 +103,16 @@ func (r *Refusal) Error() string { return r.Code }
 
 func refuse(code string) error { return &Refusal{Code: code} }
 
-// NetworkActivity reports whether a network change that a shutdown or reinstall would interrupt is underway.
-type NetworkActivity interface {
+// NearbySetup is the part of nearby BLE setup that actions coordinate with.
+type NearbySetup interface {
+	// ChangingNetwork reports whether a network change that a shutdown or reinstall would interrupt is underway.
 	ChangingNetwork() bool
+	// Available reports whether OpenSetup can reach setup now.
+	Available() bool
+	// OpenSetup makes setup available for d even while the box is online. It
+	// returns protocol.Busy while a phone is using setup, and
+	// protocol.Unavailable while Available is false.
+	OpenSetup(d time.Duration) error
 }
 
 // Operation is an admitted action. Exactly one Run must follow Begin. Run
@@ -121,7 +134,8 @@ type Outcome struct {
 
 // Status is a point-in-time view of what the controller looks after.
 // RemovedPackage names the package of the last plugin removal, "" if none
-// has been asked for.
+// has been asked for. WifiSetup is whether that action can reach nearby setup
+// now.
 type Status struct {
 	Core           string
 	Upgrading      bool
@@ -129,13 +143,14 @@ type Status struct {
 	Reinstall      Outcome
 	PluginRemoval  Outcome
 	RemovedPackage string
+	WifiSetup      bool
 }
 
 // Config is what a Controller drives and consults.
 type Config struct {
 	Systemd Systemd
-	// Network is nil when nearby setup is off.
-	Network    NetworkActivity
+	// Setup is nil when nearby setup is off.
+	Setup      NearbySetup
 	Reinstalls Record
 	Removals   PluginRemovals
 	// Installed reports whether a Debian package is installed on the box.
@@ -150,7 +165,7 @@ type Config struct {
 // Safe for concurrent use.
 type Controller struct {
 	systemd         Systemd
-	network         NetworkActivity
+	setup           NearbySetup
 	reinstalls      Record
 	removals        PluginRemovals
 	installed       func(string) bool
@@ -167,7 +182,7 @@ type Controller struct {
 
 func NewController(c Config) *Controller {
 	return &Controller{
-		systemd: c.Systemd, network: c.Network, reinstalls: c.Reinstalls, removals: c.Removals, installed: c.Installed,
+		systemd: c.Systemd, setup: c.Setup, reinstalls: c.Reinstalls, removals: c.Removals, installed: c.Installed,
 		ssh: c.SSH, soundcards: c.Soundcards, now: c.Now, restartInterval: 15 * time.Second,
 	}
 }
@@ -262,8 +277,11 @@ func (c *Controller) admit(ctx context.Context, r Request) error {
 	if a == RestartCore || a == RemovePlugin {
 		return nil
 	}
+	if a == WifiSetup && c.setup == nil {
+		return refuse(CodeSetupUnavailable)
+	}
 	// Core being mid-start blocks nothing: a wedged bootstrap is a main reason to reboot or reinstall.
-	if c.network != nil && c.network.ChangingNetwork() {
+	if c.setup != nil && c.setup.ChangingNetwork() {
 		return refuse(CodeNetworkChange)
 	}
 	if a == SetSoundcard {
@@ -306,6 +324,8 @@ func (o *operation) Run(ctx context.Context) (Target, error) {
 		return o.target, nil
 	case SetSoundcard:
 		return o.setSoundcard(ctx)
+	case WifiSetup:
+		return "", o.openSetup()
 	case Reinstall:
 		return "", o.finish(c.systemd.Reinstall(ctx))
 	case RemovePlugin:
@@ -342,6 +362,18 @@ func (o *operation) setSoundcard(ctx context.Context) (Target, error) {
 	c.mu.Unlock()
 	o.target = RebootTarget
 	return o.target, nil
+}
+
+func (o *operation) openSetup() error {
+	err := o.c.setup.OpenSetup(setupWindow)
+	o.finish(nil)
+	if errors.Is(err, protocol.Busy) {
+		return refuse(CodeSetupInUse)
+	}
+	if err != nil {
+		return refuse(CodeSetupUnavailable)
+	}
+	return nil
 }
 
 func (o *operation) Shutdown(ctx context.Context) error {
@@ -392,6 +424,7 @@ func (c *Controller) Status(ctx context.Context) (Status, error) {
 		Reinstall:      outcome(c.reinstalls, installing[ReinstallUnit]),
 		PluginRemoval:  outcome(c.removals.Record, installing[PluginRemovalUnit]),
 		RemovedPackage: c.removals.Package(),
+		WifiSetup:      c.setup != nil && c.setup.Available(),
 	}
 	c.mu.Lock()
 	s.Pending = c.pending
