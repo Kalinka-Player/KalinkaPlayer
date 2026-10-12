@@ -166,15 +166,20 @@ class OutputDeviceRouter:
         self._prefs = prefs
         self._devices = devices
         self._bus = bus
-        self._external = None
+        self._external_owner = None
+        self._external_device: Optional[ExternalOutputDevice] = None
 
-    def set_external(self, owner, plugin_id: str, device: ExternalOutputDevice) -> None:
-        """Use an external engine's controls for the lifetime of its hold."""
-        self._external = (owner, plugin_id, device)
+    def set_external(self, owner, device: ExternalOutputDevice) -> None:
+        """Use an external engine's controls while ``owner``, its hold, is active."""
+        self._external_owner, self._external_device = owner, device
 
     def clear_external(self, owner) -> None:
-        if self._external is not None and self._external[0] is owner:
-            self._external = None
+        if self._external_owner is owner:
+            self._external_owner = self._external_device = None
+
+    def _external_name(self) -> Optional[str]:
+        owner = self._external_owner
+        return owner.control.plugin_id if owner is not None and owner.active else None
 
     def current_name(self) -> str:
         """Plugin id of the module in charge, delegated or not."""
@@ -182,13 +187,12 @@ class OutputDeviceRouter:
         delegate = self._prefs.volume_control(active) if active else None
         if delegate:
             return delegate
-        if self._external is not None and self._external[0].active:
-            return self._external[1]
-        return RendererOutputPlugin.PLUGIN_ID
+        return self._external_name() or RendererOutputPlugin.PLUGIN_ID
 
     def current(self) -> Optional[ExternalOutputDevice]:
-        if self._external is not None and self.current_name() == self._external[1]:
-            return self._external[2]
+        external = self._external_name()
+        if external is not None and self.current_name() == external:
+            return self._external_device
         prepared = self._devices().get(self.current_name())
         if prepared is None or prepared.health_state is not ModuleHealthState.READY:
             return None

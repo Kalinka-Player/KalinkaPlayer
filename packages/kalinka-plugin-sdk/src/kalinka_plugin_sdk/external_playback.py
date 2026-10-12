@@ -22,6 +22,8 @@ class ExternalPlaybackListener(Protocol):
 
 
 class ExternalVolumeControl(Protocol):
+    """SDK 3.11: lets clients' volume slider drive the engine while it holds playback."""
+
     async def set_volume(self, volume: int) -> None:
         """Set the engine's volume in the range last passed to report_volume.
 

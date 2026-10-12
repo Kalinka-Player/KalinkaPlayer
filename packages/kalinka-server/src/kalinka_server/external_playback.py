@@ -49,7 +49,6 @@ class ExternalSession:
         self._teardown: asyncio.Task[None] | None = None
         self._release_task: asyncio.Task[None] | None = None
         self._router = router
-        self._volume_tasks: set[asyncio.Task] = set()
         self._volume_device = (
             ExternalVolumeDevice(self, volume_control, router)
             if volume_control is not None and router is not None
@@ -59,6 +58,10 @@ class ExternalSession:
     @property
     def active(self) -> bool:
         return self._active
+
+    @property
+    def volume_device(self) -> ExternalVolumeDevice | None:
+        return self._volume_device
 
     def snapshot(self) -> PlaybackState:
         return self._state
@@ -110,19 +113,9 @@ class ExternalSession:
             await self._arbiter.release(self)
 
     async def _stop(self, reason: RevokeReason | None, from_command: bool) -> None:
-        tasks = list(self._volume_tasks)
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        if self._router is not None and self._volume_device is not None:
+        if self._volume_device is not None:
             self._router.clear_external(self)
-            try:
-                # Restoring UI state must not delay stopping the audio engine
-                # if the renderer/amp's volume query is slow or disconnected.
-                async with asyncio.timeout(0.2):
-                    await self._router.resync()
-            except Exception:
-                logger.exception("Could not restore output volume state")
+            await self._volume_device.close()
         if not from_command:
             self._worker.cancel()
             await asyncio.gather(self._worker, return_exceptions=True)
@@ -137,6 +130,13 @@ class ExternalSession:
                 logger.exception(
                     "%s failed to stop external audio", self.control.plugin_id
                 )
+        if self._volume_device is not None:
+            try:
+                # A slow renderer or amp must not hold up the next owner.
+                async with asyncio.timeout(0.2):
+                    await self._router.resync()
+            except Exception:
+                logger.exception("Could not restore output volume state")
 
     def handle_command(self, request: TransportRequest) -> bool:
         if not self.active:
@@ -200,14 +200,9 @@ class ExternalPlaybackService:
             )
             try:
                 await self._arbiter.acquire(session)
-                if (
-                    session.active
-                    and self._arbiter.owns(session)
-                    and session._volume_device is not None
-                ):
-                    self._router.set_external(
-                        session, self._plugin_id, session._volume_device
-                    )
+                device = session.volume_device
+                if device is not None and session.active and self._arbiter.owns(session):
+                    self._router.set_external(session, device)
                     await self._router.resync()
             except BaseException:
                 await session.release()

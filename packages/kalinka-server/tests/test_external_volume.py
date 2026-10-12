@@ -117,7 +117,15 @@ async def test_fixed_volume_does_not_fall_back_to_renderer(rig):
     local.set_volume.assert_not_called()
 
 
-async def test_takeover_cancels_pending_volume_and_old_release_cannot_clear_new_hold(
+async def test_a_volume_outside_the_reported_range_is_refused(rig):
+    hold, listener, router, _, _, _, _, _, _, _ = rig
+    hold.report_volume(DeviceVolume(max_volume=30, current_volume=10))
+    with pytest.raises(ValueError):
+        await router.current().set_volume(31)
+    listener.set_volume.assert_not_called()
+
+
+async def test_takeover_ends_pending_volume_and_old_release_cannot_clear_new_hold(
     rig,
 ):
     hold, listener, router, _, arbiter, queue, _, local, _, service = rig
@@ -133,7 +141,7 @@ async def test_takeover_cancels_pending_volume_and_old_release_cannot_clear_new_
     await entered.wait()
     await arbiter.acquire(queue)
     assert router.current() is local
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(HoldEnded):
         await request
     other = await service.acquire("Roon", listener, volume_control=listener)
     other.report_volume(DeviceVolume(max_volume=100, current_volume=10))
@@ -160,4 +168,28 @@ async def test_slow_volume_resync_cannot_block_audio_stop(rig):
 
     router.resync = stalled
     await asyncio.wait_for(arbiter.take_back(), 0.5)
+    listener.on_revoked.assert_awaited_once()
+
+
+async def test_a_plugin_ignoring_cancellation_cannot_block_audio_stop(rig):
+    hold, listener, router, _, arbiter, _, _, _, _, _ = rig
+    hold.report_volume(DeviceVolume(max_volume=100, current_volume=30))
+    entered, done = asyncio.Event(), asyncio.Event()
+
+    async def stubborn_volume(value):
+        entered.set()
+        while not done.is_set():
+            try:
+                await done.wait()
+            except asyncio.CancelledError:
+                pass
+
+    listener.set_volume.side_effect = stubborn_volume
+    request = asyncio.create_task(router.current().set_volume(20))
+    await entered.wait()
+    stop = asyncio.create_task(arbiter.take_back())
+    finished, _ = await asyncio.wait({stop}, timeout=0.5)
+    done.set()
+    await asyncio.gather(stop, request, return_exceptions=True)
+    assert stop in finished
     listener.on_revoked.assert_awaited_once()
