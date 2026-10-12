@@ -28,6 +28,8 @@ async def _no_release_check(*_args, **_kwargs):
 def isolate_app(monkeypatch, tmp_path) -> None:
     """Point the server's files at ``tmp_path`` and keep it off the network."""
     monkeypatch.setenv("KALINKA_PREFIX", str(tmp_path))
+    # The catalog is on by default; an empty origin keeps its refresh offline.
+    monkeypatch.setenv("KALINKA_PLUGIN_CATALOG_BASE_URL", "")
     monkeypatch.chdir(tmp_path)
     # create_app rebinds these process globals; restore them afterwards.
     for name, value in list(vars(modules).items()):

@@ -180,15 +180,15 @@ def test_every_base_config_leaf_reaches_the_expert_list():
         assert path in paths
 
 
-def test_plugin_catalog_preview_is_off_and_expert_only():
+def test_plugin_catalog_preview_is_on_by_default_and_expert_only():
     config = KalinkaConfig()
-    assert config.server.plugin_catalog_enabled is False
+    assert config.server.plugin_catalog_enabled is True
     schema = build_presentation(base_config=config, input_modules={}, devices={})
     path = "base_config.server.plugin_catalog_enabled"
     assert path not in _all_field_paths_in_pages(schema.pages)
     field = next(field for field in schema.expert_fields if field.path == path)
     assert field.importance is Importance.EXPERT
-    assert field.default is False
+    assert field.default is True
     assert field.label == "Plugin catalog preview"
     assert field.setup.value == "hidden"
     assert not field.readonly

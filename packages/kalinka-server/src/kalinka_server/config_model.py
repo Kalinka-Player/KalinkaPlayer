@@ -143,7 +143,7 @@ class ServerConfig(BaseModel):
         },
     )
     plugin_catalog_enabled: bool = Field(
-        default=False,
+        default=True,
         title="Plugin catalog preview",
         json_schema_extra={
             "importance": "expert",
@@ -151,7 +151,8 @@ class ServerConfig(BaseModel):
                 "Show Plugins in the server menu and fetch the public catalog. "
                 "Experimental. A Debian-packaged server also installs and "
                 "removes catalog plugins from there, restarting to do so; "
-                "catalog signatures are not verified yet. Disabled by default."
+                "catalog signatures are not verified yet. Turn off to stop "
+                "fetching the catalog."
             ),
         },
     )

@@ -71,7 +71,10 @@ async def _until(condition):
 
 async def test_saved_flag_drives_routes_capabilities_and_refresh(upstream, tmp_path):
     overrides = tmp_path / "overrides.json"
-    app = await server.create_app(str(overrides), KalinkaConfig(), {})
+    # Switched off, as a server whose owner turned the preview off.
+    config = KalinkaConfig()
+    config.server.plugin_catalog_enabled = False
+    app = await server.create_app(str(overrides), config, {})
     async with running(app) as client:
         await _assert_disabled(client)
         await asyncio.sleep(0.05)
@@ -132,10 +135,8 @@ async def test_install_request_restarts_through_the_packaged_helper(
             )
         ),
     )
-    config = KalinkaConfig()
-    config.server.plugin_catalog_enabled = True
     app = await server.create_app(
-        str(overrides), config, json.loads(overrides.read_text())
+        str(overrides), KalinkaConfig(), json.loads(overrides.read_text())
     )
     async with running(app) as client:
         await _until(
