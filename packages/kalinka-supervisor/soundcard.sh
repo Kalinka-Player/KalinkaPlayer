@@ -18,9 +18,11 @@ CONFIG="$ROOT/boot/firmware/config.txt"
 DIETPI_TXT="$ROOT/boot/dietpi.txt"
 SET_HARDWARE="$ROOT/boot/dietpi/func/dietpi-set_hardware"
 STATE="$ROOT/var/lib/kalinka-supervisor/soundcard"
+HAT_STATE="$ROOT/var/lib/kalinka-supervisor/soundcard-hat"
 IMAGE_STATE="$ROOT/var/lib/kalinka-image/soundcard"
 LOCK="$ROOT/run/lock/kalinka-soundcard.lock"
 NAME='^[a-z0-9][a-z0-9.-]{0,47}$'
+EEPROM_OFF='^[[:blank:]]*force_eeprom_read=0[[:blank:]]*\r?$'
 
 # Every overlay this helper may have written, so a new choice replaces the old one.
 AUDIO_OVERLAYS='hifiberry-[a-z0-9-]+|iqaudio-[a-z0-9-]+|rpi-dacplus|rpi-dacpro|rpi-digiampplus|rpi-codeczero|allo-[a-z0-9-]+|justboom-[a-z0-9-]+|i-sabre-q2m|applepi-dac|dionaudio-[a-z0-9-]+|i2s-dac|i2s-master-dac'
@@ -29,6 +31,8 @@ export G_INTERACTIVE=0
 
 # shellcheck source=dietpi-conf.sh
 . "$(dirname "${BASH_SOURCE[0]}")/dietpi-conf.sh"
+# shellcheck source=boot-config.sh
+. "$(dirname "${BASH_SOURCE[0]}")/boot-config.sh"
 
 log() { echo "kalinka-soundcard: $*" >&2; }
 
@@ -68,19 +72,6 @@ boot_fingerprint() {
     | sha256sum
 }
 
-# Appends a line where every board reads it: after the last section, if that was for some boards only.
-append_line() {
-  local last
-  last="$(grep -E '^[[:blank:]]*\[' "$CONFIG" | tail -n1 | tr -d '[:blank:]\r' || true)"
-  if [ -s "$CONFIG" ] && [ -n "$(tail -c1 "$CONFIG")" ]; then
-    printf '\n' >> "$CONFIG"
-  fi
-  if [ -n "$last" ] && [ "$last" != '[all]' ]; then
-    printf '[all]\n' >> "$CONFIG"
-  fi
-  printf '%s\n' "$1" >> "$CONFIG"
-}
-
 remove_audio_overlays() {
   sed -Ei "/^[[:blank:]]*dtoverlay=($AUDIO_OVERLAYS)([,[:blank:]].*)?\r?$/d" "$CONFIG"
 }
@@ -89,16 +80,25 @@ set_onboard_audio() {
   if grep -Eq '^[[:blank:]]*dtparam=audio=(on|off)[[:blank:]]*\r?$' "$CONFIG"; then
     sed -Ei "s/^([[:blank:]]*dtparam=audio=)(on|off)([[:blank:]]*\r?)$/\1$1\3/" "$CONFIG"
   else
-    append_line "dtparam=audio=$1"
+    boot_config_append "$CONFIG" "dtparam=audio=$1"
   fi
 }
 
 # Stops the firmware loading the card a HAT's ID chip names when another is chosen.
 set_eeprom_read() {
   local name="$1" hat="$2"
-  sed -Ei '/^[[:blank:]]*force_eeprom_read=0[[:blank:]]*\r?$/d' "$CONFIG"
+  sed -Ei "/$EEPROM_OFF/d" "$CONFIG"
   if { [ -n "$hat" ] && [ "$name" != "$hat" ]; } || { [ -z "$hat" ] && eeprom_off "$name"; }; then
-    append_line force_eeprom_read=0
+    boot_config_append "$CONFIG" force_eeprom_read=0
+  fi
+}
+
+# While force_eeprom_read=0 hides the ID chip, its card is the one last reported for it.
+known_hat() {
+  if [ -z "$1" ] && grep -Eq "$EEPROM_OFF" "$CONFIG"; then
+    cat "$HAT_STATE" 2>/dev/null || true
+  else
+    printf '%s\n' "$1"
   fi
 }
 
@@ -121,14 +121,15 @@ apply_native() {
       ;;
     *)
       set_onboard_audio off
-      append_line "dtoverlay=$1"
+      boot_config_append "$CONFIG" "dtoverlay=$1"
       ;;
   esac
 }
 
 # Applies a card, by whichever way knows it; anything else is DietPi's to interpret.
 apply_card() {
-  local name="$1" hat="${2:-}"
+  local name="$1" hat
+  hat="$(known_hat "${2:-}")"
   if [ "$name" = "$hat" ]; then
     # The firmware sets this card up from the chip; any overlay written for it would load a second copy.
     remove_audio_overlays
@@ -144,6 +145,11 @@ apply_card() {
   fi
   set_eeprom_read "$name" "$hat"
   mkdir -p "$(dirname "$STATE")"
+  if [ -n "$hat" ]; then
+    printf '%s\n' "$hat" > "$HAT_STATE"
+  else
+    rm -f "$HAT_STATE"
+  fi
   if [ "$name" = none ]; then
     rm -f "$STATE"
   else

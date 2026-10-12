@@ -52,6 +52,19 @@ func TestApply(t *testing.T) {
 	}
 }
 
+func TestApplyWhileAnotherChangeHoldsTheHelper(t *testing.T) {
+	a := &Applier{hatCard: noChip, run: func(*exec.Cmd) error {
+		return exec.Command("sh", "-c", "exit 75").Run()
+	}}
+	if reboot, err := a.Apply(context.Background(), "hifiberry-digi"); reboot || !errors.Is(err, ErrBusy) {
+		t.Fatalf("Apply = %v, %v", reboot, err)
+	}
+	a.run = func(*exec.Cmd) error { return exec.Command("sh", "-c", "exit 1").Run() }
+	if _, err := a.Apply(context.Background(), "hifiberry-digi"); !errors.Is(err, ErrApply) {
+		t.Fatalf("a failed helper read as %v", err)
+	}
+}
+
 func TestApplyCommand(t *testing.T) {
 	var ran []string
 	a := &Applier{hatCard: noChip, run: helperRun("changed\n", "", false, &ran)}

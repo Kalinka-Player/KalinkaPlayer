@@ -2,6 +2,9 @@
 # Pi image integration. Avoid running DietPi hardware commands in the build
 # chroot: /sys there belongs to the build host, not the eventual appliance.
 
+# shellcheck source=../../kalinka-supervisor/boot-config.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../../kalinka-supervisor/boot-config.sh"
+
 configure_supervisor_radios() {
   local root="$1"
   if [ -f "$root/boot/firmware/config.txt" ]; then
@@ -28,14 +31,9 @@ configure_supervisor_radios() {
 # The supervisor reads a HAT's chips over I2C to suggest boards that carry no ID chip.
 configure_soundcard_detection() {
   local config="$1/boot/firmware/config.txt"
-  if grep -Eq '^[[:blank:]#]*dtparam=i2c_arm=' "$config"; then
-    sed -Ei 's/^[[:blank:]#]*dtparam=i2c_arm=.*/dtparam=i2c_arm=on/' "$config"
-  else
-    if [ -s "$config" ] && [ -n "$(tail -c1 "$config")" ]; then
-      printf '\n' >> "$config"
-    fi
-    printf '[all]\ndtparam=i2c_arm=on\n' >> "$config"
-  fi
+  # A line already there may sit under one board's section, which would leave the bus off on the rest.
+  sed -Ei '/^[[:blank:]#]*dtparam=i2c_arm=/d' "$config"
+  boot_config_append "$config" dtparam=i2c_arm=on
   mkdir -p "$1/etc/modules-load.d"
   printf 'i2c-dev\n' > "$1/etc/modules-load.d/kalinka-soundcard.conf"
 }

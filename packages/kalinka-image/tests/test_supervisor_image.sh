@@ -24,12 +24,15 @@ configure_soundcard_detection "$root"
 [ "$(grep -c '^dtparam=i2c_arm=on$' "$root/boot/firmware/config.txt")" = 1 ]
 grep -q '^#dtparam=i2c_arm_baudrate=100000$' "$root/boot/firmware/config.txt"
 [ "$(cat "$root/etc/modules-load.d/kalinka-soundcard.conf")" = i2c-dev ]
-printf 'dtparam=audio=off\n' > "$root/boot/firmware/config.txt"
-configure_soundcard_detection "$root"
-[ "$(cat "$root/boot/firmware/config.txt")" = "$(printf 'dtparam=audio=off\n[all]\ndtparam=i2c_arm=on')" ]
 printf 'dtparam=audio=off' > "$root/boot/firmware/config.txt"
 configure_soundcard_detection "$root"
-[ "$(cat "$root/boot/firmware/config.txt")" = "$(printf 'dtparam=audio=off\n[all]\ndtparam=i2c_arm=on')" ]
+[ "$(cat "$root/boot/firmware/config.txt")" = "$(printf 'dtparam=audio=off\ndtparam=i2c_arm=on')" ]
+printf 'dtparam=audio=off\n[pi4]\ndtoverlay=vc4-kms-v3d' > "$root/boot/firmware/config.txt"
+configure_soundcard_detection "$root"
+[ "$(cat "$root/boot/firmware/config.txt")" = "$(printf 'dtparam=audio=off\n[pi4]\ndtoverlay=vc4-kms-v3d\n[all]\ndtparam=i2c_arm=on')" ]
+printf '[cm4]\ndtparam=i2c_arm=off\n' > "$root/boot/firmware/config.txt"
+configure_soundcard_detection "$root"
+[ "$(cat "$root/boot/firmware/config.txt")" = "$(printf '[cm4]\n[all]\ndtparam=i2c_arm=on')" ]
 unit="$pkg_dir/../kalinka-supervisor/systemd/kalinka-supervisor.service"
 ! grep -q 'network-online.target' "$unit"
 # Always on: the process starts nearby setup itself once a radio appears.
@@ -68,7 +71,9 @@ for helper in reinstall ssh-setup soundcard; do
   fi
   cmp "$pkg_dir/../kalinka-supervisor/$helper.sh" "$installed"
 done
-cmp "$pkg_dir/../kalinka-supervisor/dietpi-conf.sh" "$root/package/usr/lib/kalinka-supervisor/dietpi-conf.sh"
+for shared in dietpi-conf boot-config; do
+  cmp "$pkg_dir/../kalinka-supervisor/$shared.sh" "$root/package/usr/lib/kalinka-supervisor/$shared.sh"
+done
 [ -f "$root/package/usr/lib/systemd/system/kalinka-soundcard.service" ]
 grep -q '^    systemctl enable kalinka-soundcard.service || true$' "$deb"
 # DietPi on a PC has DietPi's tool but no HAT to load.

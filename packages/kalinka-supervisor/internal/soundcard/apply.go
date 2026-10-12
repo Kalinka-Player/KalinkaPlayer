@@ -19,6 +19,12 @@ const (
 
 var ErrApply = errors.New("the sound card could not be applied")
 
+// ErrBusy reports another change of sound card under way, at boot or from another request.
+var ErrBusy = errors.New("another sound card change is under way")
+
+// helperLocked is the helper's exit status while another run holds its lock; systemd-run passes it through.
+const helperLocked = 75
+
 // keptOutput bounds how much of the helper's diagnostics reaches the journal.
 const keptOutput = 4096
 
@@ -58,6 +64,10 @@ func (a *Applier) Apply(ctx context.Context, name string) (bool, error) {
 	verdict, diagnostics := &tail{}, &tail{}
 	cmd.Stdout, cmd.Stderr = verdict, diagnostics
 	err := a.run(cmd)
+	if exit := (*exec.ExitError)(nil); errors.As(err, &exit) && exit.ExitCode() == helperLocked {
+		slog.Info("Sound card not applied: another change is under way", "name", name)
+		return false, ErrBusy
+	}
 	switch result := verdict.lastLine(); {
 	case err == nil && result == "changed":
 		slog.Info("Sound card applied; the box restarts to load it", "name", name)

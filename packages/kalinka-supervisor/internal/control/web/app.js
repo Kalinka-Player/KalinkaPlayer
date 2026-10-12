@@ -6,6 +6,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let info = null;
 let status = null;
 let soundcard = null;
+let soundcardList = "";
 let busy = false;
 // Each progress flow polls until a newer flow, or a dismiss, takes over.
 let flow = 0;
@@ -350,6 +351,16 @@ function renderSoundcard(sc) {
   byId("soundcard-hint").hidden = hint === "";
   byId("soundcard-hint").textContent = hint;
 
+  // Rebuilt only when it changes: a rebuild closes the list on someone choosing from it.
+  const list = JSON.stringify([sc.options.map((o) => o.name), sc.suggested]);
+  if (list !== soundcardList) {
+    soundcardList = list;
+    fillSoundcardSelect(sc, previous);
+  }
+  renderStatus();
+}
+
+function fillSoundcardSelect(sc, previous) {
   const select = byId("soundcard-select");
   const groups = new Map();
   const detected = sc.options.filter((o) => sc.suggested.includes(o.name));
@@ -372,7 +383,6 @@ function renderSoundcard(sc) {
   }
   const keep = [previous, sc.suggested[0], sc.configured].find((name) => name && sc.options.some((o) => o.name === name));
   select.value = keep || "";
-  renderStatus();
 }
 
 async function refreshSoundcard() {

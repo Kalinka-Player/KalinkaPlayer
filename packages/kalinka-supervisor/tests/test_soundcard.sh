@@ -183,6 +183,10 @@ run apply hifiberry-digi hifiberry-digi-pro
 assert_contains "another card stops the firmware reading the chip, whatever HiFiBerry's tools say" "$(config)" "force_eeprom_read=0"
 run apply none hifiberry-digi-pro
 assert_eq "and so does no HAT" "$(config)" "$(printf 'dtparam=audio=off\nforce_eeprom_read=0')"
+run apply hifiberry-digi-pro
+assert_eq "with the chip hidden after that restart, its card is still handed back to it" "$(config)" "dtparam=audio=off"
+run apply hifiberry-digi
+assert_not_contains "and once the chip is read again, nothing is remembered for it" "$(config)" "force_eeprom_read"
 
 echo "  -- the supervisor applying a card on DietPi"
 reset_box

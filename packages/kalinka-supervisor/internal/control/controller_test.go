@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"kalinka/supervisor/internal/protocol"
+	"kalinka/supervisor/internal/soundcard"
 )
 
 type fakeSystemd struct {
@@ -401,9 +402,12 @@ func TestReinstallIsNotTerminal(t *testing.T) {
 	}
 }
 
-func TestBootSoundcardHoldsActionsOffOnlyWhileItRuns(t *testing.T) {
+func TestBootSoundcardHoldsActionsOffWhileItRuns(t *testing.T) {
 	waiting := &fakeSystemd{units: map[string]UnitState{"kalinka-soundcard.service": {Active: "inactive", Queued: true}}}
 	c, _ := newController(waiting, nil)
+	if got := code(perform(c, SetSoundcard)); got != CodeBusy {
+		t.Fatalf("a change of card raced the hook waiting for the network: %q", got)
+	}
 	if err := perform(c, Reboot); err != nil {
 		t.Fatalf("a hook still waiting for the network held off a reboot: %v", err)
 	}
@@ -481,6 +485,17 @@ func TestSoundcardRestartRefusedBySystemd(t *testing.T) {
 	s.actErr = nil
 	if err := perform(c, Reboot); err != nil {
 		t.Fatalf("the restart cannot be retried: %v", err)
+	}
+}
+
+func TestSoundcardChangeUnderWayIsBusy(t *testing.T) {
+	c, _ := newController(&fakeSystemd{}, nil)
+	c.soundcards = &fakeApplier{err: soundcard.ErrBusy}
+	if got := code(perform(c, SetSoundcard)); got != CodeBusy {
+		t.Fatalf("apply while the helper is held = %q", got)
+	}
+	if err := perform(c, RestartCore); err != nil {
+		t.Fatalf("the controller was not released: %v", err)
 	}
 }
 
