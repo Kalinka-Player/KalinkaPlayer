@@ -99,6 +99,7 @@ def annotated(plugin, host=HOST):
         ("server_version", "5.2.9", "incompatible_server"),
         ("server_version", "5.3.0", None),
         ("server_version", "5.5.1.dev1+build", None),
+        ("server_version", "5.5.1~dev1+g1a2b3c4.d261010", None),
         ("server_version", "6.0.0", "incompatible_server"),
         ("server_version", "source-commit", "server_version_unknown"),
         ("sdk_version", "3.4.9", "incompatible_sdk"),
@@ -303,8 +304,17 @@ def test_renderer_versions_require_live_known_evidence(plugin):
         "compatible": True,
     }
     assert evaluate(plugin, renderers=(renderer,))["status"] == "metadata_compatible"
+    # A renderer built from a dev tag reports its package's spelling.
+    for version in ("0.8.1~dev20+gd229e887.d261010", "0.9.0~rc1"):
+        assert (
+            evaluate(plugin, renderers=(renderer | {"software_version": version},))[
+                "status"
+            ]
+            == "metadata_compatible"
+        ), version
     for field, value, expected in [
         ("software_version", "0.4.9", "incompatible_renderer"),
+        ("software_version", "0.5.0~dev3+gabcdef0", "incompatible_renderer"),
         ("software_version", "1.0.0", "incompatible_renderer"),
         ("software_version", "unknown", "renderer_version_unknown"),
         ("status", "offline", "renderer_unavailable"),

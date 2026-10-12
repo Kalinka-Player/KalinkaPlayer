@@ -121,11 +121,17 @@ def detect_host() -> HostEnvironment:
     )
 
 
-def _version_reasons(component: str, required: str, installed: str | None) -> list:
+def _version(text: str | None) -> Version | None:
+    """A PEP 440 version, also as a Debian package spells a pre-release: a
+    renderer built from a dev tag reports 0.8.1~dev20+g1a2b3c4."""
     try:
-        version = Version(installed) if installed else None
+        return Version(text.replace("~", "")) if text else None
     except InvalidVersion:
-        version = None
+        return None
+
+
+def _version_reasons(component: str, required: str, installed: str | None) -> list:
+    version = _version(installed)
     if version is None:
         return [{"code": f"{component}_version_unknown", "required": required}]
     if not SpecifierSet(required).contains(version, prereleases=True):
@@ -133,7 +139,7 @@ def _version_reasons(component: str, required: str, installed: str | None) -> li
             {
                 "code": f"incompatible_{component}",
                 "required": required,
-                "installed": str(version),
+                "installed": installed,
             }
         ]
     return []
@@ -158,11 +164,7 @@ def _packaged_release(kind: str, native: str) -> Version | None:
             return None
     elif kind == "rpm":
         return None
-    try:
-        # Native packages spell a PEP 440 pre-release with a tilde: 1.0~rc1.
-        return Version(version.replace("~", ""))
-    except InvalidVersion:
-        return None
+    return _version(version)
 
 
 def _artifact_reasons(
