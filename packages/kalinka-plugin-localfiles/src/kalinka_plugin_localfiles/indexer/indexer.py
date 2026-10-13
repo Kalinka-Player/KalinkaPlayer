@@ -35,6 +35,7 @@ from mutagen.id3 import ID3
 from mutagen.dsf import DSF
 from mutagen.dsdiff import DSDIFF
 
+from ..audio_formats import MEDIA_TYPES
 from ..config_model import LocalFilesConfig
 from ..filename_model import get_parser, names_a_vinyl_side, parse_music_path
 from ..filename_model.assembler import ASSEMBLER_VERSION
@@ -103,9 +104,7 @@ from ..clustering.classify import (  # noqa: E402
 )
 
 
-SUPPORTED_AUDIO_EXTENSIONS = {
-    ".mp3", ".flac", ".wav", ".wave", ".ogg", ".oga", ".dsf", ".dff"
-}
+SUPPORTED_AUDIO_EXTENSIONS = frozenset(MEDIA_TYPES)
 
 # Base64 images, kept out of the evidence as APIC frames are for ID3.
 _PICTURE_COMMENTS = ("metadata_block_picture", "coverart")
