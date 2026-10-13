@@ -140,7 +140,12 @@ def get_version() -> str:
 # packages with a newer compatible release, by dpkg's ordering; GET
 # /server/plugins reports the helper's record of the last operation as
 # `last_operation`.
-REST_API_VERSION = "0.14"
+# 0.15: two plugins may offer the same optional package, as Jamendo and My
+# Library both offer onnxruntime and tokenizers. GET /server/optional_packages
+# still lists it once, with the first plugin's plugin_id, description and
+# pip_spec; each package's `offered_by`, [{plugin_id, description}] in load
+# order, names every plugin that offers it and what for.
+REST_API_VERSION = "0.15"
 
 
 def get_rest_api_version() -> str:
