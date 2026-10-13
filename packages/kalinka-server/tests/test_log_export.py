@@ -344,7 +344,7 @@ async def _serve(response):
     body = []
 
     async def receive():
-        return {"type": "http.disconnect"}
+        await asyncio.Event().wait()
 
     async def send(message):
         if message["type"] == "http.response.body":
