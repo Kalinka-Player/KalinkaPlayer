@@ -42,11 +42,10 @@ dependencies = [
     "packaging>=21.0",
     "jsonschema>=4.18.0",
     "rapidfuzz>=2.0.0",
-    # Shared MiniLM text embedder (text_embedder.py). Imported lazily; the
-    # model itself is downloaded on first use.
+    # Catalog art (catalog_art_render.py), imported at startup. The text
+    # embedder's runtime (onnxruntime, tokenizers) is not a dependency: the
+    # plugins that embed offer it as optional packages.
     "numpy>=1.24",
-    "onnxruntime>=1.17",
-    "tokenizers>=0.15",
     # Renderer protocol (renderer_ws_handler.py). The committed generated
     # bindings (renderer_proto/) pin the runtime floor; `make proto` regenerates.
     "protobuf>=7.35,<8",
