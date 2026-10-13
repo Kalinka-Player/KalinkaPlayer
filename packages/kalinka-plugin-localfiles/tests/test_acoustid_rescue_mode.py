@@ -44,6 +44,12 @@ class _FakeDb:
     async def get_resolved_origin(self, entity_type, entity_id, field):
         return self.origins.get((entity_type, entity_id, field))
 
+    async def get_track_artist_origin(self, track_id):
+        return self.origins.get(("track", track_id, "artist_id"))
+
+    async def record_resolved_origin(self, entity_type, entity_id, field, source, tier):
+        self.origins[(entity_type, entity_id, field)] = {"source": source, "tier": tier}
+
     async def save_fingerprint(self, *a, **k):
         return None
 

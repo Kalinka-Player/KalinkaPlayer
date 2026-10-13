@@ -18,11 +18,17 @@ VA_MIN_ARTIST_UNIQUENESS = 0.5
 
 VARIOUS_ARTISTS_ID = "various_artists"
 
-# Dumping-ground / structural folder names — not compilations or artists.
-GENERIC_FOLDER_RE = re.compile(
-    r"^(music|musik|audio|downloads?|mp3s?|tracks?|songs?|various|"
+# Structural names supply no album identity, even for a single artist.
+_CONTAINER_NAMES = (
+    r"music|musik|audio|downloads?|mp3s?|tracks?|songs?|various|"
     r"streamed_music|unused|unsorted|sorted|misc|miscellaneous|temp|tmp|"
-    r"incoming|untitled|new folder|to ?sort|todo|.*\bmix(?:es)?\b.*)$",
+    r"incoming|untitled|new folder|to ?sort|todo"
+)
+CONTAINER_FOLDER_RE = re.compile(rf"^({_CONTAINER_NAMES})$", re.IGNORECASE)
+# A many-artist mix can also be a loose playlist, but a single-artist album
+# such as "The Mix" must not be discarded merely because of its name.
+GENERIC_FOLDER_RE = re.compile(
+    rf"^({_CONTAINER_NAMES}|.*\bmix(?:es)?\b.*)$",
     re.IGNORECASE,
 )
 # Bare disc/volume folder names that need the parent dir for a real title.

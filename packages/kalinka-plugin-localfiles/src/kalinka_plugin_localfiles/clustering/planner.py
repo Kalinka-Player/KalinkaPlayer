@@ -21,6 +21,7 @@ from ..utils.name_utils import (
     repair_tag_text,
 )
 from .classify import (
+    CONTAINER_FOLDER_RE,
     VARIOUS_ARTISTS_ID,
     compilation_title,
     is_declared_va_folder,
@@ -164,6 +165,7 @@ def plan_folder(
     legacy_encoding: Optional[str] = None,
     path_album_title: Optional[str] = None,
     path_album_year: Optional[int] = None,
+    is_library_root: bool = False,
 ) -> FolderPlan:
     """Plan the clusters for one folder from (track_row, evidence_row) pairs.
 
@@ -219,6 +221,12 @@ def plan_folder(
         Counter(album_keys).most_common(1)[0][1] / len(rows) if album_keys else 0.0
     )
     clusters: List[ClusterPlan] = []
+    # A storage container supplies no album identity. Its explicit albums
+    # stay separate, and its loose files must not inherit either a neighbour's
+    # tags or the name of the library root (e.g. "Music").
+    container = is_library_root or bool(
+        CONTAINER_FOLDER_RE.fullmatch(os.path.basename(folder.rstrip("/")))
+    )
     if (
         is_va_folder(len(folder_real_artists), len(rows))
         and dominant_album_cov < 0.5
@@ -267,6 +275,22 @@ def plan_folder(
             split=True,
             basis={"reason": "va_dump_tagged_stray"},
         )
+    elif container:
+        buckets = {}
+        for feature in features:
+            _, album, cue_album = display_by_id[feature.track_id]
+            key = (
+                normalize_for_id(strip_disc_suffix(album or cue_album or "")),
+                feature.albumartist_key,
+            )
+            # Artist guesses cannot partition loose files into pretend albums.
+            if not key[0]:
+                key = ("", None)
+            buckets.setdefault(key, []).append(feature)
+        result = PartitionResult(
+            groups=list(buckets.values()), split=len(buckets) > 1,
+            basis={"reason": "library_container"},
+        )
     else:
         result = partition_folder(features)
     for group in result.groups:
@@ -280,7 +304,17 @@ def plan_folder(
         discs = frozenset(f.disc_number for f in group if f.disc_number)
         aa_key = _dominant(f.albumartist_key for f in group)
 
-        if is_va_folder(len(real_artists), len(ids)):
+        titles = [display_by_id[i][1] for i in ids]
+        cue_titles = [display_by_id[i][2] for i in ids]
+        tagged = _dominant(titles) or _dominant(cue_titles)
+        if container and not tagged:
+            clusters.append(
+                ClusterPlan(ids, "singles_pool", "", "unknown_artist",
+                            {"reason": "library_container"}, folder, discs, aa_key)
+            )
+            continue
+
+        if not container and is_va_folder(len(real_artists), len(ids)):
             comp = compilation_title(folder)
             if comp is None:
                 # A generic dump — leave tracks loose (unknown_album), no album.
@@ -296,9 +330,6 @@ def plan_folder(
             )
             continue
 
-        titles = [display_by_id[i][1] for i in ids]
-        cue_titles = [display_by_id[i][2] for i in ids]
-        tagged = _dominant(titles) or _dominant(cue_titles)
         title = (
             tagged
             or _repaired(path_album_title, legacy_encoding)

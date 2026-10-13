@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from ..utils.name_utils import album_folder_for_path, normalize_for_id
+from ..utils.tracklist_names import name_carries_title
 from ._vendor.filename_parser.common import SIDE_LETTERS, numeric_value
 
 # A span below its floor is discarded. Swept against the embedded tags of a
@@ -33,6 +34,9 @@ MIN_SCORE = {
     "disc_number": 0.50,
     "year": 0.50,
 }
+
+# Reparse path-only rows when assembly rules change, as with new weights.
+ASSEMBLER_VERSION = 2
 
 # "058-166421-Artist-Title.mp3": a playlist position and a download id, not a
 # track number. The model was never trained on these — they fail label
@@ -150,6 +154,15 @@ def assemble(
         basename_artist = _last(_labelled(spans, "ARTIST", at_or_after=basename_start))
         if basename_artist is not None and not _same_name(basename_artist, artist):
             title = _extend_left(title, basename_artist)
+
+    # A ripper's numbered placeholder names no artist. Keep an artist read
+    # from a directory, but never turn the "track" in track-02 into one.
+    if (
+        artist is not None
+        and artist["start"] >= basename_start
+        and not name_carries_title(view, [view])
+    ):
+        artist = None
 
     return PathMetadata(
         title=_slice(view, title) or _stem(view),

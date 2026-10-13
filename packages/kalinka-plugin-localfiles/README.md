@@ -3,6 +3,29 @@
 The local library indexes MP3, FLAC, WAV (`.wav`, `.wave`), Ogg Vorbis (`.ogg`,
 `.oga`), DSF (`.dsf`) and DSDIFF (`.dff`) files from local folders and configured
 network shares.
+
+Loose files in a configured library root or a generic container such as
+`Music` or `Downloads` are listed individually in Recently Added. Those
+directory names do not become albums; album tags and cue sheets still name
+albums there. Numbered filenames such as `track-02.flac` do not supply an
+artist. AcoustID can correct a guessed artist even after a text search matched
+that guess, while artists read from tags are preserved. Its recording matches
+do not assign album membership.
+
+Recently Added contains Albums, Tracks and Artists sections, with name, genre
+and entity-type filters. Tracks includes every track, including album members.
+Albums and artists are dated by their newest track's first arrival. Adding a
+track brings its album and artist forward; editing metadata or moving an
+existing file preserves its arrival date.
+
+The `recent` catalog declares `q`, `genre` and `type` filters and carries
+`recent-albums`, `recent-tracks` and `recent-artists` sections with the matching
+preview content types. Each section declares `q` and `genre`; selecting its
+type on the parent returns the same filtered listing and total.
+
+Files whose size or timestamp changes during copying are retried after they
+settle, without requiring another filesystem event or a manual scan.
+
 Ogg Vorbis tags and `METADATA_BLOCK_PICTURE` covers are read like FLAC's, with
 the older `COVERART` comment as a fallback cover. A chained file, such as a
 radio rip, is timed over all its links as the renderer plays them, each from
