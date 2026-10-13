@@ -83,6 +83,30 @@ def test_registry_first_declarer_wins_on_duplicate_keys(caplog):
     assert "declared by both" in caplog.text
 
 
+def test_registry_takes_a_key_two_plugins_share_on_the_same_terms_quietly(caplog):
+    """Two plugins that run on the same runtime both offer it."""
+    input_modules = {
+        "alpha": _prepared({"onnxruntime": _spec("onnxruntime")}),
+        "beta": _prepared({"onnxruntime": _spec("onnxruntime")}),
+    }
+    with caplog.at_level("WARNING"):
+        registry = build_registry(input_modules, {})
+    assert registry["onnxruntime"][0] == "alpha"
+    assert caplog.text == ""
+
+
+def test_registry_warns_when_a_shared_key_probes_another_import_name(caplog):
+    """The first declarer's import_name decides what counts as installed."""
+    input_modules = {
+        "alpha": _prepared({"shared": _spec("shared")}),
+        "beta": _prepared({"shared": _spec("shared", import_name="shared_core")}),
+    }
+    with caplog.at_level("WARNING"):
+        registry = build_registry(input_modules, {})
+    assert registry["shared"][1].import_name == ""
+    assert "declared by both" in caplog.text
+
+
 def test_registry_skips_malformed_entries(caplog):
     input_modules = {
         "weird": _prepared({"bogus": "not a spec object"}),  # type: ignore[dict-item]
