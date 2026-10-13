@@ -148,10 +148,13 @@ is busy, including after a supervisor restart.
  "protocol": 1, "min_protocol": 1,
  "server_id": "ee4d496c-3f6c-4388-a02e-f6a2f17829cd",
  "renderer_id": "5c0ffee0-1d2e-4a3b-8c4d-5e6f7a8b9c0d",
- "actions": ["restart_core", "reboot", "poweroff", "reinstall", "set_soundcard", "remove_plugin"]}
+ "actions": ["restart_core", "reboot", "poweroff", "reinstall", "set_soundcard", "remove_plugin"],
+ "poweroff_timer": true}
 ```
 
 - `version` is the package version.
+- `poweroff_timer` advertises support for Core's inactivity timer. Older
+  supervisors omit it; apps hide the timer controls on those boxes.
 - `server_id` is Core's identity from `/var/lib/kalinka/server_id`, or `null`
   before Core has created it.
 - `renderer_id` is the renderer's identity from
@@ -172,6 +175,33 @@ A refused connection on port 8001 means the box has no supervisor, or one
 older than this API. Ordinary Core installations have no supervisor.
 
 ## Endpoints
+
+### Inactivity power-off
+
+Core persists `base_config.server.box_power_off_enabled` (default `false`)
+and `base_config.server.box_power_off_minutes` (whole minutes, 1–1440,
+default 30). KalinkaAI shows the switch and duration beside **Power off
+streamer** in Management, only for a matching supervisor advertising timer
+support and a Core exposing these settings. Changes use the usual Apply flow.
+
+Core measures continuous inactivity with a monotonic clock. Paused, stopped
+and empty playback count as idle; playing or buffering resets the clock.
+An error or failed playback read resets it too. Events include playback
+owned by input plugins. Changing the timer settings or restarting Core starts
+a full new interval. Demo mode never authorizes automatic shutdown.
+
+Supervisor polls Core's `GET /server/power-off-timer` every five seconds on
+Core's configured local interface and port. The uncached response is
+`{"server_id":"<Core identity>","due":false}`. A fresh `due: true` for the
+identity stored on this box requests the same guarded power-off operation as
+the manual action. Upgrades, reinstall, plugin removal, setup and other busy
+operations still block shutdown. Core is checked again after these guards,
+so resuming playback during admission cancels the request. A later attempt
+requires another fresh decision. An absent, older, unreachable or unrecognized
+Core never triggers power-off. Core exposes only the decision; it never
+invokes systemd.
+
+### Control API
 
 | Method | Path | Answer |
 |---|---|---|

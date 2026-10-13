@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -162,6 +163,7 @@ func TestInfo(t *testing.T) {
 			"name": "kalinka-supervisor", "version": "1.2.3", "protocol": 1.0, "min_protocol": 1.0,
 			"actions":   []any{"restart_core", "reboot", "poweroff", "reinstall", "set_soundcard", "remove_plugin"},
 			"server_id": nil, "renderer_id": nil,
+			"poweroff_timer": true,
 		}
 		if box.server {
 			want["server_id"] = testID
@@ -280,7 +282,7 @@ func TestActionReplies(t *testing.T) {
 	if w.Code != 202 || strings.TrimSpace(w.Body.String()) != `{"action":"set_soundcard","reboot":false}` {
 		t.Fatalf("sound card reply = %d %s", w.Code, w.Body)
 	}
-	if got := coord.begun[len(coord.begun)-1]; got != (Request{Action: SetSoundcard, Soundcard: "hifiberry-digi"}) {
+	if got := coord.begun[len(coord.begun)-1]; !reflect.DeepEqual(got, Request{Action: SetSoundcard, Soundcard: "hifiberry-digi"}) {
 		t.Fatalf("coordinator asked %+v", got)
 	}
 }
@@ -576,7 +578,7 @@ func TestRemovalRequests(t *testing.T) {
 				return
 			}
 			want := Request{Action: RemovePlugin, Package: "kalinka-plugin-qobuz"}
-			if len(coord.begun) != 1 || coord.begun[0] != want || strings.TrimSpace(w.Body.String()) != `{"action":"remove_plugin","package":"kalinka-plugin-qobuz"}` {
+			if len(coord.begun) != 1 || !reflect.DeepEqual(coord.begun[0], want) || strings.TrimSpace(w.Body.String()) != `{"action":"remove_plugin","package":"kalinka-plugin-qobuz"}` {
 				t.Fatalf("removal asked %+v, answered %s", coord.begun, w.Body)
 			}
 		})

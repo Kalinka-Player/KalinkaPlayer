@@ -200,6 +200,12 @@ func run(ctx context.Context, o options, setupOn, apiOn bool) error {
 			Soundcards: soundcard.NewApplier(simulated, cards.HATCard),
 			Now:        time.Now,
 		})
+		powerOffTimer := control.NewPowerOffTimer(controller, func() coreconf.Config {
+			cfg := core.Current()
+			cfg.Port = corePort()
+			return cfg
+		}, func() string { return coreconf.ReadID(o.IdentityFile) })
+		components.Go(func() { powerOffTimer.Run(ctx) })
 		binding = control.NewBinding(o.listenPort, control.NewHandler(controller, control.HandlerConfig{
 			Version:        version,
 			ServerIDFile:   o.IdentityFile,

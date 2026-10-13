@@ -142,6 +142,25 @@ class ServerConfig(BaseModel):
             ),
         },
     )
+    box_power_off_enabled: bool = Field(
+        default=False,
+        title="Power-off timer",
+        json_schema_extra={
+            "help": "Power off the streamer after playback stays paused or stopped for the set time.",
+        },
+    )
+    box_power_off_minutes: int = Field(
+        default=30,
+        ge=1,
+        le=1440,
+        strict=True,
+        title="Power off after",
+        json_schema_extra={
+            "widget": "number_input",
+            "help": "Minutes of inactivity. Playing or buffering starts the countdown over.",
+            "constraints": {"unit": "min", "step": 1},
+        },
+    )
     plugin_catalog_enabled: bool = Field(
         default=True,
         title="Plugin catalog preview",

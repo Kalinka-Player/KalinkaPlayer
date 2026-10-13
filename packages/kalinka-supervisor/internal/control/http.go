@@ -207,9 +207,10 @@ func (h *handler) info(w http.ResponseWriter, _ *http.Request) string {
 	reply(w, http.StatusOK, map[string]any{
 		"name": "kalinka-supervisor", "version": h.cfg.Version,
 		"protocol": Protocol, "min_protocol": MinProtocol,
-		"server_id":   nullable(coreconf.ReadID(h.cfg.ServerIDFile)),
-		"renderer_id": nullable(coreconf.ReadID(h.cfg.RendererIDFile)),
-		"actions":     h.actions(),
+		"server_id":      nullable(coreconf.ReadID(h.cfg.ServerIDFile)),
+		"renderer_id":    nullable(coreconf.ReadID(h.cfg.RendererIDFile)),
+		"actions":        h.actions(),
+		"poweroff_timer": true,
 	}, false)
 	return ""
 }
