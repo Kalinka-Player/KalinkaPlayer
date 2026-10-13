@@ -44,7 +44,9 @@ class OptionalPackageSpec(BaseModel):
         "is installed from a wheel only, so it must name a release with one "
         "for every Python and architecture the plugin runs on. A package the "
         "server itself depends on takes the server's own requirement, so "
-        "installing it never moves the server's copy.",
+        "installing it never moves the server's copy, and a key another "
+        "plugin also offers takes that plugin's spec, since only the first "
+        "declarer's is installed.",
     )
     description: str = Field(
         ...,
