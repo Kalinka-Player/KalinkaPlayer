@@ -41,6 +41,25 @@ def _installed(monkeypatch, names: set[str]) -> None:
     monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
 
 
+@pytest.mark.parametrize(
+    "installed, missing",
+    [
+        (set(), ["onnxruntime", "tokenizers"]),
+        ({"tokenizers"}, ["onnxruntime"]),
+        ({"onnxruntime"}, ["tokenizers"]),
+        (set(RUNTIME), []),
+    ],
+)
+def test_it_names_the_runtime_it_cannot_import(
+    monkeypatch, tmp_path, installed, missing
+):
+    """What a plugin that embeds offers to install."""
+    _installed(monkeypatch, installed)
+    embedder = SharedTextEmbedder(str(tmp_path / "minilm"), MODEL_URL)
+
+    assert embedder.missing_runtime() == missing
+
+
 @pytest.mark.parametrize("absent", RUNTIME)
 async def test_without_its_runtime_it_is_unavailable_and_downloads_nothing(
     monkeypatch, tmp_path, downloads, absent
