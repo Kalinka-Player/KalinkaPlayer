@@ -9,11 +9,12 @@ mismatch as "recompute or disable" — vectors from different models, or from
 different asset versions of the same model, are not comparable.
 
 The SDK carries only this protocol; the implementation lives in the server.
-Its runtime, ``onnxruntime`` and ``tokenizers``, is not installed with the
-server: a plugin that embeds declares both in ``OPTIONAL_PACKAGES`` and
-reports them in ``missing_packages`` while they cannot be imported, so the
-user can install them. Added in SDK 1.2 — a plugin that requires
-``context.embedder`` must pin ``kalinka-plugin-sdk>=1.2``.
+Its runtime is not installed with the server:
+:meth:`TextEmbedder.missing_runtime` names the packages it lacks, and a
+plugin that embeds offers each in ``OPTIONAL_PACKAGES`` and reports it in
+``missing_packages``, so the user can install it. Added in SDK 1.2 — a
+plugin that requires ``context.embedder`` must pin
+``kalinka-plugin-sdk>=1.2``.
 """
 from __future__ import annotations
 
@@ -51,6 +52,17 @@ class TextEmbedder(Protocol):
     def dim(self) -> int:
         """Dimensionality of the vectors returned by :meth:`embed`."""
         ...
+
+    def missing_runtime(self) -> List[str]:
+        """SDK 3.12: import names of the packages the embedder runs on that
+        this interpreter cannot import; empty once it can run.
+
+        Answered without I/O or provisioning, so it is cheap enough for
+        ``get_state()``. An embedder from a server before 3.12 lacks it, so
+        ask with ``getattr``; such a server installed the runtime with
+        itself.
+        """
+        return []
 
     async def available(self) -> bool:
         """True once the runtime is installed and the model assets are

@@ -1,5 +1,4 @@
 import asyncio
-import importlib.util
 import logging
 from typing import ClassVar, Optional
 
@@ -15,17 +14,11 @@ from .optional_packages import OPTIONAL_PACKAGES
 logger = logging.getLogger(__name__.split(".")[-1])
 
 
-def _is_importable(import_name: str) -> bool:
-    try:
-        return importlib.util.find_spec(import_name) is not None
-    except (ImportError, ValueError):
-        return False
-
-
 class KalinkaPluginJamendo(InputModulePlugin):
     # 3 replaced the genre API with the filter contract this module
-    # declares. Keep in sync with pyproject's kalinka-plugin-sdk pin.
-    REQUIRES_SDK = ">=3,<4"
+    # declares; 3.12 lets the shared embedder name the runtime it lacks.
+    # Keep in sync with pyproject's kalinka-plugin-sdk pin.
+    REQUIRES_SDK = ">=3.12,<4"
     PLUGIN_ID = "jamendo"
     CONFIG_MODEL = JamendoConfig
     OPTIONAL_PACKAGES: ClassVar[dict[str, OptionalPackageSpec]] = OPTIONAL_PACKAGES
@@ -103,9 +96,10 @@ class KalinkaPluginJamendo(InputModulePlugin):
         return self._missing_packages()
 
     def _missing_packages(self) -> list[str]:
-        """Optional packages mood search needs but cannot import. None
-        without a client_id: nothing on Jamendo works then, so a box that
-        never set Jamendo up never installs its runtime."""
+        """Optional packages mood search needs but cannot import, as the
+        shared embedder names its runtime. None without a client_id:
+        nothing on Jamendo works then, so a box that never set Jamendo up
+        never installs its runtime."""
         if self._context is None:
             return []
         config = self._context.config
@@ -113,10 +107,15 @@ class KalinkaPluginJamendo(InputModulePlugin):
             config, "ai_search_enabled", False
         ):
             return []
+        # A server before SDK 3.12 installed the runtime with itself.
+        missing_runtime = getattr(self._context.embedder, "missing_runtime", None)
+        if missing_runtime is None:
+            return []
+        lacking = set(missing_runtime())
         return [
             key
             for key, spec in OPTIONAL_PACKAGES.items()
-            if not _is_importable(spec.import_name or key)
+            if (spec.import_name or key) in lacking
         ]
 
     async def shutdown(self) -> None:
