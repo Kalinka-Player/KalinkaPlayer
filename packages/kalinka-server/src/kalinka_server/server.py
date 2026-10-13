@@ -125,6 +125,7 @@ from .renderer_test_tone import (
     tone_url,
 )
 from .server_identity import get_server_id
+from .box_power_off import BoxPowerOffTimer, register_power_off_timer_route
 from .plugin_management.inventory import (
     CAPABILITIES as PLUGIN_MANAGEMENT_CAPABILITIES,
     PluginInventory,
@@ -157,6 +158,10 @@ async def lifespan(app: FastAPI):
         if app.state.demo_renderer is not None:
             app.state.demo_renderer.connect()
 
+        app.state.box_power_off_task = asyncio.create_task(
+            app.state.box_power_off_timer.run(app.state.player_context.playqueue_eventbus)
+        )
+
         # Public metadata browsing is independent of signed update authorization.
         # Do not block startup or GET requests on an upstream network fetch.
         app.state.plugin_catalog_task = asyncio.create_task(
@@ -171,6 +176,7 @@ async def lifespan(app: FastAPI):
         logger.info("Shutting down...")
         # These loops run forever by design; cancel them and swallow the result.
         for attr in (
+            "box_power_off_task",
             "suggestions_task",
             "catalog_art_task",
             "update_check_task",
@@ -442,6 +448,7 @@ async def create_app(
         DemoReadOnlyGate, enabled=lambda: app.state.config.server.demo_mode
     )
     app.state.config = config
+    app.state.box_power_off_timer = BoxPowerOffTimer(config.server)
     app.state.bind_host = bind_host
     app.state.overrides_file = overrides_file
     app.state.overrides = dict(overrides)
@@ -1124,6 +1131,9 @@ async def create_app(
         ).model_dump(exclude_unset=True)
 
     register_config_routes(app, config, modules)
+    register_power_off_timer_route(
+        app, app.state.box_power_off_timer, player_context.playqueue
+    )
 
     @app.get("/server/version")
     def get_version_info():

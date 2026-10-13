@@ -19,6 +19,7 @@ from kalinka_server.config_overrides import apply_overrides_with_prefix
 from kalinka_server.config_route import register_config_routes
 from kalinka_server.config_schema_processor import build_presentation, readonly_paths
 from kalinka_server.options_registry import OptionsRegistry
+from kalinka_server.box_power_off import TIMER_PATHS
 
 
 @pytest.fixture
@@ -147,6 +148,81 @@ def test_saved_false_survives_restart_while_package_is_still_installed(box):
     values = _client(box).get("/server/config").json()["values"]
     assert values[management.MANAGE_PATH] is False
     assert values[management.STATUS_PATH].startswith("Installed (0.2.0). Removal")
+
+
+def test_timer_settings_persist_and_are_available_to_the_management_ui(box):
+    client = _client(box)
+    changes = {
+        "base_config.server.box_power_off_enabled": True,
+        "base_config.server.box_power_off_minutes": 45,
+    }
+    response = client.put("/server/config", json={"changes": changes})
+    assert response.status_code == 200, response.text
+    assert json.loads(box.config.read_text()) == changes
+    restarted = _client(box)
+    values = restarted.get("/server/config").json()["values"]
+    assert all(values[key] == value for key, value in changes.items())
+    fields = {
+        f["path"]: f
+        for f in restarted.get("/server/config/schema").json()["expert_fields"]
+    }
+    assert all(fields[path]["importance"] == "expert" for path in TIMER_PATHS)
+    assert (
+        fields["base_config.server.box_power_off_minutes"]["constraints"]["unit"]
+        == "min"
+    )
+
+
+@pytest.mark.parametrize("minutes", [0, -1, 1441, 1.5, True, "30", None])
+def test_invalid_timer_duration_refuses_the_whole_batch(box, minutes):
+    response = _client(box).put(
+        "/server/config",
+        json={
+            "changes": {
+                "base_config.server.box_power_off_enabled": True,
+                "base_config.server.box_power_off_minutes": minutes,
+            }
+        },
+    )
+    assert response.status_code == 422
+    assert not box.config.exists()
+
+
+def test_failed_timer_save_does_not_enable_shutdown_or_leak_into_a_later_save(
+    box, monkeypatch
+):
+    client = _client(box)
+
+    def fail(*args):
+        raise OSError("disk full")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(config_route, "save_overrides", fail)
+        response = client.put(
+            "/server/config",
+            json={
+                "changes": {
+                    "base_config.server.box_power_off_enabled": True,
+                    "base_config.server.box_power_off_minutes": 1,
+                }
+            },
+        )
+    assert response.status_code == 500
+    values = client.get("/server/config").json()["values"]
+    assert values["base_config.server.box_power_off_enabled"] is False
+    assert values["base_config.server.box_power_off_minutes"] == 30
+    assert (
+        client.put(
+            "/server/config",
+            json={
+                "changes": {
+                    "base_config.server.service_name": "Room",
+                }
+            },
+        ).status_code
+        == 200
+    )
+    assert TIMER_PATHS.isdisjoint(json.loads(box.config.read_text()))
 
 
 @pytest.mark.parametrize("previous", [None, False, True])

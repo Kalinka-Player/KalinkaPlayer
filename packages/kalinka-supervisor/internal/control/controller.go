@@ -37,6 +37,8 @@ type Request struct {
 	Action    Action
 	Soundcard string
 	Package   string
+	// ConfirmPowerOff rechecks an automatic request after slow admission checks.
+	ConfirmPowerOff func(context.Context) bool
 }
 
 var pluginPackage = regexp.MustCompile(`^kalinka-plugin-[a-z0-9][a-z0-9+.-]*$`)
@@ -280,6 +282,9 @@ func (c *Controller) admit(ctx context.Context, r Request) error {
 	}
 	if c.systemd.CheckTarget(ctx, target) != nil {
 		return refuse(CodeUnavailable)
+	}
+	if a == PowerOff && r.ConfirmPowerOff != nil && !r.ConfirmPowerOff(ctx) {
+		return refuse(CodeBusy)
 	}
 	c.mu.Lock()
 	c.pending = a

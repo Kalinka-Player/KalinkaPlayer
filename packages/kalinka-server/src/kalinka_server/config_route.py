@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from kalinka_plugin_sdk import ConfigIssue, paths
 
 from . import supervisor_management
+from .box_power_off import TIMER_PATHS
 from .config_model import KalinkaConfig
 from .config_overrides import save_overrides, store_override
 from .config_schema_processor import (
@@ -214,10 +215,11 @@ def register_config_routes(
         applied: Dict[str, Any] = {}
         committed = []
         targets = _config_targets()
-        previous_manage_box = config.server.manage_box
-        previous_manage_override = app.state.overrides.get(
-            supervisor_management.MANAGE_PATH
-        )
+        power_paths = TIMER_PATHS | {supervisor_management.MANAGE_PATH}
+        previous_power = {
+            key: getattr(config.server, key.rsplit(".", 1)[1]) for key in power_paths
+        }
+        previous_overrides = {key: app.state.overrides.get(key) for key in power_paths}
         try:
             for key, value in changes.items():
                 try:
@@ -250,23 +252,26 @@ def register_config_routes(
                         app.state.overrides_file,
                         exc,
                     )
-                    if supervisor_management.MANAGE_PATH in applied:
-                        # The privileged helper consumes the saved preference.
-                        # Do not show an unsaved request as pending work, or let
-                        # an unrelated later save accidentally persist it.
-                        config.server.manage_box = previous_manage_box
-                        if previous_manage_override is None:
-                            app.state.overrides.pop(
-                                supervisor_management.MANAGE_PATH, None
+                    if power_paths.intersection(applied):
+                        # Failed saves must never authorize a privileged operation.
+                        for key in power_paths.intersection(applied):
+                            setattr(
+                                config.server,
+                                key.rsplit(".", 1)[1],
+                                previous_power[key],
                             )
-                        else:
-                            app.state.overrides[supervisor_management.MANAGE_PATH] = (
-                                previous_manage_override
-                            )
+                            if previous_overrides[key] is None:
+                                app.state.overrides.pop(key, None)
+                            else:
+                                app.state.overrides[key] = previous_overrides[key]
                         raise HTTPException(
                             status_code=500,
                             detail="Could not save box management settings; restart was not requested.",
                         ) from exc
+
+        timer = getattr(app.state, "box_power_off_timer", None)
+        if timer is not None and TIMER_PATHS.intersection(applied):
+            timer.reset()
 
         ok_in, _err_in, ok_dev, _err_dev = _partition_modules_and_devices()
         known = build_static_values(config, ok_in, ok_dev)
