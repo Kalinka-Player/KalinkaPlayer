@@ -56,17 +56,16 @@ def _iter_plugin_entries(
         yield "device", plugin_id, prepared
 
 
-def build_registry(
+Offers = dict[str, list[tuple[str, OptionalPackageSpec]]]
+
+
+def _collect_offers(
     input_modules: dict[str, PreparedPlugin],
     devices: dict[str, PreparedPlugin],
-) -> dict[str, tuple[str, OptionalPackageSpec]]:
-    """Return {key: (declaring_plugin_id, spec)} from all loaded plugins.
-
-    Plugins may share a key, as two that use the same runtime do. The first
-    declarer wins; a warning is logged when the others ask for another
-    pip_spec, probe another import name or list other architectures.
-    """
-    registry: dict[str, tuple[str, OptionalPackageSpec]] = {}
+) -> Offers:
+    """{key: [(plugin_id, spec), ...]} for every loaded plugin offering the
+    key, in load order."""
+    offers: Offers = {}
     for _kind, plugin_id, prepared in _iter_plugin_entries(input_modules, devices):
         plugin_class = prepared.plugin_class
         declared = getattr(plugin_class, "OPTIONAL_PACKAGES", None) or {}
@@ -79,28 +78,45 @@ def build_registry(
                     type(spec).__name__,
                 )
                 continue
-            if key in registry:
-                existing_plugin_id, existing = registry[key]
-                kept = (
-                    existing.pip_spec,
-                    existing.import_name or key,
-                    existing.architectures,
+            offers.setdefault(key, []).append((plugin_id, spec))
+    return offers
+
+
+def _terms(key: str, spec: OptionalPackageSpec) -> tuple:
+    return (spec.pip_spec, spec.import_name or key, spec.architectures)
+
+
+def _first_offers(offers: Offers) -> dict[str, tuple[str, OptionalPackageSpec]]:
+    registry: dict[str, tuple[str, OptionalPackageSpec]] = {}
+    for key, offered in offers.items():
+        first_plugin_id, first = offered[0]
+        for plugin_id, spec in offered[1:]:
+            if _terms(key, spec) != _terms(key, first):
+                logger.warning(
+                    "Optional package key %r declared by both %s and %s "
+                    "with different (pip_spec, import_name, architectures) "
+                    "(%r vs %r); first declarer wins",
+                    key,
+                    first_plugin_id,
+                    plugin_id,
+                    _terms(key, first),
+                    _terms(key, spec),
                 )
-                offered = (spec.pip_spec, spec.import_name or key, spec.architectures)
-                if kept != offered:
-                    logger.warning(
-                        "Optional package key %r declared by both %s and %s "
-                        "with different (pip_spec, import_name, architectures) "
-                        "(%r vs %r); first declarer wins",
-                        key,
-                        existing_plugin_id,
-                        plugin_id,
-                        kept,
-                        offered,
-                    )
-                continue
-            registry[key] = (plugin_id, spec)
+        registry[key] = (first_plugin_id, first)
     return registry
+
+
+def build_registry(
+    input_modules: dict[str, PreparedPlugin],
+    devices: dict[str, PreparedPlugin],
+) -> dict[str, tuple[str, OptionalPackageSpec]]:
+    """Return {key: (declaring_plugin_id, spec)} from all loaded plugins.
+
+    Plugins may share a key, as two that use the same runtime do. The first
+    declarer wins; a warning is logged when the others ask for another
+    pip_spec, probe another import name or list other architectures.
+    """
+    return _first_offers(_collect_offers(input_modules, devices))
 
 
 def build_catalog(
@@ -109,8 +125,13 @@ def build_catalog(
     last_install_path: Path = LAST_INSTALL_PATH,
     pending_installs_path: Path = PENDING_INSTALLS_PATH,
 ) -> dict[str, Any]:
-    """Return the catalog payload for GET /server/optional_packages."""
-    registry = build_registry(input_modules, devices)
+    """Return the catalog payload for GET /server/optional_packages.
+
+    A package two plugins share is listed once, on the terms of the first;
+    ``offered_by`` names every plugin that offers it and what for.
+    """
+    offers = _collect_offers(input_modules, devices)
+    registry = _first_offers(offers)
 
     pending_keys: set[str] = set()
     if pending_installs_path.is_file():
@@ -146,6 +167,10 @@ def build_catalog(
                 "import_name": spec.import_name or key,
                 "installed": _is_installed(spec, key),
                 "pending": key in pending_keys,
+                "offered_by": [
+                    {"plugin_id": plugin_id, "description": offer.description}
+                    for plugin_id, offer in offers[key]
+                ],
             }
         )
 
