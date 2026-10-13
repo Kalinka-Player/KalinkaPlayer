@@ -74,9 +74,8 @@ class JamendoMoodIndex:
         if self._available is None:
             async with self._lock:
                 if self._available is None:
-                    loop = asyncio.get_running_loop()
-                    ok = await loop.run_in_executor(None, self._provision)
-                    if ok and (
+                    ok = True
+                    if (
                         self._embedder.model_id != _EXPECTED_MODEL_ID
                         or self._embedder.model_version
                         != _EXPECTED_MODEL_VERSION
@@ -89,24 +88,40 @@ class JamendoMoodIndex:
                             self._embedder.model_version,
                             _EXPECTED_MODEL_ID, _EXPECTED_MODEL_VERSION)
                         ok = False
+                    loop = asyncio.get_running_loop()
+                    # Cheap checks before the model's and the index's downloads.
+                    if ok:
+                        ok = await loop.run_in_executor(
+                            None, self._index_obtainable)
                     if ok:
                         ok = await self._embedder.available()
                         if not ok:
                             logger.warning(
                                 "shared text embedder unavailable; ai_search off")
+                    if ok:
+                        ok = await loop.run_in_executor(None, self._provision)
                     self._available = ok
         return self._available
+
+    def _index_obtainable(self) -> bool:
+        """Whether the index can be queried once present, and is present or
+        can be fetched; checked without downloading anything."""
+        try:
+            import sqlite_vec  # noqa: F401
+        except Exception as e:
+            logger.warning("sqlite-vec unavailable (%s); ai_search off", e)
+            return False
+        if not os.path.exists(self._index_path) and not self._index_url:
+            logger.warning("Jamendo index missing (%s); ai_search off",
+                           self._index_path)
+            return False
+        return True
 
     def _provision(self) -> bool:
         """Fetch the index if missing; read the index dtype/scale.
 
         Blocking (downloads, sqlite) — always called via an executor.
         """
-        try:
-            import sqlite_vec  # noqa: F401
-        except Exception as e:
-            logger.warning("sqlite-vec unavailable (%s); ai_search off", e)
-            return False
         if not os.path.exists(self._index_path) and not (
             self._index_url and download_file(self._index_url, self._index_path)
         ):
