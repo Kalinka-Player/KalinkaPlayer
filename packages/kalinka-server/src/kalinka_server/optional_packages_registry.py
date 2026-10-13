@@ -64,7 +64,7 @@ def build_registry(
 
     Plugins may share a key, as two that use the same runtime do. The first
     declarer wins; a warning is logged when the others ask for another
-    pip_spec or probe another import name.
+    pip_spec, probe another import name or list other architectures.
     """
     registry: dict[str, tuple[str, OptionalPackageSpec]] = {}
     for _kind, plugin_id, prepared in _iter_plugin_entries(input_modules, devices):
@@ -81,13 +81,17 @@ def build_registry(
                 continue
             if key in registry:
                 existing_plugin_id, existing = registry[key]
-                kept = (existing.pip_spec, existing.import_name or key)
-                offered = (spec.pip_spec, spec.import_name or key)
+                kept = (
+                    existing.pip_spec,
+                    existing.import_name or key,
+                    existing.architectures,
+                )
+                offered = (spec.pip_spec, spec.import_name or key, spec.architectures)
                 if kept != offered:
                     logger.warning(
                         "Optional package key %r declared by both %s and %s "
-                        "with different (pip_spec, import_name) (%r vs %r); "
-                        "first declarer wins",
+                        "with different (pip_spec, import_name, architectures) "
+                        "(%r vs %r); first declarer wins",
                         key,
                         existing_plugin_id,
                         plugin_id,

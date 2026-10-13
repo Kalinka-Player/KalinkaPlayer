@@ -4,7 +4,9 @@ installing it leaves what the server installed alone.
 install_pending installs them with --only-binary=:all:, so a pin with no
 wheel for a box's Python and architecture fails there instead of compiling.
 These resolve every plugin's optional pip_spec on PyPI for each Python and
-architecture a box runs, and skip when PyPI cannot be reached.
+architecture a box runs it on, and skip when PyPI cannot be reached. An
+architecture a spec leaves out must really have no wheel, or the plugin
+calls a feature unavailable that one install would bring.
 
 bootstrap.sh installs the server the same way, from piwheels and PyPI, so
 the server's own dependencies are also resolved for 32-bit Raspberry Pi OS,
@@ -24,6 +26,7 @@ import pytest
 from kalinka_plugin_localfiles.optional_packages import (
     OPTIONAL_PACKAGES as LOCALFILES_OPTIONAL_PACKAGES,
 )
+from kalinka_plugin_sdk import OptionalPackageSpec
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
@@ -42,17 +45,21 @@ ARCHITECTURES = ("aarch64", "x86_64")
 ARMV7L_PYTHONS = ("3.11", "3.13")
 
 
-def optional_packages() -> list[tuple[str, str]]:
-    """Every (key, pip_spec) a plugin offers, as the server registers them."""
-    offers: list[tuple[str, str]] = []
+def optional_packages() -> list[tuple[str, OptionalPackageSpec]]:
+    """Every (key, spec) a plugin offers, as the server registers them."""
+    offers: list[tuple[str, OptionalPackageSpec]] = []
     for plugin in entry_points(group="kalinka.plugins"):
-        declared = getattr(plugin.load(), "OPTIONAL_PACKAGES", {})
-        offers += [(key, spec.pip_spec) for key, spec in declared.items()]
+        offers += getattr(plugin.load(), "OPTIONAL_PACKAGES", {}).items()
     return offers
 
 
-def optional_package_specs() -> list[str]:
-    return [pip_spec for _key, pip_spec in optional_packages()]
+def optional_package_specs(arch: str | None = None) -> list[str]:
+    """Every pip_spec offered, or offered on ``arch``."""
+    return [
+        spec.pip_spec
+        for _key, spec in optional_packages()
+        if arch is None or spec.has_wheels_for(arch)
+    ]
 
 
 def server_requirements() -> list[str]:
@@ -144,11 +151,13 @@ def test_every_plugins_optional_packages_are_checked():
 def test_a_package_two_plugins_offer_is_offered_on_the_same_terms():
     """The registry and install_pending keep the first plugin's spec for a
     shared key, so a second spec would never be what gets installed."""
-    specs: dict[str, set[str]] = {}
-    for key, pip_spec in optional_packages():
-        specs.setdefault(key, set()).add(pip_spec)
+    terms: dict[str, set[tuple]] = {}
+    for key, spec in optional_packages():
+        terms.setdefault(key, set()).add(
+            (spec.pip_spec, spec.import_name or key, spec.architectures)
+        )
 
-    assert {key: found for key, found in specs.items() if len(found) > 1} == {}
+    assert {key: found for key, found in terms.items() if len(found) > 1} == {}
 
 
 def test_a_package_the_server_requires_is_offered_on_its_terms():
@@ -178,9 +187,35 @@ def test_pip_takes_the_check_as_written():
 @pytest.mark.parametrize("python", GLIBC_MINOR)
 def test_every_optional_package_installs_from_wheels(pypi, python, arch):
     """One resolution, so the pins also have to agree with each other."""
-    result = resolve(optional_package_specs(), python, arch)
+    result = resolve(optional_package_specs(arch), python, arch)
 
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("python", ARMV7L_PYTHONS)
+def test_every_package_offered_on_32_bit_arm_installs_there(piwheels, python):
+    result = resolve(
+        optional_package_specs("armv7l"), python, "armv7l", indexes=(PIWHEELS, PYPI)
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_an_architecture_a_package_leaves_out_has_no_wheel_for_it(piwheels):
+    """There a plugin calls the feature unavailable; once a wheel appears the
+    package should be offered instead."""
+    installable_anyway = [
+        (key, arch)
+        for key, spec in dict(optional_packages()).items()
+        for arch in (*ARCHITECTURES, "armv7l")
+        if not spec.has_wheels_for(arch)
+        and resolve(
+            [spec.pip_spec], "3.13", arch, indexes=(PIWHEELS, PYPI)
+        ).returncode
+        == 0
+    ]
+
+    assert installable_anyway == []
 
 
 def test_a_pin_without_a_wheel_fails_the_check(pypi):

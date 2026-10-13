@@ -2,7 +2,12 @@ import asyncio
 import logging
 from typing import ClassVar, Optional
 
-from kalinka_plugin_sdk import ModuleHealthState, ModuleState, OptionalPackageSpec
+from kalinka_plugin_sdk import (
+    ModuleHealthState,
+    ModuleState,
+    OptionalPackageSpec,
+    wheel_architecture,
+)
 from kalinka_plugin_sdk.plugin import InputModulePlugin, InputPluginContext
 from kalinka_plugin_sdk.inputmodule import InputModule
 
@@ -13,11 +18,13 @@ from .optional_packages import OPTIONAL_PACKAGES
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
+_KEY_BY_IMPORT_NAME = {
+    spec.import_name or key: key for key, spec in OPTIONAL_PACKAGES.items()
+}
+
 
 class KalinkaPluginJamendo(InputModulePlugin):
-    # 3 replaced the genre API with the filter contract this module
-    # declares; 3.12 lets the shared embedder name the runtime it lacks.
-    # Keep in sync with pyproject's kalinka-plugin-sdk pin.
+    # 3.12: missing_runtime and architectures. Mirrors pyproject's pin.
     REQUIRES_SDK = ">=3.12,<4"
     PLUGIN_ID = "jamendo"
     CONFIG_MODEL = JamendoConfig
@@ -61,7 +68,8 @@ class KalinkaPluginJamendo(InputModulePlugin):
         the modules page tell the user to set their key instead of silently
         showing an empty catalog. Mood search without its runtime would be
         just as silent, so its packages are reported for the modules page to
-        offer.
+        offer, or, where this box cannot install them, the setting is named
+        so the user can turn it off.
         """
         client_id = ""
         if self._context is not None:
@@ -76,47 +84,81 @@ class KalinkaPluginJamendo(InputModulePlugin):
                     "into this module's settings."
                 ),
             )
-        missing = self._missing_packages()
-        if missing:
+        to_install, no_wheel, not_offered = self._mood_search_lacks()
+        if no_wheel:
+            return ModuleState(
+                state=ModuleHealthState.WARNING,
+                message=(
+                    "Mood search is not available on this device: "
+                    + ", ".join(f"`{name}`" for name in no_wheel)
+                    + f" cannot be installed on {wheel_architecture()}. Turn "
+                    "**Mood / AI search** off in this module's settings."
+                ),
+            )
+        if not_offered:
+            return ModuleState(
+                state=ModuleHealthState.WARNING,
+                message=(
+                    "Mood search needs "
+                    + ", ".join(f"`{name}`" for name in not_offered)
+                    + ", which this version of the Jamendo plugin does not "
+                    "offer to install. Update the plugin, or turn **Mood / AI "
+                    "search** off in this module's settings."
+                ),
+            )
+        if to_install:
             return ModuleState(
                 state=ModuleHealthState.WARNING,
                 message=(
                     "Mood search unavailable. Missing package(s): "
-                    + ", ".join(f"`{m}`" for m in missing)
+                    + ", ".join(f"`{m}`" for m in to_install)
                     + ". Use **Restart with install** in the modules page to "
                     "fetch them."
                 ),
-                missing_packages=missing,
+                missing_packages=to_install,
             )
         return ModuleState(state=ModuleHealthState.READY)
 
     async def required_packages(self) -> list[str]:
         """Packages mood search needs under the current config, which may
-        hold changes the user staged since setup."""
-        return self._missing_packages()
+        hold changes the user staged since setup. None while one of them
+        cannot be installed here, since the rest would be of no use."""
+        to_install, no_wheel, not_offered = self._mood_search_lacks()
+        return [] if no_wheel or not_offered else to_install
 
-    def _missing_packages(self) -> list[str]:
-        """Optional packages mood search needs but cannot import, as the
-        shared embedder names its runtime. None without a client_id:
-        nothing on Jamendo works then, so a box that never set Jamendo up
-        never installs its runtime."""
+    def _mood_search_lacks(self) -> tuple[list[str], list[str], list[str]]:
+        """What mood search runs on and this box lacks under the current
+        config, as the shared embedder names its runtime: the keys of the
+        packages this box can install, the names of those with no wheel for
+        it, and the names of those this plugin does not offer.
+
+        Nothing without a client_id: nothing on Jamendo works then, so a box
+        that never set Jamendo up never installs its runtime.
+        """
         if self._context is None:
-            return []
+            return [], [], []
         config = self._context.config
         if not getattr(config, "client_id", "") or not getattr(
             config, "ai_search_enabled", False
         ):
-            return []
+            return [], [], []
         # A server before SDK 3.12 installed the runtime with itself.
         missing_runtime = getattr(self._context.embedder, "missing_runtime", None)
         if missing_runtime is None:
-            return []
-        lacking = set(missing_runtime())
-        return [
-            key
-            for key, spec in OPTIONAL_PACKAGES.items()
-            if (spec.import_name or key) in lacking
-        ]
+            return [], [], []
+        architecture = wheel_architecture()
+        to_install: list[str] = []
+        no_wheel: list[str] = []
+        not_offered: list[str] = []
+        for name in missing_runtime():
+            key = _KEY_BY_IMPORT_NAME.get(name)
+            if key is None:
+                not_offered.append(name)
+            elif OPTIONAL_PACKAGES[key].has_wheels_for(architecture):
+                to_install.append(key)
+            else:
+                no_wheel.append(name)
+        return to_install, no_wheel, not_offered
 
     async def shutdown(self) -> None:
         logger.info("Shutting down Jamendo input module")

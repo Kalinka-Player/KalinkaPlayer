@@ -107,6 +107,26 @@ def test_registry_warns_when_a_shared_key_probes_another_import_name(caplog):
     assert "declared by both" in caplog.text
 
 
+def test_registry_warns_when_a_shared_key_lists_other_architectures(caplog):
+    """The first declarer's list decides where the package is offered."""
+    input_modules = {
+        "alpha": _prepared({"onnxruntime": _spec("onnxruntime")}),
+        "beta": _prepared(
+            {
+                "onnxruntime": OptionalPackageSpec(
+                    pip_spec="onnxruntime==1.0",
+                    description="desc for onnxruntime",
+                    architectures=("x86_64", "aarch64"),
+                )
+            }
+        ),
+    }
+    with caplog.at_level("WARNING"):
+        registry = build_registry(input_modules, {})
+    assert registry["onnxruntime"][1].architectures == ()
+    assert "declared by both" in caplog.text
+
+
 def test_registry_skips_malformed_entries(caplog):
     input_modules = {
         "weird": _prepared({"bogus": "not a spec object"}),  # type: ignore[dict-item]
