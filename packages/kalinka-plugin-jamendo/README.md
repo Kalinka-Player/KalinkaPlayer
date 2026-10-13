@@ -12,7 +12,7 @@ An input-module plugin that lets you search, browse and play music from [Jamendo
 | ------------------- | --------------------------------------------------------------------------- |
 | `client_id`         | **Required.** Free Jamendo API key. Register an app at https://devportal.jamendo.com |
 | `audio_format`      | Streaming quality: MP3 VBR (default), MP3 96 kbps, OGG, or FLAC.             |
-| `ai_search_enabled` | Mood / AI search over the catalogue (default on). The index it needs downloads automatically on first use. |
+| `ai_search_enabled` | Mood / AI search over the catalogue (default on). Its runtime, `onnxruntime` and `tokenizers`, is installed on demand: the modules page reports it missing and **Restart with install** fetches it. The index it needs then downloads automatically on first use. |
 | `ai_index_path`     | Where the mood-search index is stored (defaults to the Kalinka state dir).   |
 | `ai_index_url`      | Where the index is fetched from when missing — leave empty to manage the file yourself. |
 
@@ -42,7 +42,7 @@ Intentionally **not** implemented:
 
 ```bash
 ./scripts/build_wheel.sh   # build the wheel (version from setuptools-scm)
-./scripts/build_deb.sh     # build the .deb (wheel + Debian control)
+./scripts/build_deb.sh     # build the .deb (wheel + optional-packages manifest + Debian control)
 ```
 
 Release versions come from a git tag of the form `kalinka-plugin-jamendo-v1.2.3`; untagged builds produce a dev version.

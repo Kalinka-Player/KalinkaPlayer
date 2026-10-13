@@ -41,6 +41,13 @@ fi
 # Copy wheel to package root
 cp "dist/${PLUGIN_WHEEL}" "pkgroot/opt/kalinka/wheels/"
 
+# A script, not `-m`, so the build needs none of the plugin's runtime deps.
+echo "Exporting optional-packages manifest..."
+mkdir -p pkgroot/opt/kalinka/allowed_packages
+PYTHONPATH="../kalinka-plugin-sdk/src" \
+    python3 src/kalinka_plugin_jamendo/optional_packages.py \
+    > pkgroot/opt/kalinka/allowed_packages/jamendo.json
+
 # Generate control file from template
 sed "s/@VERSION@/${DEB_VERSION}/g" debian/control.in > pkgroot/DEBIAN/control
 
