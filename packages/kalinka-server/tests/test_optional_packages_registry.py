@@ -158,6 +158,40 @@ def test_catalog_reports_installed_via_import_name(tmp_path: Path):
     assert by_key["ghost"]["installed"] is False
 
 
+def test_catalog_names_every_plugin_that_offers_a_shared_package(tmp_path: Path):
+    """A user of the second plugin alone still learns what it needs the
+    package for."""
+    input_modules = {
+        "localfiles": _prepared(
+            {"onnxruntime": _spec("onnxruntime"), "soxr": _spec("soxr")}
+        ),
+        "jamendo": _prepared(
+            {
+                "onnxruntime": OptionalPackageSpec(
+                    pip_spec="onnxruntime==1.0", description="mood search"
+                )
+            }
+        ),
+    }
+    catalog = build_catalog(
+        input_modules,
+        {},
+        last_install_path=tmp_path / "last.json",
+        pending_installs_path=tmp_path / "pending.json",
+    )
+    by_key = {p["key"]: p for p in catalog["packages"]}
+
+    assert by_key["onnxruntime"]["plugin_id"] == "localfiles"
+    assert by_key["onnxruntime"]["description"] == "desc for onnxruntime"
+    assert by_key["onnxruntime"]["offered_by"] == [
+        {"plugin_id": "localfiles", "description": "desc for onnxruntime"},
+        {"plugin_id": "jamendo", "description": "mood search"},
+    ]
+    assert by_key["soxr"]["offered_by"] == [
+        {"plugin_id": "localfiles", "description": "desc for soxr"}
+    ]
+
+
 def test_catalog_marks_pending_keys(tmp_path: Path):
     input_modules = {
         "p": _prepared({"a": _spec("a"), "b": _spec("b")}),
