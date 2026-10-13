@@ -8,8 +8,11 @@ identifies the embedding space. Plugins that persist vectors derived from it
 mismatch as "recompute or disable" — vectors from different models, or from
 different asset versions of the same model, are not comparable.
 
-The SDK carries only this protocol; the implementation and its ML
-dependencies live in the server. Added in SDK 1.2 — a plugin that requires
+The SDK carries only this protocol; the implementation lives in the server.
+Its runtime, ``onnxruntime`` and ``tokenizers``, is not installed with the
+server: a plugin that embeds declares both in ``OPTIONAL_PACKAGES`` and
+reports them in ``missing_packages`` while they cannot be imported, so the
+user can install them. Added in SDK 1.2 — a plugin that requires
 ``context.embedder`` must pin ``kalinka-plugin-sdk>=1.2``.
 """
 from __future__ import annotations
@@ -50,9 +53,10 @@ class TextEmbedder(Protocol):
         ...
 
     async def available(self) -> bool:
-        """True once the model assets are present (downloading them if
-        needed). False means embedding is not possible on this install;
-        callers should degrade their feature, not raise."""
+        """True once the runtime is installed and the model assets are
+        present (downloading them if needed). False means embedding is not
+        possible on this install; callers should degrade their feature, not
+        raise."""
         ...
 
     async def embed(self, texts: Sequence[str]) -> "List[np.ndarray]":
