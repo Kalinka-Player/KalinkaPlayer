@@ -13,8 +13,9 @@ on first provision the model files are migrated from the plugin's legacy
 directory to avoid a re-download.
 
 The runtime (onnxruntime, tokenizers) is not a server dependency: a plugin
-that embeds offers it as optional packages. Without it the embedder reports
-itself unavailable before downloading anything.
+that embeds offers it as optional packages, asking ``missing_runtime()``
+which ones this box lacks. Without it the embedder reports itself
+unavailable before downloading anything.
 """
 from __future__ import annotations
 
@@ -40,17 +41,11 @@ _FILES = ("model.onnx", "tokenizer.json")
 _RUNTIME_PACKAGES = ("onnxruntime", "tokenizers")
 
 
-def _missing_runtime() -> List[str]:
-    """The runtime packages this interpreter cannot import."""
-    missing = []
-    for name in _RUNTIME_PACKAGES:
-        try:
-            found = importlib.util.find_spec(name) is not None
-        except (ImportError, ValueError):
-            found = False
-        if not found:
-            missing.append(name)
-    return missing
+def _importable(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
 
 
 def download_file(url: str, dest: str) -> bool:
@@ -197,6 +192,9 @@ class SharedTextEmbedder:
     def dim(self) -> int:
         return DIM
 
+    def missing_runtime(self) -> List[str]:
+        return [name for name in _RUNTIME_PACKAGES if not _importable(name)]
+
     async def available(self) -> bool:
         if self._available is None:
             async with self._lock:  # one provisioning; others await it
@@ -207,7 +205,7 @@ class SharedTextEmbedder:
         return self._available
 
     def _provision(self) -> bool:
-        missing = _missing_runtime()
+        missing = self.missing_runtime()
         if missing:
             logger.warning("%s not installed; text embedding off",
                            ", ".join(missing))

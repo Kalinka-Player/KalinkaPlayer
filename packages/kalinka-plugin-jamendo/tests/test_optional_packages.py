@@ -1,11 +1,10 @@
 """Mood search's runtime is offered as optional packages.
 
 The server does not install onnxruntime or tokenizers, so the plugin offers
-them, reports them while they are missing, and ships the allow-list the
-install helper checks requests against.
+them, reports what the shared embedder says it lacks, and ships the
+allow-list the install helper checks requests against.
 """
 
-import importlib.util
 import json
 import os
 import subprocess
@@ -22,22 +21,27 @@ RUNTIME = ("onnxruntime", "tokenizers")
 SDK_SRC = Path(__file__).resolve().parents[2] / "kalinka-plugin-sdk" / "src"
 
 
-def _installed(monkeypatch, names: set[str]) -> None:
-    """Make the runtime packages outside ``names`` unfindable and those in it
-    findable, whatever this interpreter actually has."""
-    find_spec = importlib.util.find_spec
+class FakeEmbedder:
+    """Names the runtime it lacks, as the server's shared embedder does."""
 
-    def fake_find_spec(name, *args, **kwargs):
-        if name in RUNTIME:
-            return object() if name in names else None
-        return find_spec(name, *args, **kwargs)
+    def __init__(self, missing=()):
+        self._missing = list(missing)
 
-    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+    def missing_runtime(self) -> list[str]:
+        return list(self._missing)
 
 
-def _plugin(**config) -> KalinkaPluginJamendo:
+class OlderEmbedder:
+    """The embedder of a server before SDK 3.12, which installed the runtime
+    with itself and has no missing_runtime()."""
+
+
+def _plugin(embedder=None, **config) -> KalinkaPluginJamendo:
     plugin = KalinkaPluginJamendo()
-    plugin._context = SimpleNamespace(config=JamendoConfig(**config))
+    plugin._context = SimpleNamespace(
+        config=JamendoConfig(**config),
+        embedder=FakeEmbedder() if embedder is None else embedder,
+    )
     return plugin
 
 
@@ -66,9 +70,10 @@ def test_the_package_build_prints_the_manifest():
     assert json.loads(result.stdout) == optional_packages.manifest()
 
 
-async def test_mood_search_without_onnxruntime_reports_it_missing(monkeypatch):
-    _installed(monkeypatch, {"tokenizers"})
-    plugin = _plugin(client_id="x", ai_search_enabled=True)
+async def test_mood_search_without_onnxruntime_reports_it_missing():
+    plugin = _plugin(
+        FakeEmbedder(["onnxruntime"]), client_id="x", ai_search_enabled=True
+    )
 
     state = await plugin.get_state()
 
@@ -78,9 +83,8 @@ async def test_mood_search_without_onnxruntime_reports_it_missing(monkeypatch):
     assert await plugin.required_packages() == ["onnxruntime"]
 
 
-async def test_mood_search_without_its_runtime_reports_both(monkeypatch):
-    _installed(monkeypatch, set())
-    plugin = _plugin(client_id="x", ai_search_enabled=True)
+async def test_mood_search_without_its_runtime_reports_both():
+    plugin = _plugin(FakeEmbedder(RUNTIME), client_id="x", ai_search_enabled=True)
 
     state = await plugin.get_state()
 
@@ -89,9 +93,8 @@ async def test_mood_search_without_its_runtime_reports_both(monkeypatch):
     assert await plugin.required_packages() == ["onnxruntime", "tokenizers"]
 
 
-async def test_with_mood_search_off_nothing_is_missing(monkeypatch):
-    _installed(monkeypatch, set())
-    plugin = _plugin(client_id="x", ai_search_enabled=False)
+async def test_with_mood_search_off_nothing_is_missing():
+    plugin = _plugin(FakeEmbedder(RUNTIME), client_id="x", ai_search_enabled=False)
 
     state = await plugin.get_state()
 
@@ -100,9 +103,8 @@ async def test_with_mood_search_off_nothing_is_missing(monkeypatch):
     assert await plugin.required_packages() == []
 
 
-async def test_with_its_runtime_mood_search_is_ready(monkeypatch):
-    _installed(monkeypatch, set(RUNTIME))
-    plugin = _plugin(client_id="x", ai_search_enabled=True)
+async def test_with_its_runtime_mood_search_is_ready():
+    plugin = _plugin(FakeEmbedder(), client_id="x", ai_search_enabled=True)
 
     state = await plugin.get_state()
 
@@ -111,16 +113,24 @@ async def test_with_its_runtime_mood_search_is_ready(monkeypatch):
     assert await plugin.required_packages() == []
 
 
-async def test_without_a_client_id_the_runtime_is_not_installed(monkeypatch):
+async def test_without_a_client_id_the_runtime_is_not_installed():
     """Nothing on Jamendo works before the client_id is set, so a box that
     never set Jamendo up never fetches mood search's runtime."""
-    _installed(monkeypatch, set())
-    plugin = _plugin(ai_search_enabled=True)
+    plugin = _plugin(FakeEmbedder(RUNTIME), ai_search_enabled=True)
 
     state = await plugin.get_state()
 
     assert state.state == ModuleHealthState.ERROR
     assert state.missing_packages == []
+    assert await plugin.required_packages() == []
+
+
+async def test_an_older_servers_embedder_lacks_nothing():
+    plugin = _plugin(OlderEmbedder(), client_id="x", ai_search_enabled=True)
+
+    state = await plugin.get_state()
+
+    assert state.state == ModuleHealthState.READY
     assert await plugin.required_packages() == []
 
 
