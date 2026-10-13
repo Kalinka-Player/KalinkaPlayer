@@ -11,10 +11,15 @@ install where nothing embeds never pays the resident cost. Moved here from
 the Jamendo plugin (its mood index is built in this exact embedding space);
 on first provision the model files are migrated from the plugin's legacy
 directory to avoid a re-download.
+
+The runtime (onnxruntime, tokenizers) is not a server dependency: a plugin
+that embeds offers it as optional packages. Without it the embedder reports
+itself unavailable before downloading anything.
 """
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import logging
 import os
 import urllib.request
@@ -32,6 +37,20 @@ MODEL_VERSION = 1
 DIM = 384
 MAX_TOKENS = 256
 _FILES = ("model.onnx", "tokenizer.json")
+_RUNTIME_PACKAGES = ("onnxruntime", "tokenizers")
+
+
+def _missing_runtime() -> List[str]:
+    """The runtime packages this interpreter cannot import."""
+    missing = []
+    for name in _RUNTIME_PACKAGES:
+        try:
+            found = importlib.util.find_spec(name) is not None
+        except (ImportError, ValueError):
+            found = False
+        if not found:
+            missing.append(name)
+    return missing
 
 
 def download_file(url: str, dest: str) -> bool:
@@ -188,6 +207,11 @@ class SharedTextEmbedder:
         return self._available
 
     def _provision(self) -> bool:
+        missing = _missing_runtime()
+        if missing:
+            logger.warning("%s not installed; text embedding off",
+                           ", ".join(missing))
+            return False
         _migrate_legacy_files(self._model_dir, self._legacy_dirs)
         if not ensure_model(self._model_dir, self._model_url):
             logger.warning("MiniLM model missing (%s); text embedding off",
