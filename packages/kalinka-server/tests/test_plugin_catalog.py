@@ -5,6 +5,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import gzip
 import hashlib
+from importlib.resources import files
 import json
 import threading
 
@@ -101,6 +102,88 @@ def test_parse_preserves_browsing_metadata(document):
     assert parse_public_catalog(encode(document)) == document
 
 
+def test_a_tile_summary_is_kept_and_its_absence_accepted(document):
+    with_summary = deepcopy(document)
+    with_summary["plugins"][0]["summary"] = "Play to {player} from your phone."
+    assert parse_public_catalog(encode(with_summary)) == with_summary
+    assert "summary" not in parse_public_catalog(encode(document))["plugins"][0]
+
+
+def test_fields_a_newer_hub_adds_are_dropped_at_every_depth(document):
+    plugin = document["plugins"][0]
+    plugin["type"] = "output_device"
+    plugin["device_support"] = {
+        "models": ["Example AVR 100"],
+        "families": [],
+        "notes": ["Volume and power."],
+    }
+    expected = deepcopy(document)
+    release = plugin["releases"][0]
+    artifact = release["artifacts"][0]
+    for extended in (
+        document,
+        plugin,
+        plugin["creator"],
+        plugin["maintainers"][0],
+        plugin["source"],
+        plugin["device_support"],
+        release,
+        release["requires"],
+        artifact,
+        artifact["package"],
+        artifact["targets"][0],
+    ):
+        extended["verified"] = True
+        extended["added_later"] = {"nested": ["anything"]}
+
+    assert parse_public_catalog(encode(document)) == expected
+
+
+_BRANCHES = ("allOf", "anyOf", "oneOf", "if", "then", "else", "not")
+
+
+def _branch_field_names(node):
+    names = set(node.get("properties", {})) | set(node.get("required", []))
+    for keyword in _BRANCHES:
+        branches = node.get(keyword, [])
+        for branch in branches if isinstance(branches, list) else [branches]:
+            names |= _branch_field_names(branch)
+    return names
+
+
+def _objects_with_properties(node):
+    if isinstance(node, dict):
+        if "properties" in node:
+            yield node
+        for child in node.values():
+            yield from _objects_with_properties(child)
+    elif isinstance(node, list):
+        for child in node:
+            yield from _objects_with_properties(child)
+
+
+def test_every_field_a_schema_branch_names_survives_pruning():
+    schema = json.loads(
+        files("kalinka_server.plugin_management")
+        .joinpath("plugin.schema.json")
+        .read_text()
+    )
+    for node in _objects_with_properties(schema):
+        named = set()
+        for keyword in _BRANCHES:
+            branches = node.get(keyword, [])
+            for branch in branches if isinstance(branches, list) else [branches]:
+                named |= _branch_field_names(branch)
+        assert named <= set(node["properties"])
+
+
+def test_a_known_field_with_a_bad_value_still_fails_the_catalog(document):
+    document["plugins"][0]["added_later"] = "ignored"
+    document["plugins"][0]["tier"] = "endorsed"
+    with pytest.raises(CatalogError):
+        parse_public_catalog(encode(document))
+
+
 @pytest.mark.parametrize(
     "published_at", ["not-a-date", "2026-10-01", "2026-10-01T12:00:00"]
 )
@@ -137,13 +220,14 @@ async def test_overall_deadline_cancels_stalled_response(monkeypatch):
         lambda d: d.update(schema_version=True),
         lambda d: d.update(schema_version=2),
         lambda d: d.update(catalog_id="another-publisher"),
-        lambda d: d.update(verified=True),
         lambda d: d.update(plugins=[]),
         lambda d: d.update(revision=""),
         lambda d: d["plugins"].append(deepcopy(d["plugins"][0])),
         lambda d: d["plugins"][0].update(schema_version=True),
         lambda d: d["plugins"][0].update(type="output_device"),
-        lambda d: d["plugins"][0].update(verified=True),
+        lambda d: d["plugins"][0].update(summary=""),
+        lambda d: d["plugins"][0].update(summary="x" * 121),
+        lambda d: d["plugins"][0].update(summary="One line.\nAnother."),
         lambda d: d["plugins"][0]["creator"].update(
             url="https://user:secret@example.org/"
         ),

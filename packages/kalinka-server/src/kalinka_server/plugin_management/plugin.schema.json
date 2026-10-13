@@ -9,6 +9,7 @@
     "schema_version": {"const": 1},
     "id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,79}$"},
     "name": {"type": "string", "minLength": 1, "maxLength": 100},
+    "summary": {"type": "string", "minLength": 1, "maxLength": 120, "pattern": "^[^\\n]*$"},
     "description": {"type": "string", "minLength": 1, "maxLength": 1000},
     "distribution": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
     "entry_point": {"type": "string", "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*$"},

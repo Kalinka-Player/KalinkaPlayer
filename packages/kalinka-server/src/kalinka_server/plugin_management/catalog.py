@@ -37,6 +37,7 @@ FLAG_POLL_SECONDS = 5
 
 _SCHEMA = json.loads(files(__package__).joinpath("plugin.schema.json").read_text())
 _VALIDATOR = Draft202012Validator(_SCHEMA, format_checker=FormatChecker())
+_CATALOG_KEYS = ("schema_version", "catalog_id", "revision", "plugins")
 
 
 class CatalogError(ValueError):
@@ -103,6 +104,31 @@ def _check_tree(value, depth=0):
         value.encode("utf-8")
 
 
+def _resolve(schema: dict) -> dict:
+    while "$ref" in schema:
+        schema = _SCHEMA["$defs"][schema["$ref"].removeprefix("#/$defs/")]
+    return schema
+
+
+def _known_fields(value, schema: dict):
+    """Keep only the fields ``schema`` names, at every depth.
+
+    A newer hub may add fields this server predates; they are dropped rather
+    than failing the catalog, and never reach a client.
+    """
+    schema = _resolve(schema)
+    if isinstance(value, dict) and "properties" in schema:
+        known = schema["properties"]
+        return {
+            key: _known_fields(child, known[key])
+            for key, child in value.items()
+            if key in known
+        }
+    if isinstance(value, list) and "items" in schema:
+        return [_known_fields(child, schema["items"]) for child in value]
+    return value
+
+
 def _check_urls(value):
     if isinstance(value, dict):
         for key, child in value.items():
@@ -135,13 +161,9 @@ def parse_public_catalog(data: bytes) -> dict:
             parse_constant=_reject_constant,
         )
         _check_tree(catalog)
-        if not isinstance(catalog, dict) or set(catalog) != {
-            "schema_version",
-            "catalog_id",
-            "revision",
-            "plugins",
-        }:
+        if not isinstance(catalog, dict) or not set(_CATALOG_KEYS) <= set(catalog):
             raise CatalogError("invalid_catalog")
+        catalog = {key: catalog[key] for key in _CATALOG_KEYS}
         if type(catalog["schema_version"]) is not int or catalog["schema_version"] != 1:
             raise CatalogError("unsupported_schema_version")
         if catalog["catalog_id"] != CATALOG_ID:
@@ -156,6 +178,7 @@ def parse_public_catalog(data: bytes) -> dict:
         plugins = catalog["plugins"]
         if not isinstance(plugins, list) or not 1 <= len(plugins) <= 256:
             raise CatalogError("invalid_catalog")
+        plugins = catalog["plugins"] = [_known_fields(p, _SCHEMA) for p in plugins]
         identities = {key: set() for key in ("id", "distribution", "entry_point")}
         for plugin in plugins:
             _VALIDATOR.validate(plugin)
