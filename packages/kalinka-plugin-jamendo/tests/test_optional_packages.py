@@ -12,13 +12,24 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from kalinka_plugin_jamendo import optional_packages
+import pytest
+
+from kalinka_plugin_jamendo import module_setup, optional_packages
 from kalinka_plugin_jamendo.config_model import JamendoConfig
 from kalinka_plugin_jamendo.module_setup import KalinkaPluginJamendo
 from kalinka_plugin_sdk import ModuleHealthState
 
 RUNTIME = ("onnxruntime", "tokenizers")
 SDK_SRC = Path(__file__).resolve().parents[2] / "kalinka-plugin-sdk" / "src"
+
+
+def _on(monkeypatch, architecture: str) -> None:
+    monkeypatch.setattr(module_setup, "wheel_architecture", lambda: architecture)
+
+
+@pytest.fixture(autouse=True)
+def on_a_64_bit_pi(monkeypatch):
+    _on(monkeypatch, "aarch64")
 
 
 class FakeEmbedder:
@@ -50,7 +61,7 @@ def test_the_manifest_is_the_plugins_allow_list():
 
     assert manifest["plugin"] == KalinkaPluginJamendo.PLUGIN_ID
     assert manifest["packages"] == {
-        key: spec.model_dump()
+        key: spec.model_dump(mode="json")
         for key, spec in KalinkaPluginJamendo.OPTIONAL_PACKAGES.items()
     }
     assert set(manifest["packages"]) == set(RUNTIME)
@@ -123,6 +134,83 @@ async def test_without_a_client_id_the_runtime_is_not_installed():
     assert state.state == ModuleHealthState.ERROR
     assert state.missing_packages == []
     assert await plugin.required_packages() == []
+
+
+async def test_on_32_bit_arm_mood_search_is_unavailable_not_one_install_away(
+    monkeypatch,
+):
+    """onnxruntime has no armv7l wheel, so an install there would only fail,
+    on every restart."""
+    _on(monkeypatch, "armv7l")
+    plugin = _plugin(FakeEmbedder(RUNTIME), client_id="x", ai_search_enabled=True)
+
+    state = await plugin.get_state()
+
+    assert state.state == ModuleHealthState.WARNING
+    assert state.missing_packages == []
+    assert "not available on this device" in state.message
+    assert "`onnxruntime`" in state.message
+    assert "armv7l" in state.message
+    assert "**Mood / AI search** off" in state.message
+    assert await plugin.required_packages() == []
+
+
+async def test_on_32_bit_arm_a_package_with_wheels_there_is_still_offered(
+    monkeypatch,
+):
+    _on(monkeypatch, "armv7l")
+    plugin = _plugin(
+        FakeEmbedder(["tokenizers"]), client_id="x", ai_search_enabled=True
+    )
+
+    state = await plugin.get_state()
+
+    assert state.missing_packages == ["tokenizers"]
+    assert await plugin.required_packages() == ["tokenizers"]
+
+
+async def test_a_runtime_package_jamendo_does_not_offer_leaves_it_unavailable():
+    """A newer server's embedder may run on a package this plugin predates;
+    the box could install it, so its architecture is not the reason."""
+    plugin = _plugin(
+        FakeEmbedder(["tokenizers", "sentencepiece"]),
+        client_id="x",
+        ai_search_enabled=True,
+    )
+
+    state = await plugin.get_state()
+
+    assert state.state == ModuleHealthState.WARNING
+    assert state.missing_packages == []
+    assert "`sentencepiece`" in state.message
+    assert "Update the plugin" in state.message
+    assert "aarch64" not in state.message
+    assert await plugin.required_packages() == []
+
+
+async def test_on_32_bit_arm_a_package_without_wheels_outranks_one_not_offered(
+    monkeypatch,
+):
+    """Updating the plugin would not bring onnxruntime to this box."""
+    _on(monkeypatch, "armv7l")
+    plugin = _plugin(
+        FakeEmbedder(["onnxruntime", "sentencepiece"]),
+        client_id="x",
+        ai_search_enabled=True,
+    )
+
+    state = await plugin.get_state()
+
+    assert "not available on this device" in state.message
+    assert "`onnxruntime`" in state.message
+    assert await plugin.required_packages() == []
+
+
+async def test_on_32_bit_arm_with_mood_search_off_nothing_is_said(monkeypatch):
+    _on(monkeypatch, "armv7l")
+    plugin = _plugin(FakeEmbedder(RUNTIME), client_id="x", ai_search_enabled=False)
+
+    assert (await plugin.get_state()).state == ModuleHealthState.READY
 
 
 async def test_an_older_servers_embedder_lacks_nothing():

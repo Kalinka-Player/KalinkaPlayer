@@ -31,6 +31,8 @@ OPTIONAL_PACKAGES: dict[str, OptionalPackageSpec] = {
             "ONNX inference runtime for the text embedder that turns a mood "
             "search query into the vector the Jamendo index is matched on."
         ),
+        # Neither PyPI nor piwheels has a 32-bit ARM build.
+        architectures=("x86_64", "aarch64"),
     ),
     "tokenizers": OptionalPackageSpec(
         pip_spec="tokenizers>=0.15",
@@ -48,7 +50,8 @@ def manifest() -> dict:
         "plugin": PLUGIN_ID,
         "schema": MANIFEST_SCHEMA_VERSION,
         "packages": {
-            key: spec.model_dump() for key, spec in OPTIONAL_PACKAGES.items()
+            key: spec.model_dump(mode="json")
+            for key, spec in OPTIONAL_PACKAGES.items()
         },
     }
 
