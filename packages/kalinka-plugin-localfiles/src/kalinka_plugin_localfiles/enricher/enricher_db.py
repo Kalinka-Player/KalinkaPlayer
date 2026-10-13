@@ -9,12 +9,25 @@ from typing import List, Dict, Optional, Any, Tuple
 
 from ..config_model import LocalFilesConfig
 from ..resolution.provenance_db import ProvenanceDb
+from ..resolution.resolver import FILENAME, GUESSED, OBSERVED, TAG_CONSENSUS
 from ..worker_utils import retry_db_locked, stage_status
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
 # Key under which the enrichment fingerprint is stored in ``enricher_state``.
 ENRICHMENT_FINGERPRINT_KEY = "enrichment_fingerprint"
+
+
+def _has_local_artist(raw_tags, cue_tracks) -> Optional[bool]:
+    """Unknown evidence is not proof that the file was untagged."""
+    if raw_tags is None:
+        return None
+    try:
+        tags = json.loads(raw_tags)
+        cue = json.loads(cue_tracks) if cue_tracks else {}
+        return bool(tags.get("artist") or tags.get("TPE1") or cue.get("artist"))
+    except (ValueError, TypeError, AttributeError):
+        return None
 
 
 @retry_db_locked
@@ -65,6 +78,32 @@ class AsyncEnricherDb(ProvenanceDb):
                 (track_id, fingerprint, int(time.time())),
             )
             await conn.commit()
+
+    async def get_track_artist_origin(self, track_id: str) -> Optional[Dict]:
+        """The evidence assigning this file to an artist, not naming that artist.
+
+        A text search can identify a shared artist row called "Track" without
+        proving that an untagged file belongs to that artist. Old databases
+        lack the relationship origin; their captured tags supply the fallback.
+        """
+        origin = await self.get_resolved_origin("track", track_id, "artist_id")
+        if origin:
+            return origin
+        async with self._open() as conn:
+            row = await (await conn.execute(
+                "SELECT e.raw_tags, e.cue_tracks, ar.tier FROM tracks t "
+                "JOIN track_evidence e ON e.track_id=t.id "
+                "LEFT JOIN resolved_origin ar ON ar.entity_type='artist' "
+                "AND ar.entity_id=t.artist_id AND ar.field='name' WHERE t.id=?",
+                (track_id,),
+            )).fetchone()
+        if row:
+            tagged = _has_local_artist(row[0], row[1])
+            if tagged:
+                return {"source": TAG_CONSENSUS, "tier": OBSERVED}
+            if tagged is False and row[2] in (GUESSED, "inferred"):
+                return {"source": FILENAME, "tier": GUESSED}
+        return None
 
     async def get_track_by_id(self, track_id: str) -> Optional[Dict]:
         """Get track information by ID"""
@@ -175,8 +214,11 @@ class AsyncEnricherDb(ProvenanceDb):
           so without this they would never be re-matched when a matcher
           improves — restoring the pre-2e "retry the unmatched on a matcher
           change" behaviour for artists/tracks (albums were partly covered via
-          the generated-art sweep below). Fully-matched rows (``mbid`` set) are
-          left untouched, so display never churns.
+          the generated-art sweep below).
+
+        Matched tracks whose fingerprint supplied a title but left a guessed
+        artist association are retried too. Tagged, pinned and verified artist
+        associations are left alone.
 
         Albums carrying *generated* artwork are re-opened too, with the cover
         cleared: a changed setup may now find a real cover the generated one
@@ -196,6 +238,30 @@ class AsyncEnricherDb(ProvenanceDb):
                 f"OR (enriched = 1 AND (mbid IS NULL OR mbid = ''))"
             )
             counts[table] += cursor.rowcount or 0
+
+        # Earlier AcoustID passes accepted the recording but kept a guessed
+        # artist after a text search promoted the shared artist's name. Retry
+        # only those untagged associations, preserving tags and verified ones.
+        await cursor.execute(
+            "SELECT t.id, e.raw_tags, e.cue_tracks FROM tracks t "
+            "JOIN track_evidence e ON e.track_id=t.id "
+            "JOIN resolved_origin title ON title.entity_type='track' "
+            "AND title.entity_id=t.id AND title.field='title' "
+            "JOIN resolved_origin artist ON artist.entity_type='artist' "
+            "AND artist.entity_id=t.artist_id AND artist.field='name' "
+            "LEFT JOIN resolved_origin relation ON relation.entity_type='track' "
+            "AND relation.entity_id=t.id AND relation.field='artist_id' "
+            "WHERE t.enriched != 0 AND title.source LIKE 'acoustid:%' "
+            "AND artist.tier IN ('guessed','inferred') "
+            "AND (relation.tier IS NULL OR relation.tier='guessed')"
+        )
+        retry = [
+            (row[0],) for row in await cursor.fetchall()
+            if _has_local_artist(row[1], row[2]) is False
+        ]
+        if retry:
+            await cursor.executemany("UPDATE tracks SET enriched=0 WHERE id=?", retry)
+            counts["tracks"] += len(retry)
         return counts
 
     async def reset_failed_to_retry(self) -> Dict[str, int]:

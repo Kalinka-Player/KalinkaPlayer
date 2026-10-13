@@ -107,9 +107,8 @@ class TestLayouts:
     async def test_a_file_at_the_root_has_only_its_own_name_to_go_on(self, indexer):
         """No directory above it names anything, so only the title survives.
 
-        The album it lands in is named after the music root itself — the
-        folder ladder has always ended there, and the model declines to read
-        an album out of a path with no album directory in it.
+        The root is a storage container, so neither the parser nor clustering
+        may invent an album from its name.
         """
         fi, music_dir, config = indexer
         row = await _track(config, await _scan(fi, music_dir, "Stagger Lee.flac"))
@@ -117,7 +116,7 @@ class TestLayouts:
         # basename, extension and all.
         assert row["title"] == "Stagger Lee"
         assert row["artist_name"] == "Unknown Artist"
-        assert row["album_title"] == music_dir.name
+        assert row["album_id"] == "unknown_album"
 
 
 class TestTagsWin:

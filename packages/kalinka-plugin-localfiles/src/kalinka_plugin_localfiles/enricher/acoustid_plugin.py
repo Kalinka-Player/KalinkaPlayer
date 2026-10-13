@@ -43,7 +43,9 @@ class AcoustIdPlugin(EnricherPlugin):
     # 3: the rescue keys on provenance rather than emptiness, its match is
     # verified rather than inferred (see enrich_track), and an album that
     # names its own tracks is left to name them.
-    ENRICHER_VERSION = 3
+    # 4: artist rescue follows the file's artist evidence, even after a text
+    # search identified the shared artist row named by its filename guess.
+    ENRICHER_VERSION = 4
 
     def __init__(self, config: LocalFilesConfig, db_manager):
         self.config = config
@@ -646,7 +648,13 @@ class AcoustIdPlugin(EnricherPlugin):
     async def _artist_is_unresolved(self, track: Dict) -> bool:
         """True when nothing better than the file's own path named the artist."""
         artist_id = track.get("artist_id")
-        return artist_id in _UNNAMED_ARTIST_IDS or await self._is_a_guess(
+        if artist_id in _UNNAMED_ARTIST_IDS:
+            return True
+        if track.get("id"):
+            origin = await self.db_manager.get_track_artist_origin(track["id"])
+            if origin:
+                return origin["tier"] == GUESSED
+        return await self._is_a_guess(
             "artist", artist_id, "name"
         )
 
@@ -669,6 +677,22 @@ class AcoustIdPlugin(EnricherPlugin):
         """True when nothing better than the file's own path named the track."""
         return not (track.get("title") or "").strip() or await self._is_a_guess(
             "track", track["id"], "title"
+        )
+
+    async def needs_rescue(self, track: Dict) -> bool:
+        """A text match must not close the chain over a filename guess."""
+        if is_dsd(track.get("file_path") or "", track.get("format") or ""):
+            return False
+        if not track.get("mbid"):
+            return True
+        if await self._named_by_its_file_name(track):
+            return (
+                not (track.get("title") or "").strip()
+                or track.get("artist_id") in _UNNAMED_ARTIST_IDS
+            )
+        return (
+            await self._artist_is_unresolved(track)
+            or await self._title_is_unresolved(track)
         )
 
     async def enrich_track(self, track: Dict) -> Optional[Dict]:
@@ -810,6 +834,10 @@ class AcoustIdPlugin(EnricherPlugin):
                 if artist_id:
                     updates["artist_id"] = artist_id
                     updates["artist_name"] = match_info["artist_name"]
+                    await self.db_manager.record_resolved_origin(
+                        "track", track["id"], "artist_id",
+                        f"acoustid:{match_info['recording_mbid']}", "verified",
+                    )
                     if artist_id != original_artist_id:
                         changed_items["artists"].add(artist_id)
 

@@ -141,6 +141,8 @@ KINDS: Dict[str, _KindQuery] = {
     ),
 }
 
+RECENT_KINDS = ("album", "track", "artist")
+
 
 def folder_prefix(folder: str) -> str:
     """``folder`` as the start every path inside it shares.
@@ -1006,34 +1008,52 @@ class LocalFilesInputModuleDb:
             conn.close()
 
     def list_recently_added(
-        self, offset: int = 0, limit: int = 50
+        self,
+        offset: int = 0,
+        limit: int = 50,
+        kinds: Tuple[str, ...] = (),
+        filter: Optional[ListingFilter] = None,
     ) -> Tuple[List[Tuple[str, Dict]], int]:
-        """One page of what arrived in the library most recently, newest
-        first, as ``(kind, row)`` pairs: each album as one entry dated by its
-        first file, and each track that belongs to no album on its own.
+        """Recent albums, all tracks and artists, dated by file arrival.
 
-        Dated by when a file was first indexed, which a re-tag or a move does
-        not change, so an album the enricher touched does not resurface.
+        Albums and artists use their newest track's first arrival. Filters
+        narrow each kind before counting and paging; metadata edits and moves
+        never change arrival dates. Empty ``kinds`` means all three kinds.
         """
-        arrivals = """
-            SELECT 'album' AS kind, t.album_id AS id,
-                   MIN(lf.first_indexed) AS added
-            FROM tracks t JOIN library_file lf ON lf.file_id = t.id
-            WHERE t.album_id != 'unknown_album'
-            GROUP BY t.album_id
-            UNION ALL
-            SELECT 'track', t.id, lf.first_indexed
-            FROM tracks t JOIN library_file lf ON lf.file_id = t.id
-            WHERE t.album_id = 'unknown_album'
-        """
+        entity_ids = {"album": "t.album_id", "track": "t.id", "artist": "t.artist_id"}
+        branches: List[str] = []
+        params: List[Any] = []
+        for kind in dict.fromkeys(kinds or RECENT_KINDS):
+            entity_id = entity_ids[kind]
+            query = KINDS[kind]
+            genre_predicate = query.genre_predicate
+            if kind == "artist":
+                # A compilation's performers need not be its album artist.
+                genre_predicate = (
+                    "EXISTS (SELECT 1 FROM tracks tg JOIN albums ag ON ag.id=tg.album_id "
+                    "WHERE tg.artist_id=ar.id AND has_genre(ag.genre, ?))"
+                )
+            where, where_params = self._listing_where(
+                filter or ListingFilter(), query.text_fields, genre_predicate
+            )
+            branches.append(
+                f"SELECT ? AS kind, {query.id_expr} AS id, arrivals.added "
+                f"FROM {query.source} JOIN ("
+                f"SELECT {entity_id} AS id, MAX(lf.first_indexed) AS added "
+                "FROM tracks t JOIN library_file lf ON lf.file_id=t.id "
+                f"WHERE {entity_id} != ? GROUP BY {entity_id}"
+                f") arrivals ON arrivals.id={query.id_expr} WHERE {where}"
+            )
+            params.extend((kind, f"unknown_{kind}", *where_params))
+        arrivals = " UNION ALL ".join(branches)
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-            cursor.execute(f"SELECT COUNT(*) AS count FROM ({arrivals})")
+            cursor.execute(f"SELECT COUNT(*) AS count FROM ({arrivals})", params)
             total = cursor.fetchone()["count"]
             cursor.execute(
                 f"{arrivals} ORDER BY added DESC, kind, id LIMIT ? OFFSET ?",
-                (limit, offset),
+                (*params, limit, offset),
             )
             page = [(row["kind"], row["id"]) for row in cursor.fetchall()]
             return _materialised(cursor, page), total

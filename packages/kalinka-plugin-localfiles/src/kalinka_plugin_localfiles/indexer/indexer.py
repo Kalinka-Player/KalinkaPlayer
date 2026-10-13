@@ -37,6 +37,7 @@ from mutagen.dsdiff import DSDIFF
 
 from ..config_model import LocalFilesConfig
 from ..filename_model import get_parser, names_a_vinyl_side, parse_music_path
+from ..filename_model.assembler import ASSEMBLER_VERSION
 from ..housekeeping import in_housekeeping, is_hidden_file, is_housekeeping_dir
 from ..resolution.resolver import (
     FILENAME,
@@ -292,6 +293,7 @@ class FileIndexer:
         self.artwork_path = Path(config.artwork_path).expanduser().resolve()
         self.running = False
         self.lock = asyncio.Lock()
+        self._deferred_files: Dict[str, float] = {}
         # Scan progress (full scans only): total from the pre-count walk,
         # processed incremented per file. Published to the indexer_state
         # table in batches so /indexer/status can show an "indexing" stage.
@@ -395,6 +397,33 @@ class FileIndexer:
                 reparsed,
             )
 
+        await self._group_albums()
+
+        backfilled = await self.backfill_embedded_art(available_folders)
+        if any(backfilled.values()):
+            logger.info(
+                "Embedded art restored for %d album(s) and %d single(s)",
+                backfilled["albums"], backfilled["tracks"],
+            )
+
+        from_folders = await self.backfill_folder_art(available_folders)
+        if from_folders["albums"]:
+            logger.info(
+                "Cover taken from the album folder for %d album(s)",
+                from_folders["albums"],
+            )
+
+        if any(changed_items.values()):
+            logger.info(
+                f"Scan completed with changes: Artists={len(changed_items['artists'])}, "
+                f"Albums={len(changed_items['albums'])}, Tracks={len(changed_items['tracks'])}"
+            )
+        else:
+            logger.debug("Scan completed with no changes")
+
+        await trigger_enricher_update("enrich")
+
+    async def _group_albums(self) -> None:
         # Group tracks into albums. Folder-first clustering (when enabled)
         # supersedes the V/A-only coalesce pass — it does V/A folding plus
         # tag-variance merging, untagged-rip titling and multi-album splits.
@@ -416,33 +445,6 @@ class FileIndexer:
                     f"{va_results['tracks']} track(s) re-pointed, "
                     f"{va_results['orphans']} orphan album(s) deleted"
                 )
-
-        backfilled = await self.backfill_embedded_art(available_folders)
-        if any(backfilled.values()):
-            logger.info(
-                "Embedded art restored for %d album(s) and %d single(s)",
-                backfilled["albums"], backfilled["tracks"],
-            )
-
-        from_folders = await self.backfill_folder_art(available_folders)
-        if from_folders["albums"]:
-            logger.info(
-                "Cover taken from the album folder for %d album(s)",
-                from_folders["albums"],
-            )
-
-        # If anything changed and we have an enricher callback, notify it
-        if any(changed_items.values()):
-            logger.info(
-                f"Scan completed with changes: Artists={len(changed_items['artists'])}, "
-                f"Albums={len(changed_items['albums'])}, Tracks={len(changed_items['tracks'])}"
-            )
-        else:
-            logger.debug("Scan completed with no changes")
-
-        # Trigger the enricher run regardless of changes
-        # as there might be old files pending enrichment
-        await trigger_enricher_update("enrich")
 
     async def handle_incremental_changes(self, changes: Set[Tuple[str, str]]):
         """Process filesystem changes detected by the inotify watcher."""
@@ -516,7 +518,10 @@ class FileIndexer:
                         f"Error processing changed file {file_path}: {str(e)}"
                     )
 
-        await self.cleanup_stale_tracks()
+        removed = await self.cleanup_stale_tracks()
+
+        if any(changed_items.values()) or any(removed.values()):
+            await self._group_albums()
 
         if any(changed_items.values()):
             logger.info(
@@ -524,6 +529,23 @@ class FileIndexer:
                 f"Albums={len(changed_items['albums'])}, Tracks={len(changed_items['tracks'])}"
             )
             await trigger_enricher_update("enrich")
+
+    def deferred_retry_in(self) -> float:
+        """Seconds until an unsettled file should be checked again."""
+        if not self._deferred_files:
+            return 30.0
+        return max(0.0, min(self._deferred_files.values()) - time.monotonic())
+
+    async def retry_deferred_files(self) -> None:
+        due = {
+            ("file_closed", path)
+            for path, deadline in self._deferred_files.items()
+            if deadline <= time.monotonic()
+        }
+        if due:
+            for _, path in due:
+                self._deferred_files.pop(path, None)
+            await self.handle_incremental_changes(due)
 
     async def _iter_audio_files(self, folder: str) -> AsyncIterator[str]:
         """Supported audio files under ``folder``, depth first.
@@ -697,6 +719,7 @@ class FileIndexer:
             logger.debug(f"Skipping file in a housekeeping folder: {file_path}")
             return None
 
+        self._deferred_files.pop(file_path, None)
         # A file that is gone is nothing to index. Any other failure to
         # measure it is the storage's, and the caller decides what that means.
         storage = self.storage.for_path(file_path)
@@ -709,7 +732,8 @@ class FileIndexer:
         # Quiescence guard: skip files that may still be in mid-upload.
         # POSIX has no "upload complete" signal, so we infer it from mtime/size
         # stability over a short window. If the file is still changing, defer —
-        # the next CLOSE_WRITE/MOVED_TO event or scheduled rescan will retry it.
+        # retry it ourselves: copying tools can restore the original timestamp
+        # after CLOSE_WRITE, without sending another content event.
         # A negative age means the mtime came from a clock ahead of ours, as an
         # unsynchronised NAS reports; waiting out the skew would stall the scan
         # for hours per file, and the heuristic cannot say anything either way.
@@ -733,6 +757,9 @@ class FileIndexer:
                         f"File still being written, deferring: {file_path} "
                         f"(size {stat.size}->{stat_after.size}, "
                         f"mtime {stat.mtime}->{stat_after.mtime})"
+                    )
+                    self._deferred_files[file_path] = (
+                        time.monotonic() + max(1.0, quiescence_seconds)
                     )
                     return None
                 stat = stat_after
@@ -898,6 +925,10 @@ class FileIndexer:
             "track", track_id, "title",
             from_tag=bool(tagged_title), path_source=FILENAME,
         )
+        await self._record_origin(
+            "track", track_id, "artist_id",
+            from_tag=bool(metadata.get("artist")), path_source=FILENAME,
+        )
 
         await self.db_manager.upsert_library_file(
             track_id, file_path, file_size, modified_time, device_id, inode
@@ -1014,7 +1045,10 @@ class FileIndexer:
         moved out of the enricher — and it is narrower: rows a tag or an
         external match resolved are never touched.
         """
-        identity = json.dumps(get_parser().identity(), sort_keys=True)
+        identity = json.dumps(
+            {**get_parser().identity(), "assembler_version": ASSEMBLER_VERSION},
+            sort_keys=True,
+        )
         if await self.db_manager.get_filename_model_identity() == identity:
             return 0
 
@@ -1755,6 +1789,7 @@ class FileIndexer:
                     folder,
                     folder_rows,
                     legacy_encoding=self.config.legacy_tag_encoding,
+                    is_library_root=folder in self.music_folders,
                     **self._album_facts_from_path(folder_rows),
                 ).clusters
             )
@@ -2296,7 +2331,10 @@ async def _indexer_worker(config: LocalFilesConfig, db_manager: AsyncIndexerDb):
         while True:
             try:
                 try:
-                    command = await asyncio.wait_for(_indexer_queue.get(), timeout=30.0)
+                    command = await asyncio.wait_for(
+                        _indexer_queue.get(),
+                        timeout=min(30.0, max(0.01, indexer_instance.deferred_retry_in())),
+                    )
                     logger.debug(f"Received command: {command}")
                     if command == "scan":
                         logger.info("Manual indexer scan triggered")
@@ -2311,11 +2349,12 @@ async def _indexer_worker(config: LocalFilesConfig, db_manager: AsyncIndexerDb):
                         await indexer_instance.handle_incremental_changes(
                             command["incremental_changes"]
                         )
-                        last_run = time.time()
                     _indexer_queue.task_done()
                 except asyncio.TimeoutError:
                     # This is expected - allows periodic checking for scheduled scans
                     pass
+
+                await indexer_instance.retry_deferred_files()
 
                 if time.time() - last_run > interval_minutes * 60:
                     logger.debug(

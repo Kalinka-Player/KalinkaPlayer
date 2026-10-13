@@ -5,7 +5,7 @@ import os
 import time
 from functools import partial
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, List, Dict, Optional, Tuple
 
 from fastapi import HTTPException
@@ -78,6 +78,7 @@ from .input_module_db import (
     FolderSummary,
     ListingFilter,
     LocalFilesInputModuleDb,
+    RECENT_KINDS,
     fold_for_match,
     folder_prefix,
     genre_parts,
@@ -114,6 +115,7 @@ ARTIST_SHELF_FILTERS = [_text_filter("artists"), GENRE_FILTER]
 TRACK_SHELF_FILTERS = [_text_filter("titles, artists and albums"), GENRE_FILTER]
 PLAYLIST_SHELF_FILTERS = [_text_filter("names and descriptions"), GENRE_FILTER]
 LIBRARY_FILTERS = [_text_filter("your library"), TYPE_FILTER, GENRE_FILTER]
+RECENT_FILTERS = [_text_filter("recent additions"), TYPE_FILTER, GENRE_FILTER]
 
 LIBRARY_ENDPOINT = "library"
 FILES_ENDPOINT = "files"
@@ -143,6 +145,7 @@ class _LibrarySection:
     noun: str
     content_type: PreviewContentType
     filters: List[FilterSpec]
+    recent: bool = False
 
 
 LIBRARY_SECTIONS = (
@@ -182,14 +185,22 @@ LIBRARY_SECTIONS = (
 
 SECTION_BY_ENDPOINT = {section.endpoint: section for section in LIBRARY_SECTIONS}
 TYPE_VALUES = tuple(section.kind for section in LIBRARY_SECTIONS)
+RECENT_SECTIONS = tuple(
+    replace(SECTION_BY_ENDPOINT[f"{kind}s"], endpoint=f"recent-{kind}s", recent=True)
+    for kind in RECENT_KINDS
+)
+SECTION_BY_ENDPOINT.update({section.endpoint: section for section in RECENT_SECTIONS})
 
 SHELF_FILTERS = {
     LIBRARY_ENDPOINT: LIBRARY_FILTERS,
-    **{section.endpoint: section.filters for section in LIBRARY_SECTIONS},
+    RECENT_ENDPOINT: RECENT_FILTERS,
+    **{section.endpoint: section.filters for section in SECTION_BY_ENDPOINT.values()},
 }
 
 
-def _filtered_kinds(filter: FilterQuery) -> Tuple[str, ...]:
+def _filtered_kinds(
+    filter: FilterQuery, allowed: Tuple[str, ...] = TYPE_VALUES
+) -> Tuple[str, ...]:
     """The kinds a library listing holds, given its ``type`` constraint.
 
     An unknown value is refused rather than matched by nothing: ``type`` has a
@@ -201,7 +212,7 @@ def _filtered_kinds(filter: FilterQuery) -> Tuple[str, ...]:
         return ()
     if selector.all or selector.none:
         raise UnsupportedFilter(TYPE_FIELD, "only `any` is supported")
-    unknown = [value for value in selector.any if value not in TYPE_VALUES]
+    unknown = [value for value in selector.any if value not in allowed]
     if unknown:
         raise UnsupportedFilter(
             TYPE_FIELD, f"unknown value(s): {', '.join(unknown)}"
@@ -574,7 +585,9 @@ class LocalFilesInputModule(InputModule):
         if endpoint == FILES_ENDPOINT:
             return self._browse_library_folders(offset, limit)
         if endpoint == RECENT_ENDPOINT:
-            return self._browse_recent(offset, limit)
+            return self._browse_recent(
+                offset, limit, _filtered_kinds(filter, RECENT_KINDS), listing
+            )
         if endpoint.startswith(FOLDER_ENDPOINT_PREFIX):
             return self._browse_folder(
                 endpoint[len(FOLDER_ENDPOINT_PREFIX) :], offset, limit
@@ -585,6 +598,8 @@ class LocalFilesInputModule(InputModule):
             )
         section = SECTION_BY_ENDPOINT.get(endpoint)
         if section is not None:
+            if section.recent:
+                return self._browse_recent(offset, limit, (section.kind,), listing)
             return self._browse_kind(section.kind, offset, limit, listing)
 
         ep = endpoint.split("-")
@@ -593,9 +608,14 @@ class LocalFilesInputModule(InputModule):
         logger.warning(f"Unknown catalog endpoint: {endpoint}")
         return EmptyList(offset, limit)
 
+    def _section_total(self, section: _LibrarySection) -> int:
+        if section.recent:
+            return self.db_manager.list_recently_added(limit=0, kinds=(section.kind,))[1]
+        return self.db_manager.get_kind_total(section.kind)
+
     def _section_card(self, section: _LibrarySection) -> Optional[BrowseItem]:
         """The section as a browsable shelf, or None when it holds nothing."""
-        total = self.db_manager.get_kind_total(section.kind)
+        total = self._section_total(section)
         if total == 0:
             return None
 
@@ -610,7 +630,11 @@ class LocalFilesInputModule(InputModule):
                 id=id,
                 title=section.title,
                 filters=section.filters,
-                description=f"Your {section.noun}",
+                description=(
+                    f"Recently added {section.noun}"
+                    if section.recent
+                    else f"Your {section.noun}"
+                ),
                 preview_config=Preview(
                     type=PreviewType.IMAGE_TEXT,
                     content_type=section.content_type,
@@ -652,17 +676,19 @@ class LocalFilesInputModule(InputModule):
         )
 
     def _recent_card(self) -> BrowseItem:
+        sections = [self._section_card(section) for section in RECENT_SECTIONS]
         id = catalog_id(RECENT_ENDPOINT)
         return BrowseItem(
             id=id,
             name="Recently added",
             can_browse=True,
             can_add=False,
-            subname="Newest albums and singles",
+            subname="Newest albums, tracks and artists",
             catalog=Catalog(
                 id=id,
                 title="Recently added",
-                description="Newest albums and singles",
+                description="Newest albums, tracks and artists",
+                filters=RECENT_FILTERS,
                 preview_config=Preview(
                     type=PreviewType.IMAGE_TEXT,
                     icon="recent",
@@ -672,6 +698,7 @@ class LocalFilesInputModule(InputModule):
                 ),
                 role=CatalogRole.LIBRARY,
             ),
+            sections=[section for section in sections if section is not None],
         )
 
     def _browse_root(self, offset: int, limit: int) -> BrowseItemList:
@@ -853,10 +880,15 @@ class LocalFilesInputModule(InputModule):
         items += [self._create_track_browse_item(track) for track in tracks]
         return BrowseItemList(offset=offset, limit=limit, total=total, items=items)
 
-    def _browse_recent(self, offset: int, limit: int) -> BrowseItemList:
-        """What arrived in the library last: albums, and tracks that belong to
-        none."""
-        rows, total = self.db_manager.list_recently_added(offset, limit)
+    def _browse_recent(
+        self,
+        offset: int,
+        limit: int,
+        kinds: Tuple[str, ...] = (),
+        filter: Optional[ListingFilter] = None,
+    ) -> BrowseItemList:
+        """Recent entities, with the same filters on each section and its parent."""
+        rows, total = self.db_manager.list_recently_added(offset, limit, kinds, filter)
         items = [self._create_kind_browse_item(kind, row) for kind, row in rows]
         return BrowseItemList(offset=offset, limit=limit, total=total, items=items)
 
@@ -1108,7 +1140,10 @@ class LocalFilesInputModule(InputModule):
             raise UnsupportedFilter(field, "not filterable here")
 
         if field == TYPE_FIELD:
-            return self._type_values(offset, limit, q)
+            sections = (
+                RECENT_SECTIONS if catalog_id.id == RECENT_ENDPOINT else LIBRARY_SECTIONS
+            )
+            return self._type_values(offset, limit, q, sections)
         if field == GENRE_FILTER.id:
             return self._genre_values(offset, limit, q)
         raise UnsupportedFilter(field, "has no vocabulary")
@@ -1125,7 +1160,13 @@ class LocalFilesInputModule(InputModule):
             ],
         )
 
-    def _type_values(self, offset: int, limit: int, q: str) -> FilterValueList:
+    def _type_values(
+        self,
+        offset: int,
+        limit: int,
+        q: str,
+        sections: Tuple[_LibrarySection, ...] = LIBRARY_SECTIONS,
+    ) -> FilterValueList:
         """The kinds the library holds, in the order its sections appear.
 
         A kind holding nothing is left out, so the vocabulary and the sections
@@ -1133,10 +1174,10 @@ class LocalFilesInputModule(InputModule):
         """
         wanted = q.strip().casefold()
         values = []
-        for section in LIBRARY_SECTIONS:
+        for section in sections:
             if wanted not in section.title.casefold():
                 continue
-            total = self.db_manager.get_kind_total(section.kind)
+            total = self._section_total(section)
             if total:
                 values.append(
                     FilterValue(id=section.kind, name=section.title, count=total)

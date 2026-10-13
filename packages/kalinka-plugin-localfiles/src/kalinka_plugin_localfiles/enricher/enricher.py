@@ -148,8 +148,8 @@ class MetadataEnricher:
         # Order is the pipeline: the metadata sources get their turn, then
         # the fingerprint rescues whatever they could not identify, then the
         # artwork sources fill what is left. The chain stops early once a
-        # track has every desired field, so a track MusicBrainz identifies
-        # never reaches AcoustID.
+        # track has every desired field and no filename guess still needs
+        # fingerprint rescue.
         if config.enricher.plugins.musicbrainz.enabled:
             logger.info("Loading MusicBrainzPlugin")
             self.plugins.append(MusicBrainzPlugin(config, self.db_manager))
@@ -927,12 +927,21 @@ class MetadataEnricher:
         updated_track = track.copy()  # Make a copy to carry updates between plugins
         had_updates = False
 
+        # Having every field filled is not enough when a filename guess was
+        # merely echoed by a text search. Let the fingerprint rescue run even
+        # if MusicBrainz fills the last missing field earlier in this chain.
+        rescue_required = False
+        for plugin in self.plugins:
+            if isinstance(plugin, AcoustIdPlugin) and plugin.can_enrich_track():
+                rescue_required = await plugin.needs_rescue(track)
+                break
+
         # Desired = full target set (incl. mbid). Reaching it lets us skip the
         # plugins; not reaching it is fine (see the tail).
         is_desired_complete = all(
             updated_track.get(field) for field in TRACK_DESIRED_FIELDS
         )
-        if is_desired_complete:
+        if is_desired_complete and not rescue_required:
             logger.debug(f"Track {track['id']} already has all desired fields")
             updated_track["enriched"] = EnrichmentStatus.ENRICHED
             await self.db_manager.update_track(
@@ -947,7 +956,8 @@ class MetadataEnricher:
             emitted_claims,
             lambda p: p.can_enrich_track(),
             lambda p, e: p.enrich_track(e),
-            lambda e: all(e.get(f) for f in TRACK_DESIRED_FIELDS),
+            lambda e: not rescue_required
+            and all(e.get(f) for f in TRACK_DESIRED_FIELDS),
         )
         had_updates = had_updates or chain_updates
         deferred = self._still_worth_deferring(track["id"], deferred)
