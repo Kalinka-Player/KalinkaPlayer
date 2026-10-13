@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kalinka-plugin-localfiles"
 dynamic = ["version"]
-description = "Local files plugin for Kalinka Music Player"
+description = "My Library plugin for Kalinka Player: music on the server or a network share"
 readme = "README.md"
 license = "GPL-3.0-or-later"
 requires-python = ">=3.11"

@@ -1,4 +1,4 @@
-# Local files
+# My Library
 
 The local library indexes MP3, FLAC, WAV (`.wav`, `.wave`), Ogg Vorbis (`.ogg`,
 `.oga`), DSF (`.dsf`) and DSDIFF (`.dff`) files from local folders and configured
