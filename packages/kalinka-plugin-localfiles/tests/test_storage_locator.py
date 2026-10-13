@@ -185,13 +185,22 @@ class TestTheParsedFormSurvivesPathArithmetic:
     def test_a_local_path_reads_the_same_way(self):
         assert media_type_of("/mnt/nas/music/Bonus #1.mp3") == "audio/mpeg"
 
-    @pytest.mark.parametrize("name", ["Symphony #5.ogg", "Symphony #5.OGA"])
-    def test_ogg_is_named_without_the_hosts_type_table(self, name, monkeypatch):
-        """Python's own table has no Ogg, and a minimal host has no
-        /etc/mime.types to add it, yet the type picks the tag reader and is
+    @pytest.mark.parametrize(
+        "name, media_type",
+        [
+            ("Symphony #5.ogg", "audio/ogg"),
+            ("Symphony #5.OGA", "audio/ogg"),
+            ("Symphony #5.flac", "audio/flac"),
+        ],
+    )
+    def test_a_format_is_named_without_the_hosts_type_table(
+        self, name, media_type, monkeypatch
+    ):
+        """Python's own table has no Ogg or FLAC, and a minimal host has no
+        /etc/mime.types to add them, yet the type picks the tag reader and is
         what the renderer is told it is playing."""
         monkeypatch.setattr(mimetypes, "guess_type", lambda *_a, **_k: (None, None))
-        assert media_type_of(f"smb://host/share/{name}") == "audio/ogg"
+        assert media_type_of(f"smb://host/share/{name}") == media_type
 
     @pytest.mark.parametrize(
         "name, media_type",
