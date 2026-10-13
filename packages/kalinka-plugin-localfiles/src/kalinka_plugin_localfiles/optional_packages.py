@@ -41,6 +41,9 @@ OPTIONAL_PACKAGES: dict[str, OptionalPackageSpec] = {
             "ONNX inference runtime for the CLAP audio/text encoder used "
             "by AI search."
         ),
+        # Neither PyPI nor piwheels has a 32-bit ARM build. An SDK before
+        # 3.12 ignores the field.
+        architectures=("x86_64", "aarch64"),
     ),
     "soundfile": OptionalPackageSpec(
         pip_spec="soundfile==0.13.1",
@@ -71,7 +74,8 @@ def manifest() -> dict:
         "plugin": PLUGIN_ID,
         "schema": MANIFEST_SCHEMA_VERSION,
         "packages": {
-            key: spec.model_dump() for key, spec in OPTIONAL_PACKAGES.items()
+            key: spec.model_dump(mode="json")
+            for key, spec in OPTIONAL_PACKAGES.items()
         },
     }
 

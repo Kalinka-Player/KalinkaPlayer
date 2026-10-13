@@ -43,7 +43,8 @@ def _offer(plugin: type) -> dict:
         "plugin": plugin.PLUGIN_ID,
         "schema": 1,
         "packages": {
-            key: spec.model_dump() for key, spec in plugin.OPTIONAL_PACKAGES.items()
+            key: spec.model_dump(mode="json")
+            for key, spec in plugin.OPTIONAL_PACKAGES.items()
         },
     }
 

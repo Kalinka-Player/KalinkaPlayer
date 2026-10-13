@@ -25,7 +25,8 @@ classifiers = [
 dependencies = [
     # >=3: a catalog declares the fields it can be filtered by, and browse
     # takes a filter document where it took genre ids. >=3.12: the shared
-    # embedder names the runtime it lacks, which mood search offers.
+    # embedder names the runtime it lacks, which mood search offers, and an
+    # optional package says where it has wheels.
     "kalinka-plugin-sdk>=3.12,<4",
     "httpx>=0.24",
     # ai_search (mood/semantic): sqlite-vec KNN over the shipped index.
