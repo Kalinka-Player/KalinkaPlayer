@@ -24,9 +24,13 @@ for pkg in "$PKG_DIR" "$PACKAGES_DIR"/kalinka-plugin-*; do
 done
 
 echo "Exporting optional-packages manifests..."
-PYTHONPATH="$PACKAGES_DIR/kalinka-plugin-sdk/src" \
-    python3 "$PACKAGES_DIR/kalinka-plugin-localfiles/src/kalinka_plugin_localfiles/optional_packages.py" \
-    > "$STAGE/allowed_packages/localfiles.json"
+# The SDK's own optional_packages.py matches too; it prints nothing.
+for module in "$PACKAGES_DIR"/kalinka-plugin-*/src/kalinka_plugin_*/optional_packages.py; do
+    manifest="$(PYTHONPATH="$PACKAGES_DIR/kalinka-plugin-sdk/src" python3 "$module")"
+    [ -n "$manifest" ] || continue
+    plugin="$(basename "$(dirname "$module")")"
+    printf '%s\n' "$manifest" > "$STAGE/allowed_packages/${plugin#kalinka_plugin_}.json"
+done
 
 VERSION=$(grep "__version__ = version =" "$PKG_DIR/src/kalinka_server/_version.py" | sed -n "s/.*['\"]\\([^'\"]*\\)['\"].*/\\1/p")
 if [ -z "$VERSION" ]; then
