@@ -1,16 +1,25 @@
 import asyncio
+import importlib.util
 import logging
-from typing import Optional
+from typing import ClassVar, Optional
 
-from kalinka_plugin_sdk import ModuleHealthState, ModuleState
+from kalinka_plugin_sdk import ModuleHealthState, ModuleState, OptionalPackageSpec
 from kalinka_plugin_sdk.plugin import InputModulePlugin, InputPluginContext
 from kalinka_plugin_sdk.inputmodule import InputModule
 
 from .config_model import JamendoConfig
 from .jamendo import JamendoInputModule, get_client
 from .mood_search import JamendoMoodIndex
+from .optional_packages import OPTIONAL_PACKAGES
 
 logger = logging.getLogger(__name__.split(".")[-1])
+
+
+def _is_importable(import_name: str) -> bool:
+    try:
+        return importlib.util.find_spec(import_name) is not None
+    except (ImportError, ValueError):
+        return False
 
 
 class KalinkaPluginJamendo(InputModulePlugin):
@@ -19,6 +28,7 @@ class KalinkaPluginJamendo(InputModulePlugin):
     REQUIRES_SDK = ">=3,<4"
     PLUGIN_ID = "jamendo"
     CONFIG_MODEL = JamendoConfig
+    OPTIONAL_PACKAGES: ClassVar[dict[str, OptionalPackageSpec]] = OPTIONAL_PACKAGES
 
     def __init__(self):
         self.interface: Optional[InputModule] = None
@@ -50,12 +60,15 @@ class KalinkaPluginJamendo(InputModulePlugin):
         self.interface = JamendoInputModule(config, self._client, mood_index)
 
     async def get_state(self) -> ModuleState:
-        """Surface the "no client_id configured" case as an ERROR.
+        """Surface the "no client_id configured" case as an ERROR, and a
+        mood search without its runtime as a WARNING.
 
         Without a client_id every Jamendo request returns empty, which is
         indistinguishable from "no results" in the UI. Reporting it here lets
         the modules page tell the user to set their key instead of silently
-        showing an empty catalog.
+        showing an empty catalog. Mood search without its runtime would be
+        just as silent, so its packages are reported for the modules page to
+        offer.
         """
         client_id = ""
         if self._context is not None:
@@ -70,7 +83,41 @@ class KalinkaPluginJamendo(InputModulePlugin):
                     "into this module's settings."
                 ),
             )
+        missing = self._missing_packages()
+        if missing:
+            return ModuleState(
+                state=ModuleHealthState.WARNING,
+                message=(
+                    "Mood search unavailable. Missing package(s): "
+                    + ", ".join(f"`{m}`" for m in missing)
+                    + ". Use **Restart with install** in the modules page to "
+                    "fetch them."
+                ),
+                missing_packages=missing,
+            )
         return ModuleState(state=ModuleHealthState.READY)
+
+    async def required_packages(self) -> list[str]:
+        """Packages mood search needs under the current config, which may
+        hold changes the user staged since setup."""
+        return self._missing_packages()
+
+    def _missing_packages(self) -> list[str]:
+        """Optional packages mood search needs but cannot import. None
+        without a client_id: nothing on Jamendo works then, so a box that
+        never set Jamendo up never installs its runtime."""
+        if self._context is None:
+            return []
+        config = self._context.config
+        if not getattr(config, "client_id", "") or not getattr(
+            config, "ai_search_enabled", False
+        ):
+            return []
+        return [
+            key
+            for key, spec in OPTIONAL_PACKAGES.items()
+            if not _is_importable(spec.import_name or key)
+        ]
 
     async def shutdown(self) -> None:
         logger.info("Shutting down Jamendo input module")

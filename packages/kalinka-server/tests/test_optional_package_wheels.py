@@ -32,13 +32,17 @@ GLIBC_MINOR = {"3.11": 36, "3.12": 39, "3.13": 41, "3.14": 42}
 ARCHITECTURES = ("aarch64", "x86_64")
 
 
-def optional_package_specs() -> list[str]:
-    """Every pip_spec a plugin offers, as the server registers them."""
-    specs: list[str] = []
+def optional_packages() -> list[tuple[str, str]]:
+    """Every (key, pip_spec) a plugin offers, as the server registers them."""
+    offers: list[tuple[str, str]] = []
     for plugin in entry_points(group="kalinka.plugins"):
         declared = getattr(plugin.load(), "OPTIONAL_PACKAGES", {})
-        specs += [spec.pip_spec for spec in declared.values()]
-    return specs
+        offers += [(key, spec.pip_spec) for key, spec in declared.items()]
+    return offers
+
+
+def optional_package_specs() -> list[str]:
+    return [pip_spec for _key, pip_spec in optional_packages()]
 
 
 def manylinux_platforms(arch: str, glibc_minor: int) -> list[str]:
@@ -97,6 +101,16 @@ def test_every_plugins_optional_packages_are_checked():
     assert {
         spec.pip_spec for spec in LOCALFILES_OPTIONAL_PACKAGES.values()
     } <= set(specs)
+
+
+def test_a_package_two_plugins_offer_is_offered_on_the_same_terms():
+    """The registry and install_pending keep the first plugin's spec for a
+    shared key, so a second spec would never be what gets installed."""
+    specs: dict[str, set[str]] = {}
+    for key, pip_spec in optional_packages():
+        specs.setdefault(key, set()).add(pip_spec)
+
+    assert {key: found for key, found in specs.items() if len(found) > 1} == {}
 
 
 def test_a_package_the_server_requires_is_offered_on_its_terms():
