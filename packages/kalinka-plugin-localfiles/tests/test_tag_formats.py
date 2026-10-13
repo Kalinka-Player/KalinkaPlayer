@@ -1,6 +1,8 @@
 """Every file the indexer takes in has one way to be read, which the
 metadata and the cover share."""
 
+import mimetypes
+
 import pytest
 
 from kalinka_plugin_localfiles.config_model import LocalFilesConfig
@@ -11,7 +13,9 @@ from kalinka_plugin_localfiles.indexer.indexer import (
 
 
 @pytest.mark.parametrize("extension", sorted(SUPPORTED_AUDIO_EXTENSIONS))
-def test_an_accepted_file_has_a_reader(tmp_path, extension):
+def test_an_accepted_file_has_a_reader(tmp_path, extension, monkeypatch):
+    """Even on a host with no /etc/mime.types, as the librarian may run."""
+    monkeypatch.setattr(mimetypes, "guess_type", lambda *_a, **_k: (None, None))
     fi = FileIndexer(LocalFilesConfig(db_path=str(tmp_path / "db")), None)
 
     _, tag_format = fi._tag_format_of(f"smb://nas/music/Track #1{extension}")
