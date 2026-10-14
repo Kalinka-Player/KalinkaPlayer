@@ -23,6 +23,8 @@ type DietPi struct {
 	OpenControl                                                 func(string, string) (Control, error)
 	AddressFor                                                  func(context.Context, string) (string, error)
 	Poll, JoinTimeout                                           time.Duration
+	StartAPProcess                                              func(context.Context, string, ...string) (APProcess, error)
+	apProcesses                                                 []APProcess
 }
 
 func NewDietPi(iface, root, state, runtime string) (*DietPi, error) {
@@ -45,10 +47,14 @@ func NewDietPi(iface, root, state, runtime string) (*DietPi, error) {
 func (d *DietPi) Address(ctx context.Context) (string, error) { return d.AddressFor(ctx, "") }
 func (d *DietPi) Close() error                                { return nil }
 func (d *DietPi) Scan(ctx context.Context, country string) ([]protocol.Network, error) {
-	if !protocol.CountryPattern.MatchString(country) {
+	if country != "" && !protocol.CountryPattern.MatchString(country) {
 		return nil, protocol.Invalid
 	}
-	for _, args := range [][]string{{"iw", "reg", "set", country}, {"rfkill", "unblock", "wlan"}, {"ip", "link", "set", "dev", d.Interface, "up"}} {
+	commands := [][]string{{"rfkill", "unblock", "wlan"}, {"ip", "link", "set", "dev", d.Interface, "up"}}
+	if country != "" {
+		commands = append([][]string{{"iw", "reg", "set", country}}, commands...)
+	}
+	for _, args := range commands {
 		if _, err := d.Run(ctx, 15*time.Second, args[0], args[1:]...); err != nil {
 			return nil, err
 		}
@@ -60,6 +66,9 @@ func (d *DietPi) Scan(ctx context.Context, country string) ([]protocol.Network, 
 	return ParseScan(out), nil
 }
 func (d *DietPi) Recover(ctx context.Context) error {
+	if err := d.StopAP(ctx); err != nil {
+		return err
+	}
 	legacy := Transaction{filepath.Join(d.Root, "var/lib/kalinka-image/provision-rollback"), d.Transaction.Paths}
 	for _, t := range []Transaction{legacy, d.Transaction} {
 		if !t.Pending() {

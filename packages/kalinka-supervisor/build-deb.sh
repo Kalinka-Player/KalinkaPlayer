@@ -20,9 +20,9 @@ Package: kalinka-supervisor
 Version: $version
 Architecture: $arch
 Maintainer: Dmitry Savin <envelsavinds@gmail.com>
-Depends: bluez, dbus, systemd, curl, network-manager | ifupdown, wpasupplicant, iw, rfkill, iproute2, passwd, sudo
+Depends: bluez, dbus, systemd, curl, network-manager | ifupdown, wpasupplicant, hostapd, dnsmasq-base, iw, rfkill, iproute2, passwd, sudo
 Description: Independent Kalinka supervisor, nearby box setup and LAN control page
- Static Go service for BLE provisioning with NetworkManager or DietPi networking,
+ Static Go service for Bluetooth and Wi-Fi hotspot provisioning with NetworkManager or DietPi networking,
  and a recovery page on the local network: status, restart, reboot, power off,
  reinstall, plugin removal and, on a Raspberry Pi, choosing the sound card.
 CONTROL

@@ -46,14 +46,15 @@ func TestBlocked(t *testing.T) {
 	}{
 		{"NetworkManager", "hci0", "wlan0", "NetworkManager", Options{Backend: "nm"}, ""},
 		{"DietPi", "hci0", "wlan0", "/boot/dietpi/dietpi-network", Options{Backend: "dietpi"}, ""},
-		{"no adapter", "", "wlan0", "NetworkManager", Options{Backend: "nm"}, "no Bluetooth adapter hci0"},
-		{"other adapter", "hci1", "wlan0", "NetworkManager", Options{Backend: "nm"}, "no Bluetooth adapter hci0"},
+		{"no adapter", "", "wlan0", "NetworkManager", Options{Backend: "nm"}, ""},
+		{"HTTP without either radio transport", "", "wlan0", "NetworkManager", Options{Backend: "nm", DisableAP: true}, ""},
+		{"other adapter", "hci1", "wlan0", "NetworkManager", Options{Backend: "nm"}, ""},
 		{"no Wi-Fi", "hci0", "", "NetworkManager", Options{Backend: "nm"}, "no Wi-Fi interface"},
 		{"named interface missing", "hci0", "wlan0", "NetworkManager", Options{Backend: "nm", Interface: "wlan1"}, "no Wi-Fi interface"},
 		{"generic ifupdown", "hci0", "wlan0", "ifup", Options{Backend: "nm"}, "install network-manager"},
 		{"explicit missing DietPi", "hci0", "wlan0", "NetworkManager", Options{Backend: "dietpi"}, "requires /boot/dietpi/dietpi-network"},
 		{"simulation needs only the adapter", "hci0", "", "", Options{Backend: "nm", Test: true}, ""},
-		{"simulation still needs the adapter", "", "", "", Options{Backend: "nm", Test: true}, "no Bluetooth adapter hci0"},
+		{"HTTP simulation needs no adapter", "", "", "", Options{Backend: "nm", Test: true, DisableAP: true}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.o.Adapter = "hci0"

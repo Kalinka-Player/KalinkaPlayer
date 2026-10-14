@@ -164,6 +164,7 @@ func TestInfo(t *testing.T) {
 			"actions":   []any{"restart_core", "reboot", "poweroff", "reinstall", "set_soundcard", "remove_plugin"},
 			"server_id": nil, "renderer_id": nil,
 			"poweroff_timer": true,
+			"network_setup":  false,
 		}
 		if box.server {
 			want["server_id"] = testID

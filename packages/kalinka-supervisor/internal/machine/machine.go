@@ -118,6 +118,43 @@ func (m *Machine) Networks() []byte {
 	end := min(start+3, len(m.networks))
 	return protocol.JSON(protocol.NetworkPage{Version: 1, ID: m.scanID, State: m.scanState, Reason: m.scanReason, Page: m.scanPage, Pages: max(1, (len(m.networks)+2)/3), Networks: m.networks[start:end]})
 }
+
+// Snapshot is a consistent public view for HTTP clients, without credentials.
+type Snapshot struct {
+	Active    bool               `json:"active"`
+	State     byte               `json:"state"`
+	Reason    byte               `json:"reason"`
+	Stage     byte               `json:"stage"`
+	Address   string             `json:"address"`
+	Port      uint16             `json:"port"`
+	ScanState string             `json:"scan_state"`
+	Networks  []protocol.Network `json:"networks"`
+}
+
+func (m *Machine) Snapshot() Snapshot {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return Snapshot{m.active, m.state, m.reason, m.stage, m.address, m.cfg.Port(), m.scanState, append([]protocol.Network{}, m.networks...)}
+}
+
+// Open permits setup from the trusted LAN even when a wired or Wi-Fi link is already up.
+func (m *Machine) Open() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return protocol.Unavailable
+	}
+	if m.state == protocol.Joining || m.resetting {
+		return protocol.Busy
+	}
+	m.active = true
+	m.setupUntil = m.cfg.Now().Add(m.cfg.HandoffTimeout)
+	if m.state == protocol.Online {
+		m.update(protocol.Idle, 0, "")
+	}
+	return nil
+}
+
 func (m *Machine) Authorize(device string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -166,6 +203,31 @@ func (m *Machine) Write(device string, data []byte) error {
 	if err != nil {
 		return err
 	}
+	return m.command(device, cmd)
+}
+
+// Command accepts an unframed command from the local HTTP transport.
+func (m *Machine) Command(device string, raw []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.frames.Expire(m.cfg.Now())
+	if !m.active || m.closed {
+		return protocol.Unavailable
+	}
+	if device == "" {
+		return protocol.Invalid
+	}
+	if m.owner != "" && m.owner != device || m.resetting || m.frames.Owner != "" && m.frames.Owner != device {
+		return protocol.Busy
+	}
+	cmd, err := protocol.Decode(raw)
+	if err != nil {
+		return err
+	}
+	return m.command(device, cmd)
+}
+
+func (m *Machine) command(device string, cmd protocol.Command) error {
 	if cmd.Op == "change_network" {
 		m.owner = device
 		m.stage = protocol.Preparing

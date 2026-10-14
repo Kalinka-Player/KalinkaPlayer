@@ -217,3 +217,21 @@ func makeRepeat(b byte, n int) []byte {
 	}
 	return v
 }
+
+func TestHTTPCommandReleasesExpiredBluetoothFragment(t *testing.T) {
+	now := time.Now()
+	m := New(context.Background(), &fakeWifi{}, Config{Test: true, Now: func() time.Time { return now }})
+	defer m.Close()
+	_, _ = m.Tick(context.Background())
+	if err := m.Write("ble-phone", []byte{1, '{'}); err != nil {
+		t.Fatal(err)
+	}
+	command := []byte(`{"v":1,"op":"scan","country":"GB"}`)
+	if err := m.Command("http:client", command); err != protocol.Busy {
+		t.Fatal("HTTP bypassed partial BLE command", err)
+	}
+	now = now.Add(11 * time.Second)
+	if err := m.Command("http:client", command); err != nil {
+		t.Fatal("expired BLE frame blocked HTTP", err)
+	}
+}

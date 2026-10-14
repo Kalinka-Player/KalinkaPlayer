@@ -68,7 +68,7 @@ func TestBothSwitchesOffExits(t *testing.T) {
 	}
 	defer notify.Close()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestBothSwitchesOffExits$")
-	cmd.Env = append(os.Environ(), "KALINKA_TEST_BOTH_OFF=1", "KALINKA_BLE_SETUP=0", "KALINKA_CONTROL_API=0", "NOTIFY_SOCKET="+socket)
+	cmd.Env = append(os.Environ(), "KALINKA_TEST_BOTH_OFF=1", "KALINKA_BLE_SETUP=0", "KALINKA_WIFI_AP_SETUP=0", "KALINKA_CONTROL_API=0", "NOTIFY_SOCKET="+socket)
 	output, err := cmd.CombinedOutput()
 	if err != nil || !strings.Contains(string(output), "both disabled") {
 		t.Fatalf("exit %v: %s", err, output)
@@ -161,9 +161,52 @@ func TestUnitRunsUnconditionally(t *testing.T) {
 			t.Errorf("unit still has %q", absent)
 		}
 	}
-	for _, present := range []string{"\nWantedBy=multi-user.target\n", "\nRestartSec=10\n", "\nExecStart=/usr/lib/kalinka-supervisor/kalinka-supervisor --backend auto\n"} {
+	for _, present := range []string{"RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET", "\nWantedBy=multi-user.target\n", "\nRestartSec=10\n", "\nExecStart=/usr/lib/kalinka-supervisor/kalinka-supervisor --backend auto\n"} {
 		if !strings.Contains(unit, present) {
 			t.Errorf("unit lacks %q", strings.TrimSpace(present))
 		}
+	}
+}
+
+func TestHTTPSetupRunsWithoutBluetooth(t *testing.T) {
+	dir := t.TempDir()
+	port := freePort(t)
+	o, err := parse([]string{"--test", "--no-ble", "--no-ap", "--listen-port", strconv.Itoa(port), "--state-dir", filepath.Join(dir, "state"), "--runtime-dir", filepath.Join(dir, "run")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stopped := make(chan error, 1)
+	go func() { stopped <- run(ctx, o, true, true) }()
+	base := "http://127.0.0.1:" + strconv.Itoa(port)
+	eventually(t, "HTTP network setup", func() bool {
+		resp, err := http.Get(base + "/v1/setup")
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+		var status struct{ Available bool }
+		return json.NewDecoder(resp.Body).Decode(&status) == nil && status.Available
+	})
+	req, _ := http.NewRequest(http.MethodPost, base+"/v1/setup", strings.NewReader(`{"v":1,"op":"scan","country":"GB"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Kalinka-Setup-Client", "0123456789abcdef")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 202 {
+		t.Fatal(resp.StatusCode)
+	}
+	cancel()
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("setup did not stop")
 	}
 }

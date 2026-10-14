@@ -25,6 +25,7 @@ import (
 	"kalinka/supervisor/internal/soundcard"
 	"kalinka/supervisor/internal/sshaccess"
 	"kalinka/supervisor/internal/system"
+	"kalinka/supervisor/internal/wifi"
 )
 
 var version = "development"
@@ -53,6 +54,8 @@ func parse(args []string) (options, error) {
 	f.StringVar(&o.config, "server-config", coreconf.DefaultPath, "Core configuration file")
 	f.StringVar(&o.State, "state-dir", "", "Private persistent supervisor state directory")
 	f.StringVar(&o.Runtime, "runtime-dir", "", "Private runtime directory")
+	f.BoolVar(&o.DisableAP, "no-ap", false, "Disable the temporary setup hotspot")
+	f.BoolVar(&o.DisableBLE, "no-ble", false, "Disable Bluetooth setup")
 	f.BoolVar(&o.Test, "test", false, "Real BLE with simulated Wi-Fi and simulated control actions")
 	f.BoolVar(&o.AlwaysAdvertise, "always-advertise", false, "Keep setup available while online (local testing only)")
 	f.StringVar(&o.TestResult, "test-result", "joined", "Simulated result: joined, wrong_password, no_address, timeout")
@@ -165,9 +168,11 @@ func run(ctx context.Context, o options, setupOn, apiOn bool) error {
 	setup := &componentState{name: "Nearby setup"}
 	var service *provision.Service
 	var network control.NetworkActivity
+	var networkSetup control.NetworkSetup
 	if setupOn {
 		service = provision.New(o.Options, func() uint16 { return uint16(corePort()) })
 		network = service
+		networkSetup = service
 		components.Go(func() {
 			supervise(ctx, component{
 				blocked: func() string { return provision.Blocked(o.Options, "/", exec.LookPath) },
@@ -177,6 +182,11 @@ func run(ctx context.Context, o options, setupOn, apiOn bool) error {
 				state:   setup,
 			})
 		})
+	}
+	var apBinding *control.Binding
+	if service != nil && !o.DisableAP && !o.Test {
+		apBinding = control.NewBinding(80, control.NewSetupHandler(service, corePort, "/usr/share/kalinka-web"))
+		defer apBinding.Close()
 	}
 	var binding *control.Binding
 	if apiOn {
@@ -208,6 +218,7 @@ func run(ctx context.Context, o options, setupOn, apiOn bool) error {
 		components.Go(func() { powerOffTimer.Run(ctx) })
 		binding = control.NewBinding(o.listenPort, control.NewHandler(controller, control.HandlerConfig{
 			Version:        version,
+			NetworkSetup:   networkSetup,
 			ServerIDFile:   o.IdentityFile,
 			RendererIDFile: o.rendererID,
 			// A simulated run shows every control, whatever the machine it runs on has installed.
@@ -229,9 +240,15 @@ func run(ctx context.Context, o options, setupOn, apiOn bool) error {
 	watchdog := system.WatchdogInterval()
 	lastPing := time.Now()
 	ready := false
-	api, status := "", ""
+	api, status, hotspotStatus := "", "", ""
 	for {
 		core.Refresh()
+		if apBinding != nil {
+			if latest := apBinding.ReconcileAddress(wifi.APAddress, service.APActive()); latest != hotspotStatus {
+				slog.Info("Hotspot activation " + latest)
+				hotspotStatus = latest
+			}
+		}
 		latest := "off"
 		if binding != nil {
 			latest = binding.Reconcile(core.Current())
@@ -284,7 +301,9 @@ func main() {
 		fmt.Println("kalinka-supervisor " + version)
 		return
 	}
-	setupOn := o.Test || o.AlwaysAdvertise || enabled("KALINKA_BLE_SETUP", dietpiConfig)
+	o.DisableAP = o.DisableAP || !enabled("KALINKA_WIFI_AP_SETUP", dietpiConfig)
+	o.DisableBLE = o.DisableBLE || !enabled("KALINKA_BLE_SETUP", dietpiConfig)
+	setupOn := o.Test || o.AlwaysAdvertise || !o.DisableBLE || !o.DisableAP
 	apiOn := enabled("KALINKA_CONTROL_API", dietpiConfig)
 	if !setupOn && !apiOn {
 		slog.Info("Nearby setup and the control API are both disabled")

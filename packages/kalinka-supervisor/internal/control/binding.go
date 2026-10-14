@@ -51,6 +51,19 @@ func InterfaceIPv4(name string) (string, error) {
 // Reconcile moves the listener to where core says it belongs, and describes the result in a few words.
 func (b *Binding) Reconcile(core coreconf.Config) string {
 	want, status := b.desired(core)
+	return b.reconcile(want, status)
+}
+
+// ReconcileAddress binds the setup listener to the AP only, independently of Core's interface.
+func (b *Binding) ReconcileAddress(address string, active bool) string {
+	if !active {
+		return b.reconcile("", "off")
+	}
+	addr := net.JoinHostPort(address, strconv.Itoa(b.port))
+	return b.reconcile(addr, "listening on "+addr)
+}
+
+func (b *Binding) reconcile(want, status string) string {
 	if want == b.addr {
 		return status
 	}
