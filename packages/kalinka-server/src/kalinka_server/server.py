@@ -39,7 +39,7 @@ from kalinka_plugin_sdk.events import (
     PlayQueueEventType,
     RenderersChangedEvent,
 )
-from kalinka_plugin_sdk import paths
+from kalinka_plugin_sdk import paths, wheel_architecture
 
 from .config_model import KalinkaConfig
 from .config_overrides import save_overrides
@@ -1161,7 +1161,9 @@ async def create_app(
         the body are rejected with 400; keys returned by plugins'
         ``required_packages()`` but absent from the registry are
         dropped with a log line (the plugin is misconfigured, but the
-        restart itself should still proceed).
+        restart itself should still proceed). A package with no wheel
+        for this box counts as unknown either way, so no restart runs
+        an install that can only fail.
         """
         # Explicit body keys
         body_requested: list[str] = []
@@ -1227,7 +1229,8 @@ async def create_app(
             if auto_rejected:
                 logger.warning(
                     "Plugin required_packages() returned keys not in the "
-                    "registry; dropping: %s",
+                    "registry or with no wheel for %s; dropping: %s",
+                    wheel_architecture(),
                     auto_rejected,
                 )
             if body_rejected:

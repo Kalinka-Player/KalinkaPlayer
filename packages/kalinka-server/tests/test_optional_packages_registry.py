@@ -11,11 +11,24 @@ import pytest
 from kalinka_plugin_sdk import OptionalPackageSpec
 from kalinka_plugin_sdk.module_config import ModuleConfig
 from kalinka_plugin_sdk.plugin import InputModulePlugin
+from kalinka_server import optional_packages_registry
 from kalinka_server.optional_packages_registry import (
     build_catalog,
     build_registry,
     write_pending_installs,
 )
+
+SIXTY_FOUR_BIT_ONLY = OptionalPackageSpec(
+    pip_spec="onnxruntime==1.0",
+    description="desc for onnxruntime",
+    architectures=("x86_64", "aarch64"),
+)
+
+
+def _on(monkeypatch, architecture: str) -> None:
+    monkeypatch.setattr(
+        optional_packages_registry, "wheel_architecture", lambda: architecture
+    )
 
 
 @dataclass
@@ -192,6 +205,41 @@ def test_catalog_names_every_plugin_that_offers_a_shared_package(tmp_path: Path)
     ]
 
 
+def test_catalog_leaves_out_a_package_with_no_wheel_for_this_box(
+    monkeypatch, tmp_path: Path
+):
+    """An older app would offer to install whatever the catalog lists."""
+    _on(monkeypatch, "armv7l")
+    input_modules = {
+        "localfiles": _prepared(
+            {"onnxruntime": SIXTY_FOUR_BIT_ONLY, "soxr": _spec("soxr")}
+        ),
+    }
+
+    catalog = build_catalog(
+        input_modules,
+        {},
+        last_install_path=tmp_path / "last.json",
+        pending_installs_path=tmp_path / "pending.json",
+    )
+
+    assert [p["key"] for p in catalog["packages"]] == ["soxr"]
+
+
+def test_catalog_lists_a_package_where_it_has_wheels(monkeypatch, tmp_path: Path):
+    _on(monkeypatch, "aarch64")
+    input_modules = {"localfiles": _prepared({"onnxruntime": SIXTY_FOUR_BIT_ONLY})}
+
+    catalog = build_catalog(
+        input_modules,
+        {},
+        last_install_path=tmp_path / "last.json",
+        pending_installs_path=tmp_path / "pending.json",
+    )
+
+    assert [p["key"] for p in catalog["packages"]] == ["onnxruntime"]
+
+
 def test_catalog_marks_pending_keys(tmp_path: Path):
     input_modules = {
         "p": _prepared({"a": _spec("a"), "b": _spec("b")}),
@@ -254,6 +302,44 @@ def test_write_pending_installs_validates_and_dedupes(tmp_path: Path):
     assert payload["schema"] == 1
     assert payload["requested"] == ["numpy", "scipy"]
     assert "requested_at" in payload
+
+
+def test_write_pending_installs_refuses_a_package_with_no_wheel_for_this_box(
+    monkeypatch, tmp_path: Path
+):
+    """What My Library's required_packages() asks for on 32-bit Pi OS: the
+    install could only fail, again at every restart."""
+    _on(monkeypatch, "armv7l")
+    input_modules = {
+        "localfiles": _prepared(
+            {"onnxruntime": SIXTY_FOUR_BIT_ONLY, "soxr": _spec("soxr")}
+        ),
+    }
+    pending = tmp_path / "pending.json"
+
+    accepted, rejected = write_pending_installs(
+        ["onnxruntime", "soxr"], input_modules, {}, pending_installs_path=pending
+    )
+
+    assert accepted == ["soxr"]
+    assert rejected == ["onnxruntime"]
+    assert json.loads(pending.read_text())["requested"] == ["soxr"]
+
+
+def test_write_pending_installs_takes_a_package_where_it_has_wheels(
+    monkeypatch, tmp_path: Path
+):
+    _on(monkeypatch, "x86_64")
+    input_modules = {"localfiles": _prepared({"onnxruntime": SIXTY_FOUR_BIT_ONLY})}
+
+    accepted, rejected = write_pending_installs(
+        ["onnxruntime"],
+        input_modules,
+        {},
+        pending_installs_path=tmp_path / "pending.json",
+    )
+
+    assert (accepted, rejected) == (["onnxruntime"], [])
 
 
 def test_write_pending_installs_atomic_replace(tmp_path: Path):

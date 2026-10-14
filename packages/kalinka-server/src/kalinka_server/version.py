@@ -144,7 +144,10 @@ def get_version() -> str:
 # Library both offer onnxruntime and tokenizers. GET /server/optional_packages
 # still lists it once, with the first plugin's plugin_id, description and
 # pip_spec; each package's `offered_by`, [{plugin_id, description}] in load
-# order, names every plugin that offers it and what for.
+# order, names every plugin that offers it and what for. Also 0.15: a package
+# with no wheel for the server's architecture, as onnxruntime on 32-bit ARM,
+# is left out of GET /server/optional_packages, and PUT /server/restart
+# refuses it in `install` with the 400 an unknown key gets.
 REST_API_VERSION = "0.15"
 
 
