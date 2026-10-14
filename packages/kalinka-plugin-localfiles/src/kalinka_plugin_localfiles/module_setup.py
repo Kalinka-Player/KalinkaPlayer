@@ -18,6 +18,7 @@ from kalinka_plugin_sdk import (
     ModuleHealthState,
     ModuleState,
     OptionalPackageSpec,
+    wheel_architecture,
 )
 from kalinka_plugin_sdk.plugin import InputPluginContext, InputModulePlugin
 from kalinka_plugin_sdk.inputmodule import InputModule
@@ -86,6 +87,19 @@ def _is_importable(import_name: str) -> bool:
         return importlib.util.find_spec(import_name) is not None
     except (ImportError, ValueError):
         return False
+
+
+# CLAP needs these; each key is also its import name.
+_AI_SEARCH_PACKAGES = ("numpy", "onnxruntime", "soundfile", "soxr", "tokenizers")
+
+
+def _without_wheels(keys) -> list[str]:
+    """The optional-package keys with no wheel for this box, which no
+    install could bring."""
+    architecture = wheel_architecture()
+    return [
+        key for key in keys if not OPTIONAL_PACKAGES[key].has_wheels_for(architecture)
+    ]
 
 
 def _format_subfeature_status(sf: "_SubfeatureBookkeeping") -> str:
@@ -690,24 +704,13 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
             acoustid.message = ""
 
         # AI search: the query and indexing halves report as one feature.
-        # CLAP needs numpy + onnxruntime + soundfile + soxr + tokenizers
-        # (soundfile/soxr replaced librosa).
         ai = self._subfeatures["ai_search"]
         if not config.ai_search.enabled:
             ai.state = ModuleHealthState.DISABLED
             ai.message = "Disabled in configuration."
         else:
-            missing = [
-                pkg
-                for pkg, import_name in (
-                    ("numpy", "numpy"),
-                    ("onnxruntime", "onnxruntime"),
-                    ("soundfile", "soundfile"),
-                    ("soxr", "soxr"),
-                    ("tokenizers", "tokenizers"),
-                )
-                if not _is_importable(import_name)
-            ]
+            missing = [pkg for pkg in _AI_SEARCH_PACKAGES if not _is_importable(pkg)]
+            no_wheel = _without_wheels(missing)
             dead = [
                 name
                 for name, proc in (
@@ -716,7 +719,17 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
                 )
                 if proc is None or not proc.is_alive()
             ]
-            if missing:
+            if no_wheel:
+                # The catalog leaves these out and a restart refuses them.
+                ai.state = ModuleHealthState.ERROR
+                ai.message = (
+                    "AI search is not available on this device: "
+                    + ", ".join(f"`{m}`" for m in no_wheel)
+                    + f" cannot be installed on {wheel_architecture()}. Turn "
+                    "**AI search** off in this module's settings."
+                )
+                ai.missing_packages = ()
+            elif missing:
                 ai.state = ModuleHealthState.ERROR
                 ai.message = (
                     "AI search unavailable. Missing package(s): "
@@ -999,14 +1012,12 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
         if cfg.enricher.enabled and cfg.enricher.plugins.procedural_artwork.enabled:
             need("numpy", "numpy")
 
-        # AI search: numpy for mood ranking, plus the CLAP-side deps
-        # (soundfile + soxr handle audio decode/resample, replacing librosa).
-        if cfg.ai_search.enabled:
-            need("numpy", "numpy")
-            need("onnxruntime", "onnxruntime")
-            need("soundfile", "soundfile")
-            need("soxr", "soxr")
-            need("tokenizers", "tokenizers")
+        # AI search cannot run while one of its packages has no wheel here.
+        if cfg.ai_search.enabled and not _without_wheels(
+            pkg for pkg in _AI_SEARCH_PACKAGES if not _is_importable(pkg)
+        ):
+            for pkg in _AI_SEARCH_PACKAGES:
+                need(pkg, pkg)
 
         return missing
 
