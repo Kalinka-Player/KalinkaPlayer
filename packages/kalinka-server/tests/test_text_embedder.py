@@ -6,6 +6,7 @@ downloads a model it could never run.
 """
 
 import importlib.util
+import os
 
 import pytest
 
@@ -28,10 +29,12 @@ def downloads(monkeypatch) -> list[str]:
     return fetched
 
 
-def _installed(monkeypatch, names: set[str]) -> None:
+def _installed(monkeypatch, names: set[str], loading: set[str] | None = None):
     """Make the runtime packages outside ``names`` unfindable and those in it
-    findable, whatever this interpreter actually has."""
+    findable, whatever this interpreter actually has; those in ``loading``,
+    by default all of ``names``, import too."""
     find_spec = importlib.util.find_spec
+    loading = names if loading is None else loading
 
     def fake_find_spec(name, *args, **kwargs):
         if name in RUNTIME:
@@ -39,6 +42,13 @@ def _installed(monkeypatch, names: set[str]) -> None:
         return find_spec(name, *args, **kwargs)
 
     monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+    monkeypatch.setattr(text_embedder, "_loads", lambda name: name in loading)
+
+
+def _module(monkeypatch, tmp_path, name: str, body: str) -> None:
+    """A module the probe's child process can import."""
+    (tmp_path / f"{name}.py").write_text(body)
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path), prepend=os.pathsep)
 
 
 @pytest.mark.parametrize(
@@ -111,6 +121,54 @@ async def test_with_its_runtime_it_fetches_the_model_it_lacks(
 
     assert await embedder.available() is False
     assert downloads == [f"{MODEL_URL}/model.onnx"]
+
+
+@pytest.mark.parametrize("broken", RUNTIME)
+async def test_a_runtime_found_but_not_loading_is_missing_before_any_download(
+    monkeypatch, tmp_path, downloads, broken
+):
+    """A missing shared library shows only on import, which would otherwise
+    come after the model's download, on the first search."""
+    _installed(monkeypatch, set(RUNTIME), loading=set(RUNTIME) - {broken})
+    embedder = SharedTextEmbedder(str(tmp_path / "minilm"), MODEL_URL)
+    assert embedder.missing_runtime() == []
+
+    assert await embedder.available() is False
+    assert downloads == []
+    assert embedder.missing_runtime() == [broken]
+
+
+def test_a_module_that_imports_loads():
+    assert text_embedder._loads("json") is True
+
+
+def test_a_module_whose_import_fails_does_not_load(monkeypatch, tmp_path, caplog):
+    _module(
+        monkeypatch,
+        tmp_path,
+        "broken_runtime",
+        'raise ImportError("libgomp.so.1: cannot open shared object file")\n',
+    )
+
+    with caplog.at_level("WARNING"):
+        assert text_embedder._loads("broken_runtime") is False
+    assert "libgomp.so.1" in caplog.text
+
+
+def test_a_module_killed_by_an_illegal_instruction_does_not_load(
+    monkeypatch, tmp_path
+):
+    """Imported here, it would take the server down at every start."""
+    _module(
+        monkeypatch,
+        tmp_path,
+        "sigill_runtime",
+        "import os, resource, signal\n"
+        "resource.setrlimit(resource.RLIMIT_CORE, (0, 0))\n"
+        "os.kill(os.getpid(), signal.SIGILL)\n",
+    )
+
+    assert text_embedder._loads("sigill_runtime") is False
 
 
 async def test_embedding_without_the_runtime_is_refused(

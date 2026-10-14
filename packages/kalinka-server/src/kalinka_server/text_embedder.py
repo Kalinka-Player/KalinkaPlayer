@@ -15,7 +15,9 @@ directory to avoid a re-download.
 The runtime (onnxruntime, tokenizers) is not a server dependency: a plugin
 that embeds offers it as optional packages, asking ``missing_runtime()``
 which ones this box lacks. Without it the embedder reports itself
-unavailable before downloading anything.
+unavailable before downloading anything. Provisioning first imports the
+runtime in a child process, so one that is installed but does not load is
+named missing too.
 """
 from __future__ import annotations
 
@@ -23,6 +25,8 @@ import asyncio
 import importlib.util
 import logging
 import os
+import subprocess
+import sys
 import urllib.request
 from typing import List, Optional, Sequence
 
@@ -39,6 +43,7 @@ DIM = 384
 MAX_TOKENS = 256
 _FILES = ("model.onnx", "tokenizer.json")
 _RUNTIME_PACKAGES = ("onnxruntime", "tokenizers")
+_LOAD_TIMEOUT = 120.0
 
 
 def _importable(name: str) -> bool:
@@ -46,6 +51,28 @@ def _importable(name: str) -> bool:
         return importlib.util.find_spec(name) is not None
     except (ImportError, ValueError):
         return False
+
+
+def _loads(name: str) -> bool:
+    """Whether importing ``name`` succeeds, tried in a child process: a
+    runtime killed by an illegal instruction cannot take the server down
+    with it, and nothing the import maps stays resident here."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", f"import {name}"],
+            capture_output=True,
+            text=True,
+            timeout=_LOAD_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.warning("could not try importing %s: %s", name, e)
+        return False
+    if result.returncode != 0:
+        lines = result.stderr.strip().splitlines()
+        logger.warning("%s is installed but does not load: %s", name,
+                       lines[-1] if lines else f"exit {result.returncode}")
+        return False
+    return True
 
 
 def download_file(url: str, dest: str) -> bool:
@@ -212,8 +239,12 @@ class SharedTextEmbedder:
 
     def _provision(self) -> bool:
         missing = self.missing_runtime()
+        if not missing:
+            # A missing shared library shows only on import.
+            missing = [name for name in _RUNTIME_PACKAGES if not _loads(name)]
+            self._missing_runtime = missing
         if missing:
-            logger.warning("%s not installed; text embedding off",
+            logger.warning("%s cannot be imported; text embedding off",
                            ", ".join(missing))
             return False
         _migrate_legacy_files(self._model_dir, self._legacy_dirs)
