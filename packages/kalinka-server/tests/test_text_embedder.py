@@ -60,6 +60,37 @@ def test_it_names_the_runtime_it_cannot_import(
     assert embedder.missing_runtime() == missing
 
 
+def test_the_runtime_is_probed_once_however_often_it_is_asked(
+    monkeypatch, tmp_path
+):
+    """A plugin asks from get_state(), which the modules page polls, and
+    installing the runtime always restarts the server."""
+    probed: list[str] = []
+    find_spec = importlib.util.find_spec
+
+    def counting_find_spec(name, *args, **kwargs):
+        if name in RUNTIME:
+            probed.append(name)
+            return None
+        return find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", counting_find_spec)
+    embedder = SharedTextEmbedder(str(tmp_path / "minilm"), MODEL_URL)
+
+    assert embedder.missing_runtime() == list(RUNTIME)
+    assert embedder.missing_runtime() == list(RUNTIME)
+    assert probed == list(RUNTIME)
+
+
+def test_a_caller_cannot_change_the_answer_it_was_given(monkeypatch, tmp_path):
+    _installed(monkeypatch, set())
+    embedder = SharedTextEmbedder(str(tmp_path / "minilm"), MODEL_URL)
+
+    embedder.missing_runtime().clear()
+
+    assert embedder.missing_runtime() == list(RUNTIME)
+
+
 @pytest.mark.parametrize("absent", RUNTIME)
 async def test_without_its_runtime_it_is_unavailable_and_downloads_nothing(
     monkeypatch, tmp_path, downloads, absent

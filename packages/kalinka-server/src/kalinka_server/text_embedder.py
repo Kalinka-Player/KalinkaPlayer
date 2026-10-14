@@ -179,6 +179,8 @@ class SharedTextEmbedder:
         self._encoder = MiniLmOnnx(self._model_dir)
         self._lock = asyncio.Lock()
         self._available: Optional[bool] = None
+        # Probed once: installing the runtime always restarts the server.
+        self._missing_runtime: Optional[List[str]] = None
 
     @property
     def model_id(self) -> str:
@@ -193,7 +195,11 @@ class SharedTextEmbedder:
         return DIM
 
     def missing_runtime(self) -> List[str]:
-        return [name for name in _RUNTIME_PACKAGES if not _importable(name)]
+        if self._missing_runtime is None:
+            self._missing_runtime = [
+                name for name in _RUNTIME_PACKAGES if not _importable(name)
+            ]
+        return list(self._missing_runtime)
 
     async def available(self) -> bool:
         if self._available is None:
