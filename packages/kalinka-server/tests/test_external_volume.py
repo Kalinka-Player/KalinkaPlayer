@@ -14,10 +14,16 @@ from kalinka_plugin_sdk.direct_playback import HoldEnded
 from kalinka_plugin_sdk.ext_device import SupportedFunction
 from kalinka_plugin_sdk.ext_device_events import VolumeChangedEvent
 from kalinka_server.external_playback import ExternalPlaybackService
+from kalinka_server.module_timeout import PLUGIN_CALL_TIMEOUT_S
 from kalinka_server.output_device_router import OutputDeviceRouter
 from kalinka_server.playback_arbiter import PlaybackArbiter
 
 from tests.test_renderer_volume_control import _bus, _Device, _prepared, _registry_with
+
+# The stop gives a slow plugin or output 0.2 s per step. Waiting far longer
+# keeps a busy CI runner from failing these tests, and staying under the plugin
+# call budget still catches a step that waits that whole budget instead.
+_STOP_WITHIN_S = PLUGIN_CALL_TIMEOUT_S / 2
 
 
 @pytest.fixture
@@ -167,7 +173,7 @@ async def test_slow_volume_resync_cannot_block_audio_stop(rig):
         await asyncio.Event().wait()
 
     router.resync = stalled
-    await asyncio.wait_for(arbiter.take_back(), 0.5)
+    await asyncio.wait_for(arbiter.take_back(), _STOP_WITHIN_S)
     listener.on_revoked.assert_awaited_once()
 
 
@@ -188,7 +194,7 @@ async def test_a_plugin_ignoring_cancellation_cannot_block_audio_stop(rig):
     request = asyncio.create_task(router.current().set_volume(20))
     await entered.wait()
     stop = asyncio.create_task(arbiter.take_back())
-    finished, _ = await asyncio.wait({stop}, timeout=0.5)
+    finished, _ = await asyncio.wait({stop}, timeout=_STOP_WITHIN_S)
     done.set()
     await asyncio.gather(stop, request, return_exceptions=True)
     assert stop in finished
