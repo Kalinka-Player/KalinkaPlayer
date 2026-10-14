@@ -261,6 +261,7 @@ def test_a_package_with_no_wheel_is_named_in_the_reason(real_pip, monkeypatch):
         ("aarch64", False, "armv7l"),
         ("x86_64", False, "i686"),
         ("armv7l", False, "armv7l"),
+        ("armv8l", False, "armv7l"),
     ],
 )
 def test_the_reason_names_the_architecture_pip_wants_wheels_for(
