@@ -26,8 +26,25 @@ The server exposes a REST API (FastAPI) plus WebSocket channels for live state. 
 | Search    | `GET /search/{search_type}/{query}` (fuzzy), `GET /ai_search?query=...` (semantic) |
 | Library   | `GET /favorite/list/{type}`, `PUT /favorite/add/{id}`, playlists (`/playlist/{create,update,delete,list,add_tracks,remove_tracks}`) |
 | Devices   | `GET /device/list`, `GET/PUT /device/{get,set}_volume` |
-| Server    | `GET /server/{config,config/schema,version,modules,optional_packages}`, `PUT /server/{config,restart}`, `GET /indexer/status`, `GET /resource/{file}` |
+| Server    | `GET /server/{config,config/schema,version,modules,optional_packages}`, `PUT /server/{config,restart}`, `GET /indexer/status`, `POST /indexer/rescan`, `GET /resource/{file}` |
 | Live      | `WS /queue/ws`, `WS /device/ws`, plus SSE-style `GET /queue/events`, `GET /device/events` |
+
+`POST /indexer/rescan` (API 0.16) returns `202 {"status":"accepted"}` after
+requesting the localfiles librarian's normal folder check. Requests coalesce
+into one pending check, including while a check is already running. The
+existing librarian process handles it with the same file-stability and
+unavailable-storage guards as scheduled checks. The response is 404 when
+localfiles is unavailable, 501 for an older plugin, or 503 when its worker
+is unavailable.
+
+`GET /indexer/status` retains its module → stage structure. The localfiles
+`indexing` entry is present even when idle and adds `rescan_supported`,
+`available`, `scan_pending`, `scanning`, and `last_scan_at` (UTC Unix seconds,
+or null before the first completed check). `scanning` covers discovery through
+cleanup; progress counters stay zero until changed files have been indexed.
+The completion time survives restarts and advances on checks with no changes,
+but not on an aborted check. Watcher events do not postpone the periodic check
+or update that completion time.
 
 `POST /queue/add` takes a JSON list of entity ids, tracks or containers such as albums, playlists and folders, which it expands to their tracks, and appends them or inserts them at `?index=`. `POST /queue/replace` takes the same list without an index and replaces the queue with it in one request, which is what a client's play-now calls. Past the queue limit (1,000 tracks, 100 on a demo server) both answer 409 and change nothing; for a replacement only the new tracks count. A clear followed by an add would instead have emptied the queue before the add was refused. A replacement that comes to no tracks, such as an empty folder, answers 422 with the code `no_tracks` and also leaves the queue alone. Servers before API 0.12 answer `/queue/replace` with 405 from their browser-player mount at `/`, or with 404 where they have no such mount.
 

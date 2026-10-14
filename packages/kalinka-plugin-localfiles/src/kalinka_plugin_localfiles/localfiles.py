@@ -2,7 +2,6 @@ import asyncio
 import logging
 import multiprocessing
 import os
-import time
 from functools import partial
 from pathlib import Path
 from dataclasses import dataclass, replace
@@ -74,6 +73,7 @@ from .storage import (
     root_of,
     scheme_of,
 )
+from .scan_control import ScanControl
 from .input_module_db import (
     FolderSummary,
     ListingFilter,
@@ -361,9 +361,13 @@ class LocalFilesInputModule(InputModule):
         search_request_queue: Optional[multiprocessing.Queue] = None,
         search_response_queue: Optional[multiprocessing.Queue] = None,
         storage_source: Optional[Callable[[], StorageResolver]] = None,
+        scan_control: Optional[ScanControl] = None,
+        librarian_alive: Optional[Callable[[], bool]] = None,
     ):
         # Use the specialized LocalFilesInputModuleDb passed from module_setup.py
         self.config = config
+        self._scan_control = scan_control
+        self._librarian_alive = librarian_alive or (lambda: True)
         self.db_manager = db_manager
         self.artwork_path = Path(config.artwork_path).expanduser().resolve()
         self._storage_source = storage_source or (lambda: build_resolver(config))
@@ -703,14 +707,13 @@ class LocalFilesInputModule(InputModule):
 
     def _browse_root(self, offset: int, limit: int) -> BrowseItemList:
         """The module's catalogs: the library as its folders, and what arrived
-        in it last. Neither is offered while the library holds no tracks."""
+        in it last. The folder view stays reachable before any track is indexed."""
         if not self.db_manager.is_good():
             logger.warning("Database is not initialized or corrupted")
             return EmptyList(0, 0)
-        if self.db_manager.get_kind_total("track") == 0:
-            return EmptyList(offset, limit)
-
-        items = [self._library_card(), self._recent_card()]
+        items = [self._library_card()]
+        if self.db_manager.get_kind_total("track") > 0:
+            items.append(self._recent_card())
         return BrowseItemList(
             offset=offset,
             limit=limit,
@@ -1778,12 +1781,14 @@ class LocalFilesInputModule(InputModule):
             return None
         return resource_path.as_posix() if resource_path.exists() else None
 
+    async def request_rescan(self) -> None:
+        """Ask the existing librarian to perform its normal folder check."""
+        if self._scan_control is None or not self._librarian_alive():
+            raise RuntimeError("The library indexer is unavailable")
+        self._scan_control.request()
+
     async def get_indexer_status(self) -> dict:
-        """Return pipeline progress, stage by stage: ``indexing`` (only while
-        a scan is running), ``enrichment`` (only when the enricher is
-        enabled), and the embedder's ``clap_audio`` / ``clap_text`` job
-        coverage. Every stage carries the same
-        total/done/pending/in_progress/failed/coverage_pct shape."""
+        """Return pipeline counters and the indexing stage's folder-check state."""
         from .embedder.embedder_db import AsyncEmbedderDb
         from .enricher.enricher_db import AsyncEnricherDb
         from .indexer.indexer_db import AsyncIndexerDb
@@ -1796,21 +1801,21 @@ class LocalFilesInputModule(InputModule):
         except Exception as e:
             logger.warning("get_indexer_status: scan progress failed: %s", e)
             scan = None
-        # Progress writes land every ~2s while files are being processed,
-        # but a single file can stall a write for much longer (quiescence
-        # wait, slow network mount) — the window is a crash guard, not a
-        # liveness bound, hence the generous 10 minutes. A scan killed
-        # harder than `finally` (OOM, power loss) stops reading as active
-        # once the window lapses, or as soon as the next scan starts.
-        if (
-            scan
-            and scan.get("active")
-            and time.time() - scan.get("updated_at", 0) < 600
-        ):
-            total = scan.get("total", 0)
-            result["indexing"] = stage_status(
-                total, done=min(scan.get("processed", 0), total)
-            )
+        control = self._scan_control
+        available = bool(
+            control and control.available.is_set() and self._librarian_alive()
+        )
+        scanning = bool(available and control.scanning.is_set())
+        scan = scan or {}
+        # Checking unchanged paths is activity, but creates no indexing work.
+        total = scan.get("total", 0) if scanning and scan.get("changed", 0) else 0
+        result["indexing"] = {
+            **stage_status(total, done=min(scan.get("processed", 0), total)),
+            "available": available,
+            "scan_pending": bool(available and control.pending.is_set()),
+            "scanning": scanning,
+            "last_scan_at": scan.get("last_scan_at"),
+        }
 
         if self.config.enricher.enabled:
             try:

@@ -601,19 +601,27 @@ class AsyncIndexerDb(ProvenanceDb):
             await conn.commit()
 
     async def set_scan_progress(
-        self, total: int, processed: int, active: bool
+        self,
+        total: int,
+        processed: int,
+        active: bool,
+        *,
+        changed: int = 0,
+        last_scan_at: Optional[float] = None,
     ) -> None:
         """Publish scan progress for get_indexer_status().
 
         ``total`` comes from the listing walk, ``processed`` is the number
-        of files handled so far. ``updated_at`` lets the reader treat a row
-        left behind by a crashed scan as inactive.
+        of files handled so far. ``last_scan_at`` survives failed or aborted
+        checks; the live worker flags determine availability and activity.
         """
         value = json.dumps(
             {
                 "total": total,
                 "processed": processed,
                 "active": active,
+                "changed": changed,
+                "last_scan_at": last_scan_at,
                 "updated_at": int(time.time()),
             }
         )

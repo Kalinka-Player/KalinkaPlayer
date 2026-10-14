@@ -37,6 +37,7 @@ from mutagen.dsdiff import DSDIFF
 
 from ..audio_formats import MEDIA_TYPES
 from ..config_model import LocalFilesConfig
+from ..scan_control import ScanControl
 from ..filename_model import get_parser, names_a_vinyl_side, parse_music_path
 from ..filename_model.assembler import ASSEMBLER_VERSION
 from ..housekeeping import in_housekeeping, is_hidden_file, is_housekeeping_dir
@@ -301,6 +302,8 @@ class FileIndexer:
         self._scan_active = False
         self._scan_total = 0
         self._scan_processed = 0
+        self._scan_changed = 0
+        self._last_scan_at: Optional[float] = None
         self._scan_progress_written_at = 0.0
 
     async def start(self):
@@ -321,7 +324,20 @@ class FileIndexer:
                 self.running = False
 
     async def run_scan(self):
-        """Scan all music folders for files"""
+        """Check every configured root, retaining the last completed check."""
+        previous = await self.db_manager.get_scan_progress()
+        self._last_scan_at = (previous or {}).get("last_scan_at")
+        self._scan_total = self._scan_processed = self._scan_changed = 0
+        self._scan_active = True
+        await self._publish_scan_progress(force=True)
+        try:
+            await self._run_scan()
+            self._last_scan_at = time.time()
+        finally:
+            self._scan_active = False
+            await self._publish_scan_progress(force=True)
+
+    async def _run_scan(self):
         logger.debug(f"Starting music file scan in folders: {self.music_folders}")
 
         changed_items: Dict[str, Set[str]] = {
@@ -344,15 +360,6 @@ class FileIndexer:
                     f"{folder} ({root_status[folder].reason})"
                 )
 
-        # Publish a zeroed row first: it overwrites anything a scan killed
-        # harder than `finally` (OOM, power loss) left behind, and an
-        # all-zero row reads as "no outstanding work" while the pre-count
-        # below runs.
-        self._scan_total = 0
-        self._scan_processed = 0
-        self._scan_active = True
-        await self._publish_scan_progress(force=True)
-
         # Listed once and kept, not counted and listed again: every listing
         # is a round trip on a share, and the count is what the per-file loop
         # below reports progress against.
@@ -367,15 +374,9 @@ class FileIndexer:
             if files_by_folder.get(folder) and identity:
                 await self.db_manager.set_root_signature(folder, identity)
 
-        try:
-            for folder in available_folders:
-                logger.debug(f"Scanning folder: {folder}")
-                await self._index_files(files_by_folder[folder], changed_items)
-        finally:
-            # Mark the scan inactive even on failure so the status reader
-            # never shows a stuck "indexing" stage.
-            self._scan_active = False
-            await self._publish_scan_progress(force=True)
+        for folder in available_folders:
+            logger.debug(f"Scanning folder: {folder}")
+            await self._index_files(files_by_folder[folder], changed_items)
 
         # Delete stale entries after scanning but before enrichment
         cleanup_results = await self.cleanup_stale_tracks()
@@ -598,6 +599,7 @@ class FileIndexer:
             try:
                 result_changes = await self.process_file(file_path)
                 if result_changes:
+                    self._scan_changed += 1
                     for key, value in result_changes.items():
                         if value:
                             changed_items[key].add(value)
@@ -667,7 +669,11 @@ class FileIndexer:
         self._scan_progress_written_at = now
         try:
             await self.db_manager.set_scan_progress(
-                self._scan_total, self._scan_processed, self._scan_active
+                self._scan_total,
+                self._scan_processed,
+                self._scan_active,
+                changed=self._scan_changed,
+                last_scan_at=self._last_scan_at,
             )
         except Exception as e:
             logger.debug(f"Failed to publish scan progress: {e}")
@@ -833,6 +839,21 @@ class FileIndexer:
         metadata = await asyncio.to_thread(
             self._extract_metadata, storage, file_path
         )
+        # A writer can resume after the quiescence check, including during parsing.
+        try:
+            after_read = await asyncio.to_thread(storage.stat, file_path)
+        except FileNotFoundError:
+            return None
+        if (
+            after_read.size != stat.size
+            or after_read.mtime_ns != stat.mtime_ns
+            or after_read.identity != stat.identity
+        ):
+            logger.info("File changed while reading, deferring: %s", file_path)
+            self._deferred_files[file_path] = (
+                time.monotonic() + max(1.0, quiescence_seconds)
+            )
+            return None
         if not metadata:
             attempts = await self.db_manager.record_failure(
                 file_path, file_size, mtime_ns, "metadata extraction failed"
@@ -2315,64 +2336,75 @@ class FileIndexer:
         }
 
 
-async def _indexer_worker(config: LocalFilesConfig, db_manager: AsyncIndexerDb):
-    """Background worker task for the indexer"""
-    global _shutdown_event, _indexer_queue
+async def _indexer_worker(
+    config: LocalFilesConfig,
+    db_manager: AsyncIndexerDb,
+    scan_control: Optional[ScanControl] = None,
+):
+    """Serialize periodic checks, manual requests and watcher changes."""
+
+    async def scan():
+        if scan_control:
+            scan_control.scanning.set()
+            scan_control.pending.clear()
+        try:
+            await indexer_instance.start()
+        finally:
+            if scan_control:
+                scan_control.scanning.clear()
 
     try:
         indexer_instance = FileIndexer(config, db_manager)
-        await indexer_instance.start()
-        logger.info("Indexer worker started")
-        interval_minutes = config.scan_interval_minutes
-        logger.info(f"Scheduled file indexer to run every {interval_minutes} minutes")
-        last_run = time.time()
+        if scan_control:
+            scan_control.available.set()
+        await scan()
+        last_run = time.monotonic()
+        interval = config.scan_interval_minutes * 60
 
-        while True:
+        while not _shutdown_event.is_set():
             try:
+                if (
+                    scan_control and scan_control.pending.is_set()
+                ) or time.monotonic() - last_run >= interval:
+                    await scan()
+                    last_run = time.monotonic()
+                    continue
                 try:
                     command = await asyncio.wait_for(
                         _indexer_queue.get(),
-                        timeout=min(30.0, max(0.01, indexer_instance.deferred_retry_in())),
+                        timeout=min(
+                            1.0,
+                            max(0.01, interval - (time.monotonic() - last_run)),
+                            max(0.01, indexer_instance.deferred_retry_in()),
+                        ),
                     )
-                    logger.debug(f"Received command: {command}")
-                    if command == "scan":
-                        logger.info("Manual indexer scan triggered")
-                        await indexer_instance.start()
-                        last_run = time.time()
-                    elif command == "stop":
-                        logger.info("Stopping indexer worker")
-                        _shutdown_event.set()
-                        break
-                    elif isinstance(command, dict) and "incremental_changes" in command:
-                        logger.info("File watcher detected changes, processing...")
-                        await indexer_instance.handle_incremental_changes(
-                            command["incremental_changes"]
-                        )
-                    _indexer_queue.task_done()
                 except asyncio.TimeoutError:
-                    # This is expected - allows periodic checking for scheduled scans
                     pass
-
+                else:
+                    try:
+                        if command == "scan":
+                            await scan()
+                            last_run = time.monotonic()
+                        elif command == "stop":
+                            _shutdown_event.set()
+                            break
+                        elif isinstance(command, dict) and "incremental_changes" in command:
+                            await indexer_instance.handle_incremental_changes(
+                                command["incremental_changes"]
+                            )
+                    finally:
+                        _indexer_queue.task_done()
                 await indexer_instance.retry_deferred_files()
-
-                if time.time() - last_run > interval_minutes * 60:
-                    logger.debug(
-                        f"Scheduled indexer scan triggered (interval: {interval_minutes} mins)"
-                    )
-                    await indexer_instance.start()
-                    last_run = time.time()
-
-                await asyncio.sleep(1)
             except asyncio.CancelledError:
-                logger.info("Indexer worker cancelled.")
-                break
-            except Exception as e:
-                logger.exception(f"Error in indexer worker inner loop: {str(e)}")
+                raise
+            except Exception:
+                logger.exception("Error in indexer worker")
                 await asyncio.sleep(5)
-    except Exception as e:
-        logger.exception(f"Fatal error in indexer worker: {str(e)}")
-        # Re-raise to ensure the task failure is visible
-        raise
+    finally:
+        if scan_control:
+            scan_control.available.clear()
+            scan_control.pending.clear()
+            scan_control.scanning.clear()
 
 
 def _worth_indexing(kind: ChangeKind, path: str) -> bool:
@@ -2589,7 +2621,9 @@ async def _file_watcher_worker(config: LocalFilesConfig):
 
 
 def start_indexer(
-    config: LocalFilesConfig, db_manager: AsyncIndexerDb
+    config: LocalFilesConfig,
+    db_manager: AsyncIndexerDb,
+    scan_control: Optional[ScanControl] = None,
 ) -> Optional[asyncio.Task]:
     """Start the indexer process in a background task"""
     global _indexer_task
@@ -2613,7 +2647,9 @@ def start_indexer(
         exist_ok=True,
     )
 
-    _indexer_task = asyncio.create_task(_indexer_worker(config, db_manager))
+    _indexer_task = asyncio.create_task(
+        _indexer_worker(config, db_manager, scan_control)
+    )
 
     # Add done callback to log any unhandled exceptions
     def _on_indexer_task_done(task):
