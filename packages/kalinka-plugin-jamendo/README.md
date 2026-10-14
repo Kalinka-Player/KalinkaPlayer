@@ -36,7 +36,7 @@ Intentionally **not** implemented:
 - **No exact result totals.** The Jamendo API reports only the size of the current page, never a grand total. Reported totals are therefore estimates tuned to keep "load more" pagination working.
 - **Free-tier rate limits.** The Jamendo API rate-limits requests per client_id; heavy browsing may be throttled.
 - **FLAC is best-effort.** Lossless streams exist only for tracks whose artist enabled download; otherwise Jamendo serves a lossy stream.
-- **No mood search on 32-bit ARM.** Its runtime, onnxruntime, has no armv7l build on PyPI or piwheels. On 32-bit Raspberry Pi OS the modules page says mood search is not available on the device, offers no install, and asks for the setting to be turned off.
+- **Not on 32-bit ARM.** sqlite-vec, which mood search queries its index with, is a hard dependency with no armv7l build on PyPI or piwheels, so on 32-bit Raspberry Pi OS the install skips the plugin's wheel and Jamendo does not load. Mood search's runtime, onnxruntime, has no armv7l build either.
 - **Mood search is tied to the server's embedder.** The index vectors were computed with the exact model and version the server's shared text embedder ships (`all-MiniLM-L6-v2`); on a mismatch — or on a server too old to have the shared embedder (SDK < 1.2) — mood search disables itself rather than return near-random neighbours.
 
 ## Building
