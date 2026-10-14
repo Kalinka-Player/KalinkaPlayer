@@ -17,6 +17,7 @@ from importlib.metadata import entry_points
 from pathlib import Path
 
 import pytest
+from kalinka_plugin_sdk import optional_packages_manifest
 
 REPO = Path(__file__).resolve().parents[3]
 PACKAGES = REPO / "packages"
@@ -39,14 +40,7 @@ def _package_dir(plugin: type) -> Path:
 
 
 def _offer(plugin: type) -> dict:
-    return {
-        "plugin": plugin.PLUGIN_ID,
-        "schema": 1,
-        "packages": {
-            key: spec.model_dump(mode="json")
-            for key, spec in plugin.OPTIONAL_PACKAGES.items()
-        },
-    }
+    return optional_packages_manifest(plugin.PLUGIN_ID, plugin.OPTIONAL_PACKAGES)
 
 
 def _stub(path: Path, body: str) -> None:

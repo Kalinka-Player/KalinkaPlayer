@@ -12,14 +12,10 @@ Run as a module to print the manifest JSON:
 
 from __future__ import annotations
 
-import json
-import sys
-
-from kalinka_plugin_sdk import OptionalPackageSpec
+from kalinka_plugin_sdk import OptionalPackageSpec, print_optional_packages_manifest
 
 
 PLUGIN_ID = "localfiles"
-MANIFEST_SCHEMA_VERSION = 1
 
 
 # Each plugin's internal sub-features are now the authority on "this
@@ -41,8 +37,7 @@ OPTIONAL_PACKAGES: dict[str, OptionalPackageSpec] = {
             "ONNX inference runtime for the CLAP audio/text encoder used "
             "by AI search."
         ),
-        # Neither PyPI nor piwheels has a 32-bit ARM build. An SDK before
-        # 3.12 ignores the field.
+        # Neither PyPI nor piwheels has a 32-bit ARM build.
         architectures=("x86_64", "aarch64"),
     ),
     "soundfile": OptionalPackageSpec(
@@ -68,18 +63,5 @@ OPTIONAL_PACKAGES: dict[str, OptionalPackageSpec] = {
 }
 
 
-def manifest() -> dict:
-    """Build the JSON-serialisable manifest payload."""
-    return {
-        "plugin": PLUGIN_ID,
-        "schema": MANIFEST_SCHEMA_VERSION,
-        "packages": {
-            key: spec.model_dump(mode="json")
-            for key, spec in OPTIONAL_PACKAGES.items()
-        },
-    }
-
-
 if __name__ == "__main__":
-    json.dump(manifest(), sys.stdout, indent=2)
-    sys.stdout.write("\n")
+    print_optional_packages_manifest(PLUGIN_ID, OPTIONAL_PACKAGES)

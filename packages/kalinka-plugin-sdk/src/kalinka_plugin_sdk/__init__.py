@@ -91,7 +91,12 @@ from .module_health import ModuleHealthState, ModuleState
 from .config_feedback import ConfigIssue, ConfigOption, IssueSeverity
 from .config_records import ConfigRecord, Records
 from .dynamic_fields import DynamicFieldDecl
-from .optional_packages import OptionalPackageSpec, wheel_architecture
+from .optional_packages import (
+    OptionalPackageSpec,
+    optional_packages_manifest,
+    print_optional_packages_manifest,
+    wheel_architecture,
+)
 
 from .external_playback import (
     ExternalPlayback,
@@ -182,5 +187,7 @@ __all__ = [
     "ConfigRecord",
     "Records",
     "OptionalPackageSpec",
+    "optional_packages_manifest",
+    "print_optional_packages_manifest",
     "wheel_architecture",
 ]

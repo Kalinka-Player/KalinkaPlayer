@@ -12,6 +12,11 @@ A plugin declares a static allow-list as a class attribute:
 
 At deb build time the plugin's allow-list is exported to a JSON manifest
 shipped under /opt/kalinka/allowed_packages/<plugin_id>.json (root-owned).
+The module declaring it prints the manifest when run as a script, which is
+how the package builds call it:
+
+    if __name__ == "__main__":
+        print_optional_packages_manifest(PLUGIN_ID, OPTIONAL_PACKAGES)
 
 At runtime the server exposes the catalog and accepts install requests
 keyed by allow-list key (never by pip spec). Requested keys are validated
@@ -28,10 +33,15 @@ this device instead.
 
 from __future__ import annotations
 
+import json
 import platform
 import sys
+from collections.abc import Mapping
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+MANIFEST_SCHEMA_VERSION = 1
 
 
 def wheel_architecture() -> str:
@@ -93,3 +103,26 @@ class OptionalPackageSpec(BaseModel):
     def has_wheels_for(self, architecture: str) -> bool:
         """SDK 3.12: whether an install on ``architecture`` can succeed."""
         return not self.architectures or architecture in self.architectures
+
+
+def optional_packages_manifest(
+    plugin_id: str, packages: Mapping[str, OptionalPackageSpec]
+) -> dict[str, Any]:
+    """SDK 3.12: the manifest a plugin's package ships, naming every package
+    the install helper may install for it, on the plugin's terms."""
+    return {
+        "plugin": plugin_id,
+        "schema": MANIFEST_SCHEMA_VERSION,
+        "packages": {
+            key: spec.model_dump(mode="json") for key, spec in packages.items()
+        },
+    }
+
+
+def print_optional_packages_manifest(
+    plugin_id: str, packages: Mapping[str, OptionalPackageSpec]
+) -> None:
+    """SDK 3.12: print :func:`optional_packages_manifest` as JSON, as the
+    package builds read it from the declaring module run as a script."""
+    json.dump(optional_packages_manifest(plugin_id, packages), sys.stdout, indent=2)
+    sys.stdout.write("\n")
