@@ -169,10 +169,11 @@ def _no_wheel_reason(run: PipRun) -> str | None:
 def _wheel_machine(kernel_machine: str, python_is_64bit: bool) -> str:
     """The architecture pip wants wheels for. A 32-bit Python on a 64-bit
     kernel, as on 32-bit Raspberry Pi OS on a Pi 4 or 5, runs armv7l or
-    i686 code though the kernel reports aarch64 or x86_64."""
+    i686 code though the kernel reports aarch64 or x86_64, or armv8l under
+    a 32-bit personality."""
     if python_is_64bit:
         return kernel_machine
-    return {"aarch64": "armv7l", "x86_64": "i686"}.get(
+    return {"aarch64": "armv7l", "armv8l": "armv7l", "x86_64": "i686"}.get(
         kernel_machine, kernel_machine
     )
 
