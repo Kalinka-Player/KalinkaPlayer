@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from kalinka_plugin_sdk import OptionalPackageSpec
+from kalinka_plugin_sdk import OptionalPackageSpec, wheel_architecture
 from kalinka_plugin_sdk import paths
 
 from .player_setup import PreparedPlugin
@@ -119,6 +119,19 @@ def build_registry(
     return _first_offers(_collect_offers(input_modules, devices))
 
 
+def _installable_here(
+    registry: dict[str, tuple[str, OptionalPackageSpec]],
+) -> dict[str, tuple[str, OptionalPackageSpec]]:
+    """The registry without the packages that have no wheel for this box,
+    which an install could only fail on, at every restart."""
+    architecture = wheel_architecture()
+    return {
+        key: offer
+        for key, offer in registry.items()
+        if offer[1].has_wheels_for(architecture)
+    }
+
+
 def build_catalog(
     input_modules: dict[str, PreparedPlugin],
     devices: dict[str, PreparedPlugin],
@@ -128,10 +141,11 @@ def build_catalog(
     """Return the catalog payload for GET /server/optional_packages.
 
     A package two plugins share is listed once, on the terms of the first;
-    ``offered_by`` names every plugin that offers it and what for.
+    ``offered_by`` names every plugin that offers it and what for. One with
+    no wheel for this box is left out, as no install could bring it.
     """
     offers = _collect_offers(input_modules, devices)
-    registry = _first_offers(offers)
+    registry = _installable_here(_first_offers(offers))
 
     pending_keys: set[str] = set()
     if pending_installs_path.is_file():
@@ -189,12 +203,14 @@ def write_pending_installs(
 ) -> tuple[list[str], list[str]]:
     """Validate and persist a pending-installs request.
 
-    Returns (accepted, rejected). Caller decides what to do with each.
+    Returns (accepted, rejected). Caller decides what to do with each. A key
+    with no wheel for this box is rejected like an unknown one: the catalog
+    leaves it out too.
 
     Writes atomically (tmp + rename) so a reader of the file either sees
     the previous request or the new one, never a half-written blob.
     """
-    registry = build_registry(input_modules, devices)
+    registry = _installable_here(build_registry(input_modules, devices))
     accepted: list[str] = []
     rejected: list[str] = []
     for raw in keys:
