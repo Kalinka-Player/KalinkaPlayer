@@ -116,6 +116,18 @@ def test_partial_install_only_lists_missing(monkeypatch):
     assert set(result) == {"onnxruntime", "soundfile", "soxr"}
 
 
+def test_nothing_for_ai_search_where_onnxruntime_has_no_wheel(monkeypatch):
+    """On 32-bit ARM the rest of the CLAP stack would be of no use."""
+    from kalinka_plugin_localfiles import module_setup
+
+    cfg = LocalFilesConfig()
+    cfg.ai_search.enabled = True
+    _set_importable(monkeypatch, set())
+    monkeypatch.setattr(module_setup, "wheel_architecture", lambda: "armv7l")
+
+    assert asyncio.run(_plugin_with(cfg).required_packages()) == []
+
+
 def test_returns_empty_when_setup_never_ran():
     """Defensive: required_packages() is callable on a fresh instance
     that hasn't been set up yet, and returns [] rather than raising."""
