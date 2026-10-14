@@ -120,13 +120,14 @@ class JamendoMoodIndex:
     def _provision(self) -> bool:
         """Fetch the index if missing; read the index dtype/scale.
 
-        Blocking (downloads, sqlite) — always called via an executor.
+        Blocking (downloads, sqlite) — always called via an executor, and
+        only once _index_obtainable() has passed.
         """
         if not os.path.exists(self._index_path) and not (
             self._index_url and download_file(self._index_url, self._index_path)
         ):
-            logger.warning("Jamendo index missing (%s); ai_search off",
-                           self._index_path)
+            logger.warning("could not fetch the Jamendo index to %s; "
+                           "ai_search off", self._index_path)
             return False
         try:
             meta = self._read_meta()

@@ -60,6 +60,19 @@ async def test_with_the_embedder_available_a_missing_index_is_fetched(
     assert downloads == [INDEX_URL]
 
 
+async def test_a_failed_download_is_logged_as_one(tmp_path, downloads, caplog):
+    """The index had a URL to come from, so it is not reported missing."""
+    index = JamendoMoodIndex(
+        str(tmp_path / "index.sqlite"), INDEX_URL, FakeEmbedder(available=True)
+    )
+
+    with caplog.at_level("WARNING"):
+        assert await index.available() is False
+
+    assert "could not fetch the Jamendo index" in caplog.text
+    assert "index missing" not in caplog.text
+
+
 async def test_without_an_index_or_its_url_the_embedder_is_not_provisioned(
     tmp_path, downloads
 ):
