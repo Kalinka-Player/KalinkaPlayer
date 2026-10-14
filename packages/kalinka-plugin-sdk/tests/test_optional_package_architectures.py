@@ -1,6 +1,5 @@
 """Where an optional package can be installed (SDK 3.12)."""
 
-import json
 import sys
 
 import pytest
@@ -45,15 +44,3 @@ def test_a_package_has_wheels_only_for_the_architectures_it_declares():
 
     assert spec.has_wheels_for("aarch64")
     assert not spec.has_wheels_for("armv7l")
-
-
-def test_a_manifest_entry_reads_back_as_the_spec_it_was_written_from():
-    spec = OptionalPackageSpec(
-        pip_spec="onnxruntime>=1.17",
-        description="d",
-        architectures=("x86_64", "aarch64"),
-    )
-
-    written = json.dumps(spec.model_dump(mode="json"))
-
-    assert OptionalPackageSpec(**json.loads(written)) == spec

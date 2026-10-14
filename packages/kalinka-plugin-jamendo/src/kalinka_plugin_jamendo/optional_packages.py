@@ -13,14 +13,10 @@ Run as a module to print the manifest JSON:
 
 from __future__ import annotations
 
-import json
-import sys
-
-from kalinka_plugin_sdk import OptionalPackageSpec
+from kalinka_plugin_sdk import OptionalPackageSpec, print_optional_packages_manifest
 
 
 PLUGIN_ID = "jamendo"
-MANIFEST_SCHEMA_VERSION = 1
 
 
 # localfiles offers the same keys, and a shared key must keep one spec.
@@ -44,18 +40,5 @@ OPTIONAL_PACKAGES: dict[str, OptionalPackageSpec] = {
 }
 
 
-def manifest() -> dict:
-    """Build the JSON-serialisable manifest payload."""
-    return {
-        "plugin": PLUGIN_ID,
-        "schema": MANIFEST_SCHEMA_VERSION,
-        "packages": {
-            key: spec.model_dump(mode="json")
-            for key, spec in OPTIONAL_PACKAGES.items()
-        },
-    }
-
-
 if __name__ == "__main__":
-    json.dump(manifest(), sys.stdout, indent=2)
-    sys.stdout.write("\n")
+    print_optional_packages_manifest(PLUGIN_ID, OPTIONAL_PACKAGES)

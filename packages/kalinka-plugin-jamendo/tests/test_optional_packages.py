@@ -17,7 +17,7 @@ import pytest
 from kalinka_plugin_jamendo import module_setup, optional_packages
 from kalinka_plugin_jamendo.config_model import JamendoConfig
 from kalinka_plugin_jamendo.module_setup import KalinkaPluginJamendo
-from kalinka_plugin_sdk import ModuleHealthState
+from kalinka_plugin_sdk import ModuleHealthState, optional_packages_manifest
 
 RUNTIME = ("onnxruntime", "tokenizers")
 SDK_SRC = Path(__file__).resolve().parents[2] / "kalinka-plugin-sdk" / "src"
@@ -84,18 +84,11 @@ async def set_up(monkeypatch):
         await plugin.shutdown()
 
 
-def test_the_manifest_is_the_plugins_allow_list():
-    manifest = optional_packages.manifest()
-
-    assert manifest["plugin"] == KalinkaPluginJamendo.PLUGIN_ID
-    assert manifest["packages"] == {
-        key: spec.model_dump(mode="json")
-        for key, spec in KalinkaPluginJamendo.OPTIONAL_PACKAGES.items()
-    }
-    assert set(manifest["packages"]) == set(RUNTIME)
+def test_the_plugin_offers_mood_searchs_runtime():
+    assert set(KalinkaPluginJamendo.OPTIONAL_PACKAGES) == set(RUNTIME)
 
 
-def test_the_package_build_prints_the_manifest():
+def test_the_package_build_prints_the_plugins_allow_list():
     """As build_deb.sh and build_rpm.sh run it: a script beside the plugin's
     modules, with nothing but the SDK on the path."""
     result = subprocess.run(
@@ -106,7 +99,9 @@ def test_the_package_build_prints_the_manifest():
         check=True,
     )
 
-    assert json.loads(result.stdout) == optional_packages.manifest()
+    assert json.loads(result.stdout) == optional_packages_manifest(
+        KalinkaPluginJamendo.PLUGIN_ID, KalinkaPluginJamendo.OPTIONAL_PACKAGES
+    )
 
 
 async def test_mood_search_without_onnxruntime_reports_it_missing():
