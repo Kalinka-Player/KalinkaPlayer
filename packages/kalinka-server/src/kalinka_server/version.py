@@ -148,7 +148,9 @@ def get_version() -> str:
 # with no wheel for the server's architecture, as onnxruntime on 32-bit ARM,
 # is left out of GET /server/optional_packages, and PUT /server/restart
 # refuses it in `install` with the 400 an unknown key gets.
-REST_API_VERSION = "0.15"
+# 0.16: POST /indexer/rescan requests the localfiles librarian's normal check.
+# GET /indexer/status includes scan activity and the last completed check time.
+REST_API_VERSION = "0.16"
 
 
 def get_rest_api_version() -> str:

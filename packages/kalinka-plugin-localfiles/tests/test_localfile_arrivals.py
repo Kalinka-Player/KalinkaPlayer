@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import numpy as np
@@ -232,7 +233,7 @@ async def test_incremental_events_do_not_postpone_periodic_scan(monkeypatch):
     monkeypatch.setattr(module, "FileIndexer", lambda *args: Indexer())
     monkeypatch.setattr(module, "_indexer_queue", queue)
     monkeypatch.setattr(module, "_shutdown_event", asyncio.Event())
-    monkeypatch.setattr(module.time, "time", lambda: now)
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: now))
     monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
     await module._indexer_worker(LocalFilesConfig(scan_interval_minutes=1), None)
     assert scans == [0, 61]

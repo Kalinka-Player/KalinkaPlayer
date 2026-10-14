@@ -51,7 +51,7 @@ async def config(tmp_path):
 @pytest.mark.asyncio
 async def test_librarian_wires_one_queue_into_both_workers(config, monkeypatch):
     # Don't run the real worker loops — just observe the wiring async_main does.
-    monkeypatch.setattr(indexer_mod, "start_indexer", lambda c, db: None)
+    monkeypatch.setattr(indexer_mod, "start_indexer", lambda c, db, scan_control=None: None)
     monkeypatch.setattr(indexer_mod, "start_file_watcher", lambda c: None)
     monkeypatch.setattr(enricher_mod, "start_enricher", lambda c, db: None)
 
@@ -77,7 +77,7 @@ async def test_librarian_leaves_queue_unwired_when_enricher_disabled(
     config, monkeypatch
 ):
     config.enricher.enabled = False
-    monkeypatch.setattr(indexer_mod, "start_indexer", lambda c, db: None)
+    monkeypatch.setattr(indexer_mod, "start_indexer", lambda c, db, scan_control=None: None)
     monkeypatch.setattr(indexer_mod, "start_file_watcher", lambda c: None)
 
     def _fail(*a, **k):  # enricher must not be started when disabled

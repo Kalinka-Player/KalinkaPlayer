@@ -16,6 +16,7 @@ import signal
 from typing import Optional
 
 from .config_model import LocalFilesConfig
+from .scan_control import ScanControl
 from .worker_utils import configure_worker_logging, set_proc_title
 from .indexer import indexer as indexer_mod
 from .indexer.indexer_db import AsyncIndexerDb
@@ -29,6 +30,7 @@ async def async_main(
     config: LocalFilesConfig,
     searcher_nudge_queue: Optional[multiprocessing.Queue] = None,
     embedder_nudge_queue: Optional[multiprocessing.Queue] = None,
+    scan_control: Optional[ScanControl] = None,
 ):
     """Run the indexer and enricher worker loops in one event loop."""
     shutdown_event = asyncio.Event()
@@ -57,7 +59,7 @@ async def async_main(
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, shutdown_event.set)
 
-    indexer_task = indexer_mod.start_indexer(config, indexer_db)
+    indexer_task = indexer_mod.start_indexer(config, indexer_db, scan_control)
     watcher_task = indexer_mod.start_file_watcher(config)
 
     enricher_task = None
@@ -90,6 +92,7 @@ def main(
     logger_queue: multiprocessing.Queue,
     searcher_nudge_queue: Optional[multiprocessing.Queue] = None,
     embedder_nudge_queue: Optional[multiprocessing.Queue] = None,
+    scan_control: Optional[ScanControl] = None,
 ):
     """Main entry point for the librarian daemon."""
     set_proc_title("kal-librarian")
@@ -97,7 +100,9 @@ def main(
     configure_worker_logging(logger_queue)
 
     try:
-        asyncio.run(async_main(config, searcher_nudge_queue, embedder_nudge_queue))
+        asyncio.run(
+            async_main(config, searcher_nudge_queue, embedder_nudge_queue, scan_control)
+        )
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt received by asyncio.run. Exiting.")
     except Exception as e:

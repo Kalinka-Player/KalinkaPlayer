@@ -45,6 +45,7 @@ from .suggest import (
     SmbHostSuggester,
 )
 from .input_module_db import LocalFilesInputModuleDb
+from .scan_control import ScanControl
 from .localfiles import LocalFilesInputModule
 from .optional_packages import OPTIONAL_PACKAGES
 from . import librarian
@@ -445,6 +446,7 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
     def __init__(self):
         # The indexer and enricher share one "librarian" process (single DB
         # writer); the searcher and embedder stay separate.
+        self._scan_control = ScanControl()
         self._librarian_proc = None
         self._searcher_proc = None
         self._embedder_proc = None
@@ -534,6 +536,10 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
             input_module_db,
             *search_queues,
             storage_source=self._current_resolver,
+            scan_control=self._scan_control,
+            librarian_alive=lambda: (
+                self._librarian_proc is not None and self._librarian_proc.is_alive()
+            ),
         )
 
         # Forward subprocess log records into the main logging pipeline so the
@@ -572,6 +578,7 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
                 self._logging_queue,
                 self._searcher_nudge_queue,
                 self._embedder_nudge_queue if config.ai_search.enabled else None,
+                self._scan_control,
             ),
         )
         self._librarian_proc.start()
@@ -1055,6 +1062,8 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
         for resolvers in (self._live_resolvers, self._staged_resolvers):
             resolvers.close()
 
+        self._scan_control.available.clear()
+        self._scan_control.pending.clear()
         self._shutdown_process(self._librarian_proc)
         self._shutdown_process(self._searcher_proc)
         self._shutdown_process(self._embedder_proc)

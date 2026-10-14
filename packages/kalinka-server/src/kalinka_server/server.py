@@ -901,6 +901,21 @@ async def create_app(
             now = datetime.now(timezone(timedelta(minutes=tz_offset_min)))
         return app.state.suggestions.suggest(count, now=now)
 
+    @app.post("/indexer/rescan", status_code=202)
+    async def indexer_rescan() -> dict:
+        """Request the local library's normal filesystem check."""
+        module = enabled_input_module("localfiles")
+        request = getattr(module, "request_rescan", None)
+        if request is None:
+            raise HTTPException(
+                501, "This localfiles plugin does not support manual scans"
+            )
+        try:
+            await request()
+        except RuntimeError:
+            raise HTTPException(503, "The library indexer is unavailable") from None
+        return {"status": "accepted"}
+
     @app.get("/indexer/status")
     async def indexer_status(sources: Optional[str] = None) -> dict:
         """Return pipeline progress (indexing / enrichment / embedding
@@ -911,6 +926,10 @@ async def create_app(
             if hasattr(module, "get_indexer_status"):
                 try:
                     status = await module.get_indexer_status()
+                    if module.module_name() == "localfiles" and "indexing" in status:
+                        status["indexing"]["rescan_supported"] = hasattr(
+                            module, "request_rescan"
+                        )
                     result[module.module_name()] = status
                 except Exception:
                     pass
