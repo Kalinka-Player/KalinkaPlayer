@@ -43,7 +43,7 @@ jobs:
             make git ca-certificates dpkg-dev \
             python3 python3-pip python3-venv
           # build/setuptools-scm for wheel builds; pydantic is needed
-          # by the localfiles plugin's build-time optional_packages export.
+          # by the plugins' build-time optional_packages exports (localfiles, jamendo).
           # --ignore-installed: these deps pull a newer `packaging` than the
           # dpkg-installed one, which pip cannot uninstall (no RECORD file).
           pip install --upgrade --ignore-installed build setuptools-scm pydantic
