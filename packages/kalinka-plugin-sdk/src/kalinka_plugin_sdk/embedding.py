@@ -57,10 +57,11 @@ class TextEmbedder(Protocol):
         """SDK 3.12: import names of the packages the embedder runs on that
         this interpreter cannot import; empty once it can run.
 
-        Answered without I/O or provisioning, so it is cheap enough for
-        ``get_state()``. An embedder from a server before 3.12 lacks it, so
-        ask with ``getattr``; such a server installed the runtime with
-        itself.
+        Probed once per process, as installing the runtime always restarts
+        the server, and without provisioning, so it is cheap enough for
+        every ``get_state()``. An embedder from a server before 3.12 lacks
+        it, so ask with ``getattr``; such a server installed the runtime
+        with itself.
         """
         return []
 

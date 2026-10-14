@@ -47,6 +47,16 @@ class OlderEmbedder:
     with itself and has no missing_runtime()."""
 
 
+class UnprovisionedIndex:
+    """Stands in for the mood index whose provisioning setup() starts."""
+
+    def __init__(self, *args):
+        pass
+
+    async def available(self) -> bool:
+        return False
+
+
 def _plugin(embedder=None, **config) -> KalinkaPluginJamendo:
     plugin = KalinkaPluginJamendo()
     plugin._context = SimpleNamespace(
@@ -54,6 +64,24 @@ def _plugin(embedder=None, **config) -> KalinkaPluginJamendo:
         embedder=FakeEmbedder() if embedder is None else embedder,
     )
     return plugin
+
+
+@pytest.fixture
+async def set_up(monkeypatch):
+    """Runs the plugin's own setup() on a context whose config the test
+    keeps, so it can stage changes as PUT /server/config does."""
+    monkeypatch.setattr(module_setup, "JamendoMoodIndex", UnprovisionedIndex)
+    plugins: list[KalinkaPluginJamendo] = []
+
+    async def set_up(embedder, config: JamendoConfig) -> KalinkaPluginJamendo:
+        plugin = KalinkaPluginJamendo()
+        await plugin.setup(SimpleNamespace(config=config, embedder=embedder))
+        plugins.append(plugin)
+        return plugin
+
+    yield set_up
+    for plugin in plugins:
+        await plugin.shutdown()
 
 
 def test_the_manifest_is_the_plugins_allow_list():
@@ -114,13 +142,45 @@ async def test_with_mood_search_off_nothing_is_missing():
     assert await plugin.required_packages() == []
 
 
-async def test_with_its_runtime_mood_search_is_ready():
-    plugin = _plugin(FakeEmbedder(), client_id="x", ai_search_enabled=True)
+async def test_with_its_runtime_mood_search_stays_ready_and_unmentioned(set_up):
+    plugin = await set_up(
+        FakeEmbedder(), JamendoConfig(client_id="x", ai_search_enabled=True)
+    )
 
+    first = await plugin.get_state()
+    second = await plugin.get_state()
+
+    assert first.state == second.state == ModuleHealthState.READY
+    assert first.missing_packages == second.missing_packages == []
+    assert first.message is None and second.message is None
+    assert await plugin.required_packages() == []
+
+
+async def test_mood_search_turned_on_since_setup_reports_its_runtime_missing(
+    set_up,
+):
+    """required_packages() must see config staged since setup, though the
+    embedder probes its runtime only once."""
+    config = JamendoConfig(client_id="x", ai_search_enabled=False)
+    plugin = await set_up(FakeEmbedder(RUNTIME), config)
+    assert (await plugin.get_state()).state == ModuleHealthState.READY
+
+    config.ai_search_enabled = True
     state = await plugin.get_state()
 
-    assert state.state == ModuleHealthState.READY
-    assert state.missing_packages == []
+    assert state.state == ModuleHealthState.WARNING
+    assert state.missing_packages == ["onnxruntime", "tokenizers"]
+    assert await plugin.required_packages() == ["onnxruntime", "tokenizers"]
+
+
+async def test_mood_search_turned_off_since_setup_needs_nothing(set_up):
+    config = JamendoConfig(client_id="x", ai_search_enabled=True)
+    plugin = await set_up(FakeEmbedder(RUNTIME), config)
+    assert (await plugin.get_state()).state == ModuleHealthState.WARNING
+
+    config.ai_search_enabled = False
+
+    assert (await plugin.get_state()).state == ModuleHealthState.READY
     assert await plugin.required_packages() == []
 
 
