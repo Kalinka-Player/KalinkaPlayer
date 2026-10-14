@@ -144,7 +144,8 @@ cannot yet be reached. Test mode never creates a fake mDNS player.
 Before the updated app is available, a GATT client can read encrypted status
 to pair, then write the framed commands described below. In the app checkout,
 `flutter run` includes the new flow on supported native platforms. The web
-build keeps normal manual connection and does not expose nearby setup.
+build uses the same Network setup panel over HTTP through the temporary hotspot;
+Bluetooth setup remains native-only. See [hotspot setup](supervisor.md#network-setup-over-the-temporary-hotspot).
 
 ## Real Wi-Fi changes on a NetworkManager laptop
 
@@ -237,8 +238,8 @@ interface, adapter or server configuration. A physical Wi-Fi adapter is
 required; boards without built-in radios need suitable USB adapters.
 
 Set `KALINKA_BLE_SETUP=0` in the card's `dietpi.txt` before first boot, or stop
-and disable `kalinka-supervisor.service`, to turn setup off. The switch controls
-provisioning, not the Bluetooth hardware. Pairing uses encrypted Just Works:
+and disable `kalinka-supervisor.service`, to turn Bluetooth setup off. Set `KALINKA_WIFI_AP_SETUP=0` as well to
+disable the temporary hotspot. These switches control provisioning, not the radio hardware. Pairing uses encrypted Just Works:
 proximity authorises setup, without authenticated proof of ownership. Pi
 images allow Just Works re-pairing; after reflashing a box the phone may still
 need to forget its stale bond in Bluetooth settings.

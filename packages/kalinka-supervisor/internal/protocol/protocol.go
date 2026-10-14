@@ -147,10 +147,13 @@ type Frames struct {
 }
 
 func (f *Frames) Clear() { clear(f.data); f.data = nil; f.Owner = ""; f.deadline = time.Time{} }
-func (f *Frames) Feed(device string, data []byte, now time.Time) ([]byte, error) {
+func (f *Frames) Expire(now time.Time) {
 	if !now.Before(f.deadline) {
 		f.Clear()
 	}
+}
+func (f *Frames) Feed(device string, data []byte, now time.Time) ([]byte, error) {
+	f.Expire(now)
 	if f.Owner != "" && f.Owner != device {
 		return nil, Busy
 	}

@@ -7,14 +7,15 @@ off the box, reinstall Kalinka, remove a plugin package, or set a Raspberry Pi
 up for its sound card. It runs independently
 of Core, its Python interpreter, its virtual environment and its plugins.
 Core still owns its HTTP API, mDNS, its identity and the existing OOBE. Nearby
-setup needs no app protocol change; see
+setup keeps the BLE protocol unchanged and adds an HTTP transport; see
 [the BLE contract and test flow](ble-provisioning.md).
 
 ## Build and install
 
 The source is in `packages/kalinka-supervisor`. Go 1.25 or newer is required
-at build time. Runtime needs a Linux kernel, BlueZ, system D-Bus and the chosen
-network backend; neither Go nor Python is needed on the target.
+at build time. Runtime needs a Linux kernel, system D-Bus and the chosen
+network backend; Bluetooth additionally uses BlueZ. Hotspots use hostapd on
+DietPi and dnsmasq-base for DHCP/DNS on both backends; neither Go nor Python is needed on the target.
 
 ```sh
 make supervisor-test
@@ -46,12 +47,69 @@ All image targets install an architecture-specific Debian package containing the
 selects DietPi when `/boot/dietpi/dietpi-network` exists, otherwise NetworkManager.
 Use `--backend dietpi` or `--backend nm` to select explicitly. The service runs
 on every box, radios or not. Nearby setup is a component inside it. It starts
-while the adapter (`--adapter`, default `hci0`) and a wireless interface exist,
-and stops when either goes away. This is checked every two seconds, so a radio
-that appears after boot needs no restart. A setup failure restarts only that
-component, after 10 seconds. `KALINKA_BLE_SETUP=0` turns setup off and
-`KALINKA_CONTROL_API=0` turns the control API off. Both are read from the
-environment or `/boot/dietpi.txt`, and with both off the service exits.
+while a wireless interface and its backend exist. Bluetooth is retried separately,
+so a missing adapter or BlueZ failure does not prevent hotspot or HTTP setup.
+`--adapter` defaults to `hci0`. A component failure is retried after 10 seconds;
+hotspot startup failures are retried after 30 seconds.
+`KALINKA_BLE_SETUP=0` disables Bluetooth setup, `KALINKA_WIFI_AP_SETUP=0`
+disables the hotspot, and `KALINKA_CONTROL_API=0` disables the LAN API. All
+three are read from the environment or `/boot/dietpi.txt`. With all off, the
+service exits. `--no-ble` and `--no-ap` provide equivalent radio switches.
+
+## Network setup over the temporary hotspot
+
+The app always includes a **Network** step, even for an already selected or
+configured box. It shows the current Ethernet or Wi-Fi connection and lets the
+user keep it or choose Wi-Fi. **Set up a box** offers Bluetooth and the temporary
+Wi-Fi hotspot. The same Flutter Network panel runs in the native app and web UI.
+
+After the existing offline grace period (30 seconds on a new box, five minutes
+on a previously networked box), the supervisor opens `Kalinka-Setup-XXXX` when
+no usable home-network address exists. A working Ethernet connection suppresses
+the hotspot. The AP's own address is excluded from this decision. The hotspot
+uses WPA2 with the public setup password `kalinka-setup`; proximity authorizes
+setup, and this shared password is not proof of ownership.
+
+Join the hotspot in the phone/computer's Wi-Fi settings. DHCP and local DNS
+trigger the operating system's captive Wi-Fi activation page, which opens
+`http://192.168.4.1/activate` and then the standard Kalinka web app at
+`/?setup=network`. Devices that do not open it automatically can use
+`http://192.168.4.1` directly. The supervisor serves `/usr/share/kalinka-web`
+itself, independently of Core, on the AP address's port 80. Install the updated
+`kalinka-web` package with the supervisor for this flow. Flutter's bundled
+CanvasKit and fonts need no internet connection. HTTPS sites are not intercepted.
+On hosts with a firewall, the AP interface must permit DHCP (UDP 67), DNS
+(UDP/TCP 53) and activation (TCP 80). The AP listener exposes setup and web assets, not the supervisor's power or
+package-management actions.
+
+A single radio changes from AP to client mode during joining. HTTP acknowledges
+the credentials before closing the hotspot. The user reconnects to the chosen
+home network; the native app can return to discovery, and the browser can open
+the player at `kalinka.local`. A failed join rolls back the existing configuration
+and restores the hotspot for retry. Successful joining leaves it closed. Startup
+recovery removes a stale AP profile/address before recovering interrupted joins.
+Saved Wi-Fi profiles and DietPi files are preserved by AP activation.
+
+The network list is scanned before starting the AP and cached while it is active,
+because single-radio drivers cannot reliably scan all channels while serving an
+AP. The UI identifies cached results and always permits manual SSID entry.
+Bluetooth/HTTP share the same validation, operation ownership, WPA2 support,
+progress, rollback and cancellation. AP daemons remain in the supervisor's cgroup.
+
+`GET /v1/setup` returns `available`, `network` (connected, kind, address,
+interface), `setup` (active, state, reason, stage, address, port, scan_state,
+networks), `hotspot`, `hotspot_name`, `networks_cached` and `server_id` where
+available. `POST /v1/setup` accepts the existing unframed v1 JSON commands and
+an extra `{"v":1,"op":"open"}` to explicitly open a setup window on an online
+box. Clients supply a random, stable `X-Kalinka-Setup-Client` of 16–64 ASCII
+letters/digits/hyphens. JSON bodies are limited to 512 bytes. The LAN endpoint
+is on port 8001, with the existing local-peer/host/origin checks; the app on
+Core's port is allowed. Responses acknowledge receipt, not connection success.
+
+Physical acceptance still requires a supported Wi-Fi adapter and phone: cold
+offline boot, wired boot, captive activation on Android/iOS/Windows, correct and
+incorrect passwords, hotspot reconnection, and a reboot during joining. Recorder
+and browser tests do not establish radio/driver or OS captive-window behavior.
 
 ## Current boundaries
 
@@ -62,7 +120,7 @@ environment or `/boot/dietpi.txt`, and with both off the service exits.
 | `internal/wifi` | Native NetworkManager D-Bus and DietPi supplicant/ifupdown transactions |
 | `internal/gatt` | BlueZ exports, pairing policy and advertisement lifecycle |
 | `internal/system` | Private directories, process lock, systemd readiness and watchdog |
-| `internal/provision` | Nearby setup as one restartable component: its radio gate, recovery and BLE loop |
+| `internal/provision` | Nearby setup as one restartable component: its radio gate, recovery, Bluetooth loop and hotspot lifecycle |
 | `internal/control` | The control page and API: action policy, systemd operations, reinstall record, HTTP layer, embedded page and listener binding |
 | `internal/dashboard` | What runs on the box and what it costs, from /proc, cgroups, dpkg and Core's environment; never from Core itself |
 | `internal/soundcard` | The sound cards a Pi can be set up for, which one it has, from the device tree, ALSA and the HAT's I2C bus, and applying a choice through the packaged helper |
@@ -93,7 +151,8 @@ same adapter/interface.
   Tests cover formatting the containing command as well. Password buffers are
   cleared when possible. Go strings/D-Bus marshaling can retain copies until
   garbage collection; this is not a guaranteed memory-erasure boundary.
-- Credentials travel over encrypted GATT and local OS IPC, never subprocess
+- Credentials travel over encrypted GATT or HTTP on the local network (WPA2
+  on the setup hotspot), then local OS IPC, never subprocess
   arguments. Supplicant receives a derived WPA2 key through its Unix socket.
   NetworkManager receives settings through D-Bus. Raw command/backend errors
   and profile settings are not logged.
@@ -121,7 +180,8 @@ same adapter/interface.
   supervisor's sandbox, as installing packages needs the whole system.
 - The root unit uses `ProtectSystem=strict`, private temporary storage,
   `ProtectHome`, `NoNewPrivileges`, restricted address families and explicit
-  writable networking/state paths. `/run` and DietPi's configuration paths must
+  writable networking/state paths. `AF_PACKET` permits AP authentication and DHCP
+  in hostapd/dnsmasq. `/run` and DietPi's configuration paths must
   remain writable for ifupdown and DietPi's own tool. The unit sets
   `G_CHECK_ROOTFS_RW_VERIFIED=1` because DietPi's global mount check would reject
   this intentionally read-only root; actual file writes still fail closed.
@@ -135,8 +195,8 @@ same adapter/interface.
 
 BLE Just Works encryption does not prove ownership or prevent active
 man-in-the-middle attacks. This iteration authorizes nearby setup while offline;
-it does not authorize future destructive recovery. Disabling setup through
-`KALINKA_BLE_SETUP=0` still works in DietPi configuration or the unit environment.
+it does not authorize future destructive recovery. Disable both
+`KALINKA_BLE_SETUP` and `KALINKA_WIFI_AP_SETUP` to turn nearby setup off.
 
 ## Package updates today
 

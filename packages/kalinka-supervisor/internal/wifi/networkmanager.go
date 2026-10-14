@@ -33,6 +33,9 @@ func value[T any](props map[string]dbus.Variant, key string) T {
 // NetworkManager stages a new profile and never edits a pre-existing profile.
 type NetworkManager struct {
 	Interface, Journal string
+	Runtime            string
+	StartAPProcess     func(context.Context, string, ...string) (APProcess, error)
+	apDNS              APProcess
 	Bus                dbusx.Bus
 	device             dbus.ObjectPath
 	Timeout, Poll      time.Duration
@@ -40,7 +43,7 @@ type NetworkManager struct {
 }
 
 func NewNetworkManager(iface, state string) *NetworkManager {
-	return &NetworkManager{Interface: iface, Journal: filepath.Join(state, "networkmanager-rollback.json"), Timeout: 75 * time.Second, Poll: 500 * time.Millisecond, AddressFor: LANAddress}
+	return &NetworkManager{Interface: iface, Runtime: "/run/kalinka-supervisor", Journal: filepath.Join(state, "networkmanager-rollback.json"), Timeout: 75 * time.Second, Poll: 500 * time.Millisecond, AddressFor: LANAddress}
 }
 func (n *NetworkManager) call(ctx context.Context, path dbus.ObjectPath, method string, args ...any) ([]any, error) {
 	body, err := n.Bus.Call(ctx, path, method, args...)
@@ -89,6 +92,9 @@ func (n *NetworkManager) Recover(ctx context.Context) error {
 	p, err := n.props(ctx, n.device, nmDevice)
 	if err != nil || value[uint32](p, "DeviceType") != 2 || !value[bool](p, "Managed") {
 		return protocol.Unavailable
+	}
+	if err := n.StopAP(ctx); err != nil {
+		return err
 	}
 	return n.rollback(ctx)
 }

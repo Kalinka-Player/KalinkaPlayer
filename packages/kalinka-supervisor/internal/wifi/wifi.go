@@ -58,6 +58,7 @@ func Pause(ctx context.Context, d time.Duration) error {
 // and Interfaces and Addrs stand in for the kernel's, so tests can stage a box.
 type Host struct {
 	Root       string
+	Exclude    string
 	Interfaces func() ([]net.Interface, error)
 	Addrs      func(*net.Interface) ([]net.Addr, error)
 }
@@ -80,7 +81,7 @@ func (h Host) Address(_ context.Context, device string) (string, error) {
 	}
 	var links []net.Interface
 	for _, iface := range interfaces {
-		if (device == "" || iface.Name == device) && h.physicalLink(iface) {
+		if iface.Name != h.Exclude && (device == "" || iface.Name == device) && h.physicalLink(iface) {
 			links = append(links, iface)
 		}
 	}

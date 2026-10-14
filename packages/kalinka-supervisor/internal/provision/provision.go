@@ -1,23 +1,27 @@
-// Package provision runs nearby BLE Wi-Fi setup as one restartable component of the supervisor.
+// Package provision coordinates Bluetooth and hotspot network setup independently of Core.
 package provision
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"time"
 
+	"kalinka/supervisor/internal/coreconf"
 	"kalinka/supervisor/internal/gatt"
 	"kalinka/supervisor/internal/machine"
+	"kalinka/supervisor/internal/protocol"
 	"kalinka/supervisor/internal/wifi"
 )
 
 // Options selects the radios, networking backend and policy for nearby setup.
 type Options struct {
 	Backend, Interface, Adapter, IdentityFile, State, Runtime string
-	Test, AlwaysAdvertise                                     bool
+	Test, AlwaysAdvertise, DisableAP, DisableBLE              bool
 	TestResult, TestAddress                                   string
 }
 
@@ -30,6 +34,7 @@ type Service struct {
 	machine    atomic.Pointer[machine.Machine]
 	recovering atomic.Bool
 	beat       atomic.Int64
+	hotspot    atomic.Pointer[wifi.Hotspot]
 }
 
 // New returns a stopped service. port is asked for Core's HTTP port whenever setup reports it.
@@ -40,9 +45,6 @@ func New(o Options, port func() uint16) *Service {
 // Blocked returns why setup cannot run on this host now, or "" when it can.
 // root prefixes the /sys paths so tests can stage a host.
 func Blocked(o Options, root string, lookPath func(string) (string, error)) string {
-	if _, err := os.Stat(filepath.Join(root, "sys/class/bluetooth", o.Adapter)); err != nil {
-		return "no Bluetooth adapter " + o.Adapter
-	}
 	if o.Test {
 		return ""
 	}
@@ -84,7 +86,9 @@ func (s *Service) backend() (wifi.Backend, error) {
 	case o.Test:
 		return &wifi.DryRun{Result: o.TestResult, IP: o.TestAddress, Delay: time.Second}, nil
 	case o.Backend == "nm":
-		return wifi.NewNetworkManager(o.Interface, o.State), nil
+		n := wifi.NewNetworkManager(o.Interface, o.State)
+		n.Runtime = o.Runtime
+		return n, nil
 	}
 	d, err := wifi.NewDietPi(o.Interface, "/", o.State, o.Runtime)
 	if err != nil {
@@ -93,15 +97,15 @@ func (s *Service) backend() (wifi.Backend, error) {
 	return d, nil
 }
 
-// Run recovers any interrupted network change, then serves setup over BLE
-// while the host is offline. It returns nil when ctx ends.
+// Run recovers interrupted networking, then shares setup across Bluetooth and HTTP.
+// The fallback hotspot follows the offline policy. Run returns nil when ctx ends.
 func (s *Service) Run(ctx context.Context) error {
 	o := s.opts
 	backend, err := s.backend()
 	if err != nil {
 		return err
 	}
-	defer backend.Close()
+	defer func() { _ = backend.Close() }()
 	s.recovering.Store(true)
 	recovery, cancel := context.WithTimeout(ctx, 75*time.Second)
 	err = backend.Recover(recovery)
@@ -109,6 +113,16 @@ func (s *Service) Run(ctx context.Context) error {
 	s.recovering.Store(false)
 	if err != nil {
 		return err
+	}
+	if !o.DisableAP && !o.Test {
+		if ap, ok := backend.(wifi.AccessPoint); ok {
+			identity, _ := os.ReadFile("/etc/machine-id")
+			sum := sha256.Sum256(identity)
+			h := wifi.NewHotspot(backend, ap, fmt.Sprintf("Kalinka-Setup-%X", sum[:2]))
+			backend = h
+			s.hotspot.Store(h)
+			defer s.hotspot.Store(nil)
+		}
 	}
 	marker := filepath.Join(o.State, "networked")
 	if o.Test || o.AlwaysAdvertise {
@@ -126,27 +140,96 @@ func (s *Service) Run(ctx context.Context) error {
 	defer s.machine.Store(nil)
 	// Closing waits out a rollback, which must stay visible to ChangingNetwork until then.
 	defer m.Close()
-	radio, err := gatt.New(ctx, m, o.Adapter)
-	if err != nil {
-		return err
+	if !o.DisableBLE {
+		bleCtx, stopBLE := context.WithCancel(ctx)
+		defer stopBLE()
+		bleDone := make(chan struct{})
+		defer func() { stopBLE(); <-bleDone }()
+		go func() { defer close(bleDone); serveBluetooth(bleCtx, m, o.Adapter) }()
 	}
-	defer radio.Close()
-	eventsCtx, stopEvents := context.WithCancel(ctx)
-	defer stopEvents()
-	events := make(chan error, 1)
-	go func() { events <- radio.Events(eventsCtx) }()
 	defer s.beat.Store(0)
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
-	advertising := false
 	for {
 		s.beat.Store(time.Now().UnixNano())
 		active, err := m.Tick(ctx)
 		if err != nil {
 			return err
 		}
+		if h := s.hotspot.Load(); h != nil {
+			state := m.Snapshot()
+			address, addressErr := h.Address(ctx)
+			if addressErr == nil {
+				if err := h.Reconcile(ctx, active && state.State != protocol.Joined && address == ""); err != nil {
+					slog.Warn("Wi-Fi hotspot unavailable")
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+	}
+}
+
+// APActive reports whether the setup-only HTTP listener should be available.
+func (s *Service) APActive() bool { h := s.hotspot.Load(); return h != nil && h.Active() }
+
+// Snapshot exposes setup status even when a radio is absent or recovering.
+func (s *Service) Snapshot() map[string]any {
+	result := map[string]any{"available": false, "hotspot": s.APActive(), "server_id": coreconf.ReadID(s.opts.IdentityFile)}
+	if m := s.machine.Load(); m != nil {
+		result["available"] = true
+		result["setup"] = m.Snapshot()
+	}
+	if h := s.hotspot.Load(); h != nil {
+		result["hotspot_name"] = h.Name
+		result["networks_cached"] = h.Active()
+	}
+	return result
+}
+
+func (s *Service) Open() error {
+	if m := s.machine.Load(); m != nil {
+		return m.Open()
+	}
+	return protocol.Unavailable
+}
+
+func (s *Service) Command(owner string, raw []byte) error {
+	if m := s.machine.Load(); m != nil {
+		return m.Command(owner, raw)
+	}
+	return protocol.Unavailable
+}
+
+func serveBluetooth(ctx context.Context, m *machine.Machine, adapter string) {
+	for ctx.Err() == nil {
+		if err := bluetoothSession(ctx, m, adapter); err != nil && ctx.Err() == nil {
+			slog.Warn("Bluetooth setup unavailable; retrying")
+		}
+		_ = wifi.Pause(ctx, 10*time.Second)
+	}
+}
+
+func bluetoothSession(ctx context.Context, m *machine.Machine, adapter string) error {
+	radio, err := gatt.New(ctx, m, adapter)
+	if err != nil {
+		return err
+	}
+	defer radio.Close()
+	eventsCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	events := make(chan error, 1)
+	go func() { events <- radio.Events(eventsCtx) }()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	advertising := false
+	for {
+		active := m.Snapshot().Active
 		if active && !advertising {
-			if err = radio.Enable(ctx); err != nil {
+			if err := radio.Enable(ctx); err != nil {
 				return err
 			}
 			slog.Info("Nearby setup available", "name", radio.Name)
@@ -154,7 +237,6 @@ func (s *Service) Run(ctx context.Context) error {
 		} else if !active && advertising {
 			radio.Disable(ctx)
 			advertising = false
-			slog.Info("Nearby setup closed")
 		}
 		select {
 		case <-ctx.Done():

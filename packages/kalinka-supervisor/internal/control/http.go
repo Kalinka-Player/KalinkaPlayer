@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math"
 	"mime"
+	"net"
 	"net/http"
 	"slices"
 	"strconv"
@@ -90,6 +91,7 @@ type HandlerConfig struct {
 	Removals      PluginRemovals
 	EnableSSH     func(context.Context, protocol.Secret) error
 	Simulated     bool
+	NetworkSetup  NetworkSetup
 }
 
 type handler struct {
@@ -132,6 +134,28 @@ func (h *handler) serve(w http.ResponseWriter, r *http.Request) string {
 			return fail(w, "origin_not_allowed")
 		}
 		w.Header().Set("Access-Control-Allow-Origin", origin)
+	}
+	if r.URL.Path == "/v1/setup" {
+		switch r.Method {
+		case http.MethodGet:
+			return h.setupStatus(w, r)
+		case http.MethodPost:
+			return h.setupCommand(w, r)
+		case http.MethodOptions:
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Kalinka-Setup-Client")
+			w.WriteHeader(http.StatusNoContent)
+			return ""
+		default:
+			return fail(w, "method_not_allowed")
+		}
+	}
+	if r.URL.Path == "/setup" && r.Method == http.MethodGet {
+		http.Redirect(w, r, "http://"+net.JoinHostPort(hostname(r.Host), strconv.Itoa(h.cfg.CorePort()))+"/?setup=network", http.StatusSeeOther)
+		return ""
+	}
+	if h.coord == nil {
+		return fail(w, "not_found")
 	}
 	if r.URL.Path == "/" {
 		w.Header().Set("Allow", "GET, HEAD, POST, OPTIONS")
@@ -211,6 +235,7 @@ func (h *handler) info(w http.ResponseWriter, _ *http.Request) string {
 		"renderer_id":    nullable(coreconf.ReadID(h.cfg.RendererIDFile)),
 		"actions":        h.actions(),
 		"poweroff_timer": true,
+		"network_setup":  h.cfg.NetworkSetup != nil,
 	}, false)
 	return ""
 }

@@ -62,8 +62,11 @@ The server's venv is built during the image build rather than on first start, so
 ### The DietPi base
 
 All images support **Set up a box** through the installed Kalinka app.
-Select the box over Bluetooth, choose a nearby WPA2 network and enter its
-password. The box reports join progress; failures offer Retry, and Back
+Choose Bluetooth or the temporary Wi-Fi hotspot, select a nearby WPA2 network
+and enter its password. Joining `Kalinka-Setup-XXXX` (password `kalinka-setup`)
+opens an activation page into the standard Kalinka web app; use
+`http://192.168.4.1` if it does not open automatically. The wizard always includes
+a Network step and can keep an existing Ethernet or Wi-Fi connection. The box reports join progress; failures offer Retry, and Back
 returns to network selection. It advertises setup when it has no LAN connection and
 returns to normal discovery after joining. New boxes continue into the
 existing first-run wizard. See
