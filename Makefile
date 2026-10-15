@@ -245,7 +245,7 @@ supervisor-deb:
 ##   sudo make image-rpi5 KALINKA_VERSION=4.3.2
 IMAGE_DIR := packages/kalinka-image
 KALINKA_VERSION ?=
-# Docker Hub's anonymous pull limit fails shared CI runners.
+# Prefer the mirror; the test launcher falls back if that registry is unavailable.
 IMAGE_TEST_BASE ?= public.ecr.aws/docker/library/debian:trixie
 
 image-rpi234:
@@ -268,12 +268,13 @@ image-amd64:
 image-test:
 	@if command -v podman >/dev/null 2>&1 || command -v docker >/dev/null 2>&1; then \
 		engine=$$(command -v podman || command -v docker); \
-		echo "Running the image tests in $(IMAGE_TEST_BASE) via $$(basename $$engine)"; \
-		$$engine run --rm -v "$(CURDIR)/$(IMAGE_DIR):/packages/kalinka-image:z" \
+		image=$$(bash "$(IMAGE_DIR)/tests/pull-base.sh" "$$engine" "$(IMAGE_TEST_BASE)") || exit $$?; \
+		echo "Running the image tests in $$image via $$(basename $$engine)"; \
+		$$engine run --pull=never --rm -v "$(CURDIR)/$(IMAGE_DIR):/packages/kalinka-image:z" \
 			-v "$(CURDIR)/packages/kalinka-supervisor:/packages/kalinka-supervisor:z" \
 			-v "$(CURDIR)/scripts:/scripts:ro,z" -w /packages/kalinka-image \
 			-e KALINKA_IMAGE_TEST_DISPOSABLE=1 -e DEBIAN_FRONTEND=noninteractive \
-			$(IMAGE_TEST_BASE) bash -c 'apt-get update -qq >/dev/null && \
+			"$$image" bash -c 'apt-get update -qq >/dev/null && \
 				apt-get install -y -qq --no-install-recommends \
 					openssh-client openssl passwd python3 util-linux fdisk dosfstools tzdata gpg gpg-agent gpgv >/dev/null && \
 				bash tests/run-tests.sh'; \
