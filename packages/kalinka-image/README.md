@@ -123,6 +123,12 @@ The build switches the HAT's I2C bus on (`dtparam=i2c_arm=on`) and loads `i2c-de
 
 The last three edit `/etc`, so they skip themselves unless `KALINKA_IMAGE_TEST_DISPOSABLE=1` says the system is throwaway. `make image-test` supplies that by running them in a container.
 
+The test container uses the official Debian `trixie` image from the ECR mirror,
+falling back to Docker Hub if the mirror cannot supply it. Cached images are
+reused. `IMAGE_TEST_BASE` can select a different image, which is used without
+substitution. Download failures can trigger fallback; test failures cannot.
+`test_pull_base.sh` covers registry failures, cached images and explicit overrides.
+
 [`tests/vm/`](tests/vm) boots a copy of the PC image under UEFI with Secure Boot disabled. The test waits for Core's HTTP endpoint, then powers the guest off through the supervisor's control API, falling back to the power button. Offline, it checks the expanded filesystem, DietPi first-boot completion, networking packages, the supervisor installation, and the supervisor's journal: the control API listened, setup waited for a radio, and the power-off was accepted. `boot.sh` needs KVM, QEMU and OVMF; set `OVMF_CODE` and `OVMF_VARS` to your host's plain UEFI firmware. `inspect.sh` needs root. The old debootstrap first-boot tests remain for the retained library, which no current target uses.
 
 `test_dietpi_uefi.sh` verifies that expanding the GPT image preserves the setup partition's bytes and every partition identifier. `test_supervisor_image.sh` checks radio settings, the HAT's I2C bus, service ordering, the always-on unit, the sound-card helper in the package, and its package hooks.
