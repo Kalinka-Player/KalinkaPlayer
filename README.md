@@ -100,6 +100,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for how to send a change, and for the pro
 | [Development](docs/development.md) | Building the Debian packages, running from source, tests |
 | [Renderer design](docs/native-renderer-design.md) | The contract a renderer implements |
 | [Plugin catalog design](docs/plugin-catalog-design.md) | Proposed discovery, installation, compatibility checks, and updates |
+| [TIDAL plugin](https://github.com/Kalinka-Player/kalinka-plugin-tidal) | Account sign-in, discovery catalogs, collection browsing, and lossless streaming |
 | [Appliance images](packages/kalinka-image/README.md) | How the ready-to-flash images are built |
 | [Releasing](RELEASING.md) | Version model and release procedure |
 

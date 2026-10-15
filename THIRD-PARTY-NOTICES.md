@@ -44,6 +44,10 @@ Not shipped with the packages. Fetched on first use when the corresponding featu
 
 ## Services
 
+The optional [TIDAL plugin](https://github.com/Kalinka-Player/kalinka-plugin-tidal) uses
+[tidalapi](https://github.com/EbbLabs/python-tidal) (LGPL-3.0-or-later), installed
+from PyPI, to access TIDAL with the user's account.
+
 My Library's enricher talks to [AcoustID](https://acoustid.org/), [MusicBrainz](https://musicbrainz.org/), Wikidata and Deezer; the Jamendo plugin talks to the [Jamendo API](https://developer.jamendo.com/). Each requires you to supply your own API key where one is needed, and use is subject to those services' terms rather than this project's license.
 
 ## Appliance images
