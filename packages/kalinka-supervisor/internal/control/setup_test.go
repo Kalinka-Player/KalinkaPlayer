@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +16,44 @@ import (
 	"kalinka/supervisor/internal/machine"
 	"kalinka/supervisor/internal/protocol"
 	"kalinka/supervisor/internal/wifi"
+	"kalinka/supervisor/internal/wifi/wifitest"
 )
+
+func TestNetworkStatusReportsOnlyTheConnectedSSID(t *testing.T) {
+	wlan := wifitest.Link{Name: "wlan0", Flags: wifitest.Up, Physical: true, Wireless: true, Addresses: []string{"192.168.1.20/24"}}
+	wired := wifitest.Link{Name: "eth0", Flags: wifitest.Up, Physical: true, Addresses: []string{"192.168.1.30/24"}}
+	for _, tc := range []struct {
+		name, routes string
+		links        []wifitest.Link
+		hotspot      bool
+		lookupErr    error
+		wantQueries  int
+		want         map[string]any
+	}{
+		{"Wi-Fi", wifitest.WlanDefault, []wifitest.Link{wired, wlan}, false, nil, 1,
+			map[string]any{"connected": true, "address": "192.168.1.20", "interface": "wlan0", "kind": "wifi", "ssid": "Home Wi-Fi"}},
+		{"Ethernet", wifitest.EthDefault, []wifitest.Link{wired, wlan}, false, nil, 0,
+			map[string]any{"connected": true, "address": "192.168.1.30", "interface": "eth0", "kind": "wired"}},
+		{"SSID lookup failed", wifitest.WlanDefault, []wifitest.Link{wlan}, false, context.DeadlineExceeded, 1,
+			map[string]any{"connected": true, "address": "192.168.1.20", "interface": "wlan0", "kind": "wifi"}},
+		{"hotspot is not an upstream connection", wifitest.WlanDefault, []wifitest.Link{
+			{Name: "wlan0", Flags: wifitest.Up, Physical: true, Wireless: true, Addresses: []string{wifi.APAddress + "/24"}},
+		}, true, nil, 0, map[string]any{"connected": false, "address": "", "kind": "none"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			box := wifitest.Stage(t, tc.routes, tc.links...)
+			queries := 0
+			run := func(context.Context, time.Duration, string, ...string) (string, error) {
+				queries++
+				return "Connected to aa:bb:cc:dd:ee:ff\n\tSSID: Home Wi-Fi\n", tc.lookupErr
+			}
+			got := networkStatusOn(context.Background(), tc.hotspot, box.Host, run)
+			if !reflect.DeepEqual(got, tc.want) || queries != tc.wantQueries {
+				t.Fatalf("status %#v (%d lookups); want %#v (%d lookups)", got, queries, tc.want, tc.wantQueries)
+			}
+		})
+	}
+}
 
 type setupFake struct{ m *machine.Machine }
 

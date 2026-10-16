@@ -42,7 +42,7 @@ type Machine struct {
 	cfg                                        Config
 	frames                                     protocol.Frames
 	state, reason, stage                       byte
-	address, owner                             string
+	address, owner, targetSSID                 string
 	active, seen, completed, closed, resetting bool
 	offlineSince, joinedAt, setupUntil         time.Time
 	scanState                                  string
@@ -121,20 +121,21 @@ func (m *Machine) Networks() []byte {
 
 // Snapshot is a consistent public view for HTTP clients, without credentials.
 type Snapshot struct {
-	Active    bool               `json:"active"`
-	State     byte               `json:"state"`
-	Reason    byte               `json:"reason"`
-	Stage     byte               `json:"stage"`
-	Address   string             `json:"address"`
-	Port      uint16             `json:"port"`
-	ScanState string             `json:"scan_state"`
-	Networks  []protocol.Network `json:"networks"`
+	Active     bool               `json:"active"`
+	State      byte               `json:"state"`
+	Reason     byte               `json:"reason"`
+	Stage      byte               `json:"stage"`
+	Address    string             `json:"address"`
+	Port       uint16             `json:"port"`
+	ScanState  string             `json:"scan_state"`
+	Networks   []protocol.Network `json:"networks"`
+	TargetSSID string             `json:"target_ssid,omitempty"`
 }
 
 func (m *Machine) Snapshot() Snapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return Snapshot{m.active, m.state, m.reason, m.stage, m.address, m.cfg.Port(), m.scanState, append([]protocol.Network{}, m.networks...)}
+	return Snapshot{m.active, m.state, m.reason, m.stage, m.address, m.cfg.Port(), m.scanState, append([]protocol.Network{}, m.networks...), m.targetSSID}
 }
 
 // Open permits setup from the trusted LAN even when a wired or Wi-Fi link is already up.
@@ -230,6 +231,7 @@ func (m *Machine) Command(device string, raw []byte) error {
 func (m *Machine) command(device string, cmd protocol.Command) error {
 	if cmd.Op == "change_network" {
 		m.owner = device
+		m.targetSSID = ""
 		m.stage = protocol.Preparing
 		m.update(protocol.Joining, 0, "")
 		m.resetting = true
@@ -319,6 +321,7 @@ func (m *Machine) command(device string, cmd protocol.Command) error {
 			}
 		}()
 	} else {
+		m.targetSSID = cmd.SSID
 		m.stage = protocol.Preparing
 		m.update(protocol.Joining, 0, "")
 		go func() {
@@ -329,6 +332,7 @@ func (m *Machine) command(device string, cmd protocol.Command) error {
 			address, err := m.wifi.Join(ctx, cmd, m.report)
 			m.mu.Lock()
 			defer m.mu.Unlock()
+			m.targetSSID = ""
 			if err != nil {
 				m.owner = ""
 				m.update(protocol.Failed, protocol.Reason(err), "")

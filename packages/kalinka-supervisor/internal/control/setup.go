@@ -34,10 +34,14 @@ func (h *handler) setupStatus(w http.ResponseWriter, r *http.Request) string {
 
 func networkStatus(ctx context.Context, hotspot bool) map[string]any {
 	host := wifi.Host{Root: "/", Interfaces: net.Interfaces, Addrs: (*net.Interface).Addrs}
+	return networkStatusOn(ctx, hotspot, host, wifi.Run)
+}
+
+func networkStatusOn(ctx context.Context, hotspot bool, host wifi.Host, run wifi.Runner) map[string]any {
 	if hotspot {
-		interfaces, _ := net.Interfaces()
+		interfaces, _ := host.Interfaces()
 		for _, iface := range interfaces {
-			addrs, _ := iface.Addrs()
+			addrs, _ := host.Addrs(&iface)
 			for _, addr := range addrs {
 				ip, _, _ := net.ParseCIDR(addr.String())
 				if ip.String() == wifi.APAddress {
@@ -48,9 +52,9 @@ func networkStatus(ctx context.Context, hotspot bool) map[string]any {
 	}
 	address, _ := host.Address(ctx, "")
 	result := map[string]any{"connected": address != "", "address": address, "kind": "none"}
-	interfaces, _ := net.Interfaces()
+	interfaces, _ := host.Interfaces()
 	for _, iface := range interfaces {
-		addrs, _ := iface.Addrs()
+		addrs, _ := host.Addrs(&iface)
 		for _, addr := range addrs {
 			ip, _, _ := net.ParseCIDR(addr.String())
 			if address == "" || ip.String() != address {
@@ -58,8 +62,11 @@ func networkStatus(ctx context.Context, hotspot bool) map[string]any {
 			}
 			result["interface"] = iface.Name
 			result["kind"] = "wired"
-			if _, err := os.Stat(filepath.Join("/sys/class/net", iface.Name, "wireless")); err == nil {
+			if _, err := os.Stat(filepath.Join(host.Root, "sys/class/net", iface.Name, "phy80211")); err == nil {
 				result["kind"] = "wifi"
+				if ssid, err := wifi.ConnectedSSID(ctx, iface.Name, run); err == nil && ssid != "" {
+					result["ssid"] = ssid
+				}
 			}
 			return result
 		}

@@ -1,7 +1,6 @@
 package wifi
 
 import (
-	"encoding/hex"
 	"regexp"
 	"strconv"
 	"strings"
@@ -160,28 +159,8 @@ func ParseScan(output string) []protocol.Network {
 		if m == nil || signal == nil {
 			continue
 		}
-		s := m[1]
-		var raw []byte
-		valid := true
-		for len(s) > 0 {
-			if strings.HasPrefix(s, `\x`) {
-				if len(s) < 4 {
-					valid = false
-					break
-				}
-				b, err := hex.DecodeString(s[2:4])
-				if err != nil {
-					valid = false
-					break
-				}
-				raw = append(raw, b...)
-				s = s[4:]
-			} else {
-				raw = append(raw, s[0])
-				s = s[1:]
-			}
-		}
-		if !valid || !protocol.ValidSSID(string(raw)) {
+		ssid := decodeSSID(m[1])
+		if ssid == "" {
 			continue
 		}
 		security := "open"
@@ -213,7 +192,7 @@ func ParseScan(output string) []protocol.Network {
 			security = "unsupported"
 		}
 		strength, _ := strconv.Atoi(signal[1])
-		result = append(result, protocol.Network{SSID: string(raw), Signal: max(-127, min(0, strength)), Security: security})
+		result = append(result, protocol.Network{SSID: ssid, Signal: max(-127, min(0, strength)), Security: security})
 	}
 	return strongest(result)
 }
