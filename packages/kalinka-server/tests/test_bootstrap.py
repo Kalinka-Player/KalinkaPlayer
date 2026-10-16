@@ -51,6 +51,7 @@ def install_dir(tmp_path):
         "exit 0\n"
     )
     pip.chmod(0o755)
+    (venv_bin / "python").symlink_to(sys.executable)
     return tmp_path
 
 
@@ -101,6 +102,36 @@ def test_a_resolvable_set_is_installed_in_one_go(install_dir, tmp_path):
     assert result.returncode == 0, result.stderr
     assert len(calls) == 1
     assert "installing them singly" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "stale",
+    [
+        "kalinka_plugin_localfiles-4.2.9+localfiles.20261013-py3-none-any.whl",
+        "kalinka_plugin_localfiles-4.3.0.dev3+gabc123-py3-none-any.whl",
+    ],
+    ids=["local-build", "dev-build"],
+)
+def test_a_leftover_older_wheel_cannot_replace_the_newer_one(
+    install_dir, tmp_path, stale
+):
+    """Seen on 5.10.0: a hand-copied 5.9.1+local wheel sorted after the deb's
+    5.10.0 and was installed over it on every boot."""
+    result, calls = _run(install_dir, BUNDLE + [stale], tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert not any(stale in call for call in calls), calls
+    assert f"ignoring older {stale}" in result.stderr
+    assert any("kalinka_plugin_localfiles-4.3.0-py3" in c for c in calls)
+
+
+def test_a_newer_side_loaded_wheel_still_wins(install_dir, tmp_path):
+    newer = "kalinka_plugin_localfiles-4.3.1.dev1+gabc123-py3-none-any.whl"
+    result, calls = _run(install_dir, BUNDLE + [newer], tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert not any("kalinka_plugin_localfiles-4.3.0-py3" in c for c in calls)
+    assert any(newer in call for call in calls)
 
 
 def _wheel(directory, name, version, requires=()):
