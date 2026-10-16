@@ -87,6 +87,7 @@ func TestHTTPAndBLEShareSetupOwnership(t *testing.T) {
 	if w := send(command, func(r *http.Request) { r.Header.Set("X-Kalinka-Setup-Client", "another-client-1234") }); w.Code != 409 {
 		t.Fatal("second HTTP client admitted", w.Code)
 	}
+	m.Close()
 	if strings.Contains(logs.String()+w.Body.String(), "never-log-this") {
 		t.Fatal("credential leaked")
 	}
