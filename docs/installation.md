@@ -50,7 +50,7 @@ The image is a complete system with Kalinka already installed. You write it to a
 
 - a Raspberry Pi 3, 4, 400, 5 or Zero 2 W, or a Compute Module 3, 4 or 5, and its power supply;
 - a microSD card of 16 GB or more, or a USB SSD. **Everything on it will be erased.** Kalinka uses all the space on the card, so buy a larger one if you plan to keep music on it;
-- a network cable, if you can: it is the simplest way to connect. Wi-Fi works too, but needs [one setting on the card](#settings-on-the-card);
+- a network cable, if you can: it is the simplest way to connect. For Wi-Fi, use [Bluetooth or the temporary setup hotspot](#connect-your-box-to-the-network) after switching on, or [configure it on the card](#settings-on-the-card);
 - a computer to write the card with;
 - something to play through: a DAC HAT or a USB DAC. The Pi's own headphone socket and HDMI work too on a Pi 3 or 4, once you [turn them on](#settings-on-the-card).
 
@@ -83,13 +83,13 @@ Install [Raspberry Pi Imager](https://www.raspberrypi.com/software/) (Windows, m
 
 [balenaEtcher](https://etcher.balena.io/) works just as well: **Flash from file**, **Select target**, **Flash!**
 
-#### 3. Wi-Fi, a login or a DAC HAT? Change a setting on the card
+#### 3. Optional: a login, Wi-Fi settings or a DAC HAT
 
-Skip this step if the Pi will use a network cable and you have no need to log in to it. A DAC HAT can be chosen in the app after the first start.
+Skip this step to set up Wi-Fi through [Bluetooth or the hotspot](#connect-your-box-to-the-network), or if the Pi will use a network cable. A login and a DAC HAT can also be chosen after the first start.
 
 Otherwise, [change the settings on the card](#settings-on-the-card) for any of these:
 
-- the Pi on **Wi-Fi**;
+- **Wi-Fi configured before the first start**, instead of using nearby setup;
 - a **login** to the Pi, so you can copy music onto it over the network or use SSH;
 - a **DAC HAT without an ID chip**, or the Pi's own headphone socket or HDMI, if you want it playing from the first start.
 
@@ -99,7 +99,7 @@ The sound card can be chosen then too: see [Choose the sound card](#choose-the-s
 
 #### 4. Switch it on
 
-Put the card in the Pi, connect the network cable and your DAC, and plug in the power. Give it a couple of minutes to start. If you named a sound card on the card, it restarts once on its own to switch it on. Then go on to [Get a remote](#get-a-remote).
+Put the card in the Pi, connect your DAC and a network cable if using one, and plug in the power. Give it a couple of minutes to start. If you named a sound card on the card, it restarts once on its own to switch it on. Then [connect your box to the network](#connect-your-box-to-the-network).
 
 ### B. PC image
 
@@ -233,7 +233,7 @@ To upgrade later, install the newer `.rpm` the same way.
 
 ## Settings on the card
 
-The Kalinka images come with **no login and no Wi-Fi**. A published image cannot carry a password, because everyone who downloads it would get the same one. Kalinka plays music without either. You need them only to put the player on Wi-Fi, or to log in to it, for example to copy music onto it. On a Raspberry Pi, the same place also names a DAC HAT.
+The Kalinka images come with **no login password and no saved home Wi-Fi credentials**. You can configure these on the card before the first start. Wi-Fi can also be set up later through [Bluetooth or the temporary hotspot](#connect-your-box-to-the-network). The hotspot has its own public setup password, `kalinka-setup`; it is not an SSH login or your home Wi-Fi password. On a Raspberry Pi, the card settings can also name a DAC HAT.
 
 For a login after installation, use **SSH access** on [the control page](#the-control-page). You do not need to edit the card for that.
 
@@ -301,7 +301,7 @@ In `dietpi.txt`, remove the `#` in front of `AUTO_SETUP_SSH_PUBKEY=` and put the
 
 The current PC image uses DietPi too. Before its first boot, open the small **DIETPISETUP** FAT volume and edit `dietpi.txt` and `dietpi-wifi.txt` as described above. Sound-card HAT settings apply only to a Pi. DietPi imports these files and removes the temporary setup partition on first boot.
 
-You can also use **Set up a box** in the phone app when the PC has supported Wi-Fi and Bluetooth adapters. In a VM, pass through USB adapters; the virtual Ethernet interface is not a Wi-Fi radio. Disconnect virtual Ethernet while testing offline setup.
+You can also use the [temporary Wi-Fi hotspot](#connect-your-box-to-the-network) when the PC has a supported Wi-Fi adapter with AP support, or **Set up a box → Search using Bluetooth** in the app when it also has a Bluetooth adapter. In a VM, pass through USB adapters; the virtual Ethernet interface is not a Wi-Fi radio. Disconnect virtual Ethernet while testing offline setup.
 
 If the volume does not appear, use the disk utility to mount the partition labelled `DIETPISETUP` (partition 3), leaving the EFI and Linux root partitions alone. On Linux, `lsblk -o NAME,LABEL` identifies it. After the first boot, change settings through `dietpi-config` after logging in, or use the app's nearby setup when offline.
 
@@ -329,9 +329,33 @@ Like the server, the page answers anyone on your local network, and nobody outsi
 
 SSH setup uses the image's installed SSH server (Dropbear on DietPi or OpenSSH on Debian). On a custom installation, an SSH server must already be installed and permit password logins. The dashboard uses HTTP: set this up on a trusted network and choose a password you do not use elsewhere. Anyone who can use the dashboard can set this administrator password.
 
+## Connect your box to the network
+
+**Ethernet:** connect the box to your router with a network cable, then [open the app or browser player](#get-a-remote). The setup wizard still includes a Network step so you can review and keep this connection.
+
+**Wi-Fi:** keep this guide open, or save the picture below, before leaving your home Wi-Fi. You can set up a box from a laptop without installing the app. On supported hardware, an offline box offers both Bluetooth and a temporary Wi-Fi hotspot.
+
+### With a laptop or phone browser
+
+<img src="images/install/hotspot-setup.svg" width="640" alt="Three steps: join Kalinka-Setup-XXXX in Wi-Fi settings, enter the password kalinka-setup, then stay connected without internet and open http://192.168.4.1 to choose your home Wi-Fi.">
+
+[Open or save the illustrated setup guide](images/install/hotspot-setup.svg).
+
+1. Switch on the box and give it a couple of minutes to start. In your laptop or phone's **Wi-Fi settings**, join **`Kalinka-Setup-XXXX`**. The last four characters identify your box; do not type `XXXX` literally.
+2. Enter the hotspot password **`kalinka-setup`** — all lowercase, with a hyphen. Choose **Stay connected** or **Use without internet** if prompted.
+3. Open the network sign-in page offered by your device. If no page appears, enter **`http://192.168.4.1`** in your browser, including `http://`. This opens the standard Kalinka Network setup UI.
+4. Choose your **home Wi-Fi** and enter **that network's password**. If it is missing from the list, use **Can’t find your network? Enter SSID manually**.
+5. The setup hotspot disconnects while the box joins your home network. Reconnect your laptop or phone to that same home network, then [open the player](#get-a-remote). If joining fails, the hotspot returns; reconnect to it to retry.
+
+The hotspot password is needed **before** the box's web page can load. The app is not required for these steps. A working Ethernet or home Wi-Fi connection keeps the hotspot off. After a previously connected box loses its network, allow about five minutes for nearby setup to return. Hardware without AP support can use Ethernet or Bluetooth setup with a supported Wi-Fi backend.
+
+### With the Kalinka app
+
+Open **Set up a box**, then choose **Search using Bluetooth** or **Use the temporary Wi-Fi hotspot**. Bluetooth sends the network settings without changing your phone's Wi-Fi. The hotspot option shows the steps above, including a copyable password; you join it through your device's Wi-Fi settings. Bluetooth setup requires the native app.
+
 ## Get a remote
 
-Give the player a couple of minutes after you switch it on. Then connect to it in one of two ways.
+Once the box is on your home network, connect to it in one of two ways. If it is still offline, follow [Connect your box to the network](#connect-your-box-to-the-network) first.
 
 **With the Kalinka app (easiest).** Install it on a phone or computer on the same network; the [app's page](https://github.com/Kalinka-Player/KalinkaAI#-install) says which file to download for Android, Windows or Linux. The app searches the network and lists every Kalinka server it finds, with its address. A new server is called **My Kalinka Service** until you rename it. Tap it, then **Connect**.
 
@@ -352,7 +376,7 @@ Give the player a couple of minutes after you switch it on. Then connect to it i
 
 ## Run the setup wizard
 
-Whichever remote you open, the **setup wizard** starts. It asks where your music is, which output to play through, and whether an amplifier handles the volume, and then it plays a test tone. The browser skips the first step, because it already knows which server it belongs to. The [first-run setup guide](https://github.com/Kalinka-Player/KalinkaAI/blob/main/docs/first-run-setup.md) explains every step.
+Whichever remote you open, the **setup wizard** starts. It reviews your network connection, asks where your music is, which output to play through, and whether an amplifier handles the volume, and then it plays a test tone. The browser skips server discovery because it already knows which server it belongs to; it still shows the Network step. The [first-run setup guide](https://github.com/Kalinka-Player/KalinkaAI/blob/main/docs/first-run-setup.md) explains every step.
 
 ## Put your music on it
 
