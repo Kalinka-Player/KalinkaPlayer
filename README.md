@@ -45,6 +45,8 @@ Your files stay yours — nothing is uploaded, there is no account and no teleme
 
 **[Full installation guide →](docs/installation.md)** It covers the images, virtual machines, Wi-Fi and logins, updates and troubleshooting.
 
+**Setting up Wi-Fi from a laptop?** Join `Kalinka-Setup-XXXX` with password **`kalinka-setup`**, stay connected without internet, then open **`http://192.168.4.1`**. [Save the illustrated instructions before connecting](docs/installation.md#connect-your-box-to-the-network). Bluetooth setup is also available in the native app.
+
 ## ✨ What it does
 
 | | |

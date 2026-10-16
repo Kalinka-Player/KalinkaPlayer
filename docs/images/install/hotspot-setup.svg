@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1140" viewBox="0 0 800 1140" role="img" aria-labelledby="title description">
+  <title id="title">Connect your Kalinka box over Wi-Fi</title>
+  <desc id="description">Save these instructions before connecting. In your phone or laptop Wi-Fi settings, join Kalinka-Setup-XXXX, where the last four characters identify your box. Enter kalinka-setup, all lowercase with a hyphen. Stay connected without internet. Open http://192.168.4.1 in your browser and choose your home Wi-Fi. Enter your home Wi-Fi password, then reconnect your phone or laptop to your home network. Bluetooth setup is also available in the Kalinka app.</desc>
+  <rect width="800" height="1140" rx="24" fill="#faf8f5"/>
+  <g font-family="Arial, Helvetica, sans-serif" fill="#20201e">
+    <text x="40" y="54" font-size="18" font-weight="700" letter-spacing="3" fill="#a02b40">KALINKA / FIRST CONNECTION</text>
+    <text x="40" y="109" font-size="38" font-weight="700">Your box. Your home network.</text>
+    <text x="40" y="148" font-size="22" fill="#575754">Save this guide before switching Wi-Fi. No app needed.</text>
+
+    <rect x="32" y="183" width="736" height="245" rx="20" fill="#fff" stroke="#d9d6d0"/>
+    <circle cx="72" cy="225" r="21" fill="#a02b40"/>
+    <text x="72" y="233" text-anchor="middle" font-size="24" font-weight="700" fill="#fff">1</text>
+    <text x="108" y="234" font-size="28" font-weight="700">Open your device’s Wi-Fi settings</text>
+    <g transform="translate(56 265)" fill="none" stroke="#a02b40" stroke-width="3" stroke-linecap="round">
+      <path d="M0 12 Q24 -8 48 12 M8 23 Q24 9 40 23 M17 33 Q24 27 31 33"/>
+      <circle cx="24" cy="42" r="2" fill="#a02b40" stroke="none"/>
+    </g>
+    <rect x="126" y="261" width="608" height="74" rx="12" fill="#f5f2ee"/>
+    <text x="148" y="307" font-family="monospace" font-size="30" font-weight="700">Kalinka-Setup-XXXX</text>
+    <text x="56" y="369" font-size="22">Choose the network starting with Kalinka-Setup-.</text>
+    <text x="56" y="401" font-size="22" fill="#575754">The last four characters identify your box.</text>
+
+    <rect x="32" y="448" width="736" height="238" rx="20" fill="#fff" stroke="#d9d6d0"/>
+    <circle cx="72" cy="490" r="21" fill="#a02b40"/>
+    <text x="72" y="498" text-anchor="middle" font-size="24" font-weight="700" fill="#fff">2</text>
+    <text x="108" y="499" font-size="28" font-weight="700">Enter the hotspot password</text>
+    <g transform="translate(56 542)" fill="none" stroke="#a02b40" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="14" cy="19" r="12"/>
+      <path d="M26 19 H54 M43 19 V29 M52 19 V26"/>
+    </g>
+    <rect x="126" y="526" width="608" height="78" rx="12" fill="#fbeef0" stroke="#e5bbc3"/>
+    <text x="148" y="579" font-family="monospace" font-size="42" font-weight="700" fill="#842136">kalinka-setup</text>
+    <text x="56" y="640" font-size="22">All lowercase, with a hyphen.</text>
+    <text x="56" y="670" font-size="22" fill="#575754">Use your home Wi-Fi password later, inside Kalinka.</text>
+
+    <rect x="32" y="706" width="736" height="270" rx="20" fill="#fff" stroke="#d9d6d0"/>
+    <circle cx="72" cy="748" r="21" fill="#a02b40"/>
+    <text x="72" y="756" text-anchor="middle" font-size="24" font-weight="700" fill="#fff">3</text>
+    <text x="108" y="757" font-size="28" font-weight="700">Stay connected. Open Kalinka.</text>
+    <text x="56" y="800" font-size="22">Choose “Stay connected” if it says “No internet”.</text>
+    <rect x="56" y="823" width="678" height="61" rx="10" fill="#f5f2ee" stroke="#d9d6d0"/>
+    <g transform="translate(74 840)" fill="none" stroke="#575754" stroke-width="2.5">
+      <circle cx="14" cy="14" r="14"/>
+      <ellipse cx="14" cy="14" rx="6" ry="14"/>
+      <path d="M0 14 H28"/>
+    </g>
+    <text x="120" y="863" font-family="monospace" font-size="30">http://192.168.4.1</text>
+    <text x="56" y="921" font-size="22">If no sign-in page opens, type this in your browser.</text>
+    <text x="56" y="953" font-size="22">Choose your home Wi-Fi and enter its password.</text>
+
+    <text x="40" y="1020" font-size="21" font-weight="700">The hotspot disconnects while your box joins home Wi-Fi.</text>
+    <text x="40" y="1052" font-size="21">Reconnect this device to the same home network.</text>
+    <text x="40" y="1102" font-size="20" fill="#575754">Also available: Bluetooth setup in the app, or an Ethernet cable.</text>
+  </g>
+</svg>

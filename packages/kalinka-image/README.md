@@ -22,6 +22,8 @@ Published images live on the [`kalinka-image-v*` releases](https://github.com/Ka
 
 Flashing an image, its first-boot settings and everything else a user needs are in the [installation guide](../../docs/installation.md#install-the-server).
 
+For first-time Wi-Fi setup from a laptop, join **`Kalinka-Setup-XXXX`** with password **`kalinka-setup`**, stay connected without internet, and open **`http://192.168.4.1`**. Save the [illustrated connection instructions](../../docs/installation.md#connect-your-box-to-the-network) before switching networks. Bluetooth setup remains available through **Set up a box** in the native app; Ethernet works without either radio setup flow.
+
 ## Building an image
 
 Every build needs root, for loop devices and mounts:
