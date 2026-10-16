@@ -97,8 +97,9 @@ Bluetooth/HTTP share the same validation, operation ownership, WPA2 support,
 progress, rollback and cancellation. AP daemons remain in the supervisor's cgroup.
 
 `GET /v1/setup` returns `available`, `network` (connected, kind, address,
-interface), `setup` (active, state, reason, stage, address, port, scan_state,
-networks), `hotspot`, `hotspot_name`, `networks_cached` and `server_id` where
+interface, and `ssid` when the active Wi-Fi name can be read), `setup` (active,
+state, reason, stage, address, port, scan_state, networks, and `target_ssid`
+while joining), `hotspot`, `hotspot_name`, `networks_cached` and `server_id` where
 available. `POST /v1/setup` accepts the existing unframed v1 JSON commands and
 an extra `{"v":1,"op":"open"}` to explicitly open a setup window on an online
 box. Clients supply a random, stable `X-Kalinka-Setup-Client` of 16–64 ASCII

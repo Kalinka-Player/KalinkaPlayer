@@ -8,6 +8,7 @@ import (
 	"kalinka/supervisor/internal/wifi"
 	"kalinka/supervisor/internal/wifi/wifitest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -71,12 +72,22 @@ func TestJoinSurvivesDisconnectAndExcludesSecondPhone(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-started
+	if snapshot := m.Snapshot(); snapshot.TargetSSID != "home" {
+		t.Fatalf("joining target %q", snapshot.TargetSSID)
+	}
+	public, _ := json.Marshal(m.Snapshot())
+	if strings.Contains(string(public), "dummy-password") {
+		t.Fatal("join credentials reached public status")
+	}
 	m.Disconnected("a")
 	if err := send(m, "b", joinCommand); err != protocol.Busy {
 		t.Fatal("join owner lost")
 	}
 	close(release)
 	await(t, func() bool { return m.Status()[2] == protocol.Joined })
+	if m.Snapshot().TargetSSID != "" {
+		t.Fatal("completed join retained its target")
+	}
 	if err := m.Authorize("b"); err != protocol.Busy {
 		t.Fatal("second phone read result")
 	}
@@ -110,6 +121,9 @@ func TestChangeWaitsForRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-cancelled
+	if m.Snapshot().TargetSSID != "" {
+		t.Fatal("cancelled join retained its target")
+	}
 	if err := send(m, "a", joinCommand); err != protocol.Busy {
 		t.Fatal("new join during rollback")
 	}
