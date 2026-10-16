@@ -43,6 +43,37 @@ fi
 # Install all wheels found in the wheels directory
 shopt -s nullglob
 wheels=( "$WHEELS_DIR"/*.whl )
+# Only the newest wheel of each package. A hand-copied wheel outlives the deb
+# upgrade beside it; pip refuses the pair, and the singly fallback would then
+# leave whichever came last in glob order installed: 5.9.1+local over 5.10.0.
+# On any failure here every wheel is kept, as before.
+if [ ${#wheels[@]} -gt 1 ] && newest=$("$VENV_DIR/bin/python" - "${wheels[@]}" <<'PY'
+import sys
+from pathlib import Path
+
+try:
+    from packaging.utils import parse_wheel_filename
+except ImportError:
+    from pip._vendor.packaging.utils import parse_wheel_filename
+
+best = {}
+for path in sys.argv[1:]:
+    try:
+        name, version, *_ = parse_wheel_filename(Path(path).name)
+    except Exception:
+        name, version = path, None
+    if name not in best or (version is not None and version > best[name][0]):
+        best[name] = (version, path)
+kept = {path for _, path in best.values()}
+for path in sys.argv[1:]:
+    if path in kept:
+        print(path)
+    else:
+        print(f"[bootstrap] ignoring older {Path(path).name}", file=sys.stderr)
+PY
+); then
+  mapfile -t wheels <<<"$newest"
+fi
 if [ ${#wheels[@]} -gt 0 ]; then
   echo "[bootstrap] Installing wheels: ${wheels[*]}"
   if ! "$VENV_DIR/bin/pip" install --quiet --upgrade --no-input \
