@@ -163,6 +163,15 @@ def test_metadata_past_the_renderer_limit_is_not_indexed():
         fixture()[:100],
         fixture(bits=24, width=16, extensible=True),
     ],
+    ids=[
+        "bare RIFF tag",
+        "A-law",
+        "8-bit",
+        "six channels",
+        "24-bit float",
+        "truncated",
+        "24 bits in 16-bit samples",
+    ],
 )
 def test_unplayable_files_are_not_indexed(tmp_path, payload, caplog):
     storage = SimpleNamespace(open=lambda _, **__: io.BytesIO(payload))
