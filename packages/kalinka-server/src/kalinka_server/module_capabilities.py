@@ -15,45 +15,27 @@ from __future__ import annotations
 import logging
 from typing import Any, List
 
-from kalinka_plugin_sdk.inputmodule import InputModule
+from kalinka_plugin_sdk.inputmodule import InputModule, ModuleCapability
 
 logger = logging.getLogger(__name__)
 
-#: Natural-language search over the source's own audio —
-#: :meth:`InputModule.ai_search`, behind ``GET /ai_search``.
-AI_SEARCH = "ai_search"
-
-_OPTIONAL_CALLS = (AI_SEARCH,)
-
-#: The SDK hook a module answers to say an implemented call is switched on.
-_SWITCHES = {AI_SEARCH: "ai_search_available"}
-
 
 def capabilities_of(interface: Any) -> List[str]:
-    """The optional calls ``interface`` implements, in a stable order.
+    """The capabilities ``interface`` reports, by value, in the enum's order.
 
-    Derived rather than declared, so a plugin gains a capability by writing
-    the method and nothing else: the SDK's protocol carries a default body
-    for every optional call, and a module that leaves one alone is asking not
-    to be asked. A module that writes the call behind a setting answers its
-    switch (``ai_search_available``) with False while the setting is off.
-    Anything that is not an input module at all — a source that browses but
-    streams nothing — has none of them.
+    The module answers for itself (:meth:`InputModule.capabilities`), so a
+    capability can follow the module's own settings. Values outside
+    :class:`ModuleCapability` are dropped. Anything that is not an input
+    module at all — a source that browses but streams nothing — has none,
+    and a module whose report raises is listed with none rather than
+    failing the whole listing.
     """
     module = getattr(interface, "wrapped", interface)
     if not isinstance(module, InputModule):
         return []
-    return [name for name in _OPTIONAL_CALLS if _implements(module, name)]
-
-
-def _implements(module: InputModule, call: str) -> bool:
-    if getattr(type(module), call, None) is getattr(InputModule, call, None):
-        return False
-    switch = _SWITCHES.get(call)
-    if switch is None:
-        return True
     try:
-        return bool(getattr(module, switch)())
+        reported = set(module.capabilities())
     except Exception as e:  # noqa: BLE001 — one plugin must not sink the listing
-        logger.warning("%s.%s failed: %r", type(module).__name__, switch, e)
-        return False
+        logger.warning("%s.capabilities failed: %r", type(module).__name__, e)
+        return []
+    return [c.value for c in ModuleCapability if c in reported]
