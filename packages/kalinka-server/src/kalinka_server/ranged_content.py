@@ -97,24 +97,43 @@ def head_response(
     return Response(status_code=status, media_type=mime_type, headers=headers)
 
 
-def stream_response(
+async def stream_response(
     reader: BinaryIO,
     *,
     span: Optional[tuple[int, int]],
     size: int,
     mime_type: str,
+    read_timeout_s: float,
 ) -> StreamingResponse:
     """Stream ``reader``, either whole or over the span that was asked for.
 
+    The span's first chunk is read before the response is made. Until a
+    header has gone out, a storage that fails can still be answered with a
+    503 a renderer retries; after it, the body can only break off. A module
+    that keeps a file open between ranges finds out only here that the share
+    behind it went away.
+
     @param reader An open, seekable stream. Closed when the response ends,
-        including when the client goes away mid-track.
+        including when the client goes away mid-track, and when this raises.
     @param span The honoured range, or None to serve the whole asset.
+    @param read_timeout_s How long the first read may take.
+    @raise TimeoutError If the storage did not answer the first read in time.
+    @raise OSError If the first read failed.
     """
     status, headers = range_headers(span, size)
     start, end = span if span is not None else (0, size - 1)
+    length = end - start + 1
+    try:
+        first = await asyncio.wait_for(
+            asyncio.to_thread(_read_at, reader, start, min(_CHUNK_BYTES, length)),
+            read_timeout_s,
+        )
+    except BaseException:
+        _close_detached(reader)
+        raise
     return _ClosingStreamingResponse(
         reader,
-        _chunks(reader, start, end - start + 1),
+        _chunks(reader, first, length - len(first)),
         status_code=status,
         media_type=mime_type,
         headers=headers,
@@ -159,12 +178,22 @@ def range_headers(
     }
 
 
-async def _chunks(reader: BinaryIO, start: int, length: int) -> AsyncIterator[bytes]:
-    """Reads the span. The stream's lifetime belongs to the response, which
-    is the only place that sees every way one can end."""
+def _read_at(reader: BinaryIO, start: int, size: int) -> bytes:
+    if size <= 0:
+        return b""
     if start:
-        await asyncio.to_thread(reader.seek, start)
-    remaining = length
+        reader.seek(start)
+    return reader.read(size)
+
+
+async def _chunks(
+    reader: BinaryIO, first: bytes, remaining: int
+) -> AsyncIterator[bytes]:
+    """Sends the chunk already read, then reads the rest of the span. The
+    stream's lifetime belongs to the response, which is the only place that
+    sees every way one can end."""
+    if first:
+        yield first
     while remaining > 0:
         chunk = await asyncio.to_thread(reader.read, min(_CHUNK_BYTES, remaining))
         if not chunk:

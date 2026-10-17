@@ -15,6 +15,8 @@ class RawFile(io.RawIOBase):
         self._offset = 0
         self.reads = 0
         self.fetched = 0
+        #: Raised by every read from here on, as by a share that went away.
+        self.failure = None
 
     def readable(self):
         return True
@@ -23,6 +25,8 @@ class RawFile(io.RawIOBase):
         return True
 
     def readinto(self, buffer):
+        if self.failure is not None:
+            raise self.failure
         chunk = self._data[self._offset:self._offset + len(buffer)]
         buffer[:len(chunk)] = chunk
         self._offset += len(chunk)
