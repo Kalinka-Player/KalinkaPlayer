@@ -14,7 +14,10 @@ heredoc before a release is published with it. It fails when:
   checksum line at the start of a line, as happens when the heredoc is
   indented wrongly, or links the repository at any ref but that tag;
 * the notes give a step the guide owns again: ``dietpi.txt``,
-  ``kalinka-firstboot.conf`` or ``dd of=``.
+  ``kalinka-firstboot.conf`` or ``dd of=``;
+* the guide names ``kalinka-firstboot.conf``, which only the older Debian PC
+  image read, outside the paragraph that starts its note on those images, as
+  two of its passages did for a while after the PC image moved to DietPi.
 
 Exit status 1 when any check fails.
 """
@@ -42,7 +45,9 @@ RELEASE_WORKFLOWS = (
 DOCS = ("*.md", "docs/*.md", "packages/*/*.md")
 
 SAMPLE_TAG = "kalinka-image-v0.0.0"
-GUIDE_STEPS = ("dietpi.txt", "kalinka-firstboot.conf", "dd of=")
+DEBIAN_SETTINGS_FILE = "kalinka-firstboot.conf"
+GUIDE_STEPS = ("dietpi.txt", DEBIAN_SETTINGS_FILE, "dd of=")
+OLDER_IMAGES_NOTE = "Older Debian PC images"
 
 _GUIDE_LINK_RE = re.compile(r"(?<![\w-])installation\.md#([\w-]+)")
 _SELF_LINK_RE = re.compile(r"\]\(#([\w-]+)\)")
@@ -105,6 +110,24 @@ def broken_guide_links(guide: str, files: Mapping[str, str]) -> Iterator[Problem
                 if anchor not in anchors:
                     message = f"`#{anchor}` names no heading in {GUIDE}"
                     yield Problem(path, number, message)
+
+
+def debian_settings_file_problems(guide: str) -> Iterator[Problem]:
+    paragraph_start = ""
+    for number, line in enumerate(guide.splitlines(), 1):
+        if not line.strip():
+            paragraph_start = ""
+            continue
+        # A fence starts a block of its own, even with no blank line before it.
+        paragraph_start = line if _FENCE_RE.match(line) else paragraph_start or line
+        in_note = paragraph_start.startswith(OLDER_IMAGES_NOTE)
+        if DEBIAN_SETTINGS_FILE in line and not in_note:
+            yield Problem(
+                GUIDE,
+                number,
+                f"`{DEBIAN_SETTINGS_FILE}` is named outside the paragraph starting "
+                f"`{OLDER_IMAGES_NOTE}`: the DietPi images do not read it",
+            )
 
 
 def render_notes(script: str, tag: str) -> subprocess.CompletedProcess:
@@ -174,6 +197,7 @@ def check_repository() -> List[Problem]:
     }
     return [
         *broken_guide_links(files[GUIDE], files),
+        *debian_settings_file_problems(files[GUIDE]),
         *image_notes_problems(files[IMAGE_NOTES], files[IMAGE_WORKFLOW]),
     ]
 

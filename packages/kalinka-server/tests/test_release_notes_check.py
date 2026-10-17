@@ -2,8 +2,9 @@
 
 The notes link docs/installation.md by heading instead of repeating its
 steps, so a renamed heading, a step written back into the notes or a heredoc
-indented wrongly would otherwise first show on a published release. The
-repository itself must pass it.
+indented wrongly would otherwise first show on a published release. The guide
+itself kept sending PC users to the Debian image's settings file after the PC
+image moved to DietPi. The repository itself must pass it.
 """
 
 import importlib.util
@@ -141,6 +142,49 @@ def test_a_step_written_back_into_the_notes_is_flagged(step):
     assert _messages(notes) == [
         f"the notes mention `{step}`: link the step in docs/installation.md instead"
     ]
+
+
+@pytest.mark.parametrize(
+    "passage",
+    [
+        "**Wi-Fi or the login does not work.** On the PC image, look at the drive"
+        " again: if `kalinka-firstboot.conf` is still there, the player could not"
+        " read it.",
+        "```bash\nmcopy -i kalinka.img@@2097152 kalinka-firstboot.conf"
+        " ::/kalinka-firstboot.conf\n```",
+    ],
+    ids=["troubleshooting", "vm-settings"],
+)
+def test_a_passage_left_from_the_debian_pc_image_is_flagged(passage):
+    guide = GUIDE.replace("## Troubleshooting\n", f"## Troubleshooting\n\n{passage}\n")
+    [problem] = check.debian_settings_file_problems(guide)
+    assert "kalinka-firstboot.conf" in guide.splitlines()[problem.line - 1]
+    assert problem.message == (
+        "`kalinka-firstboot.conf` is named outside the paragraph starting"
+        " `Older Debian PC images`: the DietPi images do not read it"
+    )
+
+
+def test_the_note_on_older_images_may_name_the_file_on_any_of_its_lines():
+    guide = (
+        "Older Debian PC images read `kalinka-firstboot.conf`\n"
+        "instead. The DietPi images ignore `kalinka-firstboot.conf`.\n"
+        "\n"
+        "Rename `kalinka-firstboot.conf.example` before the first start.\n"
+    )
+    problems = check.debian_settings_file_problems(guide)
+    assert [problem.line for problem in problems] == [4]
+
+
+def test_a_fence_right_after_the_note_is_not_part_of_it():
+    guide = (
+        "Older Debian PC images read `kalinka-firstboot.conf`.\n"
+        "```bash\n"
+        "mcopy kalinka-firstboot.conf ::/\n"
+        "```\n"
+    )
+    problems = check.debian_settings_file_problems(guide)
+    assert [problem.line for problem in problems] == [3]
 
 
 def test_the_callers_shell_environment_does_not_reach_the_script(tmp_path, monkeypatch):
