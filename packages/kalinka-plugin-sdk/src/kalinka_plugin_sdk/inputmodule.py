@@ -6,6 +6,7 @@ from typing import (
     Awaitable,
     BinaryIO,
     Callable,
+    FrozenSet,
     List,
     Optional,
     Protocol,
@@ -178,6 +179,20 @@ class SearchType(str, Enum):
     artist = "artist"
 
 
+class ModuleCapability(str, Enum):
+    """
+    Optional calls an input module answers, as :meth:`InputModule.capabilities`
+    reports them. Browsing and name search are what make a module a module, so
+    they are not listed. The value is the name clients read in
+    ``/server/modules``.
+
+    Values:
+        AI_SEARCH: :meth:`InputModule.ai_search` answers natural-language queries
+    """
+
+    AI_SEARCH = "ai_search"
+
+
 @runtime_checkable
 class InputModule(Protocol):
     """
@@ -247,16 +262,20 @@ class InputModule(Protocol):
         """
         return EmptyList(offset, limit)
 
-    def ai_search_available(self) -> bool:
+    def capabilities(self) -> FrozenSet[ModuleCapability]:
         """
-        Whether :meth:`ai_search` is switched on in this running module.
+        The optional calls this module answers as it runs now.
 
-        A module that implements ai_search behind a setting returns False
-        while the setting is off, so the server stops advertising the
-        capability. Read on every module listing: keep it cheap. Defaults
-        to True.
+        Report a capability only while its call can answer: a module that
+        implements ai_search behind a setting leaves AI_SEARCH out while the
+        setting is off. Read on every module listing, so keep it cheap.
+
+        The default reports AI_SEARCH when the module overrides
+        :meth:`ai_search`, which is what servers before SDK 3.13 inferred.
         """
-        return True
+        if type(self).ai_search is not InputModule.ai_search:
+            return frozenset({ModuleCapability.AI_SEARCH})
+        return frozenset()
 
     async def search(
         self, type: SearchType, query: str, offset=0, limit=50

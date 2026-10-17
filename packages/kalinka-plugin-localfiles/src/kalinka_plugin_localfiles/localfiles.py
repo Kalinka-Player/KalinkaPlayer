@@ -5,7 +5,7 @@ import os
 from functools import partial
 from pathlib import Path
 from dataclasses import dataclass, replace
-from typing import Any, Callable, List, Dict, Optional, Tuple
+from typing import Any, Callable, FrozenSet, List, Dict, Optional, Tuple
 
 from fastapi import HTTPException
 from .config_model import DISPLAY_NAME, LocalFilesConfig
@@ -13,6 +13,7 @@ from kalinka_plugin_sdk.inputmodule import (
     ContentInfo,
     InputModule,
     ModuleAsset,
+    ModuleCapability,
     SearchType,
     SourceUnavailableError,
     TrackInfo,
@@ -408,8 +409,13 @@ class LocalFilesInputModule(InputModule):
         """Human-friendly source name for section headers."""
         return DISPLAY_NAME
 
-    def ai_search_available(self) -> bool:
-        """Off when the ai_search setting kept the searcher from starting."""
+    def capabilities(self) -> FrozenSet[ModuleCapability]:
+        """AI search only while the setting gave this module a searcher."""
+        if self._has_searcher():
+            return frozenset({ModuleCapability.AI_SEARCH})
+        return frozenset()
+
+    def _has_searcher(self) -> bool:
         return (
             self._search_request_queue is not None
             and self._search_response_queue is not None
@@ -426,7 +432,7 @@ class LocalFilesInputModule(InputModule):
         card after it, alongside the other sources' cards. The server may
         suppress the card for a navigational query.
         """
-        if not self.ai_search_available():
+        if not self._has_searcher():
             return EmptyList(offset, limit)
 
         ai_cfg = self.config.ai_search

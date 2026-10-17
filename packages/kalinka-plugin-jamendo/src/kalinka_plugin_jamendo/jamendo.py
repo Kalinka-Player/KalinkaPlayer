@@ -5,7 +5,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import List, Optional, Tuple
+from typing import FrozenSet, List, Optional, Tuple
 
 import httpx
 from pydantic import PositiveInt
@@ -46,6 +46,7 @@ from kalinka_plugin_sdk.filters import (
 from kalinka_plugin_sdk.inputmodule import (
     DirectUrl,
     InputModule,
+    ModuleCapability,
     SearchType,
     TrackInfo,
     TrackSource,
@@ -748,9 +749,11 @@ class JamendoInputModule(InputModule):
         """Human-friendly source name for section headers."""
         return "Jamendo"
 
-    def ai_search_available(self) -> bool:
-        """Off when the ai_search_enabled setting kept the mood index out."""
-        return self._mood_index is not None
+    def capabilities(self) -> FrozenSet[ModuleCapability]:
+        """AI search only while the setting gave this module a mood index."""
+        if self._mood_index is not None:
+            return frozenset({ModuleCapability.AI_SEARCH})
+        return frozenset()
 
     async def search(
         self, type: SearchType, query: str, offset=0, limit=50

@@ -6,6 +6,7 @@ supplies metadata, so no model, sqlite-vec db, or network is needed.
 
 import pytest
 
+from kalinka_plugin_sdk.inputmodule import ModuleCapability
 from kalinka_plugin_jamendo.config_model import JamendoConfig
 from kalinka_plugin_jamendo import jamendo as jm
 
@@ -104,12 +105,14 @@ async def test_missing_metadata_dropped_order_preserved():
     assert [it.id.id for it in _card_tracks(res)] == ["100", "300"]
 
 
-def test_available_follows_the_index():
+def test_ai_search_reported_only_with_an_index():
     cfg = JamendoConfig(client_id="x")
-    assert make_module(MetadataClient()).ai_search_available()
-    assert not jm.JamendoInputModule(
+    assert make_module(MetadataClient()).capabilities() == {
+        ModuleCapability.AI_SEARCH
+    }
+    assert jm.JamendoInputModule(
         cfg, MetadataClient(), mood_index=None
-    ).ai_search_available()
+    ).capabilities() == frozenset()
 
 
 @pytest.mark.asyncio
