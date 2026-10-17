@@ -58,6 +58,8 @@ private:
   void close() override;
 
   std::vector<uint8_t> readPayload(const BoxHeader &box, uint64_t limit);
+  /// The whole box, header included, as the MP4 parsers take it.
+  std::vector<uint8_t> readBox(const BoxHeader &box, uint64_t limit);
   /// The header of the box at the current position; nothing at the end.
   std::optional<BoxHeader> nextBox();
   /// Moves the source to `offset`, reading forward where it cannot seek.

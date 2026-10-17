@@ -169,16 +169,12 @@ private:
         file.moveTo(box->offset + box->size);
         continue;
       }
-      auto bytes = box->bytes();
-      const auto moof = file.readPayload(*box, maxFragmentBytes);
-      bytes.insert(bytes.end(), moof.begin(), moof.end());
+      auto bytes = file.readBox(*box, maxFragmentBytes);
       const auto media = file.nextBox();
       if (!media || media->type != "mdat" || box->size > maxFragmentBytes ||
           media->size > maxFragmentBytes - box->size)
         mp4::invalid();
-      const auto header = media->bytes();
-      const auto data = file.readPayload(*media, maxFragmentBytes);
-      bytes.insert(bytes.end(), header.begin(), header.end());
+      const auto data = file.readBox(*media, maxFragmentBytes);
       bytes.insert(bytes.end(), data.begin(), data.end());
       auto fragments = init.parseSegments(bytes);
       fragment = std::move(fragments.front());
@@ -225,6 +221,14 @@ std::vector<uint8_t> Mp4StreamDecoder::readPayload(const BoxHeader &box,
   std::vector<uint8_t> payload(box.size - box.header);
   readExact(payload.data(), payload.size());
   return payload;
+}
+
+std::vector<uint8_t> Mp4StreamDecoder::readBox(const BoxHeader &box,
+                                               uint64_t limit) {
+  auto bytes = box.bytes();
+  const auto payload = readPayload(box, limit);
+  bytes.insert(bytes.end(), payload.begin(), payload.end());
+  return bytes;
 }
 
 std::optional<Mp4StreamDecoder::BoxHeader> Mp4StreamDecoder::nextBox() {
@@ -327,9 +331,7 @@ StreamInfo Mp4StreamDecoder::open() {
   sourceSeeks = box && reposition(sourcePosition());
   for (; box; box = nextBox()) {
     if (box->type == "moov" && moov.empty()) {
-      moov = box->bytes();
-      const auto payload = readPayload(*box, maxIndexBytes);
-      moov.insert(moov.end(), payload.begin(), payload.end());
+      moov = readBox(*box, maxIndexBytes);
       continue;
     }
     if (box->type == "mdat" || box->type == "moof") {

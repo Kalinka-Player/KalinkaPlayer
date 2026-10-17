@@ -28,11 +28,11 @@ FRAMES = 87
 LC, MAIN, SSR = 1, 0, 2
 
 
-def frame(profile=LC, rate=RATE_44100, channels=2, payload=200):
+def frame(profile=LC, rate=RATE_44100, channels=2, payload=200, blocks=0):
     """One ADTS frame without a CRC, of ``payload`` silent bytes."""
     length = 7 + payload
     bits = 0xFFF << 44 | 1 << 40 | profile << 38 | rate << 34 | channels << 30
-    bits |= length << 13 | 0x7FF << 2
+    bits |= length << 13 | 0x7FF << 2 | blocks
     return bits.to_bytes(7, "big") + bytes(payload)
 
 
@@ -134,6 +134,8 @@ MP3_FRAME = b"\xff\xfb\x90\x00" + bytes(413)
         (stream(frame(), frame(payload=0)[:5]), "not an ADTS stream"),
         (stream(*[frame(profile=MAIN)] * 5), "AAC-LC or HE-AAC"),
         (stream(*[frame(profile=SSR)] * 5), "AAC-LC or HE-AAC"),
+        (stream(*[frame(channels=0)] * 5), "channel layout"),
+        (stream(*[frame(blocks=1)] * 5), "several AAC blocks"),
     ],
     ids=[
         "empty",
@@ -145,6 +147,8 @@ MP3_FRAME = b"\xff\xfb\x90\x00" + bytes(413)
         "truncated second frame",
         "AAC Main",
         "AAC SSR",
+        "channels in a program config element",
+        "several blocks a frame",
     ],
 )
 def test_unplayable_files_are_not_indexed(tmp_path, payload, reason, caplog):

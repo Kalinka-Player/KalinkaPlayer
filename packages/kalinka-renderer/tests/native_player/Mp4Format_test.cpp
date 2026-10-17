@@ -315,3 +315,42 @@ TEST(Mp4AudioTrack, FallsBackToTheITunesGaplessTag) {
   EXPECT_EQ(listed.editStart, 0u);
   EXPECT_EQ(listed.editLength, 0u);
 }
+
+TEST(Mp4AudioTrack, ReadsTheEsdsQuickTimeNestsInAWaveBox) {
+  const auto entry = aacEntry();
+  // aacEntry's 28 bytes of fields follow its box header; its esds follows.
+  Bytes fields(entry.begin() + 8, entry.begin() + 36);
+  fields[9] = 1;
+  const Bytes esds(entry.begin() + 36, entry.end());
+  const auto wave =
+      box("wave", join({box("frma", {'m', 'p', '4', 'a'}), esds}));
+  const auto quickTime = box("mp4a", join({fields, zeros(16), wave}));
+  const auto track =
+      Mp4SampleTable::parse(movie(quickTime, chunkedTables())).track;
+  EXPECT_EQ(track.codec, mp4::AudioTrack::Codec::AAC);
+  EXPECT_EQ(track.config, (Bytes{0x12, 0x10}));
+}
+
+TEST(Mp4AudioTrack, RefusesAVersionOneEntryTooShortForItsFields) {
+  const auto entry =
+      box("mp4a", join({zeros(6), number(1, 2), number(1, 2), zeros(26)}));
+  EXPECT_THROW(Mp4SampleTable::parse(movie(entry, chunkedTables())),
+               std::runtime_error);
+}
+
+TEST(Mp4AudioTrack, IgnoresAGaplessTagTooShortToRead) {
+  const auto tag = [](const Bytes &name, const Bytes &data) {
+    const auto item = box("----", join({box("name", name), box("data", data)}));
+    return box("udta", box("meta", join({zeros(4), box("ilst", item)})));
+  };
+  const Bytes named =
+      join({zeros(4), {'i', 'T', 'u', 'n', 'S', 'M', 'P', 'B'}});
+  for (const auto &bad : {tag(zeros(2), zeros(8)), tag(named, zeros(4)),
+                          box("udta", box("meta", zeros(2)))}) {
+    const auto track =
+        Mp4SampleTable::parse(movie(aacEntry(), chunkedTables(), {.moov = bad}))
+            .track;
+    EXPECT_EQ(track.editStart, 0u);
+    EXPECT_EQ(track.editLength, 0u);
+  }
+}
