@@ -165,6 +165,7 @@ DashManifest DashManifest::parse(std::span<const uint8_t> bytes,
       seconds(attribute(period, "start")) != 0)
     invalid();
   const xmlNode *adaptation = nullptr, *representation = nullptr;
+  std::string chosen;
   uint64_t best = 0;
   for (auto *set = period->children; set; set = set->next) {
     if (!named(set, "AdaptationSet"))
@@ -182,6 +183,7 @@ DashManifest DashManifest::parse(std::span<const uint8_t> bytes,
       if (!representation || bitrate > best) {
         adaptation = set;
         representation = rep;
+        chosen = codec;
         best = bitrate;
       }
     }
@@ -257,9 +259,10 @@ DashManifest DashManifest::parse(std::span<const uint8_t> bytes,
       time += d;
     }
   }
-  // The timeline counts AAC priming and padding that the duration leaves out.
+  // An AAC timeline also counts priming and padding the duration leaves out.
+  const auto tolerance = chosen.starts_with("mp4a") ? 0.2 : 0.02;
   if (result.segments.empty() ||
-      std::abs(double(time) - endTime) > result.timescale * 0.2)
+      std::abs(double(time) - endTime) > result.timescale * tolerance)
     invalid();
   result.initialization =
       expand(result.initialization, result, 0, result.segments.front().number);

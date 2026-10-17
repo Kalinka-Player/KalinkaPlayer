@@ -65,6 +65,17 @@ TEST(DashManifest, ExpandsNegativeRepeatsUpToNextTimestamp) {
   EXPECT_EQ(parsed.segments.size(), 3u);
 }
 
+TEST(DashManifest, OnlyAnAacTimelineMayOverrunItsDuration) {
+  // The fixture's timeline lasts 2.5 s; 2.6 s is a tenth of a second more.
+  const auto longer = replace(manifest, "PT2.5S", "PT2.6S");
+  EXPECT_THROW(
+      DashManifest::parse(bytes(longer), "https://example.test/a.mpd"),
+      std::runtime_error);
+  EXPECT_NO_THROW(DashManifest::parse(
+      bytes(replace(longer, "flac", "mp4a.40.2")),
+      "https://example.test/a.mpd"));
+}
+
 TEST(DashManifest, AcceptsAacRepresentations) {
   for (const auto *codec : {"mp4a.40.2", "mp4a.40.5", "mp4a.40.29"}) {
     SCOPED_TRACE(codec);

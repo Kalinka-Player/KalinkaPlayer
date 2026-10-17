@@ -18,8 +18,8 @@ std::span<const uint8_t> TrackDecoder::decode(std::span<const uint8_t> unit,
   const auto pcm = decoder->decode(unit);
   if (pcm.empty())
     return {};
-  // A unit may last less than it decodes to: the encoder's padding at the end.
-  if (pcm.size() < frames * frameBytes)
+  if (pcm.size() < frames * frameBytes ||
+      (!decoder->padded() && pcm.size() != frames * frameBytes))
     throw std::runtime_error(
         "MP4 audio sample duration does not match its audio");
   const auto skip = std::min(target > first ? target - first : 0, frames);

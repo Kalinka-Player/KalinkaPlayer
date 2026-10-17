@@ -13,9 +13,9 @@
  * Positions are output frames on the track's timeline. A codec with a delay
  * yields nothing for the first unit after a restart, so the caller starts
  * that much early: the stream plays from the timeline's delay() onwards.
- * A unit lasting less than its audio keeps only its duration, as MP4 trims
- * the encoder's padding. Throws when a unit leaves a gap or its audio does
- * not fill its duration.
+ * A padded codec's unit lasting less than its audio keeps only its duration,
+ * as MP4 trims the encoder's padding. Throws when a unit leaves a gap, or
+ * its audio does not match its duration where the codec cannot pad.
  */
 class TrackDecoder {
 public:

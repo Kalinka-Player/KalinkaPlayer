@@ -21,6 +21,7 @@ public:
 
   StreamAudioFormat format() const override;
   uint64_t delay() const override { return frameLength; }
+  bool padded() const override { return true; }
   void reset() override;
   std::span<const uint8_t> decode(std::span<const uint8_t> unit) override;
 
