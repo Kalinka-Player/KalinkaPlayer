@@ -26,7 +26,11 @@ class _Frame(NamedTuple):
     #: The header fields every frame of one stream repeats.
     fixed: int
     profile: int
+    #: 0 when a program config element in the audio says instead.
+    channels: int
     length: int
+    #: Raw data blocks after the first, which the renderer does not decode.
+    extra_blocks: int
 
 
 def _frame(header: bytes) -> Optional[_Frame]:
@@ -44,7 +48,13 @@ def _frame(header: bytes) -> Optional[_Frame]:
         or length < (_HEADER_SIZE if protection_absent else _HEADER_SIZE + 2)
     ):
         return None
-    return _Frame(bits >> 28, (bits >> 38) & 0x3, length)
+    return _Frame(
+        bits >> 28,
+        (bits >> 38) & 0x3,
+        (bits >> 30) & 0x7,
+        length,
+        bits & 0x3,
+    )
 
 
 def _require_adts(audio: BinaryIO, start: int) -> None:
@@ -57,11 +67,21 @@ def _require_adts(audio: BinaryIO, start: int) -> None:
         frame = _frame(header)
         if frame is None or (first is not None and frame.fixed != first.fixed):
             raise UnplayableFile("it is not an ADTS stream of AAC")
+        if frame.extra_blocks:
+            raise UnplayableFile(
+                "its ADTS frames hold several AAC blocks, which the renderer "
+                "does not play"
+            )
         first = first or frame
         audio.seek(frame.length - _HEADER_SIZE, os.SEEK_CUR)
     if first.profile != _PROFILE_LC:
         raise UnplayableFile(
             "its AAC is not AAC-LC or HE-AAC, the profiles the renderer plays"
+        )
+    if not first.channels:
+        raise UnplayableFile(
+            "its channel layout is in the audio rather than the ADTS header, "
+            "which the renderer does not play"
         )
 
 

@@ -1,5 +1,6 @@
 #include "Mp4.h"
 
+#include <algorithm>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -82,6 +83,13 @@ void refuseEncrypted(const std::vector<Box> &items) {
 }
 
 namespace {
+/// What follows the first `offset` bytes; throws when there are fewer.
+Bytes after(Bytes bytes, size_t offset) {
+  if (offset > bytes.size())
+    invalid();
+  return bytes.subspan(offset);
+}
+
 /// An MPEG-4 descriptor (ISO/IEC 14496-1): a tag, then a 7-bit-per-byte size.
 struct Descriptor {
   uint8_t tag;
@@ -151,14 +159,23 @@ void sampleEntry(const Box &entry, AudioTrack &track) {
   const auto version = integer(sample, 8, 2);
   if (version > 1 || (version && entry.type != "mp4a"))
     invalid();
-  const auto extensions = boxes(sample.subspan(version ? 44 : 28));
+  const auto extensions = boxes(after(sample, version ? 44 : 28));
   refuseEncrypted(extensions);
   if (entry.type == "fLaC") {
     track.codec = AudioTrack::Codec::FLAC;
     track.config = flacStreamInfo(one(extensions, "dfLa").payload);
   } else if (entry.type == "mp4a") {
     track.codec = AudioTrack::Codec::AAC;
-    track.config = audioSpecificConfig(one(extensions, "esds").payload);
+    const auto has = [&](std::string_view type) {
+      return std::ranges::any_of(
+          extensions, [&](const auto &item) { return item.type == type; });
+    };
+    // QuickTime's version 1 entry nests the esds in a `wave` box.
+    const auto holder = !has("esds") && has("wave")
+                            ? boxes(one(extensions, "wave").payload)
+                            : extensions;
+    refuseEncrypted(holder);
+    track.config = audioSpecificConfig(one(holder, "esds").payload);
   } else
     invalid();
 }
@@ -241,17 +258,17 @@ std::optional<Edit> gaplessTag(const Box &moov) {
     if (!meta)
       return std::nullopt;
     // iTunes' `meta` is a full box: its children follow version and flags.
-    const auto items = boxes(meta->payload.subspan(4));
+    const auto items = boxes(after(meta->payload, 4));
     const auto ilst = one(items, "ilst");
     for (const auto &item : boxes(ilst.payload)) {
       if (item.type != "----")
         continue;
       const auto fields = boxes(item.payload);
-      const auto name = one(fields, "name").payload.subspan(4);
+      const auto name = after(one(fields, "name").payload, 4);
       if (std::string_view(reinterpret_cast<const char *>(name.data()),
                            name.size()) != "iTunSMPB")
         continue;
-      const auto data = one(fields, "data").payload.subspan(8);
+      const auto data = after(one(fields, "data").payload, 8);
       std::istringstream text(std::string(
           reinterpret_cast<const char *>(data.data()), data.size()));
       uint64_t zero, priming, padding, length;
