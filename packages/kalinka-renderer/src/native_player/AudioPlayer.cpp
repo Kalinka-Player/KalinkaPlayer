@@ -6,6 +6,7 @@
 #include "ContainerStreamDecoder.h"
 #include "DsdContainer.h"
 #include "DsdFormat.h"
+#include "DashStreamDecoder.h"
 #include "FileInputNode.h"
 #include "FlacStreamDecoder.h"
 #include "Log.h"
@@ -143,6 +144,18 @@ struct StreamNodes {
                     static_cast<int>(spec.channel));
       nodeChain.emplace_back(std::make_shared<SineWaveNode>(
           id, spec.frequency, spec.durationMs, 48000u, 16u, spec.channel));
+      return;
+    }
+
+    if (format == AudioFormat::FormatDash) {
+      nodeChain.emplace_back(std::make_shared<DashStreamDecoder>(
+          id, url, value_or(config, "decoder.flac.buffer_size", FLAC_BUFFER_SIZE),
+          startOffsetMs,
+          std::chrono::seconds(value_or(
+              config, "input.http.stall_timeout",
+              AudioGraphHttpStream::DEFAULT_STALL_TIMEOUT.count())),
+          value_or(config, "input.http.max_redirects",
+                   AudioGraphHttpStream::DEFAULT_MAX_REDIRECTS)));
       return;
     }
 

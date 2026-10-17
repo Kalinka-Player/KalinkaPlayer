@@ -25,6 +25,16 @@ require a seekable source; sequential HTTP streams play from the beginning.
 RF64, big-endian RIFX, compressed WAV, 8-bit PCM and multichannel WAV are not
 supported.
 
+MPEG-DASH (`application/dash+xml` or `.mpd`) supports static, single-period
+HTTP/HTTPS manifests carrying unencrypted mono/stereo FLAC in fragmented MP4.
+Manifests use `SegmentTemplate` with a continuous `SegmentTimeline` starting at zero.
+The renderer fetches segments with its existing HTTP transport, extracts FLAC
+frames from fragmented MP4, and decodes them with libFLAC, preserving the original
+sample rate and bit depth. FFmpeg is not a build or runtime dependency.
+Seeking and start offsets use the audio timestamps. PCM buffering is bounded;
+the server only supplies the manifest and does not remux or transcode audio.
+Live DASH, encrypted streams and other DASH audio codecs are not supported.
+
 Integer output negotiation only accepts containers that preserve the source
 precision. True 32-bit PCM requires 32 significant output bits. Float samples
 retain their original representation and require the matching ALSA float
@@ -86,12 +96,12 @@ Automated packing and protocol tests do not verify recognition by a real DAC.
 ## Build
 
 Dependencies (dev headers): protobuf (+ compiler), Boost (headers only — asio
-and beast), spdlog, ALSA, FLAC++, libvorbisfile, libcurl, curlpp. GoogleTest is
+and beast), spdlog, ALSA, FLAC++, libvorbisfile, libcurl, curlpp, libxml2. GoogleTest is
 optional and only builds the test binary. mDNS is self-contained (vendored public-domain
 `third_party/mdns`), so no avahi or Bonjour daemon is needed.
 
-- Fedora: `sudo dnf install cmake gcc-c++ protobuf-devel protobuf-compiler protobuf-lite-devel boost-devel spdlog-devel alsa-lib-devel flac-devel libvorbis-devel libcurl-devel curlpp-devel gtest-devel`
-- Debian/Ubuntu: `sudo apt install cmake g++ libprotobuf-dev protobuf-compiler libboost-dev libspdlog-dev libasound2-dev libflac++-dev libvorbis-dev libcurl4-openssl-dev libcurlpp-dev libgtest-dev`
+- Fedora: `sudo dnf install cmake gcc-c++ protobuf-devel protobuf-compiler protobuf-lite-devel boost-devel spdlog-devel alsa-lib-devel flac-devel libvorbis-devel libcurl-devel curlpp-devel libxml2-devel gtest-devel`
+- Debian/Ubuntu: `sudo apt install cmake g++ libprotobuf-dev protobuf-compiler libboost-dev libspdlog-dev libasound2-dev libflac++-dev libvorbis-dev libcurl4-openssl-dev libcurlpp-dev libxml2-dev libgtest-dev`
 
 From the repo root:
 

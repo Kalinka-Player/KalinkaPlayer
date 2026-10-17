@@ -57,6 +57,8 @@ public:
   static constexpr std::chrono::milliseconds TRICKLE_TIME{2000};
 
   explicit LocalHttpServer(const std::string &filePath);
+  /// Serves the supplied path-to-body map with byte ranges; "" is the default body.
+  explicit LocalHttpServer(std::map<std::string, std::string, std::less<>> bodies);
   ~LocalHttpServer();
 
   LocalHttpServer(const LocalHttpServer &) = delete;
@@ -77,7 +79,7 @@ private:
   bool firstRequestTo(std::string_view target);
   bool waitForRelease();
 
-  std::string body_;
+  const std::map<std::string, std::string, std::less<>> bodies_;
   boost::asio::io_context io_;
   boost::asio::ip::tcp::acceptor acceptor_;
   mutable std::mutex mutex_;

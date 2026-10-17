@@ -21,7 +21,8 @@ enum AudioFormat {
   FormatVorbis,
   FormatUnsupported,
   FormatDsd,
-  FormatWav
+  FormatWav,
+  FormatDash
 };
 
 using StreamId = size_t;
