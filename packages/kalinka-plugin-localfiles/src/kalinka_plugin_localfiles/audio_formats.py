@@ -1,6 +1,7 @@
 """Container identities shared by indexing and PCM-only analysis stages."""
 
 from pathlib import PurePosixPath
+from typing import Optional
 
 DSD_MEDIA_TYPES = {".dsf": "audio/x-dsf", ".dff": "audio/x-dff"}
 
@@ -15,6 +16,8 @@ MEDIA_TYPES = {
     ".wave": "audio/wav",
     ".ogg": "audio/ogg",
     ".oga": "audio/ogg",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
 }
 
 
@@ -30,3 +33,17 @@ def is_dsd(path: str, media_type: str = "") -> bool:
         "audio/dff",
         "audio/dsd",
     )
+
+
+#: What libsndfile, through which analysis reads PCM, cannot decode.
+_UNDECODABLE_FOR_ANALYSIS = {".m4a": "MP4", ".aac": "AAC"}
+
+
+def analysis_refusal(path: str) -> Optional[str]:
+    """Why a file's audio cannot be analysed as PCM, or None when it can."""
+    if is_dsd(path):
+        return "DSD audio analysis requires PCM conversion"
+    container = _UNDECODABLE_FOR_ANALYSIS.get(PurePosixPath(path).suffix.lower())
+    if container is not None:
+        return f"libsndfile cannot decode {container} audio for analysis"
+    return None

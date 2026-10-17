@@ -77,8 +77,11 @@ from ..utils.name_utils import (
 )
 from .cue import find_cue_for, parse_cue
 from .dsd import native_dsdiff_tags
-from .ogg import NoVorbisStream, open_ogg_vorbis, open_ogg_vorbis_tags
-from .wav import UnsupportedWave, open_pcm_wave
+from .adts import AdtsFile
+from .mp4 import Mp4Audio, open_mp4_audio
+from .ogg import open_ogg_vorbis, open_ogg_vorbis_tags
+from .unplayable import UnplayableFile
+from .wav import open_pcm_wave
 from .id_generator import (
     generate_artist_id,
     generate_album_id,
@@ -1200,14 +1203,7 @@ class FileIndexer:
                 metadata["album_art"] = cover
             self._augment_with_cue(storage, file_path, metadata)
             return metadata
-        except NoVorbisStream:
-            logger.warning(
-                "Not indexing %s: it holds no Vorbis stream, and "
-                "Vorbis is the only codec in Ogg the renderer plays",
-                file_path,
-            )
-            return None
-        except UnsupportedWave as e:
+        except UnplayableFile as e:
             logger.warning("Not indexing %s: %s", file_path, e)
             return None
         except Exception as e:
@@ -1271,6 +1267,14 @@ class FileIndexer:
 
     def _extract_mp3_metadata(self, mp3: MP3, audio: BinaryIO, metadata: Dict) -> Dict:
         return self._extract_id3_metadata(mp3, metadata, "mp3")
+
+    def _extract_adts_metadata(
+        self, aac: AdtsFile, audio: BinaryIO, metadata: Dict
+    ) -> Dict:
+        metadata = self._extract_id3_metadata(aac, metadata, "aac")
+        # mutagen averages ADTS frame sizes as floats.
+        metadata["stream_info"]["bitrate"] = int(aac.info.bitrate)
+        return metadata
 
     def _extract_dsf_metadata(self, dsf: DSF, audio: BinaryIO, metadata: Dict) -> Dict:
         return self._extract_dsd_metadata(dsf, metadata, "dsf")
@@ -1375,62 +1379,77 @@ class FileIndexer:
     def _extract_flac_metadata(
         self, flac: FLAC, audio: BinaryIO, metadata: Dict
     ) -> Dict:
-        return self._extract_vorbis_comment_metadata(flac, metadata, "flac")
+        return self._extract_vorbis_comment_metadata(flac, flac.info, metadata, "flac")
 
     def _extract_ogg_vorbis_metadata(
         self, vorbis: OggVorbis, audio: BinaryIO, metadata: Dict
     ) -> Dict:
-        metadata = self._extract_vorbis_comment_metadata(vorbis, metadata, "vorbis")
+        metadata = self._extract_vorbis_comment_metadata(
+            vorbis, vorbis.info, metadata, "vorbis"
+        )
         # A header with no bitrate fields reads as 0, which is not a bitrate.
         metadata["stream_info"]["bitrate"] = vorbis.info.bitrate or None
         return metadata
 
+    def _extract_mp4_metadata(
+        self, mp4: Mp4Audio, audio: BinaryIO, metadata: Dict
+    ) -> Dict:
+        metadata = self._extract_vorbis_comment_metadata(
+            mp4.comments, mp4.info, metadata, mp4.codec
+        )
+        # FLAC's sample entry gives no bitrate, which mutagen reads as 0.
+        metadata["stream_info"].update(
+            bitrate=mp4.info.bitrate or None, container="mp4"
+        )
+        return metadata
+
     def _extract_vorbis_comment_metadata(
-        self, audio_file, metadata: Dict, codec: str
+        self, comments, info, metadata: Dict, codec: str
     ) -> Dict:
         """Fill ``metadata`` from a file tagged with Vorbis comments.
 
-        @param audio_file The mutagen file: its comments read as a mapping of
-            lower-case keys to lists of values, whatever the container.
+        @param comments A mapping of lower-case keys to lists of values,
+            whatever the container.
+        @param info The mutagen stream information of the audio.
         """
-        metadata["duration"] = int(audio_file.info.length)
-        if "title" in audio_file:
-            metadata["title"] = audio_file["title"][0]
-        if "artist" in audio_file:
-            metadata["artist"] = audio_file["artist"][0]
-        if "album" in audio_file:
-            metadata["album"] = audio_file["album"][0]
-        if "tracknumber" in audio_file:
-            track_str = audio_file["tracknumber"][0]
+        metadata["duration"] = int(info.length)
+        if "title" in comments:
+            metadata["title"] = comments["title"][0]
+        if "artist" in comments:
+            metadata["artist"] = comments["artist"][0]
+        if "album" in comments:
+            metadata["album"] = comments["album"][0]
+        if "tracknumber" in comments:
+            track_str = comments["tracknumber"][0]
             if "/" in track_str:
                 track_str = track_str.split("/")[0]
             try:
                 metadata["track_number"] = int(track_str)
             except ValueError:
                 pass
-        if "discnumber" in audio_file:
-            disc_str = audio_file["discnumber"][0]
+        if "discnumber" in comments:
+            disc_str = comments["discnumber"][0]
             if "/" in disc_str:
                 disc_str = disc_str.split("/")[0]
             try:
                 metadata["disc_number"] = int(disc_str)
             except ValueError:
                 pass
-        if "date" in audio_file:
+        if "date" in comments:
             try:
-                metadata["year"] = int(audio_file["date"][0].split("-")[0])
+                metadata["year"] = int(comments["date"][0].split("-")[0])
             except (ValueError, IndexError):
                 pass
-        if "genre" in audio_file:
-            metadata["genre"] = audio_file["genre"][0]
-        if "replaygain_track_gain" in audio_file:
-            gain_str = audio_file["replaygain_track_gain"][0]
+        if "genre" in comments:
+            metadata["genre"] = comments["genre"][0]
+        if "replaygain_track_gain" in comments:
+            gain_str = comments["replaygain_track_gain"][0]
             try:
                 metadata["replaygain_gain"] = float(gain_str.replace(" dB", ""))
             except ValueError:
                 pass
-        if "replaygain_track_peak" in audio_file:
-            peak_str = audio_file["replaygain_track_peak"][0]
+        if "replaygain_track_peak" in comments:
+            peak_str = comments["replaygain_track_peak"][0]
             try:
                 metadata["replaygain_peak"] = float(peak_str)
             except ValueError:
@@ -1438,16 +1457,16 @@ class FileIndexer:
         # Every Vorbis comment verbatim (incl. albumartist/compilation) +
         # stream info. Keys can repeat, so values are lists.
         metadata["raw_tags"] = {
-            key: list(audio_file[key])
-            for key in audio_file.keys()
+            key: list(comments[key])
+            for key in comments.keys()
             if key not in _PICTURE_COMMENTS
         }
         metadata["stream_info"] = {
-            "sample_rate": getattr(audio_file.info, "sample_rate", None),
-            "bits_per_sample": getattr(audio_file.info, "bits_per_sample", None),
-            "channels": getattr(audio_file.info, "channels", None),
+            "sample_rate": getattr(info, "sample_rate", None),
+            "bits_per_sample": getattr(info, "bits_per_sample", None),
+            "channels": getattr(info, "channels", None),
             "codec": codec,
-            "encoder": audio_file["encoder"][0] if "encoder" in audio_file else None,
+            "encoder": comments["encoder"][0] if "encoder" in comments else None,
         }
         return metadata
 
@@ -1517,6 +1536,10 @@ class FileIndexer:
             read_ahead=False,
             read_tags=open_ogg_vorbis_tags,
         ),
+        "audio/mp4": _TagFormat(
+            open_mp4_audio, _extract_mp4_metadata, lambda mp4: mp4.cover
+        ),
+        "audio/aac": _TagFormat(AdtsFile, _extract_adts_metadata, _id3_cover),
         "audio/x-dsf": _TagFormat(DSF, _extract_dsf_metadata, _id3_cover),
         "audio/x-dff": _TagFormat(DSDIFF, _extract_dsdiff_metadata, _id3_cover),
     }
