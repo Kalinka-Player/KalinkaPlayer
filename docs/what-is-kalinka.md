@@ -35,7 +35,7 @@ The part I care about is *where* it runs: on your own hardware, over your own fi
 
 Playback is a C++ audio graph with direct ALSA access — no PulseAudio or PipeWire in the middle — giving a bit-perfect path where your ALSA configuration permits. It plays FLAC and WAV (up to 192 kHz / 24-bit, plus 32-bit integer and float WAV on outputs that take them), MP3 and Ogg Vorbis, from local files or HTTP streams, with gapless transitions between consecutive tracks of the same format. Mono and stereo DSF and uncompressed DFF files play as DSD, native or DoP, through a compatible direct ALSA output at fixed volume once DSD output is selected in the renderer's settings. The server idles comfortably on a Raspberry Pi; the machine's resources go to your library, not to the runtime.
 
-That graph lives in its own process — the **renderer** — rather than inside the server, and the split is what lets one library drive more than one set of speakers. A renderer finds the server over mDNS, connects out to it and then fetches the audio over HTTP itself, so the stream never passes through the core: a Pi in the living room and another in the study each pull their own bytes. You choose which one is playing from the app, and switching hands the music over mid-track rather than starting it again. The default install puts a renderer on the server machine, so a single box behaves exactly as it always did; the browser player is a renderer too, which is why a laptop can play from a server that has no sound card at all.
+That graph lives in its own process — the **renderer** — rather than inside the server, and the split is what lets one library drive more than one set of speakers. A renderer finds the server over mDNS, connects out to it and then fetches the audio over HTTP itself: a Pi in the living room and another in the study each pull their own bytes, from the server for tracks in your library and straight from the service for streams such as Jamendo. You choose which one is playing from the app, and switching hands the music over mid-track rather than starting it again. The default install puts a renderer on the server machine, so a single box behaves exactly as it always did; the browser player is a renderer too, which is why a laptop can play from a server that has no sound card at all.
 
 ### One queue, many sources
 
@@ -116,7 +116,7 @@ flowchart TD
     LF -->|"enrichment lookups"| META
     JAM --> JAPI
     QOB --> QAPI
-    NATIVE -.->|"audio streams"| FILES
+    NATIVE -.->|"library audio (/content)"| API
     NATIVE -.->|"audio streams"| JAPI
     NATIVE -.->|"audio streams"| QAPI
     MC --> AMP

@@ -34,8 +34,10 @@ Three consequences shape everything below:
   still works.
 - **A renderer serves many Cores but plays for one.** Every connected Core can
   read and write settings; exactly one at a time holds a *playback session*.
-- **Media does not flow through Core.** A source is a URL the renderer fetches
-  itself.
+- **The renderer fetches its own media.** A source is a URL the renderer
+  fetches itself, from the source directly or from Core when the plugin serves
+  the track through it; see
+  [Where the audio comes from](architecture.md#where-the-audio-comes-from).
 
 ## 2. Architecture
 
