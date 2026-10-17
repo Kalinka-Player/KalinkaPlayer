@@ -45,9 +45,11 @@ with no known length. Raw AAC in ADTS frames (`audio/aac`, `audio/x-aac`,
 `audio/aacp` or `.aac`), as internet radio sends it, plays after any ID3v2 tag;
 its length and seeks are estimated from the average frame size. AAC-LC, HE-AAC
 and HE-AAC v2 decode with faad2 to 16-bit stereo at the stream's output rate:
-mono is upmixed and multichannel audio downmixed. An encoder's priming is
-dropped, but MP4 edit lists are not read, so gapless playback between AAC tracks
-is not exact. ALAC, xHE-AAC, and ADTS that describes its channels in a program
+mono is upmixed and multichannel audio downmixed. MP4 and DASH play exactly
+what the track's edit list, or else iTunes' `iTunSMPB` tag, selects, so the
+encoder's priming and padding are trimmed and AAC albums play gaplessly. ADTS
+records neither, so raw AAC loses only the first 1024 frames of priming and
+plays its padding. ALAC, xHE-AAC, and ADTS that describes its channels in a program
 config element are not supported.
 
 Integer output negotiation only accepts containers that preserve the source

@@ -5,6 +5,13 @@
 #include <string_view>
 #include <vector>
 
+/// @brief The sample frame at @p time in @p timescale units.
+/// @note Throws unless the time falls exactly on a sample within a week.
+uint64_t samplesAt(uint64_t time, uint64_t timescale, unsigned rate);
+/// @brief The sample frame at or just before @p time in @p timescale units,
+/// for lengths that only bound playback.
+uint64_t samplesNear(uint64_t time, uint64_t timescale, unsigned rate);
+
 /// ISO base media file format (MP4) boxes, read with every size checked.
 namespace mp4 {
 using Bytes = std::span<const uint8_t>;
@@ -39,6 +46,10 @@ struct AudioTrack {
   uint32_t id = 0, timescale = 0;
   /// The track's length in `timescale` units, or 0 when the file does not say.
   uint64_t duration = 0;
+  /// What plays, in `timescale` units, as the edit list or else iTunes'
+  /// gapless tag says: from `editStart` for `editLength`, 0 meaning to the
+  /// end. Encoders put their priming before it and padding after.
+  uint64_t editStart = 0, editLength = 0;
 };
 
 /// The first sound track (`trak`) of a `moov` box; throws when it has none.

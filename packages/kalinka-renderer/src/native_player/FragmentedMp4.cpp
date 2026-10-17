@@ -105,16 +105,6 @@ FragmentedMp4 FragmentedMp4::parseInitialization(Bytes bytes) {
   return result;
 }
 
-uint64_t samplesAt(uint64_t time, uint64_t timescale, unsigned rate) {
-  if (!timescale)
-    throw std::runtime_error("MP4 timing has no timescale");
-  const auto whole = time / timescale;
-  const auto remainder = time % timescale;
-  if (whole > 7 * 86400 || (remainder * rate) % timescale)
-    throw std::runtime_error("MP4 timing does not match the audio samples");
-  return whole * rate + remainder * rate / timescale;
-}
-
 std::vector<FragmentedMp4::Fragment>
 FragmentedMp4::parseSegments(Bytes bytes) const {
   const auto top = mp4::boxes(bytes);

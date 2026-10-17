@@ -50,14 +50,22 @@ Bytes aacEntry(uint8_t flags = 0) {
                    number(16, 2), zeros(4), number(44100 << 16, 4), esds}));
 }
 
-/// A movie whose one sound track has `entry` and the sample tables `tables`,
-/// its data in the file a `reference` entry of the data reference names.
+/// What a test movie has beyond its sample entry and tables.
+struct Extras {
+  /// The data reference entry naming the file the data lies in.
+  std::string_view reference = "url ";
+  uint32_t referenceFlags = 1;
+  /// Boxes added to the track and to the movie.
+  Bytes trak, moov;
+};
+
+/// A movie whose one sound track has `entry` and the sample tables `tables`.
 Bytes movie(const Bytes &entry, const Bytes &tables,
-            std::string_view reference = "url ", uint32_t referenceFlags = 1) {
+            const Extras &extras = {}) {
   const auto stsd = box("stsd", join({zeros(4), number(1, 4), entry}));
-  const auto dref =
-      box("dref", join({zeros(4), number(1, 4),
-                        box(reference, number(referenceFlags, 4))}));
+  const auto dref = box(
+      "dref", join({zeros(4), number(1, 4),
+                    box(extras.reference, number(extras.referenceFlags, 4))}));
   const auto minf =
       box("minf", join({box("dinf", dref), box("stbl", join({stsd, tables}))}));
   const auto hdlr =
@@ -66,8 +74,38 @@ Bytes movie(const Bytes &entry, const Bytes &tables,
       box("mdhd",
           join({zeros(12), number(44100, 4), number(5 * 1024, 4), zeros(4)}));
   const auto tkhd = box("tkhd", join({zeros(12), number(1, 4), zeros(64)}));
-  return box("moov",
-             box("trak", join({tkhd, box("mdia", join({mdhd, hdlr, minf}))})));
+  const auto trak = box(
+      "trak", join({tkhd, extras.trak, box("mdia", join({mdhd, hdlr, minf}))}));
+  return box("moov", join({extras.moov, trak}));
+}
+
+/// A movie header counting in milliseconds.
+Bytes mvhd() {
+  return box("mvhd", join({zeros(12), number(1000, 4), zeros(84)}));
+}
+
+/// One edit-list entry of version 0: a length in movie milliseconds, a
+/// media time in track units (-1 for an empty edit) and a rate.
+Bytes edit(uint32_t length, int32_t time, uint32_t rate = 0x00010000) {
+  return join({number(length, 4), number(uint32_t(time), 4), number(rate, 4)});
+}
+
+Bytes editList(std::initializer_list<Bytes> entries) {
+  Bytes list = join({zeros(4), number(entries.size(), 4)});
+  for (const auto &entry : entries)
+    list = join({list, entry});
+  return box("edts", box("elst", list));
+}
+
+/// iTunes' gapless tag, its hex fields as `text`.
+Bytes gaplessTag(const std::string &text) {
+  const auto item = box(
+      "----", join({box("mean", join({zeros(4), Bytes{'c', 'o', 'm'}})),
+                    box("name", join({zeros(4), Bytes{'i', 'T', 'u', 'n', 'S',
+                                                      'M', 'P', 'B'}})),
+                    box("data", join({number(1, 4), zeros(4),
+                                      Bytes(text.begin(), text.end())}))}));
+  return box("udta", box("meta", join({zeros(4), box("ilst", item)})));
 }
 
 /// Five units in three chunks of 2, 2 and 1, at 64-bit offsets.
@@ -102,11 +140,11 @@ TEST(Mp4SampleTable, ExpandsChunksIntoUnitOffsets) {
 TEST(Mp4SampleTable, ReadsAudioInTheMovieFileWhicheverWayItIsNamed) {
   for (const auto *reference : {"url ", "alis"})
     EXPECT_NO_THROW(
-        Mp4SampleTable::parse(movie(aacEntry(), chunkedTables(), reference)))
+        Mp4SampleTable::parse(movie(aacEntry(), chunkedTables(), {reference})))
         << reference;
-  for (const auto &bad : {movie(aacEntry(), chunkedTables(), "url ", 0),
-                          movie(aacEntry(), chunkedTables(), "alis", 0),
-                          movie(aacEntry(), chunkedTables(), "urn ")})
+  for (const auto &bad : {movie(aacEntry(), chunkedTables(), {"url ", 0}),
+                          movie(aacEntry(), chunkedTables(), {"alis", 0}),
+                          movie(aacEntry(), chunkedTables(), {"urn "})})
     EXPECT_THROW(Mp4SampleTable::parse(bad), std::runtime_error);
 }
 
@@ -239,4 +277,41 @@ TEST(FragmentedMp4, ListsFragmentsFromSidxAndReadsTheirTimes) {
     time += reference.duration;
   }
   EXPECT_EQ(time, 55u * 1024 - 171);
+}
+
+TEST(Mp4AudioTrack, ReadsTheEditAfterAnyEmptyOne) {
+  const Extras extras{.trak = editList({edit(500, -1), edit(1000, 2112)}),
+                      .moov = mvhd()};
+  const auto track =
+      Mp4SampleTable::parse(movie(aacEntry(), chunkedTables(), extras)).track;
+  EXPECT_EQ(track.editStart, 2112u);
+  EXPECT_EQ(track.editLength, 44100u);
+}
+
+TEST(Mp4AudioTrack, IgnoresEditsItCannotFollow) {
+  for (const auto &edits : {editList({edit(1000, 2112, 0x00020000)}),
+                            editList({edit(500, 0), edit(500, 2112)}),
+                            editList({edit(1000, -5)})}) {
+    const Extras extras{.trak = edits, .moov = mvhd()};
+    const auto track =
+        Mp4SampleTable::parse(movie(aacEntry(), chunkedTables(), extras)).track;
+    EXPECT_EQ(track.editStart, 0u);
+    EXPECT_EQ(track.editLength, 0u);
+  }
+}
+
+TEST(Mp4AudioTrack, FallsBackToTheITunesGaplessTag) {
+  const auto tag = gaplessTag(" 00000000 00000840 000001CA 0000000000046E00");
+  const auto tagged =
+      Mp4SampleTable::parse(movie(aacEntry(), chunkedTables(), {.moov = tag}))
+          .track;
+  EXPECT_EQ(tagged.editStart, 2112u);
+  EXPECT_EQ(tagged.editLength, 290304u);
+  // An edit list, even one this player cannot follow, outranks the tag.
+  const Extras both{.trak = editList({edit(1000, 0, 0x00020000)}),
+                    .moov = join({mvhd(), tag})};
+  const auto listed =
+      Mp4SampleTable::parse(movie(aacEntry(), chunkedTables(), both)).track;
+  EXPECT_EQ(listed.editStart, 0u);
+  EXPECT_EQ(listed.editLength, 0u);
 }

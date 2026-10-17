@@ -35,6 +35,22 @@ void waitStreaming(AudioGraphOutputNode &node) {
   ASSERT_EQ(node.getState().state, AudioGraphNodeState::STREAMING);
 }
 
+/// tones.m4a with its edit to start at media time `start` and last
+/// `lengthMs` movie milliseconds.
+Bytes withEdit(uint32_t start, uint32_t lengthMs) {
+  auto file = aacFixture("tones.m4a");
+  const std::string_view type = "elst";
+  const auto elst =
+      std::search(file.begin(), file.end(), type.begin(), type.end());
+  const auto put = [&](size_t at, uint32_t value) {
+    for (int i = 0; i < 4; ++i)
+      elst[at + i] = uint8_t(value >> (24 - 8 * i));
+  };
+  put(12, lengthMs);
+  put(16, start);
+  return file;
+}
+
 const Bytes &reference() {
   static const auto pcm = decodeFile("tones.m4a");
   return pcm;
@@ -115,6 +131,27 @@ TEST(Mp4StreamDecoder, ReadsThroughShortGapsRatherThanSeekingOverThem) {
   EXPECT_EQ(drain(decoder), reference());
   // The probe, then back from the index to the audio it follows.
   EXPECT_EQ(input->seeks, 2u);
+}
+
+TEST(Mp4StreamDecoder, PlaysWhatTheEditListSelects) {
+  // Apple's encoders prime with 2112 frames, 1088 more than the decoder
+  // drops; the length then overruns the timeline, which bounds it.
+  Mp4StreamDecoder apple(1, BUFFER_SIZE);
+  apple.connectTo(std::make_shared<BytesInput>(withEdit(2112, 1250)));
+  waitStreaming(apple);
+  EXPECT_EQ(apple.getState().streamInfo->streamSize, TONES_FRAMES - 1088);
+  EXPECT_EQ(drain(apple),
+            Bytes(reference().begin() + 1088 * 4, reference().end()));
+
+  Mp4StreamDecoder shorter(1, BUFFER_SIZE);
+  shorter.connectTo(std::make_shared<BytesInput>(withEdit(1024, 1000)));
+  waitStreaming(shorter);
+  EXPECT_EQ(shorter.getState().streamInfo->streamSize, 44100u);
+  ASSERT_EQ(shorter.seekTo(30000), 30000u);
+  EXPECT_LE(
+      maxDifference(drain(shorter), Bytes(reference().begin() + 30000 * 4,
+                                          reference().begin() + 44100 * 4)),
+      64);
 }
 
 TEST(Mp4StreamDecoder, PlaysFlacInMp4BitExact) {

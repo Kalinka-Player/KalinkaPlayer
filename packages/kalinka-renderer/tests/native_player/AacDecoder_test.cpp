@@ -166,9 +166,33 @@ TEST(TrackDecoder, KeepsFramesFromTheTargetOn) {
 
 TEST(TrackDecoder, ADelayedCodecPrimesOnTheFirstUnit) {
   TrackDecoder track(std::make_unique<FakeCodec>(10));
-  track.restart(15);
+  // Play begins after the delay: frame 5 of it is timeline frame 15, whose
+  // decoding starts a delay earlier.
+  EXPECT_EQ(track.restart(5), 5u);
   EXPECT_TRUE(track.decode(Bytes{0, 10}, 0, 10).empty());
   EXPECT_EQ(firsts(track.decode(Bytes{10, 10}, 10, 10)).front(), 15);
+}
+
+TEST(TrackDecoder, PlaysWhatTheEditSelects) {
+  TrackDecoder track(std::make_unique<FakeCodec>(10), 23, 12);
+  EXPECT_EQ(track.setEnd(100), 12u);
+  EXPECT_EQ(track.restart(0), 13u);
+  Bytes played;
+  for (uint8_t first = 10; first < 50; first += 10) {
+    const auto pcm = firsts(track.decode(Bytes{first, 10}, first, 10));
+    played.insert(played.end(), pcm.begin(), pcm.end());
+  }
+  EXPECT_EQ(played, (Bytes{23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34}));
+}
+
+TEST(TrackDecoder, AnEditCannotStartInsideTheDelayNorEndPastTheTimeline) {
+  TrackDecoder early(std::make_unique<FakeCodec>(10), 4, 1000);
+  EXPECT_EQ(early.setEnd(60), 50u);
+  TrackDecoder open(std::make_unique<FakeCodec>(10), 30);
+  EXPECT_EQ(open.setEnd(0), 0u);
+  open.restart(0);
+  EXPECT_TRUE(open.decode(Bytes{20, 10}, 20, 10).empty());
+  EXPECT_EQ(firsts(open.decode(Bytes{30, 10}, 30, 10)).back(), 39);
 }
 
 TEST(TrackDecoder, AShortUnitTrimsItsPaddingAndALongOneFails) {
