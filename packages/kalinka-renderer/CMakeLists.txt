@@ -97,6 +97,7 @@ add_library(kalinka_native_player STATIC
   src/native_player/AudioSampleFormat.cpp
   src/native_player/AudioStreamSwitcher.cpp
   src/native_player/Buffer.cpp
+  src/native_player/BufferedStreamDecoder.cpp
   src/native_player/Config.cpp
   src/native_player/ContainerStreamDecoder.cpp
   src/native_player/DsdContainer.cpp
@@ -211,6 +212,7 @@ if(GTest_FOUND)
     tests/native_player/AudioSampleFormat_test.cpp
     tests/native_player/AudioStreamSwitcher_test.cpp
     tests/native_player/Buffer_test.cpp
+    tests/native_player/BufferedStreamDecoder_test.cpp
     tests/native_player/ContainerStreamDecoder_test.cpp
     tests/native_player/DsdContainer_test.cpp
     tests/native_player/FileInputNode_test.cpp
