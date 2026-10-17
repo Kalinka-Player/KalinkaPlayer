@@ -21,6 +21,9 @@ public:
   /// Output frames the decoder holds back after construction or reset():
   /// the first access unit then only primes it and yields nothing.
   virtual uint64_t delay() const = 0;
+  /// Whether a unit may decode to more than it lasts: encoder padding the
+  /// container trims. A codec without it must fill each unit exactly.
+  virtual bool padded() const = 0;
   /// Forgets every unit decoded so far, as a seek needs.
   virtual void reset() = 0;
   /// @return The unit's frames; valid until the next call, empty while

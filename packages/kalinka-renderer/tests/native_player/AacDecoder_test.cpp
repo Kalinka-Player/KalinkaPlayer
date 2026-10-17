@@ -29,9 +29,11 @@ const Bytes LC_STEREO_44100{0x12, 0x10};
 /// Frames counting up from each unit's first frame, `delay` held back.
 class FakeCodec final : public SampleDecoder {
 public:
-  explicit FakeCodec(uint64_t delay) : held(delay) {}
+  explicit FakeCodec(uint64_t delay, bool padding = true)
+      : held(delay), padding(padding) {}
   StreamAudioFormat format() const override { return {1000, 1, 16, PCM16_LE}; }
   uint64_t delay() const override { return held; }
+  bool padded() const override { return padding; }
   void reset() override { priming = held > 0; }
   std::span<const uint8_t> decode(std::span<const uint8_t> unit) override {
     if (std::exchange(priming, false))
@@ -46,6 +48,7 @@ public:
 
 private:
   const uint64_t held;
+  const bool padding;
   bool priming = false;
   Bytes pcm;
 };
@@ -173,6 +176,13 @@ TEST(TrackDecoder, AShortUnitTrimsItsPaddingAndALongOneFails) {
   track.restart(0);
   EXPECT_EQ(firsts(track.decode(Bytes{0, 10}, 0, 4)), (Bytes{0, 1, 2, 3}));
   EXPECT_THROW(track.decode(Bytes{4, 10}, 4, 11), std::runtime_error);
+}
+
+TEST(TrackDecoder, AnUnpaddedCodecMustFillEachUnitExactly) {
+  TrackDecoder track(std::make_unique<FakeCodec>(0, false));
+  track.restart(0);
+  EXPECT_EQ(firsts(track.decode(Bytes{0, 4}, 0, 4)), (Bytes{0, 1, 2, 3}));
+  EXPECT_THROW(track.decode(Bytes{4, 10}, 4, 4), std::runtime_error);
 }
 
 TEST(TrackDecoder, AGapInTheTimelineFails) {
