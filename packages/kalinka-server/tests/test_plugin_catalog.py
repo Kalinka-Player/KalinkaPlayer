@@ -262,6 +262,15 @@ def test_malformed_or_self_attested_metadata_rejected(document, change):
         b"[" * 2000 + b"]" * 2000,
         b" " * (MAX_CATALOG_BYTES + 1),
     ],
+    ids=[
+        "duplicate key",
+        "array",
+        "null",
+        "NaN",
+        "not UTF-8",
+        "nested too deep",
+        "too large",
+    ],
 )
 def test_invalid_json_and_size_limits(body):
     with pytest.raises(CatalogError):
