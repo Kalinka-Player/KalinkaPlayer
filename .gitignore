@@ -124,6 +124,7 @@ tmp/
 # Renderer package build artifacts
 build-release/
 build-rpm/
+build-fuzz/
 redhat-linux-build/
 .flatpak-builder/
 *.rpm

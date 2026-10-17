@@ -178,6 +178,32 @@ target_link_libraries(kalinka-renderer PRIVATE
 include(GNUInstallDirs)
 install(TARGETS kalinka-renderer RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
+# --- fuzzers (optional: Clang's libFuzzer, for parsers fed from the network) -
+option(KALINKA_BUILD_FUZZERS "Build libFuzzer targets with ASan and UBSan" OFF)
+if(KALINKA_BUILD_FUZZERS)
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "KALINKA_BUILD_FUZZERS needs Clang for libFuzzer")
+  endif()
+  foreach(name FragmentedFlacInit FragmentedFlacSegments)
+    add_executable(${name}_fuzz
+      tests/fuzz/${name}_fuzz.cpp
+      src/native_player/FragmentedFlac.cpp
+    )
+    target_include_directories(${name}_fuzz PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/native_player
+    )
+    target_compile_definitions(${name}_fuzz PRIVATE
+      KALINKA_DASH_INIT_SEGMENT="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/dash/16/init-stream0.m4s"
+    )
+    target_compile_options(${name}_fuzz PRIVATE
+      -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined
+    )
+    target_link_options(${name}_fuzz PRIVATE
+      -fsanitize=fuzzer,address,undefined
+    )
+  endforeach()
+endif()
+
 # --- unit tests (optional: built only when GoogleTest is installed) ----------
 find_package(GTest CONFIG)
 if(GTest_FOUND)
