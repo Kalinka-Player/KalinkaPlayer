@@ -1,10 +1,9 @@
 #pragma once
 
-#include "BufferedStreamDecoder.h"
+#include "SourceStreamDecoder.h"
 #include "FragmentedMp4.h"
 #include "TrackDecoder.h"
 
-#include <atomic>
 #include <memory>
 #include <optional>
 #include <span>
@@ -22,15 +21,12 @@
  * malformed or unsupported file, or a failed source, ends the stream in the
  * ERROR state.
  */
-class Mp4StreamDecoder final : public BufferedStreamDecoder,
-                               public AudioGraphInputNode {
+class Mp4StreamDecoder final : public SourceStreamDecoder {
 public:
   /// @param bufferSize Output buffer in bytes; it must hold a frame.
   Mp4StreamDecoder(std::optional<StreamId> id, size_t bufferSize,
                    size_t startOffsetMs = 0);
   ~Mp4StreamDecoder() override;
-  void connectTo(std::shared_ptr<AudioGraphOutputNode> source) override;
-  void disconnect(std::shared_ptr<AudioGraphOutputNode> source) override;
 
 private:
   class Layout;
@@ -48,13 +44,10 @@ private:
     uint64_t first = 0, frames = 0;
   };
 
-  std::shared_ptr<AudioGraphOutputNode> input;
   std::unique_ptr<TrackDecoder> track;
   std::unique_ptr<Layout> layout;
-  /// Whether playback can seek; the source must, and the length be known.
-  std::atomic<bool> seekable{false};
   bool sourceSeeks = false;
-  uint64_t position = 0, sourceSize = 0;
+  uint64_t sourceSize = 0;
   /// A box header read ahead of where the source now stands.
   std::optional<BoxHeader> lookahead;
 
@@ -62,10 +55,8 @@ private:
   StreamInfo open() override;
   bool decodeNext() override;
   void seekSource(uint64_t frame) override;
-  bool canSeek() const override { return seekable; }
   void close() override;
 
-  void readExact(void *dest, size_t bytes);
   std::vector<uint8_t> readPayload(const BoxHeader &box, uint64_t limit);
   /// The header of the box at the current position; nothing at the end.
   std::optional<BoxHeader> nextBox();

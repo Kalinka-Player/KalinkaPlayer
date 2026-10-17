@@ -55,11 +55,10 @@ protected:
   }
   /// Appends whole frames, waiting for room; throws Interrupted.
   void write(std::span<const uint8_t> frames);
-  /// Reads up to `bytes` from `source`, waiting as needed; fewer only where
-  /// the source ends. Throws Interrupted, or SourceFailed when it fails.
-  size_t readSource(AudioGraphOutputNode &source, void *dest, size_t bytes);
   /// The stream open() described; valid on the worker once open() returns.
   const StreamInfo &streamInfo() const { return info; }
+  /// Prefixes the messages of the errors raised here.
+  virtual std::string name() const = 0;
 
 private:
   Buffer<uint8_t> buffer;
@@ -72,8 +71,6 @@ private:
   std::stop_token workerToken;
   std::jthread worker;
 
-  /// Prefixes the messages of the errors raised here.
-  virtual std::string name() const = 0;
   /// Reads the source up to its first frame; returns the stream it holds.
   virtual StreamInfo open() = 0;
   /// Appends the next block through write(); false once the source is done.

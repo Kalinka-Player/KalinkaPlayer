@@ -19,25 +19,12 @@ struct AdtsStreamDecoder::Header {
 
 AdtsStreamDecoder::AdtsStreamDecoder(std::optional<StreamId> id,
                                      size_t bufferSize, size_t startOffsetMs)
-    : AudioGraphNode(id), BufferedStreamDecoder(bufferSize, startOffsetMs) {}
+    : AudioGraphNode(id), SourceStreamDecoder(bufferSize, startOffsetMs) {}
 
 AdtsStreamDecoder::~AdtsStreamDecoder() { stop(); }
 
-void AdtsStreamDecoder::connectTo(
-    std::shared_ptr<AudioGraphOutputNode> source) {
-  if (!source || input)
-    throw std::invalid_argument("Invalid ADTS input connection");
-  input = std::move(source);
-  seekable = false;
-  start();
-}
-
-void AdtsStreamDecoder::disconnect(
-    std::shared_ptr<AudioGraphOutputNode> source) {
-  if (source != input)
-    return;
-  stop();
-  input.reset();
+uint64_t AdtsStreamDecoder::consumed() const {
+  return sourcePosition() - (window.size() - windowStart);
 }
 
 bool AdtsStreamDecoder::fill(size_t bytes) {
@@ -48,7 +35,7 @@ bool AdtsStreamDecoder::fill(size_t bytes) {
     }
     const auto held = window.size();
     window.resize(held + 4096);
-    const auto count = readSource(*input, window.data() + held, 4096);
+    const auto count = readSome(window.data() + held, 4096);
     window.resize(held + count);
     if (!count)
       return false;
@@ -59,15 +46,12 @@ bool AdtsStreamDecoder::fill(size_t bytes) {
 void AdtsStreamDecoder::consume(size_t bytes) {
   const auto held = std::min(bytes, window.size() - windowStart);
   windowStart += held;
-  position += held;
   bytes -= held;
   std::array<uint8_t, 4096> scratch;
   while (bytes) {
-    const auto count =
-        readSource(*input, scratch.data(), std::min(bytes, scratch.size()));
+    const auto count = readSome(scratch.data(), std::min(bytes, scratch.size()));
     if (!count)
       return;
-    position += count;
     bytes -= count;
   }
 }
@@ -127,19 +111,18 @@ bool AdtsStreamDecoder::sync(bool confirm) {
 StreamInfo AdtsStreamDecoder::open() {
   window.clear();
   windowStart = 0;
-  position = discard = 0;
+  discard = 0;
   fixed.reset();
   skipTags();
   if (!sync(true))
     throw std::runtime_error("No ADTS audio found");
   // An HTTP source knows its length once its first bytes have arrived.
-  const auto source = input->getState().streamInfo;
-  sourceSize = source ? source->streamSize : 0;
+  sourceSize = sourceLength();
   const auto first = *header(0);
   if (!first.channels)
     throw std::runtime_error("Unsupported AAC configuration");
   fixed = first.fixed;
-  dataStart = position;
+  dataStart = consumed();
   const unsigned object = first.profile + 1;
   const std::array<uint8_t, 2> config{
       uint8_t(object << 3 | first.rateIndex >> 1),
@@ -161,14 +144,14 @@ StreamInfo AdtsStreamDecoder::open() {
   }
   // Probe past the start: an HTTP source restarts at 0 even without ranges.
   const auto probe = dataStart ? dataStart : first.length;
-  sourceSeeks = input->seekTo(probe) == probe &&
-                (probe == dataStart || input->seekTo(dataStart) == dataStart);
-  if (sourceSeeks) {
+  const auto seeks = reposition(probe);
+  if (seeks) {
+    if (probe != dataStart && !reposition(dataStart))
+      throw std::runtime_error("ADTS stream seek failed");
     window.clear();
     windowStart = 0;
-    position = dataStart;
   }
-  seekable = sourceSeeks && length > delay;
+  setSeekable(seeks && length > delay);
   return {decoder->format(), StreamType::FRAMES,
           static_cast<unsigned long>(length > delay ? length - delay : 0)};
 }
@@ -199,11 +182,10 @@ void AdtsStreamDecoder::seekSource(uint64_t frame) {
   const auto unit = frame / delay;
   // The last byte at most: a seek to the end of an HTTP source can fail.
   const auto offset = std::min(sourceSize - 1, dataStart + unit * unitBytes);
-  if (input->seekTo(offset) != offset)
+  if (!reposition(offset))
     throw std::runtime_error("ADTS stream seek failed");
   window.clear();
   windowStart = 0;
-  position = offset;
   decoder->reset();
   discard = frame - unit * delay;
 }

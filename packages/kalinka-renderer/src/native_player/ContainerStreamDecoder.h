@@ -1,6 +1,6 @@
 #pragma once
 
-#include "BufferedStreamDecoder.h"
+#include "SourceStreamDecoder.h"
 #include "ContainerFormat.h"
 
 #include <memory>
@@ -16,8 +16,7 @@
  * throws ends the stream in the ERROR state, carrying the source's error or
  * the format's message.
  */
-class ContainerStreamDecoder final : public BufferedStreamDecoder,
-                                     public AudioGraphInputNode,
+class ContainerStreamDecoder final : public SourceStreamDecoder,
                                      private ByteReader {
 public:
   /// @param bufferSize Output buffer in bytes; it must hold a frame.
@@ -25,20 +24,18 @@ public:
                          std::unique_ptr<ContainerFormat> format,
                          size_t bufferSize, size_t startOffsetMs = 0);
   ~ContainerStreamDecoder() override;
-  void connectTo(std::shared_ptr<AudioGraphOutputNode> source) override;
-  void disconnect(std::shared_ptr<AudioGraphOutputNode> source) override;
 
 private:
   const std::unique_ptr<ContainerFormat> format;
-  std::shared_ptr<AudioGraphOutputNode> input;
-  std::atomic<bool> seekable{false};
-  uint64_t sourcePosition = 0, dataOffset = 0;
+  uint64_t dataOffset = 0;
 
-  void readExact(void *dest, size_t bytes) override;
-  uint64_t position() const override { return sourcePosition; }
+  void readExact(void *dest, size_t bytes) override {
+    SourceStreamDecoder::readExact(dest, bytes);
+  }
+  uint64_t position() const override { return sourcePosition(); }
   std::string name() const override { return format->name(); }
+  void forget() override { dataOffset = 0; }
   StreamInfo open() override;
   bool decodeNext() override;
   void seekSource(uint64_t frame) override;
-  bool canSeek() const override { return seekable; }
 };

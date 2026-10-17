@@ -123,6 +123,7 @@ add_library(kalinka_native_player STATIC
   src/native_player/Mp3StreamDecoder.cpp
   src/native_player/PerfMon.cpp
   src/native_player/SampleDecoder.cpp
+  src/native_player/SourceStreamDecoder.cpp
   src/native_player/StateMonitor.cpp
   src/native_player/StreamState.cpp
   src/native_player/TrackDecoder.cpp

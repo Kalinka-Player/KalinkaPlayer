@@ -98,30 +98,6 @@ void BufferedStreamDecoder::write(std::span<const uint8_t> frames) {
   }
 }
 
-size_t BufferedStreamDecoder::readSource(AudioGraphOutputNode &source,
-                                         void *dest, size_t bytes) {
-  auto combined = interruption();
-  auto *p = static_cast<uint8_t *>(dest);
-  size_t done = 0;
-  while (done < bytes) {
-    const auto available = source.waitForData(
-        combined.get_token(), std::min(bytes - done, size_t(4096)));
-    if (combined.get_token().stop_requested())
-      throw Interrupted{};
-    const auto state = source.getState();
-    if (state.state == AudioGraphNodeState::ERROR)
-      throw SourceFailed{state.error.value_or(
-          StreamError{StreamErrorSource::DECODER, name() + " input failed"})};
-    const auto count =
-        available ? source.read(p + done, std::min(bytes - done, available))
-                  : 0;
-    if (!count)
-      break;
-    done += count;
-  }
-  return done;
-}
-
 void BufferedStreamDecoder::prepare() {
   info = open();
   frameBytes = info.format.channels * sampleSize(info.format.sampleFormat);

@@ -216,32 +216,9 @@ std::vector<uint8_t> Mp4StreamDecoder::BoxHeader::bytes() const {
 
 Mp4StreamDecoder::Mp4StreamDecoder(std::optional<StreamId> id,
                                    size_t bufferSize, size_t startOffsetMs)
-    : AudioGraphNode(id), BufferedStreamDecoder(bufferSize, startOffsetMs) {}
+    : AudioGraphNode(id), SourceStreamDecoder(bufferSize, startOffsetMs) {}
 
 Mp4StreamDecoder::~Mp4StreamDecoder() { stop(); }
-
-void Mp4StreamDecoder::connectTo(std::shared_ptr<AudioGraphOutputNode> source) {
-  if (!source || input)
-    throw std::invalid_argument("Invalid MP4 input connection");
-  input = std::move(source);
-  seekable = false;
-  start();
-}
-
-void Mp4StreamDecoder::disconnect(
-    std::shared_ptr<AudioGraphOutputNode> source) {
-  if (source != input)
-    return;
-  stop();
-  input.reset();
-}
-
-void Mp4StreamDecoder::readExact(void *dest, size_t bytes) {
-  const auto count = readSource(*input, dest, bytes);
-  position += count;
-  if (count < bytes)
-    truncated();
-}
 
 std::vector<uint8_t> Mp4StreamDecoder::readPayload(const BoxHeader &box,
                                                    uint64_t limit) {
@@ -255,17 +232,16 @@ std::vector<uint8_t> Mp4StreamDecoder::readPayload(const BoxHeader &box,
 std::optional<Mp4StreamDecoder::BoxHeader> Mp4StreamDecoder::nextBox() {
   if (lookahead)
     return std::exchange(lookahead, std::nullopt);
-  if (sourceSize && position >= sourceSize)
+  if (sourceSize && sourcePosition() >= sourceSize)
     return std::nullopt;
   std::array<uint8_t, 16> header;
-  const auto count = readSource(*input, header.data(), 8);
-  position += count;
+  const auto count = readSome(header.data(), 8);
   if (!count)
     return std::nullopt;
   if (count < 8)
     truncated();
   BoxHeader box{std::string(reinterpret_cast<const char *>(&header[4]), 4),
-                position - 8, mp4::integer(header, 0, 4), 8};
+                sourcePosition() - 8, mp4::integer(header, 0, 4), 8};
   if (box.size == 1) {
     readExact(&header[8], 8);
     box.size = mp4::integer(header, 8, 8);
@@ -283,25 +259,25 @@ std::optional<Mp4StreamDecoder::BoxHeader> Mp4StreamDecoder::nextBox() {
 
 void Mp4StreamDecoder::moveTo(uint64_t offset) {
   if (lookahead && offset == lookahead->offset &&
-      position == offset + lookahead->header)
+      sourcePosition() == offset + lookahead->header)
     return;
   lookahead.reset();
+  const auto position = sourcePosition();
   if (offset == position)
     return;
   // A seek drops what an HTTP source has buffered: read through short gaps.
   if (sourceSeeks &&
       (offset < position || offset - position > maxReadThroughBytes)) {
-    if (input->seekTo(offset) != offset)
+    if (!reposition(offset))
       throw std::runtime_error("MP4 stream seek failed");
-    position = offset;
     return;
   }
   if (offset < position)
     throw std::runtime_error("This MP4 file needs a seekable source");
   std::array<uint8_t, 4096> scratch;
-  while (position < offset)
+  while (sourcePosition() < offset)
     readExact(scratch.data(),
-              std::min<uint64_t>(offset - position, scratch.size()));
+              std::min<uint64_t>(offset - sourcePosition(), scratch.size()));
 }
 
 std::vector<FragmentedMp4::Reference>
@@ -339,19 +315,18 @@ Mp4StreamDecoder::randomAccess(const FragmentedMp4 &init) {
 }
 
 StreamInfo Mp4StreamDecoder::open() {
-  position = sourceSize = 0;
+  sourceSize = 0;
   lookahead.reset();
   std::vector<uint8_t> moov, sidx;
   uint64_t sidxEnd = 0;
   std::optional<uint64_t> media;
   auto box = nextBox();
   // An HTTP source knows its length once its first bytes have arrived.
-  const auto source = input->getState().streamInfo;
-  sourceSize = source ? source->streamSize : 0;
+  sourceSize = sourceLength();
   if (box && sourceSize && box->size > sourceSize)
     mp4::invalid();
   // Probe past the start: an HTTP source restarts at 0 even without ranges.
-  sourceSeeks = box && input->seekTo(position) == position;
+  sourceSeeks = box && reposition(sourcePosition());
   for (; box; box = nextBox()) {
     if (box->type == "moov" && moov.empty()) {
       moov = box->bytes();
@@ -396,7 +371,7 @@ StreamInfo Mp4StreamDecoder::open() {
       listed = randomAccess(init);
     layout = std::make_unique<Fragmented>(std::move(init),
                                           track->format().sampleRate,
-                                          media.value_or(position), listed);
+                                          media.value_or(sourcePosition()), listed);
   } else {
     auto table = Mp4SampleTable::parse(moov);
     track = std::make_unique<TrackDecoder>(sampleDecoder(table.track));
@@ -405,7 +380,7 @@ StreamInfo Mp4StreamDecoder::open() {
   }
   const auto length = layout->length();
   const auto delay = track->delay();
-  seekable = sourceSeeks && length > delay;
+  setSeekable(sourceSeeks && length > delay);
   track->restart(delay);
   return {track->format(), StreamType::FRAMES,
           static_cast<unsigned long>(length > delay ? length - delay : 0)};
