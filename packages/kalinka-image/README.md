@@ -91,7 +91,10 @@ DietPi does its own first boot, so the build leaves identity, growth, Wi-Fi and 
 - the host name `kalinka`;
 - no automated first run, since that would log root in on the console;
 - the survey off;
-- logs kept on disk, because the log export reads the journal, which DietPi otherwise keeps in RAM.
+- logs kept on disk, because the log export reads the journal, which DietPi otherwise keeps in RAM;
+- DHCP on the network cable, and DietPi's lines for a fixed address (`AUTO_SETUP_NET_USESTATIC`, `AUTO_SETUP_NET_STATIC_IP`, `_GATEWAY` and `_DNS`) exactly as the [install guide](../../docs/installation.md#a-network-without-dhcp) quotes them for a network without DHCP.
+
+Before it changes anything, the build checks that DietPi's own `dietpi.txt` still has every key it sets, and fails if one is missing. Setting a key the file lacks adds it, so a key DietPi renamed would otherwise be written under a name its first boot no longer reads. It also fails if DietPi's own `AUTO_SETUP_NET_STATIC_IP` has no prefix, as the guide's `/24` would then be wrong.
 
 The copy on the root filesystem is dated 1970, as DietPi ships it, so the first boot always imports the one people edit on the card.
 
@@ -117,7 +120,7 @@ The build switches the HAT's I2C bus on (`dtparam=i2c_arm=on`) and loads `i2c-de
 - **`test_build_lib.sh`** checks the published file names, that the image's own `resolv.conf` — file, symlink or none — comes back exactly as it was, that an overlay leaves the image's own directory modes alone, and that unit links are read as links rather than resolved on the build host.
 - **`test_dietpi_conf.sh`** checks reading and writing `dietpi.txt` the way DietPi does, and every change the build makes to DietPi's files, on a copy shaped like the real ones.
 - **`test_display_image.sh`** checks the display image's edits on a `config.txt` shaped like DietPi's: the KMS line switched on once, the GPU split gone, the setting written and kept private, existing settings kept, nothing done for a headless target, and that each `-display` target builds on the same DietPi image as its headless one.
-- **`test_dietpi_image.sh`** grows a partition table without losing the disk id, refuses anything but a two-partition MBR image, accepts a signature only from the pinned key — not from a second key in the same keyring — and holds exactly the installed kernel packages, by name and version.
+- **`test_dietpi_image.sh`** grows a partition table without losing the disk id, refuses anything but a two-partition MBR image, refuses a `dietpi.txt` that has lost one of the network keys the build sets, or has it only commented out or renamed, or gives the address a netmask line instead of a prefix, accepts a signature only from the pinned key — not from a second key in the same keyring — and holds exactly the installed kernel packages, by name and version.
 - **`test_growroot.sh`** runs the grow step against faked SD, SATA and NVMe device names, and against media the image already fills.
 - **`test_systemctl_shim.sh`** pins down which verbs reach the real `systemctl` and which are swallowed.
 - **`test_firstboot.sh`** runs the Debian image's first boot for real — a real `useradd`, a real `ssh-keygen` — and checks the account, the key, the Wi-Fi profile and its permissions, that two machines get different host keys, that a file saved on Windows or holding a setting that fails is still applied as far as it can be, and that the configuration file does not survive being read.

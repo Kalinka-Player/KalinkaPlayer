@@ -28,7 +28,7 @@ fi
 DIETPI_ALSA_ID=5
 DIETPI_RAMLOG_ID=103
 
-# Read back from the image, so a key DietPi renames fails the build, not ships its password.
+# Required in DietPi's dietpi.txt and read back, so a key DietPi renames fails the build, not ships its password.
 declare -A DIETPI_SETTINGS=(
   [AUTO_SETUP_NET_HOSTNAME]=kalinka
   [AUTO_SETUP_GLOBAL_PASSWORD]=""
@@ -37,6 +37,11 @@ declare -A DIETPI_SETTINGS=(
   [AUTO_SETUP_LOGGING_INDEX]=0
   # Bluetooth uses the Pi's UART; a serial login must not claim it at boot.
   [CONFIG_SERIAL_CONSOLE_ENABLE]=0
+  # DHCP, with the lines docs/installation.md has people change for a LAN without it.
+  [AUTO_SETUP_NET_USESTATIC]=0
+  [AUTO_SETUP_NET_STATIC_IP]=192.168.0.100/24
+  [AUTO_SETUP_NET_STATIC_GATEWAY]=192.168.0.1
+  [AUTO_SETUP_NET_STATIC_DNS]="9.9.9.9 149.112.112.112"
 )
 
 BASE_HOST_TOOLS=(python3 curl gpg gpgv e2fsck resize2fs fatlabel)
@@ -129,6 +134,18 @@ print(parts[1]["start"], parts[2]["start"], parts[2]["size"])
   printf ',%s\n' "$root_size" | sfdisk --quiet --no-reread --no-tell-kernel -N 2 "$image"
 }
 
+# dietpi_conf_set adds a key the file lacks, so only this notices one DietPi renamed.
+require_dietpi_keys() {
+  local conf="$1" key
+  for key in "${!DIETPI_SETTINGS[@]}"; do
+    KEY="$key=" awk '{ sub(/^[ \t]*/, "") } index($0, ENVIRON["KEY"]) == 1 { found = 1; exit } END { exit !found }' "$conf" \
+      || die "DietPi's dietpi.txt no longer has $key"
+  done
+  # The guide has people write the address with its prefix; DietPi's own default must too, not a netmask line.
+  [[ "$(dietpi_conf_get "$conf" AUTO_SETUP_NET_STATIC_IP)" == */* ]] \
+    || die "DietPi's AUTO_SETUP_NET_STATIC_IP has no prefix, unlike the address the guide has people write"
+}
+
 base_create_image() {
   fetch_dietpi_image
   log "Unpacking and growing $DIETPI_IMAGE to $IMAGE_SIZE"
@@ -162,6 +179,7 @@ base_create_image() {
   fi
   grep -q "^UUID=$(blkid -s UUID -o value "$ROOT_DEV") / " "$ROOTFS/etc/fstab" \
     || die "fstab does not name this root filesystem"
+  require_dietpi_keys "$ROOTFS$DIETPI_SETTINGS_MOUNT/dietpi.txt"
   # shellcheck source=/dev/null
   . "$ROOTFS/boot/dietpi/.version"
   DIETPI_VERSION="$G_DIETPI_VERSION_CORE.$G_DIETPI_VERSION_SUB.$G_DIETPI_VERSION_RC"
