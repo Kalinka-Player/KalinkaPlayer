@@ -11,8 +11,9 @@
 #include <string>
 #include <vector>
 
-#include "LocalHttpServer.h"
+#include "AacTestData.h"
 #include "DashTestData.h"
+#include "LocalHttpServer.h"
 #include "TestHelpers.h"
 #include "WavTestData.h"
 #include "config/ConfigService.h"
@@ -101,6 +102,26 @@ protected:
       ioc_.run_for(std::chrono::milliseconds(100));
     }
     return done();
+  }
+
+  /// Every state the player reports for `source` until it finishes or fails.
+  std::vector<pb::PlaybackStateChanged> playToTheEnd(const pb::Source &source) {
+    std::vector<pb::PlaybackStateChanged> states;
+    player_->setStateSink([&](pb::Envelope &env) {
+      if (env.has_playback_state_changed())
+        states.push_back(env.playback_state_changed());
+    });
+    player_->setSource(source);
+    EXPECT_TRUE(runUntil([&] {
+      return std::ranges::any_of(states, [](const auto &state) {
+        return state.state() == pb::PLAYBACK_STATE_FINISHED ||
+               state.state() == pb::PLAYBACK_STATE_ERROR;
+      });
+    }));
+    player_->setStateSink({});
+    player_->stop();
+    ioc_.poll();
+    return states;
   }
 
   LocalHttpServer server_{testFile("tone880.flac")};
@@ -269,7 +290,7 @@ TEST_F(NativePlayerSettingsTest, BufferingIsItsOwnSection) {
   const pb::ConfigSection section = buffers();
 
   EXPECT_EQ(section.path(), "buffers");
-  EXPECT_EQ(section.fields_size(), 7);
+  EXPECT_EQ(section.fields_size(), 8);
   for (const pb::ConfigField &knob : section.fields()) {
     EXPECT_TRUE(knob.path().starts_with("buffers."));
     EXPECT_FALSE(knob.value().empty()) << knob.path();
@@ -661,25 +682,12 @@ TEST_F(NativePlayerStreamTest, DashMimeAndSuffixPlayThroughTheNativeRenderer) {
            std::pair{"application/dash+xml", "/opaque-asset"},
            std::pair{"", "/manifest.mpd"}}) {
     SCOPED_TRACE(mime);
-    std::vector<pb::PlaybackStateChanged> states;
-    player_->setStateSink([&](pb::Envelope &env) {
-      if (env.has_playback_state_changed())
-        states.push_back(env.playback_state_changed());
-    });
     pb::Source source;
     source.set_uri(dash.url(path));
     source.set_mime_type(mime);
     source.set_source_token(path);
     source.set_start_offset_ms(500);
-    player_->setSource(source);
-    EXPECT_TRUE(runUntil([&] {
-      return std::ranges::any_of(states, [](const auto &state) {
-        return state.state() == pb::PLAYBACK_STATE_FINISHED ||
-               state.state() == pb::PLAYBACK_STATE_ERROR;
-      });
-    }));
-    player_->setStateSink({});
-    player_->stop();
+    const auto states = playToTheEnd(source);
     EXPECT_TRUE(std::ranges::any_of(states, [](const auto &state) {
       return state.state() == pb::PLAYBACK_STATE_PLAYING &&
              state.format().sample_rate_hz() == 96000 &&
@@ -690,7 +698,39 @@ TEST_F(NativePlayerStreamTest, DashMimeAndSuffixPlayThroughTheNativeRenderer) {
     }));
     for (const auto &state : states)
       EXPECT_NE(state.state(), pb::PLAYBACK_STATE_ERROR) << state.error().message();
-    ioc_.poll();
+  }
+}
+
+TEST_F(NativePlayerStreamTest,
+       AacMimesAndSuffixesPlayThroughTheNativeRenderer) {
+  const auto text = [](const std::vector<uint8_t> &bytes) {
+    return std::string(bytes.begin(), bytes.end());
+  };
+  LocalHttpServer aac({{"/asset", text(aacFixture("tones.m4a"))},
+                       {"/track.m4a", text(aacFixture("tones-index-last.m4a"))},
+                       {"/radio", text(aacFixture("tones.aac"))},
+                       {"/track.aac", text(aacFixture("tones.aac"))}});
+  for (const auto &[mime, path] :
+       {std::pair{"audio/mp4", "/asset"}, std::pair{"audio/x-m4a", "/asset"},
+        std::pair{"", "/track.m4a"}, std::pair{"audio/aacp", "/radio"},
+        std::pair{"", "/track.aac"}}) {
+    SCOPED_TRACE(std::string(mime) + " " + path);
+    pb::Source source;
+    source.set_uri(aac.url(path));
+    source.set_mime_type(mime);
+    source.set_source_token(path);
+    const auto states = playToTheEnd(source);
+    EXPECT_TRUE(std::ranges::any_of(states, [](const auto &state) {
+      return state.state() == pb::PLAYBACK_STATE_PLAYING &&
+             state.format().sample_rate_hz() == 44100 &&
+             state.format().bits_per_sample() == 16;
+    }));
+    EXPECT_TRUE(std::ranges::any_of(states, [](const auto &state) {
+      return state.state() == pb::PLAYBACK_STATE_FINISHED;
+    }));
+    for (const auto &state : states)
+      EXPECT_NE(state.state(), pb::PLAYBACK_STATE_ERROR)
+          << state.error().message();
   }
 }
 
@@ -701,8 +741,8 @@ TEST_F(NativePlayerStreamTest, UnsupportedSourcesFailBeforeOpeningTheStream) {
     const char *error = "Unsupported stream format";
   };
   const SourceCase cases[] = {
-      {"audio/aac", "/whole"},
-      {"audio/aac", "/track.flac"},
+      {"audio/opus", "/whole"},
+      {"audio/opus", "/track.flac"},
       {"audio/mpeg4", "/whole"},
       {"audio/not-flac", "/whole"},
       {"", "/whole"},
@@ -762,7 +802,7 @@ TEST_F(NativePlayerStreamTest, QueuedUnsupportedSourceReportsItsOwnErrorAndRecov
   player_->setSource(sourceAt("/held"));
   EXPECT_TRUE(runUntil([&] { return reached("/held", pb::PLAYBACK_STATE_PLAYING); }));
   auto unsupported = sourceAt("/whole");
-  unsupported.set_mime_type("audio/aac");
+  unsupported.set_mime_type("audio/opus");
   player_->enqueueSource(unsupported);
   ioc_.run_for(std::chrono::milliseconds(100));
   EXPECT_FALSE(reached("/whole", pb::PLAYBACK_STATE_ERROR));

@@ -63,7 +63,7 @@ cd KalinkaPlayer
 sudo apt install python3 python3-venv
 ```
    To use a specific interpreter, pass it explicitly: `make dev-setup PYTHON=/path/to/python3.13`.
-   To also build and run the renderer locally (audio playback), see `make renderer-build` — that one needs the C++ toolchain (`g++ cmake pkg-config protobuf-compiler libprotobuf-dev libboost-dev libcurlpp-dev libcurl4-openssl-dev libflac++-dev libvorbis-dev libxml2-dev libasound2-dev libspdlog-dev libfmt-dev`), and with GoogleTest installed (`libgtest-dev libgmock-dev`) it builds the renderer's tests too, which `ctest --test-dir packages/kalinka-renderer/build` runs.
+   To also build and run the renderer locally (audio playback), see `make renderer-build` — that one needs the C++ toolchain (`g++ cmake pkg-config protobuf-compiler libprotobuf-dev libboost-dev libcurlpp-dev libcurl4-openssl-dev libflac++-dev libvorbis-dev libxml2-dev libfaad-dev libasound2-dev libspdlog-dev libfmt-dev`), and with GoogleTest installed (`libgtest-dev libgmock-dev`) it builds the renderer's tests too, which `ctest --test-dir packages/kalinka-renderer/build` runs.
 2. One-step setup. Creates a virtualenv at `.venv` with `python3` (or **reuses an already-active `$VIRTUAL_ENV`** — it never makes a second venv), installs the SDK, server and all bundled plugins editable, and seeds the fakeroot directory tree. It writes no config: the server starts on its defaults and keeps only the settings you change:
 ```bash
 make dev-setup
@@ -92,16 +92,16 @@ make test
 ```
 Runs the SDK, server and plugin test suites, each from its own package directory, and the retrieval benchmark's own tests. The server's play queue suite is slow and flaky, so it runs on its own with `make test-playqueue`. The renderer has its own C++ test set under `packages/kalinka-renderer/tests` (built when GoogleTest is installed). Every pull request runs the same targets in CI.
 
-The renderer's fragmented-MP4 parser reads DASH segments straight from the network, so it also has libFuzzer targets, built with Clang under AddressSanitizer and UndefinedBehaviorSanitizer:
+The renderer's MP4 parsers read DASH segments and MP4 files straight from the network, so they also have libFuzzer targets, built with Clang under AddressSanitizer and UndefinedBehaviorSanitizer:
 
 ```bash
 cd packages/kalinka-renderer
 CC=clang CXX=clang++ cmake -S . -B build-fuzz -DKALINKA_BUILD_FUZZERS=ON
-cmake --build build-fuzz --target FragmentedFlacInit_fuzz FragmentedFlacSegments_fuzz
+cmake --build build-fuzz --target FragmentedMp4Init_fuzz FragmentedMp4Segments_fuzz Mp4Movie_fuzz
 mkdir -p build-fuzz/corpus && cp tests/data/dash/16/chunk-*.m4s build-fuzz/corpus/
-build-fuzz/FragmentedFlacSegments_fuzz -max_total_time=600 build-fuzz/corpus
+build-fuzz/FragmentedMp4Segments_fuzz -max_total_time=600 build-fuzz/corpus
 ```
-`FragmentedFlacInit_fuzz` takes the `init-stream0.m4s` fixtures as its seeds instead. A crash leaves the failing input as a `crash-*` file; passing that file to the fuzzer replays it.
+`FragmentedMp4Init_fuzz` takes the `init-stream0.m4s` fixtures as its seeds instead, and `Mp4Movie_fuzz`, which reads whole files' sample tables and fragment indexes, the `.m4a` and `.mp4` files under `tests/data/aac`. A crash leaves the failing input as a `crash-*` file; passing that file to the fuzzer replays it.
 
 Two larger checks are opt-in because they are slow and need the outside world. `make system-test` runs the full-stack indexing test (a server of its own, a Samba share in podman, real enrichment and embedding) — see [tests/system/README.md](../tests/system/README.md). `make bench-sdd` measures what semantic search actually retrieves: it indexes the 706 recordings of the Song Describer Dataset through the shipped pipeline and scores the `/ai_search` endpoint against the 1106 human captions that came with them, reporting retrieval quality and a per-stage timing breakdown — see [benchmarks/sdd/RUNBOOK.md](../benchmarks/sdd/RUNBOOK.md). That directory also holds `device_probe.py`, a single file to copy onto a Raspberry Pi (or any target) to find out what one track costs it to embed and where those seconds go; the reference measurement is [benchmarks/sdd/results_device.md](../benchmarks/sdd/results_device.md).
 

@@ -21,6 +21,8 @@ These are system libraries resolved at build time; the Debian, RPM and Flatpak p
 | Component | License |
 |---|---|
 | [FLAC / libFLAC++](https://xiph.org/flac/) | BSD-3-Clause |
+| [FAAD2](https://github.com/knik0/faad2) (AAC decoding) | GPL-2.0-or-later |
+| [libxml2](https://gitlab.gnome.org/GNOME/libxml2) (DASH manifests) | MIT |
 | [ALSA (libasound)](https://www.alsa-project.org/) | LGPL-2.1-or-later |
 | [libcurl](https://curl.se/) | curl license (MIT-style) |
 | [Protocol Buffers](https://protobuf.dev/) | BSD-3-Clause |

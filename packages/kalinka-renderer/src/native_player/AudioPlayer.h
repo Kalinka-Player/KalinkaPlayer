@@ -22,7 +22,9 @@ enum AudioFormat {
   FormatUnsupported,
   FormatDsd,
   FormatWav,
-  FormatDash
+  FormatDash,
+  FormatMp4,
+  FormatAdts
 };
 
 using StreamId = size_t;

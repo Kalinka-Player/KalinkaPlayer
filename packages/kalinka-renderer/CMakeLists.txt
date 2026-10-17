@@ -49,6 +49,12 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(FLACPP REQUIRED IMPORTED_TARGET flac++)
 pkg_check_modules(VORBISFILE REQUIRED IMPORTED_TARGET vorbisfile)
 pkg_check_modules(XML2 REQUIRED IMPORTED_TARGET libxml-2.0)
+# faad2 ships a pkg-config file only from 2.11; Debian bookworm has 2.10.
+find_path(FAAD2_INCLUDE_DIR neaacdec.h)
+find_library(FAAD2_LIBRARY faad)
+if(NOT FAAD2_INCLUDE_DIR OR NOT FAAD2_LIBRARY)
+  message(FATAL_ERROR "faad2 not found: install libfaad-dev or faad2-devel")
+endif()
 pkg_check_modules(CURLPP REQUIRED IMPORTED_TARGET curlpp)
 # Debian's curlpp.pc emits a relative "-Iinclude" (empty ${prefix}), which
 # CMake rejects on the imported target. The headers are in the default search
@@ -91,6 +97,8 @@ target_link_libraries(kalinka_renderer_proto PUBLIC protobuf::libprotobuf-lite)
 add_library(kalinka_native_player STATIC
   src/native_player/AlsaAudioEmitter.cpp
   src/native_player/AlsaDeviceEnumeration.cpp
+  src/native_player/AacDecoder.cpp
+  src/native_player/AdtsStreamDecoder.cpp
   src/native_player/AlsaVolumeControl.cpp
   src/native_player/AudioGraphHttpStream.cpp
   src/native_player/AudioGraphNode.cpp
@@ -105,16 +113,23 @@ add_library(kalinka_native_player STATIC
   src/native_player/DsdFormat.cpp
   src/native_player/DashStreamDecoder.cpp
   src/native_player/DashManifest.cpp
-  src/native_player/FragmentedFlac.cpp
+  src/native_player/FragmentedMp4.cpp
+  src/native_player/FlacFrameDecoder.cpp
   src/native_player/FlacStreamDecoder.cpp
   src/native_player/Log.cpp
+  src/native_player/Mp4.cpp
+  src/native_player/Mp4SampleTable.cpp
+  src/native_player/Mp4StreamDecoder.cpp
   src/native_player/Mp3StreamDecoder.cpp
   src/native_player/PerfMon.cpp
+  src/native_player/SampleDecoder.cpp
   src/native_player/StateMonitor.cpp
   src/native_player/StreamState.cpp
+  src/native_player/TrackDecoder.cpp
   src/native_player/VorbisStreamDecoder.cpp
   src/native_player/WavContainer.cpp
 )
+target_include_directories(kalinka_native_player PRIVATE ${FAAD2_INCLUDE_DIR})
 target_link_libraries(kalinka_native_player PUBLIC
   ALSA::ALSA
   CURL::libcurl
@@ -122,6 +137,7 @@ target_link_libraries(kalinka_native_player PUBLIC
   PkgConfig::FLACPP
   PkgConfig::VORBISFILE
   PkgConfig::XML2
+  ${FAAD2_LIBRARY}
   Boost::headers
   spdlog::spdlog
   Threads::Threads
@@ -184,10 +200,12 @@ if(KALINKA_BUILD_FUZZERS)
   if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     message(FATAL_ERROR "KALINKA_BUILD_FUZZERS needs Clang for libFuzzer")
   endif()
-  foreach(name FragmentedFlacInit FragmentedFlacSegments)
+  foreach(name FragmentedMp4Init FragmentedMp4Segments Mp4Movie)
     add_executable(${name}_fuzz
       tests/fuzz/${name}_fuzz.cpp
-      src/native_player/FragmentedFlac.cpp
+      src/native_player/FragmentedMp4.cpp
+      src/native_player/Mp4.cpp
+      src/native_player/Mp4SampleTable.cpp
     )
     target_include_directories(${name}_fuzz PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/src/native_player
@@ -235,6 +253,8 @@ if(GTest_FOUND)
     tests/test_switcher_concurrency.cpp
     tests/test_volume_monitor_lifetime.cpp
     tests/test_ws_transport.cpp
+    tests/native_player/AacDecoder_test.cpp
+    tests/native_player/AdtsStreamDecoder_test.cpp
     tests/native_player/AlsaAudioEmitter_test.cpp
     tests/native_player/AlsaDeviceEnumeration_test.cpp
     tests/native_player/AudioGraphHttpStream_test.cpp
@@ -253,6 +273,8 @@ if(GTest_FOUND)
     tests/native_player/LocalHttpServer.cpp
     tests/native_player/Log_test.cpp
     tests/native_player/Mp3StreamDecoder_test.cpp
+    tests/native_player/Mp4Format_test.cpp
+    tests/native_player/Mp4StreamDecoder_test.cpp
     tests/native_player/SineWaveNode_test.cpp
     tests/native_player/StateMonitor_test.cpp
     tests/native_player/Utils_test.cpp

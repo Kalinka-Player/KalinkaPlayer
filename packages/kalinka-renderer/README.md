@@ -3,7 +3,7 @@
 The playback end of Kalinka. A standalone C++ binary that finds Kalinka Cores
 on the network, accepts a playback session from one of them, and plays what it
 is told to play through the local sound card. Core keeps the play queue, the
-library and the UI; the audio graph — HTTP fetch, FLAC/WAV/MP3/Ogg Vorbis decode,
+library and the UI; the audio graph — HTTP fetch, FLAC/WAV/MP3/Ogg Vorbis/AAC decode,
 buffering, output and volume — lives here.
 
 Output is **ALSA only**, which covers any Linux sink ALSA can reach: a card's
@@ -26,14 +26,29 @@ RF64, big-endian RIFX, compressed WAV, 8-bit PCM and multichannel WAV are not
 supported.
 
 MPEG-DASH (`application/dash+xml` or `.mpd`) supports static, single-period
-HTTP/HTTPS manifests carrying unencrypted mono/stereo FLAC in fragmented MP4.
+HTTP/HTTPS manifests carrying unencrypted mono/stereo FLAC, or AAC (`mp4a.40.2`,
+`mp4a.40.5`, `mp4a.40.29`), in fragmented MP4.
 Manifests use `SegmentTemplate` with a continuous `SegmentTimeline` starting at zero.
-The renderer fetches segments with its existing HTTP transport, extracts FLAC
-frames from fragmented MP4, and decodes them with libFLAC, preserving the original
-sample rate and bit depth. FFmpeg is not a build or runtime dependency.
-Seeking and start offsets use the audio timestamps. PCM buffering is bounded;
-the server only supplies the manifest and does not remux or transcode audio.
-Live DASH, encrypted streams and other DASH audio codecs are not supported.
+The renderer fetches segments with its existing HTTP transport, extracts the
+frames from fragmented MP4, and decodes FLAC with libFLAC, preserving the original
+sample rate and bit depth, and AAC with faad2. FFmpeg is not a build or runtime
+dependency. Seeking and start offsets use the audio timestamps. PCM buffering is
+bounded; the server only supplies the manifest and does not remux or transcode
+audio. Live DASH, encrypted streams and other DASH audio codecs are not supported.
+
+MP4 and M4A (`audio/mp4`, `audio/m4a`, `audio/x-m4a`, `.m4a` or `.mp4`) play
+their first audio track when it is AAC or FLAC, from a local file or HTTP.
+Progressive files work wherever their index lies, though an index after the audio
+needs a seekable source; fragmented files play fragment by fragment and seek
+through a `sidx` or trailing `mfra` index, and without either play from the start
+with no known length. Raw AAC in ADTS frames (`audio/aac`, `audio/x-aac`,
+`audio/aacp` or `.aac`), as internet radio sends it, plays after any ID3v2 tag;
+its length and seeks are estimated from the average frame size. AAC-LC, HE-AAC
+and HE-AAC v2 decode with faad2 to 16-bit stereo at the stream's output rate:
+mono is upmixed and multichannel audio downmixed. An encoder's priming is
+dropped, but MP4 edit lists are not read, so gapless playback between AAC tracks
+is not exact. ALAC, xHE-AAC, and ADTS that describes its channels in a program
+config element are not supported.
 
 Integer output negotiation only accepts containers that preserve the source
 precision. True 32-bit PCM requires 32 significant output bits. Float samples
@@ -96,12 +111,12 @@ Automated packing and protocol tests do not verify recognition by a real DAC.
 ## Build
 
 Dependencies (dev headers): protobuf (+ compiler), Boost (headers only — asio
-and beast), spdlog, ALSA, FLAC++, libvorbisfile, libcurl, curlpp, libxml2. GoogleTest is
+and beast), spdlog, ALSA, FLAC++, libvorbisfile, libcurl, curlpp, libxml2, faad2. GoogleTest is
 optional and only builds the test binary. mDNS is self-contained (vendored public-domain
 `third_party/mdns`), so no avahi or Bonjour daemon is needed.
 
-- Fedora: `sudo dnf install cmake gcc-c++ protobuf-devel protobuf-compiler protobuf-lite-devel boost-devel spdlog-devel alsa-lib-devel flac-devel libvorbis-devel libcurl-devel curlpp-devel libxml2-devel gtest-devel`
-- Debian/Ubuntu: `sudo apt install cmake g++ libprotobuf-dev protobuf-compiler libboost-dev libspdlog-dev libasound2-dev libflac++-dev libvorbis-dev libcurl4-openssl-dev libcurlpp-dev libxml2-dev libgtest-dev`
+- Fedora: `sudo dnf install cmake gcc-c++ protobuf-devel protobuf-compiler protobuf-lite-devel boost-devel spdlog-devel alsa-lib-devel flac-devel libvorbis-devel libcurl-devel curlpp-devel libxml2-devel faad2-devel gtest-devel`
+- Debian/Ubuntu: `sudo apt install cmake g++ libprotobuf-dev protobuf-compiler libboost-dev libspdlog-dev libasound2-dev libflac++-dev libvorbis-dev libcurl4-openssl-dev libcurlpp-dev libxml2-dev libfaad-dev libgtest-dev`
 
 From the repo root:
 

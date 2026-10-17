@@ -44,6 +44,15 @@ AudioFormat formatOf(const pb::Source &source) {
              : mime.substr(first, mime.find_last_not_of(" \t\r\n") - first + 1);
   static const std::unordered_map<std::string_view, AudioFormat> declared = {
       {"application/dash+xml", AudioFormat::FormatDash},
+      {"audio/mp4", AudioFormat::FormatMp4},
+      {"audio/m4a", AudioFormat::FormatMp4},
+      {"audio/x-m4a", AudioFormat::FormatMp4},
+      {"mp4", AudioFormat::FormatMp4},
+      {"m4a", AudioFormat::FormatMp4},
+      {"audio/aac", AudioFormat::FormatAdts},
+      {"audio/x-aac", AudioFormat::FormatAdts},
+      {"audio/aacp", AudioFormat::FormatAdts},
+      {"aac", AudioFormat::FormatAdts},
       {"audio/dsf", AudioFormat::FormatDsd},
       {"audio/x-dsf", AudioFormat::FormatDsd},
       {"audio/dff", AudioFormat::FormatDsd},
@@ -86,6 +95,12 @@ AudioFormat formatOf(const pb::Source &source) {
   const auto path = lower(source.uri().substr(0, source.uri().find_first_of("?#")));
   if (path.ends_with(".mpd")) {
     return AudioFormat::FormatDash;
+  }
+  if (path.ends_with(".m4a") || path.ends_with(".mp4")) {
+    return AudioFormat::FormatMp4;
+  }
+  if (path.ends_with(".aac")) {
+    return AudioFormat::FormatAdts;
   }
   if (path.ends_with(".dsf") || path.ends_with(".dff"))
     return AudioFormat::FormatDsd;
@@ -179,6 +194,9 @@ const Knob kBufferKnobs[] = {
     {"buffers.dsd", "DSD buffer",
      "Audio held ahead for DSF and DSDIFF playback, in bytes.",
      pb::CONFIG_FIELD_TYPE_INT, "bytes", {64000, 33554432}},
+    {"buffers.aac", "AAC and MP4 buffer",
+     "Decoded audio held ahead for AAC and MP4 playback, in bytes.",
+     pb::CONFIG_FIELD_TYPE_INT, "bytes", {64000, 33554432}},
 };
 
 const Knob kNetworkKnobs[] = {
@@ -228,6 +246,7 @@ const std::map<std::string, std::string> &graphKeys() {
       {"buffers.vorbis", "decoder.vorbis.buffer_size"},
       {"buffers.wav", "decoder.wav.buffer_size"},
       {"buffers.dsd", "decoder.dsd.buffer_size"},
+      {"buffers.aac", "decoder.aac.buffer_size"},
       {"network.stall_timeout_s", "input.http.stall_timeout"},
       {"network.max_redirects", "input.http.max_redirects"},
   };
@@ -329,6 +348,7 @@ const std::map<std::string, std::string> &NativePlayer::defaultSettings() {
       {"buffers.vorbis", "768000"},
       {"buffers.wav", "1536000"},
       {"buffers.dsd", "1536000"},
+      {"buffers.aac", "1536000"},
       {"network.stall_timeout_s",
        std::to_string(AudioGraphHttpStream::DEFAULT_STALL_TIMEOUT.count())},
       {"network.max_redirects",

@@ -20,6 +20,11 @@ std::string attribute(const xmlNode *node, const char *name) {
       xmlGetProp(node, BAD_CAST name), xmlFree);
   return value ? std::string(reinterpret_cast<const char *>(value.get())) : "";
 }
+/// FLAC, or AAC-LC, HE-AAC and HE-AAC v2 as RFC 6381 names them.
+bool playable(const std::string &codec) {
+  return codec == "flac" || codec == "fLaC" || codec == "mp4a.40.2" ||
+         codec == "mp4a.40.5" || codec == "mp4a.40.29";
+}
 bool named(const xmlNode *node, const char *name) {
   return node->type == XML_ELEMENT_NODE &&
          xmlStrEqual(node->name, BAD_CAST name);
@@ -170,7 +175,7 @@ DashManifest DashManifest::parse(std::span<const uint8_t> bytes,
       auto codec = attribute(rep, "codecs");
       if (codec.empty())
         codec = attribute(set, "codecs");
-      if (codec != "flac" && codec != "fLaC")
+      if (!playable(codec))
         continue;
       const auto bw = attribute(rep, "bandwidth");
       const auto bitrate = bw.empty() ? 0 : number(bw);
@@ -182,7 +187,7 @@ DashManifest DashManifest::parse(std::span<const uint8_t> bytes,
     }
   }
   if (!representation)
-    throw std::runtime_error("DASH currently supports FLAC audio only");
+    throw std::runtime_error("DASH supports FLAC and AAC audio only");
   DashManifest result;
   result.baseUrl = resolve(url, url);
   result.representation = attribute(representation, "id");
@@ -252,8 +257,10 @@ DashManifest DashManifest::parse(std::span<const uint8_t> bytes,
       time += d;
     }
   }
+  // The timeline also counts an AAC encoder's priming and padding, up to a
+  // couple of HE-AAC units, which the presentation duration leaves out.
   if (result.segments.empty() ||
-      std::abs(double(time) - endTime) > result.timescale * 0.02)
+      std::abs(double(time) - endTime) > result.timescale * 0.2)
     invalid();
   result.initialization =
       expand(result.initialization, result, 0, result.segments.front().number);
