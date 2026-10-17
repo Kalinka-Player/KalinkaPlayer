@@ -152,8 +152,10 @@ class SmbStorage(FileStorage):
 
         Each connection owns a socket and the thread reading it, so a
         storage replaced when the credentials changed takes them with it
-        rather than leaving one set behind per password typed.
+        rather than leaving one set behind per password typed. The files
+        kept open for streaming go first, while their sessions still answer.
         """
+        super().close()
         smbclient.reset_connection_cache(
             connection_cache=self._connections, fail_on_error=False
         )

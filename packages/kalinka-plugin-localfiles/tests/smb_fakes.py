@@ -51,7 +51,12 @@ class FakeSmbClient:
         self.calls = []
         self.logons = []
         self.opened = []
+        #: The files still open each time the connections were reset.
+        self.resets = []
         self.session = SimpleNamespace(tree_connect_table={})
+
+    def reset_connection_cache(self, connection_cache=None, fail_on_error=True):
+        self.resets.append([raw for raw in self.opened if not raw.closed])
 
     def register_session(self, server, **kwargs):
         """What the real client pools a connection and a session under. It is

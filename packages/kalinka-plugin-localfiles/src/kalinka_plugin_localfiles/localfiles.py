@@ -66,6 +66,7 @@ from .utils.mount_status import covering_mount, is_network_fs, share_protocol
 from .storage import (
     SMB_SCHEME,
     FileStat,
+    FileStorage,
     StorageResolver,
     build_resolver,
     library_roots,
@@ -1055,6 +1056,12 @@ class LocalFilesInputModule(InputModule):
         Re-runs the access check the source retriever made, because a folder
         can leave the configuration between the two. A file outside the
         boundary is reported as absent, never as forbidden.
+
+        A track its storage keeps open for streaming skips the folder probe
+        and the measurement: a renderer asks for one range after another,
+        and the first made both. The boundary is still checked, which on a
+        share is a comparison of paths rather than a round trip. A changed
+        source replaces the storage, and what it kept open closes with it.
         """
         if not self.db_manager.is_good():
             logger.warning("Database is not initialized or corrupted")
@@ -1064,10 +1071,16 @@ class LocalFilesInputModule(InputModule):
         track_path = (track or {}).get("file_path")
         if not track_path:
             return None
-        await self._require_root_available(track_path)
-
         mime_type = media_type_of(track_path) or "application/octet-stream"
         storage = self._storage.for_path(track_path)
+        kept_size = storage.readers.size_of(track_path)
+        # The pool outlives a re-setup that narrows the folders.
+        if kept_size is not None and storage.contains(track_path, self._music_folders):
+            return self._streamed(
+                storage, track_path, kept_size, mime_type, measured=False
+            )
+
+        await self._require_root_available(track_path)
         local_path = storage.local_path(track_path)
         if local_path is not None:
             # FileResponse has no answer for a file it cannot read, so the
@@ -1099,11 +1112,27 @@ class LocalFilesInputModule(InputModule):
         except OSError as e:
             logger.warning("Refusing content for track %s: %s", asset_id, e)
             return None
+        return self._streamed(storage, track_path, measured.size, mime_type)
+
+    @staticmethod
+    def _streamed(
+        storage: FileStorage,
+        track_path: str,
+        size: int,
+        mime_type: str,
+        *,
+        measured: bool = True,
+    ) -> ContentInfo:
+        """Content the server streams out of this module, read through the
+        files its storage keeps open between ranges.
+
+        @param measured Whether ``size`` was just measured, rather than taken
+            from what the storage keeps (see :meth:`ReaderPool.lend`).
+        """
         return ContentInfo(
             mime_type=mime_type,
-            # Read-ahead fetches 1 MiB per range; the server caps reads at the range.
-            reader=lambda: storage.open(track_path, read_ahead=False),
-            size=measured.size,
+            reader=lambda: storage.readers.lend(track_path, size, measured=measured),
+            size=size,
             cacheable=True,
         )
 
