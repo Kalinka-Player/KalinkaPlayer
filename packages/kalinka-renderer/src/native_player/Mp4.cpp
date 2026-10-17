@@ -1,7 +1,25 @@
 #include "Mp4.h"
 
 #include <optional>
+#include <sstream>
 #include <stdexcept>
+#include <string>
+
+uint64_t samplesAt(uint64_t time, uint64_t timescale, unsigned rate) {
+  if (!timescale)
+    throw std::runtime_error("MP4 timing has no timescale");
+  const auto whole = time / timescale;
+  const auto remainder = time % timescale;
+  if (whole > 7 * 86400 || (remainder * rate) % timescale)
+    throw std::runtime_error("MP4 timing does not match the audio samples");
+  return whole * rate + remainder * rate / timescale;
+}
+
+uint64_t samplesNear(uint64_t time, uint64_t timescale, unsigned rate) {
+  return timescale
+             ? time / timescale * rate + time % timescale * rate / timescale
+             : 0;
+}
 
 namespace mp4 {
 void invalid() { throw std::runtime_error("Unsupported or invalid MP4 audio"); }
@@ -159,14 +177,99 @@ uint64_t duration(Bytes full, size_t narrow, size_t wide) {
   return value == unknown ? 0 : value;
 }
 
+uint64_t movieTimescale(const Box &moov) {
+  const auto mvhd = inside(moov, "mvhd").payload;
+  return integer(mvhd, integer(mvhd, 0, 1) == 1 ? 20 : 12, 4);
+}
+
+/// `time` in `from` units as `to` units, rounded; 0 where it would overflow.
+uint64_t rescale(uint64_t time, uint64_t from, uint64_t to) {
+  if (!from || time > (~uint64_t(0) - from / 2) / to)
+    return 0;
+  return (time * to + from / 2) / from;
+}
+
+std::optional<Box> child(const Box &box, std::string_view type) {
+  for (const auto &item : boxes(box.payload, box.offset + box.header))
+    if (item.type == type)
+      return item;
+  return std::nullopt;
+}
+
+struct Edit {
+  uint64_t start, length;
+};
+
+/// The one edit that plays media at normal rate, after any empty edits;
+/// nothing for an edit list this player cannot follow.
+std::optional<Edit> editList(const Box &moov, const Box &trak,
+                             uint32_t timescale) {
+  const auto edts = child(trak, "edts");
+  if (!edts)
+    return std::nullopt;
+  // Edit lengths count in the movie's timescale, not the track's.
+  const auto movieScale = movieTimescale(moov);
+  const auto elst = inside(*edts, "elst").payload;
+  const auto version = integer(elst, 0, 1);
+  const size_t width = version ? 8 : 4;
+  const auto count = integer(elst, 4, 4);
+  if (version > 1 || elst.size() != 8 + count * (2 * width + 4))
+    invalid();
+  std::optional<Edit> found;
+  for (size_t i = 0; i < count; ++i) {
+    const auto at = 8 + i * (2 * width + 4);
+    const auto length = integer(elst, at, width);
+    const auto time = integer(elst, at + width, width);
+    const auto empty = time == (version ? ~uint64_t(0) : 0xffffffffu);
+    if (empty && !found)
+      continue;
+    const auto negative = time >> (8 * width - 1);
+    if (empty || negative || found ||
+        integer(elst, at + 2 * width, 4) != 0x00010000)
+      return std::nullopt;
+    found = Edit{time, rescale(length, movieScale, timescale)};
+  }
+  return found;
+}
+
+/// The priming and length iTunes' `iTunSMPB` tag gives, for files without
+/// an edit list.
+std::optional<Edit> gaplessTag(const Box &moov) {
+  try {
+    const auto udta = child(moov, "udta");
+    const auto meta = udta ? child(*udta, "meta") : std::nullopt;
+    if (!meta)
+      return std::nullopt;
+    // iTunes' `meta` is a full box: its children follow version and flags.
+    const auto items = boxes(meta->payload.subspan(4));
+    const auto ilst = one(items, "ilst");
+    for (const auto &item : boxes(ilst.payload)) {
+      if (item.type != "----")
+        continue;
+      const auto fields = boxes(item.payload);
+      const auto name = one(fields, "name").payload.subspan(4);
+      if (std::string_view(reinterpret_cast<const char *>(name.data()),
+                           name.size()) != "iTunSMPB")
+        continue;
+      const auto data = one(fields, "data").payload.subspan(8);
+      std::istringstream text(std::string(
+          reinterpret_cast<const char *>(data.data()), data.size()));
+      uint64_t zero, priming, padding, length;
+      if (text >> std::hex >> zero >> priming >> padding >> length)
+        return Edit{priming, length};
+    }
+  } catch (const std::runtime_error &) {
+  }
+  // A tag it cannot read leaves the track as it is, merely not gapless.
+  return std::nullopt;
+}
+
 /// The movie's own length in track units, for fragmented files whose
 /// track header leaves it out.
 uint64_t movieDuration(const Box &moov, uint32_t timescale) {
   const auto children = boxes(moov.payload, moov.offset + moov.header);
-  const auto mvhd = one(children, "mvhd").payload;
-  const auto wide = integer(mvhd, 0, 1) == 1;
-  const auto movieScale = integer(mvhd, wide ? 20 : 12, 4);
-  auto length = duration(mvhd, 16, 24);
+  const auto movieScale = movieTimescale(moov);
+  auto length = duration(one(children, "mvhd").payload, 16, 24);
   for (const auto &child : children)
     if (child.type == "mvex")
       for (const auto &item : boxes(child.payload, child.offset + child.header))
@@ -219,6 +322,13 @@ AudioTrack audioTrack(const Box &moov) {
   track.duration = duration(mdhd, 16, 24);
   if (!track.duration)
     track.duration = movieDuration(moov, track.timescale);
+  auto edit = editList(moov, sound, track.timescale);
+  if (!edit && !child(sound, "edts"))
+    edit = gaplessTag(moov);
+  if (edit) {
+    track.editStart = edit->start;
+    track.editLength = edit->length;
+  }
   return track;
 }
 } // namespace mp4

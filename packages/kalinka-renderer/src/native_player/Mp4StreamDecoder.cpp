@@ -82,9 +82,7 @@ public:
       total = frames(last.time + last.duration);
     } else {
       // A header's length only bounds seeking; it need not land on a frame.
-      const auto scale = init.track.timescale;
-      const auto duration = init.track.duration;
-      total = duration / scale * rate + duration % scale * rate / scale;
+      total = samplesNear(init.track.duration, init.track.timescale, rate);
     }
   }
 
@@ -359,7 +357,7 @@ StreamInfo Mp4StreamDecoder::open() {
   if (std::ranges::any_of(children,
                           [](const auto &box) { return box.type == "mvex"; })) {
     auto init = FragmentedMp4::parseInitialization(moov);
-    track = std::make_unique<TrackDecoder>(sampleDecoder(init.track));
+    track = TrackDecoder::forTrack(init.track);
     std::vector<FragmentedMp4::Reference> listed;
     try {
       if (!sidx.empty())
@@ -374,16 +372,16 @@ StreamInfo Mp4StreamDecoder::open() {
                                           media.value_or(sourcePosition()), listed);
   } else {
     auto table = Mp4SampleTable::parse(moov);
-    track = std::make_unique<TrackDecoder>(sampleDecoder(table.track));
+    track = TrackDecoder::forTrack(table.track);
     layout = std::make_unique<Progressive>(std::move(table),
                                            track->format().sampleRate);
   }
-  const auto length = layout->length();
-  const auto delay = track->delay();
-  setSeekable(sourceSeeks && length > delay);
-  track->restart(delay);
+  const auto length = track->setEnd(layout->length());
+  setSeekable(sourceSeeks && length);
+  // The layout starts at the first unit, which comes no later than the edit.
+  track->restart(0);
   return {track->format(), StreamType::FRAMES,
-          static_cast<unsigned long>(length > delay ? length - delay : 0)};
+          static_cast<unsigned long>(length)};
 }
 
 bool Mp4StreamDecoder::decodeNext() {
@@ -395,9 +393,7 @@ bool Mp4StreamDecoder::decodeNext() {
 }
 
 void Mp4StreamDecoder::seekSource(uint64_t frame) {
-  // A delayed codec's output for `frame` comes from the unit after its own.
-  layout->seek(*this, frame);
-  track->restart(frame + track->delay());
+  layout->seek(*this, track->restart(frame));
 }
 
 void Mp4StreamDecoder::close() {

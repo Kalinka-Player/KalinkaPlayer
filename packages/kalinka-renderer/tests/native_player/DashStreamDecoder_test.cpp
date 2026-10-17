@@ -19,7 +19,7 @@ namespace {
 using namespace std::chrono_literals;
 using Bytes = std::vector<uint8_t>;
 
-Bytes drain(DashStreamDecoder &node) {
+Bytes drain(AudioGraphOutputNode &node) {
   Bytes result;
   std::array<uint8_t, 2401> block;
   const auto deadline = std::chrono::steady_clock::now() + 5s;
@@ -31,7 +31,7 @@ Bytes drain(DashStreamDecoder &node) {
                node.getState().state == AudioGraphNodeState::ERROR)
       return result;
   }
-  ADD_FAILURE() << "DASH decoder did not finish";
+  ADD_FAILURE() << "decoder did not finish";
   return result;
 }
 
@@ -86,12 +86,7 @@ TEST(DashDecoder, PlaysAacAsTheSameUnitsPlayInMp4) {
     decoder.connectTo(
         std::make_shared<FileInputNode>(1, aacFixturePath("tones.m4a")));
     EXPECT_EQ(decoder.seekTo(target), target);
-    Bytes result;
-    std::array<uint8_t, 4096> block;
-    while (decoder.waitForDataFor({}, 1s, 1))
-      result.insert(result.begin() + result.size(), block.begin(),
-                    block.begin() + decoder.read(block.data(), block.size()));
-    return result;
+    return drain(decoder);
   };
   LocalHttpServer server(dashFixtures("aac"));
   DashStreamDecoder node(3, server.url("/manifest.mpd"), 8192);
@@ -110,6 +105,25 @@ TEST(DashDecoder, PlaysAacAsTheSameUnitsPlayInMp4) {
   }
   EXPECT_EQ(node.seekTo(TONES_FRAMES + 5), TONES_FRAMES);
   EXPECT_TRUE(drain(node).empty());
+}
+
+TEST(DashDecoder, PlaysWhatTheInitializationsEditSelects) {
+  auto bodies = dashFixtures("aac");
+  auto &init = bodies.at("/init-stream0.m4s");
+  // Media time 2112, Apple's priming, where the fixture's encoder used 1024.
+  const auto elst = init.find("elst");
+  ASSERT_NE(elst, std::string::npos);
+  init[elst + 18] = 0x08;
+  init[elst + 19] = 0x40;
+  LocalHttpServer server(std::move(bodies));
+  DashStreamDecoder node(3, server.url("/manifest.mpd"), 8192);
+  waitReady(node);
+  EXPECT_EQ(node.getState().streamInfo->streamSize, TONES_FRAMES - 1088);
+  Mp4StreamDecoder mp4(1, 16384);
+  mp4.connectTo(
+      std::make_shared<FileInputNode>(1, aacFixturePath("tones.m4a")));
+  const auto reference = drain(mp4);
+  EXPECT_EQ(drain(node), Bytes(reference.begin() + 1088 * 4, reference.end()));
 }
 
 TEST(DashDecoder, SeekInterruptsAFullBuffer) {

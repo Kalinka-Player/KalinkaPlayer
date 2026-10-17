@@ -6,10 +6,6 @@
 #include <span>
 #include <vector>
 
-/// @brief The sample frame at @p time in @p timescale units.
-/// @note Throws unless the time falls exactly on a sample within a week.
-uint64_t samplesAt(uint64_t time, uint64_t timescale, unsigned rate);
-
 /// @brief The audio track and sample tables of unencrypted fragmented MP4.
 struct FragmentedMp4 {
   /// The samples of one track fragment, in decoding order.

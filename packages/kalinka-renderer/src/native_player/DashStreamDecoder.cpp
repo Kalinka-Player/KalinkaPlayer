@@ -27,6 +27,8 @@ struct DashStreamDecoder::Demux {
   FragmentedMp4 init;
   std::unique_ptr<TrackDecoder> track;
   unsigned rate = 0;
+  /// Where the timeline ends, in output frames.
+  uint64_t end = 0;
   std::vector<uint64_t> starts;
   size_t segment = 0;
   std::unique_ptr<Prefetch> prefetch;
@@ -91,23 +93,20 @@ StreamInfo DashStreamDecoder::open() {
   demux->manifest = DashManifest::parse(fetch(url, 1024 * 1024), url);
   demux->init = FragmentedMp4::parseInitialization(
       fetch(demux->manifest.initialization, 1024 * 1024));
-  demux->track =
-      std::make_unique<TrackDecoder>(sampleDecoder(demux->init.track));
+  demux->track = TrackDecoder::forTrack(demux->init.track);
   const auto format = demux->track->format();
   demux->rate = format.sampleRate;
   for (const auto &segment : demux->manifest.segments)
     demux->starts.push_back(
         samplesAt(segment.time, demux->manifest.timescale, demux->rate));
   const auto &last = demux->manifest.segments.back();
-  const auto end = samplesAt(last.time + last.duration,
-                             demux->manifest.timescale, demux->rate);
-  if (end <= demux->track->delay())
+  demux->end = samplesAt(last.time + last.duration, demux->manifest.timescale,
+                         demux->rate);
+  const auto length = demux->track->setEnd(demux->end);
+  if (!length)
     throw std::runtime_error("DASH audio is too short to play");
-  const StreamInfo info{
-      format, StreamType::FRAMES,
-      static_cast<unsigned long>(end - demux->track->delay())};
-  restartAt(0, info.streamSize);
-  return info;
+  restartAt(0, length);
+  return {format, StreamType::FRAMES, static_cast<unsigned long>(length)};
 }
 
 void DashStreamDecoder::seekSource(uint64_t frame) {
@@ -116,13 +115,12 @@ void DashStreamDecoder::seekSource(uint64_t frame) {
 }
 
 void DashStreamDecoder::restartAt(uint64_t frame, uint64_t length) {
-  // A delayed codec's output for `frame` comes from the unit after its own.
-  demux->segment = frame == length
-                       ? demux->starts.size()
-                       : std::upper_bound(demux->starts.begin(),
-                                          demux->starts.end(), frame) -
-                             demux->starts.begin() - 1;
-  demux->track->restart(frame + demux->track->delay());
+  const auto from = demux->track->restart(frame);
+  demux->segment =
+      frame >= length
+          ? demux->starts.size()
+          : std::upper_bound(demux->starts.begin(), demux->starts.end(), from) -
+                demux->starts.begin() - 1;
 }
 
 void DashStreamDecoder::close() { demux.reset(); }
@@ -166,9 +164,8 @@ bool DashStreamDecoder::decodeNext() {
       position += frames;
     }
   }
-  const auto end = index + 1 < demux->starts.size()
-                       ? demux->starts[index + 1]
-                       : streamInfo().streamSize + demux->track->delay();
+  const auto end =
+      index + 1 < demux->starts.size() ? demux->starts[index + 1] : demux->end;
   if (position != end)
     throw std::runtime_error(
         "DASH audio segment length does not match its timeline");
