@@ -49,9 +49,9 @@ dependencies = [
     # Renderer protocol (renderer_ws_handler.py). The committed generated
     # bindings (renderer_proto/) pin the runtime floor; `make proto` regenerates.
     "protobuf>=7.35,<8",
-    # >=3.12: TextEmbedder.missing_runtime, which the shared text embedder
-    # implements now that its runtime is not a dependency.
-    "kalinka-plugin-sdk>=3.12,<4",
+    # >=3.13: InputModule.ai_search_available, which the module listing asks
+    # before it advertises ai_search.
+    "kalinka-plugin-sdk>=3.13,<4",
 ]
 dynamic = ["version"]
 
