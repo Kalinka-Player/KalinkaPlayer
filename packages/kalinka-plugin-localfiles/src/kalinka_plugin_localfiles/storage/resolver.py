@@ -108,6 +108,12 @@ class StorageResolver:
             except Exception as e:  # noqa: BLE001 — teardown, never fatal
                 logger.warning("Releasing %s storage failed: %s", storage.scheme, e)
 
+    def close_readers(self) -> None:
+        """Close the files every storage behind it keeps open for streaming,
+        leaving the connections to a track still being served."""
+        for storage in self.storages:
+            storage.readers.close()
+
     def canonical_roots(self, folders: Iterable[str]) -> list[str]:
         """The configured music folders in the one spelling everything else
         compares against.

@@ -459,7 +459,7 @@ class TestKeepingStagedCredentialsApart:
 
     def test_a_storage_with_nothing_to_release_needs_no_close_of_its_own(self):
         """Local storage holds no connection, so the interface's own
-        no-op is the whole of it."""
+        close is the whole of it."""
         LocalStorage().close()
 
     def test_the_resolver_releases_every_storage_it_holds(self):
@@ -575,6 +575,20 @@ class TestLettingGoOfAReplacedResolver:
         made._live_resolvers.get(saved)
 
         assert not released.wait(timeout=0.5)
+
+    def test_what_it_kept_open_between_ranges_is_closed(self, plugin):
+        """Those files were opened as the old login, and nothing is reading
+        them between two ranges."""
+        made, _music = plugin
+        live = LocalFilesConfig(**made._context.config.model_dump())
+        reading = made._live_resolvers.get(live)
+        saved = _with_password(live, "just-saved")
+
+        closed = threading.Event()
+        object.__setattr__(reading, "close_readers", closed.set)
+        made._live_resolvers.get(saved)
+
+        assert closed.wait(timeout=5)
 
     def test_closing_the_cache_releases_what_it_still_holds(self, plugin):
         made, _music = plugin

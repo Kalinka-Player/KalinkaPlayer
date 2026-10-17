@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import BinaryIO, Iterable, Iterator, Optional
 
+from .reader_pool import ReaderPool
+
 logger = logging.getLogger(__name__.split(".")[-1])
 
 #: How long a single availability probe may take before the root is called
@@ -243,6 +245,11 @@ class FileStorage(ABC):
             str, tuple[asyncio.AbstractEventLoop, "asyncio.Task[RootStatus]"]
         ] = {}
         self._swept = False
+        # A reopen stands in for the probe the range skipped, so gets as long.
+        self._readers = ReaderPool(
+            lambda path: self.open(path, read_ahead=False),
+            reopen_timeout_s=PROBE_TIMEOUT_S,
+        )
 
 
     @property
@@ -377,20 +384,28 @@ class FileStorage(ABC):
         """
         return not self.listdir(root)
 
+    @property
+    def readers(self) -> ReaderPool:
+        """The files the server streams out of this storage, kept open
+        between the ranges a renderer asks for. Lent without read-ahead."""
+        return self._readers
+
     def close(self) -> None:
         """Release what this storage holds open.
 
-        A storage that only reads the local filesystem holds nothing and
-        need not implement this. One that speaks a protocol holds a
-        connection per server, and a connection holds a socket and the
-        thread reading it — so a storage that is replaced rather than
-        reused has to be told, or both survive it.
+        Here, the files kept open for streaming (:attr:`readers`), which is
+        all a storage that only reads the local filesystem holds. One that
+        speaks a protocol also holds a connection per server, and a
+        connection holds a socket and the thread reading it — so it extends
+        this, and a storage that is replaced rather than reused has to be
+        told, or both survive it.
 
         @note Blocking, and it may take as long as the protocol takes to
             close a connection the server has stopped answering. Callers on
             an event loop run it elsewhere.
         @note Idempotent. The storage is not used again afterwards.
         """
+        self._readers.close()
 
     def local_path(self, path: str) -> Optional[str]:
         """Where a process on this machine can read the file directly, or

@@ -366,7 +366,9 @@ class _ResolverCache:
         leave a connection and the thread reading it behind. False where a
         track may still be streaming from it: a saved credential change is
         followed by a restart within seconds, which is a cheaper way to
-        release those than closing a file somebody is reading.
+        release those than closing a file somebody is reading. Only the
+        files it keeps open between ranges are closed then, each one lent
+        out as its response ends, so none outlives the source it came from.
     """
 
     def __init__(self, release_replaced: bool) -> None:
@@ -377,20 +379,20 @@ class _ResolverCache:
     def get(self, config: LocalFilesConfig) -> StorageResolver:
         key = share_logins(config)
         if self._resolver is None or key != self._key:
-            if self._release_replaced:
-                self._release(self._resolver)
+            self._release(self._resolver, connections=self._release_replaced)
             self._resolver = build_resolver(config)
             self._key = key
         return self._resolver
 
     def close(self) -> None:
-        self._release(self._resolver)
+        self._release(self._resolver, connections=True)
         self._resolver = None
         self._key = None
 
     @staticmethod
-    def _release(resolver: Optional[StorageResolver]) -> None:
-        """Hand a replaced resolver's connections back.
+    def _release(resolver: Optional[StorageResolver], connections: bool) -> None:
+        """Hand a replaced resolver's connections back, or only the files it
+        keeps open for streaming.
 
         On a thread of its own: this is reached from the event loop while
         the user edits a password, and disconnecting from a server that has
@@ -399,7 +401,9 @@ class _ResolverCache:
         if resolver is None:
             return
         threading.Thread(
-            target=resolver.close, name="storage-release", daemon=True
+            target=resolver.close if connections else resolver.close_readers,
+            name="storage-release",
+            daemon=True,
         ).start()
 
 
