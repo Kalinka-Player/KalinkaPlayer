@@ -85,11 +85,12 @@ Install [Raspberry Pi Imager](https://www.raspberrypi.com/software/) (Windows, m
 
 #### 3. Optional: a login, Wi-Fi settings or a DAC HAT
 
-Skip this step to set up Wi-Fi through [Bluetooth or the hotspot](#connect-your-box-to-the-network), or if the Pi will use a network cable. A login and a DAC HAT can also be chosen after the first start.
+Skip this step to set up Wi-Fi through [Bluetooth or the hotspot](#connect-your-box-to-the-network), or if the Pi will use a network cable to your router. A login and a DAC HAT can also be chosen after the first start.
 
 Otherwise, [change the settings on the card](#settings-on-the-card) for any of these:
 
 - **Wi-Fi configured before the first start**, instead of using nearby setup;
+- a **fixed address** for the network cable, on [a network without DHCP](#a-network-without-dhcp), where nothing hands one out;
 - a **login** to the Pi, so you can copy music onto it over the network or use SSH;
 - a **DAC HAT without an ID chip**, or the Pi's own headphone socket or HDMI, if you want it playing from the first start.
 
@@ -109,7 +110,7 @@ This turns a spare 64-bit PC into a Kalinka player. The simplest way is to write
 
 1. **Download:** from the [image releases](https://github.com/Kalinka-Player/KalinkaPlayer/releases?q=kalinka-image-v&expanded=true), download the file that ends in **`-amd64.img.xz`** (about 500 MB).
 2. **Write it** to the USB stick with [balenaEtcher](https://etcher.balena.io/) (**Flash from file**, **Select target**, **Flash!**) or with Raspberry Pi Imager (**Use custom**, as in [option A](#2-write-it-to-the-card)).
-3. **Optional:** add the [settings file](#on-the-pc-image) for Wi-Fi or a login.
+3. **Optional:** add the [settings file](#on-the-pc-image) for Wi-Fi, a login, or a fixed address on [a network without DHCP](#a-network-without-dhcp).
 4. **Start the PC from the stick.** Plug it in, switch the PC on, and press the boot menu key straight away. This is usually F12, F11, F10, F8 or Esc, depending on the maker. Choose the USB drive from the menu. To start from it every time, move USB to the top of the boot order in the PC's BIOS or UEFI settings. Use UEFI mode and disable Secure Boot for the DietPi image.
 5. Go on to [Get a remote](#get-a-remote).
 
@@ -151,7 +152,7 @@ The PC image also runs as a virtual machine. This suits a home server that is on
 <details>
 <summary>Changing the settings in a VM image</summary>
 
-A VM usually needs none of [the settings](#on-the-pc-image). Wi-Fi only works with a real adapter passed through to the VM, and a login can come later from **SSH access** on [the control page](#the-control-page). To set a password or a time zone before the first start anyway, change `dietpi.txt` on the image's DIETPISETUP partition before you import the image. It is the third partition, and where it starts depends on the size of the image, so let `partx` find it. On Linux, with `mtools` installed:
+A VM usually needs none of [the settings](#on-the-pc-image). The exception is a bridge onto a network without DHCP, where the VM needs [a fixed address](#a-network-without-dhcp) before anything can reach it. Wi-Fi only works with a real adapter passed through to the VM, and a login can come later from **SSH access** on [the control page](#the-control-page). To set a fixed address, a password or a time zone before the first start, change `dietpi.txt` on the image's DIETPISETUP partition before you import the image. It is the third partition, and where it starts depends on the size of the image, so let `partx` find it. On Linux, with `mtools` installed:
 
 ```bash
 off=$(( $(partx -g -o START -n 3 kalinka.img) * 512 ))
@@ -259,6 +260,10 @@ The Pi images are built on [DietPi](https://dietpi.com), and use its settings fi
 | A login, as `root` or `dietpi` | `AUTO_SETUP_GLOBAL_PASSWORD=` | `AUTO_SETUP_GLOBAL_PASSWORD=choose-a-password` |
 | Wi-Fi | `AUTO_SETUP_NET_WIFI_ENABLED=0` | `AUTO_SETUP_NET_WIFI_ENABLED=1` |
 | Wi-Fi in your country | `AUTO_SETUP_NET_WIFI_COUNTRY_CODE=GB` | `AUTO_SETUP_NET_WIFI_COUNTRY_CODE=US` |
+| A fixed address on the network cable, for [a network without DHCP](#a-network-without-dhcp) | `AUTO_SETUP_NET_USESTATIC=0` | `AUTO_SETUP_NET_USESTATIC=1` |
+| That address, with its prefix | `AUTO_SETUP_NET_STATIC_IP=192.168.0.100/24` | `AUTO_SETUP_NET_STATIC_IP=192.168.1.50/24` |
+| The router to the internet, or a free address on a network without one | `AUTO_SETUP_NET_STATIC_GATEWAY=192.168.0.1` | `AUTO_SETUP_NET_STATIC_GATEWAY=192.168.1.1` |
+| The name servers for the internet | `AUTO_SETUP_NET_STATIC_DNS=9.9.9.9 149.112.112.112` | `AUTO_SETUP_NET_STATIC_DNS=192.168.1.1` |
 | Your time zone, instead of UTC | `AUTO_SETUP_TIMEZONE=UTC` | `AUTO_SETUP_TIMEZONE=Europe/London` |
 | A DAC HAT without an ID chip, the headphone socket or HDMI | `CONFIG_SOUNDCARD=none` | `CONFIG_SOUNDCARD=hifiberry-digi` (see below) |
 
@@ -306,9 +311,29 @@ In `dietpi.txt`, remove the `#` in front of `AUTO_SETUP_SSH_PUBKEY=` and put the
 
 </details>
 
+#### A network without DHCP
+
+Most networks hand each device its address by themselves, from a DHCP server that is usually part of the router. On a network without one, such as a switch with no router on it, a box on a network cable gets no address, and nothing can reach it. Give it a fixed address on the card before its first start instead. For a network whose devices use the addresses `192.168.1.1` to `192.168.1.254`, change these four lines in `dietpi.txt`:
+
+```sh
+AUTO_SETUP_NET_USESTATIC=1
+AUTO_SETUP_NET_STATIC_IP=192.168.1.50/24
+AUTO_SETUP_NET_STATIC_GATEWAY=192.168.1.1
+AUTO_SETUP_NET_STATIC_DNS=192.168.1.1
+```
+
+- **The address** must be one that no other device on the network uses. The `/24` after it is the prefix, which says what the netmask `255.255.255.0` says: the first three numbers are the network's. Most home networks use it.
+- **The gateway** is the router that leads to the internet. On a network without one, do not leave the line empty: give an address in the same range that no device uses, such as `192.168.1.1` when nothing has it. Nothing needs to answer there. With a gateway set, the box counts the cable as its connection, so it does not offer [nearby setup](#connect-your-box-to-the-network) as an offline box does. Kalinka still plays the music on the box and on shares on the same network; upgrades and online lookups need the internet.
+- **DNS** names the servers that look up internet names, usually the router again. Without the internet, nothing answers there, so each look-up of a name waits several seconds before it fails. Add a share on this network by its address, such as `192.168.1.20`, rather than by its name.
+- Leave `AUTO_SETUP_NET_WIFI_ENABLED=0` as it is: the fixed address is for the network cable.
+
+The box keeps the address through restarts. Your phone or computer needs an address in the same range too, set by hand in its network settings if nothing hands it one, for example `192.168.1.51` with the netmask `255.255.255.0`. Then open `http://192.168.1.50:8000` in a browser, or, if the app does not list the box, choose **Enter Address Manually** and enter `192.168.1.50:8000`.
+
+To go back to DHCP, for example before moving the box to a network with a router, turn on **SSH access** on [the control page](#the-control-page) at `http://192.168.1.50:8001`. Log in as `kalinka-admin`, run `sudo dietpi-config`, open **Network Options: Adapters**, choose **Ethernet**, and switch its mode to **DHCP**. The box gives up the fixed address as soon as the change is applied, so your SSH session ends there, and on a network without DHCP nothing can reach the box again until it is on one with a router. Or write the card again, which starts the box afresh.
+
 ### On the PC image
 
-The current PC image uses DietPi too. Before its first boot, open the small **DIETPISETUP** FAT volume and edit `dietpi.txt` and `dietpi-wifi.txt` as described above. Sound-card HAT settings apply only to a Pi. DietPi imports these files and removes the temporary setup partition on first boot.
+The current PC image uses DietPi too. Before its first boot, open the small **DIETPISETUP** FAT volume and edit `dietpi.txt` and `dietpi-wifi.txt` as described above, including the lines for [a network without DHCP](#a-network-without-dhcp). Sound-card HAT settings apply only to a Pi. DietPi imports these files and removes the temporary setup partition on first boot.
 
 You can also use the [temporary Wi-Fi hotspot](#connect-your-box-to-the-network) when the PC has a supported Wi-Fi adapter with AP support, or **Set up a box → Search using Bluetooth** in the app when it also has a Bluetooth adapter. In a VM, pass through USB adapters; the virtual Ethernet interface is not a Wi-Fi radio. Disconnect virtual Ethernet while testing offline setup.
 
@@ -340,7 +365,7 @@ SSH setup uses the image's installed SSH server (Dropbear on DietPi or OpenSSH o
 
 ## Connect your box to the network
 
-**Ethernet:** connect the box to your router with a network cable, then [open the app or browser player](#get-a-remote). The setup wizard still includes a Network step so you can review and keep this connection.
+**Ethernet:** connect the box to your router with a network cable, then [open the app or browser player](#get-a-remote). The setup wizard still includes a Network step so you can review and keep this connection. On a network without DHCP, give the box [a fixed address on the card](#a-network-without-dhcp) before its first start.
 
 **Wi-Fi:** keep this guide open, or save the picture below, before leaving your home Wi-Fi. You can set up a box from a laptop without installing the app. On supported hardware, an offline box offers both Bluetooth and a temporary Wi-Fi hotspot.
 
