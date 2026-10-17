@@ -257,8 +257,7 @@ DashManifest DashManifest::parse(std::span<const uint8_t> bytes,
       time += d;
     }
   }
-  // The timeline also counts an AAC encoder's priming and padding, up to a
-  // couple of HE-AAC units, which the presentation duration leaves out.
+  // The timeline counts AAC priming and padding that the duration leaves out.
   if (result.segments.empty() ||
       std::abs(double(time) - endTime) > result.timescale * 0.2)
     invalid();

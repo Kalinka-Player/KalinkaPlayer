@@ -116,9 +116,7 @@ void DashStreamDecoder::seekSource(uint64_t frame) {
 }
 
 void DashStreamDecoder::restartAt(uint64_t frame, uint64_t length) {
-  // A delayed codec's output for a frame comes from the unit that much later,
-  // so decoding starts at the unit holding `frame` and keeps from `frame +
-  // delay` on.
+  // A delayed codec's output for `frame` comes from the unit after its own.
   demux->segment = frame == length
                        ? demux->starts.size()
                        : std::upper_bound(demux->starts.begin(),

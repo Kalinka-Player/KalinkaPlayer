@@ -92,8 +92,7 @@ private:
         header.blocksize > 65536)
       throw std::runtime_error("FLAC audio format changed during playback");
     const size_t width = sampleSize(format.sampleFormat);
-    // A padded container leaves its spare high byte clear, as the FLAC path
-    // does.
+    // A padded container leaves its spare high byte clear, as FLAC does.
     const uint32_t mask =
         format.bitsPerSample < 32 ? (1u << format.bitsPerSample) - 1 : ~0u;
     pcm.resize(size_t(header.blocksize) * format.channels * width);

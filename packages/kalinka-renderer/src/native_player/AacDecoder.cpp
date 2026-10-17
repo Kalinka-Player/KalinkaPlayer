@@ -26,8 +26,7 @@ AacDecoder::AacDecoder(std::span<const uint8_t> config)
       !parsed.samplingFrequency)
     unsupported();
   open();
-  // SBR doubles a unit's core frames unless it runs downsampled; faad2 also
-  // doubles a low-rate stream that might carry SBR without saying so.
+  // faad2 also upsamples a low-rate stream that may carry implicit SBR.
   const auto doubled =
       (parsed.sbr_present_flag == 1 && !parsed.downSampledSBR) ||
       parsed.forceUpSampling;
