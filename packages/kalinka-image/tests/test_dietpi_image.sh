@@ -2,8 +2,9 @@
 #
 # The steps that take a downloaded DietPi image as trustworthy and keep it
 # what DietPi tested: a signature from the pinned key and nobody else, a grown
-# root partition the Pi's boot chain still finds by the same disk id, and the
-# kernel held where DietPi left it.
+# root partition the Pi's boot chain still finds by the same disk id, every
+# dietpi.txt key the build sets still under its name, and the kernel held
+# where DietPi left it.
 set -uo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,6 +44,40 @@ printf 'label: gpt\n,16MiB,U\n,,L\n' | sfdisk --quiet "$WORK/gpt.img"
 truncate -s 64MiB "$WORK/three.img"
 printf 'label: dos\n,8MiB,c\n,8MiB,83\n,,83\n' | sfdisk --quiet "$WORK/three.img"
 ( grow_root_partition "$WORK/three.img" 128MiB ) 2>/dev/null && fail "grew an image with three partitions"
+
+echo "  -- the keys DietPi's dietpi.txt must still have"
+settings="$WORK/dietpi.txt"
+cat > "$settings" <<'CONF'
+# DietPi-Automation settings
+AUTO_SETUP_GLOBAL_PASSWORD=dietpi
+AUTO_SETUP_AUTOMATED=0
+SURVEY_OPTED_IN=-1
+AUTO_SETUP_LOGGING_INDEX=-1
+AUTO_SETUP_NET_ETHERNET_ENABLED=1
+AUTO_SETUP_NET_WIFI_ENABLED=0
+AUTO_SETUP_NET_USESTATIC=0
+AUTO_SETUP_NET_STATIC_IP=192.168.0.100/24
+AUTO_SETUP_NET_STATIC_GATEWAY=192.168.0.1
+AUTO_SETUP_NET_STATIC_DNS=9.9.9.9 149.112.112.112
+  AUTO_SETUP_NET_HOSTNAME=DietPi
+CONFIG_SERIAL_CONSOLE_ENABLE=1
+CONF
+( require_dietpi_keys "$settings" ) || fail "refused a dietpi.txt with every key the build sets, one indented"
+for key in AUTO_SETUP_NET_USESTATIC AUTO_SETUP_NET_STATIC_IP AUTO_SETUP_NET_STATIC_GATEWAY AUTO_SETUP_NET_STATIC_DNS; do
+  grep -v "^$key=" "$settings" > "$WORK/without.txt"
+  refusal="$( ( require_dietpi_keys "$WORK/without.txt" ) 2>&1 )" && fail "accepted a dietpi.txt without $key"
+  assert_eq "names the key it lacks" "${refusal##* }" "$key"
+done
+sed 's/^AUTO_SETUP_NET_STATIC_IP=/#&/' "$settings" > "$WORK/commented.txt"
+( require_dietpi_keys "$WORK/commented.txt" ) 2>/dev/null && fail "took a commented-out key for one DietPi reads"
+sed 's/^AUTO_SETUP_NET_STATIC_IP=/AUTO_SETUP_NET_STATIC_IP4=/' "$settings" > "$WORK/renamed.txt"
+( require_dietpi_keys "$WORK/renamed.txt" ) 2>/dev/null && fail "took a renamed key that starts with the old name for it"
+sed 's|^AUTO_SETUP_NET_STATIC_IP=.*|AUTO_SETUP_NET_STATIC_IP=192.168.0.100\nAUTO_SETUP_NET_STATIC_MASK=255.255.255.0|' "$settings" > "$WORK/netmask.txt"
+( require_dietpi_keys "$WORK/netmask.txt" ) 2>/dev/null && fail "took a DietPi whose address has a netmask line, not the prefix the guide gives"
+{ cat "$settings"; printf 'aSOFTWARE_INSTALL_STATE[103]=2\n'; } > "$WORK/bracketed.txt"
+# shellcheck disable=SC2034  # require_dietpi_keys reads it
+( DIETPI_SETTINGS=(["aSOFTWARE_INSTALL_STATE[103]"]=0); require_dietpi_keys "$WORK/bracketed.txt" ) \
+  || fail "read a key with brackets as a pattern, not as the name DietPi reads"
 
 echo "  -- the kernel it ships"
 in_chroot() {

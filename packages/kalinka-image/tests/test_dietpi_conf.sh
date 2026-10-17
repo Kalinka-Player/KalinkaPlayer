@@ -73,8 +73,14 @@ AUTO_SETUP_NET_HOSTNAME=DietPi
 AUTO_SETUP_AUTOMATED=0
 SURVEY_OPTED_IN=-1
 AUTO_SETUP_LOGGING_INDEX=-1
+AUTO_SETUP_NET_USESTATIC=0
+AUTO_SETUP_NET_STATIC_IP=192.168.0.100/24
+AUTO_SETUP_NET_STATIC_GATEWAY=192.168.0.1
+AUTO_SETUP_NET_STATIC_DNS=9.9.9.9 149.112.112.112
 CONFIG_SOUNDCARD=none
+CONFIG_SERIAL_CONSOLE_ENABLE=1
 CONF
+( require_dietpi_keys "$root/boot/firmware/dietpi.txt" ) || fail "the fixture lacks a key the build requires"
 cp "$root/boot/firmware/dietpi.txt" "$root/boot/dietpi.txt"
 printf 'aSOFTWARE_INSTALL_STATE[103]=2\naSOFTWARE_INSTALL_STATE[104]=2\n' > "$root/boot/dietpi/.installed"
 cat > "$root/etc/fstab" <<'FSTAB'
