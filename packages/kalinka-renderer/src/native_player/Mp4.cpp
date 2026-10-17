@@ -281,20 +281,19 @@ std::optional<Edit> gaplessTag(const Box &moov) {
   return std::nullopt;
 }
 
-/// The movie's own length in track units, for fragmented files whose
-/// track header leaves it out.
-uint64_t movieDuration(const Box &moov, uint32_t timescale) {
-  const auto children = boxes(moov.payload, moov.offset + moov.header);
-  const auto movieScale = movieTimescale(moov);
-  auto length = duration(one(children, "mvhd").payload, 16, 24);
-  for (const auto &child : children)
-    if (child.type == "mvex")
-      for (const auto &item : boxes(child.payload, child.offset + child.header))
-        if (item.type == "mehd")
-          length = duration(item.payload, 4, 4);
-  if (!movieScale || length > ~uint64_t(0) / timescale)
-    return 0;
-  return length * timescale / movieScale;
+/// The track's length in its own units: a fragmented movie's from `mehd`
+/// alone, since its other headers count only the units they list.
+uint64_t trackDuration(const Box &moov, Bytes mdhd, uint32_t timescale) {
+  if (const auto mvex = child(moov, "mvex")) {
+    const auto mehd = child(*mvex, "mehd");
+    return mehd ? rescale(duration(mehd->payload, 4, 4), movieTimescale(moov),
+                          timescale)
+                : 0;
+  }
+  if (const auto length = duration(mdhd, 16, 24))
+    return length;
+  return rescale(duration(inside(moov, "mvhd").payload, 16, 24),
+                 movieTimescale(moov), timescale);
 }
 } // namespace
 
@@ -336,9 +335,7 @@ AudioTrack audioTrack(const Box &moov) {
   if (entries.size() != 1)
     invalid();
   sampleEntry(entries.front(), track);
-  track.duration = duration(mdhd, 16, 24);
-  if (!track.duration)
-    track.duration = movieDuration(moov, track.timescale);
+  track.duration = trackDuration(moov, mdhd, track.timescale);
   auto edit = editList(moov, sound, track.timescale);
   if (!edit && !child(sound, "edts"))
     edit = gaplessTag(moov);

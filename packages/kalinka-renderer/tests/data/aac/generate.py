@@ -57,6 +57,9 @@ def main():
         ffmpeg(*copy, *fragmented, ROOT / "tones-fragmented.m4a")
         ffmpeg(*copy, fragmented[0], fragmented[1] + "+global_sidx",
                *fragmented[2:], ROOT / "tones-fragmented-sidx.m4a")
+        # Without empty_moov the movie header itself lists the first samples.
+        ffmpeg(*copy, "-movflags", "+frag_keyframe", "-frag_duration", "250000",
+               ROOT / "tones-fragmented-mixed.m4a")
 
         ramp_source = Path(temporary) / "ramp.wav"
         write_wav(ramp_source, ramp())

@@ -18,6 +18,8 @@ uint64_t read(Bytes data, size_t &position, size_t width = 4) {
 /// A track fragment's decode time, sample defaults and runs.
 struct TrackFragment {
   uint64_t time = 0, duration = 0, size = 0;
+  /// The file offset its data counts from, where the header gives one.
+  std::optional<uint64_t> base;
   std::vector<mp4::Box> runs;
 };
 
@@ -27,12 +29,14 @@ TrackFragment trackFragment(const mp4::Box &moof, const FragmentedMp4 &init) {
   mp4::refuseEncrypted(items);
   const auto header = mp4::one(items, "tfhd").payload;
   const auto flags = integer(header, 0, 4);
-  if (flags & ~uint32_t(0x02003a) || integer(header, 4, 4) != init.track.id)
+  if (flags & ~uint32_t(0x02003b) || integer(header, 4, 4) != init.track.id)
     invalid();
   size_t position = 8;
+  TrackFragment result;
+  if (flags & 1)
+    result.base = read(header, position, 8);
   if ((flags & 2) && read(header, position) != 1)
     invalid();
-  TrackFragment result;
   result.duration = flags & 8 ? read(header, position) : init.defaultDuration;
   result.size = flags & 16 ? read(header, position) : init.defaultSize;
   if (flags & 32)
@@ -106,7 +110,7 @@ FragmentedMp4 FragmentedMp4::parseInitialization(Bytes bytes) {
 }
 
 std::vector<FragmentedMp4::Fragment>
-FragmentedMp4::parseSegments(Bytes bytes) const {
+FragmentedMp4::parseSegments(Bytes bytes, uint64_t origin) const {
   const auto top = mp4::boxes(bytes);
   std::vector<std::pair<size_t, size_t>> media;
   for (const auto &box : top)
@@ -121,34 +125,43 @@ FragmentedMp4::parseSegments(Bytes bytes) const {
     const auto header = trackFragment(moof, *this);
     Fragment fragment;
     fragment.time = header.time;
-    size_t dataPosition = 0;
+    // Data counts from the moof, unless the header names a file offset.
+    if (header.base &&
+        (*header.base < origin || *header.base - origin > bytes.size()))
+      invalid();
+    const auto base =
+        header.base ? int64_t(*header.base - origin) : int64_t(moof.offset);
+    std::optional<size_t> dataPosition;
+    if (header.base)
+      dataPosition = size_t(base);
     for (const auto &box : header.runs) {
       const auto samples = run(box.payload, header, budget);
       if (samples.dataOffset) {
-        const auto absolute = int64_t(moof.offset) + *samples.dataOffset;
+        const auto absolute = base + *samples.dataOffset;
         if (absolute < 0 || uint64_t(absolute) > bytes.size())
           invalid();
         dataPosition = size_t(absolute);
       } else if (!dataPosition)
         invalid();
       for (const auto &sample : samples.samples) {
-        if (sample.size > bytes.size() - dataPosition ||
+        if (sample.size > bytes.size() - *dataPosition ||
             sample.size > bytes.size() - totalBytes)
           invalid();
         const auto after =
-            std::upper_bound(media.begin(), media.end(), dataPosition,
+            std::upper_bound(media.begin(), media.end(), *dataPosition,
                              [](size_t offset, const auto &range) {
                                return offset < range.first;
                              });
-        if (after == media.begin() || dataPosition > std::prev(after)->second ||
-            sample.size > std::prev(after)->second - dataPosition)
+        if (after == media.begin() ||
+            *dataPosition > std::prev(after)->second ||
+            sample.size > std::prev(after)->second - *dataPosition)
           invalid();
         totalBytes += sample.size;
         fragment.durations.push_back(sample.duration);
         fragment.sizes.push_back(sample.size);
-        fragment.data.insert(fragment.data.end(), bytes.begin() + dataPosition,
-                             bytes.begin() + dataPosition + sample.size);
-        dataPosition += sample.size;
+        fragment.data.insert(fragment.data.end(), bytes.begin() + *dataPosition,
+                             bytes.begin() + *dataPosition + sample.size);
+        *dataPosition += sample.size;
       }
     }
     if (fragment.data.empty())
@@ -228,6 +241,20 @@ FragmentedMp4::parseRandomAccess(Bytes mfra) const {
       }
       references.push_back({offset, time, 0});
     }
+  }
+  return references;
+}
+
+std::vector<FragmentedMp4::Reference>
+FragmentedMp4::inFrames(std::vector<Reference> references,
+                        unsigned rate) const {
+  try {
+    for (auto &reference : references) {
+      reference.time = samplesAt(reference.time, track.timescale, rate);
+      reference.duration = samplesAt(reference.duration, track.timescale, rate);
+    }
+  } catch (const std::runtime_error &) {
+    return {};
   }
   return references;
 }

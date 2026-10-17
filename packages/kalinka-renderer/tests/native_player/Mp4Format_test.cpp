@@ -354,3 +354,37 @@ TEST(Mp4AudioTrack, IgnoresAGaplessTagTooShortToRead) {
     EXPECT_EQ(track.editLength, 0u);
   }
 }
+
+TEST(FragmentedMp4, CountsAnIndexInFramesOnlyWhereItLandsOnThem) {
+  FragmentedMp4 init;
+  init.track.timescale = 1000;
+  const std::vector<FragmentedMp4::Reference> onFrames{{10, 0, 500},
+                                                       {20, 500, 250}};
+  const auto framed = init.inFrames(onFrames, 48000);
+  ASSERT_EQ(framed.size(), 2u);
+  EXPECT_EQ(framed[1].offset, 20u);
+  EXPECT_EQ(framed[1].time, 24000u);
+  EXPECT_EQ(framed[1].duration, 12000u);
+  // A millisecond is 44.1 frames at 44.1 kHz: no frame starts there.
+  EXPECT_TRUE(init.inFrames({{10, 0, 1}, {20, 1, 1}}, 44100).empty());
+}
+
+TEST(FragmentedMp4, PlacesDataByFileOffsetWhereTheFragmentSaysSo) {
+  const auto file = aacFixture("tones-fragmented-mixed.m4a");
+  const auto top = mp4::boxes(file);
+  const auto moov = *std::ranges::find_if(
+      top, [](const auto &item) { return item.type == "moov"; });
+  const auto init = FragmentedMp4::parseInitialization(
+      std::span(file).subspan(moov.offset, moov.header + moov.payload.size()));
+  const auto moof = std::ranges::find_if(
+      top, [](const auto &item) { return item.type == "moof"; });
+  const auto &mdat = *std::next(moof);
+  const auto fragment = std::span(file).subspan(
+      moof->offset,
+      mdat.offset + mdat.header + mdat.payload.size() - moof->offset);
+  const auto parsed = init.parseSegments(fragment, moof->offset);
+  ASSERT_EQ(parsed.size(), 1u);
+  EXPECT_EQ(parsed.front().time, 11264u);
+  // Its tfhd counts from a file offset, so the bytes must say where they lie.
+  EXPECT_THROW(init.parseSegments(fragment), std::runtime_error);
+}
