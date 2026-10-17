@@ -41,6 +41,7 @@ MIME_TYPES = {
     "audio/x-dff": "audio/x-dff",
     "audio/dsd": "audio/dsd",
     "audio/x-dsd": "audio/dsd",
+    "application/dash+xml": "application/dash+xml",
 }
 DSD_FORMATS = frozenset({"audio/x-dsf", "audio/x-dff", "audio/dsd"})
 EXTENSION_TYPES = {
@@ -52,6 +53,7 @@ EXTENSION_TYPES = {
     "oga": "audio/ogg",
     "dsf": "audio/x-dsf",
     "dff": "audio/x-dff",
+    "mpd": "application/dash+xml",
 }
 
 
