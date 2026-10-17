@@ -31,7 +31,7 @@ _EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif")
 #: Wider than what the indexer reads: a folder of music is another album's
 #: folder whether or not this library can play the format.
 _AUDIO_EXTENSIONS = (
-    ".flac", ".mp3", ".m4a", ".wav", ".aiff", ".aif", ".ape", ".wv",
+    ".flac", ".mp3", ".m4a", ".aac", ".wav", ".aiff", ".aif", ".ape", ".wv",
     ".ogg", ".oga", ".opus", ".wma", ".dsf", ".dff", ".mpc", ".alac",
 )
 

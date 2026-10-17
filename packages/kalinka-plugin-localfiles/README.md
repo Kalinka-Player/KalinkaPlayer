@@ -1,8 +1,8 @@
 # My Library
 
 The local library indexes MP3, FLAC, WAV (`.wav`, `.wave`), Ogg Vorbis (`.ogg`,
-`.oga`), DSF (`.dsf`) and DSDIFF (`.dff`) files from local folders and configured
-network shares.
+`.oga`), MP4 audio (`.m4a`), raw AAC (`.aac`), DSF (`.dsf`) and DSDIFF (`.dff`)
+files from local folders and configured network shares.
 
 Loose files in a configured library root or a generic container such as
 `Music` or `Downloads` are listed individually in Recently Added. Those
@@ -32,6 +32,21 @@ radio rip, is timed over all its links as the renderer plays them, each from
 where its recording begins. An Ogg file holding Opus or FLAC instead is left
 out with a warning in the log, because the renderer plays only Vorbis from an
 Ogg container.
+
+MP4 audio is indexed when its first audio track is AAC-LC or HE-AAC (v1 or
+v2, any channel count), or FLAC in mono or stereo at 16, 24 or 32 bits, in a
+progressive or a fragmented file. Its tags and first cover picture are read;
+a FLAC track's sample rate, channels and precision come from its STREAMINFO,
+and a fragmented file is timed over all its fragments. ALAC, Opus, AC-3, other
+codecs and files with no audio track are left out with a warning in the log.
+`.mp4` files are not indexed, since most are video.
+
+A raw AAC file is indexed when it holds AAC-LC or HE-AAC in ADTS frames from
+its start, or from the end of the ID3v2 tag it may begin with, which supplies
+its tags and artwork. Anything else named `.aac`, such as an MP3, is left out
+with a warning. Neither MP4 nor raw AAC audio is analysed for audio
+embeddings, since libsndfile cannot decode it; those jobs fail once, without
+retrying, and metadata/text embeddings remain available.
 
 WAV indexing reads ID3 tags and artwork, duration, sample rate and PCM
 precision, including the valid bit count in extensible headers. Integer

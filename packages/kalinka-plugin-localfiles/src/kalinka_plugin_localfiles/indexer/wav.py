@@ -9,11 +9,13 @@ from typing import BinaryIO
 
 from mutagen.wave import WAVE
 
+from .unplayable import UnplayableFile
+
 _PCM_GUID = bytes.fromhex("0100000000001000800000aa00389b71")
 _MAX_HEADER_BYTES = 64 << 20
 
 
-class UnsupportedWave(ValueError):
+class UnsupportedWave(UnplayableFile):
     """A WAV the renderer cannot play: malformed, or an encoding it lacks."""
 
 

@@ -31,6 +31,8 @@ from mutagen.ogg import OggPage
 from mutagen.ogg import error as OggError
 from mutagen.oggvorbis import OggVorbis, OggVorbisHeaderError, OggVorbisInfo
 
+from .unplayable import UnplayableFile
+
 #: Read at a time: a few typical pages, so a bisection step is one small read.
 _WINDOW = 16 * 1024
 #: The largest page Ogg allows: a header, 255 lacing values, 255 full segments.
@@ -42,7 +44,7 @@ _SETUP_ID = b"\x05vorbis"
 _MODE_BITS = 1 + 16 + 16 + 8
 
 
-class NoVorbisStream(Exception):
+class NoVorbisStream(UnplayableFile):
     """An Ogg file none of whose streams is Vorbis: Opus or FLAC, say."""
 
 
@@ -203,7 +205,10 @@ def open_ogg_vorbis_tags(audio: BinaryIO) -> OggVorbis:
 
 def _open(audio: BinaryIO, kind: Callable[[BinaryIO], OggVorbis]) -> OggVorbis:
     if not starts_vorbis_stream(audio):
-        raise NoVorbisStream()
+        raise NoVorbisStream(
+            "it holds no Vorbis stream, and Vorbis is the only codec in Ogg "
+            "the renderer plays"
+        )
     audio.seek(0)
     return kind(audio)
 
