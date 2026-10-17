@@ -20,9 +20,10 @@ from starlette.responses import Response, StreamingResponse
 
 logger = logging.getLogger(__name__)
 
-#: Read size per hop to a worker thread. Large enough that a track is a few
-#: hundred hops rather than thousands, small enough to stay off the heap.
-_CHUNK_BYTES = 256 * 1024
+#: Read size per hop to a worker thread. Larger than the range a renderer
+#: asks for by default, so each range is one read — one round trip on a
+#: share — and a whole track still goes out in bounded pieces.
+_CHUNK_BYTES = 1024 * 1024
 
 
 class UnsatisfiableRange(Exception):

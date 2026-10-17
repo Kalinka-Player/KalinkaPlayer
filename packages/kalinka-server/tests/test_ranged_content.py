@@ -186,6 +186,47 @@ class TestOpeningTheStream:
             await open_reader(refuse, 5.0)
 
 
+class _CountingHandle(_Handle):
+    def __init__(self, payload):
+        super().__init__(payload)
+        self.reads = []
+
+    def read(self, size=-1):
+        self.reads.append(size)
+        return super().read(size)
+
+
+class TestHowARangeIsRead:
+    @pytest.mark.asyncio
+    async def test_a_renderers_range_is_one_read(self):
+        """On a share each read is a round trip, and a renderer asks for
+        384,000 bytes at a time unless told otherwise. Two reads per range
+        were most of what made DSD128 from a NAS buffer."""
+        payload = bytes(range(256)) * 8000
+        handle = _CountingHandle(payload)
+        span = (100_000, 100_000 + 384_000 - 1)
+
+        body = await _drive(
+            stream_response(handle, span=span, size=len(payload), mime_type="audio/dsf")
+        )
+
+        assert body == payload[100_000:484_000]
+        assert handle.reads == [384_000]
+
+    @pytest.mark.asyncio
+    async def test_a_whole_track_is_read_in_bounded_pieces(self):
+        payload = bytes(range(256)) * 12_400  # 3 MiB and a little
+        handle = _CountingHandle(payload)
+
+        body = await _drive(
+            stream_response(handle, span=None, size=len(payload), mime_type="audio/dsf")
+        )
+
+        assert body == payload
+        assert len(handle.reads) == 4
+        assert max(handle.reads) <= 1024 * 1024
+
+
 class TestWhatARangeMeans:
     @pytest.mark.parametrize(
         "header,expected",
