@@ -52,7 +52,7 @@ public:
 
 /// Everything the decoder plays until it finishes or fails, asked for in
 /// requests that are deliberately not frame-aligned.
-inline Bytes drain(ContainerStreamDecoder &node) {
+inline Bytes drain(AudioGraphOutputNode &node) {
   using namespace std::chrono_literals;
   Bytes result;
   std::array<uint8_t, 2401> data;

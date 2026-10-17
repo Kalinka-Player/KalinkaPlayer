@@ -1,6 +1,6 @@
 #include "DashManifest.h"
 #include "DashTestData.h"
-#include "FragmentedFlac.h"
+#include "FragmentedMp4.h"
 
 #include <gtest/gtest.h>
 
@@ -65,10 +65,20 @@ TEST(DashManifest, ExpandsNegativeRepeatsUpToNextTimestamp) {
   EXPECT_EQ(parsed.segments.size(), 3u);
 }
 
+TEST(DashManifest, AcceptsAacRepresentations) {
+  for (const auto *codec : {"mp4a.40.2", "mp4a.40.5", "mp4a.40.29"}) {
+    SCOPED_TRACE(codec);
+    const auto parsed = DashManifest::parse(
+        bytes(replace(manifest, "flac", codec)), "https://example.test/a.mpd");
+    EXPECT_EQ(parsed.segments.size(), 3u);
+  }
+}
+
 TEST(DashManifest, RejectsUnsupportedAndUnboundedDocuments) {
   for (const auto &xml : {
            replace(manifest, "static", "dynamic"),
-           replace(manifest, "flac", "mp4a.40.2"),
+           replace(manifest, "flac", "ec-3"),
+           replace(manifest, "flac", "mp4a.40.42"),
            replace(manifest, "<Period>", "<Period><ContentProtection/>"),
            replace(manifest, "<Period>", "<Period start=\"PT1S\">"),
            replace(manifest, "r=\"1\"", "r=\"1000000000\""),
@@ -86,56 +96,58 @@ TEST(DashManifest, RejectsUnsupportedAndUnboundedDocuments) {
   }
 }
 
-TEST(FragmentedFlac, ExtractsConfigurationAndSampleTimings) {
+TEST(FragmentedMp4, ExtractsConfigurationAndSampleTimings) {
   for (int bits : {16, 24}) {
     const auto fixture = dashFixtures(bits);
-    const auto config = FragmentedFlac::parseInitialization(
+    const auto init = FragmentedMp4::parseInitialization(
         bytes(fixture.at("/init-stream0.m4s")));
-    EXPECT_EQ(config.format.bitsPerSample, bits);
-    EXPECT_EQ(config.format.sampleRate, bits == 16 ? 44100u : 96000u);
+    EXPECT_EQ(init.track.codec, mp4::AudioTrack::Codec::FLAC);
+    EXPECT_EQ(init.track.config.size(), 34u);
+    const auto rate = bits == 16 ? 44100u : 96000u;
     uint64_t position = 0;
     for (const auto &[name, body] : fixture) {
       if (!name.starts_with("/chunk"))
         continue;
-      for (const auto &fragment : config.parseSegments(bytes(body))) {
+      for (const auto &fragment : init.parseSegments(bytes(body))) {
         EXPECT_EQ(fragment.time, position);
-        EXPECT_FALSE(fragment.frames.empty());
+        EXPECT_EQ(fragment.sizes.size(), fragment.durations.size());
+        EXPECT_EQ(std::accumulate(fragment.sizes.begin(), fragment.sizes.end(),
+                                  size_t(0)),
+                  fragment.data.size());
         position += std::accumulate(fragment.durations.begin(),
                                     fragment.durations.end(), uint64_t(0));
       }
     }
-    EXPECT_EQ(config.samplePosition(position),
-              config.format.sampleRate * 5 / 4);
+    EXPECT_EQ(samplesAt(position, init.track.timescale, rate), rate * 5 / 4);
   }
 }
 
-TEST(FragmentedFlac, RejectsTruncatedInitialization) {
+TEST(FragmentedMp4, RejectsTruncatedInitialization) {
   const auto fixture = dashFixtures(16).at("/init-stream0.m4s");
   for (size_t size = 0; size < fixture.size(); ++size)
-    EXPECT_THROW(
-        FragmentedFlac::parseInitialization(bytes(fixture).first(size)),
-        std::runtime_error)
+    EXPECT_THROW(FragmentedMp4::parseInitialization(bytes(fixture).first(size)),
+                 std::runtime_error)
         << size;
 }
 
-TEST(FragmentedFlac, RejectsBadOffsetsEncryptionAndTruncatedSegments) {
+TEST(FragmentedMp4, RejectsBadOffsetsEncryptionAndTruncatedSegments) {
   const auto fixture = dashFixtures(16);
-  const auto config = FragmentedFlac::parseInitialization(
+  const auto init = FragmentedMp4::parseInitialization(
       bytes(fixture.at("/init-stream0.m4s")));
   const auto original = fixture.at("/chunk-stream0-00001.m4s");
   for (size_t size : {size_t(0), size_t(7), size_t(100), original.size() - 1})
-    EXPECT_THROW(config.parseSegments(bytes(original).first(size)),
+    EXPECT_THROW(init.parseSegments(bytes(original).first(size)),
                  std::runtime_error);
   auto badOffset = original;
   const auto trun = badOffset.find("trun");
   ASSERT_NE(trun, std::string::npos);
   for (size_t i = trun + 12; i < trun + 16; ++i)
     badOffset[i] = char(0xff);
-  EXPECT_THROW(config.parseSegments(bytes(badOffset)), std::runtime_error);
+  EXPECT_THROW(init.parseSegments(bytes(badOffset)), std::runtime_error);
   const auto encrypted = replace(original, "trun", "senc");
-  EXPECT_THROW(config.parseSegments(bytes(encrypted)), std::runtime_error);
+  EXPECT_THROW(init.parseSegments(bytes(encrypted)), std::runtime_error);
   auto hugeBox = original;
   for (size_t i = 0; i < 4; ++i)
     hugeBox[i] = char(0xff);
-  EXPECT_THROW(config.parseSegments(bytes(hugeBox)), std::runtime_error);
+  EXPECT_THROW(init.parseSegments(bytes(hugeBox)), std::runtime_error);
 }

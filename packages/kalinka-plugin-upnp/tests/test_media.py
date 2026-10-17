@@ -164,7 +164,7 @@ def test_invalid_or_unsafe_metadata_is_rejected(metadata):
 def test_unsupported_declared_format_does_not_fall_back_to_extension():
     metadata = DIDL.replace(
         "http://media.test/audio?key=secret&amp;id=42", "http://media.test/a.flac"
-    ).replace("audio/flac", "audio/aac")
+    ).replace("audio/flac", "audio/opus")
     with pytest.raises(UpnpError) as error:
         Media.parse("http://media.test/a.flac", metadata)
     assert error.value.code == 714

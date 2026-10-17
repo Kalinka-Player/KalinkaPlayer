@@ -192,7 +192,7 @@ async def test_unsupported_media_does_not_interrupt_current_playback(
             "SetAVTransportURI",
             {
                 "InstanceID": 0,
-                "CurrentURI": "http://media.test/file.aac",
+                "CurrentURI": "http://media.test/file.opus",
                 "CurrentURIMetaData": "",
             },
             status=500,
@@ -299,7 +299,8 @@ async def test_dsd_url_without_metadata_is_played(client, receiver, direct):
 async def test_connection_and_rendering_controls(client, receiver, direct):
     protocols = await action(client, receiver, CM, "GetProtocolInfo", {})
     assert "http-get:*:audio/flac:*" in protocols["Sink"]
-    assert "audio/aac" not in protocols["Sink"]
+    assert "http-get:*:audio/aac:*" in protocols["Sink"]
+    assert "audio/opus" not in protocols["Sink"]
     assert await action(client, receiver, CM, "GetCurrentConnectionIDs", {}) == {
         "ConnectionIDs": "0"
     }

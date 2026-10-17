@@ -1,6 +1,9 @@
+#include "AacTestData.h"
 #include "DashStreamDecoder.h"
 #include "DashTestData.h"
+#include "FileInputNode.h"
 #include "LocalHttpServer.h"
+#include "Mp4StreamDecoder.h"
 
 #include <gtest/gtest.h>
 
@@ -15,20 +18,6 @@
 namespace {
 using namespace std::chrono_literals;
 using Bytes = std::vector<uint8_t>;
-
-Bytes expected(int bits, size_t first = 0) {
-  const size_t rate = bits == 16 ? 44100 : 96000;
-  Bytes bytes;
-  for (size_t i = first; i < rate * 5 / 4; ++i)
-    for (int channel = 0; channel < 2; ++channel) {
-      int32_t value = (int(i % 503) - 251) * 57 * (channel ? -1 : 1);
-      if (bits == 24)
-        value = (value * 256 + int(i % 127) - 63) & 0xffffff;
-      for (int b = 0; b < (bits == 16 ? 2 : 4); ++b)
-        bytes.push_back(uint32_t(value) >> (8 * b));
-    }
-  return bytes;
-}
 
 Bytes drain(DashStreamDecoder &node) {
   Bytes result;
@@ -63,7 +52,7 @@ TEST(DashDecoder, PreservesEverySampleAcrossSegments) {
     const auto actual = drain(node);
     EXPECT_EQ(node.getState().state, AudioGraphNodeState::FINISHED)
         << node.getState().toString();
-    EXPECT_EQ(actual, expected(bits));
+    EXPECT_EQ(actual, rampPcm(bits));
     const auto state = node.getState();
     ASSERT_TRUE(state.streamInfo);
     EXPECT_EQ(state.streamInfo->format.bitsPerSample, bits);
@@ -81,14 +70,46 @@ TEST(DashDecoder, StartOffsetAndSeeksAreSampleAccurate) {
     const size_t rate = bits == 16 ? 44100 : 96000;
     LocalHttpServer server(dashFixtures(bits));
     DashStreamDecoder node(3, server.url("/manifest.mpd"), 8192, 500);
-    EXPECT_EQ(drain(node), expected(bits, rate / 2));
+    EXPECT_EQ(drain(node), rampPcm(bits, rate / 2));
     for (size_t target : {rate / 4 + 13, rate + 7, size_t(0)}) {
       ASSERT_EQ(node.seekTo(target), target);
-      EXPECT_EQ(drain(node), expected(bits, target));
+      EXPECT_EQ(drain(node), rampPcm(bits, target));
     }
     EXPECT_EQ(node.seekTo(rate * 3), rate * 5 / 4);
     EXPECT_TRUE(drain(node).empty());
   }
+}
+
+TEST(DashDecoder, PlaysAacAsTheSameUnitsPlayInMp4) {
+  const auto mp4 = [](size_t target) {
+    Mp4StreamDecoder decoder(1, 16384);
+    decoder.connectTo(
+        std::make_shared<FileInputNode>(1, aacFixturePath("tones.m4a")));
+    EXPECT_EQ(decoder.seekTo(target), target);
+    Bytes result;
+    std::array<uint8_t, 4096> block;
+    while (decoder.waitForDataFor({}, 1s, 1))
+      result.insert(result.begin() + result.size(), block.begin(),
+                    block.begin() + decoder.read(block.data(), block.size()));
+    return result;
+  };
+  LocalHttpServer server(dashFixtures("aac"));
+  DashStreamDecoder node(3, server.url("/manifest.mpd"), 8192);
+  waitReady(node);
+  EXPECT_EQ(node.getState().streamInfo->streamSize, TONES_FRAMES);
+  EXPECT_EQ(drain(node), mp4(0));
+  // 10240 and 11264 put the unit that primes the decoder in the segment
+  // before the one that plays. DASH restarts at a segment's first unit and
+  // MP4 at the unit before its target, so their noise substitution, which
+  // is random, may differ slightly after a seek.
+  for (size_t target : {size_t(10240), size_t(10241), size_t(11264),
+                        size_t(30000), size_t(0)}) {
+    SCOPED_TRACE(target);
+    ASSERT_EQ(node.seekTo(target), target);
+    EXPECT_LE(maxDifference(drain(node), mp4(target)), 64);
+  }
+  EXPECT_EQ(node.seekTo(TONES_FRAMES + 5), TONES_FRAMES);
+  EXPECT_TRUE(drain(node).empty());
 }
 
 TEST(DashDecoder, SeekInterruptsAFullBuffer) {
@@ -96,7 +117,7 @@ TEST(DashDecoder, SeekInterruptsAFullBuffer) {
   DashStreamDecoder node(3, server.url("/manifest.mpd"), 128);
   waitReady(node);
   ASSERT_EQ(node.seekTo(96000), 96000u);
-  EXPECT_EQ(drain(node), expected(24, 96000));
+  EXPECT_EQ(drain(node), rampPcm(24, 96000));
 }
 
 TEST(DashDecoder, FetchesTheNextSegmentWhileTheCurrentOnePlays) {
@@ -109,7 +130,7 @@ TEST(DashDecoder, FetchesTheNextSegmentWhileTheCurrentOnePlays) {
     std::this_thread::sleep_for(5ms);
   EXPECT_GT(server.requestsTo("/chunk-stream0-00002.m4s"), 0u);
   EXPECT_EQ(server.requestsTo("/chunk-stream0-00003.m4s"), 0u);
-  EXPECT_EQ(drain(node), expected(24));
+  EXPECT_EQ(drain(node), rampPcm(24));
 }
 
 TEST(DashDecoder, MissingSegmentIsAnError) {

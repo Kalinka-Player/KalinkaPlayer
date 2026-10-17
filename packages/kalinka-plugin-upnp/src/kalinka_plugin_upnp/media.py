@@ -42,6 +42,12 @@ MIME_TYPES = {
     "audio/dsd": "audio/dsd",
     "audio/x-dsd": "audio/dsd",
     "application/dash+xml": "application/dash+xml",
+    "audio/mp4": "audio/mp4",
+    "audio/m4a": "audio/mp4",
+    "audio/x-m4a": "audio/mp4",
+    "audio/aac": "audio/aac",
+    "audio/x-aac": "audio/aac",
+    "audio/aacp": "audio/aac",
 }
 DSD_FORMATS = frozenset({"audio/x-dsf", "audio/x-dff", "audio/dsd"})
 EXTENSION_TYPES = {
@@ -54,6 +60,9 @@ EXTENSION_TYPES = {
     "dsf": "audio/x-dsf",
     "dff": "audio/x-dff",
     "mpd": "application/dash+xml",
+    "m4a": "audio/mp4",
+    "mp4": "audio/mp4",
+    "aac": "audio/aac",
 }
 
 

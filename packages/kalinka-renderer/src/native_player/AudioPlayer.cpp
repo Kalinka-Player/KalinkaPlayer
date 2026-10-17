@@ -1,16 +1,18 @@
 #include "AudioPlayer.h"
+#include "AdtsStreamDecoder.h"
 #include "AlsaAudioEmitter.h"
 #include "AudioGraphHttpStream.h"
 #include "AudioStreamSwitcher.h"
 #include "Config.h"
 #include "ContainerStreamDecoder.h"
+#include "DashStreamDecoder.h"
 #include "DsdContainer.h"
 #include "DsdFormat.h"
-#include "DashStreamDecoder.h"
 #include "FileInputNode.h"
 #include "FlacStreamDecoder.h"
 #include "Log.h"
 #include "Mp3StreamDecoder.h"
+#include "Mp4StreamDecoder.h"
 #include "PerfMon.h"
 #include "SineWaveNode.h"
 #include "StateMonitor.h"
@@ -32,6 +34,8 @@ const size_t MPEG_BUFFER_SIZE = 768000;
 const size_t VORBIS_BUFFER_SIZE = 768000;
 const size_t WAV_BUFFER_SIZE = 1536000;
 const size_t DSD_BUFFER_SIZE = 1536000;
+// MP4 may carry hi-res FLAC as well as AAC.
+const size_t AAC_BUFFER_SIZE = 1536000;
 // 750KB, 50% of flac buffer size
 // approx. flac compression ratio is 50%
 const size_t HTTP_BUFFER_SIZE = 768000;
@@ -224,6 +228,14 @@ struct StreamNodes {
     case AudioFormat::FormatVorbis:
       return decoding<VorbisStreamDecoder>(
           value_or(config, "decoder.vorbis.buffer_size", VORBIS_BUFFER_SIZE),
+          startOffsetMs);
+    case AudioFormat::FormatMp4:
+      return decoding<Mp4StreamDecoder>(
+          value_or(config, "decoder.aac.buffer_size", AAC_BUFFER_SIZE),
+          startOffsetMs);
+    case AudioFormat::FormatAdts:
+      return decoding<AdtsStreamDecoder>(
+          value_or(config, "decoder.aac.buffer_size", AAC_BUFFER_SIZE),
           startOffsetMs);
     default:
       return std::unexpected("Unsupported stream format");

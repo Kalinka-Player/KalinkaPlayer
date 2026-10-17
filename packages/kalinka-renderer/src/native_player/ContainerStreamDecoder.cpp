@@ -34,25 +34,10 @@ void ContainerStreamDecoder::disconnect(
 }
 
 void ContainerStreamDecoder::readExact(void *dest, size_t bytes) {
-  auto combined = interruption();
-  auto *p = static_cast<uint8_t *>(dest);
-  while (bytes) {
-    const auto available =
-        input->waitForData(combined.get_token(), std::min(bytes, size_t(4096)));
-    if (combined.get_token().stop_requested())
-      throw Interrupted{};
-    const auto state = input->getState();
-    if (state.state == AudioGraphNodeState::ERROR)
-      throw SourceFailed{state.error.value_or(StreamError{
-          StreamErrorSource::DECODER, format->name() + " input failed"})};
-    const auto count =
-        available ? input->read(p, std::min(bytes, available)) : 0;
-    if (!count)
-      throw std::runtime_error("Truncated " + format->name() + " file");
-    sourcePosition += count;
-    p += count;
-    bytes -= count;
-  }
+  const auto count = readSource(*input, dest, bytes);
+  sourcePosition += count;
+  if (count < bytes)
+    throw std::runtime_error("Truncated " + format->name() + " file");
 }
 
 StreamInfo ContainerStreamDecoder::open() {
