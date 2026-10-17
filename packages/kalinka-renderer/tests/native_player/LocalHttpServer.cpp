@@ -246,7 +246,11 @@ void holdOpen(tcp::socket &socket) {
 } // namespace
 
 LocalHttpServer::LocalHttpServer(const std::string &filePath)
-    : body_(readFile(filePath)),
+    : LocalHttpServer(std::map<std::string, std::string, std::less<>>{
+          {"", readFile(filePath)}}) {}
+
+LocalHttpServer::LocalHttpServer(std::map<std::string, std::string, std::less<>> bodies)
+    : bodies_(std::move(bodies)),
       acceptor_(io_, tcp::endpoint(asio::ip::make_address("127.0.0.1"), 0)) {
   acceptorThread_ = std::jthread([this] { acceptConnections(); });
 }
@@ -300,7 +304,15 @@ void LocalHttpServer::serve(tcp::socket &socket) {
     if (error) {
       return;
     }
-    Reply reply = answer(request, body_, firstRequestTo(request.target()));
+    const auto first = firstRequestTo(request.target());
+    const auto found = bodies_.find(request.target());
+    static const std::string none;
+    const auto fallback = bodies_.find("");
+    const std::string &body =
+        fallback == bodies_.end() ? none : fallback->second;
+    Reply reply = found != bodies_.end()
+                      ? Reply{ranged(request, found->second)}
+                      : answer(request, body, first);
     Response &response = reply.response;
     switch (reply.delivery) {
     case Delivery::Whole:

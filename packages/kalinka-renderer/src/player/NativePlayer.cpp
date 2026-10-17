@@ -43,6 +43,7 @@ AudioFormat formatOf(const pb::Source &source) {
              ? std::string_view{}
              : mime.substr(first, mime.find_last_not_of(" \t\r\n") - first + 1);
   static const std::unordered_map<std::string_view, AudioFormat> declared = {
+      {"application/dash+xml", AudioFormat::FormatDash},
       {"audio/dsf", AudioFormat::FormatDsd},
       {"audio/x-dsf", AudioFormat::FormatDsd},
       {"audio/dff", AudioFormat::FormatDsd},
@@ -83,6 +84,9 @@ AudioFormat formatOf(const pb::Source &source) {
     return AudioFormat::FormatUnsupported;
   }
   const auto path = lower(source.uri().substr(0, source.uri().find_first_of("?#")));
+  if (path.ends_with(".mpd")) {
+    return AudioFormat::FormatDash;
+  }
   if (path.ends_with(".dsf") || path.ends_with(".dff"))
     return AudioFormat::FormatDsd;
   if (path.ends_with(".flac")) {

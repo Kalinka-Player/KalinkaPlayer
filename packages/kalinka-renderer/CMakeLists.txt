@@ -48,6 +48,7 @@ find_package(CURL 7.68 REQUIRED) # curl_multi_wakeup for prompt stream cancellat
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FLACPP REQUIRED IMPORTED_TARGET flac++)
 pkg_check_modules(VORBISFILE REQUIRED IMPORTED_TARGET vorbisfile)
+pkg_check_modules(XML2 REQUIRED IMPORTED_TARGET libxml-2.0)
 pkg_check_modules(CURLPP REQUIRED IMPORTED_TARGET curlpp)
 # Debian's curlpp.pc emits a relative "-Iinclude" (empty ${prefix}), which
 # CMake rejects on the imported target. The headers are in the default search
@@ -102,6 +103,9 @@ add_library(kalinka_native_player STATIC
   src/native_player/ContainerStreamDecoder.cpp
   src/native_player/DsdContainer.cpp
   src/native_player/DsdFormat.cpp
+  src/native_player/DashStreamDecoder.cpp
+  src/native_player/DashManifest.cpp
+  src/native_player/FragmentedFlac.cpp
   src/native_player/FlacStreamDecoder.cpp
   src/native_player/Log.cpp
   src/native_player/Mp3StreamDecoder.cpp
@@ -117,6 +121,7 @@ target_link_libraries(kalinka_native_player PUBLIC
   PkgConfig::CURLPP
   PkgConfig::FLACPP
   PkgConfig::VORBISFILE
+  PkgConfig::XML2
   Boost::headers
   spdlog::spdlog
   Threads::Threads
@@ -215,6 +220,8 @@ if(GTest_FOUND)
     tests/native_player/BufferedStreamDecoder_test.cpp
     tests/native_player/ContainerStreamDecoder_test.cpp
     tests/native_player/DsdContainer_test.cpp
+    tests/native_player/DashStreamDecoder_test.cpp
+    tests/native_player/DashFormat_test.cpp
     tests/native_player/FileInputNode_test.cpp
     tests/native_player/FlacStreamDecoder_test.cpp
     tests/native_player/LocalHttpServer.cpp

@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "LocalHttpServer.h"
+#include "DashTestData.h"
 #include "TestHelpers.h"
 #include "WavTestData.h"
 #include "config/ConfigService.h"
@@ -650,6 +651,47 @@ TEST_F(NativePlayerStreamTest, SpeakerTestToneNeedsNoStreamFormat) {
   EXPECT_GT(std::ranges::count(states, pb::PLAYBACK_STATE_FINISHED), 0);
   EXPECT_EQ(std::ranges::count(states, pb::PLAYBACK_STATE_ERROR), 0);
   player_->setStateSink({});
+}
+
+TEST_F(NativePlayerStreamTest, DashMimeAndSuffixPlayThroughTheNativeRenderer) {
+  auto bodies = dashFixtures(24);
+  bodies["/opaque-asset"] = bodies.at("/manifest.mpd");
+  LocalHttpServer dash(std::move(bodies));
+  for (const auto &[mime, path] : {
+           std::pair{"application/dash+xml", "/opaque-asset"},
+           std::pair{"", "/manifest.mpd"}}) {
+    SCOPED_TRACE(mime);
+    std::vector<pb::PlaybackStateChanged> states;
+    player_->setStateSink([&](pb::Envelope &env) {
+      if (env.has_playback_state_changed())
+        states.push_back(env.playback_state_changed());
+    });
+    pb::Source source;
+    source.set_uri(dash.url(path));
+    source.set_mime_type(mime);
+    source.set_source_token(path);
+    source.set_start_offset_ms(500);
+    player_->setSource(source);
+    EXPECT_TRUE(runUntil([&] {
+      return std::ranges::any_of(states, [](const auto &state) {
+        return state.state() == pb::PLAYBACK_STATE_FINISHED ||
+               state.state() == pb::PLAYBACK_STATE_ERROR;
+      });
+    }));
+    player_->setStateSink({});
+    player_->stop();
+    EXPECT_TRUE(std::ranges::any_of(states, [](const auto &state) {
+      return state.state() == pb::PLAYBACK_STATE_PLAYING &&
+             state.format().sample_rate_hz() == 96000 &&
+             state.format().bits_per_sample() == 24 && state.position_ms() >= 500;
+    }));
+    EXPECT_TRUE(std::ranges::any_of(states, [](const auto &state) {
+      return state.state() == pb::PLAYBACK_STATE_FINISHED;
+    }));
+    for (const auto &state : states)
+      EXPECT_NE(state.state(), pb::PLAYBACK_STATE_ERROR) << state.error().message();
+    ioc_.poll();
+  }
 }
 
 TEST_F(NativePlayerStreamTest, UnsupportedSourcesFailBeforeOpeningTheStream) {

@@ -59,8 +59,8 @@ if command -v dpkg-shlibdeps > /dev/null 2>&1; then
     rm -rf "$SHLIB_WORK"
 fi
 if [ -z "$SHLIBDEPS" ]; then
-    echo "dpkg-shlibdeps unavailable; using static library deps"
-    SHLIBDEPS="libcurlpp0, libcurl4, libflac++10, libvorbisfile3, libasound2, libspdlog1.10, libfmt9, libprotobuf-lite32, libstdc++6, libc6, libgcc-s1"
+    echo "Error: dpkg-shlibdeps must resolve this distribution's library dependencies." >&2
+    exit 1
 fi
 echo "Library deps: $SHLIBDEPS"
 
