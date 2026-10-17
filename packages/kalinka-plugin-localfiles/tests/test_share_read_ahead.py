@@ -23,6 +23,7 @@ import pytest_asyncio
 import soundfile as sf
 from fastapi import FastAPI
 from mutagen.flac import FLAC
+from smbprotocol.exceptions import SMBConnectionClosed
 
 import kalinka_plugin_localfiles.storage.smb as smb_mod
 from kalinka_plugin_localfiles.config_model import (
@@ -202,6 +203,31 @@ async def test_ranges_served_cost_the_nas_only_their_own_bytes(share, one_worker
     assert _open_bufferings(client) == [0]
     [opened] = client.opened
     assert (opened.reads, opened.fetched) == (3, 3 * RANGE_BYTES)
+
+
+@pytest.mark.asyncio
+async def test_a_share_gone_mid_track_is_a_503_the_renderer_retries(
+    share, one_worker
+):
+    """The next range is served from the file kept open, without the probe
+    that used to find the share gone, and must still answer as it did: a
+    renderer retries a 503 but cannot recover a 206 whose body breaks."""
+    client, config = share
+    track_id = await _index(config)
+    module = _module_reading(config, build_resolver(config))
+    url = f"{CONTENT_ROUTE}/localfiles/{track_id}"
+
+    async with _serving(module) as http:
+        assert (await http.get(url, headers=_ranged(0))).status_code == 206
+        gone = SMBConnectionClosed("SMB socket was closed")
+        client.failure = gone
+        for opened in client.opened:
+            opened.failure = gone
+
+        r = await http.get(url, headers=_ranged(RANGE_BYTES))
+
+    assert r.status_code == 503
+    assert r.headers["retry-after"] == "2"
 
 
 @pytest.mark.asyncio

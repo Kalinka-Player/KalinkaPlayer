@@ -1060,8 +1060,12 @@ class LocalFilesInputModule(InputModule):
         A track its storage keeps open for streaming skips the folder probe
         and the measurement: a renderer asks for one range after another,
         and the first made both. The boundary is still checked, which on a
-        share is a comparison of paths rather than a round trip. A changed
-        source replaces the storage, and what it kept open closes with it.
+        share is a comparison of paths rather than a round trip. The storage
+        stops vouching for a length after a couple of minutes however busy
+        the track is, and both run again. A changed source replaces the
+        storage, and what it kept open closes with it. A share that went
+        away meanwhile still earns a 503, because the server reads the
+        range's first bytes before it answers.
         """
         if not self.db_manager.is_good():
             logger.warning("Database is not initialized or corrupted")

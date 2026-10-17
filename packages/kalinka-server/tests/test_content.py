@@ -372,6 +372,50 @@ def test_a_stream_that_will_not_open_is_transient(monkeypatch):
     assert r.headers["retry-after"] == "2"
 
 
+class _DroppedStream(io.BytesIO):
+    """A stream open on a share that has since gone, as one a module kept
+    open between ranges can be."""
+
+    def read(self, size=-1):
+        raise OSError("nas dropped the connection")
+
+
+def test_a_stream_that_fails_its_first_read_is_transient():
+    """The read comes before any header, so the renderer still gets the 503
+    it retries rather than a 206 whose body breaks off."""
+    streams = []
+
+    def open_stream():
+        streams.append(_DroppedStream(AUDIO))
+        return streams[-1]
+
+    client = _client_for(_reader_backed(reader=open_stream))
+    r = client.get(_url(), headers={"Range": "bytes=100-199"})
+
+    assert r.status_code == 503
+    assert r.headers["retry-after"] == "2"
+    deadline = time.monotonic() + 5.0
+    while not streams[0].closed and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert streams[0].closed
+
+
+def test_a_first_read_that_does_not_answer_is_transient(monkeypatch):
+    import kalinka_server.content_route as content_route
+
+    class _Silent(io.BytesIO):
+        def read(self, size=-1):
+            time.sleep(5)
+            return b""
+
+    monkeypatch.setattr(content_route, "_OPEN_TIMEOUT_S", 0.05)
+    client = _client_for(_reader_backed(reader=lambda: _Silent(AUDIO)))
+
+    r = client.get(_url())
+    assert r.status_code == 503
+    assert r.headers["retry-after"] == "2"
+
+
 def test_a_slow_open_is_not_held_to_the_stat_budget(monkeypatch):
     """Opening a stream may have to connect and log in first, which takes
     longer than a stat is ever given. Sharing one budget failed a healthy

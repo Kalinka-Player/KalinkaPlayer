@@ -37,7 +37,8 @@ _STAT_TIMEOUT_S = 3.0
 # Opening a module's stream is not a stat: the first read of a track may have
 # to build a connection and log in before it can answer, which an SMB client
 # alone gives 15 seconds to. Cutting that off at the stat budget would fail a
-# healthy share whenever its pooled session had dropped.
+# healthy share whenever its pooled session had dropped. The first read of a
+# range, made before any header, gets as long again.
 _OPEN_TIMEOUT_S = 20.0
 
 
@@ -140,6 +141,13 @@ async def _serve_stream(
 
     try:
         reader = await ranged_content.open_reader(info.reader, _OPEN_TIMEOUT_S)
+        return await ranged_content.stream_response(
+            reader,
+            span=span,
+            size=info.size,
+            mime_type=info.mime_type,
+            read_timeout_s=_OPEN_TIMEOUT_S,
+        )
     except (asyncio.TimeoutError, TimeoutError):
         raise HTTPException(
             status_code=503,
@@ -157,13 +165,9 @@ async def _serve_stream(
         # The asset was there a moment ago, so this is the storage failing,
         # not the asset missing. A renderer retries a 5xx and abandons the
         # track on a 4xx, and a dropped share session is worth retrying.
-        logger.warning("Could not open asset %s of %s: %s", asset_id, module_name, e)
+        logger.warning("Could not read asset %s of %s: %s", asset_id, module_name, e)
         raise HTTPException(
             status_code=503,
             detail="Content storage is not readable",
             headers={"Retry-After": "2"},
         )
-
-    return ranged_content.stream_response(
-        reader, span=span, size=info.size, mime_type=info.mime_type
-    )

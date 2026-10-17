@@ -53,6 +53,16 @@ async def _closed(handle, timeout=5.0) -> bool:
     return handle.was_closed
 
 
+async def _response(handle, *, span=None, size=len(AUDIO), read_timeout_s=5.0):
+    return await stream_response(
+        handle,
+        span=span,
+        size=size,
+        mime_type="audio/flac",
+        read_timeout_s=read_timeout_s,
+    )
+
+
 async def _drive(response, *, disconnect_after=None):
     """Run a response as an ASGI server would.
 
@@ -82,11 +92,7 @@ class TestWhoClosesTheStream:
     @pytest.mark.asyncio
     async def test_a_response_that_runs_to_the_end(self):
         handle = _Handle()
-        body = await _drive(
-            stream_response(
-                handle, span=None, size=len(AUDIO), mime_type="audio/flac"
-            )
-        )
+        body = await _drive(await _response(handle))
         assert body == AUDIO
         assert await _closed(handle)
 
@@ -100,13 +106,7 @@ class TestWhoClosesTheStream:
         """
         handle = _Handle(AUDIO * 4096)  # large enough to still be streaming
         await _drive(
-            stream_response(
-                handle,
-                span=None,
-                size=len(AUDIO) * 4096,
-                mime_type="audio/flac",
-            ),
-            disconnect_after=1,
+            await _response(handle, size=len(AUDIO) * 4096), disconnect_after=1
         )
         assert await _closed(handle)
 
@@ -126,11 +126,7 @@ class TestWhoClosesTheStream:
 
         handle = _SlowToClose()
         started = time.monotonic()
-        await _drive(
-            stream_response(
-                handle, span=None, size=len(AUDIO), mime_type="audio/flac"
-            )
-        )
+        await _drive(await _response(handle))
         elapsed = time.monotonic() - started
 
         assert elapsed < 1.0
@@ -206,9 +202,7 @@ class TestHowARangeIsRead:
         handle = _CountingHandle(payload)
         span = (100_000, 100_000 + 384_000 - 1)
 
-        body = await _drive(
-            stream_response(handle, span=span, size=len(payload), mime_type="audio/dsf")
-        )
+        body = await _drive(await _response(handle, span=span, size=len(payload)))
 
         assert body == payload[100_000:484_000]
         assert handle.reads == [384_000]
@@ -218,13 +212,55 @@ class TestHowARangeIsRead:
         payload = bytes(range(256)) * 12_400  # 3 MiB and a little
         handle = _CountingHandle(payload)
 
-        body = await _drive(
-            stream_response(handle, span=None, size=len(payload), mime_type="audio/dsf")
-        )
+        body = await _drive(await _response(handle, size=len(payload)))
 
         assert body == payload
         assert len(handle.reads) == 4
         assert max(handle.reads) <= 1024 * 1024
+
+
+class TestReadingBeforeAnswering:
+    """Until a header goes out, a storage that fails can still be answered
+    with a 503 a renderer retries; after it, the body can only break off. A
+    module that keeps a file open between ranges learns only from the read
+    that the share behind it went away."""
+
+    @pytest.mark.asyncio
+    async def test_a_first_read_that_fails_is_raised_before_the_response(self):
+        class _Gone(_Handle):
+            def read(self, size=-1):
+                raise OSError("nas dropped the connection")
+
+        handle = _Gone()
+
+        with pytest.raises(OSError, match="dropped"):
+            await _response(handle, span=(100, 199))
+
+        assert await _closed(handle)
+
+    @pytest.mark.asyncio
+    async def test_a_first_read_that_does_not_answer_in_time(self):
+        class _Silent(_Handle):
+            def read(self, size=-1):
+                time.sleep(0.3)
+                return b""
+
+        handle = _Silent()
+
+        with pytest.raises((asyncio.TimeoutError, TimeoutError)):
+            await _response(handle, read_timeout_s=0.05)
+
+        assert await _closed(handle)
+
+    @pytest.mark.asyncio
+    async def test_a_short_first_read_is_followed_by_the_rest(self):
+        class _Short(_Handle):
+            def read(self, size=-1):
+                return super().read(min(size, 100))
+
+        body = await _drive(await _response(_Short(), span=(10, 1009)))
+
+        assert body == AUDIO[10:1010]
 
 
 class TestWhatARangeMeans:
@@ -288,9 +324,7 @@ class TestHeadMatchesGet:
     async def test_the_headers_are_the_same_ones(self):
         span = resolve_range("bytes=10-19", len(AUDIO))
         head = head_response(span, len(AUDIO), "audio/flac")
-        get = stream_response(
-            _Handle(), span=span, size=len(AUDIO), mime_type="audio/flac"
-        )
+        get = await _response(_Handle(), span=span)
 
         assert head.status_code == get.status_code == 206
         for field in ("content-range", "content-length", "accept-ranges"):
