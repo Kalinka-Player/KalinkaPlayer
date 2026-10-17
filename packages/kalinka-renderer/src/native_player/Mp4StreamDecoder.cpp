@@ -69,17 +69,17 @@ private:
 
 class Mp4StreamDecoder::Fragmented final : public Layout {
 public:
-  /// @param listed The fragments a `sidx` or `mfra` index lists; empty when
-  /// the file has neither.
+  /// @param listed The fragments a `sidx` or `mfra` index lists, in output
+  /// frames; empty when the file has neither.
   Fragmented(FragmentedMp4 initialization, unsigned rate, uint64_t first,
              const std::vector<FragmentedMp4::Reference> &listed)
       : init(std::move(initialization)), rate(rate), firstFragment(first),
         nextOffset(first), complete(!listed.empty()) {
     for (const auto &reference : listed)
-      index.push_back({reference.offset, frames(reference.time)});
+      index.push_back({reference.offset, reference.time});
     if (complete) {
       const auto &last = listed.back();
-      total = frames(last.time + last.duration);
+      total = last.time + last.duration;
     } else {
       // A header's length only bounds seeking; it need not land on a frame.
       total = samplesNear(init.track.duration, init.track.timescale, rate);
@@ -101,6 +101,15 @@ public:
       nextOffset = at->offset;
       expected = at->time;
     }
+    fragment = {};
+    unit = 0;
+  }
+
+  /// Starts over at the first fragment, which must begin at `time`.
+  void rewind(uint64_t time) {
+    nextOffset = firstFragment;
+    expected = time;
+    ended = false;
     fragment = {};
     unit = 0;
   }
@@ -176,7 +185,7 @@ private:
         mp4::invalid();
       const auto data = file.readBox(*media, maxFragmentBytes);
       bytes.insert(bytes.end(), data.begin(), data.end());
-      auto fragments = init.parseSegments(bytes);
+      auto fragments = init.parseSegments(bytes, box->offset);
       fragment = std::move(fragments.front());
       unitTime = frames(fragment.time);
       if (expected && unitTime != *expected)
@@ -193,6 +202,40 @@ private:
     ended = true;
     return false;
   }
+};
+
+/// A fragmented movie whose header lists its first units itself.
+class Mp4StreamDecoder::Leading final : public Layout {
+public:
+  Leading(std::unique_ptr<Progressive> listed,
+          std::unique_ptr<Fragmented> fragments)
+      : head(std::move(listed)), tail(std::move(fragments)) {
+    tail->rewind(head->length());
+  }
+
+  uint64_t length() const override { return tail->length(); }
+
+  void seek(Mp4StreamDecoder &file, uint64_t frame) override {
+    inHead = frame < head->length();
+    if (!inHead)
+      return tail->seek(file, frame);
+    head->seek(file, frame);
+    tail->rewind(head->length());
+  }
+
+  std::optional<Unit> next(Mp4StreamDecoder &file) override {
+    if (inHead) {
+      if (auto unit = head->next(file))
+        return unit;
+      inHead = false;
+    }
+    return tail->next(file);
+  }
+
+private:
+  const std::unique_ptr<Progressive> head;
+  const std::unique_ptr<Fragmented> tail;
+  bool inHead = true;
 };
 
 std::vector<uint8_t> Mp4StreamDecoder::BoxHeader::bytes() const {
@@ -321,7 +364,7 @@ StreamInfo Mp4StreamDecoder::open() {
   lookahead.reset();
   std::vector<uint8_t> moov, sidx;
   uint64_t sidxEnd = 0;
-  std::optional<uint64_t> media;
+  std::optional<BoxHeader> media;
   auto box = nextBox();
   // An HTTP source knows its length once its first bytes have arrived.
   sourceSize = sourceLength();
@@ -336,8 +379,7 @@ StreamInfo Mp4StreamDecoder::open() {
     }
     if (box->type == "mdat" || box->type == "moof") {
       if (!moov.empty()) {
-        media = box->offset;
-        lookahead = box;
+        media = lookahead = box;
         break;
       }
       if (!sourceSeeks)
@@ -360,18 +402,30 @@ StreamInfo Mp4StreamDecoder::open() {
                           [](const auto &box) { return box.type == "mvex"; })) {
     auto init = FragmentedMp4::parseInitialization(moov);
     track = TrackDecoder::forTrack(init.track);
+    const auto rate = track->format().sampleRate;
+    // Units the header lists lie in the media box that follows it.
+    const auto leading = Mp4SampleTable::listsSamples(moov);
+    const auto first = !media ? sourcePosition()
+                       : leading && media->type == "mdat"
+                           ? media->offset + media->size
+                           : media->offset;
     std::vector<FragmentedMp4::Reference> listed;
     try {
       if (!sidx.empty())
-        listed = init.parseIndex(sidx, sidxEnd);
+        listed = init.inFrames(init.parseIndex(sidx, sidxEnd), rate);
     } catch (const std::runtime_error &) {
       // As with `mfra`, a broken index costs seeking, not playback.
     }
     if (listed.empty() && sourceSeeks && sourceSize)
-      listed = randomAccess(init);
-    layout = std::make_unique<Fragmented>(std::move(init),
-                                          track->format().sampleRate,
-                                          media.value_or(sourcePosition()), listed);
+      listed = init.inFrames(randomAccess(init), rate);
+    auto fragments =
+        std::make_unique<Fragmented>(std::move(init), rate, first, listed);
+    if (leading)
+      layout = std::make_unique<Leading>(
+          std::make_unique<Progressive>(Mp4SampleTable::parse(moov), rate),
+          std::move(fragments));
+    else
+      layout = std::move(fragments);
   } else {
     auto table = Mp4SampleTable::parse(moov);
     track = TrackDecoder::forTrack(table.track);

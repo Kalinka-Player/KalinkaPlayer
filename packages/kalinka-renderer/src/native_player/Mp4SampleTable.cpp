@@ -61,15 +61,26 @@ std::vector<uint64_t> unitsPerChunk(Bytes stsc, size_t chunks) {
   }
   return result;
 }
+
+std::vector<mp4::Box> sampleTables(const mp4::Box &moov) {
+  const auto stbl = mp4::inside(
+      mp4::inside(mp4::inside(mp4::soundTrack(moov), "mdia"), "minf"), "stbl");
+  return mp4::boxes(stbl.payload, stbl.offset + stbl.header);
+}
 } // namespace
+
+bool Mp4SampleTable::listsSamples(Bytes bytes) {
+  for (const auto &item : sampleTables(mp4::one(mp4::boxes(bytes), "moov")))
+    if (item.type == "stsz")
+      return integer(item.payload, 8, 4) > 0;
+  return false;
+}
 
 Mp4SampleTable Mp4SampleTable::parse(Bytes bytes) {
   const auto moov = mp4::one(mp4::boxes(bytes), "moov");
   Mp4SampleTable table;
   table.track = mp4::audioTrack(moov);
-  const auto stbl = mp4::inside(
-      mp4::inside(mp4::inside(mp4::soundTrack(moov), "mdia"), "minf"), "stbl");
-  const auto items = mp4::boxes(stbl.payload, stbl.offset + stbl.header);
+  const auto items = sampleTables(moov);
   table.sizes = unitSizes(mp4::one(items, "stsz").payload);
   const auto count = table.sizes.size();
 

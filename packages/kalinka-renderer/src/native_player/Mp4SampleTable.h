@@ -17,7 +17,11 @@ struct Mp4SampleTable {
   std::vector<uint64_t> times;
   uint64_t end = 0;
 
-  /// Reads a whole `moov` box, header included, whose track is not
-  /// fragmented. Throws for an index that is inconsistent or too large.
+  /// Reads the units a whole `moov` box, header included, lists; a
+  /// fragmented movie's fragments follow them. Throws for an index that is
+  /// inconsistent or too large.
   static Mp4SampleTable parse(std::span<const uint8_t> moov);
+  /// Whether a `moov` box's sample tables list any audio units, as a
+  /// fragmented movie's may for those before its first fragment.
+  static bool listsSamples(std::span<const uint8_t> moov);
 };

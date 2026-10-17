@@ -32,6 +32,7 @@ private:
   class Layout;
   class Progressive;
   class Fragmented;
+  class Leading;
   struct BoxHeader {
     std::string type;
     uint64_t offset = 0, size = 0, header = 0;

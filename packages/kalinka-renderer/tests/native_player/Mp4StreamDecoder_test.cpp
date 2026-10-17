@@ -17,9 +17,9 @@ using container_test::drain;
 using namespace std::chrono_literals;
 
 constexpr size_t BUFFER_SIZE = 16384;
-const char *const LAYOUTS[] = {"tones.m4a", "tones-index-last.m4a",
-                               "tones-fragmented.m4a",
-                               "tones-fragmented-sidx.m4a"};
+const char *const LAYOUTS[] = {
+    "tones.m4a", "tones-index-last.m4a", "tones-fragmented.m4a",
+    "tones-fragmented-sidx.m4a", "tones-fragmented-mixed.m4a"};
 
 Bytes decodeFile(const std::string &name, size_t startOffsetMs = 0) {
   Mp4StreamDecoder decoder(1, BUFFER_SIZE, startOffsetMs);
@@ -188,7 +188,8 @@ TEST(Mp4StreamDecoder, StartsAtAnOffset) {
 }
 
 TEST(Mp4StreamDecoder, PlaysWhatASequentialSourceAllows) {
-  for (const auto *name : {"tones.m4a", "tones-fragmented.m4a"}) {
+  for (const auto *name :
+       {"tones.m4a", "tones-fragmented.m4a", "tones-fragmented-mixed.m4a"}) {
     SCOPED_TRACE(name);
     Mp4StreamDecoder decoder(1, BUFFER_SIZE);
     decoder.connectTo(
