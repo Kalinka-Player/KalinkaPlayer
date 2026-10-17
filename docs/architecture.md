@@ -1,6 +1,6 @@
 # Architecture
 
-The core, the plugins and the renderer each live in their own package. A renderer discovers the server over mDNS and connects out to it, then fetches media over HTTP itself — audio never flows through the core. What a renderer must do to be one is written down in [`native-renderer-design.md`](native-renderer-design.md), so the bundled ALSA renderer is an implementation of that contract rather than the only possible one.
+The core, the plugins and the renderer each live in their own package. A renderer discovers the server over mDNS and connects out to it, then fetches media over HTTP itself, from a URL the server gives it for each track. What a renderer must do to be one is written down in [`native-renderer-design.md`](native-renderer-design.md), so the bundled ALSA renderer is an implementation of that contract rather than the only possible one.
 
 ```
 packages/
@@ -14,6 +14,20 @@ packages/
 ```
 
 Plugins are ordinary Python packages discovered at runtime via package metadata. You can add or remove functionality without touching the server core. To create your own, start from the cookiecutter template under [`template/cookiecutter-kalinka-plugin/`](../template/cookiecutter-kalinka-plugin/) and read its README. Plugin Debian packaging conventions are documented in [`plugin-deb-packaging.md`](plugin-deb-packaging.md).
+
+## Where the audio comes from
+
+The URL a renderer is given points either at the source or at the server. The plugin that owns the track chooses which, with the [`TrackSource`](../packages/kalinka-plugin-sdk/src/kalinka_plugin_sdk/inputmodule.py) it returns:
+
+- A `DirectUrl` is the source's own address. The renderer fetches straight from it, and no audio passes through the server. Jamendo and UPnP use it.
+- A `ModuleAsset` names content the plugin holds, which the server serves at `/content/<module>/<asset>`, on the server address the renderer dialed to register. The renderer then only ever has to reach the server it already talks to, and the plugin never has to know which of the server's network interfaces that is. A live stream a plugin produces as it plays (`ContentInfo.live`) is served this way too.
+
+My Library always uses `ModuleAsset`, so every library track is fetched from the server, even by the renderer on the server's own machine:
+
+- A **Folder on the server** is read from disk by the server process. A share the operating system mounts counts as one.
+- A **Network share** is read over SMB by the plugin itself, since the service does not mount shares. The server relays each range the renderer asks for, copying it from the share in fixed-size reads ([`ranged_content.py`](../packages/kalinka-server/src/kalinka_server/ranged_content.py)).
+
+So when sizing a server for a library, count the renderers: each one playing a library track is a stream the server sends, and with a share also a stream it receives, since every byte travels NAS → server → renderer. How much a renderer asks for in each request is its *Network request size* setting (`buffers.network_request`).
 
 ## API overview
 
