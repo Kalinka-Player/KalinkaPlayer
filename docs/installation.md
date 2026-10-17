@@ -149,15 +149,24 @@ The PC image also runs as a virtual machine. This suits a home server that is on
 **3. Start the VM.** Its screen shows the address to open, as described in [Get a remote](#get-a-remote).
 
 <details>
-<summary>Adding the settings file to a VM</summary>
+<summary>Changing the settings in a VM image</summary>
 
-A VM has no memory card to take out, so add the [settings file](#on-the-pc-image) to the `.img` before you import it. On Linux, with `mtools` installed:
+A VM usually needs none of [the settings](#on-the-pc-image). Wi-Fi only works with a real adapter passed through to the VM, and a login can come later from **SSH access** on [the control page](#the-control-page). To set a password or a time zone before the first start anyway, change `dietpi.txt` on the image's DIETPISETUP partition before you import the image. It is the third partition, and where it starts depends on the size of the image, so let `partx` find it. On Linux, with `mtools` installed:
 
 ```bash
-mcopy -i kalinka.img@@2097152 kalinka-firstboot.conf ::/kalinka-firstboot.conf
+off=$(( $(partx -g -o START -n 3 kalinka.img) * 512 ))
+mcopy -i kalinka.img@@$off ::/dietpi.txt .
 ```
 
-On macOS, install mtools with `brew install mtools` and run the same command. The boot partition is an EFI partition, which macOS does not mount by itself.
+Change the lines you need in that copy of `dietpi.txt`, as [on a Raspberry Pi](#on-a-raspberry-pi-image), then put it back in the same terminal:
+
+```bash
+mcopy -o -i kalinka.img@@$off dietpi.txt ::/dietpi.txt
+```
+
+`dietpi-wifi.txt` is changed the same way, for a VM with a Wi-Fi adapter passed through.
+
+On macOS, run `hdiutil attach -imagekey diskimage-class=CRawDiskImage kalinka.img`. The DIETPISETUP volume appears in the Finder; click **Ignore** if macOS says another disk is not readable. Edit `dietpi.txt` there, then run `hdiutil detach` with the first `/dev/disk` name the attach command printed.
 
 </details>
 
@@ -305,7 +314,7 @@ You can also use the [temporary Wi-Fi hotspot](#connect-your-box-to-the-network)
 
 If the volume does not appear, use the disk utility to mount the partition labelled `DIETPISETUP` (partition 3), leaving the EFI and Linux root partitions alone. On Linux, `lsblk -o NAME,LABEL` identifies it. After the first boot, change settings through `dietpi-config` after logging in, or use the app's nearby setup when offline.
 
-Older Debian PC images used `kalinka-firstboot.conf` on KALINKA-BT. That file is not used by the new DietPi images.
+Older Debian PC images read `kalinka-firstboot.conf` on KALINKA-BT instead, and the `.example` file beside it explains its settings. The DietPi PC images do not read that file.
 
 ### The control page
 
@@ -489,7 +498,7 @@ All current images use DietPi. With a login, use `dietpi-update` and then `apt u
 
 **The Pi does not start.** Check you wrote the right image: `rpi5` for a Pi 5, `rpi234` for the others (with or without `-display`). Write the card again, and try another card if that fails. Use the official power supply.
 
-**Wi-Fi or the login does not work.** On a Pi, check that `AUTO_SETUP_NET_WIFI_ENABLED=1` is set and that the network name and password in `dietpi-wifi.txt` are between the quotes. The Pi removes the files from the card after its first start, so write the card again to try once more. On the PC image, look at the drive again: if `kalinka-firstboot.conf` is still there, the player could not read it. Check that the file name is exactly right, with no hidden `.txt` on the end, and that any value containing spaces is inside quotes. Then start the player again. If the file is gone but the login still fails, a line was left starting with `#`, or `PASSWORD_HASH` held the example's placeholder: write the file again with those fixed.
+**Wi-Fi or the login does not work.** On a Pi, check that `AUTO_SETUP_NET_WIFI_ENABLED=1` is set and that the network name and password in `dietpi-wifi.txt` are between the quotes. The Pi removes the files from the card after its first start, so write the card again to try once more. On the PC image, the same lines in `dietpi.txt` and `dietpi-wifi.txt` on the DIETPISETUP volume apply, and Wi-Fi also needs a Wi-Fi adapter in the PC, or one passed through to a virtual machine. DietPi removes that volume on the first start, so write the image again, or import it into a new VM, to try once more. Or, once the PC is on your network, turn on **SSH access** on [the control page](#the-control-page), log in as `kalinka-admin` and change the settings with `sudo dietpi-config`.
 
 **No outputs in the list, or no sound.** The output runs as a service of its own. On the player, `systemctl status kalinka-renderer` should say `active (running)`. If it says the unit could not be found, no output is installed on that machine: run the renderer command from [Add more outputs](#add-more-outputs) there. If there is no sound, open the output's gear and try another sound device: HDMI, the headphone socket and a USB DAC are separate devices. On a Pi, the headphone socket and HDMI stay off, and a HAT without an ID chip stays silent, until you [choose the sound card](#choose-the-sound-card) in the app. If the app shows no **Sound card** row, `CONFIG_SOUNDCARD` in `/boot/dietpi.txt` names it too ([Settings on the card](#settings-on-the-card)); restart the Pi after changing it. Until an output works, you can listen in the browser.
 
