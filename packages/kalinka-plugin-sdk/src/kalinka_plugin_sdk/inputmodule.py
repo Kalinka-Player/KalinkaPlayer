@@ -247,6 +247,17 @@ class InputModule(Protocol):
         """
         return EmptyList(offset, limit)
 
+    def ai_search_available(self) -> bool:
+        """
+        Whether :meth:`ai_search` is switched on in this running module.
+
+        A module that implements ai_search behind a setting returns False
+        while the setting is off, so the server stops advertising the
+        capability. Read on every module listing: keep it cheap. Defaults
+        to True.
+        """
+        return True
+
     async def search(
         self, type: SearchType, query: str, offset=0, limit=50
     ) -> BrowseItemList:

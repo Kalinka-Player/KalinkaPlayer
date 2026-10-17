@@ -748,6 +748,10 @@ class JamendoInputModule(InputModule):
         """Human-friendly source name for section headers."""
         return "Jamendo"
 
+    def ai_search_available(self) -> bool:
+        """Off when the ai_search_enabled setting kept the mood index out."""
+        return self._mood_index is not None
+
     async def search(
         self, type: SearchType, query: str, offset=0, limit=50
     ) -> BrowseItemList:

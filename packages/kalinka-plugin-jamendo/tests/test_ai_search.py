@@ -104,6 +104,14 @@ async def test_missing_metadata_dropped_order_preserved():
     assert [it.id.id for it in _card_tracks(res)] == ["100", "300"]
 
 
+def test_available_follows_the_index():
+    cfg = JamendoConfig(client_id="x")
+    assert make_module(MetadataClient()).ai_search_available()
+    assert not jm.JamendoInputModule(
+        cfg, MetadataClient(), mood_index=None
+    ).ai_search_available()
+
+
 @pytest.mark.asyncio
 async def test_disabled_when_no_index():
     cfg = JamendoConfig(client_id="x")

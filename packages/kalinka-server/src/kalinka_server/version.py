@@ -150,7 +150,10 @@ def get_version() -> str:
 # refuses it in `install` with the 400 an unknown key gets.
 # 0.16: POST /indexer/rescan requests the localfiles librarian's normal check.
 # GET /indexer/status includes scan activity and the last completed check time.
-REST_API_VERSION = "0.16"
+# 0.17: a module's `capabilities` follow its own settings: a source whose AI
+# search is switched off no longer lists `ai_search`. Plugin settings apply on
+# restart, so the list changes only then.
+REST_API_VERSION = "0.17"
 
 
 def get_rest_api_version() -> str:

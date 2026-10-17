@@ -24,6 +24,21 @@ class _Semantic(InputModule):
         return None
 
 
+class _Switchable(_Semantic):
+    """Writes the call behind a setting."""
+
+    def __init__(self, on):
+        self._on = on
+
+    def ai_search_available(self):
+        return self._on
+
+
+class _BrokenSwitch(_Semantic):
+    def ai_search_available(self):
+        raise RuntimeError("boom")
+
+
 class _Collections:
     """Browses and matches names, streams nothing."""
 
@@ -46,6 +61,16 @@ def test_the_per_call_budget_does_not_hide_what_it_wraps():
         "ai_search"
     ]
     assert capabilities_of(TimeLimitedInputModule(_Plain(), "plain")) == []
+
+
+def test_a_call_switched_off_by_its_setting_is_not_advertised():
+    assert capabilities_of(_Switchable(on=True)) == ["ai_search"]
+    assert capabilities_of(_Switchable(on=False)) == []
+    assert capabilities_of(TimeLimitedInputModule(_Switchable(on=False), "s")) == []
+
+
+def test_a_switch_that_raises_counts_as_off():
+    assert capabilities_of(_BrokenSwitch()) == []
 
 
 def test_a_source_that_is_not_a_module_has_none():

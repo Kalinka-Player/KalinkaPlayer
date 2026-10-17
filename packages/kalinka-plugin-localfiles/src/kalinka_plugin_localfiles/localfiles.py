@@ -408,6 +408,13 @@ class LocalFilesInputModule(InputModule):
         """Human-friendly source name for section headers."""
         return DISPLAY_NAME
 
+    def ai_search_available(self) -> bool:
+        """Off when the ai_search setting kept the searcher from starting."""
+        return (
+            self._search_request_queue is not None
+            and self._search_response_queue is not None
+        )
+
     async def ai_search(
         self, query: str, offset: int = 0, limit: int = 50
     ) -> BrowseItemList:
@@ -419,7 +426,7 @@ class LocalFilesInputModule(InputModule):
         card after it, alongside the other sources' cards. The server may
         suppress the card for a navigational query.
         """
-        if self._search_request_queue is None or self._search_response_queue is None:
+        if not self.ai_search_available():
             return EmptyList(offset, limit)
 
         ai_cfg = self.config.ai_search
