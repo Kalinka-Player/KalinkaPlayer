@@ -37,7 +37,7 @@ The Raspberry Pi images play through DAC HATs as well as USB DACs. A HAT with an
 
 A `-display` image is the same player with the now-playing display already installed and switched on: plug in an HDMI or DSI screen and it shows the cover, the track and touch controls from the first start. Without a screen, pick the image without `-display`; it is smaller.
 
-To flash an image and start it, follow [Install the server](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#install-the-server). For Wi-Fi, a login or a DAC HAT without an ID chip, change [Settings on the card](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#settings-on-the-card) before the first start.
+To flash an image and start it, follow [Install the server](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#install-the-server). For Wi-Fi, a login, a fixed address on a network without DHCP or a DAC HAT without an ID chip, change [Settings on the card](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#settings-on-the-card) before the first start.
 
 On all images, DietPi's update notices stay on, its survey is off, and logs are kept on disk rather than in memory.
 
