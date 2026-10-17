@@ -83,6 +83,40 @@ TEST(Mp4StreamDecoder, PlaysFragmentsWithoutAnIndexButCannotSeek) {
   EXPECT_EQ(drain(decoder), reference());
 }
 
+TEST(Mp4StreamDecoder, FallsBackToTheTrailingIndexPastABrokenSidx) {
+  auto file = aacFixture("tones-fragmented-sidx.m4a");
+  const auto top = mp4::boxes(file);
+  const auto sidx = *std::ranges::find_if(
+      top, [](const auto &item) { return item.type == "sidx"; });
+  const size_t width = sidx.payload[0] ? 8 : 4;
+  // The reference count, now one more than the box holds.
+  file[sidx.offset + sidx.header + 12 + 2 * width + 3] += 1;
+  Mp4StreamDecoder decoder(1, BUFFER_SIZE);
+  decoder.connectTo(std::make_shared<BytesInput>(file));
+  waitStreaming(decoder);
+  EXPECT_EQ(decoder.getState().streamInfo->streamSize, TONES_FRAMES);
+  ASSERT_EQ(decoder.seekTo(30000), 30000u);
+  EXPECT_EQ(drain(decoder).size(), (TONES_FRAMES - 30000) * 4);
+}
+
+TEST(Mp4StreamDecoder, ReadsThroughShortGapsRatherThanSeekingOverThem) {
+  struct CountingInput : BytesInput {
+    using BytesInput::BytesInput;
+    size_t seeks = 0;
+    size_t seekTo(size_t n) override {
+      ++seeks;
+      return BytesInput::seekTo(n);
+    }
+  };
+  auto input =
+      std::make_shared<CountingInput>(aacFixture("tones-index-last.m4a"));
+  Mp4StreamDecoder decoder(1, BUFFER_SIZE);
+  decoder.connectTo(input);
+  EXPECT_EQ(drain(decoder), reference());
+  // The probe, then back from the index to the audio it follows.
+  EXPECT_EQ(input->seeks, 2u);
+}
+
 TEST(Mp4StreamDecoder, PlaysFlacInMp4BitExact) {
   EXPECT_EQ(decodeFile("ramp-flac.mp4"), rampPcm(16));
   EXPECT_EQ(decodeFile("ramp-flac.mp4", 500), rampPcm(16, 22050));

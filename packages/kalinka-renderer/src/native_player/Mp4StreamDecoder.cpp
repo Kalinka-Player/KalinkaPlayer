@@ -10,6 +10,7 @@
 namespace {
 constexpr uint64_t maxIndexBytes = uint64_t(64) << 20;
 constexpr uint64_t maxFragmentBytes = uint64_t(32) << 20;
+constexpr uint64_t maxReadThroughBytes = uint64_t(256) << 10;
 
 [[noreturn]] void truncated() {
   throw std::runtime_error("Truncated MP4 file");
@@ -174,7 +175,7 @@ private:
       const auto moof = file.readPayload(*box, maxFragmentBytes);
       bytes.insert(bytes.end(), moof.begin(), moof.end());
       const auto media = file.nextBox();
-      if (!media || media->type != "mdat" ||
+      if (!media || media->type != "mdat" || box->size > maxFragmentBytes ||
           media->size > maxFragmentBytes - box->size)
         mp4::invalid();
       const auto header = media->bytes();
@@ -287,7 +288,9 @@ void Mp4StreamDecoder::moveTo(uint64_t offset) {
   lookahead.reset();
   if (offset == position)
     return;
-  if (sourceSeeks) {
+  // A seek drops what an HTTP source has buffered: read through short gaps.
+  if (sourceSeeks &&
+      (offset < position || offset - position > maxReadThroughBytes)) {
     if (input->seekTo(offset) != offset)
       throw std::runtime_error("MP4 stream seek failed");
     position = offset;
@@ -382,8 +385,13 @@ StreamInfo Mp4StreamDecoder::open() {
                           [](const auto &box) { return box.type == "mvex"; })) {
     auto init = FragmentedMp4::parseInitialization(moov);
     track = std::make_unique<TrackDecoder>(sampleDecoder(init.track));
-    auto listed = sidx.empty() ? std::vector<FragmentedMp4::Reference>{}
-                               : init.parseIndex(sidx, sidxEnd);
+    std::vector<FragmentedMp4::Reference> listed;
+    try {
+      if (!sidx.empty())
+        listed = init.parseIndex(sidx, sidxEnd);
+    } catch (const std::runtime_error &) {
+      // As with `mfra`, a broken index costs seeking, not playback.
+    }
     if (listed.empty() && sourceSeeks && sourceSize)
       listed = randomAccess(init);
     layout = std::make_unique<Fragmented>(std::move(init),
@@ -412,8 +420,7 @@ bool Mp4StreamDecoder::decodeNext() {
 }
 
 void Mp4StreamDecoder::seekSource(uint64_t frame) {
-  // A delayed codec's output for a frame comes from the unit that much later,
-  // so decoding starts at the unit holding `frame`.
+  // A delayed codec's output for `frame` comes from the unit after its own.
   layout->seek(*this, frame);
   track->restart(frame + track->delay());
 }

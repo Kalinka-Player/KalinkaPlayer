@@ -201,7 +201,12 @@ AudioTrack audioTrack(const Box &moov) {
   const auto dref = inside(inside(minf, "dinf"), "dref").payload;
   if (integer(dref, 4, 4) != 1 || dref.size() < 8)
     invalid();
-  if (integer(one(boxes(dref.subspan(8)), "url ").payload, 0, 4) != 1)
+  // QuickTime writers name the movie's own file with an `alis` entry instead.
+  const auto references = boxes(dref.subspan(8));
+  if (references.size() != 1 ||
+      (references.front().type != "url " &&
+       references.front().type != "alis") ||
+      integer(references.front().payload, 0, 4) != 1)
     invalid();
   const auto stsd = inside(inside(minf, "stbl"), "stsd").payload;
   if (integer(stsd, 4, 4) != 1 || stsd.size() < 8)

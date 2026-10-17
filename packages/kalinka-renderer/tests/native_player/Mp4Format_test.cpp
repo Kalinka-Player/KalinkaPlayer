@@ -50,11 +50,14 @@ Bytes aacEntry(uint8_t flags = 0) {
                    number(16, 2), zeros(4), number(44100 << 16, 4), esds}));
 }
 
-/// A movie whose one sound track has `entry` and the sample tables `tables`.
-Bytes movie(const Bytes &entry, const Bytes &tables) {
+/// A movie whose one sound track has `entry` and the sample tables `tables`,
+/// its data in the file a `reference` entry of the data reference names.
+Bytes movie(const Bytes &entry, const Bytes &tables,
+            std::string_view reference = "url ", uint32_t referenceFlags = 1) {
   const auto stsd = box("stsd", join({zeros(4), number(1, 4), entry}));
   const auto dref =
-      box("dref", join({zeros(4), number(1, 4), box("url ", number(1, 4))}));
+      box("dref", join({zeros(4), number(1, 4),
+                        box(reference, number(referenceFlags, 4))}));
   const auto minf =
       box("minf", join({box("dinf", dref), box("stbl", join({stsd, tables}))}));
   const auto hdlr =
@@ -94,6 +97,17 @@ TEST(Mp4SampleTable, ExpandsChunksIntoUnitOffsets) {
   EXPECT_EQ(table.sizes, (std::vector<uint32_t>{10, 11, 12, 13, 14}));
   EXPECT_EQ(table.times, (std::vector<uint64_t>{0, 1024, 2048, 3072, 4096}));
   EXPECT_EQ(table.end, 5u * 1024);
+}
+
+TEST(Mp4SampleTable, ReadsAudioInTheMovieFileWhicheverWayItIsNamed) {
+  for (const auto *reference : {"url ", "alis"})
+    EXPECT_NO_THROW(
+        Mp4SampleTable::parse(movie(aacEntry(), chunkedTables(), reference)))
+        << reference;
+  for (const auto &bad : {movie(aacEntry(), chunkedTables(), "url ", 0),
+                          movie(aacEntry(), chunkedTables(), "alis", 0),
+                          movie(aacEntry(), chunkedTables(), "urn ")})
+    EXPECT_THROW(Mp4SampleTable::parse(bad), std::runtime_error);
 }
 
 TEST(Mp4SampleTable, ReadsEsdsWithOptionalFields) {
