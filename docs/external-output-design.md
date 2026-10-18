@@ -36,7 +36,7 @@ The renderer protocol, the plugin SDK's calls, the Android native code and the R
 | `selected_renderer_id`, each `/renderer/list` row's `selected` | the saved pin, unchanged |
 | each `/renderer/list` row's `active` | false |
 | `renderers_changed` | keeps firing as renderers come, go and reconnect |
-| `PUT /renderer/active` | ends the hold and pins the renderer, as the 0.8 note says |
+| `PUT /renderer/active` | ends the hold and pins the renderer, as SDK 3.7's "selection changes revoke external playback" says (`ExternalSession.move_to` releases with OUTPUT_LOST); with no playable renderer to resolve to, it only pins, as today |
 | `/device/ws` state, `GET /device/get_volume` | without `volume_control`: `{"power_on": false, "volume": {"supported": false}}`, and `supported: false`; with it, the engine's volume as SDK 3.11 specifies |
 | `GET /device/list`, `PUT /device/set_volume`, the device socket's commands | without `volume_control`: the existing no-device answers ("No device configured"; the socket ignores the command), and nothing is sent anywhere |
 
@@ -48,9 +48,9 @@ A client that connects during a hold learns all of it from the replays: the queu
 
 Acquire: the queue's own `state_changed` (STOPPED) if it was playing, `playback_control_changed` (external), `state_changed` (the plugin's), `current_renderer_changed` (renderer_id null); then the device bus re-authors its state.
 
-End of the hold, by release or preemption: `current_renderer_changed` (renderer back); the engine stops (on preemption; on release the plugin has already stopped it); the device bus is re-authored with the renderer's volume; `playback_control_changed` (queue); `state_changed` (the queue's STOPPED, followed by its playback when the queue is what took over).
+End of the hold, by release or preemption: the engine stops (on preemption; on release the plugin has already stopped it); `current_renderer_changed` (renderer back); the device bus is re-authored with the renderer's volume; `playback_control_changed` (queue); `state_changed` (the queue's STOPPED, followed by its playback when the queue is what took over). The renderer comes back only once the engine is silent, so no client routes volume keys or a slider to it while Roon is still audible.
 
-One external hold taking over from another: `current_renderer_changed` (renderer back) as the old hold ends, `playback_control_changed` (the new holder, still external), `current_renderer_changed` (null). `output` stays external throughout.
+One external hold taking over from another: `current_renderer_changed` (renderer back) as the old hold ends, `playback_control_changed` (the new holder, still external) unless its control equals the old one's (the arbiter sends none for an equal control, as for a second Roon hold), `current_renderer_changed` (null). `output` stays external throughout.
 
 A client keys the renderer chip on `playback_control.output`, never on `renderer_id` alone. Then none of these gaps shows a wrong chip.
 
@@ -106,13 +106,12 @@ Device automation already does nothing without a device that can power on. A hol
 
 [external_playback.py](../packages/kalinka-server/src/kalinka_server/external_playback.py):
 
-- `ExternalPlaybackService` takes `registry: RendererRegistry | None` beside `router`. `player_setup.py` passes the registry, and `renderer_registry.target_id` as the `renderer_id` callable.
+- `ExternalPlaybackService` takes `registry: RendererRegistry | None` beside `router` and hands it to each `ExternalSession`, which needs it to release its claim. `player_setup.py` passes the registry, and `renderer_registry.target_id` as the `renderer_id` callable.
 - `ExternalSession.control = PlaybackControl.exclusive(plugin_id, title, output=PlaybackOutput.EXTERNAL)`.
-- `acquire`: after `arbiter.acquire`, under the existing guard (`session.active and arbiter.owns(session)`), calls `router.set_external(session, session.volume_device)`, `registry.external_claimed(session)` and `await router.resync()`.
-- `_begin_end`: right after `_active = False`, `registry.external_released(self)`. This is the one exit, so "inactive means no claim" holds for release, preemption, a failed acquire and cancellation alike.
-- `_stop`: `router.clear_external(self)` and the bounded `resync()` run for every hold, not only one with a volume device.
+- `acquire`: after `arbiter.acquire`, under the existing guard (`session.active and arbiter.owns(session)`), calls `router.set_external(session, session.volume_device)` and `await router.resync()` when there is a router, and `registry.external_claimed(session)` when there is a registry. Both stay optional, as the tests that build the service with neither rely on.
+- `_stop`: `router.clear_external(self)` and the bounded `resync()` run for every hold with a router, not only one with a volume device. `registry.external_released(self)` runs in a `finally` right after the `on_revoked` wait, before the resync, so the renderer reappears only once the engine is silent. `_stop` is the teardown every exit starts in `_begin_end`, so "a finished teardown means no claim" holds for release, preemption, a failed acquire and cancellation alike.
 
-#254 also names plugin disable and disconnection. A plugin's settings apply on restart, and shutdown revokes the hold through `arbiter.shutdown()`. A plugin that loses its Roon Core releases. Both paths end at `_begin_end`. The registry does not tell a local renderer from a remote one. With no renderer connected, the claim changes nothing a client sees: `active_id()` was None before and stays None, and no event fires.
+#254 also names plugin disable and disconnection. A plugin's settings apply on restart, and shutdown revokes the hold through `arbiter.shutdown()`. A plugin that loses its Roon Core releases. Both paths end in `_stop`. The registry does not tell a local renderer from a remote one. With no renderer connected, the claim changes nothing a client sees: `active_id()` was None before and stays None, and no event fires.
 
 ## App
 
@@ -189,7 +188,8 @@ Until it is updated, an old app shows a crossed cast icon rather than a note dur
 - `tests/test_external_playback.py`:
   - The hold's control has output EXTERNAL.
   - With a registry, `active_id()` is None while held and the renderer again after each way a hold ends: release, preemption by the queue, by another holder, `take_back`, shutdown and `vacate`, a failing `on_revoked`, a cancelled acquire, and each cancelled handover.
-  - Event order on the emitter and the registry callbacks matches [Event order](#event-order-on-the-queue-socket), and by the time the queue's control is published the renderer is active again.
+  - Event order on the emitter and the registry callbacks matches [Event order](#event-order-on-the-queue-socket), and by the time the queue's control is published the renderer is active again. On preemption, `active_id()` stays None until a slow `on_revoked` returns.
+  - A service built without a router or registry acquires and releases as today.
   - A hold acquired over another records the shared renderer, and `vacate` of that renderer ends it.
 - `tests/test_external_volume.py`:
   - A hold without `volume_control` leaves the bus volume unsupported and `router.current()` None, and a renderer `VolumeChangedEvent` is dropped; release restores the renderer's 42.
