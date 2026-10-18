@@ -9,6 +9,7 @@
 - reinstall Kalinka;
 - remove a plugin package, so a plugin that breaks Core can go without Core's help;
 - on a Raspberry Pi, set the box up for its sound card, such as a DAC HAT;
+- set the box's time zone;
 - set up an SSH administrator login through the dashboard form;
 - tell which supervisor and protocol version it is talking to.
 
@@ -93,7 +94,9 @@ reach it and what they can make it do:
   partition. Nothing accepts a command or a path. The one package name
   accepted, by `remove_plugin`, must be an installed `kalinka-plugin-*`
   package other than the SDK, and the removal unit checks it again and
-  refuses to take any other package along.
+  refuses to take any other package along. `set_timezone` accepts one zone
+  name, with no leading `/` and no `.`, that the box's tzdata has, and
+  timedated checks it again.
 - **Local peers only.** The peer address must be loopback, link-local,
   private (RFC 1918) or in 100.64.0.0/10, where VPN overlays such as Tailscale
   put LAN peers. A forwarded port does not expose the API to the internet.
@@ -148,7 +151,7 @@ is busy, including after a supervisor restart.
  "protocol": 1, "min_protocol": 1,
  "server_id": "ee4d496c-3f6c-4388-a02e-f6a2f17829cd",
  "renderer_id": "5c0ffee0-1d2e-4a3b-8c4d-5e6f7a8b9c0d",
- "actions": ["restart_core", "reboot", "poweroff", "reinstall", "set_soundcard", "remove_plugin"],
+ "actions": ["restart_core", "reboot", "poweroff", "reinstall", "set_soundcard", "remove_plugin", "set_timezone"],
  "poweroff_timer": true}
 ```
 
@@ -161,8 +164,10 @@ is busy, including after a supervisor restart.
   `/var/lib/kalinka-renderer/renderer_id`, or `null` where no renderer has
   created one. It is the `renderer_id` Core lists the renderer under.
 - `actions` lists what this box can do. A box without Core offers no
-  `restart_core` or `reinstall`, and only a Raspberry Pi offers
-  `set_soundcard`.
+  `restart_core` or `reinstall`, only a Raspberry Pi offers
+  `set_soundcard`, and only a box with tzdata and an unmasked
+  systemd-timedated offers `set_timezone`. An older supervisor lists no
+  `set_timezone`.
 
 **Negotiation** works like the renderer's Hello range. A client that speaks
 protocols `a` to `b` uses `v = min(b, protocol)`. It is compatible when
@@ -213,12 +218,14 @@ invokes systemd.
 | GET, HEAD | `/v1/reinstall/log` | The last 64 KiB of the last reinstall's output, as text; empty if none has run |
 | GET, HEAD | `/v1/plugin-removal/log` | The same for the last plugin removal |
 | GET, HEAD | `/v1/soundcard` | The sound card object below |
+| GET, HEAD | `/v1/timezones` | `{"timezones": ["Africa/Abidjan", …, "UTC"]}`, the zones to choose from for `set_timezone`, on a box that offers it |
 | POST | `/v1/actions/restart_core` | 202 `{"action": "restart_core"}` once systemd has queued the restart |
 | POST | `/v1/actions/reboot` | 202 `{"action": "reboot"}`, then the box reboots |
 | POST | `/v1/actions/poweroff` | 202 `{"action": "poweroff"}`, then the box powers off |
 | POST | `/v1/actions/reinstall` | 202 `{"action": "reinstall"}` once the reinstall has been queued |
 | POST | `/v1/actions/remove_plugin` | 202 `{"action": "remove_plugin", "package": "..."}` once the removal has been queued; the body also names the `package` |
 | POST | `/v1/actions/set_soundcard` | 202 `{"action": "set_soundcard", "reboot": true}` once the card is set up; when `reboot` is true, the box then restarts |
+| POST | `/v1/actions/set_timezone` | 202 `{"action": "set_timezone", "timezone": "Asia/Kolkata"}` once the box is on that zone; the body also names the `timezone` |
 | OPTIONS | any API path | CORS preflight |
 
 `GET /v1/status` returns:
@@ -228,7 +235,8 @@ invokes systemd.
  "setup": "waiting", "pending": null,
  "reinstall": {"state": "failed", "finished_at": "2026-10-07T09:30:00Z"},
  "plugin_removal": {"state": "succeeded", "package": "kalinka-plugin-qobuz",
-                    "finished_at": "2026-10-12T15:02:00Z"}}
+                    "finished_at": "2026-10-12T15:02:00Z"},
+ "timezone": "Europe/London"}
 ```
 
 | Field | Meaning |
@@ -242,6 +250,7 @@ invokes systemd.
 | `plugin_removal.state` | The same for the last plugin removal |
 | `plugin_removal.package` | The package the last removal was asked for, or `null` |
 | `plugin_removal.finished_at` | When the last removal ended, or `null` |
+| `timezone` | The zone `/etc/localtime` names, read from the system each time: `UTC` without it, `null` when it names no zone |
 
 `GET /v1/dashboard` returns `host`, `services`, `kalinka` (the totals),
 `packages`, `plugins` and `python`. A figure the box cannot provide is `null`;
@@ -251,8 +260,8 @@ Memory is in bytes and CPU in percent of the whole box.
 An action's body names the box. On a box with Core it is
 `{"server_id": "<id from /info>"}`, and may add the `renderer_id` too. On a
 box that runs only a renderer it is `{"renderer_id": "<id from /info>"}`.
-While `/info` reports neither, it is `{}`. `remove_plugin` adds `"package"`,
-and no other action accepts it:
+While `/info` reports neither, it is `{}`. `remove_plugin` adds `"package"`
+and `set_timezone` adds `"timezone"`, and no other action accepts either:
 
 ```sh
 curl -H 'Content-Type: application/json' \
@@ -401,13 +410,45 @@ When `force_eeprom_read=0` hides the HAT's ID chip, the helper remembers
 which card the chip set up. Choosing that card again hands it back to the
 chip rather than writing an overlay that would load a second copy.
 
+## The time zone
+
+The images run on UTC unless `AUTO_SETUP_TIMEZONE` in the card's
+`dietpi.txt` names a zone before the first start, and few people edit the
+card. The clock itself is set over the network by NTP; the zone decides which
+time the box shows, such as on the now-playing display, and when the
+server's quiet hours fall.
+
+**`set_timezone`** takes `{"server_id": "…", "timezone": "<zone>"}`. The
+name must have the shape of a tzdata name, with no leading `/` and no `.`,
+or the request is `invalid_request`. It must then be a compiled zone under
+`/usr/share/zoneinfo`, as timedated itself checks, or a name tzdata links to
+one, or it is `unknown_timezone`. Browsers and phones still report some
+links, such as `Asia/Calcutta`, whose files Debian 13 ships only in
+`tzdata-legacy`; the supervisor reads the links from `tzdata.zi` and sets
+the zone they name. The reply names the zone it set.
+
+The supervisor hands the zone to systemd-timedated's `SetTimezone` over
+D-Bus. timedated, a system service outside the supervisor's sandbox, writes
+`/etc/localtime`, so the supervisor itself writes nothing. The supervisor
+then restarts `kalinka-kiosk.service` if it runs, because the display's
+clock reads the zone only when it starts; playback carries on. The server
+reads the zone when it starts too, so its quiet hours move to the new zone
+at its next start. The change leaves the network alone, so a Wi-Fi join
+does not hold it up; a package install does.
+
+`timezone` in `/v1/status` is read from `/etc/localtime` on each request, as
+timedated reads it, so a zone set with `dietpi-config` shows there too.
+`GET /v1/timezones` lists UTC and every zone in tzdata's `zone.tab` that the
+box has, sorted: one per country and region, the list people choose from.
+
 ## Refusals
 
 Every error has Core's shape, `{"detail": {"code": "...", "message": "..."}}`:
 
 | Status | Code | When |
 |---|---|---|
-| 400 | `invalid_request` | The body is not a JSON object with only the box's identity and, for `set_soundcard`, a `soundcard` name, or is over 1 KiB |
+| 400 | `invalid_request` | The body is not a JSON object with only the box's identity and, for `set_soundcard`, a `soundcard` name, for `remove_plugin`, a `package`, or, for `set_timezone`, a `timezone` name, or is over 1 KiB |
+| 400 | `unknown_timezone` | A time zone the box's tzdata has neither as a zone nor as a link to one |
 | 403 | `not_local` | The peer is not on a local network |
 | 403 | `host_not_allowed` | The `Host` name could be a DNS-rebinding page's |
 | 403 | `origin_not_allowed` | A page this box did not serve |
@@ -425,7 +466,7 @@ Every error has Core's shape, `{"detail": {"code": "...", "message": "..."}}`:
 | 429 | `too_soon` | A `restart_core` within 15 s of one that succeeded; `Retry-After` says when |
 | 500 | `log_unreadable` | The reinstall or removal log exists but could not be read |
 | 500 | `soundcard_failed` | The sound card helper failed; the supervisor's journal has its output |
-| 503 | `unavailable` | systemd did not answer, or refused |
+| 503 | `unavailable` | systemd or timedated did not answer, or refused |
 
 The upgrade refusal protects package installs. The upgrade and reinstall
 units run apt or pip with no timeout, and cutting them off can leave a broken
@@ -434,8 +475,8 @@ does **not** block a reboot or a reinstall, because a `bootstrap.sh` stuck
 installing packages is one of the main reasons to use either.
 
 Reboot, power-off, reinstall and a sound card change wait for a Wi-Fi join
-or rollback to finish. A restart of Core does not, as it leaves the network
-alone.
+or rollback to finish. A restart of Core and a time zone change do not, as
+they leave the network alone.
 
 ## Where it listens
 
@@ -473,6 +514,11 @@ The Kalinka app shows the box under **Settings › General › Box**:
 - **Sound card**, on a Raspberry Pi, shows the DAC's name and opens a picker
   with the detected cards first. After the restart a change needs, the app
   points the box's own renderer at the new card.
+- **Time zone** shows the box's zone and opens a picker of the zones it
+  offers. The setup wizard's **Network** step proposes the phone's own zone,
+  or the browser's in the browser player, and sets it once confirmed. On a
+  box without a supervisor that offers `set_timezone`, the row is shown
+  disabled with the reason.
 
 An output's own settings show the same **Sound card** row for a box that
 runs only a renderer and has a supervisor.
@@ -516,10 +562,13 @@ follow the same steps:
      until `active` is set. Point the box's renderer at `active.pcm` by
      setting its `output.device` through Core's
      `PUT /renderer/{id}/config`.
+   - **`set_timezone`:** the reply arrives once the box is on the zone it
+     names, which `/v1/status` then reports.
 4. **Handle refusals.** Treat 409 and 429 as "not now": show the reason and
    keep the button. A 503 means systemd refused, so offer the action again.
    A 422 means the box cannot take that sound card; read `/v1/soundcard`
-   again.
+   again. An `unknown_timezone` means the box's tzdata lacks that zone;
+   offer the list from `/v1/timezones`.
 
 The web player runs on Core's port. A request from it to port 8001 is
 cross-origin, and the API allows exactly that origin.
@@ -532,7 +581,9 @@ at a time, refuses during installs, and coordinates with nearby setup. Adding
 one to `actions` keeps protocol 1, as `remove_plugin` did. An operation that
 takes a parameter follows that one's pattern: a narrow shape checked in the
 controller, handed to a unit of its own through a root-only file, and checked
-again by the unit's script. An operation that has to run inside the supervisor rather than in
+again by the unit's script. A system service's own D-Bus method, which
+checks its input again itself, serves as well: `set_timezone` uses
+timedated's. An operation that has to run inside the supervisor rather than in
 a unit of its own would need the unit's `ProtectSystem=strict` relaxed, which
 belongs in that change's threat model.
 
@@ -549,6 +600,9 @@ belongs in that change's threat model.
   - the sound card: the catalog against the overlays the images ship,
     detection against staged boxes and a fake I2C bus, and the packaged
     helper setting up every catalogued card so that detection reads it back;
+  - the time zone: the names accepted, links resolved through `tzdata.zi`,
+    the zone list and the current zone against a staged tzdata, and the
+    timedated call and the display's restart against fake buses;
   - the dashboard against a staged box;
   - the binding, and the composed process serving and stopping.
 

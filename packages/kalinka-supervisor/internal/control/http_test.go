@@ -81,11 +81,31 @@ func (f *fakeSoundcards) Report() soundcard.Report {
 	return soundcard.Report{Supported: f.supported, Name: &name, USB: []soundcard.Active{}, Suggested: []string{"hifiberry-digi-pro"}, Options: []soundcard.Card{{Name: "hifiberry-digi-pro", Label: "HiFiBerry Digi+ Pro or Digi2 Pro", Vendor: "HiFiBerry", Kind: soundcard.Digital}}}
 }
 
-// testBox is the box a handler serves: which identities it has, whether Core is installed, and its sound card.
+// fakeTimezones is a box's tzdata: Asia/Calcutta links to Asia/Kolkata, as in tzdata.zi.
+type fakeTimezones struct {
+	supported bool
+	current   *string
+}
+
+func (f *fakeTimezones) Supported() bool { return f.supported }
+func (f *fakeTimezones) Resolve(name string) (string, bool) {
+	if name == "Asia/Calcutta" {
+		name = "Asia/Kolkata"
+	}
+	return name, slices.Contains(f.Offered(), name)
+}
+func (f *fakeTimezones) Current() *string  { return f.current }
+func (f *fakeTimezones) Offered() []string { return testZones }
+
+var testZones = []string{"Asia/Kolkata", "Europe/London", "UTC"}
+
+// testBox is the box a handler serves: which identities it has, whether Core
+// is installed, its sound card, and its tzdata, which every box has unless it says otherwise.
 type testBox struct {
 	server, renderer bool
 	noCore           bool
 	cards            Soundcards
+	zones            Timezones
 }
 
 func pi() *fakeSoundcards {
@@ -115,10 +135,14 @@ func newBoxHandler(t *testing.T, coord Coordinator, box testBox) http.Handler {
 	if box.renderer {
 		renderer = rendererID
 	}
+	if box.zones == nil {
+		box.zones = &fakeTimezones{supported: true, current: nullable("Europe/London")}
+	}
 	return NewHandler(coord, HandlerConfig{
 		Version: "1.2.3", ServerIDFile: write("server_id", server), RendererIDFile: write("renderer_id", renderer),
 		CoreInstalled: func() bool { return !box.noCore },
 		Soundcards:    box.cards,
+		Timezones:     box.zones,
 		CorePort:      func() int { return 8000 },
 		Setup:         func() string { return "waiting" },
 		Dashboard:     func(context.Context) any { return map[string]string{"host": "kalinka"} },
@@ -161,7 +185,7 @@ func TestInfo(t *testing.T) {
 		}
 		want := map[string]any{
 			"name": "kalinka-supervisor", "version": "1.2.3", "protocol": 1.0, "min_protocol": 1.0,
-			"actions":   []any{"restart_core", "reboot", "poweroff", "reinstall", "set_soundcard", "remove_plugin"},
+			"actions":   []any{"restart_core", "reboot", "poweroff", "reinstall", "set_soundcard", "remove_plugin", "set_timezone"},
 			"server_id": nil, "renderer_id": nil,
 			"poweroff_timer": true,
 			"network_setup":  false,
@@ -193,9 +217,18 @@ func TestStatusReply(t *testing.T) {
 	w := serve(newTestHandler(t, coord, true), http.MethodGet, "/v1/status", "")
 	want := `{"core":"failed","core_port":8000,"pending":"poweroff",` +
 		`"plugin_removal":{"finished_at":"2026-10-07T10:30:00Z","package":"kalinka-plugin-qobuz","state":"succeeded"},` +
-		`"reinstall":{"finished_at":"2026-10-07T09:30:00Z","state":"failed"},"setup":"waiting","upgrading":true}`
+		`"reinstall":{"finished_at":"2026-10-07T09:30:00Z","state":"failed"},"setup":"waiting","timezone":"Europe/London","upgrading":true}`
 	if got := strings.TrimSpace(w.Body.String()); got != want {
 		t.Fatalf("status = %s", got)
+	}
+	for _, box := range []testBox{{server: true, zones: &fakeTimezones{supported: true}}, {server: true, zones: &fakeTimezones{}}} {
+		if got := serve(newBoxHandler(t, coord, box), http.MethodGet, "/v1/status", "").Body.String(); !strings.Contains(got, `"timezone":null`) {
+			t.Fatalf("a box whose /etc/localtime names no zone: %s", got)
+		}
+	}
+	unknown := NewHandler(coord, HandlerConfig{ServerIDFile: filepath.Join(t.TempDir(), "server_id"), CorePort: func() int { return 8000 }, Setup: func() string { return "off" }})
+	if got := serve(unknown, http.MethodGet, "/v1/status", "").Body.String(); !strings.Contains(got, `"timezone":null`) {
+		t.Fatalf("a supervisor that reads no tzdata: %s", got)
 	}
 	coord.status = Status{Core: "active", Reinstall: Outcome{State: "idle"}, PluginRemoval: Outcome{State: "idle"}}
 	got := serve(newTestHandler(t, coord, true), http.MethodGet, "/v1/status", "").Body.String()
@@ -215,6 +248,7 @@ func TestActionRequests(t *testing.T) {
 	idBody := `{"server_id":"` + testID + `"}`
 	rendererBody := `{"renderer_id":"` + rendererID + `"}`
 	card := func(id, name string) string { return `{` + id + `,"soundcard":` + name + `}` }
+	zone := func(id, name string) string { return `{` + id + `,"timezone":` + name + `}` }
 	serverID, rendererIDField := `"server_id":"`+testID+`"`, `"renderer_id":"`+rendererID+`"`
 	server, rendererOnly, both, blank := testBox{server: true}, testBox{renderer: true}, testBox{server: true, renderer: true}, testBox{}
 	for _, tc := range []struct {
@@ -256,6 +290,16 @@ func TestActionRequests(t *testing.T) {
 		{"sound card that is a path", server, "/v1/actions/set_soundcard", card(serverID, `"../../etc/passwd"`), nil, 400, "invalid_request"},
 		{"sound card with an option", server, "/v1/actions/set_soundcard", `{` + serverID + `,"soundcard":"hifiberry-digi","force":true}`, nil, 400, "invalid_request"},
 		{"sound card this box does not offer", server, "/v1/actions/set_soundcard", card(serverID, `"justboom-dac"`), nil, 422, "unknown_soundcard"},
+		{"time zone", server, "/v1/actions/set_timezone", zone(serverID, `"Europe/London"`), nil, 202, ""},
+		{"time zone on a renderer-only box", rendererOnly, "/v1/actions/set_timezone", zone(rendererIDField, `"UTC"`), nil, 202, ""},
+		{"time zone for another box", server, "/v1/actions/set_timezone", zone(`"server_id":"other"`, `"Europe/London"`), nil, 409, "wrong_server"},
+		{"time zone not named", server, "/v1/actions/set_timezone", idBody, nil, 400, "invalid_request"},
+		{"time zone that is no name", server, "/v1/actions/set_timezone", zone(serverID, `5`), nil, 400, "invalid_request"},
+		{"time zone that is a path", server, "/v1/actions/set_timezone", zone(serverID, `"../../etc/passwd"`), nil, 400, "invalid_request"},
+		{"time zone from the root", server, "/v1/actions/set_timezone", zone(serverID, `"/UTC"`), nil, 400, "invalid_request"},
+		{"time zone with an option", server, "/v1/actions/set_timezone", `{` + serverID + `,"timezone":"UTC","force":true}`, nil, 400, "invalid_request"},
+		{"time zone tzdata lacks", server, "/v1/actions/set_timezone", zone(serverID, `"Nowhere/Atlantis"`), nil, 400, "unknown_timezone"},
+		{"a zone for another action", server, "/v1/actions/reboot", zone(serverID, `"UTC"`), nil, 400, "invalid_request"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			coord := &fakeCoordinator{}
@@ -286,6 +330,52 @@ func TestActionReplies(t *testing.T) {
 	if got := coord.begun[len(coord.begun)-1]; !reflect.DeepEqual(got, Request{Action: SetSoundcard, Soundcard: "hifiberry-digi"}) {
 		t.Fatalf("coordinator asked %+v", got)
 	}
+	w = serve(h, http.MethodPost, "/v1/actions/set_timezone", `{"server_id":"`+testID+`","timezone":"Asia/Calcutta"}`)
+	if w.Code != 202 || strings.TrimSpace(w.Body.String()) != `{"action":"set_timezone","timezone":"Asia/Kolkata"}` {
+		t.Fatalf("time zone reply = %d %s", w.Code, w.Body)
+	}
+	if got := coord.begun[len(coord.begun)-1]; !reflect.DeepEqual(got, Request{Action: SetTimezone, Timezone: "Asia/Kolkata"}) {
+		t.Fatalf("coordinator asked %+v", got)
+	}
+}
+
+func TestTimezoneActionReachesTimedated(t *testing.T) {
+	s := &fakeSystemd{}
+	c, _ := newController(s, nil)
+	timedated := &fakeTimedated{}
+	c.timezone = timedated
+	h := newTestHandler(t, c, true)
+	body := func(zone string) string { return `{"server_id":"` + testID + `","timezone":"` + zone + `"}` }
+	if w := serve(h, http.MethodPost, "/v1/actions/set_timezone", body("Europe/London")); w.Code != 202 {
+		t.Fatalf("a zone tzdata has = %d %s", w.Code, w.Body)
+	}
+	for _, zone := range []string{"../etc/passwd", "/UTC", "Nowhere/Atlantis"} {
+		if w := serve(h, http.MethodPost, "/v1/actions/set_timezone", body(zone)); w.Code != 400 {
+			t.Errorf("%s = %d %s", zone, w.Code, w.Body)
+		}
+	}
+	if !slices.Equal(timedated.set, []string{"Europe/London"}) || !slices.Equal(s.calls, []string{"restart kiosk"}) {
+		t.Fatalf("timedated was given %q, systemd asked %q", timedated.set, s.calls)
+	}
+}
+
+func TestTimezoneList(t *testing.T) {
+	h := newTestHandler(t, &fakeCoordinator{}, true)
+	w := serve(h, http.MethodGet, "/v1/timezones", "")
+	if w.Code != 200 || strings.TrimSpace(w.Body.String()) != `{"timezones":["Asia/Kolkata","Europe/London","UTC"]}` || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("list = %d %s", w.Code, w.Body)
+	}
+	if status, code := detail(t, serve(h, http.MethodPost, "/v1/timezones", `{}`)); status != 405 || code != "method_not_allowed" {
+		t.Fatalf("POST timezones = %d %s", status, code)
+	}
+	unsupported := newBoxHandler(t, &fakeCoordinator{}, testBox{server: true, zones: &fakeTimezones{}})
+	if status, code := detail(t, serve(unsupported, http.MethodGet, "/v1/timezones", "")); status != 404 || code != "not_found" {
+		t.Fatalf("without timedated = %d %s", status, code)
+	}
+	without := NewHandler(&fakeCoordinator{}, HandlerConfig{ServerIDFile: filepath.Join(t.TempDir(), "server_id"), CorePort: func() int { return 8000 }})
+	if status, code := detail(t, serve(without, http.MethodGet, "/v1/timezones", "")); status != 404 || code != "not_found" {
+		t.Fatalf("without time zone support = %d %s", status, code)
+	}
 }
 
 func TestActionsFollowWhatTheBoxHas(t *testing.T) {
@@ -294,8 +384,11 @@ func TestActionsFollowWhatTheBoxHas(t *testing.T) {
 		_ = json.Unmarshal(serve(newBoxHandler(t, &fakeCoordinator{}, box), http.MethodGet, "/info", "").Body.Bytes(), &info)
 		return info.Actions
 	}
-	if got := actions(testBox{renderer: true, noCore: true, cards: pi()}); !slices.Equal(got, []any{"reboot", "poweroff", "set_soundcard"}) {
+	if got := actions(testBox{renderer: true, noCore: true, cards: pi()}); !slices.Equal(got, []any{"reboot", "poweroff", "set_soundcard", "set_timezone"}) {
 		t.Fatalf("a box with only a renderer offers %v", got)
+	}
+	if got := actions(testBox{server: true, cards: pi(), zones: &fakeTimezones{}}); slices.Contains(got, any("set_timezone")) {
+		t.Fatalf("a box without tzdata or timedated offers %v", got)
 	}
 	if got := actions(testBox{server: true, cards: &fakeSoundcards{}}); slices.Contains(got, any("set_soundcard")) {
 		t.Fatalf("a box that is no Pi offers %v", got)
@@ -304,8 +397,8 @@ func TestActionsFollowWhatTheBoxHas(t *testing.T) {
 		t.Fatalf("a supervisor without sound-card support offers %v", got)
 	}
 	coord := &fakeCoordinator{}
-	h := newBoxHandler(t, coord, testBox{renderer: true, noCore: true, cards: &fakeSoundcards{}})
-	for _, action := range []string{"restart_core", "reinstall", "set_soundcard"} {
+	h := newBoxHandler(t, coord, testBox{renderer: true, noCore: true, cards: &fakeSoundcards{}, zones: &fakeTimezones{}})
+	for _, action := range []string{"restart_core", "reinstall", "set_soundcard", "set_timezone"} {
 		if status, code := detail(t, serve(h, http.MethodPost, "/v1/actions/"+action, `{"renderer_id":"`+rendererID+`"}`)); status != 404 || code != "not_found" {
 			t.Errorf("%s on a box that cannot = %d %s", action, status, code)
 		}

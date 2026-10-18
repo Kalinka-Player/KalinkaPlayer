@@ -86,6 +86,27 @@ func TestReinstallQueuesItsUnit(t *testing.T) {
 	}
 }
 
+func TestRestartKioskLeavesABoxWithoutTheDisplayAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		err   error
+		fails bool
+	}{
+		{"display installed", nil, false},
+		{"no display", noSuch, false},
+		{"access denied", dbus.Error{Name: "org.freedesktop.DBus.Error.AccessDenied"}, true},
+	} {
+		s, calls := systemdWith(func(busCall) ([]any, error) { return nil, tc.err })
+		if err := s.RestartKiosk(context.Background()); (err != nil) != tc.fails {
+			t.Fatalf("%s: RestartKiosk = %v", tc.name, err)
+		}
+		want := []string{fmt.Sprint(managerIface+".TryRestartUnit", []any{"kalinka-kiosk.service", "replace"})}
+		if got := methods(*calls); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s: calls = %v", tc.name, got)
+		}
+	}
+}
+
 func TestShutdownIsIrreversible(t *testing.T) {
 	for _, target := range []Target{RebootTarget, PowerOffTarget} {
 		s, calls := systemdWith(succeed)

@@ -25,6 +25,7 @@ import (
 	"kalinka/supervisor/internal/soundcard"
 	"kalinka/supervisor/internal/sshaccess"
 	"kalinka/supervisor/internal/system"
+	"kalinka/supervisor/internal/timezone"
 	"kalinka/supervisor/internal/wifi"
 )
 
@@ -208,6 +209,7 @@ func run(ctx context.Context, o options, setupOn, apiOn bool) error {
 			Installed:  board.PackageInstalled,
 			SSH:        sshaccess.New(simulated),
 			Soundcards: soundcard.NewApplier(simulated, cards.HATCard),
+			Timezone:   timezone.NewSetter(simulated),
 			Now:        time.Now,
 		})
 		powerOffTimer := control.NewPowerOffTimer(controller, func() coreconf.Config {
@@ -224,6 +226,7 @@ func run(ctx context.Context, o options, setupOn, apiOn bool) error {
 			// A simulated run shows every control, whatever the machine it runs on has installed.
 			CoreInstalled: func() bool { return simulated || coreconf.Installed("/") },
 			Soundcards:    cards,
+			Timezones:     timezone.New("/"),
 			CorePort:      corePort,
 			Setup:         setup.Phase,
 			Dashboard:     func(ctx context.Context) any { return board.Snapshot(ctx) },

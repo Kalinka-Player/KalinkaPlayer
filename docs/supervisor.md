@@ -3,8 +3,8 @@
 `kalinka-supervisor` replaces the experimental Python provisioning service.
 It provides nearby box setup and a LAN [control page and API](supervisor-control.md)
 on port 8001. They show how the box is doing, and restart Core, reboot or power
-off the box, reinstall Kalinka, remove a plugin package, or set a Raspberry Pi
-up for its sound card. It runs independently
+off the box, reinstall Kalinka, remove a plugin package, set a Raspberry Pi
+up for its sound card, or set the box's time zone. It runs independently
 of Core, its Python interpreter, its virtual environment and its plugins.
 Core still owns its HTTP API, mDNS, its identity and the existing OOBE. Nearby
 setup keeps the BLE protocol unchanged and adds an HTTP transport; see
@@ -125,9 +125,10 @@ and browser tests do not establish radio/driver or OS captive-window behavior.
 | `internal/control` | The control page and API: action policy, systemd operations, reinstall record, HTTP layer, embedded page and listener binding |
 | `internal/dashboard` | What runs on the box and what it costs, from /proc, cgroups, dpkg and Core's environment; never from Core itself |
 | `internal/soundcard` | The sound cards a Pi can be set up for, which one it has, from the device tree, ALSA and the HAT's I2C bus, and applying a choice through the packaged helper |
+| `internal/timezone` | The zones the box's tzdata offers, the one `/etc/localtime` names, and setting one through systemd-timedated |
 | `internal/devicetree` | The board model and HAT identity the firmware leaves in the device tree |
 | `internal/coreconf` | Core's interface, port and identity, the renderer's identity, and whether Core is installed, read from files without either running |
-| `internal/dbusx` | The system-bus call surface shared by NetworkManager and systemd |
+| `internal/dbusx` | The system-bus call surface shared by NetworkManager, systemd and timedated |
 | `cmd/kalinka-supervisor` | Options, component supervision and process lifecycle |
 
 The machine depends on a small networking interface, not D-Bus or shell tools.
@@ -172,6 +173,9 @@ same adapter/interface.
   `/etc/modprobe.d` and `/etc/asound.conf`. The supervisor itself only reads
   the device tree, ALSA's card list, the boot partition and a few registers
   on the HAT's I2C bus. The only input is a name from its own catalog.
+- A time zone change is a call to systemd-timedated's `SetTimezone` over
+  D-Bus, so timedated, outside the sandbox, writes `/etc/localtime`. The only
+  input is a zone name the box's tzdata has, which timedated checks again.
 - The control page and API answer local peers only, cannot be framed by other
   sites, and offer a closed set of typed actions;
   [their trust model](supervisor-control.md#trust-model) lists the rest.
@@ -253,8 +257,9 @@ separate from the provisioning machine:
    API's `Controller` already admits one action at a time, refuses during
    installs, keeps reboot, power-off, reinstall and sound card changes off a
    Wi-Fi join or rollback, and audits outcomes without secrets. Restarting
-   Core, rebooting, powering off, an online reinstall and setting the sound
-   card are delivered; the remaining actions join it.
+   Core, rebooting, powering off, an online reinstall, setting the sound
+   card and setting the time zone are delivered; the remaining actions join
+   it.
 3. The embedded control page and its dashboard keep working when Core is
    absent. BLE can advertise an additional recovery capability without
    changing the existing Wi-Fi UUIDs. The page's actions are served without

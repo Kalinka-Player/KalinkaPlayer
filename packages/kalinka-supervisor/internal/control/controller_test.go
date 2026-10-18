@@ -42,6 +42,10 @@ func (f *fakeSystemd) RemovePlugin(context.Context) error {
 	f.record("remove plugin")
 	return f.actErr
 }
+func (f *fakeSystemd) RestartKiosk(context.Context) error {
+	f.record("restart kiosk")
+	return f.actErr
+}
 func (f *fakeSystemd) CheckTarget(_ context.Context, t Target) error {
 	f.record("check " + string(t))
 	return f.checkErr
@@ -81,6 +85,17 @@ func (f *fakeApplier) Apply(_ context.Context, name string) (bool, error) {
 	return f.reboot, f.err
 }
 
+// fakeTimedated stands in for timezone.Setter, which hands the zone to timedated.
+type fakeTimedated struct {
+	err error
+	set []string
+}
+
+func (f *fakeTimedated) Set(_ context.Context, zone string) error {
+	f.set = append(f.set, zone)
+	return f.err
+}
+
 // stateDir holds a directory per controller the tests build, for its removal request file.
 var stateDir string
 
@@ -103,7 +118,7 @@ func newController(s *fakeSystemd, network NetworkActivity) (*Controller, *clock
 	}
 	return NewController(Config{
 		Systemd: s, Network: network, Removals: NewPluginRemovals(dir),
-		Installed: func(string) bool { return true }, Soundcards: &fakeApplier{}, Now: c.Now,
+		Installed: func(string) bool { return true }, Soundcards: &fakeApplier{}, Timezone: &fakeTimedated{}, Now: c.Now,
 	}), c
 }
 
@@ -183,11 +198,14 @@ func code(err error) string {
 	return ""
 }
 
-// request asks for a, naming a card or a package for the actions that take one.
+// request asks for a, naming a card, a package or a zone for the actions that take one.
 func request(a Action) Request {
 	r := Request{Action: a, Soundcard: "hifiberry-digi"}
-	if a == RemovePlugin {
+	switch a {
+	case RemovePlugin:
 		r.Package = "kalinka-plugin-qobuz"
+	case SetTimezone:
+		r.Timezone = "Europe/London"
 	}
 	return r
 }
@@ -215,6 +233,7 @@ func TestActionsReachSystemd(t *testing.T) {
 		{PowerOff, []string{"check poweroff.target", "shutdown poweroff.target"}},
 		{Reinstall, []string{"reinstall"}},
 		{RemovePlugin, []string{"remove plugin"}},
+		{SetTimezone, []string{"restart kiosk"}},
 	} {
 		s := &fakeSystemd{}
 		c, _ := newController(s, nil)
@@ -241,7 +260,7 @@ func TestUpgradeRefusesEveryAction(t *testing.T) {
 				if got := code(perform(c, a)); got != CodeUpgrade {
 					t.Fatalf("%s %+v %s: %q", unit, state, a, got)
 				}
-				if len(s.calls) != 0 || len(c.soundcards.(*fakeApplier).applied) != 0 {
+				if len(s.calls) != 0 || len(c.soundcards.(*fakeApplier).applied) != 0 || len(c.timezone.(*fakeTimedated).set) != 0 {
 					t.Fatalf("acted during an upgrade: %v", s.calls)
 				}
 			}
@@ -269,11 +288,46 @@ func TestNetworkChangeBlocksAllButRestart(t *testing.T) {
 			t.Fatalf("%s: %q", a, got)
 		}
 	}
-	for _, a := range []Action{RestartCore, RemovePlugin} {
+	for _, a := range []Action{RestartCore, RemovePlugin, SetTimezone} {
 		c, _ := newController(&fakeSystemd{}, fakeNetwork(true))
 		if err := perform(c, a); err != nil {
 			t.Fatalf("%s: %v", a, err)
 		}
+	}
+}
+
+func TestTimezoneReachesTimedatedThenTheDisplay(t *testing.T) {
+	s := &fakeSystemd{}
+	c, _ := newController(s, nil)
+	if err := perform(c, SetTimezone); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.timezone.(*fakeTimedated).set; len(got) != 1 || got[0] != "Europe/London" || len(s.calls) != 1 || s.calls[0] != "restart kiosk" {
+		t.Fatalf("set %v, systemd asked %v", got, s.calls)
+	}
+	if st, _ := c.Status(context.Background()); st.Pending != "" {
+		t.Fatalf("a zone change left %q pending", st.Pending)
+	}
+
+	s = &fakeSystemd{}
+	c, _ = newController(s, nil)
+	c.timezone = &fakeTimedated{err: errors.New("timedated refused")}
+	if got := code(perform(c, SetTimezone)); got != CodeUnavailable || len(s.calls) != 0 {
+		t.Fatalf("a refused zone = %q, systemd asked %v", got, s.calls)
+	}
+	if err := perform(c, RestartCore); err != nil {
+		t.Fatalf("a refused zone kept the action lock: %v", err)
+	}
+
+	c, _ = newController(&fakeSystemd{actErr: errors.New("display stuck")}, nil)
+	if got := code(perform(c, SetTimezone)); got != CodeUnavailable {
+		t.Fatalf("a display that did not restart = %q", got)
+	}
+
+	c, _ = newController(&fakeSystemd{}, nil)
+	c.timezone = nil
+	if got := code(perform(c, SetTimezone)); got != CodeUnavailable {
+		t.Fatalf("a supervisor without a time zone setter = %q", got)
 	}
 }
 
