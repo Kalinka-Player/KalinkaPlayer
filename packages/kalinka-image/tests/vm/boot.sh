@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
 # Boot a copy of a PC image in QEMU and pass once the server answers on its
-# default port. The supervisor's control API then powers the guest off, so the
-# disk left behind is one a clean shutdown wrote; the power button is only the
-# fallback when that fails.
+# default port. The supervisor's control API then sets the guest's time zone
+# and powers it off, so the disk left behind is one a clean shutdown wrote;
+# the power button is only the fallback when that fails.
 #
 # Usage: boot.sh <image> <uefi|uefi-secure-boot|bios> <dir>
 #
@@ -27,6 +27,8 @@ HOST_CONTROL_PORT="${HOST_CONTROL_PORT:-18001}"
 SERVER_PORT=8000
 CONTROL_PORT=8001
 SHUTDOWN_TIMEOUT=120
+# inspect.sh looks for this zone on the disk.
+TIMEZONE=America/New_York
 
 die() { echo "boot: $*" >&2; exit 1; }
 
@@ -126,6 +128,19 @@ power_off_through_supervisor() {
   wait_for_exit
 }
 
+# timedated, which D-Bus starts on demand, writes the zone; the status reads it back from the system.
+set_timezone_through_supervisor() {
+  local control="http://127.0.0.1:$HOST_CONTROL_PORT" info server_id status zone
+  info="$(curl -fsS --max-time 5 "$control/info")" || return 1
+  server_id="$(python3 -c 'import json, sys; print(json.load(sys.stdin)["server_id"] or "")' <<<"$info")"
+  curl -fsS --max-time 40 -H 'Content-Type: application/json' \
+    -d "{\"server_id\": \"$server_id\", \"timezone\": \"$TIMEZONE\"}" "$control/v1/actions/set_timezone" || return 1
+  echo
+  status="$(curl -fsS --max-time 5 "$control/v1/status")" || return 1
+  zone="$(python3 -c 'import json, sys; print(json.load(sys.stdin)["timezone"])' <<<"$status")"
+  [ "$zone" = "$TIMEZONE" ] || { echo "boot: the supervisor reports the time zone as $zone" >&2; return 1; }
+}
+
 mkdir -p "$DIR"
 rm -f "$DIR/serial.log" "$DIR/qemu.log" "$DIR/screen.png"
 cp --sparse=always "$IMAGE" "$DIR/disk.img"
@@ -163,6 +178,9 @@ if [ -z "$version" ]; then
 fi
 echo "boot: the server answered after $((SECONDS - started))s: $version"
 
+# A failed change still powers off through the supervisor, so its journal is on the disk.
+timezone_set=1
+set_timezone_through_supervisor || timezone_set=0
 if ! power_off_through_supervisor; then
   power_off || echo "boot: the guest did not power off either" >&2
   die "the supervisor did not power the guest off within ${SHUTDOWN_TIMEOUT}s"
@@ -170,3 +188,4 @@ fi
 wait "$QEMU_PID" || die "QEMU exited with status $?"
 QEMU_PID=""
 echo "boot: powered off"
+[ "$timezone_set" = 1 ] || die "the supervisor did not set the time zone to $TIMEZONE"

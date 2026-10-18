@@ -131,9 +131,9 @@ reused. `IMAGE_TEST_BASE` can select a different image, which is used without
 substitution. Download failures can trigger fallback; test failures cannot.
 `test_pull_base.sh` covers registry failures, cached images and explicit overrides.
 
-[`tests/vm/`](tests/vm) boots a copy of the PC image under UEFI with Secure Boot disabled. The test waits for Core's HTTP endpoint, then powers the guest off through the supervisor's control API, falling back to the power button. Offline, it checks the expanded filesystem, DietPi first-boot completion, networking packages, the supervisor installation, and the supervisor's journal: the control API listened, setup waited for a radio, and the power-off was accepted. `boot.sh` needs KVM, QEMU and OVMF; set `OVMF_CODE` and `OVMF_VARS` to your host's plain UEFI firmware. `inspect.sh` needs root. The old debootstrap first-boot tests remain for the retained library, which no current target uses.
+[`tests/vm/`](tests/vm) boots a copy of the PC image under UEFI with Secure Boot disabled. The test waits for Core's HTTP endpoint, then sets the guest's time zone through the supervisor's control API, checks that `/v1/status` reports it, and powers the guest off through the same API, falling back to the power button. Offline, it checks the expanded filesystem, DietPi first-boot completion, networking packages, the supervisor installation, the supervisor's journal (the control API listened, setup waited for a radio, and the time zone change and the power-off were accepted), and that `/etc/localtime` names the zone it set. `boot.sh` needs KVM, QEMU and OVMF; set `OVMF_CODE` and `OVMF_VARS` to your host's plain UEFI firmware. `inspect.sh` needs root. The old debootstrap first-boot tests remain for the retained library, which no current target uses.
 
-`test_dietpi_uefi.sh` verifies that expanding the GPT image preserves the setup partition's bytes and every partition identifier. `test_supervisor_image.sh` checks radio settings, the HAT's I2C bus, service ordering, the always-on unit, the sound-card helper in the package, and its package hooks.
+`test_dietpi_uefi.sh` verifies that expanding the GPT image preserves the setup partition's bytes and every partition identifier. `test_supervisor_image.sh` checks radio settings, the HAT's I2C bus, what setting the time zone needs, service ordering, the always-on unit, the sound-card helper in the package, and its package hooks.
 
 ### Building the supervisor
 
@@ -141,6 +141,9 @@ Install Go 1.25 or newer on the build host (or pass `GO=/absolute/path/to/go`
 to the image build). Without `SUPERVISOR_DEB=/absolute/path/to/package.deb`, the build compiles the supervisor for the target with
 `CGO_ENABLED=0` before creating the image. No Go compiler or Go modules are
 installed inside the image. CI installs Go and runs `make supervisor-test`.
+The supervisor hands the time zone chosen in the app to systemd-timedated,
+which D-Bus starts on demand, so the build fails unless the image has
+timedated, its D-Bus activation file, not masked, and tzdata's `zone.tab`.
 See [the supervisor documentation](../../docs/supervisor.md) for local builds,
 a separate Debian package, service hardening and future recovery capabilities.
 

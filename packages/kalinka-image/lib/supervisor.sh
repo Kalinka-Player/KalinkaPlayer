@@ -67,11 +67,22 @@ install_supervisor() {
   fi
 }
 
+# The supervisor sets the time zone chosen in the app through timedated, which D-Bus starts on demand.
+require_timezone_support() {
+  [ -x "$ROOTFS/usr/lib/systemd/systemd-timedated" ] || die 'no systemd-timedated to set the time zone with'
+  [ -f "$ROOTFS/usr/share/dbus-1/system-services/org.freedesktop.timedate1.service" ] \
+    || die 'D-Bus cannot start systemd-timedated'
+  [ "$(readlink "$ROOTFS/etc/systemd/system/systemd-timedated.service")" != /dev/null ] \
+    || die 'systemd-timedated is masked'
+  [ -f "$ROOTFS/usr/share/zoneinfo/zone.tab" ] || die 'no tzdata to choose a time zone from'
+}
+
 verify_supervisor() {
   [ "$(in_chroot dpkg-query -W -f='${db:Status-Status}' kalinka-supervisor)" = installed ] || die 'supervisor is not package-managed'
   require_enabled multi-user.target kalinka-supervisor.service
   [ -x "$ROOTFS/usr/lib/kalinka-supervisor/kalinka-supervisor" ] || die 'no supervisor binary'
   in_chroot /usr/lib/kalinka-supervisor/kalinka-supervisor --version
+  require_timezone_support
   if [ "${DIETPI_LAYOUT:-}" = rpi ]; then
     ! grep -Eq '^[[:blank:]]*dtoverlay=disable-(bt|wifi)(,|[[:blank:]]|$)' \
       "$ROOTFS/boot/firmware/config.txt" || die 'a setup radio is disabled'
