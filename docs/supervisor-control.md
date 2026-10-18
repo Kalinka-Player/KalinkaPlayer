@@ -509,22 +509,24 @@ from the LAN for the page to be reachable.
 
 ## Using it from the app
 
-The Kalinka app shows the box under **Settings › General › Box**:
-- **Box dashboard** opens this page in the browser. That covers the
+The Kalinka app shows the box under **Settings › General › Streamer**, and
+under **Management** on the plugin catalog's **Streamer** tab:
+- **Streamer dashboard** opens this page in the browser. That covers the
   dashboard and reinstalling, so the app has no copy of either.
-- **Restart the box** and **Power off** run through the app's own
+- **Restart streamer** and **Power off streamer** run through the app's own
   confirmation dialogs.
-- **Sound card**, on a Raspberry Pi, shows the DAC's name and opens a picker
-  with the detected cards first. After the restart a change needs, the app
-  points the box's own renderer at the new card.
 - **Time zone** shows the box's zone and opens a picker of the zones it
   offers. The setup wizard's **Network** step proposes the phone's own zone,
   or the browser's in the browser player, and sets it once confirmed. On a
   box without a supervisor that offers `set_timezone`, the row is shown
   disabled with the reason.
 
-An output's own settings show the same **Sound card** row for a box that
-runs only a renderer and has a supervisor.
+**Sound card** is a row in an output's own settings, opened with its gear in
+the output switcher. On a Raspberry Pi, the row shows the DAC's name and opens
+a picker with the detected cards first. After the restart a change needs, the
+app points the box's own renderer at the new card. The row is there for the
+server's own Pi as well as for a box that runs only a renderer and has a
+supervisor.
 
 When Core stops answering, the app's "unavailable" card and the Settings
 placeholder offer **Restart server** through the supervisor.
