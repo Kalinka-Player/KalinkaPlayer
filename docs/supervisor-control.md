@@ -465,7 +465,8 @@ from the LAN for the page to be reachable.
 
 ## Using it from the app
 
-The Kalinka app shows the box under **Settings › General › Box**:
+The Kalinka app shows the box under **Server settings › General › STREAMER**
+(and under **MANAGEMENT** in the server tab of the plugin catalog screen):
 - **Box dashboard** opens this page in the browser. That covers the
   dashboard and reinstalling, so the app has no copy of either.
 - **Restart the box** and **Power off** run through the app's own
