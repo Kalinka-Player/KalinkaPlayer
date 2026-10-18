@@ -191,6 +191,26 @@ TEST(WavDecoder, HttpRangeSeekingSequentialPlaybackAndInputErrors) {
   std::filesystem::remove(path);
 }
 
+TEST(WavDecoder, OpeningAStreamWithoutRangesKeepsItsOneTransfer) {
+  const auto bytes = wav_test::file();
+  LocalHttpServer server(std::map<std::string, std::string, std::less<>>{
+      {"", std::string(bytes.begin(), bytes.end())}});
+  ContainerStreamDecoder decoder(1, wav(), 1024);
+  decoder.connectTo(std::make_shared<AudioGraphHttpStream>(
+      1, server.url("/refuses-ranges-held"), 32768, 4096));
+  // Opened, so the seekability probe has run while the transfer is held.
+  ASSERT_EQ(waitForStatus(decoder, AudioGraphNodeState::STREAMING,
+                          std::chrono::seconds(5))
+                .state,
+            AudioGraphNodeState::STREAMING);
+
+  server.release();
+
+  EXPECT_EQ(drain(decoder), expected());
+  EXPECT_EQ(decoder.getState().state, AudioGraphNodeState::FINISHED);
+  EXPECT_EQ(server.requestsTo("/refuses-ranges-held"), 2u);
+}
+
 TEST(WavPlayback, HiResFormatReachesAlsaWithFixedAndSoftwareVolume) {
   const auto path = std::filesystem::temp_directory_path() /
                     ("kalinka-wav-output-" + std::to_string(getpid()) + ".wav");

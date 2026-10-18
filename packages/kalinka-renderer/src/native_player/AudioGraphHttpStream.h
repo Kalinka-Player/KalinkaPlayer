@@ -5,6 +5,7 @@
 #include "Buffer.h"
 
 #include "Utils.h"
+#include <atomic>
 #include <chrono>
 #include <curlpp/Easy.hpp>
 
@@ -19,6 +20,10 @@
  * A server that answers 416 to a range from byte 0 before any request has
  * succeeded, as one serving a live capture does, is asked again without a range
  * and read to its end; any other 416 is an error.
+ *
+ * A stream read without ranges can only be sought back to its start. Any other
+ * seek is answered at once with where the stream has read to, and the transfer
+ * carries on undisturbed.
  *
  * A stop or a seek wakes the request immediately, even when its sender has
  * gone quiet or the reader is waiting to retry a failed request.
@@ -57,14 +62,14 @@ private:
   size_t contentLength = 0;
   bool lengthKnown = false;
   bool live = false;
-  size_t offset = 0;
+  std::atomic<size_t> offset = 0;
   size_t bytesToSkip = 0;
   Signal<size_t> seekRequestSignal;
   size_t chunkSize = 0;
   std::chrono::seconds stallTimeout;
   long maxRedirects;
   std::chrono::steady_clock::time_point silentSince;
-  bool acceptRange = true;
+  std::atomic<bool> acceptRange = true;
   bool hasReadHeader = false;
   bool setStreamingState = true;
 
@@ -79,6 +84,7 @@ private:
   void emptyBufferCallback(Buffer<uint8_t> &buffer);
   size_t headerCallback(char *buffer, size_t size, size_t nitems);
 
+  bool refusesSeekTo(size_t position) const;
   /// @return Whether the seek was taken; a refused one leaves the offset as is.
   bool handleSeekSignal(size_t position);
   void performRequest(std::stop_token stopToken);

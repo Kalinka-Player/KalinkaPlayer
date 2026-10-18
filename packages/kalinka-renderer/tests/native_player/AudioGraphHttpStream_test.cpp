@@ -527,6 +527,28 @@ TEST_F(AudioGraphHttpStreamTest, server_that_refuses_every_range_refuses_a_seek)
   EXPECT_EQ(server.requestsTo("/refuses-ranges"), 2u);
 }
 
+TEST_F(AudioGraphHttpStreamTest, seek_refused_mid_stream_leaves_the_transfer_running) {
+  // A live stream refuses ranges in its header, the other with a 416 first.
+  for (const auto &[path, requests] :
+       {std::pair{"/live-held", 1u}, std::pair{"/refuses-ranges-held", 2u}}) {
+    SCOPED_TRACE(path);
+    LocalHttpServer held(file);
+    AudioGraphHttpStream stream(1, held.url(path), bufferSize);
+    std::vector<uint8_t> content(1000);
+    ASSERT_EQ(stream.waitForData({}, content.size()), content.size());
+    ASSERT_EQ(stream.read(content.data(), content.size()), content.size());
+
+    EXPECT_EQ(stream.seekTo(content.size() / 2), content.size());
+
+    held.release();
+    const auto rest = readToEnd(stream);
+    content.insert(content.end(), rest.begin(), rest.end());
+    EXPECT_TRUE(content == fileContent(file));
+    EXPECT_EQ(stream.getState().state, AudioGraphNodeState::FINISHED);
+    EXPECT_EQ(held.requestsTo(path), requests);
+  }
+}
+
 TEST_F(AudioGraphHttpStreamTest, range_refused_once_data_has_arrived_is_an_error) {
   AudioGraphHttpStream stream(1, server.url("/ranged-once"), bufferSize,
                               bufferSize / 2);

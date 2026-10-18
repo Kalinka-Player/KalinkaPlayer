@@ -168,8 +168,13 @@ size_t AudioGraphHttpStream::headerCallback(char *buffer, size_t size,
   return totalSize;
 }
 
+bool AudioGraphHttpStream::refusesSeekTo(size_t position) const {
+  return !acceptRange && position != 0;
+}
+
 bool AudioGraphHttpStream::handleSeekSignal(size_t position) {
-  if (!acceptRange && position != 0) {
+  // The first reply can turn ranges off after seekTo() let the seek through.
+  if (refusesSeekTo(position)) {
     seekRequestSignal.respond(offset);
     return false;
   }
@@ -263,12 +268,12 @@ void AudioGraphHttpStream::readContentChunks(std::stop_token stopToken) {
         numRetries = RETRIES;
       }
       if (numRetries == 0 || !acceptRange) {
-        spdlog::error("Request failed at offset {}/{} - aborting", offset,
-                      contentLength);
+        spdlog::error("Request failed at offset {}/{} - aborting",
+                      offset.load(), contentLength);
         throw;
       } else {
         spdlog::warn("Request failed at offset {}/{} - retrying {} more times",
-                     offset, contentLength, numRetries);
+                     offset.load(), contentLength, numRetries);
         --numRetries;
         continue;
       }
@@ -290,7 +295,7 @@ void AudioGraphHttpStream::readContentChunks(std::stop_token stopToken) {
       acceptRange = false;
     } else if (responseCode == 416) {
       throw std::runtime_error("Request range not satisfiable, " +
-                               std::to_string(offset) + "/" +
+                               std::to_string(offset.load()) + "/" +
                                std::to_string(contentLength) +
                                ", chunk=" + std::to_string(chunkSize));
     } else if (responseCode >= 500 && responseCode < 600 && numRetries > 0 &&
@@ -323,17 +328,18 @@ int AudioGraphHttpStream::readSingleChunk(std::stop_token stopToken) {
       "http,https"));
 
   if (acceptRange) {
+    const size_t from = offset;
     std::ostringstream range;
-    range << offset << "-";
+    range << from << "-";
     if (chunkSize) {
       const size_t requestSize =
-          lengthKnown ? std::min(chunkSize, contentLength - offset) : chunkSize;
-      range << offset + requestSize - 1;
+          lengthKnown ? std::min(chunkSize, contentLength - from) : chunkSize;
+      range << from + requestSize - 1;
     }
     request.setOpt(new curlpp::options::Range(range.str()));
 
     spdlog::trace("Requesting range: {}, contentLength={}, offset={}",
-                  range.str(), contentLength, offset);
+                  range.str(), contentLength, from);
   }
 
   request.setOpt(new curlpp::options::ConnectTimeout(10));
@@ -438,6 +444,10 @@ size_t AudioGraphHttpStream::seekTo(size_t absolutePosition) {
   if (getState().state == AudioGraphNodeState::ERROR ||
       seekRequestSignal.getValue()) {
     return -1;
+  }
+  // Sending the seek would stop the transfer, and only a new one could follow.
+  if (refusesSeekTo(absolutePosition)) {
+    return offset;
   }
 
   spdlog::trace("AudioGraphHttpStream::seekTo({})", absolutePosition);
