@@ -101,4 +101,10 @@ supervisor_log="$(journalctl --directory "$JOURNAL" --output cat --no-pager --un
 grep -q 'Control API listening on 0.0.0.0:8001' <<<"$supervisor_log" || fail 'the control API never listened'
 grep -q 'Nearby setup waiting.*no Wi-Fi interface' <<<"$supervisor_log" || fail 'nearby setup did not wait for a radio'
 grep -q 'path=/v1/actions/poweroff .*outcome=accepted' <<<"$supervisor_log" || fail 'no accepted power-off in the audit log'
+
+echo "  -- the time zone set through the supervisor"
+grep -q 'path=/v1/actions/set_timezone .*outcome=accepted' <<<"$supervisor_log" || fail 'no accepted time zone change in the audit log'
+localtime="$(readlink "$ROOTFS/etc/localtime")"
+# boot.sh sets this zone; the link may be absolute or relative to /etc.
+assert_eq "/etc/localtime names the zone" "${localtime#*usr/share/zoneinfo/}" America/New_York
 exit "$FAILURES"

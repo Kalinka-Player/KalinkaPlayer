@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 pkg_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$pkg_dir/lib/common.sh"
 . "$pkg_dir/lib/supervisor.sh"
 root="$(mktemp -d)"
 trap 'rm -rf "$root"' EXIT
@@ -33,6 +34,30 @@ configure_soundcard_detection "$root"
 printf '[cm4]\ndtparam=i2c_arm=off\n' > "$root/boot/firmware/config.txt"
 configure_soundcard_detection "$root"
 [ "$(cat "$root/boot/firmware/config.txt")" = "$(printf '[cm4]\n[all]\ndtparam=i2c_arm=on')" ]
+ROOTFS="$root/zones"
+mkdir -p "$ROOTFS/usr/lib/systemd" "$ROOTFS/usr/share/dbus-1/system-services" \
+  "$ROOTFS/usr/share/zoneinfo" "$ROOTFS/etc/systemd/system"
+printf '#!/bin/sh\n' > "$ROOTFS/usr/lib/systemd/systemd-timedated"
+chmod 755 "$ROOTFS/usr/lib/systemd/systemd-timedated"
+printf '[D-BUS Service]\nName=org.freedesktop.timedate1\n' \
+  > "$ROOTFS/usr/share/dbus-1/system-services/org.freedesktop.timedate1.service"
+printf 'GB\t+513030-0000731\tEurope/London\n' > "$ROOTFS/usr/share/zoneinfo/zone.tab"
+( require_timezone_support )
+ln -s /dev/null "$ROOTFS/etc/systemd/system/systemd-timedated.service"
+if ( require_timezone_support ) 2>/dev/null; then
+  echo 'Took an image whose systemd-timedated is masked' >&2
+  exit 1
+fi
+rm "$ROOTFS/etc/systemd/system/systemd-timedated.service"
+for missing in usr/lib/systemd/systemd-timedated \
+    usr/share/dbus-1/system-services/org.freedesktop.timedate1.service usr/share/zoneinfo/zone.tab; do
+  mv "$ROOTFS/$missing" "$root/aside"
+  if ( require_timezone_support ) 2>/dev/null; then
+    echo "Took an image without $missing" >&2
+    exit 1
+  fi
+  mv "$root/aside" "$ROOTFS/$missing"
+done
 unit="$pkg_dir/../kalinka-supervisor/systemd/kalinka-supervisor.service"
 ! grep -q 'network-online.target' "$unit"
 # Always on: the process starts nearby setup itself once a radio appears.
@@ -86,4 +111,4 @@ for dependency in curl passwd sudo; do
     exit 1
   fi
 done
-echo 'Provisioning radios, HAT detection, always-on supervisor, packaging and pairing configuration: passed'
+echo 'Provisioning radios, HAT detection, time zone support, always-on supervisor, packaging and pairing configuration: passed'
