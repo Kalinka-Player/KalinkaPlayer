@@ -262,6 +262,8 @@ The Pi images are built on [DietPi](https://dietpi.com), and use its settings fi
 | Your time zone, instead of UTC | `AUTO_SETUP_TIMEZONE=UTC` | `AUTO_SETUP_TIMEZONE=Europe/London` |
 | A DAC HAT without an ID chip, the headphone socket or HDMI | `CONFIG_SOUNDCARD=none` | `CONFIG_SOUNDCARD=hifiberry-digi` (see below) |
 
+The time zone can stay as it is: the [setup wizard](#run-the-setup-wizard) offers yours, and **Settings › General › Box** in the app or [the control page](#the-control-page) changes it later.
+
 Leave `AUTO_SETUP_AUTOMATED=0` as it is. Set to 1, it makes DietPi run its own first-run setup unattended on the first start, instead of at your first login (see **Logging in** below).
 
 For Wi-Fi, also open **`dietpi-wifi.txt`** and put your network's name and password between the quotes on these two lines:
@@ -330,9 +332,10 @@ already have it, so their option starts enabled.
 - **What it shows:** whether the server is running, the versions of Kalinka and its plugins, and how much memory and processor time Kalinka is using. Each plugin package has a Remove button, so a plugin that stops the server from starting can be taken away without it.
 - **What it can do:** restart the server, restart the player, switch it off safely before you unplug it, or reinstall Kalinka from kalinkaplayer.com when nothing else helps. Each one asks you to confirm first.
 - **Sound card:** on a Raspberry Pi, the DAC it found and the card it is set up for, with every card it can be set up for. See [Choose the sound card](#choose-the-sound-card).
+- **Time zone:** the zone the box shows the time in, with every zone it can be set to. The time itself comes from the network.
 - **Reinstalling** keeps your settings and music. It takes several minutes, and the page shows its progress.
 - **SSH access:** after installation, enter and confirm a password under **SSH access**, then choose **Set password and enable SSH**. This creates the `kalinka-admin` login with administrator access and keeps SSH enabled after a restart. Connect with `ssh kalinka-admin@<address>` and use `sudo -i` when you need a root shell. Submitting the form again changes that account's password. Existing logins are kept.
-- **In the Kalinka app:** go to **Settings › General › Box** to choose the sound card, restart the player, switch it off, or open this page. If the server stops answering, the app offers to restart it.
+- **In the Kalinka app:** go to **Settings › General › Box** to choose the sound card or the time zone, restart the player, switch it off, or open this page. If the server stops answering, the app offers to restart it.
 
 Like the server, the page answers anyone on your local network, and nobody outside it. If you run a firewall on the player, let TCP port 8001 through from your network. To turn the page off, add the line `KALINKA_CONTROL_API=0` to `dietpi.txt`. [The supervisor's control page and API](supervisor-control.md) describes it in full.
 
@@ -385,7 +388,7 @@ Once the box is on your home network, connect to it in one of two ways. If it is
 
 ## Run the setup wizard
 
-Whichever remote you open, the **setup wizard** starts. It reviews your network connection, asks where your music is, which output to play through, and whether an amplifier handles the volume, and then it plays a test tone. The browser skips server discovery because it already knows which server it belongs to; it still shows the Network step. The [first-run setup guide](https://github.com/Kalinka-Player/KalinkaAI/blob/main/docs/first-run-setup.md) explains every step.
+Whichever remote you open, the **setup wizard** starts. It reviews your network connection and, on a Kalinka box, offers your phone's or browser's time zone for the box's clock. It then asks where your music is, which output to play through, and whether an amplifier handles the volume, and then it plays a test tone. The browser skips server discovery because it already knows which server it belongs to; it still shows the Network step. The [first-run setup guide](https://github.com/Kalinka-Player/KalinkaAI/blob/main/docs/first-run-setup.md) explains every step.
 
 ## Put your music on it
 
@@ -478,7 +481,7 @@ A few things to know:
 
 ## Keeping it up to date
 
-Kalinka checks for a new release every hour. When there is one, the app offers an **upgrade** button. To have it upgrade by itself, turn on **Auto upgrade** in the server settings: it then installs between 3 and 6 in the morning, while nothing is playing. That is the player's own clock, which on the images is UTC unless [the settings on the card](#settings-on-the-card) name a time zone.
+Kalinka checks for a new release every hour. When there is one, the app offers an **upgrade** button. To have it upgrade by itself, turn on **Auto upgrade** in the server settings: it then installs between 3 and 6 in the morning, while nothing is playing. That is the player's own clock, in the time zone the [setup wizard](#run-the-setup-wizard) or [the control page](#the-control-page) set, or UTC on the images until one is. After a change, the server keeps the old zone until it next starts.
 
 The server, its plugins, the browser player and every renderer move together, and renderers go first, so that a renderer is never left too old to play for its server. A renderer that has fallen too far behind shows an upgrade button in the app's output list.
 
