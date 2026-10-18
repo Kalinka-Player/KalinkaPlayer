@@ -7,6 +7,9 @@ let info = null;
 let status = null;
 let soundcard = null;
 let soundcardList = "";
+let timezoneList = null;
+// The box's zone at the last render, which the picker follows until someone changes it.
+let timezoneShown = null;
 let busy = false;
 // Each progress flow polls until a newer flow, or a dismiss, takes over.
 let flow = 0;
@@ -72,6 +75,14 @@ const ACTIONS = {
     go: "Apply",
     during: { title: "Setting up the sound card", body: "Writing the boot configuration…" },
     follow: followSoundcard,
+  },
+  set_timezone: {
+    icon: "i-clock",
+    title: "Change the time zone?",
+    body: (zone) => `The box shows the time in ${zone} from now on. A now-playing display restarts to follow; playback carries on.`,
+    go: "Apply",
+    during: { title: "Setting the time zone", body: "Waiting for the box…" },
+    follow: followTimezone,
   },
   remove_plugin: {
     icon: "i-remove",
@@ -232,6 +243,7 @@ function renderStatus() {
   renderNotices();
   lockActions();
   byId("soundcard-apply").disabled = locked() || !soundcardChanged();
+  renderTimezone();
 }
 
 function locked() {
@@ -449,6 +461,77 @@ async function refreshSoundcard() {
   }
 }
 
+function zoneLabel(zone) {
+  return zone.replace(/_/g, " ");
+}
+
+// The browser's own zone is the likely choice for a box in the same home.
+function browserTimezone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+  } catch (_) {
+    return "";
+  }
+}
+
+function timezoneChoice() {
+  return byId("timezone-select").value;
+}
+
+function timezoneChanged() {
+  return status != null && timezoneChoice() !== "" && timezoneChoice() !== status.timezone;
+}
+
+function renderTimezone() {
+  const card = byId("timezone");
+  card.hidden = timezoneList == null || status == null;
+  if (card.hidden) return;
+  const select = byId("timezone-select");
+  if (select.options.length === 0) {
+    fillTimezoneSelect(select);
+  } else if (status.timezone && status.timezone !== timezoneShown && select.value === timezoneShown) {
+    // A zone set elsewhere, such as in the app, must not leave Apply offering the old one back.
+    showTimezone(select, status.timezone);
+  }
+  timezoneShown = status.timezone;
+  const facts = byId("timezone-facts");
+  facts.replaceChildren();
+  fact(facts, "This box", status.timezone ? zoneLabel(status.timezone) : "Not known");
+  fact(facts, "This device", zoneLabel(browserTimezone()));
+  byId("timezone-apply").disabled = locked() || !timezoneChanged();
+}
+
+// Filled once: a refill closes the list on someone choosing from it.
+function fillTimezoneSelect(select) {
+  const current = status.timezone;
+  const zones = current && !timezoneList.includes(current) ? [current, ...timezoneList] : timezoneList;
+  select.replaceChildren(...zones.map(zoneOption));
+  const browser = browserTimezone();
+  select.value = current || (zones.includes(browser) ? browser : "UTC");
+}
+
+function showTimezone(select, zone) {
+  if (![...select.options].some((o) => o.value === zone)) select.prepend(zoneOption(zone));
+  select.value = zone;
+}
+
+function zoneOption(zone) {
+  const node = document.createElement("option");
+  node.value = zone;
+  node.textContent = zoneLabel(zone);
+  return node;
+}
+
+async function loadTimezones() {
+  if (!info.actions.includes("set_timezone")) return;
+  try {
+    timezoneList = (await getJSON("/v1/timezones")).timezones;
+  } catch (_) {
+    // The card stays hidden until the page is loaded again.
+  }
+  renderTimezone();
+}
+
 async function refreshDashboard() {
   try {
     renderDashboard(await getJSON("/v1/dashboard"));
@@ -629,6 +712,11 @@ function followSoundcard(_, result) {
   refreshSoundcard();
 }
 
+function followTimezone(_, result) {
+  finishProgress({ ok: true, title: "Time zone set", body: `The box shows the time in ${zoneLabel(result.timezone)}.` });
+  refreshStatus();
+}
+
 async function followPowerOff() {
   const token = ++flow;
   showProgress({ title: "Powering off", body: "The player is shutting down…" });
@@ -742,6 +830,9 @@ function init() {
   byId("soundcard-select").addEventListener("change", renderStatus);
   byId("soundcard-apply").addEventListener("click", () =>
     confirmAction("set_soundcard", { soundcard: soundcardChoice() }, cardLabel(soundcardChoice())));
+  byId("timezone-select").addEventListener("change", renderTimezone);
+  byId("timezone-apply").addEventListener("click", () =>
+    confirmAction("set_timezone", { timezone: timezoneChoice() }, zoneLabel(timezoneChoice())));
   byId("confirm-cancel").addEventListener("click", closeConfirm);
   byId("confirm").addEventListener("click", (e) => {
     if (e.target === byId("confirm")) closeConfirm();
@@ -756,6 +847,7 @@ function init() {
       byId("foot").textContent = `Kalinka Supervisor ${i.version} · control protocol ${i.protocol}`;
       renderStatus();
       poll(refreshSoundcard, 15000);
+      loadTimezones();
     })
     .catch(() => {
       byId("unreachable").hidden = false;

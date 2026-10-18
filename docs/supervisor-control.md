@@ -48,6 +48,9 @@ Core's files are damaged. It follows the app's dark style.
   the box can be set up for, with the ones it detected first, and **Apply**,
   which restarts the box once when the boot configuration has to change. See
   [the sound card](#the-sound-card).
+- **Time zone.** The box's zone and the browser's, a list of every zone the
+  box offers, starting on the box's own, and **Apply**. See
+  [the time zone](#the-time-zone).
 - **Resources.** Memory and CPU for Kalinka as a whole, then per service:
   - **Services:** the server, the renderer and the supervisor, plus any other
     Kalinka unit while it runs, such as an upgrade or the Wi-Fi helper.
