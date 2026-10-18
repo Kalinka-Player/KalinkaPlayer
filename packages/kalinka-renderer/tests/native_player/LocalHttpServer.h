@@ -24,8 +24,10 @@
  * `/strict-ranged` returns 416 for ranges extending past EOF, like BubbleUPnP.
  * `/refuses-ranges` answers any Range request with a bare 416 and a plain GET
  * with the whole file, chunked and of unstated length, as BubbleUPnP's
- * AudioCast does. `/ranged-once` answers its first request as `/ranged` does
- * and every later one with a 416, as a server does whose file was cut short.
+ * AudioCast does; `/refuses-ranges-held` does the same, but sends only the
+ * first 1000 bytes, unchunked, until release() is called. `/ranged-once`
+ * answers its first request as `/ranged` does and every later one with a 416,
+ * as a server does whose file was cut short.
  *
  * The routes that stall answer as `/ranged` does, but send the headers and only
  * part of the body, then hold the connection open without a word until the

@@ -131,6 +131,17 @@ Reply stalled(Response response, size_t sentFirst) {
   return {std::move(response), Delivery::Stall, sentFirst};
 }
 
+/// @p response of unstated length, chunked, or held after its first 1000 bytes.
+Reply unsized(Response response, bool held) {
+  response.erase(http::field::content_length);
+  response.keep_alive(false);
+  if (held) {
+    return {std::move(response), Delivery::Held, 1000};
+  }
+  response.chunked(true);
+  return {std::move(response)};
+}
+
 /// Every route in one place; @p first is whether @p request is the first to
 /// its path.
 Reply answer(const Request &request, const std::string &body, bool first) {
@@ -163,15 +174,9 @@ Reply answer(const Request &request, const std::string &body, bool first) {
   }
   if (target == "/live" || target == "/live-held") {
     Response response = respond(request, http::status::ok, body);
-    response.erase(http::field::content_length);
     response.set(http::field::accept_ranges, "none");
     response.set("X-Kalinka-Live", "1");
-    response.keep_alive(false);
-    if (target == "/live-held") {
-      return {std::move(response), Delivery::Held, 1000};
-    }
-    response.chunked(true);
-    return {std::move(response)};
+    return unsized(std::move(response), target == "/live-held");
   }
   if (target == "/ranged" || target == "/strict-ranged") {
     return {ranged(request, body, target == "/strict-ranged")};
@@ -179,15 +184,13 @@ Reply answer(const Request &request, const std::string &body, bool first) {
   if (target == "/refuses-a-resume" && first) {
     return stalled(ranged(request, body), LocalHttpServer::STALL_OFTEN_BYTES);
   }
-  if (target == "/refuses-ranges" || target == "/refuses-a-resume") {
+  if (target == "/refuses-ranges" || target == "/refuses-ranges-held" ||
+      target == "/refuses-a-resume") {
     if (request.count(http::field::range) != 0) {
       return {respond(request, http::status::range_not_satisfiable)};
     }
-    Response response = respond(request, http::status::ok, body);
-    response.erase(http::field::content_length);
-    response.keep_alive(false);
-    response.chunked(true);
-    return {std::move(response)};
+    return unsized(respond(request, http::status::ok, body),
+                   target == "/refuses-ranges-held");
   }
   if (target == "/ranged-once") {
     return {first ? ranged(request, body)
