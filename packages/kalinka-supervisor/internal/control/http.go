@@ -18,6 +18,7 @@ import (
 	"kalinka/supervisor/internal/coreconf"
 	"kalinka/supervisor/internal/protocol"
 	"kalinka/supervisor/internal/soundcard"
+	"kalinka/supervisor/internal/timezone"
 )
 
 const (
@@ -29,14 +30,16 @@ const (
 	phaseTimeout = 5 * time.Second
 	// soundcardTimeout bounds the helper, which systemd stops after 80 seconds.
 	soundcardTimeout = 90 * time.Second
-	accepted         = "accepted"
+	// timezoneTimeout covers D-Bus starting timedated on a Pi Zero, then the display's restart.
+	timezoneTimeout = 30 * time.Second
+	accepted        = "accepted"
 )
 
 var outcomes = map[string]struct {
 	status  int
 	message string
 }{
-	"invalid_request":        {http.StatusBadRequest, "The request body must be a JSON object with only the box's identity and, for set_soundcard, a sound card name, or, for remove_plugin, a package name"},
+	"invalid_request":        {http.StatusBadRequest, "The request body must be a JSON object with only the box's identity and, for set_soundcard, a sound card name, for remove_plugin, a package name, or, for set_timezone, a time zone name"},
 	"not_local":              {http.StatusForbidden, "Only the local network may use this API"},
 	"host_not_allowed":       {http.StatusForbidden, "Address this box by its IP address or local name"},
 	"origin_not_allowed":     {http.StatusForbidden, "Only pages served by this box may use this API"},
@@ -44,6 +47,7 @@ var outcomes = map[string]struct {
 	"method_not_allowed":     {http.StatusMethodNotAllowed, "Method not allowed"},
 	"wrong_server":           {http.StatusConflict, "server_id or renderer_id does not name this box"},
 	"unknown_soundcard":      {http.StatusUnprocessableEntity, "This box cannot be set up for that sound card; /v1/soundcard lists the ones it can"},
+	"unknown_timezone":       {http.StatusBadRequest, "This box's tzdata has no such time zone; /v1/timezones lists the ones it offers"},
 	"unsupported_media_type": {http.StatusUnsupportedMediaType, "The request body must be application/json"},
 	CodeBusy:                 {http.StatusConflict, "Another action is in progress"},
 	CodeShuttingDown:         {http.StatusConflict, "The box is already restarting or powering off"},
@@ -75,6 +79,15 @@ type Soundcards interface {
 	Report() soundcard.Report
 }
 
+// Timezones is what the API knows about the box's time zone and which zones
+// it may be set to; timezone.Zones is the production one.
+type Timezones interface {
+	Supported() bool
+	Resolve(name string) (string, bool)
+	Current() *string
+	Offered() []string
+}
+
 // HandlerConfig is what the HTTP layer reports and checks besides the actions themselves.
 // Dashboard returns a JSON-encodable snapshot of the box.
 type HandlerConfig struct {
@@ -84,6 +97,7 @@ type HandlerConfig struct {
 	// CoreInstalled is false on a box that runs only a renderer.
 	CoreInstalled func() bool
 	Soundcards    Soundcards
+	Timezones     Timezones
 	CorePort      func() int
 	Setup         func() string
 	Dashboard     func(context.Context) any
@@ -203,6 +217,8 @@ func (h *handler) route(path string) (route, bool) {
 		return route{http.MethodGet, func(w http.ResponseWriter, _ *http.Request) string { return serveLog(w, h.cfg.Removals.Record) }}, true
 	case path == "/v1/soundcard" && h.cfg.Soundcards != nil:
 		return route{http.MethodGet, h.soundcard}, true
+	case path == "/v1/timezones" && slices.Contains(h.actions(), SetTimezone):
+		return route{http.MethodGet, h.timezones}, true
 	case strings.HasPrefix(path, "/v1/actions/"):
 		a := Action(strings.TrimPrefix(path, "/v1/actions/"))
 		if !slices.Contains(h.actions(), a) {
@@ -217,11 +233,15 @@ func (h *handler) route(path string) (route, bool) {
 }
 
 // actions is what this box can do: one without Core has no Core to restart
-// or reinstall, and only a Raspberry Pi has a sound card to choose.
+// or reinstall, only a Raspberry Pi has a sound card to choose, and only a
+// box with tzdata and timedated can change its time zone.
 func (h *handler) actions() []Action {
 	return slices.DeleteFunc(slices.Clone(Supported), func(a Action) bool {
-		if a == SetSoundcard {
+		switch a {
+		case SetSoundcard:
 			return h.cfg.Soundcards == nil || !h.cfg.Soundcards.Supported()
+		case SetTimezone:
+			return h.cfg.Timezones == nil || !h.cfg.Timezones.Supported()
 		}
 		return a.needsCore() && h.cfg.CoreInstalled != nil && !h.cfg.CoreInstalled()
 	})
@@ -252,6 +272,19 @@ func (h *handler) soundcard(w http.ResponseWriter, _ *http.Request) string {
 	return ""
 }
 
+func (h *handler) timezones(w http.ResponseWriter, _ *http.Request) string {
+	reply(w, http.StatusOK, map[string]any{"timezones": h.cfg.Timezones.Offered()}, false)
+	return ""
+}
+
+// currentTimezone is the zone the system itself names, so a change made outside the supervisor shows too.
+func (h *handler) currentTimezone() *string {
+	if h.cfg.Timezones == nil {
+		return nil
+	}
+	return h.cfg.Timezones.Current()
+}
+
 func (h *handler) status(w http.ResponseWriter, r *http.Request) string {
 	s, err := h.coord.Status(r.Context())
 	if err != nil {
@@ -265,7 +298,7 @@ func (h *handler) status(w http.ResponseWriter, r *http.Request) string {
 	removal["package"] = nullable(s.RemovedPackage)
 	reply(w, http.StatusOK, map[string]any{
 		"core": s.Core, "core_port": h.cfg.CorePort(), "upgrading": s.Upgrading, "setup": h.cfg.Setup(), "pending": pending,
-		"reinstall": outcomeJSON(s.Reinstall), "plugin_removal": removal,
+		"reinstall": outcomeJSON(s.Reinstall), "plugin_removal": removal, "timezone": h.currentTimezone(),
 	}, false)
 	return ""
 }
@@ -310,6 +343,11 @@ type packageBody struct {
 	Package *string `json:"package"`
 }
 
+type timezoneBody struct {
+	identity
+	Timezone *string `json:"timezone"`
+}
+
 // identified reports whether id names this box: by its server where it has
 // one, otherwise by its renderer. A renderer named alongside a server must
 // be this box's too.
@@ -349,6 +387,12 @@ func (h *handler) act(w http.ResponseWriter, r *http.Request, a Action) string {
 			return fail(w, "invalid_request")
 		}
 		id, req.Package = body.identity, *body.Package
+	} else if a == SetTimezone {
+		var body timezoneBody
+		if !decode(w, r, &body) || body.Timezone == nil || !timezone.ValidName(*body.Timezone) {
+			return fail(w, "invalid_request")
+		}
+		id, req.Timezone = body.identity, *body.Timezone
 	} else if !decode(w, r, &id) {
 		return fail(w, "invalid_request")
 	}
@@ -358,6 +402,13 @@ func (h *handler) act(w http.ResponseWriter, r *http.Request, a Action) string {
 	if a == SetSoundcard && !h.cfg.Soundcards.Offers(req.Soundcard) {
 		return fail(w, "unknown_soundcard")
 	}
+	if a == SetTimezone {
+		zone, ok := h.cfg.Timezones.Resolve(req.Timezone)
+		if !ok {
+			return fail(w, "unknown_timezone")
+		}
+		req.Timezone = zone
+	}
 	// Not the request's context: a client hanging up must not abandon an admitted operation midway.
 	admitting, stopAdmitting := context.WithTimeout(context.Background(), phaseTimeout)
 	defer stopAdmitting()
@@ -366,8 +417,11 @@ func (h *handler) act(w http.ResponseWriter, r *http.Request, a Action) string {
 		return refusal(w, err)
 	}
 	limit := phaseTimeout
-	if a == SetSoundcard {
+	switch a {
+	case SetSoundcard:
 		limit = soundcardTimeout
+	case SetTimezone:
+		limit = timezoneTimeout
 	}
 	running, stopRunning := context.WithTimeout(context.Background(), limit)
 	defer stopRunning()
@@ -382,6 +436,9 @@ func (h *handler) act(w http.ResponseWriter, r *http.Request, a Action) string {
 	}
 	if a == RemovePlugin {
 		answer["package"] = req.Package
+	}
+	if a == SetTimezone {
+		answer["timezone"] = req.Timezone
 	}
 	if target == "" {
 		reply(w, http.StatusAccepted, answer, false)

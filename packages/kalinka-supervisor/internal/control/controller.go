@@ -21,10 +21,11 @@ const (
 	Reinstall    Action = "reinstall"
 	SetSoundcard Action = "set_soundcard"
 	RemovePlugin Action = "remove_plugin"
+	SetTimezone  Action = "set_timezone"
 )
 
 // Supported lists every action this protocol version serves, in the order /info reports them.
-var Supported = []Action{RestartCore, Reboot, PowerOff, Reinstall, SetSoundcard, RemovePlugin}
+var Supported = []Action{RestartCore, Reboot, PowerOff, Reinstall, SetSoundcard, RemovePlugin, SetTimezone}
 
 const enableSSH Action = "enable_ssh"
 
@@ -32,11 +33,13 @@ const enableSSH Action = "enable_ssh"
 var helperUnits = []string{"kalinka-ssh-setup.service", soundcard.ApplyUnit}
 
 // Request is an admitted action's input: the action, the card set_soundcard
-// makes the box's own, and the installed plugin package remove_plugin takes away.
+// makes the box's own, the installed plugin package remove_plugin takes away,
+// and the zone set_timezone makes the box's own.
 type Request struct {
 	Action    Action
 	Soundcard string
 	Package   string
+	Timezone  string
 	// ConfirmPowerOff rechecks an automatic request after slow admission checks.
 	ConfirmPowerOff func(context.Context) bool
 }
@@ -58,6 +61,11 @@ type SoundcardApplier interface {
 // SSHSetup enables the dashboard's fixed administrator account and SSH service.
 type SSHSetup interface {
 	Enable(context.Context, protocol.Secret) error
+}
+
+// TimezoneSetter makes a zone from the box's tzdata its own; timezone.Setter is the production one.
+type TimezoneSetter interface {
+	Set(ctx context.Context, zone string) error
 }
 
 // target returns the shutdown target of an action that ends the supervisor along with the host.
@@ -142,6 +150,7 @@ type Config struct {
 	Installed  func(string) bool
 	SSH        SSHSetup
 	Soundcards SoundcardApplier
+	Timezone   TimezoneSetter
 	Now        func() time.Time
 }
 
@@ -156,6 +165,7 @@ type Controller struct {
 	installed       func(string) bool
 	ssh             SSHSetup
 	soundcards      SoundcardApplier
+	timezone        TimezoneSetter
 	now             func() time.Time
 	restartInterval time.Duration
 
@@ -168,7 +178,7 @@ type Controller struct {
 func NewController(c Config) *Controller {
 	return &Controller{
 		systemd: c.Systemd, network: c.Network, reinstalls: c.Reinstalls, removals: c.Removals, installed: c.Installed,
-		ssh: c.SSH, soundcards: c.Soundcards, now: c.Now, restartInterval: 15 * time.Second,
+		ssh: c.SSH, soundcards: c.Soundcards, timezone: c.Timezone, now: c.Now, restartInterval: 15 * time.Second,
 	}
 }
 
@@ -258,8 +268,11 @@ func (c *Controller) admit(ctx context.Context, r Request) error {
 	if len(installing) > 0 {
 		return refuse(CodeUpgrade)
 	}
-	// Both leave the network alone, so a Wi-Fi join in progress does not hold them.
-	if a == RestartCore || a == RemovePlugin {
+	if a == SetTimezone && c.timezone == nil {
+		return refuse(CodeUnavailable)
+	}
+	// These leave the network alone, so a Wi-Fi join in progress does not hold them.
+	if a == RestartCore || a == RemovePlugin || a == SetTimezone {
 		return nil
 	}
 	// Core being mid-start blocks nothing: a wedged bootstrap is a main reason to reboot or reinstall.
@@ -313,6 +326,11 @@ func (o *operation) Run(ctx context.Context) (Target, error) {
 			return "", o.finish(err)
 		}
 		return "", o.finish(c.systemd.RemovePlugin(ctx))
+	case SetTimezone:
+		if err := c.timezone.Set(ctx, o.req.Timezone); err != nil {
+			return "", o.finish(err)
+		}
+		return "", o.finish(c.systemd.RestartKiosk(ctx))
 	}
 	err := c.systemd.RestartCore(ctx)
 	if err == nil {

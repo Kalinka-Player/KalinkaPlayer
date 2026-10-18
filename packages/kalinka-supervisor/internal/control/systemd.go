@@ -28,6 +28,9 @@ const ReinstallUnit = "kalinka-reinstall.service"
 // PluginRemovalUnit removes the plugin package named in the supervisor's request file; the supervisor package ships it.
 const PluginRemovalUnit = "kalinka-plugin-removal.service"
 
+// KioskUnit draws the now-playing display, whose clock reads the time zone only when it starts; the kiosk package ships it.
+const KioskUnit = "kalinka-kiosk.service"
+
 // UpgradeUnits install or remove packages; restarting or shutting down under them can leave a broken installation.
 var UpgradeUnits = []string{ReinstallUnit, PluginRemovalUnit, "kalinka-upgrade.service", "kalinka-renderer-upgrade.service", "kalinka-restart.service"}
 
@@ -63,6 +66,8 @@ type Systemd interface {
 	Reinstall(context.Context) error
 	// RemovePlugin queues PluginRemovalUnit, which reads the package to remove from the request file.
 	RemovePlugin(context.Context) error
+	// RestartKiosk restarts KioskUnit if it runs, and does nothing on a box without it.
+	RestartKiosk(context.Context) error
 	// CheckTarget confirms systemd answers and knows the target, without starting it.
 	CheckTarget(context.Context, Target) error
 	Shutdown(context.Context, Target) error
@@ -112,6 +117,16 @@ func (s *SystemdBus) Reinstall(ctx context.Context) error {
 
 func (s *SystemdBus) RemovePlugin(ctx context.Context) error {
 	return s.start(ctx, PluginRemovalUnit)
+}
+
+func (s *SystemdBus) RestartKiosk(ctx context.Context) error {
+	return s.with(func(bus dbusx.Bus) error {
+		_, err := bus.Call(ctx, manager, managerIface+".TryRestartUnit", KioskUnit, "replace")
+		if dbusx.ErrorName(err) == noSuchUnit {
+			return nil
+		}
+		return err
+	})
 }
 
 func (s *SystemdBus) start(ctx context.Context, unit string) error {
@@ -194,6 +209,10 @@ func (Simulated) Reinstall(context.Context) error {
 }
 func (Simulated) RemovePlugin(context.Context) error {
 	slog.Info("Simulated plugin removal")
+	return nil
+}
+func (Simulated) RestartKiosk(context.Context) error {
+	slog.Info("Simulated display restart")
 	return nil
 }
 func (Simulated) CheckTarget(context.Context, Target) error { return nil }
