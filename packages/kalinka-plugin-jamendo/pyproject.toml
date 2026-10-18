@@ -27,8 +27,9 @@ dependencies = [
     # takes a filter document where it took genre ids. >=3.12: the shared
     # embedder names the runtime it lacks, which mood search offers, and an
     # optional package says where it has wheels. >=3.13: InputModule.capabilities,
-    # which leaves AI search out while its setting is off.
-    "kalinka-plugin-sdk>=3.13,<4",
+    # which leaves AI search out while its setting is off. >=3.14:
+    # ModuleCapability.CATALOGS, which offers Jamendo as a home source.
+    "kalinka-plugin-sdk>=3.14,<4",
     "httpx>=0.24",
     # ai_search (mood/semantic): sqlite-vec KNN over the shipped index.
     # Imported lazily; ai_search disables itself if these are unavailable.

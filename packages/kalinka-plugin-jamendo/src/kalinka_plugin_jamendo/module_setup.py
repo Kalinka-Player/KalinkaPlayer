@@ -24,8 +24,8 @@ _KEY_BY_IMPORT_NAME = {
 
 
 class KalinkaPluginJamendo(InputModulePlugin):
-    # 3.12: missing_runtime and architectures. Mirrors pyproject's pin.
-    REQUIRES_SDK = ">=3.12,<4"
+    # 3.14: ModuleCapability.CATALOGS. Mirrors pyproject's pin.
+    REQUIRES_SDK = ">=3.14,<4"
     PLUGIN_ID = "jamendo"
     CONFIG_MODEL = JamendoConfig
     OPTIONAL_PACKAGES: ClassVar[dict[str, OptionalPackageSpec]] = OPTIONAL_PACKAGES

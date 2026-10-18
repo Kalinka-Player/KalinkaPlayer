@@ -1,4 +1,5 @@
-"""AI search is reported only while the setting gave the module a searcher."""
+"""My Library always has catalogs; AI search is reported only while the
+setting gave the module a searcher."""
 
 from kalinka_plugin_sdk.inputmodule import ModuleCapability
 
@@ -17,9 +18,13 @@ def _module(tmp_path, queues):
 
 def test_reported_with_a_searcher(tmp_path):
     module = _module(tmp_path, (object(), object()))
-    assert module.capabilities() == {ModuleCapability.AI_SEARCH}
+    assert module.capabilities() == {
+        ModuleCapability.CATALOGS,
+        ModuleCapability.AI_SEARCH,
+    }
 
 
 def test_left_out_when_the_setting_is_off(tmp_path):
-    assert _module(tmp_path, (None, None)).capabilities() == frozenset()
-    assert _module(tmp_path, (object(), None)).capabilities() == frozenset()
+    catalogs_only = {ModuleCapability.CATALOGS}
+    assert _module(tmp_path, (None, None)).capabilities() == catalogs_only
+    assert _module(tmp_path, (object(), None)).capabilities() == catalogs_only

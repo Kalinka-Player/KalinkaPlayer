@@ -47,14 +47,21 @@ def register_browse_routes(
     app: FastAPI,
     resolve_module: Callable[[EntityId], BrowseSource],
     parse_entity_id: Callable[[str], EntityId],
+    list_roots: Callable[[int, int], BrowseItemList],
     decorate: Callable[[BrowseItemList], None] = lambda result: None,
 ) -> None:
-    """Mount the entity-browsing endpoints on `app`.
+    """Mount the browsing endpoints on `app`.
 
     ``resolve_module`` maps an entity id to its input module, raising for one
-    that is unknown or disabled; ``decorate`` is the server's own pass over a
-    result (catalog card art) before it is serialised.
+    that is unknown or disabled; ``list_roots`` pages the sources' root
+    catalogs; ``decorate`` is the server's own pass over a result (catalog card
+    art) before it is serialised.
     """
+
+    @app.get("/browse")
+    def browse_root(offset: int = Query(0, ge=0), limit: int = Query(10, ge=0)):
+        """Browse the root catalog."""
+        return list_roots(offset, limit).model_dump(exclude_unset=True)
 
     @app.get("/browse/{id}")
     async def browse_entity(

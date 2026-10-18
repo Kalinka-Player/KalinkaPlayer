@@ -84,12 +84,22 @@ def client(module):
             raise HTTPException(status_code=404, detail="Input module not found")
         return module
 
+    def list_roots(offset, limit):
+        listed_roots.append((offset, limit))
+        return BrowseItemList(offset=offset, limit=limit, total=0, items=[])
+
+    listed_roots = []
     app = FastAPI()
     register_browse_routes(
-        app, resolve, EntityId.from_string, lambda result: decorated.append(result)
+        app,
+        resolve,
+        EntityId.from_string,
+        list_roots,
+        lambda result: decorated.append(result),
     )
     client = TestClient(app)
     client.decorated = decorated
+    client.listed_roots = listed_roots
     return client
 
 
@@ -172,7 +182,9 @@ def test_an_unknown_source_is_still_404(client):
 
 def test_a_module_failure_is_500_not_422():
     app = FastAPI()
-    register_browse_routes(app, lambda _: _BrokenModule(), EntityId.from_string)
+    register_browse_routes(
+        app, lambda _: _BrokenModule(), EntityId.from_string, lambda o, l: None
+    )
     r = TestClient(app, raise_server_exceptions=False).get(f"/browse/{CATALOG}")
     assert r.status_code == 500
 
@@ -199,3 +211,16 @@ def test_values_for_a_field_that_was_never_offered_is_422(client):
 
     assert r.status_code == 422
     assert r.json()["detail"]["field"] == "year"
+
+
+def test_the_root_pages_as_asked(client):
+    r = client.get("/browse", params={"offset": 10, "limit": 5})
+
+    assert r.status_code == 200
+    assert client.listed_roots == [(10, 5)]
+
+
+def test_the_root_refuses_a_negative_page(client):
+    assert client.get("/browse", params={"offset": -1}).status_code == 422
+    assert client.get("/browse", params={"limit": -1}).status_code == 422
+    assert client.listed_roots == []

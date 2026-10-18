@@ -153,7 +153,11 @@ def get_version() -> str:
 # 0.17: a module's `capabilities` follow its own settings: a source whose AI
 # search is switched off no longer lists `ai_search`. Plugin settings apply on
 # restart, so the list changes only then.
-REST_API_VERSION = "0.17"
+# 0.18: a module whose browse root leads to catalogs a client may offer on its
+# home screen lists `catalogs` among its `capabilities`; nothing infers it from
+# browsing, so a receiver lists none. GET /browse pages the source roots by
+# `offset` and `limit`, where it listed every source whatever was asked.
+REST_API_VERSION = "0.18"
 
 
 def get_rest_api_version() -> str:

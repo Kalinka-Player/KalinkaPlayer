@@ -188,9 +188,14 @@ class ModuleCapability(str, Enum):
 
     Values:
         AI_SEARCH: :meth:`InputModule.ai_search` answers natural-language queries
+        CATALOGS: SDK 3.14. The module's root, listed by the server's browse
+            root, leads to catalogs a client may offer on its home screen and
+            pin with filters. Never inferred from :meth:`InputModule.browse`,
+            which a receiver implements without having a catalog to show.
     """
 
     AI_SEARCH = "ai_search"
+    CATALOGS = "catalogs"
 
 
 @runtime_checkable
@@ -271,7 +276,8 @@ class InputModule(Protocol):
         setting is off. Read on every module listing, so keep it cheap.
 
         The default reports AI_SEARCH when the module overrides
-        :meth:`ai_search`, which is what servers before SDK 3.13 inferred.
+        :meth:`ai_search`, which is what servers before SDK 3.13 inferred,
+        and never CATALOGS: a module that has catalogs to show says so.
         """
         if type(self).ai_search is not InputModule.ai_search:
             return frozenset({ModuleCapability.AI_SEARCH})

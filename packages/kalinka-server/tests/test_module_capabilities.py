@@ -2,8 +2,8 @@
 
 The module reports it (``InputModule.capabilities``), so a capability can
 follow the module's settings; the SDK default infers AI search from the
-method, as servers did before — and a source that is not a module at all
-has none.
+method, as servers did before, and never infers catalogs — and a source that
+is not a module at all has none.
 """
 
 from kalinka_plugin_sdk.inputmodule import InputModule, ModuleCapability
@@ -43,6 +43,25 @@ class _Reporting(_Plain):
         return self._reported
 
 
+class _Catalogs(_Plain):
+    """Has catalogs to show, and says so."""
+
+    def capabilities(self):
+        return frozenset({ModuleCapability.CATALOGS})
+
+
+class _CatalogsAndSemantic(_Semantic):
+    def capabilities(self):
+        return frozenset({ModuleCapability.CATALOGS, ModuleCapability.AI_SEARCH})
+
+
+class _Receiver(_Plain):
+    """Browses to nothing; a controller hands it what it plays."""
+
+    async def browse(self, entity_id, offset=0, limit=50, filter=None):
+        return None
+
+
 class _Broken(_Semantic):
     def capabilities(self):
         raise RuntimeError("boom")
@@ -65,12 +84,24 @@ def test_a_module_reports_what_its_settings_allow():
     assert capabilities_of(_Switchable(on=False)) == []
 
 
+def test_catalogs_are_listed_only_where_the_module_declares_them():
+    assert capabilities_of(_Catalogs()) == ["catalogs"]
+    assert capabilities_of(_CatalogsAndSemantic()) == ["ai_search", "catalogs"]
+
+
+def test_catalogs_are_not_inferred_from_browsing():
+    assert capabilities_of(_Receiver()) == []
+    assert capabilities_of(_Semantic()) == ["ai_search"]
+
+
 def test_the_per_call_budget_does_not_hide_what_it_wraps():
     assert capabilities_of(TimeLimitedInputModule(_Semantic(), "semantic")) == [
         "ai_search"
     ]
     assert capabilities_of(TimeLimitedInputModule(_Switchable(False), "s")) == []
     assert capabilities_of(TimeLimitedInputModule(_Plain(), "plain")) == []
+    assert capabilities_of(TimeLimitedInputModule(_Catalogs(), "c")) == ["catalogs"]
+    assert capabilities_of(TimeLimitedInputModule(_Receiver(), "r")) == []
 
 
 def test_only_known_capabilities_are_listed():
@@ -83,4 +114,7 @@ def test_a_report_that_raises_lists_none():
 
 def test_a_source_that_is_not_a_module_has_none():
     assert capabilities_of(_Collections()) == []
+
+
+def test_a_disabled_plugin_has_none():
     assert capabilities_of(None) == []
