@@ -40,7 +40,7 @@ The renderer protocol, the plugin SDK's calls, the Android native code and the R
 | `/device/ws` state, `GET /device/get_volume` | without `volume_control`: `{"power_on": false, "volume": {"supported": false}}`, and `supported: false`; with it, the engine's volume as SDK 3.11 specifies |
 | `GET /device/list`, `PUT /device/set_volume`, the device socket's commands | without `volume_control`: the existing no-device answers ("No device configured"; the socket ignores the command), and nothing is sent anywhere |
 
-None of these is a new shape: they are the answers the server already gives when no device module is in charge. A downstream amplifier delegated to the renderer whose DAC the hold shares keeps precedence in both cases, as it does today.
+None of these is a new shape: they are the answers the server already gives when no device module is in charge. A downstream amplifier delegated to the renderer playback would go to keeps precedence in both cases, as it does today.
 
 A client that connects during a hold learns all of it from the replays: the queue socket's carries the external `playback_control` and a null `current_renderer_id`, the device socket's the unsupported volume.
 
@@ -75,29 +75,32 @@ The server imports `PlaybackOutput`, so its SDK pin, `control.in` and both RELEA
 [renderer_registry.py](../packages/kalinka-server/src/kalinka_server/renderer_registry.py) holds the external hold beside the queue's claim:
 
 - `external_claimed(owner)` and `external_released(owner)` set and clear `_external_hold` by identity. A release from another owner is ignored, as `session_released` ignores one. Both call `_publish_current()`, so `current_renderer_changed` fires with `(None, selected)` and later `(renderer, selected)`, and observers are told.
-- `active_id()` returns None while `_external_hold` is set, otherwise what it returns today. Its docstring becomes: the renderer serving playback now; None while an external engine serves it or no renderer is listed.
-- `target_id()` answers what `active_id()` answers with no external hold: the claimed renderer, else resolution. It is for callers that need where renderer playback goes or would go. `list()` and `_publish_current()` keep `active_id()`.
+- `serving_id()` is what clients are told plays: None while `_external_hold` is set, otherwise `active_id()`. Its docstring says it is the renderer serving the current playback, for reporting only, and that code deciding where playback goes wants `active_id()`. It has three callers: `_publish_current()`, `list()` and `_renderer_selection()` in [server.py](../packages/kalinka-server/src/kalinka_server/server.py), which answers both `GET` and `PUT /renderer/active`.
+- `active_id()` keeps its meaning, the renderer playback runs on or would go to, and all of its other callers. Its docstring gains one line: an external hold does not change it, and reporting goes through `serving_id()`.
 
-### Callers that move to `target_id()`
+Reporting is the exception, so it takes the new name. Three call sites change, and an internal caller added later that reaches for `active_id()` keeps working through a hold instead of silently getting None.
 
-Each reads the renderer before the arbiter has ended the hold, or needs the renderer whose DAC the hold shares:
+### Callers that keep `active_id()`
 
-| Caller | Why |
+Several read the renderer before the arbiter has ended the hold, or need the renderer behind it. None during a hold would break them:
+
+| Caller | What None would break |
 | --- | --- |
-| `RendererPlayer._ensure_session` ([renderer_player.py](../packages/kalinka-server/src/kalinka_server/renderer_player.py)) | It reads the renderer and only then claims it, and the claim's `before_claim` hook is what calls `arbiter.acquire` (`PlayQueueImpl._new_player`). With `active_id()`, pressing play could not take the output back from Roon: it would fail with "no renderer is connected". |
+| `RendererPlayer._ensure_session` ([renderer_player.py](../packages/kalinka-server/src/kalinka_server/renderer_player.py)) | It reads the renderer and only then claims it, and the claim's `before_claim` hook is what calls `arbiter.acquire` (`PlayQueueImpl._new_player`). Pressing play could not take the output back from Roon: it would fail with "no renderer is connected". |
 | `DirectPlaybackService.acquire`, both reads ([direct_playback.py](../packages/kalinka-server/src/kalinka_server/direct_playback.py)) | The pre-check runs before the arbiter hands over, so Qobuz Connect would be refused while Roon holds the output instead of taking over from it. |
-| The hold's own `renderer_id`, the callable [player_setup.py](../packages/kalinka-server/src/kalinka_server/player_setup.py) passes to `ExternalPlaybackService` | It is read before `arbiter.acquire`. A hold acquired while another still holds would record None: `vacate` (the speaker test, a renderer upgrade) could no longer find it, and amp delegation would be lost. |
-| `OutputCapabilityTracker._current` ([output_capabilities.py](../packages/kalinka-server/src/kalinka_server/output_capabilities.py)) | AirPlay keeps advertising what the renderer can play while Roon holds the DAC. |
-| The speaker test's fallback (`server_test_tone` in [server.py](../packages/kalinka-server/src/kalinka_server/server.py)) | The setup wizard still finds the renderer, and `vacate` still ends the hold first. |
+| The renderer an `ExternalSession` records at acquire (see [Session](#session)) | It is read before `arbiter.acquire`. A hold acquired while another still holds would record None, and `vacate` (the speaker test, a renderer upgrade) could no longer find it. |
+| `OutputDeviceRouter.current_name` ([output_device_router.py](../packages/kalinka-server/src/kalinka_server/output_device_router.py)) | A downstream amplifier delegated to that renderer would lose its precedence during the hold. |
+| `OutputCapabilityTracker._current` ([output_capabilities.py](../packages/kalinka-server/src/kalinka_server/output_capabilities.py)) | AirPlay would stop advertising what the renderer can play while Roon holds the DAC. |
+| The speaker test's fallback (`server_test_tone` in [server.py](../packages/kalinka-server/src/kalinka_server/server.py)) | The setup wizard would no longer find the renderer, and `vacate` would no longer end the hold first. |
 
-`RendererVolumeDevice` keeps `active_id()`: during a hold it is not the device in charge, and the router drops its events. `PlayQueueImpl.switch_renderer` resolves through `resolve_active()` and is unaffected.
+`RendererVolumeDevice` keeps `active_id()` as well. During a hold it is not the device in charge, and the router drops its events. `PlayQueueImpl.switch_renderer` resolves through `resolve_active()` and is unaffected.
 
 ### Router
 
 [output_device_router.py](../packages/kalinka-server/src/kalinka_server/output_device_router.py):
 
 - `set_external(owner, device)` takes an optional device and is called for every external hold.
-- `current_name()`: while the external owner is active, the delegate lookup uses the hold's `renderer_id` (the renderer whose DAC it shares, the one `vacate` matches), falling back to the plugin's id. With no hold, as today.
+- `current_name()` is unchanged. `active_id()` still names the renderer whose delegated amplifier keeps precedence during a hold, and without one the external plugin's id comes next, as today.
 - `current()`: an external owner in charge gives its device, or None when it brought none. `resync()` already maps None to the unsupported state, and every `/device/*` route and the device socket already treat None as no control.
 
 Device automation already does nothing without a device that can power on. A hold without volume therefore leaves power alone, just as the renderer device's no-op power does today, and a delegated amplifier is powered as before.
@@ -106,12 +109,12 @@ Device automation already does nothing without a device that can power on. A hol
 
 [external_playback.py](../packages/kalinka-server/src/kalinka_server/external_playback.py):
 
-- `ExternalPlaybackService` takes `registry: RendererRegistry | None` beside `router` and hands it to each `ExternalSession`, which needs it to release its claim. `player_setup.py` passes the registry, and `renderer_registry.target_id` as the `renderer_id` callable.
+- `ExternalPlaybackService(plugin_id, arbiter, registry=None, router=None)`: the registry replaces the `renderer_id` callable. The service hands it to each `ExternalSession`, which records `registry.active_id()` as its `renderer_id` at acquire and releases its claim through it. Without a registry the session records None, as the default callable does today. `player_setup.py` passes only the registry. With one source, a caller cannot pass the registry and forget the renderer, which would silently leave `vacate` unable to find the hold. Tests that passed `registry.active_id` pass the registry instead. Those that passed `lambda: "local"` pass one built by `_registry_with("local")` from `test_renderer_volume_control.py`, as `test_external_volume.py` already does.
 - `ExternalSession.control = PlaybackControl.exclusive(plugin_id, title, output=PlaybackOutput.EXTERNAL)`.
 - `acquire`: after `arbiter.acquire`, under the existing guard (`session.active and arbiter.owns(session)`), calls `router.set_external(session, session.volume_device)` and `await router.resync()` when there is a router, and `registry.external_claimed(session)` when there is a registry. Both stay optional, as the tests that build the service with neither rely on.
 - `_stop`: `router.clear_external(self)` and the bounded `resync()` run for every hold with a router, not only one with a volume device. `registry.external_released(self)` runs in a `finally` right after the `on_revoked` wait, before the resync, so the renderer reappears only once the engine is silent. `_stop` is the teardown every exit starts in `_begin_end`, so "a finished teardown means no claim" holds for release, preemption, a failed acquire and cancellation alike.
 
-#254 also names plugin disable and disconnection. A plugin's settings apply on restart, and shutdown revokes the hold through `arbiter.shutdown()`. A plugin that loses its Roon Core releases. Both paths end in `_stop`. The registry does not tell a local renderer from a remote one. With no renderer connected, the claim changes nothing a client sees: `active_id()` was None before and stays None, and no event fires.
+#254 also names plugin disable and disconnection. A plugin's settings apply on restart, and shutdown revokes the hold through `arbiter.shutdown()`. A plugin that loses its Roon Core releases. Both paths end in `_stop`. The registry does not tell a local renderer from a remote one. With no renderer connected, the claim changes nothing a client sees: `serving_id()` was None before and stays None, and no event fires.
 
 ## App
 
@@ -179,26 +182,27 @@ Until it is updated, an old app shows a crossed cast icon rather than a note dur
 
 - `packages/kalinka-plugin-sdk/tests/test_playback_control.py`: `output` defaults to renderer for the queue and for `exclusive()`. `exclusive(..., output=EXTERNAL)` serialises `"output": "external"`. `PlaybackControl(mode=QUEUE, output=EXTERNAL)` is refused. JSON without `output` parses as renderer.
 - `tests/test_renderer_registry.py`:
-  - `external_claimed` hides the active renderer (`active_id()` None, no row active) while `selected_id` and the rows' `selected` flags stay and `target_id()` still names the renderer; `external_released` restores it.
+  - `external_claimed` hides the serving renderer (`serving_id()` None, no row active) while `selected_id` and the rows' `selected` flags stay and `active_id()` still names the renderer; `external_released` restores it.
   - A release from another owner is ignored, and the current callback receives `(None, selected)` then `(renderer, selected)`.
   - A renderer registering, reconnecting or leaving during the claim fires `renderers_changed` and leaves current at `(None, selected)`.
-  - Observers see `target_id()` unchanged.
+  - Observers see `active_id()` unchanged.
   - With nothing connected, a claim and its release fire no current event.
   - A local and a remote renderer behave alike.
 - `tests/test_external_playback.py`:
   - The hold's control has output EXTERNAL.
-  - With a registry, `active_id()` is None while held and the renderer again after each way a hold ends: release, preemption by the queue, by another holder, `take_back`, shutdown and `vacate`, a failing `on_revoked`, a cancelled acquire, and each cancelled handover.
-  - Event order on the emitter and the registry callbacks matches [Event order](#event-order-on-the-queue-socket), and by the time the queue's control is published the renderer is active again. On preemption, `active_id()` stays None until a slow `on_revoked` returns.
-  - A service built without a router or registry acquires and releases as today.
+  - With a registry, `serving_id()` is None while held and the renderer again after each way a hold ends: release, preemption by the queue, by another holder, `take_back`, shutdown and `vacate`, a failing `on_revoked`, a cancelled acquire, and each cancelled handover. `active_id()` names the renderer throughout.
+  - Event order on the emitter and the registry callbacks matches [Event order](#event-order-on-the-queue-socket), and by the time the queue's control is published the renderer is serving again. On preemption, `serving_id()` stays None until a slow `on_revoked` returns.
+  - A service built without a router or registry acquires and releases as today, and its holds record no renderer.
   - A hold acquired over another records the shared renderer, and `vacate` of that renderer ends it.
+  - The tests that passed `lambda: "local"` pass a registry naming `local` and still vacate the hold.
 - `tests/test_external_volume.py`:
   - A hold without `volume_control` leaves the bus volume unsupported and `router.current()` None, and a renderer `VolumeChangedEvent` is dropped; release restores the renderer's 42.
   - A delegated amp keeps precedence without `volume_control`.
   - The `volume_control` cases are unchanged.
-  - `test_old_plugin_without_volume_keeps_existing_routing` now expects no control: the one expectation this design flips on purpose, and the pull request says so. The rig wires `registry.target_id`.
+  - `test_old_plugin_without_volume_keeps_existing_routing` now expects no control: the one expectation this design flips on purpose, and the pull request says so. The rig passes the registry in place of `registry.active_id`.
 - `tests/test_direct_playback.py`:
-  - Qobuz Connect acquires over a Roon hold without being refused. Roon is revoked with OTHER_HOLDER, the new control's output is renderer, and `active_id()` is the renderer.
-  - `test_external_engine_releases_the_renderer_and_waits_before_queue_resumes` passes the registry, so the queue playing over a Roon hold pins `_ensure_session`.
+  - Qobuz Connect acquires over a Roon hold without being refused. Roon is revoked with OTHER_HOLDER, the new control's output is renderer, and `serving_id()` is the renderer.
+  - `test_external_engine_releases_the_renderer_and_waits_before_queue_resumes` passes the registry, so the queue playing over a Roon hold pins `_ensure_session` on `active_id()`.
   - An output capabilities watcher sees no change across a Roon hold.
 - An app-level test over `server.create_app`, with `tests/app_harness.py`'s `isolate_app` and `running` as `test_demo_mode_app.py` uses them, a renderer registered, and a hold taken through `app.state.player_context.external_playback_for`:
   - During the hold: `GET /renderer/active` returns `renderer_id` null with the pin, `/renderer/list` has no active row, `GET /device/get_volume` returns `supported: false`, `PUT /device/set_volume` sends nothing, a fresh `/queue/ws` replay carries the external control and a null `current_renderer_id`, and a fresh `/device/ws` replay the unsupported volume.
@@ -239,7 +243,7 @@ Steps 1, 5 and 6 of the app's `docs/android-output-switcher.md` checklist, with 
 
 ## Files
 
-Server: `kalinka_plugin_sdk/datamodel.py` and `__init__.py`, the SDK README and version; `renderer_registry.py`, `renderer_player.py`, `output_device_router.py`, `external_playback.py`, `direct_playback.py`, `output_capabilities.py`, `server.py` (the speaker test's fallback), `player_setup.py` (wiring), `version.py`; the server's SDK pin, `control.in` and RELEASING.md.
+Server: `kalinka_plugin_sdk/datamodel.py` and `__init__.py`, the SDK README and version; `renderer_registry.py`, `output_device_router.py`, `external_playback.py`, `server.py` (`_renderer_selection`), `player_setup.py` (wiring), `version.py`; the server's SDK pin, `control.in` and RELEASING.md.
 
 App: `data_model.dart`, `app_state_provider.dart`, `renderer_switcher.dart`, `now_playing_content.dart` (the shared copy), `kiosk/kiosk_output_panel.dart`, `kiosk_screen.dart`, `music_player_screen.dart` (the coach-mark stop), and `CHANGELOG.md` with the server version the hidden chip needs.
 
@@ -248,7 +252,8 @@ App: `data_model.dart`, `app_state_provider.dart`, `renderer_switcher.dart`, `no
 - **An `output` object on `GET /renderer/active` and the renderer events** (`kind` renderer, external or none, with `plugin_id` and `title`). It repeats what `playback_control` already carries, adds a third representation to the replay state and to the Android parser, and puts plugin facts on a renderer resource. Its "none" is already a null renderer under queue control.
 - **A flag alone, keeping `renderer_id` set to the shared-DAC renderer.** Old clients would keep naming a renderer and offering a slider for audio it is not playing, `/renderer/list` would still mark it active, and Android would keep a live volume provider for an idle renderer. #254 asks for the registry to report no renderer.
 - **Deriving "external" from exclusive control plus a null `renderer_id`.** It is implicit, depends on two events arriving together, and cannot tell an external engine from a renderer holder whose renderer vanished mid-hold.
-- **Changing `active_id()` for every internal caller.** It would refuse the queue and Qobuz Connect taking over from Roon, drop amp delegation during a hold, and stop output capability advertising, all pinned by existing tests. Hence `target_id()` for the callers above.
+- **Making `active_id()` report None during a hold.** On its own, it would refuse the queue and Qobuz Connect taking over from Roon, drop amp delegation during a hold, and stop output capability advertising, all pinned by existing tests. With a new `target_id()` for internal callers, five would have to move: queue play, Qobuz Connect's takeover, the hold's own renderer, capability advertising and the speaker test. A caller added later that reached for `active_id()` would silently bring those bugs back. Hence `serving_id()` for the three that report.
+- **Keeping the `renderer_id` callable beside the registry.** Both would come from the same registry, and a caller passing only the registry would get the default `lambda: None`: holds that `vacate` can no longer find.
 - **A stub volume device that answers "unsupported".** `resync()` already maps None to that state and every `/device/*` route already treats None as no control, so a stub would be a second way to say the same thing.
 - **Gating the slider on `isExternal` in the client.** It would hide the slider for a hold that brings `volume_control`. The device bus is the one source of truth for volume.
 - **Native Android changes so the hardware keys drive an external hold's volume.** Native volume is tied to a media route, and no renderer route exists during a hold. The Roon plugin offers no volume today, so this is a named follow-up rather than part of this design.
