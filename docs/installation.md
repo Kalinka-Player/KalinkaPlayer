@@ -38,7 +38,7 @@ All of them must be on the same home network. They find each other by themselves
 
 **Not sure?** If you have a Raspberry Pi, use the image (A): it has the fewest steps.
 
-**Using a DAC HAT?** The Raspberry Pi images have the drivers for DAC HATs (HiFiBerry, IQaudio, Allo, JustBoom and similar boards), with nothing to install. A HAT with an ID chip on it is set up by itself. For one without, choose it in the app after the first start, under **Settings › General › Box › Sound card**, or add one line to the card before it; see [Settings on the card](#settings-on-the-card).
+**Using a DAC HAT?** The Raspberry Pi images have the drivers for DAC HATs (HiFiBerry, IQaudio, Allo, JustBoom and similar boards), with nothing to install. A HAT with an ID chip on it is set up by itself. For one without, choose it in the app after the first start, under **Sound card** in the output's settings (see [Choose the sound card](#choose-the-sound-card)), or add one line to the card before it; see [Settings on the card](#settings-on-the-card).
 
 Kalinka needs a 64-bit system. Playback and the library run in 512 MB of memory, and 1 GB is comfortable. AI search needs more: 2 GB should work, and 4 GB is what has been tested, so leave it off on a Pi 3 or Zero 2 W. See the [requirements](../README.md#-requirements) for details.
 
@@ -267,7 +267,7 @@ The Pi images are built on [DietPi](https://dietpi.com), and use its settings fi
 | Your time zone, instead of UTC | `AUTO_SETUP_TIMEZONE=UTC` | `AUTO_SETUP_TIMEZONE=Europe/London` |
 | A DAC HAT without an ID chip, the headphone socket or HDMI | `CONFIG_SOUNDCARD=none` | `CONFIG_SOUNDCARD=hifiberry-digi` (see below) |
 
-The time zone can stay as it is: the [setup wizard](#run-the-setup-wizard) offers yours, and **Settings › General › Box** in the app or [the control page](#the-control-page) changes it later.
+The time zone can stay as it is: the [setup wizard](#run-the-setup-wizard) offers yours, and **Settings › General › Streamer** in the app or [the control page](#the-control-page) changes it later.
 
 Leave `AUTO_SETUP_AUTOMATED=0` as it is. Set to 1, it makes DietPi run its own first-run setup unattended on the first start, instead of at your first login (see **Logging in** below).
 
@@ -296,13 +296,13 @@ The first start restarts the Pi once to switch the sound card on. A USB DAC need
 
 #### Choose the sound card
 
-Once the Pi is running, choose the sound card in the app instead: **Settings › General › Box › Sound card**. The same choice is on [the control page](#the-control-page).
+Once the Pi is running, choose the sound card in the app instead: tap the cast icon in the player, then the **gear** of the Pi's output, and use **Sound card** there. The same choice is on [the control page](#the-control-page).
 
 - **Found on this box** lists what the Pi detected. A HAT with an ID chip names itself, and one the Pi already set up from that chip shows as chosen, with nothing to do. For most others, Kalinka recognises the chip on the board, which several makers use, so pick your board among the few it lists.
 - **Every other card** is grouped by maker: HiFiBerry, Raspberry Pi and IQaudIO, Allo, JustBoom and more. A board that is not listed but sends plain I²S, such as one built on a PCM5102A chip, works as **Generic I2S DAC**.
 - **Apply** writes the choice to the Pi's boot settings. When that changes them, the Pi restarts once, which takes a minute or two. The app then plays through the new card on that Pi.
 
-The row shows the DAC's name once the Pi knows it. A USB DAC needs nothing here: the row names it, and you choose it in the output's own settings. For a Pi that runs only an output, see [Add more outputs](#add-more-outputs).
+The row shows the DAC's name once the Pi knows it. A USB DAC needs nothing here: the row names it, and you pick it as the sound device further down the same page. For a Pi that runs only an output, see [Add more outputs](#add-more-outputs).
 
 **Logging in.** With a password set, log in over SSH as `root` or `dietpi`, for example `ssh root@<address>`. The first login starts DietPi's own setup, which updates the system and may restart it. Kalinka does not need it and keeps working through it.
 
@@ -360,7 +360,7 @@ already have it, so their option starts enabled.
 - **Time zone:** the zone the box shows the time in, with every zone it can be set to. The time itself comes from the network.
 - **Reinstalling** keeps your settings and music. It takes several minutes, and the page shows its progress.
 - **SSH access:** after installation, enter and confirm a password under **SSH access**, then choose **Set password and enable SSH**. This creates the `kalinka-admin` login with administrator access and keeps SSH enabled after a restart. Connect with `ssh kalinka-admin@<address>` and use `sudo -i` when you need a root shell. Submitting the form again changes that account's password. Existing logins are kept.
-- **In the Kalinka app:** go to **Settings › General › Box** to choose the sound card or the time zone, restart the player, switch it off, or open this page. If the server stops answering, the app offers to restart it.
+- **In the Kalinka app:** go to **Settings › General › Streamer** to choose the time zone, restart the player, switch it off, or open this page. The sound card is in the output's settings; see [Choose the sound card](#choose-the-sound-card). If the server stops answering, the app offers to restart it.
 
 Like the server, the page answers anyone on your local network, and nobody outside it. If you run a firewall on the player, let TCP port 8001 through from your network. To turn the page off, add the line `KALINKA_CONTROL_API=0` to `dietpi.txt`. [The supervisor's control page and API](supervisor-control.md) describes it in full.
 
