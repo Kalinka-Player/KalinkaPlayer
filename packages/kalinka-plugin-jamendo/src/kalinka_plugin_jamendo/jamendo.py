@@ -750,10 +750,11 @@ class JamendoInputModule(InputModule):
         return "Jamendo"
 
     def capabilities(self) -> FrozenSet[ModuleCapability]:
-        """AI search only while the setting gave this module a mood index."""
+        """Catalogs always; AI search only while the setting gave this module
+        a mood index."""
         if self._mood_index is not None:
-            return frozenset({ModuleCapability.AI_SEARCH})
-        return frozenset()
+            return frozenset({ModuleCapability.CATALOGS, ModuleCapability.AI_SEARCH})
+        return frozenset({ModuleCapability.CATALOGS})
 
     async def search(
         self, type: SearchType, query: str, offset=0, limit=50

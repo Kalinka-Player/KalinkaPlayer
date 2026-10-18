@@ -16,7 +16,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Protocol, Sequence
 
-from kalinka_plugin_sdk.datamodel import BrowseItem, BrowseItemList, EntityId
+from kalinka_plugin_sdk.datamodel import (
+    BrowseItem,
+    BrowseItemList,
+    Catalog,
+    EntityId,
+    EntityType,
+)
 from kalinka_plugin_sdk.filters import FilterQuery, FilterValueList
 from kalinka_plugin_sdk.inputmodule import SearchType
 
@@ -107,3 +113,30 @@ class BrowseSourceRegistry:
 
     def sources(self) -> List[BrowseSource]:
         return [entry.source for entry in self.entries()]
+
+    def root_listing(self, offset: int, limit: int) -> BrowseItemList:
+        """One page of the browse root: each source's root catalog, whose id
+        a client browses verbatim rather than building it from a name."""
+        entries = self.entries()
+        return BrowseItemList(
+            offset=offset,
+            limit=limit,
+            total=len(entries),
+            items=[_root_item(entry) for entry in entries[offset : offset + limit]],
+        )
+
+
+def _root_item(entry: RegisteredSource) -> BrowseItem:
+    entity_id = EntityId(id="root", type=EntityType.CATALOG, source=entry.name)
+    return BrowseItem(
+        id=entity_id,
+        name=entry.title,
+        url=f"/browse/{entity_id.to_string}",
+        can_browse=True,
+        can_add=False,
+        catalog=Catalog(
+            id=entity_id,
+            title=entry.title,
+            description="" if entry.builtin else "Kalinka Input Module",
+        ),
+    )

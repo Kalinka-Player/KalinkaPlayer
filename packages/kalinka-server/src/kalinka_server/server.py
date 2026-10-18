@@ -21,11 +21,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
 
 from kalinka_plugin_sdk.datamodel import (
-    BrowseItem,
-    BrowseItemList,
-    Catalog,
     EntityId,
-    EntityType,
     FavoriteIds,
     PlaybackControl,
     PlaybackState,
@@ -814,41 +810,11 @@ async def create_app(
         value = await player_context.playqueue.seek(position_ms)
         return {"message": "Ok", "position_ms": value}
 
-    @app.get("/browse")
-    def browse_root(offset: int = 0, limit: int = 10):
-        """Browse the root catalog."""
-
-        items = []
-        for entry in browse_registry().entries():
-            entity_id = EntityId(
-                id="root", type=EntityType.CATALOG, source=entry.name
-            )
-            items.append(
-                BrowseItem(
-                    id=entity_id,
-                    name=entry.title,
-                    url=f"/browse/{entity_id.to_string}",
-                    can_browse=True,
-                    can_add=False,
-                    catalog=Catalog(
-                        id=entity_id,
-                        title=entry.title,
-                        description=(
-                            "" if entry.builtin else "Kalinka Input Module"
-                        ),
-                    ),
-                )
-            )
-
-        result = BrowseItemList(
-            offset=offset, limit=limit, total=len(items), items=items
-        )
-        return result.model_dump(exclude_unset=True)
-
     register_browse_routes(
         app,
         browse_source_from_id,
         parse_entity_id,
+        lambda offset, limit: browse_registry().root_listing(offset, limit),
         app.state.catalog_art.decorate,
     )
 

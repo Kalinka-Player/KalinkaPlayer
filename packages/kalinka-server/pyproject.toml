@@ -49,8 +49,9 @@ dependencies = [
     # Renderer protocol (renderer_ws_handler.py). The committed generated
     # bindings (renderer_proto/) pin the runtime floor; `make proto` regenerates.
     "protobuf>=7.35,<8",
-    # >=3.13: InputModule.capabilities, which the module listing reports.
-    "kalinka-plugin-sdk>=3.13,<4",
+    # >=3.14: InputModule.capabilities, which the module listing reports, and
+    # ModuleCapability.CATALOGS among its values.
+    "kalinka-plugin-sdk>=3.14,<4",
 ]
 dynamic = ["version"]
 

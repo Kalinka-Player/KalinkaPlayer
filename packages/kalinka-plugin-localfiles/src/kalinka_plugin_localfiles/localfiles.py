@@ -411,10 +411,11 @@ class LocalFilesInputModule(InputModule):
         return DISPLAY_NAME
 
     def capabilities(self) -> FrozenSet[ModuleCapability]:
-        """AI search only while the setting gave this module a searcher."""
+        """Catalogs always; AI search only while the setting gave this module
+        a searcher."""
         if self._has_searcher():
-            return frozenset({ModuleCapability.AI_SEARCH})
-        return frozenset()
+            return frozenset({ModuleCapability.CATALOGS, ModuleCapability.AI_SEARCH})
+        return frozenset({ModuleCapability.CATALOGS})
 
     def _has_searcher(self) -> bool:
         return (

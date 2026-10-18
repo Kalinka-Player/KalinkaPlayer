@@ -108,11 +108,12 @@ async def test_missing_metadata_dropped_order_preserved():
 def test_ai_search_reported_only_with_an_index():
     cfg = JamendoConfig(client_id="x")
     assert make_module(MetadataClient()).capabilities() == {
-        ModuleCapability.AI_SEARCH
+        ModuleCapability.CATALOGS,
+        ModuleCapability.AI_SEARCH,
     }
     assert jm.JamendoInputModule(
         cfg, MetadataClient(), mood_index=None
-    ).capabilities() == frozenset()
+    ).capabilities() == {ModuleCapability.CATALOGS}
 
 
 @pytest.mark.asyncio
