@@ -17,8 +17,9 @@ class ExternalVolumeDevice:
     @brief The output device clients drive while an external engine's hold owns volume.
 
     Answers from the volume the plugin last reported and forwards changes to
-    its ExternalVolumeControl one at a time, so the last one sent wins.
-    close() cancels pending changes when the hold ends.
+    its ExternalVolumeControl one at a time. Changes queued behind one in
+    flight are skipped once a newer one arrives, so a slider drag forwards
+    only its latest level. close() cancels pending changes when the hold ends.
 
     @note Not thread-safe: use from the event loop that created it.
     """
@@ -30,6 +31,7 @@ class ExternalVolumeDevice:
         self._volume = DeviceVolume(supported=False)
         self._emitter = router.emitter_for(session.control.plugin_id)
         self._lock = asyncio.Lock()
+        self._latest = 0
         self._pending: set[asyncio.Task] = set()
 
     def report(self, volume: DeviceVolume) -> None:
@@ -49,7 +51,8 @@ class ExternalVolumeDevice:
             raise NotImplementedError("external volume is fixed or unavailable")
         if not 0 <= volume <= self._volume.max_volume:
             raise ValueError("volume is outside the reported range")
-        task = asyncio.create_task(self._set_volume(volume))
+        self._latest += 1
+        task = asyncio.create_task(self._set_volume(volume, self._latest))
         self._pending.add(task)
         try:
             await asyncio.wait_for(task, PLUGIN_CALL_TIMEOUT_S)
@@ -60,8 +63,10 @@ class ExternalVolumeDevice:
         finally:
             self._pending.discard(task)
 
-    async def _set_volume(self, volume: int) -> None:
+    async def _set_volume(self, volume: int, ticket: int) -> None:
         async with self._lock:
+            if ticket != self._latest:
+                return
             if not self._session.active or self._router.current() is not self:
                 raise HoldEnded("external playback no longer owns volume")
             await self._controller.set_volume(volume)

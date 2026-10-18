@@ -193,3 +193,32 @@ async def test_a_plugin_ignoring_cancellation_cannot_block_audio_stop(rig):
     await asyncio.gather(stop, request, return_exceptions=True)
     assert stop in finished
     listener.on_revoked.assert_awaited_once()
+
+
+async def test_a_backlog_of_changes_forwards_only_the_latest(rig):
+    hold, listener, router, _, _, _, _, _, _, _ = rig
+    hold.report_volume(DeviceVolume(max_volume=100, current_volume=30))
+    entered, reply = asyncio.Event(), asyncio.Event()
+
+    async def slow_volume(value):
+        entered.set()
+        await reply.wait()
+
+    listener.set_volume.side_effect = slow_volume
+    device = router.current()
+    first = asyncio.create_task(device.set_volume(31))
+    await entered.wait()
+    backlog = [asyncio.create_task(device.set_volume(v)) for v in range(32, 41)]
+    await asyncio.sleep(0)
+    reply.set()
+    await asyncio.gather(first, *backlog)
+    assert [c.args for c in listener.set_volume.await_args_list] == [(31,), (40,)]
+
+
+async def test_a_change_without_a_backlog_is_forwarded(rig):
+    hold, listener, router, _, _, _, _, _, _, _ = rig
+    hold.report_volume(DeviceVolume(max_volume=100, current_volume=30))
+    device = router.current()
+    await device.set_volume(31)
+    await device.set_volume(32)
+    assert [c.args for c in listener.set_volume.await_args_list] == [(31,), (32,)]
