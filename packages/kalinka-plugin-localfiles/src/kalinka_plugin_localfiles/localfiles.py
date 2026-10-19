@@ -1566,12 +1566,14 @@ class LocalFilesInputModule(InputModule):
             name=artist_display_name(track["artist_name"]),
         )
 
-        # Add ReplayGain info if available
-        if track.get("replaygain_gain") is not None:
-            track_obj.replaygain_gain = track["replaygain_gain"]
-
-        if track.get("replaygain_peak") is not None:
-            track_obj.replaygain_peak = track["replaygain_peak"]
+        for field in (
+            "replaygain_gain",
+            "replaygain_peak",
+            "replaygain_album_gain",
+            "replaygain_album_peak",
+        ):
+            if track.get(field) is not None:
+                setattr(track_obj, field, track[field])
 
         # Add playlist track ID if available (for playlist contexts)
         if track.get("playlist_track_id"):

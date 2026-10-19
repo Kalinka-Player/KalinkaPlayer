@@ -579,6 +579,8 @@ async def test_state_messages_update_the_session():
         "current": 40,
         "max": 100,
         "backend": "hardware",
+        "db_values": [],
+        "control_mode": "",
     }
 
     changed = pb.PlaybackStateChanged()

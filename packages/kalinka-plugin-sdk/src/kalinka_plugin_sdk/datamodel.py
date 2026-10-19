@@ -330,6 +330,8 @@ class Track(BaseModel):
         album (Album): Album containing this track
         replaygain_peak (Optional[float]): ReplayGain peak value for audio normalization
         replaygain_gain (Optional[float]): ReplayGain gain value for audio normalization
+        replaygain_album_peak (Optional[float]): Album peak from this track's tags
+        replaygain_album_gain (Optional[float]): Album ReplayGain in dB
         playlist_track_id (Optional[str]): ID specific to playlist membership
         unavailable (bool): True when the track's source could not be retrieved and playback skipped it
     """
@@ -342,6 +344,8 @@ class Track(BaseModel):
     album: Album
     replaygain_peak: Optional[float] = None
     replaygain_gain: Optional[float] = None
+    replaygain_album_peak: Optional[float] = None
+    replaygain_album_gain: Optional[float] = None
     playlist_track_id: Optional[str] = None
     # True when the track's source could not be retrieved and playback
     # skipped it. Surfaced to clients so they can flag the track in the queue.
@@ -687,6 +691,8 @@ class DeviceVolume(BaseModel):
         current_volume (int): Current volume level
         volume_gain (int): Additional gain/boost applied
         supported (bool): Whether volume control is supported on this device
+        db_values (List[float]): dB at each integer level; empty uses the backend's fallback scale
+        control_mode (str): Renderer volume policy, or empty for external devices
     """
 
     max_volume: int = 0
@@ -694,6 +700,9 @@ class DeviceVolume(BaseModel):
     volume_gain: int = 0
     supported: bool = True
     backend: VolumeBackend = VolumeBackend.UNKNOWN
+    # Empty falls back to cubic software gain, or linear amplitude otherwise.
+    db_values: List[float] = []
+    control_mode: str = ""
 
 
 class DeviceAccess(str, Enum):

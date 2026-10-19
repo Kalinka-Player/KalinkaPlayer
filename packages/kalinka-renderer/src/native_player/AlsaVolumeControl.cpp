@@ -257,6 +257,22 @@ bool AlsaVolumeControl::setVolume(int percent) {
   return true;
 }
 
+std::vector<double> AlsaVolumeControl::dbValues() {
+  std::lock_guard<std::mutex> lock(mixerMutex_);
+  if (!available_ || !elem_) {
+    return {};
+  }
+  std::vector<double> values;
+  for (int percent = 0; percent <= 100; ++percent) {
+    long db = 0;
+    if (snd_mixer_selem_ask_playback_vol_dB(elem_, percentToRaw(percent), &db) < 0) {
+      return {};
+    }
+    values.push_back(std::max(-200.0, db / 100.0));
+  }
+  return values;
+}
+
 void AlsaVolumeControl::notify(int percent) {
   if (onExternalChange_) {
     onExternalChange_(percent);

@@ -35,6 +35,7 @@ from mutagen.id3 import ID3
 from mutagen.dsf import DSF
 from mutagen.dsdiff import DSDIFF
 
+from ..replaygain_tags import read_replaygain
 from ..audio_formats import MEDIA_TYPES
 from ..config_model import LocalFilesConfig
 from ..scan_control import ScanControl
@@ -923,6 +924,8 @@ class FileIndexer:
             "modified_time": modified_time,
             "replaygain_peak": metadata.get("replaygain_peak"),
             "replaygain_gain": metadata.get("replaygain_gain"),
+            "replaygain_album_gain": metadata.get("replaygain_album_gain"),
+            "replaygain_album_peak": metadata.get("replaygain_album_peak"),
             "enriched": 0,
             "last_updated": int(time.time()),
         }
@@ -1346,18 +1349,6 @@ class FileIndexer:
                 pass
         if "TCON" in id3:
             metadata["genre"] = str(id3["TCON"])
-        if "TXXX:replaygain_track_gain" in id3:
-            gain_str = str(id3["TXXX:replaygain_track_gain"])
-            try:
-                metadata["replaygain_gain"] = float(gain_str.replace(" dB", ""))
-            except ValueError:
-                pass
-        if "TXXX:replaygain_track_peak" in id3:
-            peak_str = str(id3["TXXX:replaygain_track_peak"])
-            try:
-                metadata["replaygain_peak"] = float(peak_str)
-            except ValueError:
-                pass
         # Verbatim text frames (incl. TPE2 album-artist, TCMP compilation) +
         # stream info for the clusterer. Binary frames (APIC) skipped.
         metadata["raw_tags"] = {
@@ -1365,6 +1356,7 @@ class FileIndexer:
             for key, frame in id3.items()
             if not key.startswith("APIC")
         }
+        metadata.update(read_replaygain(metadata["raw_tags"]))
         metadata["stream_info"] = {
             "sample_rate": getattr(audio_file.info, "sample_rate", None),
             "channels": getattr(audio_file.info, "channels", None),
@@ -1442,18 +1434,7 @@ class FileIndexer:
                 pass
         if "genre" in comments:
             metadata["genre"] = comments["genre"][0]
-        if "replaygain_track_gain" in comments:
-            gain_str = comments["replaygain_track_gain"][0]
-            try:
-                metadata["replaygain_gain"] = float(gain_str.replace(" dB", ""))
-            except ValueError:
-                pass
-        if "replaygain_track_peak" in comments:
-            peak_str = comments["replaygain_track_peak"][0]
-            try:
-                metadata["replaygain_peak"] = float(peak_str)
-            except ValueError:
-                pass
+        metadata.update(read_replaygain(comments))
         # Every Vorbis comment verbatim (incl. albumartist/compilation) +
         # stream info. Keys can repeat, so values are lists.
         metadata["raw_tags"] = {

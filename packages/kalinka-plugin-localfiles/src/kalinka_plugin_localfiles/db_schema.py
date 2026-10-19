@@ -10,6 +10,7 @@ Called once from module_setup.py in the main server process.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -17,6 +18,7 @@ import time
 import aiosqlite
 
 from .embedding_utils import CLAP_EMBED_FORMAT_VERSION, VA_HEAD_VERSION
+from .replaygain_tags import read_replaygain
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
@@ -116,6 +118,8 @@ async def init_db(db_path: str) -> None:
                 match_similarity INTEGER,
                 replaygain_peak REAL,
                 replaygain_gain REAL,
+                replaygain_album_gain REAL,
+                replaygain_album_peak REAL,
                 enriched INTEGER DEFAULT 0,
                 last_updated INTEGER,
                 embedding_clap_audio BLOB,
@@ -548,6 +552,30 @@ async def init_db(db_path: str) -> None:
         # ---------------------------------------------------------------
         await cursor.execute("PRAGMA table_info(tracks)")
         track_cols = {row[1] for row in await cursor.fetchall()}
+        album_gain_columns = ("replaygain_album_gain", "replaygain_album_peak")
+        for col in album_gain_columns:
+            if col not in track_cols:
+                await cursor.execute(f"ALTER TABLE tracks ADD COLUMN {col} REAL")
+        if any(col not in track_cols for col in album_gain_columns):
+            await cursor.execute(
+                "SELECT track_id, raw_tags FROM track_evidence WHERE raw_tags IS NOT NULL"
+            )
+            async for track_id, raw_tags in cursor:
+                try:
+                    tags = json.loads(raw_tags)
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(tags, dict):
+                    continue
+                gains = read_replaygain(tags)
+                await conn.execute(
+                    "UPDATE tracks SET replaygain_album_gain = ?, replaygain_album_peak = ? WHERE id = ?",
+                    (
+                        gains.get("replaygain_album_gain"),
+                        gains.get("replaygain_album_peak"),
+                        track_id,
+                    ),
+                )
         for col in ("mood_valence", "mood_arousal"):
             if col not in track_cols:
                 await cursor.execute(f"ALTER TABLE tracks ADD COLUMN {col} REAL")

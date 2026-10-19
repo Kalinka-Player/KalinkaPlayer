@@ -162,6 +162,8 @@ message VolumeState {
   uint32 current = 2;  // 0..max
   uint32 max = 3;      // 100 for the ALSA backend
   VolumeBackend backend = 4;
+  repeated double db_values = 5; // dB at each integer level; mute is -200 dB.
+  string control_mode = 6; // auto, hardware, software, fixed
 }
 
 message ErrorInfo {

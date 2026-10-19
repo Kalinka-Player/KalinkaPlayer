@@ -93,6 +93,7 @@ class RendererVolumeDevice(ExternalOutputDevice):
             current_volume=UNKNOWN_VOLUME_PLACEHOLDER,
             volume_gain=0,
             supported=True,
+            control_mode="unknown",
         )
 
     # ------------------------------------------------------------------ lifecycle
@@ -118,7 +119,13 @@ class RendererVolumeDevice(ExternalOutputDevice):
         return self._volume_for(self._registry.active_id()).model_copy()
 
     async def set_volume(self, volume: int) -> None:
-        renderer_id = self._registry.active_id()
+        await self.set_volume_for(self._registry.active_id(), volume)
+
+    async def get_volume_for(self, renderer_id: str) -> DeviceVolume:
+        return self._volume_for(renderer_id).model_copy(deep=True)
+
+    async def set_volume_for(self, renderer_id: Optional[str], volume: int) -> None:
+        """Set a particular renderer, including after output ownership moves."""
         current = self._volume_for(renderer_id)
         volume = max(0, min(int(volume), current.max_volume))
         session = self._session
@@ -130,6 +137,10 @@ class RendererVolumeDevice(ExternalOutputDevice):
             try:
                 # The renderer echoes VolumeChanged; that drives cache + event.
                 await session.set_volume(volume)
+                if self._volume_for(renderer_id) is current:
+                    self._volumes[renderer_id] = current.model_copy(
+                        update={"current_volume": volume}
+                    )
                 return
             except Exception as e:
                 logger.warning("Could not set renderer volume: %s", e)
@@ -207,6 +218,8 @@ class RendererVolumeDevice(ExternalOutputDevice):
             volume_gain=0,
             supported=volume["supported"],
             backend=_BACKENDS.get(volume.get("backend") or "", VolumeBackend.UNKNOWN),
+            db_values=volume.get("db_values", []),
+            control_mode=volume.get("control_mode", ""),
         )
         self._dispatch()
 

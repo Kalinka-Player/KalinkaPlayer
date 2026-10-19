@@ -1,9 +1,9 @@
-"""Per-renderer preferences: which renderer plays, and what controls its volume.
+"""Per-renderer selection, volume ownership and ReplayGain policy.
 
 Deliberately not part of the config-overrides file. Entries are keyed by
 renderer ids that appear and vanish at runtime, so they would churn the config
 schema; writes must take effect immediately, without a ``schema_version``
-handshake or a module restart; and the values are wiring, not module settings.
+handshake or a module restart; and these policies belong to individual renderers.
 The same reasoning already keeps renderer settings out of ``/server/config``
 (see :mod:`renderer_config`).
 
@@ -51,6 +51,17 @@ class RendererPreferences:
             "selected_renderer_name": self._selected_renderer_name,
             "renderers": {k: dict(v) for k, v in self._renderers.items()},
         }
+
+    def replaygain(self, renderer_id: str) -> str:
+        value = self._renderers.get(renderer_id, {}).get("replaygain", "disabled")
+        return value if value in ("disabled", "album", "track") else "disabled"
+
+    def set_replaygain(self, renderer_id: str, mode: str) -> None:
+        if mode not in ("disabled", "album", "track"):
+            raise ValueError("ReplayGain must be disabled, album or track")
+        if self.replaygain(renderer_id) != mode:
+            self._renderers.setdefault(renderer_id, {})["replaygain"] = mode
+            self._save()
 
     # ---------------------------------------------------------------- writing
     def set_selected(

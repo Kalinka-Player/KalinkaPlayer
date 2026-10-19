@@ -10,9 +10,6 @@ from typing import Any, Dict, Optional
 
 import httpx
 from kalinka_plugin_sdk.datamodel import (
-    EntityId,
-    PlaybackState,
-    PlayerStateEnum,
     VolumeBackend,
 )
 from kalinka_plugin_sdk.ext_device_events import (
@@ -23,9 +20,8 @@ from kalinka_plugin_sdk.ext_device_events import (
 import ifaddr
 from ssdpy import SSDPClient
 
-from kalinka_plugin_sdk.api import EventEmitter, EventListener, ReplayEvent
+from kalinka_plugin_sdk.api import EventEmitter, EventListener
 from kalinka_plugin_sdk.events import PlayQueueEvent, PlayQueueEventType, PlayQueueState
-from kalinka_plugin_sdk.events import PlaybackStateChangedEvent
 from kalinka_plugin_sdk.ext_device import (
     DeviceVolume,
     ExternalOutputDevice,
@@ -317,12 +313,6 @@ def verify_musiccast_api(api_base_url: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _track_id(state: Optional[PlaybackState]) -> Optional[EntityId]:
-    if state is None or state.current_track is None:
-        return None
-    return state.current_track.id
-
-
 class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
     # First few connection attempts use these short delays at INFO level so
     # an offline-at-startup case is visible. After that the worker drops to
@@ -347,7 +337,6 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
         self.connected_input = config.connected_input
         self.zone_name = config.zone_name
         self.volume_step_to_db = config.volume_step_to_db
-        self.auto_volume = config.auto_volume_correction
         self.discovery_timeout = config.discovery_timeout
         self.session = httpx.AsyncClient(timeout=5)
         # The amplifier refuses connections when asked several things at once.
@@ -389,7 +378,6 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
         self.shutdown_event = asyncio.Event()
         self.udp_port: Optional[int] = None
         self._volume_changed_event = asyncio.Event()
-        self._playback_state: Optional[PlaybackState] = None
 
     async def get_ready(self):
         """Probe the device, refresh state, and dispatch events.
@@ -406,9 +394,10 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
             volume_gain=0,
             supported=True,
             backend=VolumeBackend.HARDWARE,
+            db_values=[
+                i * self.volume_step_to_db for i in range(status["max_volume"] + 1)
+            ],
         )
-        # The gain is gone from the level read back, so the next PLAYING is news.
-        self._playback_state = None
         logger.debug(
             f"[volume] init from getStatus: current={self.volume.current_volume} "
             f"max={self.volume.max_volume}"
@@ -523,7 +512,6 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
         self.tasks.append(asyncio.create_task(self._event_loop()))
         self.tasks.append(asyncio.create_task(self._timer_loop()))
         self.tasks.append(asyncio.create_task(self._event_sender()))
-        self.tasks.append(asyncio.create_task(self._playback_state_listener()))
 
     async def terminate(self):
         """Gracefully shutdown all tasks and close connections"""
@@ -561,9 +549,6 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
     def __del__(self):
         """Ensure clean shutdown when object is destroyed"""
         # Note: Cannot call async methods in __del__, cleanup should be handled explicitly
-
-    def _db_to_device_units(self, db):
-        return round(db / self.volume_step_to_db)
 
     # This event sender runs in its own task
     # and used to throttle volume change notifications to once per second
@@ -627,6 +612,7 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
                                 current_volume=target,
                                 volume_gain=self.volume.volume_gain,
                                 backend=self.volume.backend,
+                                db_values=self.volume.db_values,
                             )
                         )
                     )
@@ -638,49 +624,6 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
         except Exception as e:
             logger.error(f"[task] event_sender died: {e!r}", exc_info=True)
             raise
-
-    async def _playback_state_listener(self):
-        """Listen to playback state changes and call appropriate handlers"""
-        logger.info("[task] playback_state_listener started")
-        try:
-            async with self.listener.stream(
-                [PlayQueueEventType.PlaybackStateChanged]
-            ) as stream:  # type: ignore
-                async for item in stream:
-                    # Skip replay events as they are just initial state
-                    if isinstance(item, ReplayEvent):
-                        logger.debug(
-                            f"Received replay event with state: {item.state.playback_state}"
-                        )
-                        continue
-
-                    if isinstance(item, PlaybackStateChangedEvent):
-                        await self._on_playback_state(item.state)
-        except asyncio.CancelledError:
-            logger.info("[task] playback_state_listener cancelled")
-            raise
-        except Exception as e:
-            logger.error(
-                f"[task] playback_state_listener died: {e!r}", exc_info=True
-            )
-            raise
-
-    async def _on_playback_state(self, state: PlaybackState) -> None:
-        """Act on a change of state, not on every report of one: the same
-        state is published again whenever position, format or track moves."""
-        previous, self._playback_state = self._playback_state, state
-        was = previous.state if previous is not None else None
-        logger.debug("Playback state changed to: %s", state.state)
-        if state.state == PlayerStateEnum.PLAYING:
-            if was != PlayerStateEnum.PLAYING:
-                logger.info("Playback started, calling _on_playing")
-                await self._on_playing(state)
-            elif _track_id(previous) != _track_id(state):
-                # ReplayGain is per track, and a gapless change stays PLAYING.
-                await self._on_playing(state)
-        elif state.state == PlayerStateEnum.STOPPED and was != PlayerStateEnum.STOPPED:
-            logger.info("Playback stopped, calling _on_stopped")
-            await self._on_stopped()
 
     async def _timer_loop(self):
         """Timer loop that periodically polls device status.
@@ -863,37 +806,6 @@ class KalinkaPluginMusiccastDevice(ExternalOutputDevice):
         # Handle status_updated flag
         if zone_state.get("status_updated", False):
             logger.debug("Status update event received")
-
-    async def _on_stopped(self):
-        await self._reset_replaygain()
-
-    async def _reset_replaygain(self):
-        if self.volume.volume_gain != 0:
-            await self.set_volume(self.volume.current_volume - self.volume.volume_gain)
-            self.volume.volume_gain = 0
-
-    async def _on_playing(self, state: PlaybackState):
-        # ReplayGain
-        if state.current_track is None or state.current_track.replaygain_gain is None:
-            await self._reset_replaygain()
-            return
-        if (
-            self.auto_volume is True
-            and state.current_track is not None
-            and state.current_track.replaygain_gain is not None
-        ):
-            device_gain_units = self._db_to_device_units(
-                state.current_track.replaygain_gain
-            )
-            if self.volume.volume_gain == device_gain_units:
-                return
-
-            new_volume = (
-                self.volume.current_volume - self.volume.volume_gain + device_gain_units
-            )
-            self.volume.volume_gain = device_gain_units
-            await self.set_volume(new_volume)
-            logger.info(f"Loudness correction applied: {device_gain_units}")
 
     async def _get_status(self):
         response = await self._request_musiccast(f"/{self.zone_name}/getStatus")

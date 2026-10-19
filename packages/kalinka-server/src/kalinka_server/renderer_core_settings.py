@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__.split(".")[-1])
 
 SECTION_PATH = "core.output"
 DEVICE_MODULE_PATH = "core.output.device_module"
+REPLAYGAIN_PATH = "core.output.replaygain"
 
 # The absent mapping: the renderer controls itself.
 RENDERER_ITSELF = ""
@@ -38,14 +39,16 @@ class CoreRendererSettings:
         prefs: RendererPreferences,
         candidates: Candidates,
         on_changed: Optional[Callable[[], Awaitable[None]]] = None,
+        get_config: Optional[Callable[[str], Awaitable[dict]]] = None,
     ):
         self._prefs = prefs
         # (module id, label) of every module a renderer can be mapped to.
         self._candidates = candidates
         self._on_changed = on_changed
+        self._get_config = get_config
 
     def owns(self, path: str) -> bool:
-        return path == DEVICE_MODULE_PATH
+        return path in (DEVICE_MODULE_PATH, REPLAYGAIN_PATH)
 
     def section(self, renderer_id: str) -> dict:
         candidates = self._candidates()
@@ -104,7 +107,37 @@ class CoreRendererSettings:
 
     def merge_into(self, snapshot: dict, renderer_id: str) -> dict:
         """The renderer's payload with the Core's section on the end."""
-        snapshot.setdefault("sections", []).append(self.section(renderer_id))
+        section = self.section(renderer_id)
+        enabled = self._replaygain_available(renderer_id, snapshot)
+        section["fields"].append(
+            {
+                "path": REPLAYGAIN_PATH,
+                "title": "ReplayGain",
+                "description": (
+                    "Adjust volume using loudness tags, then restore it when playback ends. "
+                    "Album level preserves the volume differences within an album. "
+                    "Requires Automatic volume control or a connected device."
+                ),
+                "type": "enum",
+                "value": self._prefs.replaygain(renderer_id),
+                "default": "disabled",
+                "options": [
+                    {"value": value, "label": label, "description": ""}
+                    for value, label in (
+                        ("disabled", "Disabled"),
+                        ("album", "Album level"),
+                        ("track", "Track level"),
+                    )
+                ],
+                "apply": "instant",
+                "read_only": not enabled,
+                "importance": "simple",
+                "range": None,
+                "unit": "",
+                "widget": "",
+            }
+        )
+        snapshot.setdefault("sections", []).append(section)
         snapshot["config_version"] = (
             f"{snapshot.get('config_version', '')}.{self.fingerprint()}"
         )
@@ -121,18 +154,42 @@ class CoreRendererSettings:
     def fingerprint(self) -> str:
         """Folds into the renderer's config_version: the options change as
         modules come and go, and a page holding the old shape must know."""
-        blob = "\x1f".join(module for module, _ in self._candidates())
+        blob = "replaygain-v1\x1f" + "\x1f".join(
+            module for module, _ in self._candidates()
+        )
         return hashlib.blake2s(blob.encode(), digest_size=4).hexdigest()
 
     async def apply(
         self, renderer_id: str, changes: Mapping[str, Any]
     ) -> list[dict]:
         outcomes = []
-        for path, value in changes.items():
+        for path in sorted(changes, key=lambda path: path != DEVICE_MODULE_PATH):
+            value = changes[path]
             outcomes.append(await self._apply_one(renderer_id, path, str(value)))
         return outcomes
 
     async def _apply_one(self, renderer_id: str, path: str, value: str) -> dict:
+        if path == REPLAYGAIN_PATH:
+            error = ""
+            if value not in ("disabled", "album", "track"):
+                error = "ReplayGain must be disabled, album or track"
+            elif value != "disabled" and not self._prefs.volume_control(renderer_id):
+                snapshot = (
+                    await self._get_config(renderer_id) if self._get_config else {}
+                )
+                if not self._replaygain_available(renderer_id, snapshot):
+                    error = "ReplayGain requires Automatic volume control or a connected device"
+            if error:
+                return {
+                    "path": path,
+                    "applied": False,
+                    "value": self._prefs.replaygain(renderer_id),
+                    "error": error,
+                }
+            self._prefs.set_replaygain(renderer_id, value)
+            if self._on_changed is not None:
+                await self._on_changed()
+            return {"path": path, "applied": True, "value": value, "error": ""}
         current = self._prefs.volume_control(renderer_id) or RENDERER_ITSELF
         if not self.owns(path):
             return {
@@ -161,3 +218,10 @@ class CoreRendererSettings:
         if self._on_changed is not None:
             await self._on_changed()
         return {"path": path, "applied": True, "value": value, "error": ""}
+
+    def _replaygain_available(self, renderer_id: str, snapshot: dict) -> bool:
+        return bool(self._prefs.volume_control(renderer_id)) or any(
+            field.get("path") == "output.volume_mode" and field.get("value") == "auto"
+            for section in snapshot.get("sections", [])
+            for field in section.get("fields", [])
+        )
