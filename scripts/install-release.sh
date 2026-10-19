@@ -57,6 +57,7 @@ REPO="${KALINKA_REPO:-madenvel/KalinkaPlayer}"
 API="https://api.github.com/repos/${REPO}/releases"
 RENDERER_INSTALLER="${KALINKA_RENDERER_INSTALLER:-https://kalinkaplayer.com/install-renderer.sh}"
 REQUEST="${1:-}"   # optional version or tag
+SELF="${BASH_SOURCE[0]:-}"   # empty when piped into bash
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -87,6 +88,15 @@ download() {  # download <url> <dest>
   local url="$1" dest="$2"
   if have curl; then curl -fSL "${AUTH[@]}" -o "$dest" "$url"
   else wget -O "$dest" "$url"; fi
+}
+
+# The sibling script when run from a checkout, else the published one, downloaded.
+installer_script() {  # installer_script <name> <url> -> path
+  if [ -f "$SELF" ] && [ -r "$(dirname "$SELF")/$1" ]; then
+    echo "$(cd "$(dirname "$SELF")" && pwd)/$1"
+  else
+    download "$2" "$TMPDIR_DL/$1" >&2 && echo "$TMPDIR_DL/$1"
+  fi
 }
 
 # --- resolve the release ------------------------------------------------------
@@ -225,11 +235,8 @@ done
 # Existing supervisor installations join this upgrade; ordinary servers stay unchanged.
 if [ "${SKIP_SUPERVISOR:-0}" != 1 ] && \
    [ "$(dpkg-query -W -f='${db:Status-Status}' kalinka-supervisor 2>/dev/null || true)" = installed ]; then
-  supervisor_script="$(dirname "${BASH_SOURCE[0]}")/install-supervisor.sh"
-  if [ ! -r "$supervisor_script" ]; then
-    supervisor_script="$TMPDIR_DL/install-supervisor.sh"
-    fetch "${KALINKA_SUPERVISOR_INSTALLER:-https://raw.githubusercontent.com/$REPO/main/scripts/install-supervisor.sh}" > "$supervisor_script"
-  fi
+  supervisor_script="$(installer_script install-supervisor.sh \
+    "${KALINKA_SUPERVISOR_INSTALLER:-https://raw.githubusercontent.com/$REPO/main/scripts/install-supervisor.sh}")"
   ALLOW_MISSING_RELEASE=1 bash "$supervisor_script"
 fi
 
@@ -242,15 +249,8 @@ fi
 # Best-effort either way: a platform with no renderer package still ends up
 # with the server installed below.
 install_renderer() {
-  local script self
-  self="${BASH_SOURCE[0]:-}"
-  if [ -f "$self" ] && [ -r "$(dirname "$self")/install-renderer.sh" ]; then
-    # Run from a checkout: use the sibling script, not the published one.
-    script="$(cd "$(dirname "$self")" && pwd)/install-renderer.sh"
-  else
-    script="$TMPDIR_DL/install-renderer.sh"
-    download "$RENDERER_INSTALLER" "$script"
-  fi
+  local script
+  script="$(installer_script install-renderer.sh "$RENDERER_INSTALLER")" || return
   KALINKA_REPO="$REPO" bash "$script"
 }
 

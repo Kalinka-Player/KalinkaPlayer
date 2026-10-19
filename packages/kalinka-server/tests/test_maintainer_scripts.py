@@ -226,14 +226,19 @@ EITHER_PATH = pytest.mark.parametrize(
 )
 
 _RELEASE_STUBS = {
-    # A fetch prints the release; a download leaves an empty .deb behind.
+    # A fetch prints the release; a download leaves an empty .deb behind, or an
+    # installer that logs its own run.
     "curl": """#!/usr/bin/env bash
 out=""
 while [ $# -gt 0 ]; do
   case "$1" in -o) out="$2"; shift ;; esac
   shift
 done
-if [ -n "$out" ]; then : > "$out"; else cat "$STUB_STATE/release.json"; fi
+case "$out" in
+  "") cat "$STUB_STATE/release.json" ;;
+  *.sh) echo 'echo "${0##*/}" >> "$STUB_STATE/scripts.log"' > "$out" ;;
+  *) : > "$out" ;;
+esac
 """,
     # Records what it installed by name, the way dpkg-query below reads it. A
     # simulation takes no lock and installs nothing, so it is not logged.
@@ -273,7 +278,11 @@ exit 1
     "dpkg-query": """#!/usr/bin/env bash
 pkg="${!#}"
 grep -qxF "$pkg" "$STUB_STATE/installed" || exit 1
-case "$2" in *Status*) printf 'install ok installed' ;; *) echo "   $pkg 9.9.9" ;; esac
+case "$2" in
+  *db:Status-Status*) printf installed ;;
+  *Status*) printf 'install ok installed' ;;
+  *) echo "   $pkg 9.9.9" ;;
+esac
 """,
     "sudo": '#!/usr/bin/env bash\nexec "$@"\n',
     "systemctl": '#!/usr/bin/env bash\necho "$*" >> "$STUB_STATE/systemctl.log"\n',
@@ -290,6 +299,7 @@ def _install_release(
     app_assets=(),
     installed=(),
     env=None,
+    piped=False,
 ):
     """install-release.sh end to end, against one published release and no
     package database.
@@ -301,6 +311,7 @@ def _install_release(
     a distribution without that package, or with a conflicting one, does.
     ``app_assets`` are published beside the bundle, where the app repo's
     lookup finds them too; ``installed`` are packages already on the box.
+    ``piped`` feeds the script to bash on stdin, as ``curl … | sudo bash`` does.
     """
     binv = tmp_path / "bin"
     binv.mkdir()
@@ -329,7 +340,8 @@ def _install_release(
     )
 
     result = subprocess.run(
-        ["bash", str(script)],
+        ["bash"] if piped else ["bash", str(script)],
+        input=script.read_text() if piped else None,
         capture_output=True,
         text=True,
         env={
@@ -508,6 +520,24 @@ def test_no_display_for_this_machine_still_installs_the_rest(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "kalinka-server_9.9.9_all.deb" in _bundle_debs(calls)
     assert "no kalinka-kiosk package for arm64" in result.stderr
+
+
+@pytest.mark.parametrize("piped", [False, True], ids=["file", "piped"])
+def test_a_supervisor_box_installs_however_the_installer_is_run(piped, tmp_path):
+    """Piped into bash, the script has no path of its own, and looking beside
+    it for the supervisor's installer stopped the install before apt ran."""
+    result, calls, _ = _install_release(
+        tmp_path,
+        app_assets=(KIOSK_ARM64,),
+        installed=("kalinka-supervisor",),
+        env={"KALINKA_DISPLAY": "1"},
+        piped=piped,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert {"kalinka-server_9.9.9_all.deb", KIOSK_ARM64} <= _bundle_debs(calls)
+    scripts = (tmp_path / "state" / "scripts.log").read_text()
+    assert scripts == "install-supervisor.sh\n"
 
 
 def test_a_reinstall_repairs_a_box_already_on_the_release(tmp_path):
