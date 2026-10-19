@@ -209,7 +209,7 @@ You only need these in special cases.
 | A particular version of the server and its plugins (the output and the browser player still come from their latest releases) | `curl -fsSL https://kalinkaplayer.com/install.sh \| sudo bash -s -- 5.0.0` |
 | A server with no output on this machine, for example a NAS whose sound nobody hears | `curl -fsSL https://kalinkaplayer.com/install.sh \| sudo KALINKA_RENDERER=0 bash` |
 | No browser player | `curl -fsSL https://kalinkaplayer.com/install.sh \| sudo KALINKA_WEB=0 bash` |
-| The now-playing display on a screen attached to this machine (Raspberry Pi, arm64); turn it on afterwards in the app under **Settings › EXPERT › Now-playing display on this machine** | `curl -fsSL https://kalinkaplayer.com/install.sh \| sudo KALINKA_DISPLAY=1 bash` |
+| The now-playing display on a screen attached to this machine (Raspberry Pi, arm64). The script also switches on the graphics driver it draws through; reboot if it asks you to, then turn the display on in the app under **Settings › EXPERT › Now-playing display on this machine** | `curl -fsSL https://kalinkaplayer.com/install.sh \| sudo KALINKA_DISPLAY=1 bash` |
 
 Running the command again upgrades whatever is installed. Kalinka normally [upgrades itself](#keeping-it-up-to-date), though.
 

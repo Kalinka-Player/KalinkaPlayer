@@ -333,10 +333,13 @@ def _install_release(
     (state / "release.json").write_text(json.dumps(release))
     (state / "unknown").write_text("".join(f"{name}\n" for name in unknown))
     (state / "installed").write_text("".join(f"{name}\n" for name in installed))
-    # A reinstall removes the server's environment, so the script only reaches its copy here.
+    # A reinstall removes the server's environment and a display edits the boot
+    # config, so the script only reaches their copies here.
     script = tmp_path / "install-release.sh"
     script.write_text(
-        INSTALL_RELEASE.read_text().replace("/opt/kalinka", f"{tmp_path}/opt/kalinka")
+        INSTALL_RELEASE.read_text()
+        .replace("/opt/kalinka", f"{tmp_path}/opt/kalinka")
+        .replace("/boot/firmware", f"{tmp_path}/boot/firmware")
     )
 
     result = subprocess.run(
@@ -520,6 +523,100 @@ def test_no_display_for_this_machine_still_installs_the_rest(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "kalinka-server_9.9.9_all.deb" in _bundle_debs(calls)
     assert "no kalinka-kiosk package for arm64" in result.stderr
+
+
+# The lines of DietPi's RPi config.txt the display cares about.
+DIETPI_BOOT_CONFIG = """\
+#-------GPU memory splits-------
+gpu_mem_256=16
+gpu_mem_512=16
+gpu_mem_1024=16
+
+#-------Display---------
+hdmi_blanking=1
+
+# Enable KMS/DRM display driver, recommended when a GUI application or desktop is used.
+#dtoverlay=vc4-kms-v3d,noaudio
+dtoverlay=hifiberry-dac
+"""
+
+REBOOT = "reboot for the display to start"
+
+
+def _boot_config(tmp_path, text):
+    config = tmp_path / "boot" / "firmware" / "config.txt"
+    config.parent.mkdir(parents=True)
+    config.write_text(text)
+    return config
+
+
+def _kms_lines(config):
+    return [line for line in config.read_text().splitlines() if "vc4-kms-v3d" in line]
+
+
+def test_the_display_switches_its_driver_on(tmp_path):
+    """flutter-pi draws through KMS alone, which DietPi ships commented out
+    beside a 16 MB GPU split."""
+    config = _boot_config(tmp_path, DIETPI_BOOT_CONFIG)
+
+    result, _, _ = _install_release(
+        tmp_path, app_assets=(KIOSK_ARM64,), env={"KALINKA_DISPLAY": "1"}
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _kms_lines(config) == ["dtoverlay=vc4-kms-v3d,noaudio"]
+    assert "gpu_mem" not in config.read_text()
+    assert "dtoverlay=hifiberry-dac" in config.read_text()
+    assert REBOOT in result.stdout
+
+
+def test_a_config_without_dietpis_kms_line_gets_one_for_every_board(tmp_path):
+    config = _boot_config(tmp_path, "[pi4]\ndtparam=audio=off\n")
+
+    result, _, _ = _install_release(
+        tmp_path, app_assets=(KIOSK_ARM64,), env={"KALINKA_DISPLAY": "1"}
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert config.read_text().endswith("\n[all]\ndtoverlay=vc4-kms-v3d,noaudio\n")
+    assert len(_kms_lines(config)) == 1
+
+
+def test_a_driver_already_on_is_left_as_it_is(tmp_path):
+    """Auto-upgrade reruns the installer on every box with the display."""
+    config = _boot_config(tmp_path, "[all]\ndtoverlay=vc4-kms-v3d\n")
+
+    result, _, _ = _install_release(
+        tmp_path, app_assets=(KIOSK_ARM64,), installed=("kalinka-kiosk",)
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert config.read_text() == "[all]\ndtoverlay=vc4-kms-v3d\n"
+    assert REBOOT not in result.stdout
+
+
+@pytest.mark.parametrize(
+    "env, assets",
+    [({}, (KIOSK_ARM64,)), ({"KALINKA_DISPLAY": "1"}, (KIOSK_AMD64,))],
+    ids=["not-asked-for", "no-package-for-this-machine"],
+)
+def test_without_the_display_the_boot_config_is_left_alone(env, assets, tmp_path):
+    config = _boot_config(tmp_path, DIETPI_BOOT_CONFIG)
+
+    result, _, _ = _install_release(tmp_path, app_assets=assets, env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert config.read_text() == DIETPI_BOOT_CONFIG
+
+
+def test_a_machine_that_boots_without_config_txt_still_gets_the_display(tmp_path):
+    result, calls, _ = _install_release(
+        tmp_path, app_assets=(KIOSK_ARM64,), env={"KALINKA_DISPLAY": "1"}
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert KIOSK_ARM64 in _bundle_debs(calls)
+    assert not (tmp_path / "boot").exists()
 
 
 @pytest.mark.parametrize("piped", [False, True], ids=["file", "piped"])

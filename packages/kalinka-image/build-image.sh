@@ -92,7 +92,6 @@ verify_kalinka
 base_finish
 install_supervisor
 verify_supervisor
-configure_display_boot "$ROOTFS"
 verify_display
 
 stop_build_aids

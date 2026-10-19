@@ -1,21 +1,9 @@
 # shellcheck shell=bash
 # The now-playing display (kalinka-kiosk) for TARGET_DISPLAY=1 targets. Defines only.
 
-KMS_OVERLAY='dtoverlay=vc4-kms-v3d([,[:blank:]].*)?'
-KMS_OVERLAY_RE="^[[:blank:]]*$KMS_OVERLAY\$"
+KMS_OVERLAY_RE='^[[:blank:]]*dtoverlay=vc4-kms-v3d([,[:blank:]].*)?$'
 
 display_target() { [ "${TARGET_DISPLAY:-0}" = 1 ]; }
-
-# flutter-pi needs KMS, which DietPi ships commented out beside a 16 MB GPU split.
-configure_display_boot() {
-  display_target || return 0
-  local conf="$1/boot/firmware/config.txt"
-  [ -f "$conf" ] || die "no $conf to turn the display driver on in"
-  sed -Ei '/^[[:blank:]]*gpu_mem(_[0-9]+)?[[:blank:]]*=/d' "$conf"
-  grep -Eq "$KMS_OVERLAY_RE" "$conf" && return 0
-  sed -Ei "0,/^[[:blank:]]*#[[:blank:]]*($KMS_OVERLAY)\$/s//\\1/" "$conf"
-  grep -Eq "$KMS_OVERLAY_RE" "$conf" || printf '\n[all]\ndtoverlay=vc4-kms-v3d,noaudio\n' >> "$conf"
-}
 
 # Before the server installs, so its postinst hands the file to kalusr.
 configure_display_setting() {

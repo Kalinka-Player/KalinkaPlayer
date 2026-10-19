@@ -37,7 +37,8 @@
 #                    (default: madenvel/KalinkaAI)
 #   KALINKA_WEB      set to 0 to skip installing the browser player
 #   KALINKA_DISPLAY  set to 1 to install the now-playing display for a screen
-#                    on this machine, 0 to leave an installed one un-upgraded
+#                    on this machine, and on a Raspberry Pi the KMS driver it
+#                    draws through; 0 to leave an installed one un-upgraded
 #   KALINKA_RENDERER set to 0 to skip installing the local renderer
 #   KALINKA_RENDERER_INSTALLER  URL of the renderer installer to use instead of
 #                    the published one at kalinkaplayer.com/install-renderer.sh
@@ -205,6 +206,7 @@ if [ "${KALINKA_WEB:-1}" != "0" ]; then
   fi
 fi
 
+kiosk_url=""
 if [ "$WANT_DISPLAY" = "1" ]; then
   arch="$(dpkg --print-architecture 2>/dev/null || true)"
   if [ -n "$arch" ] \
@@ -336,6 +338,27 @@ if ! $SUDO "${APT_INSTALL[@]}" "${BUNDLE_OPTS[@]}" "$TMPDIR_DL"/*.deb; then
   $SUDO "${APT_INSTALL[@]}" -f
 fi
 
+# --- display driver -----------------------------------------------------------
+# flutter-pi draws through KMS, which DietPi ships commented out beside a 16 MB GPU split.
+BOOT_CONFIG=/boot/firmware/config.txt
+KMS_OVERLAY='dtoverlay=vc4-kms-v3d([,[:blank:]].*)?'
+KMS_OVERLAY_RE="^[[:blank:]]*$KMS_OVERLAY\$"
+
+enable_display_driver() {
+  $SUDO sed -Ei '/^[[:blank:]]*gpu_mem(_[0-9]+)?[[:blank:]]*=/d' "$BOOT_CONFIG"
+  grep -Eq "$KMS_OVERLAY_RE" "$BOOT_CONFIG" && return 0
+  $SUDO sed -Ei "0,/^[[:blank:]]*#[[:blank:]]*($KMS_OVERLAY)\$/s//\\1/" "$BOOT_CONFIG"
+  grep -Eq "$KMS_OVERLAY_RE" "$BOOT_CONFIG" \
+    || printf '\n[all]\ndtoverlay=vc4-kms-v3d,noaudio\n' | $SUDO tee -a "$BOOT_CONFIG" >/dev/null
+}
+
+BOOT_CONFIG_CHANGED=0
+if [ -n "$kiosk_url" ] && [ -f "$BOOT_CONFIG" ]; then
+  boot_config_before="$(cksum < "$BOOT_CONFIG")"
+  enable_display_driver
+  [ "$(cksum < "$BOOT_CONFIG")" = "$boot_config_before" ] || BOOT_CONFIG_CHANGED=1
+fi
+
 # --- report -------------------------------------------------------------------
 echo
 echo ">> Installed:"
@@ -351,3 +374,6 @@ fi
 
 echo
 echo ">> Done. $TAG installed."
+if [ "$BOOT_CONFIG_CHANGED" = 1 ]; then
+  echo "   The display driver was switched on in $BOOT_CONFIG: reboot for the display to start."
+fi
