@@ -25,8 +25,10 @@ if [ -r "$TRIGGER" ]; then
     TARGET="$(head -n 1 "$TRIGGER" | tr -dc 'A-Za-z0-9._-')"
 fi
 
-TMP="$(mktemp --suffix=.sh)"
-trap 'rm -f "$TMP"' EXIT
+# A directory of its own: the installer runs, as root, any installer beside it.
+DIR="$(mktemp -d)"
+trap 'rm -rf "$DIR"' EXIT
+TMP="$DIR/install.sh"
 
 echo ">> Fetching the renderer installer from $URL"
 if command -v curl >/dev/null 2>&1; then

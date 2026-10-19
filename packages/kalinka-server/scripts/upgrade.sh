@@ -10,8 +10,10 @@ set -euo pipefail
 
 URL="${KALINKA_INSTALL_SCRIPT_URL:-https://kalinkaplayer.com/install.sh}"
 
-TMP="$(mktemp --suffix=.sh)"
-trap 'rm -f "$TMP"' EXIT
+# A directory of its own: the installer runs, as root, any installer beside it.
+DIR="$(mktemp -d)"
+trap 'rm -rf "$DIR"' EXIT
+TMP="$DIR/install.sh"
 
 echo ">> Fetching installer from $URL"
 if command -v curl >/dev/null 2>&1; then

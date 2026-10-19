@@ -618,6 +618,53 @@ def test_a_reinstall_installs_the_renderer_again(tmp_path):
     assert "--reinstall" in log.read_text().split()
 
 
+FETCH_AND_RUN = {
+    "upgrade": REPO / "packages" / "kalinka-server" / "scripts" / "upgrade.sh",
+    "upgrade-renderer": REPO / "packages" / "kalinka-renderer" / "scripts" / "upgrade-renderer.sh",
+    "reinstall": REPO / "packages" / "kalinka-supervisor" / "reinstall.sh",
+}
+
+
+@pytest.mark.parametrize("script", FETCH_AND_RUN.values(), ids=FETCH_AND_RUN.keys())
+def test_a_fetched_installer_runs_where_nobody_else_can_write(script, tmp_path):
+    """The installers run any install-*.sh they find beside themselves, as
+    root: fetched into the shared /tmp, any local user could put one there."""
+    shared = tmp_path / "tmp"
+    shared.mkdir()
+    planted = {"install-renderer.sh", "install-supervisor.sh"}
+    for name in planted:
+        (shared / name).write_text("echo planted\n")
+    binv = tmp_path / "bin"
+    binv.mkdir()
+    log = tmp_path / "installer.log"
+    report = 'd="$(dirname "$0")"; stat -c %a "$d" > "$LOG"; ls -A "$d" >> "$LOG"'
+    (binv / "curl").write_text(
+        "#!/usr/bin/env bash\n"
+        'while [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done\n'
+        f"echo '{report}' > \"$out\"\n"
+    )
+    (binv / "curl").chmod(0o755)
+
+    result = subprocess.run(
+        ["bash", str(script)],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{binv}:{os.environ['PATH']}",
+            "TMPDIR": str(shared),
+            "LOG": str(log),
+            "KALINKA_RENDERER_UPGRADE_TRIGGER": str(tmp_path / "no-request"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    mode, *beside = log.read_text().split()
+    assert mode == "700"
+    assert beside == ["install.sh"]
+    assert {p.name for p in shared.iterdir()} == planted
+
+
 POSTINST = REPO / "packages" / "kalinka-server" / "DEBIAN" / "postinst"
 BUILD_DEB = REPO / "packages" / "kalinka-server" / "scripts" / "build_deb.sh"
 PLUGINS_DROPIN = (
