@@ -59,6 +59,20 @@ protected:
 
 TEST_F(AudioPlayerTest, constructor_destructor) {}
 
+TEST_F(AudioPlayerTest, software_volume_reports_its_cubic_db_scale) {
+  auto volume = audioPlayer.getVolume();
+  EXPECT_EQ(volume.controlMode, "software");
+  ASSERT_EQ(volume.dbValues.size(), 101u);
+  EXPECT_DOUBLE_EQ(volume.dbValues[0], -200.0);
+  EXPECT_NEAR(volume.dbValues[50], -18.0618, 0.0001);
+  EXPECT_DOUBLE_EQ(volume.dbValues[100], 0.0);
+  audioPlayer.configureVolume("fixed", "");
+  volume = audioPlayer.getVolume();
+  EXPECT_EQ(volume.controlMode, "fixed");
+  EXPECT_FALSE(volume.supported);
+  EXPECT_TRUE(volume.dbValues.empty());
+}
+
 TEST_F(AudioPlayerTest, play) {
   audioPlayer.append(4, url1);
   std::this_thread::sleep_for(std::chrono::seconds(4));

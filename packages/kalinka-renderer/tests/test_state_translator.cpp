@@ -218,6 +218,8 @@ TEST(StateTranslator, VolumeCarriesEveryField) {
   volume.current = 42;
   volume.max = 100;
   volume.backend = static_cast<int>(VolumeBackend::Hardware);
+  volume.dbValues = {-200.0, -60.0, 0.0};
+  volume.controlMode = "auto";
 
   pb::VolumeState out;
   fillVolume(volume, out);
@@ -226,4 +228,7 @@ TEST(StateTranslator, VolumeCarriesEveryField) {
   EXPECT_EQ(out.current(), 42u);
   EXPECT_EQ(out.max(), 100u);
   EXPECT_EQ(out.backend(), pb::VOLUME_BACKEND_HARDWARE);
+  ASSERT_EQ(out.db_values_size(), 3);
+  EXPECT_DOUBLE_EQ(out.db_values(1), -60.0);
+  EXPECT_EQ(out.control_mode(), "auto");
 }

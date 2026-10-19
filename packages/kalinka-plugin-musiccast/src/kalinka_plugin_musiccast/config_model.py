@@ -57,17 +57,9 @@ class KalinkaPluginMusiccastConfig(ModuleConfig):
         title="Zone name",
         json_schema_extra={**_SIMPLE, **_PROMPT},
     )
-    auto_volume_correction: bool = Field(
-        default=False,
-        title="Auto volume correction",
-        json_schema_extra={
-            "help": "Even out volume differences between tracks (ReplayGain)",
-            **_SIMPLE,
-        },
-    )
     volume_step_to_db: float = Field(
         default=0.5,
-        title="Autoloudness volume step",
+        title="Volume step",
         ge=0.5,
         le=5,
         json_schema_extra={"constraints": {"unit": "dB"}},

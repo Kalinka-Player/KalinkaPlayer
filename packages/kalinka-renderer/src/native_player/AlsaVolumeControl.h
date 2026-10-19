@@ -10,6 +10,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include <alsa/asoundlib.h>
 
@@ -31,6 +32,8 @@ struct VolumeState {
   int current = 0;
   int max = 100;
   int backend = static_cast<int>(VolumeBackend::None);
+  std::vector<double> dbValues;
+  std::string controlMode;
 };
 
 /// Where external volume changes arrive, whichever mixer is behind them at the
@@ -86,6 +89,9 @@ public:
 
   /// Set volume, clamped to 0..100. False when unavailable or the write fails.
   bool setVolume(int percent);
+
+  /// dB at each integer percentage, using the card's mixer calibration.
+  std::vector<double> dbValues();
 
 private:
   bool openMixer(const std::string &deviceName, const std::string &controlName);

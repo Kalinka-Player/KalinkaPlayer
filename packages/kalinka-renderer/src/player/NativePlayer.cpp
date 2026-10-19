@@ -483,11 +483,15 @@ void NativePlayer::startPumps() {
   });
   volumePump_ = std::thread([this, monitor = volumeMonitor_] {
     while (monitor->isRunning()) {
-      VolumeState volume = monitor->wait();
+      monitor->wait();
       if (!monitor->isRunning()) {
         break;
       }
-      asio::post(ioc_, [this, volume] { emitVolume(volume, true); });
+      asio::post(ioc_, [this] {
+        if (player_) {
+          emitVolume(player_->getVolume(), true);
+        }
+      });
     }
   });
 }

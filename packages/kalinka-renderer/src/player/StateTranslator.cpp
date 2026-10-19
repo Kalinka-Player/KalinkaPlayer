@@ -82,6 +82,11 @@ void fillVolume(const VolumeState &volume, pb::VolumeState &out) {
   out.set_max(std::max(volume.max, 0));
   // Stored as int in the native struct, for the Python binding's sake.
   out.set_backend(toProto(static_cast<VolumeBackend>(volume.backend)));
+  out.clear_db_values();
+  for (double db : volume.dbValues) {
+    out.add_db_values(db);
+  }
+  out.set_control_mode(volume.controlMode);
 }
 
 void fillPlaybackStateChanged(const StreamState &state,

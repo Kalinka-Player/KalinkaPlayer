@@ -20,6 +20,7 @@
 #include "WavContainer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <expected>
 #include <functional>
@@ -421,18 +422,37 @@ VolumeState AudioPlayer::getVolume() {
   std::lock_guard<std::mutex> lock(volumeMutex_);
   VolumeState state;
   state.max = 100;
+  switch (volumeMode) {
+  case VolumeMode::Auto:
+    state.controlMode = "auto";
+    break;
+  case VolumeMode::Hardware:
+    state.controlMode = "hardware";
+    break;
+  case VolumeMode::Software:
+    state.controlMode = "software";
+    break;
+  case VolumeMode::Fixed:
+    state.controlMode = "fixed";
+    break;
+  }
   switch (activeBackend()) {
   case VolumeBackend::Hardware: {
     const int v = volumeControl->getVolume();
     state.supported = v >= 0;
     state.current = v >= 0 ? v : 0;
     state.backend = static_cast<int>(VolumeBackend::Hardware);
+    state.dbValues = volumeControl->dbValues();
     break;
   }
   case VolumeBackend::Software:
     state.supported = true;
     state.current = softwarePercent;
     state.backend = static_cast<int>(VolumeBackend::Software);
+    state.dbValues.push_back(-200.0);
+    for (int percent = 1; percent <= 100; ++percent) {
+      state.dbValues.push_back(60.0 * std::log10(percent / 100.0));
+    }
     break;
   case VolumeBackend::None:
   default:

@@ -52,6 +52,8 @@ TAGS = {
     "\xa9too": ["Lavf62"],
     "----:com.apple.iTunes:replaygain_track_gain": [MP4FreeForm(b"-6.50 dB")],
     "----:com.apple.iTunes:replaygain_track_peak": [MP4FreeForm(b"0.988")],
+    "----:com.apple.iTunes:replaygain_album_gain": [MP4FreeForm(b"-4.25 dB")],
+    "----:com.apple.iTunes:replaygain_album_peak": [MP4FreeForm(b"0.999")],
 }
 
 
@@ -206,6 +208,8 @@ def test_tags_cover_and_stream_of_an_aac_file(tmp_path):
     assert metadata["genre"] == "Electronic"
     assert metadata["replaygain_gain"] == -6.5
     assert metadata["replaygain_peak"] == 0.988
+    assert metadata["replaygain_album_gain"] == -4.25
+    assert metadata["replaygain_album_peak"] == 0.999
     assert metadata["duration"] == 2
     assert metadata["album_art"] == cover
     assert fi._embedded_art(LOCAL, str(path)) == cover
@@ -409,6 +413,9 @@ async def test_an_indexed_m4a_track_is_served_as_audio_mp4(tmp_path, monkeypatch
     assert info.mime_type == "audio/mp4"
     assert info.local_path == str(path)
     assert (await served.source_retriever()).format == "audio/mp4"
+    assert served.metadata.replaygain_gain == -6.5
+    assert served.metadata.replaygain_album_gain == -4.25
+    assert served.metadata.replaygain_album_peak == 0.999
     async with aiosqlite.connect(config.db_path) as conn:
         [stream_info] = await (
             await conn.execute(

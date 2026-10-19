@@ -99,6 +99,8 @@ def test_changes_patch_only_their_own_fields():
         "current": 70,
         "max": 100,
         "backend": "hardware",
+        "db_values": [],
+        "control_mode": "",
     }
     assert state["selected_device_id"] == "hw:CARD=sofhdadsp,DEV=0"  # untouched
     assert state["format"]["sample_rate_hz"] == 44100  # untouched

@@ -4,7 +4,7 @@ import logging
 import mimetypes
 import os
 import sys
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
@@ -102,6 +102,7 @@ from .renderer_core_settings import (
     RENDERER_ITSELF,
     CoreRendererSettings,
 )
+from .replaygain import ReplayGainController
 from .renderer_prefs import RendererPreferences
 from .renderer_registry import RendererRegistry, RendererUnavailable
 from .renderer_sessions import (
@@ -149,6 +150,7 @@ async def lifespan(app: FastAPI):
             app.state.device_router,
         )
 
+        await app.state.replaygain.start()
         await restore_state(app.state.player_context.playqueue)
         await app.state.player_context.playqueue.__aenter__()
         if app.state.demo_renderer is not None:
@@ -200,6 +202,9 @@ async def lifespan(app: FastAPI):
         arbiter = app.state.player_context.playback_arbiter
         if arbiter is not None:
             await arbiter.shutdown()
+        replaygain = getattr(app.state, "replaygain", None)
+        if replaygain is not None:
+            await replaygain.shutdown()
         # Finalize sessions and fire their close callbacks. uvicorn has already
         # closed the renderer sockets by now, so the renderer itself only
         # learns the session is gone from the STALE reconciliation at its next
@@ -729,6 +734,13 @@ async def create_app(
     device_router = player_context.device_router
     assert device_router is not None  # setup() always builds one
     app.state.device_router = device_router
+    app.state.replaygain = ReplayGainController(
+        renderer_registry,
+        renderer_prefs,
+        device_router,
+        player_context.playqueue_eventbus,
+        player_context.ext_device_eventbus,
+    )
     # Every session opens with the volume policy its renderer's wiring implies.
     renderer_sessions.set_volume_policy(device_router.session_volume_policy)
     # Under /server so the browser-player mount at "/" cannot shadow it, and
@@ -1483,12 +1495,17 @@ async def create_app(
         return (field.title if field is not None else None) or config.name or name
 
     # The Core's own settings for a renderer, answered with the renderer's.
+    async def _output_settings_changed():
+        await app.state.replaygain.refresh()
+        await device_router.resync()
+
     core_renderer_settings = CoreRendererSettings(
         renderer_prefs,
         lambda: [
             (name, _device_module_label(name)) for name in _volume_control_modules()
         ],
-        device_router.resync,
+        _output_settings_changed,
+        renderer_configs.get,
     )
 
     @app.get("/renderer/list")
@@ -1629,17 +1646,27 @@ async def create_app(
         if renderer_registry.get(renderer_id) is None:
             raise HTTPException(status_code=404, detail="Unknown renderer")
         ours, theirs = core_renderer_settings.split(changes)
-        outcomes = await core_renderer_settings.apply(renderer_id, ours)
-        if not theirs:
-            return {
+        if theirs:
+            volume_change = (
+                app.state.replaygain.changing_volume_mode(renderer_id)
+                if "output.volume_mode" in theirs
+                else nullcontext()
+            )
+            async with volume_change:
+                result = await _renderer_config_call(
+                    renderer_configs.update(renderer_id, theirs)
+                )
+        else:
+            result = {
                 "config_version": "",
                 "effect": "instant",
-                "outcomes": outcomes,
+                "outcomes": [],
             }
-        result = await _renderer_config_call(
-            renderer_configs.update(renderer_id, theirs)
+        outcomes = await _renderer_config_call(
+            core_renderer_settings.apply(renderer_id, ours)
         )
         result["outcomes"] = outcomes + result["outcomes"]
+        await app.state.replaygain.refresh()
         return result
 
     async def _renderer_config_call(awaitable):

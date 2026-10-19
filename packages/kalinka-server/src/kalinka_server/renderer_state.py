@@ -94,6 +94,8 @@ def volume_to_dict(volume) -> dict:
         "current": volume.current,
         "max": volume.max,
         "backend": enum_name(pb.VolumeBackend, volume.backend, "VOLUME_BACKEND_"),
+        "db_values": list(volume.db_values),
+        "control_mode": volume.control_mode,
     }
 
 

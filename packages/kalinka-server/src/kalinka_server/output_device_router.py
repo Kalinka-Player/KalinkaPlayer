@@ -110,8 +110,7 @@ class RoutedPlaybackListener:
     Selecting another renderer stops playback first, but the STOPPED that
     follows travels through the bus's fan-out and worker threads and may only
     reach the module after ownership has moved. Dropping it would strand the
-    module mid-track — an amp left with a ReplayGain offset applied for a
-    track that is no longer playing.
+    module waiting for the end of a playback that has already stopped.
     """
 
     def __init__(self, plugin_id: str, bus, router: "OutputDeviceRouter"):

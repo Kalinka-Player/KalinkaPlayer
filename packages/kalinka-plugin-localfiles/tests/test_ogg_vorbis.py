@@ -58,6 +58,8 @@ TAGS = {
     "genre": "Electronic",
     "replaygain_track_gain": "-6.50 dB",
     "replaygain_track_peak": "0.988",
+    "replaygain_album_gain": "-4.25 dB",
+    "replaygain_album_peak": "0.999",
 }
 
 
@@ -285,6 +287,8 @@ def test_tags_and_stream_of_a_vorbis_file(tmp_path):
     assert metadata["genre"] == "Electronic"
     assert metadata["replaygain_gain"] == -6.5
     assert metadata["replaygain_peak"] == 0.988
+    assert metadata["replaygain_album_gain"] == -4.25
+    assert metadata["replaygain_album_peak"] == 0.999
     assert metadata["duration"] == 6
     assert metadata["raw_tags"]["albumartist"] == ["Various Artists"]
     assert metadata["raw_tags"]["tracknumber"] == ["3/10"]
