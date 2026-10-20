@@ -23,9 +23,8 @@ classifiers = [
 ]
 
 dependencies = [
-    # >=3: an output device uses none of the filter contract, but this pin
-    # and REQUIRES_SDK keep it off an SDK major it was not built for.
-    "kalinka-plugin-sdk>=3,<4",
+    # >=3.14: DeviceVolume.db_values, which reports the volume step's dB scale.
+    "kalinka-plugin-sdk>=3.14,<4",
     "ssdpy>=0.4.0",
     "ifaddr>=0.2.0",
 ]
