@@ -293,12 +293,51 @@ async def test_playback_error_restores_volume(rig):
 
 async def test_switching_to_fixed_restores_before_volume_becomes_unwritable(rig):
     await rig.controller.handle(state())
-    async with rig.controller.changing_volume_mode("renderer"):
+    async with rig.controller.changing_volume_mode("renderer", "fixed", AsyncMock()):
         assert rig.device.volume.current_volume == 50
         rig.device.volume.control_mode = "fixed"
         rig.device.volume.supported = False
     await rig.controller.refresh()
     assert rig.device.writes == [40, 50]
+
+
+async def test_a_mode_change_stops_the_renderer_before_the_offset_comes_off(rig):
+    level_at_stop = []
+
+    async def stop():
+        level_at_stop.append(rig.device.volume.current_volume)
+
+    await rig.controller.handle(state())
+    async with rig.controller.changing_volume_mode("renderer", "software", stop):
+        pass
+    assert level_at_stop == [40]
+    assert rig.device.writes == [40, 50]
+
+
+async def test_an_unchanged_mode_plays_on_with_its_offset(rig):
+    stop = AsyncMock()
+    await rig.controller.handle(state())
+    async with rig.controller.changing_volume_mode("renderer", "auto", stop):
+        pass
+    stop.assert_not_awaited()
+    assert rig.device.writes == [40]
+
+
+async def test_with_no_offset_the_renderer_is_left_to_stop_itself(rig):
+    stop = AsyncMock()
+    async with rig.controller.changing_volume_mode("renderer", "software", stop):
+        pass
+    stop.assert_not_awaited()
+
+
+async def test_a_connected_device_keeps_its_offset_through_a_mode_change(rig):
+    stop = AsyncMock()
+    rig.prefs.set_volume_control("renderer", "device")
+    await rig.controller.handle(state())
+    async with rig.controller.changing_volume_mode("renderer", "software", stop):
+        pass
+    stop.assert_not_awaited()
+    assert rig.device.writes == [40], "raised while the track still plays"
 
 
 async def test_shutdown_waits_for_in_flight_correction_then_restores(rig):

@@ -8,6 +8,7 @@
 #include <alsa/asoundlib.h>
 
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <list>
 #include <thread>
@@ -36,6 +37,12 @@ private:
       std::pair<snd_pcm_sframes_t, std::function<void(snd_pcm_sframes_t)>>>
       onFramesPlayedCallbacks;
 };
+
+/// Frames a drop cannot take back, as they are already past the buffer: a
+/// sound server's own latency, or a USB card's frames in flight.
+snd_pcm_sframes_t framesBeyondBuffer(snd_pcm_sframes_t delay,
+                                     snd_pcm_uframes_t bufferSize,
+                                     snd_pcm_sframes_t avail);
 
 class AlsaAudioEmitter : public AudioGraphEmitterNode {
 public:
@@ -90,6 +97,8 @@ private:
   snd_pcm_sframes_t currentSourceStartFrames = 0;
   std::chrono::milliseconds pollTimeout = std::chrono::milliseconds(100);
   snd_pcm_t *pcmHandle = nullptr;
+  // When the device has played out what it held as it was last closed.
+  std::chrono::steady_clock::time_point silentAt;
   std::vector<pollfd> ufds;
   std::unordered_map<AudioSampleFormat, AudioSampleFormat> sampleSubstitute;
   std::vector<uint8_t> conversionScratch;
@@ -129,6 +138,8 @@ private:
 
   void setupAudioFormat(const StreamAudioFormat &streamAudioFormat);
   snd_pcm_sframes_t queuedFrames();
+  /// Frames the running device will still play after a drop.
+  snd_pcm_sframes_t framesHeardAfterDrop();
   void beginSourceAt(std::optional<long> position);
   StreamState waitForInputToBeReady(std::stop_token token);
   snd_pcm_sframes_t waitForAlsaBufferSpace();
@@ -147,6 +158,7 @@ private:
   inline std::chrono::milliseconds framesToTimeMs(snd_pcm_sframes_t frames);
 
   void start();
+  /// Returns once the device is silent, so a caller may change the gain next.
   void stop();
 
   /// Stamps the open device onto every state this node reports.

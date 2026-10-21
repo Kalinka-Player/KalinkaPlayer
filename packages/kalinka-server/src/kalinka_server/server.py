@@ -4,7 +4,7 @@ import logging
 import mimetypes
 import os
 import sys
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import asynccontextmanager, nullcontext, suppress
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
@@ -1648,7 +1648,11 @@ async def create_app(
         ours, theirs = core_renderer_settings.split(changes)
         if theirs:
             volume_change = (
-                app.state.replaygain.changing_volume_mode(renderer_id)
+                app.state.replaygain.changing_volume_mode(
+                    renderer_id,
+                    theirs["output.volume_mode"],
+                    partial(stop_renderer, renderer_id),
+                )
                 if "output.volume_mode" in theirs
                 else nullcontext()
             )
@@ -1668,6 +1672,12 @@ async def create_app(
         result["outcomes"] = outcomes + result["outcomes"]
         await app.state.replaygain.refresh()
         return result
+
+    async def stop_renderer(renderer_id: str) -> None:
+        session = renderer_sessions.get(renderer_id)
+        if session is not None:
+            with suppress(SessionNotActive):
+                await _renderer_config_call(session.stop())
 
     async def _renderer_config_call(awaitable):
         try:

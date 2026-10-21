@@ -265,6 +265,36 @@ TEST_F(AlsaAudioEmitterTest, disconnect) {
   EXPECT_EQ(alsaAudioEmitter->getState().state, AudioGraphNodeState::STOPPED);
 }
 
+TEST_F(AlsaAudioEmitterTest, a_stop_waits_only_for_what_is_past_the_buffer) {
+  auto outputNode = std::make_shared<SineWaveNode>(1, 440, 10000);
+  alsaAudioEmitter->connectTo(outputNode);
+  ASSERT_EQ(
+      waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING).state,
+      AudioGraphNodeState::STREAMING);
+
+  auto emitter = alsaAudioEmitter;
+  EXPECT_TRUE(returnsWithin([emitter, outputNode] {
+    emitter->disconnect(outputNode);
+  }, std::chrono::milliseconds(500)))
+      << "not the 10 s still to come, nor the cap for a wrong delay";
+}
+
+TEST(FramesBeyondBufferTest, ASoundServerStillPlaysItsOwnLatency) {
+  // As PipeWire reported it at 160 ms: 7552 frames ours, 9958 still to hear.
+  EXPECT_EQ(framesBeyondBuffer(9958, 7680, 128), 2406);
+}
+
+TEST(FramesBeyondBufferTest, ACardHoldsNothingPastTheBuffer) {
+  EXPECT_EQ(framesBeyondBuffer(3000, 4000, 1000), 0);
+  EXPECT_EQ(framesBeyondBuffer(2990, 4000, 1000), 0) << "never negative";
+}
+
+TEST(FramesBeyondBufferTest, AnEmptyBufferLeavesTheWholeDelay) {
+  EXPECT_EQ(framesBeyondBuffer(2400, 4000, 4000), 2400);
+  EXPECT_EQ(framesBeyondBuffer(2400, 4000, 4100), 2400)
+      << "an avail past the buffer is still nothing of ours";
+}
+
 TEST_F(AlsaAudioEmitterTest, getState) {
   auto outputNode = std::make_shared<SineWaveNode>(1, 440, 1000);
   EXPECT_EQ(alsaAudioEmitter->getState().state, AudioGraphNodeState::STOPPED);
