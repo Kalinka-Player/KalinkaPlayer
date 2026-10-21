@@ -320,3 +320,54 @@ async def test_renderer_settings_api_applies_volume_mode_before_replaygain(
         replaygain = next(f for f in fields if f["path"] == REPLAYGAIN_PATH)
         assert replaygain["value"] == "album"
         assert replaygain["read_only"] is False
+
+
+async def test_a_volume_mode_change_hands_replaygain_a_stop_sent_before_it(
+    monkeypatch, tmp_path
+):
+    from contextlib import asynccontextmanager
+
+    from kalinka_server import server
+    from kalinka_server.config_model import KalinkaConfig
+    from tests.app_harness import isolate_app, running
+    from tests.sim_renderer import SimRenderer
+
+    isolate_app(monkeypatch, tmp_path)
+    app = await server.create_app(str(tmp_path / "overrides.json"), KalinkaConfig(), {})
+    sim = SimRenderer(app.state.renderer_registry, app.state.renderer_sessions)
+    sim.configs = app.state.renderer_configs
+    sim.connect()
+    wire = []
+    command, update = sim.send_command, sim.send_config_update
+
+    async def send_command(session_id, cmd):
+        wire.append(cmd.WhichOneof("op"))
+        await command(session_id, cmd)
+
+    async def send_config_update(message_id, changes):
+        wire.append("config")
+        await update(message_id, changes)
+
+    @asynccontextmanager
+    async def changing_volume_mode(renderer_id, mode, stop):
+        wire.append(mode)
+        await stop()
+        yield
+
+    sim.send_command, sim.send_config_update = send_command, send_config_update
+    async with running(app) as client:
+        monkeypatch.setattr(
+            app.state.replaygain, "changing_volume_mode", changing_volume_mode
+        )
+        await app.state.renderer_sessions.open(sim.RENDERER_ID, announce=False)
+        url = f"/renderer/{sim.RENDERER_ID}/config"
+
+        response = await client.put(
+            url, json={"changes": {"output.volume_mode": "software"}}
+        )
+
+        assert response.status_code == 200
+        assert wire == ["software", "stop", "config"]
+        wire.clear()
+        await client.put(url, json={"changes": {"output.latency_ms": "200"}})
+        assert wire == ["config"]

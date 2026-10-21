@@ -155,6 +155,9 @@ void AlsaAudioEmitter::stop() {
     playbackThread.request_stop();
     playbackThread.join();
     playbackThread = std::jthread();
+    // The delay is the device's own claim; a wrong one must not hang a stop.
+    std::this_thread::sleep_until(std::min(
+        silentAt, std::chrono::steady_clock::now() + std::chrono::seconds(1)));
     setState(StreamState(AudioGraphNodeState::STOPPED));
   }
 }
@@ -173,6 +176,27 @@ void AlsaAudioEmitter::setState(const StreamState &newState) {
   StreamState stamped = newState;
   stamped.deviceInfo = deviceInfo;
   AudioGraphNode::setState(stamped);
+}
+
+snd_pcm_sframes_t framesBeyondBuffer(snd_pcm_sframes_t delay,
+                                     snd_pcm_uframes_t bufferSize,
+                                     snd_pcm_sframes_t avail) {
+  const snd_pcm_sframes_t buffered = std::max<snd_pcm_sframes_t>(
+      0, static_cast<snd_pcm_sframes_t>(bufferSize) - avail);
+  return std::max<snd_pcm_sframes_t>(0, delay - buffered);
+}
+
+snd_pcm_sframes_t AlsaAudioEmitter::framesHeardAfterDrop() {
+  if (pcmHandle == nullptr ||
+      snd_pcm_state(pcmHandle) != SND_PCM_STATE_RUNNING) {
+    return 0;
+  }
+  snd_pcm_sframes_t avail = 0;
+  snd_pcm_sframes_t delay = 0;
+  if (snd_pcm_avail_delay(pcmHandle, &avail, &delay) < 0) {
+    return 0;
+  }
+  return framesBeyondBuffer(delay, bufferSize, avail);
 }
 
 snd_pcm_sframes_t AlsaAudioEmitter::queuedFrames() {
@@ -341,6 +365,12 @@ void AlsaAudioEmitter::openDevice() {
 
 void AlsaAudioEmitter::closeDevice() {
   if (pcmHandle != nullptr) {
+    if (const auto stillHeard = framesHeardAfterDrop(); stillHeard > 0) {
+      const auto stillHeardMs = framesToTimeMs(stillHeard);
+      spdlog::debug("Closing with {}ms still to be heard",
+                    stillHeardMs.count());
+      silentAt = std::chrono::steady_clock::now() + stillHeardMs;
+    }
     log_on_error(snd_pcm_drop(pcmHandle));
     log_on_error(snd_pcm_hw_free(pcmHandle));
     log_on_error(snd_pcm_close(pcmHandle));
@@ -679,10 +709,6 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
           startPcmStream(streamInfo.value(), streamStartPosition);
           started = true;
         }
-      }
-
-      if (token.stop_requested()) {
-        log_on_error(snd_pcm_drop(pcmHandle));
       }
     }
   } catch (const std::exception &ex) {

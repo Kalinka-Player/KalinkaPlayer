@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
@@ -131,10 +132,25 @@ class ReplayGainController:
         await asyncio.gather(*self._tasks, return_exceptions=True)
 
     @asynccontextmanager
-    async def changing_volume_mode(self, renderer_id: str):
-        """Remove the offset before a mode change can make volume unwritable."""
+    async def changing_volume_mode(
+        self, renderer_id: str, mode: str, stop: Callable[[], Awaitable[None]]
+    ):
+        """Remove the offset before a mode change can make volume unwritable.
+
+        `stop` silences the renderer first, as an offset removed while the
+        track still plays is heard as a jump. A connected device keeps its
+        offset: the renderer's mode never reaches it, and playback through it
+        goes on.
+        """
         async with self._lock:
-            if self._applied and self._applied.output.renderer_id == renderer_id:
+            applied = self._applied
+            if (
+                applied
+                and applied.output.renderer_id == renderer_id
+                and not self._prefs.volume_control(renderer_id)
+                and (await applied.output.volume()).control_mode != mode
+            ):
+                await stop()
                 await self._restore()
             yield
 
