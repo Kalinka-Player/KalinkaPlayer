@@ -3,6 +3,7 @@
 
 #include "AudioGraphNode.h"
 #include "Config.h"
+#include "GainFade.h"
 #include "Utils.h"
 
 #include <alsa/asoundlib.h>
@@ -51,7 +52,8 @@ public:
 
   // Software volume: linear amplitude gain in [0, 1] applied to outgoing PCM
   // frames. 1.0 (the default) is a bit-perfect bypass. Thread-safe; the value
-  // is read on the playback worker thread for each conversion.
+  // is read on the playback worker thread for each conversion, and playing
+  // audio fades to it rather than jumping.
   void setSoftwareVolume(float gain);
   void setDsdAllowed(bool allowed) { dsdAllowed.store(allowed); }
 
@@ -76,6 +78,8 @@ private:
   std::jthread playbackThread;
   std::atomic<bool> isWorkerRunning = false;
   std::atomic<float> softwareGain = 1.0f;
+  // Long enough that a slider step is no click, short enough to follow a drag.
+  GainFade softwareFade{std::chrono::milliseconds(25)};
   std::atomic<bool> dsdAllowed = true; // AudioPlayer starts in fixed mode.
   uint64_t dopFrame = 0;
   unsigned outputChannels = 2;

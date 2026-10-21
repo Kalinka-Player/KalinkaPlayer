@@ -159,4 +159,12 @@ size_t convertSampleFormat(const void *source, AudioSampleFormat sourceFormat,
 void applyGainInPlace(void *buffer, size_t bytes, AudioSampleFormat format,
                       float gain);
 
+/// @brief Apply a gain that moves linearly from @p from to @p to, frame by
+/// frame, reaching @p to on the last whole frame of @p buffer.
+///
+/// Every channel of a frame gets the same gain. Gains clamp to [0, 1], and a
+/// fade that stays at 1.0 is a no-op, as in applyGainInPlace.
+void applyGainFadeInPlace(void *buffer, size_t bytes, AudioSampleFormat format,
+                          unsigned channels, float from, float to);
+
 #endif // AUDIO_SAMPLE_FORMAT_H

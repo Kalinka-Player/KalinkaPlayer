@@ -484,7 +484,7 @@ AlsaAudioEmitter::readIntoAlsaFromStream(std::stop_token stopToken,
   while (framesRead < framesToRead && !stopToken.stop_requested()) {
     snd_pcm_uframes_t frames = framesToRead - framesRead;
     if (paused) {
-
+      softwareFade.settle(softwareGain.load(std::memory_order_relaxed));
       framesRead += writeToAlsa(
           frames, [this](void *ptr, snd_pcm_uframes_t frames, size_t bytes) {
             memset(ptr, isDsd(currentStreamAudioFormat.sampleFormat) ? 0x69 : 0,
@@ -615,6 +615,7 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
       // Only with nothing queued do the two agree, and there the source is
       // the authority: it is the end that begins partway in, or seeks itself.
       if (queued == 0) {
+        softwareFade.settle(softwareGain.load(std::memory_order_relaxed));
         if (auto position = inputNode->streamReadPosition()) {
           beginSourceAt(position);
         }
@@ -996,10 +997,12 @@ size_t AlsaAudioEmitter::readAndConvertFrames(void *dest, size_t bytes) {
   // A mono stream plays each sample in every output channel.
   const unsigned copies =
       currentStreamAudioFormat.channels == 1 ? outputChannels : 1;
+  const unsigned channels = currentStreamAudioFormat.channels * copies;
+  const unsigned rate = currentStreamAudioFormat.sampleRate;
   if (sourceFormat == destFormat && copies == 1) {
     const size_t bytesRead = inputNode->read(dest, bytes);
     // Unity gain (the common case) is a no-op, so playback stays bit-perfect.
-    applyGainInPlace(dest, bytesRead, sourceFormat, gain);
+    softwareFade.apply(dest, bytesRead, sourceFormat, channels, rate, gain);
     return snd_pcm_bytes_to_frames(pcmHandle, bytesRead);
   }
 
@@ -1023,7 +1026,8 @@ size_t AlsaAudioEmitter::readAndConvertFrames(void *dest, size_t bytes) {
     }
   }
   // Gain is applied on the samples handed to ALSA, in the on-wire format.
-  applyGainInPlace(out, converted * copies * width, destFormat, gain);
+  softwareFade.apply(out, converted * copies * width, destFormat, channels,
+                     rate, gain);
   return converted * copies / outputChannels;
 }
 
