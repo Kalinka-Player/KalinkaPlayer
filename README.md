@@ -27,25 +27,26 @@ Bit-perfect playback from your own library, on your own hardware — with on-dev
 
 Kalinka turns a Raspberry Pi or any Linux box into a music player you control from your phone, desktop or a browser. The server holds your library; a separate **renderer** does the playing, talking to ALSA directly — so it can sit on the same machine, or on a Pi next to each amplifier in the house.
 
-Your files stay yours — nothing is uploaded, there is no account and no telemetry, and the semantic search runs on the device. Optional internet requests cover metadata lookups that repair your tags (MusicBrainz, Wikidata, Deezer, Cover Art Archive), hourly checks for published releases, and the public plugin catalog. Catalog browsing is off by default. Enable **Plugin catalog preview** in Server settings → General using expert mode, then open **Plugins** in the server menu. This is read-only browsing, without installation or updates. Fetching requires no account; see the [catalog configuration and trust model](docs/plugin-catalog-design.md#public-access-and-hosting).
+Your files stay yours — nothing is uploaded, there is no account and no telemetry, and the semantic search runs on the device. Optional internet requests cover metadata lookups that repair your tags (MusicBrainz, Wikidata, Deezer, Cover Art Archive), hourly checks for published releases, and the public plugin catalog, from which the app installs, updates and removes plugins. Fetching requires no account; see the [catalog configuration and trust model](docs/plugin-catalog-design.md#public-access-and-hosting).
 
 ## Installation
 
-1. **Install the server.** On a Raspberry Pi or a spare PC, [flash a ready-made image](docs/installation.md#install-the-server): Kalinka is already on it and plays as soon as the machine starts. On a machine that already runs Debian 13, Raspberry Pi OS (64-bit) or Ubuntu 24.04, one command installs everything:
+1. **Install the server.** On a Raspberry Pi or a spare PC, [flash a ready-made image](docs/installation.md#install-the-server): Kalinka is already on it and plays as soon as the machine starts. On a machine that already runs Debian 13, Raspberry Pi OS (64-bit, Trixie), DietPi or Ubuntu 24.04, one command installs everything:
 
    ```bash
+   sudo apt install -y curl python3
    curl -fsSL https://kalinkaplayer.com/install.sh | sudo bash
    ```
 
    It runs in a [virtual machine](docs/installation.md#c-virtual-machine) too.
 
 2. **Open a remote.** Install the [Kalinka app](https://github.com/Kalinka-Player/KalinkaAI#-install) (Android, Windows, Linux), which finds the server by itself, or open `http://<server-address>:8000` in any browser.
-3. **Follow the setup wizard.** It asks where your music is and where the sound should come out. There are no config files to edit. [What each step asks](https://github.com/Kalinka-Player/KalinkaAI/blob/main/docs/first-run-setup.md).
+3. **Follow the setup in the app.** It asks where your music is and where the sound should come out. There are no config files to edit.
 4. **Add your music, and more outputs if you like.** [Copy music onto it or point it at a NAS](docs/installation.md#put-your-music-on-it), and [put a renderer on any Linux box next to an amplifier, or play in a browser tab](docs/installation.md#add-more-outputs).
 
-**[Full installation guide →](docs/installation.md)** It covers the images, virtual machines, Wi-Fi and logins, updates and troubleshooting.
+**[Full installation guide →](docs/installation.md)** It covers the images, virtual machines, Wi-Fi and logins, the supervisor, updates and troubleshooting.
 
-**Setting up Wi-Fi from a laptop?** Join `Kalinka-Setup-XXXX` with password **`kalinka-setup`**, stay connected without internet, then open **`http://192.168.4.1`**. [Save the illustrated instructions before connecting](docs/installation.md#connect-your-box-to-the-network). Bluetooth setup is also available in the native app.
+**Setting up Wi-Fi from a laptop?** Join `Kalinka-Setup-XXXX` with password **`kalinka-setup`**, stay connected without internet, then open **`http://192.168.4.1`**. [The full steps](docs/installation.md#connect-your-box-to-the-network) also cover Bluetooth setup from the app.
 
 ## ✨ What it does
 
@@ -57,8 +58,8 @@ Your files stay yours — nothing is uploaded, there is no account and no teleme
 | 🏠 **Renderers anywhere** | Put a renderer on any box on your network and it appears as an output. They find the server over mDNS and upgrade themselves. |
 | 🌐 **Browser player** | The server serves a web player, so any browser is both a remote control and an output. |
 | 🧩 **Plugins** | Sources, enrichers and device integrations are ordinary Python packages discovered at runtime. My Library, Jamendo and a [UPnP renderer input](packages/kalinka-plugin-upnp/README.md) ship in the box; MusicCast handles Yamaha volume and power. |
-| 🪄 **Guided first run** | A setup wizard runs in the app and in the browser alike — name the server, point it at your music, pick an output, done. Nothing to edit on the server itself. |
-| ⚙️ **Live configuration** | Everything stays editable afterwards from Settings, with a simple tier of common fields and an `about:config`-style search for the rest. |
+| 🪄 **Guided first run** | The app and the browser player walk you through the first setup. Nothing to edit on the server itself. |
+| ⚙️ **Live configuration** | Everything stays editable afterwards from the app, with the common settings up front and an `about:config`-style search for the rest. |
 | 🔄 **Updates itself** | The server checks published releases hourly; with auto-upgrade on it installs during quiet hours while playback is stopped, otherwise the app offers a button. Server, plugins, browser player and renderers move together — renderers first, so the pair never lands on a combination that cannot play. |
 
 ## 💻 Requirements
@@ -84,9 +85,7 @@ In-browser playback goes through the browser's audio stack, so there is no gaple
 
 | | |
 |---|---|
-| [Installation](docs/installation.md) | Installing the server, connecting a remote, adding music and more outputs, updates, troubleshooting |
-| [First-run setup](https://github.com/Kalinka-Player/KalinkaAI/blob/main/docs/first-run-setup.md) | Every step of the setup wizard, in the app and in the browser |
-| [App manual](https://github.com/Kalinka-Player/KalinkaAI/blob/main/docs/app-manual.md) | An illustrated tour of the app |
+| [Installation](docs/installation.md) | Installing the server, connecting it to your network, adding music and more outputs, the supervisor, updates, troubleshooting |
 
 ## 🙋 Help test it
 
