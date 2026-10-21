@@ -116,6 +116,7 @@ add_library(kalinka_native_player STATIC
   src/native_player/FragmentedMp4.cpp
   src/native_player/FlacFrameDecoder.cpp
   src/native_player/FlacStreamDecoder.cpp
+  src/native_player/GainFade.cpp
   src/native_player/Log.cpp
   src/native_player/Mp4.cpp
   src/native_player/Mp4SampleTable.cpp
@@ -272,6 +273,7 @@ if(GTest_FOUND)
     tests/native_player/DashFormat_test.cpp
     tests/native_player/FileInputNode_test.cpp
     tests/native_player/FlacStreamDecoder_test.cpp
+    tests/native_player/GainFade_test.cpp
     tests/native_player/LocalHttpServer.cpp
     tests/native_player/Log_test.cpp
     tests/native_player/Mp3StreamDecoder_test.cpp

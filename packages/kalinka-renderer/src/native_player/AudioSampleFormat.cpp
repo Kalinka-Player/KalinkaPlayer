@@ -124,39 +124,29 @@ inline int64_t scaleClamp(int64_t sample, double gain, int bits) {
   const int64_t scaled = std::llround(static_cast<double>(sample) * gain);
   return std::clamp(scaled, minv, maxv);
 }
-} // namespace
 
-void applyGainInPlace(void *buffer, size_t bytes, AudioSampleFormat format,
-                      float gain) {
-  // Full volume must not touch the bits — keeps bit-perfect playback intact.
-  if (gain >= 1.0f) {
-    return;
-  }
-  if (isDsd(format))
-    throw std::invalid_argument("Software gain cannot alter DSD");
-  if (gain < 0.0f) {
-    gain = 0.0f;
-  }
-
-  uint8_t *ptr = static_cast<uint8_t *>(buffer);
+// One walk over every format, so a fade scales samples as a constant gain does.
+template <typename GainAt>
+void scaleSamplesInPlace(uint8_t *ptr, size_t bytes, AudioSampleFormat format,
+                         GainAt gainAt) {
   switch (format) {
   case PCM_FLOAT32_LE: {
     auto *samples = reinterpret_cast<float *>(ptr);
     for (size_t i = 0; i < bytes / sizeof(float); ++i)
-      samples[i] = static_cast<float>(double(samples[i]) * gain);
+      samples[i] = static_cast<float>(double(samples[i]) * gainAt(i));
     break;
   }
   case PCM_FLOAT64_LE: {
     auto *samples = reinterpret_cast<double *>(ptr);
     for (size_t i = 0; i < bytes / sizeof(double); ++i)
-      samples[i] *= double(gain);
+      samples[i] *= gainAt(i);
     break;
   }
   case PCM16_LE: {
     int16_t *samples = reinterpret_cast<int16_t *>(ptr);
     const size_t count = bytes / sizeof(int16_t);
     for (size_t i = 0; i < count; ++i) {
-      samples[i] = static_cast<int16_t>(scaleClamp(samples[i], gain, 16));
+      samples[i] = static_cast<int16_t>(scaleClamp(samples[i], gainAt(i), 16));
     }
     break;
   }
@@ -164,7 +154,7 @@ void applyGainInPlace(void *buffer, size_t bytes, AudioSampleFormat format,
     int32_t *samples = reinterpret_cast<int32_t *>(ptr);
     const size_t count = bytes / sizeof(int32_t);
     for (size_t i = 0; i < count; ++i) {
-      samples[i] = static_cast<int32_t>(scaleClamp(samples[i], gain, 32));
+      samples[i] = static_cast<int32_t>(scaleClamp(samples[i], gainAt(i), 32));
     }
     break;
   }
@@ -175,7 +165,8 @@ void applyGainInPlace(void *buffer, size_t bytes, AudioSampleFormat format,
     for (size_t i = 0; i < count; ++i) {
       const int32_t v =
           static_cast<int32_t>(static_cast<uint32_t>(samples[i]) << 8) >> 8;
-      samples[i] = static_cast<int32_t>(scaleClamp(v, gain, 24)) & 0xFFFFFF;
+      samples[i] =
+          static_cast<int32_t>(scaleClamp(v, gainAt(i), 24)) & 0xFFFFFF;
     }
     break;
   }
@@ -185,7 +176,7 @@ void applyGainInPlace(void *buffer, size_t bytes, AudioSampleFormat format,
       uint8_t *b = ptr + i * 3;
       const int32_t raw = b[0] | (b[1] << 8) | (b[2] << 16);
       const int32_t v = static_cast<int32_t>(static_cast<uint32_t>(raw) << 8) >> 8;
-      const int32_t scaled = static_cast<int32_t>(scaleClamp(v, gain, 24));
+      const int32_t scaled = static_cast<int32_t>(scaleClamp(v, gainAt(i), 24));
       b[0] = scaled & 0xFF;
       b[1] = (scaled >> 8) & 0xFF;
       b[2] = (scaled >> 16) & 0xFF;
@@ -195,4 +186,39 @@ void applyGainInPlace(void *buffer, size_t bytes, AudioSampleFormat format,
   default:
     break;
   }
+}
+} // namespace
+
+void applyGainInPlace(void *buffer, size_t bytes, AudioSampleFormat format,
+                      float gain) {
+  // Full volume must not touch the bits — keeps bit-perfect playback intact.
+  if (gain >= 1.0f) {
+    return;
+  }
+  if (isDsd(format))
+    throw std::invalid_argument("Software gain cannot alter DSD");
+  const double level = std::max(gain, 0.0f);
+  scaleSamplesInPlace(static_cast<uint8_t *>(buffer), bytes, format,
+                      [level](size_t) { return level; });
+}
+
+void applyGainFadeInPlace(void *buffer, size_t bytes, AudioSampleFormat format,
+                          unsigned channels, float from, float to) {
+  if (from >= 1.0f && to >= 1.0f) {
+    return;
+  }
+  if (isDsd(format))
+    throw std::invalid_argument("Software gain cannot alter DSD");
+  const size_t frames = bytes / (sampleSize(format) * channels);
+  if (frames == 0) {
+    return;
+  }
+  const double start = std::clamp(from, 0.0f, 1.0f);
+  const double perFrame = (std::clamp(to, 0.0f, 1.0f) - start) / frames;
+  scaleSamplesInPlace(static_cast<uint8_t *>(buffer),
+                      frames * sampleSize(format) * channels, format,
+                      [=](size_t sample) {
+                        const size_t frame = sample / channels;
+                        return start + perFrame * double(frame + 1);
+                      });
 }
