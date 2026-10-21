@@ -55,8 +55,8 @@ void StubPlayer::fillConfig(pb::ConfigSection &out) const {
   device->set_path("output.device");
   device->set_title("Output device");
   device->set_description(
-      "The sound card music plays through. This build has no audio output, "
-      "so there is nothing to choose.");
+      "The sound card to play through. This build has no audio output, so "
+      "there is nothing to choose.");
   device->set_type(pb::CONFIG_FIELD_TYPE_ENUM);
   device->set_value(settings_.at("output.device"));
   device->set_default_value("default");

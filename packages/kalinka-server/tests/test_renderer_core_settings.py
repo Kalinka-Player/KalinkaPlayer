@@ -186,14 +186,15 @@ def _config(mode):
 
 @pytest.mark.parametrize(
     "mode,available",
-    [("auto", True), ("fixed", False), ("hardware", False), ("software", False)],
+    [("auto", True), ("hardware", True), ("software", True), ("fixed", False)],
 )
 def test_replaygain_choices_and_volume_requirement(settings, prefs, mode, available):
     merged = settings.merge_into(_config(mode), RENDERER)
     field = merged["sections"][-1]["fields"][-1]
     assert field["path"] == REPLAYGAIN_PATH
-    assert field["value"] == "disabled"
+    assert field["value"] == ("disabled" if available else "Disabled")
     assert [o["value"] for o in field["options"]] == ["disabled", "album", "track"]
+    assert all(o["description"] for o in field["options"])
     assert field["read_only"] is not available
     prefs.set_volume_control(RENDERER, "musiccast")
     assert (
@@ -202,6 +203,20 @@ def test_replaygain_choices_and_volume_requirement(settings, prefs, mode, availa
         ]
         is False
     )
+
+
+@pytest.mark.parametrize("config", [_config("fixed"), {"sections": []}])
+def test_unavailable_replaygain_reads_disabled_but_keeps_the_saved_choice(
+    settings, prefs, config
+):
+    prefs.set_replaygain(RENDERER, "album")
+
+    field = settings.merge_into(config, RENDERER)["sections"][-1]["fields"][-1]
+
+    assert field["read_only"] is True
+    assert field["value"] == "Disabled", "read-only is shown as its label"
+    field = settings.merge_into(_config("auto"), RENDERER)["sections"][-1]["fields"][-1]
+    assert field["value"] == "album"
 
 
 async def test_replaygain_is_validated_persisted_per_renderer_and_resynced(
@@ -231,7 +246,7 @@ async def test_enabling_replaygain_with_fixed_volume_is_rejected(prefs):
     settings = CoreRendererSettings(prefs, lambda: [], get_config=get_config)
     result = await settings.apply(RENDERER, {REPLAYGAIN_PATH: "track"})
     assert result[0]["applied"] is False
-    assert "Automatic" in result[0]["error"]
+    assert "cannot change this renderer's volume" in result[0]["error"]
     result = await settings.apply(RENDERER, {REPLAYGAIN_PATH: "disabled"})
     assert result[0]["applied"] is True
 

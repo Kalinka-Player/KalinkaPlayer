@@ -23,9 +23,16 @@ from .renderer_output_device import RendererVolumeDevice
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
+# Fixed output ignores volume changes, so only these modes can carry ReplayGain.
+ADJUSTABLE_VOLUME_MODES = ("auto", "hardware", "software")
 
-def volume_curve(volume: DeviceVolume) -> list[float]:
-    """Return dB at each level, accepting only finite, monotonic calibrations."""
+
+def volume_curve(volume: DeviceVolume) -> list[float] | None:
+    """Return dB at each level, accepting only finite, monotonic calibrations.
+
+    None for a renderer's card mixer that reports no dB scale: how far a step
+    moves it is unknown, and a guess can be several times too strong.
+    """
     values = volume.db_values
     if (
         len(values) == volume.max_volume + 1
@@ -33,6 +40,8 @@ def volume_curve(volume: DeviceVolume) -> list[float]:
         and all(a <= b for a, b in zip(values, values[1:]))
     ):
         return values
+    if volume.backend == VolumeBackend.HARDWARE and volume.control_mode:
+        return None
     exponent = 60 if volume.backend == VolumeBackend.SOFTWARE else 20
     return [-200.0] + [
         exponent * math.log10(i / volume.max_volume)
@@ -103,6 +112,7 @@ class ReplayGainController:
         self._device_bus = device_bus
         self._state = PlaybackState(state=PlayerStateEnum.STOPPED)
         self._applied: _Correction | None = None
+        self._unscaled_reported: set[str] = set()
         self._lock = asyncio.Lock()
         self._tasks: list[asyncio.Task] = []
 
@@ -217,7 +227,10 @@ class ReplayGainController:
             not volume.supported
             or volume.max_volume <= 0
             or SupportedFunction.SET_VOLUME not in device.supported_functions()
-            or (not delegated and volume.control_mode not in ("", "auto"))
+            or (
+                not delegated
+                and volume.control_mode not in ("", *ADJUSTABLE_VOLUME_MODES)
+            )
         ):
             await self._restore()
             return
@@ -244,6 +257,15 @@ class ReplayGainController:
         ):
             return
         curve = volume_curve(volume)
+        if curve is None:
+            if renderer_id not in self._unscaled_reported:
+                self._unscaled_reported.add(renderer_id)
+                logger.info(
+                    "ReplayGain skipped on renderer %s: its card mixer reports no dB scale",
+                    renderer_id,
+                )
+            await self._restore()
+            return
         baseline = max(0, min(baseline, volume.max_volume))
         target = shifted_volume(baseline, gain, curve)
         correction = _Correction(output, key, baseline, target, curve)

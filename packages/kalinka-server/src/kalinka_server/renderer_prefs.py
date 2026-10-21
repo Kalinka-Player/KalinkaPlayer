@@ -20,6 +20,8 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
+REPLAYGAIN_MODES = ("disabled", "album", "track")
+
 
 class RendererPreferences:
     def __init__(self, path: Optional[str] = None):
@@ -54,10 +56,10 @@ class RendererPreferences:
 
     def replaygain(self, renderer_id: str) -> str:
         value = self._renderers.get(renderer_id, {}).get("replaygain", "disabled")
-        return value if value in ("disabled", "album", "track") else "disabled"
+        return value if value in REPLAYGAIN_MODES else "disabled"
 
     def set_replaygain(self, renderer_id: str, mode: str) -> None:
-        if mode not in ("disabled", "album", "track"):
+        if mode not in REPLAYGAIN_MODES:
             raise ValueError("ReplayGain must be disabled, album or track")
         if self.replaygain(renderer_id) != mode:
             self._renderers.setdefault(renderer_id, {})["replaygain"] = mode

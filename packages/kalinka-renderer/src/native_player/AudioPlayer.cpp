@@ -20,7 +20,6 @@
 #include "WavContainer.h"
 
 #include <algorithm>
-#include <cmath>
 #include <cstdlib>
 #include <expected>
 #include <functional>
@@ -449,10 +448,7 @@ VolumeState AudioPlayer::getVolume() {
     state.supported = true;
     state.current = softwarePercent;
     state.backend = static_cast<int>(VolumeBackend::Software);
-    state.dbValues.push_back(-200.0);
-    for (int percent = 1; percent <= 100; ++percent) {
-      state.dbValues.push_back(60.0 * std::log10(percent / 100.0));
-    }
+    state.dbValues = cubicVolumeDb();
     break;
   case VolumeBackend::None:
   default:

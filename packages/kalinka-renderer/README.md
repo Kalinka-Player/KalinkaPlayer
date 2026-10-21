@@ -205,15 +205,19 @@ and leave the one playing alone. The schema says so per field, so the settings
 page can warn first.
 
 The Core also adds **ReplayGain** (`core.output.replaygain`) to each renderer's
-settings: **Disabled** (default), **Album level**, or **Track level**. It is
-available with Automatic volume control, including its software fallback, or
-when a connected device such as MusicCast controls volume. Fixed output on its
-own does not apply ReplayGain.
+settings: **Disabled** (default), **Album level**, or **Track level**. It works
+with every volume control except Fixed output, and with a connected device such
+as MusicCast that sets the volume. With Fixed output it is read-only and reads
+Disabled. The saved choice applies again once volume control changes.
 
 The Core reads the selected gain tag and sends volume changes to the current
-volume owner. Renderers report the software or card mixer's dB scale; MusicCast
-reports its volume step. Gain is applied on track start and removed on stop,
-error, or a change to an untagged track, preserving manual volume adjustments.
+volume owner. Renderers report the dB scale of their software volume or of the
+card's mixer. A PipeWire or PulseAudio mixer has no dB scale of its own in ALSA,
+so the renderer reports the cubic scale those servers use. Any other card mixer
+without a dB scale gets no ReplayGain, as the Core cannot tell how far a step
+moves it. The log says so once per renderer. MusicCast reports its volume
+step. Gain is applied on track start and removed on stop, error, or a change to
+an untagged track, preserving manual volume adjustments.
 Album mode uses album tags without substituting track gain when they are absent.
 Apply and restore operations are logged. The choice is saved per renderer in
 the Core's renderer preferences, and replaces MusicCast's old automatic volume

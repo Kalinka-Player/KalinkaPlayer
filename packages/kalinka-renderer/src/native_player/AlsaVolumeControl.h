@@ -23,6 +23,14 @@ enum class VolumeMode { Auto, Hardware, Software, Fixed };
 
 VolumeMode parseVolumeMode(const std::string &mode);
 
+/// dB at each percentage, 0..100, of a volume that scales amplitude by the
+/// cube of the percentage, as software volume and PipeWire do. 0 is -200 dB.
+std::vector<double> cubicVolumeDb();
+
+/// Whether a control device is the PipeWire or PulseAudio plugin, whose
+/// volume is cubic but carries no dB scale for ALSA to report.
+bool isSoundServerMixer(snd_ctl_type_t type, const std::string &cardId);
+
 /// Percent-based snapshot of the active volume backend.
 ///
 /// `current`/`max` are a 0..100 scale. `backend` is a `VolumeBackend` value so
@@ -90,7 +98,8 @@ public:
   /// Set volume, clamped to 0..100. False when unavailable or the write fails.
   bool setVolume(int percent);
 
-  /// dB at each integer percentage, using the card's mixer calibration.
+  /// dB at each integer percentage, from the card's mixer calibration or, for
+  /// a sound server, its cubic scale. Empty when neither is known.
   std::vector<double> dbValues();
 
 private:
@@ -107,6 +116,7 @@ private:
   snd_mixer_elem_t *elem_ = nullptr;
   long rawMin_ = 0;
   long rawMax_ = 0;
+  bool soundServer_ = false;
   bool available_ = false;
   int lastNotified_ = -1;
 
