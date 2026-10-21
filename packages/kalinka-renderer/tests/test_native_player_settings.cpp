@@ -154,6 +154,22 @@ TEST_F(NativePlayerSettingsTest, DsdSettingsExposeCapabilitiesAndPersistMode) {
   EXPECT_EQ(field(output(), "output.dsd_mode")->value(), "disabled");
 }
 
+TEST_F(NativePlayerSettingsTest, ModeChoicesAreDescribedInTheirOwnOrder) {
+  const auto section = output();
+  auto described = [&section](const std::string &path) {
+    std::vector<std::string> values;
+    for (const pb::ConfigOption &option : field(section, path)->options()) {
+      EXPECT_FALSE(option.description().empty()) << path << " " << option.value();
+      values.push_back(option.value());
+    }
+    return values;
+  };
+  EXPECT_THAT(described("output.volume_mode"),
+              ::testing::ElementsAre("auto", "hardware", "software", "fixed"));
+  EXPECT_THAT(described("output.dsd_mode"),
+              ::testing::ElementsAre("disabled", "auto", "native", "dop"));
+}
+
 TEST_F(NativePlayerSettingsTest, DsdIsTakenWhileTheDsdModeIsNotDisabled) {
   auto dsd = [this] {
     pb::Capabilities capabilities;

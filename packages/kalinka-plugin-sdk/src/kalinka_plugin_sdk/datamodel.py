@@ -700,7 +700,8 @@ class DeviceVolume(BaseModel):
     volume_gain: int = 0
     supported: bool = True
     backend: VolumeBackend = VolumeBackend.UNKNOWN
-    # Empty falls back to cubic software gain, or linear amplitude otherwise.
+    # Empty falls back to cubic software gain, or linear amplitude for an
+    # external device. A renderer's card mixer without one gets no ReplayGain.
     db_values: List[float] = []
     control_mode: str = ""
 

@@ -17,7 +17,8 @@ import hashlib
 import logging
 from typing import Any, Awaitable, Callable, Mapping, Optional
 
-from .renderer_prefs import RendererPreferences
+from .renderer_prefs import REPLAYGAIN_MODES, RendererPreferences
+from .replaygain import ADJUSTABLE_VOLUME_MODES
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
@@ -31,6 +32,62 @@ RENDERER_ITSELF_LABEL = "This renderer"
 
 # What a module is offered as, when it has no title of its own.
 Candidates = Callable[[], list[tuple[str, str]]]
+
+REPLAYGAIN_OPTIONS = [
+    {
+        "value": "disabled",
+        "label": "Disabled",
+        "description": "Tracks play at the volume you set.",
+    },
+    {
+        "value": "album",
+        "label": "Album level",
+        "description": (
+            "Each album plays at a similar loudness. Quiet and loud songs "
+            "within an album stay as they are."
+        ),
+    },
+    {
+        "value": "track",
+        "label": "Track level",
+        "description": (
+            "Every track plays at a similar loudness. Good for playlists and "
+            "shuffle."
+        ),
+    },
+]
+
+
+def _enum_field(
+    path: str,
+    title: str,
+    description: str,
+    value: str,
+    default: str,
+    options: list[dict],
+    read_only: bool,
+) -> dict:
+    if read_only:
+        # The page shows a read-only field as its value, not as a chosen option.
+        value = next(
+            (option["label"] for option in options if option["value"] == value),
+            value,
+        )
+    return {
+        "path": path,
+        "title": title,
+        "description": description,
+        "type": "enum",
+        "value": value,
+        "default": default,
+        "options": options,
+        "apply": "instant",
+        "read_only": read_only,
+        "importance": "simple",
+        "range": None,
+        "unit": "",
+        "widget": "",
+    }
 
 
 class CoreRendererSettings:
@@ -57,7 +114,7 @@ class CoreRendererSettings:
             {
                 "value": RENDERER_ITSELF,
                 "label": RENDERER_ITSELF_LABEL,
-                "description": "Volume is applied by the renderer itself.",
+                "description": "The renderer sets its own volume.",
             }
         ] + [
             {"value": module, "label": label, "description": ""}
@@ -70,78 +127,54 @@ class CoreRendererSettings:
                 {
                     "value": mapped,
                     "label": f"{mapped} (unavailable)",
-                    "description": "Configured, but the module is not loaded.",
+                    "description": "Selected, but its plugin is not running.",
                 }
             )
-        # Nothing to choose between: shown as a value rather than as a
-        # chosen option, so it has to carry the label itself.
-        read_only = not candidates and not mapped
         return {
             "path": SECTION_PATH,
             "title": "Connected device",
             "description": "",
             "fields": [
-                {
-                    "path": DEVICE_MODULE_PATH,
-                    "title": "Volume and power",
-                    "description": (
-                        "The amplifier or receiver this renderer plays into. "
-                        "Its volume and power replace the renderer's own "
-                        "wherever this renderer is playing, and the renderer "
-                        "is left at full scale from the next track on so the "
-                        "level is set once, downstream."
-                    ),
-                    "type": "enum",
-                    "value": RENDERER_ITSELF_LABEL if read_only else mapped,
-                    "default": RENDERER_ITSELF,
-                    "options": options,
-                    "apply": "instant",
-                    "read_only": read_only,
-                    "importance": "simple",
-                    "range": None,
-                    "unit": "",
-                    "widget": "",
-                }
+                _enum_field(
+                    DEVICE_MODULE_PATH,
+                    "Volume and power",
+                    "The amplifier or receiver this renderer is connected to. "
+                    "Volume and power changes then go to that device, and the "
+                    "renderer plays at full level from the next track.",
+                    mapped,
+                    RENDERER_ITSELF,
+                    options,
+                    read_only=not candidates and not mapped,
+                )
             ],
         }
 
     def merge_into(self, snapshot: dict, renderer_id: str) -> dict:
         """The renderer's payload with the Core's section on the end."""
         section = self.section(renderer_id)
-        enabled = self._replaygain_available(renderer_id, snapshot)
-        section["fields"].append(
-            {
-                "path": REPLAYGAIN_PATH,
-                "title": "ReplayGain",
-                "description": (
-                    "Adjust volume using loudness tags, then restore it when playback ends. "
-                    "Album level preserves the volume differences within an album. "
-                    "Requires Automatic volume control or a connected device."
-                ),
-                "type": "enum",
-                "value": self._prefs.replaygain(renderer_id),
-                "default": "disabled",
-                "options": [
-                    {"value": value, "label": label, "description": ""}
-                    for value, label in (
-                        ("disabled", "Disabled"),
-                        ("album", "Album level"),
-                        ("track", "Track level"),
-                    )
-                ],
-                "apply": "instant",
-                "read_only": not enabled,
-                "importance": "simple",
-                "range": None,
-                "unit": "",
-                "widget": "",
-            }
-        )
+        section["fields"].append(self._replaygain_field(renderer_id, snapshot))
         snapshot.setdefault("sections", []).append(section)
         snapshot["config_version"] = (
             f"{snapshot.get('config_version', '')}.{self.fingerprint()}"
         )
         return snapshot
+
+    def _replaygain_field(self, renderer_id: str, snapshot: dict) -> dict:
+        available = self._replaygain_available(renderer_id, snapshot)
+        return _enum_field(
+            REPLAYGAIN_PATH,
+            "ReplayGain",
+            "Plays tracks at a similar loudness using their ReplayGain tags. "
+            "The volume is moved for each track and set back when playback "
+            "stops. Tracks without tags are left as they are. Does not work "
+            "with Fixed output, or with a card mixer that does not report its "
+            "volume in dB.",
+            # Not applied without a volume it can move, whatever is saved.
+            self._prefs.replaygain(renderer_id) if available else "disabled",
+            "disabled",
+            [dict(option) for option in REPLAYGAIN_OPTIONS],
+            read_only=not available,
+        )
 
     def split(self, changes: Mapping[str, Any]) -> tuple[dict, dict]:
         """The changes that are ours, and the ones for the renderer."""
@@ -171,14 +204,14 @@ class CoreRendererSettings:
     async def _apply_one(self, renderer_id: str, path: str, value: str) -> dict:
         if path == REPLAYGAIN_PATH:
             error = ""
-            if value not in ("disabled", "album", "track"):
+            if value not in REPLAYGAIN_MODES:
                 error = "ReplayGain must be disabled, album or track"
             elif value != "disabled" and not self._prefs.volume_control(renderer_id):
                 snapshot = (
                     await self._get_config(renderer_id) if self._get_config else {}
                 )
                 if not self._replaygain_available(renderer_id, snapshot):
-                    error = "ReplayGain requires Automatic volume control or a connected device"
+                    error = "ReplayGain cannot change this renderer's volume"
             if error:
                 return {
                     "path": path,
@@ -221,7 +254,8 @@ class CoreRendererSettings:
 
     def _replaygain_available(self, renderer_id: str, snapshot: dict) -> bool:
         return bool(self._prefs.volume_control(renderer_id)) or any(
-            field.get("path") == "output.volume_mode" and field.get("value") == "auto"
+            field.get("path") == "output.volume_mode"
+            and field.get("value") in ADJUSTABLE_VOLUME_MODES
             for section in snapshot.get("sections", [])
             for field in section.get("fields", [])
         )

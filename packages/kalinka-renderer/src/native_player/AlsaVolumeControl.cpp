@@ -28,6 +28,18 @@ VolumeMode parseVolumeMode(const std::string &mode) {
   return VolumeMode::Auto;
 }
 
+std::vector<double> cubicVolumeDb() {
+  std::vector<double> values{-200.0};
+  for (int percent = 1; percent <= 100; ++percent) {
+    values.push_back(60.0 * std::log10(percent / 100.0));
+  }
+  return values;
+}
+
+bool isSoundServerMixer(snd_ctl_type_t type, const std::string &cardId) {
+  return type == SND_CTL_TYPE_EXT && (cardId == "pipewire" || cardId == "pulse");
+}
+
 namespace {
 
 // Derive the ALSA *mixer* card name from a PCM device name. The mixer attaches
@@ -55,6 +67,18 @@ std::string deriveMixerCard(const std::string &pcm) {
   }
   // "default", "pulse", "pipewire", … — hand to the mixer as-is.
   return pcm.empty() ? "default" : pcm;
+}
+
+bool soundServerCard(snd_mixer_t *mixer, const std::string &card) {
+  snd_hctl_t *hctl = nullptr;
+  if (snd_mixer_get_hctl(mixer, card.c_str(), &hctl) < 0) {
+    return false;
+  }
+  snd_ctl_t *ctl = snd_hctl_ctl(hctl);
+  snd_ctl_card_info_t *info = nullptr;
+  snd_ctl_card_info_alloca(&info);
+  return snd_ctl_card_info(ctl, info) >= 0 &&
+         isSoundServerMixer(snd_ctl_type(ctl), snd_ctl_card_info_get_id(info));
 }
 
 // Preference order when no explicit control name is configured.
@@ -185,8 +209,10 @@ bool AlsaVolumeControl::openMixer(const std::string &deviceName,
     return false;
   }
 
-  spdlog::info("ALSA volume: using mixer control '{}' on '{}' (raw {}..{})",
-               snd_mixer_selem_get_name(elem_), card, rawMin_, rawMax_);
+  soundServer_ = soundServerCard(mixer_, card);
+  spdlog::info("ALSA volume: using mixer control '{}' on '{}' (raw {}..{}{})",
+               snd_mixer_selem_get_name(elem_), card, rawMin_, rawMax_,
+               soundServer_ ? ", sound server" : "");
   return true;
 }
 
@@ -266,7 +292,7 @@ std::vector<double> AlsaVolumeControl::dbValues() {
   for (int percent = 0; percent <= 100; ++percent) {
     long db = 0;
     if (snd_mixer_selem_ask_playback_vol_dB(elem_, percentToRaw(percent), &db) < 0) {
-      return {};
+      return soundServer_ ? cubicVolumeDb() : std::vector<double>{};
     }
     values.push_back(std::max(-200.0, db / 100.0));
   }

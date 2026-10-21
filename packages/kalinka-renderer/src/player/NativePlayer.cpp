@@ -153,19 +153,19 @@ struct Knob {
 
 const Knob kOutputKnobs[] = {
     {"output.latency_ms", "Output latency",
-     "How much audio is kept ahead of the card, in milliseconds. Raise it if "
+     "How much audio is kept ready ahead of the sound card. Raise it if "
      "playback stutters.",
      pb::CONFIG_FIELD_TYPE_INT, "ms", {20, 1000, 10, true}},
     {"output.period_ms", "Period size",
-     "How often audio is handed to the card, in milliseconds.",
+     "How often audio is sent to the sound card.",
      pb::CONFIG_FIELD_TYPE_INT, "ms", {5, 200, 5, true}},
     {"output.format_change_delay_ms", "Pause after a format change",
-     "How long to wait once a new sample rate is set, in milliseconds, for a "
-     "card that needs a moment before it will take audio.",
+     "How long to wait after the sample rate changes, for a sound card that "
+     "needs a moment to get ready. Raise it if the start of a track is silent.",
      pb::CONFIG_FIELD_TYPE_INT, "ms", {0, 2000, 50, true}},
     {"output.reopen_on_format_change", "Reopen on a format change",
-     "Close and reopen the card when the next track has a different format. "
-     "Some DACs need it.",
+     "Closes and reopens the sound card when the next track has a different "
+     "format. Some DACs need this.",
      pb::CONFIG_FIELD_TYPE_BOOL},
 };
 
@@ -173,41 +173,39 @@ const Knob kOutputKnobs[] = {
 // typo from starving or exhausting the machine, but typed rather than dragged.
 const Knob kBufferKnobs[] = {
     {"buffers.network_stream", "Network buffer",
-     "How much of a streamed track is held in memory, in bytes. Raise it on a "
-     "slow or unreliable connection.",
+     "How much of a streamed track is held in memory. Raise it on a slow or "
+     "unreliable connection.",
      pb::CONFIG_FIELD_TYPE_INT, "bytes", {64000, 33554432}},
     {"buffers.network_request", "Network request size",
-     "How much is fetched from the server at a time, in bytes.",
+     "How much is downloaded from the server at a time.",
      pb::CONFIG_FIELD_TYPE_INT, "bytes", {16000, 8388608}},
     {"buffers.flac", "FLAC buffer",
-     "Decoded audio held ahead for FLAC playback, in bytes.",
+     "How much audio is kept ready when playing FLAC.",
      pb::CONFIG_FIELD_TYPE_INT, "bytes", {64000, 33554432}},
     {"buffers.mpeg", "MP3 buffer",
-     "Decoded audio held ahead for MP3 playback, in bytes.",
+     "How much audio is kept ready when playing MP3.",
      pb::CONFIG_FIELD_TYPE_INT, "bytes", {64000, 33554432}},
     {"buffers.vorbis", "Ogg Vorbis buffer",
-     "Decoded audio held ahead for Ogg Vorbis playback, in bytes.",
+     "How much audio is kept ready when playing Ogg Vorbis.",
      pb::CONFIG_FIELD_TYPE_INT, "bytes", {64000, 33554432}},
     {"buffers.wav", "WAV buffer",
-     "Decoded audio held ahead for WAV playback, in bytes.",
+     "How much audio is kept ready when playing WAV.",
      pb::CONFIG_FIELD_TYPE_INT, "bytes", {64000, 33554432}},
     {"buffers.dsd", "DSD buffer",
-     "Audio held ahead for DSF and DSDIFF playback, in bytes.",
+     "How much audio is kept ready when playing DSF and DSDIFF.",
      pb::CONFIG_FIELD_TYPE_INT, "bytes", {64000, 33554432}},
     {"buffers.aac", "AAC and MP4 buffer",
-     "Decoded audio held ahead for AAC and MP4 playback, in bytes.",
+     "How much audio is kept ready when playing AAC and MP4.",
      pb::CONFIG_FIELD_TYPE_INT, "bytes", {64000, 33554432}},
 };
 
 const Knob kNetworkKnobs[] = {
     {"network.stall_timeout_s", "Stall timeout",
-     "How long a track may go without anything arriving from the server, in "
-     "seconds, before the renderer asks for the rest again. A track that keeps "
-     "stalling fails. Raise it on a very slow connection.",
+     "How long to wait when a download stalls before trying again. A track "
+     "that keeps stalling fails to play. Raise it on a very slow connection.",
      pb::CONFIG_FIELD_TYPE_INT, "s", {5, 300, 5, true}},
     {"network.max_redirects", "Maximum redirects",
-     "How many HTTP redirects to follow per request. Set to 0 to disable "
-     "redirects. Applies to newly opened tracks.",
+     "How many redirects to follow when fetching a track. 0 turns them off.",
      pb::CONFIG_FIELD_TYPE_INT, "", {0, 10, 1}},
 };
 
@@ -225,8 +223,49 @@ const Section kBuffering{"buffers", "Buffering",
                          kBufferKnobs};
 
 const Section kNetwork{"network", "Network",
-                       "How the renderer handles network requests.",
+                       "How the renderer downloads tracks.",
                        kNetworkKnobs};
+
+// One option of an enum setting; the page lists them in declaration order.
+struct Choice {
+  const char *value;
+  const char *label;
+  const char *description;
+};
+
+const Choice kVolumeChoices[] = {
+    {"auto", "Automatic",
+     "Uses the sound card's volume control if it has one, otherwise software."},
+    {"hardware", "Card mixer",
+     "Uses the sound card's own volume control. The audio reaches the card "
+     "unchanged. Needs a card that has one."},
+    {"software", "Software",
+     "The renderer lowers the volume itself and leaves the sound card at full. "
+     "Works with any card, but quiet levels lose a little quality."},
+    {"fixed", "Fixed output",
+     "Always plays at full level and ignores volume changes. Use it when an "
+     "amplifier or receiver sets the volume."},
+};
+
+const Choice kDsdChoices[] = {
+    {"disabled", "Disabled", "DSD tracks do not play."},
+    {"auto", "Automatic",
+     "Plays native DSD if the DAC supports the track's rate. Never uses DoP."},
+    {"native", "Native DSD",
+     "Sends DSD to the DAC as it is. The DAC must support the track's rate."},
+    {"dop", "DoP",
+     "Sends DSD wrapped in PCM. Choose it only if the DAC supports DoP. Other "
+     "DACs play it as noise."},
+};
+
+void addChoices(pb::ConfigField &field, std::span<const Choice> choices) {
+  for (const Choice &choice : choices) {
+    pb::ConfigOption *option = field.add_options();
+    option->set_value(choice.value);
+    option->set_label(choice.label);
+    option->set_description(choice.description);
+  }
+}
 
 // Per-stream keys reach the next stream appended; the rest need a new graph.
 const std::map<std::string, std::string> &graphKeys() {
@@ -728,9 +767,8 @@ void NativePlayer::fillConfig(pb::ConfigSection &out) const {
   device->set_path("output.device");
   device->set_title("Output device");
   device->set_description(
-      "The sound card music plays through. Changing it stops what is "
-      "playing and resets DSD output to Disabled; select DSD again for the new "
-      "DAC.");
+      "The sound card to play through. Changing it stops playback and turns "
+      "DSD output off, as the new card may not support it.");
   device->set_type(pb::CONFIG_FIELD_TYPE_ENUM);
   device->set_value(settings_.at("output.device"));
   device->set_default_value("default");
@@ -763,8 +801,7 @@ void NativePlayer::fillConfig(pb::ConfigSection &out) const {
     } else {
       option->set_label(missing.label + " (not detected)");
       option->set_description(
-          "Configured, but ALSA is not reporting it right now — the card may "
-          "be unplugged or renamed.");
+          "Selected, but not found. The card may be unplugged or renamed.");
     }
   }
 
@@ -797,46 +834,21 @@ void NativePlayer::fillConfig(pb::ConfigSection &out) const {
   pb::ConfigField *mode = out.add_fields();
   mode->set_path("output.volume_mode");
   mode->set_title("Volume control");
-  mode->set_description(
-      "How the level is changed: in the card, in software, or not at all.");
+  mode->set_description("How this renderer sets the volume.");
   mode->set_type(pb::CONFIG_FIELD_TYPE_ENUM);
   mode->set_value(settings_.at("output.volume_mode"));
   mode->set_default_value("auto");
   mode->set_apply(pb::APPLY_COST_INTERRUPTS_PLAYBACK);
   mode->set_importance(pb::CONFIG_IMPORTANCE_SIMPLE);
-  struct VolumeChoice {
-    const char *value;
-    const char *label;
-    const char *description;
-  };
-  static const VolumeChoice choices[] = {
-      {"auto", "Automatic",
-       "Uses the card's mixer when it has one, otherwise scales in "
-       "software."},
-      {"hardware", "Card mixer",
-       "Sets the level in the card, leaving the samples unchanged. Needs a "
-       "card that has a mixer."},
-      {"software", "Software",
-       "Sets the card mixer to 100%, then scales samples before sending them. "
-       "Works with any card; quiet levels lose some resolution."},
-      {"fixed", "Fixed output",
-       "Sets the card mixer and software gain to 100%, ignores volume commands, "
-       "and bypasses the session-start ceiling. Use only when an amplifier or "
-       "receiver controls the listening level."},
-  };
-  for (const VolumeChoice &choice : choices) {
-    pb::ConfigOption *option = mode->add_options();
-    option->set_value(choice.value);
-    option->set_label(choice.label);
-    option->set_description(choice.description);
-  }
+  addChoices(*mode, kVolumeChoices);
 
   pb::ConfigField *startCeiling = out.add_fields();
   startCeiling->set_path("output.session_start_volume_ceiling_percent");
   startCeiling->set_title("Session start volume ceiling");
   startCeiling->set_description(
-      "Maximum volume when a renderer-controlled session starts. A quieter "
-      "existing level is never raised. Fixed output bypasses this ceiling.");
+      "The highest volume playback can start at, so it never starts too loud. "
+      "A lower volume is left as it is. Not used with Fixed output or a "
+      "connected device.");
   startCeiling->set_type(pb::CONFIG_FIELD_TYPE_INT);
   startCeiling->set_value(
       settings_.at("output.session_start_volume_ceiling_percent"));
@@ -857,22 +869,12 @@ void NativePlayer::fillConfig(pb::ConfigSection &out) const {
   dsd->set_default_value("disabled");
   dsd->set_importance(pb::CONFIG_IMPORTANCE_SIMPLE);
   dsd->set_apply(pb::APPLY_COST_INTERRUPTS_PLAYBACK);
-  dsd->set_description("Preserves the source DSD rate. Requires direct "
-                       "hardware and fixed volume "
-                       "(set listening level on your amplifier). Automatic "
-                       "uses verified native DSD only. "
-                       "Choose DoP only if your DAC supports it; PCM carrier "
-                       "support alone does not prove this. "
-                       "Unsupported rates fail without conversion to PCM.");
-  for (const auto &[value, label] : std::map<std::string, std::string>{
-           {"disabled", "Disabled"},
-           {"auto", "Automatic (native DSD)"},
-           {"native", "Native DSD"},
-           {"dop", "DoP (compatible DAC required)"}}) {
-    auto *option = dsd->add_options();
-    option->set_value(value);
-    option->set_label(label);
-  }
+  dsd->set_description(
+      "Plays DSF and DSDIFF files as DSD. Needs an output device marked "
+      "(direct) and Fixed output volume, or a connected device. If the DAC "
+      "cannot play a DSD track, the track fails. It is never converted to "
+      "PCM.");
+  addChoices(*dsd, kDsdChoices);
 
   for (const Knob &knob : kOutputKnobs) {
     declare(out, knob, settings_, defaultSettings());

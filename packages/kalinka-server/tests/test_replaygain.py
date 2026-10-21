@@ -106,6 +106,30 @@ async def test_calibrated_hardware_and_musiccast_use_device_db_steps(rig):
     assert rig.device.writes == [38, 44, 50]
 
 
+async def test_a_card_mixer_without_a_db_scale_is_left_alone(rig, caplog):
+    rig.device.volume.backend = VolumeBackend.HARDWARE
+    with caplog.at_level(logging.INFO, logger="replaygain"):
+        await rig.controller.handle(state())
+        await rig.controller.handle(state("2"))
+    assert rig.device.writes == []
+    assert sum("no dB scale" in m for m in caplog.messages) == 1
+
+
+async def test_losing_the_db_scale_removes_the_correction(rig):
+    await rig.controller.handle(state())
+    rig.device.volume.backend = VolumeBackend.HARDWARE
+    await rig.controller.handle(state("2"))
+    assert rig.device.writes == [40, 50]
+
+
+async def test_an_external_device_without_a_db_scale_keeps_the_linear_fallback(rig):
+    rig.device.volume.backend = VolumeBackend.HARDWARE
+    rig.device.volume.control_mode = ""
+    rig.prefs.set_volume_control("renderer", "device")
+    await rig.controller.handle(state())
+    assert rig.device.writes == [25]
+
+
 async def test_logs_capture_current_volume_when_the_device_returns_a_live_cache(
     rig, caplog
 ):
@@ -127,9 +151,15 @@ async def test_album_mode_preserves_album_dynamics_and_does_not_use_track_fallba
     assert rig.device.writes == [40, 50]
 
 
-@pytest.mark.parametrize("mode", ["fixed", "hardware", "software"])
-async def test_only_automatic_or_delegated_volume_is_eligible(rig, mode):
+@pytest.mark.parametrize("mode", ["auto", "hardware", "software"])
+async def test_every_adjustable_volume_mode_is_eligible(rig, mode):
     rig.device.volume.control_mode = mode
+    await rig.controller.handle(state())
+    assert rig.device.writes == [40]
+
+
+async def test_fixed_output_is_eligible_only_through_a_connected_device(rig):
+    rig.device.volume.control_mode = "fixed"
     await rig.controller.handle(state())
     assert rig.device.writes == []
     rig.prefs.set_volume_control("renderer", "device")
