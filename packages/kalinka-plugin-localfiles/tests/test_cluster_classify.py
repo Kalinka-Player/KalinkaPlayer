@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Tests for the shared V/A / disc-suffix classification helpers (Phase 1 1d)."""
 
+import pytest
+
 from kalinka_plugin_localfiles.clustering.classify import (
     compilation_title,
     is_va_folder,
@@ -34,3 +36,21 @@ def test_strip_disc_suffix():
     assert strip_disc_suffix("Greatest Hits") == "Greatest Hits"  # no suffix
     # A title that is only a disc marker stays intact (nothing left otherwise).
     assert strip_disc_suffix("CD1") == "CD1"
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    ["CD I", "CD II", "(Disc III)", "[Disk IV]", "- Vol. IX",
+     "Volume XII", "CDXL", "cd xcix"],
+)
+def test_roman_disc_suffixes(suffix):
+    assert strip_disc_suffix(f"The Best of Vangelis {suffix}") == "The Best of Vangelis"
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["Album CD Mix", "Album Disc Live", "Album CD IIII", "Album CD IIX",
+     "Album CD", "Album II", "CD II"],
+)
+def test_words_invalid_numerals_and_unmarked_titles_are_preserved(title):
+    assert strip_disc_suffix(title) == title

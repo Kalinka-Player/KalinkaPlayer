@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Tests for Phase-1 1e: cross-folder disc-sibling merge."""
 
+import pytest
+
 from kalinka_plugin_localfiles.clustering.merge import merge_disc_siblings
 from kalinka_plugin_localfiles.clustering.planner import ClusterPlan
 
@@ -14,11 +16,13 @@ def _album(folder, title, ids, disc, aa="the band"):
     )
 
 
-def test_disc_siblings_merge():
+@pytest.mark.parametrize("suffixes", [("CD1", "CD2", "CD3"), ("CD I", "CD II", "CD III")])
+def test_disc_siblings_merge(suffixes):
+    first, second, third = suffixes
     clusters = [
-        _album("/m/Friends CD1", "Friends CD1", ["a1", "a2"], 1),
-        _album("/m/Friends CD2", "Friends CD2", ["b1", "b2"], 2),
-        _album("/m/Friends CD3", "Friends CD3", ["c1", "c2"], 3),
+        _album(f"/m/Friends {first}", f"Friends {first}", ["a1", "a2"], 1),
+        _album(f"/m/Friends {second}", f"Friends {second}", ["b1", "b2"], 2),
+        _album(f"/m/Friends {third}", f"Friends {third}", ["c1", "c2"], 3),
     ]
     out = merge_disc_siblings(clusters)
     assert len(out) == 1

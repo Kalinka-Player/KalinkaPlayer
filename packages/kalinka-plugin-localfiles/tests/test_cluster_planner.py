@@ -6,6 +6,8 @@ plan_folder (engine + V/A classification). Read-only — no DB writes.
 
 import json
 
+import pytest
+
 from kalinka_plugin_localfiles.clustering.planner import (
     build_features,
     plan_folder,
@@ -283,16 +285,41 @@ def test_multidisc_in_one_folder_strips_disc_suffix_from_title():
     assert len(c.track_ids) == 10
 
 
-def test_standalone_volume_keeps_its_name():
+def test_vangelis_roman_disc_tags_form_one_album():
+    # Two complete 1..8 runs with no albumartist tag used to score as
+    # separate albums, despite sharing an artist, cover and parent folder.
+    rows = [
+        (
+            _track(f"d{disc}t{number}", artist_id="vangelis",
+                   artist_name="Vangelis", track_number=number, disc_number=disc),
+            _ev(album=f"The Best of Vangelis CD {suffix}", art="21d0e4e4e4e0e1e0"),
+        )
+        for disc, suffix in ((1, "I"), (2, "II"))
+        for number in range(1, 9)
+    ]
+
+    plan = plan_folder("/music/Vangelis - The Best Of - 2 CD", rows)
+
+    assert not plan.split
+    assert len(plan.clusters) == 1
+    cluster = plan.clusters[0]
+    assert cluster.title == "The Best of Vangelis"
+    assert cluster.kind == "multi_disc"
+    assert set(cluster.track_ids) == {track["id"] for track, _ in rows}
+    assert cluster.disc_numbers == frozenset({1, 2})
+
+
+@pytest.mark.parametrize("volume", ["2", "II"])
+def test_standalone_volume_keeps_its_name(volume):
     # A single "Vol. 2" release (one title variant) must NOT be stripped.
     rows = [
-        (_track(f"t{i}", track_number=i), _ev(album="Greatest Hits Vol. 2",
+        (_track(f"t{i}", track_number=i), _ev(album=f"Greatest Hits Vol. {volume}",
                                               albumartist="Band"))
         for i in range(1, 7)
     ]
     plan = plan_folder("/music/Greatest Hits Vol 2", rows)
     assert len(plan.clusters) == 1
-    assert plan.clusters[0].title == "Greatest Hits Vol. 2"
+    assert plan.clusters[0].title == f"Greatest Hits Vol. {volume}"
     assert plan.clusters[0].kind == "album"
 
 
