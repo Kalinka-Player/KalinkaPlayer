@@ -243,8 +243,9 @@ class CoverImage(BaseModel):
         thumbnail (Optional[str]): Thumbnail resolution image URL
         large (Optional[str]): High resolution image URL (e.g., for full-screen display)
         aspect_ratio (Optional[float]): Width over height of ``large``, when
-            known, so a client can lay a card out before it loads.
-            ``thumbnail`` is drawn into a square, whatever its shape.
+            known, so a client can fit it before it loads into the card its
+            shelf's ``Preview.aspect_ratio`` lays out. ``thumbnail`` is drawn
+            into a square, whatever its shape.
     """
 
     small: Optional[str] = ""
