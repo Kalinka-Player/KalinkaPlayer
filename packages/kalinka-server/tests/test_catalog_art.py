@@ -653,6 +653,33 @@ async def test_provisional_tile_upgrades_when_covers_arrive(tmp_path):
     assert (svc2._dir / bg_file).is_file()
 
 
+async def test_a_remade_card_keeps_the_files_it_replaced_for_one_more_render(
+    tmp_path,
+):
+    """A listing served just before a render still names the files it
+    replaces; deleting them at once leaves that client on 404s."""
+    cover = tmp_path / "a1.jpg"
+    covers = {"album/a1_large.jpg": str(cover)}
+    svc = _service(
+        tmp_path, resolver=lambda eid: _FakeModule([_album_child("a1")], covers)
+    )
+    cat_id = "kalinka:qobuz:catalog:recent"
+    generations = []
+    for color in ((200, 40, 40), (40, 200, 40), (40, 40, 200)):
+        cover.write_bytes(render.encode_jpeg(_solid_cover(color)))
+        await svc._process(cat_id, render.ArtStyle.CARD, textual=False)
+        entry = svc._entries[cat_id]
+        generations.append({entry["file"], entry["thumbnail"]})
+
+    first, second, third = generations
+    assert all((svc._dir / name).is_file() for name in second | third)
+    assert not any((svc._dir / name).exists() for name in first)
+    assert set(svc._entries[cat_id]["previous"]) == second
+    # A restart's sweep keeps them too.
+    reloaded = _service(tmp_path)
+    assert all((reloaded._dir / name).is_file() for name in second | third)
+
+
 async def test_transient_failure_keeps_existing_full_tile(tmp_path):
     covers = {}
     blob = render.encode_jpeg(_solid_cover((200, 50, 50)))
