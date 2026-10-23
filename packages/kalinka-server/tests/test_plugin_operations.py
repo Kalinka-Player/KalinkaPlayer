@@ -81,6 +81,7 @@ class Box:
         self.now = NOW
         self.supported = True
         self.restart_error = None
+        self.restarting = False
 
     def restart(self):
         if self.restart_error:
@@ -97,6 +98,7 @@ class Box:
             package_version=self.installed.get,
             newer=lambda candidate, installed: Version(candidate) > Version(installed),
             restart=self.restart,
+            restarting=lambda: self.restarting,
             clock=lambda: self.now,
         )
 
@@ -221,6 +223,28 @@ async def test_one_request_at_a_time_until_it_goes_stale(box):
     )
     box.now = NOW + timedelta(minutes=16)
     await ops.request("install", "demo")
+    assert box.restarts == 2
+
+
+async def test_none_while_the_server_is_already_restarting(box):
+    """A trigger fired while kalinka-restart.service runs starts no second run,
+    so a request its helper has already passed would never be carried out."""
+    box.installed["kalinka-plugin-demo"] = "1.0.0"
+    ops = box.operations(
+        await loaded_catalog(with_release(document(), "1.1.0", DIGEST))
+    )
+    await ops.request("update", "demo")
+    box.restarting = True
+    (box.state / REQUEST_FILE).unlink()
+    assert await refused(ops.request("update", "demo")) == (
+        409,
+        "operation_in_progress",
+    )
+    assert not (box.state / REQUEST_FILE).exists()
+    assert box.restarts == 1
+    box.restarting = False
+    box.installed["kalinka-plugin-demo"] = "1.1.0"
+    await ops.request("uninstall", "demo")
     assert box.restarts == 2
 
 

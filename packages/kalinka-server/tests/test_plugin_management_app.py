@@ -156,6 +156,12 @@ async def test_install_request_restarts_through_the_packaged_helper(
         response = await client.post("/server/plugins/demo/install")
         assert response.status_code == 409
         assert response.json()["detail"]["code"] == "operation_in_progress"
+        # Its helper has taken the request, but the restart is not over yet.
+        (tmp_path / "var/lib/kalinka" / REQUEST_FILE).unlink()
+        response = await client.post("/server/plugins/demo/install")
+        assert response.status_code == 409
+        assert "already restarting." in response.json()["detail"]["message"]
+        assert not (tmp_path / "var/lib/kalinka" / REQUEST_FILE).exists()
         response = await client.post("/server/plugins/demo/uninstall")
         assert response.json()["detail"]["code"] == "not_installed"
 
