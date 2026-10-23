@@ -187,6 +187,7 @@ def test_a_collection_with_tracks_carries_its_art_on_both_payloads(tmp_path):
     svc.decorate(BrowseItemList(offset=0, limit=10, total=1, items=[item]))
 
     assert item.catalog.image is not None
+    assert item.catalog.image.aspect_ratio == 1.0
     assert item.playlist.image == item.catalog.image
 
 
@@ -261,6 +262,7 @@ def test_decorate_fills_url_once_generated(tmp_path):
     svc.decorate(result)
     url = result.items[0].catalog.image.large
     assert url == f"{ART_URL_PREFIX}/abcdef0123456789-0a1b2c3d.jpg"
+    assert result.items[0].catalog.image.aspect_ratio == render.CANVAS_W / render.CANVAS_H
     assert svc._queue.qsize() == 0
 
 

@@ -242,11 +242,14 @@ class CoverImage(BaseModel):
         small (Optional[str]): Small resolution image URL (e.g., for list items)
         thumbnail (Optional[str]): Thumbnail resolution image URL
         large (Optional[str]): High resolution image URL (e.g., for full-screen display)
+        aspect_ratio (Optional[float]): Width over height of every size, when
+            known, so a client can lay the image out before it loads
     """
 
     small: Optional[str] = ""
     thumbnail: Optional[str] = ""
     large: Optional[str] = ""
+    aspect_ratio: Optional[float] = None
 
 
 class Artist(BaseModel):

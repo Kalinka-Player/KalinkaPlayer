@@ -241,17 +241,20 @@ class CatalogArtService:
             if item.playlist is not None and item.playlist.track_count == 0:
                 continue
             cat_id = item.id.to_string if isinstance(item.id, EntityId) else str(item.id)
+            style = _style_of(item)
             entry = self._entries.get(cat_id)
             if entry and entry.get("file"):
                 url = f"{ART_URL_PREFIX}/{entry['file']}"
-                image = CoverImage(small=url, thumbnail=url, large=url)
+                image = CoverImage(
+                    small=url, thumbnail=url, large=url, aspect_ratio=style.aspect_ratio
+                )
                 item.catalog.image = image
                 # The art is the entity's, not one payload's: read as a
                 # playlist, the item shows it too.
                 if item.playlist is not None:
                     item.playlist.image = image
             if entry is None or time.time() >= entry.get("next_check_at", 0.0):
-                self._schedule(cat_id, _style_of(item), _textual_hint(item))
+                self._schedule(cat_id, style, _textual_hint(item))
 
     def _schedule(self, cat_id: str, style: ArtStyle, textual: bool) -> None:
         if cat_id in self._pending:
