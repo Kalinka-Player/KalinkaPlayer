@@ -50,9 +50,12 @@ def is_various_artists_name(name: str) -> bool:
     """True when a name is the various-artists placeholder rather than a real
     artist, so per-file "Artist - Title" naming still gets a say."""
     return bool(name and _VA_NAME_RE.match(name.strip()))
-# A trailing "(Disc 2)" / "CD1" / "Vol. 3" on an album title.
+# Canonical I–XCIX avoids treating words such as "CD Mix" as disc numbers.
+_ROMAN_DISC_NUMBER = r"(?=[ivxl])(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})"
+# A trailing "(Disc 2)" / "CD I" / "Vol. 3" on an album title.
 _DISC_SUFFIX_RE = re.compile(
-    r"[\s\-–—_([]+(?:cd|disc|disk|volume|vol\.?)\s*\d+\s*[)\]]?\s*$",
+    rf"[\s\-–—_([]+(?:cd|disc|disk|volume|vol\.?)\s*"
+    rf"(?:\d+|{_ROMAN_DISC_NUMBER})\s*[)\]]?\s*$",
     re.IGNORECASE,
 )
 
