@@ -50,12 +50,11 @@ def test_anything_but_a_known_source_and_a_range_is_refused(line):
         parse_request(line)
 
 
-def test_a_valid_request_is_understood():
-    assert parse_request(b'{"source": "local_renderer", "since": 5, "until": 9}\n') == (
-        "local_renderer",
-        5,
-        9,
-    )
+@pytest.mark.parametrize("source", ["server", "local_renderer", "supervisor"])
+def test_a_valid_request_is_understood(source):
+    line = json.dumps({"source": source, "since": 5, "until": 9}).encode() + b"\n"
+
+    assert parse_request(line) == (source, 5, 9)
 
 
 def test_the_command_names_only_the_source_s_own_units_across_every_boot():

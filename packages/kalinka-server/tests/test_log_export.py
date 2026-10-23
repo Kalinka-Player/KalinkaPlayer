@@ -71,7 +71,9 @@ async def _until_state(client, state, timeout=5.0):
 
 
 async def test_no_export_reads_as_none_with_the_sources_on_offer(export_dir):
-    manager = _manager(export_dir, _server(), ListSource("local_renderer"))
+    manager = _manager(
+        export_dir, ListSource("supervisor"), _server(), ListSource("local_renderer")
+    )
     async with _client(manager) as client:
         response = await client.get(URL)
 
@@ -79,7 +81,7 @@ async def test_no_export_reads_as_none_with_the_sources_on_offer(export_dir):
     assert response.headers["cache-control"] == "no-store"
     assert response.json() == {
         "state": "none",
-        "available_sources": ["server", "local_renderer"],
+        "available_sources": ["server", "local_renderer", "supervisor"],
         "download": None,
         "warnings": [],
         "error": None,
@@ -117,6 +119,54 @@ async def test_prepare_poll_and_download_end_to_end(export_dir):
     assert head.status_code == 200
     assert head.content == b""
     assert head.headers["content-length"] == str(info["size_bytes"])
+
+
+async def test_the_supervisor_s_logs_go_in_unasked_once_it_is_installed(export_dir):
+    supervisor = ListSource("supervisor", records((time.time() - 5, "a supervisor line")))
+    manager = _manager(export_dir, _server(), supervisor)
+    async with _client(manager) as client:
+        await client.post(URL, json={"lookback_seconds": DAY})
+        await _until_state(client, "ready")
+        download = await client.get(f"{URL}/download")
+
+    with zipfile.ZipFile(io.BytesIO(download.content)) as archive:
+        assert sorted(archive.namelist()) == ["manifest.json", "server.log", "supervisor.log"]
+        assert archive.read("supervisor.log") == b"a supervisor line\n"
+
+
+MIB = 1024 * 1024
+
+
+@pytest.mark.parametrize(
+    "with_renderer, with_supervisor, caps",
+    [
+        (False, False, {"server": 8 * MIB}),
+        (True, False, {"server": 6 * MIB, "local_renderer": 2 * MIB}),
+        (False, True, {"server": 7 * MIB, "supervisor": MIB}),
+        (True, True, {"server": 5 * MIB, "local_renderer": 2 * MIB, "supervisor": MIB}),
+    ],
+)
+async def test_the_server_keeps_what_the_other_sources_leave_of_the_text_cap(
+    export_dir, monkeypatch, with_renderer, with_supervisor, caps
+):
+    given = {}
+
+    def record_caps(target, parts, *args):
+        given.update({part.source.name: part.cap_bytes for part in parts})
+        return write_archive(target, parts, *args)
+
+    monkeypatch.setattr(log_export_service, "write_archive", record_caps)
+    sources = [_server(), ListSource("local_renderer")]
+    if with_supervisor:
+        sources.append(ListSource("supervisor"))
+    manager = _manager(export_dir, *sources)
+    async with _client(manager) as client:
+        await client.post(
+            URL, json={"lookback_seconds": DAY, "include_local_renderer": with_renderer}
+        )
+        await _until_state(client, "ready")
+
+    assert given == caps
 
 
 async def test_an_archive_downloads_again_and_leaves_no_copies_behind(export_dir):
@@ -258,14 +308,23 @@ async def test_a_failed_export_is_replaced_by_the_next_start(export_dir):
     assert again.status_code == 202
 
 
-async def test_a_failing_renderer_source_still_gives_a_ready_archive(export_dir):
-    manager = _manager(export_dir, _server(), ListSource("local_renderer", fail=True))
+@pytest.mark.parametrize(
+    "name, request_body",
+    [
+        ("local_renderer", {"include_local_renderer": True}),
+        ("supervisor", {}),
+    ],
+)
+async def test_a_failing_optional_source_still_gives_a_ready_archive(
+    export_dir, name, request_body
+):
+    manager = _manager(export_dir, _server(), ListSource(name, fail=True))
     async with _client(manager) as client:
-        await client.post(URL, json={"lookback_seconds": DAY, "include_local_renderer": True})
+        await client.post(URL, json={"lookback_seconds": DAY, **request_body})
         ready = await _until_state(client, "ready")
 
     assert [(w["source"], w["code"]) for w in ready["warnings"]] == [
-        ("local_renderer", "source_unreadable")
+        (name, "source_unreadable")
     ]
 
 

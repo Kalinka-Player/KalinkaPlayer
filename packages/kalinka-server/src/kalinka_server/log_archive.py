@@ -20,13 +20,23 @@ from datetime import datetime, timezone
 from importlib.metadata import entry_points
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
 
-from .log_sources import LOCAL_RENDERER, SERVER, LogSource, LogSourceUnreadable
+from .log_sources import (
+    LOCAL_RENDERER,
+    SERVER,
+    SUPERVISOR,
+    LogSource,
+    LogSourceUnreadable,
+)
 from .version import get_version
 
 MANIFEST_SCHEMA_VERSION = 1
 
-ENTRY_NAMES = {SERVER: "server.log", LOCAL_RENDERER: "local-renderer.log"}
-_LABELS = {SERVER: "server", LOCAL_RENDERER: "renderer"}
+ENTRY_NAMES = {
+    SERVER: "server.log",
+    LOCAL_RENDERER: "local-renderer.log",
+    SUPERVISOR: "supervisor.log",
+}
+_LABELS = {SERVER: "server", LOCAL_RENDERER: "renderer", SUPERVISOR: "supervisor"}
 
 _ZIP_CHUNK_BYTES = 256 * 1024
 
