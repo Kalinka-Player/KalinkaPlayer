@@ -179,6 +179,7 @@ async def lifespan(app: FastAPI):
         for attr in (
             "device_router_task",
             "box_power_off_task",
+            "module_health_task",
             "suggestions_task",
             "catalog_art_task",
             "update_check_task",
@@ -349,6 +350,17 @@ def enabled_input_module(name: str) -> InputModule:
             status_code=404, detail=f"Input module '{name}' is not available"
         )
     return input_module(name)
+
+
+def set_up_input_module(name: str) -> InputModule:
+    """The input module `name` while it is set up, whatever its health says
+    now, so a stream it is serving is not cut off by a passing error."""
+    module = modules.set_up_input_module(name)
+    if module is None:
+        raise HTTPException(
+            status_code=404, detail=f"Input module '{name}' is not available"
+        )
+    return module
 
 
 def input_module_from_id(entity_id: str | EntityId) -> InputModule:
@@ -532,6 +544,7 @@ async def create_app(
     )
     logger.info("Input modules found: %s", list(modules.prepared_input_modules.keys()))
     app.state.player_context = player_context
+    app.state.module_health_task = asyncio.create_task(modules.watch_health())
     app.state.demo_renderer = (
         DemoRenderer(
             renderer_registry,
@@ -1080,7 +1093,7 @@ async def create_app(
     @app.post("/playlist/create")
     async def playlist_create(name: str, description: str, source: str = "localfiles"):
         return (
-            await input_module(source).playlist_create(name, description)
+            await enabled_input_module(source).playlist_create(name, description)
         ).model_dump(exclude_unset=True)
 
     @app.put("/playlist/update")
@@ -1335,48 +1348,22 @@ async def create_app(
             modules.prepared_devices,
         )
 
-    async def _module_entry(prepared) -> Dict[str, Any]:
-        """Roll-up live state for one prepared plugin.
-
-        If the plugin failed to set up (or is disabled in config), the
-        setup-time health_state and error_message are authoritative.
-        Otherwise call plugin_instance.get_state() so plugins with
-        internal sub-features can report WARNING + a message + the
-        optional-package keys they're missing.
-        """
+    def _module_entry(prepared) -> Dict[str, Any]:
+        """One prepared plugin as clients see it, in the state it last
+        reported."""
         cfg = prepared.plugin_context.config
-        entry: Dict[str, Any] = {
+        state = prepared.state
+        return {
             "name": cfg.name,
             "title": cfg.__class__.model_fields["name"].title or cfg.name,
             "icon": module_icon(type(cfg)),
             "enabled": cfg.enabled,
-            "state": prepared.health_state.value,
-            "error_message": prepared.error_message,
-            "missing_packages": [],
+            "state": state.state.value,
+            "error_message": state.message,
+            "missing_packages": list(state.missing_packages),
             "builtin": False,
             "capabilities": capabilities_of(prepared.interface),
         }
-        if (
-            prepared.health_state == ModuleHealthState.READY
-            and prepared.plugin_instance is not None
-        ):
-            try:
-                live = await prepared.plugin_instance.get_state()
-                # Unconditional override: when health_state is READY the
-                # setup-time error_message is always None, so we replace
-                # it with whatever the live state says (which can also
-                # legitimately be None when the plugin is happy).
-                entry["state"] = live.state.value
-                entry["error_message"] = live.message
-                entry["missing_packages"] = list(live.missing_packages)
-            except Exception as e:  # noqa: BLE001 — defensive
-                logger.warning(
-                    "Plugin %s get_state() raised; falling back to setup-time "
-                    "state: %s",
-                    cfg.name,
-                    e,
-                )
-        return entry
 
     def _builtin_entries() -> List[Dict[str, Any]]:
         """Sources the server provides itself.
@@ -1405,12 +1392,13 @@ async def create_app(
 
     @app.get("/server/modules")
     async def list_modules():
+        # Asked afresh so the state shown and the modules requests reach agree.
+        await modules.refresh_health()
         input_entries = [
-            await _module_entry(m)
-            for m in modules.prepared_input_modules.values()
+            _module_entry(m) for m in modules.prepared_input_modules.values()
         ]
         device_entries = [
-            await _module_entry(d) for d in modules.prepared_devices.values()
+            _module_entry(d) for d in modules.prepared_devices.values()
         ]
         return {
             "input_modules": [*input_entries, *_builtin_entries()],
@@ -1439,7 +1427,7 @@ async def create_app(
 
         return FileResponse(resolved_path, media_type=mime_type)
 
-    register_content_route(app, enabled_input_module)
+    register_content_route(app, set_up_input_module)
 
     def _configured_secrets() -> List[str]:
         configs = [app.state.config] + [

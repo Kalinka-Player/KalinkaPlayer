@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Reporting music folder availability to the settings page.
 
-The status is evaluated on every request rather than once at setup, so an
+The status is evaluated on request rather than once at setup, so an
 unreachable share appears and clears without a restart. That makes the cost
-of one evaluation the thing to watch: the app polls module status, and each
-poll probes every folder — including the ones that have stopped answering.
+of one evaluation the thing to watch: the settings page polls the folders'
+status, and each poll probes every folder — including the ones that have
+stopped answering. The module's health, which the server polls far more
+often, reports the last such check instead of making one.
 
 What keeps that affordable lives on the storage instances, so the plugin has
 to keep them. A resolver built per call brings an empty probe registry with
@@ -17,6 +19,8 @@ import logging
 import threading
 
 import pytest
+
+from kalinka_plugin_sdk import ModuleHealthState
 
 from kalinka_plugin_localfiles.config_model import (
     AccountSignIn,
@@ -265,3 +269,104 @@ class TestWhatItReports:
 
         statuses = await made._music_folder_statuses()
         assert [status.root for status, _ in statuses] == [str(disk), str(music)]
+
+
+class TestHealthReadsTheLastCheck:
+    """The server asks for the module's health every few seconds, which must
+    not contact every share each time."""
+
+    @pytest.mark.asyncio
+    async def test_the_first_poll_starts_a_check_the_next_reports(
+        self, plugin, tmp_path
+    ):
+        made, _ = plugin
+        _write(made._context.config, music_folders=[str(tmp_path / "absent")])
+
+        first = await made.get_state()
+        await made._folder_probe
+        second = await made.get_state()
+
+        assert first.state == ModuleHealthState.READY
+        assert second.state == ModuleHealthState.WARNING
+        assert "Music folder access" in second.message
+
+    @pytest.mark.asyncio
+    async def test_polls_within_the_rescan_interval_check_once(
+        self, plugin, monkeypatch
+    ):
+        made, _ = plugin
+        checks = 0
+        check = made._music_folder_statuses
+
+        async def counted():
+            nonlocal checks
+            checks += 1
+            return await check()
+
+        monkeypatch.setattr(made, "_music_folder_statuses", counted)
+
+        await asyncio.gather(*(made.get_state() for _ in range(5)))
+        await made._folder_probe
+        await asyncio.gather(*(made.get_state() for _ in range(5)))
+
+        assert checks == 1
+
+    @pytest.mark.asyncio
+    async def test_a_check_older_than_the_rescan_interval_is_renewed(self, plugin):
+        made, _ = plugin
+        _write(made._context.config, scan_interval_minutes=0)
+        await made.get_state()
+        first = made._folder_probe
+        await first
+
+        await made.get_state()
+
+        assert made._folder_probe is not first
+
+    @pytest.mark.asyncio
+    async def test_changed_folders_are_not_judged_by_the_old_check(
+        self, plugin, tmp_path
+    ):
+        made, music = plugin
+        _write(made._context.config, music_folders=[str(tmp_path / "absent")])
+        await made.get_state()
+        await made._folder_probe
+        assert (await made.get_state()).state == ModuleHealthState.WARNING
+
+        _write(made._context.config, music_folders=[str(music)])
+
+        assert (await made.get_state()).state == ModuleHealthState.READY
+        await made._folder_probe
+        assert (await made.get_state()).state == ModuleHealthState.READY
+
+    @pytest.mark.asyncio
+    async def test_the_settings_page_check_is_what_health_reports(
+        self, plugin, tmp_path
+    ):
+        made, _ = plugin
+        _write(made._context.config, music_folders=[str(tmp_path / "absent")])
+
+        await made.resolve_dynamic_field("storage.status_view")
+        state = await made.get_state()
+
+        assert state.state == ModuleHealthState.WARNING
+        assert made._folder_probe is None
+
+    @pytest.mark.asyncio
+    async def test_a_failed_check_logs_only_its_type(
+        self, plugin, monkeypatch, caplog
+    ):
+        made, _ = plugin
+
+        async def failing():
+            raise RuntimeError("smb://media:s3cret@nas/music refused")
+
+        monkeypatch.setattr(made, "_music_folder_statuses", failing)
+
+        state = await made.get_state()
+        await asyncio.gather(made._folder_probe, return_exceptions=True)
+        await asyncio.sleep(0)
+
+        assert state.state == ModuleHealthState.READY
+        assert "RuntimeError" in caplog.text
+        assert "s3cret" not in caplog.text

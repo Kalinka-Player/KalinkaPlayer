@@ -171,8 +171,6 @@ class OutputDeviceRouter:
         self._bus = bus
         self._external_owner = None
         self._external_device: Optional[ExternalOutputDevice] = None
-        self._health_plugin: Optional[PreparedPlugin] = None
-        self._health_state = ModuleHealthState.READY
         self._synced_owner: Optional[tuple[str, Optional[ExternalOutputDevice]]] = None
         self._resync_lock = asyncio.Lock()
 
@@ -210,12 +208,7 @@ class OutputDeviceRouter:
         if external is not None and self.current_name() == external:
             return self._external_device
         prepared = self._prepared_device()
-        if prepared is None:
-            return None
-        if (
-            prepared is self._health_plugin
-            and self._health_state is not ModuleHealthState.READY
-        ):
+        if prepared is None or not prepared.reports_ready:
             return None
         interface = prepared.interface
         return interface if isinstance(interface, ExternalOutputDevice) else None
@@ -245,23 +238,6 @@ class OutputDeviceRouter:
             await self.resync(only_if_changed=True)
             await asyncio.sleep(interval_s)
 
-    async def _refresh_health(self) -> None:
-        prepared = self._prepared_device()
-        health = ModuleHealthState.READY
-        if prepared is not None and prepared.plugin_instance is not None:
-            try:
-                async with asyncio.timeout(5):
-                    state = await prepared.plugin_instance.get_state()
-                health = state.state
-            except Exception as exc:
-                health = ModuleHealthState.ERROR
-                logger.warning(
-                    "Could not read health from '%s' (%s)",
-                    self.current_name(),
-                    type(exc).__name__,
-                )
-        self._health_plugin, self._health_state = prepared, health
-
     async def resync(self, *, only_if_changed: bool = False) -> None:
         """Publish the current owner's state, so clients stop showing the
         numbers of a module that no longer drives the output.
@@ -271,7 +247,9 @@ class OutputDeviceRouter:
         if self._bus is None:
             return
         async with self._resync_lock:
-            await self._refresh_health()
+            prepared = self._prepared_device()
+            if prepared is not None:
+                await prepared.refresh_state()
             owner = (self.current_name(), self.current())
             if only_if_changed and owner == self._synced_owner:
                 return

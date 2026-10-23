@@ -6,6 +6,7 @@ import logging.handlers
 import multiprocessing
 import shutil
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, ClassVar, Mapping, Optional
 
@@ -81,6 +82,25 @@ class _SubfeatureBookkeeping:
     # Optional-package keys this sub-feature would have needed but couldn't
     # find — surfaced in the status message and used to suggest installs.
     missing_packages: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class _FolderCheck:
+    """One probe of the music folders: which locations, when, and what it
+    found for each."""
+
+    locations: tuple[str, ...]
+    at: float
+    statuses: list[tuple[RootStatus, Optional[str]]]
+
+
+def _report_check_failure(check: "asyncio.Task") -> None:
+    if check.cancelled() or check.exception() is None:
+        return
+    # The type only: a share's error text may carry its address or login.
+    logger.warning(
+        "Checking the music folders failed (%s)", type(check.exception()).__name__
+    )
 
 
 def _is_importable(import_name: str) -> bool:
@@ -464,6 +484,11 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
         self._log_listener = None
         self._inputmodule = None
 
+        # What get_state() reports music folder access from, and the probe
+        # renewing it; see _known_folder_statuses().
+        self._folder_check: Optional[_FolderCheck] = None
+        self._folder_probe: Optional[asyncio.Task] = None
+
         # Context captured at setup() so methods called by the server
         # later (get_state, required_packages, resolve_dynamic_field)
         # can read the *current* in-memory config — which the server
@@ -784,9 +809,10 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
         """Live availability of each music folder and source, paired with the
         mount identity the indexer recorded for it (None when unrecorded).
 
-        Evaluated on demand (module status, dynamic status field) rather than
-        once at setup, so an unreachable share shows up — and clears —
-        without a restart. Probing a local folder stats it, which also
+        Evaluated on demand by the settings page, and in the background for
+        get_state(), rather than once at setup, so an unreachable share shows
+        up — and clears — without a restart. Each result is kept as what
+        get_state() reports. Probing a local folder stats it, which also
         nudges a pending automount, and runs inside the service sandbox, so
         it catches paths hidden by systemd hardening too. Probing a share
         asks the server, so a wrong address or password surfaces here rather
@@ -795,20 +821,51 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
         if self._context is None:
             return []
         config = LocalFilesConfig(**self._context.config.model_dump())
+        locations = library_locations(config)
+        started = time.monotonic()
         resolver = self._resolver_for(config)
         # Off the loop: canonicalising a local folder resolves it, and a
         # folder on a hung mount would hold up every request behind it.
-        folders = await asyncio.to_thread(
-            resolver.canonical_roots, library_locations(config)
-        )
+        folders = await asyncio.to_thread(resolver.canonical_roots, locations)
         statuses = await _probe_roots(folders, resolver.for_path)
         module = self._inputmodule
         if module is None or not module.db_manager.is_good():
-            return [(status, None) for status in statuses]
-        return [
-            (status, module.db_manager.get_root_signature(status.root))
-            for status in statuses
-        ]
+            found = [(status, None) for status in statuses]
+        else:
+            found = [
+                (status, module.db_manager.get_root_signature(status.root))
+                for status in statuses
+            ]
+        last = self._folder_check
+        if last is None or started >= last.at:
+            self._folder_check = _FolderCheck(tuple(locations), started, found)
+        return found
+
+    def _known_folder_statuses(self) -> list[tuple[RootStatus, Optional[str]]]:
+        """The last check of the music folders, without probing any.
+
+        A check contacts every share and stats every folder, which the
+        server's health poll must not set off each time it asks. One older
+        than the library's rescan interval, or made for other locations, is
+        renewed in the background, so a share is contacted no more often
+        than the rescan already contacts it. Locations not yet checked
+        report nothing.
+        """
+        if self._context is None:
+            return []
+        config = LocalFilesConfig(**self._context.config.model_dump())
+        check = self._folder_check
+        current = check is not None and check.locations == tuple(
+            library_locations(config)
+        )
+        fresh = (
+            current
+            and time.monotonic() - check.at < config.scan_interval_minutes * 60
+        )
+        if not fresh and (self._folder_probe is None or self._folder_probe.done()):
+            self._folder_probe = asyncio.create_task(self._music_folder_statuses())
+            self._folder_probe.add_done_callback(_report_check_failure)
+        return check.statuses if current else []
 
     # ------------------------------------------------------------------
     # SDK overrides
@@ -848,7 +905,7 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
         # misconfiguration we have — the indexer just finds nothing.
         unavailable_roots = [
             status
-            for status, stored in await self._music_folder_statuses()
+            for status, stored in self._known_folder_statuses()
             if not status.available or _mount_mismatch(status, stored)
         ]
         if unavailable_roots:
@@ -1061,6 +1118,9 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
 
     async def shutdown(self) -> None:
         logger.info("Shutting down localfiles input module")
+
+        if self._folder_probe is not None:
+            self._folder_probe.cancel()
 
         await asyncio.to_thread(self._discovery.stop)
         for resolvers in (self._live_resolvers, self._staged_resolvers):

@@ -295,3 +295,17 @@ async def test_unchanged_health_does_not_reread_volume_or_publish(
         assert plugin.volume_reads == reads
         publish.assert_not_called()
         assert bus.get_snapshot().volume.current_volume == 70
+
+
+async def test_the_modules_page_and_the_router_read_one_answer(isolated):
+    app = await _app(isolated)
+    async with running(app) as client:
+        app.state.device_router_task.cancel()
+        await asyncio.gather(app.state.device_router_task, return_exceptions=True)
+        plugin = player_setup.modules.prepared_devices["delegate"].plugin_instance
+        plugin.health = ModuleHealthState.ERROR
+
+        devices = (await client.get("/server/modules")).json()["devices"]
+
+        assert next(d for d in devices if d["name"] == "delegate")["state"] == "error"
+        assert app.state.device_router.current() is None
