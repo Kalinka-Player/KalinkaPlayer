@@ -214,6 +214,11 @@ class CatalogArtService:
                 else:
                     # The card stands in for it until the card is made again.
                     del entry["thumbnail"]
+            previous = [
+                name for name in entry.get("previous", []) if (self._dir / name).is_file()
+            ]
+            referenced.update(previous)
+            entry["previous"] = previous
         try:
             # *.png/*.tmp sweep transparent-era and interrupted-write leftovers.
             for pattern in ("*.jpg", "*.png", "*.tmp"):
@@ -445,17 +450,25 @@ class CatalogArtService:
                 await asyncio.to_thread(encode_jpeg, thumbnail),
             )
 
-        # Keep the previous files when upgrading a provisional tile, so a client
-        # still showing them doesn't 404 before it re-fetches the richer ones.
-        if entry and not entry.get("provisional"):
-            for key, name in (("file", file_name), ("thumbnail", thumbnail_name)):
-                old = entry.get(key)
-                if old and old != name:
-                    (self._dir / old).unlink(missing_ok=True)
+        # A listing served just before this render still names the files it
+        # replaces, and its client has yet to ask for them: they stay until the
+        # card is made again, and the ones they replaced go now.
+        current = {file_name, thumbnail_name}
+        previous = []
+        if entry:
+            for name in entry.get("previous", []):
+                if name not in current:
+                    (self._dir / name).unlink(missing_ok=True)
+            previous = [
+                name
+                for name in (entry.get("file"), entry.get("thumbnail"))
+                if name and name not in current
+            ]
 
         self._entries[cat_id] = {
             "file": file_name,
             "thumbnail": thumbnail_name,
+            "previous": previous,
             "fingerprint": fingerprint,
             "next_check_at": time.time() + next_check,
             "provisional": provisional,
