@@ -43,7 +43,8 @@ class ModuleTrackSources(TrackSources):
     The module is looked up through ``module_for`` on every call rather than
     held, so one enabled, disabled or set up again since the track was queued
     is the one asked. ``module_for`` answers None for a module that is not
-    enabled and set up.
+    set up; one that is set up but reports an error is still asked, and
+    refuses the track itself if it must.
     """
 
     def __init__(self, module_for: Callable[[str], Optional[InputModule]]):

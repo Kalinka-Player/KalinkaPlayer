@@ -6,7 +6,7 @@ from importlib.metadata import entry_points
 from typing import Any, Callable, Generator, Mapping, MutableMapping
 
 from kalinka_eventbus import EventBus
-from kalinka_plugin_sdk import DeviceVolume, ModuleHealthState, paths
+from kalinka_plugin_sdk import DeviceVolume, ModuleHealthState, ModuleState, paths
 from kalinka_plugin_sdk import __version__ as SDK_VERSION
 from kalinka_plugin_sdk.datamodel import PlaybackMode, PlaybackState
 from kalinka_plugin_sdk.events import (
@@ -44,7 +44,7 @@ from .config_overrides import (
 from .config_secrets import is_private_path, loggable
 from .direct_playback import DirectPlaybackService
 from .external_playback import ExternalPlaybackService
-from .module_timeout import TimeLimitedInputModule
+from .module_timeout import PLUGIN_CALL_TIMEOUT_S, TimeLimitedInputModule
 from .output_capabilities import OutputCapabilityTracker
 from .output_device_router import OutputDeviceRouter
 from .playback_arbiter import PlaybackArbiter
@@ -59,6 +59,10 @@ from .track_sources import ModuleTrackSources
 from kalinka_plugin_sdk.api import PlayQueueController
 
 logger = logging.getLogger(__name__.split(".")[-1])
+
+# What a plugin may say of itself and still be asked for data.
+SERVING_STATES = frozenset({ModuleHealthState.READY, ModuleHealthState.WARNING})
+HEALTH_REFRESH_INTERVAL_S = 10.0
 
 
 @dataclass
@@ -82,7 +86,15 @@ class PlayerContext:
 
 @dataclass
 class PreparedPlugin:
-    """A class to hold prepared plugins for shutdown."""
+    """A plugin as setup left it, and what it last said of its health.
+
+    ``health_state`` is setup's verdict and never changes; ``state`` follows
+    the plugin's own reports, so a plugin that set up but cannot serve —
+    Jamendo without a client id, Qobuz before it is paired — says so there.
+    This is the one place a plugin's health is asked for and kept: input
+    modules are served by ``serves`` and output devices drive the output by
+    ``reports_ready``, both from the same answer.
+    """
 
     plugin_class: type[PluginBase]
     plugin_instance: PluginBase | None
@@ -90,6 +102,83 @@ class PreparedPlugin:
     plugin_context: InputPluginContext | OutputDevicePluginContext
     interface: InputModule | ExternalOutputDevice | None
     error_message: str | None = None
+    reported: ModuleState | None = None
+    _asking: "asyncio.Future[Any] | None" = field(
+        default=None, repr=False, compare=False
+    )
+
+    @property
+    def state(self) -> ModuleState:
+        """What the plugin last reported, or how setup left it until it has."""
+        if self.reported is not None:
+            return self.reported
+        return ModuleState(state=self.health_state, message=self.error_message)
+
+    @property
+    def serves(self) -> bool:
+        """Whether requests may reach it: it set up, and says it can answer."""
+        return (
+            self.health_state == ModuleHealthState.READY
+            and self.state.state in SERVING_STATES
+        )
+
+    @property
+    def reports_ready(self) -> bool:
+        """Whether it set up and its last answer was READY — the stricter test
+        for a device given the output."""
+        return (
+            self.health_state == ModuleHealthState.READY
+            and self.state.state == ModuleHealthState.READY
+        )
+
+    async def refresh_state(self) -> None:
+        """Ask the plugin how it is now.
+
+        Only a plugin that set up is asked; for any other, setup's verdict
+        stands. One that fails to answer is held at WARNING: an input module
+        stays served, a device loses the output, and the modules page says
+        why. A plugin is asked once at a time: callers arriving while an
+        answer is still pending wait on that same answer, so one stuck on a
+        hung mount never claims another thread.
+        """
+        if (
+            self.health_state != ModuleHealthState.READY
+            or self.plugin_instance is None
+        ):
+            return
+        try:
+            if self._asking is None or self._asking.done():
+                self._asking = asyncio.ensure_future(self.plugin_instance.get_state())
+                # Retrieved here, or asyncio would log a late failure's text.
+                self._asking.add_done_callback(
+                    lambda asked: asked.cancelled() or asked.exception()
+                )
+            asking = self._asking
+            # Not wait_for(shield()): shield logs a late failure's text itself.
+            await asyncio.wait({asking}, timeout=PLUGIN_CALL_TIMEOUT_S)
+            if not asking.done():
+                raise TimeoutError
+            if asking.cancelled():
+                self._hold_at_warning(asyncio.CancelledError.__name__)
+                return
+            reported = asking.result()
+            if not isinstance(reported, ModuleState):
+                raise TypeError(f"get_state() returned {type(reported).__name__}")
+            self.reported = reported
+        except Exception as e:
+            # The type only: a plugin's exception text may carry a credential.
+            self._hold_at_warning(type(e).__name__)
+
+    def _hold_at_warning(self, failure: str) -> None:
+        self.reported = ModuleState(
+            state=ModuleHealthState.WARNING,
+            message=f"Its health check failed ({failure}).",
+        )
+        logger.warning(
+            "Plugin %s get_state() failed (%s)",
+            self.plugin_context.config.name,
+            failure,
+        )
 
     @classmethod
     async def setup(cls, 
@@ -154,8 +243,19 @@ class PreparedModuleCollection:
         """The input module ``name`` while it is enabled and set up, else None."""
         if name not in self.enabled_input_modules:
             return None
+        return self.set_up_input_module(name)
+
+    def set_up_input_module(self, name: str) -> InputModule | None:
+        """The input module ``name`` if it set up, whatever it reports now.
+
+        Playback goes through this rather than :meth:`enabled_input_module`:
+        a track already queued or streaming is the module's own to refuse, and
+        one reporting an error for a moment must not cut it off.
+        """
         prepared = self.prepared_input_modules.get(name)
-        interface = prepared.interface if prepared is not None else None
+        if prepared is None or prepared.health_state != ModuleHealthState.READY:
+            return None
+        interface = prepared.interface
         return interface if isinstance(interface, InputModule) else None
 
     def _update_enabled_input_modules(self):
@@ -163,8 +263,32 @@ class PreparedModuleCollection:
         self.enabled_input_modules = {
             name
             for name, module in self.prepared_input_modules.items()
-            if module.health_state == ModuleHealthState.READY
+            if module.serves
         }
+
+    async def refresh_health(self) -> None:
+        """Ask every plugin how it is, and let requests reach only the input
+        modules that say they can serve."""
+        await asyncio.gather(
+            *(
+                plugin.refresh_state()
+                for plugin in (
+                    *self.prepared_input_modules.values(),
+                    *self.prepared_devices.values(),
+                )
+            )
+        )
+        self._update_enabled_input_modules()
+
+    async def watch_health(
+        self, interval_s: float = HEALTH_REFRESH_INTERVAL_S
+    ) -> None:
+        """Refresh health for as long as the server runs, so a plugin that
+        recovers — or stops being able to serve — is followed without a
+        restart."""
+        while True:
+            await asyncio.sleep(interval_s)
+            await self.refresh_health()
 
     def _scan_entry_points(self) -> Generator[tuple[str, type], None, None]:
         """Scan for installed plugins using entry points and yield classes derived from PluginBase."""
@@ -712,7 +836,6 @@ class PreparedModuleCollection:
                 devices[plugin_name] = prepared_plugin
 
         self.prepared_input_modules = {**input_modules}
-        self._update_enabled_input_modules()
 
         devices = await self._setup_renderer_output_device(
             devices,
@@ -721,6 +844,7 @@ class PreparedModuleCollection:
             renderer_sessions,
         )
         self.prepared_devices = {**devices}
+        await self.refresh_health()
         if player_context.device_router is not None:
             await player_context.device_router.resync()
 
@@ -786,7 +910,7 @@ async def setup(
             playqueue_eventbus,
             renderer_registry,
             renderer_sessions,
-            sources=ModuleTrackSources(modules.enabled_input_module),
+            sources=ModuleTrackSources(modules.set_up_input_module),
             arbiter=arbiter,
         ),
         ext_device_eventbus=device_eventbus,
