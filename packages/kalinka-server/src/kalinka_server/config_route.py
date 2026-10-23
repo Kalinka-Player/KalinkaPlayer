@@ -273,6 +273,10 @@ def register_config_routes(
         if timer is not None and TIMER_PATHS.intersection(applied):
             timer.reset()
 
+        router = getattr(app.state, "device_router", None)
+        if router is not None and any(key.startswith("devices.") for key in applied):
+            await router.resync()
+
         ok_in, _err_in, ok_dev, _err_dev = _partition_modules_and_devices()
         known = build_static_values(config, ok_in, ok_dev)
         return {

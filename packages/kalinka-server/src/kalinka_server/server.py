@@ -149,6 +149,9 @@ async def lifespan(app: FastAPI):
             app.state.player_context,
             app.state.device_router,
         )
+        app.state.device_router_task = asyncio.create_task(
+            app.state.device_router.monitor()
+        )
 
         await app.state.replaygain.start()
         await restore_state(app.state.player_context.playqueue)
@@ -174,6 +177,7 @@ async def lifespan(app: FastAPI):
         logger.info("Shutting down...")
         # These loops run forever by design; cancel them and swallow the result.
         for attr in (
+            "device_router_task",
             "box_power_off_task",
             "suggestions_task",
             "catalog_art_task",
