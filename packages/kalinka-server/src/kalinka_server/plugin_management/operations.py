@@ -33,7 +33,12 @@ from starlette.concurrency import run_in_threadpool
 from kalinka_plugin_sdk import paths
 
 from ..logging_setup import make_handler
-from ..update_check import deb_is_newer, installed_package_version, request_restart
+from ..update_check import (
+    deb_is_newer,
+    installed_package_version,
+    request_restart,
+    restart_pending,
+)
 from .catalog import PublicCatalog
 from .compatibility import CatalogCompatibility
 from .payload import SHA256
@@ -149,7 +154,8 @@ class PluginOperations:
 
     Every check runs against Core's own cached catalog and its metadata
     preflight; the helper repeats what matters for trust from its own fetch.
-    One request is pending at a time, and accepting one restarts the server.
+    One request is pending at a time, none is accepted while the server is
+    already restarting, and accepting one restarts the server.
     """
 
     def __init__(
@@ -163,6 +169,7 @@ class PluginOperations:
         package_version: Callable[[str], str | None] = installed_package_version,
         newer: Callable[[str, str], bool] = deb_is_newer,
         restart: Callable[[], None] = request_restart,
+        restarting: Callable[[], bool] = restart_pending,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ):
         self._catalog = catalog
@@ -173,6 +180,7 @@ class PluginOperations:
         self._package_version = package_version
         self._newer = newer
         self._restart = restart
+        self._restarting = restarting
         self._clock = clock
         self._submitting = threading.Lock()
 
@@ -326,6 +334,13 @@ class PluginOperations:
                     "operation_in_progress",
                     f"The server is already restarting to {pending.action} "
                     f"{pending.plugin_id}.",
+                )
+            # A restart under way may be past its helper; a request now would never run.
+            if self._restarting():
+                raise Refusal(
+                    409,
+                    "operation_in_progress",
+                    "The server is already restarting. Try again once it is back.",
                 )
             _write_json(path, request.model_dump(), 0o640)
             try:

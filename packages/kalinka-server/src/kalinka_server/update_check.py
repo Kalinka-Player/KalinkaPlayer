@@ -55,6 +55,7 @@ _QUIET_HOURS = range(3, 6)  # local time — auto-upgrade fires in [3:00, 6:00)
 # also exists on the same machine.
 _UPGRADE_SCRIPT = "/opt/kalinka/upgrade.sh"
 _UPGRADE_PATH_UNIT = "/etc/systemd/system/kalinka-upgrade.path"
+_RESTART_TRIGGER = "restart-request"
 
 
 def _repo() -> str:
@@ -165,7 +166,18 @@ def request_restart() -> None:
     The root-owned kalinka-restart.service it fires runs the package helpers
     and then restarts kalinka.service; Core exits when systemd stops it.
     """
-    _touch_trigger("restart-request")
+    _touch_trigger(_RESTART_TRIGGER)
+
+
+def restart_pending() -> bool:
+    """True from a restart request until Core stops to carry it out.
+
+    kalinka-restart.path starts no second run while kalinka-restart.service
+    runs, so anything left for its helpers once they have run would wait for
+    a restart that never comes. The trigger goes with Core's runtime
+    directory when Core stops.
+    """
+    return (Path(paths.run_dir()) / _RESTART_TRIGGER).exists()
 
 
 def _touch_trigger(name: str) -> None:
