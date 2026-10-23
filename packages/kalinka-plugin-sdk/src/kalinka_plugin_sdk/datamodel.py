@@ -326,6 +326,8 @@ class Track(BaseModel):
         id (EntityId): Unique identifier for the track
         title (str): Track title
         duration (int): Track duration in seconds
+        track_number (Optional[int]): Track position on its disc, if known
+        disc_number (Optional[int]): Disc position within the album, if known
         performer (Optional[Artist]): Track performer (may differ from album artist)
         album (Album): Album containing this track
         replaygain_peak (Optional[float]): ReplayGain peak value for audio normalization
@@ -340,6 +342,8 @@ class Track(BaseModel):
     title: str
     # Duration in seconds
     duration: int
+    track_number: Optional[int] = None
+    disc_number: Optional[int] = None
     performer: Optional[Artist] = None
     album: Album
     replaygain_peak: Optional[float] = None

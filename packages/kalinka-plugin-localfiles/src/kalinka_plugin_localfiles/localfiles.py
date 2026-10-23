@@ -1557,6 +1557,8 @@ class LocalFilesInputModule(InputModule):
             id=track_id(track["id"]),
             title=track["title"],
             duration=track["duration"],
+            track_number=track.get("track_number"),
+            disc_number=track.get("disc_number"),
             album=album,
         )
 

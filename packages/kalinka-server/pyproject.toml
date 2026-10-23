@@ -51,7 +51,8 @@ dependencies = [
     "protobuf>=7.35,<8",
     # >=3.14: InputModule.capabilities, which the module listing reports, and
     # ModuleCapability.CATALOGS among its values.
-    "kalinka-plugin-sdk>=3.14,<4",
+    # >=3.15: Track exposes track_number and disc_number in API responses.
+    "kalinka-plugin-sdk>=3.15,<4",
 ]
 dynamic = ["version"]
 
