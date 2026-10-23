@@ -17,7 +17,7 @@ Bit-perfect playback from your own library, on your own hardware — with on-dev
 
 **[💿 Flash an image](https://github.com/Kalinka-Player/KalinkaPlayer/releases?q=kalinka-image-v&expanded=true) · [📦 Releases](https://github.com/Kalinka-Player/KalinkaPlayer/releases/latest) · [📱 Control app](https://github.com/Kalinka-Player/KalinkaAI) · [🌐 kalinkaplayer.com](https://kalinkaplayer.com) · [💬 Help test it](https://github.com/Kalinka-Player/KalinkaPlayer/discussions/133)**
 
-<img src="docs/images/app-screenshot.png" alt="Kalinka playing a bit-perfect FLAC through a network renderer, with the play queue alongside" width="820">
+<img src="docs/images/app-screenshot.png" alt="Kalinka desktop app showing Jamendo’s new releases alongside the current track and play queue" width="820">
 
 </div>
 
