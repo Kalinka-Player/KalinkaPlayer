@@ -7,7 +7,9 @@ its albums, or a single album when there are not four to mosaic.
 :func:`render_catalog_art` renders the whole tile the app displays full-bleed:
 a generated background (a non-linear diagonal gradient with seeded concentric
 geometry drawn over it, plus film grain) with an album cascade on the right
-when covers are available.
+when covers are available. :func:`render_catalog_thumbnail` renders the same
+art square for a row's thumbnail: the background without the text column, and
+the cascade gathered to the middle.
 No text, chevron or frame — the app draws the icon/title/description column on
 the left and strokes a source-coloured frame around the tile. The gradient key
 colour is derived from the artwork (dominant cover colour, or a seeded hue for
@@ -28,12 +30,13 @@ from typing import Sequence
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
-STYLE_VERSION = 3
+STYLE_VERSION = 4
 
 CANVAS_W = 1200
 CANVAS_H = 400  # 3:1
 
 COVER_SIDE = 640
+THUMBNAIL_SIDE = 480
 
 
 class ArtStyle(Enum):
@@ -65,6 +68,13 @@ _COLLAGE_LAYOUT = [
     (0.765, 0.53, 9.0),
 ]
 _COVER_FRACTION = 0.68  # tile side as a fraction of canvas height
+# The thumbnail's cascade by cover count, gathered to the middle of a square.
+_THUMBNAIL_LAYOUTS = {
+    1: [(0.5, 0.5, 2.0)],
+    2: [(0.42, 0.47, -6.0), (0.58, 0.53, 6.0)],
+    3: [(0.36, 0.45, -7.0), (0.5, 0.5, 2.0), (0.64, 0.55, 9.0)],
+}
+_THUMBNAIL_COVER_FRACTION = 0.56
 _SUPERSAMPLE = 2        # render at 2x for clean rings and rotated edges
 
 # Rich, dark-saturated key colour so the wash reads regardless of source hue.
@@ -136,11 +146,16 @@ def _draw_geometry(base: Image.Image, rng: np.random.Generator) -> None:
 
 
 def _background(
-    width: int, height: int, key: tuple[int, int, int], rng: np.random.Generator
+    width: int,
+    height: int,
+    key: tuple[int, int, int],
+    rng: np.random.Generator,
+    *,
+    text_column: bool = True,
 ) -> Image.Image:
     """Near-black ground under a non-linear diagonal gradient (black -> key),
     with seeded concentric geometry on top, and the left held near-black for the
-    app's text column."""
+    app's text column where there is one."""
     xs, ys = np.linspace(0, 1, width), np.linspace(0, 1, height)
     grid_x, grid_y = np.meshgrid(xs, ys)
     t = (grid_x + grid_y) * 0.5  # 0 at top-left, 1 at bottom-right
@@ -156,6 +171,8 @@ def _background(
     # Geometry over the gradient (so it isn't erased by it), then hold the left
     # near-black for the text column — the scrim darkens any bands that reach it.
     _draw_geometry(result, rng)
+    if not text_column:
+        return result
 
     ld = np.clip(
         (_LEFT_DARK_END - grid_x) / (_LEFT_DARK_END - _LEFT_DARK_HOLD), 0, 1
@@ -223,12 +240,19 @@ def _paste_with_shadow(
     )
 
 
-def _collage(base: Image.Image, covers: Sequence[Image.Image], width: int, height: int) -> None:
-    side = round(height * _COVER_FRACTION)
+def _collage(
+    base: Image.Image,
+    covers: Sequence[Image.Image],
+    width: int,
+    height: int,
+    layout: Sequence[tuple[float, float, float]] = _COLLAGE_LAYOUT,
+    cover_fraction: float = _COVER_FRACTION,
+) -> None:
+    side = round(height * cover_fraction)
     radius = round(side * 0.055)
-    picks = list(covers[:3])
+    picks = list(covers[: len(layout)])
     for idx in reversed(range(len(picks))):  # back to front
-        cx_f, cy_f, angle = _COLLAGE_LAYOUT[idx]
+        cx_f, cy_f, angle = layout[idx]
         tile = _rounded_tile(picks[idx], side, radius)
         _paste_with_shadow(base, tile, (round(width * cx_f), round(height * cy_f)), angle)
 
@@ -257,6 +281,29 @@ def render_catalog_art(
     if covers:
         _collage(base, covers, width * ss, height * ss)
     out = base.convert("RGB").resize((width, height), Image.Resampling.LANCZOS)
+    return _grain(out, rng, _GRAIN)
+
+
+def render_catalog_thumbnail(
+    covers: Sequence[Image.Image], seed: str, *, side: int = THUMBNAIL_SIDE
+) -> Image.Image:
+    """The card's art, square: its background without the text column, and up
+    to three covers gathered to the middle."""
+    rng = _rng(seed)
+    key = _key_color(covers, seed)
+    ss = _SUPERSAMPLE
+    base = _background(side * ss, side * ss, key, rng, text_column=False)
+    picks = list(covers[:3])
+    if picks:
+        _collage(
+            base,
+            picks,
+            side * ss,
+            side * ss,
+            _THUMBNAIL_LAYOUTS[len(picks)],
+            _THUMBNAIL_COVER_FRACTION,
+        )
+    out = base.convert("RGB").resize((side, side), Image.Resampling.LANCZOS)
     return _grain(out, rng, _GRAIN)
 
 

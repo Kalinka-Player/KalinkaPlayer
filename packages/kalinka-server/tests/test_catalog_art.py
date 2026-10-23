@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import time
 
+import pytest
 from PIL import Image
 
 from kalinka_plugin_sdk.datamodel import (
@@ -58,6 +59,19 @@ def test_render_coverless_tile_varies_by_seed():
     jazz = render.render_catalog_art([], [], "cat:jazz", width=320, height=180)
     assert rock.mode == "RGB"
     assert rock.tobytes() != jazz.tobytes()
+
+
+@pytest.mark.parametrize("count", [0, 1, 2, 3, 4])
+def test_thumbnail_is_the_card_art_square(count):
+    covers = [_solid_cover((60 * i, 200 - 40 * i, 80)) for i in range(count)]
+    a = render.render_catalog_thumbnail(covers, "seed:x", side=96)
+    b = render.render_catalog_thumbnail(covers, "seed:x", side=96)
+    assert a.size == (96, 96)
+    assert a.mode == "RGB"
+    assert a.tobytes() == b.tobytes()
+    if count:
+        bare = render.render_catalog_thumbnail([], "seed:x", side=96)
+        assert a.tobytes() != bare.tobytes()
 
 
 def test_render_is_dark_by_design():
@@ -263,7 +277,25 @@ def test_decorate_fills_url_once_generated(tmp_path):
     url = result.items[0].catalog.image.large
     assert url == f"{ART_URL_PREFIX}/abcdef0123456789-0a1b2c3d.jpg"
     assert result.items[0].catalog.image.aspect_ratio == render.CANVAS_W / render.CANVAS_H
+    # A card made before thumbnails were stands in for its own.
+    assert result.items[0].catalog.image.thumbnail == url
     assert svc._queue.qsize() == 0
+
+
+def test_a_card_sends_its_square_thumbnail(tmp_path):
+    svc = _service(tmp_path)
+    cat_id = "kalinka:localfiles:catalog:albums"
+    svc._entries[cat_id] = {
+        "file": "abcdef0123456789-0a1b2c3d.jpg",
+        "thumbnail": "abcdef0123456789-0a1b2c3d-thumb.jpg",
+        "fingerprint": "x",
+        "next_check_at": 1e18,
+    }
+    result = BrowseItemList(offset=0, limit=10, total=1, items=[_catalog_item("albums")])
+    svc.decorate(result)
+    image = result.items[0].catalog.image
+    assert image.large == image.small == f"{ART_URL_PREFIX}/abcdef0123456789-0a1b2c3d.jpg"
+    assert image.thumbnail == f"{ART_URL_PREFIX}/abcdef0123456789-0a1b2c3d-thumb.jpg"
 
 
 def test_art_file_rejects_bad_names(tmp_path):
@@ -271,6 +303,7 @@ def test_art_file_rejects_bad_names(tmp_path):
     assert svc.art_file("../../etc/passwd") is None
     assert svc.art_file("not-a-fingerprint.jpg") is None
     assert svc.art_file("abcdef0123456789-0a1b2c3d.png") is None
+    assert svc.art_file("abcdef0123456789-0a1b2c3d-thumbs.jpg") is None
 
 
 # --------------------------------------------------------------------------
@@ -315,11 +348,15 @@ async def test_process_generates_a_card_with_covers(tmp_path):
     entry = svc._entries[cat_id]
     assert entry["file"]
     assert (svc._dir / entry["file"]).is_file()
-    # Served name validates and re-fetch with unchanged inputs reuses the file.
+    # Served names validate and re-fetch with unchanged inputs reuses the files.
     assert svc.art_file(entry["file"]) is not None
-    first_file = entry["file"]
+    thumbnail = svc.art_file(entry["thumbnail"])
+    assert thumbnail is not None
+    with Image.open(thumbnail) as square:
+        assert square.width == square.height == render.THUMBNAIL_SIDE
+    first = (entry["file"], entry["thumbnail"])
     await svc._process(cat_id, render.ArtStyle.CARD, textual=False)
-    assert svc._entries[cat_id]["file"] == first_file
+    assert (svc._entries[cat_id]["file"], svc._entries[cat_id]["thumbnail"]) == first
     # Atomic writes must not leave temp litter behind.
     assert list(svc._dir.glob("*.tmp")) == []
 
@@ -356,6 +393,8 @@ async def test_a_collection_is_rendered_as_a_square_cover(tmp_path):
 
     with Image.open(svc._dir / svc._entries[cat_id]["file"]) as image:
         assert image.width == image.height
+    # A cover is square already; it is its own thumbnail.
+    assert svc._entries[cat_id]["thumbnail"] is None
 
 
 def _track_child(album_local, track_local):
@@ -651,6 +690,26 @@ async def test_index_reload_drops_missing_files(tmp_path):
     # File was never written → a fresh load drops the dangling entry.
     reloaded = _service(tmp_path)
     assert "kalinka:localfiles:catalog:albums" not in reloaded._entries
+
+
+def test_index_reload_keeps_thumbnails_and_forgets_lost_ones(tmp_path):
+    svc = _service(tmp_path)
+    svc._dir.mkdir(parents=True, exist_ok=True)
+    for cat_id, stem in (("kept", "a" * 16), ("lost", "b" * 16)):
+        (svc._dir / f"{stem}-01020304.jpg").write_bytes(b"card")
+        svc._entries[cat_id] = {
+            "file": f"{stem}-01020304.jpg",
+            "thumbnail": f"{stem}-01020304-thumb.jpg",
+            "fingerprint": "x",
+            "next_check_at": 1e18,
+        }
+    (svc._dir / svc._entries["kept"]["thumbnail"]).write_bytes(b"thumb")
+    svc._save_index()
+    reloaded = _service(tmp_path)
+    assert (reloaded._dir / reloaded._entries["kept"]["thumbnail"]).is_file()
+    # The card stays, standing in for the thumbnail it lost.
+    assert reloaded._entries["lost"]["file"]
+    assert "thumbnail" not in reloaded._entries["lost"]
 
 
 # --------------------------------------------------------------------------

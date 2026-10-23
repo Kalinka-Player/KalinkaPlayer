@@ -5,8 +5,8 @@ catalog item it fills in the URL of ready art or enqueues generation, never
 blocking. What it generates depends on what the item is — a card background
 for a category, a square mosaic cover for a list of tracks. A single worker
 drains the queue — browsing the item's first page, rendering via
-:mod:`catalog_art_render`, and writing the JPEG under
-``<prefix>/var/cache/kalinka/catalog_art/``. File names embed a content
+:mod:`catalog_art_render`, and writing the JPEG (a card's with a square
+thumbnail beside it) under ``<prefix>/var/cache/kalinka/catalog_art/``. File names embed a content
 fingerprint, so a card's URL changes only when its content does; the worker
 re-checks every ``REFRESH_SECONDS`` but re-renders only on a fingerprint move.
 """
@@ -44,6 +44,7 @@ from .catalog_art_render import (
     content_fingerprint,
     encode_jpeg,
     render_catalog_art,
+    render_catalog_thumbnail,
     render_playlist_cover,
 )
 
@@ -66,7 +67,7 @@ COVER_FETCH_LIMIT = 24
 COVER_TILES = 4
 MAX_COVER_BYTES = 8 * 1024 * 1024
 
-_FILE_RE = re.compile(r"^[0-9a-f]{16}-[0-9a-f]{8}\.jpg$")
+_FILE_RE = re.compile(r"^[0-9a-f]{16}-[0-9a-f]{8}(-thumb)?\.jpg$")
 
 
 def _item_image_path(item: BrowseItem) -> Optional[str]:
@@ -205,6 +206,14 @@ class CatalogArtService:
                     referenced.add(name)
                 else:
                     del self._entries[cat_id]
+                    continue
+            thumbnail = entry.get("thumbnail")
+            if thumbnail:
+                if (self._dir / thumbnail).is_file():
+                    referenced.add(thumbnail)
+                else:
+                    # The card stands in for it until the card is made again.
+                    del entry["thumbnail"]
         try:
             # *.png/*.tmp sweep transparent-era and interrupted-write leftovers.
             for pattern in ("*.jpg", "*.png", "*.tmp"):
@@ -245,8 +254,12 @@ class CatalogArtService:
             entry = self._entries.get(cat_id)
             if entry and entry.get("file"):
                 url = f"{ART_URL_PREFIX}/{entry['file']}"
+                thumbnail = entry.get("thumbnail")
                 image = CoverImage(
-                    small=url, thumbnail=url, large=url, aspect_ratio=style.aspect_ratio
+                    small=url,
+                    thumbnail=f"{ART_URL_PREFIX}/{thumbnail}" if thumbnail else url,
+                    large=url,
+                    aspect_ratio=style.aspect_ratio,
                 )
                 item.catalog.image = image
                 # The art is the entity's, not one payload's: read as a
@@ -407,7 +420,9 @@ class CatalogArtService:
             return
 
         fingerprint = content_fingerprint(cover_bytes, [], cat_id, style)
-        if entry and entry.get("fingerprint") == fingerprint and have_file:
+        # A card made before cards had thumbnails is made again to gain one.
+        complete = have_file and (cover_style or bool(entry.get("thumbnail")))
+        if entry and entry.get("fingerprint") == fingerprint and complete:
             entry["next_check_at"] = time.time() + next_check
             self._save_index()
             return
@@ -418,19 +433,29 @@ class CatalogArtService:
             image = await asyncio.to_thread(render_catalog_art, covers, [], cat_id)
         data = await asyncio.to_thread(encode_jpeg, image)
 
-        file_name = (
-            f"{hashlib.sha1(cat_id.encode()).hexdigest()[:16]}-{fingerprint[:8]}.jpg"
-        )
+        stem = f"{hashlib.sha1(cat_id.encode()).hexdigest()[:16]}-{fingerprint[:8]}"
+        file_name = f"{stem}.jpg"
         _write_atomic(self._dir / file_name, data)
+        thumbnail_name = None
+        if not cover_style:
+            thumbnail = await asyncio.to_thread(render_catalog_thumbnail, covers, cat_id)
+            thumbnail_name = f"{stem}-thumb.jpg"
+            _write_atomic(
+                self._dir / thumbnail_name,
+                await asyncio.to_thread(encode_jpeg, thumbnail),
+            )
 
-        # Keep the previous file when upgrading a provisional tile, so a client
-        # still showing it doesn't 404 before it re-fetches the richer one.
-        old_file = entry.get("file") if entry else None
-        if old_file and old_file != file_name and not (entry and entry.get("provisional")):
-            (self._dir / old_file).unlink(missing_ok=True)
+        # Keep the previous files when upgrading a provisional tile, so a client
+        # still showing them doesn't 404 before it re-fetches the richer ones.
+        if entry and not entry.get("provisional"):
+            for key, name in (("file", file_name), ("thumbnail", thumbnail_name)):
+                old = entry.get(key)
+                if old and old != name:
+                    (self._dir / old).unlink(missing_ok=True)
 
         self._entries[cat_id] = {
             "file": file_name,
+            "thumbnail": thumbnail_name,
             "fingerprint": fingerprint,
             "next_check_at": time.time() + next_check,
             "provisional": provisional,

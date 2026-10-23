@@ -242,8 +242,9 @@ class CoverImage(BaseModel):
         small (Optional[str]): Small resolution image URL (e.g., for list items)
         thumbnail (Optional[str]): Thumbnail resolution image URL
         large (Optional[str]): High resolution image URL (e.g., for full-screen display)
-        aspect_ratio (Optional[float]): Width over height of every size, when
-            known, so a client can lay the image out before it loads
+        aspect_ratio (Optional[float]): Width over height of ``large``, when
+            known, so a client can lay a card out before it loads.
+            ``thumbnail`` is drawn into a square, whatever its shape.
     """
 
     small: Optional[str] = ""
