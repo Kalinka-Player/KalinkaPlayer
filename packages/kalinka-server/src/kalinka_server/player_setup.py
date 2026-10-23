@@ -721,6 +721,8 @@ class PreparedModuleCollection:
             renderer_sessions,
         )
         self.prepared_devices = {**devices}
+        if player_context.device_router is not None:
+            await player_context.device_router.resync()
 
 
 def volume_control_modules(devices: Mapping[str, PreparedPlugin]) -> list[str]:
@@ -769,8 +771,11 @@ async def setup(
             )
         )
 
-    device_eventbus=EventBus[ExtDeviceState, ExtDeviceEventType, ExtDeviceEvent](  # type: ignore[type-var]
-            initial_state=ExtDeviceState(power_on=False, volume=DeviceVolume()))
+    device_eventbus = EventBus[ExtDeviceState, ExtDeviceEventType, ExtDeviceEvent](  # type: ignore[type-var]
+        initial_state=ExtDeviceState(
+            power_on=False, volume=DeviceVolume(supported=False)
+        )
+    )
 
     # Create core components
     arbiter = PlaybackArbiter(playqueue_eventbus)

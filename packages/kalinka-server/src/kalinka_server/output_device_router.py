@@ -20,6 +20,7 @@ which every caller reads as "no control available".
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Callable, Mapping, Optional
 
@@ -51,7 +52,10 @@ class RoutedDeviceEmitter:
         self._router = router
 
     def _owns_output(self) -> bool:
-        return self._router.current_name() == self._plugin_id
+        return (
+            self._router.current_name() == self._plugin_id
+            and self._router.current() is not None
+        )
 
     def dispatch(self, event: ExtDeviceEvent) -> None:
         if not self._owns_output():
@@ -167,6 +171,10 @@ class OutputDeviceRouter:
         self._bus = bus
         self._external_owner = None
         self._external_device: Optional[ExternalOutputDevice] = None
+        self._health_plugin: Optional[PreparedPlugin] = None
+        self._health_state = ModuleHealthState.READY
+        self._synced_owner: Optional[tuple[str, Optional[ExternalOutputDevice]]] = None
+        self._resync_lock = asyncio.Lock()
 
     def set_external(self, owner, device: ExternalOutputDevice) -> None:
         """Use an external engine's controls while ``owner``, its hold, is active."""
@@ -188,12 +196,26 @@ class OutputDeviceRouter:
             return delegate
         return self._external_name() or RendererOutputPlugin.PLUGIN_ID
 
+    def _prepared_device(self) -> Optional["PreparedPlugin"]:
+        prepared = self._devices().get(self.current_name())
+        if prepared is None or prepared.health_state is not ModuleHealthState.READY:
+            return None
+        context = prepared.plugin_context
+        if context is not None and not context.config.enabled:
+            return None
+        return prepared
+
     def current(self) -> Optional[ExternalOutputDevice]:
         external = self._external_name()
         if external is not None and self.current_name() == external:
             return self._external_device
-        prepared = self._devices().get(self.current_name())
-        if prepared is None or prepared.health_state is not ModuleHealthState.READY:
+        prepared = self._prepared_device()
+        if prepared is None:
+            return None
+        if (
+            prepared is self._health_plugin
+            and self._health_state is not ModuleHealthState.READY
+        ):
             return None
         interface = prepared.interface
         return interface if isinstance(interface, ExternalOutputDevice) else None
@@ -217,33 +239,74 @@ class OutputDeviceRouter:
     def listener_for(self, plugin_id: str, bus) -> RoutedPlaybackListener:
         return RoutedPlaybackListener(plugin_id, bus, self)
 
-    async def resync(self) -> None:
+    async def monitor(self, interval_s: float = 1.0) -> None:
+        """Refresh live device availability until cancelled by server shutdown."""
+        while True:
+            await self.resync(only_if_changed=True)
+            await asyncio.sleep(interval_s)
+
+    async def _refresh_health(self) -> None:
+        prepared = self._prepared_device()
+        health = ModuleHealthState.READY
+        if prepared is not None and prepared.plugin_instance is not None:
+            try:
+                async with asyncio.timeout(5):
+                    state = await prepared.plugin_instance.get_state()
+                health = state.state
+            except Exception as exc:
+                health = ModuleHealthState.ERROR
+                logger.warning(
+                    "Could not read health from '%s' (%s)",
+                    self.current_name(),
+                    type(exc).__name__,
+                )
+        self._health_plugin, self._health_state = prepared, health
+
+    async def resync(self, *, only_if_changed: bool = False) -> None:
         """Publish the current owner's state, so clients stop showing the
-        numbers of a module that no longer drives the output."""
+        numbers of a module that no longer drives the output.
+
+        The monitor skips unchanged owners; explicit resyncs also refresh levels.
+        """
         if self._bus is None:
             return
-        device = self.current()
+        async with self._resync_lock:
+            await self._refresh_health()
+            owner = (self.current_name(), self.current())
+            if only_if_changed and owner == self._synced_owner:
+                return
+            if await self._publish_state(owner):
+                self._synced_owner = owner
+
+    async def _publish_state(
+        self, owner: tuple[str, Optional[ExternalOutputDevice]]
+    ) -> bool:
+        name, device = owner
         if device is None:
             state = ExtDeviceState(
                 power_on=False, volume=DeviceVolume(supported=False)
             )
         else:
-            functions = device.supported_functions()
             try:
-                volume = (
-                    await device.get_volume()
-                    if SupportedFunction.GET_VOLUME in functions
-                    else DeviceVolume(supported=False)
-                )
-                power_on = (
-                    await device.is_power_on()
-                    if SupportedFunction.IS_POWER_ON in functions
-                    else True
-                )
+                async with asyncio.timeout(5):
+                    functions = device.supported_functions()
+                    volume = (
+                        await device.get_volume()
+                        if SupportedFunction.GET_VOLUME in functions
+                        else DeviceVolume(supported=False)
+                    )
+                    power_on = (
+                        await device.is_power_on()
+                        if SupportedFunction.IS_POWER_ON in functions
+                        else True
+                    )
             except Exception as e:
                 logger.warning(
-                    "Could not read state from '%s': %s", self.current_name(), e
+                    "Could not read state from '%s' (%s)", name, type(e).__name__
                 )
-                return
+                return False
             state = ExtDeviceState(power_on=power_on, volume=volume)
+        if owner != (self.current_name(), self.current()):
+            return False
         self._bus.set_initial_state(state)
+        return True
