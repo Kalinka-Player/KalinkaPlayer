@@ -31,7 +31,7 @@ sequenceDiagram
     API-->>App: ZIP attachment with Content-Length
 ```
 
-**User interaction.** Add **Settings → Support → Download server logs**. Default to the last 24 hours, with 1-hour and 7-day alternatives. Offer **Include renderer logs from this server** only when the server lists that source as available (see *Sources*). It covers the renderer installed on the server's own machine, never a renderer elsewhere or the app itself.
+**User interaction.** Add **Settings → Support → Download server logs**. Default to the last 24 hours, with 1-hour and 7-day alternatives. Offer **Include renderer logs from this server** only when the server lists that source as available (see *Sources*). It covers the renderer installed on the server's own machine, never a renderer elsewhere or the app itself. The supervisor's logs need no choice: every export carries them when the server's machine has the supervisor.
 
 After **Prepare logs**, show **Collecting logs…** with an indeterminate indicator and **Cancel**, then **Download ZIP · 96 KB** with the expiry time. A failed export shows its message and **Try again**. Warnings — history shorter than requested, a cap that dropped older records, an unavailable renderer source — appear as notes beside the ready download. A short note on the screen says the archive may contain file and track names, listening times, device names and network addresses.
 
@@ -106,16 +106,19 @@ Errors use a stable code and a safe, user-facing message, for example `{"code":"
 | --- | --- | --- |
 | `server` | `server.log` | `kalinka.service`, `kalinka-upgrade.service`, `kalinka-restart.service` |
 | `local_renderer` | `local-renderer.log` | `kalinka-renderer.service`, `kalinka-renderer-upgrade.service` |
+| `supervisor` | `supervisor.log` | `kalinka-supervisor.service`, `kalinka-soundcard.service`, `kalinka-soundcard-apply.service`, `kalinka-ssh-setup.service`, `kalinka-wifi@*.service`, `kalinka-reinstall.service`, `kalinka-plugin-removal.service` |
 
 The upgrade and restart units belong to the server source because a failed upgrade is the likeliest reason to ask for logs, and their output never reaches `kalinka.service`'s journal. Each line carries its unit's name, so the interleaved file reads in order: the upgrade, the restart, the server starting again. Asking the journal by unit also brings systemd's own messages about each unit — a start, an exit status, a kill — which are often the answer. A unit with no records is normal (the RPM ships no upgrade units); warn only when a whole source has none.
 
 `local_renderer` is available when the renderer package's unit file `/usr/lib/systemd/system/kalinka-renderer.service` exists, the same check the server's postinst makes. The Flatpak renderer runs as a user unit in its user's journal and is out of scope.
 
-Production logs go to journald: the server's entry point installs stream handlers and the renderer runs in the foreground, and nothing writes `/var/log/kalinka`. The developer launcher instead tees the server's output into `paths.log_dir()/server.log`. The server picks its backend the way `logging_setup.stream_is_journal` picks a log format: when its standard error is the journal, it reads the journal through the reader below; otherwise it reads the developer's file and offers no renderer source.
+`supervisor` is available when the supervisor package's unit file `/usr/lib/systemd/system/kalinka-supervisor.service` exists, and is then in every export. Besides the supervisor itself it covers the units the supervisor ships or starts: the sound card at boot and on request, SSH access, each Wi-Fi interface, the reinstall and plugin removal. The reinstall and plugin-removal helpers write their output into `/var/log/kalinka-supervisor/`, so only systemd's messages about those two reach the archive.
+
+Production logs go to journald: the server's entry point installs stream handlers and the renderer runs in the foreground, and nothing writes `/var/log/kalinka`. The developer launcher instead tees the server's output into `paths.log_dir()/server.log`. The server picks its backend the way `logging_setup.stream_is_journal` picks a log format: when its standard error is the journal, it reads the journal through the reader below; otherwise it reads the developer's file and offers neither the renderer nor the supervisor source.
 
 **Collection.** Ask for the requested interval across boots, not only the current boot. Read newest records first, stop at the source's share of the text cap, then write the retained records oldest first; the newest records survive the cap and a slow scan can stop early. Render structured records as readable timestamped lines, never raw journal data. Cap a single record at 64 KiB and mark the cut. Record each source's actual first and last timestamps: history that starts after `since` — vacuumed, or a volatile journal lost at reboot — is a warning, never complete coverage.
 
-A source tells "nothing in range" apart from "cannot read": an accessible source with no records yields an empty file and a warning. A failed `server` source fails the export; a failed `local_renderer` source leaves a ready archive with a warning. The retained text stays in memory, within the cap, and a record that carries a credential is dropped before anything reaches the disk.
+A source tells "nothing in range" apart from "cannot read": an accessible source with no records yields an empty file and a warning. A failed `server` source fails the export; a failed `local_renderer` or `supervisor` source leaves a ready archive with a warning. The retained text stays in memory, within the cap, and a record that carries a credential is dropped before anything reaches the disk.
 
 **The journal reader.** The service user `kalusr` cannot read the system journal, and the unit runs with `NoNewPrivileges=yes`. A small socket-activated reader bridges that:
 
@@ -127,7 +130,7 @@ Two simpler routes were considered and rejected. `SupplementaryGroups=systemd-jo
 
 **Developer file source.** Without systemd, read `paths.log_dir()/server.log`, the one file [dev_run.sh](../scripts/dev_run.sh) appends to; it never rotates. Open it without following symlinks, read backwards from the length seen at open, and keep traceback lines with the record they follow. The full log format starts each record with its timestamp, which the time filter uses. Under `KALINKA_LOG_FORMAT=journal` records carry none: include the newest records up to the cap, set `time_filter_applied: false` in the manifest and warn.
 
-**Archive.** The entries are `server.log`, `local-renderer.log` when requested, and `manifest.json`, always under those names. The manifest records a schema version, the Kalinka and plugin versions, the OS version and CPU architecture, the requested range, and for each source its units or file, backend, actual first and last timestamps, record and byte counts, truncation and whether the time filter applied. Never include configuration, databases, music listings or the rest of the journal.
+**Archive.** The entries are `server.log`, `local-renderer.log` when requested, `supervisor.log` when the supervisor is installed, and `manifest.json`, always under those names. The manifest records a schema version, the Kalinka and plugin versions, the OS version and CPU architecture, the requested range, and for each source its units or file, backend, actual first and last timestamps, record and byte counts, truncation and whether the time filter applied. Never include configuration, databases, music listings or the rest of the journal.
 
 **Withholding credentials.** Logs should not carry a credential in the first place — the project rule, `quiet_credential_carrying_loggers`, and the pull-request check [check_credential_logging.py](../scripts/check_credential_logging.py) that flags code passing a credential to a log see to that — so the export's filter is the second line of defence. It never masks part of a line: a record that looks like it carries a credential is left out whole, and the archive's warnings and manifest say how many were. `credential_detector()` in [config_secrets.py](../packages/kalinka-server/src/kalinka_server/config_secrets.py), the one place that already decides what a credential is, flags a record holding the current value of any field `is_secret` marks, across the server's and the modules' configuration, also percent-encoded; a password written into a URL; or a credential-named header, query parameter or key-value pair with a value, by the same name rule the pull-request check uses ([credential_names.py](../packages/kalinka-server/src/kalinka_server/credential_names.py)). It errs towards leaving a record out. The worker holds the secret values in memory only and never logs them. Detection is best effort, which is why the screen carries its privacy note.
 
@@ -140,7 +143,7 @@ Files live in `paths.cache_dir()/log-export/`, a 0700 directory holding 0600 fil
 | Limit | Default |
 | --- | --- |
 | Concurrent preparations | 1 |
-| Collected log text | 8 MiB, split 6 MiB server and 2 MiB renderer when both are included; newest records win |
+| Collected log text | 8 MiB: 2 MiB for the renderer and 1 MiB for the supervisor when included, the rest for the server; newest records win |
 | Single record | 64 KiB, marked when cut |
 | Preparation deadline | 60 seconds |
 | Archive lifetime | 30 minutes after it becomes ready |

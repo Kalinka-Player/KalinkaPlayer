@@ -30,6 +30,15 @@ from typing import BinaryIO, List, Optional, Sequence, Tuple
 SOURCE_UNITS = {
     "server": ("kalinka.service", "kalinka-upgrade.service", "kalinka-restart.service"),
     "local_renderer": ("kalinka-renderer.service", "kalinka-renderer-upgrade.service"),
+    "supervisor": (
+        "kalinka-supervisor.service",
+        "kalinka-soundcard.service",
+        "kalinka-soundcard-apply.service",
+        "kalinka-ssh-setup.service",
+        "kalinka-wifi@*.service",
+        "kalinka-reinstall.service",
+        "kalinka-plugin-removal.service",
+    ),
 }
 
 #: Every field that can name the unit a record is about, besides the message.

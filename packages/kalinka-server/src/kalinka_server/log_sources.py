@@ -22,9 +22,14 @@ from .logging_setup import DATE_FORMAT
 
 SERVER = "server"
 LOCAL_RENDERER = "local_renderer"
+SUPERVISOR = "supervisor"
+
+#: Every source, in the order an export lists them.
+SOURCES = (SERVER, LOCAL_RENDERER, SUPERVISOR)
 
 READER_SOCKET = "/run/kalinka-journal-reader.sock"
 RENDERER_UNIT_FILE = "/usr/lib/systemd/system/kalinka-renderer.service"
+SUPERVISOR_UNIT_FILE = "/usr/lib/systemd/system/kalinka-supervisor.service"
 
 #: A record longer than this is cut, and says so.
 MAX_RECORD_BYTES = 64 * 1024
@@ -355,16 +360,20 @@ class LogSourceCatalog(ABC):
 
 
 class JournalCatalog(LogSourceCatalog):
-    """Production: the journal, through the reader, and the renderer on this
-    machine when its package is installed."""
+    """Production: the journal, through the reader, and the renderer and the
+    supervisor on this machine, each while its package is installed."""
 
     def __init__(
         self,
         socket_path: str = READER_SOCKET,
         renderer_unit_file: str = RENDERER_UNIT_FILE,
+        supervisor_unit_file: str = SUPERVISOR_UNIT_FILE,
     ) -> None:
         self._socket_path = socket_path
-        self._renderer_unit_file = renderer_unit_file
+        self._package_unit_files = {
+            LOCAL_RENDERER: renderer_unit_file,
+            SUPERVISOR: supervisor_unit_file,
+        }
 
     def available(self) -> Dict[str, LogSource]:
         if not os.path.exists(self._socket_path):
@@ -372,13 +381,14 @@ class JournalCatalog(LogSourceCatalog):
         sources: Dict[str, LogSource] = {
             SERVER: JournalLogSource(SERVER, self._socket_path)
         }
-        if os.path.exists(self._renderer_unit_file):
-            sources[LOCAL_RENDERER] = JournalLogSource(LOCAL_RENDERER, self._socket_path)
+        for name, unit_file in self._package_unit_files.items():
+            if os.path.exists(unit_file):
+                sources[name] = JournalLogSource(name, self._socket_path)
         return sources
 
 
 class FileCatalog(LogSourceCatalog):
-    """Development: the server's file, and never a renderer."""
+    """Development: the server's file alone."""
 
     def __init__(self, path: str) -> None:
         self._source = FileLogSource(SERVER, path)

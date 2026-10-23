@@ -261,19 +261,25 @@ def test_a_long_file_is_read_across_chunk_boundaries(tmp_path):
     assert [r.text for r in records] == list(reversed(lines))
 
 
-def test_the_journal_catalog_offers_the_renderer_only_when_it_is_installed(tmp_path):
+def test_the_journal_catalog_offers_the_renderer_and_supervisor_while_installed(tmp_path):
     sock = tmp_path / "reader.sock"
     sock.touch()
-    unit = tmp_path / "kalinka-renderer.service"
+    renderer = tmp_path / "kalinka-renderer.service"
+    supervisor = tmp_path / "kalinka-supervisor.service"
+    catalog = JournalCatalog(str(sock), str(renderer), str(supervisor))
 
-    assert list(JournalCatalog(str(sock), str(unit)).available()) == ["server"]
-    unit.touch()
-    assert list(JournalCatalog(str(sock), str(unit)).available()) == ["server", "local_renderer"]
+    assert list(catalog.available()) == ["server"]
+    supervisor.touch()
+    assert list(catalog.available()) == ["server", "supervisor"]
+    renderer.touch()
+    assert list(catalog.available()) == ["server", "local_renderer", "supervisor"]
+    supervisor.unlink()
+    assert list(catalog.available()) == ["server", "local_renderer"]
     sock.unlink()
-    assert JournalCatalog(str(sock), str(unit)).available() == {}
+    assert catalog.available() == {}
 
 
-def test_the_file_catalog_never_offers_a_renderer(tmp_path):
+def test_the_file_catalog_offers_the_server_alone(tmp_path):
     log = tmp_path / "server.log"
     assert FileCatalog(str(log)).available() == {}
     log.touch()

@@ -14,7 +14,7 @@ import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Iterable, List, Literal, Optional
+from typing import Callable, Dict, Iterable, List, Literal, Optional
 
 from pydantic import BaseModel
 
@@ -28,12 +28,13 @@ from .log_archive import (
     ExportWarning,
     write_archive,
 )
-from .log_sources import LOCAL_RENDERER, SERVER, LogSourceCatalog
+from .log_sources import LOCAL_RENDERER, SERVER, SOURCES, SUPERVISOR, LogSourceCatalog
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
 TEXT_CAP_BYTES = 8 * 1024 * 1024
-SPLIT_CAP_BYTES = {SERVER: 6 * 1024 * 1024, LOCAL_RENDERER: 2 * 1024 * 1024}
+#: An optional source's share of the text cap; the server keeps the rest.
+OPTIONAL_CAP_BYTES = {LOCAL_RENDERER: 2 * 1024 * 1024, SUPERVISOR: 1024 * 1024}
 DEADLINE_SECONDS = 60.0
 LIFETIME_SECONDS = 30 * 60.0
 
@@ -142,6 +143,12 @@ class _Export:
         return f"kalinka-logs-{self.until.strftime('%Y%m%dT%H%M%SZ')}.zip"
 
 
+def _cap_bytes(names: List[str]) -> Dict[str, int]:
+    caps = {name: OPTIONAL_CAP_BYTES[name] for name in names if name != SERVER}
+    caps[SERVER] = TEXT_CAP_BYTES - sum(caps.values())
+    return caps
+
+
 @dataclass(frozen=True)
 class ArchiveCheckout:
     """A ready archive held for one download.
@@ -210,7 +217,8 @@ class ExportManager:
 
     async def start(self, lookback_seconds: int, include_local_renderer: bool) -> ExportStatus:
         """Begin preparing an export of the last ``lookback_seconds``,
-        replacing a finished one.
+        replacing a finished one. The supervisor's logs are included
+        whenever this machine has it.
 
         @raise ExportInProgress While one is being prepared.
         @raise LogSourceUnavailable When a source it needs is not installed.
@@ -225,13 +233,17 @@ class ExportManager:
                 raise LogSourceUnavailable(LOCAL_RENDERER, required=False)
             self._discard_locked()
             until = datetime.now(timezone.utc).replace(microsecond=0)
-            names = [SERVER, LOCAL_RENDERER] if include_local_renderer else [SERVER]
+            names = [SERVER]
+            if include_local_renderer:
+                names.append(LOCAL_RENDERER)
+            if SUPERVISOR in available:
+                names.append(SUPERVISOR)
             export = _Export(
                 id=uuid.uuid4().hex,
                 since=until - timedelta(seconds=lookback_seconds),
                 until=until,
             )
-            caps = SPLIT_CAP_BYTES if len(names) > 1 else {SERVER: TEXT_CAP_BYTES}
+            caps = _cap_bytes(names)
             parts = [
                 ArchivePart(available[name], caps[name], required=name == SERVER)
                 for name in names
@@ -270,7 +282,7 @@ class ExportManager:
         return os.path.join(self._directory, f"{export.id}.zip")
 
     def _status_locked(self) -> ExportStatus:
-        available = sorted(self._catalog.available(), key=[SERVER, LOCAL_RENDERER].index)
+        available = sorted(self._catalog.available(), key=SOURCES.index)
         export = self._export
         if export is None:
             return ExportStatus(state="none", available_sources=available)
