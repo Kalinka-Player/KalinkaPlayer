@@ -43,6 +43,10 @@ class ArtStyle(Enum):
     CARD = "card"
     COVER = "cover"
 
+    @property
+    def aspect_ratio(self) -> float:
+        return CANVAS_W / CANVAS_H if self is ArtStyle.CARD else 1.0
+
 
 # Background palette.
 _BASE = (16, 16, 20)          # near-black ground under the gradient
