@@ -10,6 +10,8 @@ session, as the binary does.
 """
 
 import asyncio
+import os
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -99,13 +101,15 @@ def _track(track_id: str) -> TrackInfo:
 
 
 @pytest.fixture
-def checker(monkeypatch):
+def checker(monkeypatch, tmp_path):
     """A published release, on a machine with no renderer package installed
-    until a test installs one."""
+    until a test installs one, and with no dpkg of its own until a test
+    has it change what is installed."""
     checker = update_check.UpdateChecker()
     checker._latest = RELEASE
-    checker._latest_renderer = RELEASE
+    checker._renderer.latest = RELEASE
     monkeypatch.setattr(update_check, "checker", checker)
+    monkeypatch.setattr(update_check, "_DPKG_STATUS", str(tmp_path / "dpkg-status"))
     return checker
 
 
@@ -196,6 +200,13 @@ async def _press(app):
         return await client.put("/server/upgrade", json={"version": RELEASE})
 
 
+async def _report(app) -> dict:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://kalinka"
+    ) as client:
+        return (await client.get("/server/update")).json()
+
+
 def _published(emitter) -> list:
     return [
         call.args[0].state
@@ -269,7 +280,7 @@ async def test_a_press_in_a_tracks_last_seconds_does_not_start_the_next(
 async def test_only_this_machines_renderer_behind_is_left_to_the_installer(
     core, queue, checker, fired
 ):
-    checker._installed_renderer = "0.4.0"
+    checker._renderer.installed = "0.4.0"
     here = _renderer(core, "here-id", "Living room", local=True)
     await _pause_on(queue, here)
 
@@ -336,7 +347,7 @@ async def test_repeated_presses_wait_for_every_accepted_renderer(core, fired):
 async def test_an_old_local_renderer_finishes_before_the_host_installer(
     core, checker, fired
 ):
-    checker._installed_renderer = "0.4.0"
+    checker._renderer.installed = "0.4.0"
     # An older Hello cannot prove locality, including when it dials localhost.
     here = _renderer(core, "here-id", "Living room", local=False)
     assert (await _press(core.app)).status_code == 200
@@ -378,19 +389,51 @@ async def test_playback_cannot_reclaim_an_upgrading_renderer(core, queue, fired)
     await session.close()
 
 
-async def test_a_supervisor_only_update_is_preserved(core, checker, fired, monkeypatch):
+@pytest.mark.parametrize("package", ["supervisor", "web"])
+async def test_a_package_only_update_is_offered_and_fires(
+    core, checker, fired, monkeypatch, package
+):
     monkeypatch.setattr(upgrade_route, "get_version", lambda: RELEASE)
-    checker._installed_supervisor = "0.1.0"
-    checker._latest_supervisor = "0.2.0"
-    checker._supervisor_stale = True
-    async with AsyncClient(
-        transport=ASGITransport(app=core.app), base_url="http://kalinka"
-    ) as client:
-        info = (await client.get("/server/update")).json()
-    assert info["supervisor_current_version"] == "0.1.0"
-    assert info["supervisor_latest_version"] == "0.2.0"
-    assert info["supervisor_update_available"] is True
+    train = getattr(checker, f"_{package}")
+    train.installed = "0.1.0"
+    train.latest = "0.2.0"
+    train.behind = True
+    info = await _report(core.app)
+    assert info[f"{package}_current_version"] == "0.1.0"
+    assert info[f"{package}_latest_version"] == "0.2.0"
+    assert info[f"{package}_update_available"] is True
+    assert info["update_available"] is True
     assert (await _press(core.app)).status_code == 200
+    assert fired == [True]
+
+
+async def test_a_supervisor_upgrade_is_no_longer_offered_once_installed(
+    core, checker, fired, monkeypatch
+):
+    # Only the supervisor moved, so the installer left Core running.
+    monkeypatch.setattr(upgrade_route, "get_version", lambda: RELEASE)
+    monkeypatch.setattr(update_check, "deb_is_newer", lambda new, old: new != old)
+    monkeypatch.setattr(update_check, "installed_renderer_version", lambda: None)
+    installed = ["0.1.0"]
+    monkeypatch.setattr(
+        update_check, "installed_supervisor_version", lambda: installed[0]
+    )
+    checker._supervisor.latest = "0.2.0"
+    status = Path(update_check._DPKG_STATUS)
+    status.touch()
+    os.utime(status, ns=(1, 1))
+
+    assert (await _report(core.app))["supervisor_update_available"] is True
+    assert (await _press(core.app)).status_code == 200
+    assert fired == [True]
+
+    installed[0] = "0.2.0"
+    os.utime(status, ns=(2, 2))
+    info = await _report(core.app)
+    assert info["supervisor_current_version"] == "0.2.0"
+    assert info["supervisor_update_available"] is False
+    assert info["update_available"] is False
+    assert (await _press(core.app)).status_code == 409
     assert fired == [True]
 
 
