@@ -33,9 +33,12 @@
  * buffers, how much of a stream it holds in memory, how long it waits on a
  * stream that has stopped arriving. Changing how the card is driven rebuilds
  * the graph — APPLY_COST_INTERRUPTS_PLAYBACK — and anything that was playing is
- * gone, as declared. What the graph reads per stream, the buffer sizes and the
- * stall timeout, reaches each stream appended after the change, while those
- * already appended, the playing one among them, keep theirs —
+ * gone, as declared. The rebuild reports one STOPPED, from the new graph, and
+ * when a source was on air it says `interrupted`, so the Core can play it
+ * again: the session and its volume policy carry on. A retired graph's reports
+ * still on their way are dropped. What the graph reads per stream, the buffer
+ * sizes and the stall timeout, reaches each stream appended after the change,
+ * while those already appended, the playing one among them, keep theirs —
  * APPLY_COST_INSTANT. Overrides that differ from the defaults are persisted to
  * the state directory (see SettingsPersistence) and loaded on construction; a
  * stored knob value its field would refuse as a write is dropped with a
@@ -104,6 +107,8 @@ private:
 
   bool ensurePlayer();
   void rebuildPlayer();
+  /// Whether the graph holds a source it is playing, preparing or paused on.
+  bool onAir() const;
   void startPumps();
   void stopPumps();
   StreamId appendSource(const kalinka::renderer::v1::Source &source);
@@ -147,6 +152,10 @@ private:
   std::shared_ptr<VolumeMonitor> volumeMonitor_;
   std::thread statePump_;
   std::thread volumePump_;
+  // A retired graph's queued posts name streams and a device that are gone.
+  uint64_t graphGeneration_ = 0;
+  // Carried across rebuilds until a STOPPED reports it.
+  bool interruptPending_ = false;
 
   StreamId nextStreamId_ = 1;
   // Every stream the graph still knows about, in append (= switch) order.

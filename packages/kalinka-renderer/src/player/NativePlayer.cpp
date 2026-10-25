@@ -490,44 +490,66 @@ bool NativePlayer::ensurePlayer() {
 }
 
 void NativePlayer::rebuildPlayer() {
+  // Whatever was playing is gone, as APPLY_COST_INTERRUPTS_PLAYBACK declared.
+  interruptPending_ = interruptPending_ || onAir();
   stopPumps();
   sources_.clear();
   currentId_.reset();
   player_.reset();
-  ensurePlayer();
-  // Whatever was playing is gone, as APPLY_COST_INTERRUPTS_PLAYBACK declared.
-  pb::Envelope env;
-  pb::PlaybackStateChanged *changed = env.mutable_playback_state_changed();
-  changed->set_state(pb::PLAYBACK_STATE_STOPPED);
-  changed->set_position_valid(false);
-  changed->set_at_unix_ms(nowUnixMs());
-  emit(env);
+  // Without a graph to report its resting STOPPED, post one as it would.
+  if (!ensurePlayer()) {
+    asio::post(ioc_, [this, generation = graphGeneration_] {
+      if (generation == graphGeneration_) {
+        onStreamState(StreamState(AudioGraphNodeState::STOPPED));
+      }
+    });
+  }
   // The new device may set the level elsewhere: a mixer, software, or none.
   emitVolume(player_ ? player_->getVolume() : VolumeState{}, false);
+}
+
+bool NativePlayer::onAir() const {
+  if (!player_) {
+    return false;
+  }
+  switch (player_->getState().state) {
+  case AudioGraphNodeState::PREPARING:
+  case AudioGraphNodeState::STREAMING:
+  case AudioGraphNodeState::PAUSED:
+  case AudioGraphNodeState::SOURCE_CHANGED:
+    return true;
+  default:
+    return false;
+  }
 }
 
 void NativePlayer::startPumps() {
   stateMonitor_ = std::shared_ptr<StateMonitor>(player_->monitor().release());
   volumeMonitor_ =
       std::shared_ptr<VolumeMonitor>(player_->volumeMonitor().release());
+  const uint64_t generation = graphGeneration_;
 
-  statePump_ = std::thread([this, monitor = stateMonitor_] {
+  statePump_ = std::thread([this, monitor = stateMonitor_, generation] {
     while (monitor->isRunning()) {
       StreamState state = monitor->waitState();
       if (!monitor->isRunning()) {
         break;
       }
-      asio::post(ioc_, [this, state] { onStreamState(state); });
+      asio::post(ioc_, [this, state, generation] {
+        if (generation == graphGeneration_) {
+          onStreamState(state);
+        }
+      });
     }
   });
-  volumePump_ = std::thread([this, monitor = volumeMonitor_] {
+  volumePump_ = std::thread([this, monitor = volumeMonitor_, generation] {
     while (monitor->isRunning()) {
       monitor->wait();
       if (!monitor->isRunning()) {
         break;
       }
-      asio::post(ioc_, [this] {
-        if (player_) {
+      asio::post(ioc_, [this, generation] {
+        if (generation == graphGeneration_ && player_) {
           emitVolume(player_->getVolume(), true);
         }
       });
@@ -550,6 +572,7 @@ void NativePlayer::stopPumps() {
   }
   stateMonitor_.reset();
   volumeMonitor_.reset();
+  ++graphGeneration_;
 }
 
 void NativePlayer::reportUnavailable(const char *command) {
@@ -723,9 +746,13 @@ void NativePlayer::onStreamState(const StreamState &state) {
   }
 
   pb::Envelope env;
-  state_translator::fillPlaybackStateChanged(
-      state, tokenFor(state.streamId), nowUnixMs(),
-      *env.mutable_playback_state_changed());
+  pb::PlaybackStateChanged *changed = env.mutable_playback_state_changed();
+  state_translator::fillPlaybackStateChanged(state, tokenFor(state.streamId),
+                                             nowUnixMs(), *changed);
+  if (state.state == AudioGraphNodeState::STOPPED && interruptPending_) {
+    changed->set_interrupted(true);
+    interruptPending_ = false;
+  }
   emit(env);
 }
 
@@ -912,6 +939,8 @@ bool NativePlayer::applySetting(const std::string &path,
     // Changing which stage owns volume can otherwise produce an abrupt level
     // jump in audio already on air. The field declares this interruption.
     stop();
+    // A plain stop, even after a rebuild: replayed, the track would jump too.
+    interruptPending_ = false;
     std::string configureError;
     if (!player_->configureVolume(value, "", &configureError)) {
       error = configureError;

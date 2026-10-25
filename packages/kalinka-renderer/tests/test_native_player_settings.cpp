@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -124,6 +125,51 @@ protected:
     return states;
   }
 
+  // Delivers what the pumps post for a while longer, so a late report shows.
+  void settle() {
+    ioc_.restart();
+    auto work = boost::asio::make_work_guard(ioc_);
+    ioc_.run_for(std::chrono::milliseconds(300));
+  }
+
+  // Records every playback state from here on.
+  void recordStates() {
+    player_->setStateSink([this](pb::Envelope &env) {
+      if (env.has_playback_state_changed()) {
+        states_.push_back(env.playback_state_changed());
+      }
+    });
+  }
+
+  std::vector<pb::PlaybackStateChanged> stops() const {
+    std::vector<pb::PlaybackStateChanged> stopped;
+    std::ranges::copy_if(states_, std::back_inserter(stopped),
+                         [](const pb::PlaybackStateChanged &state) {
+                           return state.state() == pb::PLAYBACK_STATE_STOPPED;
+                         });
+    return stopped;
+  }
+
+  bool anyInterrupted() const {
+    return std::ranges::any_of(states_, [](const auto &state) {
+      return state.interrupted();
+    });
+  }
+
+  // Held after its first bytes, so the track is still on when a setting lands.
+  bool playHeld() {
+    recordStates();
+    player_->setSource(sourceAt("/held"));
+    const bool playing = runUntil([this] {
+      return std::ranges::any_of(states_, [](const auto &state) {
+        return state.state() == pb::PLAYBACK_STATE_PLAYING;
+      });
+    });
+    states_.clear();
+    return playing;
+  }
+
+  std::vector<pb::PlaybackStateChanged> states_;
   LocalHttpServer server_{testFile("tone880.flac")};
 };
 
@@ -525,6 +571,141 @@ TEST_F(NativePlayerStreamTest, AStreamKnobLeavesThePlayingTrackAlone) {
   EXPECT_EQ(network().fields(0).value(), "60");
   EXPECT_EQ(field(network(), "network.max_redirects")->value(), "5");
   EXPECT_EQ(field(buffers(), "buffers.flac")->value(), "2000000");
+}
+
+// Only the Core can put the track back, so the stop must say it may.
+TEST_F(NativePlayerStreamTest,
+       ADeviceChangeWhilePlayingReportsOneInterruptedStop) {
+  ASSERT_TRUE(playHeld());
+
+  ASSERT_TRUE(player_->applyConfig("output.device", "default", error_))
+      << error_;
+
+  ASSERT_TRUE(runUntil([this] { return !stops().empty(); }));
+  settle();
+  ASSERT_EQ(stops().size(), 1u);
+  EXPECT_TRUE(stops().front().interrupted());
+  EXPECT_FALSE(stops().front().has_source_token());
+}
+
+// One update can carry several settings, each rebuilding the graph.
+TEST_F(NativePlayerStreamTest, RebuildsInARowReportOneInterruptedStop) {
+  ASSERT_TRUE(playHeld());
+
+  ASSERT_TRUE(player_->applyConfig("output.latency_ms", "200", error_))
+      << error_;
+  ASSERT_TRUE(player_->applyConfig("output.period_ms", "50", error_))
+      << error_;
+
+  ASSERT_TRUE(runUntil([this] { return !stops().empty(); }));
+  settle();
+  ASSERT_EQ(stops().size(), 1u);
+  EXPECT_TRUE(stops().front().interrupted());
+}
+
+// A latency the graph cannot read fails its build as a card that will not open
+// does; the service refuses it before it would ever get this far.
+TEST_F(NativePlayerStreamTest, AGraphThatCannotBeBuiltStillReportsTheStop) {
+  ASSERT_TRUE(playHeld());
+
+  ASSERT_TRUE(player_->applyConfig("output.latency_ms", "unreadable", error_))
+      << error_;
+
+  ASSERT_TRUE(runUntil([this] { return !stops().empty(); }));
+  settle();
+  ASSERT_EQ(stops().size(), 1u);
+  EXPECT_TRUE(stops().front().interrupted());
+}
+
+TEST_F(NativePlayerStreamTest, ARebuildAfterAFailedOneReportsOneStop) {
+  ASSERT_TRUE(playHeld());
+
+  ASSERT_TRUE(player_->applyConfig("output.latency_ms", "unreadable", error_))
+      << error_;
+  ASSERT_TRUE(player_->applyConfig("output.latency_ms", "200", error_))
+      << error_;
+
+  ASSERT_TRUE(runUntil([this] { return !stops().empty(); }));
+  settle();
+  ASSERT_EQ(stops().size(), 1u);
+  EXPECT_TRUE(stops().front().interrupted());
+}
+
+// The stop keeps a level jump out of the audio; played again, the track would
+// jump all the same.
+TEST_F(NativePlayerStreamTest, AVolumeModeChangeWhilePlayingIsAPlainStop) {
+  ASSERT_TRUE(playHeld());
+
+  ASSERT_TRUE(player_->applyConfig("output.volume_mode", "software", error_))
+      << error_;
+
+  ASSERT_TRUE(runUntil([this] { return !stops().empty(); }));
+  settle();
+  EXPECT_FALSE(anyInterrupted());
+}
+
+// Whichever comes first in the update, the volume mode's plain stop wins.
+TEST_F(NativePlayerStreamTest, AVolumeModeChangeAfterARebuildIsAPlainStop) {
+  ASSERT_TRUE(playHeld());
+
+  ASSERT_TRUE(player_->applyConfig("output.latency_ms", "200", error_))
+      << error_;
+  ASSERT_TRUE(player_->applyConfig("output.volume_mode", "software", error_))
+      << error_;
+
+  ASSERT_TRUE(runUntil([this] { return !stops().empty(); }));
+  settle();
+  EXPECT_FALSE(anyInterrupted());
+}
+
+TEST_F(NativePlayerStreamTest, ARebuildWithNothingOnAirIsAPlainStop) {
+  recordStates();
+  // The STOPPED the graph rests in, so the rebuild's is the only one left.
+  ASSERT_TRUE(runUntil([this] { return !stops().empty(); }));
+  states_.clear();
+
+  ASSERT_TRUE(player_->applyConfig("output.latency_ms", "200", error_))
+      << error_;
+
+  ASSERT_TRUE(runUntil([this] { return !stops().empty(); }));
+  settle();
+  ASSERT_EQ(stops().size(), 1u);
+  EXPECT_FALSE(stops().front().interrupted());
+}
+
+// The mark is the rebuild's alone: a stop the Core asked for plays nothing
+// back, even right after an interrupted one.
+TEST_F(NativePlayerStreamTest, AStopIsPlainEvenAfterAnInterruptedOne) {
+  ASSERT_TRUE(playHeld());
+  ASSERT_TRUE(player_->applyConfig("output.latency_ms", "200", error_))
+      << error_;
+  ASSERT_TRUE(runUntil([this] { return anyInterrupted(); }));
+  ASSERT_TRUE(playHeld());
+
+  player_->stop();
+
+  ASSERT_TRUE(runUntil([this] { return !stops().empty(); }));
+  settle();
+  ASSERT_EQ(stops().size(), 1u);
+  EXPECT_FALSE(stops().front().interrupted());
+}
+
+TEST_F(NativePlayerStreamTest, NeitherAnEndNorAFailureIsInterrupted) {
+  // Under the service's 5 s minimum, so the stall fails within the deadline.
+  ASSERT_TRUE(player_->networkSettings()->applyConfig(
+      "network.stall_timeout_s", "1", error_))
+      << error_;
+  for (const auto &[path, ending] :
+       {std::pair{"/ranged", pb::PLAYBACK_STATE_FINISHED},
+        std::pair{"/stall", pb::PLAYBACK_STATE_ERROR}}) {
+    SCOPED_TRACE(path);
+    const auto states = playToTheEnd(sourceAt(path));
+    ASSERT_TRUE(std::ranges::any_of(states, [ending](const auto &state) {
+      return state.state() == ending;
+    }));
+    EXPECT_TRUE(std::ranges::none_of(
+        states, [](const auto &state) { return state.interrupted(); }));
+  }
 }
 
 TEST_F(NativePlayerSettingsTest, AStoredValueItsKnobWouldRefuseIsIgnored) {
