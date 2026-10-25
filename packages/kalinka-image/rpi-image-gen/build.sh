@@ -7,7 +7,9 @@
 # Env:
 #   KALINKA_VERSION    Kalinka release to install (default: the latest)
 #   SUPERVISOR_DEB     an arm64 kalinka-supervisor package (default: build one)
+#   SUPERVISOR_VERSION the version of the one built (default: from the last tag)
 #   OUT_DIR            where the image lands (default: ../out/rpi-image-gen)
+#   XZ_LEVEL           xz compression preset (default: -6)
 #   GITHUB_TOKEN       optional, raises the GitHub API rate limit while the
 #                      install finds the release
 #   SPIKE_SSH_PUBKEY   public key file: adds a kalinka-dev login with it and
@@ -23,11 +25,15 @@ RIG_REF=v2.9.0
 RIG_DIR="$IMAGE_DIR/cache/rpi-image-gen-$RIG_REF"
 BUILDER="localhost/kalinka-rpi-image-gen:$RIG_REF"
 OUT_DIR="${OUT_DIR:-$IMAGE_DIR/out/rpi-image-gen}"
+SCRIPT_DIR="$IMAGE_DIR"
+TARGET_ARCH=arm64
 
+# shellcheck source=../lib/common.sh
+. "$IMAGE_DIR/lib/common.sh"
+# shellcheck source=../lib/supervisor.sh
+. "$IMAGE_DIR/lib/supervisor.sh"
 # shellcheck source=../lib/seal.sh
 . "$IMAGE_DIR/lib/seal.sh"
-
-die() { echo "build.sh: $*" >&2; exit 1; }
 
 [ -f "$HERE/$CONFIG" ] || die "no config $CONFIG"
 [ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ] || [ "$(uname -m)" = aarch64 ] \
@@ -59,12 +65,7 @@ if [ -n "${GITHUB_TOKEN:-}" ]; then
   overrides+=(IGconf_kalinka_github_token_file=/work/github-token)
 fi
 
-if [ -n "${SUPERVISOR_DEB:-}" ]; then
-  cp "$SUPERVISOR_DEB" "$WORK/kalinka-supervisor.deb"
-else
-  GOARCH=arm64 OUT_DIR="$WORK" "$REPO_ROOT/packages/kalinka-supervisor/build-deb.sh"
-  mv "$WORK"/kalinka-supervisor_*_arm64.deb "$WORK/kalinka-supervisor.deb"
-fi
+build_supervisor
 
 if ! podman image exists "$BUILDER"; then
   podman build --security-opt label=disable -t "$BUILDER" -f - "$RIG_DIR" <<'CONTAINERFILE'
@@ -83,12 +84,11 @@ podman run --rm --privileged --security-opt label=disable \
     -- "${overrides[@]}"
 
 # Only the image directories: the root left beside them is owned by the container's users.
-image="$(find "$WORK"/build/image-* -maxdepth 1 -name '*.img' -type f | head -n1)"
+image="$(find "$WORK/build" -mindepth 2 -maxdepth 2 -path "$WORK/build/image-*/*.img" -type f | head -n1)"
 [ -n "$image" ] || die 'rpi-image-gen left no image'
 read -r core supervisor renderer display < "$WORK/contents"
 name="$(image_name "$core" "$target" arm64)"
 write_manifest "$OUT_DIR/$name.manifest.json" "$target" arm64 "$display" "$core" "$supervisor" "$renderer" \
   "rpi_image_gen=$RIG_REF"
-xz -T0 --stdout "$image" > "$OUT_DIR/$name.xz"
-( cd "$OUT_DIR" && sha256sum "$name.xz" > "$name.xz.sha256" )
+compress_image "$image" "$name"
 ls -lh "$OUT_DIR/$name.xz"

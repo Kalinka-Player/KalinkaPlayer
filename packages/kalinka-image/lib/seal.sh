@@ -42,6 +42,12 @@ pathlib.Path(path).write_text(json.dumps(data, indent=2) + "\n")
 PYMANIFEST
 }
 
+# Usage: compress_image IMAGE NAME   NAME.xz and its checksum land in OUT_DIR.
+compress_image() {
+  xz "${XZ_LEVEL:--6}" --threads=0 --stdout "$1" > "$OUT_DIR/$2.xz"
+  ( cd "$OUT_DIR" && sha256sum "$2.xz" > "$2.xz.sha256" )
+}
+
 publish_image() {
   log "Compressing"
   local version name supervisor renderer
@@ -54,8 +60,7 @@ publish_image() {
     "$version" "$supervisor" "$renderer" "dietpi_image=$DIETPI_IMAGE" "dietpi_version=$DIETPI_VERSION" \
     "dietpi_sha256=$(sha256sum "$DIETPI_CACHE/$DIETPI_IMAGE.img.xz" | cut -d' ' -f1)"
   detach_image
-  xz "$XZ_LEVEL" --threads=0 --stdout "$IMAGE" > "$OUT_DIR/$name.xz"
-  ( cd "$OUT_DIR" && sha256sum "$name.xz" > "$name.xz.sha256" )
+  compress_image "$IMAGE" "$name"
 
   log "Built $OUT_DIR/$name.xz"
   ls -lh "$OUT_DIR/$name.xz"
