@@ -385,11 +385,17 @@ class HolderSession:
 
     async def _replay(self, position_ms: int) -> None:
         """The renderer can play again after cutting the track short, having
-        come back or applied a setting: the same stream from where it was."""
+        come back or applied a setting: the same stream from where it was.
+
+        A sequential stream cannot be opened again, so only the plugin can
+        make a new one. On the session it was cut short on, the plugin is
+        shown the stop and the hold stays for it; a session that ended takes
+        the hold with it."""
         if self._ended or self._source is None or self._track is None:
             return
         if self._source.sequential:
-            await self._on_session_lost(CloseReason.RENDERER_LOST)
+            if not self._player.decline_resume():
+                await self._on_session_lost(CloseReason.RENDERER_LOST)
             return
         queued = self._queued
         await self.play(self._source, self._track, start_offset_ms=position_ms)
