@@ -1,0 +1,57 @@
+# METABEGIN
+# X-Env-Layer-Name: kalinka
+# X-Env-Layer-Category: app
+# X-Env-Layer-Desc: Kalinka Core, its renderer and the supervisor, installed and
+#  checked by the same steps build-image.sh takes on the DietPi images.
+# X-Env-Layer-Version: 1.0.0
+# X-Env-Layer-Requires: kalinka-base
+# X-Env-Layer-AfterProvider: device,rpi-device
+#
+# X-Env-VarPrefix: kalinka
+#
+# X-Env-Var-version:
+# X-Env-Var-version-Desc: Kalinka release to install, the latest when empty.
+# X-Env-Var-version-Required: n
+# X-Env-Var-version-Valid: string-or-empty
+# X-Env-Var-version-Set: y
+#
+# X-Env-Var-display: n
+# X-Env-Var-display-Desc: Add the now-playing display (kalinka-kiosk) for an
+#  attached HDMI or DSI screen.
+# X-Env-Var-display-Required: n
+# X-Env-Var-display-Valid: bool
+# X-Env-Var-display-Set: y
+#
+# X-Env-Var-supervisor_deb:
+# X-Env-Var-supervisor_deb-Desc: The kalinka-supervisor package for arm64.
+# X-Env-Var-supervisor_deb-Required: y
+# X-Env-Var-supervisor_deb-Valid: string
+# X-Env-Var-supervisor_deb-Set: y
+#
+# X-Env-Var-hook:
+# X-Env-Var-hook-Desc: The script that installs Kalinka into the root.
+# X-Env-Var-hook-Required: y
+# X-Env-Var-hook-Valid: string
+# X-Env-Var-hook-Set: y
+# METAEND
+---
+mmdebstrap:
+  packages:
+    - avahi-daemon
+    - alsa-utils
+    - sudo
+    - curl
+    - ca-certificates
+    - python3
+    - python3-venv
+    - libpam-systemd
+    - dbus
+    - tzdata
+    - wpasupplicant
+    - iw
+    - wireless-regdb
+    - rfkill
+    - iproute2
+    - openssh-server
+  customize-hooks:
+    - '"$IGconf_kalinka_hook" "$1"'

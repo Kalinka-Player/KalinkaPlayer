@@ -1,0 +1,11 @@
+# METABEGIN
+# X-Env-Layer-Name: kalinka-spike-access
+# X-Env-Layer-Category: app
+# X-Env-Layer-Desc: SSH on from the first boot, for checking a spike image.
+# X-Env-Layer-Version: 1.0.0
+# X-Env-Layer-Requires: kalinka,openssh-server
+# METAEND
+---
+mmdebstrap:
+  customize-hooks:
+    - $BDEBSTRAP_HOOKS/enable-units "$1" ssh
