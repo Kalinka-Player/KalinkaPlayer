@@ -4,7 +4,7 @@
 # X-Env-Layer-Desc: Kalinka Core, its renderer and the supervisor, installed and
 #  checked by the same steps build-image.sh takes on the DietPi images.
 # X-Env-Layer-Version: 1.0.0
-# X-Env-Layer-Requires: kalinka-base
+# X-Env-Layer-Requires: kalinka-base,openssh-server
 # X-Env-Layer-AfterProvider: device,rpi-device
 #
 # X-Env-VarPrefix: kalinka
@@ -68,6 +68,5 @@ mmdebstrap:
     - e2fsprogs
     - rfkill
     - iproute2
-    - openssh-server
   customize-hooks:
     - '"$IGconf_kalinka_hook" "$1"'
