@@ -174,8 +174,8 @@ class AcoustIDConfig(BaseModel):
         title="AcoustID API key",
         json_schema_extra={
             "help": (
-                "Identifies tracks by their audio fingerprint — free key at "
-                "[acoustid.org](https://acoustid.org/)"
+                "Recognises songs by their sound when the tags are missing or "
+                "wrong. [Get a free key](https://acoustid.org/new-application)"
             ),
             "widget": "password",
             **_SIMPLE,
@@ -216,14 +216,20 @@ class PluginsConfig(BaseModel):
     musicbrainz: MusicBrainzConfig = Field(
         default_factory=MusicBrainzConfig, title="MusicBrainz"
     )
-    acoustid: AcoustIDConfig = Field(default_factory=AcoustIDConfig, title="AcoustID")
+    acoustid: AcoustIDConfig = Field(
+        default_factory=AcoustIDConfig,
+        title="AcoustID",
+        json_schema_extra={"inline": True},
+    )
     wikidata: WikidataConfig = Field(default_factory=WikidataConfig, title="Wikidata")
     deezer: DeezerConfig = Field(default_factory=DeezerConfig, title="Deezer")
     coverartarchive: CoverArtArchiveConfig = Field(
         default_factory=CoverArtArchiveConfig, title="Cover Art Archive"
     )
     procedural_artwork: ProceduralArtworkConfig = Field(
-        default_factory=ProceduralArtworkConfig, title="Generated album art"
+        default_factory=ProceduralArtworkConfig,
+        title="Generated album art",
+        json_schema_extra={"inline": True},
     )
     user_agent: str = Field(
         default="Kalinka/1.0 (https://github.com/madenvel/KalinkaPlayer)",
@@ -233,7 +239,15 @@ class PluginsConfig(BaseModel):
 
 class EnricherConfig(BaseModel):
     enabled: bool = Field(
-        default=True, title="Enable enricher", json_schema_extra=_SIMPLE,
+        default=True,
+        title="Fill in missing details",
+        json_schema_extra={
+            "help": (
+                "Look up artists, albums, genres and covers online when the "
+                "tags leave them out"
+            ),
+            **_SIMPLE,
+        },
     )
     concurrency: int = Field(
         default=6,
@@ -249,7 +263,9 @@ class EnricherConfig(BaseModel):
         },
     )
     plugins: PluginsConfig = Field(
-        default_factory=PluginsConfig, title="Enrichment plugins"
+        default_factory=PluginsConfig,
+        title="Enrichment plugins",
+        json_schema_extra={"inline": True},
     )
 
 
@@ -449,23 +465,26 @@ class LocalFilesConfig(ModuleConfig):
         json_schema_extra={
             "help": "Folders on the server and shares on the network",
             "replaces": ["music_folders"],
+            "status": "storage.status_view",
             **_PRIVATE,
         },
     )
-    db_path: str = Field(
-        default_factory=lambda: os.path.join(paths.state_dir(), "localfiles.db"),
-        title="Database path",
-        json_schema_extra={"widget": "path"},
+    # Declared here so the settings page shows it under the music sources.
+    ai_search: AiSearchConfig = Field(
+        default_factory=AiSearchConfig, title="AI search"
     )
-    artwork_path: str = Field(
-        default_factory=lambda: os.path.join(paths.cache_dir(), "artwork"),
-        title="Artwork cache path",
-        json_schema_extra={"widget": "path"},
+    enricher: EnricherConfig = Field(
+        default_factory=EnricherConfig, title="Metadata and artwork"
     )
     scan_interval_minutes: int = Field(
         default=15,
         title="Scan interval",
-        json_schema_extra={"constraints": {"unit": "min"}, **_SIMPLE},
+        json_schema_extra={
+            "help": "How often every source is checked for new and changed music",
+            "constraints": {"unit": "min"},
+            "heading": "Library",
+            **_SIMPLE,
+        },
     )
     file_watch_enabled: bool = Field(
         default=True,
@@ -486,11 +505,11 @@ class LocalFilesConfig(ModuleConfig):
     )
     legacy_tag_encoding: str = Field(
         default="",
-        title="Legacy tag encoding",
+        title="Repair garbled tags",
         json_schema_extra={
             "help": (
-                "Codepage that repairs tags garbled by old taggers. Leave "
-                "empty to disable; UTF-8 mojibake is always repaired."
+                "The code page old taggers wrote them in, such as cp1251. "
+                "Leave empty to skip; mixed-up UTF-8 is always repaired."
             ),
             **_SIMPLE,
         },
@@ -505,9 +524,6 @@ class LocalFilesConfig(ModuleConfig):
             ),
             "constraints": {"unit": "s"},
         },
-    )
-    enricher: EnricherConfig = Field(
-        default_factory=EnricherConfig, title="Enricher"
     )
     rebuild_library: bool = Field(
         default=False,
@@ -524,8 +540,15 @@ class LocalFilesConfig(ModuleConfig):
             **_SIMPLE,
         },
     )
-    ai_search: AiSearchConfig = Field(
-        default_factory=AiSearchConfig, title="AI search"
+    db_path: str = Field(
+        default_factory=lambda: os.path.join(paths.state_dir(), "localfiles.db"),
+        title="Database path",
+        json_schema_extra={"widget": "path"},
+    )
+    artwork_path: str = Field(
+        default_factory=lambda: os.path.join(paths.cache_dir(), "artwork"),
+        title="Artwork cache path",
+        json_schema_extra={"widget": "path"},
     )
 
     def reconcile(self, written: frozenset[str]) -> None:
