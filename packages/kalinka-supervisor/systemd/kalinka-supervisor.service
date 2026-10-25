@@ -33,6 +33,8 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
 # DietPi's own networking tool updates these files; NM writes via its daemon.
 ReadWritePaths=/var/lib/kalinka-supervisor /run
 ReadWritePaths=-/etc/network -/etc/wpa_supplicant -/etc/resolv.conf -/etc/dhcp
+# The nm backend keeps the joined network's Wi-Fi country in kalinka-regdom.conf.
+ReadWritePaths=-/etc/modprobe.d
 ReadWritePaths=-/boot -/var/lib/dietpi -/var/lib/dhcp -/var/lib/kalinka-image
 
 [Install]
