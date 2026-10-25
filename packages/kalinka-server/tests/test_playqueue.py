@@ -1977,6 +1977,12 @@ def _enqueued(renderer) -> list:
     ]
 
 
+def _track_info(id: str) -> TrackInfo:
+    return TrackInfo(
+        id=to_track_id(id), metadata=create_track(id), source_retriever=url1
+    )
+
+
 @pytest.mark.asyncio
 async def test_a_renderer_setting_near_the_end_resumes_the_same_track(
     playqueue, renderer, event_emitter
@@ -2027,13 +2033,7 @@ async def test_a_renderer_that_does_not_say_still_stops_the_queue(
     """Without the interrupted field the stop is taken as it always was: the
     queue stops on the track, and play starts it again."""
     renderer.reports_interruptions = False
-    await playqueue.add(
-        [
-            TrackInfo(
-                id=to_track_id("1"), metadata=create_track("1"), source_retriever=url1
-            )
-        ]
-    )
+    await playqueue.add([_track_info("1")])
     await playqueue.play()
     await asyncio.sleep(0.2)
     enqueued = len(_enqueued(renderer))
@@ -2045,3 +2045,53 @@ async def test_a_renderer_that_does_not_say_still_stops_the_queue(
     assert _dispatched_states(event_emitter) == [PlayerStateEnum.STOPPED]
     assert len(_enqueued(renderer)) == enqueued
     assert renderer.current is None
+
+
+def _held_until(gate: asyncio.Event):
+    async def retrieve() -> TrackSource:
+        await gate.wait()
+        return await url1()
+
+    return retrieve
+
+
+@pytest.mark.asyncio
+async def test_a_stop_while_play_is_fetching_stays_stopped(
+    playqueue, renderer, sources
+):
+    """The fetch landing afterwards must not start what the stop was for."""
+    gate = asyncio.Event()
+    sources.serve(to_track_id("1"), _held_until(gate))
+    await playqueue.add([_track_info("1")])
+
+    await playqueue.play()
+    await playqueue.stop()
+    gate.set()
+    await asyncio.sleep(0.2)
+
+    assert _enqueued(renderer) == []
+    assert renderer.session_id is None
+
+
+@pytest.mark.asyncio
+async def test_a_stop_while_a_resume_is_fetching_stays_stopped(
+    playqueue, renderer, sources
+):
+    """A renderer setting stopped the track and the queue is fetching it again;
+    the stop the user asks for meanwhile must win."""
+    await playqueue.add([_track_info("1")])
+    await playqueue.play()
+    await asyncio.sleep(0.2)
+    enqueued = len(_enqueued(renderer))
+    gate = asyncio.Event()
+    sources.serve(to_track_id("1"), _held_until(gate))
+    renderer.rebuild()
+    await asyncio.sleep(0.05)
+
+    await playqueue.stop()
+    gate.set()
+    await asyncio.sleep(0.2)
+
+    assert len(_enqueued(renderer)) == enqueued, "the resume was not made"
+    assert renderer.session_id is None
+    assert (await playqueue.get_playback_state()).state == PlayerStateEnum.STOPPED
