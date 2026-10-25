@@ -30,7 +30,7 @@ const keptOutput = 4096
 
 // Applier makes a catalogued card the box's own through the packaged helper,
 // which systemd runs outside the supervisor's sandbox: it edits the boot
-// partition, /etc/modprobe.d and /etc/asound.conf, all read-only in there.
+// partition, /etc/modprobe.d and /etc/asound.conf, the last read-only in there.
 type Applier struct {
 	simulated bool
 	hatCard   func() string

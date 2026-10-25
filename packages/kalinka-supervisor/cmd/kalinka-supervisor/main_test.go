@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"kalinka/supervisor/internal/wifi"
 )
 
 func TestOptions(t *testing.T) {
@@ -166,6 +168,26 @@ func TestUnitRunsUnconditionally(t *testing.T) {
 			t.Errorf("unit lacks %q", strings.TrimSpace(present))
 		}
 	}
+}
+
+func TestUnitLetsNetworkManagerKeepTheCountry(t *testing.T) {
+	b, err := os.ReadFile("../../systemd/kalinka-supervisor.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(wifi.NewNetworkManager("wlan0", t.TempDir()).RegulatoryConf)
+	for _, line := range strings.Split(string(b), "\n") {
+		paths, ok := strings.CutPrefix(line, "ReadWritePaths=")
+		if !ok {
+			continue
+		}
+		for _, path := range strings.Fields(paths) {
+			if strings.TrimPrefix(path, "-") == dir {
+				return
+			}
+		}
+	}
+	t.Errorf("unit keeps %s read-only, so every join rolls back", dir)
 }
 
 func TestHTTPSetupRunsWithoutBluetooth(t *testing.T) {

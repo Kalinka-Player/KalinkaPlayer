@@ -56,7 +56,7 @@ func (n *NetworkManager) applyCountry(ctx context.Context, country string) {
 		return
 	}
 	if _, err := n.Run(ctx, 15*time.Second, "iw", "reg", "set", country); err != nil {
-		slog.Warn("Could not apply the Wi-Fi country now", "country", country)
+		slog.Warn("Could not apply the Wi-Fi country now", "country", country, "error", err)
 	}
 }
 func (n *NetworkManager) call(ctx context.Context, path dbus.ObjectPath, method string, args ...any) ([]any, error) {
