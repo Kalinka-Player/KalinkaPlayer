@@ -23,6 +23,8 @@ type Options struct {
 	Backend, Interface, Adapter, IdentityFile, State, Runtime string
 	Test, AlwaysAdvertise, DisableAP, DisableBLE              bool
 	TestResult, TestAddress                                   string
+	// KeepCountry leaves the host's Wi-Fi country alone, as a laptop under test needs.
+	KeepCountry bool
 }
 
 // Service runs nearby setup until it fails or its context ends. Run is called
@@ -88,6 +90,9 @@ func (s *Service) backend() (wifi.Backend, error) {
 	case o.Backend == "nm":
 		n := wifi.NewNetworkManager(o.Interface, o.State)
 		n.Runtime = o.Runtime
+		if o.KeepCountry {
+			n.RegulatoryConf = ""
+		}
 		return n, nil
 	}
 	d, err := wifi.NewDietPi(o.Interface, "/", o.State, o.Runtime)

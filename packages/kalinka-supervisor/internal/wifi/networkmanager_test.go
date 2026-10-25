@@ -7,6 +7,8 @@ import (
 	"github.com/godbus/dbus/v5"
 	"kalinka/supervisor/internal/protocol"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +27,8 @@ type nmFake struct {
 	failSave                     bool
 	cancel                       context.CancelFunc
 	rollbackRemaining            time.Duration
+	commands                     *[][]string
+	countryBeforeJoin            bool
 }
 
 func (b *nmFake) Close() error { return nil }
@@ -47,8 +51,15 @@ func (b *nmFake) Call(ctx context.Context, path dbus.ObjectPath, method string, 
 			return []any{map[string]dbus.Variant{"Uuid": v("previous")}}, nil
 		case nm + ".IP4Config":
 			return []any{map[string]dbus.Variant{"AddressData": v([]map[string]dbus.Variant{{"address": v("192.0.2.5")}})}}, nil
+		case nmWireless:
+			return []any{map[string]dbus.Variant{"LastScan": v(int64(0))}}, nil
 		}
+	case nmWireless + ".RequestScan":
+		return nil, errors.New("scan refused")
+	case nmWireless + ".GetAllAccessPoints":
+		return []any{[]dbus.ObjectPath{}}, nil
 	case nm + ".Settings.AddConnection2":
+		b.countryBeforeJoin = b.commands != nil && slices.ContainsFunc(*b.commands, func(c []string) bool { return slices.Equal(c, []string{"iw", "reg", "set", "GB"}) })
 		if args[1] != uint32(2) {
 			b.t.Fatal("candidate persisted before DHCP")
 		}
@@ -105,7 +116,10 @@ func TestNMStagingAndRollback(t *testing.T) {
 			n := NewNetworkManager("wlan0", t.TempDir())
 			n.Poll = time.Millisecond
 			n.Timeout = time.Second
-			b := &nmFake{t: t, state: 100, active: "/activePrevious", profiles: map[dbus.ObjectPath]settings{"/previous": {"connection": {"uuid": v("previous")}}}, states: []uint32{60, 70, 100}}
+			n.RegulatoryConf = filepath.Join(t.TempDir(), "kalinka-regdom.conf")
+			var commands [][]string
+			n.Run = recordCommands(&commands, nil)
+			b := &nmFake{t: t, state: 100, active: "/activePrevious", profiles: map[dbus.ObjectPath]settings{"/previous": {"connection": {"uuid": v("previous")}}}, states: []uint32{60, 70, 100}, commands: &commands}
 			if scenario == "wrong_password" {
 				b.states = []uint32{120}
 				b.reason = 7
@@ -131,6 +145,12 @@ func TestNMStagingAndRollback(t *testing.T) {
 				if len(stages) < 3 {
 					t.Fatal("missing progress")
 				}
+				if !b.countryBeforeJoin {
+					t.Fatal("country not applied before the join")
+				}
+				if conf, err := os.ReadFile(n.RegulatoryConf); err != nil || string(conf) != "options cfg80211 ieee80211_regdom=GB\n" {
+					t.Fatalf("country not kept across restarts: %q %v", conf, err)
+				}
 			} else {
 				if err == nil || b.committed || !b.deleted || !b.restored {
 					t.Fatalf("rollback failed %v", err)
@@ -144,11 +164,82 @@ func TestNMStagingAndRollback(t *testing.T) {
 				if strings.Contains(err.Error(), "hypothetical") {
 					t.Fatal("backend error leaked")
 				}
+				if _, err := os.Stat(n.RegulatoryConf); !os.IsNotExist(err) {
+					t.Fatal("a failed join kept its country")
+				}
 			}
 			if _, err := os.Stat(n.Journal); !os.IsNotExist(err) {
 				t.Fatal("journal remained")
 			}
 		})
+	}
+}
+func recordCommands(commands *[][]string, err error) Runner {
+	return func(_ context.Context, _ time.Duration, name string, args ...string) (string, error) {
+		*commands = append(*commands, append([]string{name}, args...))
+		return "", err
+	}
+}
+func TestNMJoinsWhenTheRadioRefusesTheCountry(t *testing.T) {
+	n := NewNetworkManager("wlan0", t.TempDir())
+	n.Poll = time.Millisecond
+	n.Timeout = time.Second
+	n.RegulatoryConf = filepath.Join(t.TempDir(), "kalinka-regdom.conf")
+	var commands [][]string
+	n.Run = recordCommands(&commands, protocol.Unavailable)
+	n.Bus = &nmFake{t: t, state: 100, active: "/activePrevious", profiles: map[dbus.ObjectPath]settings{"/previous": {"connection": {"uuid": v("previous")}}}, states: []uint32{100}}
+	if err := n.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cmd := protocol.Command{SSID: "home", Country: "GB", Password: protocol.NewSecret("dummy-passphrase")}
+	defer cmd.Password.Clear()
+	if _, err := n.Join(context.Background(), cmd, func(byte) {}); err != nil {
+		t.Fatal(err)
+	}
+	if conf, err := os.ReadFile(n.RegulatoryConf); err != nil || !strings.Contains(string(conf), "ieee80211_regdom=GB") {
+		t.Fatalf("country not kept for the next start: %q %v", conf, err)
+	}
+}
+func TestNMScanAppliesCountry(t *testing.T) {
+	n := NewNetworkManager("wlan0", t.TempDir())
+	n.Poll = time.Millisecond
+	var commands [][]string
+	n.Run = recordCommands(&commands, nil)
+	n.Bus = &nmFake{t: t, state: 100, active: "/activePrevious", profiles: map[dbus.ObjectPath]settings{}}
+	if err := n.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := n.Scan(context.Background(), "gb"); err != protocol.Invalid {
+		t.Fatalf("malformed country accepted: %v", err)
+	}
+	if _, err := n.Scan(context.Background(), "GB"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.EqualFunc(commands, [][]string{{"iw", "reg", "set", "GB"}}, slices.Equal) {
+		t.Fatalf("commands %v", commands)
+	}
+}
+func TestNMKeepsHostCountry(t *testing.T) {
+	n := NewNetworkManager("wlan0", t.TempDir())
+	n.Poll = time.Millisecond
+	n.Timeout = time.Second
+	n.RegulatoryConf = ""
+	var commands [][]string
+	n.Run = recordCommands(&commands, nil)
+	n.Bus = &nmFake{t: t, state: 100, active: "/activePrevious", profiles: map[dbus.ObjectPath]settings{"/previous": {"connection": {"uuid": v("previous")}}}, states: []uint32{100}}
+	if err := n.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := n.Scan(context.Background(), "GB"); err != nil {
+		t.Fatal(err)
+	}
+	cmd := protocol.Command{SSID: "home", Country: "GB", Password: protocol.NewSecret("dummy-passphrase")}
+	defer cmd.Password.Clear()
+	if _, err := n.Join(context.Background(), cmd, func(byte) {}); err != nil {
+		t.Fatal(err)
+	}
+	if len(commands) != 0 {
+		t.Fatalf("host country changed: %v", commands)
 	}
 }
 func TestNMRecoveryJournalHasNoCredentials(t *testing.T) {

@@ -56,6 +56,7 @@ func parse(args []string) (options, error) {
 	f.StringVar(&o.State, "state-dir", "", "Private persistent supervisor state directory")
 	f.StringVar(&o.Runtime, "runtime-dir", "", "Private runtime directory")
 	f.BoolVar(&o.DisableAP, "no-ap", false, "Disable the temporary setup hotspot")
+	f.BoolVar(&o.KeepCountry, "keep-country", false, "Leave the host's Wi-Fi country as it is instead of applying the one setup chose (nm backend)")
 	f.BoolVar(&o.DisableBLE, "no-ble", false, "Disable Bluetooth setup")
 	f.BoolVar(&o.Test, "test", false, "Real BLE with simulated Wi-Fi and simulated control actions")
 	f.BoolVar(&o.AlwaysAdvertise, "always-advertise", false, "Keep setup available while online (local testing only)")

@@ -11,6 +11,7 @@ import (
 
 	"kalinka/supervisor/internal/machine"
 	"kalinka/supervisor/internal/protocol"
+	"kalinka/supervisor/internal/wifi"
 )
 
 func stageHost(t *testing.T, adapter, wifi string) string {
@@ -78,6 +79,18 @@ func (w joiningWifi) Join(ctx context.Context, _ protocol.Command, _ func(byte))
 	case <-ctx.Done():
 	}
 	return "", protocol.Timeout
+}
+
+func TestNetworkManagerCountry(t *testing.T) {
+	for _, keep := range []bool{false, true} {
+		b, err := New(Options{Backend: "nm", KeepCountry: keep}, nil).backend()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if conf := b.(*wifi.NetworkManager).RegulatoryConf; (conf == "") != keep {
+			t.Fatalf("keep-country %v gave %q", keep, conf)
+		}
+	}
 }
 
 func TestChangingNetwork(t *testing.T) {
