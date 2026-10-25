@@ -349,7 +349,7 @@ or on the page.
 | `hat` | What the HAT's ID chip says, from `/proc/device-tree/hat`; `null` without one |
 | `configured` | The catalogued card the boot configuration sets up, else the one the firmware sets up from the HAT's ID chip; `null` for neither |
 | `configured_by` | `boot_config` or `hat`, what sets `configured` up; `null` when nothing is configured |
-| `active` | The ALSA card that came up for it: `id`, `name` and `pcm`, the name the renderer opens it by |
+| `active` | The ALSA card that came up for it: `id`, `name` and `pcm`, the name the renderer opens it by. For HDMI, `pcm` is the `default:` device of the port a screen or receiver is plugged into, else of the first port: the `hw:` device takes only IEC958 data, and a port with nothing plugged in does not open |
 | `usb` | The USB audio cards plugged in, in the same shape. They play with nothing set up, so no choice here concerns them; the output's own settings pick one |
 | `suggested` | The cards the hardware points to, most likely first |
 | `options` | Every card this box can be set up for: `name`, `label`, `vendor` and `kind` (`dac`, `digital`, `amp`, `onboard` or `none`) |
