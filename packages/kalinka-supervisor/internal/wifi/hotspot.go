@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,16 +30,25 @@ type Hotspot struct {
 	mu               sync.Mutex
 	active           atomic.Bool
 	cache            []protocol.Network
+	cacheCountry     string
 	AddressWithoutAP func(context.Context, string) (string, error)
-	JoinDelay        time.Duration
-	retryAt          time.Time
+	// HasClients reports whether anyone is on the AP; true when it cannot tell.
+	HasClients    func(context.Context, string) bool
+	NearbyCountry func(context.Context, string) string
+	JoinDelay     time.Duration
+	retryAt       time.Time
 }
 
 func NewHotspot(b Backend, ap AccessPoint, name string) *Hotspot {
 	return &Hotspot{Backend: b, AP: ap, Name: name, JoinDelay: time.Second,
 		AddressWithoutAP: func(ctx context.Context, iface string) (string, error) {
 			return (Host{Root: "/", Interfaces: net.Interfaces, Addrs: (*net.Interface).Addrs, Exclude: iface}).Address(ctx, "")
-		}}
+		},
+		HasClients: func(ctx context.Context, iface string) bool {
+			out, err := Run(ctx, 5*time.Second, "iw", "dev", iface, "station", "dump")
+			return err != nil || strings.Contains(out, "Station ")
+		},
+		NearbyCountry: func(ctx context.Context, iface string) string { return nearbyCountry(ctx, Run, iface) }}
 }
 
 func (h *Hotspot) Active() bool { return h.active.Load() }
@@ -84,11 +94,14 @@ func (h *Hotspot) Reconcile(ctx context.Context, enabled bool) (result error) {
 	ctx, stop := context.WithTimeout(ctx, 40*time.Second)
 	defer stop()
 	scan, cancel := context.WithTimeout(ctx, 20*time.Second)
-	networks, err := h.Backend.Scan(scan, "")
-	cancel()
-	if err == nil {
-		h.cache = slices.Clone(networks)
+	_, _ = h.scan(scan, h.cacheCountry)
+	if h.cacheCountry == "" {
+		// A Pi's radio without a country skips channels 12 and 13.
+		if country := h.NearbyCountry(scan, h.AP.APInterface()); country != "" {
+			_, _ = h.scan(scan, country)
+		}
 	}
+	cancel()
 	if err = h.AP.StartAP(ctx, h.Name); err != nil {
 		return err
 	}
@@ -112,11 +125,23 @@ func (h *Hotspot) Scan(ctx context.Context, country string) ([]protocol.Network,
 	}
 	// Single-radio boards cannot scan all channels while serving an AP.
 	if h.Active() {
-		return slices.Clone(h.cache), nil
+		// A list scanned without the country misses channels 12 and 13 on a Pi; with nobody on the AP, rescan.
+		if country == h.cacheCountry || h.HasClients(ctx, h.AP.APInterface()) {
+			return slices.Clone(h.cache), nil
+		}
+		// Reconcile reopens the AP.
+		if err := h.stop(ctx); err != nil {
+			return nil, err
+		}
 	}
+	return h.scan(ctx, country)
+}
+
+func (h *Hotspot) scan(ctx context.Context, country string) ([]protocol.Network, error) {
 	networks, err := h.Backend.Scan(ctx, country)
 	if err == nil {
 		h.cache = slices.Clone(networks)
+		h.cacheCountry = country
 	}
 	return networks, err
 }
