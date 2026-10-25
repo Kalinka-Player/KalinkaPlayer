@@ -68,8 +68,11 @@ fi
 build_supervisor
 
 if ! podman image exists "$BUILDER"; then
-  podman build --security-opt label=disable -t "$BUILDER" -f - "$RIG_DIR" <<'CONTAINERFILE'
-FROM docker.io/library/debian:trixie
+  # Shared CI runners keep hitting Docker Hub's anonymous pull limit, so prefer its ECR mirror.
+  base="$(bash "$IMAGE_DIR/tests/pull-base.sh" podman public.ecr.aws/docker/library/debian:trixie)"
+  podman build --security-opt label=disable --build-arg BASE="$base" -t "$BUILDER" -f - "$RIG_DIR" <<'CONTAINERFILE'
+ARG BASE
+FROM $BASE
 COPY . /rig
 RUN apt-get update && /rig/install_deps.sh && rm -rf /var/lib/apt/lists/*
 CONTAINERFILE

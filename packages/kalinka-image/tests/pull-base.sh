@@ -17,7 +17,7 @@ for image in "${images[@]}"; do
     printf '%s\n' "$image"
     exit 0
   fi
-  echo "Could not obtain image-test base: $image" >&2
+  echo "Could not obtain base image: $image" >&2
 done
 
 exit 1
