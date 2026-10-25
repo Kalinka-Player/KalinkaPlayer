@@ -4,7 +4,7 @@
 # X-Env-Layer-Desc: Kalinka Core, its renderer and the supervisor, installed and
 #  checked by the same steps build-image.sh takes on the DietPi images.
 # X-Env-Layer-Version: 1.0.0
-# X-Env-Layer-Requires: kalinka-base,openssh-server
+# X-Env-Layer-Requires: kalinka-base,openssh-server,rpi-splash-screen
 # X-Env-Layer-AfterProvider: device,rpi-device
 #
 # X-Env-VarPrefix: kalinka

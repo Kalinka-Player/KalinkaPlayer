@@ -15,3 +15,6 @@ layer:
 
 kalinka:
   hook: ${@SRCROOT}/kalinka-hook.sh
+
+splash:
+  image_path: ${@SRCROOT}/splash/kalinka.tga
