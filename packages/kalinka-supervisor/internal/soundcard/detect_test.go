@@ -402,6 +402,10 @@ func TestOnboardChoicesWithoutDietPi(t *testing.T) {
 	if r := New(b.root, noBus).Report(); r.Configured != nil {
 		t.Fatalf("the helper's record outranked a config.txt that switches the Pi's outputs off: %v", *r.Configured)
 	}
+	b.write(configTxt, "dtparam=audio=off\ndtparam=i2c_arm=on,audio=on\n")
+	if r := New(b.root, noBus).Report(); r.Configured == nil || *r.Configured != HDMI {
+		t.Fatalf("a config.txt that switches the outputs on among other parameters hid the record: %v", r.Configured)
+	}
 	b.write(configTxt, "dtparam=audio=on\ndtoverlay=vc4-kms-v3d\n")
 	b.write(dietPiTxt, "CONFIG_SOUNDCARD=none\n")
 	if r := New(b.root, noBus).Report(); r.Configured != nil {
