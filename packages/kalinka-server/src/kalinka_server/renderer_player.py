@@ -7,9 +7,10 @@ fire-and-forget: they return at once and their effect comes back as state,
 delivered through the monitor in the same StreamState shape the native player
 produced.
 
-A renderer can also go away mid-track and come back able to play, which no
-in-process player did: that arrives as on_interrupted() rather than a stop,
-because only the queue can resolve the track again.
+A renderer can also go away mid-track and come back able to play, or stop the
+track to apply one of its settings, which no in-process player did: that
+arrives as on_interrupted() rather than a stop, because only the queue can
+resolve the track again.
 
 The session is opened on demand: the first append() claims the registry's
 active renderer (the client-selected one when connected, otherwise the first
@@ -72,8 +73,12 @@ _QUIET_CLOSE_REASONS = {CloseReason.CLOSED_BY_SERVER, CloseReason.SHUTDOWN}
 # The renderer is there to play again as soon as it is asked.
 _RESUMABLE_CLOSE_REASONS = {CloseReason.RENDERER_RESTARTED}
 
-# Playing as a listener would have it: a stall reports PREPARING.
-_PLAYING_STATES = (AudioGraphNodeState.PREPARING, AudioGraphNodeState.STREAMING)
+# Playing as a listener would have it, a stall and a gapless switch included.
+_PLAYING_STATES = (
+    AudioGraphNodeState.PREPARING,
+    AudioGraphNodeState.STREAMING,
+    AudioGraphNodeState.SOURCE_CHANGED,
+)
 
 
 class RendererPlayer:
@@ -329,20 +334,14 @@ class RendererPlayer:
         self._cancel_release()
         if reason in _QUIET_CLOSE_REASONS:
             return
-        if (
-            reason in _RESUMABLE_CLOSE_REASONS
-            and self._interrupted is not None
-            and self._last_state.state in _PLAYING_STATES
-        ):
+        if reason in _RESUMABLE_CLOSE_REASONS and self._resumable():
             position = self._last_state.position_at(time.monotonic_ns())
             logger.info(
                 "Renderer session ended (%s) while playing; resuming at %d ms",
                 reason.value,
                 position,
             )
-            result = self._interrupted(position)
-            if inspect.isawaitable(result):
-                detach(result)
+            self._resume(position)
             return
         logger.warning("Renderer session ended: %s", reason.value)
         self._publish(
@@ -356,6 +355,40 @@ class RendererPlayer:
             )
         )
         self._notify_session_lost(reason)
+
+    def _resumable(self) -> bool:
+        """Whether playback cut short goes to on_interrupted(): only while it
+        was playing, as a deliberate pause is not resumed."""
+        return (
+            self._interrupted is not None
+            and self._last_state.state in _PLAYING_STATES
+        )
+
+    def _resume(self, position: int) -> None:
+        result = self._interrupted(position)
+        if inspect.isawaitable(result):
+            detach(result)
+
+    def _resume_on_this_session(self) -> None:
+        """A renderer setting stopped the track, and the session plays on.
+
+        Nothing is published: the owner plays the track again on it. Until
+        then the player holds where the track stopped, so a second
+        interruption resumes from there too, and should nobody play again the
+        idle release reports the stop."""
+        now = time.monotonic_ns()
+        position = self._last_state.position_at(now)
+        logger.info(
+            "A renderer setting stopped the track; resuming at %d ms", position
+        )
+        self._last_state = replace(
+            self._last_state,
+            state=AudioGraphNodeState.PREPARING,
+            position=position,
+            timestamp=now,
+        )
+        self._release_later(IDLE_RELEASE_TIMEOUT_S, synthesize=True)
+        self._resume(position)
 
     # ------------------------------------------------------------------
     # State delivery
@@ -388,6 +421,9 @@ class RendererPlayer:
                 self._publish(translated)
             return
         if change is StateChange.PLAYBACK:
+            if translated.interrupted and self._resumable():
+                self._resume_on_this_session()
+                return
             self._publish(translated)
 
     def _on_session_suspended(self, session: PlaybackSession) -> None:
@@ -429,23 +465,26 @@ class RendererPlayer:
     # Idle release
 
     def _arm_release(self, state: StreamState) -> None:
-        self._cancel_release()
-        if self._session is None:
-            return
         if state.state is AudioGraphNodeState.PAUSED:
-            self._release_task = asyncio.get_running_loop().create_task(
-                self._release_after(
-                    PAUSE_RELEASE_TIMEOUT_S, self._epoch, synthesize=True
-                )
-            )
+            self._release_later(PAUSE_RELEASE_TIMEOUT_S, synthesize=True)
         elif state.state in (
             AudioGraphNodeState.FINISHED,
             AudioGraphNodeState.STOPPED,
             AudioGraphNodeState.ERROR,
         ):
-            self._release_task = asyncio.get_running_loop().create_task(
-                self._release_after(IDLE_RELEASE_TIMEOUT_S, self._epoch, synthesize=False)
-            )
+            self._release_later(IDLE_RELEASE_TIMEOUT_S, synthesize=False)
+        else:
+            self._cancel_release()
+
+    def _release_later(self, delay: float, synthesize: bool) -> None:
+        """Release the session after ``delay`` unless a state is published
+        first; ``synthesize`` reports a STOPPED nobody was told of yet."""
+        self._cancel_release()
+        if self._session is None:
+            return
+        self._release_task = asyncio.get_running_loop().create_task(
+            self._release_after(delay, self._epoch, synthesize)
+        )
 
     async def _release_after(self, delay: float, epoch: int, synthesize: bool) -> None:
         try:

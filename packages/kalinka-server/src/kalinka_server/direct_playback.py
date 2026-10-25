@@ -384,7 +384,8 @@ class HolderSession:
         await self._arbiter.acquire(self)
 
     async def _replay(self, position_ms: int) -> None:
-        """The renderer came back mid-track: the same stream from where it was."""
+        """The renderer can play again after cutting the track short, having
+        come back or applied a setting: the same stream from where it was."""
         if self._ended or self._source is None or self._track is None:
             return
         if self._source.sequential:

@@ -1959,3 +1959,89 @@ async def test_a_renderer_lost_near_the_end_leaves_the_queue_stopped(
     assert len(renderer.volume_policies) == opened, "no session was reopened"
     assert renderer.pool.get(renderer.RENDERER_ID) is None
     assert (await playqueue.get_playback_state()).state == PlayerStateEnum.STOPPED
+
+
+def _dispatched_states(event_emitter) -> list[PlayerStateEnum]:
+    return [
+        c.args[0].state.state
+        for c in event_emitter.dispatch.call_args_list
+        if isinstance(c.args[0], PlaybackStateChangedEvent)
+    ]
+
+
+def _enqueued(renderer) -> list:
+    return [
+        c.enqueue_source.source
+        for c in renderer.commands
+        if c.WhichOneof("op") == "enqueue_source"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_renderer_setting_near_the_end_resumes_the_same_track(
+    playqueue, renderer, event_emitter
+):
+    """The next track was already queued behind it, and went with the graph;
+    the interrupted stop must not start it in the current one's place."""
+    await _in_a_tracks_last_seconds(playqueue, renderer)
+    session = renderer.session_id
+    event_emitter.reset_mock()
+
+    renderer.rebuild()
+    await asyncio.sleep(0.3)
+
+    assert playqueue.current_track_id == 0
+    assert renderer.session_id == session, "the session is kept, not reclaimed"
+    resumed = next(s for s in _enqueued(renderer) if s.source_token == renderer.current)
+    assert resumed.uri == URL1
+    assert DURATION_MS - 2000 <= resumed.start_offset_ms < DURATION_MS
+    states = _dispatched_states(event_emitter)
+    assert PlayerStateEnum.STOPPED not in states
+    assert PlayerStateEnum.BUFFERING in states
+    assert states[-1] == PlayerStateEnum.PLAYING
+
+
+@pytest.mark.asyncio
+async def test_a_renderer_setting_while_paused_near_the_end_stays_stopped(
+    playqueue, renderer
+):
+    """A paused track is not played again, and the next one queued behind it
+    went with the graph, so the stop must not start it either."""
+    await _in_a_tracks_last_seconds(playqueue, renderer)
+    await playqueue.pause(True)
+    await asyncio.sleep(0.2)
+    enqueued = len(_enqueued(renderer))
+
+    renderer.rebuild()
+    await asyncio.sleep(0.3)
+
+    assert len(_enqueued(renderer)) == enqueued, "nothing was started"
+    assert playqueue.current_track_id == 0
+    assert (await playqueue.get_playback_state()).state == PlayerStateEnum.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_a_renderer_that_does_not_say_still_stops_the_queue(
+    playqueue, renderer, event_emitter
+):
+    """Without the interrupted field the stop is taken as it always was: the
+    queue stops on the track, and play starts it again."""
+    renderer.reports_interruptions = False
+    await playqueue.add(
+        [
+            TrackInfo(
+                id=to_track_id("1"), metadata=create_track("1"), source_retriever=url1
+            )
+        ]
+    )
+    await playqueue.play()
+    await asyncio.sleep(0.2)
+    enqueued = len(_enqueued(renderer))
+    event_emitter.reset_mock()
+
+    renderer.rebuild()
+    await asyncio.sleep(0.3)
+
+    assert _dispatched_states(event_emitter) == [PlayerStateEnum.STOPPED]
+    assert len(_enqueued(renderer)) == enqueued
+    assert renderer.current is None

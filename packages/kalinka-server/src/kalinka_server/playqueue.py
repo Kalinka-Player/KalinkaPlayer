@@ -260,6 +260,9 @@ class PlayQueueImpl(PlayQueueController):
                     next_step=self._play_resolved,
                 )
         elif new_state.state == AudioGraphNodeState.STOPPED:
+            if new_state.interrupted:
+                # The renderer's streams went with its graph; none is left to start.
+                self._forget_streams()
             # The prefetch may have completed and appended a stream just as the
             # player ran out of time and stopped.  If a stream is already
             # queued and the player is still stopped (i.e. play_next hasn't
