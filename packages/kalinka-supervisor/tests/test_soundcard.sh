@@ -84,6 +84,7 @@ assert_eq "succeeds" "$STATUS" 0
 assert_contains "applies it through DietPi, unattended" "$CALLS" \
   "dietpi-set_hardware G_INTERACTIVE=0 soundcard hifiberry-digi"
 assert_eq "remembers it" "$(cat "$STATE")" hifiberry-digi
+assert_no_file "through a file put in place whole" "$STATE.new"
 assert_contains "writes the change out" "$CALLS" "sync"
 assert_contains "restarts to load the overlay" "$CALLS" "systemctl --no-block reboot"
 

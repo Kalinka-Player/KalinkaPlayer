@@ -13,6 +13,8 @@ const (
 	configTxt = "boot/firmware/config.txt"
 	overlays  = "boot/firmware/overlays"
 	dietPiTxt = "boot/dietpi.txt"
+	// choiceRecord is where the helper records the card it last applied.
+	choiceRecord = "var/lib/kalinka-supervisor/soundcard"
 )
 
 // supported reports whether root is a Raspberry Pi whose boot configuration the helper can edit.
@@ -52,6 +54,49 @@ func configured(root string) string {
 		return name
 	}
 	return ""
+}
+
+// recordedOnboard names the Pi's own output the helper last applied, or "".
+// Where dietpi.txt exists, DietPi's tools change the choice too, so its setting alone decides.
+func recordedOnboard(root string) string {
+	if _, err := os.Stat(filepath.Join(root, dietPiTxt)); err == nil {
+		return ""
+	}
+	// Every onboard choice the helper applies switches the outputs on; off means config.txt was edited since.
+	if !onboardAudioOn(filepath.Join(root, configTxt)) {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(root, choiceRecord))
+	if err != nil {
+		return ""
+	}
+	switch name := strings.TrimSpace(string(b)); {
+	case name == HDMI, name == HeadphoneSocket && hasHeadphoneSocket(devicetree.Model(root)):
+		return name
+	}
+	return ""
+}
+
+// onboardAudioOn reads dtparam=audio the way the firmware does: the last setting wins, and it is off unless set.
+func onboardAudioOn(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	on := false
+	s := bufio.NewScanner(f)
+	for s.Scan() {
+		if value, ok := strings.CutPrefix(strings.TrimSpace(s.Text()), "dtparam=audio="); ok {
+			switch value {
+			case "on", "true", "yes", "okay":
+				on = true
+			default:
+				on = false
+			}
+		}
+	}
+	return on
 }
 
 func configuredOverlay(path string) string {

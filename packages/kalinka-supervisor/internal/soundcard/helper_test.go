@@ -9,8 +9,9 @@ import (
 )
 
 // The packaged helper must set up every catalogued card so that detection
-// reads the same card back, on Raspberry Pi OS, on the config.txt Raspberry
-// Pi's own packages assemble, and where DietPi's dietpi.txt records the choice.
+// reads the same card back, the Pi's own outputs included, on Raspberry Pi OS,
+// on the config.txt Raspberry Pi's own packages assemble, and where DietPi's
+// dietpi.txt records the choice.
 func TestHelperSetsUpEveryCard(t *testing.T) {
 	for _, tool := range []string{"bash", "flock", "sha256sum", "sed"} {
 		if _, err := exec.LookPath(tool); err != nil {
@@ -38,6 +39,7 @@ func TestHelperSetsUpEveryCard(t *testing.T) {
 		for _, setup := range setups {
 			dietPi, name := setup.dietPi, setup.name
 			b := box{t, t.TempDir()}
+			b.write("proc/device-tree/model", "Raspberry Pi 4 Model B Rev 1.4\x00")
 			b.write(configTxt, setup.config)
 			if dietPi {
 				b.write(dietPiTxt, "CONFIG_SOUNDCARD=none\n")
@@ -53,10 +55,14 @@ func TestHelperSetsUpEveryCard(t *testing.T) {
 				t.Errorf("%s (%s): verdict %q", c.Name, name, verdict)
 			}
 			want := ""
-			if c.HAT() || dietPi && c.Kind == Onboard {
+			if c.HAT() || c.Kind == Onboard {
 				want = c.Name
 			}
-			if got := configured(b.root); got != want {
+			got := ""
+			if r := New(b.root, noBus).Report(); r.Configured != nil {
+				got = *r.Configured
+			}
+			if got != want {
 				t.Errorf("%s (%s) reads back as %q", c.Name, name, got)
 			}
 			written, err := os.ReadFile(filepath.Join(b.root, configTxt))

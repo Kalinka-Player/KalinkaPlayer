@@ -374,6 +374,75 @@ func TestOnboardChoices(t *testing.T) {
 	}
 }
 
+func TestOnboardChoicesWithoutDietPi(t *testing.T) {
+	b := pi(t, "Raspberry Pi 5 Model B Rev 1.0")
+	b.write(configTxt, "dtparam=audio=on\ndtoverlay=vc4-kms-v3d\n")
+	b.write(choiceRecord, HDMI+"\n")
+	b.write("proc/asound/cards", hdmiCards)
+	r := New(b.root, noBus).Report()
+	if r.Configured == nil || *r.Configured != HDMI || r.ConfiguredBy == nil || *r.ConfiguredBy != ByBootConfig {
+		t.Fatalf("configured = %v by %v", r.Configured, r.ConfiguredBy)
+	}
+	if r.Active == nil || r.Active.PCM != "hw:CARD=vc4hdmi0,DEV=0" {
+		t.Fatalf("active = %+v", r.Active)
+	}
+	if r.Name == nil || *r.Name != "Raspberry Pi HDMI" {
+		t.Fatalf("name = %v", r.Name)
+	}
+	b.write(choiceRecord, "hifiberry-digi\n")
+	if r := New(b.root, noBus).Report(); r.Configured != nil {
+		t.Fatalf("the helper's record outranked config.txt for a HAT: %v", *r.Configured)
+	}
+	b.write(choiceRecord, HeadphoneSocket+"\n")
+	if r := New(b.root, noBus).Report(); r.Configured != nil {
+		t.Fatalf("a Pi 5 read back a headphone socket it lacks: %v", *r.Configured)
+	}
+	b.write(choiceRecord, HDMI+"\n")
+	b.write(configTxt, "dtparam=audio=on\ndtoverlay=vc4-kms-v3d\ndtparam=audio=off\n")
+	if r := New(b.root, noBus).Report(); r.Configured != nil {
+		t.Fatalf("the helper's record outranked a config.txt that switches the Pi's outputs off: %v", *r.Configured)
+	}
+	b.write(configTxt, "dtparam=audio=on\ndtoverlay=vc4-kms-v3d\n")
+	b.write(dietPiTxt, "CONFIG_SOUNDCARD=none\n")
+	if r := New(b.root, noBus).Report(); r.Configured != nil {
+		t.Fatalf("the helper's record outranked DietPi's setting: %v", *r.Configured)
+	}
+}
+
+func TestAHATFittedAfterAnOnboardChoice(t *testing.T) {
+	dacPro := " 2 [DACPro         ]: RPi-simple - RPi DAC Pro\n                      RPi DAC Pro\n"
+	mic := " 2 [sndrpii2scard  ]: RPi-simple - snd_rpi_i2s_card\n                      snd_rpi_i2s_card\n"
+	for _, tc := range []struct {
+		name, vendor, product, table, cards, configured, pcm string
+		plays                                                bool
+	}{
+		{"one the firmware's table sets up", "HiFiBerry", "Digi2 Pro", "hifiberry-digi-pro", hdmiCards + digiCard, "hifiberry-digi-pro", "hw:CARD=sndrpihifiberry,DEV=0", true},
+		{"one that sets itself up", "Raspberry Pi Ltd.", "Raspberry Pi DAC Pro", "", hdmiCards + dacPro, "", "hw:CARD=DACPro,DEV=0", true},
+		{"another board's chip", "Raspberry Pi Ltd.", "Raspberry Pi M.2 HAT+", "", hdmiCards, HDMI, "hw:CARD=vc4hdmi0,DEV=0", false},
+		{"a microphone with no playback", "Raspberry Pi Ltd.", "Raspberry Pi M.2 HAT+", "", hdmiCards + mic, HDMI, "hw:CARD=vc4hdmi0,DEV=0", false},
+	} {
+		b := pi(t, "Raspberry Pi 5 Model B Rev 1.0")
+		b.write(configTxt, "dtparam=audio=on\ndtoverlay=vc4-kms-v3d\n")
+		b.write(choiceRecord, HDMI+"\n")
+		b.hat(tc.vendor, tc.product)
+		if tc.table != "" {
+			b.hatMap(mapEntry(tc.table))
+		}
+		b.write("proc/asound/cards", tc.cards)
+		if tc.plays {
+			b.write("proc/asound/card2/pcm0p/info", "")
+		}
+		r := New(b.root, noBus).Report()
+		got := ""
+		if r.Configured != nil {
+			got = *r.Configured
+		}
+		if got != tc.configured || r.Active == nil || r.Active.PCM != tc.pcm {
+			t.Errorf("%s: configured %q, active %+v", tc.name, got, r.Active)
+		}
+	}
+}
+
 func TestParseCards(t *testing.T) {
 	cards := parseCards(strings.NewReader(hdmiCards + hifiberryCard +
 		" 3 [Loopback       ]: Loopback - Loopback\n                      Loopback 1\n" +

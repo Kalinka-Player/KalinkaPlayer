@@ -94,10 +94,14 @@ func (d *Detector) Report() Report {
 	if configured == "" && r.HAT != nil && r.HAT.card != "" {
 		configured, by = r.HAT.card, ByHAT
 	}
+	cards := readCards(d.root)
+	// A HAT that plays outranks the record: its chip set it up, or an overlay the catalogue lacks.
+	if configured == "" && !slices.ContainsFunc(cards, func(c alsaCard) bool { return c.hat() && c.plays }) {
+		configured = recordedOnboard(d.root)
+	}
 	if configured != "" {
 		r.Configured, r.ConfiguredBy = &configured, &by
 	}
-	cards := readCards(d.root)
 	r.Active = activeCard(cards, configured)
 	r.USB = usbCards(cards)
 	r.Suggested = offered(d.guesses(r.HAT, r.Active), r.Options)
