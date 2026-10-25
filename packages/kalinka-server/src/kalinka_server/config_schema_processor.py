@@ -48,7 +48,7 @@ import json
 import logging
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Iterable, List, Sequence, Union, get_origin, get_args
+from typing import Any, Callable, Iterable, List, Sequence, Union, get_origin, get_args
 
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
@@ -325,6 +325,7 @@ def _build_field_spec(
         setup=setup,
         enum_values=_enum_values(field) if wire_type == "enum" else None,
         constraints=_extract_constraints(field, extras),
+        heading=extras.get("heading"),
     )
 
 
@@ -404,6 +405,7 @@ def _collection_spec(
     extras = _json_extra(field)
     parent, _, name = path.rpartition(".")
     title = field.title or name
+    status = extras.get("status")
     return CollectionSpec(
         path=path,
         title=title,
@@ -415,7 +417,24 @@ def _collection_spec(
         ],
         after=after,
         replaces=[f"{parent}.{other}" for other in extras.get("replaces", [])],
+        status=f"{parent}.{status}" if status else None,
     )
+
+
+def _nearest_shown(
+    anchor: str | None, fields: list[FieldSpec], shown: list[FieldSpec], step: int
+) -> str | None:
+    """``anchor`` if a pruned view still shows it, else the nearest field it
+    shows walking ``step`` from there; None past either end."""
+    order = [f.path for f in fields]
+    kept = {f.path for f in shown}
+    if anchor in order:
+        at = order.index(anchor)
+    else:
+        at = -1 if step < 0 else len(order)
+    while 0 <= at < len(order) and order[at] not in kept:
+        at += step
+    return order[at] if 0 <= at < len(order) else None
 
 
 def _reanchor(
@@ -426,17 +445,23 @@ def _reanchor(
     """``collections`` placed after the nearest field a pruned view still
     shows, so dropping the one a collection followed does not move it to the
     end."""
-    order = [f.path for f in fields]
-    kept = {f.path for f in shown}
-    placed: list[CollectionSpec] = []
-    for collection in collections:
-        at = order.index(collection.after) if collection.after in order else -1
-        while at >= 0 and order[at] not in kept:
-            at -= 1
-        placed.append(
-            collection.model_copy(update={"after": order[at] if at >= 0 else None})
-        )
-    return placed
+    return [
+        c.model_copy(update={"after": _nearest_shown(c.after, fields, shown, -1)})
+        for c in collections
+    ]
+
+
+def _reanchor_sections(
+    sections: list[SectionSpec],
+    fields: list[FieldSpec],
+    shown: list[FieldSpec],
+) -> list[SectionSpec]:
+    """``sections`` placed before the nearest field a pruned view still shows,
+    so dropping the one a section came before does not move it to the end."""
+    return [
+        s.model_copy(update={"before": _nearest_shown(s.before, fields, shown, 1)})
+        for s in sections
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -466,11 +491,21 @@ def _auto_sections(model: BaseModel, prefix: str) -> list[SectionSpec]:
     """Default layout: scalars of this model go into a single 'General' section;
     each nested BaseModel becomes its own section (recursively), unless it is
     tagged ``inline``, in which case its scalars join this model's own at the
-    point it is declared.
+    point it is declared. Each section comes before the scalar declared next.
     """
     scalar_fields: list[FieldSpec] = []
     collections: list[CollectionSpec] = []
     nested_sections: list[SectionSpec] = []
+    # Declared since the last scalar, so placed before the next one.
+    unplaced: list[SectionSpec] = []
+
+    def add_scalars(specs: list[FieldSpec]) -> None:
+        if not specs:
+            return
+        for section in unplaced:
+            section.before = specs[0].path
+        unplaced.clear()
+        scalar_fields.extend(specs)
 
     for field_name, field in model.__class__.model_fields.items():
         child_path = f"{prefix}.{field_name}" if prefix else field_name
@@ -487,28 +522,29 @@ def _auto_sections(model: BaseModel, prefix: str) -> list[SectionSpec]:
                 _sections_for(getattr(model, field_name), child_path), child_path
             )
             if extras.get("inline"):
-                scalar_fields.extend(promoted_fields)
+                add_scalars(promoted_fields)
                 collections.extend(
                     c if c.after else c.model_copy(update={"after": last_field})
                     for c in promoted_collections
                 )
                 nested_sections.extend(kept_sections)
+                unplaced.extend(s for s in kept_sections if s.before is None)
                 continue
 
-            nested_sections.append(
-                SectionSpec(
-                    id=child_path,
-                    title=field.title or field_name,
-                    importance=_importance_from_extras(extras, Importance.SIMPLE),
-                    fields=promoted_fields,
-                    collections=promoted_collections,
-                    sections=kept_sections,
-                )
+            section = SectionSpec(
+                id=child_path,
+                title=field.title or field_name,
+                importance=_importance_from_extras(extras, Importance.SIMPLE),
+                fields=promoted_fields,
+                collections=promoted_collections,
+                sections=kept_sections,
             )
+            nested_sections.append(section)
+            unplaced.append(section)
         else:
             spec = _build_field_spec(child_path, field_name, field)
             if spec is not None:
-                scalar_fields.append(spec)
+                add_scalars([spec])
 
     result: list[SectionSpec] = []
     if scalar_fields or collections:
@@ -542,17 +578,23 @@ def _sections_for(model: BaseModel, prefix: str) -> list[SectionSpec]:
 # ---------------------------------------------------------------------------
 
 
-def _find_section_by_id(
-    sections: list[SectionSpec], target_id: str
+def _find_section(
+    sections: list[SectionSpec], matches: Callable[[SectionSpec], bool]
 ) -> SectionSpec | None:
-    """Walk a section tree (DFS) and return the section whose id matches."""
+    """Walk a section tree (DFS) and return the first section ``matches``."""
     for s in sections:
-        if s.id == target_id:
+        if matches(s):
             return s
-        nested = _find_section_by_id(s.sections, target_id)
+        nested = _find_section(s.sections, matches)
         if nested is not None:
             return nested
     return None
+
+
+def _find_section_by_id(
+    sections: list[SectionSpec], target_id: str
+) -> SectionSpec | None:
+    return _find_section(sections, lambda s: s.id == target_id)
 
 
 def _dynamic_field_spec(
@@ -599,6 +641,14 @@ def _insert_after_enabled(section: SectionSpec, field_spec: FieldSpec) -> None:
     section.fields.append(field_spec)
 
 
+def _insert_beside(section: SectionSpec, prefix: str, field_spec: FieldSpec) -> None:
+    """Insert a dynamic field among the fields of the model at ``prefix``:
+    after its ``enabled`` toggle, else after the last of them."""
+    held = [i for i, f in enumerate(section.fields) if f.path.startswith(prefix)]
+    enabled = [i for i in held if section.fields[i].path == f"{prefix}enabled"]
+    section.fields.insert((enabled or held)[-1] + 1, field_spec)
+
+
 def _inject_dynamic_fields(
     sections: list[SectionSpec],
     module_path_prefix: str,
@@ -609,7 +659,9 @@ def _inject_dynamic_fields(
     Plugins reference sections by *relative* id (e.g. "searcher"); the
     server prepends the module's full path prefix to find them in the
     auto-generated section tree. Each injected field lands directly
-    after the section's ``enabled`` toggle (or at the end if none).
+    after the section's ``enabled`` toggle (or at the end if none); one
+    naming a model laid out inline lands among that model's fields in the
+    section holding them.
     """
     for entry in entries:
         decl = entry.decl
@@ -623,6 +675,15 @@ def _inject_dynamic_fields(
             target = _find_section_by_id(
                 sections, f"{module_path_prefix}.{decl.section_id}.general"
             )
+        if target is None and decl.section_id:
+            # An inline model has no section; its fields sit in the enclosing one.
+            prefix = f"{module_path_prefix}.{decl.section_id}."
+            holder = _find_section(
+                sections, lambda s: any(f.path.startswith(prefix) for f in s.fields)
+            )
+            if holder is not None:
+                _insert_beside(holder, prefix, _dynamic_field_spec(entry))
+                continue
         if target is None:
             logger.warning(
                 "Dynamic field %s declared section_id %r but no matching "
@@ -694,6 +755,23 @@ def _module_spec(
     )
 
 
+def _carry_headings(fields: list[FieldSpec], shown: list[FieldSpec]) -> list[FieldSpec]:
+    """``shown`` with the heading of a field a pruned view drops moved to the
+    next field it shows, unless that one opens a group of its own."""
+    kept = {f.path for f in shown}
+    carried: list[FieldSpec] = []
+    pending: str | None = None
+    for f in fields:
+        if f.path not in kept:
+            pending = f.heading or pending
+            continue
+        if pending and f.heading is None:
+            f = f.model_copy(update={"heading": pending})
+        pending = None
+        carried.append(f)
+    return carried
+
+
 # ---------------------------------------------------------------------------
 # Simple-view pruning
 # ---------------------------------------------------------------------------
@@ -721,7 +799,9 @@ def _prune_sections_to_simple(sections: list[SectionSpec]) -> list[SectionSpec]:
     for s in sections:
         if s.importance == Importance.EXPERT:
             continue
-        simple_fields = [f for f in s.fields if f.importance == Importance.SIMPLE]
+        simple_fields = _carry_headings(
+            s.fields, [f for f in s.fields if f.importance == Importance.SIMPLE]
+        )
         pruned_children = _prune_sections_to_simple(s.sections)
         if not simple_fields and not s.collections and not pruned_children:
             continue
@@ -734,7 +814,8 @@ def _prune_sections_to_simple(sections: list[SectionSpec]) -> list[SectionSpec]:
                 banners=list(s.banners),
                 fields=simple_fields,
                 collections=_reanchor(s.collections, s.fields, simple_fields),
-                sections=pruned_children,
+                sections=_reanchor_sections(pruned_children, s.fields, simple_fields),
+                before=s.before,
             )
         )
     return kept
@@ -761,6 +842,7 @@ def _prune_module_to_simple(module: ModuleSpec) -> ModuleSpec:
     for f in module.fields:
         if f.importance == Importance.SIMPLE or f.path.endswith(".enabled"):
             kept_fields.append(f)
+    kept_fields = _carry_headings(module.fields, kept_fields)
     return ModuleSpec(
         id=module.id,
         kind=module.kind,
@@ -772,7 +854,9 @@ def _prune_module_to_simple(module: ModuleSpec) -> ModuleSpec:
         banners=list(module.banners),
         fields=kept_fields,
         collections=_reanchor(module.collections, module.fields, kept_fields),
-        sections=_prune_sections_to_simple(module.sections),
+        sections=_reanchor_sections(
+            _prune_sections_to_simple(module.sections), module.fields, kept_fields
+        ),
     )
 
 

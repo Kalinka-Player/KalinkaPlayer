@@ -6,7 +6,9 @@ so the client renders unambiguously without re-mapping anything.
 
 Authoring entry points:
     * Per-field via `Field(..., json_schema_extra={"widget": ..., "help": ...,
-      "importance": ..., "setup": ..., "constraints": ...})`.
+      "importance": ..., "setup": ..., "constraints": ..., "heading": ...})`.
+      A collection's ``"status"`` names the read-only field reporting on its
+      entries, relative to the model declaring the collection.
     * Per-module by the excluded ``name`` field: its ``title`` is the module's
       display name and its ``description`` the one-line summary of what the
       module is. The field itself is never rendered (``exclude=True``), so
@@ -178,6 +180,9 @@ class FieldSpec(BaseModel):
     setup: Setup = Setup.HIDDEN
     enum_values: Optional[list[str]] = None
     constraints: Optional[Constraints] = None
+    # Title of a group this field opens, on a page that lays its settings
+    # out in groups; the fields after it join the group.
+    heading: Optional[str] = None
 
 
 class VariantSpec(BaseModel):
@@ -248,6 +253,9 @@ class CollectionSpec(BaseModel):
     # client showing the collection hides them; one that cannot, ignores this
     # and shows them as before.
     replaces: list[str] = Field(default_factory=list)
+    # Path of a read-only field reporting on the entries. A client that shows
+    # it with the collection does not show it again on its own.
+    status: Optional[str] = None
 
 
 class SectionSpec(BaseModel):
@@ -266,6 +274,9 @@ class SectionSpec(BaseModel):
     fields: list[FieldSpec] = Field(default_factory=list)
     collections: list[CollectionSpec] = Field(default_factory=list)
     sections: list["SectionSpec"] = Field(default_factory=list)
+    # Path of the sibling field the section comes before; None puts it after
+    # all of them, which is where a client that ignores this shows it.
+    before: Optional[str] = None
 
 
 class ModuleSpec(BaseModel):
