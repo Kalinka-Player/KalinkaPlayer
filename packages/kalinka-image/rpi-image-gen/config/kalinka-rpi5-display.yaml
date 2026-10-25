@@ -1,0 +1,8 @@
+include:
+  file: kalinka-rpi5.yaml
+
+image:
+  name: kalinka-rpi5-display
+
+kalinka:
+  display: y

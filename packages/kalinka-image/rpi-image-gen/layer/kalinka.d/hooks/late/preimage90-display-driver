@@ -1,0 +1,14 @@
+#!/bin/bash
+# config.txt is assembled from the layers' fragments in this phase, after Kalinka went in.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)"
+TARGET_DISPLAY=0
+[ "${IGconf_kalinka_display:-n}" != y ] || TARGET_DISPLAY=1
+
+# shellcheck source=../../../../../lib/common.sh
+. "$SCRIPT_DIR/lib/common.sh"
+# shellcheck source=../../../../../lib/display.sh
+. "$SCRIPT_DIR/lib/display.sh"
+
+verify_display_driver "$1/boot/firmware/config.txt"

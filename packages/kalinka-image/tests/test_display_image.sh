@@ -45,6 +45,17 @@ configure_display_setting "$root"
 assert_eq "they are kept" "$(conf_json "$root/etc/kalinka/kalinka_conf.cfg")" \
   '{"base_config.display.enabled": true, "base_config.display.rotation": "90"}'
 
+echo "  -- the display driver"
+config="$WORK/config.txt"
+printf 'dtparam=audio=on\n[pi4]\ndtoverlay=vc4-kms-v3d\n' > "$config"
+assert_eq "a display target accepts the KMS driver" \
+  "$(TARGET_DISPLAY=1; verify_display_driver "$config" 2>&1 && echo ok)" ok
+printf 'dtparam=audio=on\n#dtoverlay=vc4-kms-v3d,noaudio\n' > "$config"
+assert_contains "a display target refuses a commented-out driver" \
+  "$(TARGET_DISPLAY=1; verify_display_driver "$config" 2>&1)" 'the KMS display driver is off'
+assert_eq "a headless target does not ask for it" \
+  "$(TARGET_DISPLAY=0; verify_display_driver "$config" 2>&1 && echo ok)" ok
+
 echo "  -- display targets"
 for target in rpi234 rpi5; do
   assert_eq "$target-display builds on the same DietPi image as $target" \

@@ -1,0 +1,19 @@
+# METABEGIN
+# X-Env-Layer-Name: kalinka-base
+# X-Env-Layer-Category: suite
+# X-Env-Layer-Desc: Debian trixie with Raspberry Pi's packages, NetworkManager
+#  for wired and Wi-Fi, Bluetooth for nearby setup, and nothing else.
+#  timesyncd starts the clock no earlier than its last save, so a box without
+#  an RTC does not boot in 1970; trixie masks fake-hwclock for that reason.
+#  The Wi-Fi country is the one setup chose, so no layer sets a default.
+# X-Env-Layer-Version: 1.0.0
+# X-Env-Layer-Requires: debian-trixie-arm64-multi,
+#  rpi-debian-trixie,
+#  rpi-misc-utils,
+#  rpi-essential-base,
+#  rpi-misc-skel,
+#  systemd-min,
+#  network-manager,
+#  systemd-timesyncd,
+#  bluez
+# METAEND

@@ -1,0 +1,51 @@
+#!/bin/bash
+# Kalinka's part of an rpi-image-gen image, run on the root it has built: the
+# steps build-image.sh takes after the DietPi base is in place.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+ROOTFS="$1"
+TARGET_ARCH=arm64
+TARGET_BASE=rpi-image-gen
+TARGET_DISPLAY=0
+[ "${IGconf_kalinka_display:-n}" != y ] || TARGET_DISPLAY=1
+
+# shellcheck source=../lib/common.sh
+. "$SCRIPT_DIR/lib/common.sh"
+# shellcheck source=../lib/chroot-aids.sh
+. "$SCRIPT_DIR/lib/chroot-aids.sh"
+# shellcheck source=../lib/kalinka.sh
+. "$SCRIPT_DIR/lib/kalinka.sh"
+# shellcheck source=../lib/supervisor.sh
+. "$SCRIPT_DIR/lib/supervisor.sh"
+# shellcheck source=../lib/display.sh
+. "$SCRIPT_DIR/lib/display.sh"
+
+WORK="$(mktemp -d)"
+# mmdebstrap holds a policy-rc.d of its own until it finishes, and removes it then.
+mmdebstrap_policy="$WORK/policy-rc.d.mmdebstrap"
+restore_mmdebstrap_policy() {
+  [ ! -e "$mmdebstrap_policy" ] || mv -f "$mmdebstrap_policy" "$ROOTFS/usr/sbin/policy-rc.d"
+}
+trap 'restore_mmdebstrap_policy; rm -rf "$WORK"' EXIT
+mv "$ROOTFS/usr/sbin/policy-rc.d" "$mmdebstrap_policy"
+
+limit_journal
+printf '[Journal]\nStorage=persistent\n' > "$ROOTFS/etc/systemd/journald.conf.d/kalinka-persistent.conf"
+start_build_aids
+configure_display_setting "$ROOTFS"
+install_kalinka "${IGconf_kalinka_version:-}"
+verify_kalinka
+cp "$IGconf_kalinka_supervisor_deb" "$WORK/kalinka-supervisor.deb"
+install_supervisor
+verify_supervisor
+verify_display
+stop_build_aids
+restore_mmdebstrap_policy
+
+# The supervisor turns SSH on when someone sets a password for it.
+in_chroot systemctl disable ssh.service
+# The supervisor reads a HAT's chips over I2C; the bus itself is in config.txt.d.
+printf 'i2c-dev\n' > "$ROOTFS/etc/modules-load.d/kalinka-soundcard.conf"
+rm -rf "$ROOTFS/var/cache/kalinka"

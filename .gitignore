@@ -39,6 +39,7 @@ _version.py
 *.d
 # ... but *.d also matches every drop-in directory the image ships.
 !packages/kalinka-image/overlays/**/*.d/
+!packages/kalinka-image/rpi-image-gen/**/*.d/
 *.so
 *.a
 *.lib
@@ -92,6 +93,8 @@ kalinka-player-*
 # The demo's template holds no secret: the entrypoint fills in the client id
 !deploy/demo/kalinka_conf.cfg
 !deploy/demo/compose.yaml
+# rpi-image-gen's image definitions and layers, not runtime configuration
+!packages/kalinka-image/rpi-image-gen/**/*.yaml
 
 # Temporary files
 *.tmp

@@ -30,11 +30,16 @@ verify_display() {
   [ "$kiosk" = installed ] || die 'kalinka-kiosk is not installed'
   [ -x "$ROOTFS/usr/lib/kalinka-kiosk/bundle/flutter-pi" ] || die 'kalinka-kiosk has no flutter-pi'
   require_enabled multi-user.target kalinka-kiosk-sync.path kalinka-kiosk-sync.service
-  grep -Eq "$KMS_OVERLAY_RE" "$ROOTFS/boot/firmware/config.txt" || die 'the KMS display driver is off'
   python3 - "$ROOTFS/etc/kalinka/kalinka_conf.cfg" <<'PYCHECK' || die 'the display is not switched on'
 import json, sys
 sys.exit(json.load(open(sys.argv[1])).get("base_config.display.enabled") is not True)
 PYCHECK
   [ "$(in_chroot stat -c '%U %a' /etc/kalinka/kalinka_conf.cfg)" = 'kalusr 600' ] \
     || die 'the server cannot read its settings'
+}
+
+# Apart from verify_display: rpi-image-gen writes config.txt only after Kalinka is in.
+verify_display_driver() {
+  display_target || return 0
+  grep -Eq "$KMS_OVERLAY_RE" "$1" || die 'the KMS display driver is off'
 }
