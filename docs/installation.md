@@ -54,12 +54,12 @@ The file is about 450 MB. Do not unpack it.
 2. In Imager, choose your Pi model.
 3. For the operating system, scroll to the bottom of the list, choose **Use custom**, and pick the file you downloaded.
 4. Choose your card. Check its name and size: whatever you pick is erased.
-5. If Imager offers to set a user name, Wi-Fi or SSH, skip it. The Kalinka image does not read those settings. It has [its own](#settings-on-the-card).
+5. If Imager offers to set a user name, Wi-Fi or SSH, skip it. The Kalinka image does not read those settings. The `rpi234` images have [their own](#settings-on-the-card).
 6. Write, and wait until Imager has finished verifying.
 
 [balenaEtcher](https://etcher.balena.io/) works too: **Flash from file**, **Select target**, **Flash!**
 
-Before you take the card out, you can [change settings on it](#settings-on-the-card): Wi-Fi, a login password, a fixed network address or a DAC HAT. None of it is needed. Wi-Fi and the DAC HAT can both be set up after the first start.
+On an `rpi234` image, before you take the card out, you can [change settings on it](#settings-on-the-card): Wi-Fi, a login password, a fixed network address or a DAC HAT. None of it is needed. Wi-Fi and the DAC HAT can both be set up after the first start, and on an `rpi5` image that is the only way: it reads nothing from the card.
 
 #### 3. Switch it on
 
@@ -358,7 +358,7 @@ The page answers anyone on your home network, over plain HTTP, and nobody outsid
 
 ## Settings on the card
 
-The images start with **no login password and no Wi-Fi**. You can set these, and a few more things, on the card before the first start. You do not need to: Wi-Fi can be [set up afterwards](#connect-your-box-to-the-network), a login created on [the control page](#the-control-page), and the DAC HAT chosen in the app.
+The images start with **no login password and no Wi-Fi**. On the `rpi234` and PC images you can set these, and a few more things, on the card before the first start. You do not need to: Wi-Fi can be [set up afterwards](#connect-your-box-to-the-network), a login created on [the control page](#the-control-page), and the DAC HAT chosen in the app. The `rpi5` images are built without DietPi and read none of this: for them, that is the only way.
 
 After writing the card, unplug it and plug it back in. A drive called **KALINKA-BT** appears.
 
@@ -366,7 +366,7 @@ After writing the card, unplug it and plug it back in. A drive called **KALINKA-
 
 ### On a Raspberry Pi image
 
-Open **`dietpi.txt`** on the KALINKA-BT drive in a text editor (Notepad is fine) and change only the lines you need:
+This is for the `rpi234` images. Open **`dietpi.txt`** on the KALINKA-BT drive in a text editor (Notepad is fine) and change only the lines you need:
 
 | To get | Change this line | For example |
 |---|---|---|
@@ -444,7 +444,7 @@ A renderer that falls behind shows an upgrade button in the app. To have one upd
 sudo systemctl enable --now kalinka-renderer-upgrade.timer
 ```
 
-Kalinka does not update the operating system. On an image, log in and run `sudo dietpi-update`, then `sudo apt update && sudo apt full-upgrade`.
+Kalinka does not update the operating system. On an image, log in and run `sudo apt update && sudo apt full-upgrade`. On the `rpi234` and PC images, run `sudo dietpi-update` first.
 
 ## Troubleshooting
 

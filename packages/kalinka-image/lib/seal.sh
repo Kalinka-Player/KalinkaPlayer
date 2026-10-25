@@ -28,6 +28,20 @@ image_name() {
   echo "kalinka-$version-$suffix.img"
 }
 
+# Usage: write_manifest PATH TARGET ARCH DISPLAY CORE SUPERVISOR RENDERER [KEY=VALUE...]
+# The KEY=VALUE pairs name the base the image was built on.
+write_manifest() {
+  python3 - "$@" <<'PYMANIFEST'
+import datetime, json, pathlib, sys
+path, target, arch, display, core, supervisor, renderer, *base = sys.argv[1:]
+data = dict(target=target, architecture=arch, display=display == "1", core_version=core,
+            supervisor_version=supervisor, renderer_version=renderer)
+data.update(pair.split("=", 1) for pair in base)
+data["built_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+pathlib.Path(path).write_text(json.dumps(data, indent=2) + "\n")
+PYMANIFEST
+}
+
 publish_image() {
   log "Compressing"
   local version name supervisor renderer
@@ -36,16 +50,9 @@ publish_image() {
   mkdir -p "$OUT_DIR"
   supervisor="$(in_chroot dpkg-query -W -f='${Version}' kalinka-supervisor)"
   renderer="$(in_chroot dpkg-query -W -f='${Version}' kalinka-renderer)"
-  python3 - "$OUT_DIR/$name.manifest.json" "$TARGET" "$TARGET_ARCH" "${TARGET_DISPLAY:-0}" "$version" "$supervisor" "$renderer" \
-    "$DIETPI_IMAGE" "$DIETPI_VERSION" "$(sha256sum "$DIETPI_CACHE/$DIETPI_IMAGE.img.xz" | cut -d' ' -f1)" <<'PYMANIFEST'
-import datetime, json, pathlib, sys
-path, target, arch, display, core, supervisor, renderer, base, base_version, base_sha = sys.argv[1:]
-data = dict(target=target, architecture=arch, display=display == "1", core_version=core,
-            supervisor_version=supervisor, renderer_version=renderer,
-            dietpi_image=base, dietpi_version=base_version, dietpi_sha256=base_sha,
-            built_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
-pathlib.Path(path).write_text(json.dumps(data, indent=2) + "\n")
-PYMANIFEST
+  write_manifest "$OUT_DIR/$name.manifest.json" "$TARGET" "$TARGET_ARCH" "${TARGET_DISPLAY:-0}" \
+    "$version" "$supervisor" "$renderer" "dietpi_image=$DIETPI_IMAGE" "dietpi_version=$DIETPI_VERSION" \
+    "dietpi_sha256=$(sha256sum "$DIETPI_CACHE/$DIETPI_IMAGE.img.xz" | cut -d' ' -f1)"
   detach_image
   xz "$XZ_LEVEL" --threads=0 --stdout "$IMAGE" > "$OUT_DIR/$name.xz"
   ( cd "$OUT_DIR" && sha256sum "$name.xz" > "$name.xz.sha256" )

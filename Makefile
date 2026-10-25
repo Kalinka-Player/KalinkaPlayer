@@ -237,12 +237,13 @@ supervisor-deb:
 	@GO="$(GO)" packages/kalinka-supervisor/build-deb.sh
 
 ## --- Appliance images (packages/kalinka-image) ---------------------------------
-## Bootable images with the whole player already installed: DietPi for the
-## Raspberry Pi (headless, or -display with the now-playing screen) and x86-64
-## UEFI PCs. All need root for loop devices and mounts, and building for
-## another architecture needs qemu-user-static registered with binfmt_misc:
+## Bootable images with the whole player already installed, for the Raspberry
+## Pi (headless, or -display with the now-playing screen) and x86-64 UEFI PCs.
+## The DietPi ones need root for loop devices and mounts; the Pi 5 ones are
+## built with rpi-image-gen under podman, as you. Building for another
+## architecture needs qemu-user-static registered with binfmt_misc:
 ##   sudo make image-rpi234               # latest published release
-##   sudo make image-rpi5 KALINKA_VERSION=4.3.2
+##   make image-rpi5 KALINKA_VERSION=4.3.2
 IMAGE_DIR := packages/kalinka-image
 KALINKA_VERSION ?=
 # Prefer the mirror; the test launcher falls back if that registry is unavailable.
@@ -252,13 +253,13 @@ image-rpi234:
 	@$(IMAGE_DIR)/build-image.sh rpi234 $(KALINKA_VERSION)
 
 image-rpi5:
-	@$(IMAGE_DIR)/build-image.sh rpi5 $(KALINKA_VERSION)
+	@KALINKA_VERSION=$(KALINKA_VERSION) $(IMAGE_DIR)/rpi-image-gen/build.sh config/kalinka-rpi5.yaml
 
 image-rpi234-display:
 	@$(IMAGE_DIR)/build-image.sh rpi234-display $(KALINKA_VERSION)
 
 image-rpi5-display:
-	@$(IMAGE_DIR)/build-image.sh rpi5-display $(KALINKA_VERSION)
+	@KALINKA_VERSION=$(KALINKA_VERSION) $(IMAGE_DIR)/rpi-image-gen/build.sh config/kalinka-rpi5-display.yaml
 
 image-amd64:
 	@$(IMAGE_DIR)/build-image.sh amd64 $(KALINKA_VERSION)

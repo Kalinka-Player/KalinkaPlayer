@@ -28,6 +28,20 @@
 # X-Env-Var-supervisor_deb-Valid: string
 # X-Env-Var-supervisor_deb-Set: y
 #
+# X-Env-Var-contents:
+# X-Env-Var-contents-Desc: Where the hook records the versions it installed
+#  and whether the display is in, for build.sh to name the image.
+# X-Env-Var-contents-Required: y
+# X-Env-Var-contents-Valid: string
+# X-Env-Var-contents-Set: y
+#
+# X-Env-Var-github_token_file:
+# X-Env-Var-github_token_file-Desc: A file holding a GitHub token for the
+#  install's API calls; a file, as every setting's value is printed.
+# X-Env-Var-github_token_file-Required: n
+# X-Env-Var-github_token_file-Valid: string-or-empty
+# X-Env-Var-github_token_file-Set: y
+#
 # X-Env-Var-hook:
 # X-Env-Var-hook-Desc: The script that installs Kalinka into the root.
 # X-Env-Var-hook-Required: y

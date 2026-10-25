@@ -1,4 +1,4 @@
-name: DietPi E2E images
+name: Appliance images
 on:
   workflow_dispatch:
     inputs:

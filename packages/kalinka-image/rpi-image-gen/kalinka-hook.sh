@@ -22,6 +22,9 @@ TARGET_DISPLAY=0
 # shellcheck source=../lib/display.sh
 . "$SCRIPT_DIR/lib/display.sh"
 
+# build.sh hands the token over as a file: rpi-image-gen prints every setting it is given.
+[ -z "${IGconf_kalinka_github_token_file:-}" ] || GITHUB_TOKEN="$(cat "$IGconf_kalinka_github_token_file")"
+
 WORK="$(mktemp -d)"
 # mmdebstrap holds a policy-rc.d of its own until it finishes, and removes it then.
 mmdebstrap_policy="$WORK/policy-rc.d.mmdebstrap"
@@ -41,6 +44,10 @@ cp "$IGconf_kalinka_supervisor_deb" "$WORK/kalinka-supervisor.deb"
 install_supervisor
 verify_supervisor
 verify_display
+# What went in, for build.sh to name the image and write its manifest.
+printf '%s %s %s %s\n' "$(in_chroot dpkg-query -W -f='${Version}' kalinka-server)" \
+  "$(in_chroot dpkg-query -W -f='${Version}' kalinka-supervisor)" \
+  "$(in_chroot dpkg-query -W -f='${Version}' kalinka-renderer)" "$TARGET_DISPLAY" > "$IGconf_kalinka_contents"
 stop_build_aids
 restore_mmdebstrap_policy
 
