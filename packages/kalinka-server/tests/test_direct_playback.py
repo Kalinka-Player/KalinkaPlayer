@@ -1101,19 +1101,63 @@ async def test_show_is_refused_once_the_stream_has_finished(queue, renderer, dir
     assert len(listener.states) == states
 
 
-async def test_sequential_source_is_revoked_on_replay(queue, renderer, direct):
+async def test_a_sequential_source_is_revoked_when_the_renderer_restarts(
+    queue, renderer, direct
+):
+    """It cannot be opened again, and the session it played on is gone."""
     listener = Listener()
-    hold = await direct.acquire('Spotify Connect', listener)
-    source, track = _connect_track()
-    source = source.model_copy(update={'sequential': True})
-    await hold.play(source, track)
-    await asyncio.sleep(SETTLE_S)
+    hold = await _play_sequential(direct, listener)
     before = len(_enqueued(renderer))
-    await hold._replay(1000)
-    await asyncio.sleep(.05)
+
+    await renderer.restart()
+    await asyncio.sleep(SETTLE_S)
+
     assert not hold.active
     assert listener.revoked == [RevokeReason.OUTPUT_LOST]
     assert len(_enqueued(renderer)) == before
+
+
+async def test_a_setting_that_stops_a_sequential_source_leaves_a_new_one_to_the_plugin(
+    queue, renderer, direct
+):
+    """It cannot be opened again, but the session is still there: the plugin
+    is shown the stop, and the hold waits for the stream it makes next."""
+    listener = Listener()
+    hold = await _play_sequential(direct, listener)
+    session = renderer.session_id
+    before, told = len(_enqueued(renderer)), len(listener.states)
+
+    renderer.rebuild()
+    await asyncio.sleep(SETTLE_S)
+
+    assert hold.active
+    assert listener.revoked == []
+    assert len(_enqueued(renderer)) == before, "nothing is opened again"
+    assert [s.state for s in listener.states[told:]] == [PlayerStateEnum.STOPPED]
+
+    source, track = _connect_track("222")
+    await hold.play(source.model_copy(update={"sequential": True}), track)
+    await asyncio.sleep(SETTLE_S)
+
+    assert renderer.session_id == session
+    assert _enqueued(renderer)[-1] == "https://streaming.qobuz.test/222"
+    assert listener.states[-1].state is PlayerStateEnum.PLAYING
+
+
+async def test_a_sequential_source_a_setting_stopped_idles_out_as_any_stop_does(
+    queue, renderer, direct, monkeypatch
+):
+    monkeypatch.setattr(renderer_player, "IDLE_RELEASE_TIMEOUT_S", 0.1)
+    listener = Listener()
+    hold = await _play_sequential(direct, listener)
+    told = len(listener.states)
+
+    renderer.rebuild()
+    await asyncio.sleep(0.4)
+
+    assert not hold.active
+    assert listener.revoked == [RevokeReason.IDLE]
+    assert [s.state for s in listener.states[told:]] == [PlayerStateEnum.STOPPED]
 
 
 async def test_sequential_source_target_change_revokes(queue, renderer, direct):

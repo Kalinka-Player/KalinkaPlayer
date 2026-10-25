@@ -243,6 +243,26 @@ class SimRenderer:
         state.at_unix_ms = _NOW_UNIX_MS
         self._send(StateChange.PLAYBACK, state)
 
+    async def restart(self) -> None:
+        """The renderer reboots mid-session: its link drops, and it comes back
+        a fresh instance with nothing playing and no session of its own."""
+        self.linked = False
+        self.registry.disconnect(self.RENDERER_ID, self, clean=False)
+        self.pool.suspend(self.RENDERER_ID, self)
+        self.session_id = None
+        self.current = None
+        self.queued.clear()
+        self.position_ms = 0
+        self.finished = False
+        self.linked = True
+        self.connect()
+        await self.pool.reconcile(
+            renderer_id=self.RENDERER_ID,
+            reported_session_id="",
+            reported_owner_server_id=self.pool.server_id,
+            ws_session=self,
+        )
+
     def fail_current(self, message: str = "http error") -> None:
         """The current track's stream breaks mid-play."""
         failed, self.current = self.current, None

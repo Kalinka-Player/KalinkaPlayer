@@ -130,8 +130,23 @@ class RendererPlayer:
 
     def on_interrupted(self, callback: Callable[[int], Any]) -> None:
         """Called with the position when playback was cut short but the
-        renderer can play again. An async callback runs on its own."""
+        renderer can play again. An async callback runs on its own; an owner
+        that cannot play the track again says so with decline_resume()."""
         self._interrupted = callback
+
+    def decline_resume(self) -> bool:
+        """The owner cannot play again what was cut short. While the session
+        it was cut short on is still held, report the stop it was spared, and
+        the idle release follows as after any stop; False once that session
+        has ended."""
+        if self._session is None:
+            return False
+        self._publish(
+            StreamState(
+                state=AudioGraphNodeState.STOPPED, timestamp=time.monotonic_ns()
+            )
+        )
+        return True
 
     def on_session_lost(
         self, callback: Callable[[Optional[CloseReason]], Any]
@@ -315,10 +330,12 @@ class RendererPlayer:
         self._cancel_release()
         self._stream_uris.clear()
         session, self._session = self._session, None
-        if session is None:
+        if session is not None:
+            self._registry.session_released(session.renderer_id)
+            await session.close(CloseReason.CLOSED_BY_SERVER)
+        elif self._last_state.state not in _PLAYING_STATES:
+            # Nothing to stop, nor a stop owed by a resume given up.
             return
-        self._registry.session_released(session.renderer_id)
-        await session.close(CloseReason.CLOSED_BY_SERVER)
         if synthesize_stopped:
             self._publish(
                 StreamState(

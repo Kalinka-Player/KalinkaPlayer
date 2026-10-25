@@ -1156,12 +1156,13 @@ class PlayQueueImpl(PlayQueueController):
     async def _retry_current_track_async(self, position_ms: int) -> None:
         """Re-fetch the current track's source off-lane and resume from position_ms.
 
-        Whenever the same track has to be played again on a fresh claim: an
-        HTTP stream error, a renderer that came back, a switch to another one.
-        The fetch must not run on the interrupt lane (it would stall all state
-        updates), so it is delegated to the off-lane resolver. Unlike play/next,
-        this targets exactly the current track (single fetch, no skipping) and
-        reports failure as a PlaybackErrorEvent.
+        Whenever the same track has to be played again: an HTTP stream error,
+        a renderer that came back or applied a setting, a switch to another
+        one. The fetch must not run on the interrupt lane (it would stall all
+        state updates), so it is delegated to the off-lane resolver. Unlike
+        play/next, this targets exactly the current track (single fetch, no
+        skipping), and a failure is reported as a PlaybackErrorEvent and stops
+        playback.
         """
         index = self.current_track_id
         self._begin_resolution(
@@ -1185,6 +1186,9 @@ class PlayQueueImpl(PlayQueueController):
                     or "Failed to retrieve track source on retry"
                 )
             )
+            # Forgotten first, or the stop shown to clients starts the next track.
+            self._forget_streams()
+            self._track_player.stop()
             return
         self._apply_retry(index, track_source, position_ms)
 
