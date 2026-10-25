@@ -34,9 +34,10 @@ func (n *NetworkManager) StartAP(ctx context.Context, name string) (result error
 		}
 	}()
 	// Not the box's own address: a router that saw it serve this AP can stop bridging it between bands.
+	// No power saving: NetworkManager's default lets a Pi's radio doze through a phone's join.
 	s := settings{
 		"connection":               {"id": v("Kalinka temporary setup"), "uuid": v(id), "stable-id": v("kalinka-setup-hotspot"), "type": v("802-11-wireless"), "interface-name": v(n.Interface), "autoconnect": v(false)},
-		"802-11-wireless":          {"ssid": v([]byte(name)), "mode": v("ap"), "band": v("bg"), "channel": v(uint32(1)), "assigned-mac-address": v("stable")},
+		"802-11-wireless":          {"ssid": v([]byte(name)), "mode": v("ap"), "band": v("bg"), "channel": v(uint32(1)), "assigned-mac-address": v("stable"), "powersave": v(uint32(2))},
 		"802-11-wireless-security": {"key-mgmt": v("wpa-psk"), "proto": v([]string{"rsn"}), "psk": v(APPassword)},
 		"ipv4":                     {"method": v("manual"), "address-data": v([]map[string]dbus.Variant{{"address": v(APAddress), "prefix": v(uint32(24))}}), "never-default": v(true)},
 		"ipv6":                     {"method": v("disabled")},
