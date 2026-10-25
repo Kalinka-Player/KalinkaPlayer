@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime
 
 import pytest
@@ -33,6 +34,17 @@ def _feed(*tags):
         '<feed xmlns="http://www.w3.org/2005/Atom">'
         f"<title>Release notes</title>{entries}</feed>"
     )
+
+
+@pytest.fixture(autouse=True)
+def _no_browser_player(monkeypatch):
+    """No app releases and no browser player here, unless a test says so."""
+
+    async def no_feed(self):
+        return None
+
+    monkeypatch.setattr(UpdateChecker, "_fetch_web", no_feed)
+    monkeypatch.setattr(update_check, "installed_web_version", lambda: None)
 
 
 class _FakeRun:
@@ -268,7 +280,7 @@ class TestMaybeAutoUpgrade:
     def test_fires_for_a_behind_renderer_alone(self, monkeypatch):
         # Bundle equal to the running version; only the renderer is behind.
         checker, requests = self._armed_checker(monkeypatch, latest="3.2.0")
-        checker._renderer_stale = True
+        checker._renderer.behind = True
         self._attempt(checker, datetime(2026, 7, 27, 3, 0))
         assert requests == [1]
 
@@ -470,8 +482,7 @@ class TestSupervisorUpdates:
             assert checker.update_available()
             assert validate_upgrade_request(
                 checker.latest, checker.latest, "5.7.0",
-                checker.renderer_update_available(),
-                checker.supervisor_update_available(),
+                checker.package_update_available(),
             ) is None
 
     async def test_supervisor_only_update_is_offered(self, monkeypatch):
@@ -487,8 +498,8 @@ class TestSupervisorUpdates:
         assert checker.supervisor_update_available()
         assert checker.latest_supervisor == '0.2.0'
         assert checker.installed_supervisor == '0.1.0'
-        assert validate_upgrade_request('5.7.0', checker.latest, '5.7.0', supervisor_stale=True) is None
-        assert validate_upgrade_request('5.6.0', checker.latest, '5.7.0', supervisor_stale=True) is not None
+        assert validate_upgrade_request('5.7.0', checker.latest, '5.7.0', package_behind=True) is None
+        assert validate_upgrade_request('5.6.0', checker.latest, '5.7.0', package_behind=True) is not None
 
     async def test_absent_supervisor_is_not_an_update(self, monkeypatch):
         checker = UpdateChecker()
@@ -511,3 +522,157 @@ class TestSupervisorUpdates:
         await checker.check_now()
         await checker.check_now()
         assert checker.supervisor_update_available()
+
+
+class TestRefreshInstalled:
+    """A package the installer moves without restarting Core."""
+
+    @pytest.fixture
+    def box(self, monkeypatch, tmp_path):
+        status = tmp_path / "status"
+        status.touch()
+        os.utime(status, ns=(1, 1))
+        monkeypatch.setattr(update_check, "_DPKG_STATUS", str(status))
+        monkeypatch.setattr(update_check, "deb_is_newer", lambda new, old: new != old)
+        installed = {"renderer": "0.1.0", "supervisor": "0.1.0", "web": "0.1.0"}
+        reads = []
+
+        def reader(package):
+            def read():
+                reads.append(package)
+                return installed[package]
+
+            return read
+
+        for package in installed:
+            monkeypatch.setattr(
+                update_check, f"installed_{package}_version", reader(package)
+            )
+        feeds = [
+            _feed(
+                "kalinka-v5.7.0", "kalinka-renderer-v0.2.0", "kalinka-supervisor-v0.2.0"
+            )
+        ]
+        web_feeds = [_feed("v0.2.0")]
+        checker = UpdateChecker()
+
+        async def fetch():
+            return feeds.pop(0) if feeds else None
+
+        async def fetch_web():
+            return web_feeds.pop(0) if web_feeds else None
+
+        checker._fetch = fetch
+        checker._fetch_web = fetch_web
+        asyncio.run(checker.check_now())
+
+        def install(package, version, stamp):
+            installed[package] = version
+            os.utime(status, ns=(stamp, stamp))
+
+        return checker, install, reads
+
+    @pytest.mark.parametrize("package", ["renderer", "supervisor", "web"])
+    def test_an_installed_upgrade_stops_being_offered(self, box, package):
+        checker, install, _ = box
+        assert getattr(checker, f"{package}_update_available")()
+
+        install(package, "0.2.0", 2)
+        checker.refresh_installed()
+
+        assert getattr(checker, f"installed_{package}") == "0.2.0"
+        assert not getattr(checker, f"{package}_update_available")()
+
+    def test_packages_are_not_read_again_while_dpkg_is_unchanged(self, box):
+        checker, _, reads = box
+        read_by_check = len(reads)
+
+        checker.refresh_installed()
+        checker.refresh_installed()
+
+        assert len(reads) == read_by_check
+
+    def test_a_check_without_the_feed_still_settles_what_is_installed(self, box):
+        checker, install, _ = box
+        install("supervisor", "0.2.0", 2)
+
+        assert asyncio.run(checker.check_now()) is None
+
+        assert checker.latest_supervisor == "0.2.0"
+        assert not checker.supervisor_update_available()
+        assert checker.renderer_update_available()
+
+
+class TestBrowserPlayerUpdates:
+    """The browser player comes from the app's releases, not the bundle's."""
+
+    def _checker(self, monkeypatch, installed, bundle_feeds, web_feeds):
+        monkeypatch.setattr(update_check, "get_version", lambda: "5.7.0")
+        monkeypatch.setattr(update_check, "installed_renderer_version", lambda: None)
+        monkeypatch.setattr(update_check, "installed_supervisor_version", lambda: None)
+        monkeypatch.setattr(update_check, "installed_web_version", lambda: installed)
+        monkeypatch.setattr(update_check, "deb_is_newer", lambda new, old: new != old)
+        checker = UpdateChecker()
+
+        async def fetch():
+            return bundle_feeds.pop(0)
+
+        async def fetch_web():
+            return web_feeds.pop(0)
+
+        checker._fetch = fetch
+        checker._fetch_web = fetch_web
+        return checker
+
+    def test_a_newer_app_release_is_offered_without_a_server_release(
+        self, monkeypatch
+    ):
+        checker = self._checker(
+            monkeypatch, "0.21.1", [_feed("kalinka-v5.7.0")], [_feed("v0.21.2")]
+        )
+        asyncio.run(checker.check_now())
+
+        assert checker.latest == "5.7.0"
+        assert checker.latest_web == "0.21.2"
+        assert checker.installed_web == "0.21.1"
+        assert not checker.bundle_update_available()
+        assert checker.web_update_available()
+        assert checker.update_available()
+        assert validate_upgrade_request(
+            "5.7.0", checker.latest, "5.7.0", checker.package_update_available()
+        ) is None
+
+    def test_a_box_without_the_browser_player_is_not_offered_one(
+        self, monkeypatch
+    ):
+        checker = self._checker(
+            monkeypatch, None, [_feed("kalinka-v5.7.0")], [_feed("v0.21.2")]
+        )
+        asyncio.run(checker.check_now())
+
+        assert not checker.web_update_available()
+        assert not checker.update_available()
+
+    def test_an_unreachable_app_feed_keeps_the_known_release(self, monkeypatch):
+        checker = self._checker(
+            monkeypatch,
+            "0.21.1",
+            [_feed("kalinka-v5.7.0"), _feed("kalinka-v5.7.0")],
+            [_feed("v0.21.2"), None],
+        )
+
+        async def run():
+            await checker.check_now()
+            await checker.check_now()
+
+        asyncio.run(run())
+        assert checker.latest_web == "0.21.2"
+        assert checker.web_update_available()
+
+    def test_waits_for_a_bundle_target_to_echo(self, monkeypatch):
+        checker = self._checker(monkeypatch, "0.21.1", [None], [_feed("v0.21.2")])
+        asyncio.run(checker.check_now())
+
+        assert checker.latest is None
+        assert checker.latest_web == "0.21.2"
+        assert not checker.web_update_available()

@@ -65,18 +65,21 @@ def register_upgrade_routes(
     def get_update_info():
         """Report whether a newer release is available for this machine.
 
-        Served entirely from the daily background check's cache — never
+        Served from the hourly background check's cache, with this
+        machine's packages read again once dpkg has changed them — never
         does network I/O. The app should show its upgrade banner only
         when both ``update_available`` and ``upgrade_supported`` are
         true (dev installs report ``upgrade_supported: false``);
         dismissing the banner is purely client-side state.
 
         ``update_available`` covers the whole install — one upgrade run
-        also brings the renderer on this machine up to date, and the
-        ``renderer_*`` fields say where that one stands. ``latest_version``
+        also brings the renderer, the supervisor and the browser player on
+        this machine up to date, and the ``renderer_*``, ``supervisor_*``
+        and ``web_*`` fields say where each stands. ``latest_version``
         stays the bundle's, and is what PUT /server/upgrade expects back.
         """
         checker = update_check.checker
+        checker.refresh_installed()
         return {
             "current_version": get_version(),
             "latest_version": checker.latest,
@@ -87,6 +90,9 @@ def register_upgrade_routes(
             "supervisor_current_version": checker.installed_supervisor,
             "supervisor_latest_version": checker.latest_supervisor,
             "supervisor_update_available": checker.supervisor_update_available(),
+            "web_current_version": checker.installed_web,
+            "web_latest_version": checker.latest_web,
+            "web_update_available": checker.web_update_available(),
             "upgrade_supported": not demo_mode() and update_check.upgrade_supported(),
         }
 
@@ -101,13 +107,15 @@ def register_upgrade_routes(
 
         Touches the trigger file watched by the root-owned
         kalinka-upgrade.path unit; its oneshot fetches the published
-        installer from kalinkaplayer.com and runs it, which upgrades the
-        bundle, the web player and this machine's renderer together, and
-        the new package's postinst restarts kalinka.service — so a
-        successful upgrade looks to clients like a (long) restart.
-        Progress and failure detail stay in the systemd journal; the app
-        confirms the outcome by re-reading /server/version after
-        reconnect.
+        installer from kalinkaplayer.com and runs it, which brings the
+        bundle, the browser player, the supervisor and this machine's
+        renderer up to date together. When the bundle moves, its postinst
+        restarts kalinka.service — so a successful upgrade looks to clients
+        like a (long) restart, and the app confirms the outcome by
+        re-reading /server/version after reconnect. A run that moves only
+        packages leaves Core running; GET /server/update stops offering
+        them once dpkg has them in. Progress and failure detail stay in the
+        systemd journal.
 
         Renderers on other machines go first, as they do on the automatic
         path, except that the press is someone asking: playback on one that
@@ -134,12 +142,12 @@ def register_upgrade_routes(
         if not target:
             raise HTTPException(status_code=400, detail="'version' is required")
         checker = update_check.checker
+        await asyncio.to_thread(checker.refresh_installed)
         rejection = update_check.validate_upgrade_request(
             target,
             checker.latest,
             get_version(),
-            checker.renderer_update_available(),
-            checker.supervisor_update_available(),
+            checker.package_update_available(),
         )
         if rejection:
             raise HTTPException(status_code=409, detail=rejection)

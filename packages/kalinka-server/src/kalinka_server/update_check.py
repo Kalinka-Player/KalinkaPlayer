@@ -1,14 +1,16 @@
 """Background check for a newer Kalinka release.
 
-A background task (started from the app lifecycle) reads the repo's public
-``releases.atom`` feed once an hour — no token, not subject to the GitHub
-API rate limit. ``GET /server/update`` serves the cached result only and
-never does network I/O. With ``server.auto_upgrade`` on, the task also
-fires the upgrade itself during quiet hours while playback is stopped.
+A background task (started from the app lifecycle) reads the public
+``releases.atom`` feeds of this repo and the app's once an hour — no token,
+not subject to the GitHub API rate limit. ``GET /server/update`` serves the
+cached result only and never does network I/O. With ``server.auto_upgrade``
+on, the task also fires the upgrade itself during quiet hours while playback
+is stopped.
 
-Three release trains are watched, because one installer run covers all three: the
-``kalinka-v*`` app bundle, and the ``kalinka-renderer-v*`` renderer package
-and ``kalinka-supervisor-v*`` supervisor installed on this machine.
+Four release trains are watched, because one installer run covers all four:
+the ``kalinka-v*`` app bundle, the ``kalinka-renderer-v*`` renderer package
+and ``kalinka-supervisor-v*`` supervisor installed on this machine, and the
+app repo's ``v*`` releases, which carry the browser player.
 Renderers on other boxes are upgraded by running the installer there.
 
 ``PUT /server/upgrade`` must name the version the client is upgrading to;
@@ -28,6 +30,7 @@ import logging
 import os
 import subprocess
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -46,6 +49,8 @@ _RENDERER_TAG_PREFIX = "kalinka-renderer-v"
 _RENDERER_PACKAGE = "kalinka-renderer"
 _SUPERVISOR_TAG_PREFIX = "kalinka-supervisor-v"
 _SUPERVISOR_PACKAGE = "kalinka-supervisor"
+_WEB_TAG_PREFIX = "v"
+_WEB_PACKAGE = "kalinka-web"
 _TICK_INTERVAL = 3600  # check hourly; also guarantees ticks inside quiet hours
 _QUIET_HOURS = range(3, 6)  # local time — auto-upgrade fires in [3:00, 6:00)
 
@@ -56,11 +61,17 @@ _QUIET_HOURS = range(3, 6)  # local time — auto-upgrade fires in [3:00, 6:00)
 _UPGRADE_SCRIPT = "/opt/kalinka/upgrade.sh"
 _UPGRADE_PATH_UNIT = "/etc/systemd/system/kalinka-upgrade.path"
 _RESTART_TRIGGER = "restart-request"
+_DPKG_STATUS = "/var/lib/dpkg/status"
 
 
 def _repo() -> str:
     # Same override the install script honours.
     return os.environ.get("KALINKA_REPO", "madenvel/KalinkaPlayer")
+
+
+def _web_repo() -> str:
+    # Same override the install script honours.
+    return os.environ.get("KALINKA_WEB_REPO", "madenvel/KalinkaAI")
 
 
 def upgrade_supported() -> bool:
@@ -127,12 +138,24 @@ def installed_package_version(package: str) -> str | None:
     return version if status == "installed" and version else None
 
 
+def dpkg_status_stamp() -> int | None:
+    """When dpkg last changed what is installed, or None without dpkg."""
+    try:
+        return os.stat(_DPKG_STATUS).st_mtime_ns
+    except OSError:
+        return None
+
+
 def installed_renderer_version() -> str | None:
     return installed_package_version(_RENDERER_PACKAGE)
 
 
 def installed_supervisor_version() -> str | None:
     return installed_package_version(_SUPERVISOR_PACKAGE)
+
+
+def installed_web_version() -> str | None:
+    return installed_package_version(_WEB_PACKAGE)
 
 
 def deb_is_newer(candidate: str, installed: str) -> bool:
@@ -190,21 +213,20 @@ def validate_upgrade_request(
     target: str,
     latest: str | None,
     current: str,
-    renderer_stale: bool = False,
-    supervisor_stale: bool = False,
+    package_behind: bool = False,
 ) -> str | None:
     """Reason a PUT /server/upgrade must be rejected, or None to proceed.
 
     The client echoes the bundle version it saw in GET /server/update; no
     known release, nothing left to upgrade, or a different release
     published since all reject rather than firing the installer again.
-    The package-stale flags keep requests valid when Core is current but
-    the renderer or supervisor needs updating. The echoed version remains
-    the bundle version, matching the existing app protocol.
+    ``package_behind`` keeps requests valid when Core is current but the
+    renderer, supervisor or browser player needs updating. The echoed
+    version remains the bundle version, matching the existing app protocol.
     """
     if not latest:
         return "No update available"
-    if not is_newer(latest, current) and not renderer_stale and not supervisor_stale:
+    if not is_newer(latest, current) and not package_behind:
         return "No update available"
     if target != latest:
         return (
@@ -214,25 +236,58 @@ def validate_upgrade_request(
     return None
 
 
+@dataclass
+class _PackageTrain:
+    """A package on this machine and the release train it follows.
+
+    A machine without the package is not missing an update: the installer
+    would be adding one, which is an install decision, not an upgrade.
+    """
+
+    tag_prefix: str
+    read_installed: Callable[[], str | None]
+    latest: str | None = None
+    installed: str | None = None
+    behind: bool = False
+
+    def follow(self, feed: str) -> None:
+        if version := latest_release_version(feed, self.tag_prefix):
+            self.latest = version
+
+    def settle(self) -> None:
+        self.behind = bool(
+            self.installed and self.latest and deb_is_newer(self.latest, self.installed)
+        )
+
+
 class UpdateChecker:
     """Hourly background lookup of what is published and what is installed.
 
     ``run()`` is started as a task from the app lifecycle; endpoints read
-    the cached properties only. A transient fetch failure keeps the last
+    the cached properties, after :meth:`refresh_installed` has caught up
+    with what dpkg installed since. A transient fetch failure keeps the last
     known result (an available update must not vanish on a network blip),
     and so does a feed page that happens to carry no release of one
-    family.
+    family. A package update is offered only once the upgrade API has a
+    bundle target, since that is the version a press echoes back.
     """
 
     def __init__(self) -> None:
         self._latest: str | None = None
-        self._latest_renderer: str | None = None
-        self._installed_renderer: str | None = None
-        self._renderer_stale = False
-        self._latest_supervisor: str | None = None
-        self._installed_supervisor: str | None = None
-        self._supervisor_stale = False
+        # Late-bound, so the module's readers can be replaced after import.
+        self._renderer = _PackageTrain(
+            _RENDERER_TAG_PREFIX, lambda: installed_renderer_version()
+        )
+        self._supervisor = _PackageTrain(
+            _SUPERVISOR_TAG_PREFIX, lambda: installed_supervisor_version()
+        )
+        self._web = _PackageTrain(_WEB_TAG_PREFIX, lambda: installed_web_version())
+        self._dpkg_stamp: int | None = None
         self._last_auto_attempt: date | None = None
+
+    @property
+    def _packages(self) -> tuple[_PackageTrain, ...]:
+        return (self._renderer, self._supervisor, self._web)
 
     @property
     def latest(self) -> str | None:
@@ -242,76 +297,92 @@ class UpdateChecker:
     @property
     def latest_renderer(self) -> str | None:
         """Latest known renderer release — None until a check succeeds."""
-        return self._latest_renderer
+        return self._renderer.latest
 
     @property
     def installed_renderer(self) -> str | None:
         """Renderer version installed here as of the last check."""
-        return self._installed_renderer
+        return self._renderer.installed
 
     @property
     def latest_supervisor(self) -> str | None:
-        return self._latest_supervisor
+        return self._supervisor.latest
 
     @property
     def installed_supervisor(self) -> str | None:
-        return self._installed_supervisor
+        return self._supervisor.installed
 
-    def supervisor_update_available(self) -> bool:
-        """Offer a package update only when the upgrade API has a bundle target."""
-        return bool(self._latest and self._supervisor_stale)
+    @property
+    def latest_web(self) -> str | None:
+        """Latest known app release, which carries the browser player."""
+        return self._web.latest
+
+    @property
+    def installed_web(self) -> str | None:
+        return self._web.installed
 
     def update_available(self) -> bool:
         """Whether an installer run would bring anything newer to this box."""
-        return (
-            self.bundle_update_available() or self.renderer_update_available()
-            or self.supervisor_update_available()
-        )
+        return self.bundle_update_available() or self.package_update_available()
 
     def bundle_update_available(self) -> bool:
         """Whether a newer app bundle than the running one is published."""
         return bool(self._latest and is_newer(self._latest, get_version()))
 
-    def renderer_update_available(self) -> bool:
-        """Whether the renderer installed here is behind its latest release.
+    def package_update_available(self) -> bool:
+        """Whether a package on this machine is behind its latest release."""
+        return bool(self._latest) and any(p.behind for p in self._packages)
 
-        A machine with no renderer installed is not missing an update: the
-        installer would be adding one, which is an install decision, not an
-        upgrade. The upgrade API also needs a known bundle target.
-        """
-        return bool(self._latest and self._renderer_stale)
+    def renderer_update_available(self) -> bool:
+        return bool(self._latest and self._renderer.behind)
+
+    def supervisor_update_available(self) -> bool:
+        return bool(self._latest and self._supervisor.behind)
+
+    def web_update_available(self) -> bool:
+        return bool(self._latest and self._web.behind)
 
     async def check_now(self) -> str | None:
         """Refresh release trains and installed package versions.
 
         Returns the latest bundle release, or None when the feed could not
-        be read. The renderer verdict is settled here rather than on read,
-        so asking for it costs no process and never blocks a request.
+        be read. The package verdicts are settled here and when dpkg changes,
+        rather than on every read, so asking for them rarely costs a process.
         """
-        self._installed_renderer = installed_renderer_version()
-        self._installed_supervisor = installed_supervisor_version()
-        feed = await self._fetch()
-        if feed is None:
-            return None
-        latest = latest_release_version(feed, _BUNDLE_TAG_PREFIX)
-        renderer = latest_release_version(feed, _RENDERER_TAG_PREFIX)
-        supervisor = latest_release_version(feed, _SUPERVISOR_TAG_PREFIX)
-        if latest:
-            self._latest = latest
-        if renderer:
-            self._latest_renderer = renderer
-        if supervisor:
-            self._latest_supervisor = supervisor
-        self._supervisor_stale = bool(
-            self._installed_supervisor and self._latest_supervisor
-            and deb_is_newer(self._latest_supervisor, self._installed_supervisor)
-        )
-        self._renderer_stale = bool(
-            self._installed_renderer
-            and self._latest_renderer
-            and deb_is_newer(self._latest_renderer, self._installed_renderer)
-        )
+        await asyncio.to_thread(self._read_installed)
+        feed, web_feed = await asyncio.gather(self._fetch(), self._fetch_web())
+        latest = None
+        if feed is not None:
+            latest = latest_release_version(feed, _BUNDLE_TAG_PREFIX)
+            if latest:
+                self._latest = latest
+            self._renderer.follow(feed)
+            self._supervisor.follow(feed)
+        if web_feed is not None:
+            self._web.follow(web_feed)
+        await asyncio.to_thread(self._settle_packages)
         return latest
+
+    def refresh_installed(self) -> None:
+        """Re-read the installed packages if dpkg has changed them since.
+
+        An installer run that moves only a package — the renderer, the
+        supervisor or the browser player — leaves Core running, so without
+        this the hourly check would keep offering the upgrade that run has
+        just installed.
+        """
+        if dpkg_status_stamp() != self._dpkg_stamp:
+            self._read_installed()
+            self._settle_packages()
+
+    def _read_installed(self) -> None:
+        self._dpkg_stamp = dpkg_status_stamp()
+        for package in self._packages:
+            package.installed = package.read_installed()
+
+    def _settle_packages(self) -> None:
+        for package in self._packages:
+            package.settle()
 
     async def run(
         self,
@@ -381,27 +452,35 @@ class UpdateChecker:
             logger.error("Auto-upgrade trigger failed: %s", e)
             return
         logger.info(
-            "Auto-upgrade requested (server %s, renderer %s, supervisor %s)",
+            "Auto-upgrade requested "
+            "(server %s, renderer %s, supervisor %s, browser player %s)",
             self._latest if self.bundle_update_available() else "current",
-            self._latest_renderer
-            if self.renderer_update_available()
+            self.latest_renderer if self.renderer_update_available() else "current",
+            self.latest_supervisor
+            if self.supervisor_update_available()
             else "current",
-            self._latest_supervisor if self.supervisor_update_available() else "current",
+            self.latest_web if self.web_update_available() else "current",
         )
 
     async def _fetch(self) -> str | None:
-        """The repo's releases.atom document, or None when unreachable."""
-        url = f"https://github.com/{_repo()}/releases.atom"
-        try:
-            async with httpx.AsyncClient(
-                timeout=10, follow_redirects=True
-            ) as client:
-                response = await client.get(url)
-                response.raise_for_status()
-        except httpx.HTTPError as e:
-            logger.warning("Release feed lookup failed: %s", e)
-            return None
-        return response.text
+        """This repo's releases.atom document, or None when unreachable."""
+        return await _fetch_feed(_repo())
+
+    async def _fetch_web(self) -> str | None:
+        """The app repo's releases.atom document, or None when unreachable."""
+        return await _fetch_feed(_web_repo())
+
+
+async def _fetch_feed(repo: str) -> str | None:
+    url = f"https://github.com/{repo}/releases.atom"
+    try:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+    except httpx.HTTPError as e:
+        logger.warning("Release feed lookup failed: %s", e)
+        return None
+    return response.text
 
 
 #: Process-wide instance; run() is started from the server lifecycle.
