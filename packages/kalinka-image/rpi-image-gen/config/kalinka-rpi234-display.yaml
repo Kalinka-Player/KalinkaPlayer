@@ -1,0 +1,8 @@
+include:
+  file: kalinka-rpi234.yaml
+
+image:
+  name: kalinka-rpi234-display
+
+kalinka:
+  display: y

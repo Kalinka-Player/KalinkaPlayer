@@ -3,7 +3,7 @@ description: >-
   Test the image scripts and build one target's image into out/. The release
   and the pull-request builds both run this, so what a pull request boots is
   what a release would ship. A target with an rpi-image-gen configuration is
-  built from it; any other from DietPi by build-image.sh.
+  built from it; any other by build-image.sh.
 
 inputs:
   target:
@@ -57,7 +57,7 @@ runs:
         KALINKA_VERSION: ${{ inputs.kalinka-version }}
         SUPERVISOR_DEB: ${{ inputs.supervisor-deb }}
       run: |
-        # As root, as the DietPi build is: rpi-image-gen runs in a privileged container.
+        # As root, as build-image.sh is: rpi-image-gen runs in a privileged container.
         if [ -f "packages/kalinka-image/rpi-image-gen/config/kalinka-$TARGET.yaml" ]; then
           sudo --preserve-env=GITHUB_TOKEN \
             env OUT_DIR="$GITHUB_WORKSPACE/out" SUPERVISOR_DEB="$SUPERVISOR_DEB" \

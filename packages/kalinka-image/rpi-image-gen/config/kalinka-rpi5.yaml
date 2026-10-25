@@ -1,19 +1,8 @@
+include:
+  file: common.yaml
+
 device:
   layer: rpi5
-  hostname: kalinka
-  # Locked, as DietPi's root and dietpi are. Anything but none keeps sudo, which SSH setup needs.
-  user1: kalinka
-  user1sudo: passwd
 
 image:
-  layer: image-rpios
-  boot_part_size: 256M
-  root_part_size: 4G
   name: kalinka-rpi5
-
-layer:
-  base: kalinka-base
-  app: kalinka
-
-kalinka:
-  hook: ${@SRCROOT}/kalinka-hook.sh

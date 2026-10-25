@@ -1,6 +1,6 @@
 name: Image boot test
 
-# Boots the same DietPi UEFI image as releases. Physical radio E2E is separate.
+# Boots the same UEFI PC image as releases. Physical radio E2E is separate.
 
 on:
   pull_request:

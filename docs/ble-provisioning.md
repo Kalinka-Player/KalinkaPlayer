@@ -150,8 +150,8 @@ Bluetooth setup remains native-only. See [hotspot setup](supervisor.md#network-s
 ## Real Wi-Fi changes on a NetworkManager laptop
 
 Use `packages/kalinka-supervisor/run-live.sh` for an end-to-end test that actually changes the
-laptop's network. This is a separate backend for NetworkManager (for example,
-Fedora); DietPi images keep their ifupdown/supplicant backend. Do not use
+laptop's network. This is the NetworkManager backend (on Fedora, for example); DietPi
+systems keep their ifupdown/supplicant backend. Do not use
 `--test` for this test. The live receiver advertises even while already online,
 and the app shows real networks with no simulated-network badge. It turns the
 control API off: run as root, that would reboot the laptop for real.
@@ -193,15 +193,13 @@ NetworkManager's [AddConnection2 and Update2 flags](https://www.networkmanager.d
 
 ## DietPi integration
 
-The `rpi234` and `rpi5` image builds (and their `-display` variants) install the static Go supervisor, BlueZ, Pi
-Bluetooth firmware/UART support, and the Wi-Fi tools. The build removes
-DietPi's Bluetooth/Wi-Fi disable overlays and blacklists, enables the UART
-initialisation and provisioning units, and checks for the noninteractive
-`dietpi-network apply --no-restart` API. An older cached base lacking that API
-fails the build and must be refreshed. The x86-64 PC/VM image now also uses
-DietPi and the same native networking backend. NetworkManager remains supported
-for installations on other distributions. All images install a separately
-versioned `kalinka-supervisor` Debian package.
+Every image installs the static Go supervisor, as a separately versioned
+`kalinka-supervisor` Debian package, with BlueZ and the Wi-Fi tools; the Pi
+images add the Pi's Bluetooth firmware and UART support. On a DietPi system the
+supervisor uses DietPi's own networking, and an image built on DietPi checks for
+its noninteractive `dietpi-network apply --no-restart` API: an older cached base
+lacking that API fails the build and must be refreshed. Everywhere else the
+supervisor uses NetworkManager.
 
 UART serial-console defaults are disabled so a login/kernel console cannot
 claim the Bluetooth UART on the first boot. The local HDMI console remains
@@ -239,8 +237,9 @@ The advertised port comes from `base_config.server.port` in
 interface, adapter or server configuration. A physical Wi-Fi adapter is
 required; boards without built-in radios need suitable USB adapters.
 
-Set `KALINKA_BLE_SETUP=0` in the card's `dietpi.txt` before first boot, or stop
-and disable `kalinka-supervisor.service`, to turn Bluetooth setup off. Set `KALINKA_WIFI_AP_SETUP=0` as well to
+Set `KALINKA_BLE_SETUP=0` in `/etc/default/kalinka-supervisor` (on DietPi, also
+in `dietpi.txt` before the first boot), or stop and disable
+`kalinka-supervisor.service`, to turn Bluetooth setup off. Set `KALINKA_WIFI_AP_SETUP=0` as well to
 disable the temporary hotspot. These switches control provisioning, not the radio hardware. Pairing uses encrypted Just Works:
 proximity authorises setup, without authenticated proof of ownership. Pi
 images allow Just Works re-pairing; after reflashing a box the phone may still
