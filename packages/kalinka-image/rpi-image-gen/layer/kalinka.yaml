@@ -50,6 +50,8 @@ mmdebstrap:
     - wpasupplicant
     - iw
     - wireless-regdb
+    - cloud-guest-utils
+    - e2fsprogs
     - rfkill
     - iproute2
     - openssh-server

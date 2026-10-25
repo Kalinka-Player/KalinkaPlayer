@@ -48,4 +48,9 @@ restore_mmdebstrap_policy
 in_chroot systemctl disable ssh.service
 # The supervisor reads a HAT's chips over I2C; the bus itself is in config.txt.d.
 printf 'i2c-dev\n' > "$ROOTFS/etc/modules-load.d/kalinka-soundcard.conf"
+# The card's space past the image's few gigabytes stays unallocated until growroot fills it, as on the PC image.
+install -D -m 755 "$SCRIPT_DIR/overlays/debootstrap/usr/lib/kalinka-image/growroot.sh" "$ROOTFS/usr/lib/kalinka-image/growroot.sh"
+install -D -m 644 "$SCRIPT_DIR/overlays/debootstrap/usr/lib/systemd/system/kalinka-growroot.service" "$ROOTFS/usr/lib/systemd/system/kalinka-growroot.service"
+in_chroot systemctl enable kalinka-growroot.service
+require_enabled multi-user.target kalinka-growroot.service
 rm -rf "$ROOTFS/var/cache/kalinka"
