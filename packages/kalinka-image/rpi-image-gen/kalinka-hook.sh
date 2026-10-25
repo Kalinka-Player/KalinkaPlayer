@@ -53,6 +53,9 @@ restore_mmdebstrap_policy
 
 # The supervisor turns SSH on when someone sets a password for it.
 in_chroot systemctl disable ssh.service
+# Keys baked in would be every box's; the openssh-server layer has each make its own on first boot.
+! compgen -G "$ROOTFS/etc/ssh/ssh_host_*" > /dev/null || die 'the image carries SSH host keys'
+require_enabled multi-user.target ssh-hostkeys-generate.service
 # The supervisor reads a HAT's chips over I2C; the bus itself is in config.txt.d.
 printf 'i2c-dev\n' > "$ROOTFS/etc/modules-load.d/kalinka-soundcard.conf"
 # The card's space past the image's few gigabytes stays unallocated until growroot fills it, as on the PC image.
