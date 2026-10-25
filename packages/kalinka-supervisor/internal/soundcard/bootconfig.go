@@ -77,7 +77,7 @@ func recordedOnboard(root string) string {
 	return ""
 }
 
-// onboardAudioOn reads dtparam=audio the way the firmware does: the last setting wins, and it is off unless set.
+// onboardAudioOn reads dtparam=audio as the firmware does: several to a line, bare is on, last wins, off unless set.
 func onboardAudioOn(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
@@ -87,9 +87,14 @@ func onboardAudioOn(path string) bool {
 	on := false
 	s := bufio.NewScanner(f)
 	for s.Scan() {
-		if value, ok := strings.CutPrefix(strings.TrimSpace(s.Text()), "dtparam=audio="); ok {
-			switch value {
-			case "on", "true", "yes", "okay":
+		params, ok := strings.CutPrefix(strings.TrimSpace(s.Text()), "dtparam=")
+		if !ok {
+			continue
+		}
+		for _, param := range strings.Split(params, ",") {
+			switch name, value, _ := strings.Cut(param, "="); {
+			case name != "audio":
+			case value == "", value == "on", value == "true", value == "yes", value == "okay":
 				on = true
 			default:
 				on = false
