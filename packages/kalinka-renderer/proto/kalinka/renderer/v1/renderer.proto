@@ -428,6 +428,14 @@ message PlaybackStateChanged {
   // renderer that can name neither format still reports it. Absent when
   // unknown, which is not zero: unknown length is not a track that ended.
   optional uint64 duration_ms = 9;
+
+  // Set only on a STOPPED without a source_token: a setting that rebuilt the
+  // audio graph stopped a source it was playing, preparing or paused on. The
+  // session carries on, so a Core may play the source again; if the new graph
+  // could not be built, that play tries once more and otherwise reports the
+  // output unavailable. A Core that ignores it sees the plain stop older
+  // renderers report.
+  bool interrupted = 10;
 }
 
 // Emitted on AudioGraphNodeState::SOURCE_CHANGED — the gapless crossover.

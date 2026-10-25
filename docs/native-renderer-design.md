@@ -480,6 +480,12 @@ Report, with `Envelope.session_id` set:
   value must not go on the wire.
 - `PlaybackStateChanged.source_token` absent means the graph holds no current
   source — that is how "the track ended" differs from "playback was torn down".
+- `PlaybackStateChanged.interrupted` is set only on a STOPPED without a
+  `source_token`, when a setting that rebuilt the audio graph stopped a source
+  it was playing, preparing or paused on (§4.7). The session, its volume
+  policy and the claim carry on, so a Core may play the source again from
+  where it had reached. A Core that ignores the field sees the plain stop older
+  renderers send. A `StateSnapshot` never carries it.
 - `PlaybackStateChanged.format` is restated every time, so a Core replaces it
   rather than merging: absent means nothing is decoded — a source not yet read,
   a stopped or failed graph — never that the format is unchanged. A source
@@ -516,6 +522,15 @@ Report, with `Envelope.session_id` set:
 - Refuse — do not clamp, do not partially apply a single setting — an unknown
   path, a read-only field, a value that does not parse as the field's type, an
   integer outside its declared range, or an enum value not among the options.
+- A setting that rebuilds the audio graph, as `APPLY_COST_INTERRUPTS_PLAYBACK`
+  declares, leaves the running session in place. However many such settings
+  one `ConfigUpdate` applies, report one STOPPED, and when the graph held a
+  source it was playing, preparing or paused on, set `interrupted` on it
+  (§4.6). Kalinka's Core then plays a track that was playing or preparing
+  again from where it had reached; a paused one stays stopped. A setting that
+  stops playback without a rebuild, as `output.volume_mode` does to keep a
+  level jump out of the audio on air, reports a plain STOPPED: playing the
+  track again would bring the jump back.
 - Config paths and values are renderer-owned. Core renders and validates the
   schema, then passes selected values back verbatim; in particular, it does not
   interpret `output.volume_mode` when opening a session.
