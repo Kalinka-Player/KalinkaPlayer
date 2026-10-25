@@ -2,19 +2,19 @@
 
 Bootable images with the whole player already installed and enabled: the server, all four first-party plugins, the plugin SDK, the browser player and the renderer that drives the sound card. Power one on and it plays — there is no install step and no login needed to use it.
 
-Five targets. The Pi 5 pair is built with Raspberry Pi's [rpi-image-gen](https://github.com/raspberrypi/rpi-image-gen) from Raspberry Pi's own packages, the rest from signed DietPi images:
+Five targets. The four Raspberry Pi targets are built with Raspberry Pi's [rpi-image-gen](https://github.com/raspberrypi/rpi-image-gen) from Raspberry Pi's own packages, the PC image from a signed DietPi image:
 
 | Target | Hardware | Base | Boots via |
 |---|---|---|---|
-| `rpi234` | Raspberry Pi 3, 4, 400, Zero 2 W, CM3 and CM4 | DietPi | the Pi's own firmware and the Raspberry Pi kernel |
+| `rpi234` | Raspberry Pi 3, 4, 400, Zero 2 W, CM3 and CM4 | Debian 13, rpi-image-gen | the Pi's own firmware and the Raspberry Pi kernel |
 | `rpi5` | Raspberry Pi 5, 500 and CM5 | Debian 13, rpi-image-gen | the Pi's own firmware and the Raspberry Pi kernel |
-| `rpi234-display` | as `rpi234`, with the now-playing display on an attached screen | DietPi | as `rpi234` |
+| `rpi234-display` | as `rpi234`, with the now-playing display on an attached screen | Debian 13, rpi-image-gen | as `rpi234` |
 | `rpi5-display` | as `rpi5`, with the now-playing display on an attached screen | Debian 13, rpi-image-gen | as `rpi5` |
 | `amd64` | x86-64 PC or virtual machine with UEFI | DietPi Native PC UEFI | GRUB and UEFI (Secure Boot disabled) |
 
-A `-display` target sets `TARGET_DISPLAY=1` and is otherwise the same image. The installer then runs with `KALINKA_DISPLAY=1`: it installs `kalinka-kiosk` (the app drawn through flutter-pi, straight to KMS with no X or Wayland), switches on the KMS driver DietPi ships commented out in `config.txt`, and drops DietPi's 16 MB GPU split so the firmware default applies. [`lib/display.sh`](lib/display.sh) writes `base_config.display.enabled: true` into `/etc/kalinka/kalinka_conf.cfg`. That file is written before the server is installed, so the server's postinst hands it to `kalusr`; a file the server cannot read is one its next settings save replaces. The build fails unless the kiosk package is installed, its units are enabled, the driver is on and the setting is readable by the server, and a headless build fails if the kiosk package got in.
+A `-display` target sets `kalinka.display: y` in its rpi-image-gen configuration, which the hook reads as `TARGET_DISPLAY=1`, and is otherwise the same image. The installer then runs with `KALINKA_DISPLAY=1`: it installs `kalinka-kiosk` (the app drawn through flutter-pi, straight to KMS with no X or Wayland). [`lib/display.sh`](lib/display.sh) writes `base_config.display.enabled: true` into `/etc/kalinka/kalinka_conf.cfg`. That file is written before the server is installed, so the server's postinst hands it to `kalusr`; a file the server cannot read is one its next settings save replaces. The build fails unless the kiosk package is installed, its units are enabled, the driver is on and the setting is readable by the server, and a headless build fails if the kiosk package got in.
 
-The Pi images are built on [DietPi](https://dietpi.com) because it carries the Raspberry Pi kernel, whose drivers and overlays are what DAC HATs need; Debian's own kernel has neither.
+The Pi images take the Raspberry Pi kernel, from Raspberry Pi's own repository on top of Debian 13, because its drivers and overlays are what DAC HATs need; Debian's own kernel has neither.
 
 Published images live on the [`kalinka-image-v*` releases](https://github.com/Kalinka-Player/KalinkaPlayer/releases?q=kalinka-image-v&expanded=true).
 
@@ -26,10 +26,10 @@ For first-time Wi-Fi setup from a laptop, join **`Kalinka-Setup-XXXX`** with pas
 
 ## Building an image
 
-A DietPi build needs root, for loop devices and mounts. A Pi 5 build needs podman instead, and runs as you:
+The PC image's DietPi build needs root, for loop devices and mounts. A Pi build needs podman instead, and runs as you:
 
 ```sh
-sudo make image-rpi234                        # the latest published release
+make image-rpi234                             # the latest published release
 make image-rpi5
 make image-rpi5-display                       # with the now-playing display
 sudo make image-amd64 KALINKA_VERSION=4.3.2   # a specific one
@@ -63,7 +63,9 @@ The server's venv is built during the image build rather than on first start, so
 
 ### The rpi-image-gen base
 
-[`rpi-image-gen/build.sh`](rpi-image-gen/build.sh) builds the Pi 5 pair with rpi-image-gen, at the release it pins, inside a Debian container, so any Linux host with podman and arm64 binfmt support can run it. rpi-image-gen assembles Debian trixie from Raspberry Pi's kernel, firmware and packages, with NetworkManager for wired and Wi-Fi and BlueZ for nearby setup ([`layer/kalinka-base.yaml`](rpi-image-gen/layer/kalinka-base.yaml)). [`kalinka-hook.sh`](rpi-image-gen/kalinka-hook.sh) then runs the same steps as a DietPi build: Kalinka, the supervisor and, for `-display`, the kiosk, each checked as there. rpi-image-gen writes `config.txt` and `cmdline.txt` from the layers' fragments only after that, so the I2C bus and the absent serial console go in as fragments, and a late hook checks the display image's KMS driver. On every boot `kalinka-growroot.service` grows the root filesystem to fill the card.
+[`rpi-image-gen/build.sh`](rpi-image-gen/build.sh) builds the four Pi targets with rpi-image-gen, at the release it pins, inside a Debian container, so any Linux host with podman and arm64 binfmt support can run it. rpi-image-gen assembles Debian trixie from Raspberry Pi's kernel, firmware and packages, with NetworkManager for wired and Wi-Fi and BlueZ for nearby setup ([`layer/kalinka-base.yaml`](rpi-image-gen/layer/kalinka-base.yaml)). [`kalinka-hook.sh`](rpi-image-gen/kalinka-hook.sh) then runs the same steps as a DietPi build: Kalinka, the supervisor and, for `-display`, the kiosk, each checked as there. rpi-image-gen writes `config.txt` and `cmdline.txt` from the layers' fragments only after that, so the I2C bus and the absent serial console go in as fragments, and a late hook checks the display image's KMS driver. On every boot `kalinka-growroot.service` grows the root filesystem to fill the card.
+
+The targets share [`config/common.yaml`](rpi-image-gen/config/common.yaml) and differ in the board layer. `rpi5` takes rpi-image-gen's Pi 5 layer. `rpi234` takes its Pi 4 layer, which is rpi-image-gen's generic 64-bit one: Raspberry Pi's v8 kernel, with the boot firmware and wireless firmware for every board, so one image starts every Pi from the 3 on except the 5.
 
 These images read nothing from the card: Wi-Fi, a login and the sound card are set up after the first start. The supervisor runs its `nm` backend and applies the country setup chooses. Each box makes its own SSH host keys on its first start, through rpi-image-gen's `openssh-server` layer, and the build fails if the image carries any. `KALINKA_VERSION`, `SUPERVISOR_DEB`, `SUPERVISOR_VERSION`, `OUT_DIR` and `XZ_LEVEL` work as for a DietPi build. rpi-image-gen prints every setting it is given, so `GITHUB_TOKEN` reaches the install as a file. The image is named and its manifest written as a DietPi build's, with `rpi_image_gen` in place of the DietPi fields. `SPIKE_SSH_PUBKEY` adds a `kalinka-dev` login with that key, for checking an image on a board, and names the image `-spike`.
 
@@ -80,9 +82,9 @@ returns to normal discovery after joining. New boxes continue into the
 existing first-run wizard. See
 [BLE provisioning](../../docs/ble-provisioning.md) for the service, protocol,
 supported networks, and the laptop test launcher
-`../kalinka-supervisor/run-test.sh`. All three targets install a package-managed static Go
-`kalinka-supervisor.service` using DietPi’s ifupdown/wpa_supplicant backend.
-The same package also supports NetworkManager on other distributions. It has no Python runtime dependency.
+`../kalinka-supervisor/run-test.sh`. Every target installs a package-managed static Go
+`kalinka-supervisor.service`, which uses DietPi’s ifupdown/wpa_supplicant backend
+on the PC image and NetworkManager on the Pi images. It has no Python runtime dependency.
 The service runs on every box, radios or not, and also serves the
 [control page](../../docs/supervisor-control.md) on port 8001: the box's state
 and versions, and restart, reboot, power off and reinstall.
@@ -110,11 +112,11 @@ To refresh the key when DietPi rotates it, fetch it by fingerprint (`https://key
 
 ### Sound cards on the Pi images
 
-ALSA is installed, and marked installed for DietPi's own tools, so choosing a sound card never needs a network. A DAC HAT with a compliant ID EEPROM needs nothing: the Pi firmware loads its overlay at boot, and with onboard audio off in DietPi's `config.txt` it becomes the default card.
+ALSA is installed, so choosing a sound card never needs a network. A DAC HAT with a compliant ID EEPROM needs nothing: the Pi firmware loads its overlay at boot.
 
-Any other HAT can be chosen two ways. Before the first start, `CONFIG_SOUNDCARD=` in `dietpi.txt` names it, and `kalinka-soundcard.service` applies it before the renderer starts, restarting once if the boot configuration changed. After the first start, the app or the supervisor's control page sets it, through the same helper. The unit and its helper, `soundcard.sh`, ship in the supervisor package, which the build installs; `install_supervisor` enables the unit, as the package's own hook cannot in the build chroot.
+Any other HAT is chosen in the app or on the supervisor's control page, after the first start. The supervisor runs its helper, `soundcard.sh`, which ships in the supervisor package, outside its own sandbox. On these images the helper edits `config.txt` itself: it writes the HAT's overlay and turns the Pi's own audio off, or back on for the headphone socket and HDMI.
 
-The helper hands the cards DietPi knows to DietPi's `dietpi-set_hardware`, and sets up the others, such as `i2s-dac`, by editing `config.txt` itself. `none` is not handed on, since DietPi's handling of it removes ALSA, but it does make the helper forget the last card, so naming that card again applies it again. The values that download something — `allo-piano*` firmware, the `-eq` variants — need a network the first time, so the boot unit waits for one; the app does not offer them. The Pi 5 has no 3.5 mm output.
+On a DietPi box, `CONFIG_SOUNDCARD=` in `dietpi.txt` can also name a card before the first start, and `kalinka-soundcard.service` applies it before the renderer starts, restarting once if the boot configuration changed. There the helper hands the cards DietPi knows to DietPi's `dietpi-set_hardware`, and sets up the others, such as `i2s-dac`, by editing `config.txt` itself. `none` is not handed on, since DietPi's handling of it removes ALSA, but it does make the helper forget the last card, so naming that card again applies it again. The values that download something — `allo-piano*` firmware, the `-eq` variants — need a network the first time, so the boot unit waits for one; the app does not offer them. The Pi 5 has no 3.5 mm output.
 
 The build switches the HAT's I2C bus on (`dtparam=i2c_arm=on`) and loads `i2c-dev` at boot, so the supervisor can read a HAT's chips and suggest boards that carry no ID chip. A device that uses GPIO 2 or 3 for something else, such as a power button on GPIO 3, then needs that line removed.
 

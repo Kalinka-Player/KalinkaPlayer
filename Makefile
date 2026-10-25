@@ -239,24 +239,24 @@ supervisor-deb:
 ## --- Appliance images (packages/kalinka-image) ---------------------------------
 ## Bootable images with the whole player already installed, for the Raspberry
 ## Pi (headless, or -display with the now-playing screen) and x86-64 UEFI PCs.
-## The DietPi ones need root for loop devices and mounts; the Pi 5 ones are
-## built with rpi-image-gen under podman, as you. Building for another
+## The PC image's build needs root for loop devices and mounts; the Pi images
+## are built with rpi-image-gen under podman, as you. Building for another
 ## architecture needs qemu-user-static registered with binfmt_misc:
-##   sudo make image-rpi234               # latest published release
-##   make image-rpi5 KALINKA_VERSION=4.3.2
+##   make image-rpi234                    # latest published release
+##   sudo make image-amd64 KALINKA_VERSION=4.3.2
 IMAGE_DIR := packages/kalinka-image
 KALINKA_VERSION ?=
 # Prefer the mirror; the test launcher falls back if that registry is unavailable.
 IMAGE_TEST_BASE ?= public.ecr.aws/docker/library/debian:trixie
 
 image-rpi234:
-	@$(IMAGE_DIR)/build-image.sh rpi234 $(KALINKA_VERSION)
+	@KALINKA_VERSION=$(KALINKA_VERSION) $(IMAGE_DIR)/rpi-image-gen/build.sh config/kalinka-rpi234.yaml
 
 image-rpi5:
 	@KALINKA_VERSION=$(KALINKA_VERSION) $(IMAGE_DIR)/rpi-image-gen/build.sh config/kalinka-rpi5.yaml
 
 image-rpi234-display:
-	@$(IMAGE_DIR)/build-image.sh rpi234-display $(KALINKA_VERSION)
+	@KALINKA_VERSION=$(KALINKA_VERSION) $(IMAGE_DIR)/rpi-image-gen/build.sh config/kalinka-rpi234-display.yaml
 
 image-rpi5-display:
 	@KALINKA_VERSION=$(KALINKA_VERSION) $(IMAGE_DIR)/rpi-image-gen/build.sh config/kalinka-rpi5-display.yaml
@@ -301,10 +301,10 @@ help:
 	@echo "  kalinka-server-deb  Build kalinka-server deb package"
 	@echo "  kalinka-plugins-deb Build all plugin deb packages (including SDK)"
 	@echo "  build-all-deb     Build all deb packages (server, plugins, renderer) and move to debs/"
-	@echo "  image-rpi234      Build the Raspberry Pi 3/4/400/Zero 2 W image (needs root)"
-	@echo "  image-rpi5        Build the Raspberry Pi 5 image (needs root)"
-	@echo "  image-rpi234-display  The rpi234 image with the now-playing display (needs root)"
-	@echo "  image-rpi5-display    The rpi5 image with the now-playing display (needs root)"
+	@echo "  image-rpi234      Build the Raspberry Pi 3/4/400/Zero 2 W image (needs podman)"
+	@echo "  image-rpi5        Build the Raspberry Pi 5 image (needs podman)"
+	@echo "  image-rpi234-display  The rpi234 image with the now-playing display (needs podman)"
+	@echo "  image-rpi5-display    The rpi5 image with the now-playing display (needs podman)"
 	@echo "  image-amd64       Build the x86-64 appliance image (needs root)"
 	@echo "  image-test        Run the appliance image tests"
 	@echo "  copy-debs         Move built deb packages to debs/ directory"

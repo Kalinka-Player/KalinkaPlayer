@@ -54,16 +54,16 @@ The file is about 450 MB. Do not unpack it.
 2. In Imager, choose your Pi model.
 3. For the operating system, scroll to the bottom of the list, choose **Use custom**, and pick the file you downloaded.
 4. Choose your card. Check its name and size: whatever you pick is erased.
-5. If Imager offers to set a user name, Wi-Fi or SSH, skip it. The Kalinka image does not read those settings. The `rpi234` images have [their own](#settings-on-the-card).
+5. If Imager offers to set a user name, Wi-Fi or SSH, skip it. The Kalinka image does not read those settings.
 6. Write, and wait until Imager has finished verifying.
 
 [balenaEtcher](https://etcher.balena.io/) works too: **Flash from file**, **Select target**, **Flash!**
 
-On an `rpi234` image, before you take the card out, you can [change settings on it](#settings-on-the-card): Wi-Fi, a login password, a fixed network address or a DAC HAT. None of it is needed. Wi-Fi and the DAC HAT can both be set up after the first start, and on an `rpi5` image that is the only way: it reads nothing from the card.
+The image reads nothing from the card, so there is nothing to change on it: Wi-Fi and a DAC HAT are set up after the first start.
 
 #### 3. Switch it on
 
-Put the card in the Pi, connect your DAC and the network cable, and plug in the power. The first start takes a couple of minutes. If you set a sound card on the card, the Pi restarts once by itself.
+Put the card in the Pi, connect your DAC and the network cable, and plug in the power. The first start takes a couple of minutes.
 
 Then [connect it to your network](#connect-your-box-to-the-network) if it has no cable, or go straight to [Open Kalinka](#open-kalinka).
 
@@ -126,7 +126,7 @@ off=$(( $(partx -g -o START -n 3 kalinka.img) * 512 ))
 mcopy -i kalinka.img@@$off ::/dietpi.txt .
 ```
 
-Change the lines you need in that copy, as [on a Raspberry Pi](#on-a-raspberry-pi-image), then put it back:
+Change the lines you need in that copy, as [on the PC image](#on-the-pc-image), then put it back:
 
 ```bash
 mcopy -o -i kalinka.img@@$off dietpi.txt ::/dietpi.txt
@@ -227,7 +227,7 @@ Keep these steps at hand: while your phone or laptop is on the setup network, it
 
 Both ways need Wi-Fi in the box, and Bluetooth needs Bluetooth in it too. Every Pi listed above has both, except Compute Modules without wireless. On a PC, the Wi-Fi adapter must support access-point mode. The setup network uses 2.4 GHz.
 
-You can also put the Wi-Fi name and password [on the card](#settings-on-the-card) before the first start.
+On the PC image, you can also put the Wi-Fi name and password [on the stick](#on-the-pc-image) before the first start.
 
 ## Open Kalinka
 
@@ -252,7 +252,7 @@ Kalinka can read music from several places at once. Choose them during setup, an
 - Kalinka looks for new and changed music on a share every 15 minutes.
 - Recycle bins, snapshots, thumbnail folders and hidden folders are skipped.
 
-**Copied onto the box.** Every installation has a music folder, `/srv/kalinka/music`, that Kalinka reads from the start. Copy into it with a program that speaks **SFTP**. On an image you need a login first: create one with **SSH access** on [the control page](#the-control-page), or set a password [on the card](#settings-on-the-card).
+**Copied onto the box.** Every installation has a music folder, `/srv/kalinka/music`, that Kalinka reads from the start. Copy into it with a program that speaks **SFTP**. On an image you need a login first: create one with **SSH access** on [the control page](#the-control-page), or, on the PC image, set a password [on the stick](#on-the-pc-image).
 
 | On | Use |
 |---|---|
@@ -358,22 +358,21 @@ The page answers anyone on your home network, over plain HTTP, and nobody outsid
 
 ## Settings on the card
 
-The images start with **no login password and no Wi-Fi**. On the `rpi234` and PC images you can set these, and a few more things, on the card before the first start. You do not need to: Wi-Fi can be [set up afterwards](#connect-your-box-to-the-network), a login created on [the control page](#the-control-page), and the DAC HAT chosen in the app. The `rpi5` images are built without DietPi and read none of this: for them, that is the only way.
+The images start with **no login password and no Wi-Fi**. On the PC image you can set these, and a fixed network address, on the stick before the first start. You do not need to: Wi-Fi can be [set up afterwards](#connect-your-box-to-the-network) and a login created on [the control page](#the-control-page). The Raspberry Pi images read nothing from the card, so for them that is the only way, and a DAC HAT without an ID chip is chosen in the app.
 
-After writing the card, unplug it and plug it back in. A drive called **KALINKA-BT** appears.
+### On the PC image
 
-> **Windows may say the disk needs formatting. Click Cancel.** That message is about the part of the card Windows cannot read, and formatting would erase it. macOS may say a disk is not readable: click **Ignore**.
+After writing the stick, unplug it and plug it back in. A small drive called **DIETPISETUP** appears. If it does not, open your disk utility and mount the partition labelled `DIETPISETUP` (partition 3). Leave the other partitions alone.
 
-### On a Raspberry Pi image
+> **Windows may say the disk needs formatting. Click Cancel.** That message is about the part of the stick Windows cannot read, and formatting would erase it. macOS may say a disk is not readable: click **Ignore**.
 
-This is for the `rpi234` images. Open **`dietpi.txt`** on the KALINKA-BT drive in a text editor (Notepad is fine) and change only the lines you need:
+Open **`dietpi.txt`** on the DIETPISETUP drive in a text editor (Notepad is fine) and change only the lines you need:
 
 | To get | Change this line | For example |
 |---|---|---|
 | A login, as `root` or `dietpi` | `AUTO_SETUP_GLOBAL_PASSWORD=` | `AUTO_SETUP_GLOBAL_PASSWORD=choose-a-password` |
 | Wi-Fi | `AUTO_SETUP_NET_WIFI_ENABLED=0` | `AUTO_SETUP_NET_WIFI_ENABLED=1` |
 | Wi-Fi channels for your country | `AUTO_SETUP_NET_WIFI_COUNTRY_CODE=GB` | `AUTO_SETUP_NET_WIFI_COUNTRY_CODE=US` |
-| A DAC HAT without an ID chip, HDMI or the headphone socket | `CONFIG_SOUNDCARD=none` | `CONFIG_SOUNDCARD=hifiberry-digi` (see below) |
 
 For Wi-Fi, also open **`dietpi-wifi.txt`** and put your network's name and password between the quotes:
 
@@ -382,25 +381,11 @@ aWIFI_SSID[0]='Your network name'
 aWIFI_KEY[0]='your Wi-Fi password'
 ```
 
-Save, eject the card safely, and start the Pi. It reads the files on its first start and then **removes them from the card**, so the password does not stay there. To change them later, log in and run `sudo dietpi-config`, or write the card again.
+Save, eject the stick safely, and start the PC. It reads the files on its first start and then **removes the drive**, so the password does not stay there. To change them later, log in and run `sudo dietpi-config`, or write the stick again.
 
 Leave the other lines as they are.
 
-**Sound card names.** A HAT with an ID chip needs nothing. For anything else:
-
-| Plays through | `CONFIG_SOUNDCARD=` |
-|---|---|
-| HiFiBerry DAC+ / DAC+ Pro | `hifiberry-dacplus-std` / `hifiberry-dacplus-pro` |
-| HiFiBerry Digi+ / Digi+ Pro | `hifiberry-digi` / `hifiberry-digi-pro` |
-| IQaudio DAC+ | `iqaudio-dacplus` |
-| Allo Boss DAC | `allo-boss-dac-pcm512x-audio` |
-| JustBoom DAC | `justboom-dac` |
-| The Pi's headphone socket (Pi 3 and 4) | `rpi-bcm2835-3.5mm` |
-| The Pi's HDMI | `rpi-bcm2835-hdmi` |
-
-The first start restarts the Pi once to switch the card on. A USB DAC needs no setting.
-
-**Logging in.** With a password set, log in as `root` or `dietpi`, for example `ssh root@kalinka.local`. The first login starts DietPi's own setup, which updates the system and may restart it. Kalinka keeps working through it.
+**Logging in.** With a password set, log in as `root` or `dietpi`, for example `ssh root@kalinka.local`. The first login runs a setup that updates the system and may restart it. Kalinka keeps working through it.
 
 <details>
 <summary>An SSH key instead of a password</summary>
@@ -426,13 +411,7 @@ AUTO_SETUP_NET_STATIC_DNS=192.168.1.1
 
 Your phone or computer needs an address in the same range, for example `192.168.1.51` with the netmask `255.255.255.0`. Then open `http://192.168.1.50:8000`.
 
-To go back to DHCP, log in, run `sudo dietpi-config`, open **Network Options: Adapters** → **Ethernet**, and switch it to **DHCP**. Or write the card again.
-
-### On the PC image
-
-The PC image has the same `dietpi.txt` and `dietpi-wifi.txt`, on a small drive called **DIETPISETUP** instead of KALINKA-BT. Change them as [on a Raspberry Pi](#on-a-raspberry-pi-image), including the lines for [a network without DHCP](#a-network-without-dhcp). The sound card lines are for a Pi only. The drive is removed on the first start.
-
-If the drive does not appear, open your disk utility and mount the partition labelled `DIETPISETUP` (partition 3). Leave the other partitions alone.
+To go back to DHCP, log in, run `sudo dietpi-config`, open **Network Options: Adapters** → **Ethernet**, and switch it to **DHCP**. Or write the stick again.
 
 ## Keeping it up to date
 
@@ -444,7 +423,7 @@ A renderer that falls behind shows an upgrade button in the app. To have one upd
 sudo systemctl enable --now kalinka-renderer-upgrade.timer
 ```
 
-Kalinka does not update the operating system. On an image, log in and run `sudo apt update && sudo apt full-upgrade`. On the `rpi234` and PC images, run `sudo dietpi-update` first.
+Kalinka does not update the operating system. On an image, log in and run `sudo apt update && sudo apt full-upgrade`. On the PC image, run `sudo dietpi-update` first.
 
 ## Troubleshooting
 
@@ -456,9 +435,9 @@ Kalinka does not update the operating system. On an image, log in and run `sudo 
 
 **The setup Wi-Fi does not appear.** The box only opens it when it has no network. If a cable is plugged in, unplug it, or open Kalinka over the cable instead. Give it a few minutes after switching on.
 
-**Wi-Fi or the login from the card does not work.** Check that `AUTO_SETUP_NET_WIFI_ENABLED=1` is set and that the name and password in `dietpi-wifi.txt` are between the quotes. The box removes the files after its first start, so write the card again to try once more. Or use the [setup Wi-Fi](#connect-your-box-to-the-network) and [the control page](#the-control-page) instead.
+**On the PC image, Wi-Fi or the login from the stick does not work.** Check that `AUTO_SETUP_NET_WIFI_ENABLED=1` is set and that the name and password in `dietpi-wifi.txt` are between the quotes. The box removes the files after its first start, so write the stick again to try once more. Or use the [setup Wi-Fi](#connect-your-box-to-the-network) and [the control page](#the-control-page) instead.
 
-**No outputs in the list, or no sound.** On the box, `systemctl status kalinka-renderer` should say `active (running)`. If the unit is not found, no output is installed there: run the renderer command from [Add more outputs](#add-more-outputs). If there is no sound, pick another sound device in the output's settings: HDMI, the headphone socket and a USB DAC are separate devices. On a Pi, HDMI, the headphone socket and a HAT without an ID chip stay silent until you choose them as the sound card, in the app or [on the card](#settings-on-the-card). Until then, you can listen in the browser.
+**No outputs in the list, or no sound.** On the box, `systemctl status kalinka-renderer` should say `active (running)`. If the unit is not found, no output is installed there: run the renderer command from [Add more outputs](#add-more-outputs). If there is no sound, pick another sound device in the output's settings: HDMI, the headphone socket and a USB DAC are separate devices. On a Pi, HDMI, the headphone socket and a HAT without an ID chip stay silent until you choose them as the sound card in the app. Until then, you can listen in the browser.
 
 **An output on another machine does not appear.** On that machine, run `sudo journalctl -u kalinka-renderer -f`. A line with `[Discovery] Found` means it has seen the server. Without one, the network is blocking discovery: put both on the same network, or point the renderer at the server directly:
 

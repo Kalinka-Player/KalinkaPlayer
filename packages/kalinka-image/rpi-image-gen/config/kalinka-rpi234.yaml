@@ -1,0 +1,9 @@
+include:
+  file: common.yaml
+
+# rpi-image-gen's generic 64-bit Pi: the v8 kernel, and firmware for every board from the Pi 3 on.
+device:
+  layer: rpi4
+
+image:
+  name: kalinka-rpi234
