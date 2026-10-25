@@ -63,6 +63,9 @@ func TestNMHotspotIsTemporaryAndRecovered(t *testing.T) {
 			if value[string](s["802-11-wireless"], "mode") != "ap" || value[string](s["ipv4"], "method") != "manual" || value[bool](s["connection"], "autoconnect") {
 				t.Fatal("AP profile persistent or routes client traffic")
 			}
+			if value[string](s["802-11-wireless"], "assigned-mac-address") != "stable" || value[string](s["connection"], "stable-id") != "kalinka-setup-hotspot" {
+				t.Fatal("AP serves under the address the box joins networks with")
+			}
 			if _, err := os.Stat(n.apRecord()); err != nil {
 				t.Fatal("missing crash recovery record")
 			}
