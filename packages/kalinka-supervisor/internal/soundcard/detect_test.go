@@ -365,7 +365,7 @@ func TestOnboardChoices(t *testing.T) {
 		t.Fatalf("name = %v", r.Name)
 	}
 	b.write(dietPiTxt, "CONFIG_SOUNDCARD=rpi-bcm2835-hdmi\n")
-	if r := New(b.root, noBus).Report(); r.Active == nil || r.Active.PCM != "hw:CARD=vc4hdmi0,DEV=0" {
+	if r := New(b.root, noBus).Report(); r.Active == nil || r.Active.PCM != "default:CARD=vc4hdmi0" {
 		t.Fatalf("hdmi = %+v", r.Active)
 	}
 	b.write(dietPiTxt, "CONFIG_SOUNDCARD=hifiberry-digi\n")
@@ -383,7 +383,7 @@ func TestOnboardChoicesWithoutDietPi(t *testing.T) {
 	if r.Configured == nil || *r.Configured != HDMI || r.ConfiguredBy == nil || *r.ConfiguredBy != ByBootConfig {
 		t.Fatalf("configured = %v by %v", r.Configured, r.ConfiguredBy)
 	}
-	if r.Active == nil || r.Active.PCM != "hw:CARD=vc4hdmi0,DEV=0" {
+	if r.Active == nil || r.Active.PCM != "default:CARD=vc4hdmi0" {
 		t.Fatalf("active = %+v", r.Active)
 	}
 	if r.Name == nil || *r.Name != "Raspberry Pi HDMI" {
@@ -409,6 +409,22 @@ func TestOnboardChoicesWithoutDietPi(t *testing.T) {
 	}
 }
 
+func TestHDMIPlaysThroughThePortWithAScreen(t *testing.T) {
+	b := pi(t, "Raspberry Pi 5 Model B Rev 1.0")
+	b.write(configTxt, "dtparam=audio=on\ndtoverlay=vc4-kms-v3d\n")
+	b.write(choiceRecord, HDMI+"\n")
+	b.write("proc/asound/cards", hdmiCards)
+	b.write("sys/class/drm/card1-HDMI-A-1/status", "disconnected\n")
+	b.write("sys/class/drm/card1-HDMI-A-2/status", "disconnected\n")
+	if r := New(b.root, noBus).Report(); r.Active == nil || r.Active.PCM != "default:CARD=vc4hdmi0" {
+		t.Fatalf("with nothing plugged in, active = %+v", r.Active)
+	}
+	b.write("sys/class/drm/card1-HDMI-A-2/status", "connected\n")
+	if r := New(b.root, noBus).Report(); r.Active == nil || r.Active.PCM != "default:CARD=vc4hdmi1" || r.Active.Name != "vc4-hdmi-1" {
+		t.Fatalf("with a screen on the second port, active = %+v", r.Active)
+	}
+}
+
 func TestAHATFittedAfterAnOnboardChoice(t *testing.T) {
 	dacPro := " 2 [DACPro         ]: RPi-simple - RPi DAC Pro\n                      RPi DAC Pro\n"
 	mic := " 2 [sndrpii2scard  ]: RPi-simple - snd_rpi_i2s_card\n                      snd_rpi_i2s_card\n"
@@ -418,8 +434,8 @@ func TestAHATFittedAfterAnOnboardChoice(t *testing.T) {
 	}{
 		{"one the firmware's table sets up", "HiFiBerry", "Digi2 Pro", "hifiberry-digi-pro", hdmiCards + digiCard, "hifiberry-digi-pro", "hw:CARD=sndrpihifiberry,DEV=0", true},
 		{"one that sets itself up", "Raspberry Pi Ltd.", "Raspberry Pi DAC Pro", "", hdmiCards + dacPro, "", "hw:CARD=DACPro,DEV=0", true},
-		{"another board's chip", "Raspberry Pi Ltd.", "Raspberry Pi M.2 HAT+", "", hdmiCards, HDMI, "hw:CARD=vc4hdmi0,DEV=0", false},
-		{"a microphone with no playback", "Raspberry Pi Ltd.", "Raspberry Pi M.2 HAT+", "", hdmiCards + mic, HDMI, "hw:CARD=vc4hdmi0,DEV=0", false},
+		{"another board's chip", "Raspberry Pi Ltd.", "Raspberry Pi M.2 HAT+", "", hdmiCards, HDMI, "default:CARD=vc4hdmi0", false},
+		{"a microphone with no playback", "Raspberry Pi Ltd.", "Raspberry Pi M.2 HAT+", "", hdmiCards + mic, HDMI, "default:CARD=vc4hdmi0", false},
 	} {
 		b := pi(t, "Raspberry Pi 5 Model B Rev 1.0")
 		b.write(configTxt, "dtparam=audio=on\ndtoverlay=vc4-kms-v3d\n")

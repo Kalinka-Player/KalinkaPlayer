@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -23,11 +24,14 @@ type alsaCard struct {
 	usb, virtual bool
 	// plays is whether the card has a playback device; a USB webcam's has none.
 	plays bool
+	// plugged is whether a screen or receiver is on the HDMI port the card plays through.
+	plugged bool
 }
 
+func (c alsaCard) vc4HDMI() bool { return strings.HasPrefix(c.driver, "vc4-hdmi") }
+
 func (c alsaCard) hdmi() bool {
-	return strings.HasPrefix(c.driver, "vc4-hdmi") ||
-		strings.HasPrefix(c.driver, "bcm2835") && strings.Contains(c.name, "HDMI")
+	return c.vc4HDMI() || strings.HasPrefix(c.driver, "bcm2835") && strings.Contains(c.name, "HDMI")
 }
 
 func (c alsaCard) headphones() bool {
@@ -40,7 +44,12 @@ func (c alsaCard) hat() bool {
 }
 
 func (c alsaCard) active() *Active {
-	return &Active{ID: c.id, Name: c.name, PCM: "hw:CARD=" + c.id + ",DEV=0"}
+	pcm := "hw:CARD=" + c.id + ",DEV=0"
+	if c.vc4HDMI() {
+		// vc4's hw: device takes only IEC958 subframes; its default: wraps PCM in them.
+		pcm = "default:CARD=" + c.id
+	}
+	return &Active{ID: c.id, Name: c.name, PCM: pcm}
 }
 
 // virtualDrivers make cards with no hardware behind them.
@@ -87,8 +96,24 @@ func readCards(root string) []alsaCard {
 		cards[i].usb = err == nil
 		playback, _ := filepath.Glob(filepath.Join(dir, "pcm*p"))
 		cards[i].plays = len(playback) > 0
+		cards[i].plugged = cards[i].vc4HDMI() && hdmiPlugged(root, cards[i].name)
 	}
 	return cards
+}
+
+// hdmiPlugged reads the DRM connector behind the vc4 HDMI card called name: vc4-hdmi-N plays through HDMI-A-N+1.
+func hdmiPlugged(root, name string) bool {
+	port, err := strconv.Atoi(strings.TrimPrefix(name, "vc4-hdmi-"))
+	if err != nil {
+		return false
+	}
+	statuses, _ := filepath.Glob(filepath.Join(root, "sys/class/drm", "card*-HDMI-A-"+strconv.Itoa(port+1), "status"))
+	for _, status := range statuses {
+		if b, err := os.ReadFile(status); err == nil && strings.TrimSpace(string(b)) == "connected" {
+			return true
+		}
+	}
+	return false
 }
 
 // activeCard finds the card the configured choice brought up: the Pi's own
@@ -98,6 +123,10 @@ func activeCard(cards []alsaCard, configured string) *Active {
 	match := alsaCard.hat
 	switch configured {
 	case HDMI:
+		// vc4 refuses to open a port with nothing plugged in.
+		if i := slices.IndexFunc(cards, func(c alsaCard) bool { return c.hdmi() && c.plugged }); i >= 0 {
+			return cards[i].active()
+		}
 		match = alsaCard.hdmi
 	case HeadphoneSocket:
 		match = alsaCard.headphones
