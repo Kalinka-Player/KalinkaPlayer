@@ -361,7 +361,11 @@ or on the page.
    chosen.
 2. **The boot configuration.** The first catalogued overlay in `config.txt`.
    On DietPi, `CONFIG_SOUNDCARD` in `/boot/dietpi.txt` tells the Pi's two own
-   outputs apart.
+   outputs apart. Elsewhere the card the helper last applied does, which it
+   records in `/var/lib/kalinka-supervisor/soundcard`, while `config.txt`
+   keeps `dtparam=audio=on` as the helper left it. That record gives way
+   to a HAT fitted since: one the firmware sets up from its ID chip (step 3),
+   or any HAT card in ALSA's list that plays.
 3. **The HAT's ID chip.** The firmware sets a board up from its chip when
    its table, `overlays/hat_map.dtb`, lists the board's UUID, or its vendor
    and product, and the overlay the table names is on the card. That card is

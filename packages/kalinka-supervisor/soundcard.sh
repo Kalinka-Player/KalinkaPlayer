@@ -153,7 +153,9 @@ apply_card() {
   if [ "$name" = none ]; then
     rm -f "$STATE"
   else
-    printf '%s\n' "$name" > "$STATE"
+    # The supervisor reads the record without the lock, so it must never see it half-written.
+    printf '%s\n' "$name" > "$STATE.new"
+    mv "$STATE.new" "$STATE"
   fi
 }
 
