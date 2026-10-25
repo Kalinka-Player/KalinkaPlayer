@@ -343,9 +343,10 @@ func (n *NetworkManager) Join(ctx context.Context, c protocol.Command, progress 
 	if _, err = n.call(ctx, candidate, nmConnection+".Update2", s, uint32(1), map[string]dbus.Variant{}); err != nil {
 		return "", protocol.Storage
 	}
+	// The network is joined and saved by now; a country that cannot be kept must not roll that back.
 	if n.RegulatoryConf != "" {
-		if err = AtomicWrite(n.RegulatoryConf, []byte("options cfg80211 ieee80211_regdom="+c.Country+"\n"), 0644); err != nil {
-			return "", err
+		if err := AtomicWrite(n.RegulatoryConf, []byte("options cfg80211 ieee80211_regdom="+c.Country+"\n"), 0644); err != nil {
+			slog.Warn("Could not keep the Wi-Fi country for the next start", "country", c.Country, "error", err)
 		}
 	}
 	if err = removeDurable(n.Journal); err != nil {
