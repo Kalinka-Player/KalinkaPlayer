@@ -182,8 +182,10 @@ profiles are not modified or deleted. Failures and cancellations delete only
 the new candidate and reactivate the previous profile. An interrupted attempt
 is recovered on the receiver's next start using a credential-free rollback
 record in its private persistent state directory. A successful join stays active after
-the receiver exits. The laptop driver retains control of its regulatory domain;
-the app's country field is not applied by this backend.
+the receiver exits. `run-live.sh` passes `--keep-country`, so the laptop keeps
+its regulatory domain. Without it, as on a box, this backend applies the app's
+country: `iw reg set` before a scan and a join, and
+`/etc/modprobe.d/kalinka-regdom.conf` once a join succeeds.
 
 For manual restoration, use `nmcli connection up uuid <previous-connection-uuid>`.
 Do not pass Wi-Fi passwords to shell commands. Profile staging/persistence use

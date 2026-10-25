@@ -3,6 +3,7 @@ package wifi
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -40,10 +41,23 @@ type NetworkManager struct {
 	device             dbus.ObjectPath
 	Timeout, Poll      time.Duration
 	AddressFor         func(context.Context, string) (string, error)
+	Run                Runner
+	// RegulatoryConf keeps the joined network's country across restarts; empty leaves the host's country alone.
+	RegulatoryConf string
 }
 
 func NewNetworkManager(iface, state string) *NetworkManager {
-	return &NetworkManager{Interface: iface, Runtime: "/run/kalinka-supervisor", Journal: filepath.Join(state, "networkmanager-rollback.json"), Timeout: 75 * time.Second, Poll: 500 * time.Millisecond, AddressFor: LANAddress}
+	return &NetworkManager{Interface: iface, Runtime: "/run/kalinka-supervisor", Journal: filepath.Join(state, "networkmanager-rollback.json"), RegulatoryConf: "/etc/modprobe.d/kalinka-regdom.conf", Run: Run, Timeout: 75 * time.Second, Poll: 500 * time.Millisecond, AddressFor: LANAddress}
+}
+
+// applyCountry is best effort: a radio that refuses it still joins, and RegulatoryConf applies it at the next start.
+func (n *NetworkManager) applyCountry(ctx context.Context, country string) {
+	if n.RegulatoryConf == "" {
+		return
+	}
+	if _, err := n.Run(ctx, 15*time.Second, "iw", "reg", "set", country); err != nil {
+		slog.Warn("Could not apply the Wi-Fi country now", "country", country)
+	}
 }
 func (n *NetworkManager) call(ctx context.Context, path dbus.ObjectPath, method string, args ...any) ([]any, error) {
 	body, err := n.Bus.Call(ctx, path, method, args...)
@@ -120,7 +134,13 @@ func (n *NetworkManager) deviceAddress(ctx context.Context) (string, error) {
 	}
 	return "", nil
 }
-func (n *NetworkManager) Scan(ctx context.Context, _ string) ([]protocol.Network, error) {
+func (n *NetworkManager) Scan(ctx context.Context, country string) ([]protocol.Network, error) {
+	if country != "" && !protocol.CountryPattern.MatchString(country) {
+		return nil, protocol.Invalid
+	}
+	if country != "" {
+		n.applyCountry(ctx, country)
+	}
 	p, err := n.props(ctx, n.device, nmWireless)
 	if err != nil {
 		return nil, err
@@ -253,6 +273,8 @@ func (n *NetworkManager) Join(ctx context.Context, c protocol.Command, progress 
 			}
 		}
 	}()
+	// Before the join, so the radio picks channels by the box's country, not the access point's.
+	n.applyCountry(ctx, c.Country)
 	body, err := n.call(ctx, nmSettings, nm+".Settings.AddConnection2", s, uint32(2), map[string]dbus.Variant{})
 	var candidate dbus.ObjectPath
 	var ignored map[string]dbus.Variant
@@ -320,6 +342,11 @@ func (n *NetworkManager) Join(ctx context.Context, c protocol.Command, progress 
 	s["connection"]["autoconnect"] = v(true)
 	if _, err = n.call(ctx, candidate, nmConnection+".Update2", s, uint32(1), map[string]dbus.Variant{}); err != nil {
 		return "", protocol.Storage
+	}
+	if n.RegulatoryConf != "" {
+		if err = AtomicWrite(n.RegulatoryConf, []byte("options cfg80211 ieee80211_regdom="+c.Country+"\n"), 0644); err != nil {
+			return "", err
+		}
 	}
 	if err = removeDurable(n.Journal); err != nil {
 		return "", err
