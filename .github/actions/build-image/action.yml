@@ -2,11 +2,14 @@ name: Build an appliance image
 description: >-
   Test the image scripts and build one target's image into out/. The release
   and the pull-request builds both run this, so what a pull request boots is
-  what a release would ship.
+  what a release would ship. A target with an rpi-image-gen configuration is
+  built from it; any other from DietPi by build-image.sh.
 
 inputs:
   target:
-    description: A target in packages/kalinka-image/targets/
+    description: >-
+      A target in packages/kalinka-image/targets/, or one with a configuration
+      in packages/kalinka-image/rpi-image-gen/config/
     required: true
   kalinka-version:
     description: 'Kalinka release to install (default: the latest published)'
@@ -38,7 +41,7 @@ runs:
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends \
-          dosfstools e2fsprogs fdisk xz-utils curl gpg gpgv dpkg-dev
+          dosfstools e2fsprogs fdisk xz-utils curl gpg gpgv dpkg-dev podman
 
     # In a container, so the tests that create accounts and regenerate host
     # keys get a throwaway system rather than this runner.
@@ -54,8 +57,16 @@ runs:
         KALINKA_VERSION: ${{ inputs.kalinka-version }}
         SUPERVISOR_DEB: ${{ inputs.supervisor-deb }}
       run: |
-        sudo --preserve-env=GITHUB_TOKEN \
-          env OUT_DIR="$GITHUB_WORKSPACE/out" GO="$(command -v go)" \
-          SUPERVISOR_DEB="$SUPERVISOR_DEB" IMAGE_SIZE=8GiB \
-          packages/kalinka-image/build-image.sh \
-          "$TARGET" ${KALINKA_VERSION:+"$KALINKA_VERSION"}
+        # As root, as the DietPi build is: rpi-image-gen runs in a privileged container.
+        if [ -f "packages/kalinka-image/rpi-image-gen/config/kalinka-$TARGET.yaml" ]; then
+          sudo --preserve-env=GITHUB_TOKEN \
+            env OUT_DIR="$GITHUB_WORKSPACE/out" SUPERVISOR_DEB="$SUPERVISOR_DEB" \
+            KALINKA_VERSION="$KALINKA_VERSION" \
+            packages/kalinka-image/rpi-image-gen/build.sh "config/kalinka-$TARGET.yaml"
+        else
+          sudo --preserve-env=GITHUB_TOKEN \
+            env OUT_DIR="$GITHUB_WORKSPACE/out" GO="$(command -v go)" \
+            SUPERVISOR_DEB="$SUPERVISOR_DEB" IMAGE_SIZE=8GiB \
+            packages/kalinka-image/build-image.sh \
+            "$TARGET" ${KALINKA_VERSION:+"$KALINKA_VERSION"}
+        fi

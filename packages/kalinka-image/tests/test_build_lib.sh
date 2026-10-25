@@ -26,6 +26,13 @@ assert_eq "a board by its target and architecture" \
 assert_eq "a display variant by its whole target name" \
   "$(image_name 5.1.0 rpi5-display arm64)" "kalinka-5.1.0-rpi5-display-arm64.img"
 
+echo "  -- the manifest"
+write_manifest "$WORK/m.json" rpi5-display arm64 1 5.1.0 0.6.1 0.11.1 base=rpi-image-gen base_version=v2.9.0
+assert_eq "it carries what is inside and the base, in that order" \
+  "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d.pop("built_at"); print(json.dumps(d))' "$WORK/m.json")" \
+  '{"target": "rpi5-display", "architecture": "arm64", "display": true, "core_version": "5.1.0", "supervisor_version": "0.6.1", "renderer_version": "0.11.1", "base": "rpi-image-gen", "base_version": "v2.9.0"}'
+assert_contains "and when it was built" "$(cat "$WORK/m.json")" '"built_at": '
+
 echo "  -- a resolv.conf that is a file"
 mkdir -p "$ROOTFS/etc"
 printf 'nameserver 192.0.2.53\n' > "$ROOTFS/etc/resolv.conf"

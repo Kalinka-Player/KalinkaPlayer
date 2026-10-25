@@ -28,18 +28,18 @@ Ready-to-flash images of Kalinka Player with the server, every first-party plugi
 | Image | For | Built on |
 |---|---|---|
 | `…-rpi234-arm64.img.xz` | Raspberry Pi 3, 4, 400, Zero 2 W, CM3 and CM4 | DietPi (Debian 13) |
-| `…-rpi5-arm64.img.xz` | Raspberry Pi 5, 500 and CM5 | DietPi (Debian 13) |
+| `…-rpi5-arm64.img.xz` | Raspberry Pi 5, 500 and CM5 | Debian 13 with Raspberry Pi's kernel |
 | `…-rpi234-display-arm64.img.xz` | The same boards as `rpi234`, showing what's playing on an attached screen | DietPi (Debian 13) |
-| `…-rpi5-display-arm64.img.xz` | The same boards as `rpi5`, showing what's playing on an attached screen | DietPi (Debian 13) |
+| `…-rpi5-display-arm64.img.xz` | The same boards as `rpi5`, showing what's playing on an attached screen | Debian 13 with Raspberry Pi's kernel |
 | `…-amd64.img.xz` | x86-64 PC or virtual machine, UEFI (Secure Boot off) | DietPi (Debian 13) |
 
 The Raspberry Pi images play through DAC HATs as well as USB DACs. A HAT with an ID chip is set up by itself.
 
 A `-display` image is the same player with the now-playing display already installed and switched on: plug in an HDMI or DSI screen and it shows the cover, the track and touch controls from the first start. Without a screen, pick the image without `-display`; it is smaller.
 
-To flash an image and start it, follow [Install the server](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#install-the-server). For Wi-Fi, a login, a fixed address on a network without DHCP or a DAC HAT without an ID chip, change [Settings on the card](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#settings-on-the-card) before the first start.
+To flash an image and start it, follow [Install the server](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#install-the-server). On the DietPi images, for Wi-Fi, a login, a fixed address on a network without DHCP or a DAC HAT without an ID chip, change [Settings on the card](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#settings-on-the-card) before the first start. The `rpi5` images read nothing from the card: set up Wi-Fi from the app after the first start.
 
-On all images, DietPi's update notices stay on, its survey is off, and logs are kept on disk rather than in memory.
+On all images, logs are kept on disk rather than in memory. On the DietPi images, DietPi's update notices stay on and its survey is off.
 
 Verify downloads with `sha256sum -c SHA256SUMS --ignore-missing`.
 EOF

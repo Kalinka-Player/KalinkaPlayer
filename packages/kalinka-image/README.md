@@ -2,14 +2,14 @@
 
 Bootable images with the whole player already installed and enabled: the server, all four first-party plugins, the plugin SDK, the browser player and the renderer that drives the sound card. Power one on and it plays — there is no install step and no login needed to use it.
 
-Five targets, all built from signed DietPi images:
+Five targets. The Pi 5 pair is built with Raspberry Pi's [rpi-image-gen](https://github.com/raspberrypi/rpi-image-gen) from Raspberry Pi's own packages, the rest from signed DietPi images:
 
 | Target | Hardware | Base | Boots via |
 |---|---|---|---|
 | `rpi234` | Raspberry Pi 3, 4, 400, Zero 2 W, CM3 and CM4 | DietPi | the Pi's own firmware and the Raspberry Pi kernel |
-| `rpi5` | Raspberry Pi 5, 500 and CM5 | DietPi | the Pi's own firmware and the Raspberry Pi kernel |
+| `rpi5` | Raspberry Pi 5, 500 and CM5 | Debian 13, rpi-image-gen | the Pi's own firmware and the Raspberry Pi kernel |
 | `rpi234-display` | as `rpi234`, with the now-playing display on an attached screen | DietPi | as `rpi234` |
-| `rpi5-display` | as `rpi5`, with the now-playing display on an attached screen | DietPi | as `rpi5` |
+| `rpi5-display` | as `rpi5`, with the now-playing display on an attached screen | Debian 13, rpi-image-gen | as `rpi5` |
 | `amd64` | x86-64 PC or virtual machine with UEFI | DietPi Native PC UEFI | GRUB and UEFI (Secure Boot disabled) |
 
 A `-display` target sets `TARGET_DISPLAY=1` and is otherwise the same image. The installer then runs with `KALINKA_DISPLAY=1`: it installs `kalinka-kiosk` (the app drawn through flutter-pi, straight to KMS with no X or Wayland), switches on the KMS driver DietPi ships commented out in `config.txt`, and drops DietPi's 16 MB GPU split so the firmware default applies. [`lib/display.sh`](lib/display.sh) writes `base_config.display.enabled: true` into `/etc/kalinka/kalinka_conf.cfg`. That file is written before the server is installed, so the server's postinst hands it to `kalusr`; a file the server cannot read is one its next settings save replaces. The build fails unless the kiosk package is installed, its units are enabled, the driver is on and the setting is readable by the server, and a headless build fails if the kiosk package got in.
@@ -26,12 +26,12 @@ For first-time Wi-Fi setup from a laptop, join **`Kalinka-Setup-XXXX`** with pas
 
 ## Building an image
 
-Every build needs root, for loop devices and mounts:
+A DietPi build needs root, for loop devices and mounts. A Pi 5 build needs podman instead, and runs as you:
 
 ```sh
 sudo make image-rpi234                        # the latest published release
-sudo make image-rpi5
-sudo make image-rpi5-display                  # with the now-playing display
+make image-rpi5
+make image-rpi5-display                       # with the now-playing display
 sudo make image-amd64 KALINKA_VERSION=4.3.2   # a specific one
 ```
 
@@ -60,6 +60,12 @@ The C/C++ toolchain does stay, at about 300 MB: `install-release.sh` asks for it
 Two things happen in the chroot that would not happen on a real machine. `policy-rc.d` stops packages from starting services that have no systemd to start them, and [`build-aids/systemctl`](build-aids/systemctl) stands in for `systemctl`, passing `enable` and `disable` through to this root and swallowing the rest — so each package stays the authority on what runs at boot instead of the image builder keeping a second copy of that list. Both are removed before the image is sealed.
 
 The server's venv is built during the image build rather than on first start, so a machine that never reaches PyPI still comes up playing, and a Pi saves several minutes on its first boot.
+
+### The rpi-image-gen base
+
+[`rpi-image-gen/build.sh`](rpi-image-gen/build.sh) builds the Pi 5 pair with rpi-image-gen, at the release it pins, inside a Debian container, so any Linux host with podman and arm64 binfmt support can run it. rpi-image-gen assembles Debian trixie from Raspberry Pi's kernel, firmware and packages, with NetworkManager for wired and Wi-Fi and BlueZ for nearby setup ([`layer/kalinka-base.yaml`](rpi-image-gen/layer/kalinka-base.yaml)). [`kalinka-hook.sh`](rpi-image-gen/kalinka-hook.sh) then runs the same steps as a DietPi build: Kalinka, the supervisor and, for `-display`, the kiosk, each checked as there. rpi-image-gen writes `config.txt` and `cmdline.txt` from the layers' fragments only after that, so the I2C bus and the absent serial console go in as fragments, and a late hook checks the display image's KMS driver. On every boot `kalinka-growroot.service` grows the root filesystem to fill the card.
+
+These images read nothing from the card: Wi-Fi, a login and the sound card are set up after the first start. The supervisor runs its `nm` backend and applies the country setup chooses. `KALINKA_VERSION`, `SUPERVISOR_DEB` and `OUT_DIR` work as for a DietPi build. rpi-image-gen prints every setting it is given, so `GITHUB_TOKEN` reaches the install as a file. The image is named and its manifest written as a DietPi build's, with `rpi_image_gen` in place of the DietPi fields. `SPIKE_SSH_PUBKEY` adds a `kalinka-dev` login with that key, for checking an image on a board, and names the image `-spike`.
 
 ### The DietPi base
 
@@ -154,7 +160,7 @@ a separate Debian package, service hardening and future recovery capabilities.
 
 - `supervisor-packages.yml` tests Go and the installer, then cross-compiles `amd64` and `arm64` Debian packages and checksums.
 - `supervisor-release.yml` publishes those packages for a `kalinka-supervisor-vX.Y.Z` tag. It does not change the app bundle's Latest badge.
-- `image-build.yml` is the manual **DietPi E2E images** workflow. It builds packages first, then the five images on native runners. Download the `image-amd64`, `image-rpi234`, `image-rpi5`, `image-rpi234-display` and `image-rpi5-display` artifacts. Each contains the compressed disk, checksum and version manifest; artifacts are retained for 14 days.
+- `image-build.yml` is the manual **Appliance images** workflow. It builds packages first, then the five images on native runners. Download the `image-amd64`, `image-rpi234`, `image-rpi5`, `image-rpi234-display` and `image-rpi5-display` artifacts. Each contains the compressed disk, checksum and version manifest; artifacts are retained for 14 days.
 - `image-release.yml` reuses the same build before publishing an image release. `image-pr.yml` builds and boots x86 on relevant pull requests.
 
 Core and renderer come from published releases; supervisor comes from the selected checkout. An empty supervisor version is counted from the last `kalinka-supervisor-v*` tag, as `0.2.1~dev3+g1a2b3c4` three commits past `0.2.0`: above that release and below the next one. A checkout without that tag, such as a shallow clone, needs `SUPERVISOR_VERSION` set. Nothing in the E2E workflow publishes a release.

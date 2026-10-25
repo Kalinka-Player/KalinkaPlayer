@@ -136,4 +136,6 @@ build-rpm-stage/
 
 # Appliance image build output
 packages/kalinka-image/out/
+# Built images kept at the top for flashing
+/images/
 packages/kalinka-image/cache/

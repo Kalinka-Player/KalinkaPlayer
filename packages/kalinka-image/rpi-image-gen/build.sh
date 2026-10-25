@@ -7,6 +7,9 @@
 # Env:
 #   KALINKA_VERSION    Kalinka release to install (default: the latest)
 #   SUPERVISOR_DEB     an arm64 kalinka-supervisor package (default: build one)
+#   OUT_DIR            where the image lands (default: ../out/rpi-image-gen)
+#   GITHUB_TOKEN       optional, raises the GitHub API rate limit while the
+#                      install finds the release
 #   SPIKE_SSH_PUBKEY   public key file: adds a kalinka-dev login with it and
 #                      SSH on, for checking an image on a board. The image is
 #                      named *-spike and is never to be published.
@@ -19,7 +22,10 @@ CONFIG="${1:-config/kalinka-rpi5.yaml}"
 RIG_REF=v2.9.0
 RIG_DIR="$IMAGE_DIR/cache/rpi-image-gen-$RIG_REF"
 BUILDER="localhost/kalinka-rpi-image-gen:$RIG_REF"
-OUT_DIR="$IMAGE_DIR/out/rpi-image-gen"
+OUT_DIR="${OUT_DIR:-$IMAGE_DIR/out/rpi-image-gen}"
+
+# shellcheck source=../lib/seal.sh
+. "$IMAGE_DIR/lib/seal.sh"
 
 die() { echo "build.sh: $*" >&2; exit 1; }
 
@@ -27,15 +33,16 @@ die() { echo "build.sh: $*" >&2; exit 1; }
 [ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ] || [ "$(uname -m)" = aarch64 ] \
   || die 'arm64 binaries need qemu-user-static registered with binfmt_misc'
 
-name="$(basename "$CONFIG" .yaml)"
-overrides=(IGconf_kalinka_supervisor_deb=/work/kalinka-supervisor.deb)
+target="$(basename "$CONFIG" .yaml)"
+target="${target#kalinka-}"
+overrides=(IGconf_kalinka_supervisor_deb=/work/kalinka-supervisor.deb IGconf_kalinka_contents=/work/contents)
 [ -z "${KALINKA_VERSION:-}" ] || overrides+=("IGconf_kalinka_version=\"$KALINKA_VERSION\"")
 if [ -n "${SPIKE_SSH_PUBKEY:-}" ]; then
   [ -r "$SPIKE_SSH_PUBKEY" ] || die "cannot read $SPIKE_SSH_PUBKEY"
   overrides+=(IGconf_device_user1=kalinka-dev IGconf_device_user1sudo=nopasswd
               "IGconf_ssh_pubkey_user1=\"$(cat "$SPIKE_SSH_PUBKEY")\""
               IGconf_layer_access=kalinka-spike-access)
-  name+=-spike
+  target+=-spike
 fi
 
 mkdir -p "$IMAGE_DIR/cache" "$OUT_DIR"
@@ -46,6 +53,11 @@ mkdir -p "$IMAGE_DIR/cache" "$OUT_DIR"
 WORK="$(mktemp -d "$IMAGE_DIR/cache/rpi-image-gen-work.XXXXXXXX")"
 trap 'podman unshare rm -rf "$WORK" 2>/dev/null || rm -rf "$WORK"' EXIT
 mkdir "$WORK/build"
+# rpi-image-gen prints every setting it is given, so the token goes over as a file.
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+  ( umask 077 && printf '%s' "$GITHUB_TOKEN" > "$WORK/github-token" )
+  overrides+=(IGconf_kalinka_github_token_file=/work/github-token)
+fi
 
 if [ -n "${SUPERVISOR_DEB:-}" ]; then
   cp "$SUPERVISOR_DEB" "$WORK/kalinka-supervisor.deb"
@@ -73,6 +85,10 @@ podman run --rm --privileged --security-opt label=disable \
 # Only the image directories: the root left beside them is owned by the container's users.
 image="$(find "$WORK"/build/image-* -maxdepth 1 -name '*.img' -type f | head -n1)"
 [ -n "$image" ] || die 'rpi-image-gen left no image'
-xz -T0 --stdout "$image" > "$OUT_DIR/$name.img.xz"
-( cd "$OUT_DIR" && sha256sum "$name.img.xz" > "$name.img.xz.sha256" )
-ls -lh "$OUT_DIR/$name.img.xz"
+read -r core supervisor renderer display < "$WORK/contents"
+name="$(image_name "$core" "$target" arm64)"
+write_manifest "$OUT_DIR/$name.manifest.json" "$target" arm64 "$display" "$core" "$supervisor" "$renderer" \
+  "rpi_image_gen=$RIG_REF"
+xz -T0 --stdout "$image" > "$OUT_DIR/$name.xz"
+( cd "$OUT_DIR" && sha256sum "$name.xz" > "$name.xz.sha256" )
+ls -lh "$OUT_DIR/$name.xz"
