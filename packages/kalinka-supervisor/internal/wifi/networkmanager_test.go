@@ -200,6 +200,30 @@ func TestNMJoinsWhenTheRadioRefusesTheCountry(t *testing.T) {
 		t.Fatalf("country not kept for the next start: %q %v", conf, err)
 	}
 }
+func TestNMKeepsAJoinWhoseCountryCannotBeKept(t *testing.T) {
+	n := NewNetworkManager("wlan0", t.TempDir())
+	n.Poll = time.Millisecond
+	n.Timeout = time.Second
+	blocker := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(blocker, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	n.RegulatoryConf = filepath.Join(blocker, "kalinka-regdom.conf")
+	var commands [][]string
+	n.Run = recordCommands(&commands, nil)
+	n.Bus = &nmFake{t: t, state: 100, active: "/activePrevious", profiles: map[dbus.ObjectPath]settings{"/previous": {"connection": {"uuid": v("previous")}}}, states: []uint32{100}}
+	if err := n.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cmd := protocol.Command{SSID: "home", Country: "GB", Password: protocol.NewSecret("dummy-passphrase")}
+	defer cmd.Password.Clear()
+	if _, err := n.Join(context.Background(), cmd, func(byte) {}); err != nil {
+		t.Fatalf("a country file that cannot be written failed the join: %v", err)
+	}
+	if _, err := os.Stat(n.Journal); !os.IsNotExist(err) {
+		t.Fatalf("the join was left to roll back: %v", err)
+	}
+}
 func TestNMScanAppliesCountry(t *testing.T) {
 	n := NewNetworkManager("wlan0", t.TempDir())
 	n.Poll = time.Millisecond
