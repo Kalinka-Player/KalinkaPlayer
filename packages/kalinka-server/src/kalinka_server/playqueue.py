@@ -540,6 +540,8 @@ class PlayQueueImpl(PlayQueueController):
 
     @serialised
     async def stop(self):
+        # A fetch still in flight would start its track once it lands.
+        self._resolution.supersede()
         if self._arbiter.held_by_plugin:
             # Detached: the arbiter's lock may be held by an acquire that is
             # waiting on this lane to preempt the queue.
