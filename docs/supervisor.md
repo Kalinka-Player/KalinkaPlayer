@@ -92,7 +92,14 @@ Saved Wi-Fi profiles and DietPi files are preserved by AP activation.
 
 The network list is scanned before starting the AP and cached while it is active,
 because single-radio drivers cannot reliably scan all channels while serving an
-AP. The UI identifies cached results and always permits manual SSID entry.
+AP. A Pi's radio leaves out channels 12 and 13 until it has a Wi-Fi country, so a
+box that has none yet scans again under the country most nearby access points
+announce in their beacons (802.11d), and serves that list. The setup's own
+country still wins: when a scan asks for a country the list was not scanned
+under, and nobody is on the hotspot, the supervisor closes the hotspot, scans
+under that country and opens the hotspot again. A phone on the hotspot keeps the
+cached list. The hotspot itself stays on 2.4 GHz channel 1, which every country
+allows. The UI identifies cached results and always permits manual SSID entry.
 Bluetooth/HTTP share the same validation, operation ownership, WPA2 support,
 progress, rollback and cancellation. AP daemons remain in the supervisor's cgroup.
 

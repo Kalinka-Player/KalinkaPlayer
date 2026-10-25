@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ type hotspotFake struct {
 	active               bool
 	address              string
 	scans, starts, stops int
+	countries            []string
 	joinError            error
 	hold, joining        chan struct{}
 }
@@ -26,8 +28,9 @@ func (f *hotspotFake) Address(context.Context) (string, error) {
 	}
 	return f.address, nil
 }
-func (f *hotspotFake) Scan(context.Context, string) ([]protocol.Network, error) {
+func (f *hotspotFake) Scan(_ context.Context, country string) ([]protocol.Network, error) {
 	f.scans++
+	f.countries = append(f.countries, country)
 	return []protocol.Network{{SSID: "Home", Security: "wpa2"}}, nil
 }
 func (f *hotspotFake) Join(context.Context, protocol.Command, func(byte)) (string, error) {
@@ -67,6 +70,8 @@ func TestHotspotScanJoinAndRecovery(t *testing.T) {
 			h := NewHotspot(f, f, "Kalinka-Setup-ABCD")
 			h.JoinDelay = 0
 			h.AddressWithoutAP = func(context.Context, string) (string, error) { return "", nil }
+			h.HasClients = func(context.Context, string) bool { return true }
+			h.NearbyCountry = func(context.Context, string) string { return "" }
 			if err := h.Reconcile(ctx, true); err != nil || !h.Active() {
 				t.Fatal("AP unavailable", err)
 			}
@@ -93,6 +98,40 @@ func TestHotspotScanJoinAndRecovery(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+func TestHotspotRescansUnderANewCountryWithNobodyOnIt(t *testing.T) {
+	ctx := context.Background()
+	f := &hotspotFake{}
+	h := NewHotspot(f, f, "Kalinka-Setup-ABCD")
+	h.AddressWithoutAP = func(context.Context, string) (string, error) { return "", nil }
+	h.HasClients = func(context.Context, string) bool { return false }
+	h.NearbyCountry = func(context.Context, string) string { return "" }
+	if err := h.Reconcile(ctx, true); err != nil || !h.Active() {
+		t.Fatal("AP unavailable", err)
+	}
+	if _, err := h.Scan(ctx, "GB"); err != nil || h.Active() || !slices.Equal(f.countries, []string{"", "GB"}) {
+		t.Fatalf("scans %q with AP active %v: %v", f.countries, h.Active(), err)
+	}
+	if err := h.Reconcile(ctx, true); err != nil || !h.Active() || !slices.Equal(f.countries, []string{"", "GB", "GB"}) {
+		t.Fatalf("AP reopened after scans %q: %v", f.countries, err)
+	}
+	if _, err := h.Scan(ctx, "GB"); err != nil || !h.Active() || len(f.countries) != 3 {
+		t.Fatalf("rescanned a list already under GB: %q", f.countries)
+	}
+}
+func TestHotspotListsUnderTheCountryNearbyAccessPointsAnnounce(t *testing.T) {
+	ctx := context.Background()
+	f := &hotspotFake{}
+	h := NewHotspot(f, f, "Kalinka-Setup-ABCD")
+	h.AddressWithoutAP = func(context.Context, string) (string, error) { return "", nil }
+	h.HasClients = func(context.Context, string) bool { return true }
+	h.NearbyCountry = func(context.Context, string) string { return "DE" }
+	if err := h.Reconcile(ctx, true); err != nil || !h.Active() || !slices.Equal(f.countries, []string{"", "DE"}) {
+		t.Fatalf("scans %q before the AP: %v", f.countries, err)
+	}
+	if _, err := h.Scan(ctx, "DE"); err != nil || len(f.countries) != 2 {
+		t.Fatalf("the list under DE was not the one kept: %q", f.countries)
 	}
 }
 func TestHotspotReconcileDoesNotInterruptJoin(t *testing.T) {
