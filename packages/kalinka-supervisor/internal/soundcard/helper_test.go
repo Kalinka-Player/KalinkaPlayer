@@ -9,8 +9,8 @@ import (
 )
 
 // The packaged helper must set up every catalogued card so that detection
-// reads the same card back, on Raspberry Pi OS and where DietPi's
-// dietpi.txt records the choice.
+// reads the same card back, on Raspberry Pi OS, on the config.txt Raspberry
+// Pi's own packages assemble, and where DietPi's dietpi.txt records the choice.
 func TestHelperSetsUpEveryCard(t *testing.T) {
 	for _, tool := range []string{"bash", "flock", "sha256sum", "sed"} {
 		if _, err := exec.LookPath(tool); err != nil {
@@ -25,10 +25,20 @@ func TestHelperSetsUpEveryCard(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bin, "sync"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	assembled, err := os.ReadFile("testdata/raspberrypi-trixie-config.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	minimal := "dtparam=audio=off\nenable_uart=1\n"
+	setups := []struct {
+		name, config string
+		dietPi       bool
+	}{{"Raspberry Pi OS", minimal, false}, {"DietPi", minimal, true}, {"rpi-image-gen", string(assembled), false}}
 	for _, c := range Catalog {
-		for _, dietPi := range []bool{false, true} {
+		for _, setup := range setups {
+			dietPi, name := setup.dietPi, setup.name
 			b := box{t, t.TempDir()}
-			b.write(configTxt, "dtparam=audio=off\nenable_uart=1\n")
+			b.write(configTxt, setup.config)
 			if dietPi {
 				b.write(dietPiTxt, "CONFIG_SOUNDCARD=none\n")
 			}
@@ -36,19 +46,40 @@ func TestHelperSetsUpEveryCard(t *testing.T) {
 			cmd.Env = append(os.Environ(), "KALINKA_SOUNDCARD_ROOT="+b.root, "PATH="+bin+":"+os.Getenv("PATH"))
 			out, err := cmd.Output()
 			if err != nil {
-				t.Errorf("%s (DietPi %v): %v", c.Name, dietPi, err)
+				t.Errorf("%s (%s): %v", c.Name, name, err)
 				continue
 			}
 			if verdict := strings.TrimSpace(string(out)); verdict != "changed" && verdict != "unchanged" {
-				t.Errorf("%s: verdict %q", c.Name, verdict)
+				t.Errorf("%s (%s): verdict %q", c.Name, name, verdict)
 			}
 			want := ""
 			if c.HAT() || dietPi && c.Kind == Onboard {
 				want = c.Name
 			}
 			if got := configured(b.root); got != want {
-				t.Errorf("%s (DietPi %v) reads back as %q", c.Name, dietPi, got)
+				t.Errorf("%s (%s) reads back as %q", c.Name, name, got)
+			}
+			written, err := os.ReadFile(filepath.Join(b.root, configTxt))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.HAT() && !forEveryBoard(string(written), "dtoverlay="+c.Name) {
+				t.Errorf("%s (%s) went under one board's section", c.Name, name)
 			}
 		}
 	}
+}
+
+// forEveryBoard reports whether line is in config outside any section that limits it to some boards.
+func forEveryBoard(config, line string) bool {
+	section := "[all]"
+	for _, l := range strings.Split(config, "\n") {
+		l = strings.TrimSpace(l)
+		if strings.HasPrefix(l, "[") {
+			section = l
+		} else if l == line {
+			return section == "[all]"
+		}
+	}
+	return false
 }

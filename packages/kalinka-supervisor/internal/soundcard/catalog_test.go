@@ -6,18 +6,25 @@ import (
 	"testing"
 )
 
-// shippedOverlays lists the overlays in the DietPi Trixie images' firmware, which every HAT in the catalog must name.
+// shippedOverlays lists the overlays that DietPi's Trixie firmware and Raspberry Pi's own both carry, which every HAT in the catalog must name.
 func shippedOverlays(t *testing.T) map[string]bool {
 	t.Helper()
-	f, err := os.Open("testdata/dietpi-trixie-overlays.txt")
-	if err != nil {
-		t.Fatal(err)
+	count := map[string]int{}
+	lists := []string{"testdata/dietpi-trixie-overlays.txt", "testdata/raspberrypi-trixie-overlays.txt"}
+	for _, list := range lists {
+		f, err := os.Open(list)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := bufio.NewScanner(f)
+		for s.Scan() {
+			count[s.Text()]++
+		}
+		f.Close()
 	}
-	defer f.Close()
 	found := map[string]bool{}
-	s := bufio.NewScanner(f)
-	for s.Scan() {
-		found[s.Text()] = true
+	for name, n := range count {
+		found[name] = n == len(lists)
 	}
 	return found
 }
