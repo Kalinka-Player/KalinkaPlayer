@@ -569,6 +569,42 @@ async def test_a_renderer_that_restarts_mid_track_carries_on(
     assert offset >= 30000
 
 
+async def test_a_renderer_setting_that_stops_the_track_replays_it_on_the_session(
+    queue, renderer, direct, arbiter, emitter, monkeypatch
+):
+    """A new output device drops every stream. The plugin's app must go on
+    showing the track playing, and the hold must outlast the idle timeout."""
+    monkeypatch.setattr(renderer_player, "IDLE_RELEASE_TIMEOUT_S", 0.1)
+    listener = Listener()
+    hold = await _hold_and_play(direct, listener)
+    await hold.set_next(*_connect_track("222"))
+    renderer.report_position(30000)
+    await asyncio.sleep(0.05)
+    session = renderer.session_id
+    told, shown = len(listener.states), len(_states(emitter))
+
+    renderer.rebuild()
+    await asyncio.sleep(0.4)
+
+    assert hold.active
+    assert listener.revoked == []
+    assert arbiter.held_by_plugin
+    assert renderer.session_id == session
+    current, queued = [
+        c.enqueue_source.source
+        for c in renderer.commands
+        if c.WhichOneof("op") == "enqueue_source"
+    ][-2:]
+    assert current.uri == CONNECT_URL and current.start_offset_ms >= 30000
+    assert queued.uri == "https://streaming.qobuz.test/222"
+    assert renderer.current == current.source_token
+    assert renderer.queued == [queued.source_token]
+    states = [s.state for s in listener.states[told:]]
+    assert PlayerStateEnum.STOPPED not in states
+    assert states[-1] is PlayerStateEnum.PLAYING
+    assert all(s.state is not PlayerStateEnum.STOPPED for s in _states(emitter)[shown:])
+
+
 async def test_without_a_renderer_nothing_is_taken(emitter, arbiter, device_bus):
     registry = RendererRegistry(offline_timeout_s=30.0)
     pool = SessionPool(registry, "test-server-id")

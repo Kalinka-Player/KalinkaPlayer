@@ -66,6 +66,26 @@ def test_a_snapshot_names_the_stream_it_is_about():
     assert state.stream_id == 7
 
 
+def test_a_stop_says_whether_a_renderer_setting_interrupted_it():
+    interrupted = from_snapshot(
+        renderer_state.empty_state()
+        | {"playback_state": "stopped", "interrupted": True}
+    )
+    assert interrupted is not None and interrupted.interrupted
+
+    plain = from_snapshot(renderer_state.empty_state() | {"playback_state": "stopped"})
+    assert plain is not None and not plain.interrupted
+
+
+def test_only_a_stop_can_be_interrupted():
+    """The field rides on a STOPPED alone; anything else is played as it says."""
+    playing = from_snapshot(
+        renderer_state.empty_state()
+        | {"playback_state": "playing", "interrupted": True}
+    )
+    assert playing is not None and not playing.interrupted
+
+
 def test_a_token_from_elsewhere_names_no_stream_of_ours():
     """Only this Core's tokens are stream ids; another Core's need not be."""
     assert to_stream_id(None) is None

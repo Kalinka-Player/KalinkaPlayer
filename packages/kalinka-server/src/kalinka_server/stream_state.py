@@ -129,6 +129,8 @@ class StreamState:
     stream_info: Optional[StreamInfo] = None
     # Which appended stream this is about, None when the renderer named none.
     stream_id: Optional[int] = None
+    # A STOPPED taken to apply a renderer setting, on a session that carries on.
+    interrupted: bool = False
 
     def position_at(self, now_ns: int) -> int:
         """Where playback has reached: only a running stream advances."""
@@ -225,6 +227,9 @@ def from_snapshot(snapshot: dict) -> Optional[StreamState]:
         error=to_error(snapshot.get("error")),
         stream_info=to_stream_info(snapshot),
         stream_id=to_stream_id(snapshot.get("source_token")),
+        interrupted=(
+            state is AudioGraphNodeState.STOPPED and bool(snapshot.get("interrupted"))
+        ),
     )
 
 

@@ -54,6 +54,8 @@ class SimRenderer:
         # Clear it to play a dropped link: the graph runs on, but state has
         # nowhere to go and the renderer drops it rather than queueing it.
         self.linked = True
+        # Clear it to play a renderer from before PlaybackStateChanged.interrupted.
+        self.reports_interruptions = True
         self.queued: list[str] = []
         self.start_offsets: dict[str, int] = {}
         self.position_ms = 0
@@ -219,6 +221,28 @@ class SimRenderer:
         if self.current is not None:
             self._emit_state(pb.PLAYBACK_STATE_PLAYING, self.current)
 
+    def switch_unreported(self) -> None:
+        """The current track runs into the queued one, and of the new one only
+        the switch has been reported yet."""
+        previous, self.current = self.current, self.queued.pop(0)
+        self.position_ms = self.start_offsets.get(self.current, 0)
+        self._report_switch(previous)
+
+    def rebuild(self) -> None:
+        """A setting that rebuilds the graph is applied, as a new output device
+        is: every source is dropped, the session stays, and the one STOPPED
+        says so when a source was on air."""
+        on_air = self.current is not None
+        self.current = None
+        self.queued.clear()
+        self.finished = False
+        self.format_known = False
+        state = pb.PlaybackStateChanged()
+        state.state = pb.PLAYBACK_STATE_STOPPED
+        state.interrupted = on_air and self.reports_interruptions
+        state.at_unix_ms = _NOW_UNIX_MS
+        self._send(StateChange.PLAYBACK, state)
+
     def fail_current(self, message: str = "http error") -> None:
         """The current track's stream breaks mid-play."""
         failed, self.current = self.current, None
@@ -259,16 +283,19 @@ class SimRenderer:
         self.finished = False
         # Where the source was told to begin, as the decoder's start offset.
         self.position_ms = self.start_offsets.get(token, 0)
-        changed = pb.SourceChanged()
-        changed.source_token = token
-        if previous is not None:
-            changed.previous_source_token = previous
-        changed.at_unix_ms = _NOW_UNIX_MS
-        self._send(StateChange.SOURCE, changed)
+        self._report_switch(previous)
         self.format_known = False
         self._emit_state(pb.PLAYBACK_STATE_PREPARING, token)
         self.format_known = True
         self._emit_state(pb.PLAYBACK_STATE_PLAYING, token)
+
+    def _report_switch(self, previous: Optional[str]) -> None:
+        changed = pb.SourceChanged()
+        changed.source_token = self.current
+        if previous is not None:
+            changed.previous_source_token = previous
+        changed.at_unix_ms = _NOW_UNIX_MS
+        self._send(StateChange.SOURCE, changed)
 
     def _fill_format(self, out: pb.AudioFormat) -> None:
         out.sample_rate_hz = SAMPLE_RATE

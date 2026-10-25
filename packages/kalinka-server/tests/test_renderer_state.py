@@ -179,6 +179,27 @@ def test_the_device_is_reported_apart_from_the_decoded_format():
     assert state["device_info"]["access"] == "shared"
 
 
+def test_an_interrupted_stop_is_told_by_that_state_alone():
+    """It speaks for one STOPPED: the next state, or a snapshot, clears it."""
+    state = renderer_state.empty_state()
+    assert state["interrupted"] is False
+
+    stopped = pb.PlaybackStateChanged()
+    stopped.state = pb.PLAYBACK_STATE_STOPPED
+    stopped.interrupted = True
+    state = renderer_state.apply(state, StateChange.PLAYBACK, stopped)
+    assert state["interrupted"] is True
+
+    preparing = pb.PlaybackStateChanged()
+    preparing.state = pb.PLAYBACK_STATE_PREPARING
+    state = renderer_state.apply(state, StateChange.PLAYBACK, preparing)
+    assert state["interrupted"] is False
+
+    state = renderer_state.apply(state, StateChange.PLAYBACK, stopped)
+    state = renderer_state.apply(state, StateChange.SNAPSHOT, full_snapshot())
+    assert state["interrupted"] is False
+
+
 def test_a_closed_device_reports_nothing():
     state = renderer_state.apply(
         renderer_state.empty_state(), StateChange.SNAPSHOT, full_snapshot()
