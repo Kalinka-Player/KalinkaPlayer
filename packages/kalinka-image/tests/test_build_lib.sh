@@ -2,7 +2,7 @@
 #
 # The pieces of the build shared by every base that can be checked without
 # root: the published file name, putting the image's own resolv.conf back, the
-# overlay's modes, and reading unit links.
+# overlay's modes, reading unit links, and finding a compiler that came in.
 set -uo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -97,6 +97,20 @@ ln -s /etc/systemd/system/kalinka-test-absent.service \
   && fail "took a unit whose link does not resolve on the build host for disabled"
 ( require_disabled multi-user.target never-enabled.service ) \
   || fail "refused a unit that is not enabled"
+ROOTFS="$WORK/rootfs"
+
+echo "  -- no compiler came in"
+ROOTFS="$WORK/clean"
+mkdir -p "$ROOTFS/usr/bin" "$ROOTFS/usr/lib/x86_64-linux-gnu"
+touch "$ROOTFS/usr/bin/python3.13" "$ROOTFS/usr/lib/x86_64-linux-gnu/libgcc_s.so.1"
+( require_no_compiler ) 2>/dev/null || fail "refused an image with no compiler"
+for found in usr/bin/gcc-14 usr/bin/aarch64-linux-gnu-gcc-14 usr/include/python3.13/Python.h; do
+  ROOTFS="$WORK/with-${found##*/}"
+  mkdir -p "$ROOTFS/${found%/*}"
+  touch "$ROOTFS/$found"
+  message="$(require_no_compiler 2>&1)" && fail "took an image with /$found"
+  assert_contains "and names /$found" "$message" "/$found came in"
+done
 ROOTFS="$WORK/rootfs"
 
 exit "$FAILURES"
