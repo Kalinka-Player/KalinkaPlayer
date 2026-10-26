@@ -1,6 +1,6 @@
 [Unit]
 Description=Kalinka Renderer
-Documentation=https://github.com/madenvel/KalinkaPlayer
+Documentation=https://github.com/Kalinka-Player/KalinkaPlayer
 After=network-online.target sound.target
 Wants=network-online.target
 

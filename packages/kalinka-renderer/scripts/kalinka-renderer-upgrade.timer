@@ -1,6 +1,6 @@
 [Unit]
 Description=Nightly kalinka-renderer upgrade check
-Documentation=https://github.com/madenvel/KalinkaPlayer
+Documentation=https://github.com/Kalinka-Player/KalinkaPlayer
 
 [Timer]
 # Quiet hours, spread over an hour so a shelf of renderers does not all pull

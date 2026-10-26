@@ -93,7 +93,7 @@ SemVer picks the digit, the calendar picks the date. Keep those two decisions ap
 
 ### The browser UI package (kalinka-web)
 
-The browser player is released independently from the [KalinkaAI repo](https://github.com/madenvel/KalinkaAI/releases) (versioned by the app, not by `kalinka-v*`); the server serves its bundle from `/usr/share/kalinka-web`. It is **not** attached to server releases — `install-release.sh` fetches the latest `kalinka-web_*_all.deb` straight from the app repo at install time, so the two release cadences are decoupled. The server's update check watches the app's releases too, so a box whose browser player is behind offers the upgrade, and installs it overnight when automatic upgrades are on, without a server release. Nothing to do here when cutting a server release.
+The browser player is released independently from the [KalinkaAI repo](https://github.com/Kalinka-Player/KalinkaAI/releases) (versioned by the app, not by `kalinka-v*`); the server serves its bundle from `/usr/share/kalinka-web`. It is **not** attached to server releases — `install-release.sh` fetches the latest `kalinka-web_*_all.deb` straight from the app repo at install time, so the two release cadences are decoupled. The server's update check watches the app's releases too, so a box whose browser player is behind offers the upgrade, and installs it overnight when automatic upgrades are on, without a server release. Nothing to do here when cutting a server release.
 
 The on-device display (`kalinka-kiosk_*_<arch>.deb`, arm64 only for now) comes from the same app releases the same way, but only onto boxes that asked for it (`KALINKA_DISPLAY=1`) or already have it installed.
 

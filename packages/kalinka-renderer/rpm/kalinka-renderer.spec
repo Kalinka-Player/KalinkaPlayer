@@ -9,7 +9,7 @@ Version:        %{renderer_version}
 Release:        1%{?dist}
 Summary:        Kalinka Music Player network audio renderer
 License:        GPL-3.0-or-later
-URL:            https://github.com/madenvel/KalinkaPlayer
+URL:            https://github.com/Kalinka-Player/KalinkaPlayer
 
 BuildRequires:  cmake >= 3.16
 BuildRequires:  gcc-c++

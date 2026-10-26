@@ -10,7 +10,7 @@ body:
         library indexing, tag repair, AI mood search results and plugins.
         If the problem is something you see on a phone or desktop screen — UI glitches, crashes
         on the device, connection screens — file it on
-        [KalinkaAI](https://github.com/madenvel/KalinkaAI/issues/new/choose) instead.
+        [KalinkaAI](https://github.com/Kalinka-Player/KalinkaAI/issues/new/choose) instead.
       options:
         - label: This is a server issue, not an app/UI issue
           required: true

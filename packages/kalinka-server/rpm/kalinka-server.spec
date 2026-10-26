@@ -17,7 +17,7 @@ Version:        %{server_version}
 Release:        1%{?dist}
 Summary:        Kalinka Music Player (server)
 License:        GPL-3.0-or-later
-URL:            https://github.com/madenvel/KalinkaPlayer
+URL:            https://github.com/Kalinka-Player/KalinkaPlayer
 BuildArch:      noarch
 
 BuildRequires:  systemd-rpm-macros

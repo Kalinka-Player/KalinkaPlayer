@@ -232,7 +232,7 @@ class PluginsConfig(BaseModel):
         json_schema_extra={"inline": True},
     )
     user_agent: str = Field(
-        default="Kalinka/1.0 (https://github.com/madenvel/KalinkaPlayer)",
+        default="Kalinka/1.0 (https://github.com/Kalinka-Player/KalinkaPlayer)",
         title="User agent",
     )
 
