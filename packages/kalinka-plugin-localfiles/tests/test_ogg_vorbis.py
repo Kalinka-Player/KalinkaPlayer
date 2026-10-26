@@ -27,7 +27,11 @@ from kalinka_plugin_localfiles.indexer.indexer import (
 )
 from kalinka_plugin_localfiles.indexer.indexer_db import AsyncIndexerDb
 from kalinka_plugin_localfiles.indexer.ogg import (
+    _WINDOW,
+    _OpeningPages,
+    _Spans,
     _mode_blockflags,
+    open_ogg_vorbis,
     starts_vorbis_stream,
     vorbis_length,
 )
@@ -484,6 +488,101 @@ def test_the_setup_and_first_audio_pages_come_with_the_opening_ones():
     assert audio.reads == 3
 
 
+def test_the_opening_pages_read_as_the_file_does():
+    def reads(file):
+        return [
+            file.read(27),
+            file.seek(5),
+            file.read(10),
+            file.seek(-10, io.SEEK_END),
+            file.read(),
+            file.seek(-20000, io.SEEK_CUR),
+            file.read(30000),
+            file.tell(),
+        ]
+
+    data = _long_link()
+    opening = _OpeningPages(_Spans(io.BytesIO(data)))
+
+    assert reads(opening) == reads(io.BytesIO(data))
+    with pytest.raises(ValueError):
+        opening.seek(-1)
+
+
+def test_a_page_longer_than_a_window_leaves_the_next_header_read():
+    """libvorbis fills a comment header's pages to 64 KB, and the header
+    after each must not cost a round trip of its own."""
+    audio = _CountingFile(bytes(4 * _WINDOW))
+    opening = _OpeningPages(_Spans(audio))
+
+    opening.read(_WINDOW + 100)
+    opening.read(27)
+
+    assert audio.reads == 1
+
+
+def test_the_end_of_a_short_file_is_read_once():
+    audio = _CountingFile(bytes(100))
+    opening = _OpeningPages(_Spans(audio))
+    opening.read(200)
+    reads = audio.reads
+
+    assert opening.read(27) == b""
+    assert audio.reads == reads
+
+
+def test_the_tags_cost_no_read_of_their_own_past_timing():
+    """mutagen reads them a page header, a lacing and a packet at a time,
+    but from the window that also shows timing how the link opens."""
+    audio = _CountingFile(_long_link())
+
+    assert open_ogg_vorbis(audio).info.length == LONG_LINK_SECONDS
+    assert audio.reads == 3
+
+
+def _radio_rip(path):
+    """The file at ``path`` recorded a second into its stream, then the
+    ladder as a second link."""
+    first = _recorded_mid_stream(path.read_bytes(), LADDER_RATE)
+    return first + _reserialed(LADDER.read_bytes(), 2)
+
+
+def _counted(read, data):
+    """What ``read`` gives for ``data`` on a share, and the file it read."""
+    audio = _CountingFile(data)
+    storage = SimpleNamespace(open=lambda _, **__: audio, listdir=lambda _: [])
+    return read(storage, "smb://nas/music/rip.ogg"), audio
+
+
+def test_a_cover_split_over_many_pages_costs_a_read_a_window(tmp_path):
+    """A tagger such as Picard splits the comment header into 4 KB pages,
+    and mutagen read each with three round trips to a share. Timing then
+    stepped over the same pages by their headers, a round trip each. Now
+    the cover costs a read for each window of it, and nothing more."""
+    cover = bytes(range(256)) * 1024
+    bare = _radio_rip(_vorbis(tmp_path / "bare.ogg"))
+    covered = _radio_rip(
+        _vorbis(tmp_path / "covered.ogg", pictures=[_picture_comment(3, cover)])
+    )
+    weight = len(covered) - len(bare)
+    fi = _indexer(tmp_path)
+
+    _, bare_read = _counted(fi._extract_metadata, bare)
+    metadata, covered_read = _counted(fi._extract_metadata, covered)
+
+    assert (metadata["title"], metadata["duration"]) == ("Ladder", 12)
+    assert metadata["album_art"] == cover
+    assert covered_read.reads <= bare_read.reads + weight // _WINDOW + 1
+    assert covered_read.read_bytes <= bare_read.read_bytes + weight + _WINDOW
+
+    _, bare_read = _counted(fi._embedded_art, bare)
+    art, covered_read = _counted(fi._embedded_art, covered)
+
+    assert art == cover
+    assert covered_read.reads <= bare_read.reads + weight // _WINDOW + 1
+    assert covered_read.read_bytes <= bare_read.read_bytes + weight + _WINDOW
+
+
 def test_where_each_links_audio_starts_costs_no_read_of_its_own(monkeypatch):
     """It is found ahead of the bisection for where the link ends, which
     would otherwise have the opening pages read again."""
@@ -591,8 +690,10 @@ def test_a_chain_is_timed_through_reads_that_come_back_short():
 
 
 def test_an_ogg_file_is_read_without_read_ahead(tmp_path):
-    """Its pages and a chain's bisection are small, scattered reads, and
-    read-ahead turns each into 1 MiB from a share."""
+    """A chain's bisection and the reads back to each link's last page are
+    small and scattered, and read-ahead would make each a buffer from a
+    share. The opening pages, read straight through, are read ahead by the
+    Ogg reader itself."""
     path = _vorbis(tmp_path / "ladder.ogg", pictures=[_picture_comment(3, b"x")])
     opens = []
 
@@ -620,23 +721,25 @@ class _HeadOnlyFile(io.BytesIO):
 
 def test_a_cover_is_read_without_timing_the_file(tmp_path):
     """Timing reads back from the end of every link; the cover sits in the
-    opening pages."""
+    opening pages, a window of which is all that is read."""
     front = _cover_png((120, 0, 60))
-    data = _vorbis(
+    link = _vorbis(
         tmp_path / "ladder.ogg", pictures=[_picture_comment(3, front)]
     ).read_bytes()
+    data = b"".join(_reserialed(link, serial) for serial in (1, 2, 3))
     storage = SimpleNamespace(open=lambda _, **__: _HeadOnlyFile(data))
 
     assert _indexer(tmp_path)._embedded_art(storage, "smb://nas/ladder.ogg") == front
 
 
 class _DroppingFile(io.BytesIO):
-    """A file on a share that stops answering after the first page header."""
+    """A file on a share that sends the first page header and then stops
+    answering."""
 
     def read(self, size=-1):
         if self.tell() > 0:
             raise OSError("host is down")
-        return super().read(size)
+        return super().read(27 if size < 0 else min(size, 27))
 
 
 def test_a_share_that_drops_mid_read_is_not_taken_for_another_codec(tmp_path):
