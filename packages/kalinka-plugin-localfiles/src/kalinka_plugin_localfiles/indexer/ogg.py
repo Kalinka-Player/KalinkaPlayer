@@ -39,6 +39,8 @@ from .unplayable import UnplayableFile
 _WINDOW = 16 * 1024
 #: The largest page Ogg allows: a header, 255 lacing values, 255 full segments.
 _MAX_PAGE = 27 + 255 + 255 * 255
+#: The most of the opening kept: a malformed file can have mutagen read to its end.
+_MAX_OPENING = 16 * 1024 * 1024
 _PAGE_HEADER = struct.Struct("<4sBBqIIIB")
 _VORBIS_ID = b"\x01vorbis"
 _SETUP_ID = b"\x05vorbis"
@@ -233,24 +235,27 @@ class _Spans:
         self._audio.seek(0, os.SEEK_END)
         return self._audio.tell()
 
-    def read(self, start: int, stop: int) -> bytes:
+    def read(self, start: int, stop: int, ahead: int = 0) -> bytes:
+        """The bytes in [start, stop), with ``ahead`` more fetched and kept
+        should the span have to be read."""
         if stop <= len(self._opening):
             return bytes(self._opening[start:stop])
         if self._kept_at <= start and stop <= self._kept_at + len(self._kept):
             return self._kept[start - self._kept_at : stop - self._kept_at]
         known = bytes(self._opening[start:])
         self._kept_at = start
-        self._kept = known + self._fetch(start + len(known), stop)
-        return self._kept
+        self._kept = known + self._fetch(start + len(known), stop + ahead)
+        return self._kept[: stop - start]
 
     def read_on(self, start: int, size: int) -> bytes:
         """``size`` bytes from ``start``, or the rest of the file for a
         negative size, for a reader going on through the file from its
         start. What the opening lacks is read a window at a time, and a read
-        that does not go on from it is a span like any other."""
+        that does not go on from it, or would grow it past ``_MAX_OPENING``,
+        is a span like any other, fetched a window ahead."""
         stop = self.size() if size < 0 else start + size
-        if start > len(self._opening):
-            return self.read(start, stop)
+        if start > len(self._opening) or stop > _MAX_OPENING:
+            return self.read(start, stop, ahead=_WINDOW)
         while not self._opening_is_whole_file and len(self._opening) < stop:
             at = len(self._opening)
             # Whole windows, so a page longer than one leaves the next header read.

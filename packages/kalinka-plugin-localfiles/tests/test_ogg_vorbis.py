@@ -531,6 +531,24 @@ def test_the_end_of_a_short_file_is_read_once():
     assert audio.reads == reads
 
 
+def test_a_file_read_on_past_the_kept_opening_is_not_held(monkeypatch):
+    """A malformed file can have mutagen read on to its end looking for the
+    comment header."""
+    monkeypatch.setattr(
+        "kalinka_plugin_localfiles.indexer.ogg._MAX_OPENING", 2 * _WINDOW
+    )
+    data = bytes(range(256)) * (10 * _WINDOW // 256)
+    audio = _CountingFile(data)
+    spans = _Spans(audio)
+    opening = _OpeningPages(spans)
+
+    read = b"".join(iter(lambda: opening.read(27), b""))
+
+    assert read == data
+    assert len(spans._opening) <= 2 * _WINDOW
+    assert audio.reads <= len(data) // _WINDOW + 4
+
+
 def test_the_tags_cost_no_read_of_their_own_past_timing():
     """mutagen reads them a page header, a lacing and a packet at a time,
     but from the window that also shows timing how the link opens."""
