@@ -8,6 +8,8 @@ image:
   layer: image-rpios
   boot_part_size: 256M
   root_part_size: 4G
+  # The default, by-slot, finds the partitions only on an SD card or NVMe drive, never on USB.
+  devid_scheme: partuuid
 
 layer:
   base: kalinka-base

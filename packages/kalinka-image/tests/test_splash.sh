@@ -37,7 +37,7 @@ assert_eq 'top-left pixel is the app background' "$(sed -n "${top_left}p" <<< "$
 echo "  -- the built image's check"
 root="$WORK/root"
 mkdir -p "$root/usr/lib/firmware" "$root/boot/firmware" "$WORK/bin"
-cmdline='fsck.repair=yes rootwait root=/dev/disk/by-slot/system fullscreen_logo=1 fullscreen_logo_name=logo.tga vt.global_cursor_default=0 quiet'
+cmdline='fsck.repair=yes rootwait root=PARTUUID=de289abd-02 fullscreen_logo=1 fullscreen_logo_name=logo.tga vt.global_cursor_default=0 quiet'
 # chroot ROOT lsinitramfs FILE prints the listing the case wrote.
 printf '#!/bin/sh\ncat "%s/listing"\n' "$WORK" > "$WORK/bin/chroot"
 chmod 755 "$WORK/bin/chroot"
