@@ -596,8 +596,8 @@ def test_an_ogg_file_is_read_without_read_ahead(tmp_path):
     path = _vorbis(tmp_path / "ladder.ogg", pictures=[_picture_comment(3, b"x")])
     opens = []
 
-    def open_(file_path, *, read_ahead_bytes=None):
-        opens.append(read_ahead_bytes)
+    def open_(file_path, *, read_ahead=True):
+        opens.append(read_ahead)
         return open(file_path, "rb")
 
     storage = SimpleNamespace(open=open_, listdir=lambda _: [])
@@ -605,7 +605,7 @@ def test_an_ogg_file_is_read_without_read_ahead(tmp_path):
 
     assert fi._extract_metadata(storage, str(path))["duration"] == 6
     assert fi._embedded_art(storage, str(path)) == b"x"
-    assert opens == [0, 0]
+    assert opens == [False, False]
 
 
 class _HeadOnlyFile(io.BytesIO):

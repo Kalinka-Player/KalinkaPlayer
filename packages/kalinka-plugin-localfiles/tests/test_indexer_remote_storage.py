@@ -27,10 +27,7 @@ from PIL import Image
 
 from kalinka_plugin_localfiles.config_model import LocalFilesConfig
 from kalinka_plugin_localfiles.db_schema import init_db
-from kalinka_plugin_localfiles.indexer.indexer import (
-    TAG_READ_AHEAD_BYTES,
-    FileIndexer,
-)
+from kalinka_plugin_localfiles.indexer.indexer import FileIndexer
 from kalinka_plugin_localfiles.indexer.indexer_db import AsyncIndexerDb
 from kalinka_plugin_localfiles.localfiles import LocalFilesInputModule
 from kalinka_plugin_localfiles.input_module_db import LocalFilesInputModuleDb
@@ -66,8 +63,8 @@ class VaultStorage(FileStorage):
         self.identify = True
         self._inodes = itertools.count(1)
         self.trips: list[tuple[str, str]] = []
-        #: ``read_ahead_bytes`` of each open, in order.
-        self.opens: list[Optional[int]] = []
+        #: ``read_ahead`` of each open, in order.
+        self.opens: list[bool] = []
         #: ``(operation, path)`` pairs that fail as a share does mid-drop.
         self.failing: dict[tuple[str, str], OSError] = {}
 
@@ -137,9 +134,9 @@ class VaultStorage(FileStorage):
             identity=identity,
         )
 
-    def open(self, path: str, *, read_ahead_bytes: Optional[int] = None) -> BinaryIO:
+    def open(self, path: str, *, read_ahead: bool = True) -> BinaryIO:
         self.trips.append(("open", path))
-        self.opens.append(read_ahead_bytes)
+        self.opens.append(read_ahead)
         self._require_online()
         self._fail_if_asked("open", path)
         node = self.nodes.get(path)
@@ -500,14 +497,15 @@ class TestServingATrack:
         """The server reads a range in chunks capped at what is left of it, so
         read-ahead under the stream only fetches bytes it throws away: over
         SMB, 1 MiB for every 384,000-byte range a renderer asks for. Tag
-        reads seek about a file and keep a read-ahead of their own."""
+        reads seek about a file and keep it."""
         indexer, vault, config = library
         path = vault.add(
             f"{ROOT}/01 track.flac",
             _flac(tmp_path, {"title": "T", "artist": "A", "album": "B"}),
         )
         changes = await indexer.process_file(path)
-        assert vault.opens == [TAG_READ_AHEAD_BYTES]
+        assert vault.opens
+        assert all(vault.opens)
 
         module = _module_over(config, vault)
         info = await module.get_content_info(changes["tracks"])
@@ -515,7 +513,7 @@ class TestServingATrack:
         with info.reader():
             pass
 
-        assert vault.opens == [0]
+        assert vault.opens == [False]
 
     @pytest.mark.asyncio
     async def test_a_track_that_went_away_is_absent(self, library, tmp_path):

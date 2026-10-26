@@ -129,8 +129,8 @@ class _DroppingFile(io.BytesIO):
 def _share_drops_images(monkeypatch):
     real_open = LocalStorage.open
 
-    def open_(self, path, *, read_ahead_bytes=None):
-        handle = real_open(self, path, read_ahead_bytes=read_ahead_bytes)
+    def open_(self, path, *, read_ahead=True):
+        handle = real_open(self, path, read_ahead=read_ahead)
         if not path.endswith(".jpg"):
             return handle
         with handle:

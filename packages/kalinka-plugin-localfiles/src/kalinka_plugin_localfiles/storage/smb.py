@@ -63,9 +63,9 @@ os.environ.setdefault(
     "SMB_EXPERIMENTAL_TRANSPORT_RECEIVE_TIMEOUT", str(_RECEIVE_TIMEOUT_S)
 )
 
-#: Read-ahead per request where the caller leaves it to the storage. The
-#: audio embedder seeks to a few fragments, so the win is in asking for a
-#: chunk worth having rather than a block at a time over the network.
+#: Read-ahead per request. A tag read walks a file's header and the audio
+#: embedder seeks to a few fragments, so the win is in asking for a chunk
+#: worth having rather than a block at a time over the network.
 _READ_BUFFER = 1024 * 1024
 
 #: Long enough for a NAS that has spun its disks down, short enough that an
@@ -201,17 +201,15 @@ class SmbStorage(FileStorage):
             identity=self._identity(info),
         )
 
-    def open(self, path: str, *, read_ahead_bytes: Optional[int] = None) -> BinaryIO:
+    def open(self, path: str, *, read_ahead: bool = True) -> BinaryIO:
         """Without read-ahead the handle is the raw SMB file, so each read
         is one SMB READ of what it asked for, up to the negotiated size."""
         locator = parse(path)
-        if read_ahead_bytes is None:
-            read_ahead_bytes = _READ_BUFFER
         with self._as_os_error(locator):
             handle = smbclient.open_file(
                 self._unc(locator),
                 mode="rb",
-                buffering=read_ahead_bytes,
+                buffering=_READ_BUFFER if read_ahead else 0,
                 share_access=_SHARE_ACCESS,
                 **self._logon(locator),
             )

@@ -247,7 +247,7 @@ class FileStorage(ABC):
         self._swept = False
         # A reopen stands in for the probe the range skipped, so gets as long.
         self._readers = ReaderPool(
-            lambda path: self.open(path, read_ahead_bytes=0),
+            lambda path: self.open(path, read_ahead=False),
             reopen_timeout_s=PROBE_TIMEOUT_S,
         )
 
@@ -303,19 +303,16 @@ class FileStorage(ABC):
         """
 
     @abstractmethod
-    def open(self, path: str, *, read_ahead_bytes: Optional[int] = None) -> BinaryIO:
+    def open(self, path: str, *, read_ahead: bool = True) -> BinaryIO:
         """Open a file for reading bytes.
 
         The object is seekable: tag readers and the audio embedder both
         jump around inside a file rather than reading it through. Its reads
         fail as ``OSError`` too, however the protocol reports them.
 
-        @param read_ahead_bytes How much a read fetches at the least, in case
-            the next one wants it. Each jump to elsewhere in the file pays for
-            it again, so a caller asks for what one place in the file is
-            worth to it. 0 reads only what each call asks for, which suits a
-            caller that already reads in bounded spans; None leaves the size
-            to the storage.
+        @param read_ahead Whether a read may fetch more than it asked for, in
+            case the next one wants it. False reads only what each call asks
+            for, which suits a caller that already reads in bounded spans.
         @raise FileNotFoundError If it is not there.
         @raise OSError If it cannot be opened.
         """
