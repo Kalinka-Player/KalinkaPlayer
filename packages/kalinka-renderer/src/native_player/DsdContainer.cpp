@@ -80,10 +80,11 @@ void DsdContainer::parseDsf(ByteReader &source) {
           "Invalid DSF data chunk");
   require(sampleCount > 0 && sampleCount <= (uint64_t(1) << 48),
           "Invalid DSF sample count");
-  const auto groups = ((sampleCount + 7) / 8 + blockSize - 1) / blockSize;
-  // Some encoders write blocks past the sample count; those are never read.
-  require(groups * blockSize * channels <= length - 12,
-          "DSF sample count exceeds data size");
+  // Encoders overstate either bound; a partial last block group is untrusted.
+  const auto heldBytes = (length - 12) / (blockSize * channels) * blockSize;
+  if (heldBytes < (sampleCount + 7) / 8)
+    sampleCount = heldBytes * 8;
+  require(sampleCount > 0, "DSF data holds no complete block");
 }
 
 void DsdContainer::parseDsdiff(ByteReader &source) {
