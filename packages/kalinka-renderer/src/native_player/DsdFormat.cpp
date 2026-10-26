@@ -70,7 +70,7 @@ OutputCapabilities probeOutput(const std::string &device) {
   if (!opened) {
     if (opened.error() == -EBUSY && cache.contains(device))
       return cache.at(device);
-    return {DeviceAccess::Unknown, snd_strerror(opened.error()), {}};
+    return {DeviceAccess::Unknown, openFailure(device, opened.error()), {}};
   }
   snd_pcm_t *pcm = opened->handle;
   OutputCapabilities result;

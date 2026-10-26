@@ -1,11 +1,21 @@
 #include "PlaybackPcm.h"
 
 #include <algorithm>
+#include <cctype>
 #include <memory>
 #include <string_view>
 
 namespace {
 using Config = std::unique_ptr<snd_config_t, decltype(&snd_config_delete)>;
+
+// The kernel's ENOTSUPP, which has no name outside it.
+constexpr int kNotSupported = 524;
+
+bool namesHdmi(std::string device) {
+  std::ranges::transform(device, device.begin(),
+                         [](unsigned char c) { return std::tolower(c); });
+  return device.find("hdmi") != std::string::npos;
+}
 
 PlaybackPcm inspect(snd_config_t *root, snd_config_t *node, unsigned depth) {
   PlaybackPcm route{nullptr, DeviceAccess::Shared};
@@ -91,6 +101,14 @@ std::expected<PlaybackPcm, int> openPlayback(const std::string &device,
     route.access = DeviceAccess::Exclusive;
   route.iec958 = route.iec958 || snd_pcm_type(pcm) == SND_PCM_TYPE_IEC958;
   return route;
+}
+
+std::string openFailure(const std::string &device, int error) {
+  // An HDMI codec refuses to start with no audio sink on its port.
+  if (error == -kNotSupported && namesHdmi(device))
+    return "no screen or receiver that takes HDMI audio is connected to this "
+           "port and switched on";
+  return snd_strerror(error);
 }
 
 std::expected<PlaybackPcm, int> openPlayback(const std::string &device,
