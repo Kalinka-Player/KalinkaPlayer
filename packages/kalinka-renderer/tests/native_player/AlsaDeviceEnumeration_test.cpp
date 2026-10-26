@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "AlsaDeviceEnumeration.h"
+#include "ScopedAlsaConfig.h"
 
 namespace {
 
@@ -99,6 +100,10 @@ std::vector<AlsaPcmDevice> hintsWithoutCards() {
 
 const AlsaCard kSmsl{"AUDIO", "SMSL USB AUDIO", {{0, "USB Audio", false}}};
 
+class AlsaCardPcms : public ::testing::Test {
+  ScopedAlsaConfig alsa_{kHdmiTestConfig};
+};
+
 std::vector<std::string> names(const std::vector<AlsaPcmDevice> &devices) {
   std::vector<std::string> out;
   for (const AlsaPcmDevice &device : devices) {
@@ -107,7 +112,7 @@ std::vector<std::string> names(const std::vector<AlsaPcmDevice> &devices) {
   return out;
 }
 
-TEST(AlsaCardPcms, ACardAlsaDidNotHintIsStillOfferedDirectAndConverted) {
+TEST_F(AlsaCardPcms, ACardAlsaDidNotHintIsStillOfferedDirectAndConverted) {
   const std::vector<AlsaPcmDevice> devices =
       withCardPcms(hintsWithoutCards(), {kSmsl});
   ASSERT_EQ(devices.size(), 6u);
@@ -118,7 +123,7 @@ TEST(AlsaCardPcms, ACardAlsaDidNotHintIsStillOfferedDirectAndConverted) {
   EXPECT_EQ(devices[5].label, "SMSL USB AUDIO (converted)");
 }
 
-TEST(AlsaCardPcms, AHintedPcmKeepsItsHintAndIsNotRepeated) {
+TEST_F(AlsaCardPcms, AHintedPcmKeepsItsHintAndIsNotRepeated) {
   std::vector<AlsaPcmDevice> hinted = hintsWithoutCards();
   AlsaPcmDevice hint = describeAlsaPcm(
       "hw:CARD=AUDIO,DEV=0",
@@ -135,7 +140,7 @@ TEST(AlsaCardPcms, AHintedPcmKeepsItsHintAndIsNotRepeated) {
                                       "plughw:CARD=AUDIO,DEV=0"}));
 }
 
-TEST(AlsaCardPcms, EachCardListsItsDirectPcmsBeforeItsConvertedOnes) {
+TEST_F(AlsaCardPcms, EachCardListsItsDirectPcmsBeforeItsConvertedOnes) {
   const AlsaCard laptop{"sofhdadsp", "sof-hda-dsp",
                         {{0, "", true}, {3, "HDMI 1", false}}};
   const std::vector<AlsaPcmDevice> devices =
@@ -147,7 +152,7 @@ TEST(AlsaCardPcms, EachCardListsItsDirectPcmsBeforeItsConvertedOnes) {
                 "hw:CARD=AUDIO,DEV=0", "plughw:CARD=AUDIO,DEV=0"}));
 }
 
-TEST(AlsaCardPcms, APcmThatAlsoRecordsIsMarkedForBothDirections) {
+TEST_F(AlsaCardPcms, APcmThatAlsoRecordsIsMarkedForBothDirections) {
   const AlsaCard card{"PCH", "HDA Intel PCH", {{0, "ALC3246 Analog", true}}};
   for (const AlsaPcmDevice &device : withCardPcms({}, {card})) {
     EXPECT_EQ(device.ioid, "") << device.name;
@@ -157,7 +162,7 @@ TEST(AlsaCardPcms, APcmThatAlsoRecordsIsMarkedForBothDirections) {
 const AlsaCard kPiHdmi{"vc4hdmi0", "vc4-hdmi-0", {{0, "MAI PCM", false}},
                         "vc4-hdmi", 2};
 
-TEST(AlsaCardPcms, PiHdmiOffersOneFramedDirectOutputEvenWithoutHints) {
+TEST_F(AlsaCardPcms, PiHdmiOffersOneFramedDirectOutputEvenWithoutHints) {
   const auto devices = withCardPcms({}, {kPiHdmi});
   ASSERT_EQ(devices.size(), 2u);
   EXPECT_EQ(devices[0].name, "hdmi:CARD=vc4hdmi0,DEV=0,AES3=0x01");
@@ -165,7 +170,7 @@ TEST(AlsaCardPcms, PiHdmiOffersOneFramedDirectOutputEvenWithoutHints) {
   EXPECT_EQ(devices[1].name, "plughw:CARD=vc4hdmi0,DEV=0");
 }
 
-TEST(AlsaCardPcms, HdmiAndRawHintsDoNotOfferThePiDirectOutputTwice) {
+TEST_F(AlsaCardPcms, HdmiAndRawHintsDoNotOfferThePiDirectOutputTwice) {
   const auto devices = withCardPcms(
       {describeAlsaPcm("hdmi:CARD=vc4hdmi0,DEV=0", "vc4-hdmi-0"),
        describeAlsaPcm("hw:CARD=vc4hdmi0,DEV=0", "vc4-hdmi-0")}, {kPiHdmi});
@@ -173,7 +178,7 @@ TEST(AlsaCardPcms, HdmiAndRawHintsDoNotOfferThePiDirectOutputTwice) {
       "hdmi:CARD=vc4hdmi0,DEV=0,AES3=0x01", "plughw:CARD=vc4hdmi0,DEV=0"}));
 }
 
-TEST(AlsaCardPcms, ExistingPiRawSelectionsMigrateUsingTheDriverAndStableCardId) {
+TEST_F(AlsaCardPcms, ExistingPiRawSelectionsMigrateUsingTheDriverAndStableCardId) {
   for (const auto *name : {"hw:CARD=vc4hdmi0,DEV=0", "hw:vc4hdmi0,0", "hw:2,0",
                            "hw:CARD=2,DEV=0", "hw:2"})
     EXPECT_EQ(playbackDeviceName(name, {kPiHdmi}),
