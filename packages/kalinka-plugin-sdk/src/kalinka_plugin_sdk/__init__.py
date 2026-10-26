@@ -27,7 +27,10 @@ from .events import (
     RenderersChangedEvent,
     CurrentRendererChangedEvent,
     PlaybackControlChangedEvent,
+    ModulesChangedEvent,
     RendererDescriptor,
+    ModuleDescriptor,
+    ModulesSnapshot,
 )
 
 from .datamodel import (
@@ -143,7 +146,10 @@ __all__ = [
     "RenderersChangedEvent",
     "CurrentRendererChangedEvent",
     "PlaybackControlChangedEvent",
+    "ModulesChangedEvent",
     "RendererDescriptor",
+    "ModuleDescriptor",
+    "ModulesSnapshot",
     # Data Models
     "EntityType",
     "EntityId",
