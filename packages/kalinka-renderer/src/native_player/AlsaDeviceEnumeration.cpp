@@ -31,6 +31,23 @@ struct CtlClose {
 };
 using Ctl = std::unique_ptr<snd_ctl_t, CtlClose>;
 
+std::string withHdmiRateStatus(const std::string &name) {
+  if (name.find("AES3=") != std::string::npos)
+    return name;
+  snd_config_t *config = nullptr;
+  if (snd_config_update_ref(&config) < 0)
+    return name;
+  std::unique_ptr<snd_config_t, decltype(&snd_config_unref)> root(
+      config, snd_config_unref);
+  snd_config_t *argument = nullptr;
+  if (snd_config_search_definition(config, nullptr, "pcm.hdmi.@args.AES3",
+                                    &argument) < 0)
+    return name;
+  std::unique_ptr<snd_config_t, decltype(&snd_config_delete)> owned(
+      argument, snd_config_delete);
+  return name + ",AES3=0x01";
+}
+
 std::vector<std::string> splitLines(const char *raw) {
   std::vector<std::string> lines;
   if (!raw) return lines;
@@ -164,7 +181,7 @@ std::string sentence(std::string text) {
 std::string subdevice(const std::string &name) {
   const size_t at = name.find("DEV=");
   if (at == std::string::npos) return {};
-  const std::string dev = name.substr(at + 4);
+  const std::string dev = name.substr(at + 4, name.find(',', at) - (at + 4));
   return dev == "0" ? std::string() : " #" + dev;
 }
 
@@ -191,7 +208,7 @@ Wording wordingFor(const std::string &name) {
             "it."};
   }
   const std::string prefix = prefixOf(name);
-  if (prefix == "hw") {
+  if (prefix == "hw" || prefix == "hdmi") {
     return {"", " (direct)",
             "Sends samples to the card unchanged. The card must support the "
             "track's sample rate and format, and nothing else can play "
@@ -261,6 +278,8 @@ std::optional<AlsaCard> readCard(int index) {
 
   AlsaCard card{snd_ctl_card_info_get_id(info),
                 snd_ctl_card_info_get_name(info), {}};
+  card.driver = snd_ctl_card_info_get_driver(info);
+  card.index = index;
   int device = -1;
   while (snd_ctl_pcm_next_device(ctl.get(), &device) >= 0 && device >= 0) {
     std::optional<std::string> name =
@@ -285,6 +304,15 @@ std::vector<AlsaCard> listAlsaCards() {
 }
 
 }  // namespace
+
+bool isPlaybackPcm(const AlsaPcmDevice &device) {
+  if (!device.ioid.empty() && device.ioid != "Output")
+    return false;
+  static const char *prefixes[] = {"front:", "surround", "iec958:", "dmix:",
+                                   "dsnoop:", "usbstream:", "sysdefault"};
+  return std::none_of(std::begin(prefixes), std::end(prefixes),
+                     [&device](const char *p) { return device.name.starts_with(p); });
+}
 
 AlsaPcmDevice describeAlsaPcm(const std::string &name,
                               const std::string &alsaDescription) {
@@ -323,14 +351,17 @@ AlsaPcmDevice describeAlsaPcm(const std::string &name,
 std::vector<AlsaPcmDevice> withCardPcms(std::vector<AlsaPcmDevice> hinted,
                                         const std::vector<AlsaCard> &cards) {
   std::unordered_set<std::string> known;
-  for (const AlsaPcmDevice &device : hinted) {
-    known.insert(device.name);
-  }
+  for (auto &device : hinted)
+    device.name = playbackDeviceName(device.name, cards);
+  std::erase_if(hinted, [&](const AlsaPcmDevice &device) {
+    return !known.insert(device.name).second;
+  });
   for (const AlsaCard &card : cards) {
     for (const char *access : {"hw", "plughw"}) {
       for (const AlsaCardPcm &pcm : card.playback) {
         std::string name = std::string(access) + ":CARD=" + card.id +
                            ",DEV=" + std::to_string(pcm.device);
+        name = playbackDeviceName(name, cards);
         if (!known.insert(name).second) continue;
         AlsaPcmDevice device =
             describeAlsaPcm(name, card.name + ", " + pcm.name);
@@ -340,6 +371,30 @@ std::vector<AlsaPcmDevice> withCardPcms(std::vector<AlsaPcmDevice> hinted,
     }
   }
   return hinted;
+}
+
+std::string playbackDeviceName(const std::string &name,
+                               const std::vector<AlsaCard> &cards) {
+  if (name.starts_with("hdmi:"))
+    return withHdmiRateStatus(name);
+  for (const AlsaCard &card : cards) {
+    if (card.driver != "vc4-hdmi")
+      continue;
+    for (const auto &id : {card.id, std::to_string(card.index)}) {
+      if (id == "-1")
+        continue;
+      if (name == "hw:CARD=" + id + ",DEV=0" || name == "hw:" + id + ",0" ||
+          name == "hw:CARD=" + id || name == "hw:" + id)
+        return withHdmiRateStatus("hdmi:CARD=" + card.id + ",DEV=0");
+    }
+  }
+  return name;
+}
+
+std::string playbackDeviceName(const std::string &name) {
+  if (!name.starts_with("hw:"))
+    return playbackDeviceName(name, {});
+  return playbackDeviceName(name, listAlsaCards());
 }
 
 std::vector<AlsaPcmDevice> listAlsaPcmDevices() {

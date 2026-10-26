@@ -31,7 +31,7 @@ std::vector<double> cubicVolumeDb();
 /// volume is cubic but carries no dB scale for ALSA to report.
 bool isSoundServerMixer(snd_ctl_type_t type, const std::string &cardId);
 
-/// Whether PCM @p pcm is the card's own device, plain or converted, which
+/// Whether PCM @p pcm reaches hardware, plain, converted or through HDMI framing, which
 /// no software volume stage such as softvol sits in front of.
 bool reachesTheCardItself(const std::string &pcm);
 

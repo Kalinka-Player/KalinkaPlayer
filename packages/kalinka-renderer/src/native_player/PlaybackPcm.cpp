@@ -1,66 +1,105 @@
 #include "PlaybackPcm.h"
 
 #include <algorithm>
-#include <iterator>
+#include <memory>
+#include <string_view>
 
 namespace {
+using Config = std::unique_ptr<snd_config_t, decltype(&snd_config_delete)>;
 
-// What the renderer hands a card.
-constexpr snd_pcm_format_t kPcmFormats[] = {
-    SND_PCM_FORMAT_S16_LE, SND_PCM_FORMAT_S24_LE, SND_PCM_FORMAT_S24_3LE,
-    SND_PCM_FORMAT_S32_LE};
-
-bool framedOnly(snd_pcm_t *pcm) {
-  snd_pcm_hw_params_t *params = nullptr;
-  snd_pcm_hw_params_alloca(&params);
-  if (snd_pcm_hw_params_any(pcm, params) < 0)
-    return false;
-  snd_pcm_format_mask_t *formats = nullptr;
-  snd_pcm_format_mask_alloca(&formats);
-  snd_pcm_hw_params_get_format_mask(params, formats);
-  return onlyIec958Subframes(formats);
+PlaybackPcm inspect(snd_config_t *root, snd_config_t *node, unsigned depth) {
+  PlaybackPcm route{nullptr, DeviceAccess::Shared};
+  if (depth == 16)
+    return route;
+  const char *name = nullptr;
+  if (snd_config_get_string(node, &name) == 0) {
+    snd_config_t *definition = nullptr;
+    if (snd_config_search_definition(root, "pcm", name, &definition) < 0)
+      return route;
+    Config owned(definition, snd_config_delete);
+    return inspect(root, definition, depth + 1);
+  }
+  snd_config_t *type = nullptr;
+  const char *value = nullptr;
+  if (snd_config_search(node, "type", &type) < 0 ||
+      snd_config_get_string(type, &value) < 0)
+    return route;
+  const std::string_view kind(value);
+  if (kind == "hw") {
+    route.access = DeviceAccess::Exclusive;
+    return route;
+  }
+  if (kind != "iec958" && kind != "hooks" && kind != "empty")
+    return route;
+  route.iec958 = kind == "iec958";
+  if (route.iec958) {
+    snd_config_t *format = nullptr;
+    if (snd_config_search(node, "slave.format", &format) < 0 ||
+        snd_config_get_string(format, &value) < 0 ||
+        (std::string_view(value) != "IEC958_SUBFRAME_LE" &&
+         std::string_view(value) != "IEC958_SUBFRAME_BE"))
+      return route;
+  }
+  snd_config_t *slave = nullptr;
+  if (snd_config_search(node, "slave.pcm", &slave) < 0)
+    return route;
+  const auto downstream = inspect(root, slave, depth + 1);
+  route.access = downstream.access;
+  route.iec958 = route.iec958 || downstream.iec958;
+  return route;
 }
-
 } // namespace
 
-bool onlyIec958Subframes(const snd_pcm_format_mask_t *formats) {
-  return snd_pcm_format_mask_test(formats, SND_PCM_FORMAT_IEC958_SUBFRAME_LE) &&
-         std::none_of(std::begin(kPcmFormats), std::end(kPcmFormats),
-                      [formats](snd_pcm_format_t format) {
-                        return snd_pcm_format_mask_test(formats, format);
-                      });
+PlaybackPcm inspectHdmiRoute(snd_config_t *config, const std::string &device) {
+  PlaybackPcm route{nullptr, DeviceAccess::Shared};
+  if (!device.starts_with("hdmi:"))
+    return route;
+  snd_config_t *definition = nullptr;
+  if (snd_config_search_definition(config, "pcm", device.c_str(), &definition) <
+      0)
+    return route;
+  Config owned(definition, snd_config_delete);
+  return inspect(config, definition, 0);
 }
 
-std::string iec958FramingOf(int card, int device) {
-  return "hdmi:CARD=" + std::to_string(card) +
-         ",DEV=" + std::to_string(device) + ",AES3=0x01";
+int PlaybackPcm::significantBits(const snd_pcm_hw_params_t *params) const {
+  const int bits = snd_pcm_hw_params_get_sbits(params);
+  return iec958 ? std::min(bits, 24) : bits;
+}
+
+PlaybackPcm inspectHdmiRoute(const std::string &device) {
+  if (!device.starts_with("hdmi:"))
+    return {nullptr, DeviceAccess::Shared};
+  snd_config_t *config = nullptr;
+  if (snd_config_update_ref(&config) < 0)
+    return {nullptr, DeviceAccess::Shared};
+  std::unique_ptr<snd_config_t, decltype(&snd_config_unref)> owned(
+      config, snd_config_unref);
+  return inspectHdmiRoute(config, device);
+}
+
+std::expected<PlaybackPcm, int> openPlayback(const std::string &device,
+                                             int mode, snd_config_t *config) {
+  snd_pcm_t *pcm = nullptr;
+  const int err = snd_pcm_open_lconf(&pcm, device.c_str(),
+                                     SND_PCM_STREAM_PLAYBACK, mode, config);
+  if (err < 0)
+    return std::unexpected(err);
+  auto route = inspectHdmiRoute(config, device);
+  route.handle = pcm;
+  if (snd_pcm_type(pcm) == SND_PCM_TYPE_HW)
+    route.access = DeviceAccess::Exclusive;
+  route.iec958 = route.iec958 || snd_pcm_type(pcm) == SND_PCM_TYPE_IEC958;
+  return route;
 }
 
 std::expected<PlaybackPcm, int> openPlayback(const std::string &device,
                                              int mode) {
-  snd_pcm_t *pcm = nullptr;
-  int err = snd_pcm_open(&pcm, device.c_str(), SND_PCM_STREAM_PLAYBACK, mode);
+  snd_config_t *config = nullptr;
+  const int err = snd_config_update_ref(&config);
   if (err < 0)
     return std::unexpected(err);
-  // Anything but a raw hw handle has a plugin of its own before the card.
-  if (snd_pcm_type(pcm) != SND_PCM_TYPE_HW)
-    return PlaybackPcm{pcm, DeviceAccess::Shared};
-  if (!framedOnly(pcm))
-    return PlaybackPcm{pcm, DeviceAccess::Exclusive};
-
-  snd_pcm_info_t *info = nullptr;
-  snd_pcm_info_alloca(&info);
-  err = snd_pcm_info(pcm, info);
-  const std::string framing =
-      err < 0
-          ? std::string()
-          : iec958FramingOf(snd_pcm_info_get_card(info),
-                            static_cast<int>(snd_pcm_info_get_device(info)));
-  snd_pcm_close(pcm);
-  if (err < 0)
-    return std::unexpected(err);
-  err = snd_pcm_open(&pcm, framing.c_str(), SND_PCM_STREAM_PLAYBACK, mode);
-  if (err < 0)
-    return std::unexpected(err);
-  return PlaybackPcm{pcm, DeviceAccess::Exclusive};
+  std::unique_ptr<snd_config_t, decltype(&snd_config_unref)> owned(
+      config, snd_config_unref);
+  return openPlayback(device, mode, config);
 }

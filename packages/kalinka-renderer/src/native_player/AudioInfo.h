@@ -55,8 +55,8 @@ struct StreamAudioFormat {
 /// nothing rules it out — the most a renderer can say about a path it shares.
 enum class DeviceAccess {
   Unknown,
-  Exclusive,  ///< the device itself, nothing in between
-  Shared      ///< something sits between us and the card
+  Exclusive,  ///< Hardware, optionally through verified transport framing.
+  Shared      ///< The route may mix or alter samples.
 };
 
 inline std::string deviceAccessToString(DeviceAccess access) {
