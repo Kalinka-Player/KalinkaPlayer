@@ -462,7 +462,11 @@ class _ZeroconfWatch:
 
     # zeroconf's ServiceListener interface
     def add_service(self, zeroconf, service_type: str, name: str) -> None:
-        info = zeroconf.get_service_info(service_type, name, timeout=1500)
+        try:
+            info = zeroconf.get_service_info(service_type, name, timeout=1500)
+        except Exception as exc:  # noqa: BLE001 — raising here ends the browser
+            logger.warning("Could not resolve %s over mDNS: %r", name, exc)
+            return
         if info is None:
             return
         # parsed_addresses(), not addresses: the latter is IPv4 only, so a

@@ -858,6 +858,27 @@ class TestAnAnnouncementThatArrives:
     def test_a_service_that_cannot_be_resolved_is_not_reported(self):
         assert self._seen(None) == []
 
+    def test_a_resolution_that_fails_does_not_reach_the_browser(self, caplog):
+        """zeroconf calls this on its browser thread, and an exception out
+        of it ends that thread: no announcement is heard again until the
+        server restarts. A box too loaded for zeroconf's event loop to
+        finish the lookup in time is enough to raise one."""
+        from zeroconf import EventLoopBlocked
+
+        from kalinka_plugin_localfiles.suggest.smb_discovery import _ZeroconfWatch
+
+        class _Stalled:
+            def get_service_info(self, *_args, **_kwargs):
+                raise EventLoopBlocked
+
+        seen = []
+        watch = _ZeroconfWatch(lambda *a: seen.append(a), lambda key: None)
+        with caplog.at_level(logging.WARNING):
+            watch.add_service(_Stalled(), "_smb._tcp.local.", "NAS._smb._tcp.local.")
+
+        assert seen == []
+        assert "EventLoopBlocked" in caplog.text
+
 
 class TestLettingGoOfTheSubscription:
     """A browser is a thread of its own, and it is released by its own name:
