@@ -29,6 +29,7 @@ import asyncio
 import logging
 import os
 import subprocess
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -420,7 +421,10 @@ class UpdateChecker:
         next tick) retries the following night rather than hammering,
         and a successful one restarts the process anyway.
         """
-        now = now or datetime.now()
+        if now is None:
+            # localtime_r keeps the zone it first read; tzset re-reads /etc/localtime.
+            time.tzset()
+            now = datetime.now()
         if now.hour not in _QUIET_HOURS:
             return
         if self._last_auto_attempt == now.date():

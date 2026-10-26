@@ -438,10 +438,11 @@ The supervisor hands the zone to systemd-timedated's `SetTimezone` over
 D-Bus. timedated, a system service outside the supervisor's sandbox, writes
 `/etc/localtime`, so the supervisor itself writes nothing. The supervisor
 then restarts `kalinka-kiosk.service` if it runs, because the display's
-clock reads the zone only when it starts; playback carries on. The server
-reads the zone when it starts too, so its quiet hours move to the new zone
-at its next start. The change leaves the network alone, so a Wi-Fi join
-does not hold it up; a package install does.
+clock reads the zone only when it starts; playback carries on. While
+automatic upgrades are on, the server reads the zone again at its hourly
+check, so its quiet hours move to the new zone within the hour, without a
+restart. The change leaves the network alone, so a Wi-Fi join does not hold
+it up; a package install does.
 
 `timezone` in `/v1/status` is read from `/etc/localtime` on each request, as
 timedated reads it, so a zone set with `dietpi-config` shows there too.
