@@ -44,6 +44,7 @@ cp "$IGconf_kalinka_supervisor_deb" "$WORK/kalinka-supervisor.deb"
 install_supervisor
 verify_supervisor
 verify_display
+require_no_compiler
 # What went in, for build.sh to name the image and write its manifest.
 printf '%s %s %s %s\n' "$(in_chroot dpkg-query -W -f='${Version}' kalinka-server)" \
   "$(in_chroot dpkg-query -W -f='${Version}' kalinka-supervisor)" \

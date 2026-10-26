@@ -30,6 +30,14 @@ install_kalinka() {
   rm -rf "$ROOTFS/tmp/kalinka-install"
 }
 
+# Files, not packages: a compiler can come in without the gcc or python3-dev metapackage.
+require_no_compiler() {
+  local found
+  for found in "$ROOTFS"/usr/bin/*gcc-[0-9]* "$ROOTFS"/usr/include/python3*/Python.h; do
+    [ ! -e "$found" ] || die "${found#"$ROOTFS"} came in, though nothing on the box builds from source"
+  done
+}
+
 verify_kalinka() {
   # Built now, so a first boot that cannot reach PyPI still plays.
   log "Pre-building the server venv"
