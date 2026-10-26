@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 
 import pytest
 
@@ -337,6 +338,31 @@ class TestMaybeAutoUpgrade:
 
         self._attempt(checker, datetime(2026, 7, 27, 3, 30), renderers_ready=boom)
         assert requests == []
+
+    @pytest.fixture
+    def zone_at(self, monkeypatch):
+        """Moves the process's zone so that the local hour is the one given."""
+
+        def move(hour):
+            offset = (hour - datetime.now(timezone.utc).hour + 12) % 24 - 12
+            zone.setenv("TZ", f"LOCAL{-offset:+d}")
+
+        with monkeypatch.context() as zone:
+            yield move
+        time.tzset()
+
+    def test_a_zone_changed_while_running_moves_the_quiet_hours(
+        self, monkeypatch, zone_at
+    ):
+        checker, requests = self._armed_checker(monkeypatch)
+        zone_at(16)
+        self._attempt(checker, None)
+        assert requests == []
+
+        zone_at(4)
+        self._attempt(checker, None)
+        assert requests == [1]
+
 
 class TestUpdateChecker:
     def _checker_with_fetches(self, results, monkeypatch, installed=None):
