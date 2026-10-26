@@ -219,7 +219,9 @@ def test_a_supervisor_is_refused_before_anything_installs_where_it_has_no_packag
             assert "Debian-based systems only" in result.stderr
 
 
-EXTRAS = {"libchromaprint-tools", "build-essential", "python3-dev"}
+EXTRAS = {"libchromaprint-tools"}
+# A second name, for what the installer does with each of several.
+STAND_IN = "kalinka-stand-in"
 
 EITHER_PATH = pytest.mark.parametrize(
     "bundle_fails", [False, True], ids=["apt", "dpkg-fallback"]
@@ -300,6 +302,7 @@ def _install_release(
     installed=(),
     env=None,
     piped=False,
+    stand_in=False,
 ):
     """install-release.sh end to end, against one published release and no
     package database.
@@ -312,6 +315,7 @@ def _install_release(
     ``app_assets`` are published beside the bundle, where the app repo's
     lookup finds them too; ``installed`` are packages already on the box.
     ``piped`` feeds the script to bash on stdin, as ``curl … | sudo bash`` does.
+    ``stand_in`` adds ``STAND_IN`` to the packages it asks for by name.
     """
     binv = tmp_path / "bin"
     binv.mkdir()
@@ -336,11 +340,16 @@ def _install_release(
     # A reinstall removes the server's environment and a display edits the boot
     # config, so the script only reaches their copies here.
     script = tmp_path / "install-release.sh"
-    script.write_text(
+    text = (
         INSTALL_RELEASE.read_text()
         .replace("/opt/kalinka", f"{tmp_path}/opt/kalinka")
         .replace("/boot/firmware", f"{tmp_path}/boot/firmware")
     )
+    if stand_in:
+        extras = "declare -A EXTRAS=(\n"
+        assert extras in text
+        text = text.replace(extras, f'{extras}  [{STAND_IN}]="the stand-in is lost"\n')
+    script.write_text(text)
 
     result = subprocess.run(
         ["bash"] if piped else ["bash", str(script)],
@@ -386,7 +395,8 @@ def test_no_install_takes_every_recommend(bundle_fails, tmp_path):
 @EITHER_PATH
 def test_what_kalinka_wants_is_asked_for_by_name(bundle_fails, tmp_path):
     """DietPi skips recommends, and a failed apt run skipped them too; fpcalc
-    and the toolchain have to come either way."""
+    has to come either way. Nothing else does: no install builds from source,
+    so no box needs a compiler."""
     result, calls, installed = _install_release(tmp_path, bundle_fails=bundle_fails)
 
     assert result.returncode == 0, result.stderr
@@ -398,7 +408,7 @@ def test_what_kalinka_wants_is_asked_for_by_name(bundle_fails, tmp_path):
 @EITHER_PATH
 def test_the_names_go_in_before_the_bundle(bundle_fails, tmp_path):
     """The server's postinst restarts kalinka.service, which looks for fpcalc
-    and builds a pending Smart Search install only as it starts."""
+    only as it starts."""
     result, calls, _ = _install_release(tmp_path, bundle_fails=bundle_fails)
 
     assert result.returncode == 0, result.stderr
@@ -408,8 +418,8 @@ def test_the_names_go_in_before_the_bundle(bundle_fails, tmp_path):
 
 
 def test_what_is_already_there_is_not_upgraded(tmp_path):
-    """Auto-upgrade reruns the installer, and python3-dev pins python3 by exact
-    version: upgrading it would upgrade the interpreter the server runs on."""
+    """Auto-upgrade reruns the installer, and the operating system's packages
+    are their owner's to update, not Kalinka's."""
     result, calls, _ = _install_release(tmp_path)
 
     assert result.returncode == 0, result.stderr
@@ -420,38 +430,45 @@ def test_what_is_already_there_is_not_upgraded(tmp_path):
 def test_a_refused_install_is_not_asked_again_per_package(tmp_path):
     """A held dpkg lock is waited out for five minutes a call; asking once more
     per package kept the unattended upgrade waiting for each of them."""
-    result, calls, installed = _install_release(tmp_path, names_fail=True)
+    result, calls, installed = _install_release(
+        tmp_path, names_fail=True, stand_in=True
+    )
 
     assert result.returncode == 0, result.stderr
-    assert len([c for c in calls if EXTRAS & set(c)]) == 1
+    assert len([c for c in calls if (EXTRAS | {STAND_IN}) & set(c)]) == 1
     assert installed == set()
-    assert len(_notes(result)) == len(EXTRAS)
+    assert len(_notes(result)) == len(EXTRAS | {STAND_IN})
     assert "Done." in result.stdout
 
 
 @EITHER_PATH
 def test_a_package_apt_cannot_install_costs_only_itself(bundle_fails, tmp_path):
-    """One name missing from a distribution, or held back by a pinned python3,
-    must not take the others down with it, nor the install: the operator is
-    told what it costs instead."""
+    """One name missing from a distribution, or held back by a conflicting
+    package, must not take the others down with it, nor the install: the
+    operator is told what it costs instead."""
     result, _, installed = _install_release(
-        tmp_path, bundle_fails=bundle_fails, unknown=["python3-dev"]
+        tmp_path,
+        bundle_fails=bundle_fails,
+        unknown=["libchromaprint-tools"],
+        stand_in=True,
     )
 
     assert result.returncode == 0, result.stderr
-    assert installed == EXTRAS - {"python3-dev"}
+    assert installed == {STAND_IN}
     [note] = _notes(result)
-    assert "python3-dev" in note and "Smart Search" in note
+    assert "libchromaprint-tools" in note and "fpcalc" in note
     assert "Done." in result.stdout
 
 
 def test_each_package_that_did_not_come_is_named(tmp_path):
-    result, _, installed = _install_release(tmp_path, unknown=sorted(EXTRAS))
+    result, _, installed = _install_release(
+        tmp_path, unknown=sorted(EXTRAS | {STAND_IN}), stand_in=True
+    )
 
     assert result.returncode == 0, result.stderr
     assert installed == set()
     notes = _notes(result)
-    assert sorted(note.split()[2] for note in notes) == sorted(EXTRAS)
+    assert sorted(note.split()[2] for note in notes) == sorted(EXTRAS | {STAND_IN})
     assert any("libchromaprint-tools" in n and "fpcalc" in n for n in notes)
     assert "apt-get install --no-install-recommends" in result.stderr
 

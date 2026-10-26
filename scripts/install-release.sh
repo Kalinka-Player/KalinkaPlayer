@@ -277,8 +277,6 @@ APT_INSTALL=(apt-get "${APT_OPTS[@]}" install -y --no-install-recommends)
 # Named, as the installs below take no recommends; each maps to what is lost without it.
 declare -A EXTRAS=(
   [libchromaprint-tools]="AcoustID has no fpcalc to fingerprint tracks with"
-  [build-essential]="Smart Search cannot build a package that has no wheel for this machine"
-  [python3-dev]="Smart Search cannot build a package that has no wheel for this machine"
 )
 
 # Best-effort: every one of them serves an optional feature.
@@ -290,7 +288,7 @@ install_extras() {
   done
   [ "${#found[@]}" -gt 0 ] || return 0
   echo ">> Installing what Kalinka's optional features use ..."
-  # Upgrading python3-dev would upgrade the python3 it pins, under the server, on every auto-upgrade.
+  # Auto-upgrade reruns this, and Kalinka leaves updating the operating system to its owner.
   $SUDO "${APT_INSTALL[@]}" --no-upgrade "${found[@]}" || true
 }
 
@@ -314,7 +312,7 @@ if [ "${NO_APT_UPDATE:-0}" != "1" ]; then
   $SUDO apt-get "${APT_OPTS[@]}" update
 fi
 
-# The bundle's postinst starts kalinka.service, which looks for fpcalc and the toolchain only then.
+# The bundle's postinst starts kalinka.service, which looks for fpcalc only then.
 install_extras
 
 BUNDLE_OPTS=()
