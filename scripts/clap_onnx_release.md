@@ -43,7 +43,7 @@ python scripts/export_clap_onnx.py --output-dir /tmp/clap_onnx_v1 \
 
 ### 2. Publish the GitHub release
 
-1. Go to <https://github.com/madenvel/KalinkaPlayer/releases/new>
+1. Go to <https://github.com/Kalinka-Player/KalinkaPlayer/releases/new>
 2. Tag: `clap-onnx-vN` (matches the value of `_RELEASE_BASE` in
    [`clap_onnx.py`](../packages/kalinka-plugin-localfiles/src/kalinka_plugin_localfiles/embedder/clap_onnx.py))
 3. Title: `CLAP ONNX vN — <one-line description>`
@@ -64,7 +64,7 @@ expects exact-match filenames; renaming breaks first-boot download.
 In [`clap_onnx.py`](../packages/kalinka-plugin-localfiles/src/kalinka_plugin_localfiles/embedder/clap_onnx.py):
 
 ```python
-_RELEASE_BASE = "https://github.com/madenvel/KalinkaPlayer/releases/download/clap-onnx-vN"
+_RELEASE_BASE = "https://github.com/Kalinka-Player/KalinkaPlayer/releases/download/clap-onnx-vN"
 ```
 
 If the new export does *or doesn't* produce a `.onnx.data` sibling for

@@ -155,3 +155,12 @@ def test_unknown_model_name_returns_none(tmp_path, monkeypatch):
     )
     result = clap_onnx._ensure_model_file("does_not_exist", str(tmp_path))
     assert result is None
+
+
+def test_models_download_from_the_project_organisation():
+    """GitHub's rename redirect from the old owner ends once a repository is
+    created again under that name."""
+    for url in clap_onnx._MODEL_URLS.values():
+        assert url.startswith(
+            "https://github.com/Kalinka-Player/KalinkaPlayer/releases/download/"
+        )

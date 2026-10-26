@@ -65,7 +65,7 @@ If the device has no model directory yet, fetch just the audio tower into a thro
 ```
 mkdir -p /tmp/probe-model
 curl -sSL -o /tmp/probe-model/clap_audio_encoder.onnx \
-  https://github.com/madenvel/KalinkaPlayer/releases/download/clap-onnx-v2/clap_audio_encoder.onnx
+  https://github.com/Kalinka-Player/KalinkaPlayer/releases/download/clap-onnx-v2/clap_audio_encoder.onnx
 ```
 
 The probe runs in its own process against its own model directory and opens the audio read-only, so the server can keep running; it will compete with it for CPU, which is the one reason to stop playback first.

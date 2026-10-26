@@ -11,6 +11,7 @@ import os
 import pytest
 
 from kalinka_server import text_embedder
+from kalinka_server.config_model import EmbeddingConfig
 from kalinka_server.text_embedder import SharedTextEmbedder
 
 RUNTIME = ("onnxruntime", "tokenizers")
@@ -179,3 +180,11 @@ async def test_embedding_without_the_runtime_is_refused(
 
     with pytest.raises(RuntimeError, match="unavailable"):
         await embedder.embed(["quiet piano"])
+
+
+def test_the_model_downloads_from_the_project_organisation():
+    """GitHub's rename redirect from the old owner ends once a repository is
+    created again under that name."""
+    assert EmbeddingConfig().model_url.startswith(
+        "https://github.com/Kalinka-Player/KalinkaPlayer/releases/download/"
+    )
