@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from importlib.metadata import entry_points
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
 
+from .hdmi_ports import hdmi_ports
 from .log_sources import (
     LOCAL_RENDERER,
     SERVER,
@@ -301,6 +302,7 @@ def _manifest(
     manifest = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         **describe_install(),
+        "hdmi_ports": hdmi_ports(),
         "requested_range": {"since": _iso(since), "until": _iso(until)},
         "sources": sources,
         "warnings": [vars(w) for w in warnings],
