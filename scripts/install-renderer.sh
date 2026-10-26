@@ -15,7 +15,7 @@
 #   ./install-renderer.sh kalinka-renderer-v0.1.0  # same, full tag form
 #
 # Env:
-#   KALINKA_REPO   owner/repo to pull the release from (default: madenvel/KalinkaPlayer)
+#   KALINKA_REPO   owner/repo to pull the release from (default: Kalinka-Player/KalinkaPlayer)
 #   GITHUB_TOKEN   optional, only to avoid the 60-req/hr anonymous API limit
 #   KALINKA_REINSTALL  set to 1 to install the deb again when that version is already there
 #   KALINKA_SUPERVISOR set to 1 to install the supervisor too, so the app can set
@@ -25,7 +25,7 @@
 # whole script under sudo is fine too.
 set -euo pipefail
 
-REPO="${KALINKA_REPO:-madenvel/KalinkaPlayer}"
+REPO="${KALINKA_REPO:-Kalinka-Player/KalinkaPlayer}"
 API="https://api.github.com/repos/${REPO}/releases"
 REQUEST="${1:-}"   # optional version or tag
 

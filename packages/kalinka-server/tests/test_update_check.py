@@ -61,6 +61,19 @@ class _FakeRun:
         return self
 
 
+class TestRepo:
+    """The old owner's names only redirect, so the hourly check would follow a
+    repository created again under either of them."""
+
+    def test_defaults_to_the_project_organisation(self, monkeypatch):
+        monkeypatch.delenv("KALINKA_REPO", raising=False)
+        assert update_check._repo() == "Kalinka-Player/KalinkaPlayer"
+
+    def test_the_app_defaults_to_the_project_organisation(self, monkeypatch):
+        monkeypatch.delenv("KALINKA_WEB_REPO", raising=False)
+        assert update_check._web_repo() == "Kalinka-Player/KalinkaAI"
+
+
 class TestLatestReleaseVersion:
     def test_picks_first_matching_release(self):
         feed = _feed("kalinka-v3.3.0", "kalinka-v3.2.0")

@@ -32,9 +32,9 @@
 #   ./install-release.sh kalinka-v3.2.0  # same, full tag form
 #
 # Env:
-#   KALINKA_REPO     owner/repo to pull the server release from (default: madenvel/KalinkaPlayer)
+#   KALINKA_REPO     owner/repo to pull the server release from (default: Kalinka-Player/KalinkaPlayer)
 #   KALINKA_WEB_REPO owner/repo for the kalinka-web and kalinka-kiosk packages
-#                    (default: madenvel/KalinkaAI)
+#                    (default: Kalinka-Player/KalinkaAI)
 #   KALINKA_WEB      set to 0 to skip installing the browser player
 #   KALINKA_DISPLAY  set to 1 to install the now-playing display for a screen
 #                    on this machine, and on a Raspberry Pi the KMS driver it
@@ -54,7 +54,7 @@
 # whole script under sudo is fine too.
 set -euo pipefail
 
-REPO="${KALINKA_REPO:-madenvel/KalinkaPlayer}"
+REPO="${KALINKA_REPO:-Kalinka-Player/KalinkaPlayer}"
 API="https://api.github.com/repos/${REPO}/releases"
 RENDERER_INSTALLER="${KALINKA_RENDERER_INSTALLER:-https://kalinkaplayer.com/install-renderer.sh}"
 REQUEST="${1:-}"   # optional version or tag
@@ -175,7 +175,7 @@ mapfile -t URLS < <(printf '%s\n' "$parsed" | sed '1d')
 [ "${#URLS[@]}" -gt 0 ] || die "no installable .deb assets found for $TAG"
 
 # --- resolve the packages released from the app repo ---------------------------
-WEB_REPO="${KALINKA_WEB_REPO:-madenvel/KalinkaAI}"
+WEB_REPO="${KALINKA_WEB_REPO:-Kalinka-Player/KalinkaAI}"
 
 WANT_DISPLAY="${KALINKA_DISPLAY:-}"
 if [ -z "$WANT_DISPLAY" ]; then
