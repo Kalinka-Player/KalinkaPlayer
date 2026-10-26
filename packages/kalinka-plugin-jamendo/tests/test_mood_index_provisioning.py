@@ -7,6 +7,7 @@ so it must not download it.
 import pytest
 
 from kalinka_plugin_jamendo import mood_search
+from kalinka_plugin_jamendo.config_model import JamendoConfig
 from kalinka_plugin_jamendo.mood_search import JamendoMoodIndex
 
 INDEX_URL = "https://index.test/jamendo_index.sqlite"
@@ -93,3 +94,11 @@ async def test_an_embedder_of_another_model_fetches_nothing(tmp_path, downloads)
 
     assert await index.available() is False
     assert downloads == []
+
+
+def test_the_index_downloads_from_the_project_organisation():
+    """GitHub's rename redirect from the old owner ends once a repository is
+    created again under that name."""
+    assert JamendoConfig().ai_index_url.startswith(
+        "https://github.com/Kalinka-Player/KalinkaPlayer/releases/download/"
+    )

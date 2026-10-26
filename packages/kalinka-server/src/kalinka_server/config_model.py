@@ -58,7 +58,7 @@ _EXPERT_SECTION: dict[str, Any] = {"importance": "expert"}
 # appended at fetch time). Same release the Jamendo mood index ships from —
 # the index is built in this model's embedding space.
 _MINILM_RELEASE = (
-    "https://github.com/madenvel/KalinkaPlayer/releases/download/jamendo-ai-v1"
+    "https://github.com/Kalinka-Player/KalinkaPlayer/releases/download/jamendo-ai-v1"
 )
 
 

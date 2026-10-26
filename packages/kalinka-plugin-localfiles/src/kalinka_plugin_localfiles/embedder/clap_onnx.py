@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__.split(".")[-1])
 # ---------------------------------------------------------------------------
 
 _RELEASE_BASE = (
-    "https://github.com/madenvel/KalinkaPlayer/releases/download/clap-onnx-v2"
+    "https://github.com/Kalinka-Player/KalinkaPlayer/releases/download/clap-onnx-v2"
 )
 
 # HTSAT-base fits in a single ONNX protobuf (≈ 285 MB), so unlike v1

@@ -12,7 +12,9 @@ from kalinka_plugin_sdk.module_config import ModuleConfig
 # encoder is no longer a plugin asset — it is the server's shared text
 # embedder (kalinka_server.text_embedder), configured under the server's
 # "Text embedding" settings.
-_RELEASE = "https://github.com/madenvel/KalinkaPlayer/releases/download/jamendo-ai-v1"
+_RELEASE = (
+    "https://github.com/Kalinka-Player/KalinkaPlayer/releases/download/jamendo-ai-v1"
+)
 
 # Mood-index asset name. The index is fetched only when the local path is
 # absent (see mood_search._provision), so a content change must rename the
