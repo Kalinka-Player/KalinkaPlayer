@@ -275,8 +275,8 @@ async def test_a_file_that_could_not_be_read_is_tried_again(indexer, monkeypatch
     path, track_id = await _single_needing_its_cover(fi, db, music_dir)
     real_open = LocalStorage.open
 
-    def open_(self, file_path, *, read_ahead=True):
-        with real_open(self, file_path, read_ahead=read_ahead) as handle:
+    def open_(self, file_path, *, read_ahead_bytes=None):
+        with real_open(self, file_path, read_ahead_bytes=read_ahead_bytes) as handle:
             return _DroppingFile(handle.read())
 
     monkeypatch.setattr(LocalStorage, "open", open_)
@@ -413,7 +413,9 @@ async def test_a_read_refused_as_invalid_is_still_unreadable(indexer, monkeypatc
     path = music_dir / "single.mp3"
     path.write_bytes(b"\0" * 1024)
     monkeypatch.setattr(
-        LocalStorage, "open", lambda self, p, *, read_ahead=True: _InvalidReadFile()
+        LocalStorage,
+        "open",
+        lambda self, p, *, read_ahead_bytes=None: _InvalidReadFile(),
     )
 
     with pytest.raises(OSError):

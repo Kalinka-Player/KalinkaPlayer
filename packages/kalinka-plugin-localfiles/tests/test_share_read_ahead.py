@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
 """What reading a track on a share costs the NAS, by who is reading it.
 
-Tag reads and the audio embedder seek about a file, and a 1 MiB read-ahead
-saves them round trips. The server reads a renderer's range in chunks capped
-at what is left of it, so under the stream it is handed a read-ahead only
-fetches bytes that are thrown away: 2.7 times the audio played, as a NAS
-audit measured. The storage also keeps the file open between ranges, so
+Tag reads and the audio embedder seek about a file, and a read-ahead saves
+them round trips, though each place they seek to costs a whole one: 1 MiB
+suits the embedder's audio fragments, while a tag reader looks for a few KB
+at either end of a file. The server reads a renderer's range in chunks
+capped at what is left of it, so under the stream it is handed a read-ahead
+only fetches bytes that are thrown away: 2.7 times the audio played, as a
+NAS audit measured. The storage also keeps the file open between ranges, so
 only a track's first range waits for the share to be probed and the file
 measured and opened. Everything here reads through the storage the configuration
 builds, over an in-memory share that buffers as ``smbclient`` does.
 """
 
 import asyncio
+import io
+import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Optional
 
 import httpx
 import numpy as np
@@ -22,7 +28,10 @@ import pytest
 import pytest_asyncio
 import soundfile as sf
 from fastapi import FastAPI
-from mutagen.flac import FLAC
+from mutagen.flac import FLAC, Picture
+from mutagen.id3 import APIC, COMM, ID3, TALB, TIT2, TPE1
+from mutagen.id3 import delete as delete_id3
+from mutagen.mp3 import MP3
 from smbprotocol.exceptions import SMBConnectionClosed
 
 import kalinka_plugin_localfiles.storage.smb as smb_mod
@@ -35,7 +44,10 @@ from kalinka_plugin_localfiles.config_model import (
 from kalinka_plugin_localfiles.db_schema import init_db
 from kalinka_plugin_localfiles.embedder.embedder import EmbeddingWorker
 from kalinka_plugin_localfiles.embedder.embedder_db import AsyncEmbedderDb
-from kalinka_plugin_localfiles.indexer.indexer import FileIndexer
+from kalinka_plugin_localfiles.indexer.indexer import (
+    TAG_READ_AHEAD_BYTES,
+    FileIndexer,
+)
 from kalinka_plugin_localfiles.indexer.indexer_db import AsyncIndexerDb
 from kalinka_plugin_localfiles.input_module_db import LocalFilesInputModuleDb
 from kalinka_plugin_localfiles.localfiles import LocalFilesInputModule
@@ -47,6 +59,17 @@ from smb_fakes import FakeSmbClient
 
 TRACK = "smb://nas/music/01 noise.flac"
 TRACK_UNC = r"\\nas\music\01 noise.flac"
+MP3_TRACK = "smb://nas/music/02 ladder.mp3"
+MP3_TRACK_UNC = r"\\nas\music\02 ladder.mp3"
+LADDER_MP3 = (
+    Path(__file__).resolve().parents[2]
+    / "kalinka-renderer"
+    / "tests"
+    / "data"
+    / "ladder.mp3"
+)
+#: A picture several times the tag read-ahead.
+COVER = bytes(range(256)) * 1200
 
 #: What a renderer asks for at a time.
 RANGE_BYTES = 384_000
@@ -60,6 +83,42 @@ def noise_flac(tmp_path_factory) -> bytes:
     sf.write(str(scratch), noise, 44100, format="FLAC")
     audio = FLAC(str(scratch))
     audio.update({"title": "Noise", "artist": "A", "album": "B"})
+    audio.save()
+    return scratch.read_bytes()
+
+
+@pytest.fixture(scope="module")
+def mp3_frames(tmp_path_factory) -> bytes:
+    """The renderer's ladder untagged and 64 times over: 3 MB of frames,
+    which put a file's two ends far apart."""
+    scratch = tmp_path_factory.mktemp("ladder") / "ladder.mp3"
+    shutil.copyfile(LADDER_MP3, scratch)
+    delete_id3(scratch)
+    return scratch.read_bytes() * 64
+
+
+def _tagged_mp3(tmp_path, frames: bytes, cover: Optional[bytes] = None) -> bytes:
+    """``frames`` under a few KB of ID3 tags, with ``cover`` among them."""
+    scratch = tmp_path / "tagged.mp3"
+    scratch.write_bytes(frames)
+    tags = ID3()
+    tags.add(TIT2(text="Ladder"))
+    tags.add(TPE1(text="The Sines"))
+    tags.add(TALB(text="Test Tones"))
+    tags.add(COMM(lang="eng", desc="", text="liner notes " * 250))
+    if cover is not None:
+        tags.add(APIC(mime="image/png", type=3, desc="", data=cover))
+    tags.save(scratch)
+    return scratch.read_bytes()
+
+
+def _covered_flac(tmp_path, flac: bytes, cover: bytes) -> bytes:
+    scratch = tmp_path / "covered.flac"
+    scratch.write_bytes(flac)
+    audio = FLAC(str(scratch))
+    picture = Picture()
+    picture.type, picture.mime, picture.data = 3, "image/png", cover
+    audio.add_picture(picture)
     audio.save()
     return scratch.read_bytes()
 
@@ -90,9 +149,9 @@ def share(monkeypatch, tmp_path, noise_flac):
     return client, config
 
 
-async def _index(config) -> str:
+async def _index(config, track: str = TRACK) -> str:
     await init_db(config.db_path)
-    changes = await FileIndexer(config, AsyncIndexerDb(config)).process_file(TRACK)
+    changes = await FileIndexer(config, AsyncIndexerDb(config)).process_file(track)
     assert changes and changes["tracks"]
     return changes["tracks"]
 
@@ -112,12 +171,63 @@ class _FragmentEncoder:
 
 
 @pytest.mark.asyncio
-async def test_tags_are_read_with_read_ahead(share):
+async def test_a_flacs_tags_cost_one_read_of_the_tag_read_ahead(share):
+    """Its metadata blocks come first and are read straight through, so
+    the 1 MiB read-ahead the embedder wants used to be one read too."""
     client, config = share
 
     assert await _index(config)
 
-    assert set(_open_bufferings(client)) == {smb_mod._READ_BUFFER}
+    assert _open_bufferings(client) == [TAG_READ_AHEAD_BYTES]
+    [opened] = client.opened
+    assert (opened.reads, opened.fetched) == (1, TAG_READ_AHEAD_BYTES)
+
+
+@pytest.mark.asyncio
+async def test_an_mp3s_tags_cost_the_nas_a_few_reads_of_the_tag_read_ahead(
+    share, tmp_path, mp3_frames
+):
+    """mutagen reads the ID3v2 tag at the start, looks for an ID3v1 tag at
+    the end, then comes back for the first frames, and coming back filled
+    the 1 MiB read-ahead a second time: 2 MB from the NAS a file, for a few
+    KB of tags."""
+    client, config = share
+    mp3 = _tagged_mp3(tmp_path, mp3_frames)
+    client.files[MP3_TRACK_UNC] = mp3
+
+    track_id = await _index(config, MP3_TRACK)
+
+    [opened] = client.opened
+    assert opened.reads <= 3
+    assert opened.fetched < 200_000
+    track = await AsyncIndexerDb(config).get_track_by_id(track_id)
+    assert (track["title"], track["artist_name"]) == ("Ladder", "The Sines")
+    assert track["duration"] == int(MP3(io.BytesIO(mp3)).info.length)
+
+
+@pytest.mark.parametrize(
+    "track,unc,source,tag,reads",
+    [
+        (MP3_TRACK, MP3_TRACK_UNC, "mp3_frames", _tagged_mp3, 3),
+        (TRACK, TRACK_UNC, "noise_flac", _covered_flac, 1),
+    ],
+    ids=["mp3", "flac"],
+)
+def test_a_cover_in_the_tags_costs_its_size_and_two_reads_more(
+    share, tmp_path, request, track, unc, source, tag, reads
+):
+    """A tag bigger than the read-ahead is read past it, in one read, and
+    what follows it fills the read-ahead again."""
+    client, config = share
+    client.files[unc] = tag(tmp_path, request.getfixturevalue(source), COVER)
+    indexer = FileIndexer(config, AsyncIndexerDb(config))
+
+    metadata = indexer._extract_metadata(indexer.storage.for_path(track), track)
+
+    assert metadata["album_art"] == COVER
+    [opened] = client.opened
+    assert opened.reads <= reads + 2
+    assert opened.fetched <= len(COVER) + (reads + 1) * TAG_READ_AHEAD_BYTES
 
 
 def test_fragments_are_embedded_with_read_ahead(share):

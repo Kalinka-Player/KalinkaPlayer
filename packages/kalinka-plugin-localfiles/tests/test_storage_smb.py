@@ -378,8 +378,22 @@ class TestReading:
 
     def test_a_file_opens_without_read_ahead_when_asked(self, fake_client):
         client = fake_client(files={r"\\nas\music\a.flac": b"x"})
-        _storage().open("smb://nas/music/a.flac", read_ahead=False)
+        _storage().open("smb://nas/music/a.flac", read_ahead_bytes=0)
         assert client.calls[0][1]["buffering"] == 0
+
+    def test_a_file_opens_with_the_read_ahead_asked_for(self, fake_client):
+        audio = bytes(range(256)) * 16 * 1024
+        client = fake_client(files={r"\\nas\music\a.flac": audio})
+
+        with _storage().open(
+            "smb://nas/music/a.flac", read_ahead_bytes=64 * 1024
+        ) as handle:
+            handle.read(10)
+            handle.seek(-10, io.SEEK_END)
+            handle.read(10)
+
+        assert client.calls[0][1]["buffering"] == 64 * 1024
+        assert client.opened[0].fetched == 64 * 1024 + 10
 
     def test_a_served_range_fetches_only_its_own_bytes(self, fake_client):
         """The server reads a renderer's 384,000-byte range in chunks of at
@@ -389,7 +403,7 @@ class TestReading:
         client = fake_client(files={r"\\nas\music\a.flac": audio})
         start = 1_000_000
 
-        with _storage().open("smb://nas/music/a.flac", read_ahead=False) as handle:
+        with _storage().open("smb://nas/music/a.flac", read_ahead_bytes=0) as handle:
             handle.seek(start)
             served = handle.read(262_144) + handle.read(121_856)
 
