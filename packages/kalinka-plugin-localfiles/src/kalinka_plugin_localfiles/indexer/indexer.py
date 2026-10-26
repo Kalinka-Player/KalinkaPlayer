@@ -114,6 +114,11 @@ SUPPORTED_AUDIO_EXTENSIONS = frozenset(MEDIA_TYPES)
 # Base64 images, kept out of the evidence as APIC frames are for ID3.
 _PICTURE_COMMENTS = ("metadata_block_picture", "coverart")
 
+#: What a tag read fetches at a time. A tag reader looks at the start of a
+#: file and at its end, a share sends this much for each, and a header
+#: rarely needs more.
+TAG_READ_AHEAD_BYTES = 64 * 1024
+
 
 @dataclass(frozen=True)
 class _TagFormat:
@@ -127,9 +132,9 @@ class _TagFormat:
     extract: Callable[["FileIndexer", Any, BinaryIO, Dict], Dict]
     #: The front cover in the parsed file, or None.
     cover: Callable[[Any], Optional[bytes]]
-    #: Whether the file is opened with read-ahead, which a reader of small,
-    #: scattered spans does without: on a share it costs 1 MiB a seek.
-    read_ahead: bool = True
+    #: The read-ahead the file is opened with; 0 for a reader of small,
+    #: scattered spans, which would pay for it again at every seek.
+    read_ahead_bytes: int = TAG_READ_AHEAD_BYTES
     #: Parses just enough of an open file for ``cover``, where ``read`` does
     #: more than that, such as timing the audio; None to use ``read``.
     read_tags: Optional[Callable[[BinaryIO], Any]] = None
@@ -1196,7 +1201,9 @@ class FileIndexer:
                     f"Unsupported file format: {file_path}, format: {mime_type}"
                 )
                 return None
-            with storage.open(file_path, read_ahead=tag_format.read_ahead) as audio:
+            with storage.open(
+                file_path, read_ahead_bytes=tag_format.read_ahead_bytes
+            ) as audio:
                 parsed = tag_format.read(audio)
                 metadata = tag_format.extract(
                     self, parsed, audio, {"format": mime_type}
@@ -1514,7 +1521,7 @@ class FileIndexer:
             open_ogg_vorbis,
             _extract_ogg_vorbis_metadata,
             _vorbis_cover,
-            read_ahead=False,
+            read_ahead_bytes=0,
             read_tags=open_ogg_vorbis_tags,
         ),
         "audio/mp4": _TagFormat(
@@ -1538,7 +1545,9 @@ class FileIndexer:
         if tag_format is None:
             return None
         read = tag_format.read_tags or tag_format.read
-        with storage.open(file_path, read_ahead=tag_format.read_ahead) as audio:
+        with storage.open(
+            file_path, read_ahead_bytes=tag_format.read_ahead_bytes
+        ) as audio:
             watched = WatchedFile(audio)
             try:
                 return tag_format.cover(read(watched))

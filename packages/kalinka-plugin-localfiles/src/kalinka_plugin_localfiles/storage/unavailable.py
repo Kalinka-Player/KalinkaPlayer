@@ -62,7 +62,7 @@ class UnavailableStorage(FileStorage):
     def stat(self, path: str) -> FileStat:
         raise OSError(self._reason)
 
-    def open(self, path: str, *, read_ahead: bool = True) -> BinaryIO:
+    def open(self, path: str, *, read_ahead_bytes: Optional[int] = None) -> BinaryIO:
         raise OSError(self._reason)
 
     def local_path(self, path: str) -> Optional[str]:

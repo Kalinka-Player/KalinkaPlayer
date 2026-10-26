@@ -100,7 +100,7 @@ class _Share(FileStorage):
         self.trips.append(("stat", path))
         return FileStat(size=len(self.files[path]), mtime_ns=0, is_dir=False)
 
-    def open(self, path: str, *, read_ahead: bool = True) -> BinaryIO:
+    def open(self, path: str, *, read_ahead_bytes: Optional[int] = None) -> BinaryIO:
         self.trips.append(("open", path))
         if self.open_gate is not None:
             self.open_gate.wait(timeout=5)
@@ -177,7 +177,7 @@ def _pool(
     """A pool over ``share`` whose time and sweeps the test drives."""
     sweeps = scheduled if scheduled is not None else []
     return ReaderPool(
-        lambda path: share.open(path, read_ahead=False),
+        lambda path: share.open(path, read_ahead_bytes=0),
         reopen_timeout_s=reopen_timeout_s,
         capacity=capacity,
         clock=clock or _Clock(),
