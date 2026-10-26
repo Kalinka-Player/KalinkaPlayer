@@ -31,6 +31,15 @@ std::vector<double> cubicVolumeDb();
 /// volume is cubic but carries no dB scale for ALSA to report.
 bool isSoundServerMixer(snd_ctl_type_t type, const std::string &cardId);
 
+/// Whether PCM @p pcm is the card's own device, plain or converted, which
+/// no software volume stage such as softvol sits in front of.
+bool reachesTheCardItself(const std::string &pcm);
+
+/// Whether the simple mixer element @p element sets its playback volume
+/// through one of the card controls named in @p controls.
+bool playbackVolumeAmong(const std::string &element,
+                         const std::vector<std::string> &controls);
+
 /// Percent-based snapshot of the active volume backend.
 ///
 /// `current`/`max` are a 0..100 scale. `backend` is a `VolumeBackend` value so
