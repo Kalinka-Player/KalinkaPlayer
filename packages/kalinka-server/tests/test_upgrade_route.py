@@ -123,12 +123,19 @@ def checker(monkeypatch, tmp_path):
     return checker
 
 
+def _running(monkeypatch, version):
+    """Core at ``version``, wherever it is asked: the route and the update
+    check each hold their own reference to get_version."""
+    for module in (upgrade_route, update_check):
+        monkeypatch.setattr(module, "get_version", lambda: version)
+
+
 @pytest.fixture
 def fired(checker, monkeypatch):
     """An install that can upgrade to that release; collects the installer
     runs the press fires."""
     monkeypatch.setattr(update_check, "upgrade_supported", lambda: True)
-    monkeypatch.setattr(upgrade_route, "get_version", lambda: "0.4.0")
+    _running(monkeypatch, "0.4.0")
     runs: list[bool] = []
     monkeypatch.setattr(update_check, "request_upgrade", lambda: runs.append(True))
     return runs
@@ -422,7 +429,7 @@ async def test_playback_cannot_reclaim_an_upgrading_renderer(core, queue, fired)
 async def test_a_package_only_update_is_offered_and_fires(
     core, checker, fired, monkeypatch, package
 ):
-    monkeypatch.setattr(upgrade_route, "get_version", lambda: RELEASE)
+    _running(monkeypatch, RELEASE)
     train = getattr(checker, f"_{package}")
     train.installed = "0.1.0"
     train.latest = "0.2.0"
@@ -440,7 +447,7 @@ async def test_a_supervisor_upgrade_is_no_longer_offered_once_installed(
     core, checker, fired, monkeypatch
 ):
     # Only the supervisor moved, so the installer left Core running.
-    monkeypatch.setattr(upgrade_route, "get_version", lambda: RELEASE)
+    _running(monkeypatch, RELEASE)
     monkeypatch.setattr(update_check, "deb_is_newer", lambda new, old: new != old)
     monkeypatch.setattr(update_check, "installed_renderer_version", lambda: None)
     installed = ["0.1.0"]
