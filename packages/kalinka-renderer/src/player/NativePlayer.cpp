@@ -119,17 +119,6 @@ AudioFormat formatOf(const pb::Source &source) {
   return AudioFormat::FormatUnsupported;
 }
 
-// The noisy virtual PCMs the server's device list also hides. "sysdefault:" is
-// the same route as "default:" for a machine with no ~/.asoundrc, and offering
-// both only asks the user to pick between two identical entries.
-bool noisyPcm(const std::string &name) {
-  static const char *prefixes[] = {"front:",   "surround",   "iec958:",
-                                   "dmix:",    "dsnoop:",    "hdmi:",
-                                   "usbstream:", "sysdefault"};
-  return std::any_of(std::begin(prefixes), std::end(prefixes),
-                     [&name](const char *p) { return name.starts_with(p); });
-}
-
 // What a numeric knob accepts. A range wide enough to be typed rather than
 // dragged says so with `slider = false`.
 struct Bounds {
@@ -458,6 +447,12 @@ NativePlayer::NativePlayer(asio::io_context &ioc) : ioc_(ioc) {
     }
     setting->second = value;
     spdlog::info("Config override {} = '{}'", key, value);
+  }
+  auto &device = settings_.at("output.device");
+  const auto playback = playbackDeviceName(device);
+  if (playback != device) {
+    device = playback;
+    persistOverrides();
   }
   ensurePlayer();
 }
@@ -803,10 +798,7 @@ void NativePlayer::fillConfig(pb::ConfigSection &out) const {
   device->set_importance(pb::CONFIG_IMPORTANCE_SIMPLE);
   bool currentOffered = false;
   for (const AlsaPcmDevice &pcm : listAlsaPcmDevices()) {
-    if (!pcm.ioid.empty() && pcm.ioid != "Output") {
-      continue;
-    }
-    if (noisyPcm(pcm.name)) {
+    if (!isPlaybackPcm(pcm)) {
       continue;
     }
     pb::ConfigOption *option = device->add_options();
@@ -914,7 +906,9 @@ bool NativePlayer::applyConfig(const std::string &path,
 }
 
 bool NativePlayer::applySetting(const std::string &path,
-                                const std::string &value, std::string &error) {
+                                const std::string &requested, std::string &error) {
+  const std::string value = path == "output.device"
+                                ? playbackDeviceName(requested) : requested;
   auto setting = settings_.find(path);
   if (setting == settings_.end()) {
     error = "unknown setting";

@@ -32,6 +32,9 @@ struct AlsaPcmDevice {
 AlsaPcmDevice describeAlsaPcm(const std::string &name,
                               const std::string &alsaDescription);
 
+/// Keep playback endpoints, including HDMI framing, while hiding duplicate virtual routes.
+bool isPlaybackPcm(const AlsaPcmDevice &device);
+
 /// A playback PCM on a sound card, as the card's control interface reports it.
 struct AlsaCardPcm {
   int device = 0;
@@ -44,14 +47,25 @@ struct AlsaCard {
   std::string id;    ///< Kernel text id ("AUDIO"), the CARD= of a PCM name.
   std::string name;  ///< "SMSL USB AUDIO".
   std::vector<AlsaCardPcm> playback;
+  std::string driver;
+  int index = -1;
 };
 
-/// Add the `hw:` and `plughw:` names of every card PCM that `hinted` lacks.
+/// Canonical playback name; migrates the Pi's unusable raw HDMI output to framing.
+/// Unknown or disconnected cards keep their existing selection.
+std::string playbackDeviceName(const std::string &name,
+                               const std::vector<AlsaCard> &cards);
+
+/// Resolve a saved selection using the currently attached cards, without opening PCM.
+std::string playbackDeviceName(const std::string &name);
+
+/// Add the direct and converted names of every card PCM that `hinted` lacks.
 ///
 /// Whether ALSA hints those names at all is the distribution's choice
 /// (`defaults.namehint.extended`; Fedora ships it off), so a list built from
 /// hints alone can miss every card. Entries come out as ALSA would hint them:
-/// per card, all `hw:` then all `plughw:`, appended after `hinted`.
+/// per card, direct then `plughw:`, appended after `hinted`. The Pi's raw HDMI
+/// device is replaced by its framing PCM; duplicate hints are folded together.
 std::vector<AlsaPcmDevice> withCardPcms(std::vector<AlsaPcmDevice> hinted,
                                         const std::vector<AlsaCard> &cards);
 

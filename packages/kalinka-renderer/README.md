@@ -110,6 +110,23 @@ with a known DSF/DFF file at an appropriate amplifier level, confirm the DAC's
 DSD/native or DoP indicator, then check seek, pause and PCM↔DSD transitions.
 Automated packing and protocol tests do not verify recognition by a real DAC.
 
+On Raspberry Pi, **HDMI N (direct)** selects
+`hdmi:CARD=vc4hdmiN,DEV=0,AES3=0x01` (the displayed port number starts at 1).
+This is ALSA's IEC958 framing route, without soft volume or resampling. The
+renderer verifies that the route reaches hardware through framing and control
+hooks before allowing DoP. Custom routes containing mixing, conversion or
+unknown plugins remain shared. Saved raw `hw:` selections for an attached
+vc4 HDMI card migrate to the explicit framing name; `default:` selections
+keep their shared route.
+Custom HDMI definitions that do not accept `AES3` keep their existing
+arguments, including when the renderer loads a saved selection.
+
+Framing carries at most 24 significant PCM bits, including when ALSA accepts
+a 32-bit container. True 32-bit PCM is rejected to avoid silent truncation.
+The framing device reopens on format changes so its channel status carries
+the new rate and word length. HDMI DoP still requires **Fixed** volume and
+explicit **DoP** selection; Automatic only attempts native DSD.
+
 ## Build
 
 Dependencies (dev headers): protobuf (+ compiler), Boost (headers only — asio

@@ -164,7 +164,7 @@ void AlsaAudioEmitter::stop() {
 }
 
 DeviceAccess AlsaAudioEmitter::deviceAccess() const {
-  return pcmHandle == nullptr ? DeviceAccess::Unknown : pcmAccess;
+  return pcm.handle == nullptr ? DeviceAccess::Unknown : pcm.access;
 }
 
 void AlsaAudioEmitter::setState(const StreamState &newState) {
@@ -182,13 +182,13 @@ snd_pcm_sframes_t framesBeyondBuffer(snd_pcm_sframes_t delay,
 }
 
 snd_pcm_sframes_t AlsaAudioEmitter::framesHeardAfterDrop() {
-  if (pcmHandle == nullptr ||
-      snd_pcm_state(pcmHandle) != SND_PCM_STATE_RUNNING) {
+  if (pcm.handle == nullptr ||
+      snd_pcm_state(pcm.handle) != SND_PCM_STATE_RUNNING) {
     return 0;
   }
   snd_pcm_sframes_t avail = 0;
   snd_pcm_sframes_t delay = 0;
-  if (snd_pcm_avail_delay(pcmHandle, &avail, &delay) < 0) {
+  if (snd_pcm_avail_delay(pcm.handle, &avail, &delay) < 0) {
     return 0;
   }
   return framesBeyondBuffer(delay, bufferSize, avail);
@@ -198,12 +198,12 @@ snd_pcm_sframes_t AlsaAudioEmitter::queuedFrames() {
   // Only a running stream is holding anything: a drop or a drain leaves it in
   // SETUP with nothing left to play, while the delay goes on reporting the
   // link latency (PipeWire) long after the buffer is gone.
-  if (pcmHandle == nullptr ||
-      snd_pcm_state(pcmHandle) != SND_PCM_STATE_RUNNING) {
+  if (pcm.handle == nullptr ||
+      snd_pcm_state(pcm.handle) != SND_PCM_STATE_RUNNING) {
     return 0;
   }
   snd_pcm_sframes_t queued = 0;
-  if (snd_pcm_delay(pcmHandle, &queued) < 0) {
+  if (snd_pcm_delay(pcm.handle, &queued) < 0) {
     return 0;
   }
   return std::max<snd_pcm_sframes_t>(0, queued);
@@ -321,7 +321,7 @@ bool AlsaAudioEmitter::handlePauseSignal(bool paused) {
   StreamState newState(stateToSet, 0, state.streamInfo);
   newState.position = framesToTimeMs(currentSourceTotalFramesWritten).count();
   snd_pcm_sframes_t delay = 0;
-  int err = snd_pcm_delay(pcmHandle, &delay);
+  int err = snd_pcm_delay(pcm.handle, &delay);
   if (err < 0) {
     spdlog::error("Error when calling snd_pcm_delay: {}", snd_strerror(err));
     return false;
@@ -334,7 +334,7 @@ bool AlsaAudioEmitter::handlePauseSignal(bool paused) {
 }
 
 void AlsaAudioEmitter::openDevice() {
-  if (pcmHandle != nullptr) {
+  if (pcm.handle != nullptr) {
     return;
   }
 
@@ -349,25 +349,24 @@ void AlsaAudioEmitter::openDevice() {
 
     throw std::runtime_error(stream.str());
   }
-  pcmHandle = opened->handle;
-  pcmAccess = opened->access;
+  pcm = *opened;
 
   currentSourceTotalFramesWritten = 0;
   playedFramesCounter.reset();
 }
 
 void AlsaAudioEmitter::closeDevice() {
-  if (pcmHandle != nullptr) {
+  if (pcm.handle != nullptr) {
     if (const auto stillHeard = framesHeardAfterDrop(); stillHeard > 0) {
       const auto stillHeardMs = framesToTimeMs(stillHeard);
       spdlog::debug("Closing with {}ms still to be heard",
                     stillHeardMs.count());
       silentAt = std::chrono::steady_clock::now() + stillHeardMs;
     }
-    log_on_error(snd_pcm_drop(pcmHandle));
-    log_on_error(snd_pcm_hw_free(pcmHandle));
-    log_on_error(snd_pcm_close(pcmHandle));
-    pcmHandle = nullptr;
+    log_on_error(snd_pcm_drop(pcm.handle));
+    log_on_error(snd_pcm_hw_free(pcm.handle));
+    log_on_error(snd_pcm_close(pcm.handle));
+    pcm = {};
     currentStreamAudioFormat = StreamAudioFormat();
     deviceInfo.reset();
   }
@@ -375,7 +374,7 @@ void AlsaAudioEmitter::closeDevice() {
 
 snd_pcm_sframes_t AlsaAudioEmitter::waitForAlsaBufferSpace() {
   auto getAvailableFrames = [this]() -> snd_pcm_sframes_t {
-    return throw_on_error(snd_pcm_avail_update(pcmHandle));
+    return throw_on_error(snd_pcm_avail_update(pcm.handle));
   };
 
   perfmon_end("fullPeriodProcessingTime");
@@ -391,7 +390,7 @@ snd_pcm_sframes_t AlsaAudioEmitter::waitForAlsaBufferSpace() {
       continue;
     }
     frames = getAvailableFrames();
-    throw_on_error(snd_pcm_poll_descriptors_revents(pcmHandle, ufds.data(),
+    throw_on_error(snd_pcm_poll_descriptors_revents(pcm.handle, ufds.data(),
                                                     ufds.size(), &revents));
     if (revents & POLLERR) {
       throw std::runtime_error("Poll error");
@@ -428,7 +427,7 @@ bool AlsaAudioEmitter::handleInputNodeStateChange() {
       return false;
     } else {
       snd_pcm_sframes_t framesDelay = 0;
-      log_on_error(snd_pcm_delay(pcmHandle, &framesDelay));
+      log_on_error(snd_pcm_delay(pcm.handle, &framesDelay));
       spdlog::debug("Reporting source change in {}ms, frames={}",
                     framesToTimeMs(framesDelay).count(), framesDelay);
 
@@ -462,11 +461,11 @@ snd_pcm_sframes_t AlsaAudioEmitter::writeToAlsa(
   perfmon_begin("writeToAlsa");
   const snd_pcm_channel_area_t *my_areas = nullptr;
   snd_pcm_uframes_t offset = 0, frames = framesToWrite;
-  int err = snd_pcm_mmap_begin(pcmHandle, &my_areas, &offset, &frames);
+  int err = snd_pcm_mmap_begin(pcm.handle, &my_areas, &offset, &frames);
   if (err < 0) {
     if (isDsd(currentStreamAudioFormat.sampleFormat))
       throw std::runtime_error("DSD output underrun; restart playback");
-    if (xrun_recovery(pcmHandle, err) < 0) {
+    if (xrun_recovery(pcm.handle, err) < 0) {
       throw std::runtime_error("Error in mmap begin: " +
                                std::string(snd_strerror(err)));
     }
@@ -474,15 +473,15 @@ snd_pcm_sframes_t AlsaAudioEmitter::writeToAlsa(
 
   void *ptr = static_cast<uint8_t *>(my_areas[0].addr) +
               (my_areas[0].first / 8) +
-              snd_pcm_frames_to_bytes(pcmHandle, offset);
+              snd_pcm_frames_to_bytes(pcm.handle, offset);
 
-  frames = func(ptr, frames, snd_pcm_frames_to_bytes(pcmHandle, frames));
+  frames = func(ptr, frames, snd_pcm_frames_to_bytes(pcm.handle, frames));
 
-  err = snd_pcm_mmap_commit(pcmHandle, offset, frames);
+  err = snd_pcm_mmap_commit(pcm.handle, offset, frames);
   if (static_cast<snd_pcm_uframes_t>(err) != frames || err < 0) {
     if (isDsd(currentStreamAudioFormat.sampleFormat))
       throw std::runtime_error("Incomplete DSD output write; restart playback");
-    if (xrun_recovery(pcmHandle, err) < 0) {
+    if (xrun_recovery(pcm.handle, err) < 0) {
       throw std::runtime_error("Error in mmap commit: " +
                                std::string(snd_strerror(err)));
     }
@@ -500,7 +499,7 @@ AlsaAudioEmitter::readIntoAlsaFromStream(std::stop_token stopToken,
 
   perfmon_begin("readIntoAlsaFromStream");
 
-  if (snd_pcm_state(pcmHandle) == SND_PCM_STATE_RUNNING) {
+  if (snd_pcm_state(pcm.handle) == SND_PCM_STATE_RUNNING) {
     playedFramesCounter.update(framesToRead);
   }
 
@@ -557,9 +556,9 @@ size_t AlsaAudioEmitter::waitForInputData(std::stop_token stopToken,
                                           snd_pcm_uframes_t frames) {
   const auto sourceBytes = frames * currentStreamAudioFormat.channels *
                            sampleSize(currentStreamAudioFormat.sampleFormat);
-  if (snd_pcm_state(pcmHandle) == SND_PCM_STATE_RUNNING) {
+  if (snd_pcm_state(pcm.handle) == SND_PCM_STATE_RUNNING) {
     snd_pcm_sframes_t delayFrames = 0;
-    log_on_error(snd_pcm_delay(pcmHandle, &delayFrames));
+    log_on_error(snd_pcm_delay(pcm.handle, &delayFrames));
     auto timeout = framesToTimeMs(std::max(
         0l, delayFrames - static_cast<snd_pcm_sframes_t>(2 * periodSize)));
     return inputNode->waitForDataFor(stopToken, timeout, sourceBytes);
@@ -581,13 +580,13 @@ AlsaAudioEmitter::framesToTimeMs(snd_pcm_sframes_t frames) {
 void AlsaAudioEmitter::startPcmStream(const StreamInfo &streamInfo,
                                       snd_pcm_uframes_t position) {
   spdlog::info("Starting playback");
-  throw_on_error(snd_pcm_start(pcmHandle));
+  throw_on_error(snd_pcm_start(pcm.handle));
   setState({AudioGraphNodeState::STREAMING, framesToTimeMs(position).count(),
             streamInfo});
 }
 
 void AlsaAudioEmitter::drainPcm() {
-  if (snd_pcm_state(pcmHandle) == SND_PCM_STATE_RUNNING) {
+  if (snd_pcm_state(pcm.handle) == SND_PCM_STATE_RUNNING) {
     auto drainSequence = playedFramesCounter.drainSequence();
     if (!drainSequence.empty()) {
       snd_pcm_sframes_t prevFrames = 0;
@@ -597,12 +596,12 @@ void AlsaAudioEmitter::drainPcm() {
         prevFrames = frames;
       }
     }
-    log_on_error(snd_pcm_drop(pcmHandle));
+    log_on_error(snd_pcm_drop(pcm.handle));
   }
   if (paused || seekHappened) {
-    log_on_error(snd_pcm_drop(pcmHandle));
+    log_on_error(snd_pcm_drop(pcm.handle));
   } else {
-    log_on_error(snd_pcm_drain(pcmHandle));
+    log_on_error(snd_pcm_drain(pcm.handle));
   }
 }
 
@@ -729,17 +728,17 @@ void AlsaAudioEmitter::setupAudioFormat(
 
   spdlog::debug("Setting up audio format: {}", streamAudioFormat.toString());
 
-  if (pcmHandle != nullptr && streamAudioFormat == currentStreamAudioFormat) {
+  if (pcm.handle != nullptr && streamAudioFormat == currentStreamAudioFormat) {
     spdlog::debug("Audio format is already set up - ignoring");
-    throw_on_error(snd_pcm_prepare(pcmHandle));
+    throw_on_error(snd_pcm_prepare(pcm.handle));
     return;
   }
 
-  if (reopenDeviceWithNewFormat && pcmHandle != nullptr) {
+  if ((reopenDeviceWithNewFormat || pcm.iec958) && pcm.handle != nullptr) {
     closeDevice();
   }
 
-  if (pcmHandle == nullptr) {
+  if (pcm.handle == nullptr) {
     openDevice();
   }
 
@@ -772,9 +771,9 @@ void AlsaAudioEmitter::setupAudioFormat(
       deviceFormatFor(streamAudioFormat.sampleFormat)};
   deviceInfo = DeviceInfo{opened, deviceAccess()};
 
-  int count = throw_on_error(snd_pcm_poll_descriptors_count(pcmHandle));
+  int count = throw_on_error(snd_pcm_poll_descriptors_count(pcm.handle));
   ufds.resize(count);
-  throw_on_error(snd_pcm_poll_descriptors(pcmHandle, ufds.data(), count));
+  throw_on_error(snd_pcm_poll_descriptors(pcm.handle, ufds.data(), count));
 
   pollTimeout = std::chrono::milliseconds(bufferSize * 1000 / sampleRate);
 
@@ -835,7 +834,7 @@ void AlsaAudioEmitter::setSampleFormat(AudioSampleFormat requestedFormat,
   sampleSubstitute.erase(requestedFormat);
   auto formatToProbe = requestedFormat;
 
-  while (snd_pcm_hw_params_set_format(pcmHandle, params,
+  while (snd_pcm_hw_params_set_format(pcm.handle, params,
                                       alsaFormat(formatToProbe)) < 0) {
     const auto next = pcmFallback(formatToProbe, significantBits);
     if (!next) {
@@ -865,8 +864,8 @@ void AlsaAudioEmitter::initHwParams(unsigned int &rate,
   int dir = 0;
   std::stringstream error;
 
-  snd_pcm_drop(pcmHandle);
-  snd_pcm_hw_free(pcmHandle);
+  snd_pcm_drop(pcm.handle);
+  snd_pcm_hw_free(pcm.handle);
 
   snd_pcm_hw_params_t *params;
   throw_on_error(snd_pcm_hw_params_malloc(&params));
@@ -874,29 +873,29 @@ void AlsaAudioEmitter::initHwParams(unsigned int &rate,
   try {
 
     /* choose all parameters */
-    throw_on_error(snd_pcm_hw_params_any(pcmHandle, params));
+    throw_on_error(snd_pcm_hw_params_any(pcm.handle, params));
 
     /* set the interleaved read/write format */
     throw_on_error(snd_pcm_hw_params_set_access(
-        pcmHandle, params, SND_PCM_ACCESS_MMAP_INTERLEAVED));
+        pcm.handle, params, SND_PCM_ACCESS_MMAP_INTERLEAVED));
 
     /* set the count of channels */
     throw_on_error(
-        snd_pcm_hw_params_set_channels(pcmHandle, params, outputChannels));
+        snd_pcm_hw_params_set_channels(pcm.handle, params, outputChannels));
 
     setSampleFormat(format, params, significantBits);
 
     // DSD transport must never pass through ALSA resampling.
-    throw_on_error(snd_pcm_hw_params_set_rate_resample(pcmHandle, params,
+    throw_on_error(snd_pcm_hw_params_set_rate_resample(pcm.handle, params,
                                                        isDsd(format) ? 0 : 1));
 
     /* set the stream rate */
     rrate = rate;
     if (isDsd(format)) {
-      throw_on_error(snd_pcm_hw_params_set_rate(pcmHandle, params, rate, 0));
+      throw_on_error(snd_pcm_hw_params_set_rate(pcm.handle, params, rate, 0));
     } else {
       throw_on_error(
-          snd_pcm_hw_params_set_rate_near(pcmHandle, params, &rrate, 0));
+          snd_pcm_hw_params_set_rate_near(pcm.handle, params, &rrate, 0));
     }
 
     if (rrate != rate) {
@@ -904,7 +903,7 @@ void AlsaAudioEmitter::initHwParams(unsigned int &rate,
     }
 
     rate = rrate;
-    const int deviceBits = throw_on_error(snd_pcm_hw_params_get_sbits(params));
+    const int deviceBits = throw_on_error(pcm.significantBits(params));
     if (isDop(format) && deviceBits < 24)
       throw std::runtime_error(
           "DoP requires at least 24 significant carrier bits");
@@ -914,14 +913,14 @@ void AlsaAudioEmitter::initHwParams(unsigned int &rate,
     if (requestedPeriodSize == 0 || requestedBufferSize == 0) {
       setLatencyBasedBufferSize(params);
     } else {
-      throw_on_error(snd_pcm_hw_params_set_buffer_size_near(pcmHandle, params,
+      throw_on_error(snd_pcm_hw_params_set_buffer_size_near(pcm.handle, params,
                                                             &bufferSize));
-      throw_on_error(snd_pcm_hw_params_set_period_size_near(pcmHandle, params,
+      throw_on_error(snd_pcm_hw_params_set_period_size_near(pcm.handle, params,
                                                             &periodSize, &dir));
     }
 
     /* write the parameters to device */
-    throw_on_error(snd_pcm_hw_params(pcmHandle, params));
+    throw_on_error(snd_pcm_hw_params(pcm.handle, params));
 
   } catch (const std::exception &ex) {
     snd_pcm_hw_params_free(params);
@@ -937,14 +936,14 @@ void AlsaAudioEmitter::setSwParams() {
   throw_on_error(snd_pcm_sw_params_malloc(&sw_params));
   try {
     /* get the current swparams */
-    throw_on_error(snd_pcm_sw_params_current(pcmHandle, sw_params));
+    throw_on_error(snd_pcm_sw_params_current(pcm.handle, sw_params));
 
     // Wake up when the buffer has this amount of space available
     throw_on_error(
-        snd_pcm_sw_params_set_avail_min(pcmHandle, sw_params, periodSize));
+        snd_pcm_sw_params_set_avail_min(pcm.handle, sw_params, periodSize));
 
     /* write the parameters to the playback device */
-    throw_on_error(snd_pcm_sw_params(pcmHandle, sw_params));
+    throw_on_error(snd_pcm_sw_params(pcm.handle, sw_params));
   } catch (const std::exception &ex) {
     snd_pcm_sw_params_free(sw_params);
     throw;
@@ -961,20 +960,20 @@ void AlsaAudioEmitter::setLatencyBasedBufferSize(snd_pcm_hw_params_t *params) {
   int dir = 0;
   auto latencyMcs = requestedLatencyMs * 1000;
   auto periodMcs = requestedPeriodMs * 1000;
-  int err = snd_pcm_hw_params_set_buffer_time_near(pcmHandle, params,
+  int err = snd_pcm_hw_params_set_buffer_time_near(pcm.handle, params,
                                                    &latencyMcs, &dir);
   try {
     if (err < 0) {
       /* error path -> set period size as first */
       snd_pcm_hw_params_copy(params, paramsSaved);
       /* set the period time */
-      throw_on_error(snd_pcm_hw_params_set_period_time_near(pcmHandle, params,
+      throw_on_error(snd_pcm_hw_params_set_period_time_near(pcm.handle, params,
                                                             &periodMcs, 0));
 
       throw_on_error(snd_pcm_hw_params_get_period_size(params, &periodSize, 0));
 
       bufferSize = periodSize * (requestedLatencyMs / requestedPeriodMs);
-      throw_on_error(snd_pcm_hw_params_set_buffer_size_near(pcmHandle, params,
+      throw_on_error(snd_pcm_hw_params_set_buffer_size_near(pcm.handle, params,
                                                             &bufferSize));
 
       throw_on_error(snd_pcm_hw_params_get_buffer_size(params, &bufferSize));
@@ -986,7 +985,7 @@ void AlsaAudioEmitter::setLatencyBasedBufferSize(snd_pcm_hw_params_t *params) {
 
       /* set the period time */
       periodMcs = latencyMcs / (requestedLatencyMs / requestedPeriodMs);
-      throw_on_error(snd_pcm_hw_params_set_period_time_near(pcmHandle, params,
+      throw_on_error(snd_pcm_hw_params_set_period_time_near(pcm.handle, params,
                                                             &periodMcs, 0));
 
       throw_on_error(snd_pcm_hw_params_get_period_size(params, &periodSize, 0));
@@ -1006,7 +1005,7 @@ size_t AlsaAudioEmitter::readAndConvertFrames(void *dest, size_t bytes) {
       throw std::runtime_error(
           "DSD requires fixed volume; software gain cannot alter DSD");
     const auto count = inputNode->read(dest, bytes);
-    const auto frames = snd_pcm_bytes_to_frames(pcmHandle, count);
+    const auto frames = snd_pcm_bytes_to_frames(pcm.handle, count);
     stampDop(dest, frames);
     return frames;
   }
@@ -1022,12 +1021,12 @@ size_t AlsaAudioEmitter::readAndConvertFrames(void *dest, size_t bytes) {
     const size_t bytesRead = inputNode->read(dest, bytes);
     // Unity gain (the common case) is a no-op, so playback stays bit-perfect.
     softwareFade.apply(dest, bytesRead, sourceFormat, channels, rate, gain);
-    return snd_pcm_bytes_to_frames(pcmHandle, bytesRead);
+    return snd_pcm_bytes_to_frames(pcm.handle, bytesRead);
   }
 
   const auto width = sampleSize(destFormat);
   const size_t sourceSamples =
-      snd_pcm_bytes_to_samples(pcmHandle, bytes) / copies;
+      snd_pcm_bytes_to_samples(pcm.handle, bytes) / copies;
   auto &source = conversionScratch;
   source.resize(sourceSamples * sampleSize(sourceFormat));
   const auto count =

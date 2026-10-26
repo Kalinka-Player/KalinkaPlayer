@@ -95,7 +95,7 @@ OutputCapabilities probeOutput(const std::string &device) {
             snd_pcm_hw_params_set_format(pcm, params, alsaFormat(format)) < 0 ||
             snd_pcm_hw_params_set_rate(pcm, params, rate, 0) < 0)
           continue;
-        const int significant = snd_pcm_hw_params_get_sbits(params);
+        const int significant = opened->significantBits(params);
         result.formats.push_back(
             {rate, channels,
              isDsd(format) ? 1u

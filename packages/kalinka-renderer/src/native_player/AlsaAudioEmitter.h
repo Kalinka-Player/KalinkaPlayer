@@ -4,6 +4,7 @@
 #include "AudioGraphNode.h"
 #include "Config.h"
 #include "GainFade.h"
+#include "PlaybackPcm.h"
 #include "Utils.h"
 
 #include <alsa/asoundlib.h>
@@ -100,8 +101,7 @@ private:
   snd_pcm_sframes_t currentSourceTotalFramesWritten = 0;
   snd_pcm_sframes_t currentSourceStartFrames = 0;
   std::chrono::milliseconds pollTimeout = std::chrono::milliseconds(100);
-  snd_pcm_t *pcmHandle = nullptr;
-  DeviceAccess pcmAccess = DeviceAccess::Unknown;
+  PlaybackPcm pcm;
   // When the device has played out what it held as it was last closed.
   std::chrono::steady_clock::time_point silentAt;
   std::vector<pollfd> ufds;

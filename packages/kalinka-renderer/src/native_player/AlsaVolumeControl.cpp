@@ -1,5 +1,6 @@
 #include "AlsaVolumeControl.h"
 #include "Log.h"
+#include "PlaybackPcm.h"
 
 #ifdef __PYTHON__
 #include <pybind11/pybind11.h>
@@ -41,7 +42,8 @@ bool isSoundServerMixer(snd_ctl_type_t type, const std::string &cardId) {
 }
 
 bool reachesTheCardItself(const std::string &pcm) {
-  return pcm.starts_with("hw:") || pcm.starts_with("plughw:");
+  return pcm.starts_with("hw:") || pcm.starts_with("plughw:") ||
+         inspectHdmiRoute(pcm).access == DeviceAccess::Exclusive;
 }
 
 bool playbackVolumeAmong(const std::string &element,
@@ -191,7 +193,7 @@ bool AlsaVolumeControl::openMixer(const std::string &deviceName,
     return false;
   }
 
-  // softvol adds its control to the card, but hw: and plughw: bypass softvol.
+  // A softvol control can outlive the route that used it.
   const std::vector<std::string> unheard =
       reachesTheCardItself(deviceName) ? userControls(mixer_, card)
                                        : std::vector<std::string>();

@@ -28,6 +28,22 @@ TEST(AlsaDeviceNaming, HdmiPortsAreCountedTheWayTheBoardIsLabelled) {
             "HDMI 2 (shared)");
 }
 
+TEST(AlsaDeviceNaming, HdmiFramingIsDirectAndStatusArgumentsAreNotDeviceNumbers) {
+  EXPECT_EQ(describeAlsaPcm("hdmi:CARD=vc4hdmi1,DEV=0,AES3=0x01", kHdmiDesc).label,
+            "HDMI 2 (direct)");
+  EXPECT_EQ(describeAlsaPcm("hdmi:CARD=PCH,DEV=1,AES3=0x01", "HDA Intel PCH").label,
+            "HDA Intel PCH #1 (direct)");
+}
+
+TEST(AlsaDeviceNaming, HdmiFramingSurvivesThePlaybackFilter) {
+  EXPECT_TRUE(isPlaybackPcm(describeAlsaPcm("hdmi:CARD=vc4hdmi0,DEV=0,AES3=0x01", "")));
+  EXPECT_FALSE(isPlaybackPcm(describeAlsaPcm("dmix:CARD=vc4hdmi0,DEV=0", "")));
+  EXPECT_FALSE(isPlaybackPcm(describeAlsaPcm("sysdefault:CARD=vc4hdmi0", "")));
+  auto capture = describeAlsaPcm("hw:CARD=USB,DEV=0", "");
+  capture.ioid = "Input";
+  EXPECT_FALSE(isPlaybackPcm(capture));
+}
+
 TEST(AlsaDeviceNaming, ASecondSubdeviceStaysDistinguishable) {
   EXPECT_EQ(describeAlsaPcm("hw:CARD=USB,DEV=1",
                             "Topping D10, USB Audio #1\nDirect hardware device "
@@ -136,6 +152,41 @@ TEST(AlsaCardPcms, APcmThatAlsoRecordsIsMarkedForBothDirections) {
   for (const AlsaPcmDevice &device : withCardPcms({}, {card})) {
     EXPECT_EQ(device.ioid, "") << device.name;
   }
+}
+
+const AlsaCard kPiHdmi{"vc4hdmi0", "vc4-hdmi-0", {{0, "MAI PCM", false}},
+                        "vc4-hdmi", 2};
+
+TEST(AlsaCardPcms, PiHdmiOffersOneFramedDirectOutputEvenWithoutHints) {
+  const auto devices = withCardPcms({}, {kPiHdmi});
+  ASSERT_EQ(devices.size(), 2u);
+  EXPECT_EQ(devices[0].name, "hdmi:CARD=vc4hdmi0,DEV=0,AES3=0x01");
+  EXPECT_EQ(devices[0].label, "HDMI 1 (direct)");
+  EXPECT_EQ(devices[1].name, "plughw:CARD=vc4hdmi0,DEV=0");
+}
+
+TEST(AlsaCardPcms, HdmiAndRawHintsDoNotOfferThePiDirectOutputTwice) {
+  const auto devices = withCardPcms(
+      {describeAlsaPcm("hdmi:CARD=vc4hdmi0,DEV=0", "vc4-hdmi-0"),
+       describeAlsaPcm("hw:CARD=vc4hdmi0,DEV=0", "vc4-hdmi-0")}, {kPiHdmi});
+  EXPECT_EQ(names(devices), (std::vector<std::string>{
+      "hdmi:CARD=vc4hdmi0,DEV=0,AES3=0x01", "plughw:CARD=vc4hdmi0,DEV=0"}));
+}
+
+TEST(AlsaCardPcms, ExistingPiRawSelectionsMigrateUsingTheDriverAndStableCardId) {
+  for (const auto *name : {"hw:CARD=vc4hdmi0,DEV=0", "hw:vc4hdmi0,0", "hw:2,0",
+                           "hw:CARD=2,DEV=0", "hw:2"})
+    EXPECT_EQ(playbackDeviceName(name, {kPiHdmi}),
+              "hdmi:CARD=vc4hdmi0,DEV=0,AES3=0x01") << name;
+  for (const auto *name : {"hw:CARD=vc4hdmi0,DEV=1", "hw:2,1", "default:CARD=vc4hdmi0",
+                           "plughw:CARD=vc4hdmi0,DEV=0", "default", "pipewire"})
+    EXPECT_EQ(playbackDeviceName(name, {kPiHdmi}), name);
+  EXPECT_EQ(playbackDeviceName("hw:CARD=vc4hdmi0,DEV=0", {}),
+            "hw:CARD=vc4hdmi0,DEV=0");
+  auto otherDriver = kPiHdmi;
+  otherDriver.driver = "HDA-Intel";
+  EXPECT_EQ(playbackDeviceName("hw:CARD=vc4hdmi0,DEV=0", {otherDriver}),
+            "hw:CARD=vc4hdmi0,DEV=0");
 }
 
 }  // namespace

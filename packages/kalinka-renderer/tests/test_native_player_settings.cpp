@@ -2,10 +2,12 @@
 #include <gtest/gtest.h>
 #include <stdlib.h>
 
+#include <alsa/asoundlib.h>
 #include <boost/asio.hpp>
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <iterator>
 #include <memory>
 #include <optional>
@@ -79,6 +81,39 @@ protected:
   fs::path prefix_;
   boost::asio::io_context ioc_;
   std::shared_ptr<NativePlayer> player_;
+};
+
+class CustomHdmiSettingsTest : public NativePlayerSettingsTest {
+protected:
+  void SetUp() override {
+    NativePlayerSettingsTest::SetUp();
+    const auto config = prefix_ / "alsa.conf";
+    std::ofstream(config) << R"(
+      pcm.null { type null }
+      pcm.hdmi {
+        @args [CARD DEV]
+        @args.CARD { type string }
+        @args.DEV { type integer }
+        type null
+      }
+    )";
+    if (const char *value = getenv("ALSA_CONFIG_PATH"))
+      previousConfig_ = value;
+    setenv("ALSA_CONFIG_PATH", config.c_str(), 1);
+    snd_config_update_free_global();
+  }
+
+  void TearDown() override {
+    player_.reset();
+    snd_config_update_free_global();
+    if (previousConfig_)
+      setenv("ALSA_CONFIG_PATH", previousConfig_->c_str(), 1);
+    else
+      unsetenv("ALSA_CONFIG_PATH");
+    NativePlayerSettingsTest::TearDown();
+  }
+
+  std::optional<std::string> previousConfig_;
 };
 
 // TearDown() drops the player before the server goes, as its streams need.
@@ -198,6 +233,30 @@ TEST_F(NativePlayerSettingsTest, DsdSettingsExposeCapabilitiesAndPersistMode) {
   EXPECT_FALSE(player_->applyConfig("output.dsd_mode", "pcm", error_));
   ASSERT_TRUE(player_->applyConfig("output.device", "default", error_));
   EXPECT_EQ(field(output(), "output.dsd_mode")->value(), "disabled");
+}
+
+TEST_F(NativePlayerSettingsTest, SavedHdmiSelectionGetsAutomaticRateStatusWithoutLosingDop) {
+  player_.reset();
+  saveSettingsOverrides({{"output.device", "hdmi:CARD=Missing,DEV=0"},
+                         {"output.volume_mode", "fixed"},
+                         {"output.dsd_mode", "dop"}});
+  player_ = std::make_shared<NativePlayer>(ioc_);
+  EXPECT_EQ(field(output(), "output.device")->value(),
+            "hdmi:CARD=Missing,DEV=0,AES3=0x01");
+  EXPECT_EQ(loadSettingsOverrides().at("output.device"),
+            "hdmi:CARD=Missing,DEV=0,AES3=0x01");
+  EXPECT_EQ(field(output(), "output.dsd_mode")->value(), "dop");
+}
+
+TEST_F(CustomHdmiSettingsTest, SavedSelectionWithoutAes3StaysPlayableAfterStartup) {
+  const std::string name = "hdmi:CARD=Custom,DEV=0";
+  player_.reset();
+  saveSettingsOverrides({{"output.device", name},
+                         {"output.volume_mode", "fixed"}});
+  player_ = std::make_shared<NativePlayer>(ioc_);
+  EXPECT_EQ(field(output(), "output.device")->value(), name);
+  EXPECT_EQ(loadSettingsOverrides().at("output.device"), name);
+  EXPECT_EQ(field(output(), "output.bit_depth")->value(), "Up to 32 bit");
 }
 
 TEST_F(NativePlayerSettingsTest, ModeChoicesAreDescribedInTheirOwnOrder) {
