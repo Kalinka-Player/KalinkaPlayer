@@ -68,6 +68,16 @@ def test_records_are_written_oldest_first_with_a_manifest(tmp_path):
     assert result.size_bytes == os.stat(target).st_size
 
 
+def test_the_manifest_carries_the_hdmi_ports(tmp_path, monkeypatch):
+    ports = [{"connector": "card1-HDMI-A-2", "status": "disconnected", "edid_bytes": 0}]
+    monkeypatch.setattr(log_archive, "hdmi_ports", lambda: ports)
+    source = ListSource("server", records((T0 + 1, "first")))
+
+    target, _ = _write(tmp_path, ArchivePart(source, 1 << 20, required=True))
+
+    assert json.loads(_read(target, "manifest.json"))["hdmi_ports"] == ports
+
+
 def test_the_archive_is_readable_by_its_owner_alone(tmp_path):
     source = ListSource("server", records((T0, "x")))
 
