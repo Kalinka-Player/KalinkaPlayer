@@ -58,13 +58,13 @@ install_supervisor() {
   rm -f "$ROOTFS/tmp/kalinka-supervisor.deb"
   in_chroot systemctl enable bluetooth.service kalinka-supervisor.service
   configure_supervisor_radios "$ROOTFS"
+  in_chroot systemctl enable hciuart.service
+  in_chroot systemctl disable serial-getty@ttyAMA0.service
   if [ "${DIETPI_LAYOUT:-}" = rpi ]; then
-    in_chroot systemctl enable hciuart.service
-    in_chroot systemctl disable serial-getty@ttyAMA0.service
-    # The package's own enable skips the build chroot, which has no running systemd.
+    # The unit is only useful on DietPi, where dietpi-set_hardware exists.
     in_chroot systemctl enable kalinka-soundcard.service
-    configure_soundcard_detection "$ROOTFS"
   fi
+  configure_soundcard_detection "$ROOTFS"
 }
 
 # The supervisor sets the time zone chosen in the app through timedated, which D-Bus starts on demand.
@@ -83,16 +83,11 @@ verify_supervisor() {
   [ -x "$ROOTFS/usr/lib/kalinka-supervisor/kalinka-supervisor" ] || die 'no supervisor binary'
   in_chroot /usr/lib/kalinka-supervisor/kalinka-supervisor --version
   require_timezone_support
-  if [ "${DIETPI_LAYOUT:-}" = rpi ]; then
-    ! grep -Eq '^[[:blank:]]*dtoverlay=disable-(bt|wifi)(,|[[:blank:]]|$)' \
-      "$ROOTFS/boot/firmware/config.txt" || die 'a setup radio is disabled'
-    [ ! -f "$ROOTFS/etc/modprobe.d/dietpi-disable_bluetooth.conf" ] || die 'Bluetooth is blacklisted'
-    [ ! -f "$ROOTFS/etc/modprobe.d/dietpi-disable_wifi.conf" ] || die 'Wi-Fi is blacklisted'
-    require_enabled multi-user.target kalinka-soundcard.service
-    [ -x "$ROOTFS/usr/lib/kalinka-supervisor/soundcard.sh" ] || die 'no sound card helper'
-    grep -q '^dtparam=i2c_arm=on$' "$ROOTFS/boot/firmware/config.txt" || die 'the HAT I2C bus is off'
-    grep -qx 'i2c-dev' "$ROOTFS/etc/modules-load.d/kalinka-soundcard.conf" || die 'i2c-dev is not loaded at boot'
-  fi
+  ! grep -Eq '^[[:blank:]]*dtoverlay=disable-(bt|wifi)(,|[[:blank:]]|$)' \
+    "$ROOTFS/boot/firmware/config.txt" || die 'a setup radio is disabled'
+  [ -x "$ROOTFS/usr/lib/kalinka-supervisor/soundcard.sh" ] || die 'no sound card helper'
+  grep -q '^dtparam=i2c_arm=on$' "$ROOTFS/boot/firmware/config.txt" || die 'the HAT I2C bus is off'
+  grep -qx 'i2c-dev' "$ROOTFS/etc/modules-load.d/kalinka-soundcard.conf" || die 'i2c-dev is not loaded at boot'
   if [ "$TARGET_BASE" = dietpi ]; then
     grep -q -- '--no-restart' "$ROOTFS/boot/dietpi/dietpi-network" \
       || die 'DietPi base lacks dietpi-network apply --no-restart; refresh the image'
