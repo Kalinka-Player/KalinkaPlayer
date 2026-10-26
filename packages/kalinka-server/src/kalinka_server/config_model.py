@@ -40,9 +40,9 @@ by its ``title``, so field order here is the order the app renders.
 
 import os
 from enum import Enum
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
 
 from kalinka_plugin_sdk import paths
 
@@ -60,6 +60,17 @@ _EXPERT_SECTION: dict[str, Any] = {"importance": "expert"}
 _MINILM_RELEASE = (
     "https://github.com/Kalinka-Player/KalinkaPlayer/releases/download/jamendo-ai-v1"
 )
+
+# Settings saved before the repository moved still name its former owner, and
+# that name would serve whoever registers it next.
+_FORMER_REPO_URL = "https://github.com/madenvel/KalinkaPlayer/"
+_REPO_URL = "https://github.com/Kalinka-Player/KalinkaPlayer/"
+
+
+def _moved(url: str) -> str:
+    if url.startswith(_FORMER_REPO_URL):
+        return _REPO_URL + url.removeprefix(_FORMER_REPO_URL)
+    return url
 
 
 class LogLevel(str, Enum):
@@ -314,7 +325,7 @@ class EmbeddingConfig(BaseModel):
             "help": "Where the shared text-embedding model is stored",
         },
     )
-    model_url: str = Field(
+    model_url: Annotated[str, AfterValidator(_moved)] = Field(
         default=_MINILM_RELEASE,
         title="Text embedding model download URL",
         json_schema_extra={

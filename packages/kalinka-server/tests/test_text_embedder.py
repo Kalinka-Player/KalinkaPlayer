@@ -11,7 +11,8 @@ import os
 import pytest
 
 from kalinka_server import text_embedder
-from kalinka_server.config_model import EmbeddingConfig
+from kalinka_server.config_model import EmbeddingConfig, KalinkaConfig
+from kalinka_server.config_overrides import apply_overrides_with_prefix
 from kalinka_server.text_embedder import SharedTextEmbedder
 
 RUNTIME = ("onnxruntime", "tokenizers")
@@ -188,3 +189,26 @@ def test_the_model_downloads_from_the_project_organisation():
     assert EmbeddingConfig().model_url.startswith(
         "https://github.com/Kalinka-Player/KalinkaPlayer/releases/download/"
     )
+
+
+@pytest.mark.parametrize(
+    "saved, loaded",
+    [
+        (
+            "https://github.com/madenvel/KalinkaPlayer/releases/download/jamendo-ai-v1",
+            EmbeddingConfig().model_url,
+        ),
+        (MODEL_URL, MODEL_URL),
+    ],
+    ids=["former-owner", "own-url"],
+)
+def test_a_saved_model_url_follows_the_repository_move(saved, loaded):
+    """A setting saved before the move would otherwise keep loading the model
+    from whoever registers the old name."""
+    config = KalinkaConfig()
+
+    apply_overrides_with_prefix(
+        config, {"base_config.embedding.model_url": saved}, "base_config."
+    )
+
+    assert config.embedding.model_url == loaded
