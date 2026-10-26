@@ -73,10 +73,10 @@ test = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/madenvel/KalinkaPlayer"
-Repository = "https://github.com/madenvel/KalinkaPlayer"
-Issues = "https://github.com/madenvel/KalinkaPlayer/issues"
-Documentation = "https://github.com/madenvel/KalinkaPlayer/blob/main/README.md"
+Homepage = "https://github.com/Kalinka-Player/KalinkaPlayer"
+Repository = "https://github.com/Kalinka-Player/KalinkaPlayer"
+Issues = "https://github.com/Kalinka-Player/KalinkaPlayer/issues"
+Documentation = "https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/README.md"
 
 [project.scripts]
 kalinka-server = "kalinka_server.__main__:run"

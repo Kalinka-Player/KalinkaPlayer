@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: 📱 App problem? (UI, remote control, device crashes)
-    url: https://github.com/madenvel/KalinkaAI/issues/new/choose
+    url: https://github.com/Kalinka-Player/KalinkaAI/issues/new/choose
     about: Anything rendered on your phone/desktop screen — layout, crashes on the device, connection or setup screens, search interface. File it on KalinkaAI.
