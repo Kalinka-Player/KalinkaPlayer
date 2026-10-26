@@ -5,9 +5,7 @@ plays through every link in the renderer. mutagen times only the first link,
 and finds its end by reading it page by page whenever another link follows.
 The links are found instead the way libvorbisfile finds them: by bisecting
 for where each one's pages stop, then reading back from there to its last
-timed page. Each read is a small span, never the file. The opening pages,
-which hold the tags and any cover, are the one stretch read straight
-through, and are kept, so that timing walks them again without a read.
+timed page. Each read is a small span, never the file.
 
 Each link is timed from where its audio starts, as libvorbisfile times it,
 since a link recorded from the middle of a stream, as the first of a radio
@@ -107,11 +105,9 @@ def vorbis_length(audio: BinaryIO) -> Optional[float]:
     @note A link whose setup header cannot be read is timed from position
         0, as mutagen times a whole file.
     """
-    return _length(_Spans(audio))
-
-
-def _length(spans: "_Spans") -> Optional[float]:
-    end = spans.size()
+    audio.seek(0, os.SEEK_END)
+    end = audio.tell()
+    spans = _Spans(audio)
     last = _last_page(spans, 0, end, lambda page: True)
     length, start = None, 0
     while last is not None and start < end:
@@ -161,19 +157,30 @@ def _mode_blockflags(setup: bytes) -> Optional[List[int]]:
     return found
 
 
+class _ChainVorbisInfo(OggVorbisInfo):
+    def _post_tags(self, fileobj):
+        length = vorbis_length(fileobj)
+        if length is None:
+            raise OggVorbisHeaderError("no Vorbis page gives a position")
+        self.length = length
+
+
+class _ChainedOggVorbis(OggVorbis):
+    """mutagen's Ogg Vorbis file, timed over every link of a chain.
+
+    @note ``_Info`` is where each of mutagen's Ogg formats says how it is
+        timed; the chained-file tests fail should that ever change.
+    """
+
+    _Info = _ChainVorbisInfo
+
+
 class _UntimedVorbisInfo(OggVorbisInfo):
     def _post_tags(self, fileobj):
         pass
 
 
 class _UntimedOggVorbis(OggVorbis):
-    """mutagen's Ogg Vorbis file, read no further than its tags.
-
-    @note ``_Info`` is where each of mutagen's Ogg formats says how it is
-        timed; the tests that time a chain or read a cover without timing
-        the file fail should that ever change.
-    """
-
     _Info = _UntimedVorbisInfo
 
 
@@ -183,13 +190,7 @@ def open_ogg_vorbis(audio: BinaryIO) -> OggVorbis:
 
     @raise NoVorbisStream If none of its streams is Vorbis.
     """
-    spans = _Spans(audio)
-    vorbis = _open(spans)
-    length = _length(spans)
-    if length is None:
-        raise OggVorbisHeaderError("no Vorbis page gives a position")
-    vorbis.info.length = length
-    return vorbis
+    return _open(audio, _ChainedOggVorbis)
 
 
 def open_ogg_vorbis_tags(audio: BinaryIO) -> OggVorbis:
@@ -199,68 +200,33 @@ def open_ogg_vorbis_tags(audio: BinaryIO) -> OggVorbis:
 
     @raise NoVorbisStream If none of its streams is Vorbis.
     """
-    return _open(_Spans(audio))
+    return _open(audio, _UntimedOggVorbis)
 
 
-def _open(spans: "_Spans") -> OggVorbis:
-    opening = _OpeningPages(spans)
-    if not starts_vorbis_stream(opening):
+def _open(audio: BinaryIO, kind: Callable[[BinaryIO], OggVorbis]) -> OggVorbis:
+    if not starts_vorbis_stream(audio):
         raise NoVorbisStream(
             "it holds no Vorbis stream, and Vorbis is the only codec in Ogg "
             "the renderer plays"
         )
-    opening.seek(0)
-    return _UntimedOggVorbis(opening)
+    audio.seek(0)
+    return kind(audio)
 
 
 class _Spans:
     """A file read a span at a time, each read a round trip to a share.
 
-    What was read on through from the start of the file is kept: the
-    opening pages, which hold the tags, and which timing walks again before
-    the first link's audio. So is the last span read anywhere else, since
-    the one that shows how a link opens usually holds its setup header and
-    first audio page as well.
+    The last span is kept, since the one that shows how a link opens
+    usually holds its setup header and first audio page as well.
     """
 
     def __init__(self, audio: BinaryIO):
         self._audio = audio
-        self._opening = bytearray()
-        self._opening_is_whole_file = False
         self._kept_at, self._kept = 0, b""
 
-    def size(self) -> int:
-        self._audio.seek(0, os.SEEK_END)
-        return self._audio.tell()
-
     def read(self, start: int, stop: int) -> bytes:
-        if stop <= len(self._opening):
-            return bytes(self._opening[start:stop])
         if self._kept_at <= start and stop <= self._kept_at + len(self._kept):
             return self._kept[start - self._kept_at : stop - self._kept_at]
-        known = bytes(self._opening[start:])
-        self._kept_at = start
-        self._kept = known + self._fetch(start + len(known), stop)
-        return self._kept
-
-    def read_on(self, start: int, size: int) -> bytes:
-        """``size`` bytes from ``start``, or the rest of the file for a
-        negative size, for a reader going on through the file from its
-        start. What the opening lacks is read a window at a time, and a read
-        that does not go on from it is a span like any other."""
-        stop = self.size() if size < 0 else start + size
-        if start > len(self._opening):
-            return self.read(start, stop)
-        while not self._opening_is_whole_file and len(self._opening) < stop:
-            at = len(self._opening)
-            # Whole windows, so a page longer than one leaves the next header read.
-            wanted = -(-(stop - at) // _WINDOW) * _WINDOW
-            more = self._fetch(at, at + wanted)
-            self._opening += more
-            self._opening_is_whole_file = len(more) < wanted
-        return bytes(self._opening[start:stop])
-
-    def _fetch(self, start: int, stop: int) -> bytes:
         # A raw share handle returns at most one SMB READ's worth per call.
         self._audio.seek(start)
         chunks, wanted = [], stop - start
@@ -270,37 +236,8 @@ class _Spans:
                 break
             chunks.append(chunk)
             wanted -= len(chunk)
-        return b"".join(chunks)
-
-
-class _OpeningPages:
-    """The file for mutagen, which reads the opening pages a header, a
-    lacing and a packet at a time: from a share, three round trips a page
-    or more. They come from the opening of ``spans`` instead, which is read
-    a window at a time.
-    """
-
-    def __init__(self, spans: _Spans):
-        self._spans = spans
-        self._at = 0
-
-    def read(self, size: Optional[int] = -1) -> bytes:
-        data = self._spans.read_on(self._at, -1 if size is None else size)
-        self._at += len(data)
-        return data
-
-    def seek(self, offset: int, whence: int = os.SEEK_SET) -> int:
-        if whence == os.SEEK_CUR:
-            offset += self._at
-        elif whence == os.SEEK_END:
-            offset += self._spans.size()
-        if offset < 0:
-            raise ValueError(f"negative seek value {offset}")
-        self._at = offset
-        return offset
-
-    def tell(self) -> int:
-        return self._at
+        self._kept_at, self._kept = start, b"".join(chunks)
+        return self._kept
 
 
 def _pages_in(data: bytes, base: int) -> Iterator[_Page]:
