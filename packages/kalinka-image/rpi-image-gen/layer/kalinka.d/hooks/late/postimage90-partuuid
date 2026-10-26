@@ -1,0 +1,12 @@
+#!/bin/bash
+# fstab is written only while genimage builds the root, so the finished image is the first place to check it.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)"
+
+# shellcheck source=../../../../../lib/common.sh
+. "$SCRIPT_DIR/lib/common.sh"
+# shellcheck source=../../../../../lib/partuuid.sh
+. "$SCRIPT_DIR/lib/partuuid.sh"
+
+verify_partuuid "$1/${IGconf_image_name:?}.${IGconf_image_suffix:?}"

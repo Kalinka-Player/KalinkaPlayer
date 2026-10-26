@@ -277,7 +277,7 @@ image-test:
 			-e KALINKA_IMAGE_TEST_DISPOSABLE=1 -e DEBIAN_FRONTEND=noninteractive \
 			"$$image" bash -c 'apt-get update -qq >/dev/null && \
 				apt-get install -y -qq --no-install-recommends \
-					openssh-client openssl passwd python3 util-linux fdisk dosfstools tzdata gpg gpg-agent gpgv >/dev/null && \
+					openssh-client openssl passwd python3 util-linux fdisk dosfstools mtools e2fsprogs tzdata gpg gpg-agent gpgv >/dev/null && \
 				bash tests/run-tests.sh'; \
 	else \
 		echo "No podman or docker: running only the tests that need neither root nor a container."; \
