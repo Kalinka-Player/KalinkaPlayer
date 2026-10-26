@@ -17,6 +17,7 @@
 #include "AacTestData.h"
 #include "DashTestData.h"
 #include "LocalHttpServer.h"
+#include "ScopedAlsaConfig.h"
 #include "TestHelpers.h"
 #include "WavTestData.h"
 #include "config/ConfigService.h"
@@ -83,37 +84,20 @@ protected:
   std::shared_ptr<NativePlayer> player_;
 };
 
+class HdmiSettingsTest : public NativePlayerSettingsTest {
+  ScopedAlsaConfig alsa_{kHdmiTestConfig};
+};
+
 class CustomHdmiSettingsTest : public NativePlayerSettingsTest {
-protected:
-  void SetUp() override {
-    NativePlayerSettingsTest::SetUp();
-    const auto config = prefix_ / "alsa.conf";
-    std::ofstream(config) << R"(
-      pcm.null { type null }
-      pcm.hdmi {
-        @args [CARD DEV]
-        @args.CARD { type string }
-        @args.DEV { type integer }
-        type null
-      }
-    )";
-    if (const char *value = getenv("ALSA_CONFIG_PATH"))
-      previousConfig_ = value;
-    setenv("ALSA_CONFIG_PATH", config.c_str(), 1);
-    snd_config_update_free_global();
-  }
-
-  void TearDown() override {
-    player_.reset();
-    snd_config_update_free_global();
-    if (previousConfig_)
-      setenv("ALSA_CONFIG_PATH", previousConfig_->c_str(), 1);
-    else
-      unsetenv("ALSA_CONFIG_PATH");
-    NativePlayerSettingsTest::TearDown();
-  }
-
-  std::optional<std::string> previousConfig_;
+  ScopedAlsaConfig alsa_{R"(
+    pcm.null { type null }
+    pcm.hdmi {
+      @args [CARD DEV]
+      @args.CARD { type string }
+      @args.DEV { type integer }
+      type null
+    }
+  )"};
 };
 
 // TearDown() drops the player before the server goes, as its streams need.
@@ -235,7 +219,7 @@ TEST_F(NativePlayerSettingsTest, DsdSettingsExposeCapabilitiesAndPersistMode) {
   EXPECT_EQ(field(output(), "output.dsd_mode")->value(), "disabled");
 }
 
-TEST_F(NativePlayerSettingsTest, SavedHdmiSelectionGetsAutomaticRateStatusWithoutLosingDop) {
+TEST_F(HdmiSettingsTest, SavedHdmiSelectionGetsAutomaticRateStatusWithoutLosingDop) {
   player_.reset();
   saveSettingsOverrides({{"output.device", "hdmi:CARD=Missing,DEV=0"},
                          {"output.volume_mode", "fixed"},
