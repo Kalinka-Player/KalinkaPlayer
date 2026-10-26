@@ -342,7 +342,7 @@ void AlsaAudioEmitter::openDevice() {
   if (!opened) {
     std::stringstream stream;
     stream << "Cannot open audio device " << deviceName << " ("
-           << snd_strerror(opened.error()) << ")";
+           << openFailure(deviceName, opened.error()) << ")";
     spdlog::error(stream.str());
     setState({AudioGraphNodeState::ERROR,
               StreamError{StreamErrorSource::AUDIO_OUTPUT, stream.str()}});

@@ -27,6 +27,10 @@ struct PlaybackPcm {
 std::expected<PlaybackPcm, int> openPlayback(const std::string &device,
                                              int mode);
 
+/// Why @p device did not open, from openPlayback()'s negative @p error: in
+/// snd_strerror()'s words, unless the error says more about an HDMI port.
+std::string openFailure(const std::string &device, int error);
+
 /// Inspect an HDMI definition without opening hardware; unknown plugins fail
 /// closed.
 /// @note The returned handle is null. The caller retains ownership of config.

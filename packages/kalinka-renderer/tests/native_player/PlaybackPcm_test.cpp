@@ -92,6 +92,24 @@ TEST(PlaybackPcm, AMissingDeviceGivesAlsasError) {
   EXPECT_LT(opened.error(), 0);
 }
 
+TEST(PlaybackPcm, AnHdmiPortWithNothingToPlayToSaysSo) {
+  for (const auto *device :
+       {"hdmi:CARD=vc4hdmi1,DEV=0,AES3=0x01", "default:CARD=vc4hdmi1",
+        "plughw:CARD=vc4hdmi0,DEV=0", "HDMI:CARD=PCH,DEV=0"}) {
+    SCOPED_TRACE(device);
+    EXPECT_EQ(openFailure(device, -524),
+              "no screen or receiver that takes HDMI audio is connected to "
+              "this port and switched on");
+  }
+}
+
+TEST(PlaybackPcm, OtherOpenFailuresKeepAlsasWords) {
+  EXPECT_EQ(openFailure("hw:CARD=AUDIO,DEV=0", -524),
+            std::string(snd_strerror(-524)));
+  EXPECT_EQ(openFailure("hdmi:CARD=vc4hdmi0,DEV=0", -ENODEV),
+            std::string(snd_strerror(-ENODEV)));
+}
+
 class PcmFrames : public AudioGraphOutputNode {
 public:
   PcmFrames(StreamId id, unsigned rate, unsigned bits) : AudioGraphNode(id) {
