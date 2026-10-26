@@ -425,6 +425,8 @@ sudo systemctl enable --now kalinka-renderer-upgrade.timer
 
 Kalinka does not update the operating system. On an image, log in and run `sudo apt update && sudo apt full-upgrade`. On the PC image, run `sudo dietpi-update` first.
 
+Kalinka used to install a C compiler and Python's development files for Smart Search as well, about 300 MB that nothing uses any more. An update leaves them in place, so unless you compile software on the box yourself, remove them with `sudo apt-get remove build-essential python3-dev`, then `sudo apt-get autoremove` for what they brought with them. That second command offers every package nothing needs any more, not only theirs, so read its list before you agree.
+
 ## Troubleshooting
 
 **The app finds no server.** The phone and the box must be on the same network. Guest Wi-Fi, Wi-Fi with "client isolation" and a VM on NAT all hide the server. Enter the address by hand in the app, as `<address>:8000`: if that works, only discovery is blocked.
