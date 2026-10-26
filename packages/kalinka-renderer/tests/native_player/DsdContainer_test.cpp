@@ -49,7 +49,8 @@ Bytes dsf(unsigned order = 8, unsigned channels = 2, unsigned rate = 2822400,
   out.resize(out.size() + data - channels * 4096, 0x5a);
   return out;
 }
-constexpr size_t DSF_SAMPLE_COUNT_AT = 64, DSF_DATA_SIZE_AT = 84;
+constexpr size_t DSF_FILE_SIZE_AT = 12, DSF_SAMPLE_COUNT_AT = 64,
+                 DSF_DATA_SIZE_AT = 84;
 void overwrite(Bytes &out, size_t at, uint64_t n) {
   for (unsigned i = 0; i < 8; ++i)
     out[at + i] = n >> (8 * i);
@@ -195,6 +196,30 @@ TEST(DsdDecoder, DsfSampleCountPastTheDataPlaysTheWholeBlockGroups) {
     EXPECT_EQ(decoder.getState().state, AudioGraphNodeState::FINISHED);
     EXPECT_EQ(decoder.getState().streamInfo->durationMs(), 11u);
   }
+}
+TEST(DsdDecoder, MonoDsfSampleCountPastTheDataPlaysTheWholeBlock) {
+  ContainerStreamDecoder exact(1, dsd(DSD_U8), BUFFER_SIZE);
+  exact.connectTo(std::make_shared<BytesInput>(dsf(8, 1)));
+  const auto expected = drain(exact);
+  auto overcounted = dsf(8, 1, 2822400, 1);
+  overwrite(overcounted, DSF_SAMPLE_COUNT_AT, 3 * 4096 * 8);
+  ContainerStreamDecoder decoder(1, dsd(DSD_U8), BUFFER_SIZE);
+  decoder.connectTo(std::make_shared<BytesInput>(overcounted));
+  const auto played = drain(decoder);
+  ASSERT_EQ(played.size(), 2 * expected.size());
+  EXPECT_TRUE(std::equal(expected.begin(), expected.end(), played.begin()));
+  EXPECT_EQ(decoder.getState().state, AudioGraphNodeState::FINISHED);
+}
+TEST(DsdDecoder, DsfDataSizeTooLargeToCountInSamplesKeepsTheSampleCount) {
+  ContainerStreamDecoder exact(1, dsd(DSD_U8), BUFFER_SIZE);
+  exact.connectTo(std::make_shared<BytesInput>(dsf()));
+  auto huge = dsf();
+  overwrite(huge, DSF_FILE_SIZE_AT, (uint64_t(1) << 62) + 92);
+  overwrite(huge, DSF_DATA_SIZE_AT, (uint64_t(1) << 62) + 12);
+  ContainerStreamDecoder decoder(1, dsd(DSD_U8), BUFFER_SIZE);
+  decoder.connectTo(std::make_shared<BytesInput>(huge));
+  EXPECT_EQ(drain(decoder), drain(exact));
+  EXPECT_EQ(decoder.getState().state, AudioGraphNodeState::FINISHED);
 }
 TEST(DsdDecoder, DsfDataWithoutAWholeBlockGroupIsRefused) {
   auto bytes = dsf();
