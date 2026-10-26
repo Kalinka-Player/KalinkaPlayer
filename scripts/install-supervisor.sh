@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install the separately released supervisor through the existing Python/apt path.
 set -euo pipefail
-repo="${KALINKA_REPO:-madenvel/KalinkaPlayer}"
+repo="${KALINKA_REPO:-Kalinka-Player/KalinkaPlayer}"
 request="${1:-}"
 arch="$(dpkg --print-architecture)"
 case "$arch" in amd64|arm64) ;; *) echo "Unsupported supervisor architecture: $arch" >&2; exit 1;; esac

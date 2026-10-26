@@ -21,6 +21,7 @@ REPO = Path(__file__).resolve().parents[3]
 PRERM = REPO / "packages" / "kalinka-server" / "DEBIAN" / "prerm"
 INSTALL_RENDERER = REPO / "scripts" / "install-renderer.sh"
 INSTALL_RELEASE = REPO / "scripts" / "install-release.sh"
+INSTALL_SUPERVISOR = REPO / "scripts" / "install-supervisor.sh"
 
 
 def _run(script, *args, env=None):
@@ -226,16 +227,24 @@ EITHER_PATH = pytest.mark.parametrize(
 )
 
 _RELEASE_STUBS = {
-    # A fetch prints the release; a download leaves an empty .deb behind, or an
-    # installer that logs its own run.
+    # A fetch prints the release, and so does a lookup saved to a file, as
+    # install-supervisor.sh makes; a download leaves an empty .deb behind, or
+    # an installer that logs its own run.
     "curl": """#!/usr/bin/env bash
-out=""
+out="" url=""
 while [ $# -gt 0 ]; do
-  case "$1" in -o) out="$2"; shift ;; esac
+  case "$1" in
+    -o) out="$2"; shift ;;
+    -H|--retry) shift ;;
+    -*) ;;
+    *) url="$1" ;;
+  esac
   shift
 done
+echo "$url" >> "$STUB_STATE/curl.log"
 case "$out" in
   "") cat "$STUB_STATE/release.json" ;;
+  *.json) cat "$STUB_STATE/release.json" > "$out" ;;
   *.sh) echo 'echo "${0##*/}" >> "$STUB_STATE/scripts.log"' > "$out" ;;
   *) : > "$out" ;;
 esac
@@ -289,6 +298,37 @@ esac
 }
 
 
+def _published(tmp_path, tag, *assets, unknown=(), installed=()):
+    """A PATH on which every GitHub lookup answers with one release of
+    ``assets``, and the state directory the stubs record their calls in."""
+    binv = tmp_path / "bin"
+    binv.mkdir()
+    for name, text in _RELEASE_STUBS.items():
+        (binv / name).write_text(text)
+        (binv / name).chmod(0o755)
+    state = tmp_path / "state"
+    state.mkdir()
+    release = {
+        "tag_name": tag,
+        "assets": [
+            {"name": n, "browser_download_url": f"https://x.invalid/{n}"}
+            for n in assets
+        ],
+    }
+    (state / "release.json").write_text(json.dumps([release]))
+    (state / "unknown").write_text("".join(f"{name}\n" for name in unknown))
+    (state / "installed").write_text("".join(f"{name}\n" for name in installed))
+    return binv, state
+
+
+def _github_lookups(state):
+    return [
+        url
+        for url in (state / "curl.log").read_text().splitlines()
+        if url.startswith("https://api.github.com/")
+    ]
+
+
 def _install_release(
     tmp_path,
     *,
@@ -313,26 +353,16 @@ def _install_release(
     lookup finds them too; ``installed`` are packages already on the box.
     ``piped`` feeds the script to bash on stdin, as ``curl … | sudo bash`` does.
     """
-    binv = tmp_path / "bin"
-    binv.mkdir()
-    for name, text in _RELEASE_STUBS.items():
-        (binv / name).write_text(text)
-        (binv / name).chmod(0o755)
-    state = tmp_path / "state"
-    state.mkdir()
-    assets = [
-        {"name": n, "browser_download_url": f"https://x.invalid/{n}"}
-        for n in (
-            "kalinka-server_9.9.9_all.deb",
-            "kalinka-plugin-sdk_9.9.9_all.deb",
-            *bundle_assets,
-            *app_assets,
-        )
-    ]
-    release = [{"tag_name": "kalinka-v9.9.9", "assets": assets}]
-    (state / "release.json").write_text(json.dumps(release))
-    (state / "unknown").write_text("".join(f"{name}\n" for name in unknown))
-    (state / "installed").write_text("".join(f"{name}\n" for name in installed))
+    binv, state = _published(
+        tmp_path,
+        "kalinka-v9.9.9",
+        "kalinka-server_9.9.9_all.deb",
+        "kalinka-plugin-sdk_9.9.9_all.deb",
+        *bundle_assets,
+        *app_assets,
+        unknown=unknown,
+        installed=installed,
+    )
     # A reinstall removes the server's environment and a display edits the boot
     # config, so the script only reaches their copies here.
     script = tmp_path / "install-release.sh"
@@ -760,6 +790,72 @@ def test_a_fetched_installer_runs_where_nobody_else_can_write(script, tmp_path):
     assert mode == "700"
     assert beside == ["install.sh"]
     assert {p.name for p in shared.iterdir()} == planted
+
+
+def test_releases_are_looked_up_where_the_project_publishes_them(
+    tmp_path, monkeypatch
+):
+    """The old owner's repositories only redirect to the project's, and one
+    created again under either name would be installed from instead, unsigned."""
+    monkeypatch.delenv("KALINKA_REPO", raising=False)
+    monkeypatch.delenv("KALINKA_WEB_REPO", raising=False)
+
+    result, _, _ = _install_release(tmp_path, env={"KALINKA_WEB": "1"})
+
+    assert result.returncode == 0, result.stderr
+    assert _github_lookups(tmp_path / "state") == [
+        "https://api.github.com/repos/Kalinka-Player/KalinkaPlayer/releases?per_page=30",
+        "https://api.github.com/repos/Kalinka-Player/KalinkaAI/releases?per_page=30",
+    ]
+    assert "release in Kalinka-Player/KalinkaPlayer ..." in result.stdout
+    assert "app packages in Kalinka-Player/KalinkaAI ..." in result.stdout
+
+
+def test_a_renderer_box_looks_up_its_release_where_the_project_publishes_it(
+    tmp_path, monkeypatch
+):
+    """A renderer box runs it on its own, with no release installer above it to
+    pass a repository down."""
+    monkeypatch.delenv("KALINKA_REPO", raising=False)
+    monkeypatch.delenv("KALINKA_SUPERVISOR", raising=False)
+    binv, state = _published(
+        tmp_path,
+        "kalinka-renderer-v9.9.9",
+        "kalinka-renderer-9.9.9.debian-13.arm64.deb",
+    )
+
+    result = _run(
+        INSTALL_RENDERER,
+        env={"PATH": f"{binv}:{os.environ['PATH']}", "STUB_STATE": str(state)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _github_lookups(state) == [
+        "https://api.github.com/repos/Kalinka-Player/KalinkaPlayer/releases?per_page=30",
+    ]
+
+
+def test_a_supervisor_looks_up_its_release_where_the_project_publishes_it(
+    tmp_path, monkeypatch
+):
+    """install-release.sh runs it for a box that has one without passing its
+    repository down."""
+    monkeypatch.delenv("KALINKA_REPO", raising=False)
+    binv, state = _published(tmp_path, "kalinka-v9.9.9")
+
+    result = _run(
+        INSTALL_SUPERVISOR,
+        env={
+            "PATH": f"{binv}:{os.environ['PATH']}",
+            "STUB_STATE": str(state),
+            "ALLOW_MISSING_RELEASE": "1",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _github_lookups(state) == [
+        "https://api.github.com/repos/Kalinka-Player/KalinkaPlayer/releases?per_page=100",
+    ]
 
 
 POSTINST = REPO / "packages" / "kalinka-server" / "DEBIAN" / "postinst"

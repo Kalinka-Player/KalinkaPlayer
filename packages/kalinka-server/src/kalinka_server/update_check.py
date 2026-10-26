@@ -66,12 +66,12 @@ _DPKG_STATUS = "/var/lib/dpkg/status"
 
 def _repo() -> str:
     # Same override the install script honours.
-    return os.environ.get("KALINKA_REPO", "madenvel/KalinkaPlayer")
+    return os.environ.get("KALINKA_REPO", "Kalinka-Player/KalinkaPlayer")
 
 
 def _web_repo() -> str:
     # Same override the install script honours.
-    return os.environ.get("KALINKA_WEB_REPO", "madenvel/KalinkaAI")
+    return os.environ.get("KALINKA_WEB_REPO", "Kalinka-Player/KalinkaAI")
 
 
 def upgrade_supported() -> bool:
