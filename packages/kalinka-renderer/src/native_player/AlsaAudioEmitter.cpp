@@ -3,6 +3,7 @@
 #include "DsdFormat.h"
 #include "Log.h"
 #include "PerfMon.h"
+#include "PlaybackPcm.h"
 #include "StateMonitor.h"
 #include "StreamState.h"
 #include "Utils.h"
@@ -163,13 +164,7 @@ void AlsaAudioEmitter::stop() {
 }
 
 DeviceAccess AlsaAudioEmitter::deviceAccess() const {
-  if (pcmHandle == nullptr) {
-    return DeviceAccess::Unknown;
-  }
-  // Only a raw hw handle rules out a mixer, a resampler or a sound server:
-  // every other PCM type has something of its own between us and the card.
-  return snd_pcm_type(pcmHandle) == SND_PCM_TYPE_HW ? DeviceAccess::Exclusive
-                                                    : DeviceAccess::Shared;
+  return pcmHandle == nullptr ? DeviceAccess::Unknown : pcmAccess;
 }
 
 void AlsaAudioEmitter::setState(const StreamState &newState) {
@@ -343,21 +338,19 @@ void AlsaAudioEmitter::openDevice() {
     return;
   }
 
-  int err =
-      snd_pcm_open(&pcmHandle, deviceName.c_str(), SND_PCM_STREAM_PLAYBACK, 0);
-
-  /* Error check */
-  if (err < 0) {
+  const auto opened = openPlayback(deviceName, 0);
+  if (!opened) {
     std::stringstream stream;
     stream << "Cannot open audio device " << deviceName << " ("
-           << snd_strerror(err) << ")";
-    pcmHandle = nullptr;
+           << snd_strerror(opened.error()) << ")";
     spdlog::error(stream.str());
     setState({AudioGraphNodeState::ERROR,
               StreamError{StreamErrorSource::AUDIO_OUTPUT, stream.str()}});
 
     throw std::runtime_error(stream.str());
   }
+  pcmHandle = opened->handle;
+  pcmAccess = opened->access;
 
   currentSourceTotalFramesWritten = 0;
   playedFramesCounter.reset();

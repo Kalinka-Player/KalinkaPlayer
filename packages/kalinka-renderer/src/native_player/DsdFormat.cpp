@@ -1,4 +1,5 @@
 #include "DsdFormat.h"
+#include "PlaybackPcm.h"
 
 #include <algorithm>
 #include <array>
@@ -62,19 +63,18 @@ OutputCapabilities probeOutput(const std::string &device) {
   static std::mutex mutex;
   static std::map<std::string, OutputCapabilities> cache;
   std::lock_guard lock(mutex);
-  snd_pcm_t *pcm = nullptr;
-  const int error =
-      snd_pcm_open(&pcm, device.c_str(), SND_PCM_STREAM_PLAYBACK,
-                   SND_PCM_NONBLOCK | SND_PCM_NO_AUTO_RESAMPLE |
-                       SND_PCM_NO_AUTO_FORMAT | SND_PCM_NO_AUTO_CHANNELS);
-  if (error < 0) {
-    if (error == -EBUSY && cache.contains(device))
+  const auto opened =
+      openPlayback(device, SND_PCM_NONBLOCK | SND_PCM_NO_AUTO_RESAMPLE |
+                               SND_PCM_NO_AUTO_FORMAT |
+                               SND_PCM_NO_AUTO_CHANNELS);
+  if (!opened) {
+    if (opened.error() == -EBUSY && cache.contains(device))
       return cache.at(device);
-    return {DeviceAccess::Unknown, snd_strerror(error), {}};
+    return {DeviceAccess::Unknown, snd_strerror(opened.error()), {}};
   }
+  snd_pcm_t *pcm = opened->handle;
   OutputCapabilities result;
-  result.access = snd_pcm_type(pcm) == SND_PCM_TYPE_HW ? DeviceAccess::Exclusive
-                                                       : DeviceAccess::Shared;
+  result.access = opened->access;
   constexpr std::array rates{8000u,   11025u,   16000u,   22050u,   32000u,
                              44100u,  48000u,   64000u,   88200u,   96000u,
                              176400u, 192000u,  352800u,  384000u,  705600u,

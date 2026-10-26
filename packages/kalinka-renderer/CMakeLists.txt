@@ -123,6 +123,7 @@ add_library(kalinka_native_player STATIC
   src/native_player/Mp4StreamDecoder.cpp
   src/native_player/Mp3StreamDecoder.cpp
   src/native_player/PerfMon.cpp
+  src/native_player/PlaybackPcm.cpp
   src/native_player/SampleDecoder.cpp
   src/native_player/SourceStreamDecoder.cpp
   src/native_player/StateMonitor.cpp
@@ -279,6 +280,7 @@ if(GTest_FOUND)
     tests/native_player/Mp3StreamDecoder_test.cpp
     tests/native_player/Mp4Format_test.cpp
     tests/native_player/Mp4StreamDecoder_test.cpp
+    tests/native_player/PlaybackPcm_test.cpp
     tests/native_player/SineWaveNode_test.cpp
     tests/native_player/StateMonitor_test.cpp
     tests/native_player/Utils_test.cpp

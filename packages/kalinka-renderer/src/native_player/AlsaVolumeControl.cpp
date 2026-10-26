@@ -40,6 +40,18 @@ bool isSoundServerMixer(snd_ctl_type_t type, const std::string &cardId) {
   return type == SND_CTL_TYPE_EXT && (cardId == "pipewire" || cardId == "pulse");
 }
 
+bool reachesTheCardItself(const std::string &pcm) {
+  return pcm.starts_with("hw:") || pcm.starts_with("plughw:");
+}
+
+bool playbackVolumeAmong(const std::string &element,
+                         const std::vector<std::string> &controls) {
+  return std::ranges::any_of(controls, [&element](const std::string &control) {
+    return control == element + " Playback Volume" ||
+           control == element + " Volume";
+  });
+}
+
 namespace {
 
 // Derive the ALSA *mixer* card name from a PCM device name. The mixer attaches
@@ -79,6 +91,25 @@ bool soundServerCard(snd_mixer_t *mixer, const std::string &card) {
   snd_ctl_card_info_alloca(&info);
   return snd_ctl_card_info(ctl, info) >= 0 &&
          isSoundServerMixer(snd_ctl_type(ctl), snd_ctl_card_info_get_id(info));
+}
+
+// Controls software added to the card, softvol's among them.
+std::vector<std::string> userControls(snd_mixer_t *mixer,
+                                      const std::string &card) {
+  std::vector<std::string> names;
+  snd_hctl_t *hctl = nullptr;
+  if (snd_mixer_get_hctl(mixer, card.c_str(), &hctl) < 0) {
+    return names;
+  }
+  snd_ctl_elem_info_t *info = nullptr;
+  snd_ctl_elem_info_alloca(&info);
+  for (snd_hctl_elem_t *e = snd_hctl_first_elem(hctl); e != nullptr;
+       e = snd_hctl_elem_next(e)) {
+    if (snd_hctl_elem_info(e, info) >= 0 && snd_ctl_elem_info_is_user(info)) {
+      names.emplace_back(snd_hctl_elem_get_name(e));
+    }
+  }
+  return names;
 }
 
 // Preference order when no explicit control name is configured.
@@ -160,6 +191,15 @@ bool AlsaVolumeControl::openMixer(const std::string &deviceName,
     return false;
   }
 
+  // softvol adds its control to the card, but hw: and plughw: bypass softvol.
+  const std::vector<std::string> unheard =
+      reachesTheCardItself(deviceName) ? userControls(mixer_, card)
+                                       : std::vector<std::string>();
+  auto usable = [&unheard](snd_mixer_elem_t *e) {
+    return snd_mixer_selem_has_playback_volume(e) &&
+           !playbackVolumeAmong(snd_mixer_selem_get_name(e), unheard);
+  };
+
   snd_mixer_selem_id_t *sid = nullptr;
   snd_mixer_selem_id_alloca(&sid);
 
@@ -167,10 +207,7 @@ bool AlsaVolumeControl::openMixer(const std::string &deviceName,
     snd_mixer_selem_id_set_index(sid, 0);
     snd_mixer_selem_id_set_name(sid, name);
     snd_mixer_elem_t *e = snd_mixer_find_selem(mixer_, sid);
-    if (e && snd_mixer_selem_has_playback_volume(e)) {
-      return e;
-    }
-    return nullptr;
+    return e && usable(e) ? e : nullptr;
   };
 
   if (!controlName.empty()) {
@@ -191,8 +228,7 @@ bool AlsaVolumeControl::openMixer(const std::string &deviceName,
   if (!elem_) {
     for (snd_mixer_elem_t *e = snd_mixer_first_elem(mixer_); e != nullptr;
          e = snd_mixer_elem_next(e)) {
-      if (snd_mixer_selem_is_active(e) &&
-          snd_mixer_selem_has_playback_volume(e)) {
+      if (snd_mixer_selem_is_active(e) && usable(e)) {
         elem_ = e;
         break;
       }

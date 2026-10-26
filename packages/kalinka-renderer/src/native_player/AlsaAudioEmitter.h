@@ -101,6 +101,7 @@ private:
   snd_pcm_sframes_t currentSourceStartFrames = 0;
   std::chrono::milliseconds pollTimeout = std::chrono::milliseconds(100);
   snd_pcm_t *pcmHandle = nullptr;
+  DeviceAccess pcmAccess = DeviceAccess::Unknown;
   // When the device has played out what it held as it was last closed.
   std::chrono::steady_clock::time_point silentAt;
   std::vector<pollfd> ufds;
@@ -126,7 +127,7 @@ private:
 
   void openDevice();
   void closeDevice();
-  /// Whether the open device is ours alone, as ALSA reports its PCM type.
+  /// Whether the open device is ours alone, as openPlayback() found it.
   DeviceAccess deviceAccess() const;
 
   void initHwParams(unsigned int &rate, AudioSampleFormat format,
