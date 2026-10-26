@@ -1,8 +1,8 @@
 import os
-from typing import ClassVar
+from typing import Annotated, ClassVar
 from enum import Enum
 
-from pydantic import ConfigDict, Field
+from pydantic import AfterValidator, ConfigDict, Field
 
 from kalinka_plugin_sdk import paths
 from kalinka_plugin_sdk.module_config import ModuleConfig
@@ -15,6 +15,18 @@ from kalinka_plugin_sdk.module_config import ModuleConfig
 _RELEASE = (
     "https://github.com/Kalinka-Player/KalinkaPlayer/releases/download/jamendo-ai-v1"
 )
+
+# Settings saved before the repository moved still name its former owner, and
+# that name would serve whoever registers it next.
+_FORMER_REPO_URL = "https://github.com/madenvel/KalinkaPlayer/"
+_REPO_URL = "https://github.com/Kalinka-Player/KalinkaPlayer/"
+
+
+def _moved(url: str) -> str:
+    if url.startswith(_FORMER_REPO_URL):
+        return _REPO_URL + url.removeprefix(_FORMER_REPO_URL)
+    return url
+
 
 # Mood-index asset name. The index is fetched only when the local path is
 # absent (see mood_search._provision), so a content change must rename the
@@ -102,7 +114,7 @@ class JamendoConfig(ModuleConfig):
         title="Mood index path",
         description="Where the mood-search index is stored.",
     )
-    ai_index_url: str = Field(
+    ai_index_url: Annotated[str, AfterValidator(_moved)] = Field(
         default=f"{_RELEASE}/{_INDEX_ASSET}",
         title="Mood index download URL",
         description=(

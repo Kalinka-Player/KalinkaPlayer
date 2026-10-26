@@ -5,6 +5,7 @@ so it must not download it.
 """
 
 import pytest
+from kalinka_server.config_overrides import apply_overrides_with_prefix
 
 from kalinka_plugin_jamendo import mood_search
 from kalinka_plugin_jamendo.config_model import JamendoConfig
@@ -102,3 +103,27 @@ def test_the_index_downloads_from_the_project_organisation():
     assert JamendoConfig().ai_index_url.startswith(
         "https://github.com/Kalinka-Player/KalinkaPlayer/releases/download/"
     )
+
+
+@pytest.mark.parametrize(
+    "saved, loaded",
+    [
+        (
+            "https://github.com/madenvel/KalinkaPlayer/releases/download/"
+            "jamendo-ai-v1/jamendo_index_v2.sqlite",
+            JamendoConfig().ai_index_url,
+        ),
+        (INDEX_URL, INDEX_URL),
+    ],
+    ids=["former-owner", "own-url"],
+)
+def test_a_saved_index_url_follows_the_repository_move(saved, loaded):
+    """A setting saved before the move would otherwise keep loading the index
+    from whoever registers the old name."""
+    config = JamendoConfig()
+
+    apply_overrides_with_prefix(
+        config, {"input_modules.jamendo.ai_index_url": saved}, "input_modules.jamendo."
+    )
+
+    assert config.ai_index_url == loaded

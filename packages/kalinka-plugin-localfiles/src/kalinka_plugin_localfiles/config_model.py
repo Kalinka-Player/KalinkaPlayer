@@ -1,6 +1,6 @@
 import os
 from typing import Annotated, Any, ClassVar, Hashable, Literal, Union
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
 from kalinka_plugin_sdk import ConfigRecord, Records, paths
 from kalinka_plugin_sdk.module_config import ModuleConfig
 
@@ -212,6 +212,16 @@ class ProceduralArtworkConfig(BaseModel):
     )
 
 
+_USER_AGENT = "Kalinka/1.0 (https://github.com/Kalinka-Player/KalinkaPlayer)"
+# Saved before the repository moved, its contact link would lead to whoever
+# registers the former owner's name next.
+_FORMER_USER_AGENT = "Kalinka/1.0 (https://github.com/madenvel/KalinkaPlayer)"
+
+
+def _moved_user_agent(user_agent: str) -> str:
+    return _USER_AGENT if user_agent == _FORMER_USER_AGENT else user_agent
+
+
 class PluginsConfig(BaseModel):
     musicbrainz: MusicBrainzConfig = Field(
         default_factory=MusicBrainzConfig, title="MusicBrainz"
@@ -231,8 +241,8 @@ class PluginsConfig(BaseModel):
         title="Generated album art",
         json_schema_extra={"inline": True},
     )
-    user_agent: str = Field(
-        default="Kalinka/1.0 (https://github.com/Kalinka-Player/KalinkaPlayer)",
+    user_agent: Annotated[str, AfterValidator(_moved_user_agent)] = Field(
+        default=_USER_AGENT,
         title="User agent",
     )
 
