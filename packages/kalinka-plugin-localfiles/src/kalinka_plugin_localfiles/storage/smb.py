@@ -23,6 +23,7 @@ import secrets
 import threading
 import time
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from stat import S_ISDIR
 from typing import Any, BinaryIO, Callable, Iterable, Iterator, Optional
 
@@ -110,6 +111,8 @@ _MISSING_PATH = {0xC0000034, 0xC000003A, 0xC000000F}
 #: What ``smbprotocol`` says when a server hands out a guest session where
 #: signing or encryption is required, which a guest has no key for.
 _GUEST_SESSION = "authenticated as a guest"
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 class SmbStorage(FileStorage):
@@ -263,7 +266,8 @@ class SmbStorage(FileStorage):
     def _entry(self, locator: StorageLocator, child) -> DirEntry:
         """A listing row, built from what the directory query already
         returned — no stat per entry, which is what keeps a folder of
-        artwork to one round trip.
+        artwork to one round trip, and a scan of an unchanged library to
+        one per folder.
 
         @note ``follow_symlinks=False`` is the contract, and here it also
             keeps the listing to that one round trip: resolving a reparse
@@ -275,6 +279,7 @@ class SmbStorage(FileStorage):
             path=f"{locator}/{child.name}",
             is_dir=child.is_dir(follow_symlinks=False),
             size=child.smb_info.end_of_file,
+            mtime_ns=_epoch_ns(child.smb_info.last_write_time),
         )
 
     def _unc(self, locator: StorageLocator) -> str:
@@ -613,3 +618,17 @@ def _text(error: BaseException) -> str:
         return str(error)
     except Exception:
         return type(error).__name__
+
+
+def _epoch_ns(moment: datetime) -> Optional[int]:
+    """A listed timestamp as nanoseconds since the epoch, or None for the
+    naive ``datetime.max`` that ``smbprotocol`` substitutes for one past
+    year 9999.
+
+    The listing's timestamps are the server's to the microsecond, where
+    :meth:`SmbStorage.stat` has them to 100 ns; both floor, so they agree to
+    the whole second the library compares.
+    """
+    if moment.tzinfo is None:
+        return None
+    return (moment - _EPOCH) // timedelta(microseconds=1) * 1000

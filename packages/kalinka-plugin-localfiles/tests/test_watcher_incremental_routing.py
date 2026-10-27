@@ -37,7 +37,7 @@ def _instrument(fi, monkeypatch):
     """Record process_file/cleanup calls without touching the database."""
     processed, cleanups = [], []
 
-    async def fake_process(path):
+    async def fake_process(path, listed=None):
         processed.append(path)
         return None
 

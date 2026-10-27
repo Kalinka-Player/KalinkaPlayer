@@ -13,6 +13,7 @@ import io
 import os
 import threading
 import time
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -22,6 +23,11 @@ from smbprotocol.exceptions import (
     PasswordExpired,
     SMBAuthenticationError,
 )
+from smbprotocol.file_info import (
+    FileBasicInformation,
+    FileIdFullDirectoryInformation,
+)
+from smbprotocol.structure import DateTimeField
 
 import kalinka_plugin_localfiles.storage.smb as smb_mod
 from kalinka_plugin_localfiles.storage.locator import LocatorError, parse
@@ -37,11 +43,20 @@ class _Entry:
     when the target is followed.
     """
 
-    def __init__(self, name, is_dir=False, size=0, link_to_dir=False):
+    def __init__(
+        self,
+        name,
+        is_dir=False,
+        size=0,
+        link_to_dir=False,
+        last_write_time=datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc),
+    ):
         self.name = name
         self._is_dir = is_dir
         self._link_to_dir = link_to_dir
-        self.smb_info = SimpleNamespace(end_of_file=size)
+        self.smb_info = SimpleNamespace(
+            end_of_file=size, last_write_time=last_write_time
+        )
 
     def is_dir(self, follow_symlinks=True):
         if self._link_to_dir:
@@ -286,6 +301,61 @@ class TestListing:
         [entry] = _storage().listdir("smb://nas/music")
         assert entry.size == 1234
         assert _storage().size_of(entry) == 1234
+
+    def test_modification_times_arrive_with_the_listing(self, fake_client):
+        """With the size, what lets a scan pass over an unchanged file
+        without measuring it."""
+        written = datetime(2023, 11, 14, 22, 13, 20, 999999, tzinfo=timezone.utc)
+        fake_client(
+            listings={r"\\nas\music": [_Entry("a.flac", last_write_time=written)]}
+        )
+        [entry] = _storage().listdir("smb://nas/music")
+        assert entry.mtime_ns == 1_700_000_000_999_999_000
+        assert entry.mtime == 1_700_000_000
+
+    @pytest.mark.parametrize(
+        "ticks_after_epoch",
+        [1, 9_999_999, 17_000_000_000_000_001, 17_000_000_009_999_999, -1],
+    )
+    def test_a_listed_mtime_agrees_with_a_measured_one(
+        self, fake_client, ticks_after_epoch
+    ):
+        """The listing has the server's timestamp to the microsecond and a
+        stat has it to 100 ns. Disagreeing on the second would make every
+        file look changed, and a scan re-read the whole library."""
+        filetime = DateTimeField.EPOCH_FILETIME + ticks_after_epoch
+        listed = FileIdFullDirectoryInformation()
+        listed["last_write_time"] = filetime
+        measured = FileBasicInformation()
+        measured["last_write_time"] = filetime
+        mtime_ns = (
+            measured["last_write_time"].get_value() - DateTimeField.EPOCH_FILETIME
+        ) * 100
+        fake_client(
+            listings={
+                r"\\nas\music": [
+                    _Entry(
+                        "a.flac",
+                        last_write_time=listed["last_write_time"].get_value(),
+                    )
+                ]
+            },
+            stats={r"\\nas\music\a.flac": stat_result(mtime_ns=mtime_ns)},
+        )
+        storage = _storage()
+        [entry] = storage.listdir("smb://nas/music")
+        assert entry.mtime == storage.stat("smb://nas/music/a.flac").mtime
+
+    def test_a_timestamp_past_year_9999_is_left_unreported(self, fake_client):
+        """``smbprotocol`` stands a naive ``datetime.max`` in for it, which
+        says nothing a scan could compare."""
+        fake_client(
+            listings={
+                r"\\nas\music": [_Entry("a.flac", last_write_time=datetime.max)]
+            }
+        )
+        [entry] = _storage().listdir("smb://nas/music")
+        assert entry.mtime_ns is None
 
     def test_a_link_to_a_folder_is_not_reported_as_one(self, fake_client):
         """A scan descends into directories. Following a reparse point would

@@ -121,16 +121,22 @@ class DirEntry:
     ``is_dir`` is False for a symbolic link to a directory: a scan must not
     descend through one, matching ``os.walk`` without ``followlinks``.
 
-    ``size`` is None unless the listing itself reported it. A remote
-    directory query carries sizes, while locally they would cost a stat per
-    entry — which the pre-count pass over a large library cannot afford.
-    Read it through :meth:`FileStorage.size_of`.
+    ``size`` and ``mtime_ns`` are None unless the listing itself reported
+    them. A remote directory query carries both, while locally they would
+    cost a stat per entry — which the pre-count pass over a large library
+    cannot afford. Read the size through :meth:`FileStorage.size_of`.
     """
 
     name: str
     path: str
     is_dir: bool
     size: Optional[int] = None
+    mtime_ns: Optional[int] = None
+
+    @property
+    def mtime(self) -> Optional[int]:
+        """Whole seconds, as :attr:`FileStat.mtime` gives them."""
+        return None if self.mtime_ns is None else self.mtime_ns // 1_000_000_000
 
 
 @dataclass(frozen=True)
