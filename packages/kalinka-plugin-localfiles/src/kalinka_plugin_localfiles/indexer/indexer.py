@@ -11,6 +11,7 @@ import asyncio
 import multiprocessing
 from dataclasses import dataclass
 from typing import (
+    AbstractSet,
     Any,
     AsyncIterator,
     BinaryIO,
@@ -63,6 +64,7 @@ from ..storage import (
     PROBE_TIMEOUT_S,
     ChangeKind,
     ChangeWatcher,
+    DirEntry,
     FileStorage,
     RootStatus,
     StorageResolver,
@@ -259,6 +261,15 @@ def _tags_leave_a_gap(metadata: Dict, file_path: str) -> bool:
     )
 
 
+def _indexed_as(track: Optional[Dict[str, Any]], size: int, mtime: int) -> bool:
+    """Whether the library's row for a file records this size and mtime."""
+    return (
+        track is not None
+        and track["file_size"] == size
+        and track["modified_time"] == mtime
+    )
+
+
 def _fingerprint(storage: FileStorage, path: str) -> Optional[Fingerprint]:
     """A cover source's size and mtime, or None when it cannot be measured."""
     try:
@@ -303,6 +314,8 @@ class FileIndexer:
         self.running = False
         self.lock = asyncio.Lock()
         self._deferred_files: Dict[str, float] = {}
+        # Listed by a walk but not there when processed, e.g. a dangling link.
+        self._vanished: Set[str] = set()
         # Scan progress (full scans only): total from the pre-count walk,
         # processed incremented per file. Published to the indexer_state
         # table in batches so /indexer/status can show an "indexing" stage.
@@ -383,12 +396,20 @@ class FileIndexer:
             if files_by_folder.get(folder) and identity:
                 await self.db_manager.set_root_signature(folder, identity)
 
+        self._vanished.clear()
         for folder in available_folders:
             logger.debug(f"Scanning folder: {folder}")
             await self._index_files(files_by_folder[folder], changed_items)
 
         # Delete stale entries after scanning but before enrichment
-        cleanup_results = await self.cleanup_stale_tracks()
+        cleanup_results = await self.cleanup_stale_tracks(
+            {
+                entry.path
+                for entries in files_by_folder.values()
+                for entry in entries
+            }
+            - self._vanished
+        )
 
         # If we removed any tracks, ensure we don't trigger enrichment for them
         if cleanup_results["tracks"] > 0:
@@ -556,8 +577,9 @@ class FileIndexer:
                 self._deferred_files.pop(path, None)
             await self.handle_incremental_changes(due)
 
-    async def _iter_audio_files(self, folder: str) -> AsyncIterator[str]:
-        """Supported audio files under ``folder``, depth first.
+    async def _iter_audio_files(self, folder: str) -> AsyncIterator[DirEntry]:
+        """Supported audio files under ``folder``, depth first, as their
+        directory listings reported them.
 
         One directory listing at a time and each off the event loop, because
         a listing is a round trip on a share and never returns at all on a
@@ -582,16 +604,16 @@ class FileIndexer:
                     if not is_housekeeping_dir(entry.name):
                         pending.append(entry.path)
                 elif self._is_supported_audio_file(entry.name):
-                    yield entry.path
+                    yield entry
 
     async def scan_folder(self, folder: str, changed_items: Dict[str, Set[str]]):
         """Recursively scan a folder for music files"""
         await self._index_files(
-            [path async for path in self._iter_audio_files(folder)], changed_items
+            [entry async for entry in self._iter_audio_files(folder)], changed_items
         )
 
     async def _index_files(
-        self, files: List[str], changed_items: Dict[str, Set[str]]
+        self, files: List[DirEntry], changed_items: Dict[str, Set[str]]
     ):
         """Index files a walk has already listed, reporting progress as they
         go.
@@ -604,9 +626,10 @@ class FileIndexer:
         will not come.
         """
         unreadable: List[Tuple[str, OSError]] = []
-        for position, file_path in enumerate(files):
+        for position, listed in enumerate(files):
+            file_path = listed.path
             try:
-                result_changes = await self.process_file(file_path)
+                result_changes = await self.process_file(file_path, listed=listed)
                 if result_changes:
                     self._scan_changed += 1
                     for key, value in result_changes.items():
@@ -656,17 +679,17 @@ class FileIndexer:
 
     async def _audio_files_by_folder(
         self, folders: List[str]
-    ) -> Dict[str, List[str]]:
-        """The supported audio files under each folder.
+    ) -> Dict[str, List[DirEntry]]:
+        """The supported audio files under each folder, as listed.
 
         Directory listings only — no per-file measurement — so the cost is
         one round trip per directory and nothing per file. Walks only the
         folders given: touching an unavailable root here would re-trigger a
         failed automount or hang on a dead mount.
         """
-        found: Dict[str, List[str]] = {}
+        found: Dict[str, List[DirEntry]] = {}
         for folder in folders:
-            found[folder] = [path async for path in self._iter_audio_files(folder)]
+            found[folder] = [entry async for entry in self._iter_audio_files(folder)]
         return found
 
     async def _publish_scan_progress(self, force: bool = False):
@@ -696,9 +719,12 @@ class FileIndexer:
         storage = self.storage.for_path(path)
         return await asyncio.to_thread(storage.is_gone, path)
 
-    async def _missing_paths(self, paths: Iterable[str]) -> Set[str]:
+    async def _missing_paths(
+        self, paths: Iterable[str], listed: AbstractSet[str] = frozenset()
+    ) -> Set[str]:
         """Which of ``paths`` are certainly gone. One the storage cannot
-        answer for right now is not among them.
+        answer for right now is not among them, and nor is one in ``listed``,
+        which this scan's walk found without asking about each file.
 
         Grouped into one call per storage rather than one per path: the
         cleanup sweep asks about every row in the library, and a thread hop
@@ -706,7 +732,8 @@ class FileIndexer:
         """
         grouped: Dict[FileStorage, List[str]] = {}
         for path in paths:
-            grouped.setdefault(self.storage.for_path(path), []).append(path)
+            if path not in listed:
+                grouped.setdefault(self.storage.for_path(path), []).append(path)
 
         def absent(storage: FileStorage, batch: List[str]) -> Set[str]:
             return {path for path in batch if storage.is_gone(path)}
@@ -716,10 +743,32 @@ class FileIndexer:
             missing |= await asyncio.to_thread(absent, storage, batch)
         return missing
 
+    async def _listed_as_indexed(
+        self, file_path: str, listed: Optional[DirEntry]
+    ) -> bool:
+        """Whether a listing already shows the size and mtime the library
+        holds for ``file_path``. False when it left either unreported."""
+        if listed is None or listed.size is None or listed.mtime is None:
+            return False
+        return _indexed_as(
+            await self.db_manager.get_track_by_path(file_path),
+            listed.size,
+            listed.mtime,
+        )
+
     async def process_file(
-        self, file_path: str, force: bool = False
+        self,
+        file_path: str,
+        force: bool = False,
+        listed: Optional[DirEntry] = None,
     ) -> Optional[Dict[str, Optional[str]]]:
-        """Process a music file and update the database. Returns changed items IDs."""
+        """Process a music file and update the database. Returns changed items IDs.
+
+        @param listed What a directory listing reported about the file. When
+            it already shows the size and mtime the library holds, the file
+            is not measured again: on a share, a scan of an unchanged
+            library then costs a round trip per folder rather than per file.
+        """
         # Access boundary: never index a file whose canonical path escapes the
         # configured music folders — e.g. a symlink sitting under a watched
         # folder that resolves elsewhere. Enforced here, using the same
@@ -734,6 +783,10 @@ class FileIndexer:
             return None
 
         self._deferred_files.pop(file_path, None)
+        if not force and await self._listed_as_indexed(file_path, listed):
+            logger.debug(f"File unchanged, skipping: {file_path}")
+            return None
+
         # A file that is gone is nothing to index. Any other failure to
         # measure it is the storage's, and the caller decides what that means.
         storage = self.storage.for_path(file_path)
@@ -741,6 +794,7 @@ class FileIndexer:
             stat = await asyncio.to_thread(storage.stat, file_path)
         except FileNotFoundError as e:
             logger.debug(f"File disappeared before processing: {file_path} ({e})")
+            self._vanished.add(file_path)
             return None
 
         # Quiescence guard: skip files that may still be in mid-upload.
@@ -762,6 +816,7 @@ class FileIndexer:
                     logger.debug(
                         f"File disappeared during quiescence wait: {file_path}"
                     )
+                    self._vanished.add(file_path)
                     return None
                 if (
                     stat_after.size != stat.size
@@ -816,12 +871,7 @@ class FileIndexer:
                 existing_track = await self.db_manager.get_track_by_path(
                     file_path
                 )
-        if (
-            existing_track
-            and not force
-            and existing_track["modified_time"] == modified_time
-            and existing_track["file_size"] == file_size
-        ):
+        if not force and _indexed_as(existing_track, file_size, modified_time):
             # Unchanged content (incl. a pure rename — the paths were just
             # re-pointed above; regrouping for a folder move happens in the
             # clustering pass at the end of this scan).
@@ -852,6 +902,7 @@ class FileIndexer:
         try:
             after_read = await asyncio.to_thread(storage.stat, file_path)
         except FileNotFoundError:
+            self._vanished.add(file_path)
             return None
         if (
             after_read.size != stat.size
@@ -2204,7 +2255,9 @@ class FileIndexer:
             logger.warning("Could not list %s: %s", root, e)
             return True
 
-    async def cleanup_stale_tracks(self) -> Dict[str, int]:
+    async def cleanup_stale_tracks(
+        self, listed: AbstractSet[str] = frozenset()
+    ) -> Dict[str, int]:
         """Remove entries that are no longer valid for the file system.
 
         A track is dropped when its file either no longer exists, or falls
@@ -2221,6 +2274,10 @@ class FileIndexer:
         :meth:`_blocked_reason` rejects are never purged, and each
         candidate's root is re-probed right before deletion so a share going
         offline mid-sweep cannot masquerade as a deleted library.
+
+        @param listed Files a walk has just found, which are known to be
+            there without asking again. Any other row costs a check of its
+            own, including those in a folder the walk could not list.
         """
         logger.debug("Checking for stale files in the database...")
         root_status = await self._probe_music_roots()
@@ -2256,7 +2313,7 @@ class FileIndexer:
                 under_live_root.append((track, root))
 
         gone = await self._missing_paths(
-            track["file_path"] for track, _ in under_live_root
+            (track["file_path"] for track, _ in under_live_root), listed
         )
         candidates.extend(
             (track, root)
@@ -2323,7 +2380,7 @@ class FileIndexer:
             for path in await self.db_manager.get_failure_paths()
             if self.storage.root_of(path, self.music_folders) not in blocked
         ]
-        gone_failures = await self._missing_paths(checkable)
+        gone_failures = await self._missing_paths(checkable, listed)
         for failed_path in checkable:
             if (
                 failed_path in gone_failures

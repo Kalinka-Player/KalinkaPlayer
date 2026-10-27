@@ -64,6 +64,8 @@ class VaultStorage(FileStorage):
         self.nodes: dict[str, _Node] = {}
         self.available = True
         self.identify = True
+        #: Whether listings carry each file's size and mtime, as a share's do.
+        self.listing_measures = False
         self._inodes = itertools.count(1)
         self.trips: list[tuple[str, str]] = []
         #: ``read_ahead_bytes`` of each open, in order.
@@ -102,6 +104,7 @@ class VaultStorage(FileStorage):
     def listdir(self, path: str) -> list[DirEntry]:
         self.trips.append(("listdir", path))
         self._require_online()
+        self._fail_if_asked("listdir", path)
         prefix = path.rstrip("/") + "/"
         children: dict[str, bool] = {}
         for key in self.nodes:
@@ -112,9 +115,21 @@ class VaultStorage(FileStorage):
         if not children and path not in self._directories():
             raise FileNotFoundError(f"no such directory: {path}")
         return [
-            DirEntry(name=name, path=prefix + name, is_dir=is_dir)
+            self._entry(name, prefix + name, is_dir)
             for name, is_dir in sorted(children.items())
         ]
+
+    def _entry(self, name: str, path: str, is_dir: bool) -> DirEntry:
+        if is_dir or not self.listing_measures:
+            return DirEntry(name=name, path=path, is_dir=is_dir)
+        node = self.nodes[path]
+        return DirEntry(
+            name=name,
+            path=path,
+            is_dir=False,
+            size=len(node.data),
+            mtime_ns=node.mtime_ns,
+        )
 
     def stat(self, path: str) -> FileStat:
         self.trips.append(("stat", path))
@@ -316,6 +331,105 @@ class TestScanning:
 
         titles = [t["title"] for t in await indexer.db_manager.get_all_tracks()]
         assert titles == ["B"]
+
+
+def _audio_trips(vault, *operations):
+    return sorted(
+        path
+        for operation, path in vault.trips
+        if operation in operations and path.endswith(".flac")
+    )
+
+
+class TestARescanOfAnUnchangedLibrary:
+    """The scheduled scan's usual case. Over a share every question is a
+    round trip, so what the walk's listings already answered is not asked
+    again, file by file."""
+
+    @pytest.mark.asyncio
+    async def test_files_listed_as_indexed_are_not_measured(self, library, tmp_path):
+        indexer, vault, _ = library
+        vault.listing_measures = True
+        for n in (1, 2, 3):
+            vault.add(f"{ROOT}/Avalon/0{n}.flac", _flac(tmp_path, {"title": f"T{n}"}))
+        await indexer.run_scan()
+        vault.trips.clear()
+
+        await indexer.run_scan()
+
+        assert _audio_trips(vault, "stat", "open") == []
+        assert len(await indexer.db_manager.get_all_tracks()) == 3
+
+    @pytest.mark.asyncio
+    async def test_a_file_retagged_at_the_same_size_is_read_again(
+        self, library, tmp_path
+    ):
+        """The size alone would miss it; the listed mtime does not."""
+        indexer, vault, _ = library
+        vault.listing_measures = True
+        path = vault.add(f"{ROOT}/a.flac", _flac(tmp_path, {"title": "Avalon"}))
+        await indexer.run_scan()
+
+        retagged = _flac(tmp_path, {"title": "Avalan"})
+        assert len(retagged) == len(vault.nodes[path].data)
+        vault.nodes[path].data = retagged
+        vault.nodes[path].mtime_ns += 5_000_000_000
+        await indexer.run_scan()
+
+        [track] = await indexer.db_manager.get_all_tracks()
+        assert track["title"] == "Avalan"
+
+    @pytest.mark.asyncio
+    async def test_a_listing_of_names_alone_leaves_one_check_per_file(
+        self, library, tmp_path
+    ):
+        """A local folder lists names only, so each file is measured by the
+        per-file check — once, because the cleanup takes the walk's word
+        that a listed file is there."""
+        indexer, vault, _ = library
+        paths = [
+            vault.add(f"{ROOT}/0{n}.flac", _flac(tmp_path, {"title": f"T{n}"}))
+            for n in (1, 2)
+        ]
+        await indexer.run_scan()
+        vault.trips.clear()
+
+        await indexer.run_scan()
+
+        assert _audio_trips(vault, "stat") == sorted(paths)
+
+    @pytest.mark.asyncio
+    async def test_a_track_in_a_folder_that_would_not_list_is_kept(
+        self, library, tmp_path
+    ):
+        """Missing from the walk is not missing from the share: a folder the
+        walk could not list says nothing about the files in it."""
+        indexer, vault, _ = library
+        vault.listing_measures = True
+        vault.add(f"{ROOT}/a/x.flac", _flac(tmp_path, {"title": "X"}))
+        vault.add(f"{ROOT}/b/y.flac", _flac(tmp_path, {"title": "Y"}))
+        await indexer.run_scan()
+
+        vault.failing[("listdir", f"{ROOT}/a")] = OSError("the folder did not answer")
+        await indexer.run_scan()
+
+        titles = sorted(t["title"] for t in await indexer.db_manager.get_all_tracks())
+        assert titles == ["X", "Y"]
+
+    @pytest.mark.asyncio
+    async def test_a_listed_file_that_is_not_there_is_dropped(
+        self, library, tmp_path
+    ):
+        """A link whose target was deleted is still listed. Taking the walk's
+        word for it would keep its track forever."""
+        indexer, vault, _ = library
+        path = vault.add(f"{ROOT}/a.flac", _flac(tmp_path, {"title": "A"}))
+        await indexer.run_scan()
+
+        vault.failing[("stat", path)] = FileNotFoundError("dangling link")
+        await indexer.run_scan()
+
+        assert await indexer.db_manager.get_all_tracks() == []
 
 
 class TestWhatIsReadBesideTheAudio:
@@ -690,11 +804,11 @@ class TestReadingThroughOutages:
         process = indexer.process_file
         processed = []
 
-        async def then_switch_off(path, force=False):
+        async def then_switch_off(path, force=False, listed=None):
             processed.append(path)
             if len(processed) == 2:
                 vault.available = False
-            return await process(path, force=force)
+            return await process(path, force=force, listed=listed)
 
         indexer.process_file = then_switch_off
         await indexer.run_scan()

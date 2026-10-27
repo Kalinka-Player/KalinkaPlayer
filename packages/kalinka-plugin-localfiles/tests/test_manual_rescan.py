@@ -72,11 +72,11 @@ async def test_scan_stays_active_through_cleanup(library, monkeypatch):
     fi = FileIndexer(config, db)
     cleanup = fi.cleanup_stale_tracks
 
-    async def checked_cleanup():
+    async def checked_cleanup(listed=frozenset()):
         progress = await db.get_scan_progress()
         assert progress["active"]
         assert progress["last_scan_at"] is None
-        return await cleanup()
+        return await cleanup(listed)
 
     monkeypatch.setattr(fi, "cleanup_stale_tracks", checked_cleanup)
     await fi.run_scan()

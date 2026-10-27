@@ -105,9 +105,9 @@ class LocalStorage(FileStorage):
         return any(is_within(target, root) for root in roots)
 
     def listdir(self, path: str) -> list[DirEntry]:
-        """Sizes are left unreported: ``os.scandir`` caches the directory
-        entry's type but not its size, so filling one in would cost a stat
-        per entry on every pass over the library."""
+        """Sizes and mtimes are left unreported: ``os.scandir`` caches the
+        directory entry's type but neither of those, so filling them in
+        would cost a stat per entry on every pass over the library."""
         return [
             DirEntry(name=child.name, path=child.path, is_dir=is_dir)
             for child, is_dir in _typed_children(path)
