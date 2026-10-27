@@ -18,6 +18,7 @@ import pytest
 import pytest_asyncio
 import soundfile as sf
 from mutagen.flac import FLAC, Picture
+from mutagen.id3 import PictureType
 from PIL import Image
 
 import kalinka_plugin_localfiles.indexer.indexer as indexer_module
@@ -60,16 +61,18 @@ def _cover_png(color):
     return buf.getvalue()
 
 
-def _write_flac(path, tags, cover=None):
+def _write_flac(path, tags, cover=None, *, pictures=()):
+    """``cover`` is embedded as the front, then ``pictures`` as (type, bytes)."""
     sf.write(str(path), np.zeros(4410, dtype="float32"), 44100, format="FLAC")
     audio = FLAC(str(path))
     for k, v in tags.items():
         audio[k] = v
-    if cover is not None:
+    front = [] if cover is None else [(PictureType.COVER_FRONT, cover)]
+    for kind, data in front + list(pictures):
         pic = Picture()
-        pic.type = 3
+        pic.type = kind
         pic.mime = "image/png"
-        pic.data = cover
+        pic.data = data
         audio.add_picture(pic)
     audio.save()
 
@@ -432,6 +435,46 @@ async def test_embedded_art_reads_flac_front_cover(indexer):
     artless = music_dir / "plain.flac"
     _write_flac(artless, {"title": "P"})
     assert fi._embedded_art(LOCAL, str(artless)) is None
+
+
+@pytest.mark.parametrize(
+    "pictures, cover",
+    [
+        (
+            [
+                (PictureType.LEAFLET_PAGE, b"lyrics"),
+                (PictureType.COVER_FRONT, b"front"),
+            ],
+            b"front",
+        ),
+        (
+            [(PictureType.OTHER, b"other"), (PictureType.COVER_FRONT, b"front")],
+            b"front",
+        ),
+        (
+            [(PictureType.LEAFLET_PAGE, b"lyrics"), (PictureType.OTHER, b"other")],
+            b"other",
+        ),
+        (
+            [
+                (PictureType.LEAFLET_PAGE, b"lyrics"),
+                (PictureType.COVER_BACK, b"back"),
+                (PictureType.MEDIA, b"label"),
+            ],
+            None,
+        ),
+    ],
+    ids=["front-listed-last", "front-over-other", "other-without-front", "no-front"],
+)
+@pytest.mark.asyncio
+async def test_only_a_front_or_untyped_picture_is_the_cover(indexer, pictures, cover):
+    """A rip that embeds its booklet must not show a lyrics page as its cover."""
+    fi, db, music_dir, config = indexer
+    path = music_dir / "booklet.flac"
+    _write_flac(path, {"title": "T"}, pictures=pictures)
+
+    assert fi._extract_metadata(LOCAL, str(path)).get("album_art") == cover
+    assert fi._embedded_art(LOCAL, str(path)) == cover
 
 
 class _FakeDb:
