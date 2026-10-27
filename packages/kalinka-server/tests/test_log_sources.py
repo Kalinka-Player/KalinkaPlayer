@@ -6,7 +6,6 @@ newest records first, and reports when its history starts later than asked.
 
 import json
 import os
-import socket
 import threading
 import time
 
@@ -22,6 +21,7 @@ from kalinka_server.log_sources import (
     cap_record,
     render_journal_record,
 )
+from tests.log_export_fakes import FakeReader
 
 T0 = 1_790_000_000
 
@@ -70,33 +70,6 @@ def test_a_huge_record_is_cut_and_marked():
 
     assert len(text.encode()) < MAX_RECORD_BYTES + 100
     assert text.endswith(f"[cut: the record was {MAX_RECORD_BYTES + 10} bytes]")
-
-
-class FakeReader:
-    """A journal reader on a Unix socket, answering from a script."""
-
-    def __init__(self, path, lines, *, hang=False):
-        self.path = str(path)
-        self.lines = lines
-        self.hang = hang
-        self.requests = []
-        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.server.bind(self.path)
-        self.server.listen()
-        self.thread = threading.Thread(target=self._serve, daemon=True)
-        self.thread.start()
-
-    def _serve(self):
-        conn, _ = self.server.accept()
-        with conn:
-            self.requests.append(json.loads(conn.makefile("rb").readline()))
-            for line in self.lines:
-                conn.sendall(line if isinstance(line, bytes) else json.dumps(line).encode() + b"\n")
-            if self.hang:
-                conn.recv(1)
-
-    def close(self):
-        self.server.close()
 
 
 @pytest.fixture

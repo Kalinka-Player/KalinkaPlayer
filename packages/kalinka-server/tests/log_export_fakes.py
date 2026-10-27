@@ -1,5 +1,8 @@
-"""Log sources that answer from memory, for the export's tests."""
+"""Log sources that answer from memory, and a journal reader that answers
+from a script, for the export's tests."""
 
+import json
+import socket
 import threading
 from typing import Dict, Iterator, List, Optional
 
@@ -84,3 +87,37 @@ class FixedCatalog(LogSourceCatalog):
 def records(*pairs) -> List[LogRecord]:
     """``(timestamp, text)`` pairs as records."""
     return [LogRecord(timestamp, text) for timestamp, text in pairs]
+
+
+class FakeReader:
+    """A journal reader on a Unix socket, answering one connection from a
+    script; closed on leaving a ``with`` block."""
+
+    def __init__(self, path, lines, *, hang=False):
+        self.path = str(path)
+        self.lines = lines
+        self.hang = hang
+        self.requests = []
+        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.server.bind(self.path)
+        self.server.listen()
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    def _serve(self):
+        conn, _ = self.server.accept()
+        with conn:
+            self.requests.append(json.loads(conn.makefile("rb").readline()))
+            for line in self.lines:
+                conn.sendall(line if isinstance(line, bytes) else json.dumps(line).encode() + b"\n")
+            if self.hang:
+                conn.recv(1)
+
+    def close(self):
+        self.server.close()
+
+    def __enter__(self) -> "FakeReader":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
