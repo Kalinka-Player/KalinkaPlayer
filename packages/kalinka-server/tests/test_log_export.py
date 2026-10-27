@@ -487,16 +487,19 @@ async def test_the_server_stays_responsive_while_an_export_is_prepared(export_di
     now = time.time()
     big = _server(*((now - 1000 + i / 1000, f"line {i} " + "q" * 400) for i in range(25000)))
     manager = _manager(export_dir, big)
-    worst = 0.0
     async with _client(manager) as client:
+        begun = time.monotonic()
         await client.post(URL, json={"lookback_seconds": DAY})
+        worst = time.monotonic() - begun
         while manager.status().state == "preparing":
             started = time.monotonic()
             await client.get(URL)
             await asyncio.sleep(0.005)
             worst = max(worst, time.monotonic() - started - 0.005)
+        elapsed = time.monotonic() - begun
         final = manager.status()
 
     assert final.state == "ready"
     assert any(w.code == "older_records_dropped" for w in final.warnings)
-    assert worst < 0.25
+    # Relative to the export: a blocked loop holds one request for all of it.
+    assert worst < elapsed / 2
