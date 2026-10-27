@@ -153,6 +153,7 @@ class _Collected:
     last: Optional[float] = None
     size_bytes: int = 0
     truncated: bool = False
+    cut_short: bool = False
     time_filtered: bool = True
     history_start: Optional[float] = None
     readable: bool = True
@@ -172,22 +173,29 @@ def collect(
     until: float,
     carries_credential: Callable[[str], bool],
     token: CancelToken,
+    cutoff: CancelToken,
 ) -> _Collected:
     """The newest records of one source that fit its cap, oldest first,
-    without any that ``carries_credential`` flags.
+    without any that ``carries_credential`` flags. Once ``cutoff`` is
+    cancelled the reading stops, keeping the records it has.
 
     @raise LogSourceUnreadable If the source cannot be read.
     @raise ExportCancelled If the token was cancelled meanwhile.
     """
     token.check()
+    if cutoff.reason is not None:
+        return _Collected(cut_short=True)
     reading = part.source.open(since, until)
     kept: List[tuple] = []
     collected = _Collected()
-    with token.closing(reading.close):
+    with token.closing(reading.close), cutoff.closing(reading.close):
         records = reading.records()
         try:
             for record in records:
                 token.check()
+                if cutoff.reason is not None:
+                    collected.cut_short = True
+                    break
                 if carries_credential(record.text):
                     collected.withheld += 1
                     continue
@@ -199,7 +207,9 @@ def collect(
                 collected.size_bytes += len(line)
         except LogSourceUnreadable:
             token.check()
-            raise
+            if cutoff.reason is None:
+                raise
+            collected.cut_short = True
         finally:
             records.close()
     token.check()
@@ -222,7 +232,16 @@ def warnings_for(part: ArchivePart, collected: _Collected, since: float) -> List
             ExportWarning(name, "source_unreadable", f"The {label}'s logs could not be read.")
         ]
     found: List[ExportWarning] = []
-    if collected.truncated:
+    if collected.cut_short:
+        left_out = "older records were" if collected.lines else "its records were all"
+        found.append(
+            ExportWarning(
+                name,
+                "collection_cut_short",
+                f"Reading the {label}'s logs took too long, so {left_out} left out.",
+            )
+        )
+    elif collected.truncated:
         found.append(
             ExportWarning(
                 name,
@@ -236,6 +255,7 @@ def warnings_for(part: ArchivePart, collected: _Collected, since: float) -> List
         )
     if (
         not collected.truncated
+        and not collected.cut_short
         and collected.history_start is not None
         and collected.history_start > since
     ):
@@ -306,7 +326,7 @@ def _manifest(
             "records": len(got.lines),
             "bytes": got.size_bytes,
             "records_withheld": got.withheld,
-            "truncated": got.truncated,
+            "truncated": got.truncated or got.cut_short,
             "time_filter_applied": got.time_filtered,
         }
     manifest = {
@@ -353,9 +373,12 @@ def write_archive(
     until: float,
     carries_credential: Callable[[str], bool],
     token: CancelToken,
+    optional_cutoff: Optional[CancelToken] = None,
 ) -> ArchiveResult:
     """Collect every part and publish the archive at ``target``.
 
+    Once ``optional_cutoff`` is cancelled, a part that is not required stops
+    reading and keeps what it has, so a slow one cannot fail the export.
     Nothing is left behind unless it succeeds: the partial file is removed
     whatever stops it.
 
@@ -364,14 +387,18 @@ def write_archive(
         cannot be read, ``insufficient_storage`` when the disk is full, and
         ``export_failed`` for any other write error.
     """
+    optional_cutoff = optional_cutoff or CancelToken()
     partial = target + ".part"
     collected: Dict[str, _Collected] = {}
     warnings: List[ExportWarning] = []
     try:
         for part in parts:
             name = part.source.name
+            cutoff = CancelToken() if part.required else optional_cutoff
             try:
-                collected[name] = collect(part, since, until, carries_credential, token)
+                collected[name] = collect(
+                    part, since, until, carries_credential, token, cutoff
+                )
             except LogSourceUnreadable as e:
                 if part.required:
                     raise ExportFailure("logs_unreadable") from e

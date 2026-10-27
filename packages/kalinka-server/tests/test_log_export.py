@@ -327,6 +327,75 @@ async def test_a_collection_past_its_deadline_fails_as_a_timeout(export_dir):
     assert os.listdir(export_dir) == []
 
 
+async def test_an_optional_source_still_reading_at_its_deadline_is_cut_short(export_dir):
+    kernel = ListSource(
+        "kernel", records((time.time() - 5, "a kernel line")), gate=threading.Event()
+    )
+    manager = _manager(
+        export_dir, _server(), kernel, deadline_seconds=5, optional_deadline_seconds=0.1
+    )
+    async with _client(manager) as client:
+        await client.post(URL, json={"lookback_seconds": DAY})
+        ready = await _until_state(client, "ready")
+        download = await client.get(f"{URL}/download")
+
+    assert [(w["source"], w["code"]) for w in ready["warnings"]] == [
+        ("kernel", "collection_cut_short")
+    ]
+    with zipfile.ZipFile(io.BytesIO(download.content)) as archive:
+        assert archive.read("server.log") == b"a server line\n"
+        assert archive.read("kernel.log") == b""
+
+
+async def test_a_slow_supervisor_read_cannot_cost_the_kernel_s_logs(export_dir):
+    supervisor = ListSource(
+        "supervisor",
+        records((time.time() - 5, "a supervisor line")),
+        gate=threading.Event(),
+    )
+    kernel = ListSource("kernel", records((time.time() - 5, "a kernel line")))
+    manager = _manager(
+        export_dir,
+        _server(),
+        supervisor,
+        kernel,
+        deadline_seconds=5,
+        optional_deadline_seconds=0.1,
+    )
+    async with _client(manager) as client:
+        await client.post(URL, json={"lookback_seconds": DAY})
+        ready = await _until_state(client, "ready")
+        download = await client.get(f"{URL}/download")
+
+    assert [(w["source"], w["code"]) for w in ready["warnings"]] == [
+        ("supervisor", "collection_cut_short")
+    ]
+    with zipfile.ZipFile(io.BytesIO(download.content)) as archive:
+        assert archive.read("kernel.log") == b"a kernel line\n"
+
+
+async def test_the_server_s_logs_have_the_whole_deadline(export_dir):
+    gate = threading.Event()
+    server = _server(gate=gate)
+    kernel = ListSource("kernel", records((time.time() - 5, "a kernel line")))
+    manager = _manager(
+        export_dir, server, kernel, deadline_seconds=5, optional_deadline_seconds=0.05
+    )
+    async with _client(manager) as client:
+        await client.post(URL, json={"lookback_seconds": DAY})
+        assert await asyncio.to_thread(server.reached_gate.wait, 2)
+        await asyncio.sleep(0.2)
+        gate.set()
+        ready = await _until_state(client, "ready")
+        download = await client.get(f"{URL}/download")
+
+    assert [(w["source"], w["code"]) for w in ready["warnings"]] == [
+        ("kernel", "collection_cut_short")
+    ]
+    with zipfile.ZipFile(io.BytesIO(download.content)) as archive:
+        assert archive.read("server.log") == b"a server line\n"
+
+
 async def test_a_failed_export_is_replaced_by_the_next_start(export_dir):
     manager = _manager(export_dir, _server(fail=True))
     async with _client(manager) as client:

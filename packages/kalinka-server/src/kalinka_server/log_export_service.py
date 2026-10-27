@@ -47,6 +47,9 @@ OPTIONAL_CAP_BYTES = {
     KERNEL: 1024 * 1024,
 }
 DEADLINE_SECONDS = 60.0
+#: When the optional sources stop reading and keep what they have, leaving
+#: the rest of the deadline to write the archive.
+OPTIONAL_DEADLINE_SECONDS = 45.0
 LIFETIME_SECONDS = 30 * 60.0
 
 _ERROR_MESSAGES = {
@@ -194,12 +197,14 @@ class ExportManager:
         secrets: Callable[[], Iterable[str]],
         *,
         deadline_seconds: float = DEADLINE_SECONDS,
+        optional_deadline_seconds: float = OPTIONAL_DEADLINE_SECONDS,
         lifetime_seconds: float = LIFETIME_SECONDS,
     ) -> None:
         self._directory = directory
         self._catalog = catalog
         self._secrets = secrets
         self._deadline = deadline_seconds
+        self._optional_deadline = optional_deadline_seconds
         self._lifetime = lifetime_seconds
         self._lock = threading.Lock()
         self._export: Optional[_Export] = None
@@ -247,7 +252,9 @@ class ExportManager:
             asked = [SERVER]
             if include_local_renderer:
                 asked.append(LOCAL_RENDERER)
-            names = asked + [name for name in (SUPERVISOR, KERNEL) if name in available]
+            # The optional deadline skips the sources read last; the kernel's
+            # account of an OOM kill or crash is worth more than the supervisor's.
+            names = asked + [name for name in (KERNEL, SUPERVISOR) if name in available]
             export = _Export(
                 id=uuid.uuid4().hex,
                 since=until - timedelta(seconds=lookback_seconds),
@@ -349,6 +356,10 @@ class ExportManager:
             await asyncio.wait([previous])
         loop = asyncio.get_running_loop()
         deadline = loop.call_later(self._deadline, export.token.cancel, _TIMED_OUT)
+        optional_cutoff = CancelToken()
+        optional_deadline = loop.call_later(
+            self._optional_deadline, optional_cutoff.cancel, _TIMED_OUT
+        )
         result: Optional[ArchiveResult] = None
         error: Optional[str] = None
         try:
@@ -360,6 +371,7 @@ class ExportManager:
                 export.until.timestamp(),
                 carries_credential,
                 export.token,
+                optional_cutoff,
             )
         except ExportCancelled as e:
             error = "collection_timeout" if e.reason == _TIMED_OUT else None
@@ -371,6 +383,7 @@ class ExportManager:
             error = "export_failed"
         finally:
             deadline.cancel()
+            optional_deadline.cancel()
         with self._lock:
             if self._export is not export:
                 if result is not None:

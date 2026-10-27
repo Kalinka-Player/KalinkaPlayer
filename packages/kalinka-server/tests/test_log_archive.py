@@ -35,10 +35,18 @@ def _read(path, entry):
         return archive.read(entry).decode()
 
 
-def _write(tmp_path, *parts, carries_credential=lambda s: False, token=None):
+def _write(
+    tmp_path, *parts, carries_credential=lambda s: False, token=None, optional_cutoff=None
+):
     target = str(tmp_path / "a.zip")
     result = write_archive(
-        target, parts, SINCE, UNTIL, carries_credential, token or CancelToken()
+        target,
+        parts,
+        SINCE,
+        UNTIL,
+        carries_credential,
+        token or CancelToken(),
+        optional_cutoff,
     )
     return target, result
 
@@ -211,6 +219,60 @@ def test_a_kernel_log_that_cannot_be_read_leaves_a_ready_archive_with_a_warning(
     kernel = json.loads(_read(target, "manifest.json"))["sources"]["kernel"]
     assert kernel["readable"] is False
     assert kernel["backend"] == "journal"
+
+
+def test_an_optional_source_still_reading_at_the_cutoff_keeps_what_it_read(tmp_path):
+    server = ListSource("server", records((T0, "server line")))
+    oom = _kernel_entry(T0 + 3, "3", "Out of memory: Killed process 812 (python3)")
+    cutoff = CancelToken()
+
+    def cut_off_once_the_kill_is_read(text):
+        if "Killed process" in text:
+            cutoff.cancel("deadline")
+        return False
+
+    # The reader holds the connection open after its one record, as a slow scan would.
+    with FakeReader(tmp_path / "reader.sock", [oom], hang=True) as reader:
+        target, result = _write(
+            tmp_path,
+            ArchivePart(server, 1 << 20, required=True),
+            ArchivePart(JournalLogSource("kernel", reader.path), 1 << 20, required=False),
+            carries_credential=cut_off_once_the_kill_is_read,
+            optional_cutoff=cutoff,
+        )
+
+    assert _read(target, "server.log") == "server line\n"
+    assert _read(target, "kernel.log") == (
+        "2026-09-21T14:13:23.000Z kernel [err] Out of memory: Killed process 812 (python3)\n"
+    )
+    assert _codes(result) == [("kernel", "collection_cut_short")]
+    assert result.warnings[0].message == (
+        "Reading the kernel's logs took too long, so older records were left out."
+    )
+    kernel = json.loads(_read(target, "manifest.json"))["sources"]["kernel"]
+    assert kernel["readable"] is True
+    assert kernel["truncated"] is True
+
+
+def test_past_the_cutoff_only_the_required_source_is_still_read(tmp_path):
+    cutoff = CancelToken()
+    cutoff.cancel("deadline")
+    server = ListSource("server", records((T0, "server line")))
+    renderer = ListSource("local_renderer", records((T0, "renderer line")))
+
+    target, result = _write(
+        tmp_path,
+        ArchivePart(server, 1 << 20, required=True),
+        ArchivePart(renderer, 1 << 20, required=False),
+        optional_cutoff=cutoff,
+    )
+
+    assert _read(target, "server.log") == "server line\n"
+    assert _read(target, "local-renderer.log") == ""
+    assert _codes(result) == [("local_renderer", "collection_cut_short")]
+    assert result.warnings[0].message == (
+        "Reading the renderer's logs took too long, so its records were all left out."
+    )
 
 
 def test_history_that_starts_after_the_requested_range_is_a_warning(tmp_path):
