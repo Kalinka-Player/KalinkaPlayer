@@ -7,12 +7,16 @@ would hand the whole journal to every plugin the server runs. Instead
 as a transient user in the ``systemd-journal`` group, with the connection as
 its standard input and output.
 
-It reads one request line — ``{"source": ..., "since": ..., "until": ...}``,
-the times in whole Unix seconds — and answers with the source's records as
-``journalctl --output=json`` lines, newest first, then one trailer line:
-``{"status": "ok", "journal_start": <seconds or null>}`` or
-``{"status": "error", "code": ...}``. Journal fields are upper case, so a
-trailer's lower-case ``status`` can never be mistaken for a record.
+It reads one request line — ``{"source": ..., "since": ..., "until": ...,
+"journal_start": <bool>}``, the times in whole Unix seconds — and answers
+with the source's records as ``journalctl --output=json`` lines, newest
+first, then one trailer line: ``{"status": "ok", "journal_start": <seconds
+or null>}`` or ``{"status": "error", "code": ...}``. Finding the journal's
+start takes a second journalctl run, the same for every source, so a client
+that already knows it sends ``"journal_start": false`` and the trailer
+leaves it out; without the field it is asked for. Journal fields are upper
+case, so a trailer's lower-case ``status`` can never be mistaken for a
+record.
 
 Only the standard library is imported: this runs with the venv's interpreter
 but none of the server.
@@ -25,7 +29,7 @@ import selectors
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import BinaryIO, List, Optional, Sequence, Tuple
+from typing import BinaryIO, List, NamedTuple, Optional, Sequence, Tuple
 
 
 @dataclass(frozen=True)
@@ -87,19 +91,34 @@ class BadRequest(Exception):
     """The request is not one this reader answers."""
 
 
-def parse_request(line: bytes) -> Tuple[str, int, int]:
-    """The source and time range a request line asks for.
+class Request(NamedTuple):
+    """A validated request: a source, its range, and whether to report the
+    journal's start."""
 
-    @raise BadRequest For anything but exactly a known source and two
-        non-negative integer times in order.
+    source: str
+    since: int
+    until: int
+    journal_start: bool
+
+
+_REQUIRED_FIELDS = {"source", "since", "until"}
+
+
+def parse_request(line: bytes) -> Request:
+    """What a request line asks for.
+
+    @raise BadRequest For anything but exactly a known source, two
+        non-negative integer times in order and, optionally, a boolean
+        ``journal_start``.
     """
     try:
         request = json.loads(line)
     except ValueError:
         raise BadRequest("not JSON")
-    if not isinstance(request, dict) or set(request) != {"source", "since", "until"}:
+    if not isinstance(request, dict) or set(request) - {"journal_start"} != _REQUIRED_FIELDS:
         raise BadRequest("wrong fields")
     source, since, until = request["source"], request["since"], request["until"]
+    journal_start = request.get("journal_start", True)
     if source not in SOURCE_QUERIES:
         raise BadRequest("unknown source")
     for value in (since, until):
@@ -107,7 +126,9 @@ def parse_request(line: bytes) -> Tuple[str, int, int]:
             raise BadRequest("times must be whole seconds")
     if since > until:
         raise BadRequest("range ends before it starts")
-    return source, since, until
+    if type(journal_start) is not bool:
+        raise BadRequest("journal_start must be true or false")
+    return Request(source, since, until, journal_start)
 
 
 def journalctl_argv(source: str, since: int, until: int) -> List[str]:
@@ -214,7 +235,7 @@ def _trailer(conn_out: BinaryIO, **fields) -> None:
 def serve(conn_in: BinaryIO, conn_out: BinaryIO) -> int:
     """Answer one request on an already-accepted connection."""
     try:
-        source, since, until = parse_request(_read_request(conn_in))
+        request = parse_request(_read_request(conn_in))
     except BadRequest as e:
         print(f"Refused a request: {e}", file=sys.stderr)
         _trailer(conn_out, status="error", code="bad_request")
@@ -223,13 +244,17 @@ def serve(conn_in: BinaryIO, conn_out: BinaryIO) -> int:
         print(f"Not in the {JOURNAL_GROUP} group", file=sys.stderr)
         _trailer(conn_out, status="error", code="journal_unreadable")
         return 1
-    status = _stream(journalctl_argv(source, since, until), conn_in.fileno(), conn_out)
+    argv = journalctl_argv(request.source, request.since, request.until)
+    status = _stream(argv, conn_in.fileno(), conn_out)
     if status is None:
         return 0
     if status != 0:
         _trailer(conn_out, status="error", code="journal_unreadable")
         return 1
-    _trailer(conn_out, status="ok", journal_start=_journal_start())
+    if request.journal_start:
+        _trailer(conn_out, status="ok", journal_start=_journal_start())
+    else:
+        _trailer(conn_out, status="ok")
     return 0
 
 

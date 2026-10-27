@@ -160,12 +160,45 @@ def render_journal_record(entry: Mapping[str, Any]) -> LogRecord:
 _REALTIME_RE = re.compile(rb'"__REALTIME_TIMESTAMP"\s*:\s*"(\d+)"')
 
 
+class JournalStart:
+    """When the journal's retained history begins, the same for every source.
+
+    The first reading to run to its end asks the reader for it; the others
+    share the answer instead of each costing the reader a journalctl run.
+    A null answer is not kept: the journal is never empty while the server
+    logs to it, so null means the reader's journalctl run failed, and the
+    next reading asks again. One export's readings use it, from its one
+    worker thread.
+    """
+
+    def __init__(self) -> None:
+        self.known = False
+        self.value: Optional[float] = None
+
+    def learn(self, value: Optional[float]) -> None:
+        self.value = value
+        self.known = value is not None
+
+
 class _ReaderReading(LogReading):
-    def __init__(self, socket_path: str, source: str, since: float, until: float):
+    def __init__(
+        self,
+        socket_path: str,
+        source: str,
+        since: float,
+        until: float,
+        journal_start: JournalStart,
+    ):
         self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self._closed = threading.Event()
-        self._history_start: Optional[float] = None
-        request = {"source": source, "since": int(since), "until": int(until)}
+        self._journal_start = journal_start
+        self._exhausted = False
+        request = {
+            "source": source,
+            "since": int(since),
+            "until": int(until),
+            "journal_start": not journal_start.known,
+        }
         # Bounded, since the deadline can only close a reading once it exists.
         self._sock.settimeout(_CONNECT_TIMEOUT_S)
         try:
@@ -195,8 +228,10 @@ class _ReaderReading(LogReading):
                 if "status" in entry:
                     if entry["status"] != "ok":
                         raise LogSourceUnreadable(f"journal reader: {entry.get('code')}")
-                    start = entry.get("journal_start")
-                    self._history_start = float(start) if start is not None else None
+                    if "journal_start" in entry:
+                        start = entry["journal_start"]
+                        self._journal_start.learn(None if start is None else float(start))
+                    self._exhausted = True
                     return
                 yield render_journal_record(entry)
         finally:
@@ -231,18 +266,29 @@ class _ReaderReading(LogReading):
 
     @property
     def history_start(self) -> Optional[float]:
-        return self._history_start
+        return self._journal_start.value if self._exhausted else None
 
 
 class JournalLogSource(LogSource):
-    """A source's units or matches, read through the journal reader."""
+    """A source's units or matches, read through the journal reader.
 
-    def __init__(self, name: str, socket_path: str = READER_SOCKET) -> None:
+    Sources given one ``journal_start`` ask the reader for it only once.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        socket_path: str = READER_SOCKET,
+        journal_start: Optional[JournalStart] = None,
+    ) -> None:
         super().__init__(name)
         self._socket_path = socket_path
+        self._journal_start = journal_start or JournalStart()
 
     def open(self, since: float, until: float) -> LogReading:
-        return _ReaderReading(self._socket_path, self.name, since, until)
+        return _ReaderReading(
+            self._socket_path, self.name, since, until, self._journal_start
+        )
 
     def describe(self) -> Dict[str, Any]:
         query = SOURCE_QUERIES[self.name]
@@ -370,7 +416,8 @@ class LogSourceCatalog(ABC):
 class JournalCatalog(LogSourceCatalog):
     """Production: the journal, through the reader — the server's units and
     the kernel's records, and the renderer and the supervisor on this
-    machine, each while its package is installed."""
+    machine, each while its package is installed. The sources of one
+    :meth:`available` call, which is one export's, share the journal's start."""
 
     def __init__(
         self,
@@ -387,14 +434,13 @@ class JournalCatalog(LogSourceCatalog):
     def available(self) -> Dict[str, LogSource]:
         if not os.path.exists(self._socket_path):
             return {}
-        sources: Dict[str, LogSource] = {
-            SERVER: JournalLogSource(SERVER, self._socket_path)
+        packages = self._package_unit_files.items()
+        installed = [name for name, unit_file in packages if os.path.exists(unit_file)]
+        journal_start = JournalStart()
+        return {
+            name: JournalLogSource(name, self._socket_path, journal_start)
+            for name in [SERVER, *installed, KERNEL]
         }
-        for name, unit_file in self._package_unit_files.items():
-            if os.path.exists(unit_file):
-                sources[name] = JournalLogSource(name, self._socket_path)
-        sources[KERNEL] = JournalLogSource(KERNEL, self._socket_path)
-        return sources
 
 
 class FileCatalog(LogSourceCatalog):

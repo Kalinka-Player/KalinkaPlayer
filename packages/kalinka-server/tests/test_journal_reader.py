@@ -46,6 +46,9 @@ RECORD = {
         b'{"source": "server", "since": true, "until": 2}\n',
         b'{"source": "server", "since": -1, "until": 2}\n',
         b'{"source": "server", "since": 3, "until": 2}\n',
+        b'{"source": "server", "since": 1, "until": 2, "journal_start": 1}\n',
+        b'{"source": "server", "since": 1, "until": 2, "journal_start": "no"}\n',
+        b'{"since": 1, "until": 2, "journal_start": true}\n',
     ],
 )
 def test_anything_but_a_known_source_and_a_range_is_refused(line):
@@ -57,7 +60,16 @@ def test_anything_but_a_known_source_and_a_range_is_refused(line):
 def test_a_valid_request_is_understood(source):
     line = json.dumps({"source": source, "since": 5, "until": 9}).encode() + b"\n"
 
-    assert parse_request(line) == (source, 5, 9)
+    assert parse_request(line) == (source, 5, 9, True)
+
+
+@pytest.mark.parametrize("asked", [True, False])
+def test_a_request_may_say_whether_it_needs_the_journal_start(asked):
+    line = json.dumps(
+        {"source": "kernel", "since": 5, "until": 9, "journal_start": asked}
+    ).encode()
+
+    assert parse_request(line + b"\n").journal_start is asked
 
 
 @pytest.mark.parametrize("source", sorted(SOURCE_QUERIES))
@@ -150,6 +162,19 @@ def _ask(request: bytes, timeout=10.0):
 
 def _answer(ours):
     return [json.loads(line) for line in ours.makefile("rb")]
+
+
+def test_a_client_that_knows_the_journal_start_costs_one_journalctl_run(fake_journalctl):
+    (fake_journalctl / "records.jsonl").write_text(json.dumps(RECORD) + "\n")
+
+    ours, thread, _ = _ask(
+        b'{"source": "kernel", "since": 1, "until": 2, "journal_start": false}\n'
+    )
+    lines = _answer(ours)
+    thread.join(5)
+
+    assert lines == [RECORD, {"status": "ok"}]
+    assert len((fake_journalctl / "args.log").read_text().splitlines()) == 1
 
 
 def test_records_stream_back_then_an_ok_trailer_with_the_journal_start(fake_journalctl):

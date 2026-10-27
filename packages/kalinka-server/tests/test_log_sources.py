@@ -126,9 +126,64 @@ def test_the_journal_source_asks_for_its_name_and_range_and_yields_newest_first(
 
     texts = [r.text for r in reading.records()]
 
-    assert reader.requests == [{"source": "server", "since": T0, "until": T0 + 10}]
+    assert reader.requests == [
+        {"source": "server", "since": T0, "until": T0 + 10, "journal_start": True}
+    ]
     assert [t.rsplit(" ", 1)[-1] for t in texts] == ["newer", "older"]
     assert reading.history_start == T0 - 100
+
+
+def test_the_sources_of_one_catalog_ask_for_the_journal_start_once(tmp_path):
+    absent = str(tmp_path / "absent.service")
+    with FakeReader(
+        tmp_path / "reader.sock",
+        [_entry(T0 + 1, "server line"), {"status": "ok", "journal_start": T0 + 5}],
+        [{"status": "ok"}],
+    ) as reader:
+        sources = JournalCatalog(reader.path, absent, absent).available()
+        server = sources["server"].open(T0, T0 + 10)
+        list(server.records())
+        kernel = sources["kernel"].open(T0, T0 + 10)
+        list(kernel.records())
+
+    assert [r["source"] for r in reader.requests] == ["server", "kernel"]
+    assert [r["journal_start"] for r in reader.requests] == [True, False]
+    assert server.history_start == kernel.history_start == T0 + 5
+
+
+def test_a_reading_that_stops_early_leaves_the_journal_start_for_the_next(tmp_path):
+    absent = str(tmp_path / "absent.service")
+    with FakeReader(
+        tmp_path / "reader.sock",
+        [_entry(T0 + 2, "newer"), _entry(T0 + 1, "older"), {"status": "ok", "journal_start": T0}],
+        [{"status": "ok", "journal_start": T0}],
+    ) as reader:
+        sources = JournalCatalog(reader.path, absent, absent).available()
+        server = sources["server"].open(T0, T0 + 10)
+        records = server.records()
+        next(records)
+        records.close()
+        list(sources["kernel"].open(T0, T0 + 10).records())
+
+    assert [r["journal_start"] for r in reader.requests] == [True, True]
+    assert server.history_start is None
+
+
+def test_a_null_journal_start_is_asked_for_again(tmp_path):
+    absent = str(tmp_path / "absent.service")
+    with FakeReader(
+        tmp_path / "reader.sock",
+        [_entry(T0 + 1, "server line"), {"status": "ok", "journal_start": None}],
+        [{"status": "ok", "journal_start": T0 + 5}],
+    ) as reader:
+        sources = JournalCatalog(reader.path, absent, absent).available()
+        server = sources["server"].open(T0, T0 + 10)
+        list(server.records())
+        kernel = sources["kernel"].open(T0, T0 + 10)
+        list(kernel.records())
+
+    assert [r["journal_start"] for r in reader.requests] == [True, True]
+    assert server.history_start == kernel.history_start == T0 + 5
 
 
 def test_an_empty_range_is_empty_not_unreadable(reader_at):

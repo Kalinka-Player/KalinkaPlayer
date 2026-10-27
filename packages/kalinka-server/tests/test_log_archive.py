@@ -186,7 +186,9 @@ def test_the_kernel_s_records_go_in_oldest_first_within_their_cap(tmp_path):
             ArchivePart(JournalLogSource("kernel", reader.path), len(kept), required=False),
         )
 
-    assert reader.requests == [{"source": "kernel", "since": SINCE, "until": UNTIL}]
+    assert reader.requests == [
+        {"source": "kernel", "since": SINCE, "until": UNTIL, "journal_start": True}
+    ]
     assert _read(target, "kernel.log") == kept
     assert _codes(result) == [("kernel", "older_records_dropped")]
     assert result.warnings[0].message == (

@@ -90,12 +90,12 @@ def records(*pairs) -> List[LogRecord]:
 
 
 class FakeReader:
-    """A journal reader on a Unix socket, answering one connection from a
-    script; closed on leaving a ``with`` block."""
+    """A journal reader on a Unix socket, answering each connection in turn
+    from the next of its scripts; closed on leaving a ``with`` block."""
 
-    def __init__(self, path, lines, *, hang=False):
+    def __init__(self, path, *scripts, hang=False):
         self.path = str(path)
-        self.lines = lines
+        self.scripts = scripts
         self.hang = hang
         self.requests = []
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -105,19 +105,23 @@ class FakeReader:
         self.thread.start()
 
     def _serve(self):
-        conn, _ = self.server.accept()
-        with conn:
-            self.requests.append(json.loads(conn.makefile("rb").readline()))
-            try:
-                for line in self.lines:
-                    conn.sendall(
-                        line if isinstance(line, bytes) else json.dumps(line).encode() + b"\n"
-                    )
-            except (BrokenPipeError, ConnectionResetError):
-                # A client that has what fits its cap hangs up, as the real reader allows.
-                return
-            if self.hang:
-                conn.recv(1)
+        for lines in self.scripts:
+            conn, _ = self.server.accept()
+            with conn:
+                self.requests.append(json.loads(conn.makefile("rb").readline()))
+                self._answer(conn, lines)
+
+    def _answer(self, conn, lines):
+        try:
+            for line in lines:
+                conn.sendall(
+                    line if isinstance(line, bytes) else json.dumps(line).encode() + b"\n"
+                )
+        except (BrokenPipeError, ConnectionResetError):
+            # A client that has what fits its cap hangs up, as the real reader allows.
+            return
+        if self.hang:
+            conn.recv(1)
 
     def close(self):
         self.server.close()
