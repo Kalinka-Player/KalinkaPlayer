@@ -255,9 +255,10 @@ func (n *NetworkManager) Join(ctx context.Context, c protocol.Command, progress 
 		previous = value[string](p, "Uuid")
 	}
 	id := UUID()
+	// No power saving: with it a Pi's radio can stay associated yet stop passing traffic.
 	s := settings{
 		"connection":               {"id": v("Kalinka setup " + id[:8]), "uuid": v(id), "type": v("802-11-wireless"), "interface-name": v(n.Interface), "autoconnect": v(false), "permissions": v([]string{})},
-		"802-11-wireless":          {"ssid": v([]byte(c.SSID)), "mode": v("infrastructure"), "hidden": v(true)},
+		"802-11-wireless":          {"ssid": v([]byte(c.SSID)), "mode": v("infrastructure"), "hidden": v(true), "powersave": v(uint32(2))},
 		"802-11-wireless-security": {"key-mgmt": v("wpa-psk"), "proto": v([]string{"rsn"}), "psk": v(c.Password.Reveal()), "psk-flags": v(uint32(0))},
 		"ipv4":                     {"method": v("auto"), "dhcp-timeout": v(int32(30))}, "ipv6": {"method": v("auto"), "may-fail": v(true)}}
 	defer clear(s["802-11-wireless-security"])

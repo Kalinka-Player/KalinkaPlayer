@@ -105,6 +105,7 @@ configure_wifi() {
   # NetworkManager ignores a profile any other user could read.
   local profile=/etc/NetworkManager/system-connections/kalinka-wifi.nmconnection
   install -D -m 600 /dev/null "$profile" || return
+  # powersave=2 means off: with power saving, a Pi's radio can stay associated yet stop passing traffic.
   cat > "$profile" <<PROFILE || return
 [connection]
 id=kalinka-wifi
@@ -114,6 +115,7 @@ autoconnect=true
 [wifi]
 mode=infrastructure
 ssid=$ssid
+powersave=2
 
 [wifi-security]
 key-mgmt=wpa-psk
