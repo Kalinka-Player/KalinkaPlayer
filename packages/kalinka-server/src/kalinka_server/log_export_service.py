@@ -244,10 +244,10 @@ class ExportManager:
                 raise LogSourceUnavailable(LOCAL_RENDERER, required=False)
             self._discard_locked()
             until = datetime.now(timezone.utc).replace(microsecond=0)
-            names = [SERVER]
+            asked = [SERVER]
             if include_local_renderer:
-                names.append(LOCAL_RENDERER)
-            names.extend(name for name in (SUPERVISOR, KERNEL) if name in available)
+                asked.append(LOCAL_RENDERER)
+            names = asked + [name for name in (SUPERVISOR, KERNEL) if name in available]
             export = _Export(
                 id=uuid.uuid4().hex,
                 since=until - timedelta(seconds=lookback_seconds),
@@ -255,7 +255,12 @@ class ExportManager:
             )
             caps = _cap_bytes(names)
             parts = [
-                ArchivePart(available[name], caps[name], required=name == SERVER)
+                ArchivePart(
+                    available[name],
+                    caps[name],
+                    required=name == SERVER,
+                    asked_for=name in asked,
+                )
                 for name in names
             ]
             self._export = export

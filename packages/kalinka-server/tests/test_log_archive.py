@@ -110,6 +110,20 @@ def test_an_empty_source_gives_an_empty_file_and_a_warning(tmp_path):
     assert _codes(result) == [("server", "no_records")]
 
 
+def test_an_empty_source_included_unasked_gives_an_empty_file_and_no_warning(tmp_path):
+    server = ListSource("server", records((T0, "server line")))
+
+    target, result = _write(
+        tmp_path,
+        ArchivePart(server, 1 << 20, required=True),
+        ArchivePart(ListSource("kernel"), 1 << 20, required=False, asked_for=False),
+    )
+
+    assert _read(target, "kernel.log") == ""
+    assert result.warnings == []
+    assert json.loads(_read(target, "manifest.json"))["sources"]["kernel"]["records"] == 0
+
+
 def test_an_unreadable_server_source_fails_the_export_and_leaves_nothing(tmp_path):
     with pytest.raises(ExportFailure) as failure:
         _write(tmp_path, ArchivePart(ListSource("server", fail=True), 1 << 20, required=True))

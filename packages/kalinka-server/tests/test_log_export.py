@@ -143,6 +143,18 @@ async def test_the_supervisor_s_and_kernel_s_logs_go_in_unasked_while_available(
         assert archive.read(entry) == f"a {name} line\n".encode()
 
 
+async def test_only_an_empty_source_the_client_asked_for_is_warned_about(export_dir):
+    quiet = [ListSource(name) for name in ("local_renderer", "supervisor", "kernel")]
+    manager = _manager(export_dir, _server(), *quiet)
+    async with _client(manager) as client:
+        await client.post(URL, json={"lookback_seconds": DAY, "include_local_renderer": True})
+        ready = await _until_state(client, "ready")
+
+    assert [(w["source"], w["code"]) for w in ready["warnings"]] == [
+        ("local_renderer", "no_records")
+    ]
+
+
 MIB = 1024 * 1024
 
 

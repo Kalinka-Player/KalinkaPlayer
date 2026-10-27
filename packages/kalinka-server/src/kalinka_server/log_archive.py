@@ -119,12 +119,14 @@ class ArchivePart:
     """A source to include, with its share of the text cap.
 
     A ``required`` source that cannot be read fails the export; any other
-    leaves a warning.
+    leaves a warning. Only a source the client ``asked_for`` warns when it
+    has no records: one included whenever available is often quiet.
     """
 
     source: LogSource
     cap_bytes: int
     required: bool
+    asked_for: bool = True
 
 
 @dataclass(frozen=True)
@@ -211,8 +213,9 @@ def collect(
     return collected
 
 
-def warnings_for(name: str, collected: _Collected, since: float) -> List[ExportWarning]:
+def warnings_for(part: ArchivePart, collected: _Collected, since: float) -> List[ExportWarning]:
     """What a reader of the archive should know about one source's coverage."""
+    name = part.source.name
     label = _LABELS.get(name, name)
     if not collected.readable:
         return [
@@ -227,7 +230,7 @@ def warnings_for(name: str, collected: _Collected, since: float) -> List[ExportW
                 f"Older {label} records were left out to keep the archive small.",
             )
         )
-    elif not collected.lines:
+    elif not collected.lines and part.asked_for:
         found.append(
             ExportWarning(name, "no_records", f"The {label} logged nothing in this period.")
         )
@@ -373,7 +376,7 @@ def write_archive(
                 if part.required:
                     raise ExportFailure("logs_unreadable") from e
                 collected[name] = _Collected(readable=False)
-            warnings.extend(warnings_for(name, collected[name], since))
+            warnings.extend(warnings_for(part, collected[name], since))
         entries = {
             ENTRY_NAMES[part.source.name]: collected[part.source.name].lines
             for part in parts
