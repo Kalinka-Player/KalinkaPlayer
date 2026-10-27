@@ -20,6 +20,7 @@ import pytest
 import pytest_asyncio
 import soundfile as sf
 from mutagen.flac import FLAC, Picture
+from mutagen.id3 import PictureType
 from PIL import Image
 
 import kalinka_plugin_localfiles.indexer.indexer as indexer_module
@@ -54,21 +55,28 @@ def _cover_bytes(color, size=(64, 64)):
     return buf.getvalue()
 
 
-def _write_flac(path, tags, cover=None):
+def _write_flac(path, tags, cover=None, kind=PictureType.COVER_FRONT):
     sf.write(str(path), np.zeros(4410, dtype="float32"), 44100, format="FLAC")
     audio = FLAC(str(path))
     for k, v in tags.items():
         audio[k] = v
     if cover is not None:
         pic = Picture()
-        pic.type = 3
+        pic.type = kind
         pic.mime = "image/png"
         pic.data = cover
         audio.add_picture(pic)
     audio.save()
 
 
-async def _album_with(music_dir, fi, *, folder_images=(), embedded=None):
+async def _album_with(
+    music_dir,
+    fi,
+    *,
+    folder_images=(),
+    embedded=None,
+    embedded_kind=PictureType.COVER_FRONT,
+):
     """One tagged album folder, optionally shipping sidecar images."""
     folder = music_dir / "Nick Cave - Murder Ballads"
     folder.mkdir()
@@ -76,6 +84,7 @@ async def _album_with(music_dir, fi, *, folder_images=(), embedded=None):
         folder / "01 Stagger Lee.flac",
         {"title": "Stagger Lee", "artist": "Nick Cave", "album": "Murder Ballads"},
         cover=embedded,
+        kind=embedded_kind,
     )
     for name, size in folder_images:
         target = folder / name
@@ -193,6 +202,24 @@ async def test_embedded_art_is_not_replaced(indexer):
     assert before["image_url"] == f"{album_id}.jpg"
 
     assert (await fi.backfill_folder_art([str(music_dir)]))["albums"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_booklet_page_inside_the_file_gives_way_to_the_sleeve(indexer):
+    """A rip that embeds its booklet but no front would otherwise show a
+    lyrics page as the album's cover."""
+    fi, db, music_dir, _ = indexer
+    _, album_id = await _album_with(
+        music_dir,
+        fi,
+        folder_images=[("cover.jpg", (500, 500))],
+        embedded=_cover_bytes((240, 240, 240)),
+        embedded_kind=PictureType.LEAFLET_PAGE,
+    )
+
+    assert (await db.get_album_by_id(album_id))["image_url"] is None
+    assert (await fi.backfill_folder_art([str(music_dir)]))["albums"] == 1
+    assert (await db.get_album_by_id(album_id))["image_url"] == f"{album_id}.jpg"
 
 
 @pytest.mark.asyncio

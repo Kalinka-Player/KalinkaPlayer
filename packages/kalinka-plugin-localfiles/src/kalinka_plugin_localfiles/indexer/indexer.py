@@ -32,7 +32,7 @@ from mutagen import MutagenError
 from mutagen.mp3 import MP3
 from mutagen.flac import FLAC, Picture
 from mutagen.oggvorbis import OggVorbis
-from mutagen.id3 import ID3
+from mutagen.id3 import ID3, PictureType
 from mutagen.dsf import DSF
 from mutagen.dsdiff import DSDIFF
 
@@ -1524,12 +1524,16 @@ class FileIndexer:
     def _front_cover(pictures: List[Picture]) -> Optional[bytes]:
         """Front-cover bytes from FLAC picture blocks, or None.
 
-        Prefers picture type 3 (cover front), falls back to the first picture.
+        Takes the front cover, else a picture typed "other", which is what
+        many taggers write for the cover. A back cover, booklet page or disc
+        label is never taken: the album's folder or an online source has the
+        real front.
         """
-        for pic in pictures:
-            if pic.type == 3:
-                return pic.data
-        return pictures[0].data if pictures else None
+        for wanted in (PictureType.COVER_FRONT, PictureType.OTHER):
+            for pic in pictures:
+                if pic.type == wanted:
+                    return pic.data
+        return None
 
     @staticmethod
     def _flac_cover(flac) -> Optional[bytes]:
