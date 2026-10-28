@@ -41,7 +41,7 @@ The server exposes a REST API (FastAPI) plus WebSocket channels for live state. 
 | Library   | `GET /favorite/list/{type}`, `PUT /favorite/add/{id}`, playlists (`/playlist/{create,update,delete,list,add_tracks,remove_tracks}`) |
 | Devices   | `GET /device/list`, `GET/PUT /device/{get,set}_volume` |
 | Server    | `GET /server/{config,config/schema,version,modules,optional_packages}`, `PUT /server/{config,restart}`, `GET /indexer/status`, `POST /indexer/rescan`, `GET /resource/{file}` |
-| Live      | `WS /queue/ws`, `WS /device/ws`, plus SSE-style `GET /queue/events`, `GET /device/events` |
+| Live      | `WS /queue/ws`, `WS /device/ws`, plus SSE-style `GET /queue/events`, `GET /device/events`; the queue's channels also report renderers and, from API 0.19, the module listing (`modules_changed`) |
 
 `POST /indexer/rescan` (API 0.16) returns `202 {"status":"accepted"}` after
 requesting the localfiles librarian's normal folder check. Requests coalesce

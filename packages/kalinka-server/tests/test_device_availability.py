@@ -305,6 +305,7 @@ async def test_the_modules_page_and_the_router_read_one_answer(isolated):
         plugin = player_setup.modules.prepared_devices["delegate"].plugin_instance
         plugin.health = ModuleHealthState.ERROR
 
+        await player_setup.modules.refresh_health()
         devices = (await client.get("/server/modules")).json()["devices"]
 
         assert next(d for d in devices if d["name"] == "delegate")["state"] == "error"
