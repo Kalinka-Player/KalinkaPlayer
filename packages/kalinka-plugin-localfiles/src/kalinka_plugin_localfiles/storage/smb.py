@@ -28,6 +28,7 @@ from stat import S_ISDIR
 from typing import Any, BinaryIO, Callable, Iterable, Iterator, Optional
 
 import smbclient
+from smbprotocol import connection as smb_connection
 from smbprotocol.exceptions import (
     SMBAuthenticationError,
     SMBConnectionClosed,
@@ -53,6 +54,7 @@ from .locator import (
     parse,
     scheme_of,
 )
+from .smb_transport import FramedTcp
 
 #: How long a connection waits on a silent server before sending it an echo,
 #: and how long the echo then has. ``smbprotocol`` reads it as each
@@ -63,6 +65,8 @@ _RECEIVE_TIMEOUT_S = 15
 os.environ.setdefault(
     "SMB_EXPERIMENTAL_TRANSPORT_RECEIVE_TIMEOUT", str(_RECEIVE_TIMEOUT_S)
 )
+# smbprotocol looks this name up for every connection it makes.
+smb_connection.Tcp = FramedTcp
 
 #: Read-ahead per request where the caller leaves it to the storage. The
 #: audio embedder seeks to a few fragments, so the win is in asking for a
