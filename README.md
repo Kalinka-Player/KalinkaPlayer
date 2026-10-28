@@ -25,7 +25,7 @@ Bit-perfect playback from your own library, on your own hardware — with on-dev
 
 ## What is it
 
-Kalinka turns a Raspberry Pi or any Linux box into a music player you control from your phone, desktop or a browser. The server holds your library; a separate **renderer** does the playing, talking to ALSA directly — so it can sit on the same machine, or on a Pi next to each amplifier in the house.
+Kalinka turns a Raspberry Pi or any Linux computer into a music player you control from your phone, desktop or a browser. The server holds your library; a separate **renderer** does the playing, talking to ALSA directly — so it can sit on the same machine, or on a Pi next to each amplifier in the house.
 
 Your files stay yours — nothing is uploaded, there is no account and no telemetry, and the semantic search runs on the device. Optional internet requests cover metadata lookups that repair your tags (MusicBrainz, Wikidata, Deezer, Cover Art Archive), hourly checks for published releases, and the public plugin catalog, from which the app installs, updates and removes plugins. Fetching requires no account; see the [catalog configuration and trust model](docs/plugin-catalog-design.md#public-access-and-hosting).
 
@@ -42,11 +42,11 @@ Your files stay yours — nothing is uploaded, there is no account and no teleme
 
 2. **Open a remote.** Install the [Kalinka app](https://github.com/Kalinka-Player/KalinkaAI#-install) (Android, Windows, Linux), which finds the server by itself, or open `http://<server-address>:8000` in any browser.
 3. **Follow the setup in the app.** It asks where your music is and where the sound should come out. There are no config files to edit.
-4. **Add your music, and more outputs if you like.** [Copy music onto it or point it at a NAS](docs/installation.md#put-your-music-on-it), and [put a renderer on any Linux box next to an amplifier, or play in a browser tab](docs/installation.md#add-more-outputs).
+4. **Add your music, and more outputs if you like.** [Copy music onto it or point it at a NAS](docs/installation.md#put-your-music-on-it), and [put a renderer on any Linux computer next to an amplifier, or play in a browser tab](docs/installation.md#add-more-outputs).
 
 **[Full installation guide →](docs/installation.md)** It covers the images, virtual machines, Wi-Fi and logins, the supervisor, updates and troubleshooting.
 
-**Setting up Wi-Fi from a laptop?** Join `Kalinka-Setup-XXXX` with password **`kalinka-setup`**, stay connected without internet, then open **`http://192.168.4.1`**. [The full steps](docs/installation.md#connect-your-box-to-the-network) also cover Bluetooth setup from the app.
+**Setting up Wi-Fi from a laptop?** Join `Kalinka-Setup-XXXX` with password **`kalinka-setup`**, stay connected without internet, then open **`http://192.168.4.1`**. [The full steps](docs/installation.md#connect-your-streamer-to-the-network) also cover Bluetooth setup from the app.
 
 ## ✨ What it does
 
@@ -55,7 +55,7 @@ Your files stay yours — nothing is uploaded, there is no account and no teleme
 | 🎵 **Your library** | Indexes your directories, watches them for changes, and repairs the metadata — MusicBrainz, Wikidata and Deezer, plus AcoustID fingerprinting once you add a key of your own, falling back to filename heuristics. Artwork is extracted, cached, and generated when there is none. |
 | 🔍 **Smart Search** | Ask for *"dreamy ambient guitar"* and get matching tracks. My Library analyses the audio itself with a CLAP model; Jamendo matches a prebuilt index of track descriptions. Opt-in per plugin. |
 | 🔊 **Bit-perfect playback** | A C++ renderer with direct ALSA access. FLAC and WAV include 24-bit/96 kHz and 192 kHz playback; WAV also supports 32-bit PCM and float on compatible outputs. MP3 and Ogg Vorbis are supported too. Gapless between tracks of the same format; samples are not altered unless you turn on software volume. Mono and stereo DSF and uncompressed DFF play as native DSD or DoP through a compatible direct ALSA output at fixed volume, once DSD output is selected in the renderer's settings. |
-| 🏠 **Renderers anywhere** | Put a renderer on any box on your network and it appears as an output. They find the server over mDNS and upgrade themselves. |
+| 🏠 **Renderers anywhere** | Put a renderer on any computer on your network and it appears as an output. They find the server over mDNS and upgrade themselves. |
 | 🌐 **Browser player** | The server serves a web player, so any browser is both a remote control and an output. |
 | 🧩 **Plugins** | Sources, enrichers and device integrations are ordinary Python packages discovered at runtime. My Library, Jamendo and a [UPnP renderer input](packages/kalinka-plugin-upnp/README.md) ship in the box; MusicCast handles Yamaha volume and power. |
 | 🪄 **Guided first run** | The app and the browser player walk you through the first setup. Nothing to edit on the server itself. |
@@ -68,8 +68,8 @@ A **64-bit OS is required** — packages are built for arm64 and amd64 only. On 
 
 | Configuration | Minimum hardware | Notes |
 |---|---|---|
-| Playback + library | Raspberry Pi 3 / Zero 2 W, or any arm64/amd64 box with **512 MB RAM** | Headless OS recommended at 512 MB; enable swap for the first install and large scans. 1 GB is comfortable. |
-| With Smart Search | Raspberry Pi 4B with **2 GB RAM**, or any arm64/amd64 box with 2 GB+ | Measured on a 4 GB Pi 4B: ~1.15 GB resident with the library indexed and idle, and ~1.5 GB at the peak — the embedding pass, which loads a second model on top and is CPU-heavy. 2 GB should therefore work; 4 GB is what has actually been tested end to end. Allow ~1 GB extra disk. |
+| Playback + library | Raspberry Pi 3 / Zero 2 W, or any arm64/amd64 computer with **512 MB RAM** | Headless OS recommended at 512 MB; enable swap for the first install and large scans. 1 GB is comfortable. |
+| With Smart Search | Raspberry Pi 4B with **2 GB RAM**, or any arm64/amd64 computer with 2 GB+ | Measured on a 4 GB Pi 4B: ~1.15 GB resident with the library indexed and idle, and ~1.5 GB at the peak — the embedding pass, which loads a second model on top and is CPU-heavy. 2 GB should therefore work; 4 GB is what has actually been tested end to end. Allow ~1 GB extra disk. |
 
 Smart Search can be toggled per install, so you can start small and enable it after moving the library to a bigger board.
 

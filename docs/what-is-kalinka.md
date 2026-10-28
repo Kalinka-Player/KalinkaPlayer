@@ -6,11 +6,11 @@ Full disclosure up front: I build Kalinka. This is the write-up I wish I could l
 
 ## The short version
 
-Kalinka is an open-source music system for people who run their own audio hardware. You point it at a folder of music on a small Linux box — a Raspberry Pi 4 with a DAC hat is the reference setup — and it turns that folder into a properly organized, searchable library you control from a phone. There's no account, no cloud dependency and no subscription anywhere in the stack.
+Kalinka is an open-source music system for people who run their own audio hardware. You point it at a folder of music on a small Linux streamer — a Raspberry Pi 4 with a DAC hat is the reference setup — and it turns that folder into a properly organized, searchable library you control from a phone. There's no account, no cloud dependency and no subscription anywhere in the stack.
 
 It's two cooperating pieces of software:
 
-- **KalinkaPlayer** — a lightweight backend service for Linux (arm64/amd64). It owns the music library, the play queue and the configuration, and exposes a REST + WebSocket API. The audio itself is played by a **renderer**: a small C++ program that talks to ALSA directly, installed alongside the server by default and equally able to run on a different box on the same network.
+- **KalinkaPlayer** — a lightweight backend service for Linux (arm64/amd64). It owns the music library, the play queue and the configuration, and exposes a REST + WebSocket API. The audio itself is played by a **renderer**: a small C++ program that talks to ALSA directly, installed alongside the server by default and equally able to run on a different streamer on the same network.
 - **Kalinka Music App** — a Flutter client for Android, Linux desktop and Web that discovers the server on your network automatically and acts as the remote control: browsing, search, queue, favorites, playlists and live server settings. An optional browser-based player can be installed on the server as well.
 
 Everything beyond the core ships as **plugins**: the local-files library (the most developed part by far), streaming sources ([Jamendo](https://www.jamendo.com)'s Creative-Commons catalog, and an experimental [Qobuz](https://www.qobuz.com) integration for subscribers), and device integrations such as Yamaha MusicCast volume/power control.
@@ -35,7 +35,7 @@ The part I care about is *where* it runs: on your own hardware, over your own fi
 
 Playback is a C++ audio graph with direct ALSA access — no PulseAudio or PipeWire in the middle — giving a bit-perfect path where your ALSA configuration permits. It plays FLAC and WAV (up to 192 kHz / 24-bit, plus 32-bit integer and float WAV on outputs that take them), MP3 and Ogg Vorbis, from local files or HTTP streams, with gapless transitions between consecutive tracks of the same format. Mono and stereo DSF and uncompressed DFF files play as DSD, native or DoP, through a compatible direct ALSA output at fixed volume once DSD output is selected in the renderer's settings. The server idles comfortably on a Raspberry Pi; the machine's resources go to your library, not to the runtime.
 
-That graph lives in its own process — the **renderer** — rather than inside the server, and the split is what lets one library drive more than one set of speakers. A renderer finds the server over mDNS, connects out to it and then fetches the audio over HTTP itself: a Pi in the living room and another in the study each pull their own bytes, from the server for tracks in your library and straight from the service for streams such as Jamendo. You choose which one is playing from the app, and switching hands the music over mid-track rather than starting it again. The default install puts a renderer on the server machine, so a single box behaves exactly as it always did; the browser player is a renderer too, which is why a laptop can play from a server that has no sound card at all.
+That graph lives in its own process — the **renderer** — rather than inside the server, and the split is what lets one library drive more than one set of speakers. A renderer finds the server over mDNS, connects out to it and then fetches the audio over HTTP itself: a Pi in the living room and another in the study each pull their own bytes, from the server for tracks in your library and straight from the service for streams such as Jamendo. You choose which one is playing from the app, and switching hands the music over mid-track rather than starting it again. The default install puts a renderer on the server machine, so a single streamer behaves exactly as it always did; the browser player is a renderer too, which is why a laptop can play from a server that has no sound card at all.
 
 ### One queue, many sources
 
@@ -65,7 +65,7 @@ flowchart TD
         RSESS["Renderer sessions<br/>(registry · protocol · output selection)"]
     end
 
-    subgraph RENDERERS["Renderers — same box or elsewhere on the LAN"]
+    subgraph RENDERERS["Renderers — same streamer or elsewhere on the LAN"]
         NATIVE["kalinka-renderer (C++)<br/>FLAC, WAV, MP3 &amp; Ogg Vorbis decode · native DSD or DoP<br/>gapless switching · file &amp; HTTP inputs · direct ALSA output"]
         BROWSER["Browser player<br/>(plays in the page)"]
     end
@@ -172,7 +172,7 @@ Kalinka is young — the README itself calls it experimental. The current edges:
 - **DSP**: no EQ or room-correction chain — the design goal is a clean bit-perfect path, not signal processing.
 - **Polish over breadth**: development effort concentrates on the local-library experience; other areas move slower.
 
-And by design, it asks for a DIY temperament: you install a Debian package on a Linux box and own the result. If you want a sealed appliance with support, that's what the commercial products are for.
+And by design, it asks for a DIY temperament: you install a Debian package on a Linux computer and own the result. If you want a sealed appliance with support, that's what the commercial products are for.
 
 ## Which one should you actually run?
 

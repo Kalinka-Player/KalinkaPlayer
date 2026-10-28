@@ -9,7 +9,7 @@ Kalinka has three parts. They can all run on one machine or be spread across sev
 The steps:
 
 1. [Install the server](#install-the-server).
-2. [Connect it to your network](#connect-your-box-to-the-network), if it is not on a cable.
+2. [Connect it to your network](#connect-your-streamer-to-the-network), if it is not on a cable.
 3. [Open Kalinka](#open-kalinka) in the app or a browser, and follow the setup it shows.
 4. [Put your music on it](#put-your-music-on-it).
 5. [Add more outputs](#add-more-outputs), if you want music in more than one room.
@@ -65,7 +65,7 @@ The image reads nothing from the card, so there is nothing to change on it: Wi-F
 
 Put the card in the Pi, connect your DAC and the network cable, and plug in the power. The first start takes a couple of minutes.
 
-Then [connect it to your network](#connect-your-box-to-the-network) if it has no cable, or go straight to [Open Kalinka](#open-kalinka).
+Then [connect it to your network](#connect-your-streamer-to-the-network) if it has no cable, or go straight to [Open Kalinka](#open-kalinka).
 
 ### B. PC image
 
@@ -101,7 +101,7 @@ The PC image also runs as a virtual machine, which suits a home server that is o
 - **A bigger disk.** The image is 8 GiB. Make the virtual disk 16 GB or more before the first start, more if the music will live inside the VM.
 - **2 CPU cores and 2 GB of memory**, or 4 GB for smart search.
 
-A VM usually cannot reach your DAC. Let the VM be the server, and [add an output](#add-more-outputs) on a small box next to your amplifier. You can also pass a USB DAC through to the VM.
+A VM usually cannot reach your DAC. Let the VM be the server, and [add an output](#add-more-outputs) on a small streamer next to your amplifier. You can also pass a USB DAC through to the VM.
 
 **1. Download and unpack** the file that ends in **`-amd64.img.xz`** from the [image releases](https://github.com/Kalinka-Player/KalinkaPlayer/releases?q=kalinka-image-v&expanded=true). On Linux or macOS run `xz -d kalinka-*-amd64.img.xz`; on Windows, use [7-Zip](https://www.7-zip.org/). You get a `.img` file.
 
@@ -154,7 +154,7 @@ On a Debian system without `sudo`, log in as `root` and run the same commands wi
 
 This installs the server, its plugins, the browser player and an output for this computer's own sound card. Everything starts straight away and again after every restart. The first start downloads more components, so it needs the internet and takes a few minutes. Then go on to [Open Kalinka](#open-kalinka).
 
-It does not install the [supervisor](#the-supervisor). [Add it](#add-the-supervisor-to-a-box) if you want the control page, Wi-Fi setup without a cable, or to set up a DAC HAT from the app.
+It does not install the [supervisor](#the-supervisor). [Add it](#add-the-supervisor-to-a-streamer) if you want the control page, Wi-Fi setup without a cable, or to set up a DAC HAT from the app.
 
 If the computer runs a firewall, let your home network reach TCP port 8000 (and 8001 for the supervisor) and mDNS on UDP port 5353.
 
@@ -209,23 +209,25 @@ To upgrade, install the newer `.rpm` the same way.
 
 </details>
 
-## Connect your box to the network
+<a id="connect-your-box-to-the-network"></a>
 
-**With a network cable**, there is nothing to do: plug it into your router before switching the box on.
+## Connect your streamer to the network
 
-**For Wi-Fi**, a box with no network opens a temporary Wi-Fi network of its own, about a minute after it starts. A box that was connected before waits about five minutes after losing its network. Use any phone or laptop:
+**With a network cable**, there is nothing to do: plug it into your router before switching the streamer on.
 
-1. In its Wi-Fi settings, join **`Kalinka-Setup-XXXX`**. The four characters after the dash differ from box to box.
+**For Wi-Fi**, a streamer with no network opens a temporary Wi-Fi network of its own, about a minute after it starts. A streamer that was connected before waits about five minutes after losing its network. Use any phone or laptop:
+
+1. In its Wi-Fi settings, join **`Kalinka-Setup-XXXX`**. The four characters after the dash differ from streamer to streamer.
 2. Enter the password **`kalinka-setup`**: lowercase, with a hyphen. If your device warns that there is no internet, choose to stay connected.
 3. A setup page opens. If it does not, open **`http://192.168.4.1`** in the browser.
 4. Choose your home Wi-Fi and enter its password.
-5. The box leaves the setup network and joins yours. Reconnect your phone or laptop to your home Wi-Fi, then [open Kalinka](#open-kalinka). If the box could not join, the setup network comes back, so you can try again.
+5. The streamer leaves the setup network and joins yours. Reconnect your phone or laptop to your home Wi-Fi, then [open Kalinka](#open-kalinka). If the streamer could not join, the setup network comes back, so you can try again.
 
 Keep these steps at hand: while your phone or laptop is on the setup network, it has no internet.
 
-**With the Kalinka app** on a phone, you can set up the box over Bluetooth instead, and your phone stays on your home Wi-Fi. Start the app, choose to set up a box, and follow the steps.
+**With the Kalinka app** on a phone, you can set up the streamer over Bluetooth instead, and your phone stays on your home Wi-Fi. Start the app, choose to set up a streamer, and follow the steps.
 
-Both ways need Wi-Fi in the box, and Bluetooth needs Bluetooth in it too. Every Pi listed above has both, except Compute Modules without wireless. On a PC, the Wi-Fi adapter must support access-point mode. The setup network uses 2.4 GHz.
+Both ways need Wi-Fi in the streamer, and Bluetooth needs Bluetooth in it too. Every Pi listed above has both, except Compute Modules without wireless. On a PC, the Wi-Fi adapter must support access-point mode. The setup network uses 2.4 GHz.
 
 On the PC image, you can also put the Wi-Fi name and password [on the stick](#on-the-pc-image) before the first start.
 
@@ -233,11 +235,11 @@ On the PC image, you can also put the Wi-Fi name and password [on the stick](#on
 
 **With the Kalinka app.** Install it on a phone or computer on the same network; the [app's page](https://github.com/Kalinka-Player/KalinkaAI#-install) says which file to download for Android, Windows or Linux. The app finds the server by itself. A new server is called **My Kalinka Service**.
 
-**With a web browser.** Open `http://kalinka.local:8000` for a box started from an image. A second image box on the same network becomes `kalinka-2.local`. Otherwise open `http://<address>:8000`, for example `http://192.168.1.50:8000`. Type the `http://` and the `:8000`. To find the address:
+**With a web browser.** Open `http://kalinka.local:8000` for a streamer started from an image. A second one on the same network becomes `kalinka-2.local`. Otherwise open `http://<address>:8000`, for example `http://192.168.1.50:8000`. Type the `http://` and the `:8000`. To find the address:
 
 - the Kalinka app shows it under the server's name;
-- your router's list of connected devices shows the box as **kalinka**;
-- a screen plugged into a Raspberry Pi box shows it above the login prompt, unless it runs the now-playing display;
+- your router's list of connected devices shows the streamer as **kalinka**;
+- a screen plugged into a Raspberry Pi streamer shows it above the login prompt, unless it runs the now-playing display;
 - on a computer where you ran the install command, `hostname -I` prints it.
 
 The first time, Kalinka walks you through setup. Follow the steps it shows. On a Raspberry Pi, choosing a DAC HAT there restarts the Pi once.
@@ -252,11 +254,11 @@ Kalinka can read music from several places at once. Choose them during setup, an
 - Kalinka looks for new and changed music on a share every 15 minutes.
 - Recycle bins, snapshots, thumbnail folders and hidden folders are skipped.
 
-**Copied onto the box.** Every installation has a music folder, `/srv/kalinka/music`, that Kalinka reads from the start. Copy into it with a program that speaks **SFTP**. On an image you need a login first: create one with **SSH access** on [the control page](#the-control-page), or, on the PC image, set a password [on the stick](#on-the-pc-image).
+**Copied onto the streamer.** Every installation has a music folder, `/srv/kalinka/music`, that Kalinka reads from the start. Copy into it with a program that speaks **SFTP**. On an image you need a login first: create one with **SSH access** on [the control page](#the-control-page), or, on the PC image, set a password [on the stick](#on-the-pc-image).
 
 | On | Use |
 |---|---|
-| Windows | [WinSCP](https://winscp.net/): protocol **SFTP**, host = the box's address, your user name and password. Open `/srv/kalinka/music` and drag your albums in. |
+| Windows | [WinSCP](https://winscp.net/): protocol **SFTP**, host = the streamer's address, your user name and password. Open `/srv/kalinka/music` and drag your albums in. |
 | macOS | [Cyberduck](https://cyberduck.io/): **Open Connection** → **SFTP**, the same details. |
 | Linux | In your file manager, open `sftp://<user>@<address>/srv/kalinka/music`. |
 | Terminal | `scp -r ~/Music/* <user>@<address>:/srv/kalinka/music/` |
@@ -271,7 +273,7 @@ chmod -R o+rX /home/<you>/Music
 ```
 
 <details>
-<summary>A USB disk on a box with no desktop</summary>
+<summary>A USB disk on a streamer with no desktop</summary>
 
 Kalinka does not mount USB disks by itself, so mount it once, permanently. `lsblk -f` lists the disks; note the **UUID** of yours. Then:
 
@@ -281,7 +283,7 @@ echo 'UUID=<your-uuid> /mnt/music auto nofail,ro 0 0' | sudo tee -a /etc/fstab
 sudo mount -a
 ```
 
-Add `/mnt/music` as a **Folder on the server**. `nofail` lets the box start when the disk is unplugged, and `ro` means Kalinka only ever reads it. For an NTFS disk, write `ntfs3` instead of `auto`.
+Add `/mnt/music` as a **Folder on the server**. `nofail` lets the streamer start when the disk is unplugged, and `ro` means Kalinka only ever reads it. For an NTFS disk, write `ntfs3` instead of `auto`.
 
 </details>
 
@@ -319,17 +321,19 @@ Good to know:
 
 ## The supervisor
 
-The supervisor is a small service that looks after the box. It runs separately from Kalinka, so it keeps working when Kalinka has stopped or a plugin breaks it. It gives you:
+The supervisor is a small service that looks after the streamer. It runs separately from Kalinka, so it keeps working when Kalinka has stopped or a plugin breaks it. It gives you:
 
 - [the control page](#the-control-page), at `http://<address>:8001`;
-- Wi-Fi setup over the temporary network or Bluetooth when the box is [not connected](#connect-your-box-to-the-network);
-- from the app: restarting or switching off the box, setting its time zone, choosing a Raspberry Pi's DAC HAT, and restarting Kalinka when it stops answering.
+- Wi-Fi setup over the temporary network or Bluetooth when the streamer is [not connected](#connect-your-streamer-to-the-network);
+- from the app: restarting or switching off the streamer, setting its time zone, choosing a Raspberry Pi's DAC HAT, and restarting Kalinka when it stops answering.
 
-The images include it. On a box you installed with a command, add it as below.
+The images include it. On a streamer you installed with a command, add it as below.
 
-### Add the supervisor to a box
+<a id="add-the-supervisor-to-a-box"></a>
 
-This works on any box that runs Debian 13, Raspberry Pi OS (64-bit), DietPi or Ubuntu 24.04, with the server, a renderer, or both. You do not need to flash anything. On that box, run:
+### Add the supervisor to a streamer
+
+This works on any streamer that runs Debian 13, Raspberry Pi OS (64-bit), DietPi or Ubuntu 24.04, with the server, a renderer, or both. You do not need to flash anything. On that streamer, run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Kalinka-Player/KalinkaPlayer/main/scripts/install-supervisor.sh | sudo bash
@@ -339,7 +343,7 @@ On the server's own machine you can do it from the app instead: turn on **Manage
 
 Once installed, it is upgraded together with Kalinka. To remove it, turn **Manage this streamer** off again, or run `sudo apt remove kalinka-supervisor`.
 
-- Wi-Fi setup without a cable needs a Wi-Fi adapter in the box, and works on DietPi and on systems where NetworkManager runs the network, such as Raspberry Pi OS. Elsewhere, you still get the control page and everything else.
+- Wi-Fi setup without a cable needs a Wi-Fi adapter in the streamer, and works on DietPi and on systems where NetworkManager runs the network, such as Raspberry Pi OS. Elsewhere, you still get the control page and everything else.
 - On a Pi running Raspberry Pi OS, turn I²C on (`sudo raspi-config nonint do_i2c 0`) so the supervisor can recognise a DAC HAT by its chip. Without it, you pick the HAT from the full list.
 - It is not available on Fedora.
 
@@ -348,7 +352,7 @@ Once installed, it is upgraded together with Kalinka. To remove it, turn **Manag
 Open `http://<address>:8001` in a browser. It shows:
 
 - whether Kalinka is running, the installed versions, and how much memory and processor time Kalinka uses;
-- buttons to restart Kalinka, restart or power off the box, and reinstall Kalinka from kalinkaplayer.com. Reinstalling keeps your settings and music;
+- buttons to restart Kalinka, restart or power off the streamer, and reinstall Kalinka from kalinkaplayer.com. Reinstalling keeps your settings and music;
 - the installed plugins, each with a **Remove** button, so a plugin that stops Kalinka from starting can be taken away;
 - on a Raspberry Pi, the DAC HAT it found and the one it is set up for;
 - the time zone;
@@ -358,7 +362,7 @@ The page answers anyone on your home network, over plain HTTP, and nobody outsid
 
 ## Settings on the card
 
-The images start with **no login password and no Wi-Fi**. On the PC image you can set these, and a fixed network address, on the stick before the first start. You do not need to: Wi-Fi can be [set up afterwards](#connect-your-box-to-the-network) and a login created on [the control page](#the-control-page). The Raspberry Pi images read nothing from the card, so for them that is the only way, and a DAC HAT without an ID chip is chosen in the app.
+The images start with **no login password and no Wi-Fi**. On the PC image you can set these, and a fixed network address, on the stick before the first start. You do not need to: Wi-Fi can be [set up afterwards](#connect-your-streamer-to-the-network) and a login created on [the control page](#the-control-page). The Raspberry Pi images read nothing from the card, so for them that is the only way, and a DAC HAT without an ID chip is chosen in the app.
 
 ### On the PC image
 
@@ -396,7 +400,7 @@ In `dietpi.txt`, remove the `#` in front of `AUTO_SETUP_SSH_PUBKEY=` and put the
 
 #### A network without DHCP
 
-Most routers give each device its address. On a network without one, such as a switch with no router, a box on a cable gets no address and nothing can reach it. Give it a fixed address before its first start. For a network that uses `192.168.1.1` to `192.168.1.254`, change these four lines in `dietpi.txt`:
+Most routers give each device its address. On a network without one, such as a switch with no router, a streamer on a cable gets no address and nothing can reach it. Give it a fixed address before its first start. For a network that uses `192.168.1.1` to `192.168.1.254`, change these four lines in `dietpi.txt`:
 
 ```sh
 AUTO_SETUP_NET_USESTATIC=1
@@ -415,7 +419,7 @@ To go back to DHCP, log in, run `sudo dietpi-config`, open **Network Options: Ad
 
 ## Keeping it up to date
 
-Kalinka checks for a new release every hour, and the app offers to install it. You can also let it update by itself: turn on automatic updates in the app, and it installs them between 3 and 6 in the morning, box time, while nothing is playing. Everything on the box updates together: the server, its plugins, the browser player, the supervisor and the renderer. Renderers on other machines go first, while they are connected to the server.
+Kalinka checks for a new release every hour, and the app offers to install it. You can also let it update by itself: turn on automatic updates in the app, and it installs them between 3 and 6 in the morning, by the streamer's clock, while nothing is playing. Everything on the streamer updates together: the server, its plugins, the browser player, the supervisor and the renderer. Renderers on other machines go first, while they are connected to the server.
 
 A renderer that falls behind shows an upgrade button in the app. To have one update itself every night, even when the server is off, run this on its machine:
 
@@ -425,21 +429,21 @@ sudo systemctl enable --now kalinka-renderer-upgrade.timer
 
 Kalinka does not update the operating system. On an image, log in and run `sudo apt update && sudo apt full-upgrade`. On the PC image, run `sudo dietpi-update` first.
 
-Kalinka used to install a C compiler and Python's development files for Smart Search as well, about 300 MB that nothing uses any more. An update leaves them in place, so unless you compile software on the box yourself, remove them with `sudo apt-get remove build-essential python3-dev`, then `sudo apt-get autoremove` for what they brought with them. That second command offers every package nothing needs any more, not only theirs, so read its list before you agree.
+Kalinka used to install a C compiler and Python's development files for Smart Search as well, about 300 MB that nothing uses any more. An update leaves them in place, so unless you compile software on the streamer yourself, remove them with `sudo apt-get remove build-essential python3-dev`, then `sudo apt-get autoremove` for what they brought with them. That second command offers every package nothing needs any more, not only theirs, so read its list before you agree.
 
 ## Troubleshooting
 
-**The app finds no server.** The phone and the box must be on the same network. Guest Wi-Fi, Wi-Fi with "client isolation" and a VM on NAT all hide the server. Enter the address by hand in the app, as `<address>:8000`: if that works, only discovery is blocked.
+**The app finds no server.** The phone and the streamer must be on the same network. Guest Wi-Fi, Wi-Fi with "client isolation" and a VM on NAT all hide the server. Enter the address by hand in the app, as `<address>:8000`: if that works, only discovery is blocked.
 
-**The browser cannot connect.** Wait a few minutes after switching the box on. Type `http://`, not `https://`, and `:8000` at the end.
+**The browser cannot connect.** Wait a few minutes after switching the streamer on. Type `http://`, not `https://`, and `:8000` at the end.
 
 **The Pi does not start.** Check that you wrote the right image: `rpi5` for a Pi 5, `rpi234` for the others. Write the card again, try another card, and use the official power supply.
 
-**The setup Wi-Fi does not appear.** The box only opens it when it has no network. If a cable is plugged in, unplug it, or open Kalinka over the cable instead. Give it a few minutes after switching on.
+**The setup Wi-Fi does not appear.** The streamer only opens it when it has no network. If a cable is plugged in, unplug it, or open Kalinka over the cable instead. Give it a few minutes after switching on.
 
-**On the PC image, Wi-Fi or the login from the stick does not work.** Check that `AUTO_SETUP_NET_WIFI_ENABLED=1` is set and that the name and password in `dietpi-wifi.txt` are between the quotes. The box removes the files after its first start, so write the stick again to try once more. Or use the [setup Wi-Fi](#connect-your-box-to-the-network) and [the control page](#the-control-page) instead.
+**On the PC image, Wi-Fi or the login from the stick does not work.** Check that `AUTO_SETUP_NET_WIFI_ENABLED=1` is set and that the name and password in `dietpi-wifi.txt` are between the quotes. The streamer removes the files after its first start, so write the stick again to try once more. Or use the [setup Wi-Fi](#connect-your-streamer-to-the-network) and [the control page](#the-control-page) instead.
 
-**No outputs in the list, or no sound.** On the box, `systemctl status kalinka-renderer` should say `active (running)`. If the unit is not found, no output is installed there: run the renderer command from [Add more outputs](#add-more-outputs). If there is no sound, pick another sound device in the output's settings: HDMI, the headphone socket and a USB DAC are separate devices. On a Pi, HDMI, the headphone socket and a HAT without an ID chip stay silent until you choose them as the sound card in the app. Until then, you can listen in the browser.
+**No outputs in the list, or no sound.** On the streamer, `systemctl status kalinka-renderer` should say `active (running)`. If the unit is not found, no output is installed there: run the renderer command from [Add more outputs](#add-more-outputs). If there is no sound, pick another sound device in the output's settings: HDMI, the headphone socket and a USB DAC are separate devices. On a Pi, HDMI, the headphone socket and a HAT without an ID chip stay silent until you choose them as the sound card in the app. Until then, you can listen in the browser.
 
 **An output on another machine does not appear.** On that machine, run `sudo journalctl -u kalinka-renderer -f`. A line with `[Discovery] Found` means it has seen the server. Without one, the network is blocking discovery: put both on the same network, or point the renderer at the server directly:
 
@@ -459,7 +463,7 @@ ExecStart=/usr/bin/kalinka-renderer --server 192.168.1.50:8000
 
 **Kalinka does not start.** Open [the control page](#the-control-page): it shows what failed, can remove a broken plugin, and can reinstall Kalinka.
 
-**Logs.** While the server runs, the app can download its logs as a ZIP. Passwords and keys are removed, but file names and network addresses remain, so look through it before posting it. When the server does not start, save the logs on the box:
+**Logs.** While the server runs, the app can download its logs as a ZIP. Passwords and keys are removed, but file names and network addresses remain, so look through it before posting it. When the server does not start, save the logs on the streamer:
 
 ```bash
 sudo journalctl -u kalinka -u kalinka-upgrade -u kalinka-restart --since "1 day ago" > kalinka.log
