@@ -110,16 +110,21 @@ def status_text(desired: bool, state_dir: Path) -> str:
         result = _read_object(state_dir / RESULT_FILE)
     except (OSError, ValueError):
         result = {}
+    reason = unavailable_reason()
     if not _matches(desired, status):
         operation = "Installation" if desired else "Removal"
         if result.get("requested") is desired and result.get("status") == "failed":
-            text += f" {operation} failed: {result.get('error', 'see the server log')}"
-            text += " Restart the server to retry."
+            if reason:
+                # The saved error is this reason as worded by the release that ran
+                # the apply; a retry fails the same way until the reason is gone.
+                text += f" {operation} failed."
+            else:
+                error = result.get("error", "see the server log")
+                text += f" {operation} failed: {error} Restart the server to retry."
         elif result.get("requested") is desired and result.get("status") == "running":
             text += f" {operation} was interrupted. Restart the server to retry."
         else:
             text += f" {operation} will run when you apply and restart."
-    reason = unavailable_reason()
     if reason:
         text += f" {reason}"
     return text
