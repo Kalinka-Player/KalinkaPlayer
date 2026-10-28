@@ -163,8 +163,7 @@ TEST(AlacDecoder, APartialFrameSaysHowManyFramesItHolds) {
 TEST(AlacDecoder, SkipsDataAndFillElements) {
   AlacDecoder decoder(Config{.frameLength = 1, .channels = 1}.bytes());
   BitWriter frame;
-  // Three bytes of fill, two of data aligned one bit on, then 15 + 2 - 1
-  // bytes of fill.
+  // A long fill's count is 15 + its extra byte - 1, as the reference reads it.
   frame.put(FIL, 3).put(3, 4).put(0xffffff, 24);
   frame.put(DSE, 3).put(0, 4).put(1, 1).put(2, 8).put(0, 1).put(0xffff, 16);
   frame.put(FIL, 3).put(15, 4).put(2, 8).put(0, 8 * 16);
@@ -182,8 +181,7 @@ TEST(AlacDecoder, DecodesEscapedAndUnaryResiduals) {
 
 TEST(AlacDecoder, DecodesRunsOfZerosAndFirstOrderPrediction) {
   AlacDecoder decoder(Config{.frameLength = 6, .channels = 1}.bytes());
-  // After the first residual the mean is low enough for a run: four zeros in
-  // a parameter of 2, then 3 coded one less, the run having stood for it.
+  // The 3 after the run is coded one less, the run having stood for it.
   const auto residuals = [](BitWriter frame) {
     return frame.unary(2).put(0b1010, 4).unary(5).put(END, 3).done();
   };
@@ -196,8 +194,7 @@ TEST(AlacDecoder, DecodesRunsOfZerosAndFirstOrderPrediction) {
 }
 
 TEST(AlacDecoder, WrapsTheRunningMeanAsTheReferenceCoderDoes) {
-  // At the fastest rate a header can name, rate * mean passes 32 bits on the
-  // second residual, and the reference keeps only its low bits.
+  // The fastest rate a header can name overflows rate * mean in 32 bits.
   AlacDecoder decoder(
       Config{.frameLength = 3, .riceLimit = 16, .channels = 1, .meanRate = 255}
           .bytes());
