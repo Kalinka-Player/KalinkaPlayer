@@ -1,10 +1,10 @@
 """Plugin-reportable health state.
 
 Plugins report their current state via `get_state()`, which the server
-calls on demand (e.g. when /server/modules is fetched). Internal
-sub-features (subprocesses, optional pipelines) are an implementation
-detail of each plugin — they aggregate into one of these states plus a
-human-readable message.
+asks every few seconds while it runs and passes on to clients when the
+answer changes. Internal sub-features (subprocesses, optional pipelines)
+are an implementation detail of each plugin — they aggregate into one of
+these states plus a human-readable message.
 """
 
 from __future__ import annotations
