@@ -39,9 +39,10 @@ void refuseEncrypted(const std::vector<Box> &items);
 
 /// @brief The audio track of a movie and what decoding it needs.
 struct AudioTrack {
-  enum class Codec { FLAC, AAC };
+  enum class Codec { FLAC, AAC, ALAC };
   Codec codec = Codec::FLAC;
   /// FLAC: the 34-byte STREAMINFO block. AAC: the AudioSpecificConfig.
+  /// ALAC: the 24-byte ALACSpecificConfig.
   std::vector<uint8_t> config;
   uint32_t id = 0, timescale = 0;
   /// The track's length in `timescale` units, or 0 when the file does not say.
@@ -56,7 +57,7 @@ struct AudioTrack {
 Box soundTrack(const Box &moov);
 
 /// @brief The first sound track of a `moov` box.
-/// @note Throws for a movie without one, a codec other than FLAC or AAC, or
-/// encrypted audio.
+/// @note Throws for a movie without one, a codec other than FLAC, AAC or
+/// ALAC, or encrypted audio.
 AudioTrack audioTrack(const Box &moov);
 } // namespace mp4

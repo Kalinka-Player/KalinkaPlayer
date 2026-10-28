@@ -91,18 +91,7 @@ private:
         header.bits_per_sample != format.bitsPerSample || !header.blocksize ||
         header.blocksize > 65536)
       throw std::runtime_error("FLAC audio format changed during playback");
-    const size_t width = sampleSize(format.sampleFormat);
-    // A padded container leaves its spare high byte clear, as FLAC does.
-    const uint32_t mask =
-        format.bitsPerSample < 32 ? (1u << format.bitsPerSample) - 1 : ~0u;
-    pcm.resize(size_t(header.blocksize) * format.channels * width);
-    for (size_t i = 0; i < header.blocksize; ++i)
-      for (unsigned channel = 0; channel < format.channels; ++channel) {
-        const auto sample = uint32_t(samples[channel][i]) & mask;
-        auto *dest = pcm.data() + (i * format.channels + channel) * width;
-        for (size_t byte = 0; byte < width; ++byte)
-          dest[byte] = sample >> (8 * byte);
-      }
+    interleave(format, samples, header.blocksize, pcm);
   }
 };
 

@@ -5,8 +5,11 @@ fragmented MP4 without (tones-fragmented.m4a) and with (tones-fragmented-sidx.m4
 a sidx box, and fragmented MP4 whose movie header lists the first units itself
 (tones-fragmented-mixed.m4a); ../dash/aac segments the same packets. Since every container
 carries the same units, every decoder must play the same samples.
-ramp-flac.mp4 is FLAC in MP4 holding the ramp the DASH FLAC fixtures encode, and
-alac.m4a a short ALAC file the renderer must refuse. No music is used.
+ramp-flac.mp4 is FLAC in MP4 holding the ramp the DASH FLAC fixtures encode,
+and the ramp-alac*.m4a files hold it as ALAC: compressed (ramp-alac.m4a), in
+mono (ramp-alac-mono.m4a), uncompressed (ramp-alac-verbatim.m4a, 0.1 s) and at
+24 bits and 96 kHz (ramp-alac-24.m4a, 0.1 s, its low bytes shifted off). Each
+ends in a short frame. No music is used.
 
 Regenerate with python3 generate.py (needs ffmpeg), then rerun
 ../dash/generate.py so the DASH segments match.

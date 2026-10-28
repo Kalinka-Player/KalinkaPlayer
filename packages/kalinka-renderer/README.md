@@ -37,7 +37,7 @@ bounded; the server only supplies the manifest and does not remux or transcode
 audio. Live DASH, encrypted streams and other DASH audio codecs are not supported.
 
 MP4 and M4A (`audio/mp4`, `audio/m4a`, `audio/x-m4a`, `.m4a` or `.mp4`) play
-their first audio track when it is AAC or FLAC, from a local file or HTTP.
+their first audio track when it is AAC, FLAC or ALAC, from a local file or HTTP.
 Progressive files work wherever their index lies, though an index after the audio
 needs a seekable source; fragmented files play fragment by fragment and seek
 through a `sidx` or trailing `mfra` index, and without either play from the start
@@ -49,8 +49,10 @@ mono is upmixed and multichannel audio downmixed. MP4 and DASH play exactly
 what the track's edit list, or else iTunes' `iTunSMPB` tag, selects, so the
 encoder's priming and padding are trimmed and AAC albums play gaplessly. ADTS
 records neither, so raw AAC loses only the first 1024 frames of priming and
-plays its padding. ALAC, xHE-AAC, and ADTS that describes its channels in a program
-config element are not supported.
+plays its padding. ALAC decodes in the renderer itself, keeping the original
+sample rate and bit depth, in mono or stereo at 16, 24 or 32 bits; 20-bit and
+multichannel ALAC are not supported. Neither are xHE-AAC, and ADTS that
+describes its channels in a program config element.
 
 Integer output negotiation only accepts containers that preserve the source
 precision. True 32-bit PCM requires 32 significant output bits. Float samples

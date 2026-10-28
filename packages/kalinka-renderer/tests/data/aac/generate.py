@@ -16,9 +16,9 @@ def ffmpeg(*args):
     subprocess.run(["ffmpeg", "-v", "error", "-y", *map(str, args)], check=True)
 
 
-def write_wav(path, pcm):
+def write_wav(path, pcm, bits=16, rate=RATE, channels=2):
     with wave.open(str(path), "wb") as output:
-        output.setparams((2, 2, RATE, 0, "NONE", "not compressed"))
+        output.setparams((channels, bits // 8, rate, 0, "NONE", "not compressed"))
         output.writeframes(pcm)
 
 
@@ -31,14 +31,16 @@ def tones():
     return pcm
 
 
-def ramp():
-    """The PCM the FLAC-in-MP4 fixture must decode to, bit for bit; the tests
-    compute the same ramp."""
+def ramp(bits=16, rate=RATE, channels=2):
+    """The PCM the lossless fixtures must decode to, bit for bit, as
+    ../dash/generate.py makes it; the tests compute the same ramp."""
     pcm = bytearray()
-    for frame in range(FRAMES):
-        for channel in range(2):
+    for frame in range(rate * 5 // 4):
+        for channel in range(channels):
             value = ((frame % 503) - 251) * 57 * (-1 if channel else 1)
-            pcm.extend(value.to_bytes(2, "little", signed=True))
+            if bits == 24:
+                value = value * 256 + frame % 127 - 63
+            pcm.extend(value.to_bytes(bits // 8, "little", signed=True))
     return pcm
 
 
@@ -65,7 +67,23 @@ def main():
         write_wav(ramp_source, ramp())
         ffmpeg("-i", ramp_source, "-c:a", "flac", "-strict", "-2", "-movflags",
                "+faststart", ROOT / "ramp-flac.mp4")
-        ffmpeg("-i", ramp_source, "-t", "0.1", "-c:a", "alac", ROOT / "alac.m4a")
+        alac(Path(temporary), ramp_source)
+
+
+def alac(temporary, ramp_source):
+    """ALAC of the ramp: compressed, verbatim, 24-bit and mono. The 24-bit
+    and verbatim encodes are cut short, since neither compresses the ramp."""
+    codec = ("-c:a", "alac")
+    ffmpeg("-i", ramp_source, *codec, ROOT / "ramp-alac.m4a")
+    ffmpeg("-i", ramp_source, "-t", "0.1", *codec, "-compression_level", "0",
+           ROOT / "ramp-alac-verbatim.m4a")
+    mono = temporary / "ramp-mono.wav"
+    write_wav(mono, ramp(channels=1), channels=1)
+    ffmpeg("-i", mono, *codec, ROOT / "ramp-alac-mono.m4a")
+    deep = temporary / "ramp-24.wav"
+    write_wav(deep, ramp(24, 96000), 24, 96000)
+    ffmpeg("-i", deep, "-t", "0.1", *codec, "-sample_fmt", "s32p",
+           ROOT / "ramp-alac-24.m4a")
 
 
 if __name__ == "__main__":
