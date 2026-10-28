@@ -209,6 +209,21 @@ TEST(AlacDecoder, WrapsTheRunningMeanAsTheReferenceCoderDoes) {
   EXPECT_EQ(decode(decoder, frame.done()), pcm({-32768, -32768, 1}, 16, 2));
 }
 
+/// Two mono frames: 2000, then a residual in a parameter of 8 whose prefix
+/// is followed by `remainder` in seven bits, the last the unit holds.
+Bytes endingInARemainder(unsigned remainder) {
+  BitWriter frame;
+  frame.header(SCE, 0, false, 2).put(0, 16).predictor();
+  frame.escaped(4000, 16).put(0, 1).put(remainder, 7);
+  return frame.done();
+}
+
+TEST(AlacDecoder, DecodesACodeThatEndsTheUnit) {
+  AlacDecoder decoder(Config{.channels = 1}.bytes());
+  // A remainder below 2 is sent in one bit fewer than the parameter.
+  EXPECT_EQ(decode(decoder, endingInARemainder(0)), pcm({2000, 0}, 16, 2));
+}
+
 TEST(AlacDecoder, UnmixesStereo) {
   AlacDecoder decoder(Config{.frameLength = 1}.bytes());
   BitWriter frame;
@@ -258,6 +273,8 @@ TEST(AlacDecoder, RefusesFramesItCannotDecode) {
   overrun.unary(2).put(0b1011, 4).put(END, 3);
   BitWriter shortEscape;
   shortEscape.header(SCE, 0, false).put(0, 16).predictor().put(0x1ff, 9);
+  BitWriter shortPrefix;
+  shortPrefix.header(SCE, 0, false).put(0, 16).predictor().put(1, 1);
   const std::tuple<AlacDecoder *, Bytes, const char *> cases[] = {
       {&stereo, Bytes(), "empty"},
       {&stereo, Bytes(good.begin(), good.end() - 2), "truncated"},
@@ -274,6 +291,8 @@ TEST(AlacDecoder, RefusesFramesItCannotDecode) {
        "more frames than the configuration allows"},
       {&mono, overrun.done(), "a run of zeros past the frame"},
       {&mono, shortEscape.done(), "an escape cut short"},
+      {&mono, shortPrefix.done(), "a prefix with no zero before the end"},
+      {&mono, endingInARemainder(1), "a remainder one bit past the end"},
       {&single, Compressed{.mode = 1}.bytes(), "unknown prediction mode"},
       {&single, Compressed{.order = 4, .quantization = 0}.bytes(),
        "a predictor with no quantization"},
