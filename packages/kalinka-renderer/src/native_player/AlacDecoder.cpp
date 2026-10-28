@@ -114,7 +114,7 @@ uint32_t riceValue(Reader &bits, uint32_t modulus, unsigned k, unsigned raw) {
 /// running mean, with runs of zeros where the mean falls low.
 void readResiduals(Reader &bits, std::span<int32_t> out, unsigned chanBits,
                    const Rice &rice, unsigned meanFactor) {
-  const uint64_t rate = rice.meanRate * meanFactor / 4;
+  const uint32_t rate = rice.meanRate * meanFactor / 4;
   const uint32_t limitMask = (1u << rice.limit) - 1;
   uint32_t mean = rice.initialMean, afterRun = 0;
   for (size_t i = 0; i < out.size();) {
@@ -124,10 +124,9 @@ void readResiduals(Reader &bits, std::span<int32_t> out, unsigned chanBits,
     const uint32_t folded = n + afterRun;
     const uint32_t magnitude = (folded + 1) >> 1;
     out[i++] = int32_t(folded & 1 ? 0u - magnitude : magnitude);
-    // In 64 bits, so no rate a header can name wraps the mean.
-    mean = n > MEAN_CLAMP
-               ? MEAN_CLAMP
-               : uint32_t(rate * folded + mean - ((rate * mean) >> 9));
+    // Wraps in 32 bits, as the reference coder's mean does.
+    mean = n > MEAN_CLAMP ? MEAN_CLAMP
+                          : rate * folded + mean - ((rate * mean) >> 9);
     afterRun = 0;
     if (mean < ZERO_RUN_MEAN && i < out.size()) {
       const auto runK =
@@ -166,9 +165,8 @@ void predict(std::span<const int32_t> in, std::span<int32_t> out,
   const size_t order = predictor.order;
   const auto quantization = predictor.quantization;
   auto &coefficients = predictor.coefficients;
-  out[0] = in[0];
-  for (size_t j = 1; j <= order && j < in.size(); ++j)
-    out[j] = signExtend(uint32_t(in[j]) + uint32_t(out[j - 1]), bits);
+  const auto warmUp = std::min(order + 1, in.size());
+  firstOrder(in.first(warmUp), out.first(warmUp), bits);
   const uint32_t half = 1u << (quantization - 1);
   for (size_t j = order + 1; j < in.size(); ++j) {
     const auto top = uint32_t(out[j - order - 1]);
