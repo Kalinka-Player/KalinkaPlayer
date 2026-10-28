@@ -1467,7 +1467,7 @@ class FileIndexer:
         metadata = self._extract_vorbis_comment_metadata(
             mp4.comments, mp4.info, metadata, mp4.codec
         )
-        # FLAC's sample entry gives no bitrate, which mutagen reads as 0.
+        # A lossless sample entry may give no bitrate, which mutagen reads as 0.
         metadata["stream_info"].update(
             bitrate=mp4.info.bitrate or None, container="mp4"
         )

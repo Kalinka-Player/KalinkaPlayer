@@ -5,8 +5,7 @@
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   if (!size)
     return 0;
-  // The first byte picks a configuration: depth, channels, frame length and
-  // whether the Rice coder is configured; the rest is one access unit.
+  // The first byte picks the configuration, so one corpus covers them all.
   const uint8_t choice = data[0];
   const uint8_t bits = choice % 3 == 0 ? 16 : choice % 3 == 1 ? 24 : 32;
   const uint8_t channels = choice & 4 ? 2 : 1;

@@ -198,7 +198,7 @@ void unmix(std::span<int32_t> u, std::span<int32_t> v, unsigned shift,
   }
 }
 
-Predictor predictor(Reader &bits) {
+Predictor readPredictor(Reader &bits) {
   Predictor result{};
   result.mode = bits.read(4);
   result.quantization = bits.read(4);
@@ -328,7 +328,7 @@ private:
     const auto mixWeight = int8_t(bits.read(8));
     std::array<Predictor, 2> predictors{};
     for (unsigned channel = 0; channel < channels; ++channel)
-      predictors[channel] = predictor(bits);
+      predictors[channel] = readPredictor(bits);
     // The low bytes the shift took off come before the residuals.
     auto low = bits;
     bits.skip(size_t(shift) * channels * frames);
