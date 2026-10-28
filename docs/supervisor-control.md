@@ -3,13 +3,13 @@
 `kalinka-supervisor` serves a control page and a small HTTP API on port
 **8001**. From there, a browser or the app can:
 
-- see how the box is doing;
+- see how the streamer is doing;
 - restart Core;
-- reboot the box or power it off;
+- reboot the streamer or power it off;
 - reinstall Kalinka;
 - remove a plugin package, so a plugin that breaks Core can go without Core's help;
-- on a Raspberry Pi, set the box up for its sound card, such as a DAC HAT;
-- set the box's time zone;
+- on a Raspberry Pi, set the streamer up for its sound card, such as a DAC HAT;
+- set the streamer's time zone;
 - set up an SSH administrator login through the dashboard form;
 - tell which supervisor and protocol version it is talking to.
 
@@ -17,15 +17,15 @@ The page and API run in the supervisor process, not in Core, so they keep
 working when Core is hung, failed or still starting. They read Core's
 configuration and identity files, but never need Core to be running.
 
-The supervisor runs on every image box, with or without radios. Nearby BLE
-setup is one component inside it, started when an adapter and a Wi-Fi
-interface are present; see [the supervisor](supervisor.md). A box that runs
-only a renderer can have one too, installed with the renderer; it then offers
-no server controls.
+The supervisor runs on every streamer built from an image, with or without
+radios. Nearby BLE setup is one component inside it, started when an adapter
+and a Wi-Fi interface are present; see [the supervisor](supervisor.md). A
+streamer that runs only a renderer can have one too, installed with the
+renderer; it then offers no server controls.
 
 ## The control page
 
-Open `http://<box>:8001/` in a browser. The page is built into the supervisor
+Open `http://<streamer>:8001/` in a browser. The page is built into the supervisor
 binary and loads nothing from the internet, so it works offline and when
 Core's files are damaged. It follows the app's dark style.
 
@@ -43,13 +43,13 @@ Core's files are damaged. It follows the app's dark style.
   - **Power off:** until it stops answering.
   - **Reinstall:** shows the installer's output live, until it succeeds or
     fails.
-- **Sound card**, on a Raspberry Pi. The DAC the box found, what the boot
+- **Sound card**, on a Raspberry Pi. The DAC the streamer found, what the boot
   configuration sets up, and the ALSA card that came up. A list of every card
-  the box can be set up for, with the ones it detected first, and **Apply**,
-  which restarts the box once when the boot configuration has to change. See
-  [the sound card](#the-sound-card).
-- **Time zone.** The box's zone and the browser's, a list of every zone the
-  box offers, starting on the box's own, and **Apply**. See
+  the streamer can be set up for, with the ones it detected first, and
+  **Apply**, which restarts the streamer once when the boot configuration has
+  to change. See [the sound card](#the-sound-card).
+- **Time zone.** The streamer's zone and the browser's, a list of every zone
+  the streamer offers, starting on its own, and **Apply**. See
   [the time zone](#the-time-zone).
 - **Resources.** Memory and CPU for Kalinka as a whole, then per service:
   - **Services:** the server, the renderer and the supervisor, plus any other
@@ -64,7 +64,7 @@ Core's files are damaged. It follows the app's dark style.
 - **Software and plugins.**
   - **Packages:** every installed `kalinka*` Debian package, read from dpkg's
     database.
-  - **Plugins:** every installed `kalinka-plugin-*` Debian package other than the SDK, each with a **Remove** button, followed by any plugin in Core's Python environment that no package accounts for, read from its `dist-info` metadata the way Core's own inventory finds them, without importing anything. Remove asks for confirmation, then follows the removal with its output until it succeeds or fails, and Core starts again either way. There is no install here: installing is Core's job, from the app, and the supervisor only takes away what is already on the box.
+  - **Plugins:** every installed `kalinka-plugin-*` Debian package other than the SDK, each with a **Remove** button, followed by any plugin in Core's Python environment that no package accounts for, read from its `dist-info` metadata the way Core's own inventory finds them, without importing anything. Remove asks for confirmation, then follows the removal with its output until it succeeds or fails, and Core starts again either way. There is no install here: installing is Core's job, from the app, and the supervisor only takes away what is already on the streamer.
 
 **SSH access** is a dashboard form, outside the versioned API. Enter and
 confirm a new password of 12–128 printable ASCII characters, then submit
@@ -77,14 +77,14 @@ the form resets that account's password. Custom SSH authentication policies
 are kept, so password authentication must be allowed for this login.
 
 The form posts to `/` and requires the dashboard's exact Origin and the
-box's identity. Success redirects back to the page with connection
+streamer's identity. Success redirects back to the page with connection
 instructions; errors return the page with an explanation and empty password
 fields. `/info` and `/v1/actions/` are unchanged. Test and unprivileged runs
 simulate setup and label the result accordingly.
 
 ## Trust model
 
-**The page and API have no authentication.** The box sits on a trusted local
+**The page and API have no authentication.** The streamer sits on a trusted local
 network, as Core's own API already does: any LAN client can already restart
 Core, upgrade it through `PUT /server/upgrade`, or change its settings. This
 was a deliberate decision. What the supervisor does instead is narrow who can
@@ -93,12 +93,12 @@ reach it and what they can make it do:
 - **A closed set of actions.** Unit names, targets and the installer URL are
   constants. The SSH form accepts a password for one fixed account, and
   `set_soundcard` accepts one sound card name from the supervisor's own
-  catalog, which the box must offer: its overlay has to be on the boot
+  catalog, which the streamer must offer: its overlay has to be on the boot
   partition. Nothing accepts a command or a path. The one package name
   accepted, by `remove_plugin`, must be an installed `kalinka-plugin-*`
   package other than the SDK, and the removal unit checks it again and
   refuses to take any other package along. `set_timezone` accepts one zone
-  name, with no leading `/` and no `.`, that the box's tzdata has, and
+  name, with no leading `/` and no `.`, that the streamer's tzdata has, and
   timedated checks it again.
 - **Local peers only.** The peer address must be loopback, link-local,
   private (RFC 1918) or in 100.64.0.0/10, where VPN overlays such as Tailscale
@@ -108,7 +108,7 @@ reach it and what they can make it do:
   covered by the trusted-LAN premise.
   - API actions require `Content-Type: application/json`, parsed strictly, which
     forces a CORS preflight.
-  - Only pages the box serves may call the API: the supervisor's own page, and
+  - Only pages the streamer serves may call the API: the supervisor's own page, and
     the web player Core serves on the same host.
   - The `Host` header must be an IP address, `localhost`, a single-label name,
     or end in `.local`, `.lan`, `.home.arpa` or `.internal`. Public DNS cannot
@@ -116,9 +116,9 @@ reach it and what they can make it do:
   - Every response forbids framing (`frame-ancestors 'none'`, `X-Frame-Options:
     DENY`), so another site cannot overlay the controls and steal a click. A
     content security policy keeps the page to its own files.
-- **The right box.** An action must repeat the box's `server_id`, or its
-  `renderer_id` on a box that runs only a renderer, so a stale address left
-  by a DHCP change cannot act on a different Kalinka box. This is a guard,
+- **The right streamer.** An action must repeat the streamer's `server_id`, or
+  its `renderer_id` on a streamer that runs only a renderer, so a stale address
+  left by a DHCP change cannot act on a different Kalinka streamer. This is a guard,
   not a credential.
 - **Bounded requests.** 1 KiB bodies with no unknown fields, 8 KiB headers,
   and timeouts on reading, writing and idling. Responses are never cached.
@@ -160,15 +160,15 @@ is busy, including after a supervisor restart.
 
 - `version` is the package version.
 - `poweroff_timer` advertises support for Core's inactivity timer. Older
-  supervisors omit it; apps hide the timer controls on those boxes.
+  supervisors omit it; apps hide the timer controls on those streamers.
 - `server_id` is Core's identity from `/var/lib/kalinka/server_id`, or `null`
   before Core has created it.
 - `renderer_id` is the renderer's identity from
   `/var/lib/kalinka-renderer/renderer_id`, or `null` where no renderer has
   created one. It is the `renderer_id` Core lists the renderer under.
-- `actions` lists what this box can do. A box without Core offers no
+- `actions` lists what this streamer can do. A streamer without Core offers no
   `restart_core` or `reinstall`, only a Raspberry Pi offers
-  `set_soundcard`, and only a box with tzdata and an unmasked
+  `set_soundcard`, and only a streamer with tzdata and an unmasked
   systemd-timedated offers `set_timezone`. An older supervisor lists no
   `set_timezone`.
 
@@ -179,7 +179,7 @@ protocol, new actions and fields only get added. A breaking change raises
 `protocol`, and the older path prefix stays served for as long as
 `min_protocol` allows.
 
-A refused connection on port 8001 means the box has no supervisor, or one
+A refused connection on port 8001 means the streamer has no supervisor, or one
 older than this API. Ordinary Core installations have no supervisor.
 
 ## Endpoints
@@ -201,7 +201,7 @@ a full new interval. Demo mode never authorizes automatic shutdown.
 Supervisor polls Core's `GET /server/power-off-timer` every five seconds on
 Core's configured local interface and port. The uncached response is
 `{"server_id":"<Core identity>","due":false}`. A fresh `due: true` for the
-identity stored on this box requests the same guarded power-off operation as
+identity stored on this streamer requests the same guarded power-off operation as
 the manual action. Upgrades, reinstall, plugin removal, setup and other busy
 operations still block shutdown. Core is checked again after these guards,
 so resuming playback during admission cancels the request. A later attempt
@@ -221,14 +221,14 @@ invokes systemd.
 | GET, HEAD | `/v1/reinstall/log` | The last 64 KiB of the last reinstall's output, as text; empty if none has run |
 | GET, HEAD | `/v1/plugin-removal/log` | The same for the last plugin removal |
 | GET, HEAD | `/v1/soundcard` | The sound card object below |
-| GET, HEAD | `/v1/timezones` | `{"timezones": ["Africa/Abidjan", …, "UTC"]}`, the zones to choose from for `set_timezone`, on a box that offers it |
+| GET, HEAD | `/v1/timezones` | `{"timezones": ["Africa/Abidjan", …, "UTC"]}`, the zones to choose from for `set_timezone`, on a streamer that offers it |
 | POST | `/v1/actions/restart_core` | 202 `{"action": "restart_core"}` once systemd has queued the restart |
-| POST | `/v1/actions/reboot` | 202 `{"action": "reboot"}`, then the box reboots |
-| POST | `/v1/actions/poweroff` | 202 `{"action": "poweroff"}`, then the box powers off |
+| POST | `/v1/actions/reboot` | 202 `{"action": "reboot"}`, then the streamer reboots |
+| POST | `/v1/actions/poweroff` | 202 `{"action": "poweroff"}`, then the streamer powers off |
 | POST | `/v1/actions/reinstall` | 202 `{"action": "reinstall"}` once the reinstall has been queued |
 | POST | `/v1/actions/remove_plugin` | 202 `{"action": "remove_plugin", "package": "..."}` once the removal has been queued; the body also names the `package` |
-| POST | `/v1/actions/set_soundcard` | 202 `{"action": "set_soundcard", "reboot": true}` once the card is set up; when `reboot` is true, the box then restarts |
-| POST | `/v1/actions/set_timezone` | 202 `{"action": "set_timezone", "timezone": "Asia/Kolkata"}` once the box is on that zone; the body also names the `timezone` |
+| POST | `/v1/actions/set_soundcard` | 202 `{"action": "set_soundcard", "reboot": true}` once the card is set up; when `reboot` is true, the streamer then restarts |
+| POST | `/v1/actions/set_timezone` | 202 `{"action": "set_timezone", "timezone": "Asia/Kolkata"}` once the streamer is on that zone; the body also names the `timezone` |
 | OPTIONS | any API path | CORS preflight |
 
 `GET /v1/status` returns:
@@ -256,13 +256,13 @@ invokes systemd.
 | `timezone` | The zone `/etc/localtime` names, read from the system each time: `UTC` without it, `null` when it names no zone |
 
 `GET /v1/dashboard` returns `host`, `services`, `kalinka` (the totals),
-`packages`, `plugins` and `python`. A figure the box cannot provide is `null`;
-for example, CPU stays `null` until two samples a few seconds apart exist.
-Memory is in bytes and CPU in percent of the whole box.
+`packages`, `plugins` and `python`. A figure the streamer cannot provide is
+`null`; for example, CPU stays `null` until two samples a few seconds apart
+exist. Memory is in bytes and CPU in percent of the whole streamer.
 
-An action's body names the box. On a box with Core it is
+An action's body names the streamer. On a streamer with Core it is
 `{"server_id": "<id from /info>"}`, and may add the `renderer_id` too. On a
-box that runs only a renderer it is `{"renderer_id": "<id from /info>"}`.
+streamer that runs only a renderer it is `{"renderer_id": "<id from /info>"}`.
 While `/info` reports neither, it is `{}`. `remove_plugin` adds `"package"`
 and `set_timezone` adds `"timezone"`, and no other action accepts either:
 
@@ -283,7 +283,7 @@ uses this one when Core does not answer.
 that systemd answers and knows the target. It then writes the 202 with
 `Connection: close` and flushes it before it starts the shutdown, so the
 reply reaches the client before the network goes down. These two actions are
-terminal: until the box goes down, every later action is answered
+terminal: until the streamer goes down, every later action is answered
 `shutting_down`. If systemd refuses after the reply, which is unlikely, the
 audit line says `failed` and `pending` returns to `null`.
 
@@ -300,7 +300,7 @@ so it works when Core's own files are what is broken:
    - The server is stopped and its Python environment removed. The server's
      postinst starts it again, and `bootstrap.sh` rebuilds the environment
      from the shipped wheels. If the install fails, the installer still
-     starts the server on its way out, so the box is never left with it
+     starts the server on its way out, so the streamer is never left with it
      stopped.
    - Settings, the library and the music are kept.
    - Optional extras that were installed into the environment come back the
@@ -316,7 +316,7 @@ so it works when Core's own files are what is broken:
 The reinstall runs as long as it needs; apt and source builds on a Pi have no
 safe bound. While it runs, `upgrading` is true and every other action waits.
 
-**`remove_plugin`** writes the package name to `/var/lib/kalinka-supervisor/plugin-removal-request`, a file only root reads, and starts `kalinka-plugin-removal.service`, which ships with the supervisor package. The unit's script checks the name again, that dpkg lists the package as installed, and that apt's simulation would remove nothing else, since removing a package the server depends on would take the server with it. It then stops Core, runs `apt-get remove`, and starts Core again with `--no-block`, failure or not, so the box is never left silent. The plugin's own prerm uninstalls it from Core's environment; its settings in Core's configuration stay. Output goes to `/var/log/kalinka-supervisor/plugin-removal.log` and the result to `/var/lib/kalinka-supervisor/plugin-removal-result`, which `plugin_removal` reports. While the unit runs, `upgrading` is true and every other action waits. The unit does not wait for a Wi-Fi join, as a restart of Core does not. A box without Core offers no `remove_plugin`.
+**`remove_plugin`** writes the package name to `/var/lib/kalinka-supervisor/plugin-removal-request`, a file only root reads, and starts `kalinka-plugin-removal.service`, which ships with the supervisor package. The unit's script checks the name again, that dpkg lists the package as installed, and that apt's simulation would remove nothing else, since removing a package the server depends on would take the server with it. It then stops Core, runs `apt-get remove`, and starts Core again with `--no-block`, failure or not, so the streamer is never left silent. The plugin's own prerm uninstalls it from Core's environment; its settings in Core's configuration stay. Output goes to `/var/log/kalinka-supervisor/plugin-removal.log` and the result to `/var/lib/kalinka-supervisor/plugin-removal-result`, which `plugin_removal` reports. While the unit runs, `upgrading` is true and every other action waits. The unit does not wait for a Wi-Fi join, as a restart of Core does not. A streamer without Core offers no `remove_plugin`.
 
 ## The sound card
 
@@ -328,7 +328,7 @@ firmware's table of boards, which lists most HiFiBerry boards. Any other HAT
 needs that line, which the supervisor writes for the card chosen in the app
 or on the page.
 
-`GET /v1/soundcard` returns what the box knows:
+`GET /v1/soundcard` returns what the streamer knows:
 
 ```json
 {"supported": true, "name": "HiFiBerry Digi2 Pro",
@@ -352,7 +352,7 @@ or on the page.
 | `active` | The ALSA card that came up for it: `id`, `name` and `pcm`, the name the renderer opens it by. For HDMI, `pcm` is the `default:` device of the port a screen or receiver is plugged into, else of the first port: the `hw:` device takes only IEC958 data, and a port with nothing plugged in does not open |
 | `usb` | The USB audio cards plugged in, in the same shape. They play with nothing set up, so no choice here concerns them; the output's own settings pick one |
 | `suggested` | The cards the hardware points to, most likely first |
-| `options` | Every card this box can be set up for: `name`, `label`, `vendor` and `kind` (`dac`, `digital`, `amp`, `onboard` or `none`) |
+| `options` | Every card this streamer can be set up for: `name`, `label`, `vendor` and `kind` (`dac`, `digital`, `amp`, `onboard` or `none`) |
 
 **Detection** reads, in order:
 
@@ -396,14 +396,14 @@ from the HAT's ID chip, when there is one:
 - **The card the firmware sets up from the HAT's ID chip** is left to the
   chip: the helper removes any audio overlay and `force_eeprom_read=0` that
   would load a second card, and touches nothing else. Any other card on such
-  a box adds `force_eeprom_read=0`, so the chip's own overlay does not load
+  a streamer adds `force_eeprom_read=0`, so the chip's own overlay does not load
   on top. Without such a chip, that line is added for the boards HiFiBerry's
   tools treat so, and removed for any other card.
 - `none` removes the HAT's overlay. It is never handed to DietPi, whose
   handling of it removes ALSA.
 
-The reply says whether the boot configuration changed. When it did, the box
-restarts after the reply, exactly as for `reboot`: `pending` is `reboot`
+The reply says whether the boot configuration changed. When it did, the
+streamer restarts after the reply, exactly as for `reboot`: `pending` is `reboot`
 meanwhile. The firmware loads the overlay at that boot, and the card appears
 in `active` and in the renderer's list of output devices.
 
@@ -422,7 +422,7 @@ chip rather than writing an overlay that would load a second copy.
 The images run on UTC unless `AUTO_SETUP_TIMEZONE` in the card's
 `dietpi.txt` names a zone before the first start, and few people edit the
 card. The clock itself is set over the network by NTP; the zone decides which
-time the box shows, such as on the now-playing display, and when the
+time the streamer shows, such as on the now-playing display, and when the
 server's quiet hours fall.
 
 **`set_timezone`** takes `{"server_id": "…", "timezone": "<zone>"}`. The
@@ -447,7 +447,7 @@ it up; a package install does.
 `timezone` in `/v1/status` is read from `/etc/localtime` on each request, as
 timedated reads it, so a zone set with `dietpi-config` shows there too.
 `GET /v1/timezones` lists UTC and every zone in tzdata's `zone.tab` that the
-box has, sorted: one per country and region, the list people choose from.
+streamer has, sorted: one per country and region, the list people choose from.
 
 ## Refusals
 
@@ -455,14 +455,14 @@ Every error has Core's shape, `{"detail": {"code": "...", "message": "..."}}`:
 
 | Status | Code | When |
 |---|---|---|
-| 400 | `invalid_request` | The body is not a JSON object with only the box's identity and, for `set_soundcard`, a `soundcard` name, for `remove_plugin`, a `package`, or, for `set_timezone`, a `timezone` name, or is over 1 KiB |
-| 400 | `unknown_timezone` | A time zone the box's tzdata has neither as a zone nor as a link to one |
+| 400 | `invalid_request` | The body is not a JSON object with only the streamer's identity and, for `set_soundcard`, a `soundcard` name, for `remove_plugin`, a `package`, or, for `set_timezone`, a `timezone` name, or is over 1 KiB |
+| 400 | `unknown_timezone` | A time zone the streamer's tzdata has neither as a zone nor as a link to one |
 | 403 | `not_local` | The peer is not on a local network |
 | 403 | `host_not_allowed` | The `Host` name could be a DNS-rebinding page's |
-| 403 | `origin_not_allowed` | A page this box did not serve |
-| 404 | `not_found` | An unknown path, or an action this box does not offer |
+| 403 | `origin_not_allowed` | A page this streamer did not serve |
+| 404 | `not_found` | An unknown path, or an action this streamer does not offer |
 | 405 | `method_not_allowed` | The wrong method; `Allow` names the right one |
-| 409 | `wrong_server` | `server_id` or `renderer_id` is missing, or does not name this box |
+| 409 | `wrong_server` | `server_id` or `renderer_id` is missing, or does not name this streamer |
 | 409 | `busy` | Another action, the SSH helper or a sound card helper is still running, or, for `set_soundcard`, the boot hook is still waiting to apply its card |
 | 409 | `shutting_down` | A reboot or power-off has been accepted |
 | 409 | `upgrade_in_progress` | `kalinka-reinstall.service`, `kalinka-plugin-removal.service`, `kalinka-upgrade.service` or `kalinka-renderer-upgrade.service` is running, stopping or queued |
@@ -470,7 +470,7 @@ Every error has Core's shape, `{"detail": {"code": "...", "message": "..."}}`:
 | 409 | `not_installed` | `remove_plugin` named a package dpkg does not list as installed |
 | 409 | `network_change_in_progress` | Reboot, power-off or reinstall while nearby setup is joining a network or rolling one back |
 | 415 | `unsupported_media_type` | An action without `Content-Type: application/json` |
-| 422 | `unknown_soundcard` | A sound card this box does not offer |
+| 422 | `unknown_soundcard` | A sound card this streamer does not offer |
 | 429 | `too_soon` | A `restart_core` within 15 s of one that succeeded; `Retry-After` says when |
 | 500 | `log_unreadable` | The reinstall or removal log exists but could not be read |
 | 500 | `soundcard_failed` | The sound card helper failed; the supervisor's journal has its output |
@@ -514,48 +514,50 @@ from the LAN for the page to be reachable.
 
 ## Using it from the app
 
-The Kalinka app shows the box under **Settings › General › Streamer**, and
+The Kalinka app shows the streamer under **Settings › General › Streamer**, and
 under **Management** on the plugin catalog's **Streamer** tab:
 - **Streamer dashboard** opens this page in the browser. That covers the
   dashboard and reinstalling, so the app has no copy of either.
 - **Restart streamer** and **Power off streamer** run through the app's own
   confirmation dialogs.
-- **Time zone** shows the box's zone and opens a picker of the zones it
+- **Time zone** shows the streamer's zone and opens a picker of the zones it
   offers. The setup wizard's **Network** step proposes the phone's own zone,
   or the browser's in the browser player, and sets it once confirmed. On a
-  box without a supervisor that offers `set_timezone`, the row is shown
+  streamer without a supervisor that offers `set_timezone`, the row is shown
   disabled with the reason.
 
 **Sound card** is a row in an output's own settings, opened with its gear in
 the output switcher. On a Raspberry Pi, the row shows the DAC's name and opens
 a picker with the detected cards first. After the restart a change needs, the
-app points the box's own renderer at the new card. The row is there for the
-server's own Pi as well as for a box that runs only a renderer and has a
+app points the streamer's own renderer at the new card. The row is there for
+the server's own Pi as well as for a streamer that runs only a renderer and has a
 supervisor.
 
 When Core stops answering, the app's "unavailable" card and the Settings
 placeholder offer **Restart server** through the supervisor.
 
 None of this appears for a demo server, for a server reached over HTTPS, or
-for a box whose supervisor does not match the server. Another client should
-follow the same steps:
+for a streamer whose supervisor does not match the server. Another client
+should follow the same steps:
 
-1. **Find the box.** Probe `http://<core-host>:8001/info`. Use the box only if:
+1. **Find the streamer.** Probe `http://<core-host>:8001/info`. Use the
+   streamer only if:
    - it answers as `kalinka-supervisor`;
    - its protocol range overlaps the client's;
    - its `server_id` is Core's own, which Core reports at
      `GET /renderer/sessions`.
 
    The app records that id under the server's address on every connect.
-   While Core is down, it can then still tell its own box from another one
-   that has taken over the address.
+   While Core is down, it can then still tell its own streamer from another
+   one that has taken over the address.
 
-   **A renderer's box.** For a renderer whose `local` is true, the box is
-   Core's own. For any other, `GET /renderer/list` gives its `address`, the
-   IPv4 address it connected from. Probe `http://<address>:8001/info`, and
-   use the box only if its `renderer_id` is the renderer's own.
+   **A renderer's streamer.** For a renderer whose `local` is true, the
+   streamer is Core's own. For any other, `GET /renderer/list` gives its
+   `address`, the IPv4 address it connected from. Probe
+   `http://<address>:8001/info`, and use the streamer only if its
+   `renderer_id` is the renderer's own.
 2. **Act.** Send the action with that `server_id`, or the `renderer_id` on a
-   box without Core.
+   streamer without Core.
 3. **Wait for the result:**
    - **`restart_core`:** first check `/v1/status`, and leave a Core that is
      `activating` to finish starting: on a Pi that takes up to a minute.
@@ -569,15 +571,16 @@ follow the same steps:
    - **`poweroff`:** there is nothing to wait for.
    - **`set_soundcard`:** the reply arrives once the card is set up. When
      its `reboot` is true, wait as for `reboot`, then poll `/v1/soundcard`
-     until `active` is set. Point the box's renderer at `active.pcm` by
+     until `active` is set. Point the streamer's renderer at `active.pcm` by
      setting its `output.device` through Core's
      `PUT /renderer/{id}/config`.
-   - **`set_timezone`:** the reply arrives once the box is on the zone it
+   - **`set_timezone`:** the reply arrives once the streamer is on the zone it
      names, which `/v1/status` then reports.
 4. **Handle refusals.** Treat 409 and 429 as "not now": show the reason and
    keep the button. A 503 means systemd refused, so offer the action again.
-   A 422 means the box cannot take that sound card; read `/v1/soundcard`
-   again. An `unknown_timezone` means the box's tzdata lacks that zone;
+   A 422 means the streamer cannot take that sound card; read
+   `/v1/soundcard` again. An `unknown_timezone` means the streamer's tzdata
+   lacks that zone;
    offer the list from `/v1/timezones`.
 
 The web player runs on Core's port. A request from it to port 8001 is
@@ -608,12 +611,12 @@ belongs in that change's threat model.
   - the systemd calls against a fake bus;
   - the reinstall record and unit;
   - the sound card: the catalog against the overlays the images ship,
-    detection against staged boxes and a fake I2C bus, and the packaged
+    detection against staged streamers and a fake I2C bus, and the packaged
     helper setting up every catalogued card so that detection reads it back;
   - the time zone: the names accepted, links resolved through `tzdata.zi`,
     the zone list and the current zone against a staged tzdata, and the
     timedated call and the display's restart against fake buses;
-  - the dashboard against a staged box;
+  - the dashboard against a staged streamer;
   - the binding, and the composed process serving and stopping.
 
   The installer's reinstall mode is covered in

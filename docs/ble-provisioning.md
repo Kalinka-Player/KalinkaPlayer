@@ -1,4 +1,4 @@
-# Box setup over BLE, first iteration
+# Streamer setup over BLE, first iteration
 
 Implemented scope, updated 2026-10-06. This supersedes the provisioning parts of
 [the earlier design](first-run-wifi-design.md). Bluetooth playback, monitoring,
@@ -13,69 +13,69 @@ Bluetooth adapter address suffix. An interface without that route, such as a
 cable straight to an amplifier, does not keep setup closed when Wi-Fi breaks.
 When no physical interface carries the default route (a LAN with no gateway,
 a VPN or a separate routing table holding it), the Wi-Fi interface counts
-instead, so a wired box on a LAN with no gateway advertises while a Wi-Fi one
-does not.
-On a box which has previously connected, the grace period is five minutes.
+instead, so a wired streamer on a LAN with no gateway advertises while a Wi-Fi
+one does not.
+On a streamer which has previously connected, the grace period is five minutes.
 An internet outage does not trigger setup. A returning Ethernet or Wi-Fi
 connection closes setup automatically when no join is in progress.
 
-In the installed app, **Set up a box** is available alongside normal
+In the installed app, **Set up a streamer** is available alongside normal
 network discovery, including when other players are visible. The wizard has
-two steps: select a nearby box and press **Connect**, then choose its Wi-Fi
+two steps: select a nearby streamer and press **Connect**, then choose its Wi-Fi
 network. Accept the OS pairing prompt if shown. Selecting a network opens a
 password form with the SSID displayed read-only; **Change** returns to the
 list. **Enter custom SSID** is always available below the network list and
 opens manual name/password entry. The footer keeps **Back** and the main
 action above the keyboard. Back returns from password entry to the network
-list, then to box discovery, then to the player list. Returning to box discovery
-disconnects BLE and discards pending scan results. During a join, Back asks a
-box that supports network changes to stop the attempt and reopen the network list.
+list, then to streamer discovery, then to the player list. Returning to
+streamer discovery disconnects BLE and discards pending scan results. During a
+join, Back asks a streamer that supports network changes to stop the attempt and reopen the network list.
 The country defaults from the phone locale and can be edited under
 **Advanced**; rescan after changing it. The list shows signal strength, groups duplicate
 access points by SSID/security, and marks unsupported security types. It
 shows up to the 30 strongest networks. Manual network-name entry remains
-available for hidden networks, scan failures and older boxes without scanning.
+available for hidden networks, scan failures and older streamers without scanning.
 The first version accepts UTF-8 SSIDs (1–32 bytes, without control characters)
 and WPA2-Personal passphrases (8–63 printable ASCII characters). WPA2/WPA3
 transition networks work through WPA2; open, WPA3-only and enterprise networks
 are not supported. SSID/password whitespace is significant and is preserved.
-Hidden SSIDs are supported by enabling directed scans on the box.
+Hidden SSIDs are supported by enabling directed scans on the streamer.
 
 The app checks the encrypted BLE status before sending credentials, recovering
 connections that dropped during password entry. Status and network-list reads
 allow up to two fresh BLE reconnections before reporting failure; network-list
-recovery resumes the same scan. If the box is already joining or joined, the
+recovery resumes the same scan. If the streamer is already joining or joined, the
 app resumes that result without submitting credentials again. A lost write
 acknowledgement also triggers a status check, never an automatic credential
-resend when delivery is uncertain. The box tries the network,
+resend when delivery is uncertain. The streamer tries the network,
 reports failure for a retry or returns its IPv4 address and port. The app waits
 for the Core's HTTP API, checks its identity when available, and resumes the
 existing connection/onboarding flow. It also repeats normal mDNS discovery,
 matching `server_id`; the Core already notices new network interfaces. Apple
 builds use native Bonjour browsing with Local Network permission.
-Wi-Fi is one step of box setup: the normal connection path reads
+Wi-Fi is one step of streamer setup: the normal connection path reads
 `base_config.server.oobe_complete` and runs the existing first-run wizard when
-the box reports it is new. Previously configured boxes go to the player.
+the streamer reports it is new. Previously configured streamers go to the player.
 
-The box reports progress over BLE: preparing, authenticating, getting an IP
+The streamer reports progress over BLE: preparing, authenticating, getting an IP
 address, saving, connected. After joining, the app waits for Kalinka to respond.
 Each active step has a spinner. **Retry** appears only after a reported failure,
 a connection error, or a timeout. The failed step shows a red cross and its
 error message; all spinners stop. Completed steps retain their green ticks.
 Retry checks the player again after a handoff failure, resends the entered
-credentials after a confirmed Wi-Fi failure, or reconnects to check the box
-when its result is unknown. **Back** returns to network selection; there is
+credentials after a confirmed Wi-Fi failure, or reconnects to check the
+streamer when its result is unknown. **Back** returns to network selection; there is
 no separate change-network link below the buttons.
 
 Going back during a join cancels the attempt and waits for rollback
 before reopening the picker. After a successful join, the saved connection
 is kept while the user chooses a replacement; setup stays open for another
-three minutes even though the box is online. This action requires BLE setup
+three minutes even though the streamer is online. This action requires BLE setup
 to still be available. It does not send the previous password again; the app
 clears that field when the picker reopens.
 
-Network scanning happens on the box, so it does not require phone Wi-Fi scan
-permissions and only lists networks visible to the box's radio. Phone SSID
+Network scanning happens on the streamer, so it does not require phone Wi-Fi
+scan permissions and only lists networks visible to the streamer's radio. Phone SSID
 prefill is not implemented. [Android Wi-Fi APIs](https://developer.android.com/reference/android/net/wifi/WifiConfiguration#preSharedKey)
 do not expose saved passwords. [Apple's Wi-Fi Infrastructure sharing](https://developer.apple.com/documentation/wifiinfrastructure)
 is a separate accessory integration with EU-only production availability; it
@@ -172,7 +172,7 @@ Use your laptop's Wi-Fi interface name from `nmcli device status`. The logged-in
 user needs NetworkManager permissions to scan, activate connections, and save
 profiles (`nmcli general permissions`). The phone must be on the same LAN and
 the laptop firewall must allow the Core's TCP port and mDNS. Enter credentials
-in the phone's **SET UP A BOX** flow. The network switch can briefly interrupt
+in the phone's **SET UP A STREAMER** flow. The network switch can briefly interrupt
 other laptop connections.
 
 Credentials go directly to NetworkManager over system D-Bus, never shell
@@ -183,7 +183,7 @@ the new candidate and reactivate the previous profile. An interrupted attempt
 is recovered on the receiver's next start using a credential-free rollback
 record in its private persistent state directory. A successful join stays active after
 the receiver exits. `run-live.sh` passes `--keep-country`, so the laptop keeps
-its regulatory domain. Without it, as on a box, this backend applies the app's
+its regulatory domain. Without it, as on a streamer, this backend applies the app's
 country: `iw reg set` before a scan and a join, and
 `/etc/modprobe.d/kalinka-regdom.conf` once a join succeeds.
 
@@ -242,7 +242,7 @@ in `dietpi.txt` before the first boot), or stop and disable
 `kalinka-supervisor.service`, to turn Bluetooth setup off. Set `KALINKA_WIFI_AP_SETUP=0` as well to
 disable the temporary hotspot. These switches control provisioning, not the radio hardware. Pairing uses encrypted Just Works:
 proximity authorises setup, without authenticated proof of ownership. Pi
-images allow Just Works re-pairing; after reflashing a box the phone may still
+images allow Just Works re-pairing; after reflashing a streamer the phone may still
 need to forget its stale bond in Bluetooth settings.
 
 Before a join, scanning sets the requested regulatory country, unblocks Wi-Fi,
@@ -321,7 +321,7 @@ There are at most ten pages. Scan/page commands never carry credentials.
 When the progress capability is present, read Progress while Status is
 `joining`. Its two bytes are version `1` and stage: preparing=0,
 authenticating=1, getting_address=2, saving=3, connected=4. Status remains the
-authoritative join outcome. Older boxes use the generic connecting message.
+authoritative join outcome. Older streamers use the generic connecting message.
 
 With the change-network capability, the current join owner may send
 `change_network` during joining or before acknowledging a successful handoff.

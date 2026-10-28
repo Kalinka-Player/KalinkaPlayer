@@ -1,10 +1,10 @@
 # Kalinka Supervisor
 
 `kalinka-supervisor` replaces the experimental Python provisioning service.
-It provides nearby box setup and a LAN [control page and API](supervisor-control.md)
-on port 8001. They show how the box is doing, and restart Core, reboot or power
-off the box, reinstall Kalinka, remove a plugin package, set a Raspberry Pi
-up for its sound card, or set the box's time zone. It runs independently
+It provides nearby streamer setup and a LAN [control page and API](supervisor-control.md)
+on port 8001. They show how the streamer is doing, and restart Core, reboot or
+power off the streamer, reinstall Kalinka, remove a plugin package, set a
+Raspberry Pi up for its sound card, or set the streamer's time zone. It runs independently
 of Core, its Python interpreter, its virtual environment and its plugins.
 Core still owns its HTTP API, mDNS, its identity and the existing OOBE. Nearby
 setup keeps the BLE protocol unchanged and adds an HTTP transport; see
@@ -46,7 +46,7 @@ the HAT's I2C bus on for sound card detection.
 All image targets install an architecture-specific Debian package containing the same static Go service. `--backend auto`
 selects DietPi when `/boot/dietpi/dietpi-network` exists, otherwise NetworkManager.
 Use `--backend dietpi` or `--backend nm` to select explicitly. The service runs
-on every box, radios or not. Nearby setup is a component inside it. It starts
+on every streamer, radios or not. Nearby setup is a component inside it. It starts
 while a wireless interface and its backend exist. Bluetooth is retried separately,
 so a missing adapter or BlueZ failure does not prevent hotspot or HTTP setup.
 `--adapter` defaults to `hci0`. A component failure is retried after 10 seconds;
@@ -59,12 +59,13 @@ service exits. `--no-ble` and `--no-ap` provide equivalent radio switches.
 ## Network setup over the temporary hotspot
 
 The app always includes a **Network** step, even for an already selected or
-configured box. It shows the current Ethernet or Wi-Fi connection and lets the
-user keep it or choose Wi-Fi. **Set up a box** offers Bluetooth and the temporary
-Wi-Fi hotspot. The same Flutter Network panel runs in the native app and web UI.
+configured streamer. It shows the current Ethernet or Wi-Fi connection and lets
+the user keep it or choose Wi-Fi. **Set up a streamer** offers Bluetooth and the
+temporary Wi-Fi hotspot. The same Flutter Network panel runs in the native app
+and web UI.
 
-After the existing offline grace period (30 seconds on a new box, five minutes
-on a previously networked box), the supervisor opens `Kalinka-Setup-XXXX` when
+After the existing offline grace period (30 seconds on a new streamer, five
+minutes on a previously networked streamer), the supervisor opens `Kalinka-Setup-XXXX` when
 no usable home-network address exists. A working Ethernet connection suppresses
 the hotspot. The AP's own address is excluded from this decision. The hotspot
 uses WPA2 with the public setup password `kalinka-setup`; proximity authorizes
@@ -93,7 +94,7 @@ Saved Wi-Fi profiles and DietPi files are preserved by AP activation.
 The network list is scanned before starting the AP and cached while it is active,
 because single-radio drivers cannot reliably scan all channels while serving an
 AP. A Pi's radio leaves out channels 12 and 13 until it has a Wi-Fi country, so a
-box that has none yet scans again under the country most nearby access points
+streamer that has none yet scans again under the country most nearby access points
 announce in their beacons (802.11d), and serves that list. The setup's own
 country still wins: when a scan asks for a country the list was not scanned
 under, and nobody is on the hotspot, the supervisor closes the hotspot, scans
@@ -109,7 +110,7 @@ state, reason, stage, address, port, scan_state, networks, and `target_ssid`
 while joining), `hotspot`, `hotspot_name`, `networks_cached` and `server_id` where
 available. `POST /v1/setup` accepts the existing unframed v1 JSON commands and
 an extra `{"v":1,"op":"open"}` to explicitly open a setup window on an online
-box. Clients supply a random, stable `X-Kalinka-Setup-Client` of 16–64 ASCII
+streamer. Clients supply a random, stable `X-Kalinka-Setup-Client` of 16–64 ASCII
 letters/digits/hyphens. JSON bodies are limited to 512 bytes. The LAN endpoint
 is on port 8001, with the existing local-peer/host/origin checks; the app on
 Core's port is allowed. Responses acknowledge receipt, not connection success.
@@ -130,9 +131,9 @@ and browser tests do not establish radio/driver or OS captive-window behavior.
 | `internal/system` | Private directories, process lock, systemd readiness and watchdog |
 | `internal/provision` | Nearby setup as one restartable component: its radio gate, recovery, Bluetooth loop and hotspot lifecycle |
 | `internal/control` | The control page and API: action policy, systemd operations, reinstall record, HTTP layer, embedded page and listener binding |
-| `internal/dashboard` | What runs on the box and what it costs, from /proc, cgroups, dpkg and Core's environment; never from Core itself |
+| `internal/dashboard` | What runs on the streamer and what it costs, from /proc, cgroups, dpkg and Core's environment; never from Core itself |
 | `internal/soundcard` | The sound cards a Pi can be set up for, which one it has, from the device tree, ALSA and the HAT's I2C bus, and applying a choice through the packaged helper |
-| `internal/timezone` | The zones the box's tzdata offers, the one `/etc/localtime` names, and setting one through systemd-timedated |
+| `internal/timezone` | The zones the streamer's tzdata offers, the one `/etc/localtime` names, and setting one through systemd-timedated |
 | `internal/devicetree` | The board model and HAT identity the firmware leaves in the device tree |
 | `internal/coreconf` | Core's interface, port and identity, the renderer's identity, and whether Core is installed, read from files without either running |
 | `internal/dbusx` | The system-bus call surface shared by NetworkManager, systemd and timedated |
@@ -182,7 +183,7 @@ same adapter/interface.
   on the HAT's I2C bus. The only input is a name from its own catalog.
 - A time zone change is a call to systemd-timedated's `SetTimezone` over
   D-Bus, so timedated, outside the sandbox, writes `/etc/localtime`. The only
-  input is a zone name the box's tzdata has, which timedated checks again.
+  input is a zone name the streamer's tzdata has, which timedated checks again.
 - The control page and API answer local peers only, cannot be framed by other
   sites, and offer a closed set of typed actions;
   [their trust model](supervisor-control.md#trust-model) lists the rest.
@@ -213,7 +214,7 @@ it does not authorize future destructive recovery. Disable both
 ## Package updates today
 
 On an existing Debian-based installation, **Settings › EXPERT › Manage this
-box** (`base_config.server.manage_box`) opts into Supervisor. It is absent
+streamer** (`base_config.server.manage_box`) opts into Supervisor. It is absent
 from the simple Server section. **Apply** saves the preference and restarts
 Kalinka, not the operating system. When enabled it installs Supervisor only
 if missing; when disabled it removes that package, preserving networking
@@ -239,7 +240,7 @@ network request cannot create a startup retry loop.
 
 Core's existing Python update checker watches `kalinka-supervisor-v*` alongside Core and renderer releases. A newer supervisor alone makes the existing update action available. The root-side upgrade script still runs `install-release.sh`; that calls `install-supervisor.sh` only when the supervisor is already installed. Ordinary Core installations do not acquire a supervisor implicitly.
 
-The helper chooses the matching `amd64` or `arm64` package, verifies its release checksum and Debian package identity, refuses downgrades, then lets apt install it. The package's post-install hook reloads systemd, re-enables the unit and restarts the supervisor, which also starts it on boxes where older packages left it off for lack of radios. Neither step can fail the Core upgrade that installs the package. Persistent setup rollback records and Wi-Fi daemons survive that restart. A checksum fetched from the same HTTPS release detects corruption; it is not an independent publisher signature.
+The helper chooses the matching `amd64` or `arm64` package, verifies its release checksum and Debian package identity, refuses downgrades, then lets apt install it. The package's post-install hook reloads systemd, re-enables the unit and restarts the supervisor, which also starts it on streamers where older packages left it off for lack of radios. Neither step can fail the Core upgrade that installs the package. Persistent setup rollback records and Wi-Fi daemons survive that restart. A checksum fetched from the same HTTPS release detects corruption; it is not an independent publisher signature.
 
 Package releases remain cached when the feed rotates, but renderer/supervisor
 update offers require a known Core bundle target for the existing upgrade API.
@@ -250,7 +251,7 @@ Supervisor releases use their own tags and workflow; image builds consume the pa
 
 ## Becoming a supervisor
 
-The supervisor runs on every box, with nearby setup as one component and the
+The supervisor runs on every streamer, with nearby setup as one component and the
 control page and API as another. Keep these additions behind interfaces
 separate from the provisioning machine:
 
@@ -270,7 +271,7 @@ separate from the provisioning machine:
 3. The embedded control page and its dashboard keep working when Core is
    absent. BLE can advertise an additional recovery capability without
    changing the existing Wi-Fi UUIDs. The page's actions are served without
-   authentication: the box is on a trusted LAN, a decision recorded with
+   authentication: the streamer is on a trusted LAN, a decision recorded with
    [its trust model](supervisor-control.md#trust-model). Each further action
    that can destroy data restates that decision in its own threat model before
    it ships.
