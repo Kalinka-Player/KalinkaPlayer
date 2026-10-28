@@ -9,11 +9,9 @@ from __future__ import annotations
 
 import logging
 import os
-from contextlib import asynccontextmanager
-
-import aiosqlite
 
 from ..config_model import LocalFilesConfig
+from ..db_connection import LibraryConnection, LibraryDb
 from ..worker_utils import retry_db_locked
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -21,7 +19,7 @@ logger = logging.getLogger(__name__.split(".")[-1])
 
 
 @retry_db_locked
-class AsyncSearcherDb:
+class AsyncSearcherDb(LibraryDb):
     """
     Async database layer for the search subprocess.
 
@@ -31,16 +29,6 @@ class AsyncSearcherDb:
     def __init__(self, config: LocalFilesConfig):
         self.db_path = os.path.expanduser(config.db_path)
         self._vec_available = False
-
-    def _get_connection(self):
-        return aiosqlite.connect(self.db_path, timeout=5.0)
-
-    @asynccontextmanager
-    async def _open(self):
-        async with self._get_connection() as conn:
-            await conn.execute("PRAGMA journal_mode=WAL")
-            await conn.execute("PRAGMA busy_timeout=5000")
-            yield conn
 
     # ------------------------------------------------------------------
     # Schema initialisation
@@ -63,7 +51,7 @@ class AsyncSearcherDb:
         except Exception as e:
             logger.warning("sqlite-vec not available (%s); KNN search disabled", e)
 
-    async def _load_vec(self, conn: aiosqlite.Connection) -> None:
+    async def _load_vec(self, conn: LibraryConnection) -> None:
         """Load sqlite-vec extension into an open connection."""
         import sqlite_vec
 

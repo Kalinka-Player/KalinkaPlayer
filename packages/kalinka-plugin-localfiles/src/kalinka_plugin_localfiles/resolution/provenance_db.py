@@ -13,13 +13,14 @@ from typing import Any, Dict, List, Optional
 
 import aiosqlite
 
+from ..db_connection import LibraryDb
 from ..worker_utils import retry_db_locked
 from .resolver import GUESSED
 
 
 @retry_db_locked
-class ProvenanceDb:
-    """Mixed into a DB manager that supplies an ``_open()`` connection.
+class ProvenanceDb(LibraryDb):
+    """The claim and provenance tables, inherited by both DB managers.
 
     @note ``retry_db_locked`` walks ``vars(cls)`` rather than the MRO, so a
         subclass's own decorator never reaches these methods; it is applied

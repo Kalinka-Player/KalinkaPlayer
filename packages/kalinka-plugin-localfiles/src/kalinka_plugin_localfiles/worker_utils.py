@@ -94,11 +94,11 @@ def retry_on_locked(fn):
 def retry_db_locked(cls):
     """Class decorator: wrap every public async method with ``retry_on_locked``.
 
-    Only public (non ``_``-prefixed) coroutine methods are wrapped — these own
-    their full connection lifecycle via ``_open()``, so a retry always reopens a
-    clean connection rather than reusing one mid-transaction. Internal helpers
-    (including the ``_open`` context manager and any method handed an existing
-    connection) are left untouched.
+    Only public (non ``_``-prefixed) coroutine methods are wrapped — these hold
+    a connection for their own call only, via ``_open()``, which discards what
+    a failed attempt left uncommitted, so a retry starts clean even on a
+    connection a scan shares. Internal helpers (including the ``_open`` context
+    manager and any method handed an existing connection) are left untouched.
     """
     for name, member in list(vars(cls).items()):
         if name.startswith("_"):

@@ -432,6 +432,35 @@ class TestARescanOfAnUnchangedLibrary:
         assert await indexer.db_manager.get_all_tracks() == []
 
 
+class TestTheDatabaseConnection:
+    """Indexing a new file makes more than a dozen database calls, and
+    opening a connection for each cost more than the rest of the work."""
+
+    @pytest.mark.asyncio
+    async def test_a_scan_opens_one(self, library, tmp_path, opened):
+        indexer, vault, _ = library
+        for n in (1, 2, 3):
+            vault.add(f"{ROOT}/Avalon/0{n}.flac", _flac(tmp_path, {"title": f"T{n}"}))
+
+        await indexer.run_scan()
+
+        assert len(opened) == 1
+        assert len(await indexer.db_manager.get_all_tracks()) == 3
+
+    @pytest.mark.asyncio
+    async def test_a_batch_of_changes_opens_one(
+        self, library, tmp_path, opened
+    ):
+        indexer, vault, _ = library
+        await indexer.run_scan()
+        path = vault.add(f"{ROOT}/new.flac", _flac(tmp_path, {"title": "New"}))
+        opened.clear()
+
+        await indexer.handle_incremental_changes({("file_closed", path)})
+
+        assert len(opened) == 1
+
+
 class TestWhatIsReadBesideTheAudio:
     @pytest.mark.asyncio
     async def test_a_cue_sheet_fills_a_tagless_rip(self, library, tmp_path):

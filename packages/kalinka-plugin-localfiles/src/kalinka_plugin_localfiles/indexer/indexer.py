@@ -39,6 +39,7 @@ from mutagen.dsdiff import DSDIFF
 from ..replaygain_tags import read_replaygain
 from ..audio_formats import MEDIA_TYPES
 from ..config_model import LocalFilesConfig
+from ..db_connection import shared_connection
 from ..scan_control import ScanControl
 from ..filename_model import get_parser, names_a_vinyl_side, parse_music_path
 from ..filename_model.assembler import ASSEMBLER_VERSION
@@ -346,18 +347,22 @@ class FileIndexer:
                 self.running = False
 
     async def run_scan(self):
-        """Check every configured root, retaining the last completed check."""
-        previous = await self.db_manager.get_scan_progress()
-        self._last_scan_at = (previous or {}).get("last_scan_at")
-        self._scan_total = self._scan_processed = self._scan_changed = 0
-        self._scan_active = True
-        await self._publish_scan_progress(force=True)
-        try:
-            await self._run_scan()
-            self._last_scan_at = time.time()
-        finally:
-            self._scan_active = False
+        """Check every configured root, retaining the last completed check.
+
+        The whole check shares one database connection.
+        """
+        async with shared_connection(self.config.db_path):
+            previous = await self.db_manager.get_scan_progress()
+            self._last_scan_at = (previous or {}).get("last_scan_at")
+            self._scan_total = self._scan_processed = self._scan_changed = 0
+            self._scan_active = True
             await self._publish_scan_progress(force=True)
+            try:
+                await self._run_scan()
+                self._last_scan_at = time.time()
+            finally:
+                self._scan_active = False
+                await self._publish_scan_progress(force=True)
 
     async def _run_scan(self):
         logger.debug(f"Starting music file scan in folders: {self.music_folders}")
@@ -477,7 +482,12 @@ class FileIndexer:
                 )
 
     async def handle_incremental_changes(self, changes: Set[Tuple[str, str]]):
-        """Process filesystem changes detected by the inotify watcher."""
+        """Process filesystem changes detected by the inotify watcher, the
+        batch sharing one database connection."""
+        async with shared_connection(self.config.db_path):
+            await self._apply_changes(changes)
+
+    async def _apply_changes(self, changes: Set[Tuple[str, str]]):
         changed_items: Dict[str, Set[str]] = {
             "artists": set(),
             "albums": set(),
