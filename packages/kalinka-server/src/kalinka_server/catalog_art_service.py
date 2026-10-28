@@ -23,7 +23,8 @@ import re
 import tempfile
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import BinaryIO, Callable, Optional
+from urllib.parse import unquote
 
 import httpx
 from PIL import Image
@@ -38,6 +39,7 @@ from kalinka_plugin_sdk.datamodel import (
 )
 from kalinka_plugin_sdk.inputmodule import InputModule
 
+from . import ranged_content
 from .browse_source import BrowseSource
 from .catalog_art_render import (
     ArtStyle,
@@ -47,6 +49,7 @@ from .catalog_art_render import (
     render_catalog_thumbnail,
     render_playlist_cover,
 )
+from .content_urls import CONTENT_ROUTE
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
@@ -66,6 +69,8 @@ MAX_COVERS = 3
 COVER_FETCH_LIMIT = 24
 COVER_TILES = 4
 MAX_COVER_BYTES = 8 * 1024 * 1024
+# A share gone quiet must not stall every card queued behind this one.
+CONTENT_READ_TIMEOUT_S = 20.0
 
 _FILE_RE = re.compile(r"^[0-9a-f]{16}-[0-9a-f]{8}(-thumb)?\.jpg$")
 
@@ -159,7 +164,7 @@ class CatalogArtService:
         self,
         cache_dir: str,
         browse_resolver: Callable[[EntityId], Optional[BrowseSource]],
-        resource_resolver: Callable[[EntityId], Optional[InputModule]],
+        resource_resolver: Callable[[str], Optional[InputModule]],
     ) -> None:
         self._dir = Path(cache_dir)
         self._browse = browse_resolver
@@ -485,7 +490,10 @@ class CatalogArtService:
 
     async def _fetch_cover(self, path: str, item: BrowseItem) -> Optional[bytes]:
         """Cover bytes for a child item: local resources straight from disk
-        via the owning module, remote URLs over HTTP."""
+        via the owning module, content a module serves through it, remote
+        URLs over HTTP."""
+        if path.startswith(f"{CONTENT_ROUTE}/"):
+            return await self._fetch_content(path)
         if path.startswith("http://") or path.startswith("https://"):
             if self._http is None:
                 self._http = httpx.AsyncClient(
@@ -510,7 +518,7 @@ class CatalogArtService:
             if isinstance(item.id, EntityId)
             else EntityId.from_string(str(item.id))
         )
-        module = self._resource(item_id)
+        module = self._resource(item_id.source)
         if module is None:
             return None
         try:
@@ -521,3 +529,51 @@ class CatalogArtService:
         except Exception as exc:
             logger.debug("Local cover read failed for %s: %r", path, exc)
             return None
+
+    async def _fetch_content(self, path: str) -> Optional[bytes]:
+        """Cover bytes a module serves at ``/content/<module>/<asset>``."""
+        route_path = path.split("?", 1)[0][len(CONTENT_ROUTE) + 1 :]
+        module_name, _, asset_id = route_path.partition("/")
+        module = self._resource(unquote(module_name))
+        if module is None or not asset_id:
+            return None
+        try:
+            info = await module.get_content_info(unquote(asset_id))
+            if info is None or info.live is not None:
+                return None
+            if info.local_path:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(_read_capped_file, info.local_path),
+                    CONTENT_READ_TIMEOUT_S,
+                )
+            # A reader without a length is not servable content (content_route).
+            if info.reader is None or info.size is None or info.size > MAX_COVER_BYTES:
+                return None
+            stream = await ranged_content.open_reader(
+                info.reader, CONTENT_READ_TIMEOUT_S
+            )
+            try:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(_read_capped, stream), CONTENT_READ_TIMEOUT_S
+                )
+            finally:
+                stream.close()
+        except Exception as exc:
+            logger.debug("Module cover read failed for %s: %r", path, exc)
+            return None
+
+
+def _read_capped(stream: BinaryIO) -> Optional[bytes]:
+    data = stream.read(MAX_COVER_BYTES + 1)
+    chunks = [data]
+    total = len(data)
+    while data and total <= MAX_COVER_BYTES:
+        data = stream.read(MAX_COVER_BYTES + 1 - total)
+        chunks.append(data)
+        total += len(data)
+    return None if total > MAX_COVER_BYTES else b"".join(chunks)
+
+
+def _read_capped_file(file_path: str) -> Optional[bytes]:
+    with open(file_path, "rb") as stream:
+        return _read_capped(stream)

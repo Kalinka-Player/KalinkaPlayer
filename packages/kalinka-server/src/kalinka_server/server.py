@@ -639,8 +639,8 @@ async def create_app(
         entry = _browse_registry.get(entity_id.source) if _browse_registry else None
         return entry.source if entry is not None else None
 
-    def _art_resource_resolver(entity_id: EntityId) -> Optional[InputModule]:
-        return modules.enabled_input_module(entity_id.source)
+    def _art_resource_resolver(source: str) -> Optional[InputModule]:
+        return modules.enabled_input_module(source)
 
     app.state.catalog_art = CatalogArtService(
         os.path.join(paths.cache_dir(), "catalog_art"),
