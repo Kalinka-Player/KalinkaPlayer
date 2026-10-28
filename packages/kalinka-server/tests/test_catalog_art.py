@@ -23,11 +23,13 @@ from kalinka_plugin_sdk.datamodel import (
     PreviewType,
     Track,
 )
+from kalinka_plugin_sdk.inputmodule import ContentInfo
 
 from kalinka_server import catalog_art_render as render
 from kalinka_server.catalog_art_service import (
     ART_URL_PREFIX,
     FAIL_RETRY_SECONDS,
+    MAX_COVER_BYTES,
     PARTIAL_RETRY_SECONDS,
     REFRESH_SECONDS,
     CatalogArtService,
@@ -525,6 +527,71 @@ async def test_a_collection_takes_covers_from_the_sources_that_own_them(tmp_path
     await svc._process(cat_id, render.ArtStyle.COVER, textual=False)
 
     assert svc._entries[cat_id]["file"]
+
+
+class _ContentModule:
+    def __init__(self, blobs):
+        self._blobs = blobs
+
+    async def get_content_info(self, asset_id):
+        blob = self._blobs.get(asset_id)
+        if blob is None:
+            return None
+        return ContentInfo(
+            mime_type="image/jpeg", reader=lambda: io.BytesIO(blob), size=len(blob)
+        )
+
+
+async def test_a_cover_served_through_content_is_asked_of_the_module_it_names(
+    tmp_path,
+):
+    eid = EntityId(id="a1", type=EntityType.ALBUM, source="qobuz")
+    child = BrowseItem(
+        id=eid,
+        name="a1",
+        can_browse=True,
+        album=Album(
+            id=eid, title="a1", image=CoverImage(large="/content/qobuz/banner-a1.jpg")
+        ),
+    )
+    owner = _ContentModule(
+        {"banner-a1.jpg": render.encode_jpeg(_solid_cover((200, 50, 50)))}
+    )
+    svc = _service(
+        tmp_path,
+        resolver=lambda eid: _FakeModule([child]),
+        resource_resolver=lambda source: owner if source == "qobuz" else None,
+    )
+
+    cat_id = "kalinka:collections:playlist:c1"
+    await svc._process(cat_id, render.ArtStyle.COVER, textual=False)
+
+    assert svc._entries[cat_id]["file"]
+
+
+async def test_a_content_cover_link_carrying_a_query_names_the_asset_before_it(
+    tmp_path,
+):
+    owner = _ContentModule({"a1.jpg": b"cover"})
+    svc = _service(tmp_path, resource_resolver=lambda source: owner)
+    item = BrowseItem(id=EntityId(id="a1", type=EntityType.ALBUM, source="qobuz"), name="a1")
+
+    assert await svc._fetch_cover("/content/qobuz/a1.jpg?v=2", item) == b"cover"
+
+
+async def test_a_content_cover_larger_than_its_declared_size_is_refused(tmp_path):
+    class _Liar(_ContentModule):
+        async def get_content_info(self, asset_id):
+            return ContentInfo(
+                mime_type="image/jpeg",
+                reader=lambda: io.BytesIO(b"x" * (MAX_COVER_BYTES + 1)),
+                size=10,
+            )
+
+    svc = _service(tmp_path, resource_resolver=lambda source: _Liar({}))
+    item = BrowseItem(id=EntityId(id="a1", type=EntityType.ALBUM, source="qobuz"), name="a1")
+
+    assert await svc._fetch_cover("/content/qobuz/a1.jpg", item) is None
 
 
 async def test_a_collection_with_no_reachable_cover_ships_nothing(tmp_path):
