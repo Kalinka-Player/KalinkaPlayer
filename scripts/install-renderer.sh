@@ -183,7 +183,7 @@ EOF
       exit 1
     fi
     echo ">> note: apt reported a failure, but $pkg $have is installed — the" >&2
-    echo "   failure was another package's, left half-configured on this box." >&2
+    echo "   failure was another package's, left half-configured on this machine." >&2
   fi
 else
   echo ">> Installing with dnf ..."
