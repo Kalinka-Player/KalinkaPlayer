@@ -518,6 +518,32 @@ class AsyncIndexerDb(ProvenanceDb):
             )
             await conn.commit()
 
+    async def forget_failures_of_older_readers(self, version: int) -> int:
+        """Forget every parked extraction failure unless ``version`` of the
+        readers recorded them, then record ``version``.
+
+        A file stays parked while it is unchanged, so readers that learn a
+        format would otherwise never see the files they once refused.
+        Returns how many failures were forgotten.
+        """
+        async with self._open() as conn:
+            cursor = await conn.cursor()
+            await cursor.execute(
+                "SELECT value FROM indexer_state WHERE key = 'readers'"
+            )
+            row = await cursor.fetchone()
+            if row and row[0] == str(version):
+                return 0
+            await cursor.execute("DELETE FROM indexer_failures")
+            forgotten = cursor.rowcount
+            await cursor.execute(
+                "INSERT OR REPLACE INTO indexer_state (key, value) "
+                "VALUES ('readers', ?)",
+                (str(version),),
+            )
+            await conn.commit()
+            return forgotten
+
     async def get_failure_paths(self) -> List[str]:
         """Return all file paths currently in the failure cache."""
         async with self._open() as conn:

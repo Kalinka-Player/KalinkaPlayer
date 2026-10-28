@@ -84,7 +84,7 @@ from .dsd import native_dsdiff_tags
 from .adts import AdtsFile
 from .mp4 import Mp4Audio, open_mp4_audio
 from .ogg import open_ogg_vorbis, open_ogg_vorbis_tags
-from .unplayable import UnplayableFile
+from .unplayable import READERS_VERSION, UnplayableFile
 from .wav import open_pcm_wave
 from .id_generator import (
     generate_artist_id,
@@ -400,6 +400,16 @@ class FileIndexer:
             identity = root_status[folder].identity
             if files_by_folder.get(folder) and identity:
                 await self.db_manager.set_root_signature(folder, identity)
+
+        forgotten = await self.db_manager.forget_failures_of_older_readers(
+            READERS_VERSION
+        )
+        if forgotten:
+            logger.info(
+                "The readers have learned new formats; retrying %d file(s) "
+                "they refused before",
+                forgotten,
+            )
 
         self._vanished.clear()
         for folder in available_folders:

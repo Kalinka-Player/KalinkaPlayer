@@ -34,12 +34,17 @@ out with a warning in the log, because the renderer plays only Vorbis from an
 Ogg container.
 
 MP4 audio is indexed when its first audio track is AAC-LC or HE-AAC (v1 or
-v2, any channel count), or FLAC in mono or stereo at 16, 24 or 32 bits, in a
-progressive or a fragmented file. Its tags and first cover picture are read;
-a FLAC track's sample rate, channels and precision come from its STREAMINFO,
-and a fragmented file is timed over all its fragments. ALAC, Opus, AC-3, other
-codecs and files with no audio track are left out with a warning in the log.
-`.mp4` files are not indexed, since most are video.
+v2, any channel count), or FLAC or ALAC in mono or stereo at 16, 24 or 32
+bits, in a progressive or a fragmented file. Its tags and first cover picture
+are read; a FLAC track's sample rate, channels and precision come from its
+STREAMINFO and an ALAC track's from its configuration, and a fragmented file
+is timed over all its fragments. Opus, AC-3, other codecs and files with no
+audio track are left out with a warning in the log. `.mp4` files are not
+indexed, since most are video.
+
+A file left out for its format is not read again while it stays unchanged.
+When a new version learns to read a format it used to refuse, its first scan
+reads every such file once more.
 
 A raw AAC file is indexed when it holds AAC-LC or HE-AAC in ADTS frames from
 its start, or from the end of the ID3v2 tag it may begin with, which supplies

@@ -1,4 +1,4 @@
-"""MP4 audio in My Library: the AAC and FLAC tracks the renderer plays, their
+"""MP4 audio in My Library: the AAC, FLAC and ALAC tracks the renderer plays, their
 tags and cover, how a fragmented file is timed, how one is served, and the
 other codecs an MP4 file can carry, which stay out."""
 
@@ -98,9 +98,11 @@ def flac(rate=96000, channels=2, bits=24, seconds=2):
     return sample_entry(b"fLaC", full_box(b"dfLa", 0, blocks), channels, rate=0)
 
 
-def alac():
-    cookie = struct.pack(">IBBBBBBHIII", 4096, 0, 16, 40, 10, 14, 2, 255, 0, 0, RATE)
-    return sample_entry(b"alac", full_box(b"alac", 0, cookie))
+def alac(rate=96000, channels=2, bits=24, version=0, frames=4096):
+    cookie = struct.pack(
+        ">IBBBBBBHIII", frames, version, bits, 40, 10, 14, channels, 255, 0, 0, rate
+    )
+    return sample_entry(b"alac", full_box(b"alac", 0, cookie), channels, rate=0)
 
 
 def opus():
@@ -259,27 +261,34 @@ def test_he_aac_and_surround_aac_are_indexed(tmp_path, config, channels):
     assert metadata["stream_info"]["channels"] == channels
 
 
-def test_flac_is_described_by_its_streaminfo(tmp_path):
+LOSSLESS = pytest.mark.parametrize(
+    "entry,codec", [(flac, "flac"), (alac, "alac")], ids=["FLAC", "ALAC"]
+)
+
+
+@LOSSLESS
+def test_lossless_audio_is_described_by_its_configuration(tmp_path, entry, codec):
     path = tmp_path / "track.m4a"
-    path.write_bytes(mp4(track(flac(rate=96000, bits=24))))
+    path.write_bytes(mp4(track(entry(rate=96000, bits=24))))
 
     metadata = _indexer(tmp_path)._extract_metadata(LOCAL, str(path))
 
     stream = metadata["stream_info"]
-    assert stream["codec"] == "flac"
+    assert stream["codec"] == codec
     assert stream["sample_rate"] == 96000
     assert stream["bits_per_sample"] == 24
     assert stream["channels"] == 2
     assert stream["bitrate"] is None
 
 
+@LOSSLESS
 @pytest.mark.parametrize("bits", [16, 32])
 @pytest.mark.parametrize("channels", [1, 2])
-def test_flac_in_mono_or_stereo_at_any_depth_the_renderer_takes(
-    tmp_path, bits, channels
+def test_lossless_in_mono_or_stereo_at_any_depth_the_renderer_takes(
+    tmp_path, entry, codec, bits, channels
 ):
     path = tmp_path / "track.m4a"
-    path.write_bytes(mp4(track(flac(channels=channels, bits=bits))))
+    path.write_bytes(mp4(track(entry(channels=channels, bits=bits))))
 
     metadata = _indexer(tmp_path)._extract_metadata(LOCAL, str(path))
 
@@ -290,22 +299,34 @@ def test_flac_in_mono_or_stereo_at_any_depth_the_renderer_takes(
 @pytest.mark.parametrize(
     "payload,reason",
     [
-        (mp4(track(alac())), "ALAC"),
         (mp4(track(opus())), "OPUS"),
         (mp4(track(aac(AAC_MAIN))), "AAC MAIN"),
         (mp4(track(flac(channels=6))), "6 channels"),
         (mp4(track(flac(bits=20))), "20-bit"),
+        (mp4(track(alac(channels=6))), "6 channels"),
+        (mp4(track(alac(bits=20))), "20-bit"),
+        (mp4(track(alac(version=1))), "version 1"),
+        (mp4(track(alac(frames=0))), "0 samples"),
+        (mp4(track(alac(rate=0))), "0 Hz"),
+        (mp4(track(flac(rate=1_000_000))), "1000000 Hz"),
         (mp4(track(aac(), handler=b"vide")), "no audio track"),
         (mp4(track(sample_entry(b"fLaC", box(b"free")))), "no STREAMINFO"),
+        (mp4(track(sample_entry(b"alac", box(b"free")))), "no configuration"),
     ],
     ids=[
-        "ALAC",
         "Opus",
         "AAC Main",
         "5.1 FLAC",
         "20-bit FLAC",
+        "5.1 ALAC",
+        "20-bit ALAC",
+        "ALAC of a later version",
+        "ALAC of empty frames",
+        "ALAC without a rate",
+        "FLAC at 1 MHz",
         "video only",
         "FLAC without STREAMINFO",
+        "ALAC without configuration",
     ],
 )
 def test_unplayable_files_are_not_indexed(tmp_path, payload, reason, caplog):
