@@ -99,6 +99,7 @@ add_library(kalinka_native_player STATIC
   src/native_player/AlsaDeviceEnumeration.cpp
   src/native_player/AacDecoder.cpp
   src/native_player/AdtsStreamDecoder.cpp
+  src/native_player/AlacDecoder.cpp
   src/native_player/AlsaVolumeControl.cpp
   src/native_player/AudioGraphHttpStream.cpp
   src/native_player/AudioGraphNode.cpp
@@ -203,9 +204,11 @@ if(KALINKA_BUILD_FUZZERS)
   if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     message(FATAL_ERROR "KALINKA_BUILD_FUZZERS needs Clang for libFuzzer")
   endif()
-  foreach(name FragmentedMp4Init FragmentedMp4Segments Mp4Movie)
+  foreach(name AlacFrames FragmentedMp4Init FragmentedMp4Segments Mp4Movie)
     add_executable(${name}_fuzz
       tests/fuzz/${name}_fuzz.cpp
+      src/native_player/AlacDecoder.cpp
+      src/native_player/AudioSampleFormat.cpp
       src/native_player/FragmentedMp4.cpp
       src/native_player/Mp4.cpp
       src/native_player/Mp4SampleTable.cpp
@@ -258,6 +261,7 @@ if(GTest_FOUND)
     tests/test_ws_transport.cpp
     tests/native_player/AacDecoder_test.cpp
     tests/native_player/AdtsStreamDecoder_test.cpp
+    tests/native_player/AlacDecoder_test.cpp
     tests/native_player/AlsaAudioEmitter_test.cpp
     tests/native_player/AlsaDeviceEnumeration_test.cpp
     tests/native_player/AlsaVolumeControl_test.cpp

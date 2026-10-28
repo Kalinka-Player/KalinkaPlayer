@@ -4,6 +4,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <vector>
+
+struct StreamAudioFormat;
 
 enum AudioSampleFormat {
   PCM16_LE,
@@ -133,6 +136,13 @@ inline std::optional<AudioSampleFormat> pcmFallback(AudioSampleFormat format,
 inline int32_t packIntegers(int32_t a, int32_t b) {
   return ((b & 0xffff) << 16) + (a & 0xffff);
 }
+
+/// @brief Interleaves @p frames frames of planar integer samples into @p pcm
+/// as little-endian PCM in @p format, each masked to its significant bits.
+/// @param channels One array per channel of @p format, each @p frames long.
+void interleave(const StreamAudioFormat &format,
+                const int32_t *const channels[], size_t frames,
+                std::vector<uint8_t> &pcm);
 
 // Make sure buffer has enough space to allocate framesToBytes()
 void convertToFormat(void *buffer, const int32_t *const samples[], size_t size,

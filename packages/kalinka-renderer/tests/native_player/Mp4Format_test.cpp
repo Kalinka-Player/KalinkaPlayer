@@ -200,8 +200,32 @@ TEST(Mp4AudioTrack, RefusesOtherCodecsEncryptionAndSilentMovies) {
   for (const auto &bad :
        {movie(alac, chunkedTables()), movie(encrypted, chunkedTables()), video})
     EXPECT_THROW(Mp4SampleTable::parse(bad), std::runtime_error);
-  EXPECT_THROW(Mp4SampleTable::parse(aacFixture("alac.m4a")),
-               std::runtime_error);
+}
+
+TEST(Mp4AudioTrack, ReadsTheAlacConfig) {
+  const auto table = Mp4SampleTable::parse(aacFixture("ramp-alac.m4a"));
+  EXPECT_EQ(table.track.codec, mp4::AudioTrack::Codec::ALAC);
+  EXPECT_EQ(table.track.timescale, 44100u);
+  // Frame length 4096, version 0, 16 bits, then pb, mb and kb, 2 channels.
+  ASSERT_EQ(table.track.config.size(), 24u);
+  EXPECT_EQ(Bytes(table.track.config.begin(), table.track.config.begin() + 10),
+            (Bytes{0, 0, 0x10, 0, 0, 16, 40, 10, 14, 2}));
+}
+
+TEST(Mp4AudioTrack, RefusesAnAlacConfigItCannotRead) {
+  const auto entry = [](uint16_t version, const Bytes &config) {
+    return box("alac", join({zeros(6), number(1, 2), number(version, 2),
+                             zeros(version ? 34 : 18), box("alac", config)}));
+  };
+  const Bytes config(28, 0);
+  auto flagged = config;
+  flagged[3] = 1;
+  for (const auto &bad :
+       {entry(1, config), entry(0, Bytes(27, 0)), entry(0, flagged)})
+    EXPECT_THROW(Mp4SampleTable::parse(movie(bad, chunkedTables())),
+                 std::runtime_error);
+  EXPECT_NO_THROW(
+      Mp4SampleTable::parse(movie(entry(0, config), chunkedTables())));
 }
 
 TEST(FragmentedMp4, ReadsAacInitializationAndSegments) {

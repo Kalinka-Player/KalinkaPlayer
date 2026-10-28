@@ -1,3 +1,4 @@
+#include "AudioInfo.h"
 #include "AudioSampleFormat.h"
 
 #include <gtest/gtest.h>
@@ -283,4 +284,17 @@ TEST(AudioSampleFormatTest, DestinationBufferCannoFitAllSamples) {
   for (size_t i = 0; i < destSamples.size(); ++i) {
     EXPECT_EQ(sourceSamples[i], destSamples[i]) << "i = " << i;
   }
+}
+
+TEST(AudioSampleFormatTest, InterleavesPlanarSamplesMaskedToTheirDepth) {
+  const int32_t left[] = {1, -1}, right[] = {0x123456, -0x123456};
+  const int32_t *const channels[] = {left, right};
+  std::vector<uint8_t> pcm;
+  interleave({48000, 2, 24, PCM24_LE}, channels, 2, pcm);
+  EXPECT_EQ(pcm, (std::vector<uint8_t>{1, 0, 0, 0, 0x56, 0x34, 0x12, 0, 0xff,
+                                       0xff, 0xff, 0, 0xaa, 0xcb, 0xed, 0}));
+  interleave({48000, 1, 16, PCM16_LE}, channels, 2, pcm);
+  EXPECT_EQ(pcm, (std::vector<uint8_t>{1, 0, 0xff, 0xff}));
+  interleave({48000, 1, 32, PCM32_LE}, channels + 1, 1, pcm);
+  EXPECT_EQ(pcm, (std::vector<uint8_t>{0x56, 0x34, 0x12, 0}));
 }

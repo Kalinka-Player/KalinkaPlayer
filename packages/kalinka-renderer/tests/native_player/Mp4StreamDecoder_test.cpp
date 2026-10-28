@@ -55,6 +55,22 @@ const Bytes &reference() {
   static const auto pcm = decodeFile("tones.m4a");
   return pcm;
 }
+
+/// The verbatim and 24-bit ALAC fixtures stop after 0.1 s.
+constexpr size_t SHORT_ALAC_FRAMES = 4410, SHORT_ALAC_24_FRAMES = 9600;
+
+Bytes firstFrames(Bytes pcm, size_t frames, size_t frameBytes) {
+  pcm.resize(frames * frameBytes);
+  return pcm;
+}
+
+/// The left channel of 16-bit stereo `pcm`.
+Bytes leftChannel(const Bytes &pcm) {
+  Bytes left;
+  for (size_t i = 0; i + 4 <= pcm.size(); i += 4)
+    left.insert(left.end(), pcm.begin() + i, pcm.begin() + i + 2);
+  return left;
+}
 } // namespace
 
 TEST(Mp4StreamDecoder, EveryLayoutPlaysTheSameAudio) {
@@ -159,6 +175,33 @@ TEST(Mp4StreamDecoder, PlaysFlacInMp4BitExact) {
   EXPECT_EQ(decodeFile("ramp-flac.mp4", 500), rampPcm(16, 22050));
 }
 
+TEST(Mp4StreamDecoder, PlaysAlacInMp4BitExact) {
+  EXPECT_EQ(decodeFile("ramp-alac.m4a"), rampPcm(16));
+  EXPECT_EQ(decodeFile("ramp-alac.m4a", 500), rampPcm(16, 22050));
+  EXPECT_EQ(decodeFile("ramp-alac-mono.m4a"), leftChannel(rampPcm(16)));
+  EXPECT_EQ(decodeFile("ramp-alac-verbatim.m4a"),
+            firstFrames(rampPcm(16), SHORT_ALAC_FRAMES, 4));
+  EXPECT_EQ(decodeFile("ramp-alac-24.m4a"),
+            firstFrames(rampPcm(24), SHORT_ALAC_24_FRAMES, 8));
+  EXPECT_EQ(decodeFile("ramp-alac-24.m4a", 50),
+            firstFrames(rampPcm(24, 4800), SHORT_ALAC_24_FRAMES - 4800, 8));
+}
+
+TEST(Mp4StreamDecoder, KeepsTheDepthOfAlac) {
+  const std::pair<const char *, StreamAudioFormat> cases[] = {
+      {"ramp-alac.m4a", {44100, 2, 16, PCM16_LE}},
+      {"ramp-alac-mono.m4a", {44100, 1, 16, PCM16_LE}},
+      {"ramp-alac-24.m4a", {96000, 2, 24, PCM24_LE}},
+  };
+  for (const auto &[name, format] : cases) {
+    SCOPED_TRACE(name);
+    Mp4StreamDecoder decoder(1, BUFFER_SIZE);
+    decoder.connectTo(std::make_shared<FileInputNode>(1, aacFixturePath(name)));
+    waitStreaming(decoder);
+    EXPECT_EQ(decoder.getState().streamInfo->format, format);
+  }
+}
+
 TEST(Mp4StreamDecoder, SeeksInEveryLayout) {
   for (const auto *name : LAYOUTS) {
     for (size_t target : {size_t(0), size_t(1000), size_t(30000), size_t(43008),
@@ -227,7 +270,6 @@ TEST(Mp4StreamDecoder, RefusesWhatItCannotPlay) {
   const auto whole = aacFixture("tones.m4a");
   const Bytes half(whole.begin(), whole.begin() + whole.size() / 2);
   const std::tuple<Bytes, bool, const char *> cases[] = {
-      {aacFixture("alac.m4a"), true, "Unsupported or invalid MP4 audio"},
       // Of known length, the audio box overruns the file; of unknown length,
       // the audio runs out.
       {half, true, "Unsupported or invalid MP4 audio"},

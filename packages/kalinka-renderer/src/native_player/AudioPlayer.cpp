@@ -34,7 +34,7 @@ const size_t MPEG_BUFFER_SIZE = 768000;
 const size_t VORBIS_BUFFER_SIZE = 768000;
 const size_t WAV_BUFFER_SIZE = 1536000;
 const size_t DSD_BUFFER_SIZE = 1536000;
-// MP4 may carry hi-res FLAC as well as AAC.
+// MP4 may carry hi-res FLAC or ALAC as well as AAC.
 const size_t AAC_BUFFER_SIZE = 1536000;
 // 750KB, 50% of flac buffer size
 // approx. flac compression ratio is 50%

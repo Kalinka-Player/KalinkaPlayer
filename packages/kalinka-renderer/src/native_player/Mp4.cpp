@@ -150,6 +150,12 @@ std::vector<uint8_t> flacStreamInfo(Bytes dfla) {
   return {dfla.begin() + 8, dfla.begin() + 42};
 }
 
+std::vector<uint8_t> alacConfig(Bytes alac) {
+  if (alac.size() < 28 || integer(alac, 0, 4) != 0)
+    invalid();
+  return {alac.begin() + 4, alac.begin() + 28};
+}
+
 /// Reads one AudioSampleEntry into `track`.
 void sampleEntry(const Box &entry, AudioTrack &track) {
   const auto sample = entry.payload;
@@ -164,6 +170,9 @@ void sampleEntry(const Box &entry, AudioTrack &track) {
   if (entry.type == "fLaC") {
     track.codec = AudioTrack::Codec::FLAC;
     track.config = flacStreamInfo(one(extensions, "dfLa").payload);
+  } else if (entry.type == "alac") {
+    track.codec = AudioTrack::Codec::ALAC;
+    track.config = alacConfig(one(extensions, "alac").payload);
   } else if (entry.type == "mp4a") {
     track.codec = AudioTrack::Codec::AAC;
     const auto has = [&](std::string_view type) {

@@ -1,9 +1,27 @@
 #include "AudioSampleFormat.h"
+#include "AudioInfo.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
+
+void interleave(const StreamAudioFormat &format,
+                const int32_t *const channels[], size_t frames,
+                std::vector<uint8_t> &pcm) {
+  const size_t width = sampleSize(format.sampleFormat);
+  // A padded container leaves its spare high byte clear.
+  const uint32_t mask =
+      format.bitsPerSample < 32 ? (1u << format.bitsPerSample) - 1 : ~0u;
+  pcm.resize(frames * format.channels * width);
+  for (size_t i = 0; i < frames; ++i)
+    for (unsigned channel = 0; channel < format.channels; ++channel) {
+      const auto sample = uint32_t(channels[channel][i]) & mask;
+      auto *dest = pcm.data() + (i * format.channels + channel) * width;
+      for (size_t byte = 0; byte < width; ++byte)
+        dest[byte] = sample >> (8 * byte);
+    }
+}
 
 void convertToFormat(void *buffer, const int32_t *const samples[], size_t size,
                      AudioSampleFormat format) {
