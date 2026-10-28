@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cstring>
 #include <stdexcept>
 #include <vector>
 
@@ -33,31 +34,28 @@ public:
 
   /// The next @p count bits, at most 32.
   uint32_t read(unsigned count) {
-    const auto value = peek(count);
-    position += count;
+    const auto value = count ? uint32_t(window() >> (64 - count)) : 0;
+    skip(count);
     return value;
   }
 
-  /// The ones before the next zero, consuming both, or @p limit when at
-  /// least that many follow, consuming only those.
-  unsigned ones(unsigned limit) {
-    const auto available = unsigned(std::min<size_t>(limit + 1, left()));
-    if (!available)
-      invalidAudio();
-    const auto run =
-        unsigned(std::countl_one(peek(available) << (32 - available)));
-    if (run >= limit) {
-      position += limit;
-      return limit;
-    }
-    if (run == available)
-      invalidAudio();
-    position += run + 1;
-    return run;
+  /// At least the next 57 bits, most significant first, zero past the end;
+  /// whatever a caller decodes from them it must then skip().
+  uint64_t window() const {
+    const auto first = position / 8;
+    uint64_t value = 0;
+    if (bytes.size() - first >= sizeof value) {
+      std::memcpy(&value, bytes.data() + first, sizeof value);
+      if constexpr (std::endian::native == std::endian::little)
+        value = std::byteswap(value);
+    } else
+      for (size_t i = first; i < bytes.size(); ++i)
+        value |= uint64_t(bytes[i]) << (56 - 8 * (i - first));
+    return value << (position % 8);
   }
 
   void skip(size_t count) {
-    if (count > left())
+    if (count > bytes.size() * 8 - position)
       invalidAudio();
     position += count;
   }
@@ -67,21 +65,6 @@ public:
 private:
   std::span<const uint8_t> bytes;
   size_t position = 0;
-
-  size_t left() const { return bytes.size() * 8 - position; }
-
-  uint32_t peek(unsigned count) const {
-    if (count > left())
-      invalidAudio();
-    if (!count)
-      return 0;
-    uint64_t window = 0;
-    const auto first = position / 8;
-    const auto last = std::min(bytes.size(), first + 5);
-    for (size_t i = first; i < last; ++i)
-      window |= uint64_t(bytes[i]) << (56 - 8 * (i - first));
-    return uint32_t((window << (position % 8)) >> (64 - count));
-  }
 };
 
 /// The entropy coder's parameters for a whole stream.
@@ -97,16 +80,27 @@ struct Predictor {
 };
 
 /// One Golomb-Rice value: a unary count of @p modulus and a remainder in at
-/// most @p k bits, or @p raw bits after an escape.
+/// most @p k bits, or @p raw bits after an escape. The longest, 9 + 32 bits,
+/// fits in one window.
 uint32_t riceValue(Reader &bits, uint32_t modulus, unsigned k, unsigned raw) {
-  const auto prefix = bits.ones(ESCAPE_PREFIX);
-  if (prefix == ESCAPE_PREFIX)
-    return bits.read(raw);
+  const auto window = bits.window();
+  const auto prefix = unsigned(std::countl_one(window));
+  if (prefix >= ESCAPE_PREFIX) {
+    bits.skip(ESCAPE_PREFIX + raw);
+    return uint32_t(window << ESCAPE_PREFIX >> (64 - raw));
+  }
   auto value = prefix * modulus;
-  // A remainder below 2 is sent in k - 1 bits.
-  if (k > 1)
-    if (const auto high = bits.read(k - 1))
-      value += (high << 1 | bits.read(1)) - 1;
+  auto used = prefix + 1;
+  if (k > 1) {
+    // A remainder below 2 is sent in k - 1 bits.
+    const auto remainder = uint32_t(window << used >> (64 - k));
+    if (remainder >= 2) {
+      value += remainder - 1;
+      used += k;
+    } else
+      used += k - 1;
+  }
+  bits.skip(used);
   return value;
 }
 
