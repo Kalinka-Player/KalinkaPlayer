@@ -33,8 +33,8 @@ public:
 
   /// One channel's predictor, with `order` zero coefficients.
   BitWriter &predictor(unsigned mode = 0, unsigned order = 0,
-                       unsigned quantization = 9) {
-    put(mode, 4).put(quantization, 4).put(4, 3).put(order, 5);
+                       unsigned quantization = 9, unsigned meanFactor = 4) {
+    put(mode, 4).put(quantization, 4).put(meanFactor, 3).put(order, 5);
     return put(0, 16 * order);
   }
 
@@ -55,7 +55,7 @@ private:
 
 struct Config {
   uint32_t frameLength = 4;
-  uint8_t version = 0, bits = 16, riceLimit = 14, channels = 2;
+  uint8_t version = 0, bits = 16, riceLimit = 14, channels = 2, meanRate = 40;
   uint32_t rate = 44100;
 
   Bytes bytes() const {
@@ -63,7 +63,7 @@ struct Config {
         .put(frameLength, 32)
         .put(version, 8)
         .put(bits, 8)
-        .put(40, 8)
+        .put(meanRate, 8)
         .put(10, 8)
         .put(riceLimit, 8)
         .put(channels, 8)
@@ -193,6 +193,20 @@ TEST(AlacDecoder, DecodesRunsOfZerosAndFirstOrderPrediction) {
             pcm({1, 1, 1, 1, 1, 4}, 16, 2));
   EXPECT_EQ(decode(decoder, residuals(zeroRunResiduals().predictor(0, 31))),
             pcm({1, 1, 1, 1, 1, 4}, 16, 2));
+}
+
+TEST(AlacDecoder, WrapsTheRunningMeanAsTheReferenceCoderDoes) {
+  // At the fastest rate a header can name, rate * mean passes 32 bits on the
+  // second residual, and the reference keeps only its low bits.
+  AlacDecoder decoder(
+      Config{.frameLength = 3, .riceLimit = 16, .channels = 1, .meanRate = 255}
+          .bytes());
+  BitWriter frame;
+  frame.header(SCE, 0, false).put(0, 16).predictor(0, 0, 9, 7);
+  frame.escaped(0xffff, 16).escaped(0xffff, 16);
+  // A parameter of 16 reads 2 from these bits, where 15 would read 0.
+  frame.put(0, 1).put(1, 15).put(1, 1).put(END, 3);
+  EXPECT_EQ(decode(decoder, frame.done()), pcm({-32768, -32768, 1}, 16, 2));
 }
 
 TEST(AlacDecoder, UnmixesStereo) {
