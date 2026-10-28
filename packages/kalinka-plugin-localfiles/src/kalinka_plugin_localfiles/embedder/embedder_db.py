@@ -8,12 +8,12 @@ semantics, and sqlite-vec virtual tables for 512-dim KNN search.
 import logging
 import os
 import time
-from contextlib import asynccontextmanager
 from typing import Optional
 
 import aiosqlite
 
 from ..config_model import LocalFilesConfig
+from ..db_connection import LibraryConnection, LibraryDb
 from ..worker_utils import retry_db_locked, stage_status
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -39,7 +39,7 @@ _VEC_TEXT_TABLES = {
 }
 
 @retry_db_locked
-class AsyncEmbedderDb:
+class AsyncEmbedderDb(LibraryDb):
     """
     Database manager for the CLAP embedding pipeline.
     All methods are async and open their own short-lived connections.
@@ -48,16 +48,6 @@ class AsyncEmbedderDb:
     def __init__(self, config: LocalFilesConfig):
         self.db_path = os.path.expanduser(config.db_path)
         self._vec_available = False
-
-    def _get_connection(self):
-        return aiosqlite.connect(self.db_path, timeout=5.0)
-
-    @asynccontextmanager
-    async def _open(self):
-        async with self._get_connection() as conn:
-            await conn.execute("PRAGMA journal_mode=WAL")
-            await conn.execute("PRAGMA busy_timeout=5000")
-            yield conn
 
     async def _check_vec_available(self) -> None:
         """Lazily detect whether sqlite-vec is available."""
@@ -86,7 +76,7 @@ class AsyncEmbedderDb:
 
     async def _upsert_vec_embedding(
         self,
-        conn: aiosqlite.Connection,
+        conn: LibraryConnection,
         table: str,
         pk_col: str,
         entity_id: str,

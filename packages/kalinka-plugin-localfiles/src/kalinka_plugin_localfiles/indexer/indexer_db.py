@@ -3,7 +3,6 @@ import os
 import time
 import aiosqlite
 import logging
-from contextlib import asynccontextmanager
 from typing import List, Dict, Optional, Any, Tuple
 
 
@@ -45,17 +44,6 @@ class AsyncIndexerDb(ProvenanceDb):
         os.makedirs(self.artwork_path, exist_ok=True)
         os.makedirs(os.path.join(self.artwork_path, "album"), exist_ok=True)
         os.makedirs(os.path.join(self.artwork_path, "artist"), exist_ok=True)
-
-    def _get_connection(self):
-        """Get a database connection with row factory"""
-        return aiosqlite.connect(self.db_path, timeout=5.0)
-
-    @asynccontextmanager
-    async def _open(self):
-        async with self._get_connection() as conn:
-            await conn.execute("PRAGMA journal_mode=WAL")
-            await conn.execute("PRAGMA busy_timeout=5000")
-            yield conn
 
     async def get_track_by_path(self, file_path: str) -> Optional[Dict]:
         """Get track information by file path"""

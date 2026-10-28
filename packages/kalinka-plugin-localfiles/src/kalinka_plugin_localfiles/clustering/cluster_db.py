@@ -1,31 +1,21 @@
 """Data access for album_cluster, membership_constraint and entity_id_alias."""
 
 import os
-from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
 import aiosqlite
 
 from ..config_model import LocalFilesConfig
+from ..db_connection import LibraryDb
 from ..worker_utils import retry_db_locked
 
 
 @retry_db_locked
-class AsyncClusterDb:
+class AsyncClusterDb(LibraryDb):
     """Reads/writes the Phase-1 clustering tables."""
 
     def __init__(self, config: LocalFilesConfig):
         self.db_path = os.path.expanduser(config.db_path)
-
-    def _get_connection(self):
-        return aiosqlite.connect(self.db_path, timeout=5.0)
-
-    @asynccontextmanager
-    async def _open(self):
-        async with self._get_connection() as conn:
-            await conn.execute("PRAGMA journal_mode=WAL")
-            await conn.execute("PRAGMA busy_timeout=5000")
-            yield conn
 
     # -- id aliases ----------------------------------------------------------
 
