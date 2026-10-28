@@ -24,6 +24,7 @@ from kalinka_plugin_localfiles.db_schema import init_db
 from kalinka_plugin_localfiles.indexer import indexer as indexer_mod
 from kalinka_plugin_localfiles.indexer.indexer import FileIndexer
 from kalinka_plugin_localfiles.indexer.indexer_db import AsyncIndexerDb
+from kalinka_plugin_localfiles.storage.local import LocalStorage
 
 
 @pytest_asyncio.fixture
@@ -180,6 +181,47 @@ async def test_subsecond_mtime_change_is_retried(indexer, monkeypatch):
     p.write_bytes(b"bbbbbbbb")  # still 8 bytes
     os.utime(file_path, ns=(base_s * 10**9, base_s * 10**9 + 900_000_000))
     assert await fi.process_file(file_path) is None
+    assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_failures_are_forgotten_once_per_readers_version(indexer):
+    db = indexer[0].db_manager
+    path = "/music/lossless.m4a"
+    await db.record_failure(path, 1, 1, "refused")
+    assert await db.forget_failures_of_older_readers(1) == 1
+    await db.record_failure(path, 1, 1, "refused")
+    assert await db.forget_failures_of_older_readers(1) == 0
+    assert await db.get_failure(path) is not None
+    assert await db.forget_failures_of_older_readers(2) == 1
+    assert await db.get_failure(path) is None
+
+
+@pytest.mark.asyncio
+async def test_new_readers_reread_what_older_ones_refused(indexer, monkeypatch):
+    """A refused file stays parked while it is unchanged, so readers that
+    learn its format must read it again on their first scan, and only then."""
+
+    async def probe_once(self, root, deadline_s=None):
+        return await self.probe_root(root)
+
+    monkeypatch.setattr(LocalStorage, "await_root_available", probe_once)
+    fi, music_dir = indexer
+    _write(music_dir / "lossless.m4a")
+    calls = {"n": 0}
+    monkeypatch.setattr(
+        fi,
+        "_extract_metadata",
+        lambda _s, _p: (calls.__setitem__("n", calls["n"] + 1), None)[1],
+    )
+
+    await fi.run_scan()
+    await fi.run_scan()
+    assert calls["n"] == 1
+
+    monkeypatch.setattr(indexer_mod, "READERS_VERSION", indexer_mod.READERS_VERSION + 1)
+    await fi.run_scan()
+    await fi.run_scan()
     assert calls["n"] == 2
 
 

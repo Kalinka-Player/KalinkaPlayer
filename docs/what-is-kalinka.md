@@ -166,7 +166,7 @@ Two newer open-source projects work the same territory from different angles. **
 
 Kalinka is young — the README itself calls it experimental. The current edges:
 
-- **Formats**: the local library indexes FLAC, WAV, MP3, Ogg Vorbis, DSF and DFF. DSD playback requires a compatible direct ALSA output, fixed volume and a native DSD or DoP selection in renderer settings; unsupported rates, multichannel files and DST-compressed DFF do not fall back to PCM. ALAC, Opus, and compressed or multichannel WAV remain unsupported.
+- **Formats**: the local library indexes FLAC, WAV, MP3, Ogg Vorbis, AAC, MP4 (AAC, FLAC or ALAC), DSF and DFF. DSD playback requires a compatible direct ALSA output, fixed volume and a native DSD or DoP selection in renderer settings; unsupported rates, multichannel files and DST-compressed DFF do not fall back to PCM. Opus, multichannel ALAC, and compressed or multichannel WAV remain unsupported.
 - **Multi-room**: one server drives one output. There is no synchronized whole-house playback.
 - **Streaming breadth**: Jamendo, an experimental Qobuz plugin, and an optional [TIDAL plugin](https://github.com/Kalinka-Player/kalinka-plugin-tidal) using the unofficial tidalapi client. TIDAL exposes discovery and account catalogs, with playback limited to supported direct streams.
 - **DSP**: no EQ or room-correction chain — the design goal is a clean bit-perfect path, not signal processing.
