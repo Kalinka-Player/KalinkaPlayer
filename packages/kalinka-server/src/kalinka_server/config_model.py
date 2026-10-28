@@ -128,15 +128,15 @@ class ServerConfig(BaseModel):
     )
     manage_box: bool = Field(
         default=False,
-        title="Manage this box",
+        title="Manage this streamer",
         json_schema_extra={
             "importance": "expert",
             "help": (
-                "Apply and restart to install box management if it is missing, "
-                "or remove it when turned off. Enables the box dashboard, "
-                "reboot, power off and nearby setup. Requires an internet "
-                "connection to install. Supervisor status shows what is "
-                "actually installed."
+                "Apply and restart to install streamer management if it is "
+                "missing, or remove it when turned off. Enables the streamer "
+                "dashboard, reboot, power off and nearby setup. Requires an "
+                "internet connection to install. Supervisor status shows what "
+                "is actually installed."
             ),
         },
     )
@@ -147,7 +147,7 @@ class ServerConfig(BaseModel):
             **_SIMPLE,
             "readonly": True,
             "help": (
-                "Installed package state and the result of the last box "
+                "Installed package state and the result of the last streamer "
                 "management change. An installed supervisor may still be "
                 "stopped or unreachable."
             ),

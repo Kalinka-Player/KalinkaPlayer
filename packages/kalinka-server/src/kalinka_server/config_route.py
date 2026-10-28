@@ -266,7 +266,7 @@ def register_config_routes(
                                 app.state.overrides[key] = previous_overrides[key]
                         raise HTTPException(
                             status_code=500,
-                            detail="Could not save box management settings; restart was not requested.",
+                            detail="Could not save streamer management settings; restart was not requested.",
                         ) from exc
 
         timer = getattr(app.state, "box_power_off_timer", None)
