@@ -36,10 +36,10 @@ Core's files are damaged. It follows the app's dark style.
   - a failed Core;
   - a last reinstall that failed, with its log;
   - a plugin removal under way, or a last one that failed, with its log.
-- **Controls.** Restart server, Restart the box, Power off and Reinstall
+- **Controls.** Restart server, Restart the streamer, Power off and Reinstall
   Kalinka. Each asks for confirmation first, then follows the result:
   - **Restart server:** until Core runs again.
-  - **Restart the box:** until the box answers again; then it reloads.
+  - **Restart the streamer:** until the streamer answers again; then it reloads.
   - **Power off:** until it stops answering.
   - **Reinstall:** shows the installer's output live, until it succeeds or
     fails.
@@ -58,8 +58,8 @@ Core's files are damaged. It follows the app's dark style.
     control group. Pages they share, such as those of the server's forked
     workers, count once. Where the kernel does not report PSS, resident memory
     stands in.
-  - **CPU:** averaged over the last minute, as a share of the whole box.
-- **This box.** Name, DietPi and Debian version, kernel, uptime, load,
+  - **CPU:** averaged over the last minute, as a share of the whole streamer.
+- **This streamer.** Name, DietPi and Debian version, kernel, uptime, load,
   processors, temperature, nearby setup, memory and disk.
 - **Software and plugins.**
   - **Packages:** every installed `kalinka*` Debian package, read from dpkg's

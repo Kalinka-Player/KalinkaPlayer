@@ -59,7 +59,7 @@
       </article>
       <article class="action">
         <span class="tile"><svg class="glyph"><use href="#i-reboot"/></svg></span>
-        <div class="action-text"><h3>Restart the box</h3><p>Reboots the whole player. It is back in a minute or two.</p></div>
+        <div class="action-text"><h3>Restart the streamer</h3><p>Reboots the whole player. It is back in a minute or two.</p></div>
         <button class="button neutral" type="button" data-action="reboot">Restart</button>
       </article>
       <article class="action">
@@ -80,10 +80,10 @@
     <dl class="facts" id="soundcard-facts"></dl>
     <p class="notice notice-wait" id="soundcard-hint" hidden></p>
     <div class="pick">
-      <label for="soundcard-select">Set this box up for<select id="soundcard-select"></select></label>
+      <label for="soundcard-select">Set this streamer up for<select id="soundcard-select"></select></label>
       <button class="button accent" type="button" id="soundcard-apply">Apply</button>
     </div>
-    <p class="footnote">A HAT with an ID chip sets itself up. For any other, choose it here: the box restarts once if its boot configuration has to change.</p>
+    <p class="footnote">A HAT with an ID chip sets itself up. For any other, choose it here: the streamer restarts once if its boot configuration has to change.</p>
   </section>
 
   <section class="card" id="timezone" hidden>
@@ -93,12 +93,12 @@
       <label for="timezone-select">Show the time in<select id="timezone-select"></select></label>
       <button class="button accent" type="button" id="timezone-apply">Apply</button>
     </div>
-    <p class="footnote">The box sets its clock over the network by itself. The zone decides which time it shows and the night hours an automatic upgrade waits for.</p>
+    <p class="footnote">The streamer sets its clock over the network by itself. The zone decides which time it shows and the night hours an automatic upgrade waits for.</p>
   </section>
 
   <section class="card" id="ssh" {{if not .SSH}}hidden{{end}}>
     <h2 class="label">SSH access</h2>
-    <p class="muted">Set up a login to configure this box or copy music onto it. The administrator account is <code>{{.Username}}</code>. SSH stays on after a restart.</p>
+    <p class="muted">Set up a login to configure this streamer or copy music onto it. The administrator account is <code>{{.Username}}</code>. SSH stays on after a restart.</p>
     <p class="footnote">Use this on a trusted local network. This dashboard uses HTTP, so choose a password you do not use elsewhere.</p>
     {{if .Simulated}}<p class="notice notice-wait">Preview mode: SSH setup is simulated. No account or service will change.</p>{{end}}
     {{if .Error}}<p class="notice notice-error" role="alert">{{.Error}}</p>{{end}}
@@ -126,17 +126,17 @@
       <div class="figures">
         <div class="figure"><span class="figure-value" id="fig-memory">–</span><span class="figure-label">Kalinka memory</span></div>
         <div class="figure"><span class="figure-value" id="fig-cpu">–</span><span class="figure-label">Kalinka CPU</span></div>
-        <div class="figure"><span class="figure-value" id="fig-host-cpu">–</span><span class="figure-label">Whole box CPU</span></div>
+        <div class="figure"><span class="figure-value" id="fig-host-cpu">–</span><span class="figure-label">Whole streamer CPU</span></div>
       </div>
       <table class="services">
         <thead><tr><th>Service</th><th>State</th><th class="num">Memory</th><th class="num">CPU</th></tr></thead>
         <tbody id="services"></tbody>
       </table>
-      <p class="footnote">CPU is averaged over the last minute, as a share of the whole box.</p>
+      <p class="footnote">CPU is averaged over the last minute, as a share of the whole streamer.</p>
     </section>
 
     <section class="card">
-      <h2 class="label">This box</h2>
+      <h2 class="label">This streamer</h2>
       <dl class="facts" id="host"></dl>
       <div class="meter"><div class="meter-head"><span>Memory in use</span><span id="mem-text"></span></div><div class="meter-track"><div class="meter-fill" id="mem-fill"></div></div></div>
       <div class="meter"><div class="meter-head"><span>Disk in use</span><span id="disk-text"></span></div><div class="meter-track"><div class="meter-fill" id="disk-fill"></div></div></div>
@@ -145,13 +145,13 @@
     <section class="card">
       <h2 class="label">Software</h2>
       <dl class="versions" id="packages"></dl>
-      <p class="empty" id="packages-empty" hidden>No Kalinka packages are installed through apt on this box.</p>
+      <p class="empty" id="packages-empty" hidden>No Kalinka packages are installed through apt on this streamer.</p>
     </section>
 
     <section class="card">
       <h2 class="label">Plugins</h2>
       <dl class="versions" id="plugins"></dl>
-      <p class="empty" id="plugins-empty" hidden>No plugins are installed on this box.</p>
+      <p class="empty" id="plugins-empty" hidden>No plugins are installed on this streamer.</p>
       <p class="footnote" id="python"></p>
     </section>
   </div>

@@ -77,7 +77,7 @@ func (h *handler) enableSSH(w http.ResponseWriter, r *http.Request) string {
 		return reject(http.StatusBadRequest, "invalid_request", "Unknown dashboard action.")
 	}
 	if r.PostForm.Get("server_id") != coreconf.ReadID(h.cfg.ServerIDFile) {
-		return reject(http.StatusConflict, "wrong_server", "The box's identity changed. Check its address and try again.")
+		return reject(http.StatusConflict, "wrong_server", "The streamer's identity changed. Check its address and try again.")
 	}
 	password := r.PostForm.Get("password")
 	if !sshaccess.ValidPassword(password) {

@@ -8,7 +8,7 @@ let status = null;
 let soundcard = null;
 let soundcardList = "";
 let timezoneList = null;
-// The box's zone at the last render, which the picker follows until someone changes it.
+// The streamer's zone at the last render, which the picker follows until someone changes it.
 let timezoneShown = null;
 let busy = false;
 // Each progress flow polls until a newer flow, or a dismiss, takes over.
@@ -47,15 +47,15 @@ const ACTIONS = {
   },
   reboot: {
     icon: "i-reboot",
-    title: "Restart the box?",
-    body: "The whole player restarts. Playback stops, and the box is back in a minute or two.",
+    title: "Restart the streamer?",
+    body: "The whole player restarts. Playback stops, and the streamer is back in a minute or two.",
     go: "Restart",
     follow: followReboot,
   },
   poweroff: {
     icon: "i-power",
     danger: true,
-    title: "Power off the box?",
+    title: "Power off the streamer?",
     body: "The player shuts down safely. To start it again, unplug it and plug it back in.",
     go: "Power off",
     follow: followPowerOff,
@@ -71,7 +71,7 @@ const ACTIONS = {
   set_soundcard: {
     icon: "i-sound",
     title: "Change the sound card?",
-    body: (label) => `Sets the box up for ${label}. If its boot configuration has to change, the box restarts once, which takes a minute or two.`,
+    body: (label) => `Sets the streamer up for ${label}. If its boot configuration has to change, the streamer restarts once, which takes a minute or two.`,
     go: "Apply",
     during: { title: "Setting up the sound card", body: "Writing the boot configuration…" },
     follow: followSoundcard,
@@ -79,9 +79,9 @@ const ACTIONS = {
   set_timezone: {
     icon: "i-clock",
     title: "Change the time zone?",
-    body: (zone) => `The box shows the time in ${zone} from now on. A now-playing display restarts to follow; playback carries on.`,
+    body: (zone) => `The streamer shows the time in ${zone} from now on. A now-playing display restarts to follow; playback carries on.`,
     go: "Apply",
-    during: { title: "Setting the time zone", body: "Waiting for the box…" },
+    during: { title: "Setting the time zone", body: "Waiting for the streamer…" },
     follow: followTimezone,
   },
   remove_plugin: {
@@ -155,7 +155,7 @@ async function getLog(unit) {
   return response.ok ? response.text() : "";
 }
 
-// The box's identity, so an address that now leads to another box acts on nothing.
+// The streamer's identity, so an address that now leads to another streamer acts on nothing.
 function identity() {
   const id = {};
   if (info && info.server_id) id.server_id = info.server_id;
@@ -201,8 +201,8 @@ function renderNotices() {
   list.replaceChildren();
   if (!status) return;
   const s = status;
-  if (s.pending === "poweroff") list.append(notice("wait", "The box is powering off."));
-  if (s.pending === "reboot") list.append(notice("wait", "The box is restarting."));
+  if (s.pending === "poweroff") list.append(notice("wait", "The streamer is powering off."));
+  if (s.pending === "reboot") list.append(notice("wait", "The streamer is restarting."));
   const removal = s.plugin_removal;
   const removing = pluginName(removal.package || "a plugin");
   if (s.reinstall.state === "running") {
@@ -227,7 +227,7 @@ function finishedAt(outcome) {
   return outcome.finished_at ? ` on ${new Date(outcome.finished_at).toLocaleString()}` : "";
 }
 
-// A box that runs only a renderer has no server to restart or reinstall.
+// A streamer that runs only a renderer has no server to restart or reinstall.
 function serverInstalled() {
   return !info || info.actions.includes("restart_core");
 }
@@ -250,7 +250,7 @@ function locked() {
   return !status || status.upgrading || status.pending != null || busy;
 }
 
-// Every control waits while something privileged runs, and stays off when this box does not offer it.
+// Every control waits while something privileged runs, and stays off when this streamer does not offer it.
 function lockActions() {
   for (const button of document.querySelectorAll("[data-action]")) {
     const offered = info && info.actions.includes(button.dataset.action);
@@ -432,7 +432,7 @@ function fillSoundcardSelect(sc, previous) {
   const select = byId("soundcard-select");
   const groups = new Map();
   const detected = sc.options.filter((o) => sc.suggested.includes(o.name));
-  if (detected.length) groups.set("Found on this box", detected.map((o) => option(o, true)));
+  if (detected.length) groups.set("Found on this streamer", detected.map((o) => option(o, true)));
   for (const o of sc.options) {
     const group = SOUNDCARD_GROUPS[o.kind] || o.vendor;
     if (!groups.has(group)) groups.set(group, []);
@@ -465,7 +465,7 @@ function zoneLabel(zone) {
   return zone.replace(/_/g, " ");
 }
 
-// The browser's own zone is the likely choice for a box in the same home.
+// The browser's own zone is the likely choice for a streamer in the same home.
 function browserTimezone() {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
@@ -496,7 +496,7 @@ function renderTimezone() {
   timezoneShown = status.timezone;
   const facts = byId("timezone-facts");
   facts.replaceChildren();
-  fact(facts, "This box", status.timezone ? zoneLabel(status.timezone) : "Not known");
+  fact(facts, "This streamer", status.timezone ? zoneLabel(status.timezone) : "Not known");
   fact(facts, "This device", zoneLabel(browserTimezone()));
   byId("timezone-apply").disabled = locked() || !timezoneChanged();
 }
@@ -676,7 +676,7 @@ async function shutdownAbandoned() {
 
 async function followReboot() {
   const token = ++flow;
-  showProgress({ title: "Restarting the box", body: "The player is shutting down. This page reconnects when it is back." });
+  showProgress({ title: "Restarting the streamer", body: "The player is shutting down. This page reconnects when it is back." });
   const started = Date.now();
   let wentDown = false;
   while (token === flow) {
@@ -684,7 +684,7 @@ async function followReboot() {
     try {
       await getJSON("/info");
       if (wentDown) {
-        finishProgress({ ok: true, title: "The box is back", body: "Reloading this page…" });
+        finishProgress({ ok: true, title: "The streamer is back", body: "Reloading this page…" });
         await sleep(1200);
         location.reload();
         return;
@@ -693,11 +693,11 @@ async function followReboot() {
       wentDown = true;
     }
     if (!wentDown && (await shutdownAbandoned())) {
-      finishProgress({ ok: false, title: "The box did not restart", body: "systemd did not carry out the request. Try again." });
+      finishProgress({ ok: false, title: "The streamer did not restart", body: "systemd did not carry out the request. Try again." });
       return;
     }
     if (Date.now() - started > 300000) {
-      finishProgress({ ok: false, title: "Not back yet", body: "The box has not answered for five minutes. Check that it has power and a network connection." });
+      finishProgress({ ok: false, title: "Not back yet", body: "The streamer has not answered for five minutes. Check that it has power and a network connection." });
       return;
     }
   }
@@ -713,7 +713,7 @@ function followSoundcard(_, result) {
 }
 
 function followTimezone(_, result) {
-  finishProgress({ ok: true, title: "Time zone set", body: `The box shows the time in ${zoneLabel(result.timezone)}.` });
+  finishProgress({ ok: true, title: "Time zone set", body: `The streamer shows the time in ${zoneLabel(result.timezone)}.` });
   refreshStatus();
 }
 
@@ -726,15 +726,15 @@ async function followPowerOff() {
     try {
       await getJSON("/info");
     } catch (_) {
-      finishProgress({ ok: true, title: "Powered off", body: "Once its lights stop blinking, the box can be unplugged. Plug it back in to start it again." });
+      finishProgress({ ok: true, title: "Powered off", body: "Once its lights stop blinking, the streamer can be unplugged. Plug it back in to start it again." });
       return;
     }
     if (await shutdownAbandoned()) {
-      finishProgress({ ok: false, title: "The box did not power off", body: "systemd did not carry out the request. Try again." });
+      finishProgress({ ok: false, title: "The streamer did not power off", body: "systemd did not carry out the request. Try again." });
       return;
     }
     if (Date.now() - started > 120000) {
-      finishProgress({ ok: false, title: "Still shutting down", body: "The box is still answering after two minutes. Give it a little longer before unplugging it." });
+      finishProgress({ ok: false, title: "Still shutting down", body: "The streamer is still answering after two minutes. Give it a little longer before unplugging it." });
       return;
     }
   }

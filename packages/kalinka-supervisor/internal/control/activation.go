@@ -38,7 +38,7 @@ func NewSetupHandler(setup NetworkSetup, port func() int, webDir string) http.Ha
 		if r.URL.Path == "/activate" {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Header().Set("Content-Security-Policy", pagePolicy)
-			io.WriteString(w, `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="1;url=/?setup=network"><title>Set up Kalinka</title><body><h1>Set up your Kalinka box</h1><p>Opening Network setup…</p><p><a href="/?setup=network">Open Kalinka setup</a></p><p>If this window closes, open http://192.168.4.1 in your browser.</p></body></html>`)
+			io.WriteString(w, `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="1;url=/?setup=network"><title>Set up Kalinka</title><body><h1>Set up your Kalinka streamer</h1><p>Opening Network setup…</p><p><a href="/?setup=network">Open Kalinka setup</a></p><p>If this window closes, open http://192.168.4.1 in your browser.</p></body></html>`)
 			return
 		}
 		if r.URL.Path == "/" && r.URL.Query().Get("setup") != "network" {
