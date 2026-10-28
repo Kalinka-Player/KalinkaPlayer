@@ -388,6 +388,23 @@ def test_failure_reports_actual_state_and_can_be_retried(box, monkeypatch, desir
     assert "failed" not in management.status_text(desired, box.state)
 
 
+def test_a_failure_while_unavailable_shows_the_current_reason_once(box):
+    box.unavailable = "Streamer management packages are available for amd64 only."
+    box.state.mkdir()
+    (box.state / management.RESULT_FILE).write_text(
+        json.dumps(
+            {
+                "requested": True,
+                "status": "failed",
+                "error": "Box management packages are available for amd64 only.",
+            }
+        )
+    )
+    status = management.status_text(True, box.state)
+    assert status == f"Not installed. Installation failed. {box.unavailable}"
+    assert not _BOX.search(status)
+
+
 def test_a_successful_command_without_the_package_is_still_a_failure(box, monkeypatch):
     _save(box, True)
     monkeypatch.setattr(management, "_run", lambda command: None)
