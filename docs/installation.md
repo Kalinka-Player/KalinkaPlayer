@@ -335,9 +335,9 @@ This works on any box that runs Debian 13, Raspberry Pi OS (64-bit), DietPi or U
 curl -fsSL https://raw.githubusercontent.com/Kalinka-Player/KalinkaPlayer/main/scripts/install-supervisor.sh | sudo bash
 ```
 
-On the server's own machine you can do it from the app instead: turn on **Manage this box** in the advanced settings and apply. Kalinka restarts while the supervisor is installed; the computer itself does not.
+On the server's own machine you can do it from the app instead: turn on **Manage this streamer** in the advanced settings and apply. Kalinka restarts while the supervisor is installed; the computer itself does not.
 
-Once installed, it is upgraded together with Kalinka. To remove it, turn **Manage this box** off again, or run `sudo apt remove kalinka-supervisor`.
+Once installed, it is upgraded together with Kalinka. To remove it, turn **Manage this streamer** off again, or run `sudo apt remove kalinka-supervisor`.
 
 - Wi-Fi setup without a cable needs a Wi-Fi adapter in the box, and works on DietPi and on systems where NetworkManager runs the network, such as Raspberry Pi OS. Elsewhere, you still get the control page and everything else.
 - On a Pi running Raspberry Pi OS, turn I²C on (`sudo raspi-config nonint do_i2c 0`) so the supervisor can recognise a DAC HAT by its chip. Without it, you pick the HAT from the full list.

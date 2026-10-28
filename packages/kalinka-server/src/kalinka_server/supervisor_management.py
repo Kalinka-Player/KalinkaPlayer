@@ -1,4 +1,4 @@
-"""Box management for settings and the privileged restart service.
+"""Streamer management for settings and the privileged restart service.
 
 The Debian package also ships this file as /opt/kalinka/manage-supervisor.py.
 Keep it stdlib-only: system Python runs it outside Core's filesystem sandbox,
@@ -63,15 +63,13 @@ def unavailable_reason() -> str | None:
         not HELPER.is_file()
         or not INSTALLER.is_file()
         or not Path("/run/systemd/system").is_dir()
-    ):
-        return (
-            "Box management requires a Debian-based Kalinka installation with systemd."
+        or not all(
+            shutil.which(cmd) for cmd in ("apt-get", "dpkg", "dpkg-query", "systemctl")
         )
-    if not all(
-        shutil.which(cmd) for cmd in ("apt-get", "dpkg", "dpkg-query", "systemctl")
     ):
         return (
-            "Box management requires a Debian-based Kalinka installation with systemd."
+            "Streamer management requires a Debian-based Kalinka installation "
+            "with systemd."
         )
     try:
         arch = subprocess.run(
@@ -81,9 +79,9 @@ def unavailable_reason() -> str | None:
             timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
-        return "Could not determine this box's architecture."
+        return "Could not determine this streamer's architecture."
     if arch.returncode or arch.stdout.strip() not in {"amd64", "arm64"}:
-        return "Box management packages are available for amd64 and arm64 only."
+        return "Streamer management packages are available for amd64 and arm64 only."
     return None
 
 
@@ -157,7 +155,7 @@ def apply_saved(config_file: Path, state_dir: Path) -> int:
             return 0
         desired = config[MANAGE_PATH]
         if type(desired) is not bool:
-            raise ValueError("Manage this box must be true or false")
+            raise ValueError("Manage this streamer must be true or false")
         result.update(requested=desired, started_at=time.time(), status="running")
         if _matches(desired, _package_state()[0]):
             return 0  # In particular, enabling an installed package is not an upgrade.
@@ -183,7 +181,7 @@ def apply_saved(config_file: Path, state_dir: Path) -> int:
             )
         result["status"] = "ok"
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
-        print(f"[box management] {exc}", flush=True)
+        print(f"[streamer management] {exc}", flush=True)
         error = (
             "The package operation did not complete; see the server log."
             if isinstance(exc, subprocess.SubprocessError)

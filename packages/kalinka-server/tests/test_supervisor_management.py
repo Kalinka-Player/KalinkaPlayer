@@ -6,6 +6,7 @@ package database or network.
 
 import json
 from pathlib import Path
+import re
 import subprocess
 from types import SimpleNamespace
 
@@ -20,6 +21,8 @@ from kalinka_server.config_route import register_config_routes
 from kalinka_server.config_schema_processor import build_presentation, readonly_paths
 from kalinka_server.options_registry import OptionsRegistry
 from kalinka_server.box_power_off import TIMER_PATHS
+
+_BOX = re.compile(r"\bbox(es)?\b", re.IGNORECASE)
 
 
 @pytest.fixture
@@ -110,6 +113,39 @@ def test_status_is_in_server_settings_but_management_is_expert_only(box):
         field for field in server["fields"] if field["path"] == management.STATUS_PATH
     )
     assert status["readonly"] is True
+
+
+def test_settings_call_the_machine_a_streamer(box):
+    fields = {
+        f["path"]: f
+        for f in _client(box).get("/server/config/schema").json()["expert_fields"]
+    }
+    for path in (management.MANAGE_PATH, management.STATUS_PATH):
+        text = f"{fields[path]['label']} {fields[path]['help']}"
+        assert "streamer" in text and not _BOX.search(text)
+
+
+def test_status_names_the_streamer_where_management_cannot_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(management, "HELPER", tmp_path / "manage-supervisor.py")
+    assert management.unavailable_reason().startswith("Streamer management")
+
+
+@pytest.mark.parametrize("arch", [OSError("no dpkg"), "armhf"])
+def test_architecture_reasons_name_the_streamer(tmp_path, monkeypatch, arch):
+    for name in ("HELPER", "INSTALLER"):
+        (tmp_path / name).touch()
+        monkeypatch.setattr(management, name, tmp_path / name)
+    monkeypatch.setattr(management, "Path", lambda _: tmp_path)
+    monkeypatch.setattr(management.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+
+    def run(*args, **kwargs):
+        if isinstance(arch, Exception):
+            raise arch
+        return SimpleNamespace(returncode=0, stdout=arch)
+
+    monkeypatch.setattr(management.subprocess, "run", run)
+    reason = management.unavailable_reason()
+    assert "streamer" in reason.lower() and not _BOX.search(reason)
 
 
 def test_readonly_status_cannot_be_faked_by_a_client(box):
