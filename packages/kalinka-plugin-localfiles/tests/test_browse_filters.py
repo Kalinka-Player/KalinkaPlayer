@@ -243,7 +243,7 @@ def test_root_offers_the_library_as_one_catalog_of_its_folders(module):
     assert card.id.id == "files"
     assert card.catalog.title == "My Library"
     assert card.catalog.preview_config.type is PreviewType.FOLDER
-    assert card.catalog.filters == []
+    assert [spec.id for spec in card.catalog.filters] == ["q", "genre"]
 
 
 def test_the_library_carries_its_playlists(module):

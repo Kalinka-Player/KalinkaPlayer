@@ -153,7 +153,7 @@ def test_a_folder_says_what_is_directly_in_it_and_how_much_is_below(module):
     assert a.subname == "5 tracks"
     assert a.catalog.description == "2 folders · 2 tracks · 20 min"
     assert a.catalog.preview_config.type is PreviewType.FOLDER
-    assert a.catalog.filters == []
+    assert [spec.id for spec in a.catalog.filters] == ["q", "genre"]
     assert a.can_browse and a.can_add
 
 
@@ -251,8 +251,140 @@ def test_a_folder_refuses_a_filter_it_never_offered(module):
         _browse(
             module,
             _folder("/lib/music"),
-            filter=FilterQuery.model_validate({"q": {"contains": "a"}}),
+            filter=FilterQuery.model_validate({"type": {"any": ["track"]}}),
         )
+
+
+def _names(module, id, selectors, offset=0, limit=50):
+    listing = _browse(
+        module, id, offset, limit, filter=FilterQuery.model_validate(selectors)
+    )
+    return [item.name for item in listing.items], listing.total
+
+
+def _set_genres(config, genres):
+    with sqlite3.connect(config.db_path) as conn:
+        conn.executemany(
+            "UPDATE albums SET genre = ? WHERE id = ?",
+            [(genre, album) for album, genre in genres.items()],
+        )
+
+
+def test_a_search_keeps_matching_tracks_and_the_folders_holding_them(module):
+    query = {"q": {"contains": "notes"}}
+
+    assert _names(module, _folder("/lib/music"), query) == (["a"], 1)
+    # t_alpha is on the album Notes; t_notes is named so.
+    assert _names(module, _folder("/lib/music/a"), query) == (
+        ["t_alpha", "t_notes"],
+        2,
+    )
+
+
+def test_a_search_finds_a_folder_by_name_with_everything_in_it(module):
+    query = {"q": {"contains": "cd1"}}
+
+    assert _names(module, _folder("/lib/music"), query) == (["a"], 1)
+    assert _names(module, _folder("/lib/music/a"), query) == (["CD1"], 1)
+    assert _names(module, _folder("/lib/music/a/CD1"), query) == (
+        ["t_a11", "t_a12"],
+        2,
+    )
+
+
+def test_a_search_reads_paths_only_below_their_music_source(module):
+    query = {"q": {"contains": "music"}}
+
+    assert _names(module, _catalog("files"), query) == ([], 0)
+    assert _names(module, _folder("/lib/music/a"), query) == ([], 0)
+
+
+def test_a_filtered_folder_still_says_what_it_holds_in_all(module):
+    a = _browse(
+        module,
+        _folder("/lib/music"),
+        filter=FilterQuery.model_validate({"q": {"contains": "cd1"}}),
+    ).items[0]
+
+    assert a.subname == "5 tracks"
+    assert a.catalog.description == "2 folders · 2 tracks · 20 min"
+
+
+def test_a_genre_keeps_the_folders_and_tracks_of_its_albums(config, module):
+    _set_genres(config, {"al_a": "Jazz", "al_notes": "Rock; Jazz", "al_b": "Rock"})
+
+    jazz = {"genre": {"any": ["jazz"]}}
+    assert _names(module, _folder("/lib/music"), jazz) == (["a"], 1)
+    assert _names(module, _folder("/lib/music/a"), jazz)[0] == [
+        "CD1",
+        "CD2",
+        "t_alpha",
+        "t_notes",
+    ]
+
+    both = {"genre": {"all": ["jazz", "rock"]}}
+    assert _names(module, _folder("/lib/music/a"), both)[0] == ["t_alpha", "t_notes"]
+
+    not_jazz = {"genre": {"none": ["jazz"]}}
+    assert _names(module, _folder("/lib/music"), not_jazz)[0] == [
+        "100%_done",
+        "b",
+        "Café",
+        "t_loose",
+    ]
+
+
+def test_a_search_and_a_genre_must_both_hold(config, module):
+    _set_genres(config, {"al_a": "Jazz", "al_notes": "Rock"})
+
+    assert _names(
+        module,
+        _folder("/lib/music/a"),
+        {"q": {"contains": "notes"}, "genre": {"any": ["jazz"]}},
+    ) == ([], 0)
+
+
+def test_filtered_pages_cross_from_folders_to_tracks_under_one_total(module):
+    query = {"q": {"contains": "artist"}}
+    pages = [
+        _names(module, _folder("/lib/music/a"), query, offset, 3) for offset in (0, 3)
+    ]
+
+    assert pages == [(["CD1", "CD2", "t_alpha"], 4), (["t_notes"], 4)]
+
+
+def test_a_filtered_library_lists_only_the_sources_holding_a_match(module):
+    assert _names(module, _catalog("files"), {"q": {"contains": "other"}}) == (
+        ["music2"],
+        1,
+    )
+    assert _names(module, _catalog("files"), {"q": {"contains": "artist"}}) == (
+        ["music", "music2"],
+        2,
+    )
+
+
+def test_a_filtered_library_of_one_source_still_opens_on_its_folders(config, db):
+    module = _module(config, db, ["/lib/music"])
+
+    assert _names(module, _catalog("files"), {"q": {"contains": "cd1"}}) == (
+        ["a"],
+        1,
+    )
+
+
+def _genres(module, id):
+    values = asyncio.run(module.list_filter_values(id, "genre"))
+    return [value.name for value in values.items]
+
+
+def test_the_library_offers_every_genre_and_a_folder_the_genres_in_it(config, module):
+    _set_genres(config, {"al_a": "Jazz", "al_notes": "Jazz", "al_b": "Rock"})
+
+    assert _genres(module, _catalog("files")) == ["Jazz", "Rock"]
+    assert _genres(module, _folder("/lib/music/a")) == ["Jazz"]
+    assert _genres(module, _folder("/lib/music/b")) == ["Rock"]
+    assert _genres(module, _folder("/elsewhere")) == []
 
 
 def test_the_library_card_browses_in_the_folder_layout(module):
@@ -260,6 +392,7 @@ def test_the_library_card_browses_in_the_folder_layout(module):
 
     assert library.id == _catalog("files")
     assert library.catalog.preview_config.type is PreviewType.FOLDER
+    assert [spec.id for spec in library.catalog.filters] == ["q", "genre"]
     assert library.sections is None
     assert recent.id == _catalog("recent")
     assert recent.catalog.preview_config.type is not PreviewType.FOLDER

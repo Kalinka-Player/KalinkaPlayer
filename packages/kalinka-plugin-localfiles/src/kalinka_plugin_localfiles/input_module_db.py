@@ -212,23 +212,51 @@ def _listing_order(rest: str) -> Tuple[Tuple[int, str, str], ...]:
 _ORDERED_IN_ONE = 2000
 
 
-#: Each track under the folder, as its path below it.
-_BELOW = """
+def _below(match: Optional[str] = None) -> str:
+    """Each track under the folder, as its path below it, and whether
+    ``match`` — a clause over ``t``, its album ``a`` and its artist ``ar`` —
+    keeps it. Without one, every track is kept and no tags are read."""
+    tags = (
+        " LEFT JOIN albums a ON t.album_id = a.id"
+        " LEFT JOIN artists ar ON t.artist_id = ar.id"
+        if match
+        else ""
+    )
+    return f"""
     below AS (
         SELECT substr(t.file_path, :tail_start) AS rest, t.file_path AS path,
-               t.duration AS duration
-        FROM tracks t
+               t.duration AS duration, ({match or 1}) AS matched
+        FROM tracks t{tags}
         WHERE t.file_path > :lo AND t.file_path < :hi
     )"""
+
 
 #: Each track inside a subfolder, by that subfolder's name and its path
 #: below it.
 _NESTED = """
     nested AS (
         SELECT substr(rest, 1, instr(rest, '/') - 1) AS name,
-               substr(rest, instr(rest, '/') + 1) AS deeper, duration
+               substr(rest, instr(rest, '/') + 1) AS deeper, duration, matched
         FROM below WHERE instr(rest, '/') > 0
     )"""
+
+#: What a folder's search reads of each track: its tags, and its path within
+#: its music source, so a folder found by name keeps everything in it.
+_FOLDER_TEXT_FIELDS = (
+    "fold(t.title)",
+    "fold(a.title)",
+    "fold(ar.name)",
+    "fold(substr(t.file_path, :root_start))",
+)
+
+
+def _named(clause: str, params: Sequence[Any]) -> Tuple[str, Dict[str, Any]]:
+    """``clause`` with its ``?`` placeholders named, for a statement that
+    names its own: sqlite3 binds one style per statement."""
+    head, *tails = clause.split("?")
+    named = head + "".join(f":p{index}{tail}" for index, tail in enumerate(tails))
+    return named, {f"p{index}": value for index, value in enumerate(params)}
+
 
 #: Each track under the folder that shows a cover, the album's before its own.
 _COVERS = """
@@ -304,6 +332,10 @@ class ListingFilter:
     genre_any: Tuple[str, ...] = ()
     genre_all: Tuple[str, ...] = ()
     genre_none: Tuple[str, ...] = ()
+
+    @property
+    def narrows(self) -> bool:
+        return self != ListingFilter()
 
 
 class LocalFilesInputModuleDb:
@@ -765,11 +797,31 @@ class LocalFilesInputModuleDb:
         genre_clause, genre_params = cls._genre_where(filter, genre_predicate)
         return f"({text_clause}) AND ({genre_clause})", params + genre_params
 
+    @classmethod
+    def _folder_match(
+        cls, filter: Optional[ListingFilter], root: str
+    ) -> Tuple[Optional[str], Dict[str, Any]]:
+        """``filter`` as a match for :func:`_below`, with its parameters; None
+        where it keeps every track. A folder's text is matched against paths
+        below ``root``, the music source the folder is in."""
+        if filter is None or not filter.narrows:
+            return None, {}
+        where, params = cls._listing_where(
+            filter, _FOLDER_TEXT_FIELDS, KINDS["track"].genre_predicate
+        )
+        match, named = _named(where, params)
+        return match, {**named, "root_start": len(folder_prefix(root)) + 1}
+
     def list_album_genres(
-        self, offset: int = 0, limit: int = 50, q: str = ""
+        self,
+        offset: int = 0,
+        limit: int = 50,
+        q: str = "",
+        folder: Optional[str] = None,
     ) -> Tuple[List[Tuple[str, str, int]], int]:
         """The library's own genre vocabulary: (match form, display name, album
-        count), most albums first.
+        count), most albums first. Only albums with a track under ``folder``,
+        where one is given.
 
         Uncurated by design — the values are the user's tags, so ``Electro`` and
         ``Electronic`` stay two entries. The display name is the spelling most
@@ -777,9 +829,18 @@ class LocalFilesInputModuleDb:
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-            cursor.execute(
-                "SELECT genre FROM albums WHERE genre IS NOT NULL AND genre != ''"
-            )
+            if folder is None:
+                cursor.execute(
+                    "SELECT genre FROM albums WHERE genre IS NOT NULL AND genre != ''"
+                )
+            else:
+                cursor.execute(
+                    "SELECT a.genre AS genre FROM albums a"
+                    " WHERE a.genre IS NOT NULL AND a.genre != ''"
+                    " AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = a.id"
+                    " AND t.file_path > :lo AND t.file_path < :hi)",
+                    _FolderRange.of(folder).params(),
+                )
             counts: Dict[str, int] = {}
             spellings: Dict[str, Dict[str, int]] = {}
             for row in cursor.fetchall():
@@ -1065,36 +1126,67 @@ class LocalFilesInputModuleDb:
         conn = self._get_connection()
         try:
             row = conn.execute(
-                f"WITH {_BELOW} SELECT {_summary_columns('rest')} FROM below",
+                f"WITH {_below()} SELECT {_summary_columns('rest')} FROM below",
                 _FolderRange.of(folder).params(),
             ).fetchone()
             return _summary_of(row)
         finally:
             conn.close()
 
+    def holds_tracks(
+        self, folder: str, filter: ListingFilter, root: Optional[str] = None
+    ) -> bool:
+        """Whether ``filter`` keeps any track under ``folder``; see
+        :meth:`list_subfolders` for ``root``."""
+        match, match_params = self._folder_match(filter, root or folder)
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                f"WITH {_below(match)} SELECT 1 FROM below WHERE matched LIMIT 1",
+                {**_FolderRange.of(folder).params(), **match_params},
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+
     def list_subfolders(
-        self, folder: str, offset: int = 0, limit: int = 50
+        self,
+        folder: str,
+        offset: int = 0,
+        limit: int = 50,
+        filter: Optional[ListingFilter] = None,
+        root: Optional[str] = None,
     ) -> Tuple[List[Tuple[str, FolderSummary]], int]:
         """One page of the folders directly in ``folder`` that hold indexed
         tracks, by name regardless of case, each with what it holds; and how
         many there are.
 
+        Under ``filter``, only folders holding a track it keeps are listed,
+        each still summarised whole. Its text reads paths below ``root``, the
+        music source ``folder`` is in, or below ``folder`` itself.
+
         One grouped pass over the folder's tracks answers every row's summary,
         so a page costs the same however many folders it shows.
         """
-        params = _FolderRange.of(folder).params(limit=limit, offset=offset)
+        match, match_params = self._folder_match(filter, root or folder)
+        params = {
+            **_FolderRange.of(folder).params(limit=limit, offset=offset),
+            **match_params,
+        }
         conn = self._get_connection()
         try:
             total = conn.execute(
-                f"WITH {_BELOW}, {_NESTED} SELECT COUNT(DISTINCT name) FROM nested",
+                f"WITH {_below(match)}, {_NESTED}"
+                " SELECT COUNT(DISTINCT name) FROM nested WHERE matched",
                 params,
             ).fetchone()[0]
             rows = conn.execute(
                 f"""
-                WITH {_BELOW}, {_NESTED}
+                WITH {_below(match)}, {_NESTED}
                 SELECT name, {_summary_columns('deeper')}
                 FROM nested
                 GROUP BY name
+                HAVING MAX(matched)
                 ORDER BY fold(name), name
                 LIMIT :limit OFFSET :offset
                 """,
@@ -1134,7 +1226,7 @@ class LocalFilesInputModuleDb:
         ids: List[str] = []
         names = conn.execute(
             f"""
-            WITH {_BELOW}
+            WITH {_below()}
             SELECT DISTINCT substr(rest, 1, instr(rest, '/') - 1) AS name
             FROM below WHERE instr(rest, '/') > 0
             """,
@@ -1156,16 +1248,27 @@ class LocalFilesInputModuleDb:
         return ids
 
     def list_folder_tracks(
-        self, folder: str, offset: int = 0, limit: int = 50
+        self,
+        folder: str,
+        offset: int = 0,
+        limit: int = 50,
+        filter: Optional[ListingFilter] = None,
+        root: Optional[str] = None,
     ) -> Tuple[List[Dict], int]:
-        """One page of the tracks directly in ``folder``, by file name
-        regardless of case; and how many there are."""
+        """One page of the tracks directly in ``folder`` that ``filter``
+        keeps, by file name regardless of case; and how many there are. See
+        :meth:`list_subfolders` for ``root``."""
         query = KINDS["track"]
+        match, match_params = self._folder_match(filter, root or folder)
         where = (
             "t.file_path > :lo AND t.file_path < :hi"
             " AND instr(substr(t.file_path, :tail_start), '/') = 0"
+            + (f" AND ({match})" if match else "")
         )
-        params = _FolderRange.of(folder).params(limit=limit, offset=offset)
+        params = {
+            **_FolderRange.of(folder).params(limit=limit, offset=offset),
+            **match_params,
+        }
         conn = self._get_connection()
         try:
             total = conn.execute(

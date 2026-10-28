@@ -118,6 +118,9 @@ TRACK_SHELF_FILTERS = [_text_filter("titles, artists and albums"), GENRE_FILTER]
 PLAYLIST_SHELF_FILTERS = [_text_filter("names and descriptions"), GENRE_FILTER]
 LIBRARY_FILTERS = [_text_filter("your library"), TYPE_FILTER, GENRE_FILTER]
 RECENT_FILTERS = [_text_filter("recent additions"), TYPE_FILTER, GENRE_FILTER]
+#: Every folder of the library offers the same, and narrows to what holds a
+#: track they keep.
+FOLDER_FILTERS = [_text_filter("folders and tracks"), GENRE_FILTER]
 
 LIBRARY_ENDPOINT = "library"
 FILES_ENDPOINT = "files"
@@ -198,6 +201,12 @@ SHELF_FILTERS = {
     RECENT_ENDPOINT: RECENT_FILTERS,
     **{section.endpoint: section.filters for section in SECTION_BY_ENDPOINT.values()},
 }
+
+
+def _declared_filters(endpoint: str) -> List[FilterSpec]:
+    if endpoint == FILES_ENDPOINT or endpoint.startswith(FOLDER_ENDPOINT_PREFIX):
+        return FOLDER_FILTERS
+    return SHELF_FILTERS.get(endpoint, [])
 
 
 def _filtered_kinds(
@@ -597,19 +606,19 @@ class LocalFilesInputModule(InputModule):
         filter = or_unfiltered(filter)
         # Translated before anything is listed, so an undeclared field is
         # refused rather than dropped.
-        listing = _listing_filter(filter, SHELF_FILTERS.get(endpoint, []))
+        listing = _listing_filter(filter, _declared_filters(endpoint))
 
         if endpoint == "root":
             return self._browse_root(offset, limit)
         if endpoint == FILES_ENDPOINT:
-            return self._browse_library_folders(offset, limit)
+            return self._browse_library_folders(offset, limit, listing)
         if endpoint == RECENT_ENDPOINT:
             return self._browse_recent(
                 offset, limit, _filtered_kinds(filter, RECENT_KINDS), listing
             )
         if endpoint.startswith(FOLDER_ENDPOINT_PREFIX):
             return self._browse_folder(
-                endpoint[len(FOLDER_ENDPOINT_PREFIX) :], offset, limit
+                endpoint[len(FOLDER_ENDPOINT_PREFIX) :], offset, limit, listing
             )
         if endpoint == LIBRARY_ENDPOINT:
             return self._browse_library(
@@ -682,6 +691,7 @@ class LocalFilesInputModule(InputModule):
                 id=id,
                 title="My Library",
                 description="Everything in your music folders",
+                filters=FOLDER_FILTERS,
                 preview_config=Preview(
                     type=PreviewType.FOLDER,
                     icon="library",
@@ -841,13 +851,22 @@ class LocalFilesInputModule(InputModule):
         ]
         return [(root, summary) for root, summary in summaries if summary.total_tracks]
 
-    def _browse_library_folders(self, offset: int, limit: int) -> BrowseItemList:
+    def _browse_library_folders(
+        self, offset: int, limit: int, filter: ListingFilter
+    ) -> BrowseItemList:
         """The top of the library's folders: each music source as a folder, or
         what is in the source when there is only one, so a library kept in
-        one place opens on its own folders."""
+        one place opens on its own folders. Which of the two is decided
+        unfiltered, so a filter narrows the listing without reshaping it."""
         roots = self._library_roots()
         if len(roots) == 1:
-            return self._folder_listing(roots[0][0], offset, limit)
+            return self._folder_listing(roots[0][0], offset, limit, filter)
+        if filter.narrows:
+            roots = [
+                (root, summary)
+                for root, summary in roots
+                if self.db_manager.holds_tracks(root, filter)
+            ]
         items = [
             self._create_folder_browse_item(
                 root,
@@ -867,21 +886,38 @@ class LocalFilesInputModule(InputModule):
             return None
         return self.db_manager.get_folder_covers(path, COVER_CANDIDATES)
 
-    def _browse_folder(self, local_id: str, offset: int, limit: int) -> BrowseItemList:
-        """A folder of the library, named by its id. Only one inside a music
-        source is listed."""
+    def _library_folder(self, local_id: str) -> Optional[str]:
+        """The path a folder id names, where that is inside a music source."""
         path = decode_folder_id(local_id)
         if path is None or root_of(path, self._music_folders) is None:
             logger.debug("No such folder in the library: %s", local_id)
-            return EmptyList(offset, limit)
-        return self._folder_listing(path, offset, limit)
+            return None
+        return path
 
-    def _folder_listing(self, path: str, offset: int, limit: int) -> BrowseItemList:
+    def _browse_folder(
+        self, local_id: str, offset: int, limit: int, filter: ListingFilter
+    ) -> BrowseItemList:
+        """A folder of the library, named by its id. Only one inside a music
+        source is listed."""
+        path = self._library_folder(local_id)
+        if path is None:
+            return EmptyList(offset, limit)
+        return self._folder_listing(path, offset, limit, filter)
+
+    def _folder_listing(
+        self,
+        path: str,
+        offset: int,
+        limit: int,
+        filter: Optional[ListingFilter] = None,
+    ) -> BrowseItemList:
         """A folder's subfolders by name, then the tracks directly in it by
-        file name, as one listing of what is indexed."""
+        file name, as one listing of what is indexed. A filter keeps the
+        tracks it matches and the subfolders holding any."""
+        root = root_of(path, self._music_folders)
         folders, tracks, total = _concatenated_pages(
-            partial(self.db_manager.list_subfolders, path),
-            partial(self.db_manager.list_folder_tracks, path),
+            partial(self.db_manager.list_subfolders, path, filter=filter, root=root),
+            partial(self.db_manager.list_folder_tracks, path, filter=filter, root=root),
             offset,
             limit,
         )
@@ -1185,7 +1221,7 @@ class LocalFilesInputModule(InputModule):
         q: str = "",
     ) -> FilterValueList:
         """The vocabulary of one of this catalog's VALUES fields."""
-        declared = {spec.id for spec in SHELF_FILTERS.get(catalog_id.id, [])}
+        declared = {spec.id for spec in _declared_filters(catalog_id.id)}
         if field not in declared:
             raise UnsupportedFilter(field, "not filterable here")
 
@@ -1195,11 +1231,23 @@ class LocalFilesInputModule(InputModule):
             )
             return self._type_values(offset, limit, q, sections)
         if field == GENRE_FILTER.id:
-            return self._genre_values(offset, limit, q)
+            # A folder offers the genres found in it.
+            folder = None
+            if catalog_id.id.startswith(FOLDER_ENDPOINT_PREFIX):
+                folder = self._library_folder(
+                    catalog_id.id[len(FOLDER_ENDPOINT_PREFIX) :]
+                )
+                if folder is None:
+                    return FilterValueList(
+                        offset=offset, limit=limit, total=0, items=[]
+                    )
+            return self._genre_values(offset, limit, q, folder)
         raise UnsupportedFilter(field, "has no vocabulary")
 
-    def _genre_values(self, offset: int, limit: int, q: str) -> FilterValueList:
-        values, total = self.db_manager.list_album_genres(offset, limit, q)
+    def _genre_values(
+        self, offset: int, limit: int, q: str, folder: Optional[str] = None
+    ) -> FilterValueList:
+        values, total = self.db_manager.list_album_genres(offset, limit, q, folder)
         return FilterValueList(
             offset=offset,
             limit=limit,
@@ -1251,8 +1299,8 @@ class LocalFilesInputModule(InputModule):
             return []
         if not entity_id.id.startswith(FOLDER_ENDPOINT_PREFIX):
             return None
-        path = decode_folder_id(entity_id.id[len(FOLDER_ENDPOINT_PREFIX) :])
-        if path is None or root_of(path, self._music_folders) is None:
+        path = self._library_folder(entity_id.id[len(FOLDER_ENDPOINT_PREFIX) :])
+        if path is None:
             return []
         return [
             track_id(id) for id in self.db_manager.list_track_ids_under(path, limit)
@@ -1669,6 +1717,7 @@ class LocalFilesInputModule(InputModule):
                 title=name,
                 image=self._folder_covers.cover_of(path, covers),
                 description=_folder_description(summary),
+                filters=FOLDER_FILTERS,
                 preview_config=_folder_preview(),
             ),
         )
