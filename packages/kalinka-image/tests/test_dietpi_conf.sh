@@ -66,8 +66,8 @@ assert_eq "writing the same value twice changes nothing" "$(cat "$conf")" "$once
 
 echo "  -- the image's DietPi files"
 root="$WORK/root"
-mkdir -p "$root/boot/firmware" "$root/boot/dietpi" "$root/etc"
-cat > "$root/boot/firmware/dietpi.txt" <<'CONF'
+mkdir -p "$root/boot/kalinka-setup" "$root/boot/dietpi" "$root/etc"
+cat > "$root/boot/kalinka-setup/dietpi.txt" <<'CONF'
 AUTO_SETUP_GLOBAL_PASSWORD=dietpi
 AUTO_SETUP_NET_HOSTNAME=DietPi
 AUTO_SETUP_AUTOMATED=0
@@ -80,8 +80,8 @@ AUTO_SETUP_NET_STATIC_DNS=9.9.9.9 149.112.112.112
 CONFIG_SOUNDCARD=none
 CONFIG_SERIAL_CONSOLE_ENABLE=1
 CONF
-( require_dietpi_keys "$root/boot/firmware/dietpi.txt" ) || fail "the fixture lacks a key the build requires"
-cp "$root/boot/firmware/dietpi.txt" "$root/boot/dietpi.txt"
+( require_dietpi_keys "$root/boot/kalinka-setup/dietpi.txt" ) || fail "the fixture lacks a key the build requires"
+cp "$root/boot/kalinka-setup/dietpi.txt" "$root/boot/dietpi.txt"
 printf 'aSOFTWARE_INSTALL_STATE[103]=2\naSOFTWARE_INSTALL_STATE[104]=2\n' > "$root/boot/dietpi/.installed"
 cat > "$root/etc/fstab" <<'FSTAB'
 tmpfs /tmp tmpfs noatime,lazytime,nodev,nosuid,mode=1777
@@ -90,14 +90,14 @@ UUID=5955f447 / ext4 noatime,lazytime,rw 0 1
 FSTAB
 
 configure_dietpi_files "$root"
-for copy in "$root/boot/firmware/dietpi.txt" "$root/boot/dietpi.txt"; do
+for copy in "$root/boot/kalinka-setup/dietpi.txt" "$root/boot/dietpi.txt"; do
   for key in "${!DIETPI_SETTINGS[@]}"; do
     assert_eq "$key in ${copy#"$root"}" "$(dietpi_conf_get "$copy" "$key")" "${DIETPI_SETTINGS[$key]}"
   done
 done
 assert_eq "the password is gone, not just emptied elsewhere" \
   "$(grep -c 'dietpi$' "$root/boot/dietpi.txt")" 0
-cmp -s "$root/boot/firmware/dietpi.txt" "$root/boot/dietpi.txt" || fail "the two copies differ"
+cmp -s "$root/boot/kalinka-setup/dietpi.txt" "$root/boot/dietpi.txt" || fail "the two copies differ"
 assert_mode "the copy on the root filesystem is private" "$root/boot/dietpi.txt" 600
 assert_eq "and older than any edit to the card, so first boot imports the card's" \
   "$(stat -c %Y "$root/boot/dietpi.txt")" 0
@@ -112,9 +112,9 @@ assert_not_contains "logs no longer live in RAM" "$(cat "$root/etc/fstab")" "/va
 assert_contains "while /tmp still does" "$(cat "$root/etc/fstab")" "tmpfs /tmp"
 assert_contains "the journal is kept on disk" \
   "$(cat "$root/etc/systemd/journald.conf.d/kalinka-persistent.conf")" "Storage=persistent"
-snapshot="$(cat "$root/boot/firmware/dietpi.txt" "$root/boot/dietpi/.installed" "$root/etc/fstab")"
+snapshot="$(cat "$root/boot/kalinka-setup/dietpi.txt" "$root/boot/dietpi/.installed" "$root/etc/fstab")"
 configure_dietpi_files "$root"
 assert_eq "running it again changes nothing" \
-  "$(cat "$root/boot/firmware/dietpi.txt" "$root/boot/dietpi/.installed" "$root/etc/fstab")" "$snapshot"
+  "$(cat "$root/boot/kalinka-setup/dietpi.txt" "$root/boot/dietpi/.installed" "$root/etc/fstab")" "$snapshot"
 
 exit "$FAILURES"

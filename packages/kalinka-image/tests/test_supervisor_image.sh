@@ -5,35 +5,33 @@ pkg_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$pkg_dir/lib/supervisor.sh"
 root="$(mktemp -d)"
 trap 'rm -rf "$root"' EXIT
-mkdir -p "$root/boot/firmware" "$root/etc/modprobe.d" "$root/etc/bluetooth"
-printf '[all]\ndtoverlay=disable-bt\ndtoverlay=disable-wifi\ndtoverlay=hifiberry-dac\n' > "$root/boot/firmware/config.txt"
-printf 'console=ttyAMA0,115200 console=serial0,115200 console=tty1 root=PARTUUID=test quiet\n' > "$root/boot/firmware/cmdline.txt"
+mkdir -p "$root/etc/modprobe.d" "$root/etc/bluetooth"
 touch "$root/etc/modprobe.d/dietpi-disable_bluetooth.conf" "$root/etc/modprobe.d/dietpi-disable_wifi.conf"
 printf '[General]\n#JustWorksRepairing = never\n[Policy]\nAutoEnable=true\n' > "$root/etc/bluetooth/main.conf"
 configure_supervisor_radios "$root"
 configure_supervisor_radios "$root"
-! grep -q 'disable-' "$root/boot/firmware/config.txt"
-grep -q '^dtoverlay=hifiberry-dac$' "$root/boot/firmware/config.txt"
-! grep -Eq 'console=(ttyAMA|serial)' "$root/boot/firmware/cmdline.txt"
-grep -q 'console=tty1 root=PARTUUID=test quiet' "$root/boot/firmware/cmdline.txt"
+[ ! -e "$root/etc/modprobe.d/dietpi-disable_bluetooth.conf" ]
 [ ! -e "$root/etc/modprobe.d/dietpi-disable_wifi.conf" ]
 [ "$(grep -c '^JustWorksRepairing = always$' "$root/etc/bluetooth/main.conf")" = 1 ]
 grep -q '^AutoEnable=true$' "$root/etc/bluetooth/main.conf"
-printf '#dtparam=i2c_arm=off\n#dtparam=i2c_arm_baudrate=100000\n' >> "$root/boot/firmware/config.txt"
-configure_soundcard_detection "$root"
-configure_soundcard_detection "$root"
-[ "$(grep -c '^dtparam=i2c_arm=on$' "$root/boot/firmware/config.txt")" = 1 ]
-grep -q '^#dtparam=i2c_arm_baudrate=100000$' "$root/boot/firmware/config.txt"
-[ "$(cat "$root/etc/modules-load.d/kalinka-soundcard.conf")" = i2c-dev ]
-printf 'dtparam=audio=off' > "$root/boot/firmware/config.txt"
-configure_soundcard_detection "$root"
-[ "$(cat "$root/boot/firmware/config.txt")" = "$(printf 'dtparam=audio=off\ndtparam=i2c_arm=on')" ]
-printf 'dtparam=audio=off\n[pi4]\ndtoverlay=vc4-kms-v3d' > "$root/boot/firmware/config.txt"
-configure_soundcard_detection "$root"
-[ "$(cat "$root/boot/firmware/config.txt")" = "$(printf 'dtparam=audio=off\n[pi4]\ndtoverlay=vc4-kms-v3d\n[all]\ndtparam=i2c_arm=on')" ]
-printf '[cm4]\ndtparam=i2c_arm=off\n' > "$root/boot/firmware/config.txt"
-configure_soundcard_detection "$root"
-[ "$(cat "$root/boot/firmware/config.txt")" = "$(printf '[cm4]\n[all]\ndtparam=i2c_arm=on')" ]
+config="$root/config.txt"
+assembled='# Assembled by rpi-image-gen from layer fragments.\ndtparam=audio=on\n#dtoverlay=disable-bt\ndtparam=i2c_arm=on\n'
+printf "$assembled" > "$config"
+( verify_supervisor_boot_config "$config" )
+for line in dtoverlay=disable-bt dtoverlay=disable-wifi ' dtoverlay=disable-bt,foo' dtoverlay=disable-bt-pi5 dtoverlay=disable-wifi-pi5; do
+  { printf "$assembled"; printf '%s\n' "$line"; } > "$config"
+  if ( verify_supervisor_boot_config "$config" ) 2>/dev/null; then
+    echo "Took a config.txt with $line" >&2
+    exit 1
+  fi
+done
+for i2c in '' '#dtparam=i2c_arm=on' 'dtparam=i2c_arm=off'; do
+  printf '%s\n' "$i2c" > "$config"
+  if ( verify_supervisor_boot_config "$config" ) 2>/dev/null; then
+    echo "Took a config.txt without the HAT I2C bus: '$i2c'" >&2
+    exit 1
+  fi
+done
 ROOTFS="$root/zones"
 mkdir -p "$ROOTFS/usr/lib/systemd" "$ROOTFS/usr/share/dbus-1/system-services" \
   "$ROOTFS/usr/share/zoneinfo" "$ROOTFS/etc/systemd/system"

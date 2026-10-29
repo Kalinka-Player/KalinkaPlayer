@@ -1,22 +1,8 @@
 # shellcheck shell=bash
-# Pi image integration. Avoid running DietPi hardware commands in the build
-# chroot: /sys there belongs to the build host, not the eventual appliance.
-
-# shellcheck source=../../kalinka-supervisor/boot-config.sh
-. "$(dirname "${BASH_SOURCE[0]}")/../../kalinka-supervisor/boot-config.sh"
+# The supervisor in an image, and what nearby setup needs of the system around it. Defines only.
 
 configure_supervisor_radios() {
   local root="$1"
-  if [ -f "$root/boot/firmware/config.txt" ]; then
-    sed -i '/^[[:blank:]]*dtoverlay=disable-\(bt\|wifi\)\([,[:blank:]].*\)\?$/d' \
-      "$root/boot/firmware/config.txt"
-  fi
-  if [ -f "$root/boot/firmware/cmdline.txt" ]; then
-    # Remove UART consoles before the very first boot, when hciuart starts.
-    # DietPi's first-boot serial-console setting cleans up the gettys too.
-    sed -Ei ':again; s/(^|[[:blank:]])console=(serial[0-9]+|tty(AMA|S)[0-9]+)(,[^[:blank:]]*)?([[:blank:]]|$)/ /; t again' \
-      "$root/boot/firmware/cmdline.txt"
-  fi
   rm -f "$root/etc/modprobe.d/dietpi-disable_bluetooth.conf" \
     "$root/etc/modprobe.d/dietpi-disable_wifi.conf"
   mkdir -p "$root/etc/bluetooth"
@@ -26,16 +12,6 @@ configure_supervisor_radios() {
   [ -f "$conf" ] || printf '[General]\n' > "$conf"
   sed -i '/^[[:blank:]#]*JustWorksRepairing[[:blank:]]*=/d' "$conf"
   sed -i '/^\[General\]/a JustWorksRepairing = always' "$conf"
-}
-
-# The supervisor reads a HAT's chips over I2C to suggest boards that carry no ID chip.
-configure_soundcard_detection() {
-  local config="$1/boot/firmware/config.txt"
-  # A line already there may sit under one board's section, which would leave the bus off on the rest.
-  sed -Ei '/^[[:blank:]#]*dtparam=i2c_arm=/d' "$config"
-  boot_config_append "$config" dtparam=i2c_arm=on
-  mkdir -p "$1/etc/modules-load.d"
-  printf 'i2c-dev\n' > "$1/etc/modules-load.d/kalinka-soundcard.conf"
 }
 
 build_supervisor() {
@@ -58,13 +34,6 @@ install_supervisor() {
   rm -f "$ROOTFS/tmp/kalinka-supervisor.deb"
   in_chroot systemctl enable bluetooth.service kalinka-supervisor.service
   configure_supervisor_radios "$ROOTFS"
-  if [ "${DIETPI_LAYOUT:-}" = rpi ]; then
-    in_chroot systemctl enable hciuart.service
-    in_chroot systemctl disable serial-getty@ttyAMA0.service
-    # The package's own enable skips the build chroot, which has no running systemd.
-    in_chroot systemctl enable kalinka-soundcard.service
-    configure_soundcard_detection "$ROOTFS"
-  fi
 }
 
 # The supervisor sets the time zone chosen in the app through timedated, which D-Bus starts on demand.
@@ -83,18 +52,17 @@ verify_supervisor() {
   [ -x "$ROOTFS/usr/lib/kalinka-supervisor/kalinka-supervisor" ] || die 'no supervisor binary'
   in_chroot /usr/lib/kalinka-supervisor/kalinka-supervisor --version
   require_timezone_support
-  if [ "${DIETPI_LAYOUT:-}" = rpi ]; then
-    ! grep -Eq '^[[:blank:]]*dtoverlay=disable-(bt|wifi)(,|[[:blank:]]|$)' \
-      "$ROOTFS/boot/firmware/config.txt" || die 'a setup radio is disabled'
-    [ ! -f "$ROOTFS/etc/modprobe.d/dietpi-disable_bluetooth.conf" ] || die 'Bluetooth is blacklisted'
-    [ ! -f "$ROOTFS/etc/modprobe.d/dietpi-disable_wifi.conf" ] || die 'Wi-Fi is blacklisted'
-    require_enabled multi-user.target kalinka-soundcard.service
-    [ -x "$ROOTFS/usr/lib/kalinka-supervisor/soundcard.sh" ] || die 'no sound card helper'
-    grep -q '^dtparam=i2c_arm=on$' "$ROOTFS/boot/firmware/config.txt" || die 'the HAT I2C bus is off'
-    grep -qx 'i2c-dev' "$ROOTFS/etc/modules-load.d/kalinka-soundcard.conf" || die 'i2c-dev is not loaded at boot'
-  fi
+  [ -x "$ROOTFS/usr/lib/kalinka-supervisor/soundcard.sh" ] || die 'no sound card helper'
+  [ ! -f "$ROOTFS/etc/modprobe.d/dietpi-disable_bluetooth.conf" ] || die 'Bluetooth is blacklisted'
+  [ ! -f "$ROOTFS/etc/modprobe.d/dietpi-disable_wifi.conf" ] || die 'Wi-Fi is blacklisted'
   if [ "$TARGET_BASE" = dietpi ]; then
     grep -q -- '--no-restart' "$ROOTFS/boot/dietpi/dietpi-network" \
       || die 'DietPi base lacks dietpi-network apply --no-restart; refresh the image'
   fi
+}
+
+# Apart from verify_supervisor: rpi-image-gen writes config.txt only after the supervisor is in.
+verify_supervisor_boot_config() {
+  ! grep -Eq '^[[:blank:]]*dtoverlay=disable-(bt|wifi)(-pi5)?(,|[[:blank:]]|$)' "$1" || die 'a setup radio is disabled'
+  grep -q '^dtparam=i2c_arm=on$' "$1" || die 'the HAT I2C bus is off'
 }

@@ -39,9 +39,8 @@ The DietPi backend also requires DietPi's own `dietpi-network apply --no-restart
 API. The package enables and starts the service. It also carries the sound
 card helper and `kalinka-soundcard.service`, which applies `CONFIG_SOUNDCARD`
 from `dietpi.txt` at boot; the package enables that unit where DietPi's
-`dietpi-set_hardware` exists. Pi image builds additionally enable UART
-Bluetooth, firmware and the radio settings needed for first boot, and switch
-the HAT's I2C bus on for sound card detection.
+`dietpi-set_hardware` exists. The Pi images keep the serial console off the
+Bluetooth UART and switch the HAT's I2C bus on for sound card detection.
 
 All image targets install an architecture-specific Debian package containing the same static Go service. `--backend auto`
 selects DietPi when `/boot/dietpi/dietpi-network` exists, otherwise NetworkManager.

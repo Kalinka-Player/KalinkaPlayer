@@ -135,7 +135,7 @@ make renderer-rpm    # -> packages/kalinka-renderer/*.rpm
 
 ## Release the appliance images
 
-Ready-to-flash images with the whole player already installed — four for the Raspberry Pi (headless, and `-display` with the now-playing screen), built on DietPi, and one for x86-64 on Debian. See [`packages/kalinka-image/README.md`](packages/kalinka-image/README.md) for what is in them and how they are built.
+Ready-to-flash images with the whole player already installed — four for the Raspberry Pi (headless, and `-display` with the now-playing screen), built on Debian 13 with rpi-image-gen, and one for x86-64 on DietPi. See [`packages/kalinka-image/README.md`](packages/kalinka-image/README.md) for what is in them and how they are built.
 
 1. Tag and push. The version is the image train's own, not the app bundle's:
    ```bash
@@ -156,11 +156,11 @@ Ready-to-flash images with the whole player already installed — four for the R
 
 3. Cut an image release when the OS side changes — a Debian point release or a DietPi release worth picking up, a first-boot or partitioning fix — or when the app bundle has moved far enough that a freshly flashed card would otherwise spend its first boot upgrading. Not on every app release: the images auto-upgrade like any other install.
 
-Local builds (needs root, and `qemu-user-static` under `binfmt_misc` to cross-build):
+Local builds (the Pi images need podman and run as you, the PC image needs root; `qemu-user-static` under `binfmt_misc` to cross-build):
 ```bash
-sudo make image-rpi234
-sudo make image-rpi5
-sudo make image-rpi5-display
+make image-rpi234
+make image-rpi5
+make image-rpi5-display
 sudo make image-amd64 KALINKA_VERSION=4.3.2
 make image-test
 ```

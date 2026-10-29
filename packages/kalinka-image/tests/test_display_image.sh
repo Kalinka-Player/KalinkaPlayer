@@ -56,14 +56,4 @@ assert_contains "a display target refuses a commented-out driver" \
 assert_eq "a headless target does not ask for it" \
   "$(TARGET_DISPLAY=0; verify_display_driver "$config" 2>&1 && echo ok)" ok
 
-echo "  -- display targets"
-for target in rpi234 rpi5; do
-  assert_eq "$target-display builds on the same DietPi image as $target" \
-    "$(. "$PKG_DIR/targets/$target-display.sh"; echo "$DIETPI_IMAGE $TARGET_ARCH")" \
-    "$(. "$PKG_DIR/targets/$target.sh"; echo "$DIETPI_IMAGE $TARGET_ARCH")"
-  assert_eq "$target-display has the display" \
-    "$(. "$PKG_DIR/targets/$target-display.sh"; echo "${TARGET_DISPLAY:-0}")" 1
-  assert_eq "$target does not" "$(unset TARGET_DISPLAY; . "$PKG_DIR/targets/$target.sh"; echo "${TARGET_DISPLAY:-0}")" 0
-done
-
 exit "$FAILURES"
