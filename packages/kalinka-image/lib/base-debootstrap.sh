@@ -103,7 +103,7 @@ base_finish() {
   install_overlay debootstrap
   in_chroot systemctl enable kalinka-growroot.service kalinka-hostkeys.service
   # The supervisor turns SSH on when someone sets a password for it.
-  in_chroot systemctl disable ssh.service
+  in_chroot systemctl disable ssh.service ssh.socket
   target_install_bootloader
   verify_debootstrap_setup
 }
@@ -111,6 +111,7 @@ base_finish() {
 verify_debootstrap_setup() {
   require_enabled multi-user.target kalinka-growroot.service kalinka-hostkeys.service
   require_disabled multi-user.target ssh.service
+  require_disabled sockets.target ssh.socket
   case "$(in_chroot getent shadow root | cut -d: -f2)" in
     '*'|'!'*) ;;
     *) die 'root can log in with a password' ;;
