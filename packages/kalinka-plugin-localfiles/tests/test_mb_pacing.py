@@ -5,13 +5,16 @@ concurrent callers run strictly one at a time and pay pacing + latency each.
 ``mb_client`` disables it and spaces the starts instead, which is what makes
 concurrent enrichment worth anything: N calls cost about N intervals, not N
 × (interval + latency).
+
+The pacer runs on a clock that stands still, so no test here waits out an
+interval or measures one: each reads the start the pacer planned for every
+call.
 """
 
 from __future__ import annotations
 
 import asyncio
 import threading
-import time
 
 import musicbrainzngs
 import pytest
@@ -19,13 +22,45 @@ import pytest
 from kalinka_plugin_localfiles.enricher import mb_client
 from kalinka_plugin_localfiles.enricher.mb_client import mb_call
 
+INTERVAL = 1.0
+
+# Bounds only a failure, a call that never gets to run; passing never waits on it.
+DEADLOCK = 5.0
+
+
+class _StillClock:
+    """A pacer clock that moves only when the test moves it.
+
+    The pacer reads the clock once per reservation and sleeps straight after
+    if the slot is still ahead, so each reading books a caller to start then,
+    and a sleep moves that caller's start later.
+    """
+
+    def __init__(self, now: float = 100.0) -> None:
+        self.now = now
+        self.starts: list[float] = []
+
+    def time(self) -> float:
+        self.starts.append(self.now)
+        return self.now
+
+    async def sleep(self, delay: float) -> None:
+        self.starts[-1] += delay
+
+
+def _still_pacer(monkeypatch, max_in_flight: int = 4) -> _StillClock:
+    clock = _StillClock()
+    monkeypatch.setattr(
+        mb_client,
+        "_pacer",
+        mb_client._Pacer(INTERVAL, max_in_flight, clock=clock.time, sleep=clock.sleep),
+    )
+    return clock
+
 
 @pytest.fixture
-def paced(monkeypatch):
-    """A short but real interval, and a fresh slot clock per test."""
-    monkeypatch.setattr(mb_client._pacer, "_min_interval", 0.05)
-    monkeypatch.setattr(mb_client._pacer, "_next_slot", 0.0)
-    return 0.05
+def still(monkeypatch):
+    return _still_pacer(monkeypatch)
 
 
 def test_library_rate_limiting_is_disabled():
@@ -35,84 +70,69 @@ def test_library_rate_limiting_is_disabled():
 
 
 @pytest.mark.asyncio
-async def test_starts_are_spaced(paced):
-    starts: list[float] = []
+async def test_starts_are_spaced(still):
+    await asyncio.gather(*(mb_call(lambda: None) for _ in range(5)))
 
-    def record():
-        starts.append(time.monotonic())
-
-    await asyncio.gather(*(mb_call(record) for _ in range(5)))
-
-    assert len(starts) == 5
-    starts.sort()
-    gaps = [b - a for a, b in zip(starts, starts[1:])]
-    assert all(g >= paced * 0.8 for g in gaps), gaps
+    assert still.starts == [100.0, 101.0, 102.0, 103.0, 104.0]
 
 
 @pytest.mark.asyncio
-async def test_slow_requests_overlap(paced):
-    """A slow response must not push the next request's start out — that
-    serialisation is exactly what the library's limiter did."""
-    latency = 0.3
+async def test_slow_requests_overlap(still):
+    """A slow response must not hold back the next request's start — that
+    serialisation is exactly what the library's limiter did. The first call
+    returns only once the second has started."""
+    second_started = threading.Event()
 
-    def slow():
-        time.sleep(latency)
+    def first():
+        return second_started.wait(DEADLOCK)
 
-    started = time.monotonic()
-    await asyncio.gather(*(mb_call(slow) for _ in range(4)))
-    elapsed = time.monotonic() - started
+    overlapped, _ = await asyncio.gather(mb_call(first), mb_call(second_started.set))
 
-    # Serialised this would be 4 × (interval + latency) ≈ 1.4 s; paced with
-    # overlap it is bounded by the last start plus one latency.
-    assert elapsed < 3 * paced + latency + 0.25, elapsed
+    assert overlapped
 
 
 @pytest.mark.asyncio
-async def test_waiting_for_a_permit_does_not_bank_a_slot(paced, monkeypatch):
+async def test_waiting_for_a_permit_does_not_bank_a_slot(monkeypatch):
     """A caller must reserve its slot after it gets a permit, not before.
 
     Slots taken while every permit is held elapse unused in the queue, so
     when two slow calls finish at the same instant their waiters start
     together — a burst straight through the one-per-second budget.
     """
-    monkeypatch.setattr(mb_client._pacer, "_max_in_flight", 2)
-    monkeypatch.setattr(mb_client._pacer, "_loop", None)  # rebuild the semaphore
-    starts: list[float] = []
-    # The first two occupy both permits and finish together.
-    latencies = iter([0.30, 0.25])
-    lock = threading.Lock()
+    clock = _still_pacer(monkeypatch, max_in_flight=2)
+    holding = threading.Semaphore(0)
+    release = threading.Event()
 
-    def occupy():
-        with lock:
-            latency = next(latencies, 0.0)
-            starts.append(time.monotonic())
-        time.sleep(latency)
+    def hold():
+        holding.release()
+        release.wait(DEADLOCK)
 
-    await asyncio.gather(*(mb_call(occupy) for _ in range(6)))
+    calls = asyncio.ensure_future(
+        asyncio.gather(mb_call(hold), mb_call(hold), *(mb_call(lambda: None) for _ in range(4)))
+    )
+    for _ in range(2):
+        assert await asyncio.to_thread(holding.acquire, timeout=DEADLOCK)
+    clock.now = 200.0
+    release.set()
+    await calls
 
-    starts.sort()
-    gaps = [b - a for a, b in zip(starts, starts[1:])]
-    assert all(g >= paced * 0.8 for g in gaps), gaps
+    assert clock.starts == [100.0, 101.0, 200.0, 201.0, 202.0, 203.0]
 
 
-def test_survives_a_change_of_event_loop(monkeypatch):
+def test_survives_a_change_of_event_loop(still):
     """The lock and semaphore belong to the loop that first contends on
     them; a later loop must get its own rather than "bound to a different
     event loop"."""
-    monkeypatch.setattr(mb_client._pacer, "_min_interval", 0.001)
-
-    def noop():
-        pass
 
     async def burst():
-        await asyncio.gather(*(mb_call(noop) for _ in range(6)))
+        await asyncio.gather(*(mb_call(lambda: None) for _ in range(6)))
 
     asyncio.run(burst())
     asyncio.run(burst())
 
 
 @pytest.mark.asyncio
-async def test_exceptions_propagate_unchanged(paced):
+async def test_exceptions_propagate_unchanged(still):
     """The plugins classify MB errors as verdicts or transient failures, so
     the wrapper must not wrap or swallow them."""
 
@@ -124,7 +144,7 @@ async def test_exceptions_propagate_unchanged(paced):
 
 
 @pytest.mark.asyncio
-async def test_arguments_are_forwarded(paced):
+async def test_arguments_are_forwarded(still):
     def echo(*args, **kwargs):
         return args, kwargs
 

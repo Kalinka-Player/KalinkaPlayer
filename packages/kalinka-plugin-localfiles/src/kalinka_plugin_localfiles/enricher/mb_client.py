@@ -19,7 +19,8 @@ reaches musicbrainzngs directly is no longer paced by anything.
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+import time
+from typing import Awaitable, Callable, Optional
 
 import musicbrainzngs
 
@@ -46,35 +47,45 @@ class _Pacer:
 
     Its lock and semaphore belong to the event loop that first contends on
     them, so they are built on first use and rebuilt if the running loop
-    changes — the slot clock is loop time and starts over with it.
+    changes — the slot clock starts over with it.
+
+    @param clock A monotonic clock, in seconds; the one asyncio's own loop reads.
+    @param sleep Waits out a delay in that clock's seconds.
     """
 
-    def __init__(self, min_interval: float, max_in_flight: int) -> None:
+    def __init__(
+        self,
+        min_interval: float,
+        max_in_flight: int,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
         self._min_interval = min_interval
         self._max_in_flight = max_in_flight
+        self._clock = clock
+        self._sleep = sleep
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._lock: Optional[asyncio.Lock] = None
         self._in_flight: Optional[asyncio.Semaphore] = None
         self._next_slot = 0.0
 
-    def _bind(self) -> asyncio.AbstractEventLoop:
+    def _bind(self) -> None:
         loop = asyncio.get_running_loop()
         if self._loop is not loop:
             self._loop = loop
             self._lock = asyncio.Lock()
             self._in_flight = asyncio.Semaphore(self._max_in_flight)
             self._next_slot = 0.0
-        return loop
 
     async def wait_turn(self) -> None:
-        loop = self._bind()
+        self._bind()
         async with self._lock:
-            now = loop.time()
+            now = self._clock()
             slot = max(now, self._next_slot)
             self._next_slot = slot + self._min_interval
         delay = slot - now
         if delay > 0:
-            await asyncio.sleep(delay)
+            await self._sleep(delay)
 
     def in_flight(self) -> asyncio.Semaphore:
         self._bind()
