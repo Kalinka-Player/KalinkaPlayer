@@ -9,6 +9,7 @@
 #   TARGET_BOOT_MOUNT        where the FAT partition is mounted
 #   TARGET_BOOT_FSTAB_OPTS   its fstab mount options
 #   TARGET_PACKAGES          kernel, firmware and bootloader packages
+#   TARGET_DEBCONF           debconf answers for them, if any, as debconf-set-selections reads them
 #   target_install_bootloader()  make the image bootable, and prove it did
 #
 # Env: SUITE and MIRROR, the Debian suite and mirror (default: trixie,
@@ -87,6 +88,7 @@ FSTAB
 
 base_install_packages() {
   log "Installing the kernel, firmware and bootloader"
+  [ -z "${TARGET_DEBCONF:-}" ] || in_chroot debconf-set-selections <<<"$TARGET_DEBCONF"
   apt_install $TARGET_PACKAGES
 
   log "Installing the base system packages"

@@ -18,15 +18,18 @@ TARGET_BOOT_PART=2
 TARGET_ROOT_PART=3
 TARGET_BOOT_MOUNT=/boot/efi
 TARGET_BOOT_FSTAB_OPTS="umask=0077"
-# Intel and Realtek cover all but the margins of x86 wireless, which nearby
-# setup needs as much here as on a Pi. The signed GRUB and shim are what let
-# Secure Boot stay on.
-TARGET_PACKAGES="linux-image-amd64 grub2-common grub-efi-amd64-bin grub-pc-bin
+# Intel and Realtek Wi-Fi for nearby setup; signed GRUB and shim so Secure Boot can stay on.
+TARGET_PACKAGES="linux-image-amd64 grub2-common grub-efi-amd64 grub-pc-bin
                  grub-efi-amd64-signed shim-signed
                  firmware-iwlwifi firmware-realtek"
+# Upgrades re-run grub-install: refresh EFI/BOOT, which the image boots from, and leave NVRAM alone.
+TARGET_DEBCONF='grub-efi-amd64 grub2/force_efi_extra_removable boolean true
+grub-efi-amd64 grub2/update_nvram boolean false'
 
 target_install_bootloader() {
-  cat > "$ROOTFS/etc/default/grub" <<'GRUB'
+  # A drop-in, so GRUB's upgrades find Debian's own /etc/default/grub unchanged and never stop to ask.
+  install -d "$ROOTFS/etc/default/grub.d"
+  cat > "$ROOTFS/etc/default/grub.d/kalinka.cfg" <<'GRUB'
 GRUB_DEFAULT=0
 GRUB_TIMEOUT=3
 GRUB_DISTRIBUTOR="Kalinka Player"
@@ -35,8 +38,11 @@ GRUB_CMDLINE_LINUX=""
 GRUB_DISABLE_OS_PROBER=true
 GRUB_TERMINAL=console
 GRUB
+  # The only install that writes EFI/BOOT/grub.cfg; upgrades copy the binaries there, not the config.
   in_chroot grub-install --target=x86_64-efi --efi-directory="$TARGET_BOOT_MOUNT" \
     --boot-directory=/boot --removable --no-nvram --recheck
+  # The upgrade path, once: it adds EFI/kalinka, without which shim's upgrades skip grub-install.
+  in_chroot dpkg-reconfigure grub-efi-amd64
   in_chroot grub-install --target=i386-pc --boot-directory=/boot --recheck "$LOOP"
   in_chroot update-grub
 
@@ -49,4 +55,8 @@ GRUB
   # Only with shim as BOOTX64.EFI does GRUB sit beside it, where shim chain-loads it from.
   [ -s "$ROOTFS$TARGET_BOOT_MOUNT/EFI/BOOT/grubx64.efi" ] \
     || die "grub-install put no shim in front of GRUB — Secure Boot would refuse this image"
+  [ -s "$ROOTFS$TARGET_BOOT_MOUNT/EFI/kalinka/shimx64.efi" ] \
+    || die "GRUB's upgrade path installed no shim in EFI/kalinka — shim's upgrades would leave EFI/BOOT as built"
+  in_chroot debconf-show grub-efi-amd64 | grep -q 'grub2/force_efi_extra_removable: true$' \
+    || die "GRUB's upgrades would not refresh EFI/BOOT"
 }
