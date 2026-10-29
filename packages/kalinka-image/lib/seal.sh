@@ -50,14 +50,15 @@ compress_image() {
 
 publish_image() {
   log "Compressing"
-  local version name supervisor renderer
+  local version name supervisor renderer manifest
   local -a base
   version="$(in_chroot dpkg-query -W -f='${Version}' kalinka-server)"
   name="$(image_name "$version" "$TARGET" "$TARGET_ARCH")"
   mkdir -p "$OUT_DIR"
   supervisor="$(in_chroot dpkg-query -W -f='${Version}' kalinka-supervisor)"
   renderer="$(in_chroot dpkg-query -W -f='${Version}' kalinka-renderer)"
-  mapfile -t base < <(base_manifest)
+  manifest="$(base_manifest)"
+  mapfile -t base <<<"$manifest"
   write_manifest "$OUT_DIR/$name.manifest.json" "$TARGET" "$TARGET_ARCH" "${TARGET_DISPLAY:-0}" \
     "$version" "$supervisor" "$renderer" "${base[@]}"
   detach_image
