@@ -231,14 +231,14 @@ supervisor-build:
 	@GO="$(GO)" packages/kalinka-supervisor/build.sh
 
 supervisor-test:
-	@cd packages/kalinka-supervisor && "$(GO)" test -race ./... && "$(GO)" vet ./... && bash tests/test_soundcard.sh
+	@cd packages/kalinka-supervisor && "$(GO)" test -race ./... && "$(GO)" vet ./... && bash tests/test_soundcard.sh && bash tests/test_dietpi_conf.sh
 
 supervisor-deb:
 	@GO="$(GO)" packages/kalinka-supervisor/build-deb.sh
 
 ## --- Appliance images (packages/kalinka-image) ---------------------------------
 ## Bootable images with the whole player already installed, for the Raspberry
-## Pi (headless, or -display with the now-playing screen) and x86-64 UEFI PCs.
+## Pi (headless, or -display with the now-playing screen) and x86-64 PCs.
 ## The PC image's build needs root for loop devices and mounts; the Pi images
 ## are built with rpi-image-gen under podman, as you. Building for another
 ## architecture needs qemu-user-static registered with binfmt_misc:
@@ -264,8 +264,7 @@ image-rpi5-display:
 image-amd64:
 	@$(IMAGE_DIR)/build-image.sh amd64 $(KALINKA_VERSION)
 
-## The tests that edit /etc run in a throwaway Debian container, since that is
-## the only way to let them near a real useradd and a real ssh-keygen.
+## The tests that edit /etc run in a throwaway Debian container.
 image-test:
 	@if command -v podman >/dev/null 2>&1 || command -v docker >/dev/null 2>&1; then \
 		engine=$$(command -v podman || command -v docker); \

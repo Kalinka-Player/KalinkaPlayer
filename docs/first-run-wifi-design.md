@@ -21,7 +21,7 @@ Status: proposed, 2026-09-28, and revised the same day after the maintainer's re
 | Image | Wi-Fi comes from | Who can do it |
 |---|---|---|
 | `rpi234`, `rpi5` (DietPi) | `AUTO_SETUP_NET_WIFI_ENABLED=1` in `dietpi.txt` and the network in `dietpi-wifi.txt`, on the FAT partition, before the first boot. DietPi's first boot applies them and removes the files. | Someone who can mount the card and edit two files. |
-| `amd64` (Debian) | `kalinka-firstboot.conf` on the FAT partition, applied by [firstboot.sh](../packages/kalinka-image/overlays/debootstrap/usr/lib/kalinka-image/firstboot.sh) through NetworkManager, then shredded. | Someone who can mount a hidden EFI partition. The [installation guide](installation.md#on-the-pc-image) needs a page of `diskpart` and `diskutil` for it. |
+| `amd64` (Debian) | `kalinka-firstboot.conf` on the FAT partition, applied by [firstboot.sh](../packages/kalinka-image/overlays/debootstrap/usr/lib/kalinka-image/firstboot.sh) through NetworkManager, then shredded. | Someone who can mount a hidden EFI partition. The [installation guide](installation.md#settings-on-the-card) needs a page of `diskpart` and `diskutil` for it. |
 
 Raspberry Pi Imager offers to set Wi-Fi, a user and SSH, and our images ignore all of it. The guide tells people to skip that screen ([installation.md](installation.md#2-write-it-to-the-card), step 5), even though it is where anyone who has set up Raspberry Pi OS types their Wi-Fi.
 

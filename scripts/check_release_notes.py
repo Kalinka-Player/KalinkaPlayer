@@ -126,7 +126,7 @@ def debian_settings_file_problems(guide: str) -> Iterator[Problem]:
                 GUIDE,
                 number,
                 f"`{DEBIAN_SETTINGS_FILE}` is named outside the paragraph starting "
-                f"`{OLDER_IMAGES_NOTE}`: the DietPi images do not read it",
+                f"`{OLDER_IMAGES_NOTE}`: no current image reads it",
             )
 
 

@@ -5,13 +5,10 @@ pkg_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$pkg_dir/lib/supervisor.sh"
 root="$(mktemp -d)"
 trap 'rm -rf "$root"' EXIT
-mkdir -p "$root/etc/modprobe.d" "$root/etc/bluetooth"
-touch "$root/etc/modprobe.d/dietpi-disable_bluetooth.conf" "$root/etc/modprobe.d/dietpi-disable_wifi.conf"
+mkdir -p "$root/etc/bluetooth"
 printf '[General]\n#JustWorksRepairing = never\n[Policy]\nAutoEnable=true\n' > "$root/etc/bluetooth/main.conf"
 configure_supervisor_radios "$root"
 configure_supervisor_radios "$root"
-[ ! -e "$root/etc/modprobe.d/dietpi-disable_bluetooth.conf" ]
-[ ! -e "$root/etc/modprobe.d/dietpi-disable_wifi.conf" ]
 [ "$(grep -c '^JustWorksRepairing = always$' "$root/etc/bluetooth/main.conf")" = 1 ]
 grep -q '^AutoEnable=true$' "$root/etc/bluetooth/main.conf"
 config="$root/config.txt"

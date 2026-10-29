@@ -20,7 +20,7 @@ There are four independent things to version, and they work differently:
   builds only the renderer packages, and an app-bundle release never rebuilds
   or re-ships the renderer. Devices upgrade the renderer only when its own
   version moves — a server patch release doesn't restart renderers mid-playback.
-- The **appliance images** have their own train too, and for the same reason twice over: they change when Debian or DietPi does or when the first-boot machinery does, none of which is an app release, and they are over a gigabyte of assets that has no business riding along with every patch. Which app-bundle release goes inside them is a separate choice made at build time.
+- The **appliance images** have their own train too, and for the same reason twice over: they change when Debian or Raspberry Pi's packages do or when the first-boot machinery does, none of which is an app release, and they are over a gigabyte of assets that has no business riding along with every patch. Which app-bundle release goes inside them is a separate choice made at build time.
 - The **SDK** is the plugin API contract, versioned by its **own SemVer**,
   independent of the app/`kalinka-v*` version. **Major** = a breaking API
   change; **minor** = a backwards-compatible addition; **patch** = a fix.
@@ -135,7 +135,7 @@ make renderer-rpm    # -> packages/kalinka-renderer/*.rpm
 
 ## Release the appliance images
 
-Ready-to-flash images with the whole player already installed — four for the Raspberry Pi (headless, and `-display` with the now-playing screen), built on Debian 13 with rpi-image-gen, and one for x86-64 on DietPi. See [`packages/kalinka-image/README.md`](packages/kalinka-image/README.md) for what is in them and how they are built.
+Ready-to-flash images with the whole player already installed — four for the Raspberry Pi (headless, and `-display` with the now-playing screen), built on Debian 13 with rpi-image-gen, and one for x86-64 PCs built on Debian 13 with debootstrap. See [`packages/kalinka-image/README.md`](packages/kalinka-image/README.md) for what is in them and how they are built.
 
 1. Tag and push. The version is the image train's own, not the app bundle's:
    ```bash
@@ -154,7 +154,7 @@ Ready-to-flash images with the whole player already installed — four for the R
 
 2. **Pick the app-bundle release to bake in.** The tag push installs whatever is the latest published `kalinka-v*` at build time, which is usually what you want. The `-display` images also take `kalinka-kiosk_*_arm64.deb` from the latest app release that has one, the same way the browser player is picked, whatever `kalinka_version` says, and fail to build if no app release has it. To pin a specific one, run the workflow by hand instead (**Actions → Image release → Run workflow**) with `kalinka_version` set; it also takes the existing tag to publish under. The image filename carries the version that actually landed inside it, not the one that was asked for.
 
-3. Cut an image release when the OS side changes — a Debian point release or a DietPi release worth picking up, a first-boot or partitioning fix — or when the app bundle has moved far enough that a freshly flashed card would otherwise spend its first boot upgrading. Not on every app release: the images auto-upgrade like any other install.
+3. Cut an image release when the OS side changes — a Debian point release or a Raspberry Pi kernel or firmware worth picking up, a first-boot or partitioning fix — or when the app bundle has moved far enough that a freshly flashed card would otherwise spend its first boot upgrading. Not on every app release: the images auto-upgrade like any other install.
 
 Local builds (the Pi images need podman and run as you, the PC image needs root; `qemu-user-static` under `binfmt_misc` to cross-build):
 ```bash

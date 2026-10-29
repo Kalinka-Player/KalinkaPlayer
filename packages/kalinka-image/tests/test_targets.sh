@@ -29,9 +29,6 @@ for target_file in "$PKG_DIR"/targets/*.sh; do
     done
     [ -r "$PKG_DIR/lib/base-${TARGET_BASE:-}.sh" ] \
       || fail "$target: names a base with no lib/base-${TARGET_BASE:-}.sh"
-    if [ "${TARGET_BASE:-}" = dietpi ]; then
-      [ -n "${DIETPI_IMAGE:-}" ] || fail "$target: does not set DIETPI_IMAGE"
-    fi
     [ "${TARGET_BASE:-}" = debootstrap ] || exit "$FAILURES"
 
     for var in "${DEBOOTSTRAP_CONTRACT[@]}"; do

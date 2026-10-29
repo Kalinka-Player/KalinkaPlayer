@@ -1,7 +1,7 @@
 [Unit]
 Description=Grow the Kalinka root filesystem to fill its storage
 After=local-fs.target
-Before=kalinka-firstboot.service kalinka.service
+Before=kalinka.service
 
 [Service]
 Type=oneshot

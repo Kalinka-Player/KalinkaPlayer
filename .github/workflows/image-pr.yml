@@ -1,6 +1,7 @@
 name: Image boot test
 
-# Boots the same UEFI PC image as releases. Physical radio E2E is separate.
+# Boots the same PC image as releases, through UEFI with Secure Boot and
+# through a legacy BIOS. Physical radio E2E is separate.
 
 on:
   pull_request:
@@ -40,11 +41,11 @@ jobs:
         with:
           target: amd64
 
-      - name: Install QEMU and OVMF
+      - name: Install QEMU, OVMF and sbverify
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 qemu-utils ovmf
+            qemu-system-x86 qemu-utils ovmf sbsigntool
 
       - name: Enable KVM
         run: |
@@ -60,20 +61,26 @@ jobs:
           xz -dc out/*-amd64.img.xz > "$RUNNER_TEMP/kalinka.img"
           qemu-img resize -f raw "$RUNNER_TEMP/kalinka.img" 12G
 
-      - name: Boot through UEFI
+      - name: Boot through UEFI with Secure Boot
         env:
-          OVMF_CODE: /usr/share/OVMF/OVMF_CODE_4M.fd
-          OVMF_VARS: /usr/share/OVMF/OVMF_VARS_4M.fd
+          OVMF_CODE: /usr/share/OVMF/OVMF_CODE_4M.secboot.fd
+          OVMF_VARS: /usr/share/OVMF/OVMF_VARS_4M.ms.fd
         run: |
           packages/kalinka-image/tests/vm/boot.sh \
-            "$RUNNER_TEMP/kalinka.img" uefi "$RUNNER_TEMP/uefi"
+            "$RUNNER_TEMP/kalinka.img" uefi-secure-boot "$RUNNER_TEMP/secure-boot"
 
       # Also after a failed boot: what the image carries is often the reason.
-      - name: Inspect the disk after first boot
+      - name: Inspect the disk the Secure Boot run left
         if: ${{ !cancelled() && steps.disk.outcome == 'success' }}
         run: |
           sudo packages/kalinka-image/tests/vm/inspect.sh \
-            "$RUNNER_TEMP/uefi/disk.img" "$RUNNER_TEMP/uefi/journal"
+            "$RUNNER_TEMP/secure-boot/disk.img" "$RUNNER_TEMP/secure-boot/journal"
+
+      - name: Boot through a legacy BIOS
+        if: ${{ !cancelled() && steps.disk.outcome == 'success' }}
+        run: |
+          packages/kalinka-image/tests/vm/boot.sh \
+            "$RUNNER_TEMP/kalinka.img" bios "$RUNNER_TEMP/bios"
 
       - name: Upload the boot logs
         if: failure()
@@ -81,6 +88,7 @@ jobs:
         with:
           name: image-boot-logs
           path: |
-            ${{ runner.temp }}/uefi
+            ${{ runner.temp }}/secure-boot
+            ${{ runner.temp }}/bios
             !${{ runner.temp }}/**/disk.img
           if-no-files-found: ignore

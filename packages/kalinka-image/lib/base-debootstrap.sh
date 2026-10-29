@@ -21,7 +21,7 @@ ROOT_LABEL=kalinka-root
 BASE_HOST_TOOLS=(debootstrap mkfs.ext4 mkfs.vfat)
 
 # What no Kalinka package pulls in: a way in, onto the network, a .local name, the whole card, and ALSA's tools.
-BASE_PACKAGES="ca-certificates curl openssl sudo openssh-server libpam-systemd
+BASE_PACKAGES="ca-certificates curl sudo openssh-server libpam-systemd
                network-manager wpasupplicant iw wireless-regdb bluez avahi-daemon
                cloud-guest-utils dosfstools e2fsprogs
                systemd-timesyncd dbus tzdata
@@ -96,15 +96,27 @@ base_install_packages() {
 base_finish() {
   log "Installing the first-boot machinery"
   install_overlay debootstrap
-  echo "KALINKA_IMAGE_BOOT=$TARGET_BOOT_MOUNT" > "$ROOTFS/etc/default/kalinka-image"
-  install -m 644 "$SCRIPT_DIR/boot/kalinka-firstboot.conf.example" \
-    "$ROOTFS$TARGET_BOOT_MOUNT/"
-  in_chroot systemctl enable kalinka-growroot.service kalinka-firstboot.service
-
+  in_chroot systemctl enable kalinka-growroot.service kalinka-hostkeys.service
+  # The supervisor turns SSH on when someone sets a password for it.
+  in_chroot systemctl disable ssh.service
   target_install_bootloader
+  verify_debootstrap_setup
 }
 
-# Identities no two machines may share; kalinka-firstboot.service makes new ones.
+verify_debootstrap_setup() {
+  require_enabled multi-user.target kalinka-growroot.service kalinka-hostkeys.service
+  require_disabled multi-user.target ssh.service
+  case "$(in_chroot getent shadow root | cut -d: -f2)" in
+    '*'|'!'*) ;;
+    *) die 'root can log in with a password' ;;
+  esac
+}
+
+base_manifest() {
+  echo "debian_version=$(cat "$ROOTFS/etc/debian_version")"
+}
+
+# Identities no two machines may share; the first boot makes new ones.
 base_seal() {
   rm -f "$ROOTFS"/etc/ssh/ssh_host_*
   : > "$ROOTFS/etc/machine-id"

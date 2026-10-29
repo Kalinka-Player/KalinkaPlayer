@@ -3,8 +3,6 @@
 
 configure_supervisor_radios() {
   local root="$1"
-  rm -f "$root/etc/modprobe.d/dietpi-disable_bluetooth.conf" \
-    "$root/etc/modprobe.d/dietpi-disable_wifi.conf"
   mkdir -p "$root/etc/bluetooth"
   # Re-pairing after the phone forgot its bond must work without a screen.
   # The daemon accepts pairing only while offline setup is open.
@@ -53,12 +51,6 @@ verify_supervisor() {
   in_chroot /usr/lib/kalinka-supervisor/kalinka-supervisor --version
   require_timezone_support
   [ -x "$ROOTFS/usr/lib/kalinka-supervisor/soundcard.sh" ] || die 'no sound card helper'
-  [ ! -f "$ROOTFS/etc/modprobe.d/dietpi-disable_bluetooth.conf" ] || die 'Bluetooth is blacklisted'
-  [ ! -f "$ROOTFS/etc/modprobe.d/dietpi-disable_wifi.conf" ] || die 'Wi-Fi is blacklisted'
-  if [ "$TARGET_BASE" = dietpi ]; then
-    grep -q -- '--no-restart' "$ROOTFS/boot/dietpi/dietpi-network" \
-      || die 'DietPi base lacks dietpi-network apply --no-restart; refresh the image'
-  fi
 }
 
 # Apart from verify_supervisor: rpi-image-gen writes config.txt only after the supervisor is in.

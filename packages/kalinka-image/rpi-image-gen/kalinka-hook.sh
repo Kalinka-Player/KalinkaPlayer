@@ -34,8 +34,7 @@ restore_mmdebstrap_policy() {
 trap 'restore_mmdebstrap_policy; rm -rf "$WORK"' EXIT
 mv "$ROOTFS/usr/sbin/policy-rc.d" "$mmdebstrap_policy"
 
-limit_journal
-printf '[Journal]\nStorage=persistent\n' > "$ROOTFS/etc/systemd/journald.conf.d/kalinka-persistent.conf"
+configure_journal
 start_build_aids
 configure_display_setting "$ROOTFS"
 install_kalinka "${IGconf_kalinka_version:-}"
