@@ -1,12 +1,34 @@
 # First-run Wi-Fi and Bluetooth playback — design
 
-> **2026-10-06: implementation supersedes this proposal.** See
-> [BLE provisioning](ble-provisioning.md) for the deployed protocol and app flow,
-> and [Kalinka Supervisor](supervisor.md) for the independent Go service,
-> DietPi/NetworkManager backends, hardening and recovery roadmap.
-> Bluetooth playback stays separate. The Python daemon, playback-first
-> dependency graph, package estimates and execution plan below are historical
-> design context, not current implementation instructions.
+> **Status, 2026-10-29: a historical record.** This design was written in
+> September 2026 against the images of the time. Those were built on DietPi
+> and took their first-boot settings from files on the card: `dietpi.txt` and
+> `dietpi-wifi.txt` on the Pi images, `kalinka-firstboot.conf` on the PC image.
+> None of that holds any more, and what was built took another shape:
+>
+> - **The images** are all Debian 13, with no DietPi: the Pi images are built
+>   with rpi-image-gen, the PC image with debootstrap
+>   ([the image README](../packages/kalinka-image/README.md)). They read
+>   nothing from the card or the disk. Wi-Fi, a login and the time zone are
+>   set up after the first start.
+> - **Bluetooth LE setup (path B)** shipped inside the Go supervisor, not as
+>   the Python daemon and `wifi.sh` of §5 ([BLE provisioning](ble-provisioning.md),
+>   [Kalinka Supervisor](supervisor.md)). It runs the supervisor's
+>   NetworkManager backend on every image, and is switched off in
+>   `/etc/default/kalinka-supervisor`, not on the card. The supervisor's DietPi
+>   backend serves only a DietPi system Kalinka was installed on by hand.
+> - **The hotspot (path C)**, which §2.3 and §8 decide against, shipped in the
+>   same supervisor.
+> - **Imager customisation (path A)** was not built. §4's applier writes
+>   DietPi's inputs, so it no longer applies; honouring Imager on the
+>   rpi-image-gen images is
+>   [issue 193](https://github.com/Kalinka-Player/KalinkaPlayer/issues/193).
+> - **Bluetooth playback (§7)** was not built.
+>
+> Wherever the sections below mention DietPi, `dietpi.txt`,
+> `kalinka-firstboot.conf`, `firstboot.sh` or the images "today", they describe
+> the images as they were when this was written. The document is kept for the
+> reasons behind its decisions, not as a description of how anything works now.
 
 A Kalinka image gets onto Wi-Fi only if someone edits a file on its card before the first boot. That works for a person who flashes their own card and knows where to look. It does not work for a box sold ready-made, which comes with no card the buyer is meant to edit, no keyboard and no screen. It also fails on the PC image, whose settings partition is an EFI partition that desktops hide. The app cannot help either: its setup wizard starts by finding the server on the network, which is the very thing that is missing.
 
