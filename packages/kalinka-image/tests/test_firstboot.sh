@@ -99,6 +99,7 @@ assert_mode "and its directory" "$home/.ssh" 700
 profile=/etc/NetworkManager/system-connections/kalinka-wifi.nmconnection
 assert_contains "writes the wifi profile" "$(cat "$profile")" "ssid=Studio"
 assert_contains "with the passphrase" "$(cat "$profile")" "psk=sekrit"
+assert_contains "and power saving off" "$(cat "$profile")" "powersave=2"
 assert_mode "which NetworkManager refuses to read if it is not private" "$profile" 600
 assert_contains "persists the regulatory domain" \
   "$(cat /etc/modprobe.d/kalinka-regdom.conf)" "ieee80211_regdom=GB"

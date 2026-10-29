@@ -148,6 +148,9 @@ func TestNMStagingAndRollback(t *testing.T) {
 				if !b.countryBeforeJoin {
 					t.Fatal("country not applied before the join")
 				}
+				if value[uint32](b.profiles["/candidate"]["802-11-wireless"], "powersave") != 2 {
+					t.Fatal("joined network may doze into a link that passes no traffic")
+				}
 				if conf, err := os.ReadFile(n.RegulatoryConf); err != nil || string(conf) != "options cfg80211 ieee80211_regdom=GB\n" {
 					t.Fatalf("country not kept across restarts: %q %v", conf, err)
 				}
