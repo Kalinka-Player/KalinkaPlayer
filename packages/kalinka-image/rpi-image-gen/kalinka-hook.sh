@@ -1,6 +1,6 @@
 #!/bin/bash
 # Kalinka's part of an rpi-image-gen image, run on the root it has built: the
-# steps build-image.sh takes after the DietPi base is in place.
+# steps build-image.sh takes once the PC image's Debian base is in place.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
