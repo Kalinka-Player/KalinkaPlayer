@@ -11,21 +11,33 @@ configure_supervisor_radios "$root"
 configure_supervisor_radios "$root"
 [ "$(grep -c '^JustWorksRepairing = always$' "$root/etc/bluetooth/main.conf")" = 1 ]
 grep -q '^AutoEnable=true$' "$root/etc/bluetooth/main.conf"
-config="$root/config.txt"
+boot="$root/assembled"
+mkdir -p "$boot/boot/firmware"
+config="$boot/boot/firmware/config.txt"
+cmdline="$boot/boot/firmware/cmdline.txt"
 assembled='# Assembled by rpi-image-gen from layer fragments.\ndtparam=audio=on\n#dtoverlay=disable-bt\ndtparam=i2c_arm=on\n'
 printf "$assembled" > "$config"
-( verify_supervisor_boot_config "$config" )
+printf 'console=tty1 root=PARTUUID=0c1a2b3c-02 rootwait quiet\n' > "$cmdline"
+( verify_supervisor_boot_config "$boot" )
 for line in dtoverlay=disable-bt dtoverlay=disable-wifi ' dtoverlay=disable-bt,foo' dtoverlay=disable-bt-pi5 dtoverlay=disable-wifi-pi5; do
   { printf "$assembled"; printf '%s\n' "$line"; } > "$config"
-  if ( verify_supervisor_boot_config "$config" ) 2>/dev/null; then
+  if ( verify_supervisor_boot_config "$boot" ) 2>/dev/null; then
     echo "Took a config.txt with $line" >&2
     exit 1
   fi
 done
 for i2c in '' '#dtparam=i2c_arm=on' 'dtparam=i2c_arm=off'; do
   printf '%s\n' "$i2c" > "$config"
-  if ( verify_supervisor_boot_config "$config" ) 2>/dev/null; then
+  if ( verify_supervisor_boot_config "$boot" ) 2>/dev/null; then
     echo "Took a config.txt without the HAT I2C bus: '$i2c'" >&2
+    exit 1
+  fi
+done
+printf "$assembled" > "$config"
+for console in console=serial0,115200 console=ttyAMA0,115200 console=ttyS0; do
+  printf 'console=tty1 %s root=PARTUUID=0c1a2b3c-02 rootwait quiet\n' "$console" > "$cmdline"
+  if ( verify_supervisor_boot_config "$boot" ) 2>/dev/null; then
+    echo "Took a cmdline.txt with $console" >&2
     exit 1
   fi
 done
