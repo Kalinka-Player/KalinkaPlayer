@@ -273,10 +273,7 @@ class InputModule(Protocol):
 
         Report a capability only while its call can answer: a module that
         implements ai_search behind a setting leaves AI_SEARCH out while the
-        setting is off. Read when the server lists the modules anew — after
-        a health check finds a change, or a setting is saved — not on each
-        listing request, so a capability that changes on its own shows with
-        the module's next state change. Keep it cheap.
+        setting is off. Read on every module listing, so keep it cheap.
 
         The default reports AI_SEARCH when the module overrides
         :meth:`ai_search`, which is what servers before SDK 3.13 inferred,

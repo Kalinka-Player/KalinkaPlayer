@@ -277,13 +277,6 @@ def register_config_routes(
         if router is not None and any(key.startswith("devices.") for key in applied):
             await router.resync()
 
-        republish = getattr(app.state, "republish_modules", None)
-        if republish is not None and any(
-            key.startswith(("input_modules.", "devices.")) for key in applied
-        ):
-            # A setting can move what the listing shows without a report moving.
-            await republish()
-
         ok_in, _err_in, ok_dev, _err_dev = _partition_modules_and_devices()
         known = build_static_values(config, ok_in, ok_dev)
         return {

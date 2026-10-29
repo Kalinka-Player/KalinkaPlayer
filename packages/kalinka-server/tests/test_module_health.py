@@ -3,14 +3,11 @@
 Setup succeeding is not enough: Jamendo without a client id sets up fine and
 then reports an error, and its catalogs were still requested — empty. What a
 plugin reports of itself decides whether requests reach it, and that follows
-it while the server runs. Clients follow it too: each change reaches them over
-the queue's event channels, and the module listing serves the last one found.
+it while the server runs.
 """
 
 import asyncio
 import gc
-import json
-from contextlib import suppress
 from types import SimpleNamespace
 
 import pytest
@@ -19,19 +16,17 @@ from pydantic import Field
 from kalinka_plugin_sdk import ModuleHealthState, ModuleState
 from kalinka_plugin_sdk import __version__ as SDK_VERSION
 from kalinka_plugin_sdk.datamodel import EntityId
-from kalinka_plugin_sdk.events import ModulesSnapshot, PlayQueueEventType
 from kalinka_plugin_sdk.inputmodule import InputModule, SourceUnavailableError
 from kalinka_plugin_sdk.module_config import ModuleConfig
 from kalinka_plugin_sdk.plugin import InputModulePlugin, PluginBase
 
-from kalinka_server import player_setup, server, state_keeper
+from kalinka_server import player_setup, server
 from kalinka_server.config_model import KalinkaConfig
 from kalinka_server.player_setup import (
     PreparedModuleCollection,
     PreparedPlugin,
     modules,
 )
-from kalinka_server.queue_ws_handler import handle_websocket_connection
 from tests.app_harness import isolate_app, running
 
 NO_KEY = "No client id configured."
@@ -306,137 +301,6 @@ async def test_the_server_follows_a_module_while_it_runs():
             await watching
 
 
-def _told(collection: PreparedModuleCollection, name: str) -> list[ModuleState]:
-    """What ``name`` said each time the subscriber was told, from the start."""
-    told: list[ModuleState] = []
-    collection.set_on_changed(
-        lambda: told.append(collection.prepared_input_modules[name].state)
-    )
-    return told
-
-
-@pytest.mark.parametrize(
-    "report",
-    [
-        ModuleState(state=ModuleHealthState.READY),
-        ModuleState(state=ModuleHealthState.ERROR, message="Key rejected."),
-        ModuleState(
-            state=ModuleHealthState.ERROR,
-            message=NO_KEY,
-            missing_packages=["onnxruntime"],
-        ),
-    ],
-    ids=["state", "message", "missing packages"],
-)
-async def test_each_change_a_plugin_reports_is_told_once(report):
-    jamendo = _Plugin(ModuleHealthState.ERROR, NO_KEY)
-    collection = _collection(jamendo=jamendo)
-    await collection.refresh_health()
-    told = _told(collection, "jamendo")
-
-    jamendo.health = report
-    await collection.refresh_health()
-    await collection.refresh_health()
-
-    assert told == [ModuleState(state=ModuleHealthState.ERROR, message=NO_KEY), report]
-
-
-async def test_a_refresh_that_finds_nothing_new_tells_nothing():
-    collection = _collection(jamendo=_Plugin(ModuleHealthState.ERROR, NO_KEY))
-    await collection.refresh_health()
-    told = _told(collection, "jamendo")
-
-    for _ in range(3):
-        await collection.refresh_health()
-
-    assert len(told) == 1
-
-
-async def test_a_module_that_stops_serving_is_told_with_the_set_served():
-    qobuz = _Plugin()
-    collection = _collection(qobuz=qobuz, localfiles=_Plugin())
-    await collection.refresh_health()
-    served = []
-    collection.set_on_changed(
-        lambda: served.append(set(collection.enabled_input_modules))
-    )
-
-    qobuz.health = ModuleState(state=ModuleHealthState.ERROR)
-    await collection.refresh_health()
-    qobuz.health = ModuleState(state=ModuleHealthState.READY)
-    await collection.refresh_health()
-
-    assert served == [
-        {"qobuz", "localfiles"},
-        {"localfiles"},
-        {"qobuz", "localfiles"},
-    ]
-
-
-async def test_a_report_edited_in_place_is_still_told():
-    jamendo = _Plugin(ModuleHealthState.ERROR, NO_KEY)
-    collection = _collection(jamendo=jamendo)
-    await collection.refresh_health()
-    told = []
-    collection.set_on_changed(
-        lambda: told.append(collection.prepared_input_modules["jamendo"].state.message)
-    )
-
-    jamendo.health.message = "Key rejected."
-    await collection.refresh_health()
-
-    assert told == [NO_KEY, "Key rejected."]
-
-
-async def test_a_failed_publish_is_retried_and_does_not_stop_the_watch():
-    qobuz = _Plugin()
-    collection = _collection(qobuz=qobuz)
-    await collection.refresh_health()
-    told = []
-
-    def publish():
-        told.append(collection.prepared_input_modules["qobuz"].state.state)
-        if len(told) == 2:
-            raise RuntimeError("bus closed")
-
-    collection.set_on_changed(publish)
-    qobuz.health = ModuleState(state=ModuleHealthState.ERROR)
-    watching = asyncio.create_task(collection.watch_health(interval_s=0))
-    try:
-        async with asyncio.timeout(2):
-            while len(told) < 3:
-                await asyncio.sleep(0)
-    finally:
-        watching.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await watching
-
-    assert told == [
-        ModuleHealthState.READY,
-        ModuleHealthState.ERROR,
-        ModuleHealthState.ERROR,
-    ]
-
-
-async def test_a_device_change_found_between_refreshes_is_told_at_the_next():
-    amp = _Plugin()
-    collection = PreparedModuleCollection(
-        prepared_devices={"amp": _prepared("amp", amp)}
-    )
-    await collection.refresh_health()
-    told = []
-    collection.set_on_changed(
-        lambda: told.append(collection.prepared_devices["amp"].state.state)
-    )
-
-    amp.health = ModuleState(state=ModuleHealthState.ERROR)
-    # The output router asks the device it routes to on its own clock.
-    await collection.prepared_devices["amp"].refresh_state()
-    await collection.refresh_health()
-
-    assert told == [ModuleHealthState.READY, ModuleHealthState.ERROR]
-
-
 class _FakeConfig(ModuleConfig):
     name: str = Field(default="fake", title="Fake", frozen=True, exclude=True)
 
@@ -474,29 +338,6 @@ def _browsable(listing) -> list[str]:
     return [EntityId.from_string(item["id"]).source for item in listing.json()["items"]]
 
 
-def _fake_entry(input_modules: list[dict]) -> dict:
-    return next(entry for entry in input_modules if entry["name"] == "fake")
-
-
-class _Socket:
-    """A /queue/ws client that only listens."""
-
-    def __init__(self):
-        self.sent: asyncio.Queue[str] = asyncio.Queue()
-
-    async def accept(self):
-        pass
-
-    async def send_text(self, text: str):
-        await self.sent.put(text)
-
-    async def receive_json(self):
-        await asyncio.Event().wait()
-
-    async def close(self):
-        pass
-
-
 async def test_a_module_in_error_from_boot_offers_no_catalogs(client):
     root = await client.get("/browse")
     catalog = await client.get("/browse/kalinka:fake:catalog:root")
@@ -504,125 +345,22 @@ async def test_a_module_in_error_from_boot_offers_no_catalogs(client):
 
     assert "fake" not in _browsable(root)
     assert catalog.status_code == 404
-    fake = _fake_entry(listed)
+    fake = next(entry for entry in listed if entry["name"] == "fake")
     assert (fake["state"], fake["error_message"]) == ("error", NO_KEY)
 
 
-async def test_reading_the_modules_asks_no_plugin(client, monkeypatch):
-    asked = []
-
-    async def get_state(plugin):
-        asked.append("get_state")
-        return plugin.live
-
-    def capabilities(module):
-        asked.append("capabilities")
-        return []
-
-    monkeypatch.setattr(_FakePlugin, "get_state", get_state)
-    monkeypatch.setattr(_Module, "capabilities", capabilities)
-
-    for _ in range(3):
-        listed = (await client.get("/server/modules")).json()["input_modules"]
-
-    assert asked == []
-    assert _fake_entry(listed)["state"] == "error"
-
-
-async def test_a_recovered_module_is_listed_and_browsed_after_the_next_check(
+async def test_reading_the_modules_lets_a_recovered_module_be_browsed(
     client, monkeypatch
 ):
     monkeypatch.setattr(
         _FakePlugin, "live", ModuleState(state=ModuleHealthState.READY)
     )
-    before = (await client.get("/server/modules")).json()["input_modules"]
 
-    await modules.refresh_health()
-    after = (await client.get("/server/modules")).json()["input_modules"]
+    listed = (await client.get("/server/modules")).json()["input_modules"]
     root = await client.get("/browse")
 
-    assert _fake_entry(before)["state"] == "error"
-    assert _fake_entry(after)["state"] == "ready"
+    assert next(e for e in listed if e["name"] == "fake")["state"] == "ready"
     assert "fake" in _browsable(root)
-
-
-async def test_queue_clients_are_told_each_change_a_check_finds(
-    client, monkeypatch
-):
-    bus = modules.player_context.playqueue_eventbus
-    async with bus.stream([PlayQueueEventType.ModulesChanged]) as events:
-        replay = await asyncio.wait_for(anext(events), 2)
-        monkeypatch.setattr(
-            _FakePlugin, "live", ModuleState(state=ModuleHealthState.READY)
-        )
-        await modules.refresh_health()
-        await modules.refresh_health()
-        changed = await asyncio.wait_for(anext(events), 2)
-        with pytest.raises(TimeoutError):
-            await asyncio.wait_for(anext(events), 0.2)
-    listed = (await client.get("/server/modules")).json()
-
-    replayed = replay.state.modules.model_dump(mode="json")
-    told = ModulesSnapshot(
-        input_modules=changed.input_modules, devices=changed.devices
-    ).model_dump(mode="json")
-    assert _fake_entry(replayed["input_modules"])["state"] == "error"
-    assert _fake_entry(told["input_modules"])["state"] == "ready"
-    assert listed == told
-
-
-async def test_a_saved_module_setting_is_listed_and_told_at_once(client):
-    bus = modules.player_context.playqueue_eventbus
-    version = (await client.get("/server/config")).json()["schema_version"]
-    async with bus.stream([PlayQueueEventType.ModulesChanged]) as events:
-        await asyncio.wait_for(anext(events), 2)
-        saved = await client.put(
-            "/server/config",
-            json={
-                "schema_version": version,
-                "changes": {"input_modules.fake.enabled": False},
-            },
-        )
-        changed = await asyncio.wait_for(anext(events), 2)
-    listed = (await client.get("/server/modules")).json()["input_modules"]
-
-    assert saved.status_code == 200
-    assert _fake_entry(changed.model_dump(mode="json")["input_modules"])[
-        "enabled"
-    ] is False
-    assert _fake_entry(listed)["enabled"] is False
-
-
-async def test_a_queue_client_is_sent_the_modules_on_connecting(client):
-    socket = _Socket()
-    context = modules.player_context
-    connection = asyncio.create_task(
-        handle_websocket_connection(
-            socket, context.playqueue_eventbus, context.playqueue
-        )
-    )
-    try:
-        replay = json.loads(await asyncio.wait_for(socket.sent.get(), 2))
-    finally:
-        connection.cancel()
-        with suppress(asyncio.CancelledError):
-            await connection
-    listed = (await client.get("/server/modules")).json()
-
-    assert replay["event_type"] == "replay_event"
-    assert replay["state"]["modules"] == listed
-    assert _fake_entry(listed["input_modules"])["error_message"] == NO_KEY
-
-
-async def test_the_modules_are_not_saved_with_the_queue(
-    client, monkeypatch, tmp_path
-):
-    path = tmp_path / "state.json"
-    monkeypatch.setattr(state_keeper, "STATE_FILE", str(path))
-
-    await state_keeper.save_state(modules.player_context.playqueue_eventbus)
-
-    assert "modules" not in json.loads(path.read_text())
 
 
 async def test_a_module_in_error_still_serves_its_content(client):

@@ -164,15 +164,6 @@ def get_version() -> str:
 # release of itself, or one playing that is already on the latest release. A
 # renderer that refuses (409 "<name> refused: ..."), goes away (404) or does
 # not answer (504) once its session is stopped is left stopped.
-# Also 0.19: /queue/ws and /queue/events report the module listing. Their
-# replay state carries `modules`, {input_modules, devices} as GET
-# /server/modules answers, and a modules_changed event carries `input_modules`
-# and `devices` whenever a health check, every 10 s, finds that a module's
-# state, error_message or missing_packages moved; one that finds nothing new
-# sends nothing. GET /server/modules answers what the last check found instead
-# of asking every plugin again, so a change shows there within the same 10 s;
-# a PUT /server/config to a module or device publishes before it answers.
-# Before 0.19 the replay has no `modules`, and the GET is the only source.
 REST_API_VERSION = "0.19"
 
 

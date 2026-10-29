@@ -32,9 +32,6 @@ from kalinka_plugin_sdk.ext_device_events import ExtDeviceEventType
 from kalinka_plugin_sdk.inputmodule import InputModule, SearchType
 from kalinka_plugin_sdk.events import (
     CurrentRendererChangedEvent,
-    ModuleDescriptor,
-    ModulesChangedEvent,
-    ModulesSnapshot,
     PlayQueueEventType,
     RenderersChangedEvent,
 )
@@ -1351,23 +1348,24 @@ async def create_app(
             modules.prepared_devices,
         )
 
-    def _module_entry(prepared) -> ModuleDescriptor:
+    def _module_entry(prepared) -> Dict[str, Any]:
         """One prepared plugin as clients see it, in the state it last
         reported."""
         cfg = prepared.plugin_context.config
         state = prepared.state
-        return ModuleDescriptor(
-            name=cfg.name,
-            title=cfg.__class__.model_fields["name"].title or cfg.name,
-            icon=module_icon(type(cfg)),
-            enabled=cfg.enabled,
-            state=state.state,
-            error_message=state.message,
-            missing_packages=state.missing_packages,
-            capabilities=capabilities_of(prepared.interface),
-        )
+        return {
+            "name": cfg.name,
+            "title": cfg.__class__.model_fields["name"].title or cfg.name,
+            "icon": module_icon(type(cfg)),
+            "enabled": cfg.enabled,
+            "state": state.state.value,
+            "error_message": state.message,
+            "missing_packages": list(state.missing_packages),
+            "builtin": False,
+            "capabilities": capabilities_of(prepared.interface),
+        }
 
-    def _builtin_entries() -> List[ModuleDescriptor]:
+    def _builtin_entries() -> List[Dict[str, Any]]:
         """Sources the server provides itself.
 
         They carry no config, no packages and no failure of their own, and are
@@ -1375,42 +1373,37 @@ async def create_app(
         they do not have.
         """
         return [
-            ModuleDescriptor(
-                name=entry.name,
-                title=entry.title,
-                state=ModuleHealthState.READY,
-                builtin=True,
+            {
+                "name": entry.name,
+                "title": entry.title,
+                "icon": None,
+                "enabled": True,
+                "state": ModuleHealthState.READY.value,
+                "error_message": None,
+                "missing_packages": [],
+                "builtin": True,
                 # Browsed and searched by name like any source, but with no
                 # audio of its own there is nothing for it to suggest.
-                capabilities=[],
-            )
+                "capabilities": [],
+            }
             for entry in browse_registry().entries()
             if entry.builtin
         ]
 
-    def _publish_modules() -> None:
-        snapshot = ModulesSnapshot(
-            input_modules=[
-                *(_module_entry(m) for m in modules.prepared_input_modules.values()),
-                *_builtin_entries(),
-            ],
-            devices=[_module_entry(d) for d in modules.prepared_devices.values()],
-        )
-        app.state.module_snapshot = snapshot
-        player_context.playqueue_eventbus.dispatch(
-            ModulesChangedEvent(
-                input_modules=snapshot.input_modules, devices=snapshot.devices
-            )
-        )
-
-    # On the queue bus, so clients follow a plugin without asking again.
-    modules.set_on_changed(_publish_modules)
-    app.state.republish_modules = partial(modules.refresh_health, publish=True)
-
     @app.get("/server/modules")
     async def list_modules():
-        # What the last health check published: reading it asks no plugin.
-        return app.state.module_snapshot
+        # Asked afresh so the state shown and the modules requests reach agree.
+        await modules.refresh_health()
+        input_entries = [
+            _module_entry(m) for m in modules.prepared_input_modules.values()
+        ]
+        device_entries = [
+            _module_entry(d) for d in modules.prepared_devices.values()
+        ]
+        return {
+            "input_modules": [*input_entries, *_builtin_entries()],
+            "devices": device_entries,
+        }
 
     @app.get("/resource/{file_name:path}")
     async def get_resource(file_name: str):

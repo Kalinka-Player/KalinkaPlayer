@@ -63,8 +63,6 @@ logger = logging.getLogger(__name__.split(".")[-1])
 # What a plugin may say of itself and still be asked for data.
 SERVING_STATES = frozenset({ModuleHealthState.READY, ModuleHealthState.WARNING})
 HEALTH_REFRESH_INTERVAL_S = 10.0
-# What each input module, then each device, last said of itself, by name.
-ModuleReports = tuple[dict[str, ModuleState], dict[str, ModuleState]]
 
 
 @dataclass
@@ -240,8 +238,6 @@ class PreparedModuleCollection:
     # *before* the owning plugin acts on them (see _consume_one_shot_overrides).
     # None disables the disk persist (in-memory reset only — used by tests).
     overrides_file: str | None = None
-    _on_changed: Callable[[], None] | None = field(default=None, repr=False)
-    _published: ModuleReports | None = field(default=None, repr=False)
 
     def enabled_input_module(self, name: str) -> InputModule | None:
         """The input module ``name`` while it is enabled and set up, else None."""
@@ -270,33 +266,9 @@ class PreparedModuleCollection:
             if module.serves
         }
 
-    def set_on_changed(self, on_changed: Callable[[], None]) -> None:
-        """Call ``on_changed`` after each refresh in which some plugin says
-        something new of itself, and once now, so the subscriber starts from
-        what the plugins say rather than from their first change."""
-        self._on_changed = on_changed
-        self._published = self._reports()
-        on_changed()
-
-    def _reports(self) -> ModuleReports:
-        # Copies: a plugin may answer with one instance it edits in place.
-        return (
-            {
-                name: p.state.model_copy(deep=True)
-                for name, p in self.prepared_input_modules.items()
-            },
-            {
-                name: p.state.model_copy(deep=True)
-                for name, p in self.prepared_devices.items()
-            },
-        )
-
-    async def refresh_health(self, *, publish: bool = False) -> None:
-        """Ask every plugin how it is, let requests reach only the input
-        modules that say they can serve, and tell the subscriber when any
-        says something new — which is also the only way the set served can
-        change. ``publish`` tells it regardless, for what a report does not
-        carry, such as a setting just saved."""
+    async def refresh_health(self) -> None:
+        """Ask every plugin how it is, and let requests reach only the input
+        modules that say they can serve."""
         await asyncio.gather(
             *(
                 plugin.refresh_state()
@@ -307,11 +279,6 @@ class PreparedModuleCollection:
             )
         )
         self._update_enabled_input_modules()
-        reports = self._reports()
-        # Not against the last refresh: the output router asks its device too.
-        if self._on_changed is not None and (publish or reports != self._published):
-            self._on_changed()
-            self._published = reports
 
     async def watch_health(
         self, interval_s: float = HEALTH_REFRESH_INTERVAL_S
@@ -321,11 +288,7 @@ class PreparedModuleCollection:
         restart."""
         while True:
             await asyncio.sleep(interval_s)
-            try:
-                await self.refresh_health()
-            except Exception as e:
-                # The type only: a plugin's exception text may carry a credential.
-                logger.error("Module health check failed (%s)", type(e).__name__)
+            await self.refresh_health()
 
     def _scan_entry_points(self) -> Generator[tuple[str, type], None, None]:
         """Scan for installed plugins using entry points and yield classes derived from PluginBase."""

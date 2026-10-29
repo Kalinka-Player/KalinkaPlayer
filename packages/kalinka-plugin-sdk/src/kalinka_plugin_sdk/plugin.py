@@ -107,10 +107,10 @@ class PluginBase(ABC, Generic[PLUGIN_CLASS, CTX_TYPE]):
     async def get_state(self) -> ModuleState:
         """Return the plugin's current health roll-up.
 
-        Asked every few seconds while the server runs. The plugin is
-        responsible for keeping enough internal bookkeeping (sub-feature
-        states, optional package availability) to answer cheaply — this
-        should not perform I/O on the hot path.
+        Called on demand by the server. The plugin is responsible for
+        keeping enough internal bookkeeping (sub-feature states, optional
+        package availability) to answer cheaply — this should not perform
+        I/O on the hot path.
 
         Default implementation reports READY with no message. Plugins
         with internal sub-features should override.
