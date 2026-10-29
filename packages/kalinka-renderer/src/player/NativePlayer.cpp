@@ -286,6 +286,12 @@ bool readPerStream(const std::string &path) {
   return key != graphKeys().end() && AudioPlayer::isStreamKey(key->second);
 }
 
+// Card mixer volume on a card without one leaves nothing to set the level, and
+// every session is refused for want of its start ceiling.
+bool cardHasVolume(const std::string &device) {
+  return AlsaVolumeControl(device, "").available();
+}
+
 bool holds(std::span<const Knob> knobs, const std::string &path) {
   return std::ranges::any_of(
       knobs, [&path](const Knob &knob) { return knob.path == path; });
@@ -928,6 +934,12 @@ bool NativePlayer::applySetting(const std::string &path,
   if (setting->second == value) {
     return true;  // nothing to do, and nothing to interrupt
   }
+  if (path == "output.volume_mode" && value == "hardware" &&
+      !cardHasVolume(settings_.at("output.device"))) {
+    error = "this sound card has no volume control of its own; choose "
+            "Automatic or Software";
+    return false;
+  }
 
   if (path == "output.volume_mode" && player_ && !sessionForcedFixed_) {
     // Changing which stage owns volume can otherwise produce an abrupt level
@@ -943,8 +955,15 @@ bool NativePlayer::applySetting(const std::string &path,
   }
 
   setting->second = value;
-  if (path == "output.device")
+  if (path == "output.device") {
     settings_.at("output.dsd_mode") = "disabled";
+    std::string &volumeMode = settings_.at("output.volume_mode");
+    if (volumeMode == "hardware" && !cardHasVolume(value)) {
+      volumeMode = "auto";
+      spdlog::info("'{}' has no mixer; volume control is back to 'auto'",
+                   value);
+    }
+  }
   persistOverrides();
   spdlog::info("Config {} = '{}'", path, value);
   if (readPerStream(path)) {
@@ -1015,8 +1034,11 @@ bool NativePlayer::beginSessionVolume(const SessionVolumePolicy &policy,
   }
   VolumeState state = player_->getVolume();
   if (!state.supported) {
-    error = "volume control is unavailable; session-start volume ceiling "
-            "cannot be enforced";
+    error = configuredMode == "hardware"
+                ? "this output's sound card has no volume control of its "
+                  "own; set its volume control to Automatic or Software"
+                : "volume control is unavailable; session-start volume "
+                  "ceiling cannot be enforced";
     return false;
   }
   if (state.current > static_cast<int>(ceiling)) {
