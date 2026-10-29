@@ -108,8 +108,14 @@ class FakeReader:
         conn, _ = self.server.accept()
         with conn:
             self.requests.append(json.loads(conn.makefile("rb").readline()))
-            for line in self.lines:
-                conn.sendall(line if isinstance(line, bytes) else json.dumps(line).encode() + b"\n")
+            try:
+                for line in self.lines:
+                    conn.sendall(
+                        line if isinstance(line, bytes) else json.dumps(line).encode() + b"\n"
+                    )
+            except (BrokenPipeError, ConnectionResetError):
+                # A client that has what fits its cap hangs up, as the real reader allows.
+                return
             if self.hang:
                 conn.recv(1)
 

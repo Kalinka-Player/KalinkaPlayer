@@ -1,4 +1,5 @@
-"""The journal reader: Kalinka's own units, read out of the system journal.
+"""The journal reader: Kalinka's own units and the kernel's records, read out
+of the system journal.
 
 The service user cannot read the system journal, and giving it the right to
 would hand the whole journal to every plugin the server runs. Instead
@@ -23,25 +24,47 @@ import os
 import selectors
 import subprocess
 import sys
+from dataclasses import dataclass
 from typing import BinaryIO, List, Optional, Sequence, Tuple
 
-#: Journal units each source covers. A unit a package does not ship simply
-#: has no records.
-SOURCE_UNITS = {
-    "server": ("kalinka.service", "kalinka-upgrade.service", "kalinka-restart.service"),
-    "local_renderer": ("kalinka-renderer.service", "kalinka-renderer-upgrade.service"),
-    "supervisor": (
-        "kalinka-supervisor.service",
-        "kalinka-soundcard.service",
-        "kalinka-soundcard-apply.service",
-        "kalinka-ssh-setup.service",
-        "kalinka-wifi@*.service",
-        "kalinka-reinstall.service",
-        "kalinka-plugin-removal.service",
+
+@dataclass(frozen=True)
+class JournalQuery:
+    """What one source asks the journal for: its ``units``, or ``FIELD=value``
+    ``matches`` for records that name no unit. One or the other, since
+    journalctl would keep only the records matching both."""
+
+    units: Tuple[str, ...] = ()
+    matches: Tuple[str, ...] = ()
+
+
+#: What each source reads. A unit a package does not ship simply has no
+#: records. The kernel's are matched by transport, not ``--dmesg``: that
+#: implies ``--boot`` and would lose an OOM report that ended in a reboot.
+SOURCE_QUERIES = {
+    "server": JournalQuery(
+        units=("kalinka.service", "kalinka-upgrade.service", "kalinka-restart.service")
     ),
+    "local_renderer": JournalQuery(
+        units=("kalinka-renderer.service", "kalinka-renderer-upgrade.service")
+    ),
+    "supervisor": JournalQuery(
+        units=(
+            "kalinka-supervisor.service",
+            "kalinka-soundcard.service",
+            "kalinka-soundcard-apply.service",
+            "kalinka-ssh-setup.service",
+            "kalinka-wifi@*.service",
+            "kalinka-reinstall.service",
+            "kalinka-plugin-removal.service",
+        )
+    ),
+    "kernel": JournalQuery(matches=("_TRANSPORT=kernel",)),
 }
 
-#: Every field that can name the unit a record is about, besides the message.
+#: The message and priority, and every field that can say what a record is
+#: about: a unit, or the kernel's transport and the identifier of whatever
+#: wrote to the kernel's log, since early-boot systemd writes there too.
 OUTPUT_FIELDS = (
     "MESSAGE",
     "PRIORITY",
@@ -49,6 +72,8 @@ OUTPUT_FIELDS = (
     "UNIT",
     "OBJECT_SYSTEMD_UNIT",
     "COREDUMP_UNIT",
+    "_TRANSPORT",
+    "SYSLOG_IDENTIFIER",
 )
 
 JOURNALCTL = "journalctl"
@@ -75,7 +100,7 @@ def parse_request(line: bytes) -> Tuple[str, int, int]:
     if not isinstance(request, dict) or set(request) != {"source", "since", "until"}:
         raise BadRequest("wrong fields")
     source, since, until = request["source"], request["since"], request["until"]
-    if source not in SOURCE_UNITS:
+    if source not in SOURCE_QUERIES:
         raise BadRequest("unknown source")
     for value in (since, until):
         if type(value) is not int or value < 0:
@@ -88,9 +113,10 @@ def parse_request(line: bytes) -> Tuple[str, int, int]:
 def journalctl_argv(source: str, since: int, until: int) -> List[str]:
     """The fixed command for a validated request. No ``--boot``: history
     across reboots is the point."""
+    query = SOURCE_QUERIES[source]
     return [
         JOURNALCTL,
-        *(f"--unit={unit}" for unit in SOURCE_UNITS[source]),
+        *(f"--unit={unit}" for unit in query.units),
         f"--since=@{since}",
         f"--until=@{until}",
         "--reverse",
@@ -99,6 +125,7 @@ def journalctl_argv(source: str, since: int, until: int) -> List[str]:
         "--all",
         "--quiet",
         "--no-pager",
+        *query.matches,
     ]
 
 

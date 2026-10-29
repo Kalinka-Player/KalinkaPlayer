@@ -17,15 +17,16 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterator, List, Mapping, Optional
 
-from .journal_reader import SOURCE_UNITS
+from .journal_reader import SOURCE_QUERIES
 from .logging_setup import DATE_FORMAT
 
 SERVER = "server"
 LOCAL_RENDERER = "local_renderer"
 SUPERVISOR = "supervisor"
+KERNEL = "kernel"
 
 #: Every source, in the order an export lists them.
-SOURCES = (SERVER, LOCAL_RENDERER, SUPERVISOR)
+SOURCES = (SERVER, LOCAL_RENDERER, SUPERVISOR, KERNEL)
 
 READER_SOCKET = "/run/kalinka-journal-reader.sock"
 RENDERER_UNIT_FILE = "/usr/lib/systemd/system/kalinka-renderer.service"
@@ -130,6 +131,8 @@ def render_journal_record(entry: Mapping[str, Any]) -> LogRecord:
 
     The unit is the one the record is about — systemd's own messages about a
     unit are logged by PID 1, under ``UNIT`` rather than ``_SYSTEMD_UNIT``.
+    The kernel's records name no unit and read as ``kernel``, or as the
+    program that wrote one into the kernel's log.
     """
     try:
         timestamp: Optional[float] = int(entry["__REALTIME_TIMESTAMP"]) / 1_000_000
@@ -141,7 +144,9 @@ def render_journal_record(entry: Mapping[str, Any]) -> LogRecord:
             for key in ("UNIT", "OBJECT_SYSTEMD_UNIT", "COREDUMP_UNIT", "_SYSTEMD_UNIT")
             if entry.get(key)
         ),
-        "-",
+        (_journal_text(entry.get("SYSLOG_IDENTIFIER")) or "kernel")
+        if entry.get("_TRANSPORT") == "kernel"
+        else "-",
     )
     try:
         level = _PRIORITY_NAMES[int(_journal_text(entry.get("PRIORITY")))]
@@ -230,7 +235,7 @@ class _ReaderReading(LogReading):
 
 
 class JournalLogSource(LogSource):
-    """A source's units, read through the journal reader."""
+    """A source's units or matches, read through the journal reader."""
 
     def __init__(self, name: str, socket_path: str = READER_SOCKET) -> None:
         super().__init__(name)
@@ -240,7 +245,10 @@ class JournalLogSource(LogSource):
         return _ReaderReading(self._socket_path, self.name, since, until)
 
     def describe(self) -> Dict[str, Any]:
-        return {"backend": "journal", "units": list(SOURCE_UNITS[self.name])}
+        query = SOURCE_QUERIES[self.name]
+        if query.units:
+            return {"backend": "journal", "units": list(query.units)}
+        return {"backend": "journal", "matches": list(query.matches)}
 
 
 # The full log format: "2026-09-23 10:00:00.123 INFO ...", in local time.
@@ -360,8 +368,9 @@ class LogSourceCatalog(ABC):
 
 
 class JournalCatalog(LogSourceCatalog):
-    """Production: the journal, through the reader, and the renderer and the
-    supervisor on this machine, each while its package is installed."""
+    """Production: the journal, through the reader — the server's units and
+    the kernel's records, and the renderer and the supervisor on this
+    machine, each while its package is installed."""
 
     def __init__(
         self,
@@ -384,6 +393,7 @@ class JournalCatalog(LogSourceCatalog):
         for name, unit_file in self._package_unit_files.items():
             if os.path.exists(unit_file):
                 sources[name] = JournalLogSource(name, self._socket_path)
+        sources[KERNEL] = JournalLogSource(KERNEL, self._socket_path)
         return sources
 
 

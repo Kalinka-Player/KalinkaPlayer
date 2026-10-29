@@ -28,13 +28,24 @@ from .log_archive import (
     ExportWarning,
     write_archive,
 )
-from .log_sources import LOCAL_RENDERER, SERVER, SOURCES, SUPERVISOR, LogSourceCatalog
+from .log_sources import (
+    KERNEL,
+    LOCAL_RENDERER,
+    SERVER,
+    SOURCES,
+    SUPERVISOR,
+    LogSourceCatalog,
+)
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
 TEXT_CAP_BYTES = 8 * 1024 * 1024
 #: An optional source's share of the text cap; the server keeps the rest.
-OPTIONAL_CAP_BYTES = {LOCAL_RENDERER: 2 * 1024 * 1024, SUPERVISOR: 1024 * 1024}
+OPTIONAL_CAP_BYTES = {
+    LOCAL_RENDERER: 2 * 1024 * 1024,
+    SUPERVISOR: 1024 * 1024,
+    KERNEL: 1024 * 1024,
+}
 DEADLINE_SECONDS = 60.0
 LIFETIME_SECONDS = 30 * 60.0
 
@@ -217,8 +228,8 @@ class ExportManager:
 
     async def start(self, lookback_seconds: int, include_local_renderer: bool) -> ExportStatus:
         """Begin preparing an export of the last ``lookback_seconds``,
-        replacing a finished one. The supervisor's logs are included
-        whenever this machine has it.
+        replacing a finished one. The supervisor's and the kernel's logs are
+        included whenever they are available.
 
         @raise ExportInProgress While one is being prepared.
         @raise LogSourceUnavailable When a source it needs is not installed.
@@ -236,8 +247,7 @@ class ExportManager:
             names = [SERVER]
             if include_local_renderer:
                 names.append(LOCAL_RENDERER)
-            if SUPERVISOR in available:
-                names.append(SUPERVISOR)
+            names.extend(name for name in (SUPERVISOR, KERNEL) if name in available)
             export = _Export(
                 id=uuid.uuid4().hex,
                 since=until - timedelta(seconds=lookback_seconds),

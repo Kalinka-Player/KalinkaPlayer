@@ -31,7 +31,7 @@ sequenceDiagram
     API-->>App: ZIP attachment with Content-Length
 ```
 
-**User interaction.** Add **Settings → Support → Download server logs**. Default to the last 24 hours, with 1-hour and 7-day alternatives. Offer **Include renderer logs from this server** only when the server lists that source as available (see *Sources*). It covers the renderer installed on the server's own machine, never a renderer elsewhere or the app itself. The supervisor's logs need no choice: every export carries them when the server's machine has the supervisor.
+**User interaction.** Add **Settings → Support → Download server logs**. Default to the last 24 hours, with 1-hour and 7-day alternatives. Offer **Include renderer logs from this server** only when the server lists that source as available (see *Sources*). It covers the renderer installed on the server's own machine, never a renderer elsewhere or the app itself. The supervisor's and the kernel's logs need no choice: every export carries the supervisor's when the server's machine has the supervisor, and the kernel's whenever the server reads the journal.
 
 After **Prepare logs**, show **Collecting logs…** with an indeterminate indicator and **Cancel**, then **Download ZIP · 96 KB** with the expiry time. A failed export shows its message and **Try again**. Warnings — history shorter than requested, a cap that dropped older records, an unavailable renderer source — appear as notes beside the ready download. A short note on the screen says the archive may contain file and track names, listening times, device names and network addresses.
 
@@ -69,7 +69,7 @@ The status of a ready export:
 ```json
 {
   "state": "ready",
-  "available_sources": ["server", "local_renderer"],
+  "available_sources": ["server", "local_renderer", "supervisor", "kernel"],
   "requested_range": {
     "since": "2026-09-22T10:00:00Z",
     "until": "2026-09-23T10:00:00Z"
@@ -100,13 +100,14 @@ DELETE during preparation sets the worker's cancel flag, closes its reader conne
 
 Errors use a stable code and a safe, user-facing message, for example `{"code":"logs_unreadable","message":"The server could not read its logs."}`. The worker's codes are `logs_unreadable`, `collection_timeout`, `insufficient_storage` and `export_failed`. Never put exception text or local paths in an HTTP message. Send `Cache-Control: no-store` on every response.
 
-**Sources.** A source is a fixed set of units rendered into one file:
+**Sources.** A source is a fixed set of units, or for the kernel one fixed journal match, rendered into one file:
 
-| Source | Archive entry | Journal units |
+| Source | Archive entry | Journal units or match |
 | --- | --- | --- |
 | `server` | `server.log` | `kalinka.service`, `kalinka-upgrade.service`, `kalinka-restart.service` |
 | `local_renderer` | `local-renderer.log` | `kalinka-renderer.service`, `kalinka-renderer-upgrade.service` |
 | `supervisor` | `supervisor.log` | `kalinka-supervisor.service`, `kalinka-soundcard.service`, `kalinka-soundcard-apply.service`, `kalinka-ssh-setup.service`, `kalinka-wifi@*.service`, `kalinka-reinstall.service`, `kalinka-plugin-removal.service` |
+| `kernel` | `kernel.log` | the match `_TRANSPORT=kernel` |
 
 The upgrade and restart units belong to the server source because a failed upgrade is the likeliest reason to ask for logs, and their output never reaches `kalinka.service`'s journal. Each line carries its unit's name, so the interleaved file reads in order: the upgrade, the restart, the server starting again. Asking the journal by unit also brings systemd's own messages about each unit — a start, an exit status, a kill — which are often the answer. A unit with no records is normal (the RPM ships no upgrade units); warn only when a whole source has none.
 
@@ -114,23 +115,25 @@ The upgrade and restart units belong to the server source because a failed upgra
 
 `supervisor` is available when the supervisor package's unit file `/usr/lib/systemd/system/kalinka-supervisor.service` exists, and is then in every export. Besides the supervisor itself it covers the units the supervisor ships or starts: the sound card at boot and on request, SSH access, each Wi-Fi interface, the reinstall and plugin removal. The reinstall and plugin-removal helpers write their output into `/var/log/kalinka-supervisor/`, so only systemd's messages about those two reach the archive.
 
-Production logs go to journald: the server's entry point installs stream handlers and the renderer runs in the foreground, and nothing writes `/var/log/kalinka`. The developer launcher instead tees the server's output into `paths.log_dir()/server.log`. The server picks its backend the way `logging_setup.stream_is_journal` picks a log format: when its standard error is the journal, it reads the journal through the reader below; otherwise it reads the developer's file and offers neither the renderer nor the supervisor source.
+`kernel` is available whenever the server reads the journal, and is then in every export. The kernel logs under `_TRANSPORT=kernel` with no unit attached, so no `--unit=` match reaches its account of an OOM kill — the trigger, Mem-Info, the per-task memory table, the process it killed — or a native crash's fault line; `server.log` carries only systemd's note that the service was killed or dumped core. The reader asks for those records with the positional match `_TRANSPORT=kernel`, not `--dmesg`, which implies `--boot` and would lose the report of an OOM that ended in a reboot. Its lines name `kernel` where a unit would be, or the program that wrote the record into the kernel's log, as systemd does early in boot. The source is the whole kernel log for the period rather than lines picked by pattern: one OOM report spans many records, and a filter would cut the parts that make it useful. That widens what an archive reveals on a general-purpose machine — other processes' names in the task table, USB and audio device names, MAC addresses. Core files are not collected: the images do not install `systemd-coredump`, and where it is installed its journal summary already reaches the crashed unit's file through `--unit=`.
+
+Production logs go to journald: the server's entry point installs stream handlers and the renderer runs in the foreground, and nothing writes `/var/log/kalinka`. The developer launcher instead tees the server's output into `paths.log_dir()/server.log`. The server picks its backend the way `logging_setup.stream_is_journal` picks a log format: when its standard error is the journal, it reads the journal through the reader below; otherwise it reads the developer's file and offers none of the renderer, supervisor and kernel sources.
 
 **Collection.** Ask for the requested interval across boots, not only the current boot. Read newest records first, stop at the source's share of the text cap, then write the retained records oldest first; the newest records survive the cap and a slow scan can stop early. Render structured records as readable timestamped lines, never raw journal data. Cap a single record at 64 KiB and mark the cut. Record each source's actual first and last timestamps: history that starts after `since` — vacuumed, or a volatile journal lost at reboot — is a warning, never complete coverage.
 
-A source tells "nothing in range" apart from "cannot read": an accessible source with no records yields an empty file and a warning. A failed `server` source fails the export; a failed `local_renderer` or `supervisor` source leaves a ready archive with a warning. The retained text stays in memory, within the cap, and a record that carries a credential is dropped before anything reaches the disk.
+A source tells "nothing in range" apart from "cannot read": an accessible source with no records yields an empty file and a warning. A failed `server` source fails the export; a failed `local_renderer`, `supervisor` or `kernel` source leaves a ready archive with a warning. The retained text stays in memory, within the cap, and a record that carries a credential is dropped before anything reaches the disk.
 
 **The journal reader.** The service user `kalusr` cannot read the system journal, and the unit runs with `NoNewPrivileges=yes`. A small socket-activated reader bridges that:
 
 - `kalinka-journal-reader.socket` listens on `/run/kalinka-journal-reader.sock` with `SocketGroup=kalusr`, `SocketMode=0660` and `Accept=yes`; the socket's permissions are the peer check. It stays out of `/run/kalinka`, which systemd removes whenever the server stops.
 - `kalinka-journal-reader@.service` runs once per connection with `DynamicUser=yes` and `SupplementaryGroups=systemd-journal`, so packaging creates no user. It needs no network, writable storage or root: add `PrivateNetwork=yes`, `ProtectSystem=strict`, `ProtectHome=yes` and a `RuntimeMaxSec=` just above the preparation deadline.
-- Its executable, the stdlib-only module `kalinka_server.journal_reader` run by the venv's interpreter, reads one JSON request — a source name and two Unix timestamps — validates it, and runs a fixed `journalctl` argument vector without a shell: the source's `--unit=` flags, `--since=@<since> --until=@<until>` (epoch form, so no time zone is parsed), `--reverse`, `--output=json` and `--output-fields=` limited to the message, unit and priority. It accepts no command, arbitrary unit, directory or path. It streams records back, and kills and reaps `journalctl` when the connection closes.
+- Its executable, the stdlib-only module `kalinka_server.journal_reader` run by the venv's interpreter, reads one JSON request — a source name and two Unix timestamps — validates it, and runs a fixed `journalctl` argument vector without a shell: the source's `--unit=` flags, `--since=@<since> --until=@<until>` (epoch form, so no time zone is parsed), `--reverse`, `--output=json`, `--output-fields=` limited to the message, priority, unit, transport and syslog identifier, and for the kernel source its one match last. It accepts no command, arbitrary unit or match, directory or path. It streams records back, and kills and reaps `journalctl` when the connection closes.
 
 Two simpler routes were considered and rejected. `SupplementaryGroups=systemd-journal` on `kalinka.service` is one line, but it lets the server — and every third-party plugin in its process tree — read the whole system journal of what is often a general-purpose machine. A file handler writing into the unit's existing `LogsDirectory=kalinka` misses the startup script's output, crashes, systemd's messages about the unit and the renderer, and doubles the writes to an SD card.
 
 **Developer file source.** Without systemd, read `paths.log_dir()/server.log`, the one file [dev_run.sh](../scripts/dev_run.sh) appends to; it never rotates. Open it without following symlinks, read backwards from the length seen at open, and keep traceback lines with the record they follow. The full log format starts each record with its timestamp, which the time filter uses. Under `KALINKA_LOG_FORMAT=journal` records carry none: include the newest records up to the cap, set `time_filter_applied: false` in the manifest and warn.
 
-**Archive.** The entries are `server.log`, `local-renderer.log` when requested, `supervisor.log` when the supervisor is installed, and `manifest.json`, always under those names. The manifest records a schema version, the Kalinka and plugin versions, the OS version and CPU architecture, each HDMI port's state, the requested range, and for each source its units or file, backend, actual first and last timestamps, record and byte counts, truncation and whether the time filter applied. Never include configuration, databases, music listings or the rest of the journal.
+**Archive.** The entries are `server.log`, `local-renderer.log` when requested, `supervisor.log` when the supervisor is installed, `kernel.log` when the server reads the journal, and `manifest.json`, always under those names. The manifest records a schema version, the Kalinka and plugin versions, the OS version and CPU architecture, each HDMI port's state, the requested range, and for each source its units, match or file, backend, actual first and last timestamps, record and byte counts, truncation and whether the time filter applied. Never include configuration, databases or music listings. From the journal take only the sources' units and the kernel log's records, through the reader's fixed matches; never another part of the journal, and never a match the caller chose.
 
 **HDMI ports.** A Raspberry Pi refuses to open HDMI audio while the port has no sink whose EDID declares HDMI, and the renderer then only knows the kernel's error 524. So the manifest lists each DRM HDMI connector under `hdmi_ports`, read from `/sys/class/drm`: whether a sink is plugged in (`status`), whether the display drives the port (`enabled`), the EDID's size and, when there is one, the sink's name and whether the EDID declares HDMI and audio, decided as the kernel decides them. That tells a receiver that is unplugged, asleep or on the other port apart from a fault in the player. The rest of the EDID, its serial number included, stays out.
 
@@ -145,7 +148,7 @@ Files live in `paths.cache_dir()/log-export/`, a 0700 directory holding 0600 fil
 | Limit | Default |
 | --- | --- |
 | Concurrent preparations | 1 |
-| Collected log text | 8 MiB: 2 MiB for the renderer and 1 MiB for the supervisor when included, the rest for the server; newest records win |
+| Collected log text | 8 MiB: 2 MiB for the renderer and 1 MiB each for the supervisor and the kernel when included, the rest for the server; newest records win |
 | Single record | 64 KiB, marked when cut |
 | Preparation deadline | 60 seconds |
 | Archive lifetime | 30 minutes after it becomes ready |

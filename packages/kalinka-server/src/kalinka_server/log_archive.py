@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
 
 from .hdmi_ports import hdmi_ports
 from .log_sources import (
+    KERNEL,
     LOCAL_RENDERER,
     SERVER,
     SUPERVISOR,
@@ -36,8 +37,14 @@ ENTRY_NAMES = {
     SERVER: "server.log",
     LOCAL_RENDERER: "local-renderer.log",
     SUPERVISOR: "supervisor.log",
+    KERNEL: "kernel.log",
 }
-_LABELS = {SERVER: "server", LOCAL_RENDERER: "renderer", SUPERVISOR: "supervisor"}
+_LABELS = {
+    SERVER: "server",
+    LOCAL_RENDERER: "renderer",
+    SUPERVISOR: "supervisor",
+    KERNEL: "kernel",
+}
 
 _ZIP_CHUNK_BYTES = 256 * 1024
 

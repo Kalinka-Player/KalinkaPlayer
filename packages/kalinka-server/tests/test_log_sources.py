@@ -51,6 +51,39 @@ def test_systemd_s_own_message_about_a_unit_names_that_unit():
     assert " kalinka.service [warning] Main process" in render_journal_record(entry).text
 
 
+def test_a_kernel_record_names_the_kernel_where_a_unit_would_be():
+    entry = {
+        "__REALTIME_TIMESTAMP": str(T0 * 1_000_000),
+        "MESSAGE": "Out of memory: Killed process 812 (python3)",
+        "PRIORITY": "3",
+        "_TRANSPORT": "kernel",
+    }
+
+    assert render_journal_record(entry).text == (
+        "2026-09-21T14:13:20.000Z kernel [err] Out of memory: Killed process 812 (python3)"
+    )
+
+
+def test_a_program_s_record_in_the_kernel_s_log_names_that_program():
+    entry = {
+        "__REALTIME_TIMESTAMP": str(T0 * 1_000_000),
+        "MESSAGE": "Inserted module 'autofs4'",
+        "PRIORITY": "6",
+        "_TRANSPORT": "kernel",
+        "SYSLOG_IDENTIFIER": "systemd",
+    }
+
+    assert render_journal_record(entry).text == (
+        "2026-09-21T14:13:20.000Z systemd [info] Inserted module 'autofs4'"
+    )
+
+
+def test_any_other_record_that_names_no_unit_still_reads_as_a_dash():
+    entry = {"__REALTIME_TIMESTAMP": str(T0 * 1_000_000), "MESSAGE": "x", "_TRANSPORT": "syslog"}
+
+    assert render_journal_record(entry).text == "2026-09-21T14:13:20.000Z - [-] x"
+
+
 def test_a_message_that_is_not_utf8_is_still_rendered():
     entry = _entry(T0, None)
     entry["MESSAGE"] = list(b"caf\xe9")
@@ -234,20 +267,20 @@ def test_a_long_file_is_read_across_chunk_boundaries(tmp_path):
     assert [r.text for r in records] == list(reversed(lines))
 
 
-def test_the_journal_catalog_offers_the_renderer_and_supervisor_while_installed(tmp_path):
+def test_the_journal_catalog_offers_the_kernel_and_each_package_while_installed(tmp_path):
     sock = tmp_path / "reader.sock"
     sock.touch()
     renderer = tmp_path / "kalinka-renderer.service"
     supervisor = tmp_path / "kalinka-supervisor.service"
     catalog = JournalCatalog(str(sock), str(renderer), str(supervisor))
 
-    assert list(catalog.available()) == ["server"]
+    assert list(catalog.available()) == ["server", "kernel"]
     supervisor.touch()
-    assert list(catalog.available()) == ["server", "supervisor"]
+    assert list(catalog.available()) == ["server", "supervisor", "kernel"]
     renderer.touch()
-    assert list(catalog.available()) == ["server", "local_renderer", "supervisor"]
+    assert list(catalog.available()) == ["server", "local_renderer", "supervisor", "kernel"]
     supervisor.unlink()
-    assert list(catalog.available()) == ["server", "local_renderer"]
+    assert list(catalog.available()) == ["server", "local_renderer", "kernel"]
     sock.unlink()
     assert catalog.available() == {}
 
@@ -257,3 +290,14 @@ def test_the_file_catalog_offers_the_server_alone(tmp_path):
     assert FileCatalog(str(log)).available() == {}
     log.touch()
     assert list(FileCatalog(str(log)).available()) == ["server"]
+
+
+def test_the_manifest_names_the_units_or_the_match_a_journal_source_reads():
+    assert JournalLogSource("local_renderer").describe() == {
+        "backend": "journal",
+        "units": ["kalinka-renderer.service", "kalinka-renderer-upgrade.service"],
+    }
+    assert JournalLogSource("kernel").describe() == {
+        "backend": "journal",
+        "matches": ["_TRANSPORT=kernel"],
+    }

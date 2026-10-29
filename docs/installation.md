@@ -463,12 +463,12 @@ ExecStart=/usr/bin/kalinka-renderer --server 192.168.1.50:8000
 
 **Kalinka does not start.** Open [the control page](#the-control-page): it shows what failed, can remove a broken plugin, and can reinstall Kalinka.
 
-**Logs.** While the server runs, the app can download its logs as a ZIP. Passwords and keys are removed, but file names and network addresses remain, so look through it before posting it. When the server does not start, save the logs on the streamer:
+**Logs.** While the server runs, the app can download its logs as a ZIP. Passwords and keys are removed, but file names, network addresses and, from the kernel's log, the names of devices and other programs remain, so look through it before posting it. When the server does not start, save the logs on the streamer:
 
 ```bash
 sudo journalctl -u kalinka -u kalinka-upgrade -u kalinka-restart --since "1 day ago" > kalinka.log
 ```
 
-For a renderer, use `-u kalinka-renderer -u kalinka-renderer-upgrade`.
+For a renderer, use `-u kalinka-renderer -u kalinka-renderer-upgrade`. The kernel's account of an out-of-memory kill or a crash is in its own log, which no `-u` reaches: `sudo journalctl _TRANSPORT=kernel --since "1 day ago" > kernel.log`.
 
 **Asking for help.** Questions are welcome in [the testing thread](https://github.com/Kalinka-Player/KalinkaPlayer/discussions/133). Something you can reproduce is easier to act on as an [issue](https://github.com/Kalinka-Player/KalinkaPlayer/issues).

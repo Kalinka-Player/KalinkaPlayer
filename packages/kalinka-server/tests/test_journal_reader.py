@@ -2,8 +2,8 @@
 
 It runs with the right to read the whole system journal, so what it accepts
 is the security boundary: a known source and a time range, never a unit,
-path or command of the caller's choosing. A caller that goes away must not
-leave journalctl running.
+match, path or command of the caller's choosing. A caller that goes away
+must not leave journalctl running.
 """
 
 import json
@@ -16,6 +16,7 @@ import pytest
 
 from kalinka_server import journal_reader
 from kalinka_server.journal_reader import (
+    SOURCE_QUERIES,
     BadRequest,
     journalctl_argv,
     parse_request,
@@ -38,6 +39,8 @@ RECORD = {
         b'{"source": "server", "since": 1}\n',
         b'{"source": "server", "since": 1, "until": 2, "unit": "sshd.service"}\n',
         b'{"source": "sshd", "since": 1, "until": 2}\n',
+        b'{"source": "_TRANSPORT=syslog", "since": 1, "until": 2}\n',
+        b'{"source": "kernel", "since": 1, "until": 2, "match": "_TRANSPORT=syslog"}\n',
         b'{"source": "server", "since": "1", "until": 2}\n',
         b'{"source": "server", "since": 1.5, "until": 2}\n',
         b'{"source": "server", "since": true, "until": 2}\n',
@@ -50,26 +53,52 @@ def test_anything_but_a_known_source_and_a_range_is_refused(line):
         parse_request(line)
 
 
-@pytest.mark.parametrize("source", ["server", "local_renderer", "supervisor"])
+@pytest.mark.parametrize("source", ["server", "local_renderer", "supervisor", "kernel"])
 def test_a_valid_request_is_understood(source):
     line = json.dumps({"source": source, "since": 5, "until": 9}).encode() + b"\n"
 
     assert parse_request(line) == (source, 5, 9)
 
 
-def test_the_command_names_only_the_source_s_own_units_across_every_boot():
-    argv = journalctl_argv("server", 100, 200)
+@pytest.mark.parametrize("source", sorted(SOURCE_QUERIES))
+def test_every_command_reads_the_range_from_the_system_journal_across_every_boot(source):
+    argv = journalctl_argv(source, 100, 200)
 
     assert argv[0] == "journalctl"
+    assert "--since=@100" in argv and "--until=@200" in argv
+    assert "--reverse" in argv and "--output=json" in argv
+    assert not any(
+        a in ("-b", "--boot", "-k", "--dmesg") or a.startswith("--boot=") for a in argv
+    )
+    assert not any(a.startswith(("--directory", "--file", "--root", "-D")) for a in argv)
+
+
+@pytest.mark.parametrize("source", sorted(SOURCE_QUERIES))
+def test_every_source_reads_by_units_or_by_matches_never_both(source):
+    query = SOURCE_QUERIES[source]
+
+    assert bool(query.units) != bool(query.matches)
+
+
+def test_the_server_command_names_only_its_own_units():
+    argv = journalctl_argv("server", 100, 200)
+
     assert [a for a in argv if a.startswith("--unit=")] == [
         "--unit=kalinka.service",
         "--unit=kalinka-upgrade.service",
         "--unit=kalinka-restart.service",
     ]
-    assert "--since=@100" in argv and "--until=@200" in argv
-    assert "--reverse" in argv and "--output=json" in argv
-    assert not any(a in ("-b", "--boot") or a.startswith("--boot=") for a in argv)
-    assert not any(a.startswith(("--directory", "--file", "--root", "-D")) for a in argv)
+    assert [a for a in argv if not a.startswith("-")] == ["journalctl"]
+
+
+def test_the_kernel_command_matches_its_transport_and_asks_for_it_back():
+    argv = journalctl_argv("kernel", 100, 200)
+
+    assert [a for a in argv if not a.startswith("-")] == ["journalctl", "_TRANSPORT=kernel"]
+    assert argv[-1] == "_TRANSPORT=kernel"
+    assert not any(a.startswith("--unit=") for a in argv)
+    fields = next(a for a in argv if a.startswith("--output-fields="))
+    assert {"_TRANSPORT", "SYSLOG_IDENTIFIER"} <= set(fields.split("=", 1)[1].split(","))
 
 
 @pytest.fixture

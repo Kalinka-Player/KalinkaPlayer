@@ -19,7 +19,8 @@ from kalinka_server.log_archive import (
     ExportFailure,
     write_archive,
 )
-from tests.log_export_fakes import ListSource, records
+from kalinka_server.log_sources import JournalLogSource
+from tests.log_export_fakes import FakeReader, ListSource, records
 
 T0 = 1_790_000_000.0
 SINCE, UNTIL = T0, T0 + 3600
@@ -132,6 +133,70 @@ def test_an_unreadable_renderer_source_leaves_a_ready_archive_with_a_warning(tmp
     assert _codes(result) == [("local_renderer", "source_unreadable")]
     manifest = json.loads(_read(target, "manifest.json"))
     assert manifest["sources"]["local_renderer"]["readable"] is False
+
+
+def _kernel_entry(seconds, priority, message):
+    return {
+        "__REALTIME_TIMESTAMP": str(int(seconds * 1_000_000)),
+        "MESSAGE": message,
+        "PRIORITY": priority,
+        "_TRANSPORT": "kernel",
+    }
+
+
+def test_the_kernel_s_records_go_in_oldest_first_within_their_cap(tmp_path):
+    server = ListSource("server", records((T0, "server line")))
+    newest_first = [
+        _kernel_entry(T0 + 3, "3", "Out of memory: Killed process 812 (python3)"),
+        _kernel_entry(T0 + 2, "6", "Mem-Info:"),
+        _kernel_entry(T0 + 1, "4", "python3 invoked oom-killer"),
+        {"status": "ok", "journal_start": T0 - 100},
+    ]
+    kept = (
+        "2026-09-21T14:13:22.000Z kernel [info] Mem-Info:\n"
+        "2026-09-21T14:13:23.000Z kernel [err] Out of memory: Killed process 812 (python3)\n"
+    )
+
+    with FakeReader(tmp_path / "reader.sock", newest_first) as reader:
+        target, result = _write(
+            tmp_path,
+            ArchivePart(server, 1 << 20, required=True),
+            ArchivePart(JournalLogSource("kernel", reader.path), len(kept), required=False),
+        )
+
+    assert reader.requests == [{"source": "kernel", "since": SINCE, "until": UNTIL}]
+    assert _read(target, "kernel.log") == kept
+    assert _codes(result) == [("kernel", "older_records_dropped")]
+    assert result.warnings[0].message == (
+        "Older kernel records were left out to keep the archive small."
+    )
+    kernel = json.loads(_read(target, "manifest.json"))["sources"]["kernel"]
+    assert kernel["entry"] == "kernel.log"
+    assert kernel["backend"] == "journal"
+    assert kernel["matches"] == ["_TRANSPORT=kernel"]
+    assert kernel["records"] == 2
+    assert kernel["bytes"] == len(kept)
+    assert kernel["truncated"] is True
+
+
+def test_a_kernel_log_that_cannot_be_read_leaves_a_ready_archive_with_a_warning(tmp_path):
+    server = ListSource("server", records((T0, "server line")))
+    refusal = [{"status": "error", "code": "journal_unreadable"}]
+
+    with FakeReader(tmp_path / "reader.sock", refusal) as reader:
+        target, result = _write(
+            tmp_path,
+            ArchivePart(server, 1 << 20, required=True),
+            ArchivePart(JournalLogSource("kernel", reader.path), 1 << 20, required=False),
+        )
+
+    assert _read(target, "server.log") == "server line\n"
+    assert _read(target, "kernel.log") == ""
+    assert _codes(result) == [("kernel", "source_unreadable")]
+    assert result.warnings[0].message == "The kernel's logs could not be read."
+    kernel = json.loads(_read(target, "manifest.json"))["sources"]["kernel"]
+    assert kernel["readable"] is False
+    assert kernel["backend"] == "journal"
 
 
 def test_history_that_starts_after_the_requested_range_is_a_warning(tmp_path):
