@@ -243,6 +243,27 @@ TEST_F(CustomHdmiSettingsTest, SavedSelectionWithoutAes3StaysPlayableAfterStartu
   EXPECT_EQ(field(output(), "output.bit_depth")->value(), "Up to 32 bit");
 }
 
+TEST_F(NativePlayerSettingsTest, CardMixerIsRefusedForACardWithoutOne) {
+  EXPECT_FALSE(player_->applyConfig("output.volume_mode", "hardware", error_));
+  EXPECT_THAT(error_, ::testing::HasSubstr("no volume control"));
+  EXPECT_EQ(field(output(), "output.volume_mode")->value(), "auto");
+  EXPECT_FALSE(loadSettingsOverrides().contains("output.volume_mode"));
+}
+
+TEST_F(HdmiSettingsTest, ACardWithoutAMixerTakesCardMixerBackToAutomatic) {
+  player_.reset();
+  saveSettingsOverrides(
+      {{"output.device", "null"}, {"output.volume_mode", "hardware"}});
+  player_ = std::make_shared<NativePlayer>(ioc_);
+
+  ASSERT_TRUE(player_->applyConfig("output.device", "hdmi:CARD=Missing,DEV=0",
+                                   error_))
+      << error_;
+
+  EXPECT_EQ(field(output(), "output.volume_mode")->value(), "auto");
+  EXPECT_FALSE(loadSettingsOverrides().contains("output.volume_mode"));
+}
+
 TEST_F(NativePlayerSettingsTest, ModeChoicesAreDescribedInTheirOwnOrder) {
   const auto section = output();
   auto described = [&section](const std::string &path) {
@@ -1232,6 +1253,17 @@ TEST_F(NativePlayerSettingsTest, PersistentlyFixedOutputIsAcceptedAtUnity) {
   EXPECT_FALSE(snapshot.volume().supported());
   EXPECT_EQ(snapshot.volume().current(), 100u);
   player_->endSessionVolume();
+}
+
+TEST_F(NativePlayerSettingsTest, AStoredCardMixerWithoutOneSaysWhatToChoose) {
+  player_.reset();
+  saveSettingsOverrides(
+      {{"output.device", "null"}, {"output.volume_mode", "hardware"}});
+  player_ = std::make_shared<NativePlayer>(ioc_);
+
+  std::string error;
+  EXPECT_FALSE(player_->beginSessionVolume({}, error));
+  EXPECT_THAT(error, ::testing::HasSubstr("Automatic or Software"));
 }
 
 TEST_F(NativePlayerSettingsTest, AnUndeclaredPathIsRefused) {
