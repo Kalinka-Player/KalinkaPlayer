@@ -93,7 +93,6 @@ base_finish
 install_supervisor
 verify_supervisor
 verify_display
-verify_display_driver "$ROOTFS/boot/firmware/config.txt"
 require_no_compiler
 
 stop_build_aids

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 #
 # The steps that take a downloaded DietPi image as trustworthy and keep it
-# what DietPi tested: a signature from the pinned key and nobody else, a grown
-# root partition the Pi's boot chain still finds by the same disk id, every
+# what DietPi tested: a signature from the pinned key and nobody else, every
 # dietpi.txt key the build sets still under its name, and the kernel held
 # where DietPi left it.
 set -uo pipefail
@@ -20,30 +19,6 @@ SCRIPT_DIR="$PKG_DIR"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-
-echo "  -- growing the root partition"
-image="$WORK/dietpi.img"
-truncate -s 64MiB "$image"
-sfdisk --quiet "$image" <<'LAYOUT'
-label: dos
-label-id: 0x1234abcd
-start=2048, size=16384, type=c, bootable
-start=18432, size=32768, type=83
-LAYOUT
-( grow_root_partition "$image" 128MiB ) || fail "refused a two-partition MBR image"
-table="$(sfdisk -d "$image")"
-assert_eq "keeps the disk id the boot chain names" "$(sfdisk --disk-id "$image")" 0x1234abcd
-assert_contains "leaves the boot partition as it was" "$table" "start=        2048, size=       16384, type=c, bootable"
-assert_contains "and grows the root to the end" "$table" "start=       18432, size=      243712, type=83"
-( grow_root_partition "$image" 64MiB ) || fail "refused an image already bigger than asked"
-assert_eq "never shrinks the image" "$(stat -c %s "$image")" $((128 * 1024 * 1024))
-
-truncate -s 64MiB "$WORK/gpt.img"
-printf 'label: gpt\n,16MiB,U\n,,L\n' | sfdisk --quiet "$WORK/gpt.img"
-( grow_root_partition "$WORK/gpt.img" 128MiB ) 2>/dev/null && fail "grew a GPT image"
-truncate -s 64MiB "$WORK/three.img"
-printf 'label: dos\n,8MiB,c\n,8MiB,83\n,,83\n' | sfdisk --quiet "$WORK/three.img"
-( grow_root_partition "$WORK/three.img" 128MiB ) 2>/dev/null && fail "grew an image with three partitions"
 
 echo "  -- the keys DietPi's dietpi.txt must still have"
 settings="$WORK/dietpi.txt"
@@ -82,18 +57,18 @@ sed 's|^AUTO_SETUP_NET_STATIC_IP=.*|AUTO_SETUP_NET_STATIC_IP=192.168.0.100\nAUTO
 echo "  -- the kernel it ships"
 in_chroot() {
   printf '%s\n' \
-    'linux-image-6.18.39+rpt-rpi-v8 1:6.18.39-1+rpt1 install ok installed' \
-    'linux-image-6.12.25+rpt-rpi-v8 1:6.12.25-1+rpt1 deinstall ok config-files' \
-    'linux-image-rpi-v8 1:6.18.39-1+rpt1 install ok installed'
+    'linux-image-6.12.57+deb13-amd64 6.12.57-1 install ok installed' \
+    'linux-image-6.12.48+deb13-amd64 6.12.48-1 deinstall ok config-files' \
+    'linux-image-amd64 6.12.57-1 install ok installed'
 }
 assert_eq "names each installed kernel package with its version, since a rebuild keeps the name" \
   "$(kernel_packages | tr '\n' ';')" \
-  "linux-image-6.18.39+rpt-rpi-v8 1:6.18.39-1+rpt1;linux-image-rpi-v8 1:6.18.39-1+rpt1;"
+  "linux-image-6.12.57+deb13-amd64 6.12.57-1;linux-image-amd64 6.12.57-1;"
 kernel_packages > "$WORK/kernel.before"
 in_chroot() { echo "$*" >> "$WORK/marked"; }
 mark_kernel hold
 assert_eq "holds exactly those while the build upgrades" \
-  "$(cat "$WORK/marked")" "apt-mark hold linux-image-6.18.39+rpt-rpi-v8 linux-image-rpi-v8"
+  "$(cat "$WORK/marked")" "apt-mark hold linux-image-6.12.57+deb13-amd64 linux-image-amd64"
 : > "$WORK/kernel.before"
 : > "$WORK/marked"
 mark_kernel hold

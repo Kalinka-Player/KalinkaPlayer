@@ -1,0 +1,12 @@
+#!/bin/bash
+# config.txt is assembled from the layers' fragments in this phase, after Kalinka went in.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)"
+
+# shellcheck source=../../../../../lib/common.sh
+. "$SCRIPT_DIR/lib/common.sh"
+# shellcheck source=../../../../../lib/supervisor.sh
+. "$SCRIPT_DIR/lib/supervisor.sh"
+
+verify_supervisor_boot_config "$1/boot/firmware/config.txt"
