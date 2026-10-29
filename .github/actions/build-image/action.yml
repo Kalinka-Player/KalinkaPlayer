@@ -41,9 +41,8 @@ runs:
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends \
-          debootstrap dosfstools e2fsprogs fdisk xz-utils curl dpkg-dev podman
-        # Ubuntu's debootstrap carries no script for a Debian release younger
-        # than itself, and every Debian suite script is the same file.
+          debootstrap debian-archive-keyring gpgv dosfstools e2fsprogs fdisk xz-utils curl dpkg-dev podman
+        # Ubuntu's debootstrap lacks scripts for newer Debian suites, which are all the same file.
         [ -e /usr/share/debootstrap/scripts/trixie ] \
           || sudo ln -s sid /usr/share/debootstrap/scripts/trixie
 

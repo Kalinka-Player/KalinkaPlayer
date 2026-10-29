@@ -18,8 +18,9 @@
 SUITE="${SUITE:-trixie}"
 MIRROR="${MIRROR:-http://deb.debian.org/debian}"
 ROOT_LABEL=kalinka-root
+DEBIAN_KEYRING=/usr/share/keyrings/debian-archive-keyring.gpg
 
-BASE_HOST_TOOLS=(debootstrap mkfs.ext4 mkfs.vfat)
+BASE_HOST_TOOLS=(debootstrap gpgv mkfs.ext4 mkfs.vfat)
 
 # What no Kalinka package pulls in: a way in, onto the network, a .local name, the whole card, and ALSA's tools.
 BASE_PACKAGES="ca-certificates curl sudo openssh-server libpam-systemd
@@ -33,6 +34,8 @@ BASE_PACKAGES="ca-certificates curl sudo openssh-server libpam-systemd
 base_check_host() {
   [ -e "/usr/share/debootstrap/scripts/$SUITE" ] || die \
     "this debootstrap has no script for $SUITE: ln -s sid /usr/share/debootstrap/scripts/$SUITE"
+  # Without it debootstrap only warns, and builds from whatever the mirror served.
+  [ -r "$DEBIAN_KEYRING" ] || die "no Debian archive keyring at $DEBIAN_KEYRING: install debian-archive-keyring"
 }
 
 base_create_image() {
@@ -49,7 +52,7 @@ base_create_image() {
   mount_at "$ROOT_DEV" "$ROOTFS"
 
   log "Debootstrapping Debian $SUITE ($TARGET_ARCH)"
-  debootstrap --arch="$TARGET_ARCH" \
+  debootstrap --arch="$TARGET_ARCH" --keyring="$DEBIAN_KEYRING" --force-check-gpg \
     --components=main,contrib,non-free-firmware \
     "$SUITE" "$ROOTFS" "$MIRROR"
 
