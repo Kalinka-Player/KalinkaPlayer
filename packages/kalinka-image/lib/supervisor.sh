@@ -53,8 +53,11 @@ verify_supervisor() {
   [ -x "$ROOTFS/usr/lib/kalinka-supervisor/soundcard.sh" ] || die 'no sound card helper'
 }
 
-# Apart from verify_supervisor: rpi-image-gen writes config.txt only after the supervisor is in.
+# Apart from verify_supervisor: rpi-image-gen writes config.txt and cmdline.txt only after the supervisor is in.
 verify_supervisor_boot_config() {
-  ! grep -Eq '^[[:blank:]]*dtoverlay=disable-(bt|wifi)(-pi5)?(,|[[:blank:]]|$)' "$1" || die 'a setup radio is disabled'
-  grep -q '^dtparam=i2c_arm=on$' "$1" || die 'the HAT I2C bus is off'
+  local config="$1/boot/firmware/config.txt" cmdline
+  cmdline="$(cat "$1/boot/firmware/cmdline.txt")"
+  ! grep -Eq '^[[:blank:]]*dtoverlay=disable-(bt|wifi)(-pi5)?(,|[[:blank:]]|$)' "$config" || die 'a setup radio is disabled'
+  grep -q '^dtparam=i2c_arm=on$' "$config" || die 'the HAT I2C bus is off'
+  ! grep -Eq '(^|[[:blank:]])console=(serial|ttyAMA|ttyS)[0-9]' <<<"$cmdline" || die 'cmdline.txt has a serial console'
 }
