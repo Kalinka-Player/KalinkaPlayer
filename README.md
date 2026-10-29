@@ -93,7 +93,7 @@ Kalinka is young, and the interesting problems are the ones that only happen on 
 
 ## 🛠️ For developers
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for how to send a change, and for the project's disclosure on AI-assisted development.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for what issues and pull requests are accepted, and for the project's disclosure on AI-assisted development.
 
 | | |
 |---|---|
