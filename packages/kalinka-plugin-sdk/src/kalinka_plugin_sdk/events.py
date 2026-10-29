@@ -11,7 +11,6 @@ from .datamodel import (
     PlaybackState,
     PlaybackMode,
 )
-from .module_health import ModuleHealthState
 
 
 class PlayQueueEventType(Enum):
@@ -26,7 +25,6 @@ class PlayQueueEventType(Enum):
     RenderersChanged = "renderers_changed"
     CurrentRendererChanged = "current_renderer_changed"
     PlaybackControlChanged = "playback_control_changed"
-    ModulesChanged = "modules_changed"
 
 
 class RendererDescriptor(BaseModel):
@@ -56,33 +54,6 @@ class RendererDescriptor(BaseModel):
     last_seen: float = 0.0
 
 
-class ModuleDescriptor(BaseModel):
-    """SDK 3.17: one plugin, or a source the server provides itself, as
-    clients see it — an entry of ``GET /server/modules``.
-
-    ``state``, ``error_message`` and ``missing_packages`` are what the plugin
-    last said of itself; ``enabled`` is its configuration's switch.
-    """
-
-    name: str
-    title: str
-    icon: Optional[str] = None
-    enabled: bool = True
-    state: ModuleHealthState
-    error_message: Optional[str] = None
-    missing_packages: List[str] = Field(default_factory=list)
-    builtin: bool = False
-    capabilities: List[str] = Field(default_factory=list)
-
-
-class ModulesSnapshot(BaseModel):
-    """SDK 3.17: every input module and device, as ``GET /server/modules``
-    answers."""
-
-    input_modules: List[ModuleDescriptor] = Field(default_factory=list)
-    devices: List[ModuleDescriptor] = Field(default_factory=list)
-
-
 class PlayQueueEvent(BaseEvent[PlayQueueEventType]):
     """Base class for all play queue events."""
 
@@ -101,8 +72,6 @@ class PlayQueueState(BaseState[PlayQueueEvent]):
     # Whether the queue plays, or an input plugin holds the output exclusively;
     # while one does, playback_state describes the plugin's playback.
     playback_control: PlaybackControl = Field(default_factory=PlaybackControl)
-    # SDK 3.17; None from a server that never publishes them.
-    modules: Optional[ModulesSnapshot] = None
 
     def apply(self, event: PlayQueueEvent) -> "PlayQueueState":
         """Apply event and return a new state (immutable pattern)."""
@@ -147,10 +116,6 @@ class PlayQueueState(BaseState[PlayQueueEvent]):
             updates["selected_renderer_id"] = event.selected_renderer_id
         elif isinstance(event, PlaybackControlChangedEvent):
             updates["playback_control"] = event.control
-        elif isinstance(event, ModulesChangedEvent):
-            updates["modules"] = ModulesSnapshot(
-                input_modules=event.input_modules, devices=event.devices
-            )
         else:
             return self
 
@@ -230,13 +195,3 @@ class PlaybackControlChangedEvent(PlayQueueEvent):
 
     event_type: PlayQueueEventType = PlayQueueEventType.PlaybackControlChanged
     control: PlaybackControl = Field(default_factory=PlaybackControl)
-
-
-class ModulesChangedEvent(PlayQueueEvent):
-    """SDK 3.17: what some plugin says of itself changed. Every module and
-    device, in the shape ``GET /server/modules`` answers, so like
-    ``RenderersChangedEvent`` it is idempotent by construction."""
-
-    event_type: PlayQueueEventType = PlayQueueEventType.ModulesChanged
-    input_modules: List[ModuleDescriptor]
-    devices: List[ModuleDescriptor]
