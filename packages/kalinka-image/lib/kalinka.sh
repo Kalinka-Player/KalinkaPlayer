@@ -1,10 +1,10 @@
 # shellcheck shell=bash
 # Installing Kalinka into the image and proving it works there. Defines only.
 
-# An unbounded journal is what filled the Pi this image replaces.
-limit_journal() {
+# On disk for the log export, which reads the journal; bounded, as an unbounded one filled the Pi this image replaces.
+configure_journal() {
   mkdir -p "$ROOTFS/etc/systemd/journald.conf.d"
-  printf '[Journal]\nSystemMaxUse=200M\n' \
+  printf '[Journal]\nStorage=persistent\nSystemMaxUse=200M\n' \
     > "$ROOTFS/etc/systemd/journald.conf.d/kalinka.conf"
 }
 

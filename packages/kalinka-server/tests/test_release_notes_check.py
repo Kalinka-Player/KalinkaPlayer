@@ -54,10 +54,10 @@ def test_a_heading_gets_the_anchor_github_gives_it(heading, anchor):
 
 
 def test_a_renamed_heading_breaks_the_guides_own_links_to_it():
-    guide = GUIDE.replace("### On the PC image\n", "### PC image settings\n")
+    guide = GUIDE.replace("### The control page\n", "### The supervisor's page\n")
     problems = list(check.broken_guide_links(guide, {check.GUIDE: guide}))
     assert problems
-    assert all("`#on-the-pc-image`" in problem.message for problem in problems)
+    assert all("`#the-control-page`" in problem.message for problem in problems)
 
 
 def test_a_repeated_heading_is_numbered_and_a_fenced_comment_is_no_heading():
@@ -161,7 +161,7 @@ def test_a_passage_left_from_the_debian_pc_image_is_flagged(passage):
     assert "kalinka-firstboot.conf" in guide.splitlines()[problem.line - 1]
     assert problem.message == (
         "`kalinka-firstboot.conf` is named outside the paragraph starting"
-        " `Older Debian PC images`: the DietPi images do not read it"
+        " `Older Debian PC images`: no current image reads it"
     )
 
 

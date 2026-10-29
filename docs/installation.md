@@ -71,13 +71,12 @@ Then [connect it to your network](#connect-your-streamer-to-the-network) if it h
 
 This turns a spare PC into a Kalinka player. You write the image to a USB stick or USB disk and start the PC from it. The PC's own disk is not touched.
 
-**You need:** a 64-bit Intel or AMD PC that can start in UEFI mode, a USB stick or disk of 8 GB or more (**it is erased**; a small USB SSD lasts longer than a cheap stick), and a network cable if you can.
+**You need:** a 64-bit Intel or AMD PC, a USB stick or disk of 8 GB or more (**it is erased**; a small USB SSD lasts longer than a cheap stick), and a network cable if you can.
 
 1. **Download** the file that ends in **`-amd64.img.xz`** from the [image releases](https://github.com/Kalinka-Player/KalinkaPlayer/releases?q=kalinka-image-v&expanded=true). Do not unpack it.
 2. **Write it** to the USB stick with [balenaEtcher](https://etcher.balena.io/) or Raspberry Pi Imager (**Use custom**, as in [option A](#2-write-it-to-the-card)).
-3. **Optional:** [change settings](#on-the-pc-image) for Wi-Fi, a login password or a fixed network address.
-4. **Start the PC from the stick.** In the PC's BIOS or UEFI settings, turn off **Secure Boot**. Then switch the PC on and press the boot menu key straight away (usually F12, F11, F10, F8 or Esc) and choose the USB drive. To start from it every time, put USB first in the boot order.
-5. The first start takes a few minutes and restarts the PC once. Then go on to [Open Kalinka](#open-kalinka).
+3. **Start the PC from the stick.** Switch the PC on, press the boot menu key straight away (usually F12, F11, F10, F8 or Esc) and choose the USB drive. Secure Boot can stay on. To start from it every time, put USB first in the boot order.
+4. The first start takes a couple of minutes. Then [connect it to your network](#connect-your-streamer-to-the-network) if it has no cable, or go straight to [Open Kalinka](#open-kalinka).
 
 <details>
 <summary>Put Kalinka on the PC's internal disk instead</summary>
@@ -97,7 +96,7 @@ Remove the live stick and restart. Kalinka grows to fill the disk on its first s
 The PC image also runs as a virtual machine, which suits a home server that is on all the time anyway. Four things matter:
 
 - **Bridged network, not NAT.** Your phone has to reach the VM directly. Use a **Bridged Adapter** in VirtualBox, a **bridge** in virt-manager, **vmbr0** in Proxmox, or an **External** switch in Hyper-V.
-- **UEFI firmware, Secure Boot off.** The image does not start with legacy BIOS.
+- **UEFI or BIOS firmware.** The image starts with either, and with Secure Boot on.
 - **A bigger disk.** The image is 8 GiB. Make the virtual disk 16 GB or more before the first start, more if the music will live inside the VM.
 - **2 CPU cores and 2 GB of memory**, or 4 GB for smart search.
 
@@ -109,30 +108,12 @@ A VM usually cannot reach your DAC. Let the VM be the server, and [add an output
 
 | Software | How |
 |---|---|
-| **virt-manager / QEMU** | `qemu-img convert -f raw -O qcow2 kalinka.img kalinka.qcow2`, then `qemu-img resize kalinka.qcow2 32G`. Create a VM with **Import existing disk image**, choose **Debian 13**, and select UEFI firmware before starting it. |
-| **Proxmox VE** | Create a VM with no disk and UEFI (OVMF) firmware, then on the host run `qm disk import <vm-id> kalinka.img local-lvm`. Attach the imported disk, make it the boot disk, and resize it under **Hardware**. |
-| **VirtualBox** | `VBoxManage convertfromraw kalinka.img kalinka.vdi --format VDI`, then `VBoxManage modifymedium disk kalinka.vdi --resize 32768`. Create a **Linux / Debian (64-bit)** VM with this disk, enable EFI, and set the network to **Bridged Adapter**. |
-| **Hyper-V** | `qemu-img convert -f raw -O vhdx kalinka.img kalinka.vhdx`. Create a **Generation 2** VM with this disk and disable Secure Boot. |
+| **virt-manager / QEMU** | `qemu-img convert -f raw -O qcow2 kalinka.img kalinka.qcow2`, then `qemu-img resize kalinka.qcow2 32G`. Create a VM with **Import existing disk image** and choose **Debian 13**. |
+| **Proxmox VE** | Create a VM with no disk, then on the host run `qm disk import <vm-id> kalinka.img local-lvm`. Attach the imported disk, make it the boot disk, and resize it under **Hardware**. |
+| **VirtualBox** | `VBoxManage convertfromraw kalinka.img kalinka.vdi --format VDI`, then `VBoxManage modifymedium disk kalinka.vdi --resize 32768`. Create a **Linux / Debian (64-bit)** VM with this disk and set the network to **Bridged Adapter**. |
+| **Hyper-V** | `qemu-img convert -f raw -O vhdx kalinka.img kalinka.vhdx`. Create a **Generation 2** VM with this disk, and under **Security** set the Secure Boot template to **Microsoft UEFI Certificate Authority**. |
 
 **3. Start the VM**, give it a few minutes, and go on to [Open Kalinka](#open-kalinka).
-
-<details>
-<summary>Changing settings in a VM image</summary>
-
-A VM rarely needs [the settings](#on-the-pc-image). The exception is a network without DHCP, where it needs [a fixed address](#a-network-without-dhcp) before anything can reach it. Edit `dietpi.txt` inside the image before you import it. It is on the image's third partition. On Linux, with `mtools` installed:
-
-```bash
-off=$(( $(partx -g -o START -n 3 kalinka.img) * 512 ))
-mcopy -i kalinka.img@@$off ::/dietpi.txt .
-```
-
-Change the lines you need in that copy, as [on the PC image](#on-the-pc-image), then put it back:
-
-```bash
-mcopy -o -i kalinka.img@@$off dietpi.txt ::/dietpi.txt
-```
-
-</details>
 
 ### D. Install with one command
 
@@ -229,8 +210,6 @@ Keep these steps at hand: while your phone or laptop is on the setup network, it
 
 Both ways need Wi-Fi in the streamer, and Bluetooth needs Bluetooth in it too. Every Pi listed above has both, except Compute Modules without wireless. On a PC, the Wi-Fi adapter must support access-point mode. The setup network uses 2.4 GHz.
 
-On the PC image, you can also put the Wi-Fi name and password [on the stick](#on-the-pc-image) before the first start.
-
 ## Open Kalinka
 
 **With the Kalinka app.** Install it on a phone or computer on the same network; the [app's page](https://github.com/Kalinka-Player/KalinkaAI#-install) says which file to download for Android, Windows or Linux. The app finds the server by itself. A new server is called **My Kalinka Service**.
@@ -254,7 +233,7 @@ Kalinka can read music from several places at once. Choose them during setup, an
 - Kalinka looks for new and changed music on a share every 15 minutes.
 - Recycle bins, snapshots, thumbnail folders and hidden folders are skipped.
 
-**Copied onto the streamer.** Every installation has a music folder, `/srv/kalinka/music`, that Kalinka reads from the start. Copy into it with a program that speaks **SFTP**. On an image you need a login first: create one with **SSH access** on [the control page](#the-control-page), or, on the PC image, set a password [on the stick](#on-the-pc-image).
+**Copied onto the streamer.** Every installation has a music folder, `/srv/kalinka/music`, that Kalinka reads from the start. Copy into it with a program that speaks **SFTP**. On an image you need a login first: create one with **SSH access** on [the control page](#the-control-page).
 
 | On | Use |
 |---|---|
@@ -362,60 +341,13 @@ The page answers anyone on your home network, over plain HTTP, and nobody outsid
 
 ## Settings on the card
 
-The images start with **no login password and no Wi-Fi**. On the PC image you can set these, and a fixed network address, on the stick before the first start. You do not need to: Wi-Fi can be [set up afterwards](#connect-your-streamer-to-the-network) and a login created on [the control page](#the-control-page). The Raspberry Pi images read nothing from the card, so for them that is the only way, and a DAC HAT without an ID chip is chosen in the app.
+The images read nothing from the card or the stick, and start with no login and no Wi-Fi. If Raspberry Pi Imager offers settings, skip them. Everything is set up after the first start:
 
-### On the PC image
+- Wi-Fi, over the [setup network or Bluetooth](#connect-your-streamer-to-the-network);
+- a login, with **SSH access** on [the control page](#the-control-page);
+- the time zone and, on a Raspberry Pi, a DAC HAT without an ID chip, in the app.
 
-After writing the stick, unplug it and plug it back in. A small drive called **DIETPISETUP** appears. If it does not, open your disk utility and mount the partition labelled `DIETPISETUP` (partition 3). Leave the other partitions alone.
-
-> **Windows may say the disk needs formatting. Click Cancel.** That message is about the part of the stick Windows cannot read, and formatting would erase it. macOS may say a disk is not readable: click **Ignore**.
-
-Open **`dietpi.txt`** on the DIETPISETUP drive in a text editor (Notepad is fine) and change only the lines you need:
-
-| To get | Change this line | For example |
-|---|---|---|
-| A login, as `root` or `dietpi` | `AUTO_SETUP_GLOBAL_PASSWORD=` | `AUTO_SETUP_GLOBAL_PASSWORD=choose-a-password` |
-| Wi-Fi | `AUTO_SETUP_NET_WIFI_ENABLED=0` | `AUTO_SETUP_NET_WIFI_ENABLED=1` |
-| Wi-Fi channels for your country | `AUTO_SETUP_NET_WIFI_COUNTRY_CODE=GB` | `AUTO_SETUP_NET_WIFI_COUNTRY_CODE=US` |
-
-For Wi-Fi, also open **`dietpi-wifi.txt`** and put your network's name and password between the quotes:
-
-```sh
-aWIFI_SSID[0]='Your network name'
-aWIFI_KEY[0]='your Wi-Fi password'
-```
-
-Save, eject the stick safely, and start the PC. It reads the files on its first start and then **removes the drive**, so the password does not stay there. To change them later, log in and run `sudo dietpi-config`, or write the stick again.
-
-Leave the other lines as they are.
-
-**Logging in.** With a password set, log in as `root` or `dietpi`, for example `ssh root@kalinka.local`. The first login runs a setup that updates the system and may restart it. Kalinka keeps working through it.
-
-<details>
-<summary>An SSH key instead of a password</summary>
-
-In `dietpi.txt`, remove the `#` in front of `AUTO_SETUP_SSH_PUBKEY=` and put the whole line from your `.pub` file after the `=`.
-
-</details>
-
-#### A network without DHCP
-
-Most routers give each device its address. On a network without one, such as a switch with no router, a streamer on a cable gets no address and nothing can reach it. Give it a fixed address before its first start. For a network that uses `192.168.1.1` to `192.168.1.254`, change these four lines in `dietpi.txt`:
-
-```sh
-AUTO_SETUP_NET_USESTATIC=1
-AUTO_SETUP_NET_STATIC_IP=192.168.1.50/24
-AUTO_SETUP_NET_STATIC_GATEWAY=192.168.1.1
-AUTO_SETUP_NET_STATIC_DNS=192.168.1.1
-```
-
-- **The address** must be one no other device uses. Keep the `/24`, which most home networks use.
-- **The gateway** is the router to the internet. Without one, do not leave the line empty: give an unused address in the same range.
-- **DNS** is usually the router again. Without the internet, add network shares by their address, such as `192.168.1.20`, not by name.
-
-Your phone or computer needs an address in the same range, for example `192.168.1.51` with the netmask `255.255.255.0`. Then open `http://192.168.1.50:8000`.
-
-To go back to DHCP, log in, run `sudo dietpi-config`, open **Network Options: Adapters** → **Ethernet**, and switch it to **DHCP**. Or write the stick again.
+A streamer takes its network address from your router. On a network that gives out no addresses, such as a switch with no router, nothing can reach it.
 
 ## Keeping it up to date
 
@@ -427,7 +359,7 @@ A renderer that falls behind shows an upgrade button in the app. To have one upd
 sudo systemctl enable --now kalinka-renderer-upgrade.timer
 ```
 
-Kalinka does not update the operating system. On an image, log in and run `sudo apt update && sudo apt full-upgrade`. On the PC image, run `sudo dietpi-update` first.
+Kalinka does not update the operating system. On an image, log in and run `sudo apt update && sudo apt full-upgrade`.
 
 Kalinka used to install a C compiler and Python's development files for Smart Search as well, about 300 MB that nothing uses any more. An update leaves them in place, so unless you compile software on the streamer yourself, remove them with `sudo apt-get remove build-essential python3-dev`, then `sudo apt-get autoremove` for what they brought with them. That second command offers every package nothing needs any more, not only theirs, so read its list before you agree.
 
@@ -440,8 +372,6 @@ Kalinka used to install a C compiler and Python's development files for Smart Se
 **The Pi does not start.** Check that you wrote the right image: `rpi5` for a Pi 5, `rpi234` for the others. Write the card again, try another card, and use the official power supply.
 
 **The setup Wi-Fi does not appear.** The streamer only opens it when it has no network. If a cable is plugged in, unplug it, or open Kalinka over the cable instead. Give it a few minutes after switching on.
-
-**On the PC image, Wi-Fi or the login from the stick does not work.** Check that `AUTO_SETUP_NET_WIFI_ENABLED=1` is set and that the name and password in `dietpi-wifi.txt` are between the quotes. The streamer removes the files after its first start, so write the stick again to try once more. Or use the [setup Wi-Fi](#connect-your-streamer-to-the-network) and [the control page](#the-control-page) instead.
 
 **No outputs in the list, or no sound.** On the streamer, `systemctl status kalinka-renderer` should say `active (running)`. If the unit is not found, no output is installed there: run the renderer command from [Add more outputs](#add-more-outputs). If there is no sound, pick another sound device in the output's settings: HDMI, the headphone socket and a USB DAC are separate devices. On a Pi, HDMI, the headphone socket and a HAT without an ID chip stay silent until you choose them as the sound card in the app. Until then, you can listen in the browser.
 

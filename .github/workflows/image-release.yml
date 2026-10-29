@@ -3,7 +3,7 @@ name: Image release
 # Builds and publishes the ready-to-flash appliance images for a
 # `kalinka-image-vX.Y.Z` tag, with the server, every first-party plugin, the
 # browser player and the renderer already installed: four for the Raspberry Pi
-# (headless and -display) and one for x86-64 UEFI.
+# (headless and -display) and one for x86-64 PCs.
 #
 # The images have their own release train because they change for reasons the
 # app bundle does not — an operating system update, a first-boot fix —

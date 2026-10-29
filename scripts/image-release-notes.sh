@@ -31,13 +31,13 @@ Ready-to-flash images of Kalinka Player with the server, every first-party plugi
 | `…-rpi5-arm64.img.xz` | Raspberry Pi 5, 500 and CM5 |
 | `…-rpi234-display-arm64.img.xz` | The same boards as `rpi234`, showing what's playing on an attached screen |
 | `…-rpi5-display-arm64.img.xz` | The same boards as `rpi5`, showing what's playing on an attached screen |
-| `…-amd64.img.xz` | x86-64 PC or virtual machine, UEFI (Secure Boot off) |
+| `…-amd64.img.xz` | x86-64 PC or virtual machine, UEFI (Secure Boot on or off) or legacy BIOS |
 
 The Raspberry Pi images play through DAC HATs as well as USB DACs. A HAT with an ID chip is set up by itself.
 
 A `-display` image is the same player with the now-playing display already installed and switched on: plug in an HDMI or DSI screen and it shows the cover, the track and touch controls from the first start. Without a screen, pick the image without `-display`; it is smaller.
 
-To flash an image and start it, follow [Install the server](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#install-the-server). On the PC image, for Wi-Fi, a login or a fixed address on a network without DHCP, change [Settings on the card](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#settings-on-the-card) before the first start. The Raspberry Pi images read nothing from the card: set up Wi-Fi from the app after the first start, and choose a DAC HAT without an ID chip in the app's sound card settings.
+To flash an image and start it, follow [Install the server](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#install-the-server). The images read nothing from the card or the stick: Wi-Fi, a login and, on a Pi, a DAC HAT without an ID chip are set up after the first start, as [Settings on the card](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#settings-on-the-card) describes.
 
 On all images, logs are kept on disk rather than in memory.
 

@@ -20,6 +20,7 @@
 #   base_install_packages    the system packages Kalinka runs on
 #   base_finish              first-boot machinery and bootloader
 #   base_seal                the identities the base regenerates on first boot
+#   base_manifest            KEY=VALUE lines naming what the image was built on
 #
 # Env:
 #   IMAGE_KEEP_FAILED   retain scratch files after a failure for diagnosis (default: 0)
@@ -81,7 +82,7 @@ mount_chroot_filesystems
 snapshot_packages
 base_configure_system
 use_build_dns
-limit_journal
+configure_journal
 start_build_aids
 
 in_chroot apt-get update --error-on=any

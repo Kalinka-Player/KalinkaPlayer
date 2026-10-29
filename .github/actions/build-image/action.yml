@@ -41,7 +41,11 @@ runs:
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends \
-          dosfstools e2fsprogs fdisk xz-utils curl gpg gpgv dpkg-dev podman
+          debootstrap dosfstools e2fsprogs fdisk xz-utils curl dpkg-dev podman
+        # Ubuntu's debootstrap carries no script for a Debian release younger
+        # than itself, and every Debian suite script is the same file.
+        [ -e /usr/share/debootstrap/scripts/trixie ] \
+          || sudo ln -s sid /usr/share/debootstrap/scripts/trixie
 
     # In a container, so the tests that create accounts and regenerate host
     # keys get a throwaway system rather than this runner.

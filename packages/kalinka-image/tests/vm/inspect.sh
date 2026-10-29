@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Verify DietPi first boot, disk growth and the installed setup service.
+# Verify the first boot, disk growth, Secure Boot and the installed setup service.
 # Copy the guest journal out before checks so a failure can be investigated.
 #
 # Usage: sudo inspect.sh <disk.img> <journal-dir>
@@ -64,8 +64,7 @@ else
 fi
 
 echo "  -- the first-boot units succeeded"
-# Partition resizing runs before persistent journaling; disk checks above prove it.
-for unit in dietpi-firstboot.service; do
+for unit in kalinka-growroot.service kalinka-hostkeys.service; do
   results="$(journalctl --directory "$JOURNAL" --output cat --output-fields JOB_RESULT \
     UNIT="$unit" JOB_TYPE=start 2>/dev/null)"
   if [ -z "$results" ]; then
@@ -75,6 +74,11 @@ for unit in dietpi-firstboot.service; do
     journalctl --directory "$JOURNAL" --no-pager --unit "$unit"
   fi
 done
+
+echo "  -- the kernel booted with Secure Boot on"
+kernel_log="$(journalctl --directory "$JOURNAL" --output cat _TRANSPORT=kernel 2>/dev/null)"
+grep -qx 'secureboot: Secure boot enabled' <<<"$kernel_log" \
+  || fail "the kernel did not report Secure Boot enabled; the firmware may not have enforced it"
 
 echo "  -- an initrd"
 initrds=("$ROOTFS"/boot/initrd.img-*)
@@ -86,15 +90,27 @@ else
   fail "no /boot/initrd.img-*"
 fi
 
-echo "  -- DietPi networking and packaged supervisor"
-for package in wpasupplicant ifupdown bluez avahi-daemon libpam-systemd kalinka-supervisor; do
+echo "  -- networking, Secure Boot and the packaged supervisor"
+for package in network-manager wpasupplicant bluez avahi-daemon libpam-systemd \
+    shim-signed grub-efi-amd64-signed kalinka-supervisor; do
   status="$(dpkg-query --admindir="$ROOTFS/var/lib/dpkg" -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null)"
   assert_eq "$package is installed" "$status" "ii "
 done
 [ "$(readlink "$ROOTFS/etc/systemd/system/systemd-logind.service")" != /dev/null ] || fail 'PC power-button handler is masked'
-[ -x "$ROOTFS/boot/dietpi/dietpi-network" ] || fail 'DietPi networking tool is missing'
-[ -s "$ESP/EFI/BOOT/BOOTX64.EFI" ] || fail 'no UEFI fallback bootloader'
 [ -f "$ROOTFS/usr/lib/systemd/system/kalinka-wifi@.service" ] || fail 'no independent Wi-Fi helper'
+
+echo "  -- shim is what UEFI firmware starts"
+boot_efi="$ESP/EFI/BOOT/BOOTX64.EFI"
+cmp -s "$boot_efi" "$ROOTFS/usr/lib/shim/shimx64.efi.signed" \
+  || fail "EFI/BOOT/BOOTX64.EFI is not the image's /usr/lib/shim/shimx64.efi.signed"
+signatures="$(sbverify --list "$boot_efi" 2>&1)"
+grep -q '^signature [0-9]' <<<"$signatures" \
+  || fail "EFI/BOOT/BOOTX64.EFI carries no signature: $signatures"
+
+echo "  -- its own SSH host keys, and SSH still off"
+compgen -G "$ROOTFS/etc/ssh/ssh_host_*_key" >/dev/null || fail 'the first boot made no SSH host keys'
+[ ! -L "$ROOTFS/etc/systemd/system/multi-user.target.wants/ssh.service" ] \
+  || fail 'SSH is on before anyone set a password for it'
 
 echo "  -- the supervisor ran without radios and powered the guest off"
 supervisor_log="$(journalctl --directory "$JOURNAL" --output cat --no-pager --unit kalinka-supervisor.service 2>/dev/null)"

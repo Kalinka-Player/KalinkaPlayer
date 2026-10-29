@@ -194,12 +194,10 @@ NetworkManager's [AddConnection2 and Update2 flags](https://www.networkmanager.d
 ## DietPi integration
 
 Every image installs the static Go supervisor, as a separately versioned
-`kalinka-supervisor` Debian package, with BlueZ and the Wi-Fi tools; the Pi
-images add the Pi's Bluetooth firmware and UART support. On a DietPi system the
-supervisor uses DietPi's own networking, and an image built on DietPi checks for
-its noninteractive `dietpi-network apply --no-restart` API: an older cached base
-lacking that API fails the build and must be refreshed. Everywhere else the
-supervisor uses NetworkManager.
+`kalinka-supervisor` Debian package, with BlueZ and the Wi-Fi tools, and runs
+its NetworkManager backend. On a DietPi system where Kalinka was installed by
+hand, the supervisor uses DietPi's own networking, through its noninteractive
+`dietpi-network apply --no-restart` API.
 
 UART serial-console defaults are disabled so a login/kernel console cannot
 claim the Bluetooth UART on the first boot. The local HDMI console remains
