@@ -1,8 +1,6 @@
 # My Library
 
-The local library indexes MP3, FLAC, WAV (`.wav`, `.wave`), Ogg Vorbis (`.ogg`,
-`.oga`), MP4 audio (`.m4a`), raw AAC (`.aac`), DSF (`.dsf`) and DSDIFF (`.dff`)
-files from local folders and configured network shares.
+The local library indexes MP3, FLAC, WAV (`.wav`, `.wave`), Ogg Vorbis (`.ogg`, `.oga`), MP4 audio (`.m4a`, or `.alac` as some rippers name Apple Lossless), raw AAC (`.aac`), DSF (`.dsf`) and DSDIFF (`.dff`) files from local folders and configured network shares.
 
 Loose files in a configured library root or a generic container such as
 `Music` or `Downloads` are listed individually in Recently Added. Those
