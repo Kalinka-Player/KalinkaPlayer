@@ -1,0 +1,81 @@
+name: Contributions
+
+# A pull request from outside the project is taken only for an open issue
+# labelled "help wanted" (CONTRIBUTING.md): one that does not say it fixes one
+# is closed, with a comment saying how to get an issue marked. The maintainer
+# and Kalinka Bot are exempt, and so is a pull request either of them reopens.
+#
+# pull_request_target, so the token may comment on and close a fork's pull
+# request. Nothing from the pull request is checked out or run: the job reads
+# its description and linked issues through the API only.
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  issues: read
+  pull-requests: write
+
+jobs:
+  help-wanted:
+    name: Fixes a help wanted issue
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const EXEMPT = ['madenvel', 'kalinka-player-bot[bot]'];
+            const LABEL = 'help wanted';
+            const pr = context.payload.pull_request;
+            const { owner, repo } = context.repo;
+            if (EXEMPT.includes(pr.user.login) || EXEMPT.includes(context.payload.sender.login)) {
+              core.info(`Opened or reopened by ${context.payload.sender.login}: not checked.`);
+              return;
+            }
+
+            // The issues it says it fixes: "Fixes #12", "Closes Kalinka-Player/KalinkaAI#3", or an issue's URL,
+            // and any linked by hand in the sidebar.
+            const refs = new Map();
+            const add = (name, number) => refs.set(`${name}#${number}`, { name, number: Number(number) });
+            const keyword = new RegExp(
+              String.raw`\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+(?:https://github\.com/([\w.-]+)/([\w.-]+)/issues/(\d+)` +
+              String.raw`|(?:([\w.-]+)/([\w.-]+))?#(\d+))`, 'gi');
+            for (const m of (pr.body || '').matchAll(keyword)) {
+              const [o, name, number] = m[3] ? [m[1], m[2], m[3]] : [m[4] || owner, m[5] || repo, m[6]];
+              if (o.toLowerCase() === owner.toLowerCase()) add(name, number);
+            }
+            const linked = await github.graphql(`query($owner: String!, $repo: String!, $number: Int!) {
+              repository(owner: $owner, name: $repo) { pullRequest(number: $number) {
+                closingIssuesReferences(first: 20) { nodes { number repository { name owner { login } } } }
+              } }
+            }`, { owner, repo, number: pr.number });
+            for (const issue of linked.repository.pullRequest.closingIssuesReferences.nodes) {
+              if (issue.repository.owner.login.toLowerCase() === owner.toLowerCase()) add(issue.repository.name, issue.number);
+            }
+
+            const wanted = [];
+            for (const { name, number } of refs.values()) {
+              try {
+                const { data } = await github.rest.issues.get({ owner, repo: name, issue_number: number });
+                const labelled = data.labels.some(l => (typeof l === 'string' ? l : l.name) === LABEL);
+                if (!data.pull_request && data.state === 'open' && labelled) wanted.push(`${name}#${number}`);
+              } catch (err) {
+                core.info(`${name}#${number}: ${err.message}`);
+              }
+            }
+            if (wanted.length) {
+              core.info(`Fixes ${wanted.join(', ')}, labelled ${LABEL}.`);
+              return;
+            }
+
+            const site = `${context.serverUrl}/${owner}/${repo}`;
+            await github.rest.issues.createComment({ owner, repo, issue_number: pr.number, body: [
+              `Thanks for the pull request. This project takes pull requests only for an open issue labelled ` +
+              `[\`${LABEL}\`](${site}/labels/help%20wanted), and this one doesn't say it fixes one, so it is closed.`,
+              `Issues are welcome: open one, or ask on an existing one for it to be marked \`${LABEL}\`. Once it is, ` +
+              `open a new pull request with \`Fixes #<number>\` in its description. ` +
+              `[CONTRIBUTING.md](${site}/blob/main/CONTRIBUTING.md) says what the pull request needs.`,
+            ].join('\n\n') });
+            await github.rest.pulls.update({ owner, repo, pull_number: pr.number, state: 'closed' });
+            core.notice(`Closed: no open issue labelled ${LABEL} among ${refs.size ? [...refs.keys()].join(', ') : 'none named'}.`);
