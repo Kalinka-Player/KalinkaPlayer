@@ -113,7 +113,7 @@ The build switches the HAT's I2C bus on (`dtparam=i2c_arm=on`) and loads `i2c-de
 - **`test_display_image.sh`** checks the setting that switches the display on, written and kept private, existing settings kept, nothing done for a headless target, and the check that the display image's `config.txt` loads the KMS driver.
 - **`test_splash.sh`** checks that the Pi images' splash is what the kernel's `fullscreen_logo` reads: a 1920×1080 uncompressed 24-bit TGA of at most 224 colours whose top-left pixel is the app's background. It also runs the build's splash check against images that lack the logo, one of its kernel arguments or `quiet`, an initramfs, or the logo inside one.
 - **`test_partuuid.sh`** builds small images laid out as genimage lays them out and runs the build's partition check on them: one that finds root and boot by its disk id passes, and one whose command line finds the root by slot or by another disk's id, or whose fstab mounts root or boot by slot, fails.
-- **`test_growroot.sh`** runs the grow step against faked SD, SATA and NVMe device names, and against media the image already fills.
+- **`test_growroot.sh`** runs the grow step against a faked SD card named directly and through a `by-slot` symlink, against media the image already fills, and against `growpart` failing.
 - **`test_systemctl_shim.sh`** pins down which verbs reach the real `systemctl` and which are swallowed.
 - **`test_soundcard.sh`**, for the sound-card helper, and **`test_dietpi_conf.sh`**, for reading `dietpi.txt` as DietPi does, are in the supervisor package; `make supervisor-test` runs them.
 
