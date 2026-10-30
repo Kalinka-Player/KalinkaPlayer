@@ -12,6 +12,7 @@ from .datamodel import (
     PlaybackMode,
 )
 from .module_health import ModuleHealthState
+from .module_icons import ModuleIcons
 
 
 class PlayQueueEventType(Enum):
@@ -67,6 +68,7 @@ class ModuleDescriptor(BaseModel):
     name: str
     title: str
     icon: Optional[str] = None
+    icons: Optional[ModuleIcons] = None
     enabled: bool = True
     state: ModuleHealthState
     error_message: Optional[str] = None

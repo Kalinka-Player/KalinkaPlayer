@@ -85,6 +85,7 @@ from .player_setup import (
 )
 from .internal_modules import internal_modules
 from .module_capabilities import capabilities_of
+from .module_artwork import module_icons, register_module_icon_routes
 from .service_discovery import ServiceDiscovery
 from . import update_check
 from .version import get_rest_api_version, get_version
@@ -1360,6 +1361,7 @@ async def create_app(
             name=cfg.name,
             title=cfg.__class__.model_fields["name"].title or cfg.name,
             icon=module_icon(type(cfg)),
+            icons=module_icons(cfg),
             enabled=cfg.enabled,
             state=state.state,
             error_message=state.message,
@@ -1411,6 +1413,17 @@ async def create_app(
     async def list_modules():
         # What the last health check published: reading it asks no plugin.
         return app.state.module_snapshot
+
+    register_module_icon_routes(
+        app,
+        lambda: (
+            prepared.plugin_context.config
+            for prepared in (
+                *modules.prepared_input_modules.values(),
+                *modules.prepared_devices.values(),
+            )
+        ),
+    )
 
     @app.get("/resource/{file_name:path}")
     async def get_resource(file_name: str):

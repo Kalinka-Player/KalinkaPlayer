@@ -1,5 +1,9 @@
-from pydantic import BaseModel, Field, model_validator
 import uuid
+from typing import ClassVar
+
+from pydantic import BaseModel, Field, model_validator
+
+from .module_icons import ModuleIconFiles, ModuleIcons
 
 
 class ModuleConfig(BaseModel):
@@ -12,6 +16,9 @@ class ModuleConfig(BaseModel):
     All additional module configurations must inherit from this class to guarantee these core fields are available
     and properly managed, preventing configuration inconsistencies and ensuring seamless integration.
     """
+
+    __module_icons__: ClassVar[ModuleIcons | None] = None
+    __module_icon_files__: ClassVar[ModuleIconFiles | None] = None
 
     name: str = Field(
         default_factory=lambda: f"module_{uuid.uuid4().hex[:8]}",

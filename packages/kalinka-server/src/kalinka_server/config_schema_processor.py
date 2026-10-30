@@ -65,6 +65,7 @@ from .config_overrides import (
 from .config_secrets import is_private, is_secret, loggable, public_records
 from .dynamic_field_registry import DynamicFieldEntry, resolve_value
 from .options_registry import OptionsRegistry
+from .module_artwork import module_icons
 from .presentation_schema import (
     Banner,
     CollectionSpec,
@@ -747,6 +748,7 @@ def _module_spec(
         description=name_field.description,
         icon=module_icon(cls),
         icon_color=getattr(cls, "__module_icon_color__", None),
+        icons=module_icons(config),
         preview_fields=list(getattr(cls, "__preview_fields__", [])),
         banners=banners,
         fields=module_fields,
@@ -850,6 +852,7 @@ def _prune_module_to_simple(module: ModuleSpec) -> ModuleSpec:
         description=module.description,
         icon=module.icon,
         icon_color=module.icon_color,
+        icons=module.icons,
         preview_fields=list(module.preview_fields),
         banners=list(module.banners),
         fields=kept_fields,

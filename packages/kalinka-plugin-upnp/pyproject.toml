@@ -20,7 +20,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    "kalinka-plugin-sdk>=3.9,<4",
+    "kalinka-plugin-sdk>=3.18,<4",
     "aiohttp>=3.10,<4",
     "defusedxml>=0.7,<1",
 ]
@@ -33,6 +33,9 @@ kalinka_plugin_upnp = "kalinka_plugin_upnp:KalinkaPluginUpnp"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+kalinka_plugin_upnp = ["icons/*.svg"]
 
 [tool.setuptools_scm]
 write_to = "src/kalinka_plugin_upnp/_version.py"

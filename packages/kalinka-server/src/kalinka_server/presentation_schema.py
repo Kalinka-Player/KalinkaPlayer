@@ -17,6 +17,8 @@ Authoring entry points:
           __module_icon__: str          — material icon name for module cards
                                           and source badges
           __module_icon_color__: str    — hex color for icon tile
+          __module_icons__: ModuleIcons — small and standard SVG/PNG artwork
+          __module_icon_files__: ModuleIconFiles — packaged SVG/PNG paths
           __preview_fields__: list[str] — field names to compose the card subtitle
       Or by implementing::
           @classmethod
@@ -35,6 +37,8 @@ from enum import Enum
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
+
+from kalinka_plugin_sdk import ModuleIcons
 
 
 class Importance(str, Enum):
@@ -304,6 +308,7 @@ class ModuleSpec(BaseModel):
     description: Optional[str] = None
     icon: Optional[str] = None
     icon_color: Optional[str] = None
+    icons: Optional[ModuleIcons] = None
     preview_fields: list[str] = Field(default_factory=list)
     banners: list[Banner] = Field(default_factory=list)
     fields: list[FieldSpec] = Field(default_factory=list)
