@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <title>UPnP</title>
+  <g fill="none" stroke="#000" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2" y="2" width="60" height="60" rx="11" stroke-width="2.5"/>
+    <g stroke-width="2.8">
+      <path d="M9 20v19a4 4 0 0 0 8 0V20"/>
+      <path d="M22 43V20h4a4 4 0 0 1 4 4v5a4 4 0 0 1-4 4h-4"/>
+      <path d="M35 43V29m0 4a4 4 0 0 1 8 0v10"/>
+      <path d="M48 43V20h4a4 4 0 0 1 4 4v5a4 4 0 0 1-4 4h-4"/>
+    </g>
+  </g>
+</svg>

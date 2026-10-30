@@ -31,7 +31,7 @@ class KalinkaPluginUpnp(InputModulePlugin):
     """Start the receiver when enabled and release its hold when unloaded."""
 
     PLUGIN_ID = "upnp"
-    REQUIRES_SDK = ">=3.9,<4"
+    REQUIRES_SDK = ">=3.18,<4"
     CONFIG_MODEL = UpnpConfig
     DYNAMIC_FIELDS: ClassVar[dict[str, DynamicFieldDecl]] = {
         "receiver_status": DynamicFieldDecl(

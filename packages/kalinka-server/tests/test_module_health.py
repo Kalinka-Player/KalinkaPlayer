@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import Field
 
-from kalinka_plugin_sdk import ModuleHealthState, ModuleState
+from kalinka_plugin_sdk import ModuleHealthState, ModuleIcon, ModuleIcons, ModuleState
 from kalinka_plugin_sdk import __version__ as SDK_VERSION
 from kalinka_plugin_sdk.datamodel import EntityId
 from kalinka_plugin_sdk.events import ModulesSnapshot, PlayQueueEventType
@@ -506,6 +506,45 @@ async def test_a_module_in_error_from_boot_offers_no_catalogs(client):
     assert catalog.status_code == 404
     fake = _fake_entry(listed)
     assert (fake["state"], fake["error_message"]) == ("error", NO_KEY)
+
+
+async def test_artwork_reaches_the_listing_and_event_replay_even_in_error(
+    client, monkeypatch
+):
+    icons = ModuleIcons(
+        small=ModuleIcon(url="/resource/fake-small.png", mime_type="image/png"),
+        standard=ModuleIcon(url="/resource/fake.svg", mime_type="image/svg+xml"),
+        monochrome=True,
+    )
+    monkeypatch.setattr(_FakeConfig, "__module_icons__", icons)
+    await modules.refresh_health(publish=True)
+
+    listing = (await client.get("/server/modules")).json()
+    fake = _fake_entry(listing["input_modules"])
+    bus = modules.player_context.playqueue_eventbus
+    async with bus.stream([PlayQueueEventType.ModulesChanged]) as events:
+        replay = await asyncio.wait_for(anext(events), 2)
+
+    assert fake["icons"] == icons.model_dump(mode="json")
+    assert fake["state"] == "error"
+    assert replay.state.modules.model_dump(mode="json") == listing
+
+
+async def test_packaged_artwork_is_fetchable_from_the_real_app(client, monkeypatch):
+    from kalinka_plugin_upnp.config_model import UpnpConfig
+
+    monkeypatch.setattr(
+        _FakeConfig, "__module_icon_files__", UpnpConfig.__module_icon_files__
+    )
+    await modules.refresh_health(publish=True)
+    listing = (await client.get("/server/modules")).json()
+    icons = _fake_entry(listing["input_modules"])["icons"]
+
+    image = await client.get(icons["small"]["url"])
+
+    assert image.status_code == 200
+    assert image.headers["content-type"] == "image/svg+xml"
+    assert image.content == UpnpConfig.__module_icon_files__.small.read_bytes()
 
 
 async def test_reading_the_modules_asks_no_plugin(client, monkeypatch):

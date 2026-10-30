@@ -2,9 +2,11 @@
 
 import ipaddress
 import socket
+from pathlib import Path
 from typing import ClassVar
 
 from kalinka_plugin_sdk.module_config import ModuleConfig
+from kalinka_plugin_sdk import ModuleIconFiles
 from pydantic import Field, field_validator
 
 
@@ -13,6 +15,11 @@ class UpnpConfig(ModuleConfig):
 
     __module_icon__: ClassVar[str] = "cast"
     __module_icon_color__: ClassVar[str] = "#3974A8"
+    __module_icon_files__: ClassVar[ModuleIconFiles] = ModuleIconFiles(
+        small=Path(__file__).with_name("icons") / "small.svg",
+        standard=Path(__file__).with_name("icons") / "standard.svg",
+        monochrome=True,
+    )
 
     name: str = Field(default="upnp", title="UPnP", frozen=True, exclude=True)
     enabled: bool = Field(

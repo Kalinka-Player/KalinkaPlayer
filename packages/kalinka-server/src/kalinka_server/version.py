@@ -173,7 +173,12 @@ def get_version() -> str:
 # of asking every plugin again, so a change shows there within the same 10 s;
 # a PUT /server/config to a module or device publishes before it answers.
 # Before 0.19 the replay has no `modules`, and the GET is the only source.
-REST_API_VERSION = "0.19"
+# 0.20: module listings, their events and settings cards carry optional `icons`:
+# small and standard image URLs with MIME types, plus a monochrome flag.
+# The Material `icon` remains the fallback for clients without image support.
+# Each image's `aspect_ratio` reserves its layout; GET/HEAD /server/module-icons/
+# {digest} serves packaged artwork with immutable caching, even while disabled.
+REST_API_VERSION = "0.20"
 
 
 def get_rest_api_version() -> str:

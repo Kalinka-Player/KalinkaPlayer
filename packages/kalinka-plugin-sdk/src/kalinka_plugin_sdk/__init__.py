@@ -91,6 +91,7 @@ from .plugin import (
 )
 from .embedding import TextEmbedder
 from .module_config import ModuleConfig
+from .module_icons import ModuleIcon, ModuleIconFiles, ModuleIcons
 from .module_health import ModuleHealthState, ModuleState
 from .config_feedback import ConfigIssue, ConfigOption, IssueSeverity
 from .config_records import ConfigRecord, Records
@@ -186,6 +187,9 @@ __all__ = [
     "ExternalOutputDevice",
     "SupportedFunction",
     "ModuleConfig",
+    "ModuleIcon",
+    "ModuleIconFiles",
+    "ModuleIcons",
     "ModuleHealthState",
     "ModuleState",
     "DynamicFieldDecl",

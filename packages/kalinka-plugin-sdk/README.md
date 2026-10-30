@@ -109,6 +109,69 @@ class MyDevice(ExternalOutputDevice):
 - `EventType`: Enumeration of available event types
 - Various event classes for different event types
 
+### Plugin artwork (3.18+)
+
+A plugin may declare image artwork on its `CONFIG_MODEL`. Both `small`
+(compact attribution) and `standard` (other source displays) are required
+when it opts in. Existing plugins need no change. The server publishes
+`icons` in `ModuleDescriptor`, module-change events and settings cards;
+the existing Material `icon` remains the fallback for older clients or
+images a client cannot load or render.
+
+```python
+from pathlib import Path
+from typing import ClassVar
+from kalinka_plugin_sdk import ModuleConfig, ModuleIconFiles
+
+class MyConfig(ModuleConfig):
+    __module_icon__: ClassVar[str] = "music_note_outlined"
+    __module_icon_files__: ClassVar[ModuleIconFiles] = ModuleIconFiles(
+        small=Path(__file__).with_name("icons") / "small.svg",
+        standard=Path(__file__).with_name("icons") / "standard.svg",
+        monochrome=True,
+    )
+```
+
+Include the files as package data in the plugin's wheel. The server reads
+them once and serves them at `/server/module-icons/{sha256}`, including
+while the plugin is disabled or in error. GET and HEAD support ETags and
+immutable caching. Files must be SVG with a `viewBox`, or PNG, at most
+256 KiB each, and stay unchanged until the server restarts. Metadata carries
+their MIME types and width/height `aspect_ratio`; file paths never reach
+clients. Invalid or missing files leave the fallback icon available.
+
+For artwork already hosted elsewhere, `__module_icons__: ClassVar[ModuleIcons]`
+can instead supply `ModuleIcon(url=..., mime_type=..., aspect_ratio=...)` for
+each variant. URLs are absolute HTTP(S) or rooted at the Kalinka server;
+they must be reachable without credentials. Packaged files take precedence.
+
+SVG and PNG may be mixed. The two variants may reference the same SVG
+when no different small-size drawing is needed. Prefer simple,
+self-contained SVG paths without scripts, external resources, embedded
+bitmaps or font dependencies. For PNG, use transparent backgrounds and
+size the files for the largest intended logical size times the supported
+device pixel ratio; 96 px small and 256 px standard are useful starting
+points, not required dimensions. Clients preserve aspect ratio and fit
+the image without cropping, including any supplied clear space.
+
+`monochrome=True` means the supplied artwork is an alpha mask that may
+be drawn black on light backgrounds and white on dark backgrounds. It
+does not request a source's accent color. The default `False` preserves
+the image's original colors. Use approved monochrome brand assets, and
+respect their minimum displayed size and attribution requirements: more
+pixels in a PNG do not make an undersized on-screen logo acceptable.
+
+The app's attribution mark is 10–11 logical pixels high; a compact wordmark
+can be wider, using its `aspect_ratio`, without increasing the row height.
+The app rasterizes SVGs to PNG data at 96 px (small) or 256 px (standard) on
+the longest edge, once per retained URL/variant. Concurrent uses share the
+conversion. A separate 64-entry cache retains these PNGs across navigation
+and album-image cache eviction; theme changes tint the bitmap. PNG inputs
+skip SVG conversion. An evicted entry or a changed URL loads again.
+
+Plugins importing these types require `kalinka-plugin-sdk>=3.18,<4` in
+their wheel/deb dependencies and `REQUIRES_SDK` declaration.
+
 ## License
 
 GPL-3.0-or-later

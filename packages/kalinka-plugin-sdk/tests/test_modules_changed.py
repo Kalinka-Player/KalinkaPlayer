@@ -64,6 +64,7 @@ def test_the_wire_lists_the_modules_as_the_module_listing_does():
             "name": "qobuz",
             "title": "Qobuz",
             "icon": None,
+            "icons": None,
             "enabled": True,
             "state": "error",
             "error_message": "Not paired yet.",
