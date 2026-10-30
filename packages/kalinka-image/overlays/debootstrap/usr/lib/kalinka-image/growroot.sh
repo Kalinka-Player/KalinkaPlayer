@@ -10,7 +10,7 @@ set -euo pipefail
 
 root_source="$(findmnt -no SOURCE /)"
 disk="/dev/$(lsblk -no PKNAME "$root_source")"
-partition="${root_source##*[!0-9]}"
+partition="$(lsblk -no PARTN "$root_source")"
 
 # growpart exits non-zero when the partition already reaches the end of the
 # disk, which is the normal state on every boot after the first.
