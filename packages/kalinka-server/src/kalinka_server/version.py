@@ -178,6 +178,7 @@ def get_version() -> str:
 # The Material `icon` remains the fallback for clients without image support.
 # Each image's `aspect_ratio` reserves its layout; GET/HEAD /server/module-icons/
 # {digest} serves packaged artwork with immutable caching, even while disabled.
+# Catalog entries can also carry `icons`; `min_height` honors brand size limits.
 REST_API_VERSION = "0.20"
 
 

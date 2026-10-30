@@ -2,6 +2,15 @@
 
 Kalinka is licensed GPL-3.0-or-later (see [LICENSE](LICENSE)). It bundles, links against, or downloads at runtime the components below, each under its own terms. This list covers third-party material; it is not a dependency manifest.
 
+## Jamendo artwork
+
+`packages/kalinka-plugin-jamendo/src/kalinka_plugin_jamendo/icons/jamendo.svg`
+uses the unmodified icon paths from Jamendo's official white logo:
+https://images.jamendo.com/jamendomusic/static/svg/jamendo-music-logo-white.svg
+(retrieved 2026-10-30). The icon is presented separately from the wordmark.
+Jamendo's artwork and trademarks remain its property and are not covered by
+the GPL license for Kalinka's source code.
+
 ## Project branding
 
 The Kalinka logo, icon and related artwork under `docs/images/` are **not** under the GPL that covers the source. They are licensed separately — see [LICENSE-ASSETS](LICENSE-ASSETS) — and require the author's permission to use or redistribute.

@@ -29,7 +29,8 @@ dependencies = [
     # optional package says where it has wheels. >=3.13: InputModule.capabilities,
     # which leaves AI search out while its setting is off. >=3.14:
     # ModuleCapability.CATALOGS, which offers Jamendo as a home source.
-    "kalinka-plugin-sdk>=3.14,<4",
+    # >=3.18: packaged small and standard source artwork.
+    "kalinka-plugin-sdk>=3.18,<4",
     "httpx>=0.24",
     # ai_search (mood/semantic): sqlite-vec KNN over the shipped index.
     # Imported lazily; ai_search disables itself if these are unavailable.
@@ -51,6 +52,9 @@ kalinka_plugin_jamendo = "kalinka_plugin_jamendo:KalinkaPluginJamendo"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+kalinka_plugin_jamendo = ["icons/*.svg"]
 
 [tool.setuptools_scm]
 write_to = "src/kalinka_plugin_jamendo/_version.py"

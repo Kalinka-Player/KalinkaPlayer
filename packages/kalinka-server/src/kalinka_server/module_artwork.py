@@ -27,7 +27,7 @@ class _Asset:
     icon: ModuleIcon
 
 
-def _read(path: Path) -> _Asset:
+def _read(path: Path, min_height: float) -> _Asset:
     with Path(path).open("rb") as stream:
         data = stream.read(_MAX_BYTES + 1)
     if len(data) > _MAX_BYTES:
@@ -61,6 +61,7 @@ def _read(path: Path) -> _Asset:
             url=f"/server/module-icons/{digest}",
             mime_type=mime,
             aspect_ratio=width / height,
+            min_height=min_height,
         ),
     )
 
@@ -68,7 +69,10 @@ def _read(path: Path) -> _Asset:
 @lru_cache(maxsize=128)
 def _assets(files: ModuleIconFiles) -> tuple[_Asset, _Asset] | None:
     try:
-        return _read(Path(files.small)), _read(Path(files.standard))
+        return (
+            _read(Path(files.small), files.min_height),
+            _read(Path(files.standard), files.min_height),
+        )
     except (
         OSError,
         SyntaxError,

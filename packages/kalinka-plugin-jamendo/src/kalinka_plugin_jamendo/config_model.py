@@ -1,10 +1,11 @@
 import os
+from pathlib import Path
 from typing import Annotated, ClassVar
 from enum import Enum
 
 from pydantic import AfterValidator, ConfigDict, Field
 
-from kalinka_plugin_sdk import paths
+from kalinka_plugin_sdk import ModuleIconFiles, paths
 from kalinka_plugin_sdk.module_config import ModuleConfig
 
 # Release hosting the int8 mood index (see kalinka-training
@@ -57,6 +58,11 @@ class JamendoConfig(ModuleConfig):
 
     __module_icon__: ClassVar[str] = "music_note_outlined"
     __module_icon_color__: ClassVar[str] = "#2E7D32"  # Jamendo green
+    __module_icon_files__: ClassVar[ModuleIconFiles] = ModuleIconFiles(
+        small=Path(__file__).with_name("icons") / "jamendo.svg",
+        standard=Path(__file__).with_name("icons") / "jamendo.svg",
+        monochrome=True,
+    )
     __preview_fields__: ClassVar[list[str]] = ["audio_format"]
 
     name: str = Field(

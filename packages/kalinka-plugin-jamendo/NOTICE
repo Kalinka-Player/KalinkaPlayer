@@ -1,0 +1,8 @@
+Jamendo artwork
+--------------
+src/kalinka_plugin_jamendo/icons/jamendo.svg uses the unmodified icon paths
+from Jamendo's official white logo:
+https://images.jamendo.com/jamendomusic/static/svg/jamendo-music-logo-white.svg
+(retrieved 2026-10-30). The icon is presented separately from the wordmark.
+Jamendo's artwork and trademarks remain its property and are not covered by
+the GPL license for this plugin's source code.
