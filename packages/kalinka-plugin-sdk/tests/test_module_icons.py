@@ -92,3 +92,9 @@ def test_icons_require_public_http_urls_or_server_rooted_paths(url):
 def test_only_svg_and_png_are_supported(mime_type):
     with pytest.raises(ValidationError):
         ModuleIcon(url="/resource/icon", mime_type=mime_type)
+
+
+@pytest.mark.parametrize("height", [-1, 65, float("nan"), float("inf")])
+def test_minimum_height_must_be_bounded_and_finite(height):
+    with pytest.raises(ValidationError):
+        ModuleIcon(url="/resource/icon", mime_type="image/svg+xml", min_height=height)

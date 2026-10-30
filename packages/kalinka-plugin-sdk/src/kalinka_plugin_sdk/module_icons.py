@@ -14,6 +14,7 @@ class ModuleIcon(BaseModel):
     @param url An absolute HTTP(S) URL or a path rooted at the Kalinka server.
     @param mime_type The image format; clients must not infer it from the URL.
     @param aspect_ratio Width divided by height, reserving layout before loading.
+    @param min_height Minimum displayed height in logical pixels, for brand rules.
     @note SVGs must be self-contained, without scripts, external resources or
         embedded raster images. Clients preserve the artwork's aspect ratio.
     """
@@ -21,6 +22,7 @@ class ModuleIcon(BaseModel):
     url: str
     mime_type: Literal["image/svg+xml", "image/png"]
     aspect_ratio: float = Field(default=1.0, gt=0, le=8, allow_inf_nan=False)
+    min_height: float = Field(default=0, ge=0, le=64, allow_inf_nan=False)
 
     @field_validator("url")
     @classmethod
@@ -64,6 +66,7 @@ class ModuleIconFiles:
     @param small Local SVG/PNG for compact attribution.
     @param standard Local SVG/PNG for other source displays.
     @param monochrome Whether the artwork permits black/white rendering.
+    @param min_height Minimum displayed height in logical pixels for both variants.
     @note Files are immutable for the lifetime of the server process. Ship
         them as package data; each must be at most 256 KiB.
     """
@@ -71,3 +74,4 @@ class ModuleIconFiles:
     small: Path
     standard: Path
     monochrome: bool = False
+    min_height: float = 0

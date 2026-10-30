@@ -140,6 +140,12 @@ immutable caching. Files must be SVG with a `viewBox`, or PNG, at most
 their MIME types and width/height `aspect_ratio`; file paths never reach
 clients. Invalid or missing files leave the fallback icon available.
 
+Set `ModuleIconFiles.min_height` when a brand requires a minimum displayed
+height in logical pixels. It is carried as `min_height` on each `ModuleIcon`
+and defaults to zero; for example, Spotify's icon uses 21. Catalog entries
+can publish the same `icons` metadata with hosted URLs for display before
+installation. Installed plugins keep their packaged assets available locally.
+
 For artwork already hosted elsewhere, `__module_icons__: ClassVar[ModuleIcons]`
 can instead supply `ModuleIcon(url=..., mime_type=..., aspect_ratio=...)` for
 each variant. URLs are absolute HTTP(S) or rooted at the Kalinka server;
@@ -161,7 +167,7 @@ the image's original colors. Use approved monochrome brand assets, and
 respect their minimum displayed size and attribution requirements: more
 pixels in a PNG do not make an undersized on-screen logo acceptable.
 
-The app's attribution mark is 10–11 logical pixels high; a compact wordmark
+The app's attribution mark is 18–20 logical pixels high; a compact wordmark
 can be wider, using its `aspect_ratio`, without increasing the row height.
 The app rasterizes SVGs to PNG data at 96 px (small) or 256 px (standard) on
 the longest edge, once per retained URL/variant. Concurrent uses share the

@@ -11,6 +11,7 @@
     "name": {"type": "string", "minLength": 1, "maxLength": 100},
     "summary": {"type": "string", "minLength": 1, "maxLength": 120, "pattern": "^[^\\n]*$"},
     "description": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "icons": {"$ref": "#/$defs/module_icons"},
     "distribution": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
     "entry_point": {"type": "string", "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*$"},
     "creator": {"$ref": "#/$defs/person"},
@@ -41,6 +42,27 @@
     }
   ],
   "$defs": {
+    "module_icon": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "mime_type"],
+      "properties": {
+        "url": {"$ref": "#/$defs/https"},
+        "mime_type": {"enum": ["image/svg+xml", "image/png"]},
+        "aspect_ratio": {"type": "number", "exclusiveMinimum": 0, "maximum": 8},
+        "min_height": {"type": "number", "minimum": 0, "maximum": 64}
+      }
+    },
+    "module_icons": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["small", "standard"],
+      "properties": {
+        "small": {"$ref": "#/$defs/module_icon"},
+        "standard": {"$ref": "#/$defs/module_icon"},
+        "monochrome": {"type": "boolean"}
+      }
+    },
     "device_support": {
       "type": "object",
       "additionalProperties": false,

@@ -109,6 +109,21 @@ def test_a_tile_summary_is_kept_and_its_absence_accepted(document):
     assert "summary" not in parse_public_catalog(encode(document))["plugins"][0]
 
 
+def test_catalog_artwork_survives_without_an_installed_plugin(document):
+    icon = {
+        "url": "https://example.org/icons/source.svg",
+        "mime_type": "image/svg+xml",
+        "aspect_ratio": 1.1,
+        "min_height": 21,
+    }
+    document["plugins"][0]["icons"] = {
+        "small": icon,
+        "standard": icon,
+        "monochrome": True,
+    }
+    assert parse_public_catalog(encode(document)) == document
+
+
 def test_fields_a_newer_hub_adds_are_dropped_at_every_depth(document):
     plugin = document["plugins"][0]
     plugin["type"] = "output_device"

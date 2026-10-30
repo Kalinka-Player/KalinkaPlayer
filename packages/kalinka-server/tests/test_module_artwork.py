@@ -27,7 +27,7 @@ def artwork(tmp_path):
     class Config(ModuleConfig):
         __module_icon__: ClassVar[str] = "music_note_outlined"
         __module_icon_files__: ClassVar[ModuleIconFiles] = ModuleIconFiles(
-            small, standard, True
+            small, standard, True, min_height=21
         )
 
     config = Config(name="example", enabled=False)
@@ -47,6 +47,7 @@ def test_disabled_plugin_serves_both_variants_and_their_dimensions(artwork):
         (icons.small, config.__module_icon_files__.small),
         (icons.standard, config.__module_icon_files__.standard),
     ]:
+        assert icon.min_height == 21
         response = client.get(icon.url)
         assert response.status_code == 200
         assert response.content == path.read_bytes()
