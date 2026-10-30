@@ -17,6 +17,8 @@ MEDIA_TYPES = {
     ".ogg": "audio/ogg",
     ".oga": "audio/ogg",
     ".m4a": "audio/mp4",
+    # Some rippers name M4A files holding Apple Lossless this way.
+    ".alac": "audio/mp4",
     ".aac": "audio/aac",
 }
 
@@ -36,14 +38,15 @@ def is_dsd(path: str, media_type: str = "") -> bool:
 
 
 #: What libsndfile, through which analysis reads PCM, cannot decode.
-_UNDECODABLE_FOR_ANALYSIS = {".m4a": "MP4", ".aac": "AAC"}
+_UNDECODABLE_FOR_ANALYSIS = {"audio/mp4": "MP4", "audio/aac": "AAC"}
 
 
 def analysis_refusal(path: str) -> Optional[str]:
     """Why a file's audio cannot be analysed as PCM, or None when it can."""
     if is_dsd(path):
         return "DSD audio analysis requires PCM conversion"
-    container = _UNDECODABLE_FOR_ANALYSIS.get(PurePosixPath(path).suffix.lower())
+    media_type = MEDIA_TYPES.get(PurePosixPath(path).suffix.lower())
+    container = _UNDECODABLE_FOR_ANALYSIS.get(media_type)
     if container is not None:
         return f"libsndfile cannot decode {container} audio for analysis"
     return None

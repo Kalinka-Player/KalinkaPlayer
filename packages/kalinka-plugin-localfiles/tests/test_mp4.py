@@ -182,9 +182,16 @@ def _indexer(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "name", ["track.m4a", "TRACK.M4A", "smb://nas/music/Symphony #5.m4a"]
+    "name",
+    [
+        "track.m4a",
+        "TRACK.M4A",
+        "smb://nas/music/Symphony #5.m4a",
+        "track.alac",
+        "smb://nas/music/Symphony #5.ALAC",
+    ],
 )
-def test_m4a_files_are_indexed_as_audio_mp4(name):
+def test_m4a_and_alac_files_are_indexed_as_audio_mp4(name):
     assert is_supported_audio_file(name)
     assert media_type_of(name) == "audio/mp4"
 
@@ -410,12 +417,19 @@ def test_another_tracks_fragments_are_not_counted(tmp_path):
     assert metadata["duration"] == 2
 
 
+@pytest.mark.parametrize(
+    "name,entry,codec",
+    [("03 Ladder.m4a", aac, "aac"), ("03 Ladder.alac", alac, "alac")],
+    ids=["m4a", "alac"],
+)
 @pytest.mark.asyncio
-async def test_an_indexed_m4a_track_is_served_as_audio_mp4(tmp_path, monkeypatch):
+async def test_an_indexed_mp4_track_is_served_as_audio_mp4(
+    tmp_path, monkeypatch, name, entry, codec
+):
     monkeypatch.setattr(mimetypes, "guess_type", lambda *_a, **_k: (None, None))
     music = tmp_path / "music"
     music.mkdir()
-    path = tagged(music / "03 Ladder.m4a", mp4(track(aac())))
+    path = tagged(music / name, mp4(track(entry())))
     config = LocalFilesConfig(
         music_folders=[str(music)],
         db_path=str(tmp_path / "localfiles.db"),
@@ -444,13 +458,14 @@ async def test_an_indexed_m4a_track_is_served_as_audio_mp4(tmp_path, monkeypatch
                 (track_id,),
             )
         ).fetchone()
-    assert json.loads(stream_info)["codec"] == "aac"
+    assert json.loads(stream_info)["codec"] == codec
 
 
 @pytest.mark.parametrize(
     "path,reason",
     [
         ("/m/t.m4a", "libsndfile cannot decode MP4 audio for analysis"),
+        ("/m/t.alac", "libsndfile cannot decode MP4 audio for analysis"),
         ("smb://nas/m/t.AAC", "libsndfile cannot decode AAC audio for analysis"),
     ],
 )
