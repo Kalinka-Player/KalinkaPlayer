@@ -23,6 +23,7 @@ WEIGHTS: Dict[str, int] = {
     "same_stream": 1,
     "same_import_batch": 1,
     "track_number_collision": -3,
+    "different_cue_sheets": -3,
     "different_art": -3,
     "different_album_tags_both_sequences": -3,
     "different_albumartist": -2,
@@ -42,6 +43,7 @@ class TrackFeatures:
 
     track_id: str
     album_key: Optional[str] = None       # normalized album tag
+    album_from_cue: bool = False          # album_key is the cue title's
     albumartist_key: Optional[str] = None
     artist_key: Optional[str] = None
     track_number: Optional[int] = None
@@ -96,6 +98,11 @@ def sequence_analysis(numbers: List[Optional[int]]) -> SequenceAnalysis:
     )
 
 
+def _named_by_cue(group: List[TrackFeatures]) -> bool:
+    keyed = [t for t in group if t.album_key]
+    return bool(keyed) and all(t.album_from_cue for t in keyed)
+
+
 def _art_relation(a: List[TrackFeatures], b: List[TrackFeatures]) -> Optional[str]:
     """"same" / "different" / None from the closest cross-subgroup cover pair."""
     pa = [t.art_phash for t in a if t.art_phash]
@@ -143,6 +150,9 @@ def pair_signal_score(
 
     if a_cue and a_cue == b_cue:
         fire("same_cue_sheet")
+    elif tags_differ and _named_by_cue(a) and _named_by_cue(b):
+        # Untagged discs whose cue sheets title them differently.
+        fire("different_cue_sheets")
 
     art = _art_relation(a, b)
     if art == "same":
