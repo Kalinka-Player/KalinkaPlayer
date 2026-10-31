@@ -157,6 +157,22 @@ def test_format_root_status_recommends_for_autofs_share():
     assert "every 15 min" in text
 
 
+def test_format_root_status_leaves_a_share_s_changes_to_a_rescan_at_interval_0():
+    from kalinka_plugin_localfiles.module_setup import _format_root_status
+
+    status = RootStatus(
+        root="/mnt/nas/music",
+        available=True,
+        reason="",
+        fs_type="nfs4",
+        is_network=True,
+        is_autofs=False,
+    )
+    text = _format_root_status(status, None, 0)
+    assert "every 0 min" not in text
+    assert "when you rescan the library" in text
+
+
 def test_format_root_status_names_the_reason_when_unavailable():
     from kalinka_plugin_localfiles.module_setup import _format_root_status
 

@@ -13,8 +13,8 @@ because one slow root must not cost a worker thread per caller.
 
 Learning about changes as they happen is a separate ability, because only
 some protocols have it: :meth:`FileStorage.watcher` returns a
-:class:`ChangeWatcher` where the protocol can push, and None where the
-periodic scan is all there is.
+:class:`ChangeWatcher` where the protocol can push, and None where
+rescans are all there is.
 """
 
 from __future__ import annotations
@@ -613,5 +613,5 @@ class FileStorage(ABC):
 
     def watcher(self) -> Optional[ChangeWatcher]:
         """A watcher for roots on this storage, or None when the protocol
-        cannot report changes and the periodic scan is all there is."""
+        cannot report changes and rescans are all there is."""
         return None
