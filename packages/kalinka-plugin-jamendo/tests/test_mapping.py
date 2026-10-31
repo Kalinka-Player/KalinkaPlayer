@@ -211,6 +211,30 @@ async def test_album_track_inherits_artist_from_album():
 
 
 @pytest.mark.asyncio
+async def test_albums_and_their_tracks_carry_the_release_year():
+    album = {**ALBUM, "releasedate": "2012-05-25"}
+    bare_track = {"id": "100", "name": "Sunrise", "duration": "212"}
+
+    albums = await make_module([album]).search(SearchType.album, "mornings")
+    album_tracks = await make_module([{**album, "tracks": [bare_track]}]).browse(
+        jm.album_id("5"), 0, 50
+    )
+    tracks = await make_module([{**TRACK, "releasedate": "2012-05-25"}]).search(
+        SearchType.track, "sunrise"
+    )
+
+    assert albums.items[0].album.year == 2012
+    assert album_tracks.items[0].track.album.year == 2012
+    assert tracks.items[0].track.album.year == 2012
+
+
+@pytest.mark.asyncio
+async def test_an_album_without_a_release_date_has_no_year():
+    res = await make_module([ALBUM]).search(SearchType.album, "mornings")
+    assert res.items[0].album.year is None
+
+
+@pytest.mark.asyncio
 async def test_browse_artist_uses_albums_endpoint():
     # Artist browse goes through /albums/?artist_id= so cards get the real
     # trackid-bearing cover; offset/limit are forwarded for native pagination.

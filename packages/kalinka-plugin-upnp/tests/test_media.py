@@ -66,6 +66,20 @@ def test_didl_uses_the_matching_resource_and_maps_metadata():
     assert media.metadata == DIDL
 
 
+@pytest.mark.parametrize(
+    "date,year",
+    [("1982-05-28", 1982), ("1982", 1982), ("0000", None), ("", None), (None, None)],
+)
+def test_dc_date_gives_the_album_its_year(date, year):
+    metadata = (
+        DIDL
+        if date is None
+        else DIDL.replace("<upnp:album>", f"<dc:date>{date}</dc:date><upnp:album>")
+    )
+    media = Media.parse("http://media.test/audio?key=secret&id=42", metadata)
+    assert media.track.album.year == year
+
+
 @pytest.mark.parametrize("declared", DSD_TYPES)
 def test_declared_dsd_reaches_the_renderer_as_dsd(declared, renderer_formats):
     metadata = DIDL.replace("audio/flac", declared)

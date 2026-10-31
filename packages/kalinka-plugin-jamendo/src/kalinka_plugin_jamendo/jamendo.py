@@ -536,6 +536,12 @@ def _resize(url: Optional[str], width: int) -> Optional[str]:
     return f"{url}{sep}width={width}"
 
 
+def _year(releasedate: Optional[str]) -> Optional[int]:
+    """The year of a Jamendo ``releasedate``, ``2012-05-25``."""
+    year = (releasedate or "")[:4]
+    return int(year) if year.isdigit() and year != "0000" else None
+
+
 def _cover(url: Optional[str]) -> Optional[CoverImage]:
     if not url:
         return None
@@ -1290,6 +1296,7 @@ class JamendoInputModule(InputModule):
             album=Album(
                 id=album_id(aid),
                 title=album_name,
+                year=_year(album_meta.get("releasedate") or track.get("releasedate")),
                 artist=performer,
                 image=_cover(image),
                 genres=_genres_of(track),
@@ -1336,6 +1343,7 @@ class JamendoInputModule(InputModule):
                     album=Album(
                         id=album_id(aid),
                         title=album.get("name", ""),
+                        year=_year(album.get("releasedate")),
                         artist=artist,
                         image=_cover(album.get("image")),
                     ),

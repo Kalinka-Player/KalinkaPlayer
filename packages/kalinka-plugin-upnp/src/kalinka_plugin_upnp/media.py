@@ -3,6 +3,7 @@
 import hashlib
 import re
 from dataclasses import dataclass
+from typing import Optional
 from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree as ET
 
@@ -98,6 +99,12 @@ def parse_time(value: str) -> int:
 def format_time(milliseconds: int) -> str:
     seconds = max(0, milliseconds // 1000)
     return f"{seconds // 3600}:{seconds // 60 % 60:02}:{seconds % 60:02}"
+
+
+def year_of(date: str) -> Optional[int]:
+    """The year a ``dc:date`` names: ``1982`` or ``1982-05-28``."""
+    year = date[:4]
+    return int(year) if year.isdigit() and year != "0000" else None
 
 
 def entity(kind: str, value: str) -> EntityId:
@@ -197,6 +204,7 @@ class Media:
         album = Album(
             id=entity("album", f"{artist_name}\n{album_title}"),
             title=album_title,
+            year=year_of(value(DC, "date")),
             artist=artist,
             image=CoverImage(small=art, thumbnail=art, large=art) if art else None,
         )
