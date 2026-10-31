@@ -594,10 +594,12 @@ class LocalFilesInputModuleDb:
             cursor = conn.cursor()
             cursor.execute(
                 f"""
-                SELECT {TRACK_COLUMNS}
+                SELECT {TRACK_COLUMNS},
+                       json_extract(e.stream_info, '$.codec') AS audio_codec
                 FROM tracks t
                 LEFT JOIN albums a ON t.album_id = a.id
                 LEFT JOIN artists ar ON t.artist_id = ar.id
+                LEFT JOIN track_evidence e ON e.track_id = t.id
                 WHERE t.id = ?
             """,
                 (track_id,),
@@ -636,10 +638,12 @@ class LocalFilesInputModuleDb:
             placeholders = ", ".join("?" for _ in track_ids)
             cursor.execute(
                 f"""
-                SELECT {TRACK_COLUMNS}
+                SELECT {TRACK_COLUMNS},
+                       json_extract(e.stream_info, '$.codec') AS audio_codec
                 FROM tracks t
                 LEFT JOIN albums a ON t.album_id = a.id
                 LEFT JOIN artists ar ON t.artist_id = ar.id
+                LEFT JOIN track_evidence e ON e.track_id = t.id
                 WHERE t.id IN ({placeholders})
             """,
                 track_ids,
