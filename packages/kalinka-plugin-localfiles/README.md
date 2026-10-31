@@ -40,6 +40,12 @@ is timed over all its fragments. Opus, AC-3, other codecs and files with no
 audio track are left out with a warning in the log. `.mp4` files are not
 indexed, since most are video.
 
+Playback reports the indexed audio codec separately from the source MIME
+type. MP4 audio can display AAC, ALAC or FLAC while it is still served and
+routed to the renderer as `audio/mp4`. This also carries the indexed codec
+for other library formats, such as Vorbis in Ogg. Older library entries
+without codec evidence keep the MIME-label fallback until they are reindexed.
+
 A file left out for its format is not read again while it stays unchanged.
 When a new version learns to read a format it used to refuse, its first scan
 reads every such file once more.
