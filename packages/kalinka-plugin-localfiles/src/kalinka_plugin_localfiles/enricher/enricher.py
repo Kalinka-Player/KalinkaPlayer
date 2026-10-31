@@ -68,6 +68,26 @@ TRACK_DESIRED_FIELDS = [
 ALBUM_FETCH_FIELDS = ["title", "artist_id", "mbid", "image_url"]
 
 
+def _changed(snapshot: Dict, updated: Dict) -> Dict:
+    """What enrichment changed: the rest of the snapshot may be stale."""
+    return {
+        field: value
+        for field, value in updated.items()
+        if field not in snapshot or snapshot[field] != value
+    }
+
+
+# Committed with the cover's files by the source that stored them.
+_COVER_COLUMNS = ("image_url", "image_generated")
+
+
+def _album_changes(snapshot: Dict, updated: Dict) -> Dict:
+    changes = _changed(snapshot, updated)
+    for field in _COVER_COLUMNS:
+        changes.pop(field, None)
+    return changes
+
+
 def _album_has(album: Dict, field: str) -> bool:
     """One desired field's presence, counting a generated cover as absent."""
     if field == "image_url":
@@ -556,6 +576,7 @@ class MetadataEnricher:
             f"Starting enrichment for artist {artist.get('name', artist['id'])}"
         )
         updated_artist = artist.copy()  # Make a copy to carry updates between plugins
+        stored = artist.copy()  # as read, to write back only what changed
         had_updates = False
 
         # Desired = the full target set (id + cover). Reaching it lets us skip
@@ -609,7 +630,9 @@ class MetadataEnricher:
             # here would close the row for good on a passing outage.
             if deferred:
                 if had_updates:
-                    await self.db_manager.update_artist(artist["id"], updated_artist)
+                    await self.db_manager.update_artist(
+                        artist["id"], _changed(stored, updated_artist)
+                    )
                 return True
             if all(updated_artist.get(f) for f in ARTIST_REQUIRED_FIELDS):
                 updated_artist["enriched"] = EnrichmentStatus.ENRICHED  # local-only
@@ -622,7 +645,9 @@ class MetadataEnricher:
 
         # Only update the database once at the end if we had any updates
         if had_updates:
-            await self.db_manager.update_artist(artist["id"], updated_artist)
+            await self.db_manager.update_artist(
+                artist["id"], _changed(stored, updated_artist)
+            )
 
     async def _local_origin(
         self, entity_type: str, entity_id: str, field: str
@@ -807,6 +832,7 @@ class MetadataEnricher:
         it keeps no verdict and stays pending for a later retry.
         """
         updated_album = album.copy()  # Make a copy to carry updates between plugins
+        stored = album.copy()  # as read, to write back only what changed
         had_updates = False
 
         # Desired = full target set (external id, cover, year, genre). Reaching
@@ -895,7 +921,9 @@ class MetadataEnricher:
             # here would close the row for good on a passing outage.
             if deferred:
                 if had_updates:
-                    await self.db_manager.update_album(album["id"], updated_album)
+                    await self.db_manager.update_album(
+                        album["id"], _album_changes(stored, updated_album)
+                    )
                 return True
             if all(updated_album.get(f) for f in ALBUM_REQUIRED_FIELDS):
                 updated_album["enriched"] = EnrichmentStatus.ENRICHED  # local-only
@@ -908,7 +936,9 @@ class MetadataEnricher:
 
         # Only update the database once at the end if we had any updates
         if had_updates:
-            await self.db_manager.update_album(album["id"], updated_album)
+            await self.db_manager.update_album(
+                album["id"], _album_changes(stored, updated_album)
+            )
 
     async def _process_tracks(self) -> int:
         """Process non-enriched tracks"""
@@ -925,6 +955,7 @@ class MetadataEnricher:
         it keeps no verdict and stays pending for a later retry.
         """
         updated_track = track.copy()  # Make a copy to carry updates between plugins
+        stored = track.copy()  # as read, to write back only what changed
         had_updates = False
 
         # Having every field filled is not enough when a filename guess was
@@ -978,7 +1009,9 @@ class MetadataEnricher:
             # row stays pending rather than being closed as local-only.
             if deferred:
                 if had_updates:
-                    await self.db_manager.update_track(track["id"], updated_track)
+                    await self.db_manager.update_track(
+                        track["id"], _changed(stored, updated_track)
+                    )
                 return True
             missing = [f for f in TRACK_REQUIRED_FIELDS if not updated_track.get(f)]
             if not missing:
@@ -996,7 +1029,9 @@ class MetadataEnricher:
 
         # Only update the database once at the end if we had any updates
         if had_updates:
-            await self.db_manager.update_track(track["id"], updated_track)
+            await self.db_manager.update_track(
+                track["id"], _changed(stored, updated_track)
+            )
             if "album_id" in updated_track:
                 await self.db_manager.update_album_stats(updated_track["album_id"])
 

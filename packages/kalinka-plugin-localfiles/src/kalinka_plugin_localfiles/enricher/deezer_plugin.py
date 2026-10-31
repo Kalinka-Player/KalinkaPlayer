@@ -19,6 +19,7 @@ from .enricher_plugin import (
     has_real_cover,
     inferred_claims,
     raise_if_service_unavailable,
+    write_album_cover,
 )
 
 
@@ -379,7 +380,12 @@ class DeezerPlugin(EnricherPlugin):
         # write — genre is a resolvable field, so it's emitted as a claim and
         # left to resolution (a local tag or MB outranks it).
         image_data = image_response.content
-        if self._save_images(image_data, album["id"], "album"):
+        if await write_album_cover(
+            self.db_manager,
+            album["id"],
+            lambda current: not has_real_cover(current),
+            lambda: self._save_images(image_data, album["id"], "album"),
+        ):
             # Cleared alongside the URL: this cover replaces a generated one,
             # and a row still flagged generated is wiped by the art sweep.
             updates["image_url"] = album["id"]

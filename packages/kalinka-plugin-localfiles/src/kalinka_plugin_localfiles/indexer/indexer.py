@@ -52,6 +52,7 @@ from ..resolution.resolver import (
 )
 from ..utils.artwork_store import (
     ArtworkSave,
+    artwork_lock,
     dhash_bytes,
     save_artwork_images,
     store_artwork_from_file,
@@ -1760,11 +1761,12 @@ class FileIndexer:
         counts = {"albums": 0, "tracks": 0}
         written_off = await self.db_manager.get_art_failures(EMBEDDED_COVER)
         for album_id, file_path in await self.db_manager.get_albums_missing_art():
-            if await self._restore_embedded_art(
-                album_id, file_path, "album", available_folders, written_off
-            ):
-                await self.db_manager.set_album_cover(album_id)
-                counts["albums"] += 1
+            async with artwork_lock(album_id):
+                if await self._restore_embedded_art(
+                    album_id, file_path, "album", available_folders, written_off
+                ):
+                    await self.db_manager.set_album_cover(album_id)
+                    counts["albums"] += 1
         for track_id, file_path in await self.db_manager.get_singles_missing_art():
             if await self._restore_embedded_art(
                 track_id, file_path, "track", available_folders, written_off
@@ -1806,12 +1808,14 @@ class FileIndexer:
             ):
                 logger.debug(f"Folder not searched again, unchanged: {folder}")
                 continue
-            cover = await self._cover_from_folder(
-                album_id, storage, folder, failed, state
-            )
+            async with artwork_lock(album_id):
+                cover = await self._cover_from_folder(
+                    album_id, storage, folder, failed, state
+                )
+                if cover is not None:
+                    await self.db_manager.set_album_cover(album_id)
             if cover is None:
                 continue
-            await self.db_manager.set_album_cover(album_id)
             counts["albums"] += 1
             panel = " (front panel)" if cover.box else ""
             logger.info(f"Cover for album {album_id} taken from {cover.path}{panel}")

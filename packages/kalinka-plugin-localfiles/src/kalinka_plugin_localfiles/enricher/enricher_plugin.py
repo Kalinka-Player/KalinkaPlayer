@@ -1,7 +1,9 @@
 import abc
-from typing import Dict, List, Optional
+import asyncio
+from typing import Callable, Dict, List, Optional
 
 from ..resolution.resolver import LOCALLY_DERIVED, TIER_RANK, source_base
+from ..utils.artwork_store import artwork_lock
 
 
 class TransientEnrichmentError(Exception):
@@ -71,6 +73,29 @@ async def best_search_name(
     if not external:
         return fallback
     return max(external, key=lambda c: TIER_RANK.get(c.get("tier"), 0))["value"]
+
+
+async def write_album_cover(
+    db_manager,
+    album_id: str,
+    wanted: Callable[[Dict], bool],
+    write: Callable[[], bool],
+    generated: bool = False,
+) -> bool:
+    """Store an album's cover with ``write`` and point the album at it, if
+    the album as it stands now is still ``wanted``; say whether it did.
+
+    Files and row change together under the album's artwork lock, which the
+    indexer's cover pass also holds: a source decides on a stale snapshot.
+    """
+    async with artwork_lock(album_id):
+        current = await db_manager.get_album_by_id(album_id)
+        if current is None or not wanted(current):
+            return False
+        if not await asyncio.to_thread(write):
+            return False
+        await db_manager.set_album_image(album_id, generated)
+        return True
 
 
 def has_real_cover(album: Dict) -> bool:

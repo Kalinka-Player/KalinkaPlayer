@@ -629,6 +629,15 @@ class AsyncEnricherDb(ProvenanceDb):
         """Update artist information"""
         await self._update("artists", artist_id, data)
 
+    async def set_album_image(self, album_id: str, generated: bool) -> None:
+        """Point an album at the cover a source just stored for it."""
+        async with self._open() as conn:
+            await conn.execute(
+                "UPDATE albums SET image_url = ?, image_generated = ? WHERE id = ?",
+                (album_id, int(generated), album_id),
+            )
+            await conn.commit()
+
     async def update_album(self, album_id: str, data: Dict[str, Any]) -> None:
         """Update album information"""
         await self._update("albums", album_id, data)

@@ -65,6 +65,12 @@ class _NoClaims:
     async def get_artist_by_id(self, artist_id):
         return None
 
+    async def get_album_by_id(self, album_id):
+        return {"id": album_id}
+
+    async def set_album_image(self, album_id, generated):
+        pass
+
 
 def _plugin(tmp_path) -> DeezerPlugin:
     config = LocalFilesConfig(

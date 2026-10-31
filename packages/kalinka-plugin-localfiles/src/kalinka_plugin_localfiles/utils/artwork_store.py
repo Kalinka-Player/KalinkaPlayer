@@ -12,10 +12,12 @@ being held in memory whole.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import os
 import threading
+import weakref
 from enum import Enum, auto
 from pathlib import Path
 from typing import BinaryIO, Optional, Tuple, Union
@@ -29,6 +31,20 @@ logger = logging.getLogger(__name__.split(".")[-1])
 
 _SIZES = (("thumbnail", 50), ("small", 230), ("large", 600))
 _LARGEST = max(size for _, size in _SIZES)
+
+
+_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = (
+    weakref.WeakValueDictionary()
+)
+
+
+def artwork_lock(entity_id: str) -> asyncio.Lock:
+    """Held while an entity's cover is decided and written: the indexer and
+    the enrichers share one event loop and these files."""
+    lock = _LOCKS.get(entity_id)
+    if lock is None:
+        lock = _LOCKS[entity_id] = asyncio.Lock()
+    return lock
 
 
 def artwork_file(
