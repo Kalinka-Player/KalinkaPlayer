@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import base64
 import os
-import re
 import sys
 import io
 import json
@@ -60,6 +59,7 @@ from ..utils.artwork_store import (
 )
 from ..utils.folder_art import FolderCover, find_folder_covers
 from ..utils.watched_file import WatchedFile
+from ..utils.years import year_from_date
 from ..worker_utils import nudge
 from ..storage import (
     PROBE_TIMEOUT_S,
@@ -1341,10 +1341,8 @@ class FileIndexer:
             metadata["track_number"] = one.number
         if not metadata.get("genre") and sheet.genre:
             metadata["genre"] = sheet.genre
-        if not metadata.get("year") and sheet.date:
-            m = re.search(r"\d{4}", sheet.date)
-            if m:
-                metadata["year"] = int(m.group())
+        if not metadata.get("year") and (year := year_from_date(sheet.date)):
+            metadata["year"] = year
 
     def _extract_mp3_metadata(self, mp3: MP3, audio: BinaryIO, metadata: Dict) -> Dict:
         return self._extract_id3_metadata(mp3, metadata, "mp3")
@@ -1420,11 +1418,8 @@ class FileIndexer:
                 metadata["disc_number"] = int(disc_str)
             except ValueError:
                 pass
-        if "TDRC" in id3:
-            try:
-                metadata["year"] = int(str(id3["TDRC"]).split("-")[0])
-            except (ValueError, IndexError):
-                pass
+        if "TDRC" in id3 and (year := year_from_date(id3["TDRC"])):
+            metadata["year"] = year
         if "TCON" in id3:
             metadata["genre"] = str(id3["TCON"])
         # Verbatim text frames (incl. TPE2 album-artist, TCMP compilation) +
@@ -1505,11 +1500,8 @@ class FileIndexer:
                 metadata["disc_number"] = int(disc_str)
             except ValueError:
                 pass
-        if "date" in comments:
-            try:
-                metadata["year"] = int(comments["date"][0].split("-")[0])
-            except (ValueError, IndexError):
-                pass
+        if "date" in comments and (year := year_from_date(comments["date"][0])):
+            metadata["year"] = year
         if "genre" in comments:
             metadata["genre"] = comments["genre"][0]
         metadata.update(read_replaygain(comments))

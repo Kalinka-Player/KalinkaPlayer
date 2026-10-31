@@ -11,9 +11,10 @@ Vorbis comments (``date``/``genre``, lower-case and list-valued).
 
 from __future__ import annotations
 
-import re
 from collections import Counter
 from typing import Any, Dict, Iterable, List, Optional
+
+from ..utils.years import year_from_date
 
 # Candidate tag keys per field, lower-cased (raw keys are matched case-insensitively).
 _KEYS = {
@@ -21,7 +22,6 @@ _KEYS = {
     "genre": ("tcon", "genre"),
     "language": ("tlan", "language"),
 }
-_YEAR_RE = re.compile(r"(\d{4})")
 
 
 def _first(value: Any) -> Any:
@@ -43,9 +43,8 @@ def extract_fields(raw_tags: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         if raw is None:
             continue
         if field == "year":
-            m = _YEAR_RE.search(str(raw))
-            if m and 1000 <= int(m.group(1)) <= 2100:  # reject malformed years
-                out["year"] = int(m.group(1))
+            if (year := year_from_date(raw)) is not None:
+                out["year"] = year
         else:
             out[field] = str(raw).strip()
     return out
