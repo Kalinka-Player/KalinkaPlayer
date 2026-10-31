@@ -512,6 +512,7 @@ class TestWhatIsReadBesideTheAudio:
         )
 
         changes = await indexer.process_file(f"{ROOT}/single.flac")
+        await indexer.resolve_artwork([ROOT])
 
         track_id = changes["tracks"]
         track = await indexer.db_manager.get_track_by_id(track_id)

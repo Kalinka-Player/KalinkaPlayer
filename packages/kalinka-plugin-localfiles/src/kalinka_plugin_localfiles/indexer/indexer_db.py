@@ -13,13 +13,6 @@ from ..worker_utils import retry_db_locked
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
-#: A cover source's size and nanosecond mtime: when either changes, the file
-#: is worth reading again.
-Fingerprint = Tuple[int, int]
-
-#: The cover passes, as ``art_source_failures.kind``.
-EMBEDDED_COVER = "embedded"
-
 #: Where an album's cover decision is kept: the provenance of its image.
 _COVER_FIELD = "image_url"
 
@@ -138,39 +131,15 @@ class AsyncIndexerDb(ProvenanceDb):
         """Update track information"""
         await self._update("tracks", track_id, data)
 
-    async def get_singles_missing_art(self) -> List[Tuple[str, str]]:
-        """(track_id, file_path) for unknown_album tracks whose file embeds a
-        cover (evidence art_phash) but that carry no track-level image yet."""
-        async with self._open() as conn:
-            cursor = await conn.cursor()
-            await cursor.execute(
-                """
-                SELECT t.id, t.file_path FROM tracks t
-                JOIN track_evidence e ON e.track_id = t.id
-                WHERE t.album_id = 'unknown_album'
-                  AND t.image_url IS NULL
-                  AND e.art_phash IS NOT NULL
-                """
-            )
-            return [(row[0], row[1]) for row in await cursor.fetchall()]
-
     async def reassign_album(self, track_id: str, album_id: str) -> None:
         """The single owner of tracks.album_id writes — clustering / reconciler
         only. Album membership must flow through here, never through an
         enrichment plugin (§3 invariant: membership changes only in the
-        clustering pass).
-
-        A track that joins an album no longer needs a cover of its own, so
-        what failed to give it one is forgotten."""
+        clustering pass)."""
         async with self._open() as conn:
             await conn.execute(
                 "UPDATE tracks SET album_id = ? WHERE id = ?", (album_id, track_id)
             )
-            if album_id != "unknown_album":
-                await conn.execute(
-                    "DELETE FROM art_source_failures WHERE entity_id = ?",
-                    (track_id,),
-                )
             await conn.commit()
 
     async def update_album(self, album_id: str, data: Dict[str, Any]) -> None:
@@ -406,9 +375,6 @@ class AsyncIndexerDb(ProvenanceDb):
             cursor = await conn.cursor()
             await cursor.execute("DELETE FROM tracks WHERE id = ?", (track_id,))
             deleted = cursor.rowcount > 0
-            await cursor.execute(
-                "DELETE FROM art_source_failures WHERE entity_id = ?", (track_id,)
-            )
             await conn.commit()
             return deleted
 
@@ -467,16 +433,12 @@ class AsyncIndexerDb(ProvenanceDb):
             return attempts
 
     async def clear_failure(self, file_path: str) -> None:
-        """Remove any recorded extraction failure for a file path, and any
-        cover that failed to come out of it: it has just been read again."""
+        """Remove any recorded extraction failure for a file path: it has
+        just been read again."""
         async with self._open() as conn:
             cursor = await conn.cursor()
             await cursor.execute(
                 "DELETE FROM indexer_failures WHERE file_path = ?", (file_path,)
-            )
-            await cursor.execute(
-                "DELETE FROM art_source_failures WHERE source_path = ?",
-                (file_path,),
             )
             await conn.commit()
 
@@ -514,43 +476,6 @@ class AsyncIndexerDb(ProvenanceDb):
             rows = await cursor.fetchall()
             return [row[0] for row in rows]
 
-    async def get_art_failures(
-        self, kind: str
-    ) -> Dict[str, Dict[str, Fingerprint]]:
-        """What one cover pass has written off, as entity id -> source path ->
-        the fingerprint the source had then."""
-        async with self._open() as conn:
-            cursor = await conn.execute(
-                "SELECT entity_id, source_path, size, mtime_ns "
-                "FROM art_source_failures WHERE kind = ?",
-                (kind,),
-            )
-            failures: Dict[str, Dict[str, Fingerprint]] = {}
-            for entity_id, path, size, mtime_ns in await cursor.fetchall():
-                failures.setdefault(entity_id, {})[path] = (size, mtime_ns)
-            return failures
-
-    async def replace_art_failures(
-        self, entity_id: str, kind: str, sources: Dict[str, Fingerprint]
-    ) -> None:
-        """Make ``sources`` all that one cover pass has written off for
-        ``entity_id``, forgetting what it had before."""
-        async with self._open() as conn:
-            await conn.execute(
-                "DELETE FROM art_source_failures WHERE entity_id = ? AND kind = ?",
-                (entity_id, kind),
-            )
-            await conn.executemany(
-                "INSERT OR REPLACE INTO art_source_failures "
-                "(entity_id, source_path, kind, size, mtime_ns) "
-                "VALUES (?, ?, ?, ?, ?)",
-                [
-                    (entity_id, path, kind, size, mtime_ns)
-                    for path, (size, mtime_ns) in sources.items()
-                ],
-            )
-            await conn.commit()
-
     async def set_album_cover(
         self, album_id: str, origin: Optional[Dict[str, Any]] = None
     ) -> None:
@@ -564,9 +489,6 @@ class AsyncIndexerDb(ProvenanceDb):
             await conn.execute(
                 "UPDATE albums SET image_url = ?, image_generated = 0 WHERE id = ?",
                 (f"{album_id}.jpg", album_id),
-            )
-            await conn.execute(
-                "DELETE FROM art_source_failures WHERE entity_id = ?", (album_id,)
             )
             await conn.commit()
         if origin is not None:
@@ -602,20 +524,52 @@ class AsyncIndexerDb(ProvenanceDb):
         """Each album's cover decision: the cover it should have
         (``desired``), the ``source`` and file it got, and what its folders
         held (``folder``)."""
+        return await self._cover_origins("album")
+
+    async def _cover_origins(self, entity_type: str) -> Dict[str, Dict[str, Any]]:
         async with self._open() as conn:
             cursor = await conn.execute(
                 "SELECT entity_id, evidence_ref FROM resolved_origin "
-                "WHERE entity_type = 'album' AND field = ?",
-                (_COVER_FIELD,),
+                "WHERE entity_type = ? AND field = ?",
+                (entity_type, _COVER_FIELD),
             )
             rows = await cursor.fetchall()
         origins: Dict[str, Dict[str, Any]] = {}
-        for album_id, evidence in rows:
+        for entity_id, evidence in rows:
             try:
-                origins[album_id] = json.loads(evidence)
+                origins[entity_id] = json.loads(evidence)
             except (TypeError, ValueError):
                 continue
         return origins
+
+    async def get_track_cover_origins(self) -> Dict[str, Dict[str, Any]]:
+        """Which picture each track's own stored cover shows (``phash``),
+        or that none of its files would decode (``failed``)."""
+        return await self._cover_origins("track")
+
+    async def record_track_cover_origin(
+        self, track_id: str, origin: Dict[str, Any]
+    ) -> None:
+        await self.record_resolved_origin(
+            "track",
+            track_id,
+            _COVER_FIELD,
+            "none" if origin.get("failed") else "embedded_art",
+            OBSERVED,
+            json.dumps(origin),
+        )
+
+    async def set_track_images(
+        self, images: List[Tuple[Optional[str], str]]
+    ) -> None:
+        """Set ``(image_url, track_id)`` pairs in one transaction."""
+        if not images:
+            return
+        async with self._open() as conn:
+            await conn.executemany(
+                "UPDATE tracks SET image_url = ? WHERE id = ?", images
+            )
+            await conn.commit()
 
     async def get_album_covers(self) -> Dict[str, Tuple[Optional[str], int]]:
         """(image_url, image_generated) of every album."""
@@ -632,24 +586,12 @@ class AsyncIndexerDb(ProvenanceDb):
             cursor = await conn.execute(
                 """
                 SELECT t.id, t.album_id, t.file_path, t.disc_number,
-                       t.track_number, e.art_phash, e.art_type
+                       t.track_number, t.image_url, e.art_phash, e.art_type
                 FROM tracks t
                 LEFT JOIN track_evidence e ON e.track_id = t.id
                 """
             )
             return [dict(row) for row in await cursor.fetchall()]
-
-    async def set_track_cover(self, track_id: str) -> None:
-        """As :meth:`set_album_cover`, for a single's own cover."""
-        async with self._open() as conn:
-            await conn.execute(
-                "UPDATE tracks SET image_url = ? WHERE id = ?",
-                (f"{track_id}.jpg", track_id),
-            )
-            await conn.execute(
-                "DELETE FROM art_source_failures WHERE entity_id = ?", (track_id,)
-            )
-            await conn.commit()
 
     async def set_scan_progress(
         self,
@@ -866,11 +808,6 @@ class AsyncIndexerDb(ProvenanceDb):
                 )
                 deleted_albums = cursor.rowcount
                 await self._forget_provenance(cursor, "album", orphaned_albums)
-                await cursor.execute(
-                    "DELETE FROM art_source_failures "
-                    f"WHERE entity_id IN ({albums_placeholders})",
-                    orphaned_albums,
-                )
 
             # Get artists with no tracks or albums. ``unknown_artist``
             # is excluded as the only sentinel — every other artist

@@ -50,12 +50,7 @@ from ..resolution.resolver import (
     OBSERVED,
     TAG_CONSENSUS,
 )
-from ..utils.artwork_store import (
-    ArtworkSave,
-    dhash_bytes,
-    save_artwork_images,
-    store_artwork_images,
-)
+from ..utils.artwork_store import dhash_bytes, save_artwork_images
 from ..utils.folder_art import is_cover_image_name
 from ..utils.watched_file import WatchedFile
 from ..utils.years import year_from_date
@@ -92,11 +87,7 @@ from .id_generator import (
 )
 from .artwork_choice import EMBEDDED_ART, embedded_key
 from .artwork_resolver import ArtworkResolver, Listings
-from .indexer_db import (
-    EMBEDDED_COVER,
-    AsyncIndexerDb,
-    Fingerprint,
-)
+from .indexer_db import AsyncIndexerDb
 
 
 # V/A-compilation classification (thresholds, folder heuristics, title
@@ -289,15 +280,6 @@ def _indexed_as(track: Optional[Dict[str, Any]], size: int, mtime: int) -> bool:
     )
 
 
-def _fingerprint(storage: FileStorage, path: str) -> Optional[Fingerprint]:
-    """A cover source's size and mtime, or None when it cannot be measured."""
-    try:
-        stat = storage.stat(path)
-    except OSError:
-        return None
-    return stat.size, stat.mtime_ns
-
-
 class FileIndexer:
     def __init__(
         self,
@@ -463,9 +445,6 @@ class FileIndexer:
         await self._group_albums()
 
         await self.resolve_artwork(available_folders, listings=listings)
-        singles = await self.backfill_single_art(available_folders)
-        if singles:
-            logger.info("Embedded art restored for %d single(s)", singles)
 
         if any(changed_items.values()):
             logger.info(
@@ -1044,16 +1023,6 @@ class FileIndexer:
             "enriched": 0,
             "last_updated": int(time.time()),
         }
-        # A single on unknown_album has no album row to carry its embedded
-        # cover, so it gets track-level art. Clustering demotions are covered
-        # by backfill_embedded_art after the recluster pass.
-        if album_id == "unknown_album":
-            saved = "album_art" in metadata and await asyncio.to_thread(
-                self._save_images, metadata["album_art"], track_id, "track", file_path
-            )
-            # Written either way: a re-index of a file whose art was removed
-            # must drop the cover, which the surgical update would keep.
-            track_data["image_url"] = f"{track_id}.jpg" if saved else None
         if existing_track is None:
             await self.db_manager.insert_track(track_data)
         else:
@@ -1782,76 +1751,15 @@ class FileIndexer:
         listings: Optional[Listings] = None,
         dirty_dirs: AbstractSet[str] = frozenset(),
     ) -> int:
-        """Give every album the cover its local art decides, before the
-        online sources are asked for any; see :class:`ArtworkResolver`."""
+        """Give every album the cover its local art decides, and every track
+        whose own embedded cover differs that picture, before the online
+        sources are asked for any; see :class:`ArtworkResolver`."""
         changed = await self.artwork_resolver.resolve(
             available_folders, listings, dirty_dirs
         )
         if changed:
             logger.info("Changed the cover of %d album(s)", changed)
         return changed
-
-    async def backfill_single_art(self, available_folders: List[str]) -> int:
-        """Re-extract the embedded cover of loose tracks that clustering
-        demoted to ``unknown_album``, which lost their album row and the
-        cover reference with it.
-
-        The evidence ``art_phash`` gates the pass to files known to embed a
-        picture, and a recorded ``image_url`` stops repeats — as does a
-        picture that would not decode, until its file changes.
-        """
-        restored = 0
-        written_off = await self.db_manager.get_art_failures(EMBEDDED_COVER)
-        for track_id, file_path in await self.db_manager.get_singles_missing_art():
-            if await self._restore_embedded_art(
-                track_id, file_path, "track", available_folders, written_off
-            ):
-                await self.db_manager.set_track_cover(track_id)
-                restored += 1
-        return restored
-
-    async def _restore_embedded_art(
-        self,
-        entity_id: str,
-        file_path: str,
-        entity_type: str,
-        available_folders: List[str],
-        written_off: Dict[str, Dict[str, Fingerprint]],
-    ) -> bool:
-        """Store the cover embedded in ``file_path`` for an album or single.
-
-        A file whose tags or picture would not decode is written off until it
-        changes; one that could not be read is tried again next pass.
-        """
-        if self.storage.root_of(file_path, available_folders) is None:
-            return False
-        storage = self.storage.for_path(file_path)
-        fingerprint = await asyncio.to_thread(_fingerprint, storage, file_path)
-        if fingerprint is None:
-            return False
-        if written_off.get(entity_id, {}).get(file_path) == fingerprint:
-            logger.debug(f"Cover for {entity_id} not retried, unchanged: {file_path}")
-            return False
-        try:
-            art = await asyncio.to_thread(self._embedded_art, storage, file_path)
-        except OSError as e:
-            logger.debug(f"Could not read embedded art from {file_path}: {e}")
-            return False
-        outcome = ArtworkSave.UNDECODABLE
-        if art:
-            outcome = await asyncio.to_thread(
-                store_artwork_images,
-                self.artwork_path,
-                art,
-                entity_id,
-                entity_type,
-                origin=file_path,
-            )
-        if outcome is ArtworkSave.UNDECODABLE:
-            await self.db_manager.replace_art_failures(
-                entity_id, EMBEDDED_COVER, {file_path: fingerprint}
-            )
-        return outcome is ArtworkSave.SAVED
 
     async def recluster(self) -> Dict[str, int]:
         """Folder-first album grouping over the whole library.

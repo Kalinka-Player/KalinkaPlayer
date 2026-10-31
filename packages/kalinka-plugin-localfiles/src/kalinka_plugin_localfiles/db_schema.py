@@ -192,26 +192,8 @@ async def init_db(db_path: str) -> None:
             """
         )
 
-        # The same for cover sources that would not decode, per entity and
-        # per pass (kind 'folder' or 'embedded'), with the rest of a
-        # written-off folder (kind 'folder_state').
-        await cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS art_source_failures (
-                entity_id   TEXT NOT NULL,
-                source_path TEXT NOT NULL,
-                kind        TEXT NOT NULL,
-                size        INTEGER NOT NULL,
-                mtime_ns    INTEGER NOT NULL,
-                PRIMARY KEY (entity_id, source_path)
-            )
-            """
-        )
-        # clear_failure forgets by path on every file indexed.
-        await cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_art_source_failures_source "
-            "ON art_source_failures(source_path)"
-        )
+        # Cover write-offs live in each cover's provenance now.
+        await cursor.execute("DROP TABLE IF EXISTS art_source_failures")
 
         # Per local-album-cluster grouping metadata, keyed 1:1 to an albums
         # row. The folders a cluster occupies are derived from member tracks;

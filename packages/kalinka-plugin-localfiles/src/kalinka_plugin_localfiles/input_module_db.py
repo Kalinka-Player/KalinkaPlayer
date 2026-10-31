@@ -100,7 +100,8 @@ ARTIST_COLUMNS = (
 #: the row source to alias ``albums`` as ``a`` and ``artists`` as ``ar``.
 TRACK_COLUMNS = (
     "t.*, a.title as album_title, a.genre as album_genre,"
-    " a.year as album_year, ar.name as artist_name"
+    " a.year as album_year, a.image_url as album_image_url,"
+    " ar.name as artist_name"
 )
 
 KINDS: Dict[str, _KindQuery] = {

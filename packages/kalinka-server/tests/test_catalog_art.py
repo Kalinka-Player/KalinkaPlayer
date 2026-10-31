@@ -27,6 +27,7 @@ from kalinka_plugin_sdk.inputmodule import ContentInfo
 
 from kalinka_server import catalog_art_render as render
 from kalinka_server.catalog_art_service import (
+    _item_image_path,
     ART_URL_PREFIX,
     FAIL_RETRY_SECONDS,
     MAX_COVER_BYTES,
@@ -158,6 +159,20 @@ def _album_child(local, *, with_image=True, query=""):
     return BrowseItem(
         id=eid, name=local, can_browse=True, album=Album(id=eid, title=local, image=image)
     )
+
+
+def _track_with_cover(own=None):
+    album_id = EntityId(id="a1", type=EntityType.ALBUM, source="localfiles")
+    track_id = EntityId(id="t1", type=EntityType.TRACK, source="localfiles")
+    album = Album(id=album_id, title="A", image=CoverImage(large="/album.jpg"))
+    track = Track(id=track_id, title="T", duration=1, album=album, image=own)
+    return BrowseItem(id=track_id, name="T", can_browse=False, track=track)
+
+
+def test_a_track_tile_shows_the_tracks_own_cover_as_the_app_does():
+    assert _item_image_path(_track_with_cover(CoverImage(large="/own.jpg"))) == "/own.jpg"
+    assert _item_image_path(_track_with_cover()) == "/album.jpg"
+    assert _item_image_path(_track_with_cover(CoverImage())) == "/album.jpg"
 
 
 def _service(tmp_path, resolver=lambda eid: None, resource_resolver=None):

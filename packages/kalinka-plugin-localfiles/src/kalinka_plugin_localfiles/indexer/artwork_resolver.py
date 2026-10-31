@@ -1,4 +1,5 @@
-"""Gives every album the cover :mod:`artwork_choice` decides on.
+"""Gives every album the cover :mod:`artwork_choice` decides on, and every
+track whose own embedded cover differs from its album's that picture.
 
 Each album's decision is kept as the provenance of its ``image_url``: the
 cover it should have, what it got, and what its folders held. A pass opens
@@ -65,6 +66,7 @@ from .artwork_choice import (
     decide,
     embedded_choices,
     hamming,
+    track_variants,
 )
 
 logger = logging.getLogger("indexer")
@@ -114,6 +116,7 @@ class ArtworkResolver:
         self.artwork_path = Path(artwork_path)
         self.library_roots = list(library_roots)
         self.read_cover = read_cover
+        self._decisions: Dict[str, Dict[str, Any]] = {}
 
     async def resolve(
         self,
@@ -121,8 +124,8 @@ class ArtworkResolver:
         listings: Optional[Listings] = None,
         dirty_dirs: AbstractSet[str] = frozenset(),
     ) -> int:
-        """Bring every album's cover in line with its decision, and say how
-        many changed.
+        """Bring every album's and track's cover in line with its decision,
+        and say how many albums' changed.
 
         @param available_folders Roots that can be read now; an album under
             any other keeps the cover it has.
@@ -134,6 +137,7 @@ class ArtworkResolver:
         rows = await self.db.get_artwork_inputs()
         covers = await self.db.get_album_covers()
         origins = await self.db.get_cover_origins()
+        self._decisions = dict(origins)
         cached = await asyncio.to_thread(self._cached_covers)
         owned = album_folders(
             ((row["album_id"], row["file_path"]) for row in rows), self.library_roots
@@ -152,12 +156,25 @@ class ArtworkResolver:
                 )
             )
         children = _children(listings) if listings is not None else None
+
+        def readable(track: Member) -> bool:
+            return self.storage.root_of(track.path, available_folders) is not None
+
+        # An album lives in one folder; loose tracks are anyone's.
+        reachable = {
+            album_id: (
+                [t for t in tracks if readable(t)]
+                if album_id == "unknown_album"
+                else tracks if readable(tracks[0]) else []
+            )
+            for album_id, tracks in members.items()
+        }
+        reachable = {
+            album_id: tracks for album_id, tracks in reachable.items() if tracks
+        }
         changed = 0
-        for album_id in sorted(members):
+        for album_id in sorted(reachable):
             if album_id == "unknown_album" or album_id not in covers:
-                continue
-            first = members[album_id][0].path
-            if self.storage.root_of(first, available_folders) is None:
                 continue
             if await self._resolve_album(
                 album_id,
@@ -172,7 +189,100 @@ class ArtworkResolver:
                 dirty_dirs,
             ):
                 changed += 1
+        await self._resolve_tracks(
+            reachable, {row["id"]: row["image_url"] for row in rows}
+        )
         return changed
+
+    async def _resolve_tracks(
+        self,
+        members: Dict[str, List[Member]],
+        current: Dict[str, Optional[str]],
+    ) -> None:
+        """Store each track's own cover where it differs from its album's,
+        once per picture an album's tracks share, and point every other
+        track back at its album's.
+
+        The picture is stored under the first track carrying it, whose
+        provenance says which picture that was, so it is read again only
+        when that changes or the file goes missing.
+        """
+        albums = self._decisions
+        stored = await self.db.get_track_cover_origins()
+        cached = await asyncio.to_thread(self._cached_covers, "track")
+        wanted: Dict[str, Optional[str]] = {}
+        for album_id, tracks in members.items():
+            cover = albums.get(album_id) or {}
+            for track in tracks:
+                wanted[track.track_id] = None
+            for group in track_variants(
+                tracks,
+                cover.get("cover_dhash"),
+                cover.get("source"),
+                singles=album_id == "unknown_album",
+            ):
+                key = group[0].track_id
+                record = stored.get(key) or {}
+                tried = sorted(track.track_id for track in group)
+                if record.get("phash") != group[0].phash or not (
+                    (record.get("failed") and record.get("tracks") == tried)
+                    or (not record.get("failed") and key in cached)
+                ):
+                    saved = await self._store_track_cover(key, group)
+                    if saved is None:
+                        for track in group:
+                            wanted[track.track_id] = current.get(track.track_id)
+                        continue
+                    record = {"failed": not saved}
+                if not record.get("failed"):
+                    for track in group:
+                        wanted[track.track_id] = f"{key}.jpg"
+        await self.db.set_track_images(
+            [
+                (image_url, track_id)
+                for track_id, image_url in wanted.items()
+                if current.get(track_id) != image_url
+            ]
+        )
+
+    async def _store_track_cover(self, key: str, group: List[Member]) -> Optional[bool]:
+        """Store the picture ``group`` shares as track ``key``'s cover, from
+        the first of its files that decodes. None when a file could not be
+        read, which is tried again next pass."""
+        phash = group[0].phash
+        unread = False
+        for track in group:
+            storage = self.storage.for_path(track.path)
+            try:
+                data = await asyncio.to_thread(self.read_cover, storage, track.path)
+            except OSError as e:
+                logger.debug(f"Could not read embedded art from {track.path}: {e}")
+                unread = True
+                continue
+            if data is None:
+                continue
+            outcome = await asyncio.to_thread(
+                store_artwork_images, self.artwork_path, data, key, "track", track.path
+            )
+            if outcome is ArtworkSave.IO_FAILED:
+                unread = True
+            elif outcome is ArtworkSave.SAVED:
+                await self.db.record_track_cover_origin(
+                    key, {"phash": phash, "path": track.path}
+                )
+                return True
+        if unread:
+            return None
+        # Remembered until the picture or the tracks carrying it change.
+        await self.db.record_track_cover_origin(
+            key,
+            {
+                "phash": phash,
+                "failed": True,
+                "tracks": sorted(track.track_id for track in group),
+            },
+        )
+        return False
 
     async def _resolve_album(
         self,
@@ -215,7 +325,9 @@ class ArtworkResolver:
         desired = decide(_pick(folder, "named"), choices, _pick(folder, "scan"))
         if _already_has(stored, desired, cover, cached):
             if folder != (stored or {}).get("folder"):
-                await self.db.record_cover_origin(album_id, {**stored, "folder": folder})
+                await self._decide(
+                    self.db.record_cover_origin, album_id, {**stored, "folder": folder}
+                )
             return False
         return await self._apply(
             album_id,
@@ -253,8 +365,10 @@ class ArtworkResolver:
         # a share carries its size and time, which the signature has.
         for kind in ("named", "scan"):
             pick = _pick(folder, kind)
-            if pick is None or pick.size is None or _listed_with_size(
-                listings, pick.path
+            if (
+                pick is None
+                or pick.size is None
+                or _listed_with_size(listings, pick.path)
             ):
                 continue
             now = await asyncio.to_thread(_fingerprint, storage, pick.path)
@@ -315,14 +429,14 @@ class ArtworkResolver:
                     self._shows_old_folder_cover, storage, album_id, first_path
                 )
             if local:
-                await self.db.clear_local_album_cover(album_id, origin)
+                await self._decide(self.db.clear_local_album_cover, album_id, origin)
                 logger.info(
                     "Album %s has no local cover any more; the online sources "
                     "may supply one",
                     album_id,
                 )
                 return True
-            await self.db.record_cover_origin(album_id, origin)
+            await self._decide(self.db.record_cover_origin, album_id, origin)
             return False
 
         if stored is None and desired.embedded is not None and _real(cover) and cached:
@@ -332,7 +446,8 @@ class ArtworkResolver:
             if existing and hamming(existing, desired.embedded.phash) <= (
                 ART_SAME_MAX_HAMMING
             ):
-                await self.db.record_cover_origin(
+                await self._decide(
+                    self.db.record_cover_origin,
                     album_id,
                     {
                         **base,
@@ -354,7 +469,8 @@ class ArtworkResolver:
                     continue
                 if outcome is ArtworkSave.SAVED:
                     cover_dhash = await asyncio.to_thread(self._stored_dhash, album_id)
-                    await self.db.set_album_cover(
+                    await self._decide(
+                        self.db.set_album_cover,
                         album_id,
                         {
                             **base,
@@ -380,10 +496,17 @@ class ArtworkResolver:
         # files are not opened again until something changes. A cover still
         # on disk from before stays.
         source = (stored or {}).get("source", NO_ART) if cached else NO_ART
-        await self.db.record_cover_origin(
-            album_id, {**(stored or {}), **base, "source": source}
+        await self._decide(
+            self.db.record_cover_origin,
+            album_id,
+            {**(stored or {}), **base, "source": source},
         )
         return False
+
+    async def _decide(self, write, album_id: str, origin: Dict[str, Any]) -> None:
+        """Write an album's decision, remembered for the track pass after."""
+        await write(album_id, origin)
+        self._decisions[album_id] = origin
 
     async def _store(
         self, storage: FileStorage, attempt: _Attempt, album_id: str
@@ -425,11 +548,11 @@ class ArtworkResolver:
             logger.debug(f"Could not read folder cover {attempt.path}: {e}")
             return ArtworkSave.IO_FAILED
 
-    def _cached_covers(self) -> Set[str]:
-        """Albums whose cover files are on disk, from one listing."""
+    def _cached_covers(self, entity_type: str = "album") -> Set[str]:
+        """The entities whose cover files are on disk, from one listing."""
         suffix = "_large.jpg"  # written last
         try:
-            names = os.listdir(self.artwork_path / "album")
+            names = os.listdir(self.artwork_path / entity_type)
         except OSError:
             return set()
         return {name[: -len(suffix)] for name in names if name.endswith(suffix)}
@@ -460,7 +583,9 @@ class ArtworkResolver:
 
     def _stored_dhash(self, album_id: str) -> Optional[str]:
         try:
-            data = artwork_file(self.artwork_path, "album", album_id, "small").read_bytes()
+            data = artwork_file(
+                self.artwork_path, "album", album_id, "small"
+            ).read_bytes()
         except OSError:
             return None
         return dhash_bytes(data)
