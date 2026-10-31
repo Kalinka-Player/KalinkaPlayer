@@ -3,7 +3,7 @@ Version: @VERSION@
 Section: python
 Priority: optional
 Architecture: all
-Depends: kalinka-plugin-sdk (>= 3.15), kalinka-plugin-sdk (<< 4), python3, ca-certificates
+Depends: kalinka-plugin-sdk (>= 3.18), kalinka-plugin-sdk (<< 4), python3, ca-certificates
 Recommends: libchromaprint-tools
 Maintainer: Dmitry Savin <envelsavinds@gmail.com>
 Description: Kalinka Player plugin for My Library, music on the server or a network share

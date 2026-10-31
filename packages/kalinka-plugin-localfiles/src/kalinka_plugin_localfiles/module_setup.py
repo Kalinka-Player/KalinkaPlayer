@@ -428,7 +428,7 @@ class _ResolverCache:
 
 
 class KalinkaPluginLocalFiles(InputModulePlugin):
-    REQUIRES_SDK = ">=3.15,<4"
+    REQUIRES_SDK = ">=3.18,<4"
     PLUGIN_ID = "localfiles"
     CONFIG_MODEL = LocalFilesConfig
     OPTIONAL_PACKAGES: ClassVar[dict[str, OptionalPackageSpec]] = OPTIONAL_PACKAGES

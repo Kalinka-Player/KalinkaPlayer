@@ -96,12 +96,16 @@ ARTIST_COLUMNS = (
     " AS album_count"
 )
 
+#: Track row plus the album and artist fields a track card carries. Requires
+#: the row source to alias ``albums`` as ``a`` and ``artists`` as ``ar``.
+TRACK_COLUMNS = (
+    "t.*, a.title as album_title, a.genre as album_genre,"
+    " a.year as album_year, ar.name as artist_name"
+)
+
 KINDS: Dict[str, _KindQuery] = {
     "track": _KindQuery(
-        columns=(
-            "t.*, a.title as album_title, a.genre as album_genre,"
-            " ar.name as artist_name"
-        ),
+        columns=TRACK_COLUMNS,
         source=(
             "tracks t JOIN albums a ON t.album_id = a.id"
             " JOIN artists ar ON t.artist_id = ar.id"
@@ -589,8 +593,8 @@ class LocalFilesInputModuleDb:
         try:
             cursor = conn.cursor()
             cursor.execute(
-                """
-                SELECT t.*, a.title as album_title, a.genre as album_genre, ar.name as artist_name 
+                f"""
+                SELECT {TRACK_COLUMNS}
                 FROM tracks t
                 LEFT JOIN albums a ON t.album_id = a.id
                 LEFT JOIN artists ar ON t.artist_id = ar.id
@@ -632,7 +636,7 @@ class LocalFilesInputModuleDb:
             placeholders = ", ".join("?" for _ in track_ids)
             cursor.execute(
                 f"""
-                SELECT t.*, a.title as album_title, a.genre as album_genre, ar.name as artist_name
+                SELECT {TRACK_COLUMNS}
                 FROM tracks t
                 LEFT JOIN albums a ON t.album_id = a.id
                 LEFT JOIN artists ar ON t.artist_id = ar.id
@@ -891,7 +895,7 @@ class LocalFilesInputModuleDb:
             # Get results
             cursor.execute(
                 f"""
-                SELECT t.*, a.title as album_title, a.genre as album_genre, ar.name as artist_name
+                SELECT {TRACK_COLUMNS}
                 FROM tracks t
                 JOIN albums a ON t.album_id = a.id
                 JOIN artists ar ON t.artist_id = ar.id
@@ -1382,8 +1386,8 @@ class LocalFilesInputModuleDb:
 
             # Get results
             cursor.execute(
-                """
-                SELECT t.*, a.title as album_title, a.genre as album_genre, ar.name as artist_name
+                f"""
+                SELECT {TRACK_COLUMNS}
                 FROM tracks t
                 JOIN albums a ON t.album_id = a.id
                 JOIN artists ar ON t.artist_id = ar.id
@@ -1472,8 +1476,8 @@ class LocalFilesInputModuleDb:
             total = cursor.fetchone()["count"]
 
             cursor.execute(
-                """
-                SELECT t.*, a.title as album_title, a.genre as album_genre, ar.name as artist_name
+                f"""
+                SELECT {TRACK_COLUMNS}
                 FROM tracks t
                 JOIN albums a ON t.album_id = a.id
                 JOIN artists ar ON t.artist_id = ar.id
@@ -1507,8 +1511,8 @@ class LocalFilesInputModuleDb:
 
             # Get results
             cursor.execute(
-                """
-                SELECT t.*, a.title as album_title, a.genre as album_genre, ar.name as artist_name
+                f"""
+                SELECT {TRACK_COLUMNS}
                 FROM tracks t
                 JOIN albums a ON t.album_id = a.id
                 JOIN artists ar ON t.artist_id = ar.id
@@ -1556,8 +1560,8 @@ class LocalFilesInputModuleDb:
 
             # Get results
             cursor.execute(
-                """
-                SELECT t.*, a.title as album_title, a.genre as album_genre, ar.name as artist_name, 
+                f"""
+                SELECT {TRACK_COLUMNS},
                        pt.position, pt.playlist_track_id
                 FROM playlist_tracks pt
                 JOIN tracks t ON pt.track_id = t.id
