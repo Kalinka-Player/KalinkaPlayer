@@ -28,6 +28,9 @@ from kalinka_plugin_localfiles.db_schema import init_db
 from kalinka_plugin_localfiles.indexer.indexer import FileIndexer
 from kalinka_plugin_localfiles.indexer.indexer_db import AsyncIndexerDb
 from kalinka_plugin_localfiles.localfiles import LocalFilesInputModule
+from kalinka_plugin_localfiles.utils.artwork_store import dhash_bytes
+
+from art_images import patterned_png
 
 
 @pytest_asyncio.fixture
@@ -193,14 +196,22 @@ def _touch(path):
 
 async def _single_whose_cover_broke(fi, db, music_dir):
     """A loose single indexed with a good cover, then re-tagged with one cut
-    short. The broken picture has no hash, so the good one's is kept, and
-    the backfill goes on selecting the track."""
+    short. The broken picture has no hash of its own; the good one's stands
+    in for a library indexed when a hash outlived its picture, so the
+    backfill goes on selecting the track."""
     path = music_dir / "loose.flac"
     _write_flac(path, TAGS, cover=_cover_png((20, 90, 250)))
     track_id = (await fi.process_file(str(path)))["tracks"]
+    phash = (await db.get_tracks_with_evidence())[0][1]["art_phash"]
     _write_flac(path, TAGS, cover=_truncated_jpeg())
     await fi.process_file(str(path))
     assert (await db.get_track_by_id(track_id))["image_url"] is None
+    with closing(sqlite3.connect(fi.config.db_path)) as conn:
+        conn.execute(
+            "UPDATE track_evidence SET art_phash = ? WHERE track_id = ?",
+            (phash, track_id),
+        )
+        conn.commit()
     return path, track_id
 
 
@@ -391,6 +402,118 @@ async def test_embedded_art_reads_mp3_apic(indexer):
     assert art == _cover_png((90, 10, 130))
     with pytest.raises(OSError):
         fi._embedded_art(LOCAL, str(music_dir / "missing.mp3"))
+
+
+def _mp3_with_pictures(music_dir, *pictures):
+    """A copy of the ladder MP3 tagged with ``(type, desc, data)`` APICs."""
+    from mutagen.id3 import APIC, ID3
+
+    path = music_dir / "pictures.mp3"
+    shutil.copyfile(LADDER_MP3, path)
+    id3 = ID3()
+    for kind, desc, data in pictures:
+        id3.add(APIC(encoding=3, mime="image/png", type=kind, desc=desc, data=data))
+    id3.save(str(path))
+    return path
+
+
+@pytest.mark.asyncio
+async def test_an_mp3_front_cover_is_found_by_its_type_not_its_description(
+    indexer,
+):
+    """Taggers describe frames freely: "Front Cover" is the front, and an
+    undescribed frame may be the back."""
+    fi, db, music_dir, config = indexer
+    front, back = _cover_png((90, 10, 130)), _cover_png((10, 90, 130))
+    path = _mp3_with_pictures(
+        music_dir,
+        (PictureType.COVER_BACK, "", back),
+        (PictureType.COVER_FRONT, "Front Cover", front),
+    )
+
+    assert fi._embedded_cover(LOCAL, str(path)) == (front, 3)
+
+
+@pytest.mark.asyncio
+async def test_an_mp3_with_only_a_back_cover_has_none(indexer):
+    fi, db, music_dir, config = indexer
+    path = _mp3_with_pictures(
+        music_dir, (PictureType.COVER_BACK, "", _cover_png((10, 90, 130)))
+    )
+
+    assert fi._embedded_cover(LOCAL, str(path)) is None
+    assert "album_art" not in fi._extract_metadata(LOCAL, str(path))
+
+
+@pytest.mark.asyncio
+async def test_an_untyped_picture_stands_in_and_says_so(indexer):
+    fi, db, music_dir, config = indexer
+    other = _cover_png((40, 40, 200))
+    path = _mp3_with_pictures(
+        music_dir,
+        (PictureType.ARTIST, "", _cover_png((200, 40, 40))),
+        (PictureType.OTHER, "", other),
+    )
+
+    metadata = fi._extract_metadata(LOCAL, str(path))
+    assert metadata["album_art"] == other
+    assert metadata["album_art_type"] == 0
+
+
+@pytest.mark.asyncio
+async def test_covers_picked_by_older_readers_are_read_again_once(indexer):
+    """An MP3 indexed when an undescribed back cover was taken for the
+    front gets its evidence corrected on the next scan, and only that one."""
+    fi, db, music_dir, config = indexer
+    front, back = patterned_png(1), patterned_png(2)
+    path = _mp3_with_pictures(
+        music_dir,
+        (PictureType.COVER_BACK, "", back),
+        (PictureType.COVER_FRONT, "Front Cover", front),
+    )
+    track_id = (await fi.process_file(str(path)))["tracks"]
+    with closing(sqlite3.connect(config.db_path)) as conn:
+        conn.execute(
+            "UPDATE track_evidence SET art_phash = ?, art_type = NULL, "
+            "updated_at = 0",
+            (dhash_bytes(back),),
+        )
+        conn.commit()
+
+    assert await fi._reread_covers_of_older_readers([]) == 0
+    assert await db.get_indexer_state("cover_readers") != "1:done"
+    assert await fi._reread_covers_of_older_readers([str(music_dir)]) == 1
+    assert await db.get_indexer_state("cover_readers") == "1:done"
+    assert await fi._reread_covers_of_older_readers([str(music_dir)]) == 0
+
+    with closing(sqlite3.connect(config.db_path)) as conn:
+        row = conn.execute(
+            "SELECT art_phash, art_type FROM track_evidence WHERE track_id = ?",
+            (track_id,),
+        ).fetchone()
+    assert row == (dhash_bytes(front), 3)
+
+
+@pytest.mark.asyncio
+async def test_a_flac_picture_records_its_type_with_its_hash(indexer):
+    fi, db, music_dir, config = indexer
+    path = music_dir / "other.flac"
+    _write_flac(path, TAGS, cover=_cover_png((20, 90, 250)))
+    audio = FLAC(str(path))
+    audio.pictures[0].type = PictureType.OTHER
+    pictures = list(audio.pictures)
+    audio.clear_pictures()
+    for picture in pictures:
+        audio.add_picture(picture)
+    audio.save()
+
+    await fi.process_file(str(path))
+
+    (_, evidence), = await db.get_tracks_with_evidence()
+    with closing(sqlite3.connect(config.db_path)) as conn:
+        (art_type,) = conn.execute("SELECT art_type FROM track_evidence").fetchone()
+    assert evidence["art_phash"] is not None
+    assert art_type == 0
 
 
 @pytest.mark.asyncio

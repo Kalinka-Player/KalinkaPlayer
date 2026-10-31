@@ -49,6 +49,34 @@ def served_cover(entity_type: str, image_id: str) -> CoverImage:
     )
 
 
+def dhash_image(img: Image.Image) -> str:
+    """64-bit row-difference hash (dHash) of a picture, as 16 hex digits.
+
+    Adjacent-pixel brightness on a 9x8 grayscale downscale: the same cover
+    re-encoded or resized lands within a few bits, which is what lets an
+    embedded thumbnail be matched against a sleeve scan.
+    """
+    px = img.convert("L").resize((9, 8), Image.Resampling.LANCZOS).tobytes()
+    bits = 0
+    for row in range(8):
+        for col in range(8):
+            left = px[row * 9 + col]
+            right = px[row * 9 + col + 1]
+            bits = (bits << 1) | (1 if left > right else 0)
+    return f"{bits:016x}"
+
+
+def dhash_bytes(image_data: bytes) -> Optional[str]:
+    """:func:`dhash_image` of an encoded picture, or None when it will not
+    decode."""
+    try:
+        with Image.open(io.BytesIO(image_data)) as img:
+            return dhash_image(img)
+    except Exception as e:  # noqa: BLE001 - a broken picture has no hash
+        logger.debug("art phash failed: %s", e)
+        return None
+
+
 class ArtworkSave(Enum):
     """How storing a cover went, for a caller that remembers failures."""
 

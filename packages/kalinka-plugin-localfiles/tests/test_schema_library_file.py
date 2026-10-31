@@ -29,6 +29,7 @@ TRACK_EVIDENCE_COLS = {
     "raw_tags",
     "stream_info",
     "art_phash",
+    "art_type",
     "cue_sheet",
     "cue_tracks",
     "fingerprint",
