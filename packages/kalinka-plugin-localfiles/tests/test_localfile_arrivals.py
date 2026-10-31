@@ -206,37 +206,74 @@ async def test_timestamp_restored_after_close_is_retried_without_another_event(
     assert fi.deferred_retry_in() == 30
 
 
-@pytest.mark.asyncio
-async def test_incremental_events_do_not_postpone_periodic_scan(monkeypatch):
+DAY = 24 * 60 * 60
+NEW_FILE = {"incremental_changes": {("file_closed", "/music/new.flac")}}
+
+
+@pytest.fixture
+def worker(monkeypatch):
+    """`_indexer_worker` over a fake indexer, queue and clock.
+
+    Applying a change takes the fake indexer a day, which is how a test lets
+    time pass between the commands it queues.
+    """
     from kalinka_plugin_localfiles.indexer import indexer as module
 
-    now = 0
-    scans = []
+    run = SimpleNamespace(now=0, scans=[], changes=[], retries=0)
+    queue = asyncio.Queue()
+    shutdown = asyncio.Event()
 
     class Indexer:
         async def start(self):
-            scans.append(now)
+            run.scans.append(run.now)
+            # Back-to-back scans never yield, so end the run instead of hanging.
+            if len(run.scans) > 3:
+                shutdown.set()
 
         async def handle_incremental_changes(self, changes):
-            nonlocal now
-            now = 61
+            run.changes.append(changes)
+            run.now += DAY
 
         def deferred_retry_in(self):
             return 30
 
         async def retry_deferred_files(self):
-            pass
+            run.retries += 1
 
-    queue = asyncio.Queue()
-    queue.put_nowait({"incremental_changes": {("file_closed", "/music/new.flac")}})
-    queue.put_nowait("stop")
+    async def until_stopped(*commands, minutes):
+        for command in (*commands, "stop"):
+            queue.put_nowait(command)
+        await module._indexer_worker(
+            LocalFilesConfig(scan_interval_minutes=minutes), None
+        )
+
     monkeypatch.setattr(module, "FileIndexer", lambda *args: Indexer())
     monkeypatch.setattr(module, "_indexer_queue", queue)
-    monkeypatch.setattr(module, "_shutdown_event", asyncio.Event())
-    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr(module, "_shutdown_event", shutdown)
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: run.now))
     monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
-    await module._indexer_worker(LocalFilesConfig(scan_interval_minutes=1), None)
-    assert scans == [0, 61]
+    run.until_stopped = until_stopped
+    return run
+
+
+@pytest.mark.asyncio
+async def test_incremental_events_do_not_postpone_periodic_scan(worker):
+    await worker.until_stopped(NEW_FILE, minutes=1)
+    assert worker.scans == [0, DAY]
+
+
+@pytest.mark.asyncio
+async def test_an_interval_of_0_scans_only_when_asked(worker):
+    await worker.until_stopped(NEW_FILE, "scan", minutes=0)
+    assert worker.scans == [0, DAY]
+
+
+@pytest.mark.asyncio
+async def test_an_interval_of_0_still_applies_changes_and_retries(worker):
+    """Scanning back to back once kept the worker from reading its queue."""
+    await worker.until_stopped(NEW_FILE, minutes=0)
+    assert worker.changes == [NEW_FILE["incremental_changes"]]
+    assert worker.retries == 1
 
 
 @pytest.mark.asyncio

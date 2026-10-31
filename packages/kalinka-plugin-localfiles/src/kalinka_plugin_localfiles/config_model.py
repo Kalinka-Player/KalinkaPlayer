@@ -21,6 +21,8 @@ _PRIVATE: dict[str, Any] = {"private": True}
 # search heading, a track's attribution.
 DISPLAY_NAME = "My Library"
 
+DEFAULT_SCAN_INTERVAL_MINUTES = 15
+
 
 class MoodConfig(BaseModel):
     """Mood (valence/arousal) ranking.
@@ -487,10 +489,14 @@ class LocalFilesConfig(ModuleConfig):
         default_factory=EnricherConfig, title="Metadata and artwork"
     )
     scan_interval_minutes: int = Field(
-        default=15,
+        default=DEFAULT_SCAN_INTERVAL_MINUTES,
+        ge=0,
         title="Scan interval",
         json_schema_extra={
-            "help": "How often every source is checked for new and changed music",
+            "help": (
+                "How often every source is checked for new and changed music; "
+                "0 checks only when Kalinka starts and when you rescan."
+            ),
             "constraints": {"unit": "min"},
             "heading": "Library",
             **_SIMPLE,

@@ -230,7 +230,7 @@ Kalinka can read music from several places at once. Choose them during setup, an
 **On a NAS or another computer.** Nothing to copy. Add a **Network share**: the address of the NAS, the name of the share followed by any folder inside it (for example `music/Albums`), and the user name and password of an account on the NAS, or **Guest** for an open share.
 
 - The NAS must offer SMB2 or later. A very old NAS, or a router sharing a USB disk, may offer only SMB1: turn on SMB2 or SMB3 in its settings.
-- Kalinka looks for new and changed music on a share every 15 minutes.
+- Kalinka looks for new and changed music on a share every 15 minutes. Set **Scan interval** to 0 in the **My Library** settings to have it look only when Kalinka starts and when you choose **Rescan library**.
 - Recycle bins, snapshots, thumbnail folders and hidden folders are skipped.
 
 **Copied onto the streamer.** Every installation has a music folder, `/srv/kalinka/music`, that Kalinka reads from the start. Copy into it with a program that speaks **SFTP**. On an image you need a login first: create one with **SSH access** on [the control page](#the-control-page).

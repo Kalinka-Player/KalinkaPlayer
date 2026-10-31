@@ -4,6 +4,7 @@ import os
 import sys
 import io
 import json
+import math
 import time
 import logging
 import asyncio
@@ -160,7 +161,7 @@ def rearm_needs_rescan(
 
     An unmounted root that returns with the mount identity the library was
     indexed from is the same filesystem — remote changes are invisible to
-    inotify regardless, so the periodic scan covers them and a
+    inotify regardless, so rescans cover them and a
     bounce-triggered rescan adds nothing. ``unmount_seen`` is False when a
     rescan is owed unconditionally (startup deferral, deleted root).
     """
@@ -2445,7 +2446,7 @@ async def _indexer_worker(
             scan_control.available.set()
         await scan()
         last_run = time.monotonic()
-        interval = config.scan_interval_minutes * 60
+        interval = config.scan_interval_minutes * 60 or math.inf
 
         while not _shutdown_event.is_set():
             try:
@@ -2586,7 +2587,7 @@ async def _watch_roots(
                 lost_roots[root] = False
                 logger.warning(
                     f"Music folder cannot be watched for changes, leaving it "
-                    f"to the periodic scan: {root}"
+                    f"to rescans: {root}"
                 )
 
         logger.info(
@@ -2661,7 +2662,7 @@ async def _file_watcher_worker(config: LocalFilesConfig):
     or moved out, which schedules the stale-track cleanup).
 
     Only some protocols can report changes at all. Roots on storage that
-    cannot are left to the periodic scan, and when no root can be watched
+    cannot are left to rescans, and when no root can be watched
     the worker returns rather than idling.
     """
     resolver = build_resolver(config)
@@ -2676,15 +2677,15 @@ async def _file_watcher_worker(config: LocalFilesConfig):
             if watcher is None:
                 logger.info(
                     f"{storage.scheme} storage cannot report changes; "
-                    f"{', '.join(roots)} rely on the periodic scan"
+                    f"{', '.join(roots)} rely on rescans"
                 )
                 continue
             watched.append((storage, watcher))
 
         if not watched:
             logger.info(
-                "No music folder can report changes; the periodic scan is "
-                "what picks new files up"
+                "No music folder can report changes; rescans are what pick "
+                "new files up"
             )
             return
 

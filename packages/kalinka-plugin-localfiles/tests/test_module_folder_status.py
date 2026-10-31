@@ -17,11 +17,13 @@ thread never sees a second caller.
 import asyncio
 import logging
 import threading
+from types import SimpleNamespace
 
 import pytest
 
 from kalinka_plugin_sdk import ModuleHealthState
 
+from kalinka_plugin_localfiles import module_setup
 from kalinka_plugin_localfiles.config_model import (
     AccountSignIn,
     LocalFilesConfig,
@@ -59,6 +61,15 @@ def plugin(tmp_path):
         )
     )
     return made, music
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """The clock the plugin ages its folder checks by, moved by hand."""
+    clock = SimpleNamespace(now=0.0)
+    clock.monotonic = lambda: clock.now
+    monkeypatch.setattr(module_setup, "time", clock)
+    return clock
 
 
 def _write(config, **fields):
@@ -312,15 +323,37 @@ class TestHealthReadsTheLastCheck:
         assert checks == 1
 
     @pytest.mark.asyncio
-    async def test_a_check_older_than_the_rescan_interval_is_renewed(self, plugin):
+    async def test_a_check_older_than_the_rescan_interval_is_renewed(
+        self, plugin, clock
+    ):
+        made, _ = plugin
+        await made.get_state()
+        first = made._folder_probe
+        await first
+
+        clock.now += made._context.config.scan_interval_minutes * 60
+        await made.get_state()
+
+        assert made._folder_probe is not first
+
+    @pytest.mark.asyncio
+    async def test_with_rescans_manual_only_polls_still_check_once(
+        self, plugin, clock
+    ):
+        """An interval of 0 once made every check stale on arrival, so each
+        health poll contacted every share."""
         made, _ = plugin
         _write(made._context.config, scan_interval_minutes=0)
         await made.get_state()
         first = made._folder_probe
         await first
 
+        clock.now += 60
         await made.get_state()
+        assert made._folder_probe is first
 
+        clock.now += 15 * 60
+        await made.get_state()
         assert made._folder_probe is not first
 
     @pytest.mark.asyncio

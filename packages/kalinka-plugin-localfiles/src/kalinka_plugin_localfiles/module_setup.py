@@ -24,7 +24,13 @@ from kalinka_plugin_sdk import (
 from kalinka_plugin_sdk.plugin import InputPluginContext, InputModulePlugin
 from kalinka_plugin_sdk.inputmodule import InputModule
 
-from .config_model import AccountSignIn, LocalFilesConfig, LocalSource, MusicSource
+from .config_model import (
+    DEFAULT_SCAN_INTERVAL_MINUTES,
+    AccountSignIn,
+    LocalFilesConfig,
+    LocalSource,
+    MusicSource,
+)
 from .db_schema import init_db
 from .storage import (
     FILE_SCHEME,
@@ -92,6 +98,13 @@ class _FolderCheck:
     locations: tuple[str, ...]
     at: float
     statuses: list[tuple[RootStatus, Optional[str]]]
+
+
+def _folder_check_lifetime_s(config: LocalFilesConfig) -> int:
+    """How long a check of the music folders stands before health renews it:
+    the library's rescan interval, or the default one when rescans are manual
+    only."""
+    return (config.scan_interval_minutes or DEFAULT_SCAN_INTERVAL_MINUTES) * 60
 
 
 def _report_check_failure(check: "asyncio.Task") -> None:
@@ -191,10 +204,14 @@ def _format_root_status(
             "autofs idle timeout of 0) avoids this."
         )
     if status.is_network:
+        when = (
+            f"by the periodic rescan (every {scan_interval_minutes} min)"
+            if scan_interval_minutes
+            else "when you rescan the library"
+        )
         notes.append(
-            "Changes made to the share by other machines are picked up by the "
-            f"periodic rescan (every {scan_interval_minutes} min), not "
-            "instantly."
+            f"Changes made to the share by other machines are picked up {when}, "
+            "not instantly."
         )
     if notes:
         text += "\n" + "\n".join(f"- {note}" for note in notes)
@@ -848,7 +865,8 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
         server's health poll must not set off each time it asks. One older
         than the library's rescan interval, or made for other locations, is
         renewed in the background, so a share is contacted no more often
-        than the rescan already contacts it. Locations not yet checked
+        than the rescan already contacts it, or than the default rescan
+        would when rescans are manual only. Locations not yet checked
         report nothing.
         """
         if self._context is None:
@@ -860,7 +878,7 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
         )
         fresh = (
             current
-            and time.monotonic() - check.at < config.scan_interval_minutes * 60
+            and time.monotonic() - check.at < _folder_check_lifetime_s(config)
         )
         if not fresh and (self._folder_probe is None or self._folder_probe.done()):
             self._folder_probe = asyncio.create_task(self._music_folder_statuses())
