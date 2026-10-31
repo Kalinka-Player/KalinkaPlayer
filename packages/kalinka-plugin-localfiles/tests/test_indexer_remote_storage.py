@@ -284,7 +284,9 @@ class TestScanning:
 
         walks = []
         walk = indexer._iter_audio_files
-        indexer._iter_audio_files = lambda folder: walks.append(folder) or walk(folder)
+        indexer._iter_audio_files = (
+            lambda folder, images=None: walks.append(folder) or walk(folder, images)
+        )
 
         await indexer.run_scan()
 

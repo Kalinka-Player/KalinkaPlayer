@@ -52,13 +52,11 @@ from ..resolution.resolver import (
 )
 from ..utils.artwork_store import (
     ArtworkSave,
-    artwork_lock,
     dhash_bytes,
     save_artwork_images,
-    store_artwork_from_file,
     store_artwork_images,
 )
-from ..utils.folder_art import FolderCover, find_folder_covers
+from ..utils.folder_art import is_cover_image_name
 from ..utils.watched_file import WatchedFile
 from ..utils.years import year_from_date
 from ..worker_utils import nudge
@@ -92,10 +90,10 @@ from .id_generator import (
     generate_album_id,
     generate_track_id,
 )
+from .artwork_choice import EMBEDDED_ART, embedded_key
+from .artwork_resolver import ArtworkResolver, Listings
 from .indexer_db import (
     EMBEDDED_COVER,
-    FOLDER_COVER,
-    FOLDER_STATE,
     AsyncIndexerDb,
     Fingerprint,
 )
@@ -300,19 +298,6 @@ def _fingerprint(storage: FileStorage, path: str) -> Optional[Fingerprint]:
     return stat.size, stat.mtime_ns
 
 
-def _fingerprints(
-    storage: FileStorage, paths: Iterable[str]
-) -> Optional[Dict[str, Fingerprint]]:
-    """Each path's fingerprint, or None when one cannot be measured."""
-    measured: Dict[str, Fingerprint] = {}
-    for path in paths:
-        fingerprint = _fingerprint(storage, path)
-        if fingerprint is None:
-            return None
-        measured[path] = fingerprint
-    return measured
-
-
 class FileIndexer:
     def __init__(
         self,
@@ -332,6 +317,13 @@ class FileIndexer:
         # cleanup_stale_tracks purges anything that falls outside them.
         self.music_folders = library_roots(config, self.storage)
         self.artwork_path = Path(config.artwork_path).expanduser().resolve()
+        self.artwork_resolver = ArtworkResolver(
+            db_manager,
+            self.storage,
+            self.artwork_path,
+            self.music_folders,
+            self._embedded_art,
+        )
         self.running = False
         self.lock = asyncio.Lock()
         self._deferred_files: Dict[str, float] = {}
@@ -410,7 +402,10 @@ class FileIndexer:
         # Listed once and kept, not counted and listed again: every listing
         # is a round trip on a share, and the count is what the per-file loop
         # below reports progress against.
-        files_by_folder = await self._audio_files_by_folder(available_folders)
+        listings: Dict[str, List[DirEntry]] = {}
+        files_by_folder = await self._audio_files_by_folder(
+            available_folders, listings
+        )
         self._scan_total = sum(len(files) for files in files_by_folder.values())
         await self._publish_scan_progress(force=True)
 
@@ -467,19 +462,10 @@ class FileIndexer:
 
         await self._group_albums()
 
-        backfilled = await self.backfill_embedded_art(available_folders)
-        if any(backfilled.values()):
-            logger.info(
-                "Embedded art restored for %d album(s) and %d single(s)",
-                backfilled["albums"], backfilled["tracks"],
-            )
-
-        from_folders = await self.backfill_folder_art(available_folders)
-        if from_folders["albums"]:
-            logger.info(
-                "Cover taken from the album folder for %d album(s)",
-                from_folders["albums"],
-            )
+        await self.resolve_artwork(available_folders, listings=listings)
+        singles = await self.backfill_single_art(available_folders)
+        if singles:
+            logger.info("Embedded art restored for %d single(s)", singles)
 
         if any(changed_items.values()):
             logger.info(
@@ -529,9 +515,15 @@ class FileIndexer:
 
         processed_dirs = set()
         processed_files = set()
+        art_dirs: Set[str] = set()
 
         for change_type, file_path in changes:
             logger.debug(f"Change detected: {change_type} - {file_path}")
+            if change_type in (ChangeKind.DIR_ADDED, ChangeKind.DIR_REMOVED):
+                art_dirs.update((file_path, os.path.dirname(file_path)))
+            elif is_cover_image_name(os.path.basename(file_path)):
+                art_dirs.add(os.path.dirname(file_path))
+                continue
 
             if change_type == "dir_added":
                 logger.info(f"New directory detected: {file_path}")
@@ -591,16 +583,31 @@ class FileIndexer:
                         f"Error processing changed file {file_path}: {str(e)}"
                     )
 
-        removed = await self.cleanup_stale_tracks()
+        only_images = all(
+            kind not in (ChangeKind.DIR_ADDED, ChangeKind.DIR_REMOVED)
+            and is_cover_image_name(os.path.basename(path))
+            for kind, path in changes
+        )
+        removed = {} if only_images else await self.cleanup_stale_tracks()
 
         if any(changed_items.values()) or any(removed.values()):
             await self._group_albums()
+        covers_changed = 0
+        if any(changed_items.values()) or any(removed.values()) or art_dirs:
+            roots = {
+                self.storage.root_of(path, self.music_folders) for _, path in changes
+            }
+            covers_changed = await self.resolve_artwork(
+                [root for root in self.music_folders if root in roots],
+                dirty_dirs=art_dirs,
+            )
 
         if any(changed_items.values()):
             logger.info(
                 f"File changes detected: Artists={len(changed_items['artists'])}, "
                 f"Albums={len(changed_items['albums'])}, Tracks={len(changed_items['tracks'])}"
             )
+        if any(changed_items.values()) or covers_changed:
             await trigger_enricher_update("enrich")
 
     def deferred_retry_in(self) -> float:
@@ -620,9 +627,12 @@ class FileIndexer:
                 self._deferred_files.pop(path, None)
             await self.handle_incremental_changes(due)
 
-    async def _iter_audio_files(self, folder: str) -> AsyncIterator[DirEntry]:
+    async def _iter_audio_files(
+        self, folder: str, listings: Optional[Dict[str, List[DirEntry]]] = None
+    ) -> AsyncIterator[DirEntry]:
         """Supported audio files under ``folder``, depth first, as their
-        directory listings reported them.
+        directory listings reported them. ``listings`` keeps each listing
+        for the cover pass, which would otherwise list album folders again.
 
         One directory listing at a time and each off the event loop, because
         a listing is a round trip on a share and never returns at all on a
@@ -642,6 +652,8 @@ class FileIndexer:
             except OSError as e:
                 logger.warning(f"Could not list {directory}: {e}")
                 continue
+            if listings is not None:
+                listings[directory] = list(entries)
             for entry in entries:
                 if entry.is_dir:
                     if not is_housekeeping_dir(entry.name):
@@ -721,7 +733,9 @@ class FileIndexer:
         return root is not None and in_housekeeping(path, root, is_dir)
 
     async def _audio_files_by_folder(
-        self, folders: List[str]
+        self,
+        folders: List[str],
+        listings: Optional[Dict[str, List[DirEntry]]] = None,
     ) -> Dict[str, List[DirEntry]]:
         """The supported audio files under each folder, as listed.
 
@@ -732,7 +746,9 @@ class FileIndexer:
         """
         found: Dict[str, List[DirEntry]] = {}
         for folder in folders:
-            found[folder] = [entry async for entry in self._iter_audio_files(folder)]
+            found[folder] = [
+                entry async for entry in self._iter_audio_files(folder, listings)
+            ]
         return found
 
     async def _publish_scan_progress(self, force: bool = False):
@@ -1059,11 +1075,7 @@ class FileIndexer:
             track_id, file_path, file_size, modified_time, device_id, inode
         )
 
-        art_phash = (
-            await asyncio.to_thread(dhash_bytes, metadata["album_art"])
-            if "album_art" in metadata
-            else None
-        )
+        art_phash = metadata.get("album_art_phash")
         await self.db_manager.upsert_track_evidence(
             track_id,
             {
@@ -1153,6 +1165,8 @@ class FileIndexer:
         ):
             album_data["image_url"] = f"{album_id}.jpg"
         await self.db_manager.insert_album(album_data)
+        if album_data.get("image_url") and album_id != "unknown_album":
+            await self._record_first_cover(album_id, metadata, file_path)
         if year is not None:
             await self._record_origin(
                 "album", album_id, "year",
@@ -1160,6 +1174,27 @@ class FileIndexer:
                 path_source=FOLDER_NAME,
             )
         return album_id, True
+
+    async def _record_first_cover(
+        self, album_id: str, metadata: Dict, file_path: str
+    ) -> None:
+        """Lets the cover pass keep it unopened when the other tracks agree."""
+        phash = metadata.get("album_art_phash")
+        if phash is None:
+            return
+        await self.db_manager.record_cover_origin(
+            album_id,
+            {
+                "desired": embedded_key(phash),
+                "source": EMBEDDED_ART,
+                "path": file_path,
+                "phash": phash,
+                "picture_type": metadata.get("album_art_type"),
+                "reason": "first file read",
+                "cover_dhash": phash,
+                "folder": None,
+            },
+        )
 
     async def _reparse_paths_on_model_change(
         self, available_folders: List[str], changed_items: Dict[str, Set[str]]
@@ -1309,6 +1344,7 @@ class FileIndexer:
             if cover is not None:
                 metadata["album_art"] = cover.data
                 metadata["album_art_type"] = cover.picture_type
+                metadata["album_art_phash"] = dhash_bytes(cover.data)
             self._augment_with_cue(storage, file_path, metadata)
             return metadata
         except UnplayableFile as e:
@@ -1740,166 +1776,39 @@ class FileIndexer:
             self.artwork_path, image_data, entity_id, entity_type, origin=file_path
         )
 
-    async def backfill_embedded_art(
-        self, available_folders: List[str]
-    ) -> Dict[str, int]:
-        """Re-extract embedded covers that clustering left behind.
+    async def resolve_artwork(
+        self,
+        available_folders: List[str],
+        listings: Optional[Listings] = None,
+        dirty_dirs: AbstractSet[str] = frozenset(),
+    ) -> int:
+        """Give every album the cover its local art decides, before the
+        online sources are asked for any; see :class:`ArtworkResolver`."""
+        changed = await self.artwork_resolver.resolve(
+            available_folders, listings, dirty_dirs
+        )
+        if changed:
+            logger.info("Changed the cover of %d album(s)", changed)
+        return changed
 
-        Two shapes of loss, one cure. An album row minted by a re-cluster
-        starts with no cover even when its files embed one (a procedural
-        placeholder may have papered over it since). And a loose track
-        demoted to ``unknown_album`` loses its per-file album row — and the
-        cover reference with it — so it gets track-level art instead.
+    async def backfill_single_art(self, available_folders: List[str]) -> int:
+        """Re-extract the embedded cover of loose tracks that clustering
+        demoted to ``unknown_album``, which lost their album row and the
+        cover reference with it.
 
-        Each entity costs one file read, once: the evidence ``art_phash``
-        gates the pass to files known to embed a picture, and a recorded
-        ``image_url`` stops repeats — as does a picture whose tags or data
-        would not decode, until its file changes. Only files under currently
-        available roots are touched. Runs before the enricher nudge so
-        embedded art wins over a procedural cover.
+        The evidence ``art_phash`` gates the pass to files known to embed a
+        picture, and a recorded ``image_url`` stops repeats — as does a
+        picture that would not decode, until its file changes.
         """
-        counts = {"albums": 0, "tracks": 0}
+        restored = 0
         written_off = await self.db_manager.get_art_failures(EMBEDDED_COVER)
-        for album_id, file_path in await self.db_manager.get_albums_missing_art():
-            async with artwork_lock(album_id):
-                if await self._restore_embedded_art(
-                    album_id, file_path, "album", available_folders, written_off
-                ):
-                    await self.db_manager.set_album_cover(album_id)
-                    counts["albums"] += 1
         for track_id, file_path in await self.db_manager.get_singles_missing_art():
             if await self._restore_embedded_art(
                 track_id, file_path, "track", available_folders, written_off
             ):
                 await self.db_manager.set_track_cover(track_id)
-                counts["tracks"] += 1
-        return counts
-
-    async def backfill_folder_art(
-        self, available_folders: List[str]
-    ) -> Dict[str, int]:
-        """Take covers from image files sitting in the album's own folder.
-
-        Runs after the embedded-art pass, so a picture inside the file still
-        wins: it is unambiguously this record's, while a folder may hold a
-        whole sleeve set. What is left is the case nothing else covers — a
-        needledrop or a download whose art was saved beside the audio rather
-        than tagged into it, which no online source can improve on.
-
-        Costs one directory listing plus a header read per candidate image,
-        for albums that have no real cover yet; a recorded ``image_url``
-        stops repeats. So does a folder none of whose images would decode:
-        until one of its images, or one of the directories searched, changes,
-        it costs a stat of each.
-        """
-        counts = {"albums": 0}
-        written_off = await self.db_manager.get_art_failures(FOLDER_COVER)
-        searched = await self.db_manager.get_art_failures(FOLDER_STATE)
-        for album_id, file_path in await self.db_manager.get_albums_without_cover():
-            if self.storage.root_of(file_path, available_folders) is None:
-                continue
-            storage = self.storage.for_path(file_path)
-            folder = album_folder_for_path(file_path)
-            failed = written_off.get(album_id, {})
-            state = searched.get(album_id, {})
-            recorded = {**failed, **state}
-            if folder in state and recorded == await asyncio.to_thread(
-                _fingerprints, storage, recorded
-            ):
-                logger.debug(f"Folder not searched again, unchanged: {folder}")
-                continue
-            async with artwork_lock(album_id):
-                cover = await self._cover_from_folder(
-                    album_id, storage, folder, failed, state
-                )
-                if cover is not None:
-                    await self.db_manager.set_album_cover(album_id)
-            if cover is None:
-                continue
-            counts["albums"] += 1
-            panel = " (front panel)" if cover.box else ""
-            logger.info(f"Cover for album {album_id} taken from {cover.path}{panel}")
-        return counts
-
-    async def _cover_from_folder(
-        self,
-        album_id: str,
-        storage: FileStorage,
-        folder: str,
-        failed: Dict[str, Fingerprint],
-        state: Dict[str, Fingerprint],
-    ) -> Optional[FolderCover]:
-        """Store the best image in ``folder`` that decodes, and say which.
-
-        Candidates are tried best first, passing over any that failed before
-        and has not changed. When none decodes, they are written off, and
-        the directories searched and every other image in them are recorded
-        as the folder's state, so it is searched again only once one of
-        those changes. The state is kept apart because an image that was not
-        a candidate — outranked, say, by a larger broken one — was never
-        tried. A read or write failure ends the attempt without writing the
-        folder off: it says nothing about the images.
-        """
-        found = await asyncio.to_thread(find_folder_covers, storage, folder)
-        if not found.covers:
-            return None
-        undecodable: Dict[str, Fingerprint] = {}
-        for cover in found.covers:
-            fingerprint = await asyncio.to_thread(_fingerprint, storage, cover.path)
-            if fingerprint is None:
-                break
-            if failed.get(cover.path) != fingerprint:
-                outcome = await asyncio.to_thread(
-                    self._save_folder_cover, storage, cover, album_id
-                )
-                if outcome is ArtworkSave.SAVED:
-                    return cover
-                if outcome is ArtworkSave.IO_FAILED:
-                    break
-            undecodable[cover.path] = fingerprint
-        if len(undecodable) == len(found.covers):
-            passed_over = [p for p in found.images if p not in undecodable]
-            folder_state = (
-                await asyncio.to_thread(
-                    _fingerprints, storage, found.directories + passed_over
-                )
-                or {}
-            )
-        else:
-            # Interrupted: keep what is known of each cover, not of the folder.
-            candidates = {cover.path for cover in found.covers}
-            undecodable = {
-                **{p: f for p, f in failed.items() if p in candidates},
-                **undecodable,
-            }
-            folder_state = {}
-        if undecodable != failed:
-            await self.db_manager.replace_art_failures(
-                album_id, FOLDER_COVER, undecodable
-            )
-        if folder_state != state:
-            await self.db_manager.replace_art_failures(
-                album_id, FOLDER_STATE, folder_state
-            )
-        return None
-
-    def _save_folder_cover(
-        self, storage: FileStorage, cover: FolderCover, album_id: str
-    ) -> ArtworkSave:
-        """Store an album's cover from an image file beside its audio."""
-        try:
-            with storage.open(cover.path) as image:
-                return store_artwork_from_file(
-                    self.artwork_path,
-                    image,
-                    album_id,
-                    "album",
-                    cover.box,
-                    origin=cover.path,
-                )
-        except OSError as e:
-            logger.debug(f"Could not read folder cover {cover.path}: {e}")
-            return ArtworkSave.IO_FAILED
+                restored += 1
+        return restored
 
     async def _restore_embedded_art(
         self,
@@ -2586,13 +2495,18 @@ def _worth_indexing(kind: ChangeKind, path: str) -> bool:
     """Whether a reported change is one the library acts on.
 
     A directory event always is — a tree may have arrived whole, or taken
-    tracks with it. A file event only matters for a format this module
-    indexes, so tidying up a folder of artwork does not cost a database
-    sweep.
+    tracks with it. A file event matters for a format this module indexes,
+    and for an image that may be an album's cover.
     """
     if kind in (ChangeKind.DIR_ADDED, ChangeKind.DIR_REMOVED):
         return True
-    return is_supported_audio_file(path)
+    if is_supported_audio_file(path):
+        return True
+    # A NAS's thumbnail cache writes an image for every image it sees.
+    directories = path.replace("\\", "/").split("/")[:-1]
+    return is_cover_image_name(os.path.basename(path)) and not any(
+        is_housekeeping_dir(part) for part in directories
+    )
 
 
 async def _rearm_lost_roots(
