@@ -51,6 +51,18 @@ func NewHotspot(b Backend, ap AccessPoint, name string) *Hotspot {
 		NearbyCountry: func(ctx context.Context, iface string) string { return nearbyCountry(ctx, Run, iface) }}
 }
 
+// EnableRadio shares the same lock as scans, joins and hotspot changes.
+func (h *Hotspot) EnableRadio(ctx context.Context) error {
+	if !h.mu.TryLock() {
+		return protocol.Busy
+	}
+	defer h.mu.Unlock()
+	if radio, ok := h.Backend.(interface{ EnableRadio(context.Context) error }); ok {
+		return radio.EnableRadio(ctx)
+	}
+	return protocol.Unavailable
+}
+
 func (h *Hotspot) Active() bool { return h.active.Load() }
 
 func (h *Hotspot) Address(ctx context.Context) (string, error) {

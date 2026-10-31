@@ -9,6 +9,13 @@ mkdir -p "$root/etc/bluetooth"
 printf '[General]\n#JustWorksRepairing = never\n[Policy]\nAutoEnable=true\n' > "$root/etc/bluetooth/main.conf"
 configure_supervisor_radios "$root"
 configure_supervisor_radios "$root"
+[ "$(grep -c '^KALINKA_RADIO_RECOVERY=first-run$' "$root/etc/default/kalinka-supervisor")" = 1 ]
+sed -i 's/^KALINKA_RADIO_RECOVERY=.*/KALINKA_RADIO_RECOVERY=off/' "$root/etc/default/kalinka-supervisor"
+configure_supervisor_radios "$root"
+grep -q '^KALINKA_RADIO_RECOVERY=off$' "$root/etc/default/kalinka-supervisor"
+printf '  KALINKA_RADIO_RECOVERY = off\n' > "$root/etc/default/kalinka-supervisor"
+configure_supervisor_radios "$root"
+! grep -q 'first-run' "$root/etc/default/kalinka-supervisor"
 [ "$(grep -c '^JustWorksRepairing = always$' "$root/etc/bluetooth/main.conf")" = 1 ]
 grep -q '^AutoEnable=true$' "$root/etc/bluetooth/main.conf"
 boot="$root/assembled"

@@ -58,6 +58,13 @@ func NewNetworkManager(iface, state string) *NetworkManager {
 // block set outside it. NetworkManager comes first: it keeps its switch across
 // restarts and would block the radio again.
 func (n *NetworkManager) EnableRadio(ctx context.Context) error {
+	name, err := rfkill.WiFiName(n.Root, n.Interface)
+	if err != nil {
+		return err
+	}
+	if err := rfkill.CheckHardware(n.Root, "wlan", name); err != nil {
+		return err
+	}
 	// The bus's own errors, so the log says why NetworkManager refused.
 	body, err := n.Bus.Call(ctx, nmRoot, "org.freedesktop.DBus.Properties.Get", nm, "WirelessEnabled")
 	var enabled dbus.Variant
@@ -67,13 +74,17 @@ func (n *NetworkManager) EnableRadio(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if on, _ := enabled.Value().(bool); !on {
+	on, ok := enabled.Value().(bool)
+	if !ok {
+		return protocol.Unavailable
+	}
+	if !on {
 		if _, err = n.Bus.Call(ctx, nmRoot, "org.freedesktop.DBus.Properties.Set", nm, "WirelessEnabled", v(true)); err != nil {
 			return err
 		}
 		slog.Info("Switched Wi-Fi on in NetworkManager")
 	}
-	if _, _, err = rfkill.Unblock(n.Root, "wlan"); err != nil {
+	if _, _, err = rfkill.Unblock(n.Root, "wlan", name); err != nil {
 		return fmt.Errorf("clear the kernel's Wi-Fi block: %w", err)
 	}
 	return nil
@@ -175,7 +186,9 @@ func (n *NetworkManager) Scan(ctx context.Context, country string) ([]protocol.N
 		return nil, err
 	}
 	previous := value[int64](p, "LastScan")
-	if _, err = n.call(ctx, n.device, nmWireless+".RequestScan", map[string]dbus.Variant{}); err == nil {
+	if _, err = n.call(ctx, n.device, nmWireless+".RequestScan", map[string]dbus.Variant{}); err != nil {
+		return nil, err
+	} else {
 		deadline := time.Now().Add(12 * time.Second)
 		for time.Now().Before(deadline) {
 			p, err = n.props(ctx, n.device, nmWireless)

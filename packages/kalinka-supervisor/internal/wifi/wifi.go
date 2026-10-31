@@ -243,3 +243,6 @@ func (d *DryRun) Join(ctx context.Context, c protocol.Command, progress func(byt
 	}
 	return address, nil
 }
+
+// EnableRadio in test mode never changes the host.
+func (d *DryRun) EnableRadio(context.Context) error { return nil }

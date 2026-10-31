@@ -30,7 +30,17 @@
 </header>
 
 <main class="page">
-<section class="card"><h2>Network</h2><p>Review your wired connection or set up Wi-Fi.</p><a class="button neutral" href="/setup">Network setup</a></section>
+<section class="card">
+    <h2>Network</h2>
+    <p>Review your wired connection or set up Wi-Fi.</p>
+    <a class="button neutral" href="/setup">Network setup</a>
+    <details>
+      <summary>Wi-Fi disabled or no networks found?</summary>
+      <p>If Wi-Fi was switched off, enable it here before opening network setup. This turns on Wi-Fi across the streamer and allows saved networks to reconnect.</p>
+      <button class="button neutral" type="button" id="wifi-enable" data-simulated="{{.Simulated}}">Enable Wi-Fi</button>
+      <p class="muted" id="wifi-enable-status" role="status" aria-live="polite"></p>
+    </details>
+  </section>
   <div class="notice notice-error" id="unreachable" hidden>
     <svg class="glyph"><use href="#i-alert"/></svg>
     <span>The supervisor is not answering. The figures below are from the last time it did.</span>

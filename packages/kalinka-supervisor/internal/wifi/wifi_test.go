@@ -169,6 +169,9 @@ func TestDietPiJoinAndRollback(t *testing.T) {
 			mu.Lock()
 			all := strings.Join(calls, "\n")
 			mu.Unlock()
+			if strings.Contains(all, "rfkill") {
+				t.Fatal("joining implicitly changes radio blocks")
+			}
 			if strings.Contains(all, "ifup --force") {
 				t.Fatal("network daemon would belong to supervisor process group")
 			}
@@ -219,11 +222,12 @@ func TestDietPiEnableRadio(t *testing.T) {
 		commands [][]string
 	}{
 		{"blocked, no address", true, "", restart},
-		{"blocked, address back", true, "192.0.2.5", nil},
+		{"blocked, stale address", true, "192.0.2.5", restart},
 		{"not blocked", false, "", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := rfkilltest.Stage(t, rfkilltest.Radio{Type: "wlan", Name: "phy0", Soft: tc.blocked}, rfkilltest.Radio{Type: "bluetooth", Name: "hci0", Soft: true})
+			rfkilltest.LinkWiFi(t, root, "wlan0", "phy0")
 			d, err := NewDietPi("wlan0", root, filepath.Join(root, "state"), filepath.Join(root, "run"))
 			if err != nil {
 				t.Fatal(err)
@@ -248,6 +252,35 @@ func TestDietPiEnableRadio(t *testing.T) {
 		})
 	}
 }
+
+func TestDietPiRetriesFailedRestartAfterClearingOnlyItsRadio(t *testing.T) {
+	root := rfkilltest.Stage(t, rfkilltest.Radio{Type: "wlan", Name: "phy0", Soft: true}, rfkilltest.Radio{Type: "wlan", Name: "phy1", Soft: true})
+	rfkilltest.LinkWiFi(t, root, "wlan0", "phy0")
+	d, err := NewDietPi("wlan0", root, t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	d.Run = func(context.Context, time.Duration, string, ...string) (string, error) {
+		calls++
+		if calls == 1 {
+			return "", protocol.Unavailable
+		}
+		return "", nil
+	}
+	if err := d.EnableRadio(context.Background()); err == nil {
+		t.Fatal("restart failure hidden")
+	}
+	if err := d.EnableRadio(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.EnableRadio(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || rfkilltest.Soft(t, root, "rfkill0") || !rfkilltest.Soft(t, root, "rfkill1") {
+		t.Fatal("lost retry or touched another radio")
+	}
+}
 func TestRunnerRedactsErrorsAndBoundsCancellation(t *testing.T) {
 	_, err := Run(context.Background(), time.Second, "sh", "-c", "echo secret >&2; exit 1")
 	if err != protocol.Unavailable {
@@ -257,5 +290,26 @@ func TestRunnerRedactsErrorsAndBoundsCancellation(t *testing.T) {
 	_, err = Run(context.Background(), 20*time.Millisecond, "sh", "-c", "sleep 30 & wait")
 	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 2*time.Second {
 		t.Fatal("child process not cancelled")
+	}
+}
+
+func TestDietPiScanPreservesRadioBlock(t *testing.T) {
+	root := rfkilltest.Stage(t, rfkilltest.Radio{Type: "wlan", Name: "phy0", Soft: true})
+	rfkilltest.LinkWiFi(t, root, "wlan0", "phy0")
+	d, err := NewDietPi("wlan0", root, t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Run = func(_ context.Context, _ time.Duration, name string, _ ...string) (string, error) {
+		if name == "rfkill" {
+			t.Fatal("scan implicitly clears a radio block")
+		}
+		return "", protocol.Unavailable
+	}
+	if _, err := d.Scan(context.Background(), ""); err == nil {
+		t.Fatal("blocked scan succeeded")
+	}
+	if !rfkilltest.Soft(t, root, "rfkill0") {
+		t.Fatal("scan enabled the radio")
 	}
 }

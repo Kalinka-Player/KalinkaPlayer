@@ -191,6 +191,17 @@ For manual restoration, use `nmcli connection up uuid <previous-connection-uuid>
 Do not pass Wi-Fi passwords to shell commands. Profile staging/persistence use
 NetworkManager's [AddConnection2 and Update2 flags](https://www.networkmanager.dev/docs/api/latest/nm-dbus-types.html).
 
+## Disabled radios
+
+Opening setup does not clear an OS radio block. On a configured streamer, if
+Wi-Fi is disabled, connect Ethernet and use **Enable Wi-Fi** on the supervisor
+page at port 8001 before continuing with the app. A hardware switch must be
+released physically. The Bluetooth protocol remains unchanged.
+
+New appliance images enable automatic recovery only for first-run offline
+setup. Administrators can opt into later recovery, or disable it entirely;
+see the [radio recovery policy](supervisor.md#network-setup-over-the-temporary-hotspot).
+
 ## DietPi integration
 
 Every image installs the static Go supervisor, as a separately versioned

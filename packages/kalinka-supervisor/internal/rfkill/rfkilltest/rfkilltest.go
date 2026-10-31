@@ -47,3 +47,15 @@ func Soft(t testing.TB, root, name string) bool {
 	}
 	return strings.TrimSpace(string(b)) == "1"
 }
+
+// LinkWiFi stages the kernel's interface-to-physical-radio link.
+func LinkWiFi(t testing.TB, root, iface, name string) {
+	t.Helper()
+	dir := filepath.Join(root, "sys/class/net", iface)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("../../ieee80211", name), filepath.Join(dir, "phy80211")); err != nil {
+		t.Fatal(err)
+	}
+}

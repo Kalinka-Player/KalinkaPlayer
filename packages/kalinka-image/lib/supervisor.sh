@@ -4,6 +4,12 @@
 configure_supervisor_radios() {
   local root="$1"
   mkdir -p "$root/etc/bluetooth"
+  mkdir -p "$root/etc/default"
+  local defaults="$root/etc/default/kalinka-supervisor"
+  touch "$defaults"
+  if ! grep -Eq '^[[:blank:]]*KALINKA_RADIO_RECOVERY[[:blank:]]*=' "$defaults"; then
+    printf '\n# Recover blocked radios only until this image first gets a network.\nKALINKA_RADIO_RECOVERY=first-run\n' >> "$defaults"
+  fi
   # Re-pairing after the phone forgot its bond must work without a screen.
   # The daemon accepts pairing only while offline setup is open.
   local conf="$root/etc/bluetooth/main.conf"

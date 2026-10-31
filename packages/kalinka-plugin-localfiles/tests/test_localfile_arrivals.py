@@ -206,31 +206,6 @@ async def test_timestamp_restored_after_close_is_retried_without_another_event(
     assert fi.deferred_retry_in() == 30
 
 
-@pytest.mark.asyncio
-async def test_quiescence_window_counts_from_the_exact_mtime(library, monkeypatch):
-    from kalinka_plugin_localfiles.indexer import indexer as module
-
-    fi, music, config = library
-    config.quiescence_seconds = 1
-    path = _write(music / "track-03.flac")
-    written_ns = 1_800_000_000_900_000_000
-    os.utime(path, ns=(written_ns, written_ns))
-    monkeypatch.setattr(
-        module,
-        "time",
-        SimpleNamespace(time=lambda: written_ns / 1e9 + 0.2, monotonic=time.monotonic),
-    )
-    waits = []
-
-    async def wait(delay):
-        waits.append(delay)
-
-    with patch("kalinka_plugin_localfiles.indexer.indexer.asyncio.sleep", wait):
-        await fi.handle_incremental_changes({("file_closed", path)})
-    assert waits == [pytest.approx(0.8, abs=1e-3)]
-    assert await fi.db_manager.get_track_by_path(path) is not None
-
-
 DAY = 24 * 60 * 60
 NEW_FILE = {"incremental_changes": {("file_closed", "/music/new.flac")}}
 

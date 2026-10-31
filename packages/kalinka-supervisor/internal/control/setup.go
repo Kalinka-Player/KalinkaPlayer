@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime"
 	"net"
@@ -12,12 +13,14 @@ import (
 	"regexp"
 
 	"kalinka/supervisor/internal/protocol"
+	"kalinka/supervisor/internal/rfkill"
 	"kalinka/supervisor/internal/wifi"
 )
 
 // NetworkSetup shares one setup machine between HTTP and Bluetooth clients.
 type NetworkSetup interface {
 	Snapshot() map[string]any
+	EnableWiFi(context.Context) error
 	Open() error
 	Command(string, []byte) error
 }
@@ -100,7 +103,9 @@ func (h *handler) setupCommand(w http.ResponseWriter, r *http.Request) string {
 	if json.Unmarshal(raw, &command) != nil || command.Version != 1 {
 		return setupFailure(w, protocol.Invalid)
 	}
-	if command.Op == "open" {
+	if command.Op == "enable_wifi" {
+		err = h.cfg.NetworkSetup.EnableWiFi(r.Context())
+	} else if command.Op == "open" {
 		err = h.cfg.NetworkSetup.Open()
 	} else {
 		err = h.cfg.NetworkSetup.Command("http:"+client, raw)
@@ -114,6 +119,9 @@ func (h *handler) setupCommand(w http.ResponseWriter, r *http.Request) string {
 
 func setupFailure(w http.ResponseWriter, err error) string {
 	code, status := "unavailable", http.StatusServiceUnavailable
+	if errors.Is(err, rfkill.ErrHardBlocked) {
+		code, status = "radio_hard_blocked", http.StatusConflict
+	}
 	if err == protocol.Invalid {
 		code, status = "invalid_request", http.StatusBadRequest
 	}
