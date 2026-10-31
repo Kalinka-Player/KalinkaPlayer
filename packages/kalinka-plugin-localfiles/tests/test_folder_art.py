@@ -15,6 +15,9 @@ from PIL import Image
 
 from kalinka_plugin_localfiles.storage.local import LocalStorage
 from kalinka_plugin_localfiles.utils.folder_art import (
+    EXACT,
+    NAMED,
+    SCAN,
     find_folder_cover,
     find_folder_covers,
 )
@@ -143,6 +146,79 @@ class TestTheNameWhenItSaysSomething:
         _image(str(tmp_path / "cover_small.jpg"), (300, 300))
         _image(str(tmp_path / "cover_big.jpg"), (1500, 1500))
         assert _name(find_folder_cover(LOCAL, str(tmp_path))) == "cover_big.jpg"
+
+
+class TestConventionalNames:
+    """``cover``, ``folder``, ``front``, ``album``: what players look for,
+    in that order, whatever the size."""
+
+    def test_the_conventional_names_rank_in_order(self, tmp_path):
+        _image(str(tmp_path / "album.jpg"), (1500, 1500))
+        _image(str(tmp_path / "front.jpg"), (1400, 1400))
+        _image(str(tmp_path / "folder.jpg"), (1200, 1200))
+        _image(str(tmp_path / "cover.jpg"), (300, 300))
+        assert _names(find_folder_covers(LOCAL, str(tmp_path))) == [
+            "cover.jpg",
+            "folder.jpg",
+            "front.jpg",
+            "album.jpg",
+        ]
+
+    def test_the_names_match_whatever_their_case(self, tmp_path):
+        _image(str(tmp_path / "Folder.JPG"), (300, 300))
+        _image(str(tmp_path / "AlbumArt_Large.jpg"), (1500, 1500))
+        assert _name(find_folder_cover(LOCAL, str(tmp_path))) == "Folder.JPG"
+
+    def test_a_webp_cover_is_admissible(self, tmp_path):
+        _image(str(tmp_path / "cover.webp"))
+        assert _name(find_folder_cover(LOCAL, str(tmp_path))) == "cover.webp"
+
+    def test_each_cover_says_how_it_was_chosen(self, tmp_path):
+        _image(str(tmp_path / "cover.jpg"))
+        _image(str(tmp_path / "AlbumArt.jpg"))
+        _image(str(tmp_path / "scan_1.jpg"))
+        found = find_folder_covers(LOCAL, str(tmp_path))
+        assert [c.tier for c in found.covers] == [EXACT, NAMED, SCAN]
+
+    @pytest.mark.parametrize(
+        "name",
+        ["Back Cover.jpg", "cover_back.jpg", "BackCover.jpg", "artist.jpg", "logo.png"],
+    )
+    def test_a_name_that_says_which_other_picture_it_is_is_dropped(
+        self, tmp_path, name
+    ):
+        _image(str(tmp_path / name))
+        assert find_folder_cover(LOCAL, str(tmp_path)) is None
+
+    @pytest.mark.parametrize(
+        "name",
+        ["CD1 Cover.jpg", "Disc 2 front.png", "AlbumArt_{2C4ACD47-1F}_Large.jpg"],
+    )
+    def test_a_disc_cover_is_still_a_cover(self, tmp_path, name):
+        _image(str(tmp_path / name))
+        assert _name(find_folder_cover(LOCAL, str(tmp_path))) == name
+
+    def test_a_players_named_thumbnail_is_not_the_sleeve(self, tmp_path):
+        _image(str(tmp_path / "AlbumArtSmall.jpg"), (75, 75))
+        assert find_folder_cover(LOCAL, str(tmp_path)) is None
+
+    def test_an_artistic_name_is_not_an_artist_photo(self, tmp_path):
+        _image(str(tmp_path / "artistic_cover.jpg"))
+        assert _name(find_folder_cover(LOCAL, str(tmp_path))) == "artistic_cover.jpg"
+
+    def test_the_given_directories_are_searched_in_their_order(self, tmp_path):
+        """The album folder beside the audio first, then a disc folder: the
+        caller knows which directories are the album's."""
+        _image(str(tmp_path / "CD1" / "cover.jpg"))
+        _image(str(tmp_path / "folder.jpg"))
+        found = find_folder_covers(
+            LOCAL, str(tmp_path), [str(tmp_path), str(tmp_path / "CD1")]
+        )
+        assert [os.path.relpath(c.path, tmp_path) for c in found.covers] == [
+            "folder.jpg",
+            os.path.join("CD1", "cover.jpg"),
+        ]
+        assert found.directories == [str(tmp_path), str(tmp_path / "CD1")]
 
 
 class TestWhenTheNamesAreNoHelp:

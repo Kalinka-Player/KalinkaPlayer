@@ -2,7 +2,6 @@
 import base64
 import os
 import sys
-import io
 import json
 import math
 import time
@@ -19,14 +18,13 @@ from typing import (
     Dict,
     Iterable,
     List,
+    NamedTuple,
     Optional,
     Set,
     Tuple,
 )
 
 from pathlib import Path
-
-from PIL import Image
 
 from mutagen import MutagenError
 from mutagen.mp3 import MP3
@@ -54,6 +52,7 @@ from ..resolution.resolver import (
 )
 from ..utils.artwork_store import (
     ArtworkSave,
+    dhash_bytes,
     save_artwork_images,
     store_artwork_from_file,
     store_artwork_images,
@@ -118,10 +117,29 @@ SUPPORTED_AUDIO_EXTENSIONS = frozenset(MEDIA_TYPES)
 # Base64 images, kept out of the evidence as APIC frames are for ID3.
 _PICTURE_COMMENTS = ("metadata_block_picture", "coverart")
 
+#: Bumped whenever the embedded-cover readers start choosing differently, so
+#: the covers of files already indexed are read once more. 1: ID3 pictures
+#: are chosen by their type rather than their description.
+COVER_READERS_VERSION = 1
+
+#: The formats whose cover sits in an ID3 tag, which version 1 re-reads.
+_ID3_COVER_TYPES = frozenset(
+    ("audio/mpeg", "audio/wav", "audio/aac", "audio/x-dsf", "audio/x-dff")
+)
+
 #: What a tag read fetches at a time. A tag reader looks at the start of a
 #: file and at its end, a share sends this much for each, and a header
 #: rarely needs more.
 TAG_READ_AHEAD_BYTES = 64 * 1024
+
+
+class EmbeddedCover(NamedTuple):
+    """A file's embedded cover and how it is typed: 3 (front cover) or 0
+    (other, which is what many taggers write for the cover, and all an MP4
+    or a legacy Vorbis COVERART can say)."""
+
+    data: bytes
+    picture_type: int
 
 
 @dataclass(frozen=True)
@@ -135,7 +153,7 @@ class _TagFormat:
     #: the metadata so far.
     extract: Callable[["FileIndexer", Any, BinaryIO, Dict], Dict]
     #: The front cover in the parsed file, or None.
-    cover: Callable[[Any], Optional[bytes]]
+    cover: Callable[[Any], Optional[EmbeddedCover]]
     #: The read-ahead the file is opened with; 0 for a reader of small,
     #: scattered spans, which would pay for it again at every seek.
     read_ahead_bytes: int = TAG_READ_AHEAD_BYTES
@@ -411,6 +429,9 @@ class FileIndexer:
                 "they refused before",
                 forgotten,
             )
+        reread = await self._reread_covers_of_older_readers(available_folders)
+        if reread:
+            logger.info("Re-read the embedded cover of %d file(s)", reread)
 
         self._vanished.clear()
         for folder in available_folders:
@@ -1038,7 +1059,7 @@ class FileIndexer:
         )
 
         art_phash = (
-            await asyncio.to_thread(self._art_phash, metadata["album_art"])
+            await asyncio.to_thread(dhash_bytes, metadata["album_art"])
             if "album_art" in metadata
             else None
         )
@@ -1048,6 +1069,9 @@ class FileIndexer:
                 "raw_tags": metadata.get("raw_tags"),
                 "stream_info": metadata.get("stream_info"),
                 "art_phash": art_phash,
+                "art_type": (
+                    metadata.get("album_art_type") if art_phash else None
+                ),
                 "cue_sheet": metadata.get("cue_sheet"),
                 "cue_tracks": metadata.get("cue_tracks"),
             },
@@ -1282,7 +1306,8 @@ class FileIndexer:
                 )
                 cover = tag_format.cover(parsed)
             if cover is not None:
-                metadata["album_art"] = cover
+                metadata["album_art"] = cover.data
+                metadata["album_art_type"] = cover.picture_type
             self._augment_with_cue(storage, file_path, metadata)
             return metadata
         except UnplayableFile as e:
@@ -1523,19 +1548,26 @@ class FileIndexer:
         return metadata
 
     @staticmethod
-    def _id3_cover(audio_file) -> Optional[bytes]:
-        """Front-cover bytes from a file's ID3 tag, or None."""
+    def _id3_cover(audio_file) -> Optional[EmbeddedCover]:
+        """The front cover from a file's ID3 tag, else a picture typed
+        "other", or None.
+
+        Chosen by the frame's picture type: its description is free text, so
+        "Front Cover" and "" may both be the front, and "" may be the back.
+        """
         id3 = audio_file.tags
         if id3 is None:
             return None
-        for tag in ("APIC:", "APIC:Cover", "APIC:CoverFront"):
-            if tag in id3:
-                return id3[tag].data
+        frames = [frame for frame in id3.getall("APIC") if frame.data]
+        for wanted in (PictureType.COVER_FRONT, PictureType.OTHER):
+            for frame in frames:
+                if frame.type == wanted:
+                    return EmbeddedCover(frame.data, int(wanted))
         return None
 
     @staticmethod
-    def _front_cover(pictures: List[Picture]) -> Optional[bytes]:
-        """Front-cover bytes from FLAC picture blocks, or None.
+    def _front_cover(pictures: List[Picture]) -> Optional[EmbeddedCover]:
+        """The front cover from FLAC picture blocks, or None.
 
         Takes the front cover, else a picture typed "other", which is what
         many taggers write for the cover. A back cover, booklet page or disc
@@ -1545,17 +1577,17 @@ class FileIndexer:
         for wanted in (PictureType.COVER_FRONT, PictureType.OTHER):
             for pic in pictures:
                 if pic.type == wanted:
-                    return pic.data
+                    return EmbeddedCover(pic.data, int(wanted))
         return None
 
     @staticmethod
-    def _flac_cover(flac) -> Optional[bytes]:
-        """Front-cover bytes from a FLAC file's picture blocks, or None."""
+    def _flac_cover(flac) -> Optional[EmbeddedCover]:
+        """The front cover from a FLAC file's picture blocks, or None."""
         return FileIndexer._front_cover(flac.pictures)
 
     @staticmethod
-    def _vorbis_cover(vorbis) -> Optional[bytes]:
-        """Front-cover bytes from an Ogg Vorbis file's base64
+    def _vorbis_cover(vorbis) -> Optional[EmbeddedCover]:
+        """The front cover from an Ogg Vorbis file's base64
         ``METADATA_BLOCK_PICTURE`` comments, or failing those the legacy
         ``COVERART`` one, or None.
 
@@ -1577,8 +1609,15 @@ class FileIndexer:
             except ValueError:
                 continue
             if data:
-                return data
+                return EmbeddedCover(data, int(PictureType.OTHER))
         return None
+
+    @staticmethod
+    def _mp4_cover(mp4: Mp4Audio) -> Optional[EmbeddedCover]:
+        """An MP4 file's first picture. MP4 has no picture types."""
+        if mp4.cover is None:
+            return None
+        return EmbeddedCover(mp4.cover, int(PictureType.OTHER))
 
     #: How each media type ``_tag_format_of`` names is read.
     _TAG_FORMATS = {
@@ -1593,7 +1632,7 @@ class FileIndexer:
             read_tags=open_ogg_vorbis_tags,
         ),
         "audio/mp4": _TagFormat(
-            open_mp4_audio, _extract_mp4_metadata, lambda mp4: mp4.cover
+            open_mp4_audio, _extract_mp4_metadata, _mp4_cover
         ),
         "audio/aac": _TagFormat(AdtsFile, _extract_adts_metadata, _id3_cover),
         "audio/x-dsf": _TagFormat(DSF, _extract_dsf_metadata, _id3_cover),
@@ -1603,6 +1642,13 @@ class FileIndexer:
     def _embedded_art(
         self, storage: FileStorage, file_path: str
     ) -> Optional[bytes]:
+        """The bytes of :meth:`_embedded_cover`, or None."""
+        cover = self._embedded_cover(storage, file_path)
+        return cover.data if cover is not None else None
+
+    def _embedded_cover(
+        self, storage: FileStorage, file_path: str
+    ) -> Optional[EmbeddedCover]:
         """Read just the embedded cover from a file, or None when its tags
         give up none.
 
@@ -1613,40 +1659,78 @@ class FileIndexer:
         if tag_format is None:
             return None
         read = tag_format.read_tags or tag_format.read
-        with storage.open(
-            file_path, read_ahead_bytes=tag_format.read_ahead_bytes
-        ) as audio:
-            watched = WatchedFile(audio)
-            try:
-                return tag_format.cover(read(watched))
-            except Exception as e:
-                if watched.read_error is not None:
-                    raise watched.read_error from None
-                logger.debug("Could not read embedded art from %s: %s", file_path, e)
-                return None
-
-    @staticmethod
-    def _art_phash(image_data: bytes) -> Optional[str]:
-        """64-bit row-difference hash (dHash) of embedded art, 16 hex or None.
-
-        Adjacent-pixel brightness on a 9x8 grayscale downscale. Same cover ->
-        small Hamming distance; robust to re-encoding/resize.
-        """
         try:
-            img = Image.open(io.BytesIO(image_data)).convert("L").resize(
-                (9, 8), Image.Resampling.LANCZOS
-            )
-            px = img.tobytes()  # 72 bytes, one grayscale value per pixel
-            bits = 0
-            for row in range(8):
-                for col in range(8):
-                    left = px[row * 9 + col]
-                    right = px[row * 9 + col + 1]
-                    bits = (bits << 1) | (1 if left > right else 0)
-            return f"{bits:016x}"
+            with storage.open(
+                file_path, read_ahead_bytes=tag_format.read_ahead_bytes
+            ) as audio:
+                watched = WatchedFile(audio)
+                try:
+                    return tag_format.cover(read(watched))
+                except Exception as e:
+                    if watched.read_error is not None:
+                        raise watched.read_error from None
+                    logger.debug(
+                        "Could not read embedded art from %s: %s", file_path, e
+                    )
+                    return None
         except Exception as e:
-            logger.debug("art phash failed: %s", e)
+            failure = storage_failure(e)
+            if failure is not None:
+                raise failure
+            logger.debug("Could not open %s for its art: %s", file_path, e)
             return None
+
+    async def _reread_covers_of_older_readers(
+        self, available_folders: List[str]
+    ) -> int:
+        """Read just the embedded cover of each ID3-tagged file whose
+        evidence older readers recorded, and say how many were read.
+
+        Files read since the new readers arrived are passed over, so one
+        that could not be reached is read on a later scan and the rest are
+        not read again; once none is left the pass is over for good.
+        """
+        version, _, since = (
+            await self.db_manager.get_indexer_state("cover_readers") or ""
+        ).partition(":")
+        if version == str(COVER_READERS_VERSION) and since == "done":
+            return 0
+        if version != str(COVER_READERS_VERSION) or not since:
+            # Past every row already written, whatever the clock says.
+            newest = await self.db_manager.get_latest_evidence_time()
+            since = str(max(int(time.time()), newest + 1))
+            await self.db_manager.set_indexer_state(
+                "cover_readers", f"{COVER_READERS_VERSION}:{since}"
+            )
+        reread: List[Tuple[str, Optional[str], Optional[int]]] = []
+        missed = False
+        for track_id, file_path in await self.db_manager.get_tracks_read_before(
+            int(since)
+        ):
+            if media_type_of(file_path) not in _ID3_COVER_TYPES:
+                continue
+            if self.storage.root_of(file_path, available_folders) is None:
+                missed = True
+                continue
+            storage = self.storage.for_path(file_path)
+            try:
+                cover = await asyncio.to_thread(
+                    self._embedded_cover, storage, file_path
+                )
+            except OSError as e:
+                logger.debug(f"Could not re-read the cover of {file_path}: {e}")
+                missed = True
+                continue
+            phash = (
+                await asyncio.to_thread(dhash_bytes, cover.data) if cover else None
+            )
+            reread.append((track_id, phash, cover.picture_type if phash else None))
+        await self.db_manager.set_art_evidence(reread)
+        if not missed:
+            await self.db_manager.set_indexer_state(
+                "cover_readers", f"{COVER_READERS_VERSION}:done"
+            )
+        return len(reread)
 
     def _save_images(
         self, image_data: bytes, entity_id: str, entity_type: str, file_path: str

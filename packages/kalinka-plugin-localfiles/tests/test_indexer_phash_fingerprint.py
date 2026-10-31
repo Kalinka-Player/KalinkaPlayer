@@ -20,6 +20,7 @@ from kalinka_plugin_localfiles.db_schema import init_db
 from kalinka_plugin_localfiles.enricher.enricher_db import AsyncEnricherDb
 from kalinka_plugin_localfiles.indexer.indexer import FileIndexer
 from kalinka_plugin_localfiles.indexer.indexer_db import AsyncIndexerDb
+from kalinka_plugin_localfiles.utils.artwork_store import dhash_bytes
 
 
 @pytest_asyncio.fixture
@@ -67,12 +68,12 @@ async def _evidence(config, track_id):
 
 
 def test_art_phash_is_16_hex_and_stable():
-    a1 = FileIndexer._art_phash(_cover_png((120, 30, 200)))
-    a2 = FileIndexer._art_phash(_cover_png((120, 30, 200)))
+    a1 = dhash_bytes(_cover_png((120, 30, 200)))
+    a2 = dhash_bytes(_cover_png((120, 30, 200)))
     assert a1 is not None and len(a1) == 16
     int(a1, 16)  # valid hex
     assert a1 == a2  # same image -> same hash
-    assert FileIndexer._art_phash(b"not an image") is None
+    assert dhash_bytes(b"not an image") is None
 
 
 @pytest.mark.asyncio
@@ -84,10 +85,14 @@ async def test_indexing_stores_art_phash(indexer):
     changes = await fi.process_file(str(path))
     ev = await _evidence(config, changes["tracks"])
     assert ev["art_phash"] is not None and len(ev["art_phash"]) == 16
+    assert ev["art_type"] == 3
 
 
 @pytest.mark.asyncio
-async def test_retag_without_art_preserves_phash(indexer):
+async def test_retag_without_art_clears_phash(indexer):
+    """A picture missing from a file that was read is a removed picture: a
+    read that fails raises before the evidence is written. A kept hash would
+    have the album cover chosen from art no file has any more."""
     fi, music_dir, config = indexer
     path = music_dir / "02 - track.flac"
     _write_flac(path, {"title": "T", "artist": "A", "album": "X"},
@@ -109,7 +114,8 @@ async def test_retag_without_art_preserves_phash(indexer):
     await fi.process_file(str(path))
 
     ev = await _evidence(config, track_id)
-    assert ev["art_phash"] == phash  # preserved, not nulled
+    assert ev["art_phash"] is None
+    assert ev["art_type"] is None
 
 
 @pytest.mark.asyncio

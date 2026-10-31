@@ -337,9 +337,11 @@ class AsyncIndexerDb(ProvenanceDb):
     async def upsert_track_evidence(
         self, track_id: str, evidence: Dict[str, Any]
     ) -> None:
-        """Upsert the current-snapshot evidence row. art_phash/cue_sheet/
-        cue_tracks/import_batch are COALESCE-kept when a refresh omits them, so
-        a transient miss doesn't erase already-captured evidence."""
+        """Upsert the current-snapshot evidence row. cue_sheet/cue_tracks/
+        import_batch are COALESCE-kept when a refresh omits them, so a
+        transient miss doesn't erase already-captured evidence. The art
+        columns are written as read: a read failure raises before this, so a
+        missing picture is a removed one."""
         raw_tags = evidence.get("raw_tags")
         stream_info = evidence.get("stream_info")
         cue_tracks = evidence.get("cue_tracks")
@@ -347,14 +349,14 @@ class AsyncIndexerDb(ProvenanceDb):
             await conn.execute(
                 """
                 INSERT INTO track_evidence
-                    (track_id, raw_tags, stream_info, art_phash, cue_sheet,
-                     cue_tracks, import_batch, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (track_id, raw_tags, stream_info, art_phash, art_type,
+                     cue_sheet, cue_tracks, import_batch, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(track_id) DO UPDATE SET
                     raw_tags     = excluded.raw_tags,
                     stream_info  = excluded.stream_info,
-                    art_phash    = COALESCE(excluded.art_phash,
-                                            track_evidence.art_phash),
+                    art_phash    = excluded.art_phash,
+                    art_type     = excluded.art_type,
                     cue_sheet    = COALESCE(excluded.cue_sheet,
                                             track_evidence.cue_sheet),
                     cue_tracks   = COALESCE(excluded.cue_tracks,
@@ -368,6 +370,7 @@ class AsyncIndexerDb(ProvenanceDb):
                     json.dumps(raw_tags) if raw_tags is not None else None,
                     json.dumps(stream_info) if stream_info is not None else None,
                     evidence.get("art_phash"),
+                    evidence.get("art_type"),
                     evidence.get("cue_sheet"),
                     json.dumps(cue_tracks) if cue_tracks is not None else None,
                     evidence.get("import_batch"),
@@ -644,6 +647,59 @@ class AsyncIndexerDb(ProvenanceDb):
                 "INSERT OR REPLACE INTO indexer_state (key, value) "
                 "VALUES ('scan_progress', ?)",
                 (value,),
+            )
+            await conn.commit()
+
+    async def get_indexer_state(self, key: str) -> Optional[str]:
+        """One value from ``indexer_state``, or None when it was never set."""
+        async with self._open() as conn:
+            cursor = await conn.cursor()
+            await cursor.execute(
+                "SELECT value FROM indexer_state WHERE key = ?", (key,)
+            )
+            row = await cursor.fetchone()
+        return row[0] if row else None
+
+    async def set_indexer_state(self, key: str, value: str) -> None:
+        async with self._open() as conn:
+            await conn.execute(
+                "INSERT OR REPLACE INTO indexer_state (key, value) VALUES (?, ?)",
+                (key, value),
+            )
+            await conn.commit()
+
+    async def get_latest_evidence_time(self) -> int:
+        async with self._open() as conn:
+            cursor = await conn.execute(
+                "SELECT COALESCE(MAX(updated_at), 0) FROM track_evidence"
+            )
+            return (await cursor.fetchone())[0]
+
+    async def get_tracks_read_before(self, since: int) -> List[Tuple[str, str]]:
+        """(track_id, file_path) of the tracks whose evidence was last
+        written before ``since``."""
+        async with self._open() as conn:
+            cursor = await conn.execute(
+                "SELECT t.id, t.file_path FROM tracks t "
+                "JOIN track_evidence e ON e.track_id = t.id "
+                "WHERE COALESCE(e.updated_at, 0) < ?",
+                (since,),
+            )
+            return [(row[0], row[1]) for row in await cursor.fetchall()]
+
+    async def set_art_evidence(
+        self, covers: List[Tuple[str, Optional[str], Optional[int]]]
+    ) -> None:
+        """Record ``(track_id, art_phash, art_type)``: what each track's
+        embedded cover is, read on its own."""
+        if not covers:
+            return
+        now = int(time.time())
+        async with self._open() as conn:
+            await conn.executemany(
+                "UPDATE track_evidence SET art_phash = ?, art_type = ?, "
+                "updated_at = ? WHERE track_id = ?",
+                [(phash, kind, now, track_id) for track_id, phash, kind in covers],
             )
             await conn.commit()
 

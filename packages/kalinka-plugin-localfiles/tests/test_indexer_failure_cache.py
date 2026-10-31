@@ -273,11 +273,15 @@ def test_an_mp3_is_read_once(monkeypatch):
     class FakeInfo:
         length = 90.0
 
+    class FakeTags(dict):
+        def getall(self, _key):
+            return []
+
     class FakeMP3:
         def __init__(self, _stream):
             reads["n"] += 1
             self.info = FakeInfo()
-            self.tags = {"TIT2": "Come Together"}
+            self.tags = FakeTags({"TIT2": "Come Together"})
 
     def refuse(*args):
         raise AssertionError("the frames were parsed a second time")

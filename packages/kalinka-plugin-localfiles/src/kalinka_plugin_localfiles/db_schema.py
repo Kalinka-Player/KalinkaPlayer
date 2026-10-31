@@ -163,6 +163,7 @@ async def init_db(db_path: str) -> None:
                 raw_tags       TEXT,
                 stream_info    TEXT,
                 art_phash      TEXT,
+                art_type       INTEGER,
                 cue_sheet      TEXT,
                 cue_tracks     TEXT,
                 fingerprint    TEXT,
@@ -636,6 +637,10 @@ async def init_db(db_path: str) -> None:
         if "cue_tracks" not in ev_cols:
             await cursor.execute("ALTER TABLE track_evidence ADD COLUMN cue_tracks TEXT")
             logger.info("Added track_evidence.cue_tracks column")
+        # NULL on rows read before picture types were recorded.
+        if "art_type" not in ev_cols:
+            await cursor.execute("ALTER TABLE track_evidence ADD COLUMN art_type INTEGER")
+            logger.info("Added track_evidence.art_type column")
 
         # Backfill file identity from existing tracks (path-hash id becomes
         # file_id; last_updated is the best first_indexed for legacy rows).
