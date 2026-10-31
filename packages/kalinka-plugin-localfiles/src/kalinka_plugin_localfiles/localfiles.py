@@ -1596,12 +1596,16 @@ class LocalFilesInputModule(InputModule):
             for part in genre_parts(track.get("album_genre"))
         ]
 
-        # Album image, else the track's own cover (singles on unknown_album).
-        cover_path = self._get_album_image_urls(
-            track["album_id"]
-        ) or self._get_track_image_urls(track)
-        if cover_path:
-            album.image = cover_path
+        if "album_image_url" in track:
+            album_cover = self._resource_image_urls("album", track["album_image_url"])
+        else:
+            album_cover = self._get_album_image_urls(track["album_id"])
+        own_cover = self._get_track_image_urls(track)
+        # A single has no album cover; older clients read its own from there.
+        if track["album_id"] == "unknown_album":
+            album_cover = album_cover or own_cover
+        if album_cover:
+            album.image = album_cover
 
         # Create Track object
         track_obj = Track(
@@ -1611,6 +1615,7 @@ class LocalFilesInputModule(InputModule):
             track_number=track.get("track_number"),
             disc_number=track.get("disc_number"),
             album=album,
+            image=own_cover or album_cover,
         )
 
         # Add performer if available

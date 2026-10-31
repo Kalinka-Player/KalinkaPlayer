@@ -21,7 +21,6 @@ from mutagen.flac import FLAC, Picture
 from mutagen.id3 import PictureType
 from PIL import Image
 
-import kalinka_plugin_localfiles.indexer.indexer as indexer_module
 from kalinka_plugin_localfiles.config_model import LocalFilesConfig
 from kalinka_plugin_localfiles.storage.local import LocalStorage
 from kalinka_plugin_localfiles.db_schema import init_db
@@ -64,6 +63,9 @@ def _cover_png(color):
     return buf.getvalue()
 
 
+TAGS = {"title": "Bee Moved", "artist": "Blue Coast"}
+
+
 def _write_flac(path, tags, cover=None, *, pictures=()):
     """``cover`` is embedded as the front, then ``pictures`` as (type, bytes)."""
     sf.write(str(path), np.zeros(4410, dtype="float32"), 44100, format="FLAC")
@@ -80,19 +82,36 @@ def _write_flac(path, tags, cover=None, *, pictures=()):
     audio.save()
 
 
-@pytest.mark.asyncio
-async def test_untagged_single_gets_track_art_at_index_time(indexer):
-    fi, db, music_dir, config = indexer
+def _track_reads(monkeypatch, fi, junk=()):
+    """Records each embedded-cover read the cover pass makes, answering
+    ``junk`` paths with a picture that will not decode."""
+    reads = []
+    real = fi.artwork_resolver.read_cover
+
+    def read(storage, path):
+        reads.append(path)
+        return b"junk" if path in junk else real(storage, path)
+
+    monkeypatch.setattr(fi.artwork_resolver, "read_cover", read)
+    return reads
+
+
+async def _single(fi, music_dir, cover=None):
     path = music_dir / "loose.flac"
-    _write_flac(path, {"title": "Bee Moved", "artist": "Blue Coast"},
-                cover=_cover_png((250, 200, 20)))
+    _write_flac(path, {"title": "Bee Moved", "artist": "Blue Coast"}, cover=cover)
+    track_id = (await fi.process_file(str(path)))["tracks"]
+    return path, track_id
 
-    changes = await fi.process_file(str(path))
-    track_id = changes["tracks"]
 
-    track = await db.get_track_by_id(track_id)
-    assert track["album_id"] == "unknown_album"
-    assert track["image_url"] == f"{track_id}.jpg"
+@pytest.mark.asyncio
+async def test_an_untagged_single_keeps_its_own_cover(indexer):
+    fi, db, music_dir, config = indexer
+    path, track_id = await _single(fi, music_dir, patterned_png(1))
+    assert (await db.get_track_by_id(track_id))["album_id"] == "unknown_album"
+
+    await fi.resolve_artwork([str(music_dir)])
+
+    assert (await db.get_track_by_id(track_id))["image_url"] == f"{track_id}.jpg"
     assert (fi.artwork_path / "track" / f"{track_id}_thumbnail.jpg").exists()
 
 
@@ -117,213 +136,84 @@ async def test_new_album_gets_no_cover_from_a_picture_that_would_not_save(
 
 
 @pytest.mark.asyncio
-async def test_reindex_without_embedded_art_drops_the_track_cover(indexer):
-    """The update is surgical, so a cover the file no longer carries would
-    otherwise stay on the row forever."""
+async def test_a_single_retagged_without_art_drops_its_cover(indexer):
     fi, db, music_dir, config = indexer
-    path = music_dir / "loose.flac"
-    _write_flac(path, {"title": "Bee Moved", "artist": "Blue Coast"},
-                cover=_cover_png((250, 200, 20)))
-    changes = await fi.process_file(str(path))
-    track_id = changes["tracks"]
-    assert (await db.get_track_by_id(track_id))["image_url"] == f"{track_id}.jpg"
+    path, track_id = await _single(fi, music_dir, patterned_png(1))
+    await fi.resolve_artwork([str(music_dir)])
 
     path.unlink()
     _write_flac(path, {"title": "Bee Moved", "artist": "Blue Coast"})
     await fi.process_file(str(path))
+    await fi.resolve_artwork([str(music_dir)])
 
     assert (await db.get_track_by_id(track_id))["image_url"] is None
 
 
 @pytest.mark.asyncio
-async def test_backfill_restores_art_after_clustering_demotion(indexer):
+async def test_a_track_demoted_to_a_single_gets_its_cover_back(indexer, monkeypatch):
     fi, db, music_dir, config = indexer
     path = music_dir / "single.flac"
     _write_flac(path, {"title": "Bee Moved", "artist": "Blue Coast",
                        "album": "Bee Moved"},
-                cover=_cover_png((20, 90, 250)))
-
-    changes = await fi.process_file(str(path))
-    track_id = changes["tracks"]
-    track = await db.get_track_by_id(track_id)
-    assert track["album_id"] != "unknown_album"
-    assert track["image_url"] is None
+                cover=patterned_png(1))
+    track_id = (await fi.process_file(str(path)))["tracks"]
+    await fi.resolve_artwork([str(music_dir)])
+    assert (await db.get_track_by_id(track_id))["image_url"] is None
 
     # What recluster does to a V/A dump folder: the track goes to
     # unknown_album and the per-file album row is orphan-deleted.
     await db.reassign_album(track_id, "unknown_album")
     await db.delete_orphaned_albums_and_artists()
+    await fi.resolve_artwork([str(music_dir)])
 
-    assert await fi.backfill_single_art([str(music_dir)]) == 1
-    track = await db.get_track_by_id(track_id)
-    assert track["image_url"] == f"{track_id}.jpg"
-    assert (fi.artwork_path / "track" / f"{track_id}_large.jpg").exists()
-
-    # Idempotent: a second pass finds nothing to do.
-    assert await fi.backfill_single_art([str(music_dir)]) == 0
-
-
-NOTHING = 0
-TAGS = {"title": "Bee Moved", "artist": "Blue Coast"}
-
-
-def _truncated_jpeg():
-    buf = io.BytesIO()
-    Image.effect_noise((400, 400), 64).convert("RGB").save(buf, "JPEG")
-    data = buf.getvalue()
-    return data[: len(data) // 2]
-
-
-def _failed_sources(config, entity_id):
-    with closing(sqlite3.connect(config.db_path)) as conn:
-        rows = conn.execute(
-            "SELECT source_path FROM art_source_failures WHERE entity_id = ?",
-            (entity_id,),
-        )
-        return {path for (path,) in rows}
-
-
-def _touch(path):
-    """Change the file's mtime past the filesystem's timestamp granularity,
-    which a fast test can otherwise fall inside."""
-    stat = path.stat()
-    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
-
-
-async def _single_whose_cover_broke(fi, db, music_dir):
-    """A loose single indexed with a good cover, then re-tagged with one cut
-    short. The broken picture has no hash of its own; the good one's stands
-    in for a library indexed when a hash outlived its picture, so the
-    backfill goes on selecting the track."""
-    path = music_dir / "loose.flac"
-    _write_flac(path, TAGS, cover=_cover_png((20, 90, 250)))
-    track_id = (await fi.process_file(str(path)))["tracks"]
-    phash = (await db.get_tracks_with_evidence())[0][1]["art_phash"]
-    _write_flac(path, TAGS, cover=_truncated_jpeg())
-    await fi.process_file(str(path))
-    assert (await db.get_track_by_id(track_id))["image_url"] is None
-    with closing(sqlite3.connect(fi.config.db_path)) as conn:
-        conn.execute(
-            "UPDATE track_evidence SET art_phash = ? WHERE track_id = ?",
-            (phash, track_id),
-        )
-        conn.commit()
-    return path, track_id
-
-
-async def _single_needing_its_cover(fi, db, music_dir):
-    path = music_dir / "loose.flac"
-    _write_flac(path, TAGS, cover=_cover_png((20, 90, 250)))
-    track_id = (await fi.process_file(str(path)))["tracks"]
-    await db.update_track(track_id, {"image_url": None})
-    return path, track_id
-
-
-class _DroppingFile(io.BytesIO):
-    """A file on a share that stops answering after its first few bytes."""
-
-    def read(self, size=-1):
-        if size is None or size < 0 or self.tell() + size > 64:
-            raise OSError("host is down")
-        return super().read(size)
+    assert (await db.get_track_by_id(track_id))["image_url"] == f"{track_id}.jpg"
+    reads = _track_reads(monkeypatch, fi)
+    await fi.resolve_artwork([str(music_dir)])
+    assert reads == []
 
 
 @pytest.mark.asyncio
-async def test_a_cover_that_will_not_decode_is_retried_once_its_file_changes(
+async def test_a_cover_that_will_not_decode_is_not_read_again_until_it_changes(
     indexer, monkeypatch
 ):
     fi, db, music_dir, config = indexer
-    path, track_id = await _single_whose_cover_broke(fi, db, music_dir)
-    stores = []
-    real_store = indexer_module.store_artwork_images
+    path, track_id = await _single(fi, music_dir, patterned_png(1))
+    reads = _track_reads(monkeypatch, fi, junk={str(path)})
 
-    def store(*args, **kwargs):
-        stores.append(kwargs["origin"])
-        return real_store(*args, **kwargs)
+    await fi.resolve_artwork([str(music_dir)])
+    await fi.resolve_artwork([str(music_dir)])
 
-    monkeypatch.setattr(indexer_module, "store_artwork_images", store)
-
-    assert await fi.backfill_single_art([str(music_dir)]) == NOTHING
-    assert await fi.backfill_single_art([str(music_dir)]) == NOTHING
-    assert stores == [str(path)]
-    assert _failed_sources(config, track_id) == {str(path)}
-
-    audio = FLAC(str(path))
-    audio["comment"] = "remastered"
-    audio.save()
-    _touch(path)
-
-    assert await fi.backfill_single_art([str(music_dir)]) == NOTHING
-    assert stores == [str(path)] * 2
-
-
-@pytest.mark.asyncio
-async def test_tags_that_will_not_parse_are_not_read_again(indexer, monkeypatch):
-    fi, db, music_dir, config = indexer
-    path, track_id = await _single_needing_its_cover(fi, db, music_dir)
-    path.write_bytes(b"no longer a FLAC file " * 64)
-    reads = []
-    real_read = fi._embedded_art
-
-    def read(storage, file_path):
-        reads.append(file_path)
-        return real_read(storage, file_path)
-
-    monkeypatch.setattr(fi, "_embedded_art", read)
-
-    assert await fi.backfill_single_art([str(music_dir)]) == NOTHING
-    assert await fi.backfill_single_art([str(music_dir)]) == NOTHING
     assert reads == [str(path)]
-    assert _failed_sources(config, track_id) == {str(path)}
+    assert (await db.get_track_by_id(track_id))["image_url"] is None
 
-
-@pytest.mark.asyncio
-async def test_a_file_that_could_not_be_read_is_tried_again(indexer, monkeypatch):
-    """A share that stopped answering has not shown the tags to be broken,
-    though the tag reader reports it as if it had."""
-    fi, db, music_dir, config = indexer
-    path, track_id = await _single_needing_its_cover(fi, db, music_dir)
-    real_open = LocalStorage.open
-
-    def open_(self, file_path, *, read_ahead_bytes=None):
-        with real_open(self, file_path, read_ahead_bytes=read_ahead_bytes) as handle:
-            return _DroppingFile(handle.read())
-
-    monkeypatch.setattr(LocalStorage, "open", open_)
-    assert await fi.backfill_single_art([str(music_dir)]) == NOTHING
-    assert _failed_sources(config, track_id) == set()
-
-    monkeypatch.undo()
-    assert await fi.backfill_single_art([str(music_dir)]) == 1
-
-
-@pytest.mark.asyncio
-async def test_a_written_off_cover_is_forgotten_once_the_file_is_read_again(
-    indexer,
-):
-    fi, db, music_dir, config = indexer
-    path, track_id = await _single_whose_cover_broke(fi, db, music_dir)
-    await fi.backfill_single_art([str(music_dir)])
-    assert _failed_sources(config, track_id) == {str(path)}
-
-    _write_flac(path, TAGS, cover=_cover_png((20, 90, 250)))
+    _write_flac(path, {"title": "Bee Moved", "artist": "Blue Coast"},
+                cover=patterned_png(2))
+    os.utime(path, (1, 2_000_000_000))
     await fi.process_file(str(path))
+    monkeypatch.undo()
+    reads = _track_reads(monkeypatch, fi)
+    await fi.resolve_artwork([str(music_dir)])
 
-    assert _failed_sources(config, track_id) == set()
+    assert reads == [str(path)]
     assert (await db.get_track_by_id(track_id))["image_url"] == f"{track_id}.jpg"
 
 
 @pytest.mark.asyncio
-async def test_a_written_off_cover_is_forgotten_when_the_track_joins_an_album(
-    indexer,
-):
+async def test_a_file_that_could_not_be_read_is_tried_again(indexer, monkeypatch):
     fi, db, music_dir, config = indexer
-    path, track_id = await _single_whose_cover_broke(fi, db, music_dir)
-    await fi.backfill_single_art([str(music_dir)])
+    path, track_id = await _single(fi, music_dir, patterned_png(1))
+    real = fi.artwork_resolver.read_cover
 
-    await db.reassign_album(track_id, "album_minted1")
+    def unreachable(storage, file_path):
+        raise OSError("host is down")
 
-    assert _failed_sources(config, track_id) == set()
+    monkeypatch.setattr(fi.artwork_resolver, "read_cover", unreachable)
+    await fi.resolve_artwork([str(music_dir)])
+    assert (await db.get_track_by_id(track_id))["image_url"] is None
+
+    monkeypatch.setattr(fi.artwork_resolver, "read_cover", real)
+    await fi.resolve_artwork([str(music_dir)])
+    assert (await db.get_track_by_id(track_id))["image_url"] == f"{track_id}.jpg"
 
 
 @pytest.mark.asyncio
@@ -354,28 +244,19 @@ async def test_backfill_gives_minted_album_its_embedded_cover(indexer):
 
 
 @pytest.mark.asyncio
-async def test_backfill_skips_artless_and_unavailable(indexer):
+async def test_an_artless_single_or_one_out_of_reach_is_left_alone(indexer):
     fi, db, music_dir, config = indexer
-    artless = music_dir / "artless.flac"
-    _write_flac(artless, {"title": "Plain", "artist": "A"})
-    changes = await fi.process_file(str(artless))
-    await db.reassign_album(changes["tracks"], "unknown_album")
-
-    # No art_phash in evidence -> not even selected for a file read.
-    assert await db.get_singles_missing_art() == []
-
+    _, artless = await _single(fi, music_dir)
     covered = music_dir / "covered.flac"
-    _write_flac(covered, {"title": "Covered", "artist": "A"},
-                cover=_cover_png((5, 5, 5)))
-    covered_changes = await fi.process_file(str(covered))
-    covered_id = covered_changes["tracks"]
-    # Strip the art it got at index time to expose the root-availability gate.
-    await db.update_track(covered_id, {"image_url": None})
+    _write_flac(covered, {"title": "Covered", "artist": "A"}, cover=patterned_png(1))
+    covered_id = (await fi.process_file(str(covered)))["tracks"]
 
-    # The track's root is not in the available list -> untouched.
-    assert await fi.backfill_single_art([]) == 0
-    track = await db.get_track_by_id(covered_id)
-    assert track["image_url"] is None
+    await fi.resolve_artwork([])
+    assert (await db.get_track_by_id(covered_id))["image_url"] is None
+
+    await fi.resolve_artwork([str(music_dir)])
+    assert (await db.get_track_by_id(artless))["image_url"] is None
+    assert (await db.get_track_by_id(covered_id))["image_url"] == f"{covered_id}.jpg"
 
 
 @pytest.mark.asyncio

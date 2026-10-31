@@ -86,8 +86,15 @@ def _item_image_path(item: BrowseItem) -> Optional[str]:
         image = item.playlist.image
     elif item.catalog is not None:
         image = item.catalog.image
-    elif item.track is not None and item.track.album is not None:
-        image = item.track.album.image
+    elif item.track is not None:
+        # SDK 3.20: a track's own cover, where it differs from its album's.
+        own = getattr(item.track, "image", None)
+        album = item.track.album
+        image = own if _url_of(own) else album.image if album else None
+    return _url_of(image)
+
+
+def _url_of(image: Optional[CoverImage]) -> Optional[str]:
     if image is None:
         return None
     return image.large or image.small or image.thumbnail

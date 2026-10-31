@@ -337,6 +337,10 @@ class Track(BaseModel):
         disc_number (Optional[int]): Disc position within the album, if known
         performer (Optional[Artist]): Track performer (may differ from album artist)
         album (Album): Album containing this track
+        image (Optional[CoverImage]): SDK 3.20. The cover to show for this
+            track: its own embedded cover where that differs from the
+            album's, else the album's. Absent from modules that do not tell
+            them apart, where clients show ``album.image``.
         replaygain_peak (Optional[float]): ReplayGain peak value for audio normalization
         replaygain_gain (Optional[float]): ReplayGain gain value for audio normalization
         replaygain_album_peak (Optional[float]): Album peak from this track's tags
@@ -353,6 +357,7 @@ class Track(BaseModel):
     disc_number: Optional[int] = None
     performer: Optional[Artist] = None
     album: Album
+    image: Optional[CoverImage] = None
     replaygain_peak: Optional[float] = None
     replaygain_gain: Optional[float] = None
     replaygain_album_peak: Optional[float] = None

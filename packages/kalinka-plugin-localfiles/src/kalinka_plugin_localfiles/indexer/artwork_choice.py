@@ -17,7 +17,7 @@ import re
 from collections import defaultdict
 from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Set, Tuple
 
-from ..clustering.signals import ART_SAME_MAX_HAMMING
+from ..clustering.signals import ART_DIFF_MIN_HAMMING, ART_SAME_MAX_HAMMING
 from ..utils.name_utils import album_folder_for_path
 
 FOLDER_ART, EMBEDDED_ART, NO_ART = "folder_art", "embedded_art", "none"
@@ -223,3 +223,44 @@ def album_folders(
 
 def hamming(a: str, b: str) -> int:
     return bin(int(a, 16) ^ int(b, 16)).count("1")
+
+
+#: A blank or single-colour picture hashes to this, whatever its colour.
+_FLAT = "0" * 16
+
+
+def track_variants(
+    members: Iterable[Member],
+    cover_dhash: Optional[str],
+    cover_source: Optional[str],
+    singles: bool = False,
+) -> List[List[Member]]:
+    """The tracks whose own embedded cover differs from their album's, one
+    list per picture, each in track order.
+
+    The rest show the album's cover and need nothing stored, as do all of an
+    album whose cover is unknown. A folder cover is a scan, often bordered or
+    cropped unlike the thumbnail the files embed, so only a clearly different
+    picture counts against it. A flat picture says too little to count.
+
+    @param singles The members are loose tracks with no album cover of their
+        own to fall back on: every one with a picture keeps it.
+    """
+    ordered = sorted(members, key=track_order)
+    if singles:
+        return [[member] for member in ordered if member.phash]
+
+    if not cover_dhash:
+        return []
+
+    def differs(phash: str) -> bool:
+        distance = hamming(phash, cover_dhash)
+        if cover_source == FOLDER_ART:
+            return distance >= ART_DIFF_MIN_HAMMING
+        return distance > ART_SAME_MAX_HAMMING
+
+    groups: List[List[Member]] = []
+    for member in ordered:
+        if member.phash and member.phash != _FLAT and differs(member.phash):
+            _join(groups, member)
+    return groups

@@ -4,6 +4,7 @@ from kalinka_plugin_localfiles.indexer.artwork_choice import (
     Member,
     album_folders,
     embedded_choices,
+    track_variants,
 )
 
 A = "0f0f0f0f0f0f0f0f"
@@ -45,3 +46,16 @@ def test_a_folder_shared_by_two_albums_is_neither_ones():
     assert owned["a"].roots == [] and owned["b"].roots == []
     assert owned["c"].folders == ["/m/Album"]
     assert owned["c"].discs == ["/m/Album/CD1", "/m/Album/CD2"]
+
+
+def test_a_track_variant_needs_an_album_cover_to_differ_from():
+    assert track_variants([_member(1, A), _member(2, B)], None, "embedded_art") == []
+
+
+def test_re_encodes_of_one_different_cover_share_a_copy():
+    groups = track_variants(
+        [_member(1, A), _member(2, B), _member(3, "f0f0f0f0f0f0f0f1")],
+        A,
+        "embedded_art",
+    )
+    assert [[m.track_id for m in group] for group in groups] == [["t2", "t3"]]
