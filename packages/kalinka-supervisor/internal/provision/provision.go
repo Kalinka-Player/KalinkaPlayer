@@ -282,7 +282,7 @@ func (s *Service) Command(owner string, raw []byte) error {
 func serveBluetooth(ctx context.Context, m *machine.Machine, adapter string) {
 	for ctx.Err() == nil {
 		if err := bluetoothSession(ctx, m, adapter); err != nil && ctx.Err() == nil {
-			slog.Warn("Bluetooth setup unavailable; retrying")
+			slog.Warn("Bluetooth setup unavailable; retrying", "error", err)
 		}
 		_ = wifi.Pause(ctx, 10*time.Second)
 	}
