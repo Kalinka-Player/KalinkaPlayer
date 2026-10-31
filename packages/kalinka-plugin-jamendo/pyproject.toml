@@ -29,7 +29,6 @@ dependencies = [
     # optional package says where it has wheels. >=3.13: InputModule.capabilities,
     # which leaves AI search out while its setting is off. >=3.14:
     # ModuleCapability.CATALOGS, which offers Jamendo as a home source.
-    # >=3.18: packaged small and standard source artwork.
     "kalinka-plugin-sdk>=3.18,<4",
     "httpx>=0.24",
     # ai_search (mood/semantic): sqlite-vec KNN over the shipped index.

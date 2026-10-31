@@ -1,5 +1,3 @@
-"""Plugin artwork survives metadata transport without replacing older icons."""
-
 import pytest
 from pydantic import ValidationError
 

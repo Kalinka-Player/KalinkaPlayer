@@ -1,5 +1,3 @@
-"""Static plugin artwork, independent of plugin setup and playback health."""
-
 import hashlib
 import io
 import logging
@@ -20,7 +18,7 @@ _LOG = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class _Asset:
-    """@brief An installed icon's immutable bytes and public metadata."""
+    """@brief Cached icon data."""
 
     data: bytes
     digest: str
@@ -101,7 +99,7 @@ def module_icons(config: ModuleConfig) -> ModuleIcons | None:
 def register_module_icon_routes(
     app: FastAPI, configs: Callable[[], Iterable[ModuleConfig]]
 ) -> None:
-    """@brief Serve only artwork declared by installed modules and devices."""
+    """@brief Serve installed artwork without initializing plugins."""
 
     @app.api_route("/server/module-icons/{digest}", methods=["GET", "HEAD"])
     async def icon(digest: str, request: Request):

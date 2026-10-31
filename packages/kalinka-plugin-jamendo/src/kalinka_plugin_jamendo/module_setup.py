@@ -24,7 +24,6 @@ _KEY_BY_IMPORT_NAME = {
 
 
 class KalinkaPluginJamendo(InputModulePlugin):
-    # 3.18: packaged artwork. Mirrors pyproject's pin.
     REQUIRES_SDK = ">=3.18,<4"
     PLUGIN_ID = "jamendo"
     CONFIG_MODEL = JamendoConfig
