@@ -2,6 +2,7 @@ import asyncio
 import logging
 import multiprocessing
 import os
+import re
 from functools import partial
 from pathlib import Path
 from dataclasses import dataclass, replace
@@ -88,6 +89,10 @@ from .input_module_db import (
 )
 
 logger = logging.getLogger(__name__.split(".")[-1])
+
+_COVER_RESOURCE = re.compile(
+    r"(album|track)/((?:album|track)_[0-9a-f]{16})_(thumbnail|small|large)\.jpg"
+)
 
 # A hard NFS mount can otherwise block a stat indefinitely.
 STAT_TIMEOUT_S = 5.0
@@ -1849,12 +1854,13 @@ class LocalFilesInputModule(InputModule):
         if not image_url:
             return None
         image_base = image_url.replace(".jpg", "")
-        thumbnail = artwork_file(
-            self.artwork_path, entity_type, image_base, "thumbnail"
-        )
-        if not thumbnail.exists():
+        # The largest size is written last, so its time stands for the set.
+        large = artwork_file(self.artwork_path, entity_type, image_base, "large")
+        try:
+            written = large.stat().st_mtime_ns
+        except OSError:
             return None
-        return served_cover(entity_type, image_base)
+        return served_cover(entity_type, image_base, written)
 
     def _get_album_image_urls(self, album_id: str) -> Optional[CoverImage]:
         """Get image URLs for an album"""
@@ -1888,7 +1894,22 @@ class LocalFilesInputModule(InputModule):
         resource_path = (self.artwork_path / id).resolve()
         if not resource_path.is_relative_to(self.artwork_path):
             return None
-        return resource_path.as_posix() if resource_path.exists() else None
+        if resource_path.exists():
+            return resource_path.as_posix()
+        return await asyncio.to_thread(self._current_cover, id)
+
+    def _current_cover(self, resource: str) -> Optional[str]:
+        """What a link kept in the queue or a collection shows once its
+        cover is gone: the cover its album or track shows now."""
+        match = _COVER_RESOURCE.fullmatch(resource)
+        if match is None:
+            return None
+        kind, entity_id, size = match.groups()
+        current = self.db_manager.current_cover_of(kind, entity_id)
+        if current is None:
+            return None
+        path = artwork_file(self.artwork_path, *current, size)
+        return path.as_posix() if path.exists() else None
 
     async def request_rescan(self) -> None:
         """Ask the existing librarian to perform its normal folder check."""

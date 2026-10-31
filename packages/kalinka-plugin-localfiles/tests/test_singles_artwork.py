@@ -509,13 +509,13 @@ async def test_track_metadata_falls_back_to_track_art(tmp_path):
     module = LocalFilesInputModule(config, _FakeDb(track))
     track_dir = module.artwork_path / "track"
     track_dir.mkdir(parents=True, exist_ok=True)
-    Image.new("RGB", (50, 50), (1, 2, 3)).save(
-        track_dir / "track_1_thumbnail.jpg", "JPEG"
-    )
+    for size in ("thumbnail", "small", "large"):
+        Image.new("RGB", (50, 50), (1, 2, 3)).save(
+            track_dir / f"track_1_{size}.jpg", "JPEG"
+        )
 
     [info] = await module.get_track_info(["track_1"])
     assert info.metadata.album.image is not None
-    assert (
-        info.metadata.album.image.thumbnail
-        == "/resource/track/track_1_thumbnail.jpg"
+    assert info.metadata.album.image.thumbnail.startswith(
+        "/resource/track/track_1_thumbnail.jpg?v="
     )

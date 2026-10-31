@@ -714,6 +714,38 @@ class LocalFilesInputModuleDb:
         finally:
             conn.close()
 
+    def current_cover_of(
+        self, entity_type: str, entity_id: str
+    ) -> Optional[Tuple[str, str]]:
+        """``(kind, image id)`` of the cover an album or track shows now, for
+        a link kept from before it changed: a regrouped album's new one, a
+        track's own or else its album's."""
+        conn = self._get_connection()
+        try:
+            if entity_type == "album":
+                alias = conn.execute(
+                    "SELECT current_id FROM entity_id_alias WHERE old_id = ?",
+                    (entity_id,),
+                ).fetchone()
+                row = conn.execute(
+                    "SELECT image_url FROM albums WHERE id = ?",
+                    (alias[0] if alias else entity_id,),
+                ).fetchone()
+                return ("album", _image_id(row[0])) if row and row[0] else None
+            row = conn.execute(
+                "SELECT t.image_url, a.image_url FROM tracks t "
+                "LEFT JOIN albums a ON a.id = t.album_id WHERE t.id = ?",
+                (entity_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            own, album = row
+            if own:
+                return "track", _image_id(own)
+            return ("album", _image_id(album)) if album else None
+        finally:
+            conn.close()
+
     def get_album_by_id(self, album_id: str) -> Optional[Dict]:
         """Get album information by ID"""
         conn = self._get_connection()

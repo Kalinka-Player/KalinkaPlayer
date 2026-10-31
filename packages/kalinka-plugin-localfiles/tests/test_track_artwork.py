@@ -59,6 +59,10 @@ def _flac(path, track, cover, album="Murder Ballads"):
     return path
 
 
+def _path(url):
+    return url.split("?", 1)[0]
+
+
 async def _ids(fi, *paths):
     return [(await fi.process_file(str(path)))["tracks"] for path in paths]
 
@@ -103,8 +107,10 @@ async def test_a_track_with_another_cover_keeps_it_and_the_album_keeps_its_own(
     infos = await module.get_track_info(ids)
     album_id = (await db.get_track_by_id(ids[0]))["album_id"]
     album_cover = f"/resource/album/{album_id}_small.jpg"
-    assert [info.metadata.album.image.small for info in infos] == [album_cover] * 3
-    assert [info.metadata.image.small for info in infos] == [
+    assert [_path(info.metadata.album.image.small) for info in infos] == [
+        album_cover
+    ] * 3
+    assert [_path(info.metadata.image.small) for info in infos] == [
         album_cover,
         album_cover,
         f"/resource/track/{ids[2]}_small.jpg",
@@ -184,8 +190,8 @@ async def test_a_single_keeps_its_cover_in_the_album_field_for_older_clients(
     [info] = await module.get_track_info([single])
 
     own = f"/resource/track/{single}_small.jpg"
-    assert info.metadata.image.small == own
-    assert info.metadata.album.image.small == own
+    assert _path(info.metadata.image.small) == own
+    assert _path(info.metadata.album.image.small) == own
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ asked for; a playlist's from its albums' covers by the same renderer."""
 from __future__ import annotations
 
 import asyncio
+import os
 import pathlib
 import sqlite3
 
@@ -160,6 +161,10 @@ def _resource(folder, key=KEY, size="large"):
     return f"folder/{encode_folder_id(folder)}/{key}_{size}.jpg"
 
 
+def _path(url):
+    return url.split("?", 1)[0]
+
+
 def _mosaics(artwork):
     return sorted(path.name for path in (artwork / "folder").rglob("*.jpg"))
 
@@ -178,7 +183,7 @@ def test_fewer_than_four_covers_show_the_first_alone(artwork):
         [("album", "album_000000000000000b"), ("album", "album_000000000000000c")],
     )
 
-    assert image.large == "/resource/album/album_000000000000000b_large.jpg"
+    assert _path(image.large) == "/resource/album/album_000000000000000b_large.jpg"
 
 
 def test_a_cover_whose_file_is_missing_is_passed_over(artwork):
@@ -186,13 +191,15 @@ def test_a_cover_whose_file_is_missing_is_passed_over(artwork):
         "/music/one", [("album", "album_ffffffffffffffff"), ("track", SINGLE)]
     )
 
-    assert image.small == f"/resource/track/{SINGLE}_small.jpg"
+    assert _path(image.small) == f"/resource/track/{SINGLE}_small.jpg"
 
 
 def test_four_covers_are_named_for_the_folder_and_its_mosaic(artwork):
     image = _covers(artwork).cover_of("/music/many", FIRST_FOUR)
 
-    assert image.thumbnail == "/resource/" + _resource("/music/many", size="thumbnail")
+    assert _path(image.thumbnail) == "/resource/" + _resource(
+        "/music/many", size="thumbnail"
+    )
 
 
 def test_the_mosaic_is_composed_when_first_asked_for(artwork):
@@ -219,6 +226,35 @@ def test_a_composed_mosaic_is_not_composed_again(artwork):
 
     assert asyncio.run(store.path_of(_resource("/music/many", size="small"))) == path
     assert pathlib.Path(path).stat().st_mtime_ns == before
+
+
+def test_a_mosaic_is_composed_again_once_one_of_its_covers_changes(artwork):
+    store = _covers(artwork)
+    link = store.cover_of("/music/many", FIRST_FOUR).large
+    path = asyncio.run(store.path_of(_resource("/music/many")))
+    _cover(artwork, "album", "album_000000000000000b", WHITE)
+    tile = artwork / "album" / "album_000000000000000b_large.jpg"
+    later = pathlib.Path(path).stat().st_mtime_ns + 1_000_000_000
+    os.utime(tile, ns=(later, later))
+
+    assert store.cover_of("/music/many", FIRST_FOUR).large != link
+    path = asyncio.run(store.path_of(_resource("/music/many")))
+    with Image.open(path) as mosaic:
+        assert _close(_quadrants(mosaic)[1], WHITE)
+
+
+def test_a_mosaic_is_not_composed_over_and_over_when_the_clock_lags(artwork):
+    """A Pi without a clock battery can boot to a time before its covers'."""
+    store = _covers(artwork)
+    tile = artwork / "album" / "album_000000000000000c_large.jpg"
+    ahead = tile.stat().st_mtime_ns + 86_400 * 10**9
+    os.utime(tile, ns=(ahead, ahead))
+
+    path = asyncio.run(store.path_of(_resource("/music/many")))
+    composed = pathlib.Path(path).stat().st_mtime_ns
+
+    assert asyncio.run(store.path_of(_resource("/music/many"))) == path
+    assert pathlib.Path(path).stat().st_mtime_ns == composed == ahead
 
 
 @pytest.mark.parametrize(
@@ -283,7 +319,7 @@ def test_a_listed_folder_points_at_its_mosaic_and_the_module_serves_it(module):
         )
     )
     many = next(item for item in library.items if item.name == "many")
-    resource = many.catalog.image.large.removeprefix("/resource/")
+    resource = _path(many.catalog.image.large).removeprefix("/resource/")
 
     assert resource.startswith("folder/")
     assert asyncio.run(module.get_resource_path(resource)) is not None

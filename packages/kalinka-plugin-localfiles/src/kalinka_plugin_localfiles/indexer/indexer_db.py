@@ -547,6 +547,24 @@ class AsyncIndexerDb(ProvenanceDb):
         or that none of its files would decode (``failed``)."""
         return await self._cover_origins("track")
 
+    async def forget_track_cover_origins(self, keep: set) -> None:
+        """Forget which picture a stored track cover showed once nothing
+        points at it, keeping the record of covers that would not decode."""
+        stale = [
+            (track_id,)
+            for track_id, origin in (await self._cover_origins("track")).items()
+            if track_id not in keep and not origin.get("failed")
+        ]
+        if not stale:
+            return
+        async with self._open() as conn:
+            await conn.executemany(
+                "DELETE FROM resolved_origin WHERE entity_type = 'track' "
+                "AND field = 'image_url' AND entity_id = ?",
+                stale,
+            )
+            await conn.commit()
+
     async def record_track_cover_origin(
         self, track_id: str, origin: Dict[str, Any]
     ) -> None:
@@ -570,6 +588,19 @@ class AsyncIndexerDb(ProvenanceDb):
                 "UPDATE tracks SET image_url = ? WHERE id = ?", images
             )
             await conn.commit()
+
+    async def get_image_keys(self) -> Dict[str, set]:
+        """The stored image sets albums and tracks point at, by kind."""
+        keys: Dict[str, set] = {"album": set(), "track": set()}
+        async with self._open() as conn:
+            for kind, table in (("album", "albums"), ("track", "tracks")):
+                cursor = await conn.execute(
+                    f"SELECT image_url FROM {table} WHERE image_url IS NOT NULL"
+                )
+                keys[kind] = {
+                    row[0].removesuffix(".jpg") for row in await cursor.fetchall()
+                }
+        return keys
 
     async def get_album_covers(self) -> Dict[str, Tuple[Optional[str], int]]:
         """(image_url, image_generated) of every album."""
