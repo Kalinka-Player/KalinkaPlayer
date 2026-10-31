@@ -70,6 +70,17 @@ the hotspot. The AP's own address is excluded from this decision. The hotspot
 uses WPA2 with the public setup password `kalinka-setup`; proximity authorizes
 setup, and this shared password is not proof of ownership.
 
+A streamer still offline 10 seconds after boot, or after losing its network,
+clears its radios' soft blocks once, before setup opens. With NetworkManager it
+switches Wi-Fi on there first, since NetworkManager keeps that switch across
+restarts, then in the kernel; the DietPi backend unblocks Wi-Fi itself before
+each scan, join and hotspot. Bluetooth is cleared in the kernel unless Bluetooth
+setup is off. That undoes a block left by `nmcli radio wifi off` or `rfkill
+block`, so setup can use both radios and, with NetworkManager, a saved network
+can reconnect. A streamer online over Ethernet keeps its radios as they are, and
+a radio blocked by a hardware switch is named in the log, since software cannot
+clear it.
+
 Join the hotspot in the phone/computer's Wi-Fi settings. DHCP and local DNS
 trigger the operating system's captive Wi-Fi activation page, which opens
 `http://192.168.4.1/activate` and then the standard Kalinka web app at

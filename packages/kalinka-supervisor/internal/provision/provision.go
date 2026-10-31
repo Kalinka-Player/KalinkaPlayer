@@ -15,8 +15,13 @@ import (
 	"kalinka/supervisor/internal/gatt"
 	"kalinka/supervisor/internal/machine"
 	"kalinka/supervisor/internal/protocol"
+	"kalinka/supervisor/internal/rfkill"
 	"kalinka/supervisor/internal/wifi"
 )
+
+// radioSettle covers a cable's DHCP lease at boot and leaves a saved network
+// most of BootGrace to reconnect before setup opens.
+const radioSettle = 10 * time.Second
 
 // Options selects the radios, networking backend and policy for nearby setup.
 type Options struct {
@@ -37,11 +42,22 @@ type Service struct {
 	recovering atomic.Bool
 	beat       atomic.Int64
 	hotspot    atomic.Pointer[wifi.Hotspot]
+	// Tests swap these for a fake backend, a staged /sys and no settling.
+	open   func() (wifi.Backend, error)
+	root   string
+	settle time.Duration
 }
 
 // New returns a stopped service. port is asked for Core's HTTP port whenever setup reports it.
 func New(o Options, port func() uint16) *Service {
-	return &Service{opts: o, port: port}
+	s := &Service{opts: o, port: port, root: "/", settle: radioSettle}
+	s.open = s.backend
+	return s
+}
+
+// radioSwitch is a backend that owns the host's Wi-Fi switch.
+type radioSwitch interface {
+	EnableRadio(context.Context) error
 }
 
 // Blocked returns why setup cannot run on this host now, or "" when it can.
@@ -106,7 +122,7 @@ func (s *Service) backend() (wifi.Backend, error) {
 // The fallback hotspot follows the offline policy. Run returns nil when ctx ends.
 func (s *Service) Run(ctx context.Context) error {
 	o := s.opts
-	backend, err := s.backend()
+	backend, err := s.open()
 	if err != nil {
 		return err
 	}
@@ -119,6 +135,8 @@ func (s *Service) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Before the hotspot wraps the backend and hides its methods.
+	wifiSwitch, _ := backend.(radioSwitch)
 	if !o.DisableAP && !o.Test {
 		if ap, ok := backend.(wifi.AccessPoint); ok {
 			identity, _ := os.ReadFile("/etc/machine-id")
@@ -152,28 +170,80 @@ func (s *Service) Run(ctx context.Context) error {
 		defer func() { stopBLE(); <-bleDone }()
 		go func() { defer close(bleDone); serveBluetooth(bleCtx, m, o.Adapter) }()
 	}
+	radios := offlineRadios{settle: s.settle, unblock: func() { s.unblockRadios(ctx, wifiSwitch) }}
 	defer s.beat.Store(0)
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
 		s.beat.Store(time.Now().UnixNano())
-		active, err := m.Tick(ctx)
-		if err != nil {
+		if err := s.tick(ctx, m, backend, &radios, time.Now()); err != nil {
 			return err
-		}
-		if h := s.hotspot.Load(); h != nil {
-			state := m.Snapshot()
-			address, addressErr := h.Address(ctx)
-			if addressErr == nil {
-				if err := h.Reconcile(ctx, active && state.State != protocol.Joined && address == ""); err != nil {
-					slog.Warn("Wi-Fi hotspot unavailable")
-				}
-			}
 		}
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Service) tick(ctx context.Context, m *machine.Machine, backend machine.Wifi, radios *offlineRadios, now time.Time) error {
+	active, err := m.Tick(ctx)
+	if err != nil {
+		return err
+	}
+	// Machine reports Online until setup opens, so the address tells when the box went offline.
+	if address, addressErr := backend.Address(ctx); addressErr == nil {
+		radios.observe(address != "", active, now)
+		if h := s.hotspot.Load(); h != nil {
+			if err := h.Reconcile(ctx, active && m.Snapshot().State != protocol.Joined && address == ""); err != nil {
+				slog.Warn("Wi-Fi hotspot unavailable")
+			}
+		}
+	}
+	return nil
+}
+
+// offlineRadios unblocks the radios once each time the box goes offline, after
+// settle and before setup opens. A box online, or with setup already open, keeps
+// its radios as they are: someone may have blocked them on purpose.
+type offlineRadios struct {
+	settle  time.Duration
+	unblock func()
+	since   time.Time
+	done    bool
+}
+
+func (r *offlineRadios) observe(online, setupOpen bool, now time.Time) {
+	if online {
+		r.since, r.done = time.Time{}, false
+		return
+	}
+	if r.done || setupOpen {
+		return
+	}
+	if r.since.IsZero() {
+		r.since = now
+	}
+	if now.Sub(r.since) >= r.settle {
+		r.done = true
+		r.unblock()
+	}
+}
+
+// unblockRadios clears the soft blocks setup needs. Bluetooth's has no owner
+// above the kernel, so it is cleared there, before Enable powers the adapter.
+func (s *Service) unblockRadios(ctx context.Context, wifiSwitch radioSwitch) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if wifiSwitch != nil {
+		if err := wifiSwitch.EnableRadio(ctx); err != nil {
+			slog.Warn("Could not switch Wi-Fi on", "error", err)
+		}
+	}
+	if !s.opts.DisableBLE {
+		if _, _, err := rfkill.Unblock(s.root, "bluetooth"); err != nil {
+			slog.Warn("Could not clear Bluetooth's soft block", "error", err)
 		}
 	}
 }
