@@ -3,6 +3,7 @@ package wifi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/godbus/dbus/v5"
 	"kalinka/supervisor/internal/dbusx"
 	"kalinka/supervisor/internal/protocol"
+	"kalinka/supervisor/internal/rfkill"
 )
 
 const (
@@ -44,10 +46,37 @@ type NetworkManager struct {
 	Run                Runner
 	// RegulatoryConf keeps the joined network's country across restarts; empty leaves the host's country alone.
 	RegulatoryConf string
+	// Root prefixes /sys, so tests can stage the kernel's radio switches.
+	Root string
 }
 
 func NewNetworkManager(iface, state string) *NetworkManager {
-	return &NetworkManager{Interface: iface, Runtime: "/run/kalinka-supervisor", Journal: filepath.Join(state, "networkmanager-rollback.json"), RegulatoryConf: "/etc/modprobe.d/kalinka-regdom.conf", Run: Run, Timeout: 75 * time.Second, Poll: 500 * time.Millisecond, AddressFor: LANAddress}
+	return &NetworkManager{Interface: iface, Runtime: "/run/kalinka-supervisor", Journal: filepath.Join(state, "networkmanager-rollback.json"), RegulatoryConf: "/etc/modprobe.d/kalinka-regdom.conf", Root: "/", Run: Run, Timeout: 75 * time.Second, Poll: 500 * time.Millisecond, AddressFor: LANAddress}
+}
+
+// EnableRadio switches Wi-Fi on in NetworkManager, then clears a kernel soft
+// block set outside it. NetworkManager comes first: it keeps its switch across
+// restarts and would block the radio again.
+func (n *NetworkManager) EnableRadio(ctx context.Context) error {
+	// The bus's own errors, so the log says why NetworkManager refused.
+	body, err := n.Bus.Call(ctx, nmRoot, "org.freedesktop.DBus.Properties.Get", nm, "WirelessEnabled")
+	var enabled dbus.Variant
+	if err == nil {
+		err = dbus.Store(body, &enabled)
+	}
+	if err != nil {
+		return err
+	}
+	if on, _ := enabled.Value().(bool); !on {
+		if _, err = n.Bus.Call(ctx, nmRoot, "org.freedesktop.DBus.Properties.Set", nm, "WirelessEnabled", v(true)); err != nil {
+			return err
+		}
+		slog.Info("Switched Wi-Fi on in NetworkManager")
+	}
+	if _, _, err = rfkill.Unblock(n.Root, "wlan"); err != nil {
+		return fmt.Errorf("clear the kernel's Wi-Fi block: %w", err)
+	}
+	return nil
 }
 
 // applyCountry is best effort: a radio that refuses it still joins, and RegulatoryConf applies it at the next start.
