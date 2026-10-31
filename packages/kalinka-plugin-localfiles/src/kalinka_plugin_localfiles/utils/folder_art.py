@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import List, NamedTuple, Optional, Tuple
+from typing import Callable, List, NamedTuple, Optional, Tuple
 
 from PIL import Image
 
@@ -150,6 +150,11 @@ class _Candidate(NamedTuple):
         )
 
 
+def is_cover_image_name(name: str) -> bool:
+    """Whether a file could be one of a folder's cover images, by its name."""
+    return not is_hidden_file(name) and name.lower().endswith(_EXTENSIONS)
+
+
 def _stem(path: str) -> str:
     return os.path.splitext(os.path.basename(path))[0]
 
@@ -171,7 +176,12 @@ def _holds_audio(storage: FileStorage, directory: str) -> bool:
         return False
 
 
-def _directories(storage: FileStorage, folder: str) -> List[str]:
+def _directories(
+    storage: FileStorage,
+    folder: str,
+    holds_tracks: Optional[Callable[[str], bool]] = None,
+    strict: bool = False,
+) -> List[str]:
     """``folder`` and the subdirectories that hold artwork rather than music.
 
     Scans are often filed under PIC/, Artwork/ or Scans/ rather than beside
@@ -179,18 +189,41 @@ def _directories(storage: FileStorage, folder: str) -> List[str]:
     deep tree of unrelated images out. A subdirectory with music of its own
     is another album's folder rather than this one's scans: a loose track
     sitting among album folders would otherwise be handed a neighbour's
-    sleeve.
+    sleeve. ``holds_tracks`` says the same of a subdirectory the library
+    indexed tracks under at any depth, which a listing one level down cannot.
     """
     try:
         children = sorted(storage.listdir(folder), key=lambda e: e.name)
     except OSError:
+        if strict:
+            raise
         return []
     return [folder] + [
         entry.path
         for entry in children
         if _searchable_directory(storage, entry)
+        and not (holds_tracks and holds_tracks(entry.path))
         and not _holds_audio(storage, entry.path)
     ]
+
+
+def album_directories(
+    storage: FileStorage,
+    folders: List[str],
+    discs: List[str],
+    holds_tracks: Callable[[str], bool],
+) -> List[str]:
+    """Where an album's cover may be, best first: each of its folders and
+    the artwork folders under it, then its disc folders.
+
+    @raise OSError If one of its folders cannot be listed, which says
+        nothing about what it holds.
+    """
+    directories: List[str] = []
+    for folder in folders:
+        directories.extend(_directories(storage, folder, holds_tracks, strict=True))
+    directories.extend(disc for disc in discs if disc not in directories)
+    return directories
 
 
 def _searchable_directory(storage: FileStorage, entry: DirEntry) -> bool:
@@ -213,20 +246,22 @@ def _searchable_directory(storage: FileStorage, entry: DirEntry) -> bool:
     return storage.is_dir(entry.path)
 
 
-def _image_entries(storage: FileStorage, directories: List[str]) -> List[DirEntry]:
+def _image_entries(
+    storage: FileStorage, directories: List[str], strict: bool = False
+) -> List[DirEntry]:
     """Image files, by name alone — no file is opened here."""
     entries: List[DirEntry] = []
     for directory in directories:
         try:
             children = sorted(storage.listdir(directory), key=lambda e: e.name)
         except OSError:
+            if strict:
+                raise
             continue
         entries.extend(
             entry
             for entry in children
-            if not entry.is_dir
-            and not is_hidden_file(entry.name)
-            and entry.name.lower().endswith(_EXTENSIONS)
+            if not entry.is_dir and is_cover_image_name(entry.name)
         )
     return entries
 
@@ -264,7 +299,7 @@ def find_folder_covers(
         too.
     @param directories The directories to search, in the order their images
         are preferred, for a caller that knows better which belong to the
-        album.
+        album. One of those that cannot be listed raises OSError.
     @return Which files could hold the cover and which part of each is the
         front, with the directories and images that were searched for them.
         Covers come by tier — every :data:`EXACT` one, then :data:`NAMED`,
@@ -272,9 +307,10 @@ def find_folder_covers(
     """
     if not folder:
         return FolderCovers([], [], [])
+    strict = directories is not None
     if directories is None:
         directories = _directories(storage, folder)
-    images = _image_entries(storage, directories)
+    images = _image_entries(storage, directories, strict)
     measured = (
         _measure(storage, e.path) for e in images if _worth_measuring(storage, e)
     )

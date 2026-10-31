@@ -921,9 +921,7 @@ class MetadataEnricher:
             # here would close the row for good on a passing outage.
             if deferred:
                 if had_updates:
-                    await self.db_manager.update_album(
-                        album["id"], _album_changes(stored, updated_album)
-                    )
+                    await self._write_album(stored, updated_album)
                 return True
             if all(updated_album.get(f) for f in ALBUM_REQUIRED_FIELDS):
                 updated_album["enriched"] = EnrichmentStatus.ENRICHED  # local-only
@@ -936,9 +934,16 @@ class MetadataEnricher:
 
         # Only update the database once at the end if we had any updates
         if had_updates:
-            await self.db_manager.update_album(
-                album["id"], _album_changes(stored, updated_album)
-            )
+            await self._write_album(stored, updated_album)
+
+    async def _write_album(self, stored: Dict, updated: Dict) -> None:
+        changes = _album_changes(stored, updated)
+        if "enriched" in changes and has_real_cover(stored):
+            current = await self.db_manager.get_album_by_id(stored["id"])
+            if current is not None and not current.get("image_url"):
+                # Its local cover went meanwhile: left open to the online sources.
+                changes.pop("enriched")
+        await self.db_manager.update_album(stored["id"], changes)
 
     async def _process_tracks(self) -> int:
         """Process non-enriched tracks"""

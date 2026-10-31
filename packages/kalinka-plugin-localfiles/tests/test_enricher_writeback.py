@@ -153,3 +153,38 @@ async def test_a_real_cover_stored_during_enrichment_is_not_flagged_generated(
 
     album = await _row(cfg, "albums", "al1")
     assert (album["image_url"], album["image_generated"]) == ("al1.jpg", 0)
+
+
+class _AnswersWhileTheIndexerReopensTheAlbum:
+    """The album's local cover goes while a source answers for it."""
+
+    runs_after_resolution = False
+
+    def __init__(self, db_path):
+        self.db_path = db_path
+
+    def can_enrich_album(self):
+        return True
+
+    async def enrich_album(self, album):
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute(
+                "UPDATE albums SET image_url = NULL, enriched = 0 WHERE id = 'al1'"
+            )
+            await conn.commit()
+        return {"updates": {"mbid": "release-1"}}
+
+
+@pytest.mark.asyncio
+async def test_an_album_reopened_meanwhile_is_not_closed_again(tmp_path):
+    cfg, db, enricher = await _library(tmp_path)
+    await _execute(
+        cfg, "UPDATE albums SET image_url = 'al1.jpg', image_generated = 0 "
+        "WHERE id = 'al1'"
+    )
+    enricher.plugins = [_AnswersWhileTheIndexerReopensTheAlbum(cfg.db_path)]
+
+    await enricher._enrich_album(await _row(cfg, "albums", "al1"))
+
+    album = await _row(cfg, "albums", "al1")
+    assert (album["mbid"], album["enriched"]) == ("release-1", 0)

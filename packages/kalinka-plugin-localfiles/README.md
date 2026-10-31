@@ -24,6 +24,12 @@ type on the parent returns the same filtered listing and total.
 Files whose size or timestamp changes during copying are retried after they
 settle, without requiring another filesystem event or a manual scan.
 
+An album's cover comes from its own folder when an image there is named `cover`, `folder`, `front` or `album` (JPEG, PNG, GIF or WebP, in any case), preferred in that order. It may sit beside the audio, in an artwork folder under it, or in a disc folder. Otherwise the cover is the embedded front cover most of the album's tracks carry, ties going to the earliest track. Failing that it is the most common embedded picture with no type, then a sleeve scan chosen by how it looks.
+
+A folder only counts when the album is the only one with tracks in it. Several albums sharing a directory, loose tracks beside an album, or a library root give their images to none of them. Local art replaces covers found online or generated, which only fill albums with none of their own.
+
+Covers follow changes to the files at the next scan: an image added, replaced or removed, a retag, a track moving to another album. In a watched local folder they follow at once. Embedded covers are chosen by picture type, front cover first; a back cover, booklet page or artist photo is never the front.
+
 Ogg Vorbis tags and `METADATA_BLOCK_PICTURE` covers are read like FLAC's, with
 the older `COVERART` comment as a fallback cover. A chained file, such as a
 radio rip, is timed over all its links as the renderer plays them, each from

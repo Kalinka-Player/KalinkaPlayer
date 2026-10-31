@@ -154,20 +154,16 @@ async def test_backfill_restores_art_after_clustering_demotion(indexer):
     await db.reassign_album(track_id, "unknown_album")
     await db.delete_orphaned_albums_and_artists()
 
-    saved = await fi.backfill_embedded_art([str(music_dir)])
-    assert saved == {"albums": 0, "tracks": 1}
+    assert await fi.backfill_single_art([str(music_dir)]) == 1
     track = await db.get_track_by_id(track_id)
     assert track["image_url"] == f"{track_id}.jpg"
     assert (fi.artwork_path / "track" / f"{track_id}_large.jpg").exists()
 
     # Idempotent: a second pass finds nothing to do.
-    assert await fi.backfill_embedded_art([str(music_dir)]) == {
-        "albums": 0,
-        "tracks": 0,
-    }
+    assert await fi.backfill_single_art([str(music_dir)]) == 0
 
 
-NOTHING = {"albums": 0, "tracks": 0}
+NOTHING = 0
 TAGS = {"title": "Bee Moved", "artist": "Blue Coast"}
 
 
@@ -247,8 +243,8 @@ async def test_a_cover_that_will_not_decode_is_retried_once_its_file_changes(
 
     monkeypatch.setattr(indexer_module, "store_artwork_images", store)
 
-    assert await fi.backfill_embedded_art([str(music_dir)]) == NOTHING
-    assert await fi.backfill_embedded_art([str(music_dir)]) == NOTHING
+    assert await fi.backfill_single_art([str(music_dir)]) == NOTHING
+    assert await fi.backfill_single_art([str(music_dir)]) == NOTHING
     assert stores == [str(path)]
     assert _failed_sources(config, track_id) == {str(path)}
 
@@ -257,7 +253,7 @@ async def test_a_cover_that_will_not_decode_is_retried_once_its_file_changes(
     audio.save()
     _touch(path)
 
-    assert await fi.backfill_embedded_art([str(music_dir)]) == NOTHING
+    assert await fi.backfill_single_art([str(music_dir)]) == NOTHING
     assert stores == [str(path)] * 2
 
 
@@ -275,8 +271,8 @@ async def test_tags_that_will_not_parse_are_not_read_again(indexer, monkeypatch)
 
     monkeypatch.setattr(fi, "_embedded_art", read)
 
-    assert await fi.backfill_embedded_art([str(music_dir)]) == NOTHING
-    assert await fi.backfill_embedded_art([str(music_dir)]) == NOTHING
+    assert await fi.backfill_single_art([str(music_dir)]) == NOTHING
+    assert await fi.backfill_single_art([str(music_dir)]) == NOTHING
     assert reads == [str(path)]
     assert _failed_sources(config, track_id) == {str(path)}
 
@@ -294,14 +290,11 @@ async def test_a_file_that_could_not_be_read_is_tried_again(indexer, monkeypatch
             return _DroppingFile(handle.read())
 
     monkeypatch.setattr(LocalStorage, "open", open_)
-    assert await fi.backfill_embedded_art([str(music_dir)]) == NOTHING
+    assert await fi.backfill_single_art([str(music_dir)]) == NOTHING
     assert _failed_sources(config, track_id) == set()
 
     monkeypatch.undo()
-    assert await fi.backfill_embedded_art([str(music_dir)]) == {
-        "albums": 0,
-        "tracks": 1,
-    }
+    assert await fi.backfill_single_art([str(music_dir)]) == 1
 
 
 @pytest.mark.asyncio
@@ -310,7 +303,7 @@ async def test_a_written_off_cover_is_forgotten_once_the_file_is_read_again(
 ):
     fi, db, music_dir, config = indexer
     path, track_id = await _single_whose_cover_broke(fi, db, music_dir)
-    await fi.backfill_embedded_art([str(music_dir)])
+    await fi.backfill_single_art([str(music_dir)])
     assert _failed_sources(config, track_id) == {str(path)}
 
     _write_flac(path, TAGS, cover=_cover_png((20, 90, 250)))
@@ -326,7 +319,7 @@ async def test_a_written_off_cover_is_forgotten_when_the_track_joins_an_album(
 ):
     fi, db, music_dir, config = indexer
     path, track_id = await _single_whose_cover_broke(fi, db, music_dir)
-    await fi.backfill_embedded_art([str(music_dir)])
+    await fi.backfill_single_art([str(music_dir)])
 
     await db.reassign_album(track_id, "album_minted1")
 
@@ -354,8 +347,7 @@ async def test_backfill_gives_minted_album_its_embedded_cover(indexer):
     await db.delete_orphaned_albums_and_artists()
     assert (await db.get_album_by_id(old_album)) is None
 
-    saved = await fi.backfill_embedded_art([str(music_dir)])
-    assert saved == {"albums": 1, "tracks": 0}
+    assert await fi.resolve_artwork([str(music_dir)]) == 1
     album = await db.get_album_by_id("album_minted1")
     assert album["image_url"] == "album_minted1.jpg"
     assert (fi.artwork_path / "album" / "album_minted1_large.jpg").exists()
@@ -381,7 +373,7 @@ async def test_backfill_skips_artless_and_unavailable(indexer):
     await db.update_track(covered_id, {"image_url": None})
 
     # The track's root is not in the available list -> untouched.
-    assert await fi.backfill_embedded_art([]) == {"albums": 0, "tracks": 0}
+    assert await fi.backfill_single_art([]) == 0
     track = await db.get_track_by_id(covered_id)
     assert track["image_url"] is None
 

@@ -8,6 +8,7 @@ from typing import List, Dict, Optional, Any, Tuple
 
 from ..config_model import LocalFilesConfig
 from ..resolution.provenance_db import ProvenanceDb
+from ..resolution.resolver import OBSERVED
 from ..worker_utils import retry_db_locked
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -17,12 +18,10 @@ logger = logging.getLogger(__name__.split(".")[-1])
 Fingerprint = Tuple[int, int]
 
 #: The cover passes, as ``art_source_failures.kind``.
-FOLDER_COVER = "folder"
 EMBEDDED_COVER = "embedded"
-#: The rest of a written-off folder: the directories searched and the images
-#: that were never candidates. They say when to search it again, but were
-#: not tried, so they must not be passed over as having failed.
-FOLDER_STATE = "folder_state"
+
+#: Where an album's cover decision is kept: the provenance of its image.
+_COVER_FIELD = "image_url"
 
 
 @retry_db_locked
@@ -138,46 +137,6 @@ class AsyncIndexerDb(ProvenanceDb):
     async def update_track(self, track_id: str, data: Dict[str, Any]) -> None:
         """Update track information"""
         await self._update("tracks", track_id, data)
-
-    async def get_albums_missing_art(self) -> List[Tuple[str, str]]:
-        """(album_id, one member file_path) for albums with no real cover —
-        none at all, or a procedural placeholder — whose files embed one
-        (evidence art_phash)."""
-        async with self._open() as conn:
-            cursor = await conn.cursor()
-            await cursor.execute(
-                """
-                SELECT a.id, MIN(t.file_path) FROM albums a
-                JOIN tracks t ON t.album_id = a.id
-                JOIN track_evidence e ON e.track_id = t.id
-                WHERE (a.image_url IS NULL OR a.image_generated = 1)
-                  AND a.id != 'unknown_album'
-                  AND e.art_phash IS NOT NULL
-                GROUP BY a.id
-                """
-            )
-            return [(row[0], row[1]) for row in await cursor.fetchall()]
-
-    async def get_albums_without_cover(self) -> List[Tuple[str, str]]:
-        """(album_id, one member file_path) for albums with no real cover.
-
-        Unlike :meth:`get_albums_missing_art` this asks nothing of the files:
-        a folder's sleeve scan is there whether or not any track embeds a
-        picture, so gating on ``art_phash`` would hide exactly the albums
-        this is for.
-        """
-        async with self._open() as conn:
-            cursor = await conn.cursor()
-            await cursor.execute(
-                """
-                SELECT a.id, MIN(t.file_path) FROM albums a
-                JOIN tracks t ON t.album_id = a.id
-                WHERE (a.image_url IS NULL OR a.image_generated = 1)
-                  AND a.id != 'unknown_album'
-                GROUP BY a.id
-                """
-            )
-            return [(row[0], row[1]) for row in await cursor.fetchall()]
 
     async def get_singles_missing_art(self) -> List[Tuple[str, str]]:
         """(track_id, file_path) for unknown_album tracks whose file embeds a
@@ -592,9 +551,15 @@ class AsyncIndexerDb(ProvenanceDb):
             )
             await conn.commit()
 
-    async def set_album_cover(self, album_id: str) -> None:
+    async def set_album_cover(
+        self, album_id: str, origin: Optional[Dict[str, Any]] = None
+    ) -> None:
         """Point an album at the cover just stored for it, and forget every
-        source that failed to give it one."""
+        source that failed to give it one.
+
+        @param origin The decision the cover was stored for, kept as the
+            image's provenance; see :meth:`get_cover_origins`.
+        """
         async with self._open() as conn:
             await conn.execute(
                 "UPDATE albums SET image_url = ?, image_generated = 0 WHERE id = ?",
@@ -604,6 +569,75 @@ class AsyncIndexerDb(ProvenanceDb):
                 "DELETE FROM art_source_failures WHERE entity_id = ?", (album_id,)
             )
             await conn.commit()
+        if origin is not None:
+            await self.record_cover_origin(album_id, origin)
+
+    async def clear_local_album_cover(
+        self, album_id: str, origin: Dict[str, Any]
+    ) -> None:
+        """Take away a cover local art gave an album that no longer has any,
+        and open the album to the online sources again."""
+        async with self._open() as conn:
+            await conn.execute(
+                "UPDATE albums SET image_url = NULL, image_generated = 0, "
+                "enriched = 0 WHERE id = ?",
+                (album_id,),
+            )
+            await conn.commit()
+        await self.record_cover_origin(album_id, origin)
+
+    async def record_cover_origin(
+        self, album_id: str, origin: Dict[str, Any]
+    ) -> None:
+        await self.record_resolved_origin(
+            "album",
+            album_id,
+            _COVER_FIELD,
+            origin.get("source", "none"),
+            OBSERVED,
+            json.dumps(origin),
+        )
+
+    async def get_cover_origins(self) -> Dict[str, Dict[str, Any]]:
+        """Each album's cover decision: the cover it should have
+        (``desired``), the ``source`` and file it got, and what its folders
+        held (``folder``)."""
+        async with self._open() as conn:
+            cursor = await conn.execute(
+                "SELECT entity_id, evidence_ref FROM resolved_origin "
+                "WHERE entity_type = 'album' AND field = ?",
+                (_COVER_FIELD,),
+            )
+            rows = await cursor.fetchall()
+        origins: Dict[str, Dict[str, Any]] = {}
+        for album_id, evidence in rows:
+            try:
+                origins[album_id] = json.loads(evidence)
+            except (TypeError, ValueError):
+                continue
+        return origins
+
+    async def get_album_covers(self) -> Dict[str, Tuple[Optional[str], int]]:
+        """(image_url, image_generated) of every album."""
+        async with self._open() as conn:
+            cursor = await conn.execute(
+                "SELECT id, image_url, COALESCE(image_generated, 0) FROM albums"
+            )
+            return {row[0]: (row[1], row[2]) for row in await cursor.fetchall()}
+
+    async def get_artwork_inputs(self) -> List[Dict[str, Any]]:
+        """Every track with what its embedded cover is, for the cover pass."""
+        async with self._open() as conn:
+            conn.row_factory = aiosqlite.Row
+            cursor = await conn.execute(
+                """
+                SELECT t.id, t.album_id, t.file_path, t.disc_number,
+                       t.track_number, e.art_phash, e.art_type
+                FROM tracks t
+                LEFT JOIN track_evidence e ON e.track_id = t.id
+                """
+            )
+            return [dict(row) for row in await cursor.fetchall()]
 
     async def set_track_cover(self, track_id: str) -> None:
         """As :meth:`set_album_cover`, for a single's own cover."""
