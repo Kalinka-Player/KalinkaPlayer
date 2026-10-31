@@ -23,11 +23,21 @@ from kalinka_plugin_localfiles.enricher.enricher_plugin import (
 
 
 class _FakeDb:
-    """Only what the plugin asks of the database: a release's group, if known."""
+    """Only what the plugin asks of the database: a release's group, if
+    known, and the album as it stands when its cover is written."""
 
     def __init__(self, rg_id=None):
         self.rg_id = rg_id
         self.asked_for: list[str] = []
+        self.albums: dict[str, dict] = {}
+
+    async def get_album_by_id(self, album_id):
+        return self.albums.get(album_id, {"id": album_id})
+
+    async def set_album_image(self, album_id, generated):
+        self.albums[album_id] = {
+            "id": album_id, "image_url": album_id, "image_generated": int(generated)
+        }
 
     async def get_release_group_for_release(self, release_id):
         self.asked_for.append(release_id)

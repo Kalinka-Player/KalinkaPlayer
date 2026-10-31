@@ -11,6 +11,7 @@ from .enricher_plugin import (
     TransientEnrichmentError,
     has_real_cover,
     raise_if_service_unavailable,
+    write_album_cover,
 )
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -109,8 +110,13 @@ class CoverArtArchivePlugin(EnricherPlugin):
             if response is None:
                 return None
 
-        if not save_artwork_images(
-            self.artwork_path, response.content, album["id"], "album"
+        if not await write_album_cover(
+            self.db_manager,
+            album["id"],
+            lambda current: not has_real_cover(current),
+            lambda: save_artwork_images(
+                self.artwork_path, response.content, album["id"], "album"
+            ),
         ):
             return None
         logger.info(

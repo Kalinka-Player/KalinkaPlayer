@@ -1,21 +1,16 @@
-import asyncio
 import logging
-import os
 from pathlib import Path
 from typing import Dict, Optional
 
-from PIL import Image
-
 from ..config_model import LocalFilesConfig
-from .enricher_plugin import EnricherPlugin
+from ..utils.artwork_store import ArtworkSave, store_decoded_image
+from .enricher_plugin import EnricherPlugin, write_album_cover
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
 # Rendered once at this size, then downscaled — matches the `_large`
 # artwork size the other art-fetching plugins (Deezer) produce.
 _LARGE_SIZE = 600
-_SMALL_SIZE = 230
-_THUMBNAIL_SIZE = 50
 
 
 class ProceduralArtworkPlugin(EnricherPlugin):
@@ -96,36 +91,27 @@ class ProceduralArtworkPlugin(EnricherPlugin):
                 track_titles=tuple(track_titles),
             )
             image = await self._generator.generate(album_input, size=_LARGE_SIZE)
-            await asyncio.to_thread(self._save_images, image, album["id"])
+            saved = await write_album_cover(
+                self.db_manager,
+                album["id"],
+                lambda current: not current.get("image_url"),
+                lambda: self._save_images(image, album["id"]),
+                generated=True,
+            )
         except Exception as e:
             logger.error(
                 f"Error generating artwork for album {album.get('title', album['id'])}: {e}"
             )
             return None
+        if not saved:
+            return None
 
         logger.debug(f"Generated procedural artwork for album: {title}")
         return {"updates": {"image_url": album["id"], "image_generated": 1}}
 
-    def _save_images(self, image, album_id: str) -> None:
+    def _save_images(self, image, album_id: str) -> bool:
         """Save the rendered cover in the three standard sizes."""
-        dir_path = os.path.join(self.artwork_path, "album")
-        os.makedirs(dir_path, exist_ok=True)
-
         if image.mode != "RGB":
             image = image.convert("RGB")
-
-        image.save(
-            os.path.join(dir_path, f"{album_id}_large.jpg"), "JPEG", quality=90
-        )
-
-        small = image.copy()
-        small.thumbnail((_SMALL_SIZE, _SMALL_SIZE), Image.Resampling.LANCZOS)
-        small.save(
-            os.path.join(dir_path, f"{album_id}_small.jpg"), "JPEG", quality=90
-        )
-
-        thumbnail = image.copy()
-        thumbnail.thumbnail((_THUMBNAIL_SIZE, _THUMBNAIL_SIZE), Image.Resampling.LANCZOS)
-        thumbnail.save(
-            os.path.join(dir_path, f"{album_id}_thumbnail.jpg"), "JPEG", quality=90
-        )
+        outcome = store_decoded_image(image, self.artwork_path, album_id, "album")
+        return outcome is ArtworkSave.SAVED
