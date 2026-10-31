@@ -228,6 +228,12 @@ func TestRadiosLeftAloneWhileSetupIsOpenFromTheLAN(t *testing.T) {
 	}
 }
 
+// Only a simulated run has no Wi-Fi switch.
+var (
+	_ radioSwitch = (*wifi.NetworkManager)(nil)
+	_ radioSwitch = (*wifi.DietPi)(nil)
+)
+
 type countingSwitch struct{ calls int }
 
 func (c *countingSwitch) EnableRadio(context.Context) error { c.calls++; return nil }
@@ -240,7 +246,7 @@ func TestUnblockRadios(t *testing.T) {
 	}{
 		{"NetworkManager", false, &countingSwitch{}},
 		{"Bluetooth setup off", true, &countingSwitch{}},
-		{"no Wi-Fi switch, as on DietPi", false, nil},
+		{"no Wi-Fi switch, as in a simulated run", false, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := New(Options{DisableBLE: tc.disableBLE}, nil)

@@ -5,6 +5,7 @@ import (
 	"crypto/pbkdf2"
 	"crypto/sha1"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"kalinka/supervisor/internal/protocol"
+	"kalinka/supervisor/internal/rfkill"
 )
 
 // DietPi preserves the native ifupdown and wpa_supplicant configuration paths.
@@ -46,6 +48,28 @@ func NewDietPi(iface, root, state, runtime string) (*DietPi, error) {
 }
 func (d *DietPi) Address(ctx context.Context) (string, error) { return d.AddressFor(ctx, "") }
 func (d *DietPi) Close() error                                { return nil }
+
+// EnableRadio clears Wi-Fi's soft block. An ifup that ran into the block may
+// have given up on DHCP, so an interface the block left without an address is
+// brought up again.
+func (d *DietPi) EnableRadio(ctx context.Context) error {
+	cleared, _, err := rfkill.Unblock(d.Root, "wlan")
+	if err != nil {
+		return fmt.Errorf("clear the kernel's Wi-Fi block: %w", err)
+	}
+	if len(cleared) == 0 {
+		return nil
+	}
+	address, err := d.AddressFor(ctx, d.Interface)
+	if err != nil || address != "" {
+		return err
+	}
+	unit := "kalinka-wifi@" + d.Interface + ".service"
+	if _, err = d.Run(ctx, 15*time.Second, "systemctl", "--no-block", "restart", unit); err != nil {
+		return fmt.Errorf("restart %s: %w", unit, err)
+	}
+	return nil
+}
 func (d *DietPi) Scan(ctx context.Context, country string) ([]protocol.Network, error) {
 	if country != "" && !protocol.CountryPattern.MatchString(country) {
 		return nil, protocol.Invalid
