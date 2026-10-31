@@ -484,6 +484,7 @@ class HolderSession:
             message=state.error.message if state.error else None,
             audio_info=to_audio_info(state.stream_info),
             mime_type=self._source.format if self._source else None,
+            audio_codec=self._source.audio_codec if self._source else None,
             stream_url=self._player.stream_uri(self._stream_id),
             timestamp_ns=time.monotonic_ns(),
         )

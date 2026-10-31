@@ -141,6 +141,7 @@ class PlayQueueImpl(PlayQueueController):
         self._track_player = self._new_player()
         self.current_track_id = 0
         self.current_format = None
+        self.current_audio_codec = None
         self.track_list: list[Track] = []
 
         # Playback mode
@@ -436,6 +437,7 @@ class PlayQueueImpl(PlayQueueController):
         track_source, self.current_stream_id = entry
         self.current_track_id = index
         self.current_format = track_source.format
+        self.current_audio_codec = track_source.audio_codec
         self._request_more_tracks()
 
     def stream_duration_ms(self, stream_id: Optional[int]) -> Optional[int]:
@@ -870,6 +872,7 @@ class PlayQueueImpl(PlayQueueController):
             message=stream_state.error.message if stream_state.error else None,
             audio_info=to_audio_info(stream_state.stream_info),
             mime_type=self.current_format,
+            audio_codec=self.current_audio_codec,
             stream_url=self._track_player.stream_uri(self.current_stream_id),
             timestamp_ns=time.monotonic_ns(),
         )
@@ -1029,6 +1032,8 @@ class PlayQueueImpl(PlayQueueController):
         # makes the switcher emit FINISHED, and the FINISHED handler keys off
         # current_stream_id to tell a teardown from a real track-completion.
         self.current_stream_id = None
+        self.current_format = None
+        self.current_audio_codec = None
         self._track_player.clear_all()
         self.prepared_tracks.clear()
         self._unavailable_indices.clear()

@@ -315,6 +315,88 @@ async def test_the_mime_type_reaches_the_renderer(queue, renderer, direct):
     assert enqueue.enqueue_source.source.mime_type == "audio/flac"
 
 
+@pytest.mark.parametrize("direct_mode", [False, True], ids=["queue", "direct"])
+async def test_codec_display_metadata_does_not_change_renderer_routing(
+    queue, renderer, direct, emitter, sources, direct_mode
+):
+    listener = Listener()
+    hold = await direct.acquire("TIDAL", listener) if direct_mode else None
+    # Switching to a legacy source must clear the previous stream's codec.
+    for index, (source_format, codec) in enumerate(
+        [
+            ("application/dash+xml", "flac"),
+            ("application/dash+xml", "aac"),
+            ("audio/mp4", "flac"),
+            ("audio/mp4", "aac"),
+            ("audio/mp4", "alac"),
+            ("audio/mp4", None),
+            ("audio/flac", None),
+            ("audio/mpeg", None),
+        ]
+    ):
+        track = example_track(str(index))
+        source = TrackSource(
+            source=DirectUrl(url=f"https://cdn.example/{index}"),
+            format=source_format,
+            audio_codec=codec,
+        )
+        if hold is not None:
+            await hold.play(source, track)
+        else:
+
+            async def retrieve(value=source):
+                return value
+
+            sources.serve(track.id, retrieve)
+            await queue.replace([track])
+            await queue.play()
+        await asyncio.sleep(SETTLE_S)
+
+        snapshot = await queue.get_playback_state()
+        event = _states(emitter)[-1]
+        for state in (snapshot, event):
+            assert state.current_track == track
+            assert state.mime_type == source_format
+            assert state.audio_codec == codec
+            assert state.model_dump()["audio_codec"] == codec
+        if hold is not None:
+            assert listener.states[-1].audio_codec == codec
+        enqueue = [
+            c for c in renderer.commands if c.WhichOneof("op") == "enqueue_source"
+        ][-1]
+        assert enqueue.enqueue_source.source.mime_type == source_format
+
+
+@pytest.mark.parametrize("replacement", [False, True], ids=["clear", "replace"])
+async def test_a_cleared_queue_does_not_report_the_previous_audio_codec(
+    queue, renderer, emitter, sources, replacement
+):
+    track = example_track("1")
+
+    async def retrieve():
+        return TrackSource(
+            source=DirectUrl(url="https://cdn.example/1"),
+            format="audio/mp4",
+            audio_codec="alac",
+        )
+
+    sources.serve(track.id, retrieve)
+    await queue.replace([track])
+    await queue.play()
+    await asyncio.sleep(SETTLE_S)
+    assert (await queue.get_playback_state()).audio_codec == "alac"
+
+    if replacement:
+        await queue.replace([example_track("2")])
+    else:
+        await queue.clear()
+    await asyncio.sleep(SETTLE_S)
+
+    for state in (await queue.get_playback_state(), _states(emitter)[-1]):
+        assert state.audio_codec is None
+        assert state.mime_type is None
+
+
 async def test_playing_from_the_queue_takes_the_output_back(
     queue, renderer, direct, emitter, arbiter
 ):

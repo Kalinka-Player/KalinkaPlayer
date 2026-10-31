@@ -3,7 +3,6 @@ tags and cover, how a fragmented file is timed, how one is served, and the
 other codecs an MP4 file can carry, which stay out."""
 
 import io
-import json
 import logging
 import mimetypes
 import struct
@@ -419,17 +418,77 @@ def test_another_tracks_fragments_are_not_counted(tmp_path):
 
 @pytest.mark.parametrize(
     "name,entry,codec",
-    [("03 Ladder.m4a", aac, "aac"), ("03 Ladder.alac", alac, "alac")],
-    ids=["m4a", "alac"],
+    [
+        ("03 Ladder.m4a", aac, "aac"),
+        ("03 Ladder.m4a", flac, "flac"),
+        ("03 Ladder.m4a", alac, "alac"),
+        ("03 Ladder.alac", alac, "alac"),
+    ],
+    ids=["aac-in-m4a", "flac-in-m4a", "alac-in-m4a", "alac-extension"],
 )
+@pytest.mark.parametrize("fragmented", [False, True], ids=["progressive", "fragmented"])
 @pytest.mark.asyncio
-async def test_an_indexed_mp4_track_is_served_as_audio_mp4(
-    tmp_path, monkeypatch, name, entry, codec
+async def test_an_indexed_mp4_track_preserves_its_container_and_audio_codec(
+    tmp_path, monkeypatch, name, entry, codec, fragmented
 ):
     monkeypatch.setattr(mimetypes, "guess_type", lambda *_a, **_k: (None, None))
+    data = (
+        mp4(
+            track(entry(), ticks=0, stts=[]),
+            mvex=box(b"mvex", trex(1024)),
+            fragments=fragment(run_of_count(87)),
+        )
+        if fragmented
+        else mp4(track(entry()))
+    )
+    module, track_id, path = await _indexed_mp4(tmp_path, name, data)
+
+    info = await module.get_content_info(track_id)
+    [served] = await module.get_track_info([track_id])
+
+    assert info.mime_type == "audio/mp4"
+    assert info.local_path == str(path)
+    for source in (
+        await served.source_retriever(),
+        await module.get_track_source(track_id),
+    ):
+        assert source.format == "audio/mp4"
+        assert source.audio_codec == codec
+    assert served.metadata.replaygain_gain == -6.5
+    assert served.metadata.replaygain_album_gain == -4.25
+    assert served.metadata.replaygain_album_peak == 0.999
+
+
+@pytest.mark.parametrize("stream_info", [None, "{}", '{"codec": null}'])
+@pytest.mark.asyncio
+async def test_an_mp4_without_codec_evidence_keeps_playing_without_guessing(
+    tmp_path, stream_info
+):
+    module, track_id, _ = await _indexed_mp4(
+        tmp_path, "03 Ladder.m4a", mp4(track(alac()))
+    )
+    async with aiosqlite.connect(module.db_manager.db_path) as conn:
+        await conn.execute("DELETE FROM track_evidence WHERE track_id=?", (track_id,))
+        if stream_info is not None:
+            await conn.execute(
+                "INSERT INTO track_evidence (track_id, stream_info) VALUES (?, ?)",
+                (track_id, stream_info),
+            )
+        await conn.commit()
+
+    [served] = await module.get_track_info([track_id])
+    for source in (
+        await served.source_retriever(),
+        await module.get_track_source(track_id),
+    ):
+        assert source.format == "audio/mp4"
+        assert source.audio_codec is None
+
+
+async def _indexed_mp4(tmp_path, name, data):
     music = tmp_path / "music"
     music.mkdir()
-    path = tagged(music / name, mp4(track(entry())))
+    path = tagged(music / name, data)
     config = LocalFilesConfig(
         music_folders=[str(music)],
         db_path=str(tmp_path / "localfiles.db"),
@@ -441,24 +500,7 @@ async def test_an_indexed_mp4_track_is_served_as_audio_mp4(
         await FileIndexer(config, AsyncIndexerDb(config)).process_file(str(path))
     )["tracks"]
     module = LocalFilesInputModule(config, LocalFilesInputModuleDb(config))
-
-    info = await module.get_content_info(track_id)
-    [served] = await module.get_track_info([track_id])
-
-    assert info.mime_type == "audio/mp4"
-    assert info.local_path == str(path)
-    assert (await served.source_retriever()).format == "audio/mp4"
-    assert served.metadata.replaygain_gain == -6.5
-    assert served.metadata.replaygain_album_gain == -4.25
-    assert served.metadata.replaygain_album_peak == 0.999
-    async with aiosqlite.connect(config.db_path) as conn:
-        [stream_info] = await (
-            await conn.execute(
-                "SELECT stream_info FROM track_evidence WHERE track_id=?",
-                (track_id,),
-            )
-        ).fetchone()
-    assert json.loads(stream_info)["codec"] == codec
+    return module, track_id, path
 
 
 @pytest.mark.parametrize(

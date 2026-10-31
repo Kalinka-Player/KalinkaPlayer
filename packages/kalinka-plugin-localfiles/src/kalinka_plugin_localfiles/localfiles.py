@@ -1006,6 +1006,7 @@ class LocalFilesInputModule(InputModule):
         return TrackSource(
             source=ModuleAsset(module=self.module_name(), asset_id=track["id"]),
             format=track["format"],
+            audio_codec=track.get("audio_codec"),
         )
 
     def _require_readable(self, track_path: str) -> None:

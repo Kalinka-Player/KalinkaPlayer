@@ -82,7 +82,11 @@ class TrackSource(BaseModel):
 
     Attributes:
         source (ModuleAsset | DirectUrl): Server-proxied asset, or an absolute URL
-        format (str): The audio format/codec (e.g., "mp3", "flac", "aac")
+        format (str): Source format used to select the renderer decoder (e.g.,
+            "flac", "audio/mp4", "application/dash+xml").
+        audio_codec (Optional[str]): SDK 3.19. Encoded audio codec for display
+            (e.g., "flac", "aac"), independent of the container or transport.
+            Omit when unknown; never change format just to alter a label.
         sequential (bool): SDK 3.5. The resource plays from its first byte
             only and cannot be reopened at another offset: after a seek or a
             lost renderer the plugin makes a new one. Plays only through
@@ -94,6 +98,7 @@ class TrackSource(BaseModel):
 
     source: ModuleAsset | DirectUrl
     format: str
+    audio_codec: Optional[str] = None
     sequential: bool = False
     timeline_offset_ms: NonNegativeInt = 0
 
