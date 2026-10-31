@@ -1,5 +1,3 @@
-"""Packaged icons are available without enabling or calling a plugin."""
-
 from pathlib import Path
 from typing import ClassVar
 

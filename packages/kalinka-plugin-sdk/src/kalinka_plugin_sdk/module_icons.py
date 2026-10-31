@@ -1,5 +1,3 @@
-"""Artwork a plugin supplies for its attribution and other source displays."""
-
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -9,14 +7,13 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class ModuleIcon(BaseModel):
-    """@brief SDK 3.18: a static SVG or PNG served at a public image URL.
+    """@brief SVG or PNG artwork accessible without credentials.
 
     @param url An absolute HTTP(S) URL or a path rooted at the Kalinka server.
-    @param mime_type The image format; clients must not infer it from the URL.
-    @param aspect_ratio Width divided by height, reserving layout before loading.
-    @param min_height Minimum displayed height in logical pixels, for brand rules.
+    @param aspect_ratio Width divided by height.
+    @param min_height Minimum displayed height in logical pixels.
     @note SVGs must be self-contained, without scripts, external resources or
-        embedded raster images. Clients preserve the artwork's aspect ratio.
+        embedded raster images.
     """
 
     url: str
@@ -43,15 +40,12 @@ class ModuleIcon(BaseModel):
 
 
 class ModuleIcons(BaseModel):
-    """@brief SDK 3.18: both sizes of a plugin's optional source artwork.
+    """@brief Attribution and source icons, with a shared tinting policy.
 
     @param small Artwork for compact attribution.
-    @param standard Artwork for other source displays, scaled to fit.
-    @param monochrome Whether clients may render the alpha mask in black on
-        light backgrounds and white on dark backgrounds, never a source tint.
-    @note Both variants are required. They may reference the same SVG. False
-        monochrome preserves the supplied colors. Clients that cannot load or
-        draw an image fall back to the module's Material icon or initial.
+    @param standard Artwork for other source displays.
+    @param monochrome Allow black/white tinting; otherwise preserve original colors.
+    @note Both variants are required but may reference the same SVG.
     """
 
     small: ModuleIcon
@@ -61,14 +55,14 @@ class ModuleIcons(BaseModel):
 
 @dataclass(frozen=True)
 class ModuleIconFiles:
-    """@brief SDK 3.18: packaged artwork the server serves even while disabled.
+    """@brief Packaged icons served even when the plugin is disabled.
 
     @param small Local SVG/PNG for compact attribution.
     @param standard Local SVG/PNG for other source displays.
-    @param monochrome Whether the artwork permits black/white rendering.
+    @param monochrome Allow black/white tinting; otherwise preserve original colors.
     @param min_height Minimum displayed height in logical pixels for both variants.
-    @note Files are immutable for the lifetime of the server process. Ship
-        them as package data; each must be at most 256 KiB.
+    @note Include files as package data, at most 256 KiB each. Changes require
+        a server restart.
     """
 
     small: Path
