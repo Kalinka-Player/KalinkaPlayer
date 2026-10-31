@@ -86,16 +86,18 @@ func New(ctx context.Context, m *machine.Machine, adapter string) (*Bluez, error
 	}
 	conn, err := dbus.ConnectSystemBus()
 	if err != nil {
-		return nil, protocol.Unavailable
+		return nil, fmt.Errorf("%w: system bus: %w", protocol.Unavailable, err)
 	}
 	b := &Bluez{conn: conn, machine: m, adapter: dbus.ObjectPath("/org/bluez/" + adapter), objects: map[dbus.ObjectPath]*object{}, signals: make(chan *dbus.Signal, 32)}
 	fail := func() (*Bluez, error) { _ = conn.Close(); return nil, protocol.Unavailable }
-	if conn.BusObject().CallWithContext(ctx, "org.freedesktop.DBus.GetNameOwner", 0, "org.bluez").Store(&b.owner) != nil {
-		return fail()
+	if err = conn.BusObject().CallWithContext(ctx, "org.freedesktop.DBus.GetNameOwner", 0, "org.bluez").Store(&b.owner); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("%w: find org.bluez: %w", protocol.Unavailable, err)
 	}
 	address, err := b.get(ctx, "Address")
 	if err != nil {
-		return fail()
+		_ = conn.Close()
+		return nil, err
 	}
 	s, ok := address.Value().(string)
 	if !ok {
@@ -171,8 +173,8 @@ func (b *Bluez) export(path dbus.ObjectPath, iface string, impl any, get func() 
 func (b *Bluez) call(parent context.Context, path dbus.ObjectPath, method string, args ...any) error {
 	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
-	if b.conn.Object("org.bluez", path).CallWithContext(ctx, method, 0, args...).Err != nil {
-		return protocol.Unavailable
+	if err := b.conn.Object("org.bluez", path).CallWithContext(ctx, method, 0, args...).Err; err != nil {
+		return fmt.Errorf("%w: %w", protocol.Unavailable, err)
 	}
 	return nil
 }
@@ -180,13 +182,16 @@ func (b *Bluez) get(parent context.Context, key string) (dbus.Variant, error) {
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 	var v dbus.Variant
-	if b.conn.Object("org.bluez", b.adapter).CallWithContext(ctx, properties+".Get", 0, "org.bluez.Adapter1", key).Store(&v) != nil {
-		return v, protocol.Unavailable
+	if err := b.conn.Object("org.bluez", b.adapter).CallWithContext(ctx, properties+".Get", 0, "org.bluez.Adapter1", key).Store(&v); err != nil {
+		return v, fmt.Errorf("%w: get %s: %w", protocol.Unavailable, key, err)
 	}
 	return v, nil
 }
 func (b *Bluez) set(ctx context.Context, key string, value any) error {
-	return b.call(ctx, b.adapter, properties+".Set", "org.bluez.Adapter1", key, dbus.MakeVariant(value))
+	if err := b.call(ctx, b.adapter, properties+".Set", "org.bluez.Adapter1", key, dbus.MakeVariant(value)); err != nil {
+		return fmt.Errorf("set %s: %w", key, err)
+	}
+	return nil
 }
 func (b *Bluez) Enable(ctx context.Context) error {
 	b.mu.Lock()
