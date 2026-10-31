@@ -63,6 +63,7 @@ from .utils.cover_collage import compose_cover
 from .utils.folder_collage import FOLDER_ART, FolderCovers
 from .utils.id_generator import generate_playlist_id
 from .utils.mount_status import covering_mount, is_network_fs, share_protocol
+from .utils.years import plausible_year
 from .storage import (
     SMB_SCHEME,
     FileStat,
@@ -1579,7 +1580,7 @@ class LocalFilesInputModule(InputModule):
         album = Album(
             id=album_id(track["album_id"]),
             title=track["album_title"],
-            year=track.get("album_year"),
+            year=plausible_year(track.get("album_year")),
             artist=Artist(
                 id=artist_id(track["artist_id"]),
                 name=artist_display_name(track["artist_name"]),
@@ -1653,7 +1654,7 @@ class LocalFilesInputModule(InputModule):
             title=album["title"],
             duration=album.get("duration", 0),
             track_count=album.get("track_count", 0),
-            year=album.get("year"),
+            year=plausible_year(album.get("year")),
             artist=Artist(
                 id=artist_id(album["artist_id"]),
                 name=artist_display_name(album["artist_name"]),
