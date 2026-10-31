@@ -27,6 +27,7 @@ type DietPi struct {
 	Poll, JoinTimeout                                           time.Duration
 	StartAPProcess                                              func(context.Context, string, ...string) (APProcess, error)
 	apProcesses                                                 []APProcess
+	radioRestartNeeded                                          bool
 }
 
 func NewDietPi(iface, root, state, runtime string) (*DietPi, error) {
@@ -49,32 +50,39 @@ func NewDietPi(iface, root, state, runtime string) (*DietPi, error) {
 func (d *DietPi) Address(ctx context.Context) (string, error) { return d.AddressFor(ctx, "") }
 func (d *DietPi) Close() error                                { return nil }
 
-// EnableRadio clears Wi-Fi's soft block. An ifup that ran into the block may
-// have given up on DHCP, so an interface the block left without an address is
-// brought up again.
+// EnableRadio clears only this interface's block. After an unblock, restart
+// its ifupdown service: DHCP may have failed while the radio was disabled.
 func (d *DietPi) EnableRadio(ctx context.Context) error {
-	cleared, _, err := rfkill.Unblock(d.Root, "wlan")
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	name, err := rfkill.WiFiName(d.Root, d.Interface)
+	if err != nil {
+		return err
+	}
+	cleared, _, err := rfkill.Unblock(d.Root, "wlan", name)
 	if err != nil {
 		return fmt.Errorf("clear the kernel's Wi-Fi block: %w", err)
 	}
-	if len(cleared) == 0 {
+	if len(cleared) > 0 {
+		d.radioRestartNeeded = true
+	}
+	if !d.radioRestartNeeded {
 		return nil
 	}
-	address, err := d.AddressFor(ctx, d.Interface)
-	if err != nil || address != "" {
-		return err
-	}
 	unit := "kalinka-wifi@" + d.Interface + ".service"
-	if _, err = d.Run(ctx, 15*time.Second, "systemctl", "--no-block", "restart", unit); err != nil {
+	if _, err := d.Run(ctx, 15*time.Second, "systemctl", "--no-block", "restart", unit); err != nil {
 		return fmt.Errorf("restart %s: %w", unit, err)
 	}
+	d.radioRestartNeeded = false
 	return nil
 }
+
 func (d *DietPi) Scan(ctx context.Context, country string) ([]protocol.Network, error) {
 	if country != "" && !protocol.CountryPattern.MatchString(country) {
 		return nil, protocol.Invalid
 	}
-	commands := [][]string{{"rfkill", "unblock", "wlan"}, {"ip", "link", "set", "dev", d.Interface, "up"}}
+	commands := [][]string{{"ip", "link", "set", "dev", d.Interface, "up"}}
 	if country != "" {
 		commands = append([][]string{{"iw", "reg", "set", country}}, commands...)
 	}
@@ -183,9 +191,6 @@ func (d *DietPi) Join(parent context.Context, c protocol.Command, progress func(
 	}()
 	run := func(name string, args ...string) error { _, e := d.Run(ctx, 15*time.Second, name, args...); return e }
 	if err = run("iw", "reg", "set", c.Country); err != nil {
-		return "", err
-	}
-	if err = run("rfkill", "unblock", "wlan"); err != nil {
 		return "", err
 	}
 	contents, err := readOptional(d.Conf)

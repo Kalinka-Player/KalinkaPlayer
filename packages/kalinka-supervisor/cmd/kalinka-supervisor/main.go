@@ -55,6 +55,7 @@ func parse(args []string) (options, error) {
 	f.StringVar(&o.config, "server-config", coreconf.DefaultPath, "Core configuration file")
 	f.StringVar(&o.State, "state-dir", "", "Private persistent supervisor state directory")
 	f.StringVar(&o.Runtime, "runtime-dir", "", "Private runtime directory")
+	f.StringVar(&o.RadioRecovery, "radio-recovery", os.Getenv("KALINKA_RADIO_RECOVERY"), "Automatic radio recovery during offline setup: off (default), first-run, always")
 	f.BoolVar(&o.DisableAP, "no-ap", false, "Disable the temporary setup hotspot")
 	f.BoolVar(&o.KeepCountry, "keep-country", false, "Leave the host's Wi-Fi country as it is instead of applying the one setup chose (nm backend)")
 	f.BoolVar(&o.DisableBLE, "no-ble", false, "Disable Bluetooth setup")
@@ -73,6 +74,12 @@ func parse(args []string) (options, error) {
 	}
 	if o.version {
 		return o, nil
+	}
+	if o.RadioRecovery == "" {
+		o.RadioRecovery = "off"
+	}
+	if o.RadioRecovery != "off" && o.RadioRecovery != "first-run" && o.RadioRecovery != "always" {
+		return o, protocol.Invalid
 	}
 	if o.Backend != "auto" && o.Backend != "dietpi" && o.Backend != "nm" {
 		return o, protocol.Invalid

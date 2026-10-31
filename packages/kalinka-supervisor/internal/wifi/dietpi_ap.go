@@ -99,7 +99,6 @@ func (d *DietPi) StartAP(ctx context.Context, name string) (result error) {
 		return err
 	}
 	for _, args := range [][]string{
-		{"rfkill", "unblock", "wlan"},
 		{"ip", "link", "set", "dev", d.Interface, "up"},
 		{"ip", "address", "replace", APAddress + "/24", "dev", d.Interface},
 	} {

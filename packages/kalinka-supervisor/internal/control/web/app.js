@@ -150,6 +150,38 @@ async function getJSON(path) {
   return response.json();
 }
 
+async function enableWiFi() {
+  const button = byId("wifi-enable");
+  const message = byId("wifi-enable-status");
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  message.textContent = "Enabling Wi-Fi…";
+  try {
+    const response = await fetch("/v1/setup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Kalinka-Setup-Client": "supervisor-dashboard" },
+      body: JSON.stringify({ v: 1, op: "enable_wifi" }),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      const reasons = {
+        radio_hard_blocked: "Wi-Fi is disabled by a hardware switch. Turn that switch on and try again.",
+        busy: "Network setup is busy. Wait for it to finish and try again.",
+      };
+      message.textContent = reasons[result.error] || "Wi-Fi could not be enabled. Check that the adapter is available and try again.";
+      return;
+    }
+    message.textContent = button.dataset.simulated === "true"
+      ? "Wi-Fi enabling simulated successfully. No radio was changed."
+      : "Wi-Fi is enabled. You can now open network setup.";
+  } catch (_) {
+    message.textContent = "The supervisor could not be reached. Check your connection and try again.";
+  } finally {
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+  }
+}
+
 async function getLog(unit) {
   const response = await fetch(`/v1/${unit}/log`, { cache: "no-store" });
   return response.ok ? response.text() : "";
@@ -827,6 +859,7 @@ function init() {
   for (const button of document.querySelectorAll(".actions [data-action]")) {
     button.addEventListener("click", () => confirmAction(button.dataset.action));
   }
+  byId("wifi-enable").addEventListener("click", enableWiFi);
   byId("soundcard-select").addEventListener("change", renderStatus);
   byId("soundcard-apply").addEventListener("click", () =>
     confirmAction("set_soundcard", { soundcard: soundcardChoice() }, cardLabel(soundcardChoice())));

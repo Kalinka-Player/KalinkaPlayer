@@ -27,7 +27,7 @@ ProtectHome=yes
 PrivateTmp=yes
 ProtectControlGroups=yes
 ProtectKernelModules=yes
-# No ProtectKernelTunables=/PrivateDevices=: radio blocks clear via /sys/class/rfkill and /dev/rfkill.
+# No ProtectKernelTunables=: authorized radio recovery writes /sys/class/rfkill.
 RestrictSUIDSGID=yes
 LockPersonality=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET

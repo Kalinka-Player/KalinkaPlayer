@@ -52,6 +52,60 @@ func await(t *testing.T, check func() bool) {
 
 const joinCommand = `{"v":1,"op":"join","ssid":"home","password":"dummy-password","country":"GB"}`
 
+type enablingWifi struct {
+	fakeWifi
+	started chan struct{}
+}
+
+func (f *enablingWifi) EnableRadio(ctx context.Context) error {
+	close(f.started)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestEnablingWiFiExcludesSetupOperationsAndHonorsCancellation(t *testing.T) {
+	f := &enablingWifi{started: make(chan struct{})}
+	m := New(context.Background(), f, Config{Test: true})
+	defer m.Close()
+	_, _ = m.Tick(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- m.EnableWiFi(ctx) }()
+	select {
+	case <-f.started:
+	case <-time.After(time.Second):
+		t.Fatal("enable never started")
+	}
+	if !m.ChangingNetwork() {
+		t.Fatal("radio change hidden from reboot guard")
+	}
+	if err := m.EnableWiFi(ctx); err != protocol.Busy {
+		t.Fatal("overlapping enable", err)
+	}
+	for _, raw := range []string{joinCommand, `{"v":1,"op":"scan","country":"GB"}`} {
+		if err := m.Command("phone", []byte(raw)); err != protocol.Busy {
+			t.Fatal("overlapping setup", err)
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("request cancellation did not stop enabling")
+	}
+	if m.ChangingNetwork() {
+		t.Fatal("busy flag leaked")
+	}
+	m.Close()
+	if err := m.EnableWiFi(context.Background()); err != protocol.Unavailable {
+		t.Fatal("closed machine accepted enable")
+	}
+}
+
 func TestJoinSurvivesDisconnectAndExcludesSecondPhone(t *testing.T) {
 	release := make(chan struct{})
 	started := make(chan struct{})

@@ -37,6 +37,27 @@ func TestOptions(t *testing.T) {
 	}
 }
 
+func TestRadioRecoveryOptions(t *testing.T) {
+	for _, tc := range []struct {
+		env  string
+		args []string
+		want string
+	}{
+		{"", nil, "off"}, {"first-run", nil, "first-run"}, {"always", nil, "always"},
+		{"first-run", []string{"--radio-recovery=off"}, "off"},
+	} {
+		t.Setenv("KALINKA_RADIO_RECOVERY", tc.env)
+		o, err := parse(tc.args)
+		if err != nil || o.RadioRecovery != tc.want {
+			t.Fatalf("%+v: %q, %v", tc, o.RadioRecovery, err)
+		}
+	}
+	t.Setenv("KALINKA_RADIO_RECOVERY", "typo")
+	if _, err := parse(nil); err == nil {
+		t.Fatal("invalid policy accepted")
+	}
+}
+
 func TestEnabled(t *testing.T) {
 	dietpi := filepath.Join(t.TempDir(), "dietpi.txt")
 	if !enabled("KALINKA_CONTROL_API", dietpi) {
@@ -190,7 +211,7 @@ func TestUnitLetsNetworkManagerKeepTheCountry(t *testing.T) {
 	t.Errorf("unit keeps %s read-only, so every join rolls back", dir)
 }
 
-func TestUnitLetsTheSupervisorClearRadioBlocks(t *testing.T) {
+func TestUnitLetsTheSupervisorClearAuthorizedRadioBlocks(t *testing.T) {
 	b, err := os.ReadFile("../../systemd/kalinka-supervisor.service")
 	if err != nil {
 		t.Fatal(err)
@@ -198,8 +219,8 @@ func TestUnitLetsTheSupervisorClearRadioBlocks(t *testing.T) {
 	for _, line := range strings.Split(string(b), "\n") {
 		key, value, _ := strings.Cut(line, "=")
 		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
-		if (key == "ProtectKernelTunables" || key == "PrivateDevices") && value != "no" {
-			t.Errorf("unit sets %s, so an offline streamer cannot clear its radios' soft blocks", line)
+		if key == "ProtectKernelTunables" && value != "no" {
+			t.Errorf("unit sets %s, so authorized radio recovery cannot clear a soft block", line)
 		}
 	}
 }

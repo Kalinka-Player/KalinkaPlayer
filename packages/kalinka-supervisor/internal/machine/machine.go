@@ -44,6 +44,7 @@ type Machine struct {
 	state, reason, stage                       byte
 	address, owner, targetSSID                 string
 	active, seen, completed, closed, resetting bool
+	enabling                                   bool
 	offlineSince, joinedAt, setupUntil         time.Time
 	scanState                                  string
 	scanReason                                 *string
@@ -72,7 +73,7 @@ func New(parent context.Context, wifi Wifi, cfg Config) *Machine {
 	}
 	ctx, cancel := context.WithCancel(parent)
 	_, err := os.Stat(cfg.Marker)
-	return &Machine{ctx: ctx, cancel: cancel, wifi: wifi, cfg: cfg, seen: cfg.Marker != "" && err == nil, offlineSince: cfg.Now(), scanState: "idle", networks: []protocol.Network{}, Changes: make(chan struct{}, 1)}
+	return &Machine{ctx: ctx, cancel: cancel, wifi: wifi, cfg: cfg, seen: cfg.Marker != "" && !os.IsNotExist(err), offlineSince: cfg.Now(), scanState: "idle", networks: []protocol.Network{}, Changes: make(chan struct{}, 1)}
 }
 func (m *Machine) changed() {
 	select {
@@ -101,8 +102,52 @@ func (m *Machine) Progress() []byte { m.mu.Lock(); defer m.mu.Unlock(); return [
 func (m *Machine) ChangingNetwork() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.state == protocol.Joining || m.resetting
+	return m.state == protocol.Joining || m.resetting || m.enabling
 }
+
+// FirstRun stays false once this player has had a usable network, including across boots.
+func (m *Machine) FirstRun() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return !m.seen
+}
+
+// EnableWiFi changes the radio only on an explicit request or an opted-in recovery.
+// Reads, opening setup, scanning and joining never imply permission to clear a block.
+func (m *Machine) EnableWiFi(parent context.Context) error {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return protocol.Unavailable
+	}
+	if m.enabling || m.state == protocol.Joining || m.scanState == "scanning" || m.resetting {
+		m.mu.Unlock()
+		return protocol.Busy
+	}
+	radio, ok := m.wifi.(interface{ EnableRadio(context.Context) error })
+	if !ok {
+		m.mu.Unlock()
+		return protocol.Unavailable
+	}
+	m.enabling = true
+	m.workers.Add(1)
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		m.enabling = false
+		m.mu.Unlock()
+		m.workers.Done()
+	}()
+	ctx, cancel := context.WithTimeout(m.ctx, 10*time.Second)
+	defer cancel()
+	stop := context.AfterFunc(parent, cancel)
+	defer stop()
+	if err := parent.Err(); err != nil {
+		return err
+	}
+	return radio.EnableRadio(ctx)
+}
+
 func (m *Machine) Identity() []byte {
 	s := strings.ReplaceAll(coreconf.ReadID(m.cfg.IdentityFile), "-", "")
 	v, err := hex.DecodeString(s)
@@ -145,7 +190,7 @@ func (m *Machine) Open() error {
 	if m.closed {
 		return protocol.Unavailable
 	}
-	if m.state == protocol.Joining || m.resetting {
+	if m.state == protocol.Joining || m.resetting || m.enabling {
 		return protocol.Busy
 	}
 	m.active = true
@@ -192,7 +237,7 @@ func (m *Machine) Write(device string, data []byte) error {
 	if !m.active || m.closed {
 		return protocol.Unavailable
 	}
-	if m.owner != "" && m.owner != device || m.resetting {
+	if m.owner != "" && m.owner != device || m.resetting || m.enabling {
 		return protocol.Busy
 	}
 	raw, err := m.frames.Feed(device, data, m.cfg.Now())
@@ -218,7 +263,7 @@ func (m *Machine) Command(device string, raw []byte) error {
 	if device == "" {
 		return protocol.Invalid
 	}
-	if m.owner != "" && m.owner != device || m.resetting || m.frames.Owner != "" && m.frames.Owner != device {
+	if m.owner != "" && m.owner != device || m.resetting || m.enabling || m.frames.Owner != "" && m.frames.Owner != device {
 		return protocol.Busy
 	}
 	cmd, err := protocol.Decode(raw)
@@ -348,7 +393,7 @@ func (m *Machine) command(device string, cmd protocol.Command) error {
 }
 func (m *Machine) Tick(ctx context.Context) (bool, error) {
 	m.mu.Lock()
-	busy := m.state == protocol.Joining || m.scanState == "scanning" || m.resetting
+	busy := m.state == protocol.Joining || m.scanState == "scanning" || m.resetting || m.enabling
 	active := m.active
 	m.mu.Unlock()
 	if busy {
@@ -363,7 +408,7 @@ func (m *Machine) Tick(ctx context.Context) (bool, error) {
 	if m.closed {
 		return false, nil
 	}
-	if m.state == protocol.Joining || m.scanState == "scanning" || m.resetting {
+	if m.state == protocol.Joining || m.scanState == "scanning" || m.resetting || m.enabling {
 		return m.active, nil
 	}
 	now := m.cfg.Now()

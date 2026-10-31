@@ -70,18 +70,43 @@ the hotspot. The AP's own address is excluded from this decision. The hotspot
 uses WPA2 with the public setup password `kalinka-setup`; proximity authorizes
 setup, and this shared password is not proof of ownership.
 
-A streamer still offline 10 seconds after boot, or after losing its network,
-clears its radios' soft blocks once, before setup opens. With NetworkManager it
-switches Wi-Fi on there first, since NetworkManager keeps that switch across
-restarts, then in the kernel. On DietPi it clears Wi-Fi's block in the kernel
-and, when that leaves the Wi-Fi interface without an address, restarts
-`kalinka-wifi@<interface>.service`, since an `ifup` that ran into the block at
-boot may have given up on DHCP. Bluetooth is cleared in the kernel unless
-Bluetooth setup is off. That undoes a block left by `nmcli radio wifi off` or
-`rfkill block`, so a saved network can reconnect and setup can use both radios.
-A streamer online over Ethernet keeps its radios as they are, and a radio
-blocked by a hardware switch is named in the log, since software cannot clear
-it.
+Radio soft blocks are preserved by default. Losing Ethernet, waiting for DHCP,
+opening setup, scanning and joining do not authorize clearing a block. A refused
+NetworkManager scan reports failure instead of a successful empty network list.
+If Wi-Fi was disabled, connect over Ethernet and use **Wi-Fi disabled or no
+networks found? → Enable Wi-Fi** in the supervisor page on port 8001, then open
+Network setup. This explicit action is available while the streamer is online.
+NetworkManager's Wi-Fi switch is global and persistent: enabling it allows all
+Wi-Fi adapters and saved networks to reconnect. Bluetooth is left alone.
+
+Automatic radio recovery is a separate policy, selected by `--radio-recovery`
+or `KALINKA_RADIO_RECOVERY` in `/etc/default/kalinka-supervisor`. The command-line
+option takes precedence. Restart the supervisor after changing the environment:
+
+| Value | Behaviour |
+|---|---|
+| `off` (package default) | Preserve OS radio blocks; enable Wi-Fi explicitly when needed. |
+| `first-run` (new appliance images) | Recover radios only during offline setup before the streamer has ever had a usable network. |
+| `always` | Opt in to recovering radios during every offline setup window, including previously configured streamers. |
+
+Recovery requires an open setup window and no usable network address. Automatic
+setup still waits 30 seconds on a new streamer and five minutes on a previously
+networked one. An Ethernet address permanently
+ends first-run recovery, just as a Wi-Fi address does; the existing `networked`
+marker keeps that decision across restarts. Package upgrades do not opt
+existing installations into recovery. Test and `--always-advertise` modes never
+recover radios automatically.
+
+Recovery runs outside the supervisor heartbeat, with up to three attempts per
+radio, ten seconds apart and bounded to ten seconds per attempt. Successful
+steps are not repeated within the same offline setup window. It allows another
+ten seconds for a saved network to reconnect before starting the hotspot;
+returning connectivity cancels recovery. Wi-Fi recovery follows the hotspot
+switch (`--no-ap`/`KALINKA_WIFI_AP_SETUP=0`), and Bluetooth follows its own setup
+switch. Bluetooth unblocking is limited to `--adapter`; DietPi Wi-Fi unblocking
+is limited to the selected interface's physical radio. DietPi restarts that
+interface's networking service after clearing a block, since DHCP may have
+failed while it was disabled. Hardware blocks are reported and left intact.
 
 Join the hotspot in the phone/computer's Wi-Fi settings. DHCP and local DNS
 trigger the operating system's captive Wi-Fi activation page, which opens
@@ -122,10 +147,14 @@ state, reason, stage, address, port, scan_state, networks, and `target_ssid`
 while joining), `hotspot`, `hotspot_name`, `networks_cached` and `server_id` where
 available. `POST /v1/setup` accepts the existing unframed v1 JSON commands and
 an extra `{"v":1,"op":"open"}` to explicitly open a setup window on an online
-streamer. Clients supply a random, stable `X-Kalinka-Setup-Client` of 16–64 ASCII
-letters/digits/hyphens. JSON bodies are limited to 512 bytes. The LAN endpoint
+streamer. `{"v":1,"op":"enable_wifi"}` explicitly enables Wi-Fi, including before
+opening setup. It completes within ten seconds and returns 202 on success,
+409 with `busy` for an overlapping setup operation, or 409 with
+`radio_hard_blocked` for a hardware switch; other enable failures return 503.
+The existing BLE protocol is unchanged. Clients supply a random, stable
+`X-Kalinka-Setup-Client` of 16–64 ASCII letters/digits/hyphens. JSON bodies are limited to 512 bytes. The LAN endpoint
 is on port 8001, with the existing local-peer/host/origin checks; the app on
-Core's port is allowed. Responses acknowledge receipt, not connection success.
+Core's port is allowed. Scan and join responses acknowledge receipt, not connection success.
 
 Physical acceptance still requires a supported Wi-Fi adapter and phone: cold
 offline boot, wired boot, captive activation on Android/iOS/Windows, correct and

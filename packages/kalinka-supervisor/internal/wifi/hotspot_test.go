@@ -167,6 +167,9 @@ func TestDietPiAPKeepsSavedFilesAndRecoversCrash(t *testing.T) {
 	}
 	var calls []string
 	d.Run = func(_ context.Context, _ time.Duration, name string, args ...string) (string, error) {
+		if name == "rfkill" {
+			t.Fatal("hotspot startup implicitly changes radio blocks")
+		}
 		calls = append(calls, name+" "+strings.Join(args, " "))
 		return "", nil
 	}

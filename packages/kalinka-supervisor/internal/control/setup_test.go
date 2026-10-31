@@ -15,6 +15,7 @@ import (
 
 	"kalinka/supervisor/internal/machine"
 	"kalinka/supervisor/internal/protocol"
+	"kalinka/supervisor/internal/rfkill"
 	"kalinka/supervisor/internal/wifi"
 	"kalinka/supervisor/internal/wifi/wifitest"
 )
@@ -55,11 +56,54 @@ func TestNetworkStatusReportsOnlyTheConnectedSSID(t *testing.T) {
 	}
 }
 
+type radioSetup struct {
+	setupFake
+	enable func(context.Context) error
+}
+
+func (s radioSetup) EnableWiFi(ctx context.Context) error { return s.enable(ctx) }
+
+func TestEnableWiFiRequiresAnExplicitTrustedRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, body, origin string
+		result                     error
+		want, calls                int
+	}{
+		{"status only", "GET", "", "", nil, 200, 0},
+		{"open setup", "POST", `{"v":1,"op":"open"}`, "", nil, 202, 0},
+		{"enable over Ethernet", "POST", `{"v":1,"op":"enable_wifi"}`, "", nil, 202, 1},
+		{"external origin", "POST", `{"v":1,"op":"enable_wifi"}`, "http://evil.example", nil, 403, 0},
+		{"busy", "POST", `{"v":1,"op":"enable_wifi"}`, "", protocol.Busy, 409, 1},
+		{"hard blocked", "POST", `{"v":1,"op":"enable_wifi"}`, "", rfkill.ErrHardBlocked, 409, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := machine.New(context.Background(), &wifi.DryRun{IP: "192.0.2.10"}, machine.Config{})
+			defer m.Close()
+			calls := 0
+			s := radioSetup{setupFake{m}, func(context.Context) error { calls++; return tc.result }}
+			h := NewHandler(nil, HandlerConfig{CorePort: func() int { return 8000 }, NetworkSetup: s})
+			w := serve(h, tc.method, "/v1/setup", tc.body, func(r *http.Request) {
+				r.Header.Set("X-Kalinka-Setup-Client", "supervisor-dashboard")
+				if tc.origin != "" {
+					r.Header.Set("Origin", tc.origin)
+				}
+			})
+			if w.Code != tc.want || calls != tc.calls {
+				t.Fatalf("HTTP %d, calls %d: %s", w.Code, calls, w.Body.String())
+			}
+			if tc.result == rfkill.ErrHardBlocked && !strings.Contains(w.Body.String(), "radio_hard_blocked") {
+				t.Fatal("lost hardware block reason")
+			}
+		})
+	}
+}
+
 type setupFake struct{ m *machine.Machine }
 
 func (f setupFake) Snapshot() map[string]any {
 	return map[string]any{"available": true, "setup": f.m.Snapshot()}
 }
+func (f setupFake) EnableWiFi(ctx context.Context) error   { return f.m.EnableWiFi(ctx) }
 func (f setupFake) Open() error                            { return f.m.Open() }
 func (f setupFake) Command(owner string, raw []byte) error { return f.m.Command(owner, raw) }
 func TestHTTPAndBLEShareSetupOwnership(t *testing.T) {

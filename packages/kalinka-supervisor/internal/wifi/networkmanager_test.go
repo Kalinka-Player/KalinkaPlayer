@@ -7,6 +7,7 @@ import (
 	"github.com/godbus/dbus/v5"
 	"kalinka/supervisor/internal/dbusx"
 	"kalinka/supervisor/internal/protocol"
+	"kalinka/supervisor/internal/rfkill"
 	"kalinka/supervisor/internal/rfkill/rfkilltest"
 	"os"
 	"path/filepath"
@@ -19,6 +20,8 @@ import (
 const testDevice = dbus.ObjectPath("/device")
 
 type nmFake struct {
+	scanError                    error
+	scans                        int64
 	t                            *testing.T
 	profiles                     map[dbus.ObjectPath]settings
 	state                        uint32
@@ -57,7 +60,7 @@ func (b *nmFake) Call(ctx context.Context, path dbus.ObjectPath, method string, 
 		case nm + ".IP4Config":
 			return []any{map[string]dbus.Variant{"AddressData": v([]map[string]dbus.Variant{{"address": v("192.0.2.5")}})}}, nil
 		case nmWireless:
-			return []any{map[string]dbus.Variant{"LastScan": v(int64(0))}}, nil
+			return []any{map[string]dbus.Variant{"LastScan": v(b.scans)}}, nil
 		}
 	case "org.freedesktop.DBus.Properties.Get":
 		if path == nmRoot && args[0] == nm && args[1] == "WirelessEnabled" {
@@ -73,7 +76,8 @@ func (b *nmFake) Call(ctx context.Context, path dbus.ObjectPath, method string, 
 			return nil, nil
 		}
 	case nmWireless + ".RequestScan":
-		return nil, errors.New("scan refused")
+		b.scans++
+		return nil, b.scanError
 	case nmWireless + ".GetAllAccessPoints":
 		return []any{[]dbus.ObjectPath{}}, nil
 	case nm + ".Settings.AddConnection2":
@@ -149,6 +153,9 @@ func TestNMStagingAndRollback(t *testing.T) {
 				b.cancel = cancel
 			}
 			n.Bus = b
+			if n.Root != "/" {
+				rfkilltest.LinkWiFi(t, n.Root, "wlan0", "phy0")
+			}
 			if err := n.Recover(ctx); err != nil {
 				t.Fatal(err)
 			}
@@ -262,16 +269,16 @@ func TestNMScanAppliesCountry(t *testing.T) {
 	}
 }
 
-// The empty list a phone sees when NetworkManager refuses the scan, as it does with Wi-Fi switched off.
-func TestNMScanRefusedGivesNoNetworks(t *testing.T) {
+// A refused scan must not look like a successful scan with no nearby networks.
+func TestNMScanRefusedReportsFailure(t *testing.T) {
 	n := NewNetworkManager("wlan0", t.TempDir())
 	n.Poll = time.Millisecond
-	n.Bus = &nmFake{t: t, state: 100, active: "/activePrevious", profiles: map[dbus.ObjectPath]settings{}}
+	n.Bus = &nmFake{t: t, scanError: errors.New("scan refused"), state: 100, active: "/activePrevious", profiles: map[dbus.ObjectPath]settings{}}
 	if err := n.Recover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	networks, err := n.Scan(context.Background(), "")
-	if err != nil || networks == nil || len(networks) != 0 {
+	if err != protocol.Unavailable || networks != nil {
 		t.Fatalf("networks %v, error %v", networks, err)
 	}
 }
@@ -286,6 +293,9 @@ func TestNMEnableRadio(t *testing.T) {
 			n.Root = rfkilltest.Stage(t, rfkilltest.Radio{Type: "wlan", Name: "phy0", Soft: true}, rfkilltest.Radio{Type: "bluetooth", Name: "hci0", Soft: true})
 			b := &nmFake{t: t, state: 100, active: "/activePrevious", profiles: map[dbus.ObjectPath]settings{}, wirelessEnabled: tc.enabled}
 			n.Bus = b
+			if n.Root != "/" {
+				rfkilltest.LinkWiFi(t, n.Root, "wlan0", "phy0")
+			}
 			if err := n.Recover(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -309,6 +319,7 @@ func TestNMEnableRadio(t *testing.T) {
 func TestNMEnableRadioRefused(t *testing.T) {
 	n := NewNetworkManager("wlan0", t.TempDir())
 	n.Root = rfkilltest.Stage(t, rfkilltest.Radio{Type: "wlan", Name: "phy0", Soft: true})
+	rfkilltest.LinkWiFi(t, n.Root, "wlan0", "phy0")
 	n.Bus = &nmFake{t: t, state: 100, active: "/activePrevious", profiles: map[dbus.ObjectPath]settings{}, refuseWireless: true}
 	if err := n.Recover(context.Background()); err != nil {
 		t.Fatal(err)
@@ -319,6 +330,20 @@ func TestNMEnableRadioRefused(t *testing.T) {
 	}
 	if !rfkilltest.Soft(t, n.Root, "rfkill0") {
 		t.Fatal("kernel block cleared behind NetworkManager's back")
+	}
+}
+
+func TestNMEnableRadioChecksHardwareBeforeChangingGlobalSwitch(t *testing.T) {
+	n := NewNetworkManager("wlan0", t.TempDir())
+	n.Root = rfkilltest.Stage(t, rfkilltest.Radio{Type: "wlan", Name: "phy0", Soft: true, Hard: true})
+	rfkilltest.LinkWiFi(t, n.Root, "wlan0", "phy0")
+	b := &nmFake{t: t}
+	n.Bus = b
+	if err := n.EnableRadio(context.Background()); !errors.Is(err, rfkill.ErrHardBlocked) {
+		t.Fatal(err)
+	}
+	if b.wirelessSets != 0 || !rfkilltest.Soft(t, n.Root, "rfkill0") {
+		t.Fatal("changed a switch despite the hardware block")
 	}
 }
 func TestNMKeepsHostCountry(t *testing.T) {
