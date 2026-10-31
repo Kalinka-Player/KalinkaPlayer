@@ -28,6 +28,7 @@ from .classify import (
     is_va_folder,
     normalize_album_title,
     strip_artist_prefix,
+    strip_disc_label,
     strip_disc_suffix,
 )
 from .engine import PartitionResult, partition_folder
@@ -73,6 +74,11 @@ def _cue_album(cue: Dict) -> Optional[str]:
     return clean_display_name(album) if album else None
 
 
+def _cue_album_key(title: str) -> Optional[str]:
+    """The album key of a cue-titled disc: every disc of a set shares it."""
+    return normalize_for_id(strip_disc_label(title)) or None
+
+
 def build_features(track: Dict, evidence: Optional[Dict]) -> TrackFeatures:
     """Assemble the scorer's per-track features from a track row + evidence."""
     evidence = evidence or {}
@@ -86,8 +92,15 @@ def build_features(track: Dict, evidence: Optional[Dict]) -> TrackFeatures:
     # Album key: normalized, disc-suffix stripped so "X (Disc 1)"/"X (Disc 2)"
     # share a bucket and are distinguished by disc_number within the cluster.
     album_key = None
+    album_from_cue = False
     if album_display:
         album_key = normalize_for_id(strip_disc_suffix(album_display)) or None
+    else:
+        # An untagged whole-disc rip is named by its cue sheet alone.
+        cue_title = _cue_album(_loads(evidence.get("cue_tracks")))
+        if cue_title:
+            album_key = _cue_album_key(cue_title)
+            album_from_cue = album_key is not None
 
     albumartist = _tag(raw, *_ALBUMARTIST_TAGS)
     albumartist_key = normalize_for_id(albumartist) if albumartist else None
@@ -103,6 +116,7 @@ def build_features(track: Dict, evidence: Optional[Dict]) -> TrackFeatures:
     return TrackFeatures(
         track_id=track["id"],
         album_key=album_key,
+        album_from_cue=album_from_cue,
         albumartist_key=albumartist_key,
         artist_key=track.get("artist_id"),
         track_number=track.get("track_number"),
@@ -279,10 +293,11 @@ def plan_folder(
         buckets = {}
         for feature in features:
             _, album, cue_album = display_by_id[feature.track_id]
-            key = (
-                normalize_for_id(strip_disc_suffix(album or cue_album or "")),
-                feature.albumartist_key,
-            )
+            if album:
+                album_key = normalize_for_id(strip_disc_suffix(album))
+            else:
+                album_key = _cue_album_key(cue_album) if cue_album else ""
+            key = (album_key or "", feature.albumartist_key)
             # Artist guesses cannot partition loose files into pretend albums.
             if not key[0]:
                 key = ("", None)
@@ -306,6 +321,9 @@ def plan_folder(
 
         titles = [display_by_id[i][1] for i in ids]
         cue_titles = [display_by_id[i][2] for i in ids]
+        if len({title for title in cue_titles if title}) > 1:
+            # The discs of one set, each named by its own cue sheet.
+            cue_titles = [strip_disc_label(t) if t else t for t in cue_titles]
         tagged = _dominant(titles) or _dominant(cue_titles)
         if container and not tagged:
             clusters.append(

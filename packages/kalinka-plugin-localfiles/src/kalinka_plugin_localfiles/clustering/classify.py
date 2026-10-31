@@ -118,6 +118,23 @@ def strip_disc_suffix(title: str) -> str:
     return _DISC_SUFFIX_RE.sub("", title).strip() or title
 
 
+# A cue sheet titles one disc, often in words the tag-oriented suffix rule
+# misses: "Disc One", "CD-2", "[CD 1 of 2]".
+_CUE_DISC_LABEL_RE = re.compile(
+    r"[\s\-–—_:,(\[]+(?:cd|disc|disk)"
+    rf"(?:[\s\-#.]+(?:\d+|{_ROMAN_DISC_NUMBER}|one|two|three|four|five|six|seven"
+    r"|eight|nine|ten)|\d+)(?:\s*(?:of|/)\s*\d+)?\s*[)\]]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def strip_disc_label(title: str) -> str:
+    """A cue-titled disc's title without its disc label, in the wider forms
+    cue sheets use as well as :func:`strip_disc_suffix`'s."""
+    return _CUE_DISC_LABEL_RE.sub("", strip_disc_suffix(title)).strip() or title
+
+
+
 # --- title normalization (deterministic cleanup of a local title) -----------
 # Album titles are always locally derived (MusicBrainz never sets a title), so
 # this is a safe cleanup of folder/tag junk, not a competing title source.

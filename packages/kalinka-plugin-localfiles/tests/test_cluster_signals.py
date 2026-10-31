@@ -98,6 +98,44 @@ def test_art_relation_thresholds():
     assert "different_art" in diff
 
 
+def test_cue_disc_labels_come_off_the_title():
+    from kalinka_plugin_localfiles.clustering.classify import strip_disc_label
+
+    assert strip_disc_label("Mellon Collie [CD 2 of 2]") == "Mellon Collie"
+    assert strip_disc_label("Mellon Collie - Disc Two") == "Mellon Collie"
+    assert strip_disc_label("Mellon Collie CD-2") == "Mellon Collie"
+    assert strip_disc_label("Discography") == "Discography"
+
+
+def _disc(name, **features):
+    return [TrackFeatures(f"{name}1", cue_sheet=f"/m/{name}.cue", album_key=name,
+                          album_from_cue=True, stream_key="flac|44100|16",
+                          **features)]
+
+
+def test_untagged_discs_titled_differently_by_their_cues_split():
+    score, basis = pair_signal_score(_disc("avalon"), _disc("flesh"))
+    assert "different_cue_sheets" in basis
+    assert score < 0
+
+
+def test_shared_cover_art_outweighs_differing_cue_titles():
+    """The discs of one set, subtitled rather than numbered."""
+    score, _ = pair_signal_score(
+        _disc("dawn", art_phash="0f0f0f0f0f0f0f0f"),
+        _disc("dusk", art_phash="0f0f0f0f0f0f0f0f"),
+    )
+    assert score >= 0
+
+
+def test_tagged_tracks_never_take_the_cue_penalty():
+    """A typo in one track's album tag, each track with its own cue."""
+    a = [TrackFeatures("a1", cue_sheet="/m/1.cue", album_key="abbey road")]
+    b = [TrackFeatures("b1", cue_sheet="/m/2.cue", album_key="abbey raod")]
+    _, basis = pair_signal_score(a, b)
+    assert "different_cue_sheets" not in basis
+
+
 def test_cue_sheet_is_strong_cohesion():
     a = [TrackFeatures("a1", track_number=1, cue_sheet="/m/x.cue",
                        album_key="x")]

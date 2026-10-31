@@ -162,3 +162,63 @@ async def test_embedded_tags_win_over_cue(indexer):
     )
     assert row["artist"] == "Real Artist"
     assert row["album"] == "Real Album"
+
+
+def _cue(title, performer, file_name):
+    return (
+        f'PERFORMER "{performer}"\nTITLE "{title}"\nFILE "{file_name}" WAVE\n'
+        '  TRACK 01 AUDIO\n    TITLE "One"\n    INDEX 01 00:00:00\n'
+        '  TRACK 02 AUDIO\n    TITLE "Two"\n    INDEX 01 00:00:30\n'
+    )
+
+
+async def _grouped_rips(fi, config, folder, titles):
+    """Index one untagged whole-disc rip per cue title, regroup, and return
+    each rip's album id."""
+    folder.mkdir(exist_ok=True)
+    for title in titles:
+        flac = folder / f"{title}.flac"
+        sf.write(str(flac), np.zeros(2205, dtype="float32"), 44100, format="FLAC")
+        (folder / f"{title}.cue").write_text(_cue(title, "Roxy Music", flac.name))
+        await fi.process_file(str(flac))
+    await fi._group_albums()
+    async with aiosqlite.connect(config.db_path) as conn:
+        rows = await (
+            await conn.execute("SELECT album_id FROM tracks ORDER BY file_path")
+        ).fetchall()
+    return [album for (album,) in rows]
+
+
+@pytest.mark.asyncio
+async def test_untagged_cue_albums_sharing_a_folder_stay_apart(indexer):
+    fi, music, config = indexer
+    albums = await _grouped_rips(
+        fi, config, music / "Rips", ["Avalon", "Flesh and Blood"]
+    )
+    assert len(set(albums)) == 2
+
+
+@pytest.mark.parametrize(
+    "titles",
+    [
+        ["Mellon Collie - Disc One", "Mellon Collie - Disc Two"],
+        ["Mellon Collie CD-1", "Mellon Collie CD-2"],
+        ["Mellon Collie [CD 1 of 2]", "Mellon Collie [CD 2 of 2]"],
+    ],
+)
+@pytest.mark.asyncio
+async def test_the_discs_of_one_set_stay_together(indexer, titles):
+    fi, music, config = indexer
+    albums = await _grouped_rips(fi, config, music / "Mellon Collie", titles)
+    assert len(set(albums)) == 1
+    title = await _row(config, "SELECT title FROM albums WHERE id = ?", (albums[0],))
+    assert title["title"] == "Mellon Collie"
+
+
+@pytest.mark.asyncio
+async def test_the_discs_of_one_set_stay_together_at_the_library_root(indexer):
+    fi, music, config = indexer
+    albums = await _grouped_rips(
+        fi, config, music, ["Mellon Collie - Disc One", "Mellon Collie - Disc Two"]
+    )
+    assert len(set(albums)) == 1
