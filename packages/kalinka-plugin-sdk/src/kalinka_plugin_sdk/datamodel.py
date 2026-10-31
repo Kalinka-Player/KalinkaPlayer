@@ -306,6 +306,7 @@ class Album(BaseModel):
         title (str): Album title
         duration (Optional[int]): Total album duration in seconds
         track_count (Optional[int]): Number of tracks in the album
+        year (Optional[int]): Year this release came out, if known
         image (Optional[CoverImage]): Album cover art in different sizes
         label (Optional[Label]): Record label that released the album
         genres (List[Genre]): The genres it is filed under, in the order the
@@ -317,6 +318,7 @@ class Album(BaseModel):
     title: str
     duration: Optional[int] = None
     track_count: Optional[int] = None
+    year: Optional[int] = None
     image: Optional[CoverImage] = None
     label: Optional[Label] = None
     genres: List[Genre] = []
