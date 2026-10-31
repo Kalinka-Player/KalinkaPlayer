@@ -73,13 +73,15 @@ setup, and this shared password is not proof of ownership.
 A streamer still offline 10 seconds after boot, or after losing its network,
 clears its radios' soft blocks once, before setup opens. With NetworkManager it
 switches Wi-Fi on there first, since NetworkManager keeps that switch across
-restarts, then in the kernel; the DietPi backend unblocks Wi-Fi itself before
-each scan, join and hotspot. Bluetooth is cleared in the kernel unless Bluetooth
-setup is off. That undoes a block left by `nmcli radio wifi off` or `rfkill
-block`, so setup can use both radios and, with NetworkManager, a saved network
-can reconnect. A streamer online over Ethernet keeps its radios as they are, and
-a radio blocked by a hardware switch is named in the log, since software cannot
-clear it.
+restarts, then in the kernel. On DietPi it clears Wi-Fi's block in the kernel
+and, when that leaves the Wi-Fi interface without an address, restarts
+`kalinka-wifi@<interface>.service`, since an `ifup` that ran into the block at
+boot may have given up on DHCP. Bluetooth is cleared in the kernel unless
+Bluetooth setup is off. That undoes a block left by `nmcli radio wifi off` or
+`rfkill block`, so a saved network can reconnect and setup can use both radios.
+A streamer online over Ethernet keeps its radios as they are, and a radio
+blocked by a hardware switch is named in the log, since software cannot clear
+it.
 
 Join the hotspot in the phone/computer's Wi-Fi settings. DHCP and local DNS
 trigger the operating system's captive Wi-Fi activation page, which opens
