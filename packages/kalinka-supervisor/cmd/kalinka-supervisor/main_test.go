@@ -190,6 +190,20 @@ func TestUnitLetsNetworkManagerKeepTheCountry(t *testing.T) {
 	t.Errorf("unit keeps %s read-only, so every join rolls back", dir)
 }
 
+func TestUnitLetsTheSupervisorClearRadioBlocks(t *testing.T) {
+	b, err := os.ReadFile("../../systemd/kalinka-supervisor.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		key, value, _ := strings.Cut(line, "=")
+		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+		if (key == "ProtectKernelTunables" || key == "PrivateDevices") && value != "no" {
+			t.Errorf("unit sets %s, so an offline streamer cannot clear its radios' soft blocks", line)
+		}
+	}
+}
+
 func TestHTTPSetupRunsWithoutBluetooth(t *testing.T) {
 	dir := t.TempDir()
 	port := freePort(t)
