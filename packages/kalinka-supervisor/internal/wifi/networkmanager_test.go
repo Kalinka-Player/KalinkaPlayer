@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/godbus/dbus/v5"
+	"kalinka/supervisor/internal/dbusx"
 	"kalinka/supervisor/internal/protocol"
+	"kalinka/supervisor/internal/rfkill/rfkilltest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -29,6 +31,9 @@ type nmFake struct {
 	rollbackRemaining            time.Duration
 	commands                     *[][]string
 	countryBeforeJoin            bool
+	wirelessEnabled              bool
+	wirelessSets                 int
+	refuseWireless               bool
 }
 
 func (b *nmFake) Close() error { return nil }
@@ -53,6 +58,19 @@ func (b *nmFake) Call(ctx context.Context, path dbus.ObjectPath, method string, 
 			return []any{map[string]dbus.Variant{"AddressData": v([]map[string]dbus.Variant{{"address": v("192.0.2.5")}})}}, nil
 		case nmWireless:
 			return []any{map[string]dbus.Variant{"LastScan": v(int64(0))}}, nil
+		}
+	case "org.freedesktop.DBus.Properties.Get":
+		if path == nmRoot && args[0] == nm && args[1] == "WirelessEnabled" {
+			return []any{v(b.wirelessEnabled)}, nil
+		}
+	case "org.freedesktop.DBus.Properties.Set":
+		if path == nmRoot && args[0] == nm && args[1] == "WirelessEnabled" {
+			if b.refuseWireless {
+				return nil, dbus.NewError("org.freedesktop.NetworkManager.PermissionDenied", []any{"Not authorized to enable/disable Wi-Fi"})
+			}
+			b.wirelessSets++
+			b.wirelessEnabled = args[2].(dbus.Variant).Value().(bool)
+			return nil, nil
 		}
 	case nmWireless + ".RequestScan":
 		return nil, errors.New("scan refused")
@@ -241,6 +259,66 @@ func TestNMScanAppliesCountry(t *testing.T) {
 	}
 	if !slices.EqualFunc(commands, [][]string{{"iw", "reg", "set", "GB"}}, slices.Equal) {
 		t.Fatalf("commands %v", commands)
+	}
+}
+
+// The empty list a phone sees when NetworkManager refuses the scan, as it does with Wi-Fi switched off.
+func TestNMScanRefusedGivesNoNetworks(t *testing.T) {
+	n := NewNetworkManager("wlan0", t.TempDir())
+	n.Poll = time.Millisecond
+	n.Bus = &nmFake{t: t, state: 100, active: "/activePrevious", profiles: map[dbus.ObjectPath]settings{}}
+	if err := n.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	networks, err := n.Scan(context.Background(), "")
+	if err != nil || networks == nil || len(networks) != 0 {
+		t.Fatalf("networks %v, error %v", networks, err)
+	}
+}
+func TestNMEnableRadio(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		enabled bool
+		sets    int
+	}{{"switched off", false, 1}, {"already on", true, 0}} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := NewNetworkManager("wlan0", t.TempDir())
+			n.Root = rfkilltest.Stage(t, rfkilltest.Radio{Type: "wlan", Name: "phy0", Soft: true}, rfkilltest.Radio{Type: "bluetooth", Name: "hci0", Soft: true})
+			b := &nmFake{t: t, state: 100, active: "/activePrevious", profiles: map[dbus.ObjectPath]settings{}, wirelessEnabled: tc.enabled}
+			n.Bus = b
+			if err := n.Recover(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				if err := n.EnableRadio(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if b.wirelessSets != tc.sets || !b.wirelessEnabled {
+				t.Fatalf("%d sets, WirelessEnabled %v", b.wirelessSets, b.wirelessEnabled)
+			}
+			if rfkilltest.Soft(t, n.Root, "rfkill0") {
+				t.Fatal("kernel Wi-Fi block left")
+			}
+			if !rfkilltest.Soft(t, n.Root, "rfkill1") {
+				t.Fatal("Bluetooth cleared by the Wi-Fi switch")
+			}
+		})
+	}
+}
+func TestNMEnableRadioRefused(t *testing.T) {
+	n := NewNetworkManager("wlan0", t.TempDir())
+	n.Root = rfkilltest.Stage(t, rfkilltest.Radio{Type: "wlan", Name: "phy0", Soft: true})
+	n.Bus = &nmFake{t: t, state: 100, active: "/activePrevious", profiles: map[dbus.ObjectPath]settings{}, refuseWireless: true}
+	if err := n.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	err := n.EnableRadio(context.Background())
+	if dbusx.ErrorName(err) != "org.freedesktop.NetworkManager.PermissionDenied" {
+		t.Fatalf("refusal lost its reason: %v", err)
+	}
+	if !rfkilltest.Soft(t, n.Root, "rfkill0") {
+		t.Fatal("kernel block cleared behind NetworkManager's back")
 	}
 }
 func TestNMKeepsHostCountry(t *testing.T) {

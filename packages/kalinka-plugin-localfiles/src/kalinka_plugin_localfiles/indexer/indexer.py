@@ -826,9 +826,10 @@ class FileIndexer:
         # A negative age means the mtime came from a clock ahead of ours, as an
         # unsynchronised NAS reports; waiting out the skew would stall the scan
         # for hours per file, and the heuristic cannot say anything either way.
+        # Exact mtime: whole seconds would make a file up to a second older.
         quiescence_seconds = self.config.quiescence_seconds
         if quiescence_seconds > 0:
-            age = time.time() - stat.mtime
+            age = time.time() - stat.mtime_ns / 1_000_000_000
             if 0 <= age < quiescence_seconds:
                 await asyncio.sleep(quiescence_seconds - age)
                 try:

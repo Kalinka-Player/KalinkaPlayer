@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"kalinka/supervisor/internal/protocol"
+	"kalinka/supervisor/internal/rfkill/rfkilltest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -204,6 +206,44 @@ func TestDietPiJoinAndRollback(t *testing.T) {
 			}
 			if d.Transaction.Pending() {
 				t.Fatal("transaction remained")
+			}
+		})
+	}
+}
+func TestDietPiEnableRadio(t *testing.T) {
+	restart := [][]string{{"systemctl", "--no-block", "restart", "kalinka-wifi@wlan0.service"}}
+	for _, tc := range []struct {
+		name     string
+		blocked  bool
+		address  string
+		commands [][]string
+	}{
+		{"blocked, no address", true, "", restart},
+		{"blocked, address back", true, "192.0.2.5", nil},
+		{"not blocked", false, "", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := rfkilltest.Stage(t, rfkilltest.Radio{Type: "wlan", Name: "phy0", Soft: tc.blocked}, rfkilltest.Radio{Type: "bluetooth", Name: "hci0", Soft: true})
+			d, err := NewDietPi("wlan0", root, filepath.Join(root, "state"), filepath.Join(root, "run"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var commands [][]string
+			d.Run = recordCommands(&commands, nil)
+			d.AddressFor = func(_ context.Context, device string) (string, error) {
+				if device != "wlan0" {
+					t.Fatalf("address read on %q", device)
+				}
+				return tc.address, nil
+			}
+			if err := d.EnableRadio(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if rfkilltest.Soft(t, root, "rfkill0") || !rfkilltest.Soft(t, root, "rfkill1") {
+				t.Fatal("cleared the wrong radios")
+			}
+			if !slices.EqualFunc(commands, tc.commands, slices.Equal) {
+				t.Fatalf("commands %v", commands)
 			}
 		})
 	}
