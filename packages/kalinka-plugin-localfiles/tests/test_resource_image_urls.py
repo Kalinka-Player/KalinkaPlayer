@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """The ``/resource/`` links a browse item carries for a saved image set.
 
-A link names a path and nothing else, so anything that resolves it as a file
-name — the app, the server's own catalog-art composer — finds the file. The
-cost is that a cover replaced under the same name keeps its link, and a client
-holding it cached shows the old picture until it drops it. Where a moving link
-is wanted the art is content-named instead, as ``catalog_art_service`` does.
+A link names a path, and its query says when the set was written: a cover
+replaced under the same name gets a new link, so a client caching by link
+shows the new picture. Whatever resolves a link as a file reads the path
+before the query, as the server and its catalog-art composer do.
 """
+
+import os
+
 
 import pytest
 from PIL import Image
@@ -30,6 +32,10 @@ def module(tmp_path):
     return LocalFilesInputModule(config, _FakeDb())
 
 
+def _path(url):
+    return url.split("?", 1)[0]
+
+
 def _write_art(module, entity_type, base):
     folder = module.artwork_path / entity_type
     folder.mkdir(parents=True, exist_ok=True)
@@ -44,26 +50,30 @@ class TestTheLink:
         _write_art(module, "album", "album_1")
         urls = module._resource_image_urls("album", "album_1.jpg")
 
-        assert (urls.thumbnail, urls.small, urls.large) == (
+        assert [_path(url) for url in (urls.thumbnail, urls.small, urls.large)] == [
             "/resource/album/album_1_thumbnail.jpg",
             "/resource/album/album_1_small.jpg",
             "/resource/album/album_1_large.jpg",
-        )
+        ]
 
-    def test_it_carries_no_query(self, module):
-        """A query is read as part of the name by anything resolving the link
-        as a file, which is how the catalog-art composer reads it."""
+    def test_a_cover_replaced_under_its_name_gets_a_new_link(self, module):
         _write_art(module, "album", "album_1")
-        urls = module._resource_image_urls("album", "album_1.jpg")
+        before = module._resource_image_urls("album", "album_1.jpg")
+        large = module.artwork_path / "album" / "album_1_large.jpg"
+        later = large.stat().st_mtime_ns + 1_000_000_000
+        os.utime(large, ns=(later, later))
 
-        assert "?" not in urls.thumbnail + urls.small + urls.large
+        after = module._resource_image_urls("album", "album_1.jpg")
+
+        assert _path(after.small) == _path(before.small)
+        assert after.small != before.small
 
     def test_the_path_names_a_file_that_exists(self, module):
         _write_art(module, "album", "album_1")
         urls = module._resource_image_urls("album", "album_1.jpg")
 
         assert (
-            module.artwork_path / urls.thumbnail.removeprefix("/resource/")
+            module.artwork_path / _path(urls.thumbnail).removeprefix("/resource/")
         ).is_file()
 
     @pytest.mark.parametrize("entity_type", ["album", "artist", "track", "playlist"])
@@ -71,7 +81,7 @@ class TestTheLink:
         _write_art(module, entity_type, f"{entity_type}_1")
         urls = module._resource_image_urls(entity_type, f"{entity_type}_1.jpg")
 
-        assert urls.small == f"/resource/{entity_type}/{entity_type}_1_small.jpg"
+        assert _path(urls.small) == f"/resource/{entity_type}/{entity_type}_1_small.jpg"
 
 
 class TestWhenThereIsNoImage:

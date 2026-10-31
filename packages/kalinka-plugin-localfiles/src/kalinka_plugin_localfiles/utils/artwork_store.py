@@ -17,6 +17,7 @@ import io
 import logging
 import os
 import threading
+import time
 import weakref
 from enum import Enum, auto
 from pathlib import Path
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__.split(".")[-1])
 
 _SIZES = (("thumbnail", 50), ("small", 230), ("large", 600))
 _LARGEST = max(size for _, size in _SIZES)
+_SIZE_FILES = {f"{name}.jpg" for name, _ in _SIZES}
 
 
 _LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = (
@@ -54,15 +56,63 @@ def artwork_file(
     return Path(artwork_path) / entity_type / f"{image_id}_{size}.jpg"
 
 
-def served_cover(entity_type: str, image_id: str) -> CoverImage:
+def served_cover(
+    entity_type: str, image_id: str, version: Optional[int] = None
+) -> CoverImage:
     """The URLs the server answers a stored image set at, through the
-    module's ``get_resource_path``."""
+    module's ``get_resource_path``.
+
+    @param version When the set was written. A cover replaced in place
+        keeps its name, so clients that cache by URL learn of the new one
+        only from this.
+    """
     base = f"/resource/{entity_type}/{image_id}"
+    query = "" if version is None else f"?v={_base36(version)}"
     return CoverImage(
-        thumbnail=f"{base}_thumbnail.jpg",
-        small=f"{base}_small.jpg",
-        large=f"{base}_large.jpg",
+        thumbnail=f"{base}_thumbnail.jpg{query}",
+        small=f"{base}_small.jpg{query}",
+        large=f"{base}_large.jpg{query}",
     )
+
+
+def _base36(number: int) -> str:
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    text = ""
+    while True:
+        number, digit = divmod(number, 36)
+        text = digits[digit] + text
+        if not number:
+            return text
+
+
+#: Spares a source that has stored a cover but not yet recorded it.
+_SWEEP_GRACE_S = 3600
+
+
+def sweep_artwork(
+    artwork_path: Union[str, os.PathLike], entity_type: str, keep: set
+) -> int:
+    """Delete stored image sets of ``entity_type`` whose key is not in
+    ``keep``, and leftovers of interrupted writes, and say how many files
+    went."""
+    directory = Path(artwork_path) / entity_type
+    try:
+        entries = list(os.scandir(directory))
+    except OSError:
+        return 0
+    cutoff = time.time() - _SWEEP_GRACE_S
+    removed = 0
+    for entry in entries:
+        key, _, size = entry.name.rpartition("_")
+        wanted = size in _SIZE_FILES and key in keep
+        try:
+            if wanted or entry.stat().st_mtime > cutoff:
+                continue
+            os.unlink(entry.path)
+            removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 def dhash_image(img: Image.Image) -> str:

@@ -30,7 +30,7 @@ A folder only counts when the album is the only one with tracks in it. Several a
 
 A track whose embedded cover differs from its album's keeps its own: the queue, Now Playing and track lists show it, while album grids and headers keep the album's. Tracks sharing such a picture share one stored copy, and a track showing its album's cover stores nothing. A loose track with no album keeps the cover it embeds.
 
-Covers follow changes to the files at the next scan: an image added, replaced or removed, a retag, a track moving to another album. In a watched local folder they follow at once. Embedded covers are chosen by picture type, front cover first; a back cover, booklet page or artist photo is never the front.
+Covers follow changes to the files at the next scan: an image added, replaced or removed, a retag, a track moving to another album. In a watched local folder they follow at once. A changed cover gets a new link, so clients that cache covers show the new one. Cover files nothing uses any more are deleted after a full scan, and a link kept under a regrouped album's old id shows the cover of the album it became. Embedded covers are chosen by picture type, front cover first; a back cover, booklet page or artist photo is never the front.
 
 Ogg Vorbis tags and `METADATA_BLOCK_PICTURE` covers are read like FLAC's, with
 the older `COVERART` comment as a fallback cover. A chained file, such as a

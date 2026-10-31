@@ -5,7 +5,8 @@ A composed cover's link names the folder and the four covers it is made of,
 and it is composed only for a folder in the library whose first covers are
 still those four. However a link is spelled, a request can cost no more than
 one mosaic per folder; and composing a folder's mosaic for new covers removes
-the one it had before, so a folder keeps one on disk.
+the one it had before, so a folder keeps one on disk. A mosaic older than
+one of its covers is composed again.
 """
 
 from __future__ import annotations
@@ -41,6 +42,15 @@ def _key_of(covers: Sequence[Cover]) -> str:
     return "-".join(kind[0] + image_id.split("_", 1)[1] for kind, image_id in covers)
 
 
+def _tiles_of(key: str) -> List[Cover]:
+    """The covers a mosaic's key names, as :func:`_key_of` spelled them."""
+    tiles = []
+    for part in key.split("-"):
+        kind = "album" if part[0] == "a" else "track"
+        tiles.append((kind, f"{kind}_{part[1:]}"))
+    return tiles
+
+
 class FolderCovers:
     """Turns the covers found under a folder into the folder's own, and
     serves the ones it composed.
@@ -69,8 +79,13 @@ class FolderCovers:
         if not usable:
             return None
         if len(usable) < MOSAIC_TILES:
-            return served_cover(*usable[0])
-        return served_cover(f"{FOLDER_ART}/{encode_folder_id(folder)}", _key_of(usable))
+            (kind, image_id), written = usable[0]
+            return served_cover(kind, image_id, written)
+        return served_cover(
+            f"{FOLDER_ART}/{encode_folder_id(folder)}",
+            _key_of([cover for cover, _ in usable]),
+            max(written for _, written in usable),
+        )
 
     async def path_of(self, resource: str) -> Optional[str]:
         """The file behind a composed cover's ``resource`` name, composing it
@@ -85,23 +100,40 @@ class FolderCovers:
             return None
         store = self._store_of(folder)
         target = artwork_file(self._artwork_path, store, key, size)
-        if target.exists():
+        if await asyncio.to_thread(self._current, target, key):
             return str(target)
         saved = await asyncio.to_thread(self._compose, folder, store, key)
         return str(target) if saved is ArtworkSave.SAVED else None
 
-    def _usable(self, covers: Sequence[Cover]) -> List[Cover]:
-        return list(
-            islice((cover for cover in covers if self._exists(*cover)), MOSAIC_TILES)
+    def _current(self, target: Path, key: str) -> bool:
+        """Whether a composed mosaic exists and is newer than its covers."""
+        try:
+            composed = target.stat().st_mtime_ns
+        except OSError:
+            return False
+        return all(
+            (written := self._written(*tile)) is not None and written <= composed
+            for tile in _tiles_of(key)
         )
 
-    def _exists(self, kind: str, image_id: str) -> bool:
-        match = _COVER_ID.fullmatch(image_id)
-        return (
-            match is not None
-            and match[1] == kind
-            and artwork_file(self._artwork_path, kind, image_id, "large").exists()
+    def _usable(self, covers: Sequence[Cover]) -> List[Tuple[Cover, int]]:
+        """The first covers that exist, each with when it was written."""
+        written = ((cover, self._written(*cover)) for cover in covers)
+        return list(
+            islice(
+                ((cover, at) for cover, at in written if at is not None), MOSAIC_TILES
+            )
         )
+
+    def _written(self, kind: str, image_id: str) -> Optional[int]:
+        match = _COVER_ID.fullmatch(image_id)
+        if match is None or match[1] != kind:
+            return None
+        try:
+            large = artwork_file(self._artwork_path, kind, image_id, "large")
+            return large.stat().st_mtime_ns
+        except OSError:
+            return None
 
     @staticmethod
     def _store_of(folder: str) -> str:
@@ -113,7 +145,7 @@ class FolderCovers:
         covers = self._covers_of(folder)
         if covers is None:
             return None
-        usable = self._usable(covers)
+        usable = [cover for cover, _ in self._usable(covers)]
         if len(usable) < MOSAIC_TILES or _key_of(usable) != key:
             return None
         cover = compose_cover(
@@ -123,8 +155,23 @@ class FolderCovers:
             return ArtworkSave.UNDECODABLE
         saved = store_decoded_image(cover, self._artwork_path, key, store)
         if saved is ArtworkSave.SAVED:
+            self._date_like_its_newest_cover(store, key, usable)
             self._forget_others(store, key)
         return saved
+
+    def _date_like_its_newest_cover(
+        self, store: str, key: str, tiles: Sequence[Cover]
+    ) -> None:
+        """Stamped with its covers' time: a Pi's clock can lag behind them."""
+        newest = max(self._written(*tile) or 0 for tile in tiles)
+        for size in ("thumbnail", "small", "large"):
+            try:
+                os.utime(
+                    artwork_file(self._artwork_path, store, key, size),
+                    ns=(newest, newest),
+                )
+            except OSError:
+                continue
 
     def _forget_others(self, store: str, key: str) -> None:
         """Remove the mosaics the folder had for covers it no longer leads

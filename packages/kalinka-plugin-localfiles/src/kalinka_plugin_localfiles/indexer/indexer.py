@@ -50,7 +50,7 @@ from ..resolution.resolver import (
     OBSERVED,
     TAG_CONSENSUS,
 )
-from ..utils.artwork_store import dhash_bytes, save_artwork_images
+from ..utils.artwork_store import dhash_bytes, save_artwork_images, sweep_artwork
 from ..utils.folder_art import is_cover_image_name
 from ..utils.watched_file import WatchedFile
 from ..utils.years import year_from_date
@@ -445,6 +445,7 @@ class FileIndexer:
         await self._group_albums()
 
         await self.resolve_artwork(available_folders, listings=listings)
+        await self._sweep_artwork()
 
         if any(changed_items.values()):
             logger.info(
@@ -1143,6 +1144,18 @@ class FileIndexer:
                 path_source=FOLDER_NAME,
             )
         return album_id, True
+
+    async def _sweep_artwork(self) -> None:
+        """Delete the cover files no album or track points at any more."""
+        keys = await self.db_manager.get_image_keys()
+        removed = 0
+        for kind, keep in keys.items():
+            removed += await asyncio.to_thread(
+                sweep_artwork, self.artwork_path, kind, keep
+            )
+        await self.db_manager.forget_track_cover_origins(keys["track"])
+        if removed:
+            logger.info("Removed %d cover file(s) nothing uses any more", removed)
 
     async def _record_first_cover(
         self, album_id: str, metadata: Dict, file_path: str
