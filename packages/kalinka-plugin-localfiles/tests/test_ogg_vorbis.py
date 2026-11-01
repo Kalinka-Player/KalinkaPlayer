@@ -26,7 +26,7 @@ from kalinka_plugin_localfiles.indexer.indexer import (
     is_supported_audio_file,
 )
 from kalinka_plugin_localfiles.indexer.indexer_db import AsyncIndexerDb
-from kalinka_plugin_localfiles.indexer.ogg import (
+from kalinka_plugin_sdk.media.ogg import (
     _WINDOW,
     _OpeningPages,
     _Spans,
@@ -535,7 +535,7 @@ def test_a_file_read_on_past_the_kept_opening_is_not_held(monkeypatch):
     """A malformed file can have mutagen read on to its end looking for the
     comment header."""
     monkeypatch.setattr(
-        "kalinka_plugin_localfiles.indexer.ogg._MAX_OPENING", 2 * _WINDOW
+        "kalinka_plugin_sdk.media.ogg._MAX_OPENING", 2 * _WINDOW
     )
     data = bytes(range(256)) * (10 * _WINDOW // 256)
     audio = _CountingFile(data)
@@ -611,7 +611,7 @@ def test_where_each_links_audio_starts_costs_no_read_of_its_own(monkeypatch):
     assert vorbis_length(timed) == pytest.approx(3 * LONG_LINK_SECONDS)
 
     monkeypatch.setattr(
-        "kalinka_plugin_localfiles.indexer.ogg._audio_start", lambda *_: 0
+        "kalinka_plugin_sdk.media.ogg._audio_start", lambda *_: 0
     )
     untimed = _CountingFile(data)
     vorbis_length(untimed)

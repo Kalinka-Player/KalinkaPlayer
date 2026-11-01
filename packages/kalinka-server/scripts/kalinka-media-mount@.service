@@ -1,0 +1,8 @@
+[Unit]
+Description=Mount %I for Kalinka
+BindsTo=dev-%i.device
+After=dev-%i.device
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/kalinka/media-mount mount-device /dev/%I

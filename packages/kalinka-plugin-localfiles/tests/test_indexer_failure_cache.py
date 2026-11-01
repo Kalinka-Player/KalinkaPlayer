@@ -228,7 +228,9 @@ async def test_new_readers_reread_what_older_ones_refused(indexer, monkeypatch):
 def _reading_mp3_with(monkeypatch, reader):
     entry = FileIndexer._TAG_FORMATS["audio/mpeg"]
     monkeypatch.setitem(
-        FileIndexer._TAG_FORMATS, "audio/mpeg", dataclasses.replace(entry, read=reader)
+        FileIndexer._TAG_FORMATS,
+        "audio/mpeg",
+        dataclasses.replace(entry, reader=dataclasses.replace(entry.reader, read=reader)),
     )
 
 

@@ -23,6 +23,7 @@ BuildArch:      noarch
 BuildRequires:  systemd-rpm-macros
 Requires:       python3 >= 3.11
 Requires:       python3-pip
+Suggests:       nfs-utils
 %{?systemd_requires}
 
 %description
@@ -43,6 +44,11 @@ install -D -m 644 scripts/kalinka-restart.service %{buildroot}%{_unitdir}/kalink
 install -D -m 644 scripts/kalinka-journal-reader.socket %{buildroot}%{_unitdir}/kalinka-journal-reader.socket
 install -D -m 644 scripts/kalinka-journal-reader@.service %{buildroot}%{_unitdir}/kalinka-journal-reader@.service
 install -D -m 644 scripts/kalinka.tmpfiles.conf %{buildroot}%{_tmpfilesdir}/kalinka.conf
+install -D -m 644 scripts/kalinka-mounts.path %{buildroot}%{_unitdir}/kalinka-mounts.path
+install -D -m 644 scripts/kalinka-mounts.service %{buildroot}%{_unitdir}/kalinka-mounts.service
+install -D -m 644 scripts/kalinka-media-mount@.service %{buildroot}%{_unitdir}/kalinka-media-mount@.service
+install -D -m 644 scripts/99-kalinka-media.rules %{buildroot}%{_udevrulesdir}/99-kalinka-media.rules
+install -D -m 755 scripts/media-mount %{buildroot}%{_prefix}/lib/kalinka/media-mount
 install -D -m 644 rpm/kalinka-server.sysusers %{buildroot}%{_sysusersdir}/kalinka-server.conf
 
 %pre
@@ -73,11 +79,18 @@ if [ ! -d /srv/kalinka/music ]; then
 fi
 systemctl enable --now kalinka-restart.path >/dev/null 2>&1 || :
 systemctl enable --now kalinka-journal-reader.socket >/dev/null 2>&1 || :
+systemctl enable --now kalinka-mounts.path >/dev/null 2>&1 || :
+udevadm control --reload-rules >/dev/null 2>&1 || :
+for dev in /sys/class/block/*; do
+  case "$(readlink -f "$dev")" in
+    */usb*) udevadm trigger --action=add "$dev" >/dev/null 2>&1 || : ;;
+  esac
+done
 systemctl enable kalinka.service >/dev/null 2>&1 || :
 systemctl restart kalinka.service >/dev/null 2>&1 || :
 
 %preun
-%systemd_preun kalinka.service kalinka-restart.path kalinka-journal-reader.socket
+%systemd_preun kalinka.service kalinka-restart.path kalinka-journal-reader.socket kalinka-mounts.path
 
 %postun
 %systemd_postun_with_restart kalinka.service
@@ -94,6 +107,12 @@ systemctl restart kalinka.service >/dev/null 2>&1 || :
 %{_unitdir}/kalinka-journal-reader.socket
 %{_unitdir}/kalinka-journal-reader@.service
 %{_tmpfilesdir}/kalinka.conf
+%{_unitdir}/kalinka-mounts.path
+%{_unitdir}/kalinka-mounts.service
+%{_unitdir}/kalinka-media-mount@.service
+%{_udevrulesdir}/99-kalinka-media.rules
+%dir %{_prefix}/lib/kalinka
+%{_prefix}/lib/kalinka/media-mount
 %{_sysusersdir}/kalinka-server.conf
 
 %changelog

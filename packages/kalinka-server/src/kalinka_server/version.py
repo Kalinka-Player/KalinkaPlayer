@@ -174,7 +174,25 @@ def get_version() -> str:
 # a PUT /server/config to a module or device publishes before it answers.
 # Before 0.19 the replay has no `modules`, and the GET is the only source.
 # 0.20: optional module/catalog artwork and /server/module-icons/{digest}.
-REST_API_VERSION = "0.20"
+# 0.21: storage. GET /server/storage/volumes lists the server's own music
+# folder, the drives and shares it mounted and the disks mounted under /media,
+# /mnt or /run/media, each with a `summary` to show under its label;
+# /queue/ws and /queue/events carry volumes_changed with the same list, and
+# the replay state `volumes`. POST /server/storage/volumes/{id}/eject and
+# /mount ask the root helper to unmount or mount one. GET
+# /server/storage/folders?path= lists the folders in a path on the server's
+# storage or under /home, or the places they can be in, for Settings to pick
+# a music folder. GET /server/storage/location?entity_id= says where a Drives
+# folder is and what a library makes of it (`holds`, `removable`), and POST
+# /server/storage/adopt adds it to that library and /release takes out the
+# source it is. Drives (source `drives`, `builtin`, `icon`, `count`) browses
+# and plays every mounted volume from its files; its catalogs are `live` and
+# `on_storage`, its root carries a folder `preview_config`, it lists
+# `catalogs` only while a drive is mounted, and its rows carry the `icon` a
+# client draws where they have no art.
+# Settings saved through PUT /server/config reach the plugin that owns them.
+# GET /server/version carries `storage`.
+REST_API_VERSION = "0.21"
 
 
 def get_rest_api_version() -> str:

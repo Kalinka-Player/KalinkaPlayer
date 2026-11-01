@@ -244,27 +244,16 @@ Kalinka can read music from several places at once. Choose them during setup, an
 
 Albums appear once they have finished copying.
 
-**In another folder or on a USB disk on the server's machine.** Add it as a **Folder on the server**. The server runs as the user `kalusr` and can only read files that every user may read. A folder in your home usually needs this once:
+**On a USB disk or stick plugged into the server.** Just plug it in. Kalinka mounts it read-only, and within a few seconds **Drives** appears among your music sources: browse its folders and play straight from it, with its tags and cover art, without waiting for anything to be indexed. To keep a disk's music in My Library, open it or one of its folders and choose **Add to library**. FAT32, exFAT, NTFS, HFS+, ext4, XFS, Btrfs and F2FS are mounted; a disk you have put in `/etc/fstab` is left to you. On ext4, XFS, Btrfs and F2FS the server, which runs as the user `kalusr`, reads only the files that every user may read. Pulling the disk out without ejecting it is safe, as Kalinka never writes to it; **Eject** in the drive's menu also powers it down.
+
+**On an NFS share, or a second disk inside the server.** Add it in **Configuration → Storage**. Kalinka mounts it read-only now and at every start, and it appears under **Drives** like a USB disk. NFS needs the `nfs-common` package, which the installer adds when it can.
+
+**In another folder on the server's machine.** Add it as a **Folder on the server**. The server runs as the user `kalusr` and can only read files that every user may read. A folder in your home usually needs this once:
 
 ```bash
 chmod o+X /home/<you>
 chmod -R o+rX /home/<you>/Music
 ```
-
-<details>
-<summary>A USB disk on a streamer with no desktop</summary>
-
-Kalinka does not mount USB disks by itself, so mount it once, permanently. `lsblk -f` lists the disks; note the **UUID** of yours. Then:
-
-```bash
-sudo mkdir -p /mnt/music
-echo 'UUID=<your-uuid> /mnt/music auto nofail,ro 0 0' | sudo tee -a /etc/fstab
-sudo mount -a
-```
-
-Add `/mnt/music` as a **Folder on the server**. `nofail` lets the streamer start when the disk is unplugged, and `ro` means Kalinka only ever reads it. For an NTFS disk, write `ntfs3` instead of `auto`.
-
-</details>
 
 The library then fills in by itself: Kalinka finds your files, tidies their details online and, if you turned it on, prepares smart search. On a Raspberry Pi with a large collection the first pass can take hours. Kalinka works normally in the meantime.
 

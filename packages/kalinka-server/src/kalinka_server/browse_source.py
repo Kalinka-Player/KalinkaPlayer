@@ -22,6 +22,7 @@ from kalinka_plugin_sdk.datamodel import (
     Catalog,
     EntityId,
     EntityType,
+    Preview,
 )
 from kalinka_plugin_sdk.filters import FilterQuery, FilterValueList
 from kalinka_plugin_sdk.inputmodule import SearchType
@@ -83,6 +84,20 @@ class RegisteredSource:
     title: str
     source: BrowseSource
     builtin: bool = False
+    #: How a client lays out the root: a folder page for Drives, say. None
+    #: leaves it to the root's items.
+    preview: Optional[Preview] = None
+    #: The material icon name a built-in is drawn with, as a plugin's config
+    #: declares its own.
+    icon: Optional[str] = None
+    #: The root changes without Kalinka, and is listed again each time it
+    #: is shown (``Catalog.live``).
+    live: bool = False
+    #: The root is on the server's storage (``Catalog.on_storage``).
+    on_storage: bool = False
+    #: A number a client may show on the source's icon, asked each time the
+    #: modules are listed (``ModuleDescriptor.count``).
+    count: Optional[Callable[[], Optional[int]]] = None
 
 
 class BrowseSourceRegistry:
@@ -138,5 +153,8 @@ def _root_item(entry: RegisteredSource) -> BrowseItem:
             id=entity_id,
             title=entry.title,
             description="" if entry.builtin else "Kalinka Input Module",
+            preview_config=entry.preview,
+            live=entry.live,
+            on_storage=entry.on_storage,
         ),
     )

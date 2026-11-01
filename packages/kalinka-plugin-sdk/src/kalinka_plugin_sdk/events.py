@@ -13,6 +13,7 @@ from .datamodel import (
 )
 from .module_health import ModuleHealthState
 from .module_icons import ModuleIcons
+from .storage import VolumeDescriptor
 
 
 class PlayQueueEventType(Enum):
@@ -28,6 +29,7 @@ class PlayQueueEventType(Enum):
     CurrentRendererChanged = "current_renderer_changed"
     PlaybackControlChanged = "playback_control_changed"
     ModulesChanged = "modules_changed"
+    VolumesChanged = "volumes_changed"
 
 
 class RendererDescriptor(BaseModel):
@@ -75,6 +77,9 @@ class ModuleDescriptor(BaseModel):
     missing_packages: List[str] = Field(default_factory=list)
     builtin: bool = False
     capabilities: List[str] = Field(default_factory=list)
+    #: SDK 3.20: a number a client may show on the source's icon, such as
+    #: the drives Drives lists; None where it counts nothing.
+    count: Optional[int] = None
 
 
 class ModulesSnapshot(BaseModel):
@@ -105,6 +110,8 @@ class PlayQueueState(BaseState[PlayQueueEvent]):
     playback_control: PlaybackControl = Field(default_factory=PlaybackControl)
     # SDK 3.17; None from a server that never publishes them.
     modules: Optional[ModulesSnapshot] = None
+    # SDK 3.20; None from a server without a storage manager.
+    volumes: Optional[List[VolumeDescriptor]] = None
 
     def apply(self, event: PlayQueueEvent) -> "PlayQueueState":
         """Apply event and return a new state (immutable pattern)."""
@@ -153,6 +160,8 @@ class PlayQueueState(BaseState[PlayQueueEvent]):
             updates["modules"] = ModulesSnapshot(
                 input_modules=event.input_modules, devices=event.devices
             )
+        elif isinstance(event, VolumesChangedEvent):
+            updates["volumes"] = event.volumes
         else:
             return self
 
@@ -242,3 +251,11 @@ class ModulesChangedEvent(PlayQueueEvent):
     event_type: PlayQueueEventType = PlayQueueEventType.ModulesChanged
     input_modules: List[ModuleDescriptor]
     devices: List[ModuleDescriptor]
+
+
+class VolumesChangedEvent(PlayQueueEvent):
+    """SDK 3.20: a volume was mounted, unmounted, or changed state. Every
+    volume, as ``GET /server/storage/volumes`` lists them."""
+
+    event_type: PlayQueueEventType = PlayQueueEventType.VolumesChanged
+    volumes: List[VolumeDescriptor]

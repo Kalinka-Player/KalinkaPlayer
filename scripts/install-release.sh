@@ -277,6 +277,7 @@ APT_INSTALL=(apt-get "${APT_OPTS[@]}" install -y --no-install-recommends)
 # Named, as the installs below take no recommends; each maps to what is lost without it.
 declare -A EXTRAS=(
   [libchromaprint-tools]="AcoustID has no fpcalc to fingerprint tracks with"
+  [nfs-common]="NFS shares cannot be mounted under Configuration → Storage"
 )
 
 # Best-effort: every one of them serves an optional feature.

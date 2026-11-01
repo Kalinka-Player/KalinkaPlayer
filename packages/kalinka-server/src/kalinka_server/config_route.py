@@ -35,6 +35,7 @@ from .config_validation import (
     stored_value,
     validate_changes,
 )
+from .module_timeout import PLUGIN_CALL_TIMEOUT_S
 from .player_setup import ModuleHealthState, PreparedModuleCollection
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -172,6 +173,37 @@ def register_config_routes(
         except ConfigWriteError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
+    async def _tell_owners(applied: Dict[str, Any]) -> None:
+        """Hand each plugin the paths of its own settings that changed, and
+        the storage manager its own, so a change applies without a restart."""
+        by_plugin: Dict[str, set] = {}
+        for key in applied:
+            root, _, rest = key.partition(".")
+            if root in ("input_modules", "devices"):
+                name, _, path = rest.partition(".")
+                if path:
+                    by_plugin.setdefault(f"{root}.{name}", set()).add(path)
+        for owner, paths in by_plugin.items():
+            root, name = owner.split(".", 1)
+            prepared = (
+                modules.prepared_input_modules if root == "input_modules" else modules.prepared_devices
+            ).get(name)
+            instance = prepared.plugin_instance if prepared is not None else None
+            if instance is None:
+                continue
+            try:
+                await asyncio.wait_for(
+                    instance.config_changed(frozenset(paths)), PLUGIN_CALL_TIMEOUT_S
+                )
+            except Exception:  # noqa: BLE001 — the save stands whatever a plugin makes of it
+                logger.exception("%s could not take in its changed settings", name)
+        storage = getattr(app.state, "storage", None)
+        if storage is not None:
+            if any(key.startswith("base_config.storage.") for key in applied):
+                await storage.config_changed()
+            elif any(key.startswith("input_modules.") for key in applied):
+                await storage.refresh()
+
     @app.post("/server/config/validate")
     async def validate_config_fields(payload: Dict[str, Any]):
         """Judge staged changes without keeping any of them.
@@ -202,6 +234,24 @@ def register_config_routes(
         configuration again.
         """
         changes, issues = await _judge(payload)
+        return await _commit(changes, issues)
+
+    async def apply_config_changes(changes: Dict[str, Any]):
+        """Validate and commit changes the server makes on a user's behalf,
+        such as adding a drive to a library, exactly as a save would."""
+        issues = await validate_changes(changes, _config_targets())
+        return await _commit(changes, issues)
+
+    app.state.apply_config_changes = apply_config_changes
+
+    def config_value(path: str) -> Any:
+        """The saved value at ``path``, as ``GET /server/config`` sends it."""
+        ok_in, _err_in, ok_dev, _err_dev = _partition_modules_and_devices()
+        return build_static_values(config, ok_in, ok_dev).values.get(path)
+
+    app.state.config_value = config_value
+
+    async def _commit(changes: Dict[str, Any], issues: list):
         refused = blocking(issues)
         if refused:
             return JSONResponse(
@@ -283,6 +333,8 @@ def register_config_routes(
         ):
             # A setting can move what the listing shows without a report moving.
             await republish()
+
+        await _tell_owners(applied)
 
         ok_in, _err_in, ok_dev, _err_dev = _partition_modules_and_devices()
         known = build_static_values(config, ok_in, ok_dev)

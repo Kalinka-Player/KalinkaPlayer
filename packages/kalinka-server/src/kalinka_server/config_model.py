@@ -40,11 +40,12 @@ by its ``title``, so field order here is the order the app renders.
 
 import os
 from enum import Enum
-from typing import Annotated, Any
+from typing import Annotated, Any, ClassVar, Literal, Union
 
 from pydantic import AfterValidator, BaseModel, Field
 
 from kalinka_plugin_sdk import paths
+from kalinka_plugin_sdk.config_records import ConfigRecord, Records
 
 
 # Shared extras — keeps audit-tagging consistent across the file.
@@ -337,6 +338,75 @@ class EmbeddingConfig(BaseModel):
     )
 
 
+class NfsVersion(str, Enum):
+    v3 = "3"
+    v4 = "4"
+    v4_1 = "4.1"
+    v4_2 = "4.2"
+
+
+class NfsMount(ConfigRecord):
+    """An NFS export, mounted read-only under the media root."""
+
+    __preview_fields__: ClassVar[list[str]] = ["host", "export"]
+
+    kind: Literal["nfs"] = Field(
+        default="nfs",
+        title="NFS share",
+        description="An export on a NAS, mounted on this server",
+        json_schema_extra={"icon": "lan_outlined"},
+    )
+    label: str = Field(default="", title="Name", json_schema_extra={**_SIMPLE, "help": "How Drives lists it"})
+    host: str = Field(default="", title="Server", json_schema_extra=_SIMPLE)
+    export: str = Field(
+        default="", title="Export", json_schema_extra={**_SIMPLE, "help": "The exported path, such as /volume1/music"}
+    )
+    version: NfsVersion = Field(default=NfsVersion.v4_2, title="NFS version")
+    read_only: bool = Field(default=True, title="Read-only")
+
+
+class DiskMount(ConfigRecord):
+    """A filesystem on a disk inside this machine, found by its UUID."""
+
+    __preview_fields__: ClassVar[list[str]] = ["fs_uuid"]
+
+    kind: Literal["disk"] = Field(
+        default="disk",
+        title="Disk on this machine",
+        description="A second disk or partition this server should mount",
+        json_schema_extra={"icon": "storage_outlined"},
+    )
+    label: str = Field(default="", title="Name", json_schema_extra={**_SIMPLE, "help": "How Drives lists it"})
+    fs_uuid: str = Field(
+        default="",
+        title="Filesystem",
+        json_schema_extra={**_SIMPLE, "dynamic_options": True},
+    )
+    read_only: bool = Field(default=True, title="Read-only")
+
+
+MountRecord = Annotated[Union[NfsMount, DiskMount], Field(discriminator="kind")]
+
+
+class StorageConfig(BaseModel):
+    """Drives and shares this server mounts, under one media root."""
+
+    automount_usb: bool = Field(
+        default=True,
+        title="Mount USB drives automatically",
+        json_schema_extra={
+            **_SIMPLE,
+            "help": "Read-only, so a drive can be pulled out without ejecting it",
+        },
+    )
+    drives_enabled: bool = Field(
+        default=True,
+        title="Show drives as a source",
+        json_schema_extra={**_SIMPLE, "help": "Browse and play mounted drives without adding them to My Library"},
+    )
+    mounts: Records[MountRecord] = Field(default_factory=list, title="Mounts")
+
+
 class KalinkaConfig(BaseModel):
     """Main Kalinka configuration."""
 
@@ -344,6 +414,7 @@ class KalinkaConfig(BaseModel):
     device_automation: DeviceAutomationConfig = Field(
         default_factory=DeviceAutomationConfig, title="Device automation"
     )
+    storage: StorageConfig = Field(default_factory=StorageConfig, title="Storage")
     display: DisplayConfig = Field(
         default_factory=DisplayConfig,
         title="Screen",

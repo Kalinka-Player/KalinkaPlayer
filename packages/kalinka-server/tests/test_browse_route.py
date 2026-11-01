@@ -19,6 +19,7 @@ from kalinka_plugin_sdk.filters import (
     FilterValueList,
     UnsupportedFilter,
 )
+from kalinka_plugin_sdk.inputmodule import SourceUnavailableError
 
 from kalinka_server.browse_route import register_browse_routes
 
@@ -187,6 +188,22 @@ def test_a_module_failure_is_500_not_422():
     )
     r = TestClient(app, raise_server_exceptions=False).get(f"/browse/{CATALOG}")
     assert r.status_code == 500
+
+
+class _UnpluggedModule(_FakeModule):
+    async def browse(self, *args, **kwargs):
+        raise SourceUnavailableError("The drive this is on is not connected")
+
+
+def test_a_source_that_is_away_is_503_with_its_reason_and_no_error(caplog):
+    app = FastAPI()
+    register_browse_routes(
+        app, lambda _: _UnpluggedModule(), EntityId.from_string, lambda o, l: None
+    )
+    r = TestClient(app, raise_server_exceptions=False).get(f"/browse/{CATALOG}")
+    assert r.status_code == 503
+    assert r.json()["detail"] == "The drive this is on is not connected"
+    assert not [rec for rec in caplog.records if rec.levelname == "ERROR"]
 
 
 def test_values_endpoint_serves_one_fields_vocabulary(client, module):

@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch for Kalinka mount requests
+# No After=kalinka.service — see kalinka-restart.path.
+
+[Path]
+DirectoryNotEmpty=/run/kalinka-mounts/requests
+Unit=kalinka-mounts.service
+
+[Install]
+WantedBy=multi-user.target

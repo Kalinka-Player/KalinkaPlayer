@@ -180,6 +180,19 @@ class PluginBase(ABC, Generic[PLUGIN_CLASS, CTX_TYPE]):
         """
         return []
 
+    async def config_changed(self, changed: frozenset[str]) -> None:
+        """SDK 3.20: the user saved settings of this plugin.
+
+        Called after the save is committed and persisted, with the paths
+        that changed inside this plugin's config. The live config already
+        holds the new values; a plugin that copied any of them at setup
+        takes them in here, so the change applies without a restart.
+
+        @note Bounded by the server's per-call timeout. Long work, such as
+            a rescan, is started here and left to run.
+        """
+        return None
+
     async def required_packages(self) -> list[str]:
         """Return optional-package keys the plugin would need to install
         given its *current* in-memory config.

@@ -14,7 +14,7 @@ import pytest
 from PIL import Image
 
 from kalinka_plugin_localfiles.storage.local import LocalStorage
-from kalinka_plugin_localfiles.utils.folder_art import (
+from kalinka_plugin_sdk.media.folder_art import (
     EXACT,
     NAMED,
     SCAN,
@@ -70,7 +70,7 @@ class TestWhatIsAdmissible:
     def test_an_oversized_file_is_skipped_without_being_opened(
         self, tmp_path, monkeypatch
     ):
-        import kalinka_plugin_localfiles.utils.folder_art as folder_art
+        import kalinka_plugin_sdk.media.folder_art as folder_art
 
         _image(str(tmp_path / "cover.jpg"))
         monkeypatch.setattr(folder_art, "_MAX_BYTES", 10)
@@ -87,7 +87,7 @@ class TestWhatIsAdmissible:
         """A storage reports zero for a file it could not measure — gone
         since the listing, or unreadable — and opening one is a wasted round
         trip on a share."""
-        import kalinka_plugin_localfiles.utils.folder_art as folder_art
+        import kalinka_plugin_sdk.media.folder_art as folder_art
 
         _image(str(tmp_path / "cover.jpg"))
         monkeypatch.setattr(LocalStorage, "size_of", lambda self, entry: 0)
@@ -103,7 +103,7 @@ class TestWhatIsAdmissible:
     ):
         """A byte cap does not bound decode cost, so the pixel count is
         checked too — from the header, before any pixel is read."""
-        import kalinka_plugin_localfiles.utils.folder_art as folder_art
+        import kalinka_plugin_sdk.media.folder_art as folder_art
 
         _image(str(tmp_path / "cover.jpg"), (1200, 1200))
         monkeypatch.setattr(folder_art, "_MAX_PIXELS", 1000)

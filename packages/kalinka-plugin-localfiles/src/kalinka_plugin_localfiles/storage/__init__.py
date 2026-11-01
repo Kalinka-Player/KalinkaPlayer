@@ -24,17 +24,19 @@ from .locator import (
     LocatorError,
     StorageLocator,
     is_within,
-    media_type_of,
     parse,
     root_of,
     scheme_of,
 )
+from kalinka_plugin_sdk.media.formats import media_type_of
+
 from .credentials import SmbCredentials
 from .resolver import StorageResolver, build_resolver
 from .sources import library_locations, library_roots, share_logins, source_location
 from .unavailable import UnavailableStorage
 
 __all__ = [
+    "media_type_of",
     "PROBE_TIMEOUT_S",
     "ChangeKind",
     "ChangeWatcher",
@@ -56,7 +58,6 @@ __all__ = [
     "is_within",
     "library_locations",
     "library_roots",
-    "media_type_of",
     "parse",
     "root_of",
     "scheme_of",

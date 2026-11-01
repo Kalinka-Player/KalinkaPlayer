@@ -71,6 +71,7 @@ def test_the_wire_lists_the_modules_as_the_module_listing_does():
             "missing_packages": [],
             "builtin": False,
             "capabilities": [],
+            "count": None,
         }
     ]
     assert wire["devices"][0]["state"] == "ready"

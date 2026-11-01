@@ -9,7 +9,7 @@ import threading
 import requests
 from typing import Dict, Optional, List, Tuple
 
-from ..audio_formats import is_dsd
+from kalinka_plugin_sdk.media.formats import is_dsd
 from ..config_model import LocalFilesConfig
 from ..resolution.resolver import GUESSED
 from ..storage import build_resolver

@@ -78,6 +78,7 @@ def test_prerm_still_reports_a_real_removal(tmp_path):
     assert systemctl_log.read_text().splitlines() == [
         "disable --now kalinka-restart.path",
         "disable --now kalinka-journal-reader.socket",
+        "disable --now kalinka-mounts.path",
     ]
 
 
@@ -220,7 +221,7 @@ def test_a_supervisor_is_refused_before_anything_installs_where_it_has_no_packag
             assert "Debian-based systems only" in result.stderr
 
 
-EXTRAS = {"libchromaprint-tools"}
+EXTRAS = {"libchromaprint-tools", "nfs-common"}
 # A second name, for what the installer does with each of several.
 STAND_IN = "kalinka-stand-in"
 
@@ -484,7 +485,7 @@ def test_a_package_apt_cannot_install_costs_only_itself(bundle_fails, tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
-    assert installed == {STAND_IN}
+    assert installed == (EXTRAS - {"libchromaprint-tools"}) | {STAND_IN}
     [note] = _notes(result)
     assert "libchromaprint-tools" in note and "fpcalc" in note
     assert "Done." in result.stdout
