@@ -129,10 +129,10 @@ def register_storage_routes(
             if len(kept) == len(records):
                 return _unchanged(adopter)
             records = kept
+        # Saving a library's settings brings the volume list up to date.
         result = await apply_changes({path: records})
         if isinstance(result, JSONResponse):
             return result
-        await storage.refresh()
         return {
             "module": adopter.module,
             "issues": result.get("issues", []),

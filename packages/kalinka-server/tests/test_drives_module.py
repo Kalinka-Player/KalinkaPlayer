@@ -1,5 +1,6 @@
 """Drives: mounted volumes browsed and played straight from their files."""
 
+import asyncio
 import io
 import json
 import os
@@ -21,8 +22,7 @@ from kalinka_plugin_sdk.storage import (
     VolumeState,
 )
 
-from kalinka_server.drives import fsio, ids, listing
-from kalinka_server.drives import module as drives_module
+from kalinka_server.drives import fsio, ids, listing, rows
 from kalinka_server.drives.listing import ListingCache, TagCache
 from kalinka_server.drives.module import DrivesModule
 from kalinka_server.storage.describe import summary_of
@@ -315,7 +315,7 @@ async def test_folders_a_slow_drive_cannot_count_in_time_are_listed_without_coun
 ):
     drives = _drives(tmp_path, [_volume(stick, "3A1F", "SANDISK")])
     monkeypatch.setattr(fsio, "COUNT_BUDGET_S", 0.05)
-    monkeypatch.setattr(drives_module, "count_folder", lambda _path: time.sleep(0.5))
+    monkeypatch.setattr(rows, "count_folder", lambda _path: time.sleep(0.5))
 
     listing = await drives.browse(ids.catalog_id(ids.ROOT))
 
@@ -337,7 +337,7 @@ async def test_a_malformed_file_or_a_name_that_is_not_utf8_lists_all_the_same(tm
     json.dumps(listing.model_dump(mode="json"))
 
 
-def test_a_file_that_would_not_read_is_read_again_next_time(tmp_path, monkeypatch):
+async def test_a_file_that_would_not_read_is_read_again_next_time(tmp_path, monkeypatch):
     track = _flac(tmp_path / "So What.flac", title="So What")
     entry = listing.entry_of(str(track))
     tags = TagCache()
@@ -347,10 +347,30 @@ def test_a_file_that_would_not_read_is_read_again_next_time(tmp_path, monkeypatc
         raise OSError(5, "Input/output error")
 
     monkeypatch.setattr(listing, "read_summary", unplugged)
-    assert tags.read_all([entry], 5.0) == {str(track): None}
+    assert await tags.read_within([entry], 5.0) == {str(track): None}
     monkeypatch.setattr(listing, "read_summary", real)
-    assert tags.read_all([entry], 5.0)[str(track)].title == "So What"
+    assert (await tags.read_within([entry], 5.0))[str(track)].title == "So What"
     tags.shutdown()
+
+
+async def test_a_drive_that_stops_answering_holds_up_no_other(tmp_path, stick, monkeypatch):
+    dead = tmp_path / "nas"
+    dead.mkdir()
+    io = fsio.DriveIO(lane_of=lambda path: "nas" if path.startswith(str(dead)) else "stick")
+    monkeypatch.setattr(fsio, "FS_TIMEOUT_S", 0.2)
+    hung = [asyncio.ensure_future(io.run(time.sleep, 1.0, at=str(dead))) for _ in range(6)]
+
+    started = time.monotonic()
+    assert await io.run(os.path.isdir, str(stick), at=str(stick)) is True
+    assert time.monotonic() - started < 0.15
+    await asyncio.gather(*hung, return_exceptions=True)
+    io.close()
+
+
+def test_a_folder_says_whether_it_holds_a_cover(tmp_path, stick):
+    assert listing.folder_has_images(str(stick / "Jazz" / "Kind of Blue"))
+    assert not listing.folder_has_images(str(stick / "Jazz"))
+    assert not listing.folder_has_images(str(tmp_path / "missing"))
 
 
 def test_a_folder_is_listed_again_only_once_something_in_it_changed(tmp_path, monkeypatch):

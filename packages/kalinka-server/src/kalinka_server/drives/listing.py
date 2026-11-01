@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import threading
 import time
 from collections import OrderedDict
-from concurrent.futures import Future, ThreadPoolExecutor, wait
+from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 from kalinka_plugin_sdk.files import is_hidden_file, is_housekeeping_dir
 from kalinka_plugin_sdk.media.formats import is_supported_audio_file
@@ -180,16 +181,18 @@ def walk_tracks(path: str, limit: int) -> list[str]:
 class TagCache:
     """Tags of files read lately, so a page shown again reads nothing.
 
-    @note Thread-safe; reads run on a small pool of its own, so a slow drive
-        holds up only the tracks it serves.
+    @param pool_for The threads a file is read on; a pool of its own when
+        not given.
+    @note Thread-safe.
     """
 
-    def __init__(self, capacity: int = 5000, workers: int = 4):
+    def __init__(self, capacity: int = 5000, pool_for: Optional[Callable[[str], Executor]] = None):
         self._capacity = capacity
         self._lock = threading.Lock()
         self._entries: OrderedDict[tuple[str, int, int], TagSummary] = OrderedDict()
         self._reading: dict[tuple[str, int, int], Future] = {}
-        self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="kal-tags")
+        self._own = None if pool_for else ThreadPoolExecutor(max_workers=4, thread_name_prefix="kal-tags")
+        self._pool_for = pool_for or (lambda _path: self._own)
 
     def cached(self, key: tuple[str, int, int]) -> tuple[bool, Optional[TagSummary]]:
         with self._lock:
@@ -220,10 +223,10 @@ class TagCache:
         with self._lock:
             future = self._reading.get(key)
             if future is None:
-                future = self._reading[key] = self._pool.submit(self._read, key)
+                future = self._reading[key] = self._pool_for(key[0]).submit(self._read, key)
         return future
 
-    def read_all(
+    async def read_within(
         self, files: Sequence[FileEntry], budget_s: float
     ) -> dict[str, Optional[TagSummary]]:
         """Tags for ``files`` by path; a file not read within ``budget_s``
@@ -236,15 +239,26 @@ class TagCache:
             if hit:
                 out[entry.path] = summary
             else:
-                pending[self._reader(key)] = entry.path
+                pending[asyncio.wrap_future(self._reader(key))] = entry.path
         if pending:
-            done, _ = wait(pending, timeout=max(0.0, budget_s))
+            done, _ = await asyncio.wait(pending, timeout=max(0.0, budget_s))
             for future in done:
                 out[pending[future]] = future.result()
         return out
 
     def shutdown(self) -> None:
-        self._pool.shutdown(wait=False, cancel_futures=True)
+        if self._own is not None:
+            self._own.shutdown(wait=False, cancel_futures=True)
+
+
+def folder_has_images(path: str) -> bool:
+    """Whether a folder holds an image a cover could be, stopping at the
+    first."""
+    try:
+        with os.scandir(path) as entries:
+            return any(e.name.lower().endswith(_IMAGE_SUFFIXES) for e in entries)
+    except OSError:
+        return False
 
 
 def entry_of(path: str) -> Optional[FileEntry]:

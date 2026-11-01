@@ -1,6 +1,8 @@
 """Requests to the root helper, and reading its answers back."""
 
 import json
+import os
+import time
 
 from kalinka_server.storage import requests as requests_mod
 from kalinka_server.storage.requests import MountRequests
@@ -59,3 +61,16 @@ def test_a_request_nobody_answers_times_out(tmp_path, monkeypatch):
 
     assert not requests.pending("rec_nas")
     assert requests.outcome("rec_nas").error == "The mount helper did not answer"
+
+
+def test_a_request_queued_behind_a_slow_one_waits_its_turn(tmp_path, monkeypatch):
+    requests = _requests(tmp_path)
+    monkeypatch.setattr(requests_mod, "ANSWER_TIMEOUT_S", 0.2)
+    requests.mount("rec_b", "nfs4", "nas:/b", ["ro"])
+    time.sleep(0.3)
+    assert not requests.pending("rec_b")
+
+    # The helper answered another request just now, so this one is next.
+    os.utime(tmp_path / "res")
+    assert requests.pending("rec_b")
+    assert requests.outcome("rec_b") is None

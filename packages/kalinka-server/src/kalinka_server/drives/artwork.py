@@ -110,6 +110,12 @@ class DriveArtwork:
         self._writes = 0
         self._none: OrderedDict[str, float] = OrderedDict()
 
+    @staticmethod
+    def subject_of(resource: str) -> Optional[str]:
+        """The file or folder ``resource`` is the cover of, reading nothing."""
+        match = _RESOURCE.match(resource)
+        return decode_path(match.group(2)) if match is not None else None
+
     def path_of(self, resource: str) -> Optional[str]:
         match = _RESOURCE.match(resource)
         if match is None:

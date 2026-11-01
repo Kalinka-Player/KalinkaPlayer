@@ -210,8 +210,8 @@ class StorageManager:
         off changes no volume but what the server offers."""
         self._apply_automount()
         self._apply_mounts()
-        await self.refresh()
-        await self._tell_listeners()
+        if not await self.refresh():
+            await self._tell_listeners()
 
     def eject(self, volume_id: str) -> bool:
         volume = self.volume(volume_id)
@@ -272,15 +272,19 @@ class StorageManager:
             label=best.label,
         )
 
-    async def refresh(self) -> None:
-        """Rebuild the list now, or once more right after a rebuild under way."""
+    async def refresh(self) -> bool:
+        """Rebuild the list now, or once more right after a rebuild under way.
+
+        @return Whether the list changed, and the listeners were told.
+        """
         if self._refreshing is not None and not self._refreshing.done():
             self._again = True
             return await asyncio.shield(self._refreshing)
         self._refreshing = asyncio.ensure_future(self._rebuild_until_settled())
-        await asyncio.shield(self._refreshing)
+        return await asyncio.shield(self._refreshing)
 
-    async def _rebuild_until_settled(self) -> None:
+    async def _rebuild_until_settled(self) -> bool:
+        told = False
         while True:
             self._again = False
             volumes = await asyncio.to_thread(self.snapshot)
@@ -290,8 +294,9 @@ class StorageManager:
             if changed:
                 self._announce()
                 await self._tell_listeners()
+                told = True
             if not self._again:
-                return
+                return told
 
     async def _tell_listeners(self) -> None:
         for callback in list(self._after_change):
@@ -338,7 +343,10 @@ class StorageManager:
         # The latest mount on a point hides those under it.
         shown = {mount.mount_point: mount for mount in mounts}
         views: set[str] = set()
-        for mount in mounts:
+        # Kalinka's own mounts first: their id is their directory, so a clone
+        # mounted elsewhere is the one renamed, and a view of either is theirs.
+        ours = sorted(mounts, key=lambda m: not _under(m.mount_point, (self._media_root,)))
+        for mount in ours:
             if shown[mount.mount_point] is not mount:
                 continue
             volume = self._describe(mount, configured)
@@ -487,6 +495,26 @@ class StorageManager:
         except OSError as e:
             logger.warning("Could not ask for a mount: %s", e)
 
+    def filesystem_options(self) -> list[dict]:
+        """What a disk mount's filesystem can be set to: those nothing has
+        mounted, and those the saved mounts name, mounted or not."""
+        options = [
+            {
+                "value": uuid,
+                "label": facts.label or uuid,
+                "description": " · ".join(p for p in (facts.fs_type, facts.vendor, facts.model) if p),
+            }
+            for uuid, facts in self.unmounted_filesystems()
+        ]
+        offered = {option["value"] for option in options}
+        for record in self._config().mounts:
+            if isinstance(record, DiskMount) and record.fs_uuid and record.fs_uuid not in offered:
+                offered.add(record.fs_uuid)
+                options.append(
+                    {"value": record.fs_uuid, "label": record.label or record.fs_uuid, "description": "A saved mount"}
+                )
+        return options
+
     def unmounted_filesystems(self) -> list[tuple[str, BlockFacts]]:
         """Filesystems udev knows of that nothing has mounted, by UUID: none
         that /etc/fstab places, and none on a disk the system runs from,
@@ -510,7 +538,9 @@ class StorageManager:
             if _disk_of(name[1:], self._sys_dev_block) in system - {None}:
                 continue
             facts = block_facts(name[1:], self._udev)
-            if facts.fs_usage == "filesystem" and facts.uuid and facts.bus != "usb" and facts.uuid not in listed:
+            # A USB drive mounts by itself, unless that is switched off.
+            automounted = facts.bus == "usb" and self._config().automount_usb
+            if facts.fs_usage == "filesystem" and facts.uuid and not automounted and facts.uuid not in listed:
                 found.append((facts.uuid, facts))
         return found
 

@@ -274,6 +274,25 @@ def test_the_disk_picker_offers_unmounted_internal_filesystems(tmp_path):
     assert offered == ["1111-2222"]
 
 
+def test_with_automount_off_a_usb_drive_is_offered_as_a_disk(tmp_path):
+    box = _Box(tmp_path)
+    box.config = box.config.model_copy(update={"automount_usb": False})
+
+    offered = [uuid for uuid, _ in box.manager.unmounted_filesystems()]
+
+    assert offered == ["1111-2222", "9999-0000"]
+
+
+def test_a_saved_disk_keeps_its_filesystem_among_the_choices(tmp_path):
+    """Spare is mounted for rec_disk, so nothing else would offer it."""
+    box = _Box(tmp_path, mountinfo=MOUNTINFO + "\n60 1 8:33 / /media/kalinka/rec_disk ro - ext4 /dev/sdc1 ro")
+
+    options = box.manager.filesystem_options()
+
+    assert [(o["value"], o["label"]) for o in options] == [("1111-2222", "Spare")]
+    assert box.manager.unmounted_filesystems() == []
+
+
 def test_the_disk_picker_leaves_out_what_fstab_places(tmp_path):
     box = _Box(tmp_path)
     (tmp_path / "fstab").write_text('UUID="1111-2222" /srv/spare ext4 noauto 0 0\n')
@@ -293,6 +312,22 @@ def test_the_disk_picker_leaves_out_the_disk_the_system_uses(tmp_path):
         (links / numbers).symlink_to(disk / part)
 
     assert box.manager.unmounted_filesystems() == []
+
+
+async def test_a_clone_mounted_elsewhere_first_leaves_kalinka_its_id(tmp_path):
+    """The desktop mounted a clone of SANDISK before Kalinka mounted it."""
+    clone = "40 1 8:65 / /media/me/SANDISK ro - vfat /dev/sde1 ro"
+    box = _Box(tmp_path, mountinfo=clone + "\n" + MOUNTINFO)
+    (tmp_path / "udev" / "b8:65").write_text(
+        "E:ID_FS_LABEL=SANDISK\nE:ID_FS_UUID=3A1F-9C2B\nE:ID_FS_TYPE=vfat\nE:ID_FS_USAGE=filesystem\nE:ID_BUS=usb\n"
+    )
+
+    await box.manager.refresh()
+
+    ours = box.manager.volume("3A1F-9C2B")
+    assert ours.mount_point == "/media/kalinka/3A1F-9C2B"
+    assert box.manager.volume("3A1F-9C2B-sde1").mount_point == "/media/me/SANDISK"
+    assert box.manager.eject("3A1F-9C2B")
 
 
 async def test_free_space_moving_is_no_news(tmp_path):
@@ -319,3 +354,16 @@ async def test_a_settings_change_reaches_the_listeners_with_no_volume_changed(tm
     await box.manager.config_changed()
 
     assert told == [True] and len(box.events) == 1
+
+
+async def test_a_settings_change_that_moves_a_volume_tells_the_listeners_once(tmp_path):
+    box = _Box(tmp_path, config=StorageConfig())
+    told = []
+
+    async def listener():
+        told.append(True)
+
+    box.manager.after_change(listener)
+    await box.manager.config_changed()
+
+    assert told == [True]

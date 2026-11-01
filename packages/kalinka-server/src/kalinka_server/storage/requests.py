@@ -21,7 +21,8 @@ def results_dir() -> str:
 
 #: A request the helper has not answered by then is reported as failed: on a
 #: plain install without the units nothing will ever answer it. Requests run
-#: one at a time, and a share that is away retries for a minute.
+#: one at a time, so the wait counts from the helper's last answer too, and a
+#: share that is away retries for a minute.
 ANSWER_TIMEOUT_S = 150.0
 
 
@@ -85,7 +86,7 @@ class MountRequests:
         answered = self._answer(volume_id)
         if answered is not None and answered.seq >= seq:
             return False
-        return time.time() - at < ANSWER_TIMEOUT_S
+        return not self._overdue(at)
 
     def outcome(self, volume_id: str) -> Optional[RequestOutcome]:
         """The helper's last answer for ``volume_id``, or a timeout once the
@@ -93,10 +94,20 @@ class MountRequests:
         answered = self._answer(volume_id)
         sent = self._sent.get(volume_id)
         if sent is not None and (answered is None or answered.seq < sent[0]):
-            if time.time() - sent[1] >= ANSWER_TIMEOUT_S:
+            if self._overdue(sent[1]):
                 return RequestOutcome(False, "The mount helper did not answer", sent[1], sent[0])
             return None
         return answered
+
+    def _overdue(self, sent_at: float) -> bool:
+        """Whether a request sent at ``sent_at`` has waited too long: since it
+        was sent, and since the helper last answered any, as one queued
+        behind a slow mount waits its turn."""
+        try:
+            answered_at = os.stat(self._results_dir).st_mtime
+        except OSError:
+            answered_at = 0.0
+        return time.time() - max(sent_at, answered_at) >= ANSWER_TIMEOUT_S
 
     def _answer(self, volume_id: str) -> Optional[RequestOutcome]:
         path = os.path.join(self._results_dir, f"{volume_id}.json")
