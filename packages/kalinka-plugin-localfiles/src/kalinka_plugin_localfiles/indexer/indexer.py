@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import base64
 import os
 import sys
 import json
@@ -18,7 +17,6 @@ from typing import (
     Dict,
     Iterable,
     List,
-    NamedTuple,
     Optional,
     Set,
     Tuple,
@@ -26,22 +24,27 @@ from typing import (
 
 from pathlib import Path
 
-from mutagen import MutagenError
 from mutagen.mp3 import MP3
-from mutagen.flac import FLAC, Picture
+from mutagen.flac import FLAC
 from mutagen.oggvorbis import OggVorbis
-from mutagen.id3 import ID3, PictureType
+from mutagen.id3 import ID3
 from mutagen.dsf import DSF
 from mutagen.dsdiff import DSDIFF
 
 from ..replaygain_tags import read_replaygain
-from ..audio_formats import MEDIA_TYPES
+from kalinka_plugin_sdk.media.adts import AdtsFile
+from kalinka_plugin_sdk.media.formats import is_supported_audio_file
+from kalinka_plugin_sdk.media.dsd import native_dsdiff_tags
+from kalinka_plugin_sdk.media.folder_art import is_cover_image_name
+from kalinka_plugin_sdk.media.mp4 import Mp4Audio
+from kalinka_plugin_sdk.media.tags import TAG_READERS, EmbeddedCover, TagReader
+from kalinka_plugin_sdk.media.unplayable import READERS_VERSION, UnplayableFile
 from ..config_model import LocalFilesConfig
 from ..db_connection import shared_connection
 from ..scan_control import ScanControl
 from ..filename_model import get_parser, names_a_vinyl_side, parse_music_path
 from ..filename_model.assembler import ASSEMBLER_VERSION
-from ..housekeeping import in_housekeeping, is_hidden_file, is_housekeeping_dir
+from kalinka_plugin_sdk.files import in_housekeeping, is_housekeeping_dir
 from ..resolution.resolver import (
     FILENAME,
     FOLDER_NAME,
@@ -51,7 +54,6 @@ from ..resolution.resolver import (
     TAG_CONSENSUS,
 )
 from ..utils.artwork_store import dhash_bytes, save_artwork_images, sweep_artwork
-from ..utils.folder_art import is_cover_image_name
 from ..utils.watched_file import WatchedFile
 from ..utils.years import year_from_date
 from ..worker_utils import nudge
@@ -74,12 +76,6 @@ from ..utils.name_utils import (
     repair_tag_text,
 )
 from .cue import find_cue_for, parse_cue
-from .dsd import native_dsdiff_tags
-from .adts import AdtsFile
-from .mp4 import Mp4Audio, open_mp4_audio
-from .ogg import open_ogg_vorbis, open_ogg_vorbis_tags
-from .unplayable import READERS_VERSION, UnplayableFile
-from .wav import open_pcm_wave
 from .id_generator import (
     generate_artist_id,
     generate_album_id,
@@ -102,8 +98,6 @@ from ..clustering.classify import (  # noqa: E402
 )
 
 
-SUPPORTED_AUDIO_EXTENSIONS = frozenset(MEDIA_TYPES)
-
 # Base64 images, kept out of the evidence as APIC frames are for ID3.
 _PICTURE_COMMENTS = ("metadata_block_picture", "coverart")
 
@@ -123,33 +117,32 @@ _ID3_COVER_TYPES = frozenset(
 TAG_READ_AHEAD_BYTES = 64 * 1024
 
 
-class EmbeddedCover(NamedTuple):
-    """A file's embedded cover and how it is typed: 3 (front cover) or 0
-    (other, which is what many taggers write for the cover, and all an MP4
-    or a legacy Vorbis COVERART can say)."""
-
-    data: bytes
-    picture_type: int
-
-
 @dataclass(frozen=True)
 class _TagFormat:
-    """How one kind of audio file is read, for its metadata and for its
-    cover alike, so a format is added in one place."""
+    """How one kind of audio file is indexed: the SDK's reader for its tags
+    and cover, and this module's extraction of everything it records."""
 
-    #: Parses an open file with mutagen, raising when it is not this kind.
-    read: Callable[[BinaryIO], Any]
+    reader: TagReader
     #: Fills metadata from the indexer, the parsed file, the open file and
     #: the metadata so far.
     extract: Callable[["FileIndexer", Any, BinaryIO, Dict], Dict]
-    #: The front cover in the parsed file, or None.
-    cover: Callable[[Any], Optional[EmbeddedCover]]
-    #: The read-ahead the file is opened with; 0 for a reader of small,
-    #: scattered spans, which would pay for it again at every seek.
-    read_ahead_bytes: int = TAG_READ_AHEAD_BYTES
-    #: Parses just enough of an open file for ``cover``, where ``read`` does
-    #: more than that, such as timing the audio; None to use ``read``.
-    read_tags: Optional[Callable[[BinaryIO], Any]] = None
+
+    @property
+    def read(self) -> Callable[[BinaryIO], Any]:
+        return self.reader.read
+
+    @property
+    def cover(self) -> Callable[[Any], Optional[EmbeddedCover]]:
+        return self.reader.cover
+
+    @property
+    def read_tags(self) -> Optional[Callable[[BinaryIO], Any]]:
+        return self.reader.read_tags
+
+    @property
+    def read_ahead_bytes(self) -> int:
+        ahead = self.reader.read_ahead_bytes
+        return TAG_READ_AHEAD_BYTES if ahead is None else ahead
 
 
 # How often the file watcher checks whether a lost root came back.
@@ -162,7 +155,7 @@ WATCH_POLL_INTERVAL_S = 1.0
 
 def rearm_needs_rescan(
     unmount_seen: bool,
-    identity: Optional[str],
+    status: RootStatus,
     stored_signature: Optional[str],
 ) -> bool:
     """Whether a re-armed root owes a rescan, or was just an autofs bounce.
@@ -175,7 +168,7 @@ def rearm_needs_rescan(
     """
     if not unmount_seen:
         return True
-    return not (stored_signature and identity == stored_signature)
+    return not (stored_signature and status.identity and status.matches(stored_signature))
 
 
 # Configure logger for watchfiles.main only to WARNING level
@@ -217,16 +210,6 @@ async def trigger_enricher_update(data):
         return
 
     await _enricher_queue.put(data)
-
-
-def is_supported_audio_file(filename: str) -> bool:
-    """Whether a file is music this module indexes. A hidden one never is,
-    whatever it is called: the ``._`` forks macOS leaves beside a copied
-    track carry its name and extension and no audio."""
-    if is_hidden_file(os.path.basename(filename)):
-        return False
-    ext = os.path.splitext(filename.lower())[1]
-    return ext in SUPPORTED_AUDIO_EXTENSIONS
 
 
 #: Rows many files contribute to, where a guess must not displace a tag.
@@ -1566,96 +1549,19 @@ class FileIndexer:
         }
         return metadata
 
-    @staticmethod
-    def _id3_cover(audio_file) -> Optional[EmbeddedCover]:
-        """The front cover from a file's ID3 tag, else a picture typed
-        "other", or None.
-
-        Chosen by the frame's picture type: its description is free text, so
-        "Front Cover" and "" may both be the front, and "" may be the back.
-        """
-        id3 = audio_file.tags
-        if id3 is None:
-            return None
-        frames = [frame for frame in id3.getall("APIC") if frame.data]
-        for wanted in (PictureType.COVER_FRONT, PictureType.OTHER):
-            for frame in frames:
-                if frame.type == wanted:
-                    return EmbeddedCover(frame.data, int(wanted))
-        return None
-
-    @staticmethod
-    def _front_cover(pictures: List[Picture]) -> Optional[EmbeddedCover]:
-        """The front cover from FLAC picture blocks, or None.
-
-        Takes the front cover, else a picture typed "other", which is what
-        many taggers write for the cover. A back cover, booklet page or disc
-        label is never taken: the album's folder or an online source has the
-        real front.
-        """
-        for wanted in (PictureType.COVER_FRONT, PictureType.OTHER):
-            for pic in pictures:
-                if pic.type == wanted:
-                    return EmbeddedCover(pic.data, int(wanted))
-        return None
-
-    @staticmethod
-    def _flac_cover(flac) -> Optional[EmbeddedCover]:
-        """The front cover from a FLAC file's picture blocks, or None."""
-        return FileIndexer._front_cover(flac.pictures)
-
-    @staticmethod
-    def _vorbis_cover(vorbis) -> Optional[EmbeddedCover]:
-        """The front cover from an Ogg Vorbis file's base64
-        ``METADATA_BLOCK_PICTURE`` comments, or failing those the legacy
-        ``COVERART`` one, or None.
-
-        A comment that will not decode is passed over: it is one tag among
-        many, and must not cost the track the rest.
-        """
-        pictures = []
-        for encoded in vorbis.get("metadata_block_picture", []):
-            try:
-                pictures.append(Picture(base64.b64decode(encoded)))
-            except (ValueError, MutagenError):
-                continue
-        cover = FileIndexer._front_cover([p for p in pictures if p.data])
-        if cover is not None:
-            return cover
-        for encoded in vorbis.get("coverart", []):
-            try:
-                data = base64.b64decode(encoded)
-            except ValueError:
-                continue
-            if data:
-                return EmbeddedCover(data, int(PictureType.OTHER))
-        return None
-
-    @staticmethod
-    def _mp4_cover(mp4: Mp4Audio) -> Optional[EmbeddedCover]:
-        """An MP4 file's first picture. MP4 has no picture types."""
-        if mp4.cover is None:
-            return None
-        return EmbeddedCover(mp4.cover, int(PictureType.OTHER))
-
-    #: How each media type ``_tag_format_of`` names is read.
+    #: How each media type ``_tag_format_of`` names is indexed.
     _TAG_FORMATS = {
-        "audio/mpeg": _TagFormat(MP3, _extract_mp3_metadata, _id3_cover),
-        "audio/flac": _TagFormat(FLAC, _extract_flac_metadata, _flac_cover),
-        "audio/wav": _TagFormat(open_pcm_wave, _extract_wav_metadata, _id3_cover),
-        "audio/ogg": _TagFormat(
-            open_ogg_vorbis,
-            _extract_ogg_vorbis_metadata,
-            _vorbis_cover,
-            read_ahead_bytes=0,
-            read_tags=open_ogg_vorbis_tags,
-        ),
-        "audio/mp4": _TagFormat(
-            open_mp4_audio, _extract_mp4_metadata, _mp4_cover
-        ),
-        "audio/aac": _TagFormat(AdtsFile, _extract_adts_metadata, _id3_cover),
-        "audio/x-dsf": _TagFormat(DSF, _extract_dsf_metadata, _id3_cover),
-        "audio/x-dff": _TagFormat(DSDIFF, _extract_dsdiff_metadata, _id3_cover),
+        media_type: _TagFormat(TAG_READERS[media_type], extract)
+        for media_type, extract in {
+            "audio/mpeg": _extract_mp3_metadata,
+            "audio/flac": _extract_flac_metadata,
+            "audio/wav": _extract_wav_metadata,
+            "audio/ogg": _extract_ogg_vorbis_metadata,
+            "audio/mp4": _extract_mp4_metadata,
+            "audio/aac": _extract_adts_metadata,
+            "audio/x-dsf": _extract_dsf_metadata,
+            "audio/x-dff": _extract_dsdiff_metadata,
+        }.items()
     }
 
     def _embedded_art(
@@ -2161,11 +2067,7 @@ class FileIndexer:
         """
         if not status.available:
             return status.reason
-        if (
-            stored_signature
-            and status.identity
-            and status.identity != stored_signature
-        ):
+        if not status.matches(stored_signature):
             return (
                 f"the mount changed (indexed from {stored_signature}, "
                 f"now {status.identity})"
@@ -2454,7 +2356,7 @@ async def _rearm_lost_roots(
             continue
         unmount_seen = lost_roots.pop(root)
         stored = await db.get_root_signature(root)
-        if not rearm_needs_rescan(unmount_seen, status.identity, stored):
+        if not rearm_needs_rescan(unmount_seen, status, stored):
             logger.info(
                 f"Music folder is back (same storage), watching it again: {root}"
             )

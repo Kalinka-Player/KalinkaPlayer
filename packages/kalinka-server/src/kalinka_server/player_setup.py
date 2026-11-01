@@ -229,6 +229,9 @@ class PreparedModuleCollection:
 
     prepared_input_modules: dict[str, PreparedPlugin] = field(default_factory=dict)
     prepared_devices: dict[str, PreparedPlugin] = field(default_factory=dict)
+    # Sources the server provides itself, reached by name like a plugin's for
+    # what they serve, but neither configured nor listed as plugins.
+    core_input_modules: dict[str, InputModule] = field(default_factory=dict)
     enabled_input_modules: set[str] = field(default_factory=set)
     player_context: PlayerContext | None = None
     # Set by ``scan_and_setup_plugins`` when a plugin's setup mutated
@@ -245,7 +248,7 @@ class PreparedModuleCollection:
 
     def enabled_input_module(self, name: str) -> InputModule | None:
         """The input module ``name`` while it is enabled and set up, else None."""
-        if name not in self.enabled_input_modules:
+        if name not in self.enabled_input_modules and name not in self.core_input_modules:
             return None
         return self.set_up_input_module(name)
 
@@ -256,11 +259,20 @@ class PreparedModuleCollection:
         a track already queued or streaming is the module's own to refuse, and
         one reporting an error for a moment must not cut it off.
         """
+        core = self.core_input_modules.get(name)
+        if core is not None:
+            return core
         prepared = self.prepared_input_modules.get(name)
         if prepared is None or prepared.health_state != ModuleHealthState.READY:
             return None
         interface = prepared.interface
         return interface if isinstance(interface, InputModule) else None
+
+    def serving_input_modules(self) -> list[InputModule]:
+        """Every input module that can be asked for content now: the enabled
+        plugins that set up, and the server's own."""
+        plugins = (self.enabled_input_module(name) for name in sorted(self.enabled_input_modules))
+        return [*(m for m in plugins if m is not None), *self.core_input_modules.values()]
 
     def _update_enabled_input_modules(self):
         """Update the set of enabled input module names."""

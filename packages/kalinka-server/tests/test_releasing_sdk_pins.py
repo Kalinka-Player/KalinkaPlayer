@@ -29,7 +29,7 @@ def _sdk_major() -> int:
 
 
 def _server_sdk_pin() -> str:
-    return re.search(r'"kalinka-plugin-sdk(>=[^"]+)"', SERVER_PYPROJECT.read_text())[1]
+    return re.search(r'"kalinka-plugin-sdk(?:\[[^\]]*\])?(>=[^"]+)"', SERVER_PYPROJECT.read_text())[1]
 
 
 def _sdk_sections() -> list[str]:

@@ -55,7 +55,9 @@ dependencies = [
     # >=3.17: ModulesChangedEvent, which carries the module listing on the
     # queue event bus.
     # >=3.19: TrackSource and PlaybackState carry audio_codec for display.
-    "kalinka-plugin-sdk>=3.19,<4",
+    # >=3.20: mounts, storage and VolumesChangedEvent; the media extra reads
+    # the files Drives lists.
+    "kalinka-plugin-sdk[media]>=3.20,<4",
 ]
 dynamic = ["version"]
 

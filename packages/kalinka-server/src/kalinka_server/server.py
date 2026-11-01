@@ -39,6 +39,7 @@ from kalinka_plugin_sdk.events import (
     RenderersChangedEvent,
 )
 from kalinka_plugin_sdk import paths, wheel_architecture
+from kalinka_plugin_sdk.storage import LibraryAdopter, StorageBacked
 
 from .config_model import KalinkaConfig
 from .config_overrides import save_overrides
@@ -50,6 +51,11 @@ from .browse_source import BrowseSource, BrowseSourceRegistry, RegisteredSource
 from .collections.route import register_collection_routes
 from .collections.source import CollectionsSource
 from .collections.store import CollectionStore
+from .drives.folders import ServerFolders
+from .drives.fsio import DriveIO
+from .drives.module import DrivesModule
+from .storage.manager import Adopter, StorageManager
+from .storage.routes import register_storage_routes
 from .config_secrets import secret_values
 from .content_route import register_content_route
 from .demo_mode import (
@@ -167,6 +173,8 @@ async def lifespan(app: FastAPI):
             app.state.box_power_off_timer.run(app.state.player_context.playqueue_eventbus)
         )
 
+        await app.state.storage.start()
+
         # Public metadata browsing is independent of signed update authorization.
         # Do not block startup or GET requests on an upstream network fetch.
         app.state.plugin_catalog_task = asyncio.create_task(
@@ -235,6 +243,15 @@ async def lifespan(app: FastAPI):
 
         # Shutdown internal modules first
         await internal_modules.shutdown()
+        storage = getattr(app.state, "storage", None)
+        if storage is not None:
+            await storage.stop()
+        drives = getattr(app.state, "drives", None)
+        if drives is not None:
+            drives.close()
+        drive_io = getattr(app.state, "drive_io", None)
+        if drive_io is not None:
+            drive_io.close()
 
         # Then shutdown plugins, including the built-in renderer volume device.
         await shutdown()
@@ -349,6 +366,9 @@ def enabled_input_module(name: str) -> InputModule:
     rather than a server fault, so neither may reach the 500 `input_module`
     raises for an interface that has been torn down.
     """
+    module = modules.enabled_input_module(name)
+    if module is not None:
+        return module
     if name not in modules.enabled_input_modules:
         raise HTTPException(
             status_code=404, detail=f"Input module '{name}' is not available"
@@ -621,6 +641,37 @@ async def create_app(
         entry = _browse_registry.get(name) if _browse_registry else None
         return entry.title if entry is not None else name
 
+    def _adopters() -> List[Adopter]:
+        """Enabled plugins whose library can keep folders from storage."""
+        found = []
+        for name in sorted(modules.enabled_input_modules):
+            prepared = modules.prepared_input_modules[name]
+            instance = prepared.plugin_instance
+            if not isinstance(instance, LibraryAdopter):
+                continue
+            cfg = prepared.plugin_context.config
+            title = cfg.__class__.model_fields["name"].title or cfg.name
+            found.append(Adopter(module=name, title=title, library=instance))
+        return found
+
+    storage = StorageManager(
+        config=lambda: config.storage,
+        media_dir=paths.media_dir(),
+        dispatch=player_context.playqueue_eventbus.dispatch,
+        adopters=_adopters,
+    )
+    app.state.storage = storage
+    drive_io = app.state.drive_io = DriveIO()
+    drives = DrivesModule(
+        storage,
+        paths.cache_dir(),
+        enabled=lambda: config.storage.drives_enabled,
+        io=drive_io,
+    )
+    app.state.drives = drives
+    server_folders = ServerFolders(storage, drive_io)
+    modules.core_input_modules = {drives.module_name(): drives}
+
     global _browse_registry
     collections_source = CollectionsSource(app.state.collections, _source_title)
     _browse_registry = BrowseSourceRegistry(
@@ -631,7 +682,8 @@ async def create_app(
                 title=collections_source.display_name(),
                 source=collections_source,
                 builtin=True,
-            )
+            ),
+            drives.registered_source(),
         ],
     )
 
@@ -750,6 +802,17 @@ async def create_app(
         modules.prepared_devices,
     )
     app.state.dynamic_paths = frozenset(app.state.dynamic_field_registry.keys())
+    app.state.options_registry.register(
+        "base_config.storage.mounts.fs_uuid",
+        lambda: [
+            {
+                "value": uuid,
+                "label": facts.label or uuid,
+                "description": " · ".join(p for p in (facts.fs_type, facts.vendor, facts.model) if p),
+            }
+            for uuid, facts in storage.unmounted_filesystems()
+        ],
+    )
     # Volume and power are answered by whichever module owns the *active*
     # renderer, so the target is resolved per request rather than bound here.
     device_router = player_context.device_router
@@ -1149,6 +1212,22 @@ async def create_app(
         ).model_dump(exclude_unset=True)
 
     register_config_routes(app, config, modules)
+
+    async def _storage_location_of(entity_id: EntityId):
+        module = modules.enabled_input_module(entity_id.source)
+        # The class beneath the per-call timeout wrapper says what it is.
+        if not isinstance(getattr(module, "wrapped", module), StorageBacked):
+            return None
+        return await module.storage_location(entity_id)
+
+    register_storage_routes(
+        app,
+        storage,
+        location_of=_storage_location_of,
+        current_value=app.state.config_value,
+        apply_changes=app.state.apply_config_changes,
+        list_folders=server_folders.list,
+    )
     register_power_off_timer_route(
         app, app.state.box_power_off_timer, player_context.playqueue
     )
@@ -1165,6 +1244,7 @@ async def create_app(
                 **app.state.plugin_operations.capabilities(),
                 "enabled": app.state.config.server.plugin_catalog_enabled,
             },
+            "storage": {"volumes": True, "mounts": True, "adopt": True, "folders": True},
         }
 
     register_upgrade_routes(
@@ -1380,11 +1460,11 @@ async def create_app(
             ModuleDescriptor(
                 name=entry.name,
                 title=entry.title,
+                icon=entry.icon,
                 state=ModuleHealthState.READY,
                 builtin=True,
-                # Browsed and searched by name like any source, but with no
-                # audio of its own there is nothing for it to suggest.
-                capabilities=[],
+                capabilities=capabilities_of(entry.source),
+                count=entry.count() if entry.count is not None else None,
             )
             for entry in browse_registry().entries()
             if entry.builtin
@@ -1408,6 +1488,8 @@ async def create_app(
     # On the queue bus, so clients follow a plugin without asking again.
     modules.set_on_changed(_publish_modules)
     app.state.republish_modules = partial(modules.refresh_health, publish=True)
+    # A drive coming or going is what turns Drives' catalogs on or off.
+    storage.after_change(app.state.republish_modules)
 
     @app.get("/server/modules")
     async def list_modules():
@@ -1428,8 +1510,8 @@ async def create_app(
     @app.get("/resource/{file_name:path}")
     async def get_resource(file_name: str):
         file_path = None
-        for module_name in modules.enabled_input_modules:
-            file_path = await input_module(module_name).get_resource_path(file_name)
+        for owner in modules.serving_input_modules():
+            file_path = await owner.get_resource_path(file_name)
             if file_path:
                 resolved_path = Path(file_path).resolve()
                 if resolved_path.is_file():

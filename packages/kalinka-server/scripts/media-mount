@@ -1,0 +1,513 @@
+#!/usr/bin/python3 -I
+"""Mounts storage for Kalinka, as root, and nothing else.
+
+Two callers, both systemd units: ``kalinka-media-mount@.service`` runs
+``mount-device`` for a USB filesystem udev has just announced, and
+``kalinka-mounts.service`` runs ``apply-requests`` for what the server asked
+for in its request directory. The server runs unprivileged, so every request
+is checked here again: a fixed set of filesystems and options, and a target
+that is always a directory of its own under the media root.
+
+Mounts are read-only unless a request for a configured disk or share says
+otherwise, so pulling a stick out without ejecting it loses nothing.
+"""
+
+import json
+import os
+import pwd
+import re
+import stat
+import subprocess
+import sys
+import time
+
+MEDIA_ROOT = "/media/kalinka"
+REQUESTS_DIR = "/run/kalinka-mounts/requests"
+RESULTS_DIR = "/run/kalinka-mounts/results"
+NO_AUTOMOUNT_MARKER = "/var/lib/kalinka/storage/no-automount"
+FSTAB = "/etc/fstab"
+MOUNTINFO = "/proc/self/mountinfo"
+SWAPS = "/proc/swaps"
+DEV_BY_UUID = "/dev/disk/by-uuid"
+SYS_CLASS_BLOCK = "/sys/class/block"
+SYS_DEV_BLOCK = "/sys/dev/block"
+SERVICE_USER = "kalusr"
+
+MAX_REQUEST_BYTES = 4096
+REQUEST_TIMEOUT_S = 120
+
+#: udev's ID_FS_TYPE → the type passed to mount.
+BLOCK_FILESYSTEMS = {
+    "vfat": "vfat",
+    "exfat": "exfat",
+    "ntfs": "ntfs3",
+    "hfsplus": "hfsplus",
+    "ext2": "ext2",
+    "ext3": "ext3",
+    "ext4": "ext4",
+    "xfs": "xfs",
+    "btrfs": "btrfs",
+    "f2fs": "f2fs",
+}
+NETWORK_FILESYSTEMS = ("nfs", "nfs4")
+
+#: Filesystems with no owners of their own, given to the service user.
+_OWNERLESS = ("vfat", "exfat", "ntfs3", "hfsplus")
+
+_ALWAYS = ("nosuid", "nodev", "noexec")
+
+_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+#: ``<sequence>.<volume id>.json``: the sequence orders the requests.
+_REQUEST_NAME = re.compile(r"^([0-9]{1,20})\.([A-Za-z0-9][A-Za-z0-9_-]{0,63})\.json$")
+#: The GPT type of an EFI system partition, which firmware boots from.
+_ESP_TYPE = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+_UUID = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+_NFS_HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9.\-]*|\[[0-9A-Fa-f:.]+\]")
+_FLAG_OPTIONS = {"ro", "rw", "soft", "hard", "noatime", "nofail", "_netdev"}
+_NUMERIC_OPTIONS = {
+    "timeo": (1, 6000),
+    "retrans": (0, 100),
+    "rsize": (1024, 16 * 1024 * 1024),
+    "wsize": (1024, 16 * 1024 * 1024),
+    "nconnect": (1, 16),
+}
+_NFS_VERSIONS = {"3", "4", "4.0", "4.1", "4.2"}
+
+
+class Refused(Exception):
+    """A request this helper will not carry out, with the reason to report."""
+
+
+def udev_properties(device: str) -> dict:
+    result = subprocess.run(
+        ["udevadm", "info", "--query=property", f"--name={device}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    properties = {}
+    for line in result.stdout.splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            properties[key] = value
+    return properties
+
+
+def _unescape(field: str) -> str:
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), field)
+
+
+def mounts() -> list:
+    """(major:minor, source, mount point) of everything mounted, from
+    mountinfo."""
+    found = []
+    with open(MOUNTINFO, encoding="utf-8", errors="surrogateescape") as f:
+        for line in f:
+            left, _, right = line.partition(" - ")
+            fields, tail = left.split(), right.split()
+            if len(fields) >= 5 and len(tail) >= 2:
+                found.append((fields[2], _unescape(tail[1]), _unescape(fields[4])))
+    return found
+
+
+def _block_name(numbers: str, source: str):
+    """The /sys/class/block name of what is mounted from ``source``.
+
+    @note By its device numbers first: a root the kernel mounted itself is
+        ``/dev/root`` in mountinfo, a name no device node has.
+    """
+    link = os.path.join(SYS_DEV_BLOCK, numbers)
+    if os.path.exists(link):
+        return os.path.basename(os.path.realpath(link))
+    if source.startswith("/dev/") and source != "/dev/root":
+        return os.path.basename(os.path.realpath(source))
+    return None
+
+
+def _name_of(device: str) -> str:
+    """The /sys/class/block name of a device node."""
+    try:
+        numbers = os.stat(device).st_rdev
+    except OSError:
+        numbers = None
+    if numbers:
+        name = _block_name(f"{os.major(numbers)}:{os.minor(numbers)}", device)
+        if name:
+            return name
+    return os.path.basename(os.path.realpath(device))
+
+
+def _disk(name: str) -> str:
+    """The whole disk a block device belongs to, by /sys/class/block name."""
+    link = os.path.realpath(os.path.join(SYS_CLASS_BLOCK, name))
+    if os.path.exists(os.path.join(link, "partition")):
+        return os.path.basename(os.path.dirname(link))
+    return name
+
+
+def _mounted_blocks() -> list:
+    """(block name, mount point) of every mounted block device."""
+    found = []
+    for numbers, source, point in mounts():
+        name = _block_name(numbers, source)
+        if name:
+            found.append((name, point))
+    return found
+
+
+def _system_disks() -> set:
+    """The disks the system uses for itself: any with a filesystem mounted
+    outside the media root, swap, or a device mapper or RAID built on it.
+    Nothing on them is mounted, offered or powered off for Kalinka."""
+    disks = {
+        _disk(name)
+        for name, point in _mounted_blocks()
+        if not point.startswith(MEDIA_ROOT + os.sep)
+    }
+    try:
+        with open(SWAPS, encoding="utf-8", errors="surrogateescape") as f:
+            for line in f.read().splitlines()[1:]:
+                if line.split():
+                    disks.add(_disk(_name_of(_unescape(line.split()[0]))))
+    except OSError:
+        pass
+    try:
+        names = os.listdir(SYS_CLASS_BLOCK)
+    except OSError:
+        names = []
+    for name in names:
+        try:
+            if os.listdir(os.path.join(SYS_CLASS_BLOCK, name, "holders")):
+                disks.add(_disk(name))
+        except OSError:
+            pass
+    return disks
+
+
+def is_mounted(device: str) -> bool:
+    name = _name_of(device)
+    return any(mounted == name for mounted, _ in _mounted_blocks())
+
+
+def mounted_at(target: str):
+    """The source mounted at ``target``, or None."""
+    for _, source, point in reversed(mounts()):
+        if point == target:
+            return source
+    return None
+
+
+def in_fstab(device: str, properties: dict) -> bool:
+    """Whether the owner already said where this filesystem goes."""
+    tags = {
+        "UUID": properties.get("ID_FS_UUID"),
+        "PARTUUID": properties.get("ID_PART_ENTRY_UUID"),
+        "LABEL": properties.get("ID_FS_LABEL"),
+        "PARTLABEL": properties.get("ID_PART_ENTRY_NAME"),
+    }
+    try:
+        with open(FSTAB, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        fields = line.split()
+        if not fields or fields[0].startswith("#"):
+            continue
+        spec = _unescape(fields[0])
+        tag, sep, value = spec.partition("=")
+        if sep and tag in tags:
+            if tags[tag] and value.strip('"') == tags[tag]:
+                return True
+        elif spec.startswith("/dev/") and _name_of(spec) == _name_of(device):
+            return True
+    return False
+
+
+def _service_ids() -> tuple:
+    user = pwd.getpwnam(SERVICE_USER)
+    return user.pw_uid, user.pw_gid
+
+
+def mount_options(fstype: str, requested=("ro",)) -> list:
+    options = list(dict.fromkeys([*requested, *_ALWAYS]))
+    if "rw" not in options and "ro" not in options:
+        options.insert(0, "ro")
+    if fstype in _OWNERLESS:
+        uid, gid = _service_ids()
+        options += [f"uid={uid}", f"gid={gid}", "umask=022"]
+        if fstype == "vfat":
+            options.append("utf8")
+    return options
+
+
+def target_for(volume_id: str) -> str:
+    if not _ID.match(volume_id):
+        raise Refused(f"invalid volume id {volume_id!r}")
+    return os.path.join(MEDIA_ROOT, volume_id)
+
+
+def _systemd_mount(source: str, target: str, fstype: str, options: list, block: bool):
+    # Lazily unmounted, as a stick pulled out while a track plays from it is
+    # busy: a plain unmount would fail and leave a dead mount behind.
+    command = ["systemd-mount", "--collect", "--property=LazyUnmount=yes", f"--type={fstype}"]
+    command.append(f"--options={','.join(options)}")
+    if not block:
+        command.append("--no-block")
+    command += ["--", source, target]
+    result = subprocess.run(
+        command, capture_output=True, text=True, timeout=REQUEST_TIMEOUT_S
+    )
+    if result.returncode != 0:
+        raise Refused(result.stderr.strip() or f"systemd-mount failed for {target}")
+
+
+def mount_device(device: str) -> int:
+    """Mount a USB filesystem udev has announced, read-only, by its UUID."""
+    if os.path.exists(NO_AUTOMOUNT_MARKER):
+        return 0
+    properties = udev_properties(device)
+    if properties.get("ID_FS_USAGE") != "filesystem":
+        return 0
+    fstype = BLOCK_FILESYSTEMS.get(properties.get("ID_FS_TYPE", ""))
+    if fstype is None:
+        print(f"{device}: {properties.get('ID_FS_TYPE')!r} is not mounted", file=sys.stderr)
+        return 0
+    if is_mounted(device) or in_fstab(device, properties):
+        return 0
+    if _disk(_name_of(device)) in _system_disks():
+        # A partition of the disk a USB-booted Pi runs from.
+        return 0
+    uuid = properties.get("ID_FS_UUID", "")
+    volume_id = uuid if _UUID.match(uuid) and _ID.match(uuid) else os.path.basename(device)
+    target = target_for(volume_id)
+    # Another filesystem with this UUID, as cloned sticks and sticks formatted
+    # with a fixed serial have, is named after its device too.
+    second = target_for(f"{volume_id}-{os.path.basename(device)}")
+    if mounted_at(target) is not None:
+        if mounted_at(second) is not None:
+            return 0
+        target = second
+    try:
+        _systemd_mount(device, target, fstype, mount_options(fstype), block=False)
+    except Refused:
+        # Both plugged in at boot, the other took the target first.
+        if target == second or mounted_at(second) is not None:
+            raise
+        _systemd_mount(device, second, fstype, mount_options(fstype), block=False)
+    return 0
+
+
+def _checked_options(options) -> list:
+    if not isinstance(options, list) or len(options) > 16:
+        raise Refused("options must be a short list")
+    checked = []
+    for option in options:
+        if not isinstance(option, str):
+            raise Refused("options must be strings")
+        name, sep, value = option.partition("=")
+        if not sep and option in _FLAG_OPTIONS:
+            checked.append(option)
+        elif name == "vers" and value in _NFS_VERSIONS:
+            checked.append(option)
+        elif name in _NUMERIC_OPTIONS and value.isdigit():
+            low, high = _NUMERIC_OPTIONS[name]
+            if not low <= int(value) <= high:
+                raise Refused(f"{name} out of range")
+            checked.append(option)
+        else:
+            raise Refused(f"option {option!r} is not allowed")
+    return checked
+
+
+def _nfs_source(source) -> str:
+    if not isinstance(source, str) or len(source) > 1024 or "\n" in source or "," in source:
+        raise Refused("invalid share")
+    host, sep, path = source.partition(":/")
+    if not sep or not _NFS_HOST.fullmatch(host):
+        raise Refused("a share is host:/path")
+    return f"{host}:/{path}"
+
+
+def _disk_source(source) -> tuple:
+    """The device behind ``UUID=…`` and its filesystem as udev knows it."""
+    if not isinstance(source, str) or not source.startswith("UUID="):
+        raise Refused("a disk is UUID=…")
+    uuid = source[len("UUID="):]
+    if not _UUID.match(uuid):
+        raise Refused("invalid UUID")
+    device = os.path.join(DEV_BY_UUID, uuid)
+    if not os.path.exists(device):
+        raise Refused(f"no filesystem with UUID {uuid}")
+    properties = udev_properties(device)
+    fstype = BLOCK_FILESYSTEMS.get(properties.get("ID_FS_TYPE", ""))
+    if fstype is None:
+        raise Refused("unsupported filesystem")
+    if is_mounted(device):
+        raise Refused("already mounted elsewhere")
+    if in_fstab(device, properties):
+        raise Refused("/etc/fstab says where this filesystem goes")
+    if properties.get("ID_PART_ENTRY_TYPE", "").lower() == _ESP_TYPE:
+        raise Refused("an EFI system partition is not music")
+    if _disk(_name_of(device)) in _system_disks():
+        raise Refused("this filesystem is on the disk the system runs from")
+    return device, fstype
+
+
+def _power_off(disk: str) -> None:
+    """Takes a USB disk off its bus once nothing on it is mounted."""
+    if "/usb" not in os.path.realpath(os.path.join(SYS_CLASS_BLOCK, disk)):
+        return
+    if disk in _system_disks() or any(_disk(name) == disk for name, _ in _mounted_blocks()):
+        return
+    delete = os.path.join(SYS_CLASS_BLOCK, disk, "device", "delete")
+    if os.path.exists(delete):
+        with open(delete, "w") as f:
+            f.write("1")
+
+
+def _unmount(target: str) -> None:
+    result = subprocess.run(
+        ["systemd-umount", "--", target],
+        capture_output=True,
+        text=True,
+        timeout=REQUEST_TIMEOUT_S,
+    )
+    if result.returncode != 0:
+        raise Refused(result.stderr.strip() or f"could not unmount {target}")
+
+
+def apply(request: dict) -> None:
+    action = request.get("action")
+    target = target_for(str(request.get("id", "")))
+    if action == "mount":
+        if mounted_at(target) is not None:
+            return
+        fstype = request.get("fstype")
+        options = _checked_options(request.get("options", ["ro"]))
+        if fstype in NETWORK_FILESYSTEMS:
+            source = _nfs_source(request.get("source"))
+            # A minute of retries rather than two, as requests run one at a
+            # time and a share that is away holds up the rest.
+            options.append("retry=1")
+        elif fstype == "disk":
+            source, fstype = _disk_source(request.get("source"))
+        else:
+            raise Refused(f"filesystem {fstype!r} is not allowed")
+        _systemd_mount(source, target, fstype, mount_options(fstype, options), block=True)
+    elif action == "unmount":
+        disk = next(
+            (_disk(name) for name, point in reversed(_mounted_blocks()) if point == target),
+            None,
+        )
+        if mounted_at(target) is None:
+            return
+        _unmount(target)
+        if request.get("eject") is True and disk is not None:
+            for name, point in _mounted_blocks():
+                if point.startswith(MEDIA_ROOT + os.sep) and _disk(name) == disk:
+                    _unmount(point)
+            _power_off(disk)
+        try:
+            os.rmdir(target)
+        except OSError:
+            pass
+    else:
+        raise Refused(f"unknown action {action!r}")
+
+
+def _write_result(request_id: str, result: dict) -> None:
+    if not _ID.match(request_id):
+        return
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    final = os.path.join(RESULTS_DIR, f"{request_id}.json")
+    partial = final + ".part"
+    with open(partial, "w", encoding="utf-8") as f:
+        json.dump(result, f)
+    os.chmod(partial, 0o644)
+    os.replace(partial, final)
+
+
+def _take(path: str) -> dict:
+    """The request at ``path``. Only a plain file is read, never through a
+    link, and never waiting on what a pipe or device would make it wait on."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise Refused("a request is a plain file")
+        data = os.read(fd, MAX_REQUEST_BYTES + 1)
+    finally:
+        os.close(fd)
+    if len(data) > MAX_REQUEST_BYTES:
+        raise Refused("request too large")
+    request = json.loads(data)
+    if not isinstance(request, dict):
+        raise Refused("request must be an object")
+    return request
+
+
+def _discard(path: str) -> None:
+    """Takes an entry out of the request directory, whatever it is, so the
+    path unit is not started again and again for it."""
+    for remove in (os.unlink, os.rmdir):
+        try:
+            remove(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            pass
+    try:
+        # Hidden, as the path unit does not count hidden entries.
+        os.replace(path, os.path.join(os.path.dirname(path), "." + os.path.basename(path)))
+    except OSError:
+        pass
+
+
+def apply_requests() -> int:
+    try:
+        names = sorted(n for n in os.listdir(REQUESTS_DIR) if not n.startswith("."))
+    except FileNotFoundError:
+        return 0
+    for name in names:
+        path = os.path.join(REQUESTS_DIR, name)
+        named = _REQUEST_NAME.match(name)
+        request: dict = {}
+        try:
+            if named is None:
+                raise Refused(f"not a request: {name!r}")
+            request = _take(path)
+            if request.get("id") != named[2] or request.get("seq") != named[1]:
+                raise Refused("request does not match its file")
+            apply(request)
+            result = {"ok": True, "error": None}
+        except Refused as refused:
+            result = {"ok": False, "error": str(refused)}
+        except Exception as error:
+            # Whatever went wrong, the requests after this one still run.
+            result = {"ok": False, "error": f"{type(error).__name__}: {error}"}
+        if named is not None:
+            result.update(action=request.get("action"), seq=named[1], at=time.time())
+            try:
+                _write_result(named[2], result)
+            except OSError as error:
+                print(f"{name}: no result written: {error}", file=sys.stderr)
+        _discard(path)
+    return 0
+
+
+def main(argv: list) -> int:
+    if len(argv) == 2 and argv[0] == "mount-device":
+        try:
+            return mount_device(argv[1])
+        except Refused as refused:
+            print(f"{argv[1]}: {refused}", file=sys.stderr)
+            return 1
+    if len(argv) == 1 and argv[0] == "apply-requests":
+        return apply_requests()
+    print("usage: media-mount mount-device <device> | apply-requests", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

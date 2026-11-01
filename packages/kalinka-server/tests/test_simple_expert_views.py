@@ -27,6 +27,7 @@ from kalinka_plugin_localfiles.config_model import LocalFilesConfig
 from kalinka_plugin_sdk.module_config import ModuleConfig
 from kalinka_server.config_model import KalinkaConfig
 from kalinka_server.config_schema_processor import (
+    _is_record_collection,
     _importance_from_extras,
     build_presentation,
     readonly_paths,
@@ -63,12 +64,13 @@ def _general_page(schema):
 
 
 def _leaf_paths(model, prefix):
-    """Every settable leaf of a config model, as dotted paths."""
+    """Every settable leaf of a config model, as dotted paths. A collection
+    of records is edited as cards on its page, not in the expert list."""
     for name, value in model.__dict__.items():
         path = f"{prefix}.{name}"
         if isinstance(value, BaseModel):
             yield from _leaf_paths(value, path)
-        else:
+        elif not _is_record_collection(type(model).model_fields[name].annotation):
             yield path
 
 
@@ -164,6 +166,7 @@ def test_general_page_sections_follow_declaration_order():
     assert [s.id for s in _general_page(schema).sections] == [
         "base_config.server",
         "base_config.device_automation",
+        "base_config.storage",
     ]
 
 

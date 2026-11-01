@@ -1,0 +1,5 @@
+# A filesystem on a USB disk is mounted read-only under /media/kalinka by
+# kalinka-media-mount@.service. udev itself must not mount: it runs in a
+# private mount namespace and kills what it starts when the event ends.
+# On the USB bus, not ID_BUS=usb: a disk in a USB enclosure reports ata.
+ACTION=="add", SUBSYSTEM=="block", ENV{ID_FS_USAGE}=="filesystem", SUBSYSTEMS=="usb", TAG+="systemd", ENV{SYSTEMD_WANTS}+="kalinka-media-mount@%k.service"

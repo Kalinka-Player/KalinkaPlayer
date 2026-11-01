@@ -181,6 +181,20 @@ skip SVG conversion. An evicted entry or a changed URL loads again.
 Plugins importing these types require `kalinka-plugin-sdk>=3.18,<4` in
 their wheel/deb dependencies and `REQUIRES_SDK` declaration.
 
+### Storage and media (3.20+)
+
+- `kalinka_plugin_sdk.mounts`: `list_mounts`, `covering_mount`, `is_network_fs` read `/proc/self/mountinfo`; `block_facts("8:1")` reads what udev recorded of a block device (label, UUID, bus); `KALINKA_MEDIA_ROOT` is where the server mounts the drives and shares it manages.
+- `kalinka_plugin_sdk.files`: `is_housekeeping_dir`, `is_hidden_file` and `in_housekeeping` tell recycle bins, snapshots and resource forks from music.
+- `kalinka_plugin_sdk.media`, with the `media` extra (`kalinka-plugin-sdk[media]`, which brings mutagen and Pillow): `formats` names the playable formats; `tags.TAG_READERS` reads each one's tags and cover, `read_summary` and `read_cover` read a local file; `folder_art.find_folder_cover` picks a cover from the images beside an album; `images.resize_to_jpeg` makes the artwork sizes.
+- `PluginBase.config_changed(changed)` is called after the user saves settings of the plugin, with the paths that changed, so a plugin can apply them without a restart.
+- `LibraryAdopter` is how a library plugin keeps a folder from a drive. It implements `location_status(location)`, answering with a `LocationStatus` that says whether it already holds the folder and whether one of its sources is exactly that folder, plus `adopt_location` and `release_location`, which return the `SourcesChange` that adds or removes the folder: one record added to, or removed by id from, a record list of its settings. The server asks only plugins that implement all three.
+- `StorageBacked` is an input module whose pages are folders on storage; it answers `storage_location(entity_id)`.
+- `Catalog.live` marks a listing that changes without Kalinka, so a client lists it again each time it is shown; `Catalog.on_storage` marks a folder of a mounted volume. `ModuleDescriptor.count` is a number a client may show on the source's icon.
+- `BrowseItem.icon` names what a client draws where the item has no art (`track`, `folder`, `usb_drive`, `network_share`, `disk`, `internal_storage`), in place of art it would make up.
+- `VolumesChangedEvent` on the queue bus, and `PlayQueueState.volumes`, carry the server's volumes as `VolumeDescriptor`s, each with a `summary` to show under its label.
+
+Plugins using these require `kalinka-plugin-sdk>=3.20,<4`.
+
 ## License
 
 GPL-3.0-or-later

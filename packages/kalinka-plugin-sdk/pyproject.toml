@@ -36,6 +36,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# kalinka_plugin_sdk.media: reading music files and their covers.
+media = [
+    "mutagen>=1.46.0",
+    "pillow>=9.0.0",
+]
 dev = [
     "pytest>=7.0.0",
     "black>=22.0.0",

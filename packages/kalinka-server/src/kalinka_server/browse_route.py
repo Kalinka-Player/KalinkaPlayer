@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from kalinka_plugin_sdk.datamodel import BrowseItemList, EntityId, EntityType
 from kalinka_plugin_sdk.filters import FilterQuery, FilterValueList, UnsupportedFilter
+from kalinka_plugin_sdk.inputmodule import SourceUnavailableError
 
 from .browse_source import BrowseSource
 
@@ -87,6 +88,9 @@ def register_browse_routes(
             raise HTTPException(
                 status_code=422, detail={"field": e.field, "reason": e.reason}
             )
+        except SourceUnavailableError as e:
+            # An unplugged drive or an unreachable share, as content answers it.
+            raise HTTPException(status_code=503, detail=str(e))
         except Exception as e:
             # repr, not str: httpx timeout exceptions stringify to "".
             logger.error(f"Error browsing entity {id}: {e!r}")

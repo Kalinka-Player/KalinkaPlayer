@@ -44,7 +44,7 @@ from ..utils.artwork_store import (
     store_artwork_from_file,
     store_artwork_images,
 )
-from ..utils.folder_art import (
+from kalinka_plugin_sdk.media.folder_art import (
     EXACT,
     NAMED,
     SCAN,

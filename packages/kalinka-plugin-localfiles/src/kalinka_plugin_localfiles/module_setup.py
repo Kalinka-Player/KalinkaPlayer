@@ -4,6 +4,7 @@ import itertools
 import logging
 import logging.handlers
 import multiprocessing
+import os
 import shutil
 import threading
 import time
@@ -23,11 +24,13 @@ from kalinka_plugin_sdk import (
 )
 from kalinka_plugin_sdk.plugin import InputPluginContext, InputModulePlugin
 from kalinka_plugin_sdk.inputmodule import InputModule
+from kalinka_plugin_sdk.storage import LocationStatus, SourcesChange, StorageLocation
 
 from .config_model import (
     DEFAULT_SCAN_INTERVAL_MINUTES,
     AccountSignIn,
     LocalFilesConfig,
+    LocalLocation,
     LocalSource,
     MusicSource,
 )
@@ -39,6 +42,7 @@ from .storage import (
     RootStatus,
     StorageResolver,
     build_resolver,
+    is_within,
     library_locations,
     parse,
     scheme_of,
@@ -72,6 +76,8 @@ _SUGGESTED_FIELDS = (
 #: gives up on it. Short, because every folder is probed on every poll and
 #: the page waits for the slowest of them.
 _PROBE_TIMEOUT_S = 2.0
+#: How long "the library holds no tracks" is answered without asking again.
+_EMPTINESS_TTL_S = 30.0
 
 
 @dataclass
@@ -168,12 +174,7 @@ def _mount_mismatch(status: RootStatus, stored_signature: Optional[str]) -> bool
     """True when the folder's current mount is not the one the library was
     indexed from — a static share silently gave way to the local directory
     underneath it."""
-    return bool(
-        status.available
-        and stored_signature
-        and status.identity
-        and status.identity != stored_signature
-    )
+    return status.available and not status.matches(stored_signature)
 
 
 def _format_root_status(
@@ -445,7 +446,7 @@ class _ResolverCache:
 
 
 class KalinkaPluginLocalFiles(InputModulePlugin):
-    REQUIRES_SDK = ">=3.18,<4"
+    REQUIRES_SDK = ">=3.20,<4"
     PLUGIN_ID = "localfiles"
     CONFIG_MODEL = LocalFilesConfig
     OPTIONAL_PACKAGES: ClassVar[dict[str, OptionalPackageSpec]] = OPTIONAL_PACKAGES
@@ -511,6 +512,8 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
         # can read the *current* in-memory config — which the server
         # mutates via PUT /server/config without re-invoking setup.
         self._context: Optional[InputPluginContext] = None
+        self._empty = True
+        self._emptiness_checked_at = float("-inf")
 
         # What playback and the status page read, and — separately — what
         # folders the user has typed but not saved are judged with.
@@ -1069,6 +1072,78 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
                 )
             )
         return issues
+
+    async def location_status(
+        self, location: StorageLocation
+    ) -> Optional[LocationStatus]:
+        """A folder on this server joins the library as a folder source.
+
+        @note New sources are read from the next start, until the librarian
+            can take roots while it runs.
+        @note Answers from the paths alone, reading nothing from disk: it is
+            asked for every folder a Drives page lists, on the event loop,
+            and a share that stopped answering must not hold that up. The
+            location's path comes resolved already.
+        """
+        target = self._target(location)
+        if target is None:
+            return None
+        roots = self._folder_sources()
+        return LocationStatus(
+            holds=any(is_within(target, root) for root in roots.values()),
+            library_empty=self._library_empty(),
+            removable=target in roots.values(),
+            restart_required=True,
+        )
+
+    async def adopt_location(
+        self, location: StorageLocation
+    ) -> Optional[SourcesChange]:
+        target = self._target(location)
+        if target is None:
+            return None
+        record = LocalSource(location=LocalLocation(path=target))
+        return SourcesChange(
+            collection="music_sources",
+            add=record.model_dump(mode="json", exclude={"id"}),
+        )
+
+    async def release_location(
+        self, location: StorageLocation
+    ) -> Optional[SourcesChange]:
+        target = self._target(location)
+        if target is None:
+            return None
+        found = next(
+            (sid for sid, root in self._folder_sources().items() if root == target),
+            None,
+        )
+        if found is None:
+            return None
+        return SourcesChange(collection="music_sources", remove=found)
+
+    def _target(self, location: StorageLocation) -> Optional[str]:
+        """Where ``location`` is, as the library would name it; None before
+        setup and for a path that is not this machine's."""
+        if self._context is None or not os.path.isabs(location.path):
+            return None
+        return os.path.normpath(location.path)
+
+    def _folder_sources(self) -> dict[str, str]:
+        """Each folder source's id and the folder it reads."""
+        return {
+            source.id: os.path.normpath(source.location.path)
+            for source in self._context.config.music_sources
+            if isinstance(source, LocalSource) and source.location.path
+        }
+
+    def _library_empty(self) -> bool:
+        now = time.monotonic()
+        if now - self._emptiness_checked_at > _EMPTINESS_TTL_S:
+            db = self._inputmodule.db_manager if self._inputmodule is not None else None
+            self._empty = db is None or not db.is_good() or db.get_kind_total("track") == 0
+            self._emptiness_checked_at = now
+        return self._empty
 
     async def required_packages(self) -> list[str]:
         """Optional-package keys this plugin would need given the *current*

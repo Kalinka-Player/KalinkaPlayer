@@ -1,0 +1,9 @@
+[Unit]
+Description=Mount and unmount storage on Kalinka's request
+# Every request is taken out of the directory, however it ends, so the path
+# unit starting this again at once is the next request, not a loop.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/kalinka/media-mount apply-requests

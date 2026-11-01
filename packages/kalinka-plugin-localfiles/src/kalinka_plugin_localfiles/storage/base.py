@@ -152,10 +152,12 @@ class RootStatus:
     is a round trip of its own (:meth:`FileStorage.is_empty`).
 
     ``identity`` names the storage the folder currently lives on
-    ("nfs4 192.168.1.5:/export", "ext4 /dev/sda1", "smb //nas/music 1a2b3c4d").
-    Stable across reboots, it lets callers detect that a static mount
-    silently gave way to the local directory underneath it — which
-    availability alone cannot see.
+    ("nfs4 192.168.1.5:/export", "vfat uuid:3A1F-9C2B", "smb //nas/music
+    1a2b3c4d"). Stable across reboots and replugs, it lets callers detect
+    that a static mount silently gave way to the local directory underneath
+    it — which availability alone cannot see. ``legacy_identity`` is what
+    the same storage was recorded as before disks were named by UUID
+    ("vfat /dev/sda1"), accepted so a library indexed then still matches.
     """
 
     root: str
@@ -165,6 +167,14 @@ class RootStatus:
     is_network: bool
     is_autofs: bool
     identity: Optional[str] = None
+    legacy_identity: Optional[str] = None
+
+    def matches(self, stored: Optional[str]) -> bool:
+        """Whether the storage here is the one ``stored`` recorded; true
+        when either side has nothing to compare."""
+        if not stored or not self.identity:
+            return True
+        return stored in (self.identity, self.legacy_identity)
 
 
 class ChangeKind(str, Enum):

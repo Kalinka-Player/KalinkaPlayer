@@ -12,7 +12,8 @@ Depends: adduser,
     python3-venv,
     python3-pip,
     python3-setuptools,
-    kalinka-plugin-sdk (>= 3.19), kalinka-plugin-sdk (<< 4)
+    kalinka-plugin-sdk (>= 3.20), kalinka-plugin-sdk (<< 4)
 Recommends: kalinka-web
+Suggests: nfs-common
 Description: Kalinka Music Player (server)
   Kalinka Music Player service used in a pair with Kalinka App.

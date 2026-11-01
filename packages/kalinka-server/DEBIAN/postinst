@@ -13,6 +13,8 @@ UPGRADE_PATH_UNIT="kalinka-upgrade.path"
 UPGRADE_PATH_UNIT_PATH="/etc/systemd/system/${UPGRADE_PATH_UNIT}"
 JOURNAL_READER_SOCKET="kalinka-journal-reader.socket"
 JOURNAL_READER_SOCKET_PATH="/etc/systemd/system/${JOURNAL_READER_SOCKET}"
+MOUNTS_PATH_UNIT="kalinka-mounts.path"
+MOUNTS_PATH_UNIT_PATH="/etc/systemd/system/${MOUNTS_PATH_UNIT}"
 
 case "$1" in
   configure)
@@ -77,6 +79,19 @@ case "$1" in
       systemctl enable --now "$JOURNAL_READER_SOCKET"
     else
       echo "Note: $JOURNAL_READER_SOCKET not found at $JOURNAL_READER_SOCKET_PATH. Skipping."
+    fi
+    if [ -f "$MOUNTS_PATH_UNIT_PATH" ]; then
+      systemctl enable --now "$MOUNTS_PATH_UNIT"
+    fi
+    # Drives plugged in before this install are mounted now, not at the next plug.
+    if command -v udevadm >/dev/null 2>&1; then
+      udevadm control --reload-rules || true
+      # Drives already plugged in, and only those on USB.
+      for dev in /sys/class/block/*; do
+        case "$(readlink -f "$dev")" in
+          */usb*) udevadm trigger --action=add "$dev" || true ;;
+        esac
+      done
     fi
     if [ -f "$UNIT_PATH" ]; then
       systemctl enable "$UNIT_NAME"

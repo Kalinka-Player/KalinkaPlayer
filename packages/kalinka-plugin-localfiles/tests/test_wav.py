@@ -17,7 +17,7 @@ from kalinka_plugin_localfiles.indexer.indexer import (
     is_supported_audio_file,
 )
 from kalinka_plugin_localfiles.indexer.indexer_db import AsyncIndexerDb
-from kalinka_plugin_localfiles.indexer.wav import UnsupportedWave, open_pcm_wave
+from kalinka_plugin_sdk.media.wav import UnsupportedWave, open_pcm_wave
 from kalinka_plugin_localfiles.storage import media_type_of
 
 

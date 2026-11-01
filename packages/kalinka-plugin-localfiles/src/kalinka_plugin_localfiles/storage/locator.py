@@ -14,8 +14,6 @@ rather than by :func:`os.path.normpath`: normalising a URL collapses the
 
 from __future__ import annotations
 
-import mimetypes
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -259,22 +257,6 @@ def is_within(path: str, root: str) -> bool:
     if path == root:
         return True
     return path.startswith(root if root.endswith("/") else root + "/")
-
-
-def media_type_of(path: str) -> Optional[str]:
-    """The media type a location's name implies, or None.
-
-    Guessed from the last component alone, because
-    :func:`mimetypes.guess_type` treats a scheme-bearing string as a URL and
-    truncates it at the first ``#`` or ``?`` — which silently unnames every
-    share-backed track called something like ``Symphony #5.flac``. The type
-    decides which tag reader runs and what a renderer is told it is playing,
-    so getting it from the name is not optional.
-    """
-    from ..audio_formats import MEDIA_TYPES
-
-    suffix = os.path.splitext(path)[1].lower()
-    return MEDIA_TYPES.get(suffix) or mimetypes.guess_type(os.path.basename(path))[0]
 
 
 def root_of(path: str, roots: Iterable[str]) -> Optional[str]:

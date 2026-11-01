@@ -1071,7 +1071,7 @@ class LocalFilesInputModule(InputModule):
                 f"Music folder {root} is not available: {status.reason}"
             )
         stored = self.db_manager.get_root_signature(root)
-        if stored and status.identity and status.identity != stored:
+        if not status.matches(stored):
             raise SourceUnavailableError(
                 f"Music folder {root} is not mounted "
                 f"(the library was indexed from {stored})"

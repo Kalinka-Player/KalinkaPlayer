@@ -462,6 +462,13 @@ class Catalog(BaseModel):
             consumer attributes a catalog to its source(s) when the catalog's
             own ``id.source`` cannot (server-assembled sections use
             ``source="server"`` and so can't encode the origin in the id).
+        live (bool): SDK 3.20. What it lists changes without Kalinka, as a
+            drive's folders do when files are copied to it, so a client
+            lists it again each time it is shown.
+        on_storage (bool): SDK 3.20. A folder of a volume the server
+            mounted, or the list of them: ``GET /server/storage/location``
+            answers for it, and it may list what a volume that went away
+            held.
     """
 
     id: EntityId
@@ -472,6 +479,8 @@ class Catalog(BaseModel):
     preview_config: Optional[Preview] = None
     role: Optional[CatalogRole] = None
     sources: List[str] = []
+    live: bool = False
+    on_storage: bool = False
 
 
 class MatchTier(str, Enum):
@@ -564,6 +573,10 @@ class BrowseItem(BaseModel):
         playlist (Optional[Playlist]): Playlist data if this represents a playlist
         catalog (Optional[Catalog]): Catalog data if this represents a catalog section
         track (Optional[Track]): Track data if this represents a track
+        icon (Optional[str]): What a client draws where the item has no art,
+            in place of art it would make up: ``track``, ``folder``,
+            ``usb_drive``, ``network_share``, ``disk`` or
+            ``internal_storage`` (since 3.20).
         timestamp (NonNegativeInt): Used for sorting/merging items by time
         match (Optional[NameMatch]): How the item answers the query it was
             searched for, set by the server's name ranking and absent
@@ -620,6 +633,7 @@ class BrowseItem(BaseModel):
     playlist: Optional[Playlist] = None
     catalog: Optional[Catalog] = None
     track: Optional[Track] = None
+    icon: Optional[str] = None
 
     # Used for merging multiple items into a single view
     timestamp: NonNegativeInt = 0

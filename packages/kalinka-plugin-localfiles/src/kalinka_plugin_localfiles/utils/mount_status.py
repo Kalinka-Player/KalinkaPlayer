@@ -13,127 +13,29 @@ to every storage alike and live in :class:`~..storage.base.FileStorage`.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 from typing import Optional
+
+from kalinka_plugin_sdk.mounts import (
+    Mount,
+    block_facts,
+    covering_mount,
+    covers,
+    is_network_fs,
+    list_mounts,
+    share_protocol,
+)
 
 from ..storage.base import RootStatus
 
-_NETWORK_FS = {
-    "cifs",
-    "smb3",
-    "smbfs",
-    "sshfs",
-    "fuse.sshfs",
-    "davfs",
-    "fuse.davfs2",
-    "9p",
-    "ceph",
-    "fuse.ceph",
-    "glusterfs",
-    "fuse.glusterfs",
-    "afpfs",
-}
-
-_SMB_FS = {"cifs", "smb3", "smbfs"}
-
-
-@dataclass(frozen=True)
-class Mount:
-    """One mountinfo row: where a filesystem is mounted, its type and source.
-
-    @param device The kernel's ``major:minor``. Rows sharing it are views
-        of one filesystem.
-    @param fs_root Which part of that filesystem is mounted: ``/`` for the
-        whole of it, a directory for a bind mount, a subvolume for btrfs.
-    @note Both default to empty, as they are for a Mount built by hand
-        rather than read from mountinfo.
-    """
-
-    mount_point: str
-    fs_type: str
-    source: str
-    device: str = ""
-    fs_root: str = ""
-
-
-def _unescape(field: str) -> str:
-    if "\\" not in field:
-        return field
-    out = []
-    i = 0
-    while i < len(field):
-        if field[i] == "\\" and i + 4 <= len(field) and field[i + 1 : i + 4].isdigit():
-            out.append(chr(int(field[i + 1 : i + 4], 8)))
-            i += 4
-        else:
-            out.append(field[i])
-            i += 1
-    return "".join(out)
-
-
-def list_mounts(text: Optional[str] = None) -> list[Mount]:
-    """Parse mountinfo rows, in mount order (later rows stack on earlier)."""
-    if text is None:
-        try:
-            with open("/proc/self/mountinfo", encoding="utf-8") as f:
-                text = f.read()
-        except OSError:
-            return []
-    mounts: list[Mount] = []
-    for line in text.splitlines():
-        head, sep, tail = line.partition(" - ")
-        if not sep:
-            continue
-        head_fields = head.split(" ")
-        tail_fields = tail.split(" ")
-        if len(head_fields) < 5 or len(tail_fields) < 2:
-            continue
-        mounts.append(
-            Mount(
-                mount_point=_unescape(head_fields[4]),
-                fs_type=tail_fields[0],
-                source=_unescape(tail_fields[1]),
-                device=head_fields[2],
-                fs_root=_unescape(head_fields[3]),
-            )
-        )
-    return mounts
-
-
-def _covers(mount_point: str, path: str) -> bool:
-    return (
-        mount_point == "/"
-        or path == mount_point
-        or path.startswith(mount_point + os.sep)
-    )
-
-
-def covering_mount(path: str, mounts: Optional[list[Mount]] = None) -> Optional[Mount]:
-    """The mount `path` currently lives on: longest matching mount point,
-    later rows winning a tie (they are stacked on top)."""
-    if mounts is None:
-        mounts = list_mounts()
-    best: Optional[Mount] = None
-    for m in mounts:
-        if _covers(m.mount_point, path) and (
-            best is None or len(m.mount_point) >= len(best.mount_point)
-        ):
-            best = m
-    return best
-
-
-def is_network_fs(fs_type: str) -> bool:
-    """Whether a server, rather than a disk on this machine, answers for a
-    filesystem of this type."""
-    return fs_type.startswith("nfs") or fs_type in _NETWORK_FS
-
-
-def share_protocol(fs_type: str) -> Optional[str]:
-    """The protocol a user knows a mounted share by, as "SMB" or "NFS"; None
-    for any other filesystem."""
-    if fs_type.startswith("nfs"):
-        return "NFS"
-    return "SMB" if fs_type in _SMB_FS else None
+__all__ = [
+    "Mount",
+    "autofs_pending",
+    "covering_mount",
+    "is_network_fs",
+    "list_mounts",
+    "probe_root",
+    "share_protocol",
+]
 
 
 def autofs_pending(root: str, mounts: Optional[list[Mount]] = None) -> bool:
@@ -157,8 +59,10 @@ def probe_root(root: str, mounts: Optional[list[Mount]] = None) -> RootStatus:
         mounts = list_mounts()
     cov = covering_mount(root, mounts)
     fs_type = cov.fs_type if cov else None
-    identity = f"{cov.fs_type} {cov.source}" if cov else None
-    is_autofs = any(m.fs_type == "autofs" and _covers(m.mount_point, root) for m in mounts)
+    legacy = f"{cov.fs_type} {cov.source}" if cov else None
+    uuid = block_facts(cov.device).uuid if cov and cov.source.startswith("/dev/") else ""
+    identity = f"{cov.fs_type} uuid:{uuid}" if uuid else legacy
+    is_autofs = any(m.fs_type == "autofs" and covers(m.mount_point, root) for m in mounts)
     is_network = fs_type is not None and is_network_fs(fs_type)
     if fs_type == "autofs":
         return RootStatus(
@@ -169,6 +73,7 @@ def probe_root(root: str, mounts: Optional[list[Mount]] = None) -> RootStatus:
             is_network=is_network,
             is_autofs=True,
             identity=identity,
+            legacy_identity=legacy,
         )
     if not accessible:
         return RootStatus(
@@ -179,6 +84,7 @@ def probe_root(root: str, mounts: Optional[list[Mount]] = None) -> RootStatus:
             is_network=is_network,
             is_autofs=is_autofs,
             identity=identity,
+            legacy_identity=legacy,
         )
     try:
         # Listed for the failure, not for the contents: the access bits can
@@ -194,6 +100,7 @@ def probe_root(root: str, mounts: Optional[list[Mount]] = None) -> RootStatus:
             is_network=is_network,
             is_autofs=is_autofs,
             identity=identity,
+            legacy_identity=legacy,
         )
     return RootStatus(
         root=root,
@@ -203,4 +110,5 @@ def probe_root(root: str, mounts: Optional[list[Mount]] = None) -> RootStatus:
         is_network=is_network,
         is_autofs=is_autofs,
         identity=identity,
+        legacy_identity=legacy,
     )

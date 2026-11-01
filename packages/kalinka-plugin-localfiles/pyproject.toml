@@ -32,8 +32,9 @@ dependencies = [
     # >=3.15: Track carries track_number and disc_number from the library.
     # >=3.18: Album carries the release year.
     # >=3.19: TrackSource carries the indexed audio codec for display.
-    # >=3.20: Track carries its own cover.
-    "kalinka-plugin-sdk>=3.20,<4",
+    # >=3.20: Track carries its own cover; the file readers live in
+    # kalinka_plugin_sdk.media, and LibraryAdopter answers "Add to library".
+    "kalinka-plugin-sdk[media]>=3.20,<4",
     "rapidfuzz>=2.0.0",
     "musicbrainzngs>=0.7.1",
     "inotify_simple>=1.3.5",

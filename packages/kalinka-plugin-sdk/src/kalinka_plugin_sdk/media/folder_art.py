@@ -15,12 +15,60 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Callable, List, NamedTuple, Optional, Tuple
+from typing import BinaryIO, Callable, ContextManager, Iterable, List, NamedTuple, Optional, Protocol, Tuple
 
 from PIL import Image
 
-from ..housekeeping import is_hidden_file, is_housekeeping_dir
-from ..storage import DirEntry, FileStorage
+from ..files import is_hidden_file, is_housekeeping_dir
+
+
+class DirEntry(Protocol):
+    """One child of a directory; a link to a directory is not ``is_dir``."""
+
+    name: str
+    path: str
+    is_dir: bool
+
+
+class FileStorage(Protocol):
+    """What the cover search reads a folder through."""
+
+    def listdir(self, path: str) -> Iterable[DirEntry]: ...
+
+    def is_dir(self, path: str) -> bool: ...
+
+    def size_of(self, entry: DirEntry) -> Optional[int]: ...
+
+    def open(self, path: str) -> ContextManager[BinaryIO]: ...
+
+
+class _LocalEntry(NamedTuple):
+    name: str
+    path: str
+    is_dir: bool
+
+
+class LocalFiles:
+    """:class:`FileStorage` over this machine's own filesystem."""
+
+    def listdir(self, path: str) -> List[_LocalEntry]:
+        with os.scandir(path) as entries:
+            return [
+                _LocalEntry(e.name, e.path, e.is_dir(follow_symlinks=False))
+                for e in entries
+            ]
+
+    def is_dir(self, path: str) -> bool:
+        return os.path.isdir(path)
+
+    def size_of(self, entry: DirEntry) -> Optional[int]:
+        try:
+            return os.stat(entry.path).st_size
+        except OSError:
+            return None
+
+    def open(self, path: str) -> ContextManager[BinaryIO]:
+        return open(path, "rb")
 
 #: A cheap pre-filter on the *name*, so most files are ruled out without
 #: being opened; the real format is whatever the header turns out to say,

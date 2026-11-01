@@ -5,11 +5,10 @@ import mimetypes
 
 import pytest
 
+from kalinka_plugin_sdk.media.formats import SUPPORTED_AUDIO_EXTENSIONS
+
 from kalinka_plugin_localfiles.config_model import LocalFilesConfig
-from kalinka_plugin_localfiles.indexer.indexer import (
-    SUPPORTED_AUDIO_EXTENSIONS,
-    FileIndexer,
-)
+from kalinka_plugin_localfiles.indexer.indexer import FileIndexer
 
 
 @pytest.mark.parametrize("extension", sorted(SUPPORTED_AUDIO_EXTENSIONS))

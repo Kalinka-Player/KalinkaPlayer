@@ -19,8 +19,8 @@ from kalinka_plugin_localfiles.input_module_db import (
     LocalFilesInputModuleDb,
 )
 from kalinka_plugin_localfiles.localfiles import LocalFilesInputModule
-from kalinka_plugin_localfiles.utils import mount_status
-from kalinka_plugin_localfiles.utils.mount_status import Mount
+from kalinka_plugin_sdk import mounts as sdk_mounts
+from kalinka_plugin_sdk.mounts import Mount
 
 TRACKS = [
     ("t_loose", "/lib/music/loose.flac", "unknown_album"),
@@ -182,7 +182,7 @@ def test_each_source_says_what_it_is_and_where(config, db, monkeypatch):
         Mount("/lib/music2", "cifs", "//nas/music"),
         Mount("/elsewhere", "fuse.sshfs", "me@host:/srv"),
     ]
-    monkeypatch.setattr(mount_status, "list_mounts", lambda: mounts)
+    monkeypatch.setattr(sdk_mounts, "list_mounts", lambda: mounts)
     roots = ["/lib/music", "/lib/music2", "/elsewhere", "smb://nas/music"]
     module = _module(config, db, roots)
 

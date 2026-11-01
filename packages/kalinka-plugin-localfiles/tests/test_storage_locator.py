@@ -13,13 +13,13 @@ import mimetypes
 import os
 
 import pytest
+from kalinka_plugin_sdk.media.formats import media_type_of
 
 from kalinka_plugin_localfiles.storage.locator import (
     FILE_SCHEME,
     SMB_SCHEME,
     LocatorError,
     is_within,
-    media_type_of,
     parse,
     root_of,
     scheme_of,

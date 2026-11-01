@@ -2,12 +2,11 @@
 
 import pytest
 
-from kalinka_plugin_localfiles.housekeeping import (
+from kalinka_plugin_sdk.files import (
     in_housekeeping,
     is_hidden_file,
     is_housekeeping_dir,
 )
-from kalinka_plugin_localfiles.indexer.indexer import is_supported_audio_file
 
 
 @pytest.mark.parametrize(
@@ -44,8 +43,7 @@ def test_music_named_like_it_is_not(name):
 
 def test_a_resource_fork_is_hidden():
     assert is_hidden_file("._01 Aria.flac")
-    assert not is_supported_audio_file("smb://nas/music/Bach/._01 Aria.flac")
-    assert is_supported_audio_file("smb://nas/music/Bach/01 Aria.flac")
+    assert not is_hidden_file("01 Aria.flac")
 
 
 def test_only_folders_below_the_root_are_judged():

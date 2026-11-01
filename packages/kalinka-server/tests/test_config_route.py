@@ -62,6 +62,10 @@ def library():
 
 @pytest.fixture
 def client(tmp_path, library):
+    return _client(tmp_path, library)
+
+
+def _client(tmp_path, library, instance=None):
     app = FastAPI()
     app.state.config = KalinkaConfig()
     app.state.schema_version = "1"
@@ -74,7 +78,7 @@ def client(tmp_path, library):
     app.state.overrides_file = str(tmp_path / "overrides.json")
     modules = SimpleNamespace(
         prepared_input_modules={
-            "localfiles": _Prepared(SimpleNamespace(config=library))
+            "localfiles": _Prepared(SimpleNamespace(config=library), plugin_instance=instance)
         },
         prepared_devices={},
     )
@@ -176,3 +180,38 @@ class TestWhatASaveAnswers:
     def test_no_credential_is_in_it(self, client):
         answer = client.put("/server/config", json=_body(_read(client)))
         assert SECRET not in json.dumps(answer.json())
+
+
+class _Listening:
+    """A plugin that takes in its settings as they are saved."""
+
+    def __init__(self):
+        self.changed: list[frozenset[str]] = []
+
+    async def validate_config(self, candidate, changed):
+        return []
+
+    async def config_changed(self, changed):
+        self.changed.append(changed)
+
+
+class TestASaveReachesThePlugin:
+    def test_with_the_paths_that_changed_within_it(self, tmp_path, library):
+        plugin = _Listening()
+        client = _client(tmp_path, library, plugin)
+
+        answer = client.put("/server/config", json=_body(_read(client)))
+
+        assert answer.status_code == 200
+        [changed] = plugin.changed
+        assert "music_sources" in changed
+        assert not any(path.startswith("input_modules.") for path in changed)
+
+    def test_not_when_the_save_is_refused(self, tmp_path, library):
+        plugin = _Listening()
+        client = _client(tmp_path, library, plugin)
+
+        answer = client.put("/server/config", json=_body(_edited(client, location={"host": "other.local"})))
+
+        assert answer.status_code == 422
+        assert plugin.changed == []

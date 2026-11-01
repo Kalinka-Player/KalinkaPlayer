@@ -222,3 +222,18 @@ def test_format_root_status_flags_a_mount_identity_mismatch():
 )
 def test_a_share_is_named_by_the_protocol_it_is_mounted_with(fs_type, protocol):
     assert share_protocol(fs_type) == protocol
+
+
+def test_a_disk_is_named_by_its_filesystem_uuid(tmp_path, monkeypatch):
+    """A stick plugged back in as another device node is the same disk."""
+    from kalinka_plugin_sdk.mounts import BlockFacts
+    from kalinka_plugin_localfiles.utils import mount_status
+
+    monkeypatch.setattr(mount_status, "block_facts", lambda device: BlockFacts(uuid="3A1F-9C2B") if device == "8:1" else BlockFacts())
+    mounts = [Mount(mount_point=str(tmp_path), fs_type="vfat", source="/dev/sdb1", device="8:1", fs_root="/")]
+
+    status = probe_root(str(tmp_path), mounts)
+
+    assert (status.identity, status.legacy_identity) == ("vfat uuid:3A1F-9C2B", "vfat /dev/sdb1")
+    assert status.matches("vfat uuid:3A1F-9C2B") and status.matches("vfat /dev/sdb1")
+    assert not status.matches("vfat uuid:FFFF-0000")

@@ -28,9 +28,21 @@ from .events import (
     CurrentRendererChangedEvent,
     PlaybackControlChangedEvent,
     ModulesChangedEvent,
+    VolumesChangedEvent,
     RendererDescriptor,
     ModuleDescriptor,
     ModulesSnapshot,
+)
+from .storage import (
+    LibraryAdopter,
+    LocationStatus,
+    SourcesChange,
+    StorageBacked,
+    StorageLocation,
+    VolumeDescriptor,
+    VolumeKind,
+    VolumeLibrary,
+    VolumeState,
 )
 
 from .datamodel import (
@@ -148,9 +160,20 @@ __all__ = [
     "CurrentRendererChangedEvent",
     "PlaybackControlChangedEvent",
     "ModulesChangedEvent",
+    "VolumesChangedEvent",
     "RendererDescriptor",
     "ModuleDescriptor",
     "ModulesSnapshot",
+    # Storage
+    "LibraryAdopter",
+    "LocationStatus",
+    "SourcesChange",
+    "StorageBacked",
+    "StorageLocation",
+    "VolumeDescriptor",
+    "VolumeKind",
+    "VolumeLibrary",
+    "VolumeState",
     # Data Models
     "EntityType",
     "EntityId",
