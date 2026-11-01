@@ -11,15 +11,14 @@ from typing import Optional
 
 from pydantic import BaseModel
 
-from kalinka_plugin_sdk.inputmodule import SourceUnavailableError
 from kalinka_plugin_sdk.mounts import covers
 from kalinka_plugin_sdk.storage import VolumeState
 
 from ..storage.describe import icon_of
 from ..storage.manager import StorageManager
-from . import fsio
 from .fsio import DriveIO
-from .listing import ListingCache, count_folder, folder_subname, shown
+from .listing import ListingCache
+from .rows import folder_rows, listed
 
 HOME = "/home"
 #: The most folders one page lists, whatever it asks for.
@@ -61,23 +60,12 @@ class ServerFolders:
             return ServerFolderList(offset=offset, limit=limit, total=len(places), folders=places[offset : offset + limit])
         if not os.path.isabs(path) or "\0" in path:
             raise LookupError(path)
-        real = await self._io.run(os.path.realpath, path)
+        real = await self._io.run(os.path.realpath, path, at=path)
         if not self._allowed(real):
             raise LookupError(path)
-        try:
-            contents = await self._io.run(self._listings.list, real)
-        except OSError as e:
-            raise SourceUnavailableError(f"{shown(os.path.basename(real) or real)} cannot be read") from e
-        page = contents.folders[offset : offset + limit]
-        counts = await self._io.each_within(count_folder, [p for _, p in page], fsio.COUNT_BUDGET_S)
-        folders = [
-            ServerFolder(
-                path=folder,
-                name=shown(name),
-                subname=folder_subname(count, await self._storage.library_holding(folder)),
-            )
-            for (name, folder), count in zip(page, counts)
-        ]
+        contents = await listed(self._io, self._listings, real)
+        rows = await folder_rows(self._io, self._storage, contents.folders[offset : offset + limit])
+        folders = [ServerFolder(path=row.path, name=row.name, subname=row.subname) for row in rows]
         return ServerFolderList(offset=offset, limit=limit, total=len(contents.folders), folders=folders)
 
     def _mounted(self):

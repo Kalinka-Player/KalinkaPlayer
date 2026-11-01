@@ -661,7 +661,11 @@ async def create_app(
         adopters=_adopters,
     )
     app.state.storage = storage
-    drive_io = app.state.drive_io = DriveIO()
+    def _volume_of(path: str) -> str:
+        location = storage.location_of(path)
+        return location.volume_id if location is not None else ""
+
+    drive_io = app.state.drive_io = DriveIO(lane_of=_volume_of)
     drives = DrivesModule(
         storage,
         paths.cache_dir(),
@@ -803,15 +807,7 @@ async def create_app(
     )
     app.state.dynamic_paths = frozenset(app.state.dynamic_field_registry.keys())
     app.state.options_registry.register(
-        "base_config.storage.mounts.fs_uuid",
-        lambda: [
-            {
-                "value": uuid,
-                "label": facts.label or uuid,
-                "description": " · ".join(p for p in (facts.fs_type, facts.vendor, facts.model) if p),
-            }
-            for uuid, facts in storage.unmounted_filesystems()
-        ],
+        "base_config.storage.mounts.fs_uuid", storage.filesystem_options
     )
     # Volume and power are answered by whichever module owns the *active*
     # renderer, so the target is resolved per request rather than bound here.

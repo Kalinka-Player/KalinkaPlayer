@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Callable, FrozenSet, List, Optional, Sequence
 
@@ -45,15 +46,14 @@ from .artwork import EMBEDDED, FOLDER, DriveArtwork, cover_urls
 from .fsio import DriveIO
 from .listing import (
     FileEntry,
-    FolderCounts,
     ListingCache,
     TagCache,
-    count_folder,
     entry_of,
-    folder_subname,
+    folder_has_images,
     shown,
     walk_tracks,
 )
+from .rows import FolderRow, folder_rows, listed
 
 DISPLAY_NAME = "Drives"
 ICON = "storage_outlined"
@@ -100,7 +100,7 @@ class DrivesModule(InputModule):
         self._storage = storage
         self._enabled = enabled
         self._io = io or DriveIO()
-        self._tags = TagCache()
+        self._tags = TagCache(pool_for=self._io.pool_for)
         self._listings = ListingCache()
         self._artwork = DriveArtwork(os.path.join(cache_dir, "drives-art"), self._allowed)
 
@@ -137,11 +137,6 @@ class DrivesModule(InputModule):
     def close(self) -> None:
         self._tags.shutdown()
 
-    async def _counts(self, paths: Sequence[str]) -> list[Optional[FolderCounts]]:
-        """Each folder's counts, or None for one not counted within
-        COUNT_BUDGET_S: a slow drive lists its folders without them."""
-        return await self._io.each_within(count_folder, paths, fsio.COUNT_BUDGET_S)
-
     def _drives(self) -> list[VolumeDescriptor]:
         return [
             v for v in self._storage.volumes()
@@ -158,7 +153,7 @@ class DrivesModule(InputModule):
     async def _resolved(self, path: Optional[str]) -> str:
         if path is None:
             raise LookupError("not a path on a drive")
-        real = await self._io.run(os.path.realpath, path)
+        real = await self._io.run(os.path.realpath, path, at=path)
         if not self._allowed(real):
             raise SourceUnavailableError(self._absent_reason(path))
         return real
@@ -222,23 +217,17 @@ class DrivesModule(InputModule):
         self, path: str, offset: int, limit: int, tracks_only: bool = False
     ) -> BrowseItemList:
         limit = min(limit, MAX_PAGE)
-        try:
-            contents = await self._io.run(self._listings.list, path)
-        except OSError as e:
-            raise SourceUnavailableError(f"{shown(os.path.basename(path) or path)} cannot be read") from e
+        contents = await listed(self._io, self._listings, path)
         folders = [] if tracks_only else contents.folders
         page_folders = folders[offset : offset + limit]
         track_offset = max(0, offset - len(folders))
         page_tracks = contents.tracks[track_offset : track_offset + limit - len(page_folders)]
 
-        counts = await self._counts([p for _, p in page_folders])
-        folder_items = [
-            await self._folder_item(name, folder, count)
-            for (name, folder), count in zip(page_folders, counts)
-        ]
-        tags = await self._io.run(
-            self._tags.read_all, page_tracks, PAGE_TAG_BUDGET_S, timeout=PAGE_TAG_BUDGET_S + fsio.FS_TIMEOUT_S
+        rows, tags = await asyncio.gather(
+            folder_rows(self._io, self._storage, page_folders),
+            self._tags.read_within(page_tracks, PAGE_TAG_BUDGET_S),
         )
+        folder_items = [self._folder_item(row) for row in rows]
         track_items = [
             self._track_item(entry, tags.get(entry.path), contents.has_images) for entry in page_tracks
         ]
@@ -249,18 +238,19 @@ class DrivesModule(InputModule):
             items=folder_items + track_items,
         )
 
-    async def _folder_item(self, name: str, path: str, counts: Optional[FolderCounts]) -> BrowseItem:
-        item_id = ids.folder_id(path)
-        image = cover_urls(FOLDER, path) if counts is not None and (counts.has_images or counts.tracks) else None
-        name = shown(name)
+    @staticmethod
+    def _folder_item(row: FolderRow) -> BrowseItem:
+        item_id = ids.folder_id(row.path)
+        counts = row.counts
+        image = cover_urls(FOLDER, row.path) if counts is not None and (counts.has_images or counts.tracks) else None
         return BrowseItem(
             id=item_id,
-            name=name,
+            name=row.name,
             can_browse=True,
             can_add=counts is None or bool(counts.folders or counts.tracks),
-            subname=folder_subname(counts, await self._storage.library_holding(path)),
+            subname=row.subname,
             icon="folder",
-            catalog=_catalog(item_id, name, image=image),
+            catalog=_catalog(item_id, row.name, image=image),
         )
 
     def _track(self, entry: FileEntry, summary: Optional[TagSummary], folder_has_images: bool) -> Track:
@@ -321,18 +311,18 @@ class DrivesModule(InputModule):
                 if item is not None:
                     others[entity_id.to_string] = item
         tracks: list[FileEntry] = await self._io.run(
-            self._entries, paths, timeout=max(fsio.FS_TIMEOUT_S, len(paths) / 100)
+            self._entries, paths, at=paths[0], timeout=max(fsio.FS_TIMEOUT_S, len(paths) / 100)
         ) if paths else []
-        tags = await self._io.run(
-            self._tags.read_all, tracks, QUEUE_TAG_BUDGET_S, timeout=QUEUE_TAG_BUDGET_S + fsio.FS_TIMEOUT_S
-        )
         folders = list(dict.fromkeys(os.path.dirname(entry.path) for entry in tracks))
-        images = dict(zip(folders, await self._counts(folders)))
+        tags, has_images = await asyncio.gather(
+            self._tags.read_within(tracks, QUEUE_TAG_BUDGET_S),
+            self._io.each_within(folder_has_images, folders, fsio.COUNT_BUDGET_S),
+        )
+        images = dict(zip(folders, has_images))
         by_path = {}
         for entry in tracks:
-            counts = images.get(os.path.dirname(entry.path))
             by_path[ids.track_id(entry.path).to_string] = self._track_item(
-                entry, tags.get(entry.path), counts is not None and counts.has_images
+                entry, tags.get(entry.path), bool(images.get(os.path.dirname(entry.path)))
             )
         resolved = {**others, **by_path}
         return [resolved[e.to_string] for e in entity_ids if e.to_string in resolved]
@@ -358,10 +348,10 @@ class DrivesModule(InputModule):
                 return self._volume_item(volume) if volume is not None else None
             if endpoint.startswith(ids.FOLDER_PREFIX):
                 path = ids.decode_path(endpoint[len(ids.FOLDER_PREFIX):])
-                if path is None or not self._allowed(await self._io.run(os.path.realpath, path)):
+                if path is None or not self._allowed(await self._io.run(os.path.realpath, path, at=path)):
                     return None
-                (counts,) = await self._counts([path])
-                return await self._folder_item(os.path.basename(path) or path, path, counts)
+                (row,) = await folder_rows(self._io, self._storage, [(os.path.basename(path) or path, path)])
+                return self._folder_item(row)
         return None
 
     async def tracks_to_add(self, entity_id: EntityId, limit: int) -> Optional[List[EntityId]]:
@@ -371,10 +361,10 @@ class DrivesModule(InputModule):
         real = await self._resolved(path)
         try:
             if entity_id.type == EntityType.ALBUM:
-                contents = await self._io.run(self._listings.list, real, timeout=3 * fsio.FS_TIMEOUT_S)
+                contents = await self._io.run(self._listings.list, real, at=real, timeout=3 * fsio.FS_TIMEOUT_S)
                 paths = [t.path for t in contents.tracks][:limit]
             else:
-                paths = await self._io.run(walk_tracks, real, limit, timeout=6 * fsio.FS_TIMEOUT_S)
+                paths = await self._io.run(walk_tracks, real, limit, at=real, timeout=6 * fsio.FS_TIMEOUT_S)
         except OSError as e:
             raise SourceUnavailableError(f"{shown(os.path.basename(real) or real)} cannot be read") from e
         return [ids.track_id(p) for p in paths]
@@ -400,7 +390,7 @@ class DrivesModule(InputModule):
         path = self._container_path(entity_id)
         if path is None:
             return None
-        real = await self._io.run(os.path.realpath, path)
+        real = await self._io.run(os.path.realpath, path, at=path)
         if not self._allowed(real):
             return None
         return self._storage.location_of(real) or StorageLocation(volume_id="", path=real)
@@ -411,13 +401,13 @@ class DrivesModule(InputModule):
         if path is None or not is_supported_audio_file(path):
             return None
         real = await self._resolved(path)
-        return real if await self._io.run(os.path.isfile, real) else None
+        return real if await self._io.run(os.path.isfile, real, at=real) else None
 
     async def get_track_source(self, track_id: str) -> TrackSource:
         real = await self._playable(track_id)
         if real is None:
             raise LookupError(track_id)
-        entry = await self._io.run(entry_of, real)
+        entry = await self._io.run(entry_of, real, at=real)
         hit, summary = self._tags.cached((real, entry.size, entry.mtime_ns)) if entry else (False, None)
         return TrackSource(
             source=ModuleAsset(module=ids.SOURCE, asset_id=track_id),
@@ -439,7 +429,9 @@ class DrivesModule(InputModule):
         if not id.startswith(f"{ids.SOURCE}/"):
             return None
         try:
-            return await self._io.run(self._artwork.path_of, id, timeout=3 * fsio.FS_TIMEOUT_S)
+            return await self._io.run(
+                self._artwork.path_of, id, at=self._artwork.subject_of(id) or "", timeout=3 * fsio.FS_TIMEOUT_S
+            )
         except SourceUnavailableError:
             return None
 
