@@ -80,7 +80,7 @@ func TestUnblockReportsASoftBlockItCannotClear(t *testing.T) {
 		t.Fatal(err)
 	}
 	cleared, _, err := Unblock(root, "wlan", "phy0")
-	if err == nil || len(cleared) != 0 {
+	if !errors.Is(err, ErrSoftBlocked) || !errors.Is(err, os.ErrPermission) || len(cleared) != 0 {
 		t.Fatalf("cleared %v, error %v", cleared, err)
 	}
 }

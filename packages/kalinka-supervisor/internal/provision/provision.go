@@ -292,7 +292,7 @@ func (s *Service) problemCode(radio string, err error) string {
 	switch {
 	case hard || errors.Is(err, rfkill.ErrHardBlocked):
 		return "radio_hard_blocked"
-	case soft:
+	case soft || errors.Is(err, rfkill.ErrSoftBlocked):
 		return "radio_blocked"
 	}
 	return "unavailable"

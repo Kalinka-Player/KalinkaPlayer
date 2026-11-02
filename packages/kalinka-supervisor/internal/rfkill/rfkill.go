@@ -12,6 +12,9 @@ import (
 
 var ErrHardBlocked = errors.New("radio_hard_blocked")
 
+// ErrSoftBlocked marks a soft block that could not be cleared.
+var ErrSoftBlocked = errors.New("radio_blocked")
+
 type radioState struct {
 	path, name string
 	soft, hard bool
@@ -105,7 +108,7 @@ func Unblock(root, kind, radio string) (cleared, hard []string, err error) {
 			continue
 		}
 		if err := os.WriteFile(filepath.Join(r.path, "soft"), []byte("0"), 0644); err != nil {
-			errs = append(errs, err)
+			errs = append(errs, fmt.Errorf("%s: %w: %w", r.name, ErrSoftBlocked, err))
 		} else {
 			slog.Info("Cleared a radio's soft block", "radio", r.name, "type", kind)
 			cleared = append(cleared, r.name)
