@@ -36,7 +36,7 @@ type nmFake struct {
 	countryBeforeJoin            bool
 	wirelessEnabled              bool
 	wirelessSets                 int
-	refuseWireless               bool
+	refuseWireless               string
 }
 
 func (b *nmFake) Close() error { return nil }
@@ -68,8 +68,8 @@ func (b *nmFake) Call(ctx context.Context, path dbus.ObjectPath, method string, 
 		}
 	case "org.freedesktop.DBus.Properties.Set":
 		if path == nmRoot && args[0] == nm && args[1] == "WirelessEnabled" {
-			if b.refuseWireless {
-				return nil, dbus.NewError("org.freedesktop.NetworkManager.PermissionDenied", []any{"Not authorized to enable/disable Wi-Fi"})
+			if b.refuseWireless != "" {
+				return nil, dbus.NewError(b.refuseWireless, []any{"Wi-Fi left off"})
 			}
 			b.wirelessSets++
 			b.wirelessEnabled = args[2].(dbus.Variant).Value().(bool)
@@ -317,22 +317,33 @@ func TestNMEnableRadio(t *testing.T) {
 	}
 }
 func TestNMEnableRadioRefused(t *testing.T) {
-	n := NewNetworkManager("wlan0", t.TempDir())
-	n.Root = rfkilltest.Stage(t, rfkilltest.Radio{Type: "wlan", Name: "phy0", Soft: true})
-	rfkilltest.LinkWiFi(t, n.Root, "wlan0", "phy0")
-	n.Bus = &nmFake{t: t, state: 100, active: "/activePrevious", profiles: map[dbus.ObjectPath]settings{}, refuseWireless: true}
-	if err := n.Recover(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	err := n.EnableRadio(context.Background())
-	if dbusx.ErrorName(err) != "org.freedesktop.NetworkManager.PermissionDenied" {
-		t.Fatalf("refusal lost its reason: %v", err)
-	}
-	if !errors.Is(err, rfkill.ErrSoftBlocked) {
-		t.Fatalf("a radio left switched off is not marked so: %v", err)
-	}
-	if !rfkilltest.Soft(t, n.Root, "rfkill0") {
-		t.Fatal("kernel block cleared behind NetworkManager's back")
+	for _, tc := range []struct {
+		name    string
+		refused bool
+	}{
+		{"org.freedesktop.NetworkManager.PermissionDenied", true},
+		{"org.freedesktop.DBus.Error.ServiceUnknown", false},
+		{"org.freedesktop.DBus.Error.NoReply", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := NewNetworkManager("wlan0", t.TempDir())
+			n.Root = rfkilltest.Stage(t, rfkilltest.Radio{Type: "wlan", Name: "phy0", Soft: true})
+			rfkilltest.LinkWiFi(t, n.Root, "wlan0", "phy0")
+			n.Bus = &nmFake{t: t, state: 100, active: "/activePrevious", profiles: map[dbus.ObjectPath]settings{}, refuseWireless: tc.name}
+			if err := n.Recover(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			err := n.EnableRadio(context.Background())
+			if dbusx.ErrorName(err) != tc.name {
+				t.Fatalf("failure lost its reason: %v", err)
+			}
+			if errors.Is(err, rfkill.ErrSoftBlocked) != tc.refused {
+				t.Fatalf("marked as a radio left switched off: %v, want %v", errors.Is(err, rfkill.ErrSoftBlocked), tc.refused)
+			}
+			if !rfkilltest.Soft(t, n.Root, "rfkill0") {
+				t.Fatal("kernel block cleared behind NetworkManager's back")
+			}
+		})
 	}
 }
 
