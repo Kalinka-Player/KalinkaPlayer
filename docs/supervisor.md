@@ -133,7 +133,10 @@ trigger the operating system's captive Wi-Fi activation page, which opens
 `http://192.168.4.1/activate` and then the standard Kalinka web app at
 `/?setup=network`. Devices that do not open it automatically can use
 `http://192.168.4.1` directly. The supervisor serves `/usr/share/kalinka-web`
-itself, independently of Core, on the AP address's port 80. Install the updated
+itself, independently of Core, on the AP address's port 80. The activation page
+is that package's `activate.html`, in the app's colours; a streamer
+without `kalinka-web`, or with one that predates the page, gets a plain page
+built into the supervisor instead. Install the updated
 `kalinka-web` package with the supervisor for this flow. Flutter's bundled
 CanvasKit and fonts need no internet connection. HTTPS sites are not intercepted.
 On hosts with a firewall, the AP interface must permit DHCP (UDP 67), DNS
