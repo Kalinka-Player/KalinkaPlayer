@@ -162,7 +162,8 @@ is busy, including after a supervisor restart.
 - `poweroff_timer` advertises support for Core's inactivity timer. Older
   supervisors omit it; apps hide the timer controls on those streamers.
 - `server_id` is Core's identity from `/var/lib/kalinka/server_id`, or `null`
-  before Core has created it.
+  before there is one. The server's package makes it as it installs; on a
+  streamer flashed from an image, Core makes it on its first start.
 - `renderer_id` is the renderer's identity from
   `/var/lib/kalinka-renderer/renderer_id`, or `null` where no renderer has
   created one. It is the `renderer_id` Core lists the renderer under.

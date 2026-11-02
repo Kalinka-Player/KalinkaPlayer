@@ -8,11 +8,17 @@ package. Neither broke the install; both told the operator something untrue.
 The release installer that auto-upgrade reruns is here too, for what it asks
 apt to bring: on a headless box, one flag decides between the packages Kalinka
 uses and a graphics stack that nothing on it will ever draw with.
+
+The postinst makes the server's id, which the app keeps a server's pins under,
+before Core first starts, and an upgrade must keep it.
 """
 
 import json
 import os
+import re
+import shutil
 import subprocess
+import uuid
 from pathlib import Path
 
 import pytest
@@ -912,3 +918,113 @@ def test_restart_service_runs_the_plugin_helper_before_core():
         "-m kalinka_server.plugin_management.operations" in dropin
     )
     assert "kalinka-restart.service.d/plugins.conf" in BUILD_DEB.read_text()
+
+
+def _recorder(name, then=""):
+    return f'#!/usr/bin/env bash\necho "{name} $*" >> "$STUB_STATE/calls.log"\n{then}'
+
+
+def _sandboxed_configure(tmp_path, server_id=None):
+    """The postinst's configure, run against a root under tmp_path.
+
+    Every system path in it is moved under that root, and what reaches past
+    the files — users, systemd, udev — is a recorder. Only root can give a
+    file away, so install drops the owner it is asked for and chown only
+    records it. ``server_id`` is what the box already holds there, if
+    anything. Returns the result, the recorded calls, the id path and what
+    it held when kalinka.service was started.
+    """
+    root = tmp_path / "root"
+    script = tmp_path / "postinst"
+    script.write_text(
+        re.sub(
+            r'(?<=[\s"=])/(?=(?:etc|opt|srv|sys|usr|var)/)',
+            lambda _: f"{root}/",
+            POSTINST.read_text(),
+        )
+    )
+    unit = root / "etc" / "systemd" / "system" / "kalinka.service"
+    unit.parent.mkdir(parents=True)
+    unit.touch()
+    path = root / "var" / "lib" / "kalinka" / "server_id"
+    if server_id is not None:
+        path.parent.mkdir(parents=True)
+        path.write_text(server_id)
+
+    binv = tmp_path / "bin"
+    binv.mkdir()
+    state = tmp_path / "state"
+    state.mkdir()
+    stubs = {
+        "id": "#!/usr/bin/env bash\nexit 1\n",
+        "install": _recorder(
+            "install",
+            "args=()\n"
+            "while [ $# -gt 0 ]; do\n"
+            '  case "$1" in -o|-g) shift ;; *) args+=("$1") ;; esac\n'
+            "  shift\n"
+            "done\n"
+            f'exec {shutil.which("install")} "${{args[@]}}"\n',
+        ),
+        "systemctl": _recorder(
+            "systemctl",
+            '[ "$*" != "restart kalinka.service" ] || '
+            f'cat "{path}" > "$STUB_STATE/id-at-start" 2>/dev/null || true\n',
+        ),
+        **{
+            name: _recorder(name)
+            for name in (
+                "adduser",
+                "usermod",
+                "gpasswd",
+                "chown",
+                "systemd-tmpfiles",
+                "udevadm",
+            )
+        },
+    }
+    for name, text in stubs.items():
+        (binv / name).write_text(text)
+        (binv / name).chmod(0o755)
+
+    result = _run(
+        script,
+        "configure",
+        env={"PATH": f"{binv}:{os.environ['PATH']}", "STUB_STATE": str(state)},
+    )
+    calls = (state / "calls.log").read_text().splitlines()
+    at_start = state / "id-at-start"
+    return result, calls, path, at_start.read_text() if at_start.exists() else None
+
+
+@pytest.mark.parametrize(
+    "left", [None, "", "\n", "not-a-uuid\n"], ids=["none", "empty", "blank", "malformed"]
+)
+def test_a_fresh_install_has_its_server_id_before_core_first_starts(left, tmp_path):
+    """The supervisor reports it from install on, rather than once Core has
+    run; an empty file, which a power cut mid-write can leave, is no id, nor
+    is anything else Core would replace as malformed."""
+    result, calls, path, at_start = _sandboxed_configure(tmp_path, server_id=left)
+
+    assert result.returncode == 0, result.stderr
+    server_id = path.read_text().strip()
+    assert uuid.UUID(server_id).version == 4
+    assert at_start == path.read_text()
+    assert f"chown kalusr:kalusr {path}.new" in calls
+    assert not path.with_name("server_id.new").exists()
+    if left is None:
+        assert f"install -d -m 0750 -o kalusr -g kalusr {path.parent}" in calls
+        assert path.parent.stat().st_mode & 0o777 == 0o750
+
+
+def test_an_upgrade_keeps_the_server_id(tmp_path):
+    """A new one would orphan the renderer sessions Core holds and leave the
+    app's pins under an id nobody has."""
+    kept = "0b0c5a3e-8c1b-4a51-9a0d-6c9b1c7f1e2a\n"
+
+    result, calls, path, at_start = _sandboxed_configure(tmp_path, server_id=kept)
+
+    assert result.returncode == 0, result.stderr
+    assert path.read_text() == kept
+    assert at_start == kept
+    assert not any(str(path) in call for call in calls)
