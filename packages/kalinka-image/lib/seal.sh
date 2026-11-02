@@ -7,9 +7,16 @@ seal_rootfs() {
   rm -rf "$ROOTFS"/var/lib/apt/lists/* "$ROOTFS"/tmp/*
   # Emptied, not removed: whatever reads these files is rarely what recreates them.
   find "$ROOTFS/var/log" -type f -delete
+  seal_kalinka
+  restore_dns
+}
+
+# What installing Kalinka leaves that no box flashed from the image may start with.
+seal_kalinka() {
   # pip's cache from bootstrap.sh, of wheels already installed; systemd recreates it.
   rm -rf "$ROOTFS/var/cache/kalinka"
-  restore_dns
+  # The server's postinst made it; one left here would be every box's, with one set of the app's pins.
+  rm -f "$ROOTFS/var/lib/kalinka/server_id"
 }
 
 # Zeroed free space compresses to nothing; whatever the host left there does not.

@@ -2,7 +2,8 @@
 #
 # The pieces of the build shared by every base that can be checked without
 # root: the published file name, putting the image's own resolv.conf back, the
-# overlay's modes, reading unit links, and finding a compiler that came in.
+# overlay's modes, reading unit links, finding a compiler that came in, and
+# sealing the server's id out.
 set -uo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -111,6 +112,25 @@ for found in usr/bin/gcc-14 usr/bin/aarch64-linux-gnu-gcc-14 usr/include/python3
   message="$(require_no_compiler 2>&1)" && fail "took an image with /$found"
   assert_contains "and names /$found" "$message" "/$found came in"
 done
+ROOTFS="$WORK/rootfs"
+
+echo "  -- the sealed root carries no server id"
+ROOTFS="$WORK/sealed"
+mkdir -p "$ROOTFS/var/lib/kalinka" "$ROOTFS/var/cache/kalinka/pip" "$ROOTFS/var/log"
+echo 0b0c5a3e-8c1b-4a51-9a0d-6c9b1c7f1e2a > "$ROOTFS/var/lib/kalinka/server_id"
+echo '{}' > "$ROOTFS/var/lib/kalinka/last_install.json"
+( in_chroot() { :; }; seal_rootfs ) >/dev/null
+assert_no_file "the box flashed from it makes its own" "$ROOTFS/var/lib/kalinka/server_id"
+assert_no_file "and starts without the build's pip cache" "$ROOTFS/var/cache/kalinka"
+assert_file "but keeps what bootstrap recorded of the venv" "$ROOTFS/var/lib/kalinka/last_install.json"
+# rpi-image-gen's root is never given to seal_rootfs, whose restore_dns would take its resolv.conf.
+hook="$(cat "$PKG_DIR/rpi-image-gen/kalinka-hook.sh")"
+# After the last install, or a later one would put an id back.
+[[ "$hook" == *$'\ninstall_supervisor\n'*$'\nseal_kalinka'* ]] \
+  || fail "the Pi images keep the server id the build's install made"
+build="$(cat "$PKG_DIR/build-image.sh")"
+[[ "$build" == *$'\ninstall_supervisor\n'*$'\nseal_rootfs\n'* ]] \
+  || fail "the PC image keeps the server id the build's install made"
 ROOTFS="$WORK/rootfs"
 
 exit "$FAILURES"
