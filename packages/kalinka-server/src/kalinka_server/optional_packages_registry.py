@@ -303,15 +303,25 @@ def write_pending_installs(
     nothing accepted the file is removed instead: install_pending would
     replace last_install.json with a record of installing nothing.
     """
+    return _write_pending(
+        keys, build_registry(input_modules, devices), pending_installs_path
+    )
+
+
+def _write_pending(
+    keys: Sequence[str],
+    registry: dict[str, tuple[str, OptionalPackageSpec]],
+    pending_installs_path: Path | None,
+) -> tuple[list[str], list[str]]:
     pending_installs_path = pending_installs_path or _state_file(
         PENDING_INSTALLS_FILE
     )
-    registry = _installable_here(build_registry(input_modules, devices))
+    installable = _installable_here(registry)
     accepted: list[str] = []
     rejected: list[str] = []
     for raw in keys:
         key = str(raw)
-        if key in registry:
+        if key in installable:
             if key not in accepted:
                 accepted.append(key)
         else:
@@ -388,8 +398,9 @@ async def queue_required_packages(
     unknown or declared without a wheel, so a failed install can be retried.
     """
     asked = [str(key) for key in requested]
+    registry = build_registry(input_modules, devices)
     no_wheel = _no_wheel_at_last_install(
-        build_registry(input_modules, devices),
+        registry,
         _read_last_install(last_install_path or _state_file(LAST_INSTALL_FILE)),
     )
     needed = [
@@ -397,10 +408,9 @@ async def queue_required_packages(
         for key in await required_packages(input_modules, devices)
         if key not in asked
     ]
-    accepted, rejected = write_pending_installs(
+    accepted, rejected = _write_pending(
         [*asked, *(key for key in needed if key not in no_wheel)],
-        input_modules,
-        devices,
+        registry,
         pending_installs_path,
     )
     rejected += [key for key in needed if key in no_wheel]
