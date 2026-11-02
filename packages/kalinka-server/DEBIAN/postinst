@@ -5,6 +5,8 @@ set -euo pipefail
 USER="kalusr"
 INSTALL_DIR="/opt/kalinka"
 CONFIG_DIR="/etc/kalinka"
+STATE_DIR="/var/lib/kalinka"
+SERVER_ID="${STATE_DIR}/server_id"
 UNIT_NAME="kalinka.service"
 UNIT_PATH="/etc/systemd/system/${UNIT_NAME}"
 RESTART_PATH_UNIT="kalinka-restart.path"
@@ -18,7 +20,7 @@ MOUNTS_PATH_UNIT_PATH="/etc/systemd/system/${MOUNTS_PATH_UNIT}"
 
 case "$1" in
   configure)
-    echo "[1/4] Ensure system user exists (nologin)"
+    echo "[1/5] Ensure system user exists (nologin)"
     if ! id -u "$USER" >/dev/null 2>&1; then
       adduser --system --no-create-home --group --disabled-login "$USER"
     else
@@ -40,7 +42,7 @@ case "$1" in
       fi
     fi
 
-    echo "[2/4] Create install/config directories"
+    echo "[2/5] Create install/config directories"
     install -d -m 0755 "$INSTALL_DIR"
     install -d -m 0750 -o "$USER" -g "$USER" "$CONFIG_DIR"
     # Default music drop-off folder (matches the localfiles plugin's
@@ -56,13 +58,26 @@ case "$1" in
       install -d -m 3777 -o root -g "$USER" /srv/kalinka/music
     fi
 
-    echo "[3/4] Lock down config permissions"
+    echo "[3/5] Lock down config permissions"
     chown -R "$USER:$USER" "$CONFIG_DIR"
     # Files 0600, directories 0700
     find "$CONFIG_DIR" -type f -exec chmod 600 {} \;
     find "$CONFIG_DIR" -type d -exec chmod 700 {} \;
 
-    echo "[4/4] systemd: reload; enable/start if units exist"
+    # Here rather than at Core's first start, so the supervisor can report it before Core has run.
+    echo "[4/5] Create the server id if there is none"
+    # A file Core would take for malformed and replace is none either.
+    if ! python3 -c 'import sys, uuid; uuid.UUID(open(sys.argv[1]).read().strip())' "$SERVER_ID" 2>/dev/null; then
+      [ -d "$STATE_DIR" ] || install -d -m 0750 -o "$USER" -g "$USER" "$STATE_DIR"
+      python3 -c 'import uuid; print(uuid.uuid4())' > "$SERVER_ID.new"
+      chown "$USER:$USER" "$SERVER_ID.new"
+      # Core and the app key on it from now on, so it has to outlast a power cut.
+      sync "$SERVER_ID.new"
+      mv "$SERVER_ID.new" "$SERVER_ID"
+      sync "$STATE_DIR"
+    fi
+
+    echo "[5/5] systemd: reload; enable/start if units exist"
     systemd-tmpfiles --create /usr/lib/tmpfiles.d/kalinka.conf || true
     systemctl daemon-reload
     if [ -f "$RESTART_PATH_UNIT_PATH" ]; then
