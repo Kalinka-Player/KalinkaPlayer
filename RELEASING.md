@@ -121,9 +121,16 @@ The on-device display (`kalinka-kiosk_*_<arch>.deb`, arm64 only for now) comes f
    release to carry it. Renderers on separate boxes still upgrade by
    running the script there.
 
-2. The package version comes from the tag; the `VERSION` in
-   `packages/kalinka-renderer/CMakeLists.txt` is only the dev-build fallback.
-   Bump it to match the tag when convenient, not as a release step.
+2. There is no version to bump: the tag is the version.
+   `packages/kalinka-renderer/scripts/version.sh` derives it with
+   `scripts/tag_version.sh` from the newest `kalinka-renderer-v*` tag
+   reachable from the commit. A build of the tagged commit with no local
+   changes gets the tag's own version; a build of any later commit, or with
+   local changes, gets the next patch with a `~dev` count, such as
+   `0.13.1~dev4+gabc1234`, which sorts below the release it leads up to.
+   The release workflow hands the build the tag it is building, and CMake
+   asks the same script when nothing is passed, so a plain
+   `make renderer-build` reports that version too.
 
 Local builds (current distro/arch only, for testing the packaging):
 ```bash
