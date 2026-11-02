@@ -111,7 +111,8 @@ failed while it was disabled. Hardware blocks are reported and left intact.
 A radio that fails says why. Each failed recovery attempt logs `Radio recovery
 failed` with `wifi:` or `bluetooth:` and the reason, and every `Bluetooth setup
 unavailable; retrying` line carries BlueZ's or the bus's reason. Clients get
-one fixed code per radio in `radio_problems`, in `GET /v1/setup`:
+one fixed code per radio in `radio_problems`, in `GET /v1/setup` and in the
+control API's `/v1/status`, and the control page shows it beside nearby setup:
 
 | Code | Meaning |
 |---|---|

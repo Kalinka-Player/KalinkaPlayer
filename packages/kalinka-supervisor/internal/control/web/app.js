@@ -37,6 +37,21 @@ const STATES = {
 
 const SETUP = { running: "On", waiting: "Waiting", off: "Off" };
 
+const RADIOS = { bluetooth: "Bluetooth", wifi: "Wi-Fi" };
+
+// Past tense: a radio stays listed from its last failed attempt until it next works.
+const RADIO_PROBLEMS = {
+  radio_blocked: "was switched off",
+  radio_hard_blocked: "was off at a hardware switch",
+  unavailable: "did not respond",
+};
+
+function setupFact(s) {
+  const problems = Object.entries(s.radio_problems).map(([radio, code]) =>
+    `${RADIOS[radio] || radio} ${RADIO_PROBLEMS[code] || RADIO_PROBLEMS.unavailable}`);
+  return [SETUP[s.setup], ...problems].join(" · ");
+}
+
 const ACTIONS = {
   restart_core: {
     icon: "i-restart",
@@ -359,7 +374,7 @@ function renderDashboard(d) {
   fact(host, "Load", h.load.map((l) => l.toFixed(2)).join("  "));
   fact(host, "Processors", h.cpus ? String(h.cpus) : "");
   fact(host, "Temperature", h.temperature_c == null ? "" : `${h.temperature_c.toFixed(1)} °C`);
-  fact(host, "Nearby setup", status ? SETUP[status.setup] : "");
+  fact(host, "Nearby setup", status ? setupFact(status) : "");
   meter("mem", h.memory_total - h.memory_available, h.memory_total);
   meter("disk", h.disk_total - h.disk_free, h.disk_total);
 

@@ -217,7 +217,7 @@ func TestStatusReply(t *testing.T) {
 	w := serve(newTestHandler(t, coord, true), http.MethodGet, "/v1/status", "")
 	want := `{"core":"failed","core_port":8000,"pending":"poweroff",` +
 		`"plugin_removal":{"finished_at":"2026-10-07T10:30:00Z","package":"kalinka-plugin-qobuz","state":"succeeded"},` +
-		`"reinstall":{"finished_at":"2026-10-07T09:30:00Z","state":"failed"},"setup":"waiting","timezone":"Europe/London","upgrading":true}`
+		`"radio_problems":{},"reinstall":{"finished_at":"2026-10-07T09:30:00Z","state":"failed"},"setup":"waiting","timezone":"Europe/London","upgrading":true}`
 	if got := strings.TrimSpace(w.Body.String()); got != want {
 		t.Fatalf("status = %s", got)
 	}

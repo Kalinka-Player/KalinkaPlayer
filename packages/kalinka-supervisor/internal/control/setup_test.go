@@ -103,9 +103,40 @@ type setupFake struct{ m *machine.Machine }
 func (f setupFake) Snapshot() map[string]any {
 	return map[string]any{"available": true, "setup": f.m.Snapshot()}
 }
+func (f setupFake) Problems() map[string]string            { return nil }
 func (f setupFake) EnableWiFi(ctx context.Context) error   { return f.m.EnableWiFi(ctx) }
 func (f setupFake) Open() error                            { return f.m.Open() }
 func (f setupFake) Command(owner string, raw []byte) error { return f.m.Command(owner, raw) }
+
+type problemSetup struct {
+	setupFake
+	problems map[string]string
+}
+
+func (s problemSetup) Problems() map[string]string { return s.problems }
+
+func TestStatusNamesTheRadioThatFailed(t *testing.T) {
+	m := machine.New(context.Background(), &wifi.DryRun{}, machine.Config{})
+	defer m.Close()
+	coord := &fakeCoordinator{status: Status{Core: "active", Reinstall: Outcome{State: "idle"}, PluginRemoval: Outcome{State: "idle"}}}
+	for _, tc := range []struct {
+		name  string
+		setup NetworkSetup
+		want  string
+	}{
+		{"nearby setup off", nil, `"radio_problems":{}`},
+		{"every radio works", setupFake{m}, `"radio_problems":{}`},
+		{"Bluetooth switched off", problemSetup{setupFake{m}, map[string]string{"bluetooth": "radio_blocked"}}, `"radio_problems":{"bluetooth":"radio_blocked"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewHandler(coord, HandlerConfig{CorePort: func() int { return 8000 }, Setup: func() string { return "running" }, NetworkSetup: tc.setup})
+			if got := serve(h, http.MethodGet, "/v1/status", "").Body.String(); !strings.Contains(got, tc.want) {
+				t.Fatalf("status = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestHTTPAndBLEShareSetupOwnership(t *testing.T) {
 	m := machine.New(context.Background(), &wifi.DryRun{Delay: time.Hour}, machine.Config{Test: true})
 	defer m.Close()
