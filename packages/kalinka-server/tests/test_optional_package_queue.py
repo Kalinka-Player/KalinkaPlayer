@@ -8,6 +8,7 @@ for, and refuses a key it does not know. The modules page offers no package
 this box cannot install.
 """
 
+import asyncio
 import json
 import sys
 from typing import ClassVar
@@ -77,12 +78,18 @@ class _ArtPlugin(InputModulePlugin):
 
 
 @pytest.fixture
-async def client(monkeypatch, tmp_path):
+async def app(monkeypatch, tmp_path):
     isolate_app(monkeypatch, tmp_path)
     monkeypatch.setattr(
         modules, "_scan_entry_points", lambda: iter([("art", _ArtPlugin)])
     )
-    app = await server.create_app(str(tmp_path / "overrides.json"), KalinkaConfig(), {})
+    return await server.create_app(
+        str(tmp_path / "overrides.json"), KalinkaConfig(), {}
+    )
+
+
+@pytest.fixture
+async def client(app):
     async with running(app) as client:
         yield client
 
@@ -155,6 +162,46 @@ async def test_a_queue_that_cannot_be_written_does_not_fail_the_save(
     assert saved.status_code == 200
     assert modules.prepared_input_modules["art"].plugin_context.config.generated_art
     assert "Could not queue the optional packages needed" in caplog.text
+
+
+async def test_a_save_queues_only_once_an_earlier_one_has_written(
+    app, client, state_dir, monkeypatch
+):
+    """An answer the plugins gave before a later save never lands after it."""
+    asked: list[list[str]] = []
+    asking = asyncio.Event()
+    answered = asyncio.Event()
+    answer = _ArtPlugin.required_packages
+
+    async def slow_first_answer(self):
+        needed = await answer(self)
+        asked.append(needed)
+        if len(asked) == 1:
+            asking.set()
+            await answered.wait()
+        return needed
+
+    monkeypatch.setattr(_ArtPlugin, "required_packages", slow_first_answer)
+    turning_on = asyncio.create_task(_save(client, True))
+    await asyncio.wait_for(asking.wait(), 1)
+
+    queueing = asyncio.Event()
+    queue = app.state.queue_required_packages
+
+    async def queue_again(*requested):
+        queueing.set()
+        return await queue(*requested)
+
+    monkeypatch.setattr(app.state, "queue_required_packages", queue_again)
+    turning_off = asyncio.create_task(_save(client, False))
+    await asyncio.wait_for(queueing.wait(), 1)
+
+    assert asked == [[ART]]
+    answered.set()
+    assert (await turning_on).status_code == 200
+    assert (await turning_off).status_code == 200
+    assert asked == [[ART], []]
+    assert _queued(state_dir) is None
 
 
 async def test_a_restart_queues_what_it_names_then_what_the_plugins_need(
