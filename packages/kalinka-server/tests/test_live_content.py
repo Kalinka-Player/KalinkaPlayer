@@ -8,6 +8,9 @@ from kalinka_server import live_content
 from kalinka_server.live_content import serve
 from starlette.requests import Request
 
+# Only a hang should fail these, not a full GC pause on a slow runner.
+HANG_GUARD_S = 5
+
 
 class Capture:
     size = None
@@ -72,7 +75,7 @@ async def test_disconnect_closes_a_reader_waiting_for_more_bytes(asgi_version):
 
     await asyncio.wait_for(response({
         'type': 'http', 'asgi': {'spec_version': asgi_version},
-    }, receive, send), .2)
+    }, receive, send), HANG_GUARD_S)
     assert capture.closed
 
 
@@ -100,9 +103,9 @@ async def test_reader_faults_propagate_but_disconnected_sockets_do_not(failure_a
     request = response({'type': 'http', 'asgi': {'spec_version': '2.4'}}, receive, send)
     if failure_at == 'reader':
         with pytest.raises(OSError, match='broken source'):
-            await asyncio.wait_for(request, .2)
+            await asyncio.wait_for(request, HANG_GUARD_S)
     else:
-        await asyncio.wait_for(request, .2)
+        await asyncio.wait_for(request, HANG_GUARD_S)
     assert capture.closed
 
 
