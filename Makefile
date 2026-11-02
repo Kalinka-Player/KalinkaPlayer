@@ -1,6 +1,6 @@
 ## KalinkaPlayer Development Makefile
 
-.PHONY: supervisor-build supervisor-test supervisor-deb clean test test-playqueue test-plugin-template system-test bench-sdd help venv-env kalinka-server-deb kalinka-server-rpm kalinka-plugins-deb build-all-deb copy-debs build-env dev-setup dev-run renderer-build renderer-clean renderer-deb renderer-rpm proto image-rpi234 image-rpi5 image-rpi234-display image-rpi5-display image-amd64 image-test
+.PHONY: supervisor-build supervisor-test supervisor-deb clean test test-playqueue test-plugin-template system-test bench-sdd lint help venv-env kalinka-server-deb kalinka-server-rpm kalinka-plugins-deb build-all-deb copy-debs build-env dev-setup dev-run renderer-build renderer-clean renderer-deb renderer-rpm proto image-rpi234 image-rpi5 image-rpi234-display image-rpi5-display image-amd64 image-test
 
 ## --- Local-from-source dev environment (no root, no systemd) ------------------
 ## Everything lands in a per-user fakeroot under $(KALINKA_PREFIX) instead of the
@@ -130,16 +130,17 @@ proto:
 	@echo "Regenerated kalinka_server/renderer_proto/renderer_pb2.py"
 ## -----------------------------------------------------------------------------
 
-## Clean build artifacts
+## Remove Python bytecode caches and egg-info directories
 clean:
 	@echo "Cleaning build artifacts..."
 	@find . -name "*.pyc" -delete
 	@find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 	@find . -name "*.egg-info" -type d -exec rm -rf {} + 2>/dev/null || true
 
-## Run the SDK, server, plugin and plugin template suites, each from its own
-## package so its conftest.py applies. The play queue suite is slow and flaky,
-## so it runs on its own (make test-playqueue) when the play queue changes.
+## Run the SDK, server, plugin, benchmark and plugin template suites, each
+## from its own package so its conftest.py applies. The play queue suite is
+## slow and flaky, so it runs on its own (make test-playqueue) when the play
+## queue changes.
 ## Extra pytest args via ARGS, e.g. make test ARGS="-q -rfE"
 PLUGIN_TEST_DIRS := $(filter-out packages/kalinka-plugin-sdk,$(patsubst %/tests/,%,$(wildcard packages/kalinka-plugin-*/tests/)))
 
@@ -288,18 +289,25 @@ image-test:
 help:
 	@echo "KalinkaPlayer Development Commands:"
 	@echo ""
-	@echo "  dev-setup         One-shot local setup: venv + editable installs + native build + ~/kalinka fakeroot"
+	@echo "  dev-setup         One-shot local setup: venv + editable installs + ~/kalinka fakeroot"
 	@echo "  dev-run           Run the server in the foreground against the fakeroot (Ctrl-C to stop)"
-	@echo "  dev-rebuild-native  Rebuild the native C++ extension, then restart to load it"
 	@echo "  system-test       Full-stack indexing test: fakeroot + Samba in podman + real enrichment/AI search"
 	@echo "  bench-sdd         Retrieval-quality benchmark on the Song Describer Dataset (benchmarks/sdd)"
 	@echo ""
-	@echo "  build-native      Build the native player C++ extension"
+	@echo "  renderer-build    Build the renderer (C++), and its tests when GoogleTest is installed"
+	@echo "  renderer-clean    Remove the renderer's build directories"
+	@echo "  renderer-deb      Build the renderer deb package for this distro and architecture"
+	@echo "  renderer-rpm      Build the renderer rpm package for this Fedora release and architecture"
+	@echo "  proto             Regenerate the server's Python renderer-protocol bindings (needs grpcio-tools)"
 	@echo "  venv-env          Create the venv (if missing) with the wheel-build toolchain"
 	@echo "  build-env         venv-env plus the editable SDK (what the deb builds need)"
 	@echo "  kalinka-server-deb  Build kalinka-server deb package"
+	@echo "  kalinka-server-rpm  Build the noarch kalinka-server rpm (server, SDK and plugin wheels)"
 	@echo "  kalinka-plugins-deb Build all plugin deb packages (including SDK)"
 	@echo "  build-all-deb     Build all deb packages (server, plugins, renderer) and move to debs/"
+	@echo "  supervisor-build  Build the Go supervisor into packages/kalinka-supervisor/build"
+	@echo "  supervisor-test   Run the supervisor's Go tests (with -race), go vet and its shell tests"
+	@echo "  supervisor-deb    Build the supervisor deb package (amd64 or arm64)"
 	@echo "  image-rpi234      Build the Raspberry Pi 3/4/400/Zero 2 W image (needs podman)"
 	@echo "  image-rpi5        Build the Raspberry Pi 5 image (needs podman)"
 	@echo "  image-rpi234-display  The rpi234 image with the now-playing display (needs podman)"
@@ -307,9 +315,9 @@ help:
 	@echo "  image-amd64       Build the x86-64 appliance image (needs root)"
 	@echo "  image-test        Run the appliance image tests"
 	@echo "  copy-debs         Move built deb packages to debs/ directory"
-	@echo "  test              Run the SDK, server, plugin and plugin template tests (not the play queue)"
+	@echo "  test              Run the SDK, server, plugin, benchmark and plugin template tests (not the play queue)"
 	@echo "  test-playqueue    Run the server's slow play queue tests"
 	@echo "  test-plugin-template  Render the plugin template and run what it generates"
-	@echo "  lint              Check for undefined names (F821)"
-	@echo "  clean             Clean build artifacts"
+	@echo "  lint              Check for undefined names (F821/F822) and credentials in logs"
+	@echo "  clean             Remove Python bytecode caches and egg-info directories"
 	@echo "  help              Show this help message"
