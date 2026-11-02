@@ -1,44 +1,50 @@
 # Receiver controls and device management
 
-Status: proposed, 2026-11-02. This is a control and UI design; the interfaces below are not implemented yet. It extends the [Bluetooth and AirPlay media design](bluetooth-audio-sink-design.md) without changing PCM transport, renderer selection, or playback ownership.
+Status: proposed, revised 2026-11-02 after review. The interfaces below are not implemented yet. This extends the [Bluetooth and AirPlay media design](bluetooth-audio-sink-design.md) without changing PCM transport, renderer selection or playback ownership.
 
-## Decision
+## Decision and v1 scope
 
-Add an optional **receiver-control capability** to input plugins. Core discovers and routes it; the app renders a common **Connect a device** panel. Bluetooth and AirPlay supply their own discovery, session and device-management behavior through this interface.
+Add an optional **receiver-control capability** to input plugins. Core routes a small set of typed commands and publishes snapshots; the app adds a shared **Connect a device** panel. Plugins retain protocol behavior and permission enforcement.
 
-Persistent plugin settings remain settings: enabled, advertised name, supported codec preferences and expert tuning. Pairing, discovery windows, disconnecting a sender, and granting/revoking access are immediate operations in device management. They never enter the staged-settings Apply/restart flow.
+Persistent settings are **Enabled**, a receiver-name override and optional supported codec preferences. Pairing, disconnecting audio and granting/revoking device access are immediate commands, outside staged settings. Enable/disable is a live write to the existing saved `enabled` field, including when invoked from the panel. There is no second, temporary availability switch.
 
-The capability is independent of `LiveAudio`: a plugin can receive playback through `DirectPlayback` or `ExternalPlayback` and still expose receiver controls. Existing input and output plugin types remain intact.
+Bluetooth v1 implements pairing windows, saved-device audio permissions and profile disconnect. AirPlay contributes identity, readiness and current-session information; enabling/disabling its plugin controls availability persistently. AirPlay has no pairing or per-device permission controls.
 
-### Alternatives considered
+Keep `LiveAudio`, `DirectPlayback`, `ExternalPlayback` and the existing input interface unchanged. Receiver control is optional and independent of media delivery. Defer access requests, independent advertisement control and full bond removal until a backend implements them; do not specify their commands now.
 
 | Approach | Tradeoff |
 |---|---|
-| Keep discovery and device actions in the settings schema | Smallest change, but transient operations remain mixed with saved configuration, restart rules and staged edits. It also provides no useful session/request lifecycle. |
-| Add Bluetooth- and AirPlay-specific Core routes and app screens | Straightforward initially, but every new receiver requires protocol-specific changes throughout Core and the app. |
-| Optional, typed receiver controller | Recommended. One small control contract supports shared presentation while plugins retain protocol policy. Existing plugins need no changes. |
+| Keep actions in settings | Smallest change, but transient operations remain mixed with saved values, staged edits and restart behavior. |
+| Protocol-specific Core routes and app screens | Simple initially, but every receiver adds protocol logic throughout Core and the app. |
+| Optional typed controller with synchronous commands | Recommended. Shared presentation and routing, with protocol policy inside plugins and no operation-tracking framework. |
 
-## What exists today
+## Code baseline and required corrections
 
-| Existing component | Consequence for this design |
+Reviewed Core/SDK/Bluetooth/supervisor at `c1b918313f66e80c8e310ec9319fe61c2d82ff82`, AirPlay at `ad98729593e02377d9708a99a8fee60f593fbc81`, and the mobile worktree at `175b1b8`.
+
+| Current code | Required change |
 |---|---|
-| `PluginBase` has optional hooks and `InputModulePlugin.get_interface()` returns the browsing/input interface. | Add a separate optional controller; preserve the existing interface and defaults. |
-| `PreparedPlugin.setup()` instantiates disabled plugins but skips their setup and interface registration. | Static receiver metadata must be readable without starting the plugin. Runtime controllers are usable only after setup. |
-| Bluetooth implements `pair_phone`, `authorize_device`, and `forget_device` as immediate one-shot config fields. | The backend operations can be reused, but their public presentation moves out of configuration. |
-| Bluetooth audio grants are stored separately from BlueZ bonds. The supervisor shares BlueZ for setup. | Revoking audio access and removing a Bluetooth pairing must remain distinct operations. |
-| AirPlay owns `Receiver`/shairport-sync and starts it during plugin setup. Its wrapper currently exposes start/stop, not independent advertisement control or a trustworthy persistent sender-device list. | AirPlay initially exposes receiver availability and current-session information. It must not pretend to support Bluetooth-style pairing, per-device grants, or non-disruptive advertisement withdrawal. |
-| Home sources are filtered by the `catalogs` capability. | Receivers need their own discovery capability; do not invent a browsable Bluetooth/AirPlay catalog. |
-| Module snapshots and events already keep plugin health current. | Reuse the event connection, with a separate receiver snapshot so pairing changes do not churn the settings schema or playback state. |
+| Both Bluetooth grant paths set `Trusted=True`; revocation deletes an `AudioAccess` entry and filters its PCM. | Save prior trust, restore it on revocation, and disconnect unauthorized A2DP profiles. Silently dropping PCM is insufficient. |
+| The supervisor changes the adapter alias and pairing agent, but does not set device `Trusted`. | Protect the bond and restore actual prior trust; do not assume provisioning owns a trust value created by audio. |
+| The pairing agent saves a grant on its authorization callback. | Treat the callback as provisional admission; commit on the concrete A2DP success condition below. |
+| `PreparedPlugin.setup()` skips disabled plugins. Bluetooth's `config_changed()` otherwise handles enabled changes. | Opt into setup while disabled; retain the controller while its audio runtime is stopped. |
+| AirPlay starts its receiver during setup and has no `config_changed()`. | Separate controller initialization from receiver start/stop; implement live enabled/name changes. |
+| Home sources depend on `catalogs` and catalog loading. | Add an independent entry point driven by installed receiver descriptors. |
+| Bluetooth exists on the feature branch, with no containing release tag. Test images are already installed. | Ship the controller in its first release; migrate test-image data without a public one-shot API compatibility period. |
 
-Local implementation references: [SDK plugin contracts](../packages/kalinka-plugin-sdk/src/kalinka_plugin_sdk/plugin.py), [plugin lifecycle](../packages/kalinka-server/src/kalinka_server/player_setup.py), [Bluetooth plugin](../packages/kalinka-plugin-bluetooth/src/kalinka_plugin_bluetooth/__init__.py), [Bluetooth pairing/access](../packages/kalinka-plugin-bluetooth/src/kalinka_plugin_bluetooth/pairing.py). AirPlay behavior above is based on the sibling `kalinka-plugin-airplay` checkout at `ad98729593e02377d9708a99a8fee60f593fbc81`, specifically its `__init__.py`, `receiver.py`, and `shairport.py`.
+References: [SDK](../packages/kalinka-plugin-sdk/src/kalinka_plugin_sdk/plugin.py), [setup/health](../packages/kalinka-server/src/kalinka_server/player_setup.py), [config notifications](../packages/kalinka-server/src/kalinka_server/config_route.py), [Bluetooth plugin](../packages/kalinka-plugin-bluetooth/src/kalinka_plugin_bluetooth/__init__.py), [pairing/access](../packages/kalinka-plugin-bluetooth/src/kalinka_plugin_bluetooth/pairing.py), [PCM endpoint discovery](../packages/kalinka-plugin-bluetooth/src/kalinka_plugin_bluetooth/backend.py), [supervisor BlueZ ownership](../packages/kalinka-supervisor/internal/gatt/bluez.go). AirPlay references are the inspected sibling checkout's `__init__.py`, `receiver.py` and `shairport.py`.
 
 ## User experience
 
-### Access points
+### Add entry points to existing app surfaces
 
-Place a labelled **Connect a device** action beside Home's music sources, and the same action in the streamer menu. Both open one panel for the currently connected Core. Keep it available when an installed receiver plugin is disabled or unhealthy; explain that condition in its row. It does not depend on the public plugin catalog being enabled or reachable.
+Add a labelled **Connect a device** action beside Home's music sources. Introduce a receiver entry widget in `SearchSessionView._buildZeroState` / `SearchZeroState`, alongside `HomeSourceList` (`lib/widgets/search/search_session_view.dart`, `lib/widgets/search/search_zero_state.dart`, `lib/widgets/home/home_source_list.dart`). Keep it outside the catalog-loading and `showSources` guards so it remains accessible when the navigation rail replaces the source list.
 
-On phones, use a sheet; on tablets, use the existing side-panel treatment. An active Bluetooth/AirPlay input badge also opens this panel at that receiver. Keep the selected output visible and use the existing output picker to change it.
+Add a **Connect a device** row to both `ServerSheetContent` and `_TabletServerSheetContent` in `lib/widgets/server_sheet.dart`, using a new `ServerSheetAction` handled by `MusicPlayerScreen`. This is a new row in the existing server sheet. Reuse `showKalinkaBottomSheet` on phones and `SlideInPanel` on larger screens. Both entries open the same panel for the connected Core.
+
+No new active-input badge is required for v1. A later shortcut would be an explicit addition to `MiniPlayer` / `NowPlayingContent`; the existing `SourceBadge` and stream-info tap target are not receiver-management controls.
+
+Show the entry for any installed receiver, including disabled or unhealthy plugins. Hide it when a successful inventory fetch finds none; installation remains accessible through existing Configuration/plugin catalog navigation. If the last known inventory contained receivers but the connection fails, retain the entry with unavailable/retry state. A failed fetch is not an empty inventory. Visibility is independent of the public catalog being enabled or reachable.
 
 ```text
 Connect a device
@@ -51,56 +57,60 @@ Visible as “Kitchen Kalinka” when pairing is open
 
 AirPlay
 Available on this network as “Kitchen Kalinka”
-[How to connect]                         [Stop receiving]
+[How to connect]                         [Disable AirPlay]
 ```
 
-This is one access point, with protocol-specific actions. There is no combined “advertise everything” switch: Bluetooth uses a short pairing window, whereas AirPlay normally remains available on the network while its receiver runs.
+The names match because both receivers inherit the streamer name. Show their actual effective names if overrides or backend limitations make them differ. A disabled row offers **Enable Bluetooth/AirPlay**; an unhealthy row explains the failure.
 
-An unavailable output is shown beside **Play through**, separately from receiver health. Opening discovery does not acquire a renderer, interrupt the queue, or claim playback. Audio arriving later goes through existing arbitration. Changing output does not change which machine receives Bluetooth or advertises AirPlay.
+Opening the panel or pairing window does not claim playback, acquire an output or interrupt the queue. Show output availability separately and reuse the existing renderer picker. Changing output does not change which host receives Bluetooth or advertises AirPlay.
 
-### Bluetooth flow
+### Bluetooth pairing and device management
 
-1. Tap **Pair a device**. The plugin obtains its adapter lease, registers its agent and opens a two-minute window immediately. Keep the current music playing.
-2. Show the effective Bluetooth name, “Select this name in your device's Bluetooth settings,” a countdown, and **Stop pairing**. Closing the panel leaves the bounded window running.
-3. On successful pairing through this audio workflow, grant audio access automatically and close the window once the pairing/authorization handshake has completed. Show “Pixel 9 Pro can now play audio.” Pairing success alone does not take playback away from another input.
-4. Remembered, allowed devices can reconnect without reopening discovery. After timeout, only the new-device window closes; existing sessions and grants remain.
+1. **Pair a device** obtains the shared adapter lease, registers the agent and opens a two-minute window. Show the effective name, sender instructions, countdown and **Stop pairing**. Closing the panel leaves the bounded window running.
+2. Agent acceptance records a provisional candidate, not a saved grant. Opening the window consents to admit a nearby audio device; a familiar display name is not proof of its identity.
+3. Success is the first eligible A2DP PCM endpoint from a candidate admitted in this still-open window, as defined below. Persist the grant, close admission, finish authorization replies and unregister the agent/restore adapter properties. Show **“Pixel 9 Pro can now play audio”** with **“Not this device? Remove”**, which immediately revokes audio access. Removal remains available in Manage devices after the notice disappears.
+4. On timeout/cancel, discard provisional candidates and restore temporary trust changes. A bond alone never creates a grant. An already bonded phone can subsequently receive **Allow audio** in Manage devices. Remembered, allowed phones reconnect without reopening pairing.
 
-**Manage devices** uses readable device names and explicit states: connected, playing, saved, or “Paired; audio not allowed.” Show “Paired for setup” only when provisioning supplies that provenance; a BlueZ bond alone does not establish why it exists. An already bonded device can offer **Allow audio** here, with an explanation. It is not a second required step after ordinary audio pairing.
+The first qualifying candidate completes the window; serialize that decision so two phones cannot both win. Clean up other provisional candidates. A remembered phone reconnecting does not complete another phone's pairing flow. Pairing success alone does not take output; actual audio follows existing arbitration.
 
-Device actions have exact meanings:
+Manage devices shows connected/playing/saved state and **Paired; audio not allowed**. Use **Paired for setup** only when provisioning supplies that provenance. **Allow audio** handles an existing bond without a grant; it is not a second mandatory step after ordinary audio pairing.
 
-| Action | Effect |
+| Device action | Meaning |
 |---|---|
-| Disconnect audio | End the current audio session; keep its audio grant and Bluetooth bond. |
-| Remove audio access | Persistently revoke Kalinka audio access and end this peer's active audio. Preserve its setup permission and bond. |
-| Remove Bluetooth pairing | Remove the shared bond, if the backend can coordinate this safely with provisioning. Explain the effect on setup/reconnection before executing. |
+| Disconnect audio | Disconnect this A2DP session and release its playback; retain its grant and bond. A later reconnect is allowed. |
+| Remove audio access | Persist denial, restore pre-grant trust when known, disconnect current A2DP and reject subsequent unauthorized audio connections. Retain the bond. |
 
-Full bond removal is not offered in the first Bluetooth adapter until that coordination exists. Do not label an audio-only revocation “Unpair” or “Forget device.” Avoid disconnecting an entire shared Bluetooth device when only its audio profile should end.
+V1 offers no full unpairing and never labels audio-only revocation **Unpair** or **Forget device**. Do not use whole-device disconnect or `RemoveDevice` as a substitute for audio-profile disconnect.
 
-### AirPlay flow
+### AirPlay and persistent enable/disable
 
-When available, show the actual advertised name and instructions to select it in the sender's AirPlay output menu. When the enabled receiver has been stopped, offer **Make available**; start its owned receiver and publish readiness without restarting Core.
+An enabled AirPlay receiver is available by default. Show its effective advertised name and sender instructions. Report actual readiness; spawning a child alone is not proof of advertisement, so use unknown visibility until confirmed. **Disable AirPlay** writes `enabled=false`, stops its owned receiver and releases its input without restarting Core. The choice survives a restart or power cycle. **Enable AirPlay** saves `enabled=true` and starts it again.
 
-For the current wrapper, **Stop receiving** stops the receiver, withdraws its advertisement and can end an active AirPlay session. During playback, show that consequence and require an explicit stop choice. Do not call it “Stop discovery,” which would imply existing playback continues. A future backend that can independently control advertisements may expose that additional action.
+Always explain that disabling ends any AirPlay playback; confirm this consequence before saving. There is no **Stop receiving / Make available** pair or temporary availability state. Add genuine session disconnect only after verifying support in the bundled shairport-sync build; do not assume an upstream D-Bus feature is present.
 
-Discovery, admission and disconnection are separate: withdrawing an advertisement alone is not an access-control guarantee. Conversely, stopping Bluetooth pairing does not block a remembered phone from reconnecting.
+AirPlay has no saved-device list in v1. Current sender names/addresses are informational, not authenticated identities or permission keys. Bluetooth's **Stop pairing** instead closes new-device admission while remembered devices can still reconnect.
 
-AirPlay initially offers no saved-device allow list. Current-session sender details are informational, not proof of a stable authenticated identity. If a future backend provides real pairing/access requests, it opts into the corresponding management capability. Do not infer access permissions from IP addresses, hostnames, or a name shared with a Bluetooth peer.
+Panel enable/disable writes only that plugin's `enabled` field through the existing config API. Reconcile it with the settings UI while preserving unrelated staged edits. Opening a panel never silently enables a receiver or installs packages.
 
-### Persistent settings and disabled receivers
+## One streamer name, optional overrides
 
-Bluetooth settings contain **Enabled**, **Bluetooth name**, and optional **Codec preference** when the installed backend supports meaningful choices. Prefer **Automatic**; advertise only supported codecs. AirPlay keeps its enabled flag, speaker name and applicable receiver settings. Technical tuning stays in Expert settings.
+Use Core's `server.service_name` as the default for both receivers. Add an optional Bluetooth `device_name`; replace AirPlay's `Kalinka (<hostname>)` default with an unset override. Show **Use streamer name** by default, with a custom-name field when overridden. Clearing the override restores inheritance; never copy the current server name into a saved override.
 
-The panel can offer **Enable Bluetooth** or **Enable AirPlay** for an installed, disabled plugin. This explicitly persists only its existing `enabled` setting and starts that plugin. It does not silently enable it just because the panel was opened or discovery was requested. Reconcile that exact field in the app while preserving unrelated staged edits.
+Core supplies an optional read-only `context.server_name()` accessor and calls an optional `server_name_changed()` plugin hook, defaulting to a no-op, after a saved rename. Plugins read the current name and reconcile their own receiver; they do not inspect Core internals. Applying `base_config.server.service_name` updates Core's own discovery identity and both inheriting receivers. Explicit overrides remain unchanged. Implement discovery updates and notifications, not just an app-label change.
 
-A name or codec change may need to restart that receiver and interrupt its input; show that effect where the setting is applied. It must not require restarting Core. For Bluetooth, the advertised name is an adapter-wide BlueZ alias: its update must be coordinated with the supervisor's use of the shared adapter. The panel displays the effective name, not just the requested config value.
+Name changes apply without a Core restart. AirPlay may restart its own receiver and interrupt its input; explain this when applying a name change, including an inherited rename. A disabled receiver stores the desired name without starting. Validate protocol name limits and report the effective name after any normalization or collision handling.
 
-## Optional SDK contract
+Bluetooth's alias is adapter-wide. Serialize writes with the existing adapter lease. While provisioning owns it, retain the desired name, show the current effective name/pending change, and reconcile after lease release. The supervisor already saves/restores its temporary alias; do not race that restoration or reapply a stale name. Reconcile the latest desired name before audio discovery. Provisioning's temporary setup identity stays distinct from the audio name.
 
-Add a small module such as `kalinka_plugin_sdk.receiver_control`. The following is illustrative API shape:
+Preserve explicitly saved AirPlay names as overrides during migration. Unset/default-derived names follow the server. Existing Bluetooth has no override to migrate.
+
+## Minimal optional SDK contract
+
+Illustrative additions, with defaults that leave existing plugins unchanged:
 
 ```python
 class InputModulePlugin(...):
+    SETUP_WHEN_DISABLED: ClassVar[bool] = False
     RECEIVER: ClassVar[ReceiverDescriptor | None] = None
 
     def get_receiver_control(self) -> ReceiverControl | None:
@@ -108,146 +118,120 @@ class InputModulePlugin(...):
 
 class ReceiverControl(Protocol):
     async def snapshot(self) -> ReceiverSnapshot: ...
-    async def execute(self, command: ReceiverCommand) -> ReceiverResult: ...
+    async def execute(self, command: ReceiverCommand) -> ReceiverSnapshot: ...
 ```
 
-`RECEIVER` declares a contract version, presentation identity and supported control families. It is plain data readable before setup. The optional controller is attached after successful setup, and removed before shutdown. Core derives the `receiver_control` module capability from this declaration rather than from plugin IDs or the public feed.
+The static descriptor contains contract version, presentation identity and supported v1 actions. Core derives `receiver_control` from it, independently of plugin IDs/the public catalog. An initialized controller remains accessible while disabled; commands requiring reception return a readable refusal. Failed/incompatible plugins retain an inventory row when their descriptor is available, without a callable controller.
 
-Use typed SDK models and a discriminated command union, not arbitrary method names, URLs, Python callbacks supplied by clients, or a general plugin-generated UI schema. Receiver controls remain a small domain interface. New optional capabilities can be added without imposing them on every plugin.
+Use typed snapshots and a discriminated command union:
 
-### State and capabilities
-
-Keep these concepts separate in `ReceiverSnapshot`:
-
-| Field | Meaning |
+| Snapshot state | Meaning |
 |---|---|
-| Receiver identity | Core/plugin-scoped ID, title and contract version. One receiver per plugin initially. |
-| Lifecycle | Desired enabled setting plus actual `disabled`, `starting`, `ready`, `stopping`, or `error` state. |
-| Effective name | What a sender should look for; may be unknown while unavailable. |
-| Visibility | `hidden`, `advertising`, or `unknown`, and optional expiry/window ID. |
-| Admission | Whether new devices can join, require approval, or must already have permission. |
-| Sessions | Current senders, connection/playback state, and opaque session IDs. This is independent of device trust and current output ownership. |
-| Peers | Optional saved devices with opaque IDs, pairing and audio-permission state. |
-| Requests | Optional pending approval challenges with opaque IDs, expiry and supported responses. |
-| Actions | Supported operations currently available, their target type, unavailable reason and playback effects. |
-| Freshness | Core boot epoch, plugin runtime generation and snapshot revision. |
+| Identity | Core/plugin-scoped receiver ID, title and contract version. One receiver per plugin initially. |
+| Enabled and status | Saved enabled value; actual `disabled`, `starting`, `ready`, `stopping` or `error`, with a readable reason. |
+| Name and visibility | Effective name, inherited/custom indication, and `hidden`, `advertising` or `unknown`. |
+| Pairing, when supported | Current opaque window ID and remaining seconds, or closed; recent successful peer for feedback. |
+| Sessions | Senders and connection/playback state with opaque session IDs, independent of selected output. |
+| Peers, when supported | Opaque peer IDs, names, bond state and audio permission. |
+| Actions | Supported v1 commands and current availability/reason. |
 
-Use explicit capabilities for timed pairing, receiver availability, independent advertisement control, saved peers, access requests, audio-session disconnect, and bond removal. Absent capabilities mean absent controls. An available action must still be revalidated by the plugin when executed.
+Commands are `open_pairing`, `close_pairing(window_id)`, `grant_audio(peer_id)`, `revoke_audio(peer_id)` and `disconnect_audio(session_id)`. Opening uses the bounded 120-second default. Bluetooth implements these; AirPlay initially implements none and participates through its snapshot plus ordinary live config fields. Older clients ignore unknown optional capabilities; Core rejects unsupported commands.
 
-Known effects include `none`, `ends_target_audio`, and `restarts_receiver`. Core never lets a plugin declare that an ordinary receiver action needs to restart the streamer. Destructive/effectful actions carry an explicit acknowledgement of the presented effects; effects are checked again if state changes before execution.
+Do not define access-request models, advertisement commands, bond-removal commands, effect-acknowledgement tokens or runtime-generation fields for v1. Add capabilities with a working backend and concrete client need.
 
-### Commands
+## Core setup and live configuration
 
-| Command family | Arguments and semantics |
-|---|---|
-| Open/close pairing window | Bounded duration; closing names the window ID. Bluetooth initially defaults to 120 seconds. |
-| Set receiver availability | Start/stop the protocol receiver; stopping may require acknowledgement that the active input ends. |
-| Set advertisement visibility | Only supported where it can be changed independently of receiver/session lifetime. |
-| Disconnect audio session | An opaque current session ID; preserve saved access. |
-| Grant/revoke audio access | An opaque peer ID; applies only to this plugin's audio permission. |
-| Remove pairing | An opaque peer ID, only when advertised as supported, with explicit effects. |
-| Respond to access request | Opaque request ID and one of the challenge's allowed answers; cannot approve an expired/replaced request. |
+For an opted-in receiver, `PreparedPlugin.setup()` calls `setup(context)` even when disabled. Setup initializes context, controller and saved policy, but does not start audio reception or pairing while disabled. Create its input interface/controller once for the Core lifetime. The plugin starts/stops its audio runtime in `config_changed({"enabled"})`; disabling is not plugin unload.
 
-A shared command family does not require every plugin to implement every command. In v1 Bluetooth exposes pairing, saved-peer audio grants and audio disconnect; AirPlay exposes availability and current-session information. Session disconnect is offered only when the adapter has a working implementation; stopping the whole receiver remains a distinct action.
+Successful setup leaves internal `health_state=READY`; `get_state()` reports `DISABLED` until enabled. Refresh that report before publishing inventory or admitting browse/playback calls. Reuse `refresh_health()` and `_update_enabled_input_modules()` on changes. Preserve successful setup versus current serving state without mutating setup health, rebuilding interfaces or re-registering plugins. Controller lookup must not use the enabled-input filter. The plugin still refuses playback while disabled, including calls through `set_up_input_module()`.
 
-Permission policy belongs to the plugin/backend. Core routes approved app commands and never equates a Bluetooth setup bond with audio permission. Opening a pairing window is the user's explicit consent to admit a newly paired audio device during that window. If a backend supports a separate approval challenge, show it as a request rather than a config field.
+Bluetooth can reuse its enabled-change logic after separating runtime stop from final cleanup. AirPlay needs `config_changed()` for enabled/name changes and idempotent start/stop. Plugins serialize commands, name/enabled changes and backend events with their own lock; final shutdown cancels tasks/timers and releases owned resources. A missing backend must not prevent lightweight controller setup while disabled. Runtime failures appear in snapshots, never as implicit Core restarts.
 
-## Core routing and plugin lifecycle
+Add one per-field **`applies_live`** marker, default false, alongside **`apply_immediately`**. It means saving the field needs no Core restart, not that a staged widget saves itself or that audio cannot be interrupted. Existing `apply_immediately` behavior stays for other plugins. New clients skip restart only when every changed field applies live. Mixed writes retain existing restart behavior for other fields; receiver commands never enter such a batch.
 
-```mermaid
-flowchart LR
-    App[Connect a device / Manage devices] --> API[Core receiver API]
-    API --> Registry[Receiver registry and operation tracking]
-    Registry --> BT[Bluetooth controller]
-    Registry --> AP[AirPlay controller]
-    BT --> BlueZ[BlueZ / BlueALSA / adapter lease]
-    AP --> Shairport[Owned AirPlay receiver]
-    Registry -. state events .-> App
-    BT --> Media[Existing playback and live-audio services]
-    AP --> Media
-    Media --> Renderer[Selected renderer]
-```
+Mark enabled/name fields live once handlers exist. Optional codec preferences remain absent unless the backend can support and apply them; prefer Automatic. Config already persists before notifying owners: failed startup leaves desired enabled=true and actual error, not a false ready state. Refresh receiver/module state after notification.
 
-Core owns inventory, command validation, lifecycle serialization, operation tracking and event delivery. Plugins own protocol state and enforcement. The app owns presentation using standard control semantics. Renderer settings and output selection continue to use their existing APIs.
+There is no new lifecycle coordinator, per-plugin reload API, `restart_plugin` apply tier or operation registry. Existing plugins keep their setup/restart defaults.
 
-Introduce a registry fed by the existing `PreparedPlugin` collection. Disabled, incompatible and failed receiver plugins remain listed with a reason and no callable controller. Avoid constructing a second plugin instance for management. Registration/removal follows the same lifetime as the existing input interface, health reporting, dynamic fields and option resolvers.
-
-Live enable/disable requires an explicit, limited lifecycle addition: receiver plugins opt into safe per-plugin setup/shutdown. The existing config service persists the desired enabled value; a lifecycle coordinator starts/stops only that prepared plugin and refreshes its registrations and module events. Disabling releases that plugin's playback hold and resources through normal ownership APIs. Do not power down BlueZ or stop shared services used by setup or another owner.
-
-Make apply effects additive metadata/results in the config API: `live`, `restart_plugin`, or `restart_core`. New clients honor them; existing plugins retain their existing restart behavior unless they opt in. Receiver fields declare the appropriate effect. No automatic fallback from failed plugin startup to restarting Core. Preserve the desired setting and expose the failed actual state with a bounded retry operation.
-
-Serialize configuration application and commands for the same plugin. Invalidate the runtime generation before unloading it, cancel old operations, and ignore late callbacks. Update the existing prepared-plugin registrations rather than bypassing `PreparedPlugin.health_state` or maintaining a second enabled-module list. Installation of missing system packages remains the existing software-management workflow; discovery never starts an installation implicitly.
-
-## API and events
-
-Proposed endpoints:
+## Synchronous API and state updates
 
 ```text
 GET  /receivers
 GET  /receivers/{receiver_id}
-POST /receivers/{receiver_id}/commands
-GET  /receivers/{receiver_id}/operations/{operation_id}
+POST /receivers/{receiver_id}/commands  -> 200 ReceiverSnapshot
 ```
 
-Commands carry a client request ID, the Core boot epoch and receiver runtime generation, a typed operation and its typed target/arguments. A close-window command carries its window ID; a permission response carries its request ID. The backend validates these against current state so a stale app cannot close a newer window or authorize a different phone. Do not reject commands merely because an unrelated metadata or progress update incremented a snapshot revision.
+POST awaits the bounded backend transition and returns the snapshot. **Open pairing** completes when the window is open, not when a phone pairs or the timer expires. No `202`, `/operations`, request-ID cache or operation events. Enabled/name changes use the config API; `starting`/`stopping` describes background receiver startup/shutdown.
 
-Core accepts a command once and returns `202` with an operation ID; completion is reported through operation state and a new snapshot. Immediate validation failures use structured errors. A bounded idempotency cache makes network retries return the same operation; repeating “open pairing” does not extend a window by accident. Operations are scoped to a Core boot/plugin generation and are never replayed after restart. Reconnect fetches current state rather than resending commands.
+Commands are idempotent at their target:
 
-Publish the retry/deduplication lifetime; after it expires, the client reconciles state instead of retrying a historical operation. Reject reuse of a request ID with different arguments. An explicit request to open an already-open pairing window returns the existing window without extending it.
+- Opening an already-open window returns it without extending it.
+- Close names a window ID and never closes a newer window; disconnect names a session ID and never disconnects a replacement session. An already-ended target is a no-op; a conflicting/stale target is refused.
+- Granting existing access or revoking absent access is a no-op, except that pending trust-restoration/profile-disconnect cleanup still needs reconciliation.
 
-Core runs `execute()` as a tracked, bounded task; its return means the requested transition has completed. Opening pairing completes when the window is open, not when a phone eventually pairs or the timer expires. Pending approval requests live in the snapshot independently of HTTP requests. Operations report `pending`, `running`, `succeeded`, `failed`, or `cancelled`; backend timeouts must trigger cleanup/reconciliation so a late result cannot silently reopen a cancelled window. Snapshot reads use cached state and never wait for a pairing handshake.
+Use unpredictable window/session IDs and controller-runtime-scoped peer handles; invalidate them on runtime replacement. No boot epoch/generation is required on every command. Do not automatically resend POSTs after timeout, reconnect or restart: GET current state first, then let the user act. An old close/disconnect cannot affect a replacement; an untargeted new **open** is a new intent, not a replay guarantee across restarts.
 
-Use stable errors such as `plugin_disabled`, `backend_unavailable`, `unsupported_operation`, `adapter_busy`, `stale_target`, `permission_request_expired`, and `effects_changed`. Known refusals become appropriate 4xx responses with readable messages; failed backend work becomes an operation failure, not an unexplained perpetual spinner. No generic HTTP 500 for unsupported receiver capabilities.
+Bound backend calls and reconcile cancellation. A partial revocation stays denied and reports failed cleanup; never report success while the phone remains connected for audio. Use structured errors such as `plugin_disabled`, `unsupported_operation`, `adapter_busy`, `stale_target`, `backend_unavailable` and `backend_timeout`, with appropriate 4xx/503/504 responses. Unsupported capability is not HTTP 500. Client confirmation explains the fixed action meaning; the backend revalidates targets/state and refuses an unsafe race without an effects-token exchange.
 
-Add `receivers_changed` and `receiver_operation_changed` messages to the existing app event connection, plus a receiver snapshot on replay. An optional context notifier lets plugins signal a changed cached snapshot. Core validates plugin ownership and coalesces duplicate updates. These notifications contain control state, never PCM blocks or sample-rate progress events.
+Add only `receivers_changed` to the existing event connection, with a snapshot on replay. An optional context notifier invalidates cached state; coalesce notifications. The app refreshes after writes/events/reconnect and serializes its refreshes so an older HTTP response cannot overwrite a newer one. Snapshots never wait for pairing and contain no PCM blocks or playback-progress ticks.
 
-The app uses server time/expiry to render a local countdown; the backend's monotonic deadline is authoritative. Backgrounding or closing a panel does not prolong the window. After disconnect, show state as unavailable until refreshed; do not claim that a stale countdown is a live advertisement.
+Send pairing **remaining seconds**, sampled from the backend's monotonic deadline. The app counts down using monotonic elapsed time and refreshes on resume/reconnect. It is approximate; only the backend decides expiry. An incorrect Pi wall clock before NTP, or a clock adjustment, cannot extend the window. Offline UI must not claim discovery is still active.
 
-Routes use the same access boundary as other streamer-management operations and must enforce any configured controller authorization. A device being approved to send audio does not gain permission to manage other devices or the streamer. Pairing prompts and permission decisions are never accepted solely because the requesting peer supplied a familiar display name.
+Use the existing streamer-management authorization boundary. An audio grant does not grant app/admin access; a familiar peer name is not identity proof. No separate permission-management framework is introduced.
 
-## Backend-specific work
+## Bluetooth admission and revocation
 
-### Bluetooth
+### Concrete pairing success
 
-Move the existing pairing window and `AudioAccess` operations behind the controller. Add runtime snapshots and exact device/session action semantics. Track provisional authorization during the handshake; persist new grants only after successful audio pairing and reconcile failed or cancelled attempts. Do not unregister the agent midway through the successful handshake. Use the actual BlueZ object path resolved from the opaque peer, since a device's identity address can differ from its original object path.
+Before changing trust, record the candidate's actual BlueZ object path, resolved identity/address, pre-grant `Trusted` and owning window. Never derive its path from the address; privacy addresses may differ. Agent callbacks admit a candidate provisionally for audio-related authorization during that window, without adding a saved grant.
 
-Keep the shared adapter lease for global agent/discovery/name changes. Return `adapter_busy` while provisioning owns it. Add scoped backend/D-Bus permissions only for operations actually implemented. Stop pairing must restore adapter properties and release the lease without stopping established audio. Revocation must stop this peer's current playback as well as remove its saved grant.
+Success is the first newly observed eligible **BlueALSA PCM source endpoint**, not an agent callback or generic `Connected=True`. Require `Transport="A2DP-sink"`, `Mode="source"`, matching `Device` on the selected adapter, valid PCM format, and BlueZ `Paired=True` / `Connected=True`, as in `BlueAlsaBackend.endpoints()`. It must belong to a candidate admitted in this same still-open window. Correlate updates whether pairing state or PCM interface notification arrives first.
 
-Kalinka audio grants are separate from BlueZ's device-wide `Trusted` property. Coordinate trust changes with provisioning; revoking an audio grant must not blindly clear shared device trust. Enforce the audio grant on every new or resumed audio transport, rather than relying on discoverability or trust alone.
+Here “first A2DP PCM” means endpoint availability; it does not require non-zero samples or starting a song. A paused phone can finish pairing. Renderer readiness/output ownership is irrelevant. This candidate is the only provisional exception to the no-grant disconnect rule, bounded by the window. On success, durably commit its grant/trust baseline before admitting PCM to playback, then close the window after outstanding agent replies. Failure/cancel/expiry rolls back provisional trust and disconnects ungranted A2DP.
 
-Expose only codecs the backend can receive, with Automatic as the default. Codec configuration is separate from a peer's right to send audio. This management extension does not change the existing SBC/PCM media path or add transcoding.
+Already bonded **Allow audio** uses explicit user consent instead of pairing success. Record prior trust before changing it and saving the grant. Repeated grants retain the original baseline, never replacing it with Kalinka's newly written `True`.
 
-### AirPlay
+### Trust restoration and effective removal
 
-Separate plugin initialization from the desired running state of its owned receiver. Reuse the current start/stop supervision for availability. Track actual readiness and the effective advertised identity; process creation alone is not proof that service advertisement succeeded.
+Replace the address-to-alias file with versioned records containing identity, alias, grant state and **trust before the audio grant** (`true`, `false`, or `unknown` for legacy test data). Persist restoration information before changing trust; retain cleanup records until restoration succeeds. Roll back pending grants after a crash, never promote them silently on boot.
 
-Respect the difference between a stopped receiver and an unexpectedly failed child: an intentional stop must suppress automatic restart. A transient stop is not a change to the plugin's enabled setting; after a Core restart an enabled AirPlay plugin returns to its documented default of available. Bluetooth always boots with new-device pairing closed. Show these semantics in the panel/help.
+On **Remove audio access**:
 
-Initially omit independent advertisement withdrawal and persistent peer permissions. Add them only after verifying the bundled shairport-sync build can implement the required behavior and identity guarantees. The controller contract supports those extensions without an AirPlay-specific branch in Core or an app redesign.
+1. Durably revoke the grant and provisional admission. Stop its PCM forwarding and release only its playback hold.
+2. Restore pre-grant trust: false if audio introduced it, true if it already existed. The inspected supervisor never sets `Trusted`, so preserving audio-created trust as supposed setup state is incorrect. Keep the bond and provisioning credentials.
+3. Call `org.bluez.Device1.DisconnectProfile` for the peer's registered A2DP audio profile using the actual device path. Observe transport/PCM removal; report failure if teardown exceeds its bounded budget. Method success alone is not proof of removal. The [BlueZ Device API](https://bluez.readthedocs.io/en/latest/device-api/) distinguishes this from whole-device `Disconnect`, which terminates all profiles/the ACL connection.
+4. On every new/reappearing A2DP transport or PCM endpoint, disconnect it unless the peer has a grant or valid provisional admission. Reject unauthorized audio-service requests when the agent is consulted. Enforce denial regardless of `Trusted`; previously trusted and legacy phones must not stay selected for audio that is merely discarded.
 
-## Compatibility and migration
+Implement the disconnect helper and D-Bus permission before exposing revoke/disconnect. Coalesce transport notifications and retry teardown with a bound/backoff; report failures rather than spinning. Inspect startup inventory and subsequent events so reconnect/restart cannot bypass policy. Scope this to Kalinka's configured BlueALSA receiver, not other Bluetooth profiles or another audio manager. Verify profile teardown on the packaged Pi build, including simultaneous provisioning use.
 
-1. Ship an additive SDK minor release with default `RECEIVER = None` and optional context notifications. Leave `get_interface()`, browsing, `DirectPlayback`, `ExternalPlayback`, and `LiveAudio` unchanged.
-2. Add the Core registry, structured operations, events and scoped plugin lifecycle. Expose a receiver-control API version so clients feature-detect support. Preserve existing plugin APIs and restart behavior for non-opted-in plugins.
-3. Add the Bluetooth controller. For one compatibility period, keep old one-shot config inputs as deprecated adapters to the same controller. Hide them from the new presentation schema. Do not maintain two independent pairing implementations.
-4. Add the AirPlay availability controller. Its capabilities accurately reflect its current wrapper. Preserve installed users' existing enabled/available default.
-5. Add the app entry points and shared panel. On older Core versions, show the existing settings link with a clear “Update the streamer for device controls” explanation. Do not fake live operations with a restart.
-6. Remove deprecated Bluetooth management fields in a later documented breaking release after clients have migrated. Persisted device grants/bonds survive this migration; transient pairing actions never run merely because settings were loaded.
+Disabling Bluetooth closes admission and disconnects audio sessions. If its configured BlueALSA service keeps exposing A2DP, retain a lightweight admission watcher in the initialized controller to disconnect incoming audio while disabled. No discovery, capture or playback runs in that state. Stopping the PCM reader alone is insufficient; do not stop shared BlueZ/provisioning services.
 
-A plugin with no receiver descriptor is unaffected. Unknown optional action types are ignored by older clients; the server still checks capability/contract compatibility before dispatch. Installed-plugin inventory drives visibility even for unpublished plugins.
+Existing test-image grants have no recoverable trust baseline. Migrate them with `trust_before_grant=unknown`, preserve current trust on revoke, and enforce denial through the same profile disconnect path. Do not invent a false baseline. After such a grant is removed and cleanup completed, a later explicit grant snapshots then-current trust normally.
+
+## Delivery and compatibility
+
+1. Add SDK defaults for the descriptor/controller, `SETUP_WHEN_DISABLED`, live-field metadata, state notification and small server-name context hook. Leave browsing/media interfaces unchanged.
+2. Add Core GET/POST routing, snapshot events, opt-in setup while disabled, name propagation and live config presentation. Reuse prepared plugins/health refresh, without tracked operations or reload machinery.
+3. Ship Bluetooth's first release with the controller and corrected admission/trust/profile-disconnect behavior. Remove `pair_phone`, `authorize_device` and `forget_device` from its config model now. Discard stored test-image overrides before generic one-shot consumption; never execute a staged discovery action during migration. Preserve bonds and migrate grants as above. Upgrade the test app alongside Core/plugin.
+4. Add AirPlay's initialized controller, inherited name and live enabled/name handlers. Preserve explicit saved names and enabled values. Disabled stays disabled across reboot; enabled starts its receiver.
+5. Add app entry points/panel, feature-detect the API and honor `applies_live`. Older servers retain their settings path with an update explanation; do not fake commands with restart. Older clients can use ordinary settings but do not acquire new Bluetooth device management automatically.
+
+No released Bluetooth one-shot API needs an adapter. If that API ships first, explicitly revise the plan: retain forwarding fields marked **superseded**, let new clients filter them, and keep them visible to old clients. Core cannot hide fields selectively without client capability negotiation. This is a contingency, not the selected v1 plan.
+
+Plugins with no descriptor/setup opt-in are unchanged. Missing system packages use existing explicit software management. Installed inventory drives receiver visibility even for unpublished plugins.
 
 ## Acceptance criteria
 
-- Discovery is reachable from Home in two taps and never restarts Core. Opening discovery or the panel never claims an output.
-- Bluetooth pairing shows the effective name, countdown and cancellation. It closes on success/timeout while remembered-device playback remains usable.
-- Successful ordinary audio pairing needs no separate grant step. Existing bonds without audio permission are clearly labelled and can receive an explicit audio grant.
-- Audio revocation takes effect for the active sender and preserves provisioning credentials. Full unpairing is absent until safely implemented.
-- AirPlay can become available through the same panel; stopping an active receiver explains the actual interruption. Unsupported pairing/device-permission controls are absent.
-- Per-plugin enable/disable updates health, input registration and control availability without a Core restart or unrelated audio-service changes.
-- Two app clients, network retries, a stale window/request, app backgrounding and a plugin/Core restart cannot duplicate or resurrect operations.
-- A discovery/permission operation cannot mutate the saved queue, reset renderer selection or replay old PCM. Switching output leaves receiver identity/discovery unchanged.
-- Missing backend, adapter conflict, unsupported action and expired approval all produce finite, readable states.
-- Old plugins load unchanged; old clients retain their existing behavior; new clients discover unsupported servers explicitly.
-- Panel actions have 48dp targets, descriptive labels, visible busy/error state, and stable focus. Large text, narrow/landscape layouts and screen-reader announcements work without reading the countdown every second.
+- Home and both server-sheet layouts expose the entry with catalogs off, disabled/error receivers and navigation rails. No installed receiver hides it; a failed fetch is not an empty inventory.
+- Pairing opens in two taps without a Core restart or output takeover. Its monotonic countdown survives wrong Pi time, NTP changes and app backgrounding.
+- Agent callbacks alone save no grant. Eligible A2DP plus a paired candidate completes even when paused; test event ordering, two candidates, expiry and crash recovery. Success offers **Not this device? Remove**.
+- Revocation removes the phone's A2DP route and blocks reconnects, including originally trusted and legacy-unknown phones. Originally untrusted phones return to `Trusted=False`; previously trusted ones keep trust. The bond/BLE setup remain usable.
+- Disconnect retains the grant. Stale session/window commands cannot affect replacements. Ungranted/disabled audio connections are disconnected, not discarded. Backend failure yields a finite error and pending cleanup.
+- First enable after booting disabled works live. Controller/input registration remain stable across toggles, with correct health/serving state. Disabled setup starts no audio reception.
+- AirPlay disable persists over reboot. Enable/name changes need no Core restart; receiver-only interruption is explained. Unsupported disconnect/permission controls are absent.
+- Streamer rename updates Core and both inherited receiver names; overrides survive. Provisioning alias restoration/deferred rename cannot undo the desired audio name.
+- Synchronous commands return snapshots or structured errors. Lost replies cause refresh, not replay; repeated current-target commands are safe. No operation service or effects tokens are needed.
+- Test-image migration preserves grants/bonds, marks unknown trust honestly and never executes saved one-shots. Other plugins retain their behavior.
+- Use existing palette/components, 48dp targets, stable busy/error layout and focus. Check narrow/landscape/tablet layouts, large text and screen readers without announcing every countdown tick.
 
-The latency-reporting/lip-sync work remains in the media design. This interface may surface a later sync-settings link, but discovery and permission management do not acquire ownership of timing, compression or audio buffers.
+Latency reporting and lip-sync remain media work. This interface does not own timing, compression or audio buffers.
