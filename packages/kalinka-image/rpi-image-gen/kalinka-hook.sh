@@ -23,6 +23,8 @@ TARGET_DISPLAY=0
 . "$SCRIPT_DIR/lib/display.sh"
 # shellcheck source=../lib/seal.sh
 . "$SCRIPT_DIR/lib/seal.sh"
+# shellcheck source=../lib/test-packages.sh
+. "$SCRIPT_DIR/lib/test-packages.sh"
 
 # build.sh hands the token over as a file: rpi-image-gen prints every setting it is given.
 [ -z "${IGconf_kalinka_github_token_file:-}" ] || GITHUB_TOKEN="$(cat "$IGconf_kalinka_github_token_file")"
@@ -40,10 +42,12 @@ configure_journal
 start_build_aids
 configure_display_setting "$ROOTFS"
 install_kalinka "${IGconf_kalinka_version:-}"
+install_test_packages
 verify_kalinka
 cp "$IGconf_kalinka_supervisor_deb" "$WORK/kalinka-supervisor.deb"
 install_supervisor
 verify_supervisor
+verify_test_packages
 verify_display
 require_no_compiler
 # What went in, for build.sh to name the image and write its manifest.
