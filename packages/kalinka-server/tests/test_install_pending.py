@@ -362,6 +362,111 @@ def test_killed_mid_install_does_not_retry_on_next_boot(env, monkeypatch):
     )
 
 
+def _without_wheels(monkeypatch, *packages: str) -> None:
+    """pip finds every index answering, and no wheel of ``packages``."""
+
+    def pip(spec: str) -> install_pending.PipRun:
+        name = spec.split("==")[0]
+        if name not in packages:
+            return install_pending.PipRun(0, "", "")
+        page = f"https://index.test/simple/{name}/"
+        return install_pending.PipRun(
+            1,
+            f"ERROR: No matching distribution found for {spec}",
+            f"Getting page {page}\nFetched page {page} as text/html\n",
+        )
+
+    monkeypatch.setattr(install_pending, "_pip_install", pip)
+
+
+def _no_wheel_record(env: dict) -> dict:
+    return json.loads((env["tmp"] / "no_wheel.json").read_text())
+
+
+def test_a_package_with_no_wheel_is_recorded_for_this_interpreter(env, monkeypatch):
+    _without_wheels(monkeypatch, "tokenizers")
+    _write_pending(env["pending"], ["numpy", "tokenizers"])
+
+    _run(env)
+
+    python, machine = install_pending._interpreter()
+    assert _no_wheel_record(env) == {
+        "schema": 1,
+        "python": python,
+        "architecture": machine,
+        "packages": {
+            "tokenizers": {
+                "pip_spec": "tokenizers==0.22.2",
+                "reason": (
+                    f"No prebuilt tokenizers==0.22.2 for Python {python} on {machine}"
+                ),
+            }
+        },
+    }
+
+
+def test_the_record_outlasts_an_install_of_something_else(env, monkeypatch):
+    """last_install.json names only the latest install's keys."""
+    _without_wheels(monkeypatch, "tokenizers")
+    _write_pending(env["pending"], ["tokenizers"])
+    _run(env)
+
+    _write_pending(env["pending"], ["numpy"])
+    _run(env)
+
+    assert list(_no_wheel_record(env)["packages"]) == ["tokenizers"]
+    assert _only_result(env)["key"] == "numpy"
+
+
+def test_a_package_that_installs_at_last_leaves_the_record(env, monkeypatch):
+    _without_wheels(monkeypatch, "tokenizers")
+    _write_pending(env["pending"], ["tokenizers"])
+    _run(env)
+
+    _without_wheels(monkeypatch)
+    _write_pending(env["pending"], ["tokenizers"])
+    _run(env)
+
+    assert not (env["tmp"] / "no_wheel.json").exists()
+
+
+def test_a_package_whose_allowed_spec_moved_leaves_the_record(env, monkeypatch):
+    """A newer release of it may well have the wheel."""
+    _without_wheels(monkeypatch, "tokenizers")
+    _write_pending(env["pending"], ["tokenizers"])
+    _run(env)
+    manifest = env["manifests"] / "lf.json"
+    moved = json.loads(manifest.read_text())
+    moved["packages"]["tokenizers"]["pip_spec"] = "tokenizers==0.23.0"
+    manifest.write_text(json.dumps(moved))
+
+    _write_pending(env["pending"], ["numpy"])
+    _run(env)
+
+    assert not (env["tmp"] / "no_wheel.json").exists()
+
+
+def test_a_record_kept_for_another_python_is_dropped(env, monkeypatch):
+    (env["tmp"] / "no_wheel.json").write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "python": "3.0",
+                "architecture": "armv7l",
+                "packages": {
+                    "numpy": {"pip_spec": "numpy==2.4.6", "reason": "No prebuilt"}
+                },
+            }
+        )
+    )
+    _without_wheels(monkeypatch, "tokenizers")
+    _write_pending(env["pending"], ["tokenizers"])
+
+    _run(env)
+
+    assert list(_no_wheel_record(env)["packages"]) == ["tokenizers"]
+
+
 def test_no_pending_file_is_a_noop(env):
     """Helper must not error when there's nothing to install."""
     rc = _run(env)
