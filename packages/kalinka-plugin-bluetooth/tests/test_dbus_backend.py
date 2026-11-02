@@ -4,12 +4,51 @@ import asyncio
 import os
 import shutil
 import socket
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from dbus_fast import Message, MessageType, Variant
 from dbus_fast.aio import MessageBus
 
 from kalinka_plugin_bluetooth import backend
+
+
+@pytest.mark.parametrize(
+    "destination,member,body,error_name,label",
+    [
+        ("org.bluealsa", "GetManagedObjects", [], "ServiceUnknown", "BlueALSA"),
+        (
+            "org.freedesktop.DBus",
+            "GetNameOwner",
+            ["org.bluez"],
+            "NameHasNoOwner",
+            "BlueZ",
+        ),
+        ("org.bluealsa", "GetManagedObjects", [], "AccessDenied", None),
+    ],
+)
+async def test_dbus_errors_identify_missing_service_without_hiding_other_failures(
+    destination, member, body, error_name, label
+):
+    client = backend.BlueAlsaBackend()
+    client.bus = SimpleNamespace(
+        call=AsyncMock(return_value=SimpleNamespace(
+            message_type=MessageType.ERROR,
+            error_name=f"org.freedesktop.DBus.Error.{error_name}",
+            body=["The name is not activatable" if label else "Permission denied"],
+        ))
+    )
+    with pytest.raises(RuntimeError) as caught:
+        await client.call(
+            destination, "/", backend.OBJECTS, member, "s" if body else "", body
+        )
+    if label:
+        assert label in str(caught.value)
+        assert (body[0] if body else destination) in str(caught.value)
+        assert "not running or installed" in str(caught.value)
+    else:
+        assert "org.bluealsa GetManagedObjects: Permission denied" in str(caught.value)
 
 
 @pytest.mark.skipif(

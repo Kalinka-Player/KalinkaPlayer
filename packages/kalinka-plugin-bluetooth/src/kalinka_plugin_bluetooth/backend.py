@@ -131,8 +131,29 @@ class BlueAlsaBackend:
             5,
         )
         if reply.message_type == MessageType.ERROR:
+            if reply.error_name in (
+                "org.freedesktop.DBus.Error.ServiceUnknown",
+                "org.freedesktop.DBus.Error.NameHasNoOwner",
+            ):
+                service = (
+                    body[0]
+                    if destination == "org.freedesktop.DBus"
+                    and member == "GetNameOwner"
+                    and body
+                    else destination
+                )
+                if service == BLUEZ:
+                    label = "BlueZ"
+                elif service == self.service:
+                    label = "BlueALSA"
+                else:
+                    label = "D-Bus"
+                raise RuntimeError(
+                    f"{label} service {service} is not running or installed"
+                )
             raise RuntimeError(
-                f"{member}: {reply.body[0] if reply.body else reply.error_name}"
+                f"{destination} {member}: "
+                f"{reply.body[0] if reply.body else reply.error_name}"
             )
         return reply
 
