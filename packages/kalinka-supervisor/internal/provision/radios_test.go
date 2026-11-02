@@ -329,6 +329,24 @@ func TestClearingABlockKeepsABluetoothdFailure(t *testing.T) {
 	}
 }
 
+type stalledRadio struct{ radioBackend }
+
+func (b *stalledRadio) EnableRadio(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }
+
+func TestRecoveryReportsAWiFiRadioThatDidNotAnswer(t *testing.T) {
+	s := New(Options{DisableBLE: true}, nil)
+	m := machine.New(context.Background(), &stalledRadio{}, machine.Config{})
+	defer m.Close()
+	call, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := s.radioSteps(m)[0](call); err == nil {
+		t.Fatal("a radio that never answered enabled")
+	}
+	if got := s.Problems()["wifi"]; got != "unavailable" {
+		t.Fatalf("reported %q after the attempt ran out of time", got)
+	}
+}
+
 func TestBluetoothRecoveryHonorsAdapterAndDisabledTransports(t *testing.T) {
 	for _, disabled := range []bool{false, true} {
 		s := New(Options{Adapter: "hci1", DisableBLE: disabled, DisableAP: true}, nil)
