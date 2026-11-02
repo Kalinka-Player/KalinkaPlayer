@@ -328,6 +328,9 @@ func TestNMEnableRadioRefused(t *testing.T) {
 	if dbusx.ErrorName(err) != "org.freedesktop.NetworkManager.PermissionDenied" {
 		t.Fatalf("refusal lost its reason: %v", err)
 	}
+	if !errors.Is(err, rfkill.ErrSoftBlocked) {
+		t.Fatalf("a radio left switched off is not marked so: %v", err)
+	}
 	if !rfkilltest.Soft(t, n.Root, "rfkill0") {
 		t.Fatal("kernel block cleared behind NetworkManager's back")
 	}

@@ -116,7 +116,7 @@ control API's `/v1/status`, and the control page shows it beside nearby setup:
 
 | Code | Meaning |
 |---|---|
-| `radio_blocked` | Bluetooth is switched off in software, by rfkill |
+| `radio_blocked` | The radio is switched off in software and stayed off: by rfkill, or for Wi-Fi by NetworkManager refusing to switch it on |
 | `radio_hard_blocked` | A hardware switch blocks the radio |
 | `unavailable` | Anything else; the log has the detail |
 

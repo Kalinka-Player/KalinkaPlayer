@@ -288,6 +288,31 @@ func TestExplicitWiFiEnableReportsItsOutcome(t *testing.T) {
 	}
 }
 
+func TestWiFiLeftSwitchedOffIsReportedAsBlocked(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"NetworkManager refused its switch", fmt.Errorf("NetworkManager: %w: %w", rfkill.ErrSoftBlocked, errors.New("Not authorized to enable/disable Wi-Fi")), "radio_blocked"},
+		{"kernel block not writable", fmt.Errorf("clear the kernel's Wi-Fi block: phy0: %w: %w", rfkill.ErrSoftBlocked, os.ErrPermission), "radio_blocked"},
+		{"NetworkManager did not answer", errors.New("org.freedesktop.DBus.Error.NoReply"), "unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := machine.New(context.Background(), &radioBackend{enable: tc.err}, machine.Config{})
+			defer m.Close()
+			s := New(Options{}, nil)
+			s.machine.Store(m)
+			if err := s.EnableWiFi(context.Background()); !errors.Is(err, tc.err) {
+				t.Fatalf("returned %v", err)
+			}
+			if got := s.Problems()["wifi"]; got != tc.want {
+				t.Fatalf("reported %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestClearingABlockKeepsABluetoothdFailure(t *testing.T) {
 	s := New(Options{DisableAP: true}, nil)
 	s.root = t.TempDir()
