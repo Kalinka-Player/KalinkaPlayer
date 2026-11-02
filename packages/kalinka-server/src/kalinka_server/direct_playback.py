@@ -12,6 +12,7 @@ import asyncio
 import inspect
 import logging
 import time
+from dataclasses import replace
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
@@ -40,8 +41,15 @@ from kalinka_plugin_sdk.ext_device_events import (
     VolumeChangedEvent,
 )
 from kalinka_plugin_sdk.inputmodule import TrackSource
+from kalinka_plugin_sdk.live_audio import (
+    LiveAudioRef,
+    LivePolicy,
+    LiveSource,
+    PCM_MIME_TYPE,
+)
 
 from .config_model import KalinkaConfig
+from .live_audio import LiveAudioRegistry, PcmSource
 from .module_timeout import PLUGIN_CALL_TIMEOUT_S
 from .output_capabilities import OutputCapabilityTracker
 from .output_device_router import OutputDeviceRouter
@@ -55,7 +63,12 @@ from .renderer_sessions import (
     SessionOpenFailed,
     SessionPool,
 )
-from .stream_state import AudioGraphNodeState, StateMonitor, StreamState
+from .stream_state import (
+    AudioGraphNodeState,
+    StateMonitor,
+    StreamState,
+    StreamErrorSource,
+)
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
@@ -136,6 +149,7 @@ class HolderSession:
         arbiter: PlaybackArbiter,
         device_router: OutputDeviceRouter,
         device_events: DeviceEvents,
+        live_audio: LiveAudioRegistry | None = None,
     ):
         self._plugin_id = plugin_id
         self._control = PlaybackControl.exclusive(plugin_id, title, seekable=seekable)
@@ -145,6 +159,13 @@ class HolderSession:
         self._config = config
         self._registry = registry
         self._pool = pool
+        self._live_audio = live_audio
+        self._live_source: PcmSource | None = None
+        self._live_policy = LivePolicy()
+        self._live_paused = False
+        self._live_target: str | None = None
+        self._live_unwatch: Callable[[], None] | None = None
+        self._live_task: asyncio.Task | None = None
         self._bridge = _ListenerBridge(listener, plugin_id)
         self._monitor = StateMonitor()
         self._player = self._new_player()
@@ -190,11 +211,107 @@ class HolderSession:
         self, source: TrackSource, track: Track, *, start_offset_ms: int = 0
     ) -> None:
         self._require_active()
+        if isinstance(source.source, LiveAudioRef):
+            raise ValueError("Use play_live() for a logical live source")
         if source.sequential and start_offset_ms:
             raise ValueError("a sequential source starts at its first byte")
+        self._forget_live()
         self._clear_next()
         self._timeline_offset_ms = source.timeline_offset_ms
         self._start(source, track, start_offset_ms)
+
+    async def play_live(
+        self, source: LiveSource, track: Track, *, policy: LivePolicy = LivePolicy()
+    ) -> None:
+        self._require_active()
+        if self._live_audio is None:
+            raise OutputUnavailable("Live audio is unavailable on this server")
+        capture = self._live_audio.resolve(source.reference, self._plugin_id)
+        if capture is not source:
+            raise ValueError("live source was not created by this server")
+        async with self._swap:
+            self._require_active()
+            self._player.require_live_output(self.renderer_id)
+            self._forget_live()
+            self._live_source, self._live_policy = capture, policy
+            self._player.retain_live_input(True)
+            self._live_target = self.renderer_id
+            self._track = track
+            self._live_unwatch = capture.watch(self._schedule_live_refresh)
+            self._timeline_offset_ms = 0
+            self._reached = None
+            self._start_live()
+
+    def _start_live(self) -> None:
+        capture = self._live_source
+        if capture is None or capture.closed or self._live_paused or self._ended:
+            return
+        if self._stream_id is not None and self._reached is not None:
+            self._timeline_offset_ms += self._reached.position_at(time.monotonic_ns())
+        self._clear_next()
+        self._player.clear_all()
+        self._stream_id = None
+        self._start(
+            TrackSource(
+                source=capture.reference,
+                format=PCM_MIME_TYPE,
+                audio_codec="pcm",
+                sequential=True,
+                live_policy=self._live_policy,
+            ),
+            self._track,
+            0,
+        )
+
+    def _schedule_live_refresh(self, delay: float = 0) -> None:
+        if self._ended or self._live_source is None:
+            return
+        if self._live_task is None or self._live_task.done():
+            self._live_task = asyncio.create_task(self._refresh_live(delay))
+
+    async def _refresh_live(self, delay: float) -> None:
+        await asyncio.sleep(delay)
+        while not self._ended and self._live_source is not None:
+            async with self._swap:
+                if self._live_source is None or self._ended:
+                    return
+                if self._live_source.closed:
+                    await self.stop()
+                    return
+                if self._live_paused:
+                    return
+                try:
+                    record = self._registry.get(self._live_target)
+                    if record is None or not record.playable:
+                        raise RendererUnavailable("Waiting for the selected output")
+                    if self._player.renderer_id is None:
+                        await self._player.open(self._live_target)
+                    self._player.require_live_output(self.renderer_id)
+                    self._start_live()
+                    return
+                except (
+                    RendererUnavailable,
+                    RendererBusy,
+                    SessionOpenFailed,
+                    OutputUnavailable,
+                    asyncio.TimeoutError,
+                ) as error:
+                    logger.debug(
+                        "%s live output unavailable: %s", self._plugin_id, error
+                    )
+            await asyncio.sleep(1)
+
+    def _forget_live(self) -> None:
+        self._player.retain_live_input(False)
+        if self._live_unwatch is not None:
+            self._live_unwatch()
+            self._live_unwatch = None
+        task, self._live_task = self._live_task, None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+        self._live_source = None
+        self._live_paused = False
+        self._live_target = None
 
     async def show(self, track: Track, position_ms: int) -> None:
         self._require_active()
@@ -233,14 +350,33 @@ class HolderSession:
 
     async def pause(self) -> None:
         self._require_active()
+        if self._live_source is not None:
+            if self._reached is not None:
+                self._timeline_offset_ms += self._reached.position_at(
+                    time.monotonic_ns()
+                )
+            self._live_paused = True
+            self._player.clear_all()
+            self._stream_id = None
+            self._publish(
+                StreamState(
+                    state=AudioGraphNodeState.PAUSED, timestamp=time.monotonic_ns()
+                )
+            )
+            return
         self._player.pause()
 
     async def resume(self) -> None:
         self._require_active()
+        if self._live_source is not None:
+            self._live_paused = False
+            self._schedule_live_refresh()
+            return
         self._player.resume()
 
     async def stop(self) -> None:
         self._require_active()
+        self._forget_live()
         self._clear_next()
         stream_id, self._stream_id = self._stream_id, None
         self._source = None
@@ -305,17 +441,29 @@ class HolderSession:
         target is claimed before the current renderer is given up. A paused
         track stays paused.
         """
-        if self._source is not None and self._source.sequential and renderer_id != self.renderer_id:
+        if (
+            self._live_source is None
+            and self._source is not None
+            and self._source.sequential
+            and renderer_id != self.renderer_id
+        ):
             await self._on_session_lost(CloseReason.RENDERER_LOST)
             commit()
             return
         async with self._swap:
             old = self._player
-            if self._ended or old.renderer_id in (None, renderer_id):
+            if (
+                self._ended
+                or old.renderer_id == renderer_id
+                or (old.renderer_id is None and self._live_source is None)
+            ):
                 commit()
                 return
             player = self._new_player()
             try:
+                if self._live_source is not None:
+                    player.require_live_output(renderer_id)
+                    player.retain_live_input(True)
                 await player.open(renderer_id, announce=False)
             except HoldEnded:
                 await player.shutdown()
@@ -332,6 +480,13 @@ class HolderSession:
             # as the playback ending, when it is only moving.
             await old.shutdown()
             await player.announce()
+            if self._live_source is not None:
+                self._live_target = renderer_id
+                task, self._live_task = self._live_task, None
+                if task is not None and task is not asyncio.current_task():
+                    task.cancel()
+                self._start_live()
+                return
             if reached.state in _MOVING_STATES and self._source is not None:
                 self._start(
                     self._source,
@@ -355,6 +510,7 @@ class HolderSession:
             self._pool,
             self._monitor,
             before_claim=self._before_claim,
+            live_audio=self._live_audio,
         )
         player.on_interrupted(self._replay)
         player.on_session_lost(self._on_session_lost)
@@ -393,6 +549,9 @@ class HolderSession:
         the hold with it."""
         if self._ended or self._source is None or self._track is None:
             return
+        if self._live_source is not None:
+            self._schedule_live_refresh(0.25)
+            return
         if self._source.sequential:
             if not self._player.decline_resume():
                 await self._on_session_lost(CloseReason.RENDERER_LOST)
@@ -403,6 +562,18 @@ class HolderSession:
             await self.set_next(queued.source, queued.track)
 
     async def _on_session_lost(self, reason: Optional[CloseReason]) -> None:
+        if (
+            self._live_source is not None
+            and not self._live_source.closed
+            and reason
+            in (
+                CloseReason.RENDERER_LOST,
+                CloseReason.RENDERER_RESTARTED,
+                CloseReason.RENDERER_SHUTDOWN,
+            )
+        ):
+            self._schedule_live_refresh(1)
+            return
         cause = RevokeReason.IDLE if reason is None else RevokeReason.OUTPUT_LOST
         if await self._end(cause):
             await self._arbiter.release(self)
@@ -414,6 +585,7 @@ class HolderSession:
                 await asyncio.shield(self._teardown)
             return False
         self._ended = True
+        self._forget_live()
         self._queued = None
         self._volume_watch.cancel()
         self._teardown = asyncio.ensure_future(self._stop_player())
@@ -434,6 +606,8 @@ class HolderSession:
         async for state in self._monitor:
             if self._ended:
                 continue
+            if self._live_source is not None and self._live_paused:
+                continue  # Queue-clear acknowledgements must not erase PAUSED.
             queued = self._queued
             if queued is not None and state.stream_id == queued.stream_id:
                 previous = self._stream_id
@@ -448,7 +622,24 @@ class HolderSession:
                 continue
             if state.state is AudioGraphNodeState.SOURCE_CHANGED:
                 continue
+            if (
+                state.state is AudioGraphNodeState.ERROR
+                and self._live_source is not None
+                and not self._live_source.closed
+                and state.error is not None
+                and state.error.source is StreamErrorSource.HTTP_STREAM
+            ):
+                self._schedule_live_refresh(0.5)
+                # Recoverable transport lag is buffering, not a fatal input
+                # error: plugins must keep receiving rather than pause phones.
+                self._publish(
+                    replace(state, state=AudioGraphNodeState.PREPARING, error=None)
+                )
+                continue
             if state.state is AudioGraphNodeState.FINISHED:
+                if self._live_source is not None and not self._live_source.closed:
+                    self._schedule_live_refresh(0.1)
+                    continue
                 if self._source is None:
                     continue
                 if self._queued is not None:
@@ -510,8 +701,10 @@ class DirectPlaybackService:
         arbiter: PlaybackArbiter,
         device_router: Callable[[], Optional[OutputDeviceRouter]],
         device_events: DeviceEvents,
+        live_audio: LiveAudioRegistry | None = None,
     ):
         self._plugin_id = plugin_id
+        self._live_audio = live_audio
         self._config = config
         self._registry = registry
         self._capabilities = capabilities
@@ -541,6 +734,7 @@ class DirectPlaybackService:
             arbiter=self._arbiter,
             device_router=router,
             device_events=self._device_events,
+            live_audio=self._live_audio,
         )
         await self._arbiter.acquire(session)
         # Resolved after the queue let go: its claim no longer pins the choice.

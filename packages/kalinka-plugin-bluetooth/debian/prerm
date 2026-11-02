@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+case "$1" in
+  remove|deconfigure)
+    if [ -d /run/systemd/system ]; then
+      systemctl disable --now kalinka-bluealsa.service || true
+    fi
+    if [ -x /opt/kalinka/venv/bin/pip ]; then
+      /opt/kalinka/venv/bin/pip uninstall -y kalinka-plugin-bluetooth || true
+    fi
+    ;;
+esac

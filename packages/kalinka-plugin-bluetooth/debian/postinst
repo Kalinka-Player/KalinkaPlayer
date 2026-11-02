@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+if [ "$1" = configure ]; then
+    if command -v systemd-tmpfiles >/dev/null; then
+        systemd-tmpfiles --create /usr/lib/tmpfiles.d/kalinka-bluetooth.conf
+    fi
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload
+        # Do not replace an administrator's running Bluetooth audio manager.
+        # Enable/start this unit explicitly after choosing the BlueALSA backend.
+        systemctl reload dbus.service || true
+    fi
+fi

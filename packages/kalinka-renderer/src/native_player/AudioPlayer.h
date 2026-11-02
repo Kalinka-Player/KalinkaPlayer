@@ -24,7 +24,8 @@ enum AudioFormat {
   FormatWav,
   FormatDash,
   FormatMp4,
-  FormatAdts
+  FormatAdts,
+  FormatLivePcm
 };
 
 using StreamId = size_t;

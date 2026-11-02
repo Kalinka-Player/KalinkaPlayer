@@ -24,7 +24,7 @@ from .datamodel import (
 )
 from .filters import FilterQuery, FilterValueList
 from .live_content import LiveContent
-
+from .live_audio import LiveAudioRef, LivePolicy
 
 class SourceUnavailableError(RuntimeError):
     """A track's backing storage is temporarily unreachable.
@@ -96,14 +96,24 @@ class TrackSource(BaseModel):
             sequential source.
     """
 
-    source: ModuleAsset | DirectUrl
+    source: ModuleAsset | DirectUrl | LiveAudioRef
     format: str
     audio_codec: Optional[str] = None
     sequential: bool = False
     timeline_offset_ms: NonNegativeInt = 0
+    live_policy: Optional[LivePolicy] = None
 
     @model_validator(mode="after")
     def _offset_only_when_sequential(self) -> "TrackSource":
+        if isinstance(self.source, LiveAudioRef):
+            if not self.sequential or self.timeline_offset_ms:
+                raise ValueError(
+                    "live audio is sequential and always starts at the live edge"
+                )
+            if self.live_policy is None:
+                raise ValueError("live audio requires an explicit latency policy")
+        elif self.live_policy is not None:
+            raise ValueError("live_policy applies only to a live audio source")
         if self.timeline_offset_ms and not self.sequential:
             raise ValueError("timeline_offset_ms applies only to a sequential source")
         return self

@@ -36,6 +36,7 @@ from .config_overrides import (
     apply_overrides_with_prefix,
     find_one_shot_overrides,
     is_one_shot_field,
+    is_immediate_action_field,
     reconcile_config,
     save_overrides,
     store_override,
@@ -43,6 +44,7 @@ from .config_overrides import (
 )
 from .config_secrets import is_private_path, loggable
 from .direct_playback import DirectPlaybackService
+from .live_audio import LiveAudioRegistry
 from .external_playback import ExternalPlaybackService
 from .module_timeout import PLUGIN_CALL_TIMEOUT_S, TimeLimitedInputModule
 from .output_capabilities import OutputCapabilityTracker
@@ -84,6 +86,7 @@ class PlayerContext:
     # An input plugin's handle for playing outside the queue, by plugin id.
     direct_playback_for: "Callable[[str], DirectPlaybackService] | None" = None
     external_playback_for: "Callable[[str], ExternalPlaybackService] | None" = None
+    live_audio: "LiveAudioRegistry | None" = None
 
 
 @dataclass
@@ -405,6 +408,7 @@ class PreparedModuleCollection:
         plugin_class: type[PluginBase],
         plugin_config: ModuleConfig,
         overrides: MutableMapping[str, Any],
+        only_keys: set[str] | None = None,
     ) -> list[str]:
         """Reset any *armed* one-shot triggers for this plugin, persist-first,
         before its ``setup()`` runs. Returns the override keys durably consumed
@@ -429,6 +433,8 @@ class PreparedModuleCollection:
         armed = find_one_shot_overrides(
             plugin_class.CONFIG_MODEL, prefix, plugin_config, overrides
         )
+        if only_keys is not None:
+            armed = [key for key in armed if key in only_keys]
         if not armed:
             return []
 
@@ -485,6 +491,45 @@ class PreparedModuleCollection:
                 reset_kind,
             )
         return armed
+
+    def consume_immediate_actions(
+        self, prepared: PreparedPlugin, paths: set[str], overrides
+    ) -> list[str]:
+        """Persistently disarm explicitly immediate one-shots before their callback.
+
+        Ordinary one-shots still wait for setup. A disabled/uninitialized
+        plugin also keeps its actions for setup, when its dependencies exist.
+        """
+        if prepared.health_state == ModuleHealthState.DISABLED:
+            return []
+        config = prepared.plugin_context.config
+        prefix = (
+            (
+                "input_modules."
+                if prepared.plugin_class.PLUGIN_TYPE == PluginType.INPUT_MODULE
+                else "devices."
+            )
+            + config.name
+            + "."
+        )
+        keys = {
+            prefix + path
+            for path in paths
+            if is_immediate_action_field(type(config), path.split("."))
+        }
+        return self._consume_one_shot_overrides(
+            config.name, prepared.plugin_class, config, overrides, only_keys=keys
+        )
+
+    def finish_immediate_actions(
+        self, prepared: PreparedPlugin, keys: list[str]
+    ) -> None:
+        self._reset_consumed_one_shot_values(
+            prepared.plugin_context.config.name,
+            prepared.plugin_class,
+            prepared.plugin_context.config,
+            keys,
+        )
 
     def _reset_consumed_one_shot_values(
         self,
@@ -754,7 +799,7 @@ class PreparedModuleCollection:
         """Create a PluginContext instance."""
         if self.player_context is None:
             raise ValueError("PlayerContext is not set in PreparedModuleCollection")
-        
+
         match plugin_class.PLUGIN_TYPE:
             case PluginType.INPUT_MODULE:
                 direct_playback_for = self.player_context.direct_playback_for
@@ -772,6 +817,11 @@ class PreparedModuleCollection:
                     ),
                     external_playback=(
                         external_playback_for(name) if external_playback_for else None
+                    ),
+                    live_audio=(
+                        self.player_context.live_audio.for_plugin(name)
+                        if self.player_context.live_audio
+                        else None
                     ),
                 )
             case PluginType.OUTPUT_DEVICE:
@@ -984,6 +1034,7 @@ async def setup(
     player_context.external_playback_for = lambda plugin_id: ExternalPlaybackService(
         plugin_id, arbiter, renderer_registry.active_id, player_context.device_router
     )
+    player_context.live_audio = LiveAudioRegistry()
     player_context.direct_playback_for = lambda plugin_id: DirectPlaybackService(
         plugin_id,
         config=config,
@@ -993,6 +1044,7 @@ async def setup(
         arbiter=arbiter,
         device_router=lambda: player_context.device_router,
         device_events=device_eventbus,
+        live_audio=player_context.live_audio,
     )
 
     # Scan and setup plugins

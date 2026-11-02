@@ -1,0 +1,19 @@
+[Unit]
+Description=Kalinka Bluetooth A2DP receiver
+Requires=bluetooth.service
+After=bluetooth.service
+Conflicts=bluealsa.service
+
+[Service]
+Type=dbus
+BusName=org.bluealsa
+ExecStart=/usr/lib/kalinka-plugin-bluetooth/start-bluealsa
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

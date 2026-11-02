@@ -43,6 +43,7 @@ AudioFormat formatOf(const pb::Source &source) {
              ? std::string_view{}
              : mime.substr(first, mime.find_last_not_of(" \t\r\n") - first + 1);
   static const std::unordered_map<std::string_view, AudioFormat> declared = {
+      {"application/vnd.kalinka.pcm", AudioFormat::FormatLivePcm},
       {"application/dash+xml", AudioFormat::FormatDash},
       {"audio/mp4", AudioFormat::FormatMp4},
       {"audio/m4a", AudioFormat::FormatMp4},
@@ -1126,4 +1127,5 @@ void NativePlayer::fillSnapshot(pb::StateSnapshot &out) const {
 
 void NativePlayer::fillCapabilities(pb::Capabilities &out) const {
   out.set_dsd(settings_.at("output.dsd_mode") != "disabled");
+  out.set_live_pcm(1);
 }

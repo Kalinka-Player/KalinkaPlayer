@@ -148,6 +148,11 @@ size_t AudioStreamSwitcher::waitForDataFor(std::stop_token stopToken,
 
 void AudioStreamSwitcher::acceptSourceChange() { switchToNextSource(); }
 
+std::optional<uint64_t> AudioStreamSwitcher::liveSourceFrame() const {
+  std::lock_guard lock(mutex);
+  return currentInputNode ? currentInputNode->liveSourceFrame() : std::nullopt;
+}
+
 std::optional<long> AudioStreamSwitcher::streamReadPosition() const {
   // Passed through, never cached: the source owns its own timeline.
   std::lock_guard lock(mutex);

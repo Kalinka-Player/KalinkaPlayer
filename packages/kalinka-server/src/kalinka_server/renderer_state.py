@@ -160,6 +160,10 @@ def apply(state: dict, change: StateChange, message) -> dict:
         state["position_ms"] = message.position_ms
         state["position_valid"] = message.position_valid
         state["interrupted"] = message.interrupted
+        state["live_ready"] = message.live_ready
+        state["live_source_frame"] = (
+            message.live_source_frame if message.HasField("live_source_frame") else None
+        )
         _set_source_token(
             state,
             message.source_token if message.HasField("source_token") else None,

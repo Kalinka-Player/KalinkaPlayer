@@ -9,6 +9,7 @@
 #include <iostream>
 #include <mutex>
 #include <stop_token>
+#include <stdexcept>
 
 template <class T> class Buffer {
   std::deque<T> data;
@@ -38,7 +39,23 @@ public:
 
   Buffer(const Buffer &) = delete;
 
-  size_t max_size() const { return capacity; }
+  size_t max_size() const {
+    std::lock_guard lock(m);
+    return capacity;
+  }
+
+  // Used after a live header supplies the rate: bound storage in frames/time.
+  // Only an empty buffer may be resized; no samples are silently discarded.
+  void setCapacity(size_t value) {
+    {
+      std::lock_guard lock(m);
+      if (!value || !data.empty())
+        throw std::invalid_argument("Only an empty buffer can be resized");
+      capacity = value;
+    }
+    hasDataCon.notify_all();
+    hasSpaceCon.notify_all();
+  }
 
   size_t read(T *dest, size_t size) {
     size_t sizeToCopy = 0;
@@ -82,8 +99,8 @@ public:
 
   size_t waitForData(std::stop_token stopToken = std::stop_token(),
                      size_t size = 1) {
+    std::unique_lock<std::mutex> lock(m);
     if (size > 0) {
-      std::unique_lock<std::mutex> lock(m);
       hasDataCon.wait(lock, stopToken, [this, size] {
         return done || data.size() >= std::min(size, capacity) || eof.load();
       });
@@ -95,8 +112,8 @@ public:
   size_t waitForDataFor(std::stop_token stopToken = std::stop_token(),
                         std::chrono::milliseconds timeout = {},
                         size_t size = 1) {
+    std::unique_lock<std::mutex> lock(m);
     if (size > 0) {
-      std::unique_lock<std::mutex> lock(m);
       hasDataCon.wait_for(lock, stopToken, timeout, [this, size] {
         return done || data.size() >= std::min(size, capacity) || eof.load();
       });
@@ -107,9 +124,9 @@ public:
 
   size_t waitForSpace(std::stop_token stopToken = std::stop_token(),
                       size_t size = 1) {
+    std::unique_lock<std::mutex> lock(m);
     size = std::min(size, capacity);
     if (size > 0) {
-      std::unique_lock<std::mutex> lock(m);
       hasSpaceCon.wait(lock, stopToken, [this, size]() {
         return done || (capacity - data.size()) >= size;
       });
@@ -127,7 +144,7 @@ public:
     return capacity - data.size();
   }
 
-  bool empty() const { return data.empty(); }
+  bool empty() const { return size() == 0; }
 
   void setEof() {
     {

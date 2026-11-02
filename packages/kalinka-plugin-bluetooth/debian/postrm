@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+case "$1" in
+  remove|purge)
+    if [ -d /run/systemd/system ]; then
+      systemctl daemon-reload
+      systemctl reload dbus.service || true
+    fi
+    ;;
+esac

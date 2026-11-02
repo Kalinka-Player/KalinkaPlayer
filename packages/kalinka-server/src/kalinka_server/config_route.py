@@ -18,7 +18,7 @@ from kalinka_plugin_sdk import ConfigIssue, paths
 from . import supervisor_management
 from .box_power_off import TIMER_PATHS
 from .config_model import KalinkaConfig
-from .config_overrides import save_overrides, store_override
+from .config_overrides import is_immediate_action_field, save_overrides, store_override
 from .config_schema_processor import (
     build_enum_options,
     build_presentation,
@@ -191,12 +191,29 @@ def register_config_routes(
             instance = prepared.plugin_instance if prepared is not None else None
             if instance is None:
                 continue
+            immediate = {
+                path
+                for path in paths
+                if is_immediate_action_field(
+                    type(prepared.plugin_context.config), path.split(".")
+                )
+            }
+            consumed = (
+                modules.consume_immediate_actions(
+                    prepared, immediate, app.state.overrides
+                )
+                if immediate
+                else []
+            )
             try:
                 await asyncio.wait_for(
                     instance.config_changed(frozenset(paths)), PLUGIN_CALL_TIMEOUT_S
                 )
             except Exception:  # noqa: BLE001 — the save stands whatever a plugin makes of it
                 logger.exception("%s could not take in its changed settings", name)
+            finally:
+                if consumed:
+                    modules.finish_immediate_actions(prepared, consumed)
         storage = getattr(app.state, "storage", None)
         if storage is not None:
             if any(key.startswith("base_config.storage.") for key in applied):

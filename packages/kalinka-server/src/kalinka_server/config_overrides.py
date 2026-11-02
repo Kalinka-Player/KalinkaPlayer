@@ -367,6 +367,17 @@ def is_one_shot_field(model_cls: type[BaseModel], attrs: List[str]) -> bool:
     return isinstance(extra, dict) and bool(extra.get("one_shot"))
 
 
+def is_immediate_action_field(model_cls: type[BaseModel], attrs: List[str]) -> bool:
+    """Whether a one-shot field is consumed on save instead of at setup."""
+    info = field_info(model_cls, attrs)
+    extra = info.json_schema_extra if info is not None else None
+    return (
+        isinstance(extra, dict)
+        and bool(extra.get("one_shot"))
+        and bool(extra.get("apply_immediately"))
+    )
+
+
 def find_one_shot_overrides(
     model_cls: type[BaseModel],
     prefix: str,

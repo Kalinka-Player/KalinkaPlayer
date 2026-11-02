@@ -202,3 +202,32 @@ GPL-3.0-or-later
 ## Contributing
 
 Please refer to the main Kalinka Player repository for contribution guidelines.
+
+
+## Live receiver audio (SDK 3.21)
+
+Bluetooth/AirPlay-style inputs can publish decoded PCM through
+`context.live_audio` and use `hold.play_live(source, track, policy=LivePolicy())`.
+Core owns the bounded memory buffer, HTTP delivery and renderer switching.
+The producer must keep draining independently of output acquisition and call
+`source.close()` on disconnect/shutdown; it must not encode or spool media.
+
+```python
+from kalinka_plugin_sdk import PcmFormat, LivePolicy
+
+source = context.live_audio.create_pcm(PcmFormat(48000, 2, "S24_3LE"))
+# In the receiver's event-loop task, without output I/O:
+source.offer(complete_pcm_frames)
+# In a separate control task:
+hold = await context.direct_playback.acquire("Bluetooth", listener, seekable=False)
+await hold.play_live(source, track, policy=LivePolicy(60, 250))
+```
+
+`offer()` is synchronous and accepts complete interleaved little-endian frames.
+Old retained blocks are evicted without blocking reception. `reset(format)`
+starts a new epoch after a discontinuity; `show()` only updates metadata.
+A compatible renderer move preserves capture and ownership, whereas a queue
+or other-input takeover still revokes the hold. Pause/resume starts fresh audio.
+Older renderers without `OutputCapabilities.live_pcm >= 1` report an upgrade
+requirement. See the [live audio design](../../docs/bluetooth-audio-sink-design.md)
+for wire format, lifecycle and validation limits.
