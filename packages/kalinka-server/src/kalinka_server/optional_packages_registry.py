@@ -158,14 +158,15 @@ def _read_last_install(last_install_path: Path) -> Any:
 class InstallHistory:
     """What the installs at earlier starts left for the server.
 
-    Both files change only while the server is down, before it starts, so
+    These files change only while the server is down, before it starts, so
     they are read once then.
     """
 
     #: {key: {"pip_spec", "reason"}} for each package pip found no wheel of
     #: for this Python and architecture, at any install so far.
     no_wheel: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
-    #: The keys the last install was asked for and did not install.
+    #: The keys the last install was asked for and did not install, or was
+    #: cut off before it finished.
     not_installed: frozenset[str] = frozenset()
 
     @classmethod
@@ -188,8 +189,30 @@ class InstallHistory:
                 if isinstance(result, dict)
                 and "key" in result
                 and result.get("status") != "ok"
-            ),
+            )
+            | _interrupted(state_dir, last_install),
         )
+
+
+def _interrupted(state_dir: Path, last_install: Any) -> frozenset[str]:
+    """The keys of an install cut off before it wrote last_install.json, as
+    by a power cut: install_pending keeps such a request as
+    ``.in_progress.<ts>``, so a start must not queue it again by itself."""
+    started_at = (
+        last_install.get("started_at") if isinstance(last_install, dict) else None
+    )
+    recorded_up_to = int(started_at) if isinstance(started_at, (int, float)) else -1
+    keys: set[str] = set()
+    pattern = f"{Path(PENDING_INSTALLS_FILE).stem}.in_progress.*"
+    for path in state_dir.glob(pattern):
+        try:
+            started = int(path.suffix[1:])
+            requested = json.loads(path.read_text()).get("requested")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if started > recorded_up_to and isinstance(requested, list):
+            keys.update(str(key) for key in requested)
+    return frozenset(keys)
 
 
 def _names(keys: Sequence[str]) -> str:
@@ -344,38 +367,11 @@ def build_catalog(
     }
 
 
-def write_pending_installs(
-    keys: Sequence[str],
-    input_modules: dict[str, PreparedPlugin],
-    devices: dict[str, PreparedPlugin],
-    pending_installs_path: Path | None = None,
-) -> tuple[list[str], list[str]]:
-    """Validate and persist a pending-installs request.
-
-    Returns (accepted, rejected). Caller decides what to do with each. A key
-    with no wheel for this box is rejected like an unknown one: the catalog
-    leaves it out too.
-
-    Writes atomically (tmp + rename) so a reader of the file either sees
-    the previous request or the new one, never a half-written blob. With
-    nothing accepted the file is removed instead: install_pending would
-    replace last_install.json with a record of installing nothing.
-    """
-    installable = _installable_here(build_registry(input_modules, devices))
-    accepted: list[str] = []
-    rejected: list[str] = []
-    for raw in keys:
-        key = str(raw)
-        if key in installable:
-            if key not in accepted:
-                accepted.append(key)
-        else:
-            rejected.append(key)
-    _write_pending(accepted, pending_installs_path)
-    return accepted, rejected
-
-
 def _write_pending(keys: list[str], pending_installs_path: Path | None) -> None:
+    """Replace the request atomically (tmp + rename), so a reader sees the
+    previous one or the new one, never a half-written blob. With no keys
+    the file is removed: install_pending would replace last_install.json
+    with a record of installing nothing."""
     pending_installs_path = pending_installs_path or _state_file(
         PENDING_INSTALLS_FILE
     )
@@ -406,26 +402,36 @@ async def _required_by_plugin(
     A plugin that raises or does not answer in time is skipped, so neither a
     settings save nor a restart can fail on one.
     """
-    required: list[tuple[str, list[str]]] = []
-    for _kind, plugin_id, prepared in _iter_plugin_entries(input_modules, devices):
-        instance = prepared.plugin_instance
-        if instance is None or not prepared.plugin_context.config.enabled:
-            continue
-        try:
-            named = await asyncio.wait_for(
-                instance.required_packages(), PLUGIN_CALL_TIMEOUT_S
-            )
-        except Exception as e:  # noqa: BLE001 — defensive
-            # The type only: a plugin's exception text may carry a credential.
-            logger.warning(
-                "Plugin %s required_packages() failed (%s); ignoring",
-                plugin_id,
-                type(e).__name__,
-            )
-            continue
-        keys = list(dict.fromkeys(str(key) for key in named or []))
-        required.append((plugin_id, keys))
-    return required
+    asked = [
+        (plugin_id, prepared.plugin_instance)
+        for _kind, plugin_id, prepared in _iter_plugin_entries(input_modules, devices)
+        if prepared.plugin_instance is not None
+        and prepared.plugin_context.config.enabled
+    ]
+    answers = await asyncio.gather(
+        *(_required_by(plugin_id, instance) for plugin_id, instance in asked)
+    )
+    return [
+        (plugin_id, keys)
+        for (plugin_id, _instance), keys in zip(asked, answers)
+        if keys is not None
+    ]
+
+
+async def _required_by(plugin_id: str, instance: Any) -> list[str] | None:
+    try:
+        named = await asyncio.wait_for(
+            instance.required_packages(), PLUGIN_CALL_TIMEOUT_S
+        )
+    except Exception as e:  # noqa: BLE001 — defensive
+        # The type only: a plugin's exception text may carry a credential.
+        logger.warning(
+            "Plugin %s required_packages() failed (%s); ignoring",
+            plugin_id,
+            type(e).__name__,
+        )
+        return None
+    return list(dict.fromkeys(str(key) for key in named or []))
 
 
 async def queue_required_packages(

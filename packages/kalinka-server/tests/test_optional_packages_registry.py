@@ -27,7 +27,6 @@ from kalinka_server.optional_packages_registry import (
     build_catalog,
     build_registry,
     queue_required_packages,
-    write_pending_installs,
 )
 
 SIXTY_FOUR_BIT_ONLY = OptionalPackageSpec(
@@ -299,91 +298,6 @@ def test_catalog_tolerates_malformed_last_install(tmp_path: Path, caplog):
     assert "Cannot read last install" in caplog.text
 
 
-def test_write_pending_installs_validates_and_dedupes(tmp_path: Path):
-    input_modules = {"p": _prepared({"numpy": _spec("numpy"), "scipy": _spec("scipy")})}
-    pending = tmp_path / "pending.json"
-    accepted, rejected = write_pending_installs(
-        ["numpy", "scipy", "bogus", "numpy"],
-        input_modules,
-        {},
-        pending_installs_path=pending,
-    )
-    assert accepted == ["numpy", "scipy"]
-    assert rejected == ["bogus"]
-    payload = json.loads(pending.read_text())
-    assert payload["schema"] == 1
-    assert payload["requested"] == ["numpy", "scipy"]
-    assert "requested_at" in payload
-
-
-def test_write_pending_installs_refuses_a_package_with_no_wheel_for_this_box(
-    monkeypatch, tmp_path: Path
-):
-    """What My Library's required_packages() asks for on 32-bit Pi OS: the
-    install could only fail, again at every restart."""
-    _on(monkeypatch, "armv7l")
-    input_modules = {
-        "localfiles": _prepared(
-            {"onnxruntime": SIXTY_FOUR_BIT_ONLY, "soxr": _spec("soxr")}
-        ),
-    }
-    pending = tmp_path / "pending.json"
-
-    accepted, rejected = write_pending_installs(
-        ["onnxruntime", "soxr"], input_modules, {}, pending_installs_path=pending
-    )
-
-    assert accepted == ["soxr"]
-    assert rejected == ["onnxruntime"]
-    assert json.loads(pending.read_text())["requested"] == ["soxr"]
-
-
-def test_write_pending_installs_takes_a_package_where_it_has_wheels(
-    monkeypatch, tmp_path: Path
-):
-    _on(monkeypatch, "x86_64")
-    input_modules = {"localfiles": _prepared({"onnxruntime": SIXTY_FOUR_BIT_ONLY})}
-
-    accepted, rejected = write_pending_installs(
-        ["onnxruntime"],
-        input_modules,
-        {},
-        pending_installs_path=tmp_path / "pending.json",
-    )
-
-    assert (accepted, rejected) == (["onnxruntime"], [])
-
-
-def test_write_pending_installs_atomic_replace(tmp_path: Path):
-    """The pending file must be replaced atomically (no half-written state)."""
-    input_modules = {"p": _prepared({"numpy": _spec("numpy")})}
-    pending = tmp_path / "pending.json"
-    pending.write_text(json.dumps({"schema": 1, "requested": ["old"]}))
-    write_pending_installs(
-        ["numpy"], input_modules, {}, pending_installs_path=pending
-    )
-    payload = json.loads(pending.read_text())
-    assert payload["requested"] == ["numpy"]
-    # No leftover .tmp
-    assert list(tmp_path.glob("pending.json.tmp")) == []
-
-
-def test_write_pending_installs_with_nothing_accepted_removes_the_request(
-    tmp_path: Path,
-):
-    """install_pending would record a run of nothing over the last install."""
-    input_modules = {"p": _prepared({"numpy": _spec("numpy")})}
-    pending = tmp_path / "pending.json"
-    pending.write_text(json.dumps({"schema": 1, "requested": ["numpy"]}))
-
-    accepted, rejected = write_pending_installs(
-        ["bogus"], input_modules, {}, pending_installs_path=pending
-    )
-
-    assert (accepted, rejected) == ([], ["bogus"])
-    assert not pending.exists()
-
-
 class _Needing:
     """A plugin whose required_packages() answers what the test says."""
 
@@ -474,6 +388,15 @@ def test_queue_writes_what_bootstrap_reads(tmp_path: Path):
     assert set(payload) == {"schema", "requested_at", "requested"}
     assert payload["schema"] == 1
     assert payload["requested"] == ["x"]
+
+
+def test_queue_replaces_the_request_atomically(tmp_path: Path):
+    _write_queue(tmp_path, ["old"])
+
+    _queue(tmp_path, {"alpha": _running(["x"], ["x"])})
+
+    assert _queued(tmp_path) == ["x"]
+    assert list(tmp_path.glob("pending.json.tmp")) == []
 
 
 def test_queue_takes_a_feature_turned_off_back_out(tmp_path: Path):
@@ -775,6 +698,22 @@ def test_install_history_names_what_the_last_install_did_not_install(
     )
 
     assert InstallHistory.read(tmp_path).not_installed == {"b", "c"}
+
+
+def test_install_history_names_what_an_install_cut_off_was_asked_for(
+    tmp_path: Path,
+):
+    """install_pending moves the request aside before pip, so a power cut
+    leaves no pending file: a start must not queue the same install again."""
+    (tmp_path / "last_install.json").write_text(
+        json.dumps({"started_at": 100.5, "results": [{"key": "a", "status": "ok"}]})
+    )
+    for started, keys in ((100, ["recorded"]), (99, ["older"]), (200, ["cut"])):
+        (tmp_path / f"pending_installs.in_progress.{started}").write_text(
+            json.dumps({"schema": 1, "requested": keys})
+        )
+
+    assert InstallHistory.read(tmp_path).not_installed == {"cut"}
 
 
 def test_install_history_is_empty_before_any_install(tmp_path: Path):

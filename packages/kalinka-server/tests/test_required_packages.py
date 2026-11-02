@@ -1,11 +1,10 @@
 """Tests for plugin-side required_packages() auto-detection.
 
-The server's PUT /server/restart unions the result of each plugin's
-required_packages() with the optional explicit body and writes the
-combined list to /var/lib/kalinka/pending_installs.json. This file
-tests the plugin-side computation; the server merge is exercised
-end-to-end via the write_pending_installs unit tests in
-test_optional_packages_registry.py.
+A settings save, PUT /server/restart and the server's start queue what
+each plugin's required_packages() names in
+/var/lib/kalinka/pending_installs.json. This file tests the plugin-side
+computation; the server side is exercised via the queue_required_packages
+unit tests in test_optional_packages_registry.py.
 """
 
 from __future__ import annotations

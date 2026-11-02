@@ -238,7 +238,7 @@ def get_version() -> str:
 # server next installs them; GET /server/optional_packages marks them
 # `pending`, and turning the feature off again takes them back out. The
 # server's own start queues them too, except a plugin's whose install failed
-# at the last start. PUT /server/restart queues the same after what `install`
+# or was cut off at the last start. PUT /server/restart queues the same after what `install`
 # names; a 400 for a key it refuses now queues nothing, and its `accepted`
 # lists the keys it would have taken. A package any install found no wheel
 # of for the server's Python and architecture is no longer queued for a
