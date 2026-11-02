@@ -255,16 +255,16 @@ func (s *Service) reported(radio string, step func(context.Context) error, works
 }
 
 // report keeps only a fixed code for clients. A cancelled or refused attempt,
-// or one that met setup stopping, says nothing about the radio; one that ran
-// out of its caller's time does, though the call inside may have seen that as
-// cancellation.
+// or one that met setup stopping or a bluetoothd restart, says nothing about
+// the radio; one that ran out of its caller's time does, though the call
+// inside may have seen that as cancellation.
 func (s *Service) report(ctx context.Context, radio string, err error) {
 	if err == nil {
 		s.forget(radio)
 		return
 	}
 	if errors.Is(ctx.Err(), context.Canceled) || (ctx.Err() == nil && errors.Is(err, context.Canceled)) ||
-		errors.Is(err, protocol.Busy) || errors.Is(err, machine.ErrClosed) {
+		errors.Is(err, protocol.Busy) || errors.Is(err, machine.ErrClosed) || errors.Is(err, gatt.ErrRestarted) {
 		return
 	}
 	code := s.problemCode(radio, err)

@@ -79,8 +79,12 @@ func TestEventsSayWhyBluetoothSetupStopped(t *testing.T) {
 			b := &Bluez{conn: conn, owner: ":1.42", machine: m, status: &characteristic{}, signals: make(chan *dbus.Signal, 2)}
 			b.signals <- owner(":1.42")
 			tc.end(b)
-			if err := b.Events(context.Background()); !errors.Is(err, protocol.Unavailable) || !strings.Contains(err.Error(), tc.want) {
+			err = b.Events(context.Background())
+			if !errors.Is(err, protocol.Unavailable) || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Events = %v, want a reason containing %q", err, tc.want)
+			}
+			if restarted := tc.name == "bluetoothd restarted"; errors.Is(err, ErrRestarted) != restarted {
+				t.Fatalf("Events = %v, a restart: %v", err, restarted)
 			}
 		})
 	}

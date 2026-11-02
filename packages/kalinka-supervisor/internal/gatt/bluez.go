@@ -273,6 +273,10 @@ func (b *Bluez) Close() {
 	_ = b.conn.Close()
 }
 
+// ErrRestarted ends a session whose bluetoothd was replaced by a running one;
+// it says nothing about the radio.
+var ErrRestarted = fmt.Errorf("%w: bluetoothd restarted", protocol.Unavailable)
+
 // Events must be serviced even when provisioning is not advertising.
 func (b *Bluez) Events(ctx context.Context) error {
 	for {
@@ -290,7 +294,7 @@ func (b *Bluez) Events(ctx context.Context) error {
 					if signal.Body[2] == "" {
 						return fmt.Errorf("%w: bluetoothd stopped", protocol.Unavailable)
 					}
-					return fmt.Errorf("%w: bluetoothd restarted", protocol.Unavailable)
+					return ErrRestarted
 				}
 				continue
 			}
