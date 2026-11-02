@@ -167,10 +167,15 @@ async def test_a_producer_that_goes_quiet_is_abandoned(monkeypatch):
     async def receive():
         await asyncio.Event().wait()
 
+    loop = asyncio.get_running_loop()
+    started = loop.time()
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(
-            response({'type': 'http', 'asgi': {'spec_version': '2.4'}}, receive, send), 1
+            response({'type': 'http', 'asgi': {'spec_version': '2.4'}}, receive, send),
+            HANG_GUARD_S,
         )
+    # The idle limit gave up, not the guard.
+    assert loop.time() - started < HANG_GUARD_S
     assert capture.closed
 
 
