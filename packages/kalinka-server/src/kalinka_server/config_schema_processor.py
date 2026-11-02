@@ -322,6 +322,7 @@ def _build_field_spec(
         default=None if is_secret(field) else field.default,
         readonly=bool(field.frozen) or extras.get("readonly") is True,
         dynamic_options=_dynamic_options_from_extras(extras, widget, path),
+        apply_immediately=bool(extras.get("one_shot") and extras.get("apply_immediately")),
         importance=_importance_from_extras(extras),
         setup=setup,
         enum_values=_enum_values(field) if wire_type == "enum" else None,

@@ -193,3 +193,19 @@ def test_my_library_reads_sources_then_ai_search_then_metadata_then_library():
         "acoustid.status_view",
         "enricher.plugins.procedural_artwork.enabled",
     ]
+
+
+def test_only_immediate_one_shots_bypass_client_restart():
+    class Actions(ModuleConfig):
+        name: str = Field(default="actions", frozen=True, exclude=True)
+        pair: bool = Field(default=False, json_schema_extra={
+            "one_shot": True, "apply_immediately": True,
+        })
+        install: bool = Field(default=False, json_schema_extra={"one_shot": True})
+        ordinary: bool = Field(default=False, json_schema_extra={"apply_immediately": True})
+
+    module = _module_spec(Actions(), "input_module", path_prefix="input_modules")
+    fields = {field.path.rsplit(".", 1)[-1]: field for field in module.fields}
+    assert fields["pair"].model_dump()["apply_immediately"] is True
+    assert fields["install"].apply_immediately is False
+    assert fields["ordinary"].apply_immediately is False

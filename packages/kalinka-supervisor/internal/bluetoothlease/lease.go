@@ -32,6 +32,13 @@ func Acquire(directory, adapter string) (*Lease, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The service runs with UMask=0077. The audio plugin runs as kalusr,
+	// so explicitly permit it to open this shared inode for a read-only flock.
+	// Also repair lock files created by older supervisor versions.
+	if err = file.Chmod(0644); err != nil {
+		file.Close()
+		return nil, err
+	}
 	if err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		file.Close()
 		return nil, fmt.Errorf("Bluetooth audio pairing is using %s: %w", adapter, err)

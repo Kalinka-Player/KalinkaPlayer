@@ -6,6 +6,13 @@ the selected local or remote renderer. Only the renderer opens the DAC. The
 receiver's PCM is forwarded without FLAC encoding, file spooling or a local/
 remote compression switch.
 
+BlueALSA is used as a Bluetooth receiver and codec decoder. The plugin calls
+its D-Bus `PCM1.Open` method once and reads PCM directly from the returned file
+descriptor; samples do not travel in D-Bus messages. This capture path uses
+neither ALSA PCM devices nor `arecord`, PipeWire, or a local playback loopback.
+Replacing BlueALSA with raw BlueZ transport access would also require owning
+A2DP codec negotiation, packet handling, decoding and reconnect behaviour.
+
 Requires SDK 3.21 and a Core/renderer release supporting live PCM v1. Upgrade
 remote renderers too; an older renderer reports an upgrade requirement.
 

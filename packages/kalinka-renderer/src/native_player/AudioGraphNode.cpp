@@ -41,7 +41,11 @@ void AudioGraphNode::setState(const StreamState &newState) {
   if (!stamped.streamId.has_value()) {
     stamped.streamId = boundStreamId;
   }
-  if (state.state == stamped.state && state.streamId == stamped.streamId) {
+  // Live readiness releases Core's PCM gate, and frame reports bound backlog.
+  // Both can change without a playback-state or source transition.
+  if (state.state == stamped.state && state.streamId == stamped.streamId &&
+      state.liveReady == stamped.liveReady &&
+      state.liveSourceFrame == stamped.liveSourceFrame) {
     return;
   }
   state = stamped;

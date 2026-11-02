@@ -148,7 +148,6 @@ public:
   GatedPcmInput() {
     setState({AudioGraphNodeState::STREAMING, 0,
               StreamInfo{.streamType = StreamType::BYTES}});
-    offer(header());
   }
   void offer(const Bytes &bytes) { buffer.write(bytes.data(), bytes.size()); }
   size_t read(void *out, size_t size) override {
@@ -181,6 +180,12 @@ TEST(LivePcm, OutputReadinessPrecedesFirstPcmFrame) {
   auto switcher = std::make_shared<AudioStreamSwitcher>();
   switcher->connectTo(decoder);
   emitter.connectTo(switcher);
+  // A real HTTP header arrives after the graph has entered PREPARING.
+  // The ready notification must survive even though its state is unchanged.
+  ASSERT_TRUE(StateChangeWaitLock({}, emitter, AudioGraphNodeState::PREPARING,
+                                 2s).state().state ==
+              AudioGraphNodeState::PREPARING);
+  input->offer(header());
   bool ready = false;
   auto deadline = std::chrono::steady_clock::now() + 2s;
   while (!ready && std::chrono::steady_clock::now() < deadline) {

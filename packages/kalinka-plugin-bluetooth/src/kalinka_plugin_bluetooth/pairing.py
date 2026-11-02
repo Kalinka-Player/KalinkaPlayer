@@ -200,12 +200,12 @@ class PairingWindow:
             props = plain(response.body[0])
             if not self.active:
                 raise ValueError("Pairing window expired")
-            await self.access.allow(
-                props["Address"], props.get("Alias", props["Address"])
-            )
             # Trust permits reconnect after the temporary agent is removed.
             # Admission to Kalinka audio is still checked against AudioAccess.
             await self.backend.set_property(BLUEZ, device, DEVICE, "Trusted", "b", True)
+            await self.access.allow(
+                props["Address"], props.get("Alias", props["Address"])
+            )
             response = Message.new_method_return(message)
         except Exception as error:
             response = Message.new_error(
