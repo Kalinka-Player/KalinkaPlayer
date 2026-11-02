@@ -192,7 +192,7 @@ func TestAdvertisingClearsTheBluetoothProblem(t *testing.T) {
 	}
 	s := New(Options{}, nil)
 	s.root = t.TempDir()
-	s.report("bluetooth", errors.New("unavailable: bluetoothd stopped"))
+	s.report(context.Background(), "bluetooth", errors.New("unavailable: bluetoothd stopped"))
 	if got := s.Problems()["bluetooth"]; got != "unavailable" {
 		t.Fatalf("reported %q", got)
 	}

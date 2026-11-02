@@ -262,16 +262,38 @@ func TestExplicitWiFiEnableReportsItsOutcome(t *testing.T) {
 	if got := s.Problems()["wifi"]; got != "unavailable" {
 		t.Fatalf("reported %q", got)
 	}
-	s.report("wifi", protocol.Busy)
-	if got := s.Problems()["wifi"]; got != "unavailable" {
-		t.Fatalf("a refused request replaced the report with %q", got)
-	}
 	b.enable = nil
 	if err := s.EnableWiFi(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if got := s.Problems(); len(got) != 0 {
 		t.Fatalf("still reported after Wi-Fi came on: %v", got)
+	}
+	s.report(context.Background(), "wifi", protocol.Busy)
+	if got := s.Problems(); len(got) != 0 {
+		t.Fatalf("a refused request was reported: %v", got)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	s.report(cancelled, "wifi", errors.New("signal: killed"))
+	if got := s.Problems(); len(got) != 0 {
+		t.Fatalf("a cancelled request was reported: %v", got)
+	}
+}
+
+func TestClearingABlockKeepsABluetoothdFailure(t *testing.T) {
+	s := New(Options{DisableAP: true}, nil)
+	s.root = t.TempDir()
+	m := machine.New(context.Background(), &radioBackend{}, machine.Config{})
+	defer m.Close()
+	s.report(context.Background(), "bluetooth", errors.New("unavailable: bluetoothd stopped"))
+	for _, step := range s.radioSteps(m) {
+		if err := step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := s.Problems()["bluetooth"]; got != "unavailable" {
+		t.Fatalf("recovery cleared a failure it did not fix: %q", got)
 	}
 }
 

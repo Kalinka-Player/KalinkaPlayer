@@ -47,9 +47,9 @@ const RADIO_PROBLEMS = {
 };
 
 function setupFact(s) {
-  const problems = Object.entries(s.radio_problems).map(([radio, code]) =>
+  const problems = Object.entries(s.radio_problems || {}).map(([radio, code]) =>
     `${RADIOS[radio] || radio} ${RADIO_PROBLEMS[code] || RADIO_PROBLEMS.unavailable}`);
-  return [SETUP[s.setup], ...problems].join(" · ");
+  return [SETUP[s.setup], ...problems].filter(Boolean).join(" · ");
 }
 
 const ACTIONS = {
