@@ -82,36 +82,35 @@ func New(ctx context.Context, m *machine.Machine, adapter string) (*Bluez, error
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	if adapter == "" || strings.ContainsAny(adapter, "/\x00") {
-		return nil, protocol.Invalid
+		return nil, fmt.Errorf("%w: adapter name %q", protocol.Invalid, adapter)
 	}
 	conn, err := dbus.ConnectSystemBus()
 	if err != nil {
 		return nil, fmt.Errorf("%w: system bus: %w", protocol.Unavailable, err)
 	}
 	b := &Bluez{conn: conn, machine: m, adapter: dbus.ObjectPath("/org/bluez/" + adapter), objects: map[dbus.ObjectPath]*object{}, signals: make(chan *dbus.Signal, 32)}
-	fail := func() (*Bluez, error) { _ = conn.Close(); return nil, protocol.Unavailable }
-	if err = conn.BusObject().CallWithContext(ctx, "org.freedesktop.DBus.GetNameOwner", 0, "org.bluez").Store(&b.owner); err != nil {
+	fail := func(step string, err error) (*Bluez, error) {
 		_ = conn.Close()
-		return nil, fmt.Errorf("%w: find org.bluez: %w", protocol.Unavailable, err)
+		return nil, fmt.Errorf("%w: %s: %w", protocol.Unavailable, step, err)
+	}
+	if err = conn.BusObject().CallWithContext(ctx, "org.freedesktop.DBus.GetNameOwner", 0, "org.bluez").Store(&b.owner); err != nil {
+		return fail("find org.bluez", err)
 	}
 	address, err := b.get(ctx, "Address")
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
-	s, ok := address.Value().(string)
-	if !ok {
-		return fail()
-	}
+	s, _ := address.Value().(string)
 	s = strings.ReplaceAll(s, ":", "")
 	if len(s) < 4 {
-		return fail()
+		return fail("adapter address", fmt.Errorf("unusable value %v", address.Value()))
 	}
 	b.Name = "Kalinka-" + s[len(s)-4:]
 	if err = b.export(service, "org.bluez.GattService1", nil, func() map[string]dbus.Variant {
 		return map[string]dbus.Variant{"UUID": dbus.MakeVariant(protocol.ServiceUUID), "Primary": dbus.MakeVariant(true)}
 	}); err != nil {
-		return fail()
+		return fail("export the setup service", err)
 	}
 	for _, spec := range []struct {
 		name, uuid       string
@@ -120,7 +119,7 @@ func New(ctx context.Context, m *machine.Machine, adapter string) (*Bluez, error
 	}{{"status", protocol.StatusUUID, m.Status, false, true}, {"identity", protocol.IdentityUUID, m.Identity, false, false}, {"networks", protocol.NetworksUUID, m.Networks, true, false}, {"progress", protocol.ProgressUUID, m.Progress, false, false}} {
 		c := &characteristic{bluez: b, uuid: spec.uuid, path: dbus.ObjectPath(string(service) + "/" + spec.name), get: spec.get, snapshot: spec.snapshot, notify: spec.notify, reads: map[string][]byte{}}
 		if err = b.export(c.path, "org.bluez.GattCharacteristic1", c, c.props); err != nil {
-			return fail()
+			return fail("export the "+spec.name+" characteristic", err)
 		}
 		b.chars = append(b.chars, c)
 		if spec.name == "status" {
@@ -131,25 +130,25 @@ func New(ctx context.Context, m *machine.Machine, adapter string) (*Bluez, error
 	if err = b.export(dbus.ObjectPath(string(service)+"/command"), "org.bluez.GattCharacteristic1", c, func() map[string]dbus.Variant {
 		return map[string]dbus.Variant{"UUID": dbus.MakeVariant(protocol.CommandUUID), "Service": dbus.MakeVariant(service), "Flags": dbus.MakeVariant([]string{"write", "encrypt-write"})}
 	}); err != nil {
-		return fail()
+		return fail("export the command characteristic", err)
 	}
 	if err = conn.Export(&manager{b}, app, "org.freedesktop.DBus.ObjectManager"); err != nil {
-		return fail()
+		return fail("export the object manager", err)
 	}
 	if err = b.export(advert, "org.bluez.LEAdvertisement1", &advertisement{b}, func() map[string]dbus.Variant {
 		return map[string]dbus.Variant{"Type": dbus.MakeVariant("peripheral"), "ServiceUUIDs": dbus.MakeVariant([]string{protocol.ServiceUUID}), "LocalName": dbus.MakeVariant(b.Name)}
 	}); err != nil {
-		return fail()
+		return fail("export the advertisement", err)
 	}
 	if err = conn.Export(&agent{b}, agentPath, "org.bluez.Agent1"); err != nil {
-		return fail()
+		return fail("export the pairing agent", err)
 	}
 	conn.Signal(b.signals)
 	if err = conn.AddMatchSignal(dbus.WithMatchSender("org.bluez"), dbus.WithMatchInterface(properties), dbus.WithMatchMember("PropertiesChanged")); err != nil {
-		return fail()
+		return fail("watch BlueZ devices", err)
 	}
 	if err = conn.AddMatchSignal(dbus.WithMatchSender("org.freedesktop.DBus"), dbus.WithMatchInterface("org.freedesktop.DBus"), dbus.WithMatchMember("NameOwnerChanged"), dbus.WithMatchArg(0, "org.bluez")); err != nil {
-		return fail()
+		return fail("watch for BlueZ restarts", err)
 	}
 	return b, nil
 }
@@ -281,14 +280,17 @@ func (b *Bluez) Events(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-b.conn.Context().Done():
-			return protocol.Unavailable
+			return fmt.Errorf("%w: lost the system bus", protocol.Unavailable)
 		case signal, ok := <-b.signals:
 			if !ok {
-				return protocol.Unavailable
+				return fmt.Errorf("%w: lost the system bus", protocol.Unavailable)
 			}
 			if signal.Name == "org.freedesktop.DBus.NameOwnerChanged" {
 				if len(signal.Body) == 3 && signal.Body[0] == "org.bluez" && signal.Body[2] != b.owner {
-					return protocol.Unavailable
+					if signal.Body[2] == "" {
+						return fmt.Errorf("%w: bluetoothd stopped", protocol.Unavailable)
+					}
+					return fmt.Errorf("%w: bluetoothd restarted", protocol.Unavailable)
 				}
 				continue
 			}
