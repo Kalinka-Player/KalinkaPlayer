@@ -60,7 +60,9 @@ Core's files are damaged. It follows the app's dark style.
     stands in.
   - **CPU:** averaged over the last minute, as a share of the whole streamer.
 - **This streamer.** Name, DietPi and Debian version, kernel, uptime, load,
-  processors, temperature, nearby setup, memory and disk.
+  processors, temperature, nearby setup, memory and disk. Nearby setup names
+  a radio whose last attempt to come on failed, such as "On · Bluetooth was
+  switched off", until it next works.
 - **Software and plugins.**
   - **Packages:** every installed `kalinka*` Debian package, read from dpkg's
     database.
@@ -235,7 +237,7 @@ invokes systemd.
 
 ```json
 {"core": "active", "core_port": 8000, "upgrading": false,
- "setup": "waiting", "pending": null,
+ "setup": "running", "radio_problems": {"bluetooth": "radio_blocked"}, "pending": null,
  "reinstall": {"state": "failed", "finished_at": "2026-10-07T09:30:00Z"},
  "plugin_removal": {"state": "succeeded", "package": "kalinka-plugin-qobuz",
                     "finished_at": "2026-10-12T15:02:00Z"},
@@ -247,6 +249,7 @@ invokes systemd.
 | `core` | `kalinka.service`'s systemd ActiveState |
 | `upgrading` | Whether an upgrade or reinstall is installing packages |
 | `setup` | Nearby setup: `running`, `waiting` or `off` |
+| `radio_problems` | Each radio, `bluetooth` or `wifi`, whose last attempt to come on failed, with `radio_blocked`, `radio_hard_blocked` or `unavailable`, until it next works; empty while nearby setup is off. See [the supervisor](supervisor.md#network-setup-over-the-temporary-hotspot) |
 | `pending` | `reboot` or `poweroff` once accepted, otherwise `null` |
 | `reinstall.state` | `running`, `succeeded`, `failed`, or `idle` if none has run |
 | `reinstall.finished_at` | When the last reinstall ended, or `null` |

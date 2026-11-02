@@ -297,7 +297,7 @@ func (h *handler) status(w http.ResponseWriter, r *http.Request) string {
 	removal := outcomeJSON(s.PluginRemoval)
 	removal["package"] = nullable(s.RemovedPackage)
 	reply(w, http.StatusOK, map[string]any{
-		"core": s.Core, "core_port": h.cfg.CorePort(), "upgrading": s.Upgrading, "setup": h.cfg.Setup(), "pending": pending,
+		"core": s.Core, "core_port": h.cfg.CorePort(), "upgrading": s.Upgrading, "setup": h.cfg.Setup(), "radio_problems": h.radioProblems(), "pending": pending,
 		"reinstall": outcomeJSON(s.Reinstall), "plugin_removal": removal, "timezone": h.currentTimezone(),
 	}, false)
 	return ""

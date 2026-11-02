@@ -18,11 +18,23 @@ import (
 )
 
 // NetworkSetup shares one setup machine between HTTP and Bluetooth clients.
+// Problems maps each radio whose last attempt to come on failed to a fixed code.
 type NetworkSetup interface {
 	Snapshot() map[string]any
+	Problems() map[string]string
 	EnableWiFi(context.Context) error
 	Open() error
 	Command(string, []byte) error
+}
+
+// radioProblems keeps its shape while nearby setup is off.
+func (h *handler) radioProblems() map[string]string {
+	if h.cfg.NetworkSetup != nil {
+		if problems := h.cfg.NetworkSetup.Problems(); problems != nil {
+			return problems
+		}
+	}
+	return map[string]string{}
 }
 
 func (h *handler) setupStatus(w http.ResponseWriter, r *http.Request) string {
