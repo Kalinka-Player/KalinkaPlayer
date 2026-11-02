@@ -226,49 +226,60 @@ func (s *Service) tick(ctx context.Context, m *machine.Machine, backend machine.
 func (s *Service) radioSteps(m *machine.Machine) []func(context.Context) error {
 	var steps []func(context.Context) error
 	if !s.opts.DisableAP {
-		steps = append(steps, s.reported("wifi", m.EnableWiFi))
+		steps = append(steps, s.reported("wifi", m.EnableWiFi, s.forget))
 	}
 	if !s.opts.DisableBLE {
+		// A cleared block says nothing of bluetoothd; only advertising proves Bluetooth works.
 		steps = append(steps, s.reported("bluetooth", func(ctx context.Context) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 			_, _, err := rfkill.Unblock(s.root, "bluetooth", s.opts.Adapter)
 			return err
-		}))
+		}, s.forgetBlock))
 	}
 	return steps
 }
 
-// reported keeps a recovery step's outcome for clients and names its radio in the log.
-func (s *Service) reported(radio string, step func(context.Context) error) func(context.Context) error {
+// reported names a recovery step's radio in the log; works is what its success proves.
+func (s *Service) reported(radio string, step func(context.Context) error, works func(string)) func(context.Context) error {
 	return func(ctx context.Context) error {
 		err := step(ctx)
-		s.report(radio, err)
-		if err != nil {
-			return fmt.Errorf("%s: %w", radio, err)
+		if err == nil {
+			works(radio)
+			return nil
 		}
-		return nil
+		s.report(ctx, radio, err)
+		return fmt.Errorf("%s: %w", radio, err)
 	}
 }
 
-// report keeps a radio's latest outcome as a fixed code, which is all clients
-// see of it; the log has the detail. A cancelled or refused attempt says
-// nothing about the radio.
-func (s *Service) report(radio string, err error) {
-	if errors.Is(err, context.Canceled) || errors.Is(err, protocol.Busy) {
+// report keeps only a fixed code for clients; a cancelled or refused attempt says nothing about the radio.
+func (s *Service) report(ctx context.Context, radio string, err error) {
+	if err == nil {
+		s.forget(radio)
 		return
 	}
-	code := ""
-	if err != nil {
-		code = s.problemCode(radio, err)
+	if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, protocol.Busy) {
+		return
 	}
+	code := s.problemCode(radio, err)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if code == "" {
+	s.problems[radio] = code
+}
+
+func (s *Service) forget(radio string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.problems, radio)
+}
+
+func (s *Service) forgetBlock(radio string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if code := s.problems[radio]; code == "radio_blocked" || code == "radio_hard_blocked" {
 		delete(s.problems, radio)
-	} else {
-		s.problems[radio] = code
 	}
 }
 
@@ -299,7 +310,7 @@ func (s *Service) Problems() map[string]string {
 func (s *Service) EnableWiFi(ctx context.Context) error {
 	if m := s.machine.Load(); m != nil {
 		err := m.EnableWiFi(ctx)
-		s.report("wifi", err)
+		s.report(ctx, "wifi", err)
 		if err != nil {
 			slog.Warn("Could not enable Wi-Fi", "error", err)
 		}
@@ -343,7 +354,7 @@ func (s *Service) serveBluetooth(ctx context.Context, m *machine.Machine) {
 	for ctx.Err() == nil {
 		if err := s.bluetoothSession(ctx, m); err != nil && ctx.Err() == nil {
 			slog.Warn("Bluetooth setup unavailable; retrying", "error", err)
-			s.report("bluetooth", err)
+			s.report(ctx, "bluetooth", err)
 		}
 		_ = wifi.Pause(ctx, 10*time.Second)
 	}
@@ -368,7 +379,7 @@ func (s *Service) bluetoothSession(ctx context.Context, m *machine.Machine) erro
 			if err := radio.Enable(ctx); err != nil {
 				return err
 			}
-			s.report("bluetooth", nil)
+			s.forget("bluetooth")
 			slog.Info("Nearby setup available", "name", name)
 			advertising = true
 		} else if !active && advertising {

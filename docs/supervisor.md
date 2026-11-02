@@ -123,7 +123,9 @@ control API's `/v1/status`, and the control page shows it beside nearby setup:
 A radio is listed from its last failed attempt, by recovery, **Enable Wi-Fi**
 or a Bluetooth setup session, until it next works: until recovery or Enable
 Wi-Fi succeeds for Wi-Fi, and until recovery clears its block or nearby setup
-advertises for Bluetooth. A cancelled or `busy` attempt changes nothing.
+advertises for Bluetooth. Clearing a block leaves an `unavailable` Bluetooth
+listed, since only advertising shows BlueZ works. A cancelled or `busy`
+attempt changes nothing.
 
 Join the hotspot in the phone/computer's Wi-Fi settings. DHCP and local DNS
 trigger the operating system's captive Wi-Fi activation page, which opens
