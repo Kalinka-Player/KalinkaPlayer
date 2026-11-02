@@ -21,6 +21,8 @@ TARGET_DISPLAY=0
 . "$SCRIPT_DIR/lib/supervisor.sh"
 # shellcheck source=../lib/display.sh
 . "$SCRIPT_DIR/lib/display.sh"
+# shellcheck source=../lib/seal.sh
+. "$SCRIPT_DIR/lib/seal.sh"
 
 # build.sh hands the token over as a file: rpi-image-gen prints every setting it is given.
 [ -z "${IGconf_kalinka_github_token_file:-}" ] || GITHUB_TOKEN="$(cat "$IGconf_kalinka_github_token_file")"
@@ -64,4 +66,4 @@ install -D -m 755 "$SCRIPT_DIR/overlays/debootstrap/usr/lib/kalinka-image/growro
 install -D -m 644 "$SCRIPT_DIR/overlays/debootstrap/usr/lib/systemd/system/kalinka-growroot.service" "$ROOTFS/usr/lib/systemd/system/kalinka-growroot.service"
 in_chroot systemctl enable kalinka-growroot.service
 require_enabled multi-user.target kalinka-growroot.service
-rm -rf "$ROOTFS/var/cache/kalinka"
+seal_kalinka
