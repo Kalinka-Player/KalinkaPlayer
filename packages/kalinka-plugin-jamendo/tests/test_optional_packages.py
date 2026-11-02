@@ -114,6 +114,7 @@ async def test_mood_search_without_onnxruntime_reports_it_missing():
     assert state.state == ModuleHealthState.WARNING
     assert state.missing_packages == ["onnxruntime"]
     assert "`onnxruntime`" in state.message
+    assert "Restart to finish setting up" in state.message
     assert await plugin.required_packages() == ["onnxruntime"]
 
 

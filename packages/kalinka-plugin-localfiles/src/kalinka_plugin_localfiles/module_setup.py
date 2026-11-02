@@ -729,7 +729,7 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
             enr.state = ModuleHealthState.WARNING
             enr.message = (
                 "Generated album art unavailable. Missing package: `numpy`. "
-                "Use **Restart with install** in the modules page to fetch it."
+                "Restart to finish setting up; it installs as Kalinka starts."
             )
             enr.missing_packages = ("numpy",)
         else:
@@ -790,8 +790,8 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
                 ai.message = (
                     "AI search unavailable. Missing package(s): "
                     + ", ".join(f"`{m}`" for m in missing)
-                    + ". Use **Restart with install** in the modules page to "
-                    "fetch them."
+                    + ". Restart to finish setting up; they install as "
+                    "Kalinka starts."
                 )
                 ai.missing_packages = tuple(missing)
             elif dead:
@@ -1150,9 +1150,9 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
 
         Reads context.config (which reflects any staged PUT /server/config
         changes), not the config captured at setup. The server calls this
-        when handling /server/restart so an install is auto-queued for
-        sub-features the user just enabled but whose deps aren't yet
-        importable.
+        after each save of a setting and on /server/restart, so the next
+        start installs what sub-features the user just enabled need but
+        cannot yet import.
         """
         if self._context is None:
             return []
