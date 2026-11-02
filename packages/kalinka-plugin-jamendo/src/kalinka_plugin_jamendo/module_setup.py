@@ -111,8 +111,7 @@ class KalinkaPluginJamendo(InputModulePlugin):
                 message=(
                     "Mood search unavailable. Missing package(s): "
                     + ", ".join(f"`{m}`" for m in to_install)
-                    + ". Restart to finish setting up; they install as "
-                    "Kalinka starts."
+                    + "."
                 ),
                 missing_packages=to_install,
             )

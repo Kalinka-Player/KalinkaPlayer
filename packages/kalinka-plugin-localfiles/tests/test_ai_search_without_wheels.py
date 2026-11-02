@@ -48,13 +48,16 @@ def test_32_bit_arm_offers_no_install(tmp_path, monkeypatch):
     assert ai.state is ModuleHealthState.ERROR
     assert ai.missing_packages == ()
     assert "`onnxruntime`" in ai.message and "armv7l" in ai.message
-    assert "Restart to finish setting up" not in ai.message
+    assert "Missing package" not in ai.message
     assert _module_state(plugin).missing_packages == []
 
 
 def test_64_bit_arm_still_offers_the_install(tmp_path, monkeypatch):
     plugin = _evaluated(tmp_path, monkeypatch, architecture="aarch64", importable=set())
-    assert "Restart to finish setting up" in plugin._subfeatures["ai_search"].message
+    assert plugin._subfeatures["ai_search"].message == (
+        "AI search unavailable. Missing package(s): "
+        "`numpy`, `onnxruntime`, `soundfile`, `soxr`, `tokenizers`."
+    )
     assert set(_module_state(plugin).missing_packages) == {
         "numpy",
         "onnxruntime",
