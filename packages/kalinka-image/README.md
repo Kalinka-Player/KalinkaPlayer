@@ -37,6 +37,24 @@ sudo make image-amd64 KALINKA_VERSION=4.3.2   # a specific one
 
 Building for an architecture other than the host's needs `qemu-user-static` registered with `binfmt_misc`; the script says so if it is missing. CI avoids the question by building each image on a runner of its own architecture.
 
+For a Bluetooth test image built with unpublished packages:
+
+```sh
+TEST_DEBS_DIR=/absolute/path/to/debs make image-rpi5
+```
+
+The directory must contain one Debian package each for Core, SDK, renderer and
+the Bluetooth plugin, built together; native packages must be arm64. The build
+installs them over the selected release, enables Bluetooth input and its BlueALSA
+service, and prebuilds the Python environment. If an AirPlay package is included,
+that input is enabled too. Automatic Core upgrades are disabled for the test.
+An included supervisor package is used unless `SUPERVISOR_DEB` is set; otherwise
+the supervisor is built from the checkout as usual. Use the matching checkout
+so Bluetooth audio pairing and BLE provisioning share their adapter lease.
+Test images have `-test` in their filename and a `.packages.tsv` manifest of
+package versions and SHA-256 hashes. Without `TEST_DEBS_DIR`, release images
+keep their normal defaults.
+
 `IMAGE_SIZE`, `OUT_DIR` and `XZ_LEVEL` override the defaults. CI uses 8 GiB; scratch images live in `/var/tmp`, overridable with `IMAGE_WORK_DIR`. That filesystem needs enough free disk space for the uncompressed image. Each build uses a private mount namespace. Set `IMAGE_KEEP_FAILED=1` to retain a failed build’s scratch directory for diagnosis. `SUITE` and `MIRROR` pick the Debian release and mirror the PC image is built from. Images land in `out/`.
 
 ```sh

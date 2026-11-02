@@ -15,6 +15,12 @@
 # X-Env-Var-version-Valid: string-or-empty
 # X-Env-Var-version-Set: y
 #
+# X-Env-Var-test_debs:
+# X-Env-Var-test_debs-Desc: Local packages to overlay for a Bluetooth test image.
+# X-Env-Var-test_debs-Required: n
+# X-Env-Var-test_debs-Valid: string-or-empty
+# X-Env-Var-test_debs-Set: y
+#
 # X-Env-Var-display: n
 # X-Env-Var-display-Desc: Add the now-playing display (kalinka-kiosk) for an
 #  attached HDMI or DSI screen.
