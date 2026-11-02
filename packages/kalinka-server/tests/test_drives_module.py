@@ -195,7 +195,7 @@ async def test_drive_pages_change_without_kalinka_and_are_on_storage(tmp_path, s
     volumes = (await drives.browse(ids.catalog_id(ids.ROOT))).items
     folders = (await drives.browse(ids.volume_id("3A1F"))).items
 
-    assert (entry.live, entry.on_storage, entry.icon) == (True, True, "storage_outlined")
+    assert (entry.live, entry.on_storage, entry.icon) == (True, True, "hard_drive_outlined")
     assert all(item.catalog.live and item.catalog.on_storage for item in [*volumes, *folders[:2]])
 
 
