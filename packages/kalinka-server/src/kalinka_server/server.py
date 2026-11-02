@@ -1283,6 +1283,17 @@ async def create_app(
         app, renderer_upgrades, demo_mode=lambda: app.state.config.server.demo_mode
     )
 
+    queueing = asyncio.Lock()
+
+    async def _queue_required_packages(requested: Sequence[str] = ()):
+        # One at a time, so an answer read before a later save never lands last.
+        async with queueing:
+            return await queue_required_packages(
+                modules.prepared_input_modules, modules.prepared_devices, requested
+            )
+
+    app.state.queue_required_packages = _queue_required_packages
+
     @app.put("/server/restart")
     async def restart_server(payload: Optional[Dict[str, Any]] = None):
         """Request a full systemd-driven restart of the server.
@@ -1306,11 +1317,7 @@ async def create_app(
             body_requested = [str(k) for k in raw]
 
         try:
-            accepted, rejected = await queue_required_packages(
-                modules.prepared_input_modules,
-                modules.prepared_devices,
-                body_requested,
-            )
+            accepted, rejected = await _queue_required_packages(body_requested)
         except OSError as e:
             logger.error("Failed to write pending installs: %s", e)
             raise HTTPException(
@@ -1474,9 +1481,6 @@ async def create_app(
     # On the queue bus, so clients follow a plugin without asking again.
     modules.set_on_changed(_publish_modules)
     app.state.republish_modules = partial(modules.refresh_health, publish=True)
-    app.state.queue_required_packages = lambda: queue_required_packages(
-        modules.prepared_input_modules, modules.prepared_devices
-    )
     # A drive coming or going is what turns Drives' catalogs on or off.
     storage.after_change(app.state.republish_modules)
 
