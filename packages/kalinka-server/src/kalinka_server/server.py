@@ -1314,8 +1314,8 @@ async def create_app(
         # gave a new package, installs at the next start however it comes.
         try:
             await _queue_required_packages(hold_failed=True)
-        except OSError as e:
-            logger.error("Could not queue the optional packages needed: %s", e)
+        except Exception:  # noqa: BLE001 — shutdown awaits this task silently
+            logger.exception("Could not queue the optional packages needed")
 
     app.state.package_queue_task = asyncio.create_task(_queue_at_start())
 
