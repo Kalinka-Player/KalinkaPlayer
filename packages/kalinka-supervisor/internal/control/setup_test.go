@@ -185,3 +185,75 @@ func TestCaptiveActivationServesStandardAppWithoutCore(t *testing.T) {
 		t.Fatal("captive listener exposes machine control")
 	}
 }
+
+func stageWebBuild(t *testing.T, files map[string]string) string {
+	dir := t.TempDir()
+	for name, content := range files {
+		path := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func TestActivationPageComesFromTheWebBuildWhenItHasOne(t *testing.T) {
+	const page = `<!DOCTYPE html><link rel="stylesheet" href="activate.css"><h1>Set up your Kalinka streamer</h1>`
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		body  string
+	}{
+		{"web build with the page", map[string]string{"index.html": "app", "activate.html": page}, page},
+		{"web build that predates it", map[string]string{"index.html": "app"}, activationFallback},
+		{"no web build", nil, activationFallback},
+		{"a directory in its place", map[string]string{"activate.html/index.html": page}, activationFallback},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewSetupHandler(nil, func() int { return 8000 }, stageWebBuild(t, tc.files))
+			w := serve(h, http.MethodGet, "/activate", "", func(r *http.Request) { r.Host = wifi.APAddress })
+			if w.Code != http.StatusOK || w.Body.String() != tc.body {
+				t.Fatalf("HTTP %d: %s", w.Code, w.Body.String())
+			}
+			if got := w.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+				t.Errorf("Content-Type %q", got)
+			}
+			if got := w.Header().Get("Content-Security-Policy"); got != pagePolicy {
+				t.Errorf("CSP %q; want %q", got, pagePolicy)
+			}
+			if got := w.Header().Get("Cache-Control"); got != "no-store" {
+				t.Errorf("Cache-Control %q", got)
+			}
+		})
+	}
+}
+
+func TestActivationPageIsOnlyServedUnderItsPolicy(t *testing.T) {
+	h := NewSetupHandler(nil, func() int { return 8000 }, stageWebBuild(t, map[string]string{"index.html": "app", "activate.html": "page"}))
+	for _, p := range []string{"/activate.html", "//activate.html", "/assets/../activate.html", "/activate.html/"} {
+		w := serve(h, http.MethodGet, p, "", func(r *http.Request) { r.Host = wifi.APAddress })
+		if w.Code != http.StatusFound || w.Header().Get("Location") != "/activate" {
+			t.Fatalf("%s = HTTP %d, Location %q: %s", p, w.Code, w.Header().Get("Location"), w.Body.String())
+		}
+	}
+}
+
+func TestActivationPageLoadsItsStylesheetAndIconFromTheHotspot(t *testing.T) {
+	const icon = "assets/assets/images/kalinka_icon.svg"
+	dir := stageWebBuild(t, map[string]string{
+		"index.html":    "app",
+		"activate.html": `<link rel="stylesheet" href="activate.css"><img src="` + icon + `">`,
+		"activate.css":  `main { text-align: center }`,
+		icon:            `<svg xmlns="http://www.w3.org/2000/svg"/>`,
+	})
+	h := NewSetupHandler(nil, func() int { return 8000 }, dir)
+	for file, kind := range map[string]string{"activate.css": "text/css", icon: "image/svg+xml"} {
+		w := serve(h, http.MethodGet, "/"+file, "", func(r *http.Request) { r.Host = wifi.APAddress })
+		if w.Code != http.StatusOK || !strings.HasPrefix(w.Header().Get("Content-Type"), kind) {
+			t.Fatalf("%s = HTTP %d, %q: %s", file, w.Code, w.Header().Get("Content-Type"), w.Body.String())
+		}
+	}
+}
