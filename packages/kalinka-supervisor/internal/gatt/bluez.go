@@ -4,6 +4,7 @@ package gatt
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
+	"kalinka/supervisor/internal/bluetoothlease"
 	"kalinka/supervisor/internal/machine"
 	"kalinka/supervisor/internal/protocol"
 )
@@ -76,6 +78,7 @@ type Bluez struct {
 	oldAlias                                 string
 	oldPairable                              bool
 	changedAdapter                           bool
+	pairingLease                             *bluetoothlease.Lease
 }
 
 func New(ctx context.Context, m *machine.Machine, adapter string) (*Bluez, error) {
@@ -192,12 +195,21 @@ func (b *Bluez) set(ctx context.Context, key string, value any) error {
 	}
 	return nil
 }
-func (b *Bluez) Enable(ctx context.Context) error {
+func (b *Bluez) Enable(ctx context.Context) (err error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.advertising {
 		return nil
 	}
+	b.pairingLease, err = bluetoothlease.Acquire(bluetoothlease.Directory(), filepath.Base(string(b.adapter)))
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			b.disableLocked(ctx)
+		}
+	}()
 	alias, err := b.get(ctx, "Alias")
 	if err != nil {
 		return err
@@ -238,6 +250,9 @@ func (b *Bluez) Enable(ctx context.Context) error {
 func (b *Bluez) Disable(ctx context.Context) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.disableLocked(ctx)
+}
+func (b *Bluez) disableLocked(ctx context.Context) {
 	if b.advertising {
 		_ = b.call(ctx, b.adapter, "org.bluez.LEAdvertisingManager1.UnregisterAdvertisement", advert)
 	}
@@ -258,6 +273,8 @@ func (b *Bluez) Disable(ctx context.Context) {
 	b.registered = false
 	b.agentRegistered = false
 	b.changedAdapter = false
+	b.pairingLease.Close()
+	b.pairingLease = nil
 	for _, c := range b.chars {
 		c.notifying.Store(false)
 		c.mu.Lock()

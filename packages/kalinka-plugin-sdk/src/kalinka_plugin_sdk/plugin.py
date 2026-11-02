@@ -7,6 +7,7 @@ from .config_feedback import ConfigIssue, ConfigOption
 from .dynamic_fields import DynamicFieldDecl
 from .direct_playback import DirectPlayback
 from .external_playback import ExternalPlayback
+from .live_audio import LiveAudio
 from .embedding import TextEmbedder
 from .events import PlayQueueEventType, PlayQueueEvent, PlayQueueState
 from .ext_device_events import ExtDeviceEventType, ExtDeviceEvent, ExtDeviceState
@@ -188,6 +189,12 @@ class PluginBase(ABC, Generic[PLUGIN_CLASS, CTX_TYPE]):
         holds the new values; a plugin that copied any of them at setup
         takes them in here, so the change applies without a restart.
 
+        SDK 3.21: a field declaring both ``one_shot`` and ``apply_immediately``
+        in json_schema_extra is durably reset before this call. Its armed
+        value is visible during the callback and reset in memory afterwards.
+        Copy the action's arguments before scheduling work. Ordinary one-shot
+        fields retain their next-setup behavior.
+
         @note Bounded by the server's per-call timeout. Long work, such as
             a rescan, is started here and left to run.
         """
@@ -222,6 +229,8 @@ class InputPluginContext(PluginContextBase):
     direct_playback: Optional[DirectPlayback] = field(default=None, kw_only=True)
     # SDK 3.7+: ownership and metadata for plugins with their own audio engine.
     external_playback: Optional[ExternalPlayback] = field(default=None, kw_only=True)
+    # SDK 3.21+: receiver PCM whose lifetime is independent of its output route.
+    live_audio: Optional[LiveAudio] = field(default=None, kw_only=True)
 
 
 @dataclass

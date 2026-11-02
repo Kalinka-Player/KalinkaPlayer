@@ -49,6 +49,8 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(FLACPP REQUIRED IMPORTED_TARGET flac++)
 pkg_check_modules(VORBISFILE REQUIRED IMPORTED_TARGET vorbisfile)
 pkg_check_modules(XML2 REQUIRED IMPORTED_TARGET libxml-2.0)
+find_path(SOXR_INCLUDE_DIR soxr.h REQUIRED)
+find_library(SOXR_LIBRARY NAMES soxr REQUIRED)
 # faad2 ships a pkg-config file only from 2.11; Debian bookworm has 2.10.
 find_path(FAAD2_INCLUDE_DIR neaacdec.h)
 find_library(FAAD2_LIBRARY faad)
@@ -119,6 +121,8 @@ add_library(kalinka_native_player STATIC
   src/native_player/FlacStreamDecoder.cpp
   src/native_player/GainFade.cpp
   src/native_player/Log.cpp
+  src/native_player/LivePcmStreamDecoder.cpp
+  src/native_player/LivePcmClock.cpp
   src/native_player/Mp4.cpp
   src/native_player/Mp4SampleTable.cpp
   src/native_player/Mp4StreamDecoder.cpp
@@ -134,6 +138,7 @@ add_library(kalinka_native_player STATIC
   src/native_player/WavContainer.cpp
 )
 target_include_directories(kalinka_native_player PRIVATE ${FAAD2_INCLUDE_DIR})
+target_include_directories(kalinka_native_player PUBLIC ${SOXR_INCLUDE_DIR})
 target_link_libraries(kalinka_native_player PUBLIC
   ALSA::ALSA
   CURL::libcurl
@@ -142,6 +147,7 @@ target_link_libraries(kalinka_native_player PUBLIC
   PkgConfig::VORBISFILE
   PkgConfig::XML2
   ${FAAD2_LIBRARY}
+  ${SOXR_LIBRARY}
   Boost::headers
   spdlog::spdlog
   Threads::Threads
@@ -281,6 +287,7 @@ if(GTest_FOUND)
     tests/native_player/GainFade_test.cpp
     tests/native_player/LocalHttpServer.cpp
     tests/native_player/Log_test.cpp
+    tests/native_player/LivePcmStreamDecoder_test.cpp
     tests/native_player/Mp3StreamDecoder_test.cpp
     tests/native_player/Mp4Format_test.cpp
     tests/native_player/Mp4StreamDecoder_test.cpp

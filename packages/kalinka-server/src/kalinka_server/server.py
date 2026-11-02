@@ -58,6 +58,7 @@ from .storage.manager import Adopter, StorageManager
 from .storage.routes import register_storage_routes
 from .config_secrets import secret_values
 from .content_route import register_content_route
+from .live_audio import register_live_audio_route
 from .demo_mode import (
     DEMO_QUEUE,
     DemoReadOnlyGate,
@@ -255,6 +256,8 @@ async def lifespan(app: FastAPI):
 
         # Then shutdown plugins, including the built-in renderer volume device.
         await shutdown()
+        if app.state.player_context.live_audio is not None:
+            app.state.player_context.live_audio.close()
 
         app.state.player_context.playqueue_eventbus.close()
         await save_state(app.state.player_context.playqueue_eventbus)
@@ -1526,6 +1529,7 @@ async def create_app(
         return FileResponse(resolved_path, media_type=mime_type)
 
     register_content_route(app, set_up_input_module)
+    register_live_audio_route(app, player_context.live_audio)
 
     def _configured_secrets() -> List[str]:
         configs = [app.state.config] + [

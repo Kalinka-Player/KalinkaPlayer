@@ -132,12 +132,12 @@ explicit **DoP** selection; Automatic only attempts native DSD.
 ## Build
 
 Dependencies (dev headers): protobuf (+ compiler), Boost (headers only — asio
-and beast), spdlog, ALSA, FLAC++, libvorbisfile, libcurl, curlpp, libxml2, faad2. GoogleTest is
+and beast), spdlog, ALSA, FLAC++, libvorbisfile, libcurl, curlpp, libxml2, faad2, libsoxr. GoogleTest is
 optional and only builds the test binary. mDNS is self-contained (vendored public-domain
 `third_party/mdns`), so no avahi or Bonjour daemon is needed.
 
-- Fedora: `sudo dnf install cmake gcc-c++ protobuf-devel protobuf-compiler protobuf-lite-devel boost-devel spdlog-devel alsa-lib-devel flac-devel libvorbis-devel libcurl-devel curlpp-devel libxml2-devel faad2-devel gtest-devel`
-- Debian/Ubuntu: `sudo apt install cmake g++ libprotobuf-dev protobuf-compiler libboost-dev libspdlog-dev libasound2-dev libflac++-dev libvorbis-dev libcurl4-openssl-dev libcurlpp-dev libxml2-dev libfaad-dev libgtest-dev`
+- Fedora: `sudo dnf install cmake gcc-c++ protobuf-devel protobuf-compiler protobuf-lite-devel boost-devel spdlog-devel alsa-lib-devel flac-devel libvorbis-devel libcurl-devel curlpp-devel libxml2-devel faad2-devel soxr-devel gtest-devel`
+- Debian/Ubuntu: `sudo apt install cmake g++ libprotobuf-dev protobuf-compiler libboost-dev libspdlog-dev libasound2-dev libflac++-dev libvorbis-dev libcurl4-openssl-dev libcurlpp-dev libxml2-dev libfaad-dev libsoxr-dev libgtest-dev`
 
 From the repo root:
 

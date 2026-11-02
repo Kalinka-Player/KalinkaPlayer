@@ -114,8 +114,14 @@ def test_every_type_sent_to_the_renderer_selects_the_declared_decoder(
             assert renderer_formats[sent] == renderer_formats[declared], declared
 
 
-def test_every_type_the_renderer_decodes_is_accepted(renderer_formats):
-    assert {name for name in renderer_formats if "/" in name} <= MIME_TYPES.keys()
+def test_every_portable_type_the_renderer_decodes_is_accepted(renderer_formats):
+    # Core's private live PCM protocol needs its output-readiness handshake;
+    # a UPnP sender cannot supply that as an ordinary media URL.
+    private = {"application/vnd.kalinka.pcm"}
+    assert not private & MIME_TYPES.keys()
+    assert {
+        name for name in renderer_formats if "/" in name
+    } - private <= MIME_TYPES.keys()
 
 
 def test_every_url_suffix_the_renderer_decodes_is_accepted(

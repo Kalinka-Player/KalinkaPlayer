@@ -83,6 +83,7 @@ public:
   virtual std::optional<long> streamReadPosition() const {
     return std::nullopt;
   }
+  virtual std::optional<uint64_t> liveSourceFrame() const { return std::nullopt; }
 
   virtual ~AudioGraphOutputNode() = default;
 };

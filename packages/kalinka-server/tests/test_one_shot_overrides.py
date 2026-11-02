@@ -219,3 +219,61 @@ def test_is_one_shot_field_walks_optional_nested_model():
         sub: Optional[_OptNested] = None
 
     assert is_one_shot_field(_OptCfg, ["sub", "flag"]) is True
+
+
+def test_immediate_actions_reset_durably_without_consuming_restart_actions(tmp_path):
+    from types import SimpleNamespace
+    from kalinka_plugin_sdk.module_health import ModuleHealthState
+
+    class Immediate(_Cfg):
+        pair: bool = Field(
+            default=False,
+            json_schema_extra={"one_shot": True, "apply_immediately": True},
+        )
+
+    class Plugin(_Plugin):
+        CONFIG_MODEL = Immediate
+
+    config = Immediate(name="fake", pair=True, rebuild=True)
+    prepared = SimpleNamespace(
+        plugin_class=Plugin,
+        plugin_context=SimpleNamespace(config=config),
+        health_state=ModuleHealthState.READY,
+    )
+    overrides = {PREFIX + "pair": True, PREFIX + "rebuild": True}
+    collection = _collection(str(tmp_path / "overrides.json"))
+    consumed = collection.consume_immediate_actions(
+        prepared, {"pair", "rebuild"}, overrides
+    )
+    assert consumed == [PREFIX + "pair"]
+    assert config.pair and config.rebuild  # Callback still sees the action.
+    assert load_overrides(collection.overrides_file) == {PREFIX + "rebuild": True}
+    collection.finish_immediate_actions(prepared, consumed)
+    assert not config.pair and config.rebuild
+
+    config.pair = True
+    overrides[PREFIX + "pair"] = True
+    prepared.health_state = ModuleHealthState.DISABLED
+    assert collection.consume_immediate_actions(prepared, {"pair"}, overrides) == []
+    assert config.pair and overrides[PREFIX + "pair"]
+
+
+def test_immediate_action_detection_requires_both_flags_and_handles_nested_models():
+    from kalinka_server.config_overrides import is_immediate_action_field
+
+    class Actions(BaseModel):
+        pair: bool = Field(
+            default=False,
+            json_schema_extra={"one_shot": True, "apply_immediately": True},
+        )
+        ordinary: bool = Field(
+            default=False, json_schema_extra={"apply_immediately": True}
+        )
+
+    class Config(_Cfg):
+        actions: Actions | None = None
+
+    assert is_immediate_action_field(Config, ["actions", "pair"])
+    assert not is_immediate_action_field(Config, ["actions", "ordinary"])
+    assert not is_immediate_action_field(Config, ["rebuild"])
+    assert not is_immediate_action_field(Config, ["unknown"])

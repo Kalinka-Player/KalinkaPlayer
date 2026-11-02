@@ -55,6 +55,8 @@ protected:
   }
   /// Appends whole frames, waiting for room; throws Interrupted.
   void write(std::span<const uint8_t> frames);
+  void setBufferSize(size_t bytes) { buffer.setCapacity(bytes); }
+  size_t bufferedBytes() const { return buffer.size(); }
   /// The stream open() described; valid on the worker once open() returns.
   const StreamInfo &streamInfo() const { return info; }
   /// Prefixes the messages of the errors raised here.

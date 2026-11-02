@@ -84,6 +84,13 @@ struct DeviceInfo {
   }
 };
 
+/// @brief Per-stream latency policy for live PCM output.
+struct LiveAudioPolicy {
+  unsigned targetLatencyMs = 60;
+  unsigned maxBufferMs = 250;
+  bool operator==(const LiveAudioPolicy &) const = default;
+};
+
 /// @brief Defines the information about the stream.
 struct StreamInfo {
   // The format of the audio frames in the stream.
@@ -96,6 +103,7 @@ struct StreamInfo {
   // The size of the stream in frames or bytes,
   // depending on the stream type.
   unsigned long streamSize = 0;
+  std::optional<LiveAudioPolicy> live;
 
   bool operator==(const StreamInfo &other) const = default;
   bool operator!=(const StreamInfo &other) const = default;

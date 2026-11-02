@@ -236,6 +236,8 @@ message Capabilities {
   // DSD sources are taken rather than refused outright. A given track can
   // still fail on the output it meets.
   bool dsd = 1;
+  // Framed PCM, output readiness, bounded queues and live position feedback.
+  uint32 live_pcm = 2;
 }
 
 message CapabilitiesChanged {
@@ -436,6 +438,11 @@ message PlaybackStateChanged {
   // output unavailable. A Core that ignores it sees the plain stop older
   // renderers report.
   bool interrupted = 10;
+  // Output format is configured and hardware settling has completed. Core
+  // may now choose a fresh PCM cursor for this source_token. Not a clock sync.
+  bool live_ready = 11;
+  // Absolute PCM frame audible at report time, after live clock adaptation.
+  optional uint64 live_source_frame = 12;
 }
 
 // Emitted on AudioGraphNodeState::SOURCE_CHANGED — the gapless crossover.

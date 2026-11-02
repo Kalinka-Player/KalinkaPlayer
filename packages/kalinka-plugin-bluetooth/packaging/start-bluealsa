@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+# Debian 13 ships bluealsa; newer releases call the daemon bluealsad.
+for receiver in /usr/bin/bluealsad /usr/bin/bluealsa /usr/sbin/bluealsa; do
+    if [ -x "$receiver" ]; then
+        exec "$receiver" --profile=a2dp-sink
+    fi
+done
+echo "Install BlueALSA to receive Bluetooth audio" >&2
+exit 1

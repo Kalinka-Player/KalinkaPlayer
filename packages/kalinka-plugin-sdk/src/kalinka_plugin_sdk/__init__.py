@@ -121,7 +121,14 @@ from .external_playback import (
     ExternalPlaybackSession,
 )
 
+from .live_audio import LiveAudio, LiveAudioRef, LivePolicy, LiveSource, PcmFormat
+
 __all__ = [
+    "LiveAudio",
+    "LiveAudioRef",
+    "LivePolicy",
+    "LiveSource",
+    "PcmFormat",
     "ExternalPlayback",
     "ExternalPlaybackListener",
     "ExternalPlaybackSession",

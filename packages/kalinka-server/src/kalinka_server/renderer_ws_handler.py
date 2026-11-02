@@ -81,7 +81,7 @@ def lan_address(host: Optional[str]) -> Optional[str]:
 
 
 def _capabilities(capabilities: pb.Capabilities) -> OutputCapabilities:
-    return OutputCapabilities(dsd=capabilities.dsd)
+    return OutputCapabilities(dsd=capabilities.dsd, live_pcm=capabilities.live_pcm)
 
 
 class RendererSession(RendererLink):

@@ -20,7 +20,7 @@ from typing import Any, Callable, Optional, Protocol
 
 from .datamodel import DeviceVolume, PlaybackState, Track
 from .inputmodule import TrackSource
-
+from .live_audio import LivePolicy, LiveSource
 
 class RevokeReason(str, Enum):
     """Why a hold ended without the plugin releasing it."""
@@ -63,6 +63,8 @@ class OutputCapabilities:
     """
 
     dsd: Optional[bool] = None
+    # Version of the framed PCM reader, readiness and bounded-live policy.
+    live_pcm: int = 0
 
 
 class OutputUnavailable(RuntimeError):
@@ -163,6 +165,18 @@ class DirectPlaybackSession(Protocol):
         on_next_started reports this. Pause and seek keep the queued source.
         None, play(), and stop() remove any queued successor.
         A track is required with a source; sequential sources cannot be queued.
+        """
+        ...
+
+    async def play_live(
+        self, source: LiveSource, track: Track, *, policy: LivePolicy = LivePolicy()
+    ) -> None:
+        """SDK 3.21: play receiver audio through the acquired output.
+
+        Core binds a fresh route on output switches and recovery, preserving
+        the source and this hold. Raises OutputUnavailable for an older
+        renderer; there is no transcoding fallback. Pause discards queued live
+        audio; resume begins at the live edge. The caller owns source.close().
         """
         ...
 
