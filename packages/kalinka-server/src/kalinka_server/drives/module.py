@@ -56,7 +56,7 @@ from .listing import (
 from .rows import FolderRow, folder_rows, listed
 
 DISPLAY_NAME = "Drives"
-ICON = "storage_outlined"
+ICON = "hard_drive_outlined"
 
 #: How long a page waits on tags before showing file names for the rest.
 PAGE_TAG_BUDGET_S = 2.0

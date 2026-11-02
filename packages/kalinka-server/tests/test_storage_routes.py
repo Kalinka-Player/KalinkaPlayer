@@ -246,7 +246,7 @@ async def test_the_server_offers_drives_and_says_it_has_storage(app):
     assert version["storage"] == {"volumes": True, "mounts": True, "adopt": True, "folders": True}
     drives = next(m for m in modules if m["name"] == "drives")
     assert drives["builtin"] is True and drives["title"] == "Drives"
-    assert drives["icon"] == "storage_outlined"
+    assert drives["icon"] == "hard_drive_outlined"
     # Whatever this machine has plugged in.
     assert drives["count"] == app.state.drives.count()
     root = next(r for r in roots if r["id"] == "kalinka:drives:catalog:root")
