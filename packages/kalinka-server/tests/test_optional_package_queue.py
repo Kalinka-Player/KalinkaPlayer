@@ -4,16 +4,23 @@ Turning a feature on queues its packages as the setting is saved, for
 bootstrap.sh to install on the way up; a reboot or the streamer's own
 Restart server asks nothing of the server first. Turning it off again takes
 them back out. PUT /server/restart queues the same, after what its body asks
-for, and refuses a key it does not know.
+for, and refuses a key it does not know. The modules page offers no package
+this box cannot install.
 """
 
 import json
+import sys
 from typing import ClassVar
 
 import pytest
 from pydantic import Field
 
-from kalinka_plugin_sdk import OptionalPackageSpec
+from kalinka_plugin_sdk import (
+    ModuleHealthState,
+    ModuleState,
+    OptionalPackageSpec,
+    wheel_architecture,
+)
 from kalinka_plugin_sdk import __version__ as SDK_VERSION
 from kalinka_plugin_sdk.inputmodule import InputModule
 from kalinka_plugin_sdk.module_config import ModuleConfig
@@ -51,6 +58,7 @@ class _ArtPlugin(InputModulePlugin):
         for key in (ART, OTHER)
     }
     failure: ClassVar[Exception | None] = None
+    health: ClassVar[ModuleState] = ModuleState(state=ModuleHealthState.READY)
 
     async def setup(self, context):
         self._context = context
@@ -58,6 +66,9 @@ class _ArtPlugin(InputModulePlugin):
 
     def get_interface(self):
         return self._interface
+
+    async def get_state(self) -> ModuleState:
+        return self.health
 
     async def required_packages(self) -> list[str]:
         if self.failure is not None:
@@ -176,3 +187,51 @@ async def test_a_restart_refuses_an_install_that_is_not_a_list(client):
 
     assert restarted.status_code == 400
     assert not update_check.restart_pending()
+
+
+async def test_the_modules_page_offers_no_package_the_last_install_found_no_wheel_of(
+    client, state_dir, monkeypatch
+):
+    """#332: the module says so instead of offering an install that fails."""
+    python = f"{sys.version_info.major}.{sys.version_info.minor}"
+    reason = f"No prebuilt {ART}==1.0 for Python {python} on {wheel_architecture()}"
+    (state_dir / "last_install.json").write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "requested": [ART],
+                "results": [
+                    {
+                        "key": ART,
+                        "pip_spec": f"{ART}==1.0",
+                        "returncode": 1,
+                        "status": "failed",
+                        "stderr": "",
+                        "reason": reason,
+                    }
+                ],
+            }
+        )
+    )
+    monkeypatch.setattr(
+        _ArtPlugin,
+        "health",
+        ModuleState(
+            state=ModuleHealthState.WARNING,
+            message="Generated art unavailable.",
+            missing_packages=[ART, OTHER],
+        ),
+    )
+    await modules.refresh_health(publish=True)
+
+    listed = (await client.get("/server/modules")).json()["input_modules"]
+    saved = await _save(client, True)
+
+    art = next(entry for entry in listed if entry["name"] == "art")
+    assert art["missing_packages"] == [OTHER]
+    assert art["error_message"] == (
+        f"Generated art unavailable.\n\n`{ART}` is not available on this "
+        f"device. {reason}."
+    )
+    assert saved.status_code == 200
+    assert _queued(state_dir) is None

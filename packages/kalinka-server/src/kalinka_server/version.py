@@ -237,7 +237,12 @@ def get_version() -> str:
 # packages the plugins need under the new settings, so whatever starts the
 # server next installs them; GET /server/optional_packages marks them
 # `pending`, and turning the feature off again takes them back out. PUT
-# /server/restart queues the same after what `install` names.
+# /server/restart queues the same after what `install` names. A package the
+# last install found no wheel of for the server's Python and architecture is
+# no longer queued for a plugin, though `install` may still name it. A
+# module's `missing_packages` leaves out every package no install can bring
+# to the server, and its error_message names each as not available on this
+# device.
 REST_API_VERSION = "0.22"
 
 
