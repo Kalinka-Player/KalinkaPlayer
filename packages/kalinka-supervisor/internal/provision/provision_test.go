@@ -1,16 +1,21 @@
 package provision
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"kalinka/supervisor/internal/machine"
 	"kalinka/supervisor/internal/protocol"
+	"kalinka/supervisor/internal/rfkill/rfkilltest"
 	"kalinka/supervisor/internal/wifi"
 )
 
@@ -118,6 +123,87 @@ func TestChangingNetwork(t *testing.T) {
 	}
 	if !s.ChangingNetwork() {
 		t.Fatal("join not reported")
+	}
+}
+
+type fakeRadio struct{ enable error }
+
+func (r *fakeRadio) Enable(context.Context) error     { return r.enable }
+func (r *fakeRadio) Disable(context.Context)          {}
+func (r *fakeRadio) Events(ctx context.Context) error { <-ctx.Done(); return nil }
+func (r *fakeRadio) Close()                           {}
+func (r *fakeRadio) open(context.Context, *machine.Machine, string) (peripheral, string, error) {
+	return r, "Kalinka-TEST", nil
+}
+
+func waitFor(t *testing.T, what string, done func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(time.Second); !done(); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal(what)
+		}
+	}
+}
+
+func TestBluetoothFailureReachesTheSnapshot(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		block rfkilltest.Radio
+		want  string
+	}{
+		{"soft block", rfkilltest.Radio{Type: "bluetooth", Name: "hci0", Soft: true}, "radio_blocked"},
+		{"hardware switch", rfkilltest.Radio{Type: "bluetooth", Name: "hci0", Soft: true, Hard: true}, "radio_hard_blocked"},
+		{"only another adapter blocked", rfkilltest.Radio{Type: "bluetooth", Name: "hci1", Soft: true}, "unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			old := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			defer slog.SetDefault(old)
+			m := machine.New(context.Background(), &radioBackend{}, machine.Config{})
+			defer m.Close()
+			if err := m.Open(); err != nil {
+				t.Fatal(err)
+			}
+			s := New(Options{}, nil)
+			s.root = rfkilltest.Stage(t, tc.block)
+			s.openRadio = (&fakeRadio{enable: errors.New("set Powered: unavailable: Blocked through rfkill")}).open
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			go func() { defer close(done); s.serveBluetooth(ctx, m) }()
+			waitFor(t, "the failure was not reported", func() bool { return s.Problems()["bluetooth"] != "" })
+			cancel()
+			<-done
+			if got := s.Snapshot()["radio_problems"]; !reflect.DeepEqual(got, map[string]string{"bluetooth": tc.want}) {
+				t.Fatalf("snapshot reports %v, want %s", got, tc.want)
+			}
+			if line := logs.String(); !strings.Contains(line, "Bluetooth setup unavailable; retrying") || !strings.Contains(line, "Blocked through rfkill") {
+				t.Fatalf("the log does not say why: %s", line)
+			}
+		})
+	}
+}
+
+func TestAdvertisingClearsTheBluetoothProblem(t *testing.T) {
+	m := machine.New(context.Background(), &radioBackend{}, machine.Config{})
+	defer m.Close()
+	if err := m.Open(); err != nil {
+		t.Fatal(err)
+	}
+	s := New(Options{}, nil)
+	s.root = t.TempDir()
+	s.report("bluetooth", errors.New("unavailable: bluetoothd stopped"))
+	if got := s.Problems()["bluetooth"]; got != "unavailable" {
+		t.Fatalf("reported %q", got)
+	}
+	s.openRadio = (&fakeRadio{}).open
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.bluetoothSession(ctx, m) }()
+	waitFor(t, "advertising did not clear the report", func() bool { return len(s.Problems()) == 0 })
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 

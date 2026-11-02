@@ -108,6 +108,22 @@ is limited to the selected interface's physical radio. DietPi restarts that
 interface's networking service after clearing a block, since DHCP may have
 failed while it was disabled. Hardware blocks are reported and left intact.
 
+A radio that fails says why. Each failed recovery attempt logs `Radio recovery
+failed` with `wifi:` or `bluetooth:` and the reason, and every `Bluetooth setup
+unavailable; retrying` line carries BlueZ's or the bus's reason. Clients get
+one fixed code per radio in `radio_problems`, in `GET /v1/setup`:
+
+| Code | Meaning |
+|---|---|
+| `radio_blocked` | Bluetooth is switched off in software, by rfkill |
+| `radio_hard_blocked` | A hardware switch blocks the radio |
+| `unavailable` | Anything else; the log has the detail |
+
+A radio is listed from its last failed attempt, by recovery, **Enable Wi-Fi**
+or a Bluetooth setup session, until it next works: until recovery or Enable
+Wi-Fi succeeds for Wi-Fi, and until recovery clears its block or nearby setup
+advertises for Bluetooth. A cancelled or `busy` attempt changes nothing.
+
 Join the hotspot in the phone/computer's Wi-Fi settings. DHCP and local DNS
 trigger the operating system's captive Wi-Fi activation page, which opens
 `http://192.168.4.1/activate` and then the standard Kalinka web app at
@@ -144,9 +160,9 @@ progress, rollback and cancellation. AP daemons remain in the supervisor's cgrou
 `GET /v1/setup` returns `available`, `network` (connected, kind, address,
 interface, and `ssid` when the active Wi-Fi name can be read), `setup` (active,
 state, reason, stage, address, port, scan_state, networks, and `target_ssid`
-while joining), `hotspot`, `hotspot_name`, `networks_cached` and `server_id` where
-available. `POST /v1/setup` accepts the existing unframed v1 JSON commands and
-an extra `{"v":1,"op":"open"}` to explicitly open a setup window on an online
+while joining), `hotspot`, `hotspot_name`, `networks_cached`, `server_id` where
+available, and `radio_problems`, above. `POST /v1/setup` accepts the existing
+unframed v1 JSON commands and an extra `{"v":1,"op":"open"}` to explicitly open a setup window on an online
 streamer. `{"v":1,"op":"enable_wifi"}` explicitly enables Wi-Fi, including before
 opening setup. It completes within ten seconds and returns 202 on success,
 409 with `busy` for an overlapping setup operation, or 409 with

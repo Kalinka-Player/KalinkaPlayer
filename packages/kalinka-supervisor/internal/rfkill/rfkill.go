@@ -76,6 +76,16 @@ func CheckHardware(root, kind, radio string) error {
 	return nil
 }
 
+// Blocked reads the named radio's blocks without changing them. A host
+// without rfkill reports neither.
+func Blocked(root, kind, radio string) (soft, hard bool, err error) {
+	radios, err := states(root, kind, radio)
+	for _, r := range radios {
+		soft, hard = soft || r.soft, hard || r.hard
+	}
+	return soft, hard, err
+}
+
 // Unblock clears only the named radio's soft block. A hard block is reported
 // without changing the soft block. A host without rfkill has nothing to clear.
 func Unblock(root, kind, radio string) (cleared, hard []string, err error) {
