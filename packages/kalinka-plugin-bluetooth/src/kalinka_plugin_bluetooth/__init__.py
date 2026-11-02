@@ -16,7 +16,7 @@ from kalinka_plugin_sdk.module_config import ModuleConfig
 from kalinka_plugin_sdk.module_health import ModuleHealthState, ModuleState
 from kalinka_plugin_sdk.plugin import InputModulePlugin
 
-from .backend import BlueAlsaBackend, DEVICE, PCM, volume_percent
+from .backend import BLUEZ, BlueAlsaBackend, DEVICE, PCM, volume_percent
 from .pairing import AudioAccess, PairingWindow
 from .service import BluetoothService
 
@@ -150,8 +150,8 @@ class KalinkaPluginBluetooth(InputModulePlugin):
             if address:
                 peer = next(
                     (
-                        p[DEVICE]
-                        for p in self.backend.bluez.values()
+                        (path, p[DEVICE])
+                        for path, p in self.backend.bluez.items()
                         if DEVICE in p
                         and p[DEVICE].get("Paired")
                         and p[DEVICE].get("Address", "").upper() == address
@@ -160,7 +160,13 @@ class KalinkaPluginBluetooth(InputModulePlugin):
                 )
                 if peer is None:
                     raise ValueError("Select a phone that is already paired")
-                await self.access.allow(address, peer.get("Alias", address))
+                path, props = peer
+                # Use BlueZ's object path: privacy addresses can differ from
+                # the resolved address stored in Device1.Address.
+                await self.backend.set_property(
+                    BLUEZ, path, DEVICE, "Trusted", "b", True
+                )
+                await self.access.allow(address, props.get("Alias", address))
             if actions.get("forget_device"):
                 await self.access.forget(actions["forget_device"])
             if actions:

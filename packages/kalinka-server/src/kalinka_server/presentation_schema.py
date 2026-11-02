@@ -180,6 +180,9 @@ class FieldSpec(BaseModel):
     readonly: bool = False
     dynamic: bool = False           # Value is resolved by the owning module at request time
     dynamic_options: bool = False   # Options are resolved by the owning module at request time
+    # One-shot actions consumed on save. Clients must not restart afterward;
+    # in mixed batches these run after ordinary settings have been restarted.
+    apply_immediately: bool = False
     importance: Importance = Importance.EXPERT
     setup: Setup = Setup.HIDDEN
     enum_values: Optional[list[str]] = None

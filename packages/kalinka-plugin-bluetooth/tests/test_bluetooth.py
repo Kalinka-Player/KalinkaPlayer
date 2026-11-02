@@ -336,3 +336,29 @@ async def test_disconnect_closes_source_before_waiting_for_pending_claim(service
     assert source.closed and service.source is None
     finish.set()
     await disconnecting
+
+
+@pytest.mark.parametrize("trust_fails", [False, True])
+async def test_authorizing_bonded_phone_trusts_actual_bluez_path(tmp_path, trust_fails):
+    from unittest.mock import AsyncMock
+    from kalinka_plugin_bluetooth import KalinkaPluginBluetooth
+    from kalinka_plugin_bluetooth.backend import BLUEZ, DEVICE
+
+    plugin = KalinkaPluginBluetooth()
+    plugin.access = AudioAccess(tmp_path / "access.json")
+    address = "AA:BB:CC:DD:EE:FF"
+    path = "/org/bluez/hci0/dev_11_22_33_44_55_66"
+    setter = AsyncMock(side_effect=RuntimeError("trust failed") if trust_fails else None)
+    plugin.backend = SimpleNamespace(
+        bluez={path: {DEVICE: {"Address": address, "Alias": "Phone", "Paired": True}}},
+        set_property=setter,
+    )
+    plugin.actions = {"authorize_device": address}
+    await plugin._apply_actions()
+    setter.assert_awaited_once_with(BLUEZ, path, DEVICE, "Trusted", "b", True)
+    if trust_fails:
+        assert not plugin.access.devices
+        assert plugin.error == "trust failed"
+    else:
+        assert plugin.access.devices == {address: "Phone"}
+        assert plugin.error is None

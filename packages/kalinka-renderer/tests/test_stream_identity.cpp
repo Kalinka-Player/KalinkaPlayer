@@ -22,6 +22,7 @@ public:
   }
 
   void emit(AudioGraphNodeState state) { setState(StreamState(state)); }
+  void emit(const StreamState &state) { setState(state); }
 };
 
 /// Records every state a node publishes.
@@ -50,6 +51,32 @@ TEST(StreamIdentity, AStreamNodeStampsItsOwnStates) {
   stream->emit(AudioGraphNodeState::STREAMING);
 
   EXPECT_EQ(stream->getState().streamId, std::optional<StreamId>(7));
+}
+
+TEST(StreamIdentity, LiveReadinessAndProgressSurviveStateDeduplication) {
+  FakeStream stream(7);
+  Recorder recorder(stream);
+  StreamState state(AudioGraphNodeState::PREPARING);
+  stream.emit(state);
+  const auto beforeReady = recorder.states.size();
+  state.liveReady = true;
+  stream.emit(state);
+  ASSERT_EQ(recorder.states.size(), beforeReady + 1);
+  EXPECT_TRUE(recorder.last().liveReady);
+  stream.emit(state);
+  EXPECT_EQ(recorder.states.size(), beforeReady + 1);
+
+  state.state = AudioGraphNodeState::STREAMING;
+  state.liveReady = false;
+  state.liveSourceFrame = 44100;
+  stream.emit(state);
+  const auto beforeProgress = recorder.states.size();
+  state.liveSourceFrame = 55125;
+  stream.emit(state);
+  ASSERT_EQ(recorder.states.size(), beforeProgress + 1);
+  EXPECT_EQ(recorder.last().liveSourceFrame, 55125);
+  stream.emit(state);
+  EXPECT_EQ(recorder.states.size(), beforeProgress + 1);
 }
 
 TEST(StreamIdentity, ANodeBelongingToNoStreamLeavesStatesAnonymous) {
