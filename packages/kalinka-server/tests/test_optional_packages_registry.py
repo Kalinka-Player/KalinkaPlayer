@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -15,6 +18,7 @@ from kalinka_server import optional_packages_registry
 from kalinka_server.optional_packages_registry import (
     build_catalog,
     build_registry,
+    queue_required_packages,
     write_pending_installs,
 )
 
@@ -354,3 +358,139 @@ def test_write_pending_installs_atomic_replace(tmp_path: Path):
     assert payload["requested"] == ["numpy"]
     # No leftover .tmp
     assert list(tmp_path.glob("pending.json.tmp")) == []
+
+
+def test_write_pending_installs_with_nothing_accepted_removes_the_request(
+    tmp_path: Path,
+):
+    """install_pending would record a run of nothing over the last install."""
+    input_modules = {"p": _prepared({"numpy": _spec("numpy")})}
+    pending = tmp_path / "pending.json"
+    pending.write_text(json.dumps({"schema": 1, "requested": ["numpy"]}))
+
+    accepted, rejected = write_pending_installs(
+        ["bogus"], input_modules, {}, pending_installs_path=pending
+    )
+
+    assert (accepted, rejected) == ([], ["bogus"])
+    assert not pending.exists()
+
+
+class _Needing:
+    """A plugin whose required_packages() answers what the test says."""
+
+    def __init__(self, keys: list[str] | None = None, answer: Any = None):
+        self.keys = keys or []
+        self.answer = answer
+
+    async def required_packages(self) -> list[str]:
+        if self.answer is not None:
+            return await self.answer()
+        return self.keys
+
+
+@dataclass
+class _Running:
+    plugin_class: Any
+    plugin_instance: Any
+    plugin_context: Any = field(
+        default_factory=lambda: SimpleNamespace(config=SimpleNamespace(enabled=True))
+    )
+
+
+def _running(offered: list[str], needs: list[str] = (), **kwargs) -> _Running:
+    return _Running(
+        plugin_class=FakePluginClass(
+            OPTIONAL_PACKAGES={key: _spec(key) for key in offered}
+        ),
+        plugin_instance=_Needing(list(needs), **kwargs),
+    )
+
+
+def _queue(tmp_path: Path, input_modules, devices=None, requested=()):
+    return asyncio.run(
+        queue_required_packages(
+            input_modules,
+            devices or {},
+            requested,
+            pending_installs_path=tmp_path / "pending.json",
+        )
+    )
+
+
+def _queued(tmp_path: Path) -> list[str] | None:
+    pending = tmp_path / "pending.json"
+    return json.loads(pending.read_text())["requested"] if pending.exists() else None
+
+
+def test_queue_takes_what_was_asked_for_then_what_plugins_need_in_load_order(
+    tmp_path: Path,
+):
+    input_modules = {
+        "alpha": _running(["x", "y", "v"], ["x", "y"]),
+        "beta": _running(["z"], ["y", "z"]),
+    }
+    devices = {"amp": _running(["w"], ["w"])}
+
+    accepted, rejected = _queue(tmp_path, input_modules, devices, ["z", "v"])
+
+    assert (accepted, rejected) == (["z", "v", "x", "y", "w"], [])
+    assert _queued(tmp_path) == ["z", "v", "x", "y", "w"]
+
+
+def test_queue_writes_what_bootstrap_reads(tmp_path: Path):
+    _queue(tmp_path, {"alpha": _running(["x"], ["x"])})
+
+    payload = json.loads((tmp_path / "pending.json").read_text())
+    assert set(payload) == {"schema", "requested_at", "requested"}
+    assert payload["schema"] == 1
+    assert payload["requested"] == ["x"]
+
+
+def test_queue_takes_a_feature_turned_off_back_out(tmp_path: Path):
+    plugin = _running(["x"], ["x"])
+    _queue(tmp_path, {"alpha": plugin})
+    plugin.plugin_instance.keys = []
+
+    assert _queue(tmp_path, {"alpha": plugin}) == ([], [])
+    assert _queued(tmp_path) is None
+
+
+def test_queue_asks_no_disabled_plugin(tmp_path: Path):
+    plugin = _running(["x"], ["x"])
+    plugin.plugin_context.config.enabled = False
+
+    assert _queue(tmp_path, {"alpha": plugin}) == ([], [])
+
+
+def test_queue_drops_an_unknown_plugin_key_and_says_so(tmp_path: Path, caplog):
+    with caplog.at_level("WARNING"):
+        accepted, rejected = _queue(tmp_path, {"alpha": _running(["x"], ["x", "q"])})
+
+    assert (accepted, rejected) == (["x"], ["q"])
+    assert "Not queueing ['q']" in caplog.text
+
+
+async def _raises():
+    raise RuntimeError("401 for https://api.test/?client_id=s3cret")
+
+
+async def _hangs():
+    await asyncio.Event().wait()
+
+
+def test_queue_skips_a_plugin_that_raises_or_hangs(tmp_path: Path, monkeypatch, caplog):
+    monkeypatch.setattr(optional_packages_registry, "PLUGIN_CALL_TIMEOUT_S", 0.01)
+    input_modules = {
+        "raising": _running(["r"], answer=_raises),
+        "hanging": _running(["h"], answer=_hangs),
+        "alpha": _running(["x"], ["x"]),
+    }
+
+    with caplog.at_level("WARNING"):
+        accepted, _rejected = _queue(tmp_path, input_modules)
+
+    assert accepted == ["x"]
+    assert "raising required_packages() failed (RuntimeError)" in caplog.text
+    assert "hanging required_packages() failed (TimeoutError)" in caplog.text
+    assert "s3cret" not in caplog.text

@@ -82,7 +82,7 @@ make dev-run
 
    Logs here carry the full `date time LEVEL thread name: message` format. Under systemd both the server and the renderer switch to the terser format journald expects — no timestamp or level of their own, since journald records those itself — and `KALINKA_LOG_FORMAT=journal make dev-run` shows you that format from a source checkout (`full` forces the other direction). It is not auto-detected here because `dev-run` pipes output through `tee`.
 4. **Restart to pick up changes.** Python edits go live on restart — either click **Restart** in the app (this works without systemd: `dev-run` watches the restart trigger in the fakeroot and relaunches) or Ctrl-C and re-run `make dev-run`. After editing renderer C++, rebuild with `make renderer-build` and restart the renderer binary.
-   Enabling an optional feature (Smart Search) in **Settings** and hitting **Restart** also just works: `dev-run` installs the requested optional packages into the venv before relaunching — the same flow `kalinka.service` runs at boot in production.
+   Enabling an optional feature (Smart Search) in **Settings** queues its optional packages, and the next start installs them into the venv before the server comes up, whether **Restart** in the app or Ctrl-C and `make dev-run` again — the same flow `kalinka.service` runs at boot in production.
 5. Open the Kalinka app: the server appears in its list under the name you configured. Pick it and tap **Connect**, or use **Enter Address Manually** with `<host>:8000`.
 
 # Testing

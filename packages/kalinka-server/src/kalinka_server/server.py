@@ -38,7 +38,7 @@ from kalinka_plugin_sdk.events import (
     PlayQueueEventType,
     RenderersChangedEvent,
 )
-from kalinka_plugin_sdk import paths, wheel_architecture
+from kalinka_plugin_sdk import paths
 from kalinka_plugin_sdk.storage import LibraryAdopter, StorageBacked
 
 from .config_model import KalinkaConfig
@@ -86,7 +86,7 @@ from .options_registry import OptionsRegistry, register_plugin_options
 from .web_ui import WebUiStaticFiles
 from .optional_packages_registry import (
     build_catalog as build_optional_packages_catalog,
-    write_pending_installs,
+    queue_required_packages,
 )
 from .player_setup import (
     modules,
@@ -1285,25 +1285,15 @@ async def create_app(
     async def restart_server(payload: Optional[Dict[str, Any]] = None):
         """Request a full systemd-driven restart of the server.
 
-        Before triggering the restart, the server polls every loaded
-        plugin's ``required_packages()`` and unions the result with an
-        optional ``{"install": [...]}`` body. Any allowed keys land in
-        ``/var/lib/kalinka/pending_installs.json`` so the bootstrap-time
-        install runs automatically on the way back up. This keeps the
-        optional-packages mechanism invisible from the user's perspective:
-        flipping a sub-feature toggle and clicking restart just works,
-        with a longer restart while the install completes.
+        Before triggering the restart, the server queues what an optional
+        ``{"install": [...]}`` body asks for, then what the plugins'
+        ``required_packages()`` name, as a settings save does, so the
+        bootstrap-time install runs on the way back up.
 
-        The explicit body is kept as a power-user override (and for
-        future "retry failed install" affordances). Unknown keys in
-        the body are rejected with 400; keys returned by plugins'
-        ``required_packages()`` but absent from the registry are
-        dropped with a log line (the plugin is misconfigured, but the
-        restart itself should still proceed). A package with no wheel
-        for this box counts as unknown either way, so no restart runs
-        an install that can only fail.
+        The explicit body is kept as a power-user override, and to retry
+        an install that failed. Unknown keys in the body, and keys with no
+        wheel declared for this box, are rejected with 400.
         """
-        # Explicit body keys
         body_requested: list[str] = []
         if payload and isinstance(payload, dict):
             raw = payload.get("install") or []
@@ -1313,78 +1303,28 @@ async def create_app(
                 )
             body_requested = [str(k) for k in raw]
 
-        # Auto-collect from plugins' required_packages(). Defensive: a
-        # misbehaving plugin must not block the restart.
-        auto_keys: list[str] = []
-        for prepared in list(modules.prepared_input_modules.values()) + list(
-            modules.prepared_devices.values()
-        ):
-            instance = prepared.plugin_instance
-            if instance is None:
-                continue
-            try:
-                keys = await instance.required_packages()
-            except Exception as e:  # noqa: BLE001 — defensive
-                logger.warning(
-                    "Plugin %s required_packages() raised; ignoring: %s",
-                    prepared.plugin_class.PLUGIN_ID,
-                    e,
-                )
-                continue
-            for k in keys or []:
-                if k not in auto_keys:
-                    auto_keys.append(str(k))
-
-        # Union, body first (so explicit user intent ordering wins for
-        # display) then auto-detected.
-        combined: list[str] = []
-        seen: set[str] = set()
-        for k in list(body_requested) + list(auto_keys):
-            if k not in seen:
-                seen.add(k)
-                combined.append(k)
-
-        accepted: list[str] = []
-        rejected: list[str] = []
-        if combined:
-            try:
-                accepted, rejected = write_pending_installs(
-                    combined,
-                    modules.prepared_input_modules,
-                    modules.prepared_devices,
-                )
-            except OSError as e:
-                logger.error("Failed to write pending installs: %s", e)
-                raise HTTPException(
-                    status_code=500,
-                    detail="Failed to record install request",
-                ) from e
-            # Body-provided keys must be valid (user-facing API). Keys
-            # we auto-collected from plugins are best-effort — drop with
-            # a log if the plugin is misconfigured.
-            body_rejected = [k for k in rejected if k in body_requested]
-            auto_rejected = [k for k in rejected if k not in body_requested]
-            if auto_rejected:
-                logger.warning(
-                    "Plugin required_packages() returned keys not in the "
-                    "registry or with no wheel for %s; dropping: %s",
-                    wheel_architecture(),
-                    auto_rejected,
-                )
-            if body_rejected:
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "message": "Unknown optional-package keys",
-                        "rejected": body_rejected,
-                        "accepted": accepted,
-                    },
-                )
-            if accepted:
-                logger.info(
-                    "Queued optional packages for next-boot install: %s",
-                    accepted,
-                )
+        try:
+            accepted, rejected = await queue_required_packages(
+                modules.prepared_input_modules,
+                modules.prepared_devices,
+                body_requested,
+            )
+        except OSError as e:
+            logger.error("Failed to write pending installs: %s", e)
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to record install request",
+            ) from e
+        body_rejected = [k for k in rejected if k in body_requested]
+        if body_rejected:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Unknown optional-package keys",
+                    "rejected": body_rejected,
+                    "accepted": accepted,
+                },
+            )
 
         try:
             update_check.request_restart()
@@ -1523,6 +1463,9 @@ async def create_app(
     # On the queue bus, so clients follow a plugin without asking again.
     modules.set_on_changed(_publish_modules)
     app.state.republish_modules = partial(modules.refresh_health, publish=True)
+    app.state.queue_required_packages = lambda: queue_required_packages(
+        modules.prepared_input_modules, modules.prepared_devices
+    )
     # A drive coming or going is what turns Drives' catalogs on or off.
     storage.after_change(app.state.republish_modules)
 

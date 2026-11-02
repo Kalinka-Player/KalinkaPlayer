@@ -78,9 +78,10 @@ echo "[dev] restart trigger= $TRIGGER  (in-app Restart works)"
 echo
 
 # Dev analog of prod's bootstrap.sh: drain optional-package requests (written by
-# /server/restart to pending_installs.json) through the SAME install_pending
-# helper, feeding it allow-list manifests generated from each plugin's
-# optional_packages module (the deb ships these as /opt/kalinka/allowed_packages).
+# a settings save or /server/restart to pending_installs.json) through the SAME
+# install_pending helper, feeding it allow-list manifests generated from each
+# plugin's optional_packages module (the deb ships these as
+# /opt/kalinka/allowed_packages).
 drain_pending_installs() {
   [ -f "$PENDING" ] || return 0
   echo "[dev] pending optional-package install found -> running install_pending" | tee -a "$LOGFILE"
