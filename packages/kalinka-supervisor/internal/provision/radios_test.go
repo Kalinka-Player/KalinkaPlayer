@@ -279,6 +279,13 @@ func TestExplicitWiFiEnableReportsItsOutcome(t *testing.T) {
 	if got := s.Problems(); len(got) != 0 {
 		t.Fatalf("a cancelled request was reported: %v", got)
 	}
+	m.Close()
+	if err := s.EnableWiFi(context.Background()); !errors.Is(err, protocol.Unavailable) {
+		t.Fatalf("a closed machine answered %v", err)
+	}
+	if got := s.Problems(); len(got) != 0 {
+		t.Fatalf("a request that met setup stopping was reported: %v", got)
+	}
 }
 
 func TestClearingABlockKeepsABluetoothdFailure(t *testing.T) {

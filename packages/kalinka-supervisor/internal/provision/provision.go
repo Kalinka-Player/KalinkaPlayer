@@ -254,13 +254,14 @@ func (s *Service) reported(radio string, step func(context.Context) error, works
 	}
 }
 
-// report keeps only a fixed code for clients; a cancelled or refused attempt says nothing about the radio.
+// report keeps only a fixed code for clients; a cancelled or refused attempt,
+// or one that met setup stopping, says nothing about the radio.
 func (s *Service) report(ctx context.Context, radio string, err error) {
 	if err == nil {
 		s.forget(radio)
 		return
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, protocol.Busy) {
+	if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, protocol.Busy) || errors.Is(err, machine.ErrClosed) {
 		return
 	}
 	code := s.problemCode(radio, err)
