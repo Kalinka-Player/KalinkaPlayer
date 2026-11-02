@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/godbus/dbus/v5"
@@ -80,7 +81,11 @@ func (n *NetworkManager) EnableRadio(ctx context.Context) error {
 	}
 	if !on {
 		if _, err = n.Bus.Call(ctx, nmRoot, "org.freedesktop.DBus.Properties.Set", nm, "WirelessEnabled", v(true)); err != nil {
-			return fmt.Errorf("NetworkManager: %w: %w", rfkill.ErrSoftBlocked, err)
+			// Only NetworkManager's own error refuses; the bus's mean it did not answer.
+			if strings.HasPrefix(dbusx.ErrorName(err), nm+".") {
+				return fmt.Errorf("NetworkManager: %w: %w", rfkill.ErrSoftBlocked, err)
+			}
+			return err
 		}
 		slog.Info("Switched Wi-Fi on in NetworkManager")
 	}
