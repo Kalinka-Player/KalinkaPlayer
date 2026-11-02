@@ -33,6 +33,11 @@ After selecting this backend, run `sudo systemctl enable --now kalinka-bluealsa`
 Package installation leaves that choice to the administrator so it does not
 stop a Bluetooth manager already in use.
 
+If BlueZ or BlueALSA is unavailable, the plugin keeps the error in receiver
+status and logs it once while it persists. Reconnection backs off from two
+seconds to at most 30 seconds; starting the backend allows automatic recovery.
+Leave the plugin disabled on hosts that do not receive Bluetooth audio.
+
 Enable the plugin in Kalinka settings and restart the server once to load it.
 Choose **Pair a phone for two minutes**, save, and select the receiver in the
 phone's Bluetooth settings. The action resets after saving. Alternatively,

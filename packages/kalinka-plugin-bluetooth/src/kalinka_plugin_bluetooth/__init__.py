@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from time import monotonic
 
 from pydantic import Field, model_validator
 
@@ -176,6 +177,8 @@ class KalinkaPluginBluetooth(InputModulePlugin):
             logger.warning("Bluetooth action failed: %s", error)
 
     async def _run(self):
+        retry_delay = 2.0
+        last_error = None
         while True:
             backend = BlueAlsaBackend(
                 self.context.config.adapter, self.context.config.bluealsa_service
@@ -183,6 +186,7 @@ class KalinkaPluginBluetooth(InputModulePlugin):
             reader = None
             pipe = None
             self.backend = backend
+            started = monotonic()
             try:
                 await backend.connect()
                 self.error = None
@@ -264,11 +268,18 @@ class KalinkaPluginBluetooth(InputModulePlugin):
                         )
                         if volume is not None:
                             await self.service.input_volume(volume_percent(volume))
+                    if last_error is not None:
+                        logger.info("Bluetooth receiver available again")
+                        last_error = None
             except asyncio.CancelledError:
                 raise
             except Exception as error:
                 self.error = f"Bluetooth receiver unavailable: {error}"
-                logger.warning("%s", self.error)
+                # Keep the failure visible in plugin status without filling
+                # the log when an optional backend is absent for hours.
+                if self.error != last_error:
+                    logger.warning("%s", self.error)
+                    last_error = self.error
             finally:
                 if reader is not None:
                     reader.cancel()
@@ -287,7 +298,12 @@ class KalinkaPluginBluetooth(InputModulePlugin):
                     finally:
                         backend.close()
                         self.backend = None
-            await asyncio.sleep(2)
+            # A backend that repeatedly starts and immediately fails should
+            # also back off. Reset only after a stable run, not just connect().
+            if monotonic() - started >= 30:
+                retry_delay = 2.0
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 30.0)
 
     async def _drain(self, pipe, service, backend):
         try:
