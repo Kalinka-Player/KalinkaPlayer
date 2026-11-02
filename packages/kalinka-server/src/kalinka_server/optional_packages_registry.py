@@ -7,35 +7,43 @@ serves the catalog used by the settings UI.
 
 Install requests go through this module: keys are validated against the
 in-memory registry and written to /var/lib/kalinka/pending_installs.json.
-Bootstrap re-validates against the deb-shipped manifest at
+A settings save and a restart both queue what the plugins need then, so
+whatever starts the server next installs it. Bootstrap re-validates
+against the deb-shipped manifest at
 /opt/kalinka/allowed_packages/<plugin>.json before invoking pip — i.e.
 this in-process check is convenience, not the security boundary.
 """
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import logging
 import os
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from kalinka_plugin_sdk import OptionalPackageSpec, wheel_architecture
 from kalinka_plugin_sdk import paths
 
+from .module_timeout import PLUGIN_CALL_TIMEOUT_S
 from .player_setup import PreparedPlugin
 
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
 
-# Default state file locations (under $KALINKA_PREFIX, default /var/lib/kalinka).
-# Kept overridable for tests.
-PENDING_INSTALLS_PATH = Path(paths.state_dir()) / "pending_installs.json"
-LAST_INSTALL_PATH = Path(paths.state_dir()) / "last_install.json"
+PENDING_INSTALLS_FILE = "pending_installs.json"
+LAST_INSTALL_FILE = "last_install.json"
 PENDING_SCHEMA_VERSION = 1
+
+
+def _state_file(name: str) -> Path:
+    # Per call: $KALINKA_PREFIX may be set after this module is imported.
+    return Path(paths.state_dir()) / name
 
 
 def _is_installed(spec: OptionalPackageSpec, key: str) -> bool:
@@ -132,11 +140,21 @@ def _installable_here(
     }
 
 
+def _read_last_install(last_install_path: Path) -> Any:
+    if not last_install_path.is_file():
+        return None
+    try:
+        return json.loads(last_install_path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning("Cannot read last install at %s: %s", last_install_path, e)
+        return None
+
+
 def build_catalog(
     input_modules: dict[str, PreparedPlugin],
     devices: dict[str, PreparedPlugin],
-    last_install_path: Path = LAST_INSTALL_PATH,
-    pending_installs_path: Path = PENDING_INSTALLS_PATH,
+    last_install_path: Path | None = None,
+    pending_installs_path: Path | None = None,
 ) -> dict[str, Any]:
     """Return the catalog payload for GET /server/optional_packages.
 
@@ -144,6 +162,9 @@ def build_catalog(
     ``offered_by`` names every plugin that offers it and what for. One with
     no wheel for this box is left out, as no install could bring it.
     """
+    pending_installs_path = pending_installs_path or _state_file(
+        PENDING_INSTALLS_FILE
+    )
     offers = _collect_offers(input_modules, devices)
     registry = _installable_here(_first_offers(offers))
 
@@ -161,14 +182,9 @@ def build_catalog(
                 e,
             )
 
-    last_install: dict[str, Any] | None = None
-    if last_install_path.is_file():
-        try:
-            last_install = json.loads(last_install_path.read_text())
-        except (OSError, json.JSONDecodeError) as e:
-            logger.warning(
-                "Cannot read last install at %s: %s", last_install_path, e
-            )
+    last_install = _read_last_install(
+        last_install_path or _state_file(LAST_INSTALL_FILE)
+    )
 
     packages: list[dict[str, Any]] = []
     for key, (declaring_plugin_id, spec) in sorted(registry.items()):
@@ -196,10 +212,10 @@ def build_catalog(
 
 
 def write_pending_installs(
-    keys: list[str],
+    keys: Sequence[str],
     input_modules: dict[str, PreparedPlugin],
     devices: dict[str, PreparedPlugin],
-    pending_installs_path: Path = PENDING_INSTALLS_PATH,
+    pending_installs_path: Path | None = None,
 ) -> tuple[list[str], list[str]]:
     """Validate and persist a pending-installs request.
 
@@ -208,8 +224,13 @@ def write_pending_installs(
     leaves it out too.
 
     Writes atomically (tmp + rename) so a reader of the file either sees
-    the previous request or the new one, never a half-written blob.
+    the previous request or the new one, never a half-written blob. With
+    nothing accepted the file is removed instead: install_pending would
+    replace last_install.json with a record of installing nothing.
     """
+    pending_installs_path = pending_installs_path or _state_file(
+        PENDING_INSTALLS_FILE
+    )
     registry = _installable_here(build_registry(input_modules, devices))
     accepted: list[str] = []
     rejected: list[str] = []
@@ -220,6 +241,10 @@ def write_pending_installs(
                 accepted.append(key)
         else:
             rejected.append(key)
+
+    if not accepted:
+        pending_installs_path.unlink(missing_ok=True)
+        return accepted, rejected
 
     payload = {
         "schema": PENDING_SCHEMA_VERSION,
@@ -233,4 +258,73 @@ def write_pending_installs(
     tmp_path.write_text(json.dumps(payload, indent=2))
     os.replace(tmp_path, pending_installs_path)
 
+    return accepted, rejected
+
+
+async def required_packages(
+    input_modules: dict[str, PreparedPlugin],
+    devices: dict[str, PreparedPlugin],
+) -> list[str]:
+    """The keys the enabled plugins' ``required_packages()`` name now, in
+    load order, each once.
+
+    A plugin that raises or does not answer in time is skipped, so neither a
+    settings save nor a restart can fail on one.
+    """
+    keys: list[str] = []
+    for _kind, plugin_id, prepared in _iter_plugin_entries(input_modules, devices):
+        instance = prepared.plugin_instance
+        if instance is None or not prepared.plugin_context.config.enabled:
+            continue
+        try:
+            named = await asyncio.wait_for(
+                instance.required_packages(), PLUGIN_CALL_TIMEOUT_S
+            )
+        except Exception as e:  # noqa: BLE001 — defensive
+            # The type only: a plugin's exception text may carry a credential.
+            logger.warning(
+                "Plugin %s required_packages() failed (%s); ignoring",
+                plugin_id,
+                type(e).__name__,
+            )
+            continue
+        for raw in named or []:
+            key = str(raw)
+            if key not in keys:
+                keys.append(key)
+    return keys
+
+
+async def queue_required_packages(
+    input_modules: dict[str, PreparedPlugin],
+    devices: dict[str, PreparedPlugin],
+    requested: Sequence[str] = (),
+    pending_installs_path: Path | None = None,
+) -> tuple[list[str], list[str]]:
+    """Queue the keys asked for, then those the plugins need now, for the
+    next start to install, whatever brings it.
+
+    Returns (accepted, rejected) as :func:`write_pending_installs` does. The
+    queue is replaced whole, so a feature turned off since takes its keys
+    back out. A key a plugin needs is dropped with a log line where no
+    install can bring it: unknown, or declared with no wheel for this box.
+    """
+    asked = [str(key) for key in requested]
+    needed = [
+        key
+        for key in await required_packages(input_modules, devices)
+        if key not in asked
+    ]
+    accepted, rejected = write_pending_installs(
+        [*asked, *needed], input_modules, devices, pending_installs_path
+    )
+    dropped = [key for key in needed if key in rejected]
+    if dropped:
+        logger.warning(
+            "Not queueing %s, which plugins need: unknown, or no wheel for %s",
+            dropped,
+            wheel_architecture(),
+        )
+    if accepted:
+        logger.info("Queued optional packages for the next start: %s", accepted)
     return accepted, rejected

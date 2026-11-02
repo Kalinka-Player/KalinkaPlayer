@@ -402,12 +402,21 @@ def register_config_routes(
         receivers = getattr(app.state, "receivers", None)
         if receivers is not None:
             receivers.changed()
-        republish = getattr(app.state, "republish_modules", None)
-        if republish is not None and any(
+        plugins_touched = any(
             key.startswith(("input_modules.", "devices.")) for key in applied
-        ):
+        )
+        republish = getattr(app.state, "republish_modules", None)
+        if republish is not None and plugins_touched:
             # A setting can move what the listing shows without a report moving.
             await republish()
+
+        queue_packages = getattr(app.state, "queue_required_packages", None)
+        if queue_packages is not None and plugins_touched:
+            # Now, not at a restart: a reboot or a crash restarts without asking.
+            try:
+                await queue_packages()
+            except Exception:  # noqa: BLE001 — the save stands without the queue
+                logger.exception("Could not queue the optional packages needed")
 
         ok_in, _err_in, ok_dev, _err_dev = _partition_modules_and_devices()
         known = build_static_values(config, ok_in, ok_dev)

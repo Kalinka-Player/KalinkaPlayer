@@ -233,6 +233,11 @@ def get_version() -> str:
 # preparing, checking and removing_package. GET /server/plugins'
 # last_operation is the same record. An update stops that plugin's own
 # playback while its files are replaced; the rest plays on.
+# Also 0.22: a PUT /server/config to a module or device queues the optional
+# packages the plugins need under the new settings, so whatever starts the
+# server next installs them; GET /server/optional_packages marks them
+# `pending`, and turning the feature off again takes them back out. PUT
+# /server/restart queues the same after what `install` names.
 REST_API_VERSION = "0.22"
 
 
