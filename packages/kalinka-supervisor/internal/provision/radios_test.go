@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"kalinka/supervisor/internal/gatt"
 	"kalinka/supervisor/internal/machine"
 	"kalinka/supervisor/internal/protocol"
 	"kalinka/supervisor/internal/rfkill"
@@ -344,6 +345,15 @@ func TestRecoveryReportsAWiFiRadioThatDidNotAnswer(t *testing.T) {
 	}
 	if got := s.Problems()["wifi"]; got != "unavailable" {
 		t.Fatalf("reported %q after the attempt ran out of time", got)
+	}
+}
+
+func TestBluetoothdRestartIsNotAProblem(t *testing.T) {
+	s := New(Options{}, nil)
+	s.root = t.TempDir()
+	s.report(context.Background(), "bluetooth", gatt.ErrRestarted)
+	if got := s.Problems(); len(got) != 0 {
+		t.Fatalf("a bluetoothd restart was reported: %v", got)
 	}
 }
 
