@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,14 +12,21 @@ from typing import Any
 
 import pytest
 
-from kalinka_plugin_sdk import OptionalPackageSpec
+from kalinka_plugin_sdk import (
+    ModuleHealthState,
+    ModuleState,
+    OptionalPackageSpec,
+    wheel_architecture,
+)
 from kalinka_plugin_sdk.module_config import ModuleConfig
 from kalinka_plugin_sdk.plugin import InputModulePlugin
-from kalinka_server import optional_packages_registry
+from kalinka_server import install_pending, optional_packages_registry
 from kalinka_server.optional_packages_registry import (
+    as_offered,
     build_catalog,
     build_registry,
     queue_required_packages,
+    unavailable_packages,
     write_pending_installs,
 )
 
@@ -414,6 +422,7 @@ def _queue(tmp_path: Path, input_modules, devices=None, requested=()):
             devices or {},
             requested,
             pending_installs_path=tmp_path / "pending.json",
+            last_install_path=tmp_path / "last.json",
         )
     )
 
@@ -494,3 +503,169 @@ def test_queue_skips_a_plugin_that_raises_or_hangs(tmp_path: Path, monkeypatch, 
     assert "raising required_packages() failed (RuntimeError)" in caplog.text
     assert "hanging required_packages() failed (TimeoutError)" in caplog.text
     assert "s3cret" not in caplog.text
+
+
+def _here() -> str:
+    return (
+        f"for Python {sys.version_info.major}.{sys.version_info.minor} "
+        f"on {wheel_architecture()}"
+    )
+
+
+def _last_install(tmp_path: Path, key: str, reason: str, pip_spec: str = "") -> None:
+    (tmp_path / "last.json").write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "requested": [key],
+                "results": [
+                    {
+                        "key": key,
+                        "pip_spec": pip_spec or f"{key}==1.0",
+                        "returncode": 1,
+                        "status": "failed",
+                        "stderr": "",
+                        "reason": reason,
+                    }
+                ],
+            }
+        )
+    )
+
+
+def test_queue_drops_a_plugin_key_the_last_install_found_no_wheel_of(
+    tmp_path: Path, caplog
+):
+    """#332: otherwise every save and restart queues an install that can
+    only fail again."""
+    _last_install(tmp_path, "soxr", f"No prebuilt soxr==1.0 {_here()}")
+
+    with caplog.at_level("WARNING"):
+        accepted, rejected = _queue(
+            tmp_path, {"alpha": _running(["soxr", "x"], ["soxr", "x"])}
+        )
+
+    assert (accepted, rejected) == (["x"], ["soxr"])
+    assert _queued(tmp_path) == ["x"]
+    assert "Not queueing ['soxr']" in caplog.text
+
+
+def test_queue_takes_a_key_asked_for_though_the_last_install_found_no_wheel(
+    tmp_path: Path,
+):
+    """An index may carry the wheel by now, so a retry stays possible."""
+    _last_install(tmp_path, "soxr", f"No prebuilt soxr==1.0 {_here()}")
+
+    accepted, rejected = _queue(
+        tmp_path, {"alpha": _running(["soxr"], ["soxr"])}, requested=["soxr"]
+    )
+
+    assert (accepted, rejected) == (["soxr"], [])
+
+
+@pytest.mark.parametrize(
+    "reason, pip_spec",
+    [
+        pytest.param("No prebuilt soxr==1.0 for Python 3.0 on {arch}", "", id="python"),
+        pytest.param("No prebuilt soxr==1.0 for Python {python} on vax", "", id="arch"),
+        pytest.param("No prebuilt soxr==0.9 {here}", "soxr==0.9", id="older-spec"),
+    ],
+)
+def test_a_no_wheel_failure_under_other_terms_does_not_stop_the_queue(
+    tmp_path: Path, reason, pip_spec
+):
+    python = f"{sys.version_info.major}.{sys.version_info.minor}"
+    _last_install(
+        tmp_path,
+        "soxr",
+        reason.format(arch=wheel_architecture(), python=python, here=_here()),
+        pip_spec,
+    )
+
+    accepted, _rejected = _queue(tmp_path, {"alpha": _running(["soxr"], ["soxr"])})
+
+    assert accepted == ["soxr"]
+
+
+def test_queue_reads_install_pendings_own_no_wheel_reason(
+    tmp_path: Path, monkeypatch
+):
+    """The reason's wording is install_pending's; the queue only matches it."""
+    manifests = tmp_path / "manifests"
+    manifests.mkdir()
+    (manifests / "alpha.json").write_text(
+        json.dumps(
+            {"plugin": "alpha", "packages": {"soxr": {"pip_spec": "soxr==1.0"}}}
+        )
+    )
+    page = "https://index.test/simple/soxr/"
+    monkeypatch.setattr(
+        install_pending,
+        "_pip_install",
+        lambda spec: install_pending.PipRun(
+            1,
+            f"ERROR: No matching distribution found for {spec}",
+            f"Getting page {page}\nFetched page {page} as text/html\n",
+        ),
+    )
+    pending = tmp_path / "pending.json"
+    pending.write_text(json.dumps({"schema": 1, "requested": ["soxr"]}))
+    install_pending.main(
+        ["install_pending", str(pending), str(manifests), str(tmp_path / "last.json")]
+    )
+
+    accepted, rejected = _queue(tmp_path, {"alpha": _running(["soxr"], ["soxr"])})
+
+    assert (accepted, rejected) == ([], ["soxr"])
+
+
+def test_unavailable_names_declared_and_found_packages_without_wheels(
+    monkeypatch, tmp_path: Path
+):
+    _on(monkeypatch, "armv7l")
+    python = f"{sys.version_info.major}.{sys.version_info.minor}"
+    found = f"No prebuilt soxr==1.0 for Python {python} on armv7l"
+    _last_install(tmp_path, "soxr", found)
+    input_modules = {
+        "localfiles": _prepared(
+            {
+                "onnxruntime": SIXTY_FOUR_BIT_ONLY,
+                "soxr": _spec("soxr"),
+                "numpy": _spec("numpy"),
+            }
+        ),
+    }
+
+    unavailable = unavailable_packages(
+        input_modules, {}, last_install_path=tmp_path / "last.json"
+    )
+
+    assert unavailable == {
+        "onnxruntime": "No prebuilt onnxruntime for armv7l",
+        "soxr": found,
+    }
+
+
+def test_a_module_offers_no_package_this_box_cannot_install():
+    state = ModuleState(
+        state=ModuleHealthState.ERROR,
+        message="AI search unavailable.",
+        missing_packages=["numpy", "soxr"],
+    )
+
+    shown = as_offered(state, {"soxr": "No prebuilt soxr for armv7l"})
+
+    assert shown.missing_packages == ["numpy"]
+    assert shown.message == (
+        "AI search unavailable.\n\n"
+        "`soxr` is not available on this device. No prebuilt soxr for armv7l."
+    )
+    assert state.missing_packages == ["numpy", "soxr"]
+
+
+def test_a_module_offering_only_installable_packages_is_shown_as_it_said():
+    state = ModuleState(
+        state=ModuleHealthState.WARNING, missing_packages=["numpy"]
+    )
+
+    assert as_offered(state, {"soxr": "No prebuilt soxr for armv7l"}) is state

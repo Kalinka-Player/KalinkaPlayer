@@ -21,12 +21,13 @@ import importlib.util
 import json
 import logging
 import os
+import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from kalinka_plugin_sdk import OptionalPackageSpec, wheel_architecture
+from kalinka_plugin_sdk import ModuleState, OptionalPackageSpec, wheel_architecture
 from kalinka_plugin_sdk import paths
 
 from .module_timeout import PLUGIN_CALL_TIMEOUT_S
@@ -148,6 +149,80 @@ def _read_last_install(last_install_path: Path) -> Any:
     except (OSError, json.JSONDecodeError) as e:
         logger.warning("Cannot read last install at %s: %s", last_install_path, e)
         return None
+
+
+def _no_wheel_at_last_install(
+    registry: dict[str, tuple[str, OptionalPackageSpec]],
+    last_install: Any,
+) -> dict[str, str]:
+    """{key: reason} for each package the last install found no wheel of
+    for this Python and architecture, as install_pending words it, while it
+    is still offered on the terms that install tried."""
+    here = (
+        f" for Python {sys.version_info.major}.{sys.version_info.minor} "
+        f"on {wheel_architecture()}"
+    )
+    results = last_install.get("results") if isinstance(last_install, dict) else None
+    found: dict[str, str] = {}
+    for result in results if isinstance(results, list) else []:
+        if not isinstance(result, dict) or result.get("status") != "failed":
+            continue
+        key, reason = result.get("key"), result.get("reason")
+        if not isinstance(key, str) or not isinstance(reason, str):
+            continue
+        offer = registry.get(key)
+        if (
+            offer is not None
+            and offer[1].pip_spec == result.get("pip_spec")
+            and reason.endswith(here)
+        ):
+            found[key] = reason
+    return found
+
+
+def unavailable_packages(
+    input_modules: dict[str, PreparedPlugin],
+    devices: dict[str, PreparedPlugin],
+    last_install_path: Path | None = None,
+) -> dict[str, str]:
+    """{key: why} for each offered package no install can bring to this box:
+    one declared with no wheel for its architecture, and one the last
+    install found no wheel of."""
+    registry = build_registry(input_modules, devices)
+    architecture = wheel_architecture()
+    unavailable = {
+        key: f"No prebuilt {key} for {architecture}"
+        for key, (_plugin_id, spec) in registry.items()
+        if not spec.has_wheels_for(architecture)
+    }
+    unavailable.update(
+        _no_wheel_at_last_install(
+            registry,
+            _read_last_install(last_install_path or _state_file(LAST_INSTALL_FILE)),
+        )
+    )
+    return unavailable
+
+
+def as_offered(state: ModuleState, unavailable: Mapping[str, str]) -> ModuleState:
+    """``state`` as the modules page shows it: a package no install can bring
+    is taken out of ``missing_packages`` and named in the message as not
+    available on this device, so nothing offers an install that would fail."""
+    lacking = [key for key in state.missing_packages if key in unavailable]
+    if not lacking:
+        return state
+    notes = [
+        f"`{key}` is not available on this device. {unavailable[key]}."
+        for key in lacking
+    ]
+    return state.model_copy(
+        update={
+            "missing_packages": [
+                key for key in state.missing_packages if key not in unavailable
+            ],
+            "message": "\n\n".join([state.message, *notes] if state.message else notes),
+        }
+    )
 
 
 def build_catalog(
@@ -300,6 +375,7 @@ async def queue_required_packages(
     devices: dict[str, PreparedPlugin],
     requested: Sequence[str] = (),
     pending_installs_path: Path | None = None,
+    last_install_path: Path | None = None,
 ) -> tuple[list[str], list[str]]:
     """Queue the keys asked for, then those the plugins need now, for the
     next start to install, whatever brings it.
@@ -307,22 +383,35 @@ async def queue_required_packages(
     Returns (accepted, rejected) as :func:`write_pending_installs` does. The
     queue is replaced whole, so a feature turned off since takes its keys
     back out. A key a plugin needs is dropped with a log line where no
-    install can bring it: unknown, or declared with no wheel for this box.
+    install can bring it: unknown, declared with no wheel for this box, or
+    found without one by the last install. One asked for is refused only as
+    unknown or declared without a wheel, so a failed install can be retried.
     """
     asked = [str(key) for key in requested]
+    no_wheel = _no_wheel_at_last_install(
+        build_registry(input_modules, devices),
+        _read_last_install(last_install_path or _state_file(LAST_INSTALL_FILE)),
+    )
     needed = [
         key
         for key in await required_packages(input_modules, devices)
         if key not in asked
     ]
     accepted, rejected = write_pending_installs(
-        [*asked, *needed], input_modules, devices, pending_installs_path
+        [*asked, *(key for key in needed if key not in no_wheel)],
+        input_modules,
+        devices,
+        pending_installs_path,
     )
+    rejected += [key for key in needed if key in no_wheel]
     dropped = [key for key in needed if key in rejected]
     if dropped:
         logger.warning(
-            "Not queueing %s, which plugins need: unknown, or no wheel for %s",
+            "Not queueing %s, which plugins need: unknown, or no wheel for "
+            "Python %d.%d on %s",
             dropped,
+            sys.version_info.major,
+            sys.version_info.minor,
             wheel_architecture(),
         )
     if accepted:

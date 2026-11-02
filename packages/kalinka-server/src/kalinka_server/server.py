@@ -85,8 +85,10 @@ from .plugin_lifecycle import PluginLifecycle
 from .options_registry import OptionsRegistry, register_plugin_options
 from .web_ui import WebUiStaticFiles
 from .optional_packages_registry import (
+    as_offered,
     build_catalog as build_optional_packages_catalog,
     queue_required_packages,
+    unavailable_packages,
 )
 from .player_setup import (
     modules,
@@ -1402,11 +1404,11 @@ async def create_app(
             modules.prepared_devices,
         )
 
-    def _module_entry(prepared) -> ModuleDescriptor:
+    def _module_entry(prepared, unavailable: Dict[str, str]) -> ModuleDescriptor:
         """One prepared plugin as clients see it, in the state it last
-        reported."""
+        reported, offering only the packages this box can install."""
         cfg = prepared.plugin_context.config
-        state = prepared.state
+        state = as_offered(prepared.state, unavailable)
         return ModuleDescriptor(
             name=cfg.name,
             title=cfg.__class__.model_fields["name"].title or cfg.name,
@@ -1445,12 +1447,21 @@ async def create_app(
         ]
 
     def _publish_modules() -> None:
+        unavailable = unavailable_packages(
+            modules.prepared_input_modules, modules.prepared_devices
+        )
         snapshot = ModulesSnapshot(
             input_modules=[
-                *(_module_entry(m) for m in modules.prepared_input_modules.values()),
+                *(
+                    _module_entry(m, unavailable)
+                    for m in modules.prepared_input_modules.values()
+                ),
                 *_builtin_entries(),
             ],
-            devices=[_module_entry(d) for d in modules.prepared_devices.values()],
+            devices=[
+                _module_entry(d, unavailable)
+                for d in modules.prepared_devices.values()
+            ],
         )
         app.state.module_snapshot = snapshot
         app.state.receivers.changed()
