@@ -727,10 +727,7 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
             "numpy"
         ):
             enr.state = ModuleHealthState.WARNING
-            enr.message = (
-                "Generated album art unavailable. Missing package: `numpy`. "
-                "Restart to finish setting up; it installs as Kalinka starts."
-            )
+            enr.message = "Generated album art unavailable. Missing package: `numpy`."
             enr.missing_packages = ("numpy",)
         else:
             enr.state = ModuleHealthState.READY
@@ -790,8 +787,7 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
                 ai.message = (
                     "AI search unavailable. Missing package(s): "
                     + ", ".join(f"`{m}`" for m in missing)
-                    + ". Restart to finish setting up; they install as "
-                    "Kalinka starts."
+                    + "."
                 )
                 ai.missing_packages = tuple(missing)
             elif dead:

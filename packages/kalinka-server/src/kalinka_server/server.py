@@ -85,10 +85,11 @@ from .plugin_lifecycle import PluginLifecycle
 from .options_registry import OptionsRegistry, register_plugin_options
 from .web_ui import WebUiStaticFiles
 from .optional_packages_registry import (
-    as_offered,
+    InstallHistory,
+    Installability,
     build_catalog as build_optional_packages_catalog,
+    build_registry as build_optional_packages_registry,
     queue_required_packages,
-    unavailable_packages,
 )
 from .player_setup import (
     modules,
@@ -210,6 +211,7 @@ async def lifespan(app: FastAPI):
             "update_check_task",
             "upgrade_task",
             "plugin_catalog_task",
+            "package_queue_task",
         ):
             task = getattr(app.state, attr, None)
             if task is not None:
@@ -1283,16 +1285,39 @@ async def create_app(
         app, renderer_upgrades, demo_mode=lambda: app.state.config.server.demo_mode
     )
 
+    # The plugins are set up once per process, and the installs ran before it.
+    installability = Installability.of(
+        build_optional_packages_registry(
+            modules.prepared_input_modules, modules.prepared_devices
+        ),
+        InstallHistory.read(),
+    )
     queueing = asyncio.Lock()
 
-    async def _queue_required_packages(requested: Sequence[str] = ()):
+    async def _queue_required_packages(
+        requested: Sequence[str] = (), hold_failed: bool = False
+    ):
         # One at a time, so an answer read before a later save never lands last.
         async with queueing:
             return await queue_required_packages(
-                modules.prepared_input_modules, modules.prepared_devices, requested
+                modules.prepared_input_modules,
+                modules.prepared_devices,
+                installability,
+                requested,
+                hold_failed,
             )
 
     app.state.queue_required_packages = _queue_required_packages
+
+    async def _queue_at_start():
+        # A feature turned on whose install never ran, or that an upgrade
+        # gave a new package, installs at the next start however it comes.
+        try:
+            await _queue_required_packages(hold_failed=True)
+        except OSError as e:
+            logger.error("Could not queue the optional packages needed: %s", e)
+
+    app.state.package_queue_task = asyncio.create_task(_queue_at_start())
 
     @app.put("/server/restart")
     async def restart_server(payload: Optional[Dict[str, Any]] = None):
@@ -1305,7 +1330,8 @@ async def create_app(
 
         The explicit body is kept as a power-user override, and to retry
         an install that failed. Unknown keys in the body, and keys with no
-        wheel declared for this box, are rejected with 400.
+        wheel declared for this box, are rejected with 400, and then nothing
+        is queued or restarted.
         """
         body_requested: list[str] = []
         if payload and isinstance(payload, dict):
@@ -1324,13 +1350,12 @@ async def create_app(
                 status_code=500,
                 detail="Failed to record install request",
             ) from e
-        body_rejected = [k for k in rejected if k in body_requested]
-        if body_rejected:
+        if rejected:
             raise HTTPException(
                 status_code=400,
                 detail={
                     "message": "Unknown optional-package keys",
-                    "rejected": body_rejected,
+                    "rejected": rejected,
                     "accepted": accepted,
                 },
             )
@@ -1411,11 +1436,11 @@ async def create_app(
             modules.prepared_devices,
         )
 
-    def _module_entry(prepared, unavailable: Dict[str, str]) -> ModuleDescriptor:
+    def _module_entry(prepared) -> ModuleDescriptor:
         """One prepared plugin as clients see it, in the state it last
         reported, offering only the packages this box can install."""
         cfg = prepared.plugin_context.config
-        state = as_offered(prepared.state, unavailable)
+        state = installability.as_offered(prepared.state)
         return ModuleDescriptor(
             name=cfg.name,
             title=cfg.__class__.model_fields["name"].title or cfg.name,
@@ -1454,21 +1479,12 @@ async def create_app(
         ]
 
     def _publish_modules() -> None:
-        unavailable = unavailable_packages(
-            modules.prepared_input_modules, modules.prepared_devices
-        )
         snapshot = ModulesSnapshot(
             input_modules=[
-                *(
-                    _module_entry(m, unavailable)
-                    for m in modules.prepared_input_modules.values()
-                ),
+                *(_module_entry(m) for m in modules.prepared_input_modules.values()),
                 *_builtin_entries(),
             ],
-            devices=[
-                _module_entry(d, unavailable)
-                for d in modules.prepared_devices.values()
-            ],
+            devices=[_module_entry(d) for d in modules.prepared_devices.values()],
         )
         app.state.module_snapshot = snapshot
         app.state.receivers.changed()
