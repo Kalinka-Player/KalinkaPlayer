@@ -48,6 +48,29 @@ func TestUnblockWithoutRfkill(t *testing.T) {
 	}
 }
 
+func TestBlockedReadsOnlyTheSelectedRadio(t *testing.T) {
+	root := rfkilltest.Stage(t,
+		rfkilltest.Radio{Type: "bluetooth", Name: "hci0", Soft: true},
+		rfkilltest.Radio{Type: "bluetooth", Name: "hci1", Hard: true},
+		rfkilltest.Radio{Type: "wlan", Name: "hci2", Soft: true, Hard: true},
+	)
+	for _, tc := range []struct {
+		radio      string
+		soft, hard bool
+	}{{"hci0", true, false}, {"hci1", false, true}, {"hci2", false, false}} {
+		soft, hard, err := Blocked(root, "bluetooth", tc.radio)
+		if err != nil || soft != tc.soft || hard != tc.hard {
+			t.Fatalf("%s: soft %v, hard %v, error %v", tc.radio, soft, hard, err)
+		}
+	}
+	if !rfkilltest.Soft(t, root, "rfkill0") {
+		t.Fatal("reading changed a block")
+	}
+	if soft, hard, err := Blocked(t.TempDir(), "bluetooth", "hci0"); soft || hard || err != nil {
+		t.Fatalf("without rfkill: soft %v, hard %v, error %v", soft, hard, err)
+	}
+}
+
 func TestUnblockReportsASoftBlockItCannotClear(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root writes a read-only file")

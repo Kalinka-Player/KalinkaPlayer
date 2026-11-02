@@ -4,10 +4,13 @@ package provision
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -42,6 +45,26 @@ type Service struct {
 	hotspot    atomic.Pointer[wifi.Hotspot]
 	// Root prefixes /sys so tests can stage Bluetooth radio blocks.
 	root string
+	// openRadio is gatt.New, which tests replace so no session needs BlueZ.
+	openRadio func(context.Context, *machine.Machine, string) (peripheral, string, error)
+	mu        sync.Mutex
+	problems  map[string]string
+}
+
+// peripheral is the part of gatt.Bluez a Bluetooth session drives.
+type peripheral interface {
+	Enable(context.Context) error
+	Disable(context.Context)
+	Events(context.Context) error
+	Close()
+}
+
+func openBluez(ctx context.Context, m *machine.Machine, adapter string) (peripheral, string, error) {
+	b, err := gatt.New(ctx, m, adapter)
+	if err != nil {
+		return nil, "", err
+	}
+	return b, b.Name, nil
 }
 
 // New returns a stopped service. port is asked for Core's HTTP port whenever setup reports it.
@@ -49,7 +72,7 @@ func New(o Options, port func() uint16) *Service {
 	if o.Adapter == "" {
 		o.Adapter = "hci0"
 	}
-	return &Service{opts: o, port: port, root: "/"}
+	return &Service{opts: o, port: port, root: "/", openRadio: openBluez, problems: map[string]string{}}
 }
 
 // Blocked returns why setup cannot run on this host now, or "" when it can.
@@ -158,7 +181,7 @@ func (s *Service) Run(ctx context.Context) error {
 		defer stopBLE()
 		bleDone := make(chan struct{})
 		defer func() { stopBLE(); <-bleDone }()
-		go func() { defer close(bleDone); serveBluetooth(bleCtx, m, o.Adapter) }()
+		go func() { defer close(bleDone); s.serveBluetooth(bleCtx, m) }()
 	}
 	radios := newRadioRecovery(s.radioSteps(m)...)
 	defer radios.close()
@@ -203,24 +226,80 @@ func (s *Service) tick(ctx context.Context, m *machine.Machine, backend machine.
 func (s *Service) radioSteps(m *machine.Machine) []func(context.Context) error {
 	var steps []func(context.Context) error
 	if !s.opts.DisableAP {
-		steps = append(steps, m.EnableWiFi)
+		steps = append(steps, s.reported("wifi", m.EnableWiFi))
 	}
 	if !s.opts.DisableBLE {
-		steps = append(steps, func(ctx context.Context) error {
+		steps = append(steps, s.reported("bluetooth", func(ctx context.Context) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 			_, _, err := rfkill.Unblock(s.root, "bluetooth", s.opts.Adapter)
 			return err
-		})
+		}))
 	}
 	return steps
+}
+
+// reported keeps a recovery step's outcome for clients and names its radio in the log.
+func (s *Service) reported(radio string, step func(context.Context) error) func(context.Context) error {
+	return func(ctx context.Context) error {
+		err := step(ctx)
+		s.report(radio, err)
+		if err != nil {
+			return fmt.Errorf("%s: %w", radio, err)
+		}
+		return nil
+	}
+}
+
+// report keeps a radio's latest outcome as a fixed code, which is all clients
+// see of it; the log has the detail. A cancelled or refused attempt says
+// nothing about the radio.
+func (s *Service) report(radio string, err error) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, protocol.Busy) {
+		return
+	}
+	code := ""
+	if err != nil {
+		code = s.problemCode(radio, err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if code == "" {
+		delete(s.problems, radio)
+	} else {
+		s.problems[radio] = code
+	}
+}
+
+func (s *Service) problemCode(radio string, err error) string {
+	var soft, hard bool
+	if radio == "bluetooth" {
+		soft, hard, _ = rfkill.Blocked(s.root, "bluetooth", s.opts.Adapter)
+	}
+	switch {
+	case hard || errors.Is(err, rfkill.ErrHardBlocked):
+		return "radio_hard_blocked"
+	case soft:
+		return "radio_blocked"
+	}
+	return "unavailable"
+}
+
+// Problems maps each radio whose last attempt failed, "bluetooth" or "wifi",
+// to radio_blocked, radio_hard_blocked or unavailable, until that radio next
+// works. Safe from any goroutine.
+func (s *Service) Problems() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.problems)
 }
 
 // EnableWiFi is an explicit request from the trusted LAN, including over Ethernet.
 func (s *Service) EnableWiFi(ctx context.Context) error {
 	if m := s.machine.Load(); m != nil {
 		err := m.EnableWiFi(ctx)
+		s.report("wifi", err)
 		if err != nil {
 			slog.Warn("Could not enable Wi-Fi", "error", err)
 		}
@@ -234,7 +313,7 @@ func (s *Service) APActive() bool { h := s.hotspot.Load(); return h != nil && h.
 
 // Snapshot exposes setup status even when a radio is absent or recovering.
 func (s *Service) Snapshot() map[string]any {
-	result := map[string]any{"available": false, "hotspot": s.APActive(), "server_id": coreconf.ReadID(s.opts.IdentityFile)}
+	result := map[string]any{"available": false, "hotspot": s.APActive(), "server_id": coreconf.ReadID(s.opts.IdentityFile), "radio_problems": s.Problems()}
 	if m := s.machine.Load(); m != nil {
 		result["available"] = true
 		result["setup"] = m.Snapshot()
@@ -260,17 +339,18 @@ func (s *Service) Command(owner string, raw []byte) error {
 	return protocol.Unavailable
 }
 
-func serveBluetooth(ctx context.Context, m *machine.Machine, adapter string) {
+func (s *Service) serveBluetooth(ctx context.Context, m *machine.Machine) {
 	for ctx.Err() == nil {
-		if err := bluetoothSession(ctx, m, adapter); err != nil && ctx.Err() == nil {
+		if err := s.bluetoothSession(ctx, m); err != nil && ctx.Err() == nil {
 			slog.Warn("Bluetooth setup unavailable; retrying", "error", err)
+			s.report("bluetooth", err)
 		}
 		_ = wifi.Pause(ctx, 10*time.Second)
 	}
 }
 
-func bluetoothSession(ctx context.Context, m *machine.Machine, adapter string) error {
-	radio, err := gatt.New(ctx, m, adapter)
+func (s *Service) bluetoothSession(ctx context.Context, m *machine.Machine) error {
+	radio, name, err := s.openRadio(ctx, m, s.opts.Adapter)
 	if err != nil {
 		return err
 	}
@@ -288,7 +368,8 @@ func bluetoothSession(ctx context.Context, m *machine.Machine, adapter string) e
 			if err := radio.Enable(ctx); err != nil {
 				return err
 			}
-			slog.Info("Nearby setup available", "name", radio.Name)
+			s.report("bluetooth", nil)
+			slog.Info("Nearby setup available", "name", name)
 			advertising = true
 		} else if !active && advertising {
 			radio.Disable(ctx)

@@ -3,14 +3,17 @@ package provision
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"kalinka/supervisor/internal/machine"
 	"kalinka/supervisor/internal/protocol"
+	"kalinka/supervisor/internal/rfkill"
 	"kalinka/supervisor/internal/rfkill/rfkilltest"
 	"kalinka/supervisor/internal/wifi"
 )
@@ -18,6 +21,7 @@ import (
 type radioBackend struct {
 	address string
 	enables atomic.Int32
+	enable  error
 }
 
 func (b *radioBackend) Address(context.Context) (string, error)                  { return b.address, nil }
@@ -27,7 +31,7 @@ func (b *radioBackend) Join(context.Context, protocol.Command, func(byte)) (stri
 }
 func (b *radioBackend) Recover(context.Context) error         { return nil }
 func (b *radioBackend) Close() error                          { return nil }
-func (b *radioBackend) EnableRadio(context.Context) error     { b.enables.Add(1); return nil }
+func (b *radioBackend) EnableRadio(context.Context) error     { b.enables.Add(1); return b.enable }
 func (b *radioBackend) StartAP(context.Context, string) error { return nil }
 func (b *radioBackend) StopAP(context.Context) error          { return nil }
 func (b *radioBackend) APInterface() string                   { return "wlan0" }
@@ -204,6 +208,71 @@ func TestRecoveryDoesNotBlockHeartbeatAndCancelsWhenOnline(t *testing.T) {
 	}
 	r.reconcile(context.Background(), false)
 	waitRecovery(t, r)
+}
+
+func TestRecoveryReportsEachRadioUntilItWorks(t *testing.T) {
+	s := New(Options{}, nil)
+	s.root = rfkilltest.Stage(t, rfkilltest.Radio{Type: "bluetooth", Name: "hci0", Soft: true, Hard: true})
+	b := &radioBackend{enable: fmt.Errorf("phy0: %w", rfkill.ErrHardBlocked)}
+	m := machine.New(context.Background(), b, machine.Config{})
+	defer m.Close()
+	steps := s.radioSteps(m)
+	var logged []string
+	for _, step := range steps {
+		if err := step(context.Background()); err != nil {
+			logged = append(logged, err.Error())
+		}
+	}
+	if !reflect.DeepEqual(logged, []string{"wifi: phy0: radio_hard_blocked", "bluetooth: hci0: radio_hard_blocked"}) {
+		t.Fatalf("the log would read %q", logged)
+	}
+	want := map[string]string{"wifi": "radio_hard_blocked", "bluetooth": "radio_hard_blocked"}
+	if got := s.Snapshot()["radio_problems"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("snapshot reports %v, want %v", got, want)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, step := range steps {
+		_ = step(cancelled)
+	}
+	if !reflect.DeepEqual(s.Problems(), want) {
+		t.Fatalf("a cancelled attempt changed the report: %v", s.Problems())
+	}
+	b.enable = nil
+	s.root = rfkilltest.Stage(t, rfkilltest.Radio{Type: "bluetooth", Name: "hci0"})
+	for _, step := range steps {
+		if err := step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := s.Problems(); len(got) != 0 {
+		t.Fatalf("radios that now work are still reported: %v", got)
+	}
+}
+
+func TestExplicitWiFiEnableReportsItsOutcome(t *testing.T) {
+	b := &radioBackend{enable: errors.New("NetworkManager did not answer")}
+	m := machine.New(context.Background(), b, machine.Config{})
+	defer m.Close()
+	s := New(Options{}, nil)
+	s.machine.Store(m)
+	if err := s.EnableWiFi(context.Background()); err == nil {
+		t.Fatal("the failure was not returned")
+	}
+	if got := s.Problems()["wifi"]; got != "unavailable" {
+		t.Fatalf("reported %q", got)
+	}
+	s.report("wifi", protocol.Busy)
+	if got := s.Problems()["wifi"]; got != "unavailable" {
+		t.Fatalf("a refused request replaced the report with %q", got)
+	}
+	b.enable = nil
+	if err := s.EnableWiFi(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Problems(); len(got) != 0 {
+		t.Fatalf("still reported after Wi-Fi came on: %v", got)
+	}
 }
 
 func TestBluetoothRecoveryHonorsAdapterAndDisabledTransports(t *testing.T) {
