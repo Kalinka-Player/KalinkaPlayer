@@ -21,7 +21,8 @@ logged to last_install.json and the helper exits 0 so kalinka.service
 still starts. The server can read last_install.json to surface results.
 pip installs wheels only, so a failed entry whose package has no wheel for
 this machine says so in its ``reason``, once every index pip asked has
-answered.
+answered. Such packages are also kept in no_wheel.json beside it, which
+outlasts later runs (:mod:`no_wheel_record`).
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ import time
 from pathlib import Path
 from typing import NamedTuple
 
+from . import no_wheel_record
 from .logging_setup import make_handler
 
 
@@ -158,11 +160,18 @@ def _no_wheel_reason(run: PipRun) -> str | None:
     not_found = _NOT_FOUND.search(run.stderr or "")
     if not_found is None or not _every_index_answered(run.log):
         return None
-    python = f"{sys.version_info.major}.{sys.version_info.minor}"
-    machine = _wheel_machine(platform.machine(), sys.maxsize > 2**32)
+    python, machine = _interpreter()
     return (
         f"No prebuilt {not_found.group(1).strip()} for Python {python} "
         f"on {machine}"
+    )
+
+
+def _interpreter() -> tuple[str, str]:
+    """This Python's version and the architecture pip wants wheels for."""
+    return (
+        f"{sys.version_info.major}.{sys.version_info.minor}",
+        _wheel_machine(platform.machine(), sys.maxsize > 2**32),
     )
 
 
@@ -176,6 +185,32 @@ def _wheel_machine(kernel_machine: str, python_is_64bit: bool) -> str:
     return {"aarch64": "armv7l", "armv8l": "armv7l", "x86_64": "i686"}.get(
         kernel_machine, kernel_machine
     )
+
+
+def _remember_no_wheel(
+    record_path: Path, registry: dict[str, dict], results: list[dict]
+) -> None:
+    """Carry the packages pip found no wheel of over from earlier runs, with
+    this run's added; one that installs now, or whose allow-listed spec has
+    moved since, leaves the record."""
+    python, machine = _interpreter()
+    packages = {
+        key: entry
+        for key, entry in no_wheel_record.read(record_path, python, machine).items()
+        if key in registry and registry[key]["pip_spec"] == entry["pip_spec"]
+    }
+    for result in results:
+        if result["status"] == "ok":
+            packages.pop(result["key"], None)
+        elif "reason" in result:
+            packages[result["key"]] = {
+                "pip_spec": result["pip_spec"],
+                "reason": result["reason"],
+            }
+    try:
+        no_wheel_record.write(record_path, python, machine, packages)
+    except OSError as e:
+        logger.error("Failed to write %s: %s", record_path, e)
 
 
 def main(argv: list[str]) -> int:
@@ -290,6 +325,9 @@ def main(argv: list[str]) -> int:
     except OSError as e:
         logger.error("Failed to write audit log %s: %s", last_install_path, e)
         # Still try to move the pending file out of the way below.
+    _remember_no_wheel(
+        last_install_path.with_name(no_wheel_record.FILE_NAME), registry, results
+    )
 
     # Rename the in-progress audit trail to .done or .failed depending
     # on the outcome. If this rename fails the file simply stays as
