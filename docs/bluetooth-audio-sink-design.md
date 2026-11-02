@@ -1,6 +1,8 @@
 # Bluetooth and AirPlay live audio: transport, latency and architecture
 
-Status: implemented, 2026-11-02; deployment and physical phone/Pi/DAC latency measurements remain pending. The sections below retain the research and design rationale; this implementation summary records the concrete contract and remaining limits.
+Status: implemented, 2026-11-02; Pi5 Bluetooth playback is confirmed, and switching between Pi5 and laptop renderers was exercised. Physical end-to-end latency measurements and the remaining hardware matrix are still pending. The sections below retain the research and design rationale; this implementation summary records the concrete contract and remaining limits.
+
+Follow-on proposal: [Receiver controls and device management](receiver-controls-design.md) moves discovery, pairing and audio-access operations out of plugin settings into an optional SDK controller and a shared app entry point. It preserves the media architecture below; that control/UI extension is not implemented yet.
 
 Pre-change baseline inspected: KalinkaPlayer `506a9bb10689a537dfeb201234a2a48d744947b7` and the sibling `kalinka-plugin-airplay` checkout at `1a6293694c0a62ffec6d1b94c036576562f20f56`. Local links below refer to the current tree; AirPlay links are pinned to the inspected revision. External sources were checked on the date above.
 
