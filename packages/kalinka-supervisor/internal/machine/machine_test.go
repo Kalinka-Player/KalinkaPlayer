@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"kalinka/supervisor/internal/protocol"
 	"kalinka/supervisor/internal/wifi"
 	"kalinka/supervisor/internal/wifi/wifitest"
@@ -101,8 +102,8 @@ func TestEnablingWiFiExcludesSetupOperationsAndHonorsCancellation(t *testing.T) 
 		t.Fatal("busy flag leaked")
 	}
 	m.Close()
-	if err := m.EnableWiFi(context.Background()); err != protocol.Unavailable {
-		t.Fatal("closed machine accepted enable")
+	if err := m.EnableWiFi(context.Background()); !errors.Is(err, ErrClosed) || !errors.Is(err, protocol.Unavailable) {
+		t.Fatal("closed machine accepted enable", err)
 	}
 }
 

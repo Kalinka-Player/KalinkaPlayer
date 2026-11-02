@@ -4,6 +4,7 @@ package machine
 import (
 	"context"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -112,13 +113,18 @@ func (m *Machine) FirstRun() bool {
 	return !m.seen
 }
 
+// ErrClosed is EnableWiFi's answer once the machine has closed. It matches
+// protocol.Unavailable but, unlike a backend without EnableRadio, says nothing
+// about the radio.
+var ErrClosed = fmt.Errorf("%w: setup has stopped", protocol.Unavailable)
+
 // EnableWiFi changes the radio only on an explicit request or an opted-in recovery.
 // Reads, opening setup, scanning and joining never imply permission to clear a block.
 func (m *Machine) EnableWiFi(parent context.Context) error {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
-		return protocol.Unavailable
+		return ErrClosed
 	}
 	if m.enabling || m.state == protocol.Joining || m.scanState == "scanning" || m.resetting {
 		m.mu.Unlock()
