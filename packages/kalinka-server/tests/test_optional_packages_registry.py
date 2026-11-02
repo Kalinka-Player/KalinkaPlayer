@@ -480,6 +480,25 @@ def test_queue_drops_an_unknown_plugin_key_and_says_so(tmp_path: Path, caplog):
     assert "Not queueing ['q']" in caplog.text
 
 
+def test_queue_warns_of_a_conflicting_declaration_once(tmp_path: Path, caplog):
+    """Each save queues, so each save should log the conflict only once."""
+    input_modules = {
+        "alpha": _running(["shared"], ["shared"]),
+        "beta": _Running(
+            plugin_class=FakePluginClass(
+                OPTIONAL_PACKAGES={"shared": _spec("shared-v2")}
+            ),
+            plugin_instance=_Needing(),
+        ),
+    }
+
+    with caplog.at_level("WARNING"):
+        accepted, _rejected = _queue(tmp_path, input_modules)
+
+    assert accepted == ["shared"]
+    assert caplog.text.count("declared by both") == 1
+
+
 async def _raises():
     raise RuntimeError("401 for https://api.test/?client_id=s3cret")
 
