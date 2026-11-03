@@ -2,13 +2,25 @@
 
 stage_test_packages() {
   local source="$1" destination="$2" architecture="$3" file package version arch filename
+  local supervisor="${4:-}"
   local -A seen=()
   [ -d "$source" ] || die "TEST_DEBS_DIR is not a directory: $source"
+  local -a files=("$source"/*.deb)
+  if [ -n "$supervisor" ]; then
+    [ -f "$supervisor" ] || die 'SUPERVISOR_DEB does not exist'
+    [ "$(dpkg-deb -f "$supervisor" Package)" = kalinka-supervisor ] || die 'wrong supervisor package'
+    # Stage the explicit selection first; omit bundled supervisor versions so
+    # apt and the verification manifest agree on the package being installed.
+    files=("$supervisor" "${files[@]}")
+  fi
   mkdir -p "$destination"
   : > "$destination/packages.tsv"
-  for file in "$source"/*.deb; do
+  for file in "${files[@]}"; do
     [ -f "$file" ] || continue
     package="$(dpkg-deb -f "$file" Package)"
+    if [ "$package" = kalinka-supervisor ] && [ -n "$supervisor" ] && [ -n "${seen[$package]:-}" ]; then
+      continue
+    fi
     version="$(dpkg-deb -f "$file" Version)"
     arch="$(dpkg-deb -f "$file" Architecture)"
     case "$package" in kalinka-*) ;; *) die "not a Kalinka test package: $package" ;; esac

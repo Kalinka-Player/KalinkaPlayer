@@ -44,6 +44,8 @@ class Live:
 
 class Hold:
     def __init__(self, listener):
+        self.paused = False
+        self.resumes = 0
         self.listener, self.active, self.plays, self.shown, self.volumes = (
             listener,
             True,
@@ -62,10 +64,11 @@ class Hold:
         self.active = False
 
     async def pause(self):
-        pass
+        self.paused = True
 
     async def resume(self):
-        pass
+        self.paused = False
+        self.resumes += 1
 
     async def set_volume(self, value):
         self.volumes.append(value)
@@ -205,6 +208,38 @@ async def test_pause_discards_audio_and_volume_echo_does_not_loop(service):
     assert service.backend.volumes == [42] and service.hold.volumes == []
     await service.input_volume(25)
     assert service.hold.volumes == [25]
+
+
+async def test_sender_play_resumes_the_hold_paused_through_kalinka(service, endpoint):
+    service.audio(b"123456")
+    await settle(service)
+    hold = service.hold
+    await service.command(TransportRequest(TransportKind.PAUSE))
+    await service.connected(replace(endpoint, running=False))
+    assert hold.paused
+
+    await service.connected(endpoint)
+    service.audio(b"abcdef")
+    await settle(service)
+    assert not hold.paused and hold.resumes == 1
+    assert not service.paused and service.hold is hold
+    assert service.source.data == b"abcdef"
+    assert len(service.direct.holds) == 1
+    # The sender already started: do not echo Play or restart on another update.
+    assert service.backend.commands == ["Pause"]
+    await service.connected(endpoint)
+    assert hold.resumes == 1
+
+
+async def test_sender_running_transition_does_not_restart_an_unpaused_hold(
+    service, endpoint
+):
+    service.audio(b"123456")
+    await settle(service)
+    await service.connected(replace(endpoint, running=False))
+    await service.connected(endpoint)
+    assert service.hold.resumes == 0
+    assert service.source.resets == 0
 
 
 def test_backend_normalizes_api_versions_and_rejects_unknown_layouts():
