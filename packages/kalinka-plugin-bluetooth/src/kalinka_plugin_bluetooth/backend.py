@@ -123,6 +123,7 @@ class BlueAlsaBackend:
         self.owner = ""
         self._restarted = False
         self._incarnations = {}
+        self._device_incarnations = {}
         self.agent_handler = None
 
     async def call(self, destination, path, interface, member, signature="", body=None):
@@ -209,6 +210,27 @@ class BlueAlsaBackend:
             if result is not None:
                 return result
         if message.message_type == MessageType.SIGNAL:
+            if (
+                message.interface == OBJECTS
+                and message.member in ("InterfacesAdded", "InterfacesRemoved")
+                and len(message.body) == 2
+                and DEVICE in message.body[1]
+            ):
+                path = message.body[0]
+                self._device_incarnations[path] = (
+                    self._device_incarnations.get(path, 0) + 1
+                )
+            if (
+                message.interface == PROPERTIES
+                and message.member == "PropertiesChanged"
+                and len(message.body) >= 2
+                and message.body[0] == DEVICE
+                and "Paired" in message.body[1]
+            ):
+                path = message.path
+                self._device_incarnations[path] = (
+                    self._device_incarnations.get(path, 0) + 1
+                )
             if (
                 message.interface == OBJECTS
                 and message.member in ("InterfacesAdded", "InterfacesRemoved")
@@ -310,6 +332,41 @@ class BlueAlsaBackend:
                     "The phone's audio profile did not disconnect",
                 )
             await asyncio.sleep(0.05)
+        self.changed.set()
+
+    def device_identity(self, address):
+        peer = self.devices().get(address)
+        if peer is None:
+            return None
+        return (
+            peer[0],
+            bool(peer[1].get("Paired")),
+            self._device_incarnations.get(peer[0], 0),
+        )
+
+    async def remove_device(self, device, *, address, expected_identity):
+        # Persistence yields before removal. Recheck immediately before the
+        # D-Bus call so a replacement bond cannot inherit an old Forget action.
+        if self.device_identity(address) != expected_identity:
+            raise ReceiverError("stale_target", "The phone's pairing has changed")
+        try:
+            await self.call(
+                BLUEZ,
+                f"/org/bluez/{self.adapter}",
+                ADAPTER,
+                "RemoveDevice",
+                "o",
+                [device],
+            )
+        except Exception:
+            await self.refresh()
+            if self.bluez.get(device, {}).get(DEVICE, {}).get("Paired"):
+                raise
+        await self.refresh()
+        if self.bluez.get(device, {}).get(DEVICE, {}).get("Paired"):
+            raise ReceiverError(
+                "backend_timeout", "The phone's pairing has not been removed yet"
+            )
         self.changed.set()
 
     async def events(self) -> AsyncIterator[None]:

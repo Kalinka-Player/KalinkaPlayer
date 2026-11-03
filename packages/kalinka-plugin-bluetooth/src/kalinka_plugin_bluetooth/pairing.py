@@ -2,8 +2,8 @@
 
 Both Kalinka clients take the same advisory lock before changing adapter-global
 properties or the default agent. Capture does not hold the lease. Audio access
-is remembered separately from BlueZ bonds, so forgetting audio never deletes a
-Wi-Fi provisioning bond.
+is remembered separately from BlueZ bonds. Explicit Forget removes the shared
+bond under the same lease; it never resets network provisioning settings.
 """
 
 from __future__ import annotations
@@ -12,14 +12,13 @@ import asyncio
 import fcntl
 import json
 import os
-from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
 from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel
-from kalinka_plugin_sdk.receiver_control import PairingRequest, ReceiverError
+from kalinka_plugin_sdk.receiver_control import ReceiverError
 
 from dbus_fast import Message
 
@@ -28,18 +27,10 @@ from .backend import ADAPTER, AUDIO_UUIDS, BLUEZ, DEVICE, PROPERTIES, plain
 AGENT = "/org/kalinka/bluetooth_agent"
 
 
-@dataclass
-class PendingPairing:
-    view: PairingRequest
-    device: str
-    deadline: float
-    answer: asyncio.Future | None = None
-
-
 class AccessRecord(BaseModel):
     alias: str
     trust_before_grant: bool | None = None
-    state: Literal["pending", "allowed", "revoked"] = "pending"
+    state: Literal["pending", "allowed", "revoked", "forgetting"] = "pending"
 
 
 class AudioAccess:
@@ -86,7 +77,7 @@ class AudioAccess:
         async with self._write:
             existing = self.records.get(address)
             if existing is not None:
-                if existing.state == "revoked":
+                if existing.state in ("revoked", "forgetting"):
                     raise ReceiverError(
                         "backend_unavailable",
                         "Previous audio-access cleanup is still pending",
@@ -117,6 +108,16 @@ class AudioAccess:
                     }
                 )
 
+    async def forget_bond(self, address, alias):
+        async with self._write:
+            record = self.records.get(address, AccessRecord(alias=alias))
+            await self._persist(
+                {
+                    **self.records,
+                    address: record.model_copy(update={"state": "forgetting"}),
+                }
+            )
+
     async def cleaned(self, address):
         async with self._write:
             record = self.records.get(address)
@@ -134,6 +135,11 @@ class AudioAccess:
         record = self.records.get(address)
         if record is None or record.state == "allowed":
             return
+        if record.state == "forgetting":
+            raise ReceiverError(
+                "backend_unavailable",
+                "Device removal must finish under the Bluetooth setup lease",
+            )
         peer = backend.devices().get(address)
         if peer is not None:
             path, props = peer
@@ -189,7 +195,8 @@ class PairingWindow:
         self._old: dict = {}
         self._tasks: set[asyncio.Task] = set()
         self._guard = asyncio.Lock()
-        self.pending: PendingPairing | None = None
+        self._new_bonds: set[str] = set()
+        self._existing_audio_devices: set[str] = set()
         self.notice: str | None = None
 
     @property
@@ -252,6 +259,8 @@ class PairingWindow:
                 raise
             self._lock_fd = fd
             try:
+                self._new_bonds.clear()
+                self._existing_audio_devices = self.backend.audio_devices()
                 self._existing_endpoints = {
                     e.identity for e in self.backend.endpoints()
                 }
@@ -277,7 +286,7 @@ class PairingWindow:
                     "org.bluez.AgentManager1",
                     "RegisterAgent",
                     "os",
-                    [AGENT, "DisplayYesNo"],
+                    [AGENT, "NoInputNoOutput"],
                 )
                 self._registered = True
                 await self.backend.call(
@@ -321,89 +330,42 @@ class PairingWindow:
             # Denial is durable and the admission watcher retries cleanup.
             self.backend.changed.set()
 
-    @property
-    def request(self):
-        pending = self.pending
-        if pending is None or not self.active:
-            return None
-        return pending.view.model_copy(
-            update={
-                "remaining_seconds": max(
-                    0.0, min(self.remaining_seconds, pending.deadline - monotonic())
-                )
-            }
-        )
-
     def _cancel_requests(self):
-        self.pending = None
         for task in self._tasks:
             task.cancel()
-        # A cancelled handshake must not leave provisional audio permission.
         self.candidates.clear()
+        self._new_bonds.clear()
         self.backend.changed.set()
 
-    async def expire_request(self):
-        pending = self.pending
-        if (
-            pending is not None
-            and pending.answer is None
-            and monotonic() >= pending.deadline
-        ):
-            self.pending = None
-            self.notice = "Pairing approval timed out"
-            self.backend.changed.set()
-            await self.backend.call(BLUEZ, pending.device, DEVICE, "CancelPairing")
-
-    async def answer(self, request_id, accept, code=None):
-        pending = self.pending
-        if (
-            pending is None
-            or pending.view.request_id != request_id
-            or not self.active
-            or not self.remaining_seconds
-            or monotonic() >= pending.deadline
-        ):
-            raise ReceiverError(
-                "stale_target", "This pairing request has already ended"
+    async def _admit(self, device, props, window_id):
+        if not self.active or not self.remaining_seconds or self.window_id != window_id:
+            raise ReceiverError("stale_target", "Pairing window expired")
+        address = props["Address"].upper()
+        if address in self.access.devices:
+            return address
+        if self.candidates.get(address) == device:
+            return address
+        if self.candidates and self.candidates.get(address) != device:
+            raise ReceiverError("pairing_busy", "Another device is pairing")
+        self.candidates[address] = device
+        if not props.get("Paired"):
+            self._new_bonds.add(address)
+        try:
+            await self.access.begin(
+                address, props.get("Alias", address), bool(props.get("Trusted"))
             )
-        method = pending.view.method
-        if accept:
-            if pending.answer is None:
-                raise ReceiverError(
-                    "invalid_answer", "Enter the displayed code on your device"
-                )
-            if method == "passkey":
-                if (
-                    code is None
-                    or len(code) != 6
-                    or not code.isascii()
-                    or not code.isdigit()
-                ):
-                    raise ReceiverError(
-                        "invalid_answer", "Enter the six-digit code from your device"
-                    )
-            elif method == "pin":
-                if (
-                    not code
-                    or len(code) > 16
-                    or any(ord(c) < 32 or ord(c) == 127 for c in code)
-                ):
-                    raise ReceiverError(
-                        "invalid_answer",
-                        "Enter the PIN from your device (1–16 characters)",
-                    )
-            elif code is not None:
-                raise ReceiverError(
-                    "invalid_answer", "This request does not accept a code"
-                )
-        # Consume the token before yielding: a second client can never answer it.
-        self.pending = None
-        self.notice = None if accept else "Pairing rejected"
-        if pending.answer is not None:
-            pending.answer.set_result((accept, code))
-        elif not accept:
-            await self.backend.call(BLUEZ, pending.device, DEVICE, "CancelPairing")
-        self.backend.changed.set()
+            if (
+                not self.active
+                or not self.remaining_seconds
+                or self.window_id != window_id
+            ):
+                raise ReceiverError("stale_target", "Pairing window expired")
+            await self.backend.set_property(BLUEZ, device, DEVICE, "Trusted", "b", True)
+        except BaseException:
+            self.candidates.pop(address, None)
+            self._new_bonds.discard(address)
+            raise
+        return address
 
     def _agent(self, message):
         if message.path != AGENT or message.interface != "org.bluez.Agent1":
@@ -417,28 +379,22 @@ class PairingWindow:
             self._cancel_requests()
             if message.member == "Release":
                 self._registered = False
-                # End the window and restore the provisioning lease promptly.
                 self.deadline = monotonic()
                 if self._timer is not None:
                     self._timer.cancel()
                 self._timer = asyncio.create_task(self._expire(0))
             return Message.new_method_return(message)
-        methods = {
-            "RequestConfirmation": "confirmation",
-            "RequestAuthorization": "authorization",
-            "RequestPinCode": "pin",
-            "RequestPasskey": "passkey",
-            "DisplayPinCode": "display_pin",
-            "DisplayPasskey": "display_passkey",
-            "AuthorizeService": "authorization",
-        }
-        if (
-            not self.active
-            or not self.remaining_seconds
-            or message.member not in methods
-        ):
+        if not self.active or not self.remaining_seconds:
             return Message.new_error(
                 message, "org.bluez.Error.Rejected", "Audio pairing is closed"
+            )
+        # The explicit pairing window authorizes Just Works. Never invent a PIN
+        # or silently confirm a numeric-comparison callback with this capability.
+        if message.member not in ("RequestAuthorization", "AuthorizeService"):
+            return Message.new_error(
+                message,
+                "org.bluez.Error.Rejected",
+                "This receiver supports pairing without a code",
             )
         if message.member == "AuthorizeService" and (
             len(message.body) != 2 or message.body[1].lower() not in AUDIO_UUIDS
@@ -452,16 +408,12 @@ class PairingWindow:
                 "org.bluez.Error.Rejected",
                 "Another pairing request is pending",
             )
-        task = asyncio.create_task(
-            self._authorize(message, methods[message.member], self.window_id)
-        )
+        task = asyncio.create_task(self._authorize(message, self.window_id))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return True
 
-    async def _authorize(self, message, method, window_id):
-        pending = None
-        address = None
+    async def _authorize(self, message, window_id):
         try:
             device = message.body[0]
             if not device.startswith(self.adapter + "/dev_"):
@@ -469,110 +421,96 @@ class PairingWindow:
             reply = await self.backend.call(
                 BLUEZ, device, PROPERTIES, "GetAll", "s", [DEVICE]
             )
-            props = plain(reply.body[0])
-            if (
-                not self.active
-                or not self.remaining_seconds
-                or self.window_id != window_id
-            ):
-                raise ValueError("Pairing window expired")
-            address = props["Address"].upper()
-            approved = message.member == "AuthorizeService" and (
-                address in self.access.devices or self.admits(address)
-            )
-            answer_code = None
-            if not approved:
-                code = None
-                if method in ("confirmation", "display_passkey"):
-                    value = message.body[1]
-                    if type(value) is not int or not 0 <= value <= 999999:
-                        raise ValueError("Invalid BlueZ comparison code")
-                    code = f"{value:06d}"
-                elif method == "display_pin":
-                    code = str(message.body[1])
-                display = method.startswith("display_")
-                current = self.pending
-                if current is not None and not (
-                    current.device == device
-                    and current.view.method.startswith("display_")
-                ):
-                    raise ValueError("Another pairing request is pending")
-                pending = PendingPairing(
-                    PairingRequest(
-                        request_id=(
-                            current.view.request_id
-                            if current and display
-                            else uuid4().hex
-                        ),
-                        device_name=props.get("Alias", address),
-                        method=method,
-                        code=code,
-                        entered=message.body[2]
-                        if method == "display_passkey"
-                        else None,
-                        remaining_seconds=min(60, self.remaining_seconds),
-                    ),
-                    device,
-                    monotonic() + min(60, self.remaining_seconds),
-                    None if display else asyncio.get_running_loop().create_future(),
-                )
-                self.pending = pending
-                self.notice = None
-                self.backend.changed.set()
-                if not display:
-                    accepted, answer_code = await asyncio.wait_for(
-                        pending.answer, min(60, self.remaining_seconds)
-                    )
-                    if not accepted:
-                        raise ValueError("Pairing rejected")
-                    if (
-                        not self.active
-                        or not self.remaining_seconds
-                        or self.window_id != window_id
-                    ):
-                        raise ValueError("Pairing window expired")
-            if not method.startswith("display_"):
-                if address not in self.access.devices:
-                    self.candidates[address] = device
-                    await self.access.begin(
-                        address, props.get("Alias", address), bool(props.get("Trusted"))
-                    )
-                    if not self.active or not self.remaining_seconds:
-                        raise ValueError("Pairing window expired")
-                await self.backend.set_property(
-                    BLUEZ, device, DEVICE, "Trusted", "b", True
-                )
-            signature, body = (
-                ("s", [answer_code])
-                if method == "pin"
-                else ("u", [int(answer_code)])
-                if method == "passkey"
-                else ("", [])
-            )
-            response = Message.new_method_return(message, signature, body)
+            await self._admit(device, plain(reply.body[0]), window_id)
+            response = Message.new_method_return(message)
         except (Exception, asyncio.CancelledError) as error:
-            if address is not None:
-                self.candidates.pop(address, None)
             self.notice = (
-                "Pairing approval timed out"
-                if isinstance(error, TimeoutError)
-                else "Pairing cancelled"
+                "Pairing cancelled"
                 if isinstance(error, asyncio.CancelledError)
                 else str(error)
             )
             response = Message.new_error(
                 message, "org.bluez.Error.Rejected", self.notice
             )
-        finally:
-            if (
-                pending is not None
-                and pending.answer is not None
-                and self.pending is pending
-            ):
-                self.pending = None
         if self.backend.bus is not None:
             await self.backend.bus.send(response)
         self.backend.changed.set()
+
+    async def admit_connected(self):
+        # A phone bonded during provisioning may reconnect without an agent
+        # callback. Admit its fresh audio transport only inside this window.
+        if not self.active or not self.remaining_seconds:
+            return
+        for address, (device, props) in self.backend.devices().items():
+            record = self.access.records.get(address)
+            if record and record.state in ("revoked", "forgetting"):
+                continue
+            if (
+                device in self.backend.audio_devices() - self._existing_audio_devices
+                and props.get("Paired")
+                and address not in self.access.devices
+                and (not self.candidates or self.candidates.get(address) == device)
+            ):
+                await self._admit(device, props, self.window_id)
+                return
+
+    async def complete_bond(self):
+        # A new bond is a completed pairing even before the sender opens A2DP.
+        # Existing provisioning bonds still need a fresh audio endpoint.
+        async with self._guard:
+            if self._tasks:
+                return False
+            for address in list(self._new_bonds):
+                peer = self.backend.devices().get(address)
+                if self.admits(address) and peer and peer[1].get("Paired"):
+                    await self.access.commit(address)
+                    self.completed_address = address
+                    await self._close()
+                    return True
+        return False
+
+    async def forget_device(self, address, expected_identity):
+        """Durably forget a bond while excluding concurrent BLE provisioning."""
+        async with self._guard:
+            fd = None
+            if self._lock_fd is None:
+                self.runtime.mkdir(parents=True, exist_ok=True)
+                fd = os.open(
+                    self.runtime / f"bluetooth-{self.backend.adapter}.lock",
+                    os.O_RDONLY | os.O_CREAT | os.O_CLOEXEC,
+                    0o644,
+                )
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    os.close(fd)
+                    raise ReceiverError(
+                        "adapter_busy",
+                        "Bluetooth setup is using the adapter; try again when setup finishes",
+                    ) from None
+            try:
+                if address in self.candidates:
+                    raise ReceiverError(
+                        "pairing_busy",
+                        "Wait for this device to finish pairing, or stop pairing first",
+                    )
+                await self.backend.refresh()
+                if self.backend.device_identity(address) != expected_identity:
+                    raise ReceiverError(
+                        "stale_target", "The phone's pairing has changed"
+                    )
+                peer = self.backend.devices().get(address)
+                alias = peer[1].get("Alias", address) if peer else address
+                await self.access.forget_bond(address, alias)
+                if peer:
+                    await self.backend.remove_device(
+                        peer[0], address=address, expected_identity=expected_identity
+                    )
+                await self.access.cleaned(address)
+                self.backend.changed.set()
+            finally:
+                if fd is not None:
+                    os.close(fd)
 
     async def _restore(self):
         self.active = False
@@ -615,7 +553,8 @@ class PairingWindow:
         """Only a paired A2DP PCM endpoint commits a provisional grant."""
         async with self._guard:
             if (
-                not self.admits(endpoint.address)
+                self._tasks
+                or not self.admits(endpoint.address)
                 or self.candidates[endpoint.address] != endpoint.device
                 or endpoint.identity in self._existing_endpoints
             ):
@@ -625,20 +564,19 @@ class PairingWindow:
                 return False
             await self.access.commit(endpoint.address)
             self.completed_address = endpoint.address
-            await self._close(cancel=False)
+            await self._close()
             return True
 
     async def close(self):
         async with self._guard:
-            await self._close(cancel=True)
+            await self._close()
 
-    async def _close(self, *, cancel):
+    async def _close(self):
         self.active = False
         timer, self._timer = self._timer, None
         if timer is not None and timer is not asyncio.current_task():
             timer.cancel()
             await asyncio.gather(timer, return_exceptions=True)
-        self.pending = None
         tasks = list(self._tasks)
         for task in tasks:
             task.cancel()
@@ -650,5 +588,6 @@ class PairingWindow:
                     await self.access.cleanup(self.backend, address)
         finally:
             self.candidates.clear()
+            self._new_bonds.clear()
             await self._restore()
             self.backend.changed.set()

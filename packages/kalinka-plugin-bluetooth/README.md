@@ -13,7 +13,7 @@ neither ALSA PCM devices nor `arecord`, PipeWire, or a local playback loopback.
 Replacing BlueALSA with raw BlueZ transport access would also require owning
 A2DP codec negotiation, packet handling, decoding and reconnect behaviour.
 
-Requires SDK 3.23 and a Core/renderer release supporting live PCM v1. Upgrade
+Requires SDK 3.24 and a Core/renderer release supporting live PCM v1. Upgrade
 remote renderers too; an older renderer reports an upgrade requirement.
 
 ## Setup
@@ -39,19 +39,28 @@ seconds to at most 30 seconds; starting the backend allows automatic recovery.
 Leave the plugin disabled on hosts that do not receive Bluetooth audio.
 
 Enable Bluetooth in Configuration. Open **Connect** in the mobile source strip,
-or **Bluetooth** under Connect in the wide sidebar. Choose **Pair a device**,
-then select the displayed name in your phone's Bluetooth settings. Confirm the
-actual code in Kalinka when BlueZ requests comparison; pairing is never
-automatically approved. A pending approval appears even with the panel closed. These changes apply without restarting Core, including
-the first enable after boot. Pairing closes after two minutes or the first
-successful A2DP connection; playback need not start to finish pairing.
+or **Bluetooth** under Connect in the wide sidebar. Choose **Pair**, then select
+the displayed name in your phone's Bluetooth settings. Complete any prompt on
+the phone; there is no second Kalinka approval or comparison code. The receiver
+uses Just Works (NoInputNoOutput) only within the explicit two-minute window,
+which closes after the first successful new bond. This does not verify the
+sender's identity with a comparison code. Closing the panel leaves the window
+running; **Stop pairing** ends it without disconnecting established audio.
+These changes apply without restarting Core, including the first enable.
 
-The panel also offers **Allow audio** for an existing bond, **Disconnect audio**
-without losing permission, and **Remove audio access**. Removing access restores
-trust to its pre-grant value and disconnects the A2DP profile; it keeps the bond
-and provisioning access. The receiver denies new ungranted audio connections,
-including while disabled. Grants from older test images have an unknown prior
-trust value: preserve that trust but still disconnect audio on revocation.
+Paired devices appear directly below **Bluetooth · Pair**. Pairing for audio
+also grants audio access; there is no separate permission switch. Saved audio
+phones reconnect normally. A phone bonded only for setup can gain audio access
+by reconnecting its audio profile inside a new Pair window.
+
+**Disconnect** ends the audio connection and keeps the saved pairing.
+**Forget** removes the Bluetooth bond, including shared setup pairing, and
+its audio grant. Its confirmation explains that Wi-Fi configuration stays
+saved and re-pairing is required; the phone may need to forget its old bond too.
+Forget respects the shared provisioning lease. Failed removals deny audio
+but are not automatically replayed against a later pairing. Internally, the
+receiver still restores recorded pre-grant trust when provisional access fails
+and disconnects unauthorized A2DP profiles rather than playing into silence.
 
 Only persistent configuration belongs in plugin settings. Leave **Bluetooth
 name** empty to follow the streamer name. A custom name overrides it. A rename

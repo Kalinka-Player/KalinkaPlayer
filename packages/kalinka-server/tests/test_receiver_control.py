@@ -223,6 +223,43 @@ async def test_commands_are_typed_synchronous_and_not_replayed(api):
     assert entry.plugin_instance.calls == 2
 
 
+async def test_forget_routes_an_opaque_peer_handle_and_reports_pairing_mode(
+    api, monkeypatch
+):
+    from unittest.mock import AsyncMock
+    from kalinka_plugin_sdk import ForgetDevice
+
+    client, _, entry, _ = api
+    monkeypatch.setattr(
+        entry.plugin_class,
+        "RECEIVER",
+        ReceiverDescriptor(
+            title="Bluetooth", kind="bluetooth", commands=("forget_device",)
+        ),
+    )
+    entry.plugin_instance.execute = AsyncMock(
+        return_value=ReceiverSnapshot(
+            enabled=True, state="ready", pairing_mode="just_works"
+        )
+    )
+    entry.plugin_instance.snapshot = AsyncMock(
+        return_value=entry.plugin_instance.execute.return_value
+    )
+    response = await client.post(
+        "/receivers/test/commands",
+        json={"command": "forget_device", "peer_id": "opaque-peer"},
+    )
+    assert response.status_code == 200
+    assert response.json()["pairing_mode"] == "just_works"
+    entry.plugin_instance.execute.assert_awaited_once_with(
+        ForgetDevice(command="forget_device", peer_id="opaque-peer")
+    )
+    invalid = await client.post(
+        "/receivers/test/commands", json={"command": "forget_device"}
+    )
+    assert invalid.status_code == 422
+
+
 async def test_published_snapshot_is_deduplicated_and_survives_queue_replay(api):
     _, registry, entry, events = api
     registry.changed()

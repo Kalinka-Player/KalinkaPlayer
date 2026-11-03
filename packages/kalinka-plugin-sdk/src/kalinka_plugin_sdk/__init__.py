@@ -143,6 +143,7 @@ from .receiver_control import (
     GrantAudio,
     RevokeAudio,
     DisconnectAudio,
+    ForgetDevice,
 )
 
 __all__ = [
@@ -164,6 +165,7 @@ __all__ = [
     "GrantAudio",
     "RevokeAudio",
     "DisconnectAudio",
+    "ForgetDevice",
 
     "LiveAudio",
     "LiveAudioRef",

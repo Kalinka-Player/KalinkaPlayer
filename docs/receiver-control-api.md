@@ -1,6 +1,6 @@
 # Receiver control API v1
 
-Implemented with Core REST/WS API **0.23** and plugin SDK **3.23**. This optional
+Implemented with Core REST/WS API **0.24** and plugin SDK **3.24**. This optional
 control interface is independent of browsing, direct playback, PCM delivery and
 renderer selection. Plugins without it retain their existing behavior.
 
@@ -31,6 +31,7 @@ Example Bluetooth snapshot (opaque handles shortened for readability):
   "effective_name": "Kitchen Kalinka",
   "name_inherited": true,
   "visibility": "advertising",
+  "pairing_mode": "just_works",
   "pairing": {"window_id": "window-handle", "remaining_seconds": 114.3},
   "recent_peer_id": null,
   "peers": [],
@@ -46,6 +47,9 @@ while enabled and its configured receiver name. mDNS collision-renaming is not
 independently observed by this implementation.
 
 Peer rows contain `peer_id`, `name`, `paired`, `audio_allowed`, `connected`.
+Bluetooth lists actual paired BlueZ devices. `audio_allowed` remains available
+for compatibility and provisioning isolation; the app does not expose it as
+a separate permission control.
 Session rows contain `session_id`, `name`, nullable `peer_id`, and `playing`.
 AirPlay offers session information without pretending sender names are stable
 device identities or exposing a device access list.
@@ -55,16 +59,26 @@ Supported command bodies:
 ```json
 {"command":"open_pairing"}
 {"command":"close_pairing","window_id":"window-handle"}
-{"command":"grant_audio","peer_id":"peer-handle"}
-{"command":"revoke_audio","peer_id":"peer-handle"}
+{"command":"forget_device","peer_id":"peer-handle"}
 {"command":"disconnect_audio","session_id":"session-handle"}
 ```
 
 Opening an existing window does not extend it. The window lasts at most 120
-seconds and ends after the first successfully paired A2DP PCM endpoint appears.
-No song or renderer is needed to complete pairing. Pending candidates are not
-saved grants. Revocation durably denies audio, restores known pre-grant trust,
-and disconnects the A2DP profile without deleting the Bluetooth bond.
+seconds. With `pairing_mode: "just_works"`, the plugin uses NoInputNoOutput and
+accepts one candidate during that explicit window; it publishes no approval
+request. A successful new BlueZ bond commits audio access and ends the window.
+An already-bonded provisioning phone must establish a fresh audio connection
+inside the window; its valid A2DP PCM endpoint then commits access. No song or
+renderer is needed. Pending candidates are not saved grants.
+
+Forget removes the actual BlueZ bond and associated grant, including any bond
+shared with provisioning. It uses the adapter lease and rejects stale peer
+handles if the bond has changed. Confirmation belongs in the client. Removal
+failure leaves audio denied, but the destructive call is never automatically
+replayed; refresh and explicitly retry if necessary. Disconnect preserves the
+bond. Internal/legacy `grant_audio` and `revoke_audio` commands remain accepted
+but are no longer advertised as Bluetooth actions. Revocation alone restores
+known pre-grant trust and disconnects A2DP without removing the bond.
 
 Close/disconnect target an opaque runtime handle and cannot affect a newer
 window/session. A gone target is a no-op unless it conflicts with a replacement.
@@ -137,11 +151,14 @@ live buffers; this API introduces no transcoding or media endpoints.
 
 ## Pairing requests and receiver passwords (API 0.23 / SDK 3.23)
 
-Snapshots may include `pairing_request`: an opaque `request_id`, `device_name`,
+Controllers that require explicit approval may include `pairing_request`: an opaque `request_id`, `device_name`,
 `method`, optional string `code`, optional `entered` count, and monotonic
 `remaining_seconds`. Methods are `confirmation`, `authorization`, `pin`,
 `passkey`, `display_pin` and `display_passkey`, corresponding to actual BlueZ
 callbacks. Numeric codes retain all six digits including leading zeroes.
+The current Bluetooth controller uses `pairing_mode: "just_works"` and does not
+implement `answer_pairing`. A controller using numeric comparison may declare
+`pairing_mode: "confirm"`; absent mode leaves older controllers compatible.
 
 `{"command":"answer_pairing","request_id":"opaque-id","accept":true}`
 answers a comparison or authorization request. `accept` must be a JSON boolean.
