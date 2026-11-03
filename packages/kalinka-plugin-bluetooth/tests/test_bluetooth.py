@@ -2,6 +2,7 @@ import asyncio
 import os
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -12,6 +13,9 @@ from kalinka_plugin_sdk.direct_playback import (
 )
 from kalinka_plugin_sdk.live_audio import PcmFormat
 from kalinka_plugin_bluetooth.backend import (
+    BLUEZ,
+    PLAYER,
+    BlueAlsaBackend,
     Endpoint,
     PcmPipe,
     pcm_format,
@@ -161,6 +165,131 @@ async def test_pcm_is_preserved_and_claims_once_even_with_fragmented_frames(serv
     assert service.hold.shown[0][0].performer.name == "Artist"
     assert service.hold.shown[0][0].duration == 10
     assert len(service.hold.plays) == 1
+
+
+@pytest.mark.parametrize("status", ["stopped", "error"])
+async def test_inactive_sender_metadata_is_cleared_without_losing_the_stream(
+    service, endpoint, status
+):
+    backend = BlueAlsaBackend()
+    player_path = endpoint.device + "/player0"
+    player = {
+        "Status": "playing",
+        "Track": {"Title": "Yesterday", "Artist": "Old artist", "Duration": 269000},
+    }
+    backend.bluez = {player_path: {PLAYER: player}}
+    await service.update_metadata(backend.metadata(endpoint))
+    service.audio(b"123456")
+    await settle(service)
+    hold, source = service.hold, service.source
+    assert hold.plays[0][1].title == "Yesterday"
+
+    # Android may keep Track unchanged after its media session has stopped.
+    player["Status"] = status
+    await service.update_metadata(backend.metadata(endpoint))
+    track, position = hold.shown[-1]
+    assert track.title == "Bluetooth audio"
+    assert track.performer is None and track.duration == 0
+    assert track.album.title == endpoint.alias and position == 0
+    assert service.hold is hold and service.source is source
+    assert len(hold.plays) == 1 and not source.closed
+
+    # Filtering metadata must not prevent Play from reaching the stopped player.
+    backend.call = AsyncMock()
+    await backend.command(endpoint, "Play")
+    backend.call.assert_awaited_once_with(BLUEZ, player_path, PLAYER, "Play")
+    player.update(Status="playing", Track={"Title": "Today"})
+    await service.update_metadata(backend.metadata(endpoint))
+    assert hold.shown[-1][0].title == "Today"
+
+
+@pytest.mark.parametrize(
+    "status", ["playing", "paused", "forward-seek", "reverse-seek", None]
+)
+def test_sender_metadata_is_kept_while_active_or_paused(endpoint, status):
+    backend = BlueAlsaBackend()
+    player = {"Track": {"Title": "Song"}}
+    if status is not None:
+        player["Status"] = status
+    backend.bluez = {endpoint.device + "/player0": {PLAYER: player}}
+    assert backend.metadata(endpoint) == {"Title": "Song"}
+
+
+@pytest.mark.parametrize(
+    "running,status", [(False, None), (True, "paused"), (True, "stopped")]
+)
+async def test_idle_sender_pauses_output_and_pcm_resumes_without_remote_play(
+    service, endpoint, running, status
+):
+    service.audio(b"123456")
+    await settle(service)
+    hold, source = service.hold, service.source
+    await service.connected(replace(endpoint, running=running))
+    service.last_audio -= 2
+    await service.update_activity(status)
+    assert hold.paused and service.input_idle and not service.paused
+    assert "paused" in service.status
+    assert source.resets == 1 and source.data == b""
+    await service.update_activity(status)
+    assert source.resets == 1
+
+    # System/browser audio can resume without a fresh AVRCP or Running event.
+    service.backend.changed.clear()
+    service.audio(b"abcdef")
+    assert service.backend.changed.is_set()
+    await service.update_activity(status)
+    assert not hold.paused and not service.input_idle and hold.resumes == 1
+    assert source.data == b"abcdef" and service.hold is hold
+    assert service.backend.commands == [] and len(service.direct.holds) == 1
+
+
+async def test_short_sender_gap_does_not_restart_output(service, endpoint):
+    service.audio(b"123456")
+    await settle(service)
+    await service.connected(replace(endpoint, running=False))
+    await service.update_activity("paused")
+    assert not service.hold.paused and service.source.resets == 0
+    await service.connected(endpoint)
+    await service.update_activity("playing")
+    assert service.hold.resumes == 0
+
+
+async def test_expected_audio_stall_keeps_renderer_state(service):
+    service.audio(b"123456")
+    await settle(service)
+    service.last_audio -= 2
+    await service.update_activity("playing")
+    assert not service.hold.paused and service.source.resets == 0
+    assert "paused" not in service.status
+    service.output_error = "Renderer unavailable"
+    await service.update_activity("stopped")
+    assert not service.hold.paused and service.output_error == "Renderer unavailable"
+
+
+async def test_idle_monitor_cannot_undo_a_kalinka_pause(service):
+    service.audio(b"123456")
+    await settle(service)
+    await service.command(TransportRequest(TransportKind.PAUSE))
+    service.audio(b"abcdef")
+    await service.update_activity("playing")
+    assert service.hold.paused and service.hold.resumes == 0
+    assert service.backend.commands == ["Pause"]
+
+
+async def test_queue_takeover_while_idle_cannot_be_undone_by_pcm(service, endpoint):
+    service.audio(b"123456")
+    await settle(service)
+    await service.connected(replace(endpoint, running=False))
+    service.last_audio -= 2
+    await service.update_activity("paused")
+    hold = service.hold
+    hold.listener.on_revoked(RevokeReason.QUEUE_PLAY)
+    service.audio(b"abcdef")
+    await service.update_activity("playing")
+    await settle(service)
+    assert service.blocked and service.hold is None and not service.input_idle
+    assert service.source.data == b"" and hold.resumes == 0
+    assert len(service.direct.holds) == 1
 
 
 async def test_takeover_does_not_reclaim_until_a_new_sender_play_transition(

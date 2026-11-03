@@ -69,6 +69,15 @@ play transition or reconnect. Output changes keep capture running and start
 fresh audio on the new renderer. Absolute volume is routed to Kalinka's output
 volume authority, with BlueALSA software gain disabled.
 
+Metadata from a stopped or failed phone player is ignored: Now Playing shows
+**Bluetooth audio** and the phone's name until that player becomes active again.
+A paused player keeps its track information. If the sender reports paused/stopped
+or its transport is inactive and no PCM arrives for a second, the output pauses
+instead of buffering indefinitely. The normal two-second backend poll bounds
+idle detection; incoming PCM wakes it immediately and resumes at the live edge
+without sending Play back to the phone. Brief gaps do not restart the output,
+and renderer errors or stalls while the sender is still playing remain visible.
+
 ## Development and limits
 
 Install with `pip install -e packages/kalinka-plugin-sdk -e
