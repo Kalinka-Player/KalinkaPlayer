@@ -168,3 +168,15 @@ async def test_install_request_restarts_through_the_packaged_helper(
         await _save_flag(client, False)
         response = await client.post("/server/plugins/demo/install")
         assert response.status_code == 403
+
+
+async def test_the_operation_record_is_idle_until_one_runs(upstream, tmp_path):
+    app = await server.create_app(str(tmp_path / "overrides.json"), KalinkaConfig(), {})
+    async with running(app) as client:
+        await _save_flag(client, True)
+
+        answer = await client.get("/server/plugins/operation")
+
+        assert answer.status_code == 200
+        assert answer.json() == {"status": "idle"}
+        assert (await client.get("/server/plugins")).json()["last_operation"] is None

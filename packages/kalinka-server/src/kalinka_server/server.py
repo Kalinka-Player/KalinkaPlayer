@@ -540,6 +540,8 @@ async def create_app(
         known_renderers,
         supported=lambda: not app.state.config.server.demo_mode
         and installation_supported(),
+        # Built later in create_app; asked for only once a request comes.
+        lifecycle=lambda: getattr(app.state, "plugin_lifecycle", None),
     )
     register_plugin_routes(
         app,

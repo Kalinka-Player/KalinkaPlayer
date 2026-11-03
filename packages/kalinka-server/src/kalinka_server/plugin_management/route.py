@@ -1,7 +1,7 @@
-"""Plugin inventory and the install/uninstall requests the restart service carries out.
+"""Plugin inventory and the install/uninstall requests the root helper carries out.
 
 Missing trust is never reported as up to date; an accepted operation is a
-restart, not a result.
+record to follow, not a result.
 """
 
 from typing import Callable
@@ -81,6 +81,12 @@ def register_plugin_routes(
         @router.post("/{plugin_id}/uninstall", status_code=202)
         async def uninstall_plugin(plugin_id: str):
             return await operate("uninstall", plugin_id)
+
+        @router.get("/operation")
+        def operation():
+            """The operation in flight or the last one, step by step, for a
+            client to poll — reopened later or not."""
+            return JSONResponse(operations.operation(), headers=_HEADERS)
 
     @router.get("/catalog")
     async def catalog():

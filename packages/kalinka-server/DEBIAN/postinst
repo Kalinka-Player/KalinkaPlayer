@@ -11,6 +11,11 @@ UNIT_NAME="kalinka.service"
 UNIT_PATH="/etc/systemd/system/${UNIT_NAME}"
 RESTART_PATH_UNIT="kalinka-restart.path"
 RESTART_PATH_UNIT_PATH="/etc/systemd/system/${RESTART_PATH_UNIT}"
+PLUGINS_PATH_UNIT="kalinka-plugins.path"
+PLUGINS_PATH_UNIT_PATH="/etc/systemd/system/${PLUGINS_PATH_UNIT}"
+# While the plugin helper works beside a running Core, a plugin package's
+# trigger must leave Core alone.
+LIVE_OPERATION_MARKER="/run/kalinka/plugin-live-operation"
 UPGRADE_PATH_UNIT="kalinka-upgrade.path"
 UPGRADE_PATH_UNIT_PATH="/etc/systemd/system/${UPGRADE_PATH_UNIT}"
 JOURNAL_READER_SOCKET="kalinka-journal-reader.socket"
@@ -85,6 +90,11 @@ case "$1" in
     else
       echo "Note: $RESTART_PATH_UNIT not found at $RESTART_PATH_UNIT_PATH. Skipping."
     fi
+    if [ -f "$PLUGINS_PATH_UNIT_PATH" ]; then
+      systemctl enable --now "$PLUGINS_PATH_UNIT"
+    else
+      echo "Note: $PLUGINS_PATH_UNIT not found at $PLUGINS_PATH_UNIT_PATH. Skipping."
+    fi
     if [ -f "$UPGRADE_PATH_UNIT_PATH" ]; then
       systemctl enable --now "$UPGRADE_PATH_UNIT"
     else
@@ -121,7 +131,11 @@ case "$1" in
 
   triggered)
     # A Core stopped for a package operation is started once, afterwards, by whoever stopped it.
-    echo "[triggered] Restarting $UNIT_NAME if it is running..."
-    systemctl try-restart "$UNIT_NAME" || true
+    if [ -e "$LIVE_OPERATION_MARKER" ]; then
+      echo "[triggered] $UNIT_NAME is taking the plugin in itself; not restarting it."
+    else
+      echo "[triggered] Restarting $UNIT_NAME if it is running..."
+      systemctl try-restart "$UNIT_NAME" || true
+    fi
     ;;
 esac
