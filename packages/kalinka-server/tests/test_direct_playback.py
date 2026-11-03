@@ -1795,6 +1795,102 @@ async def test_live_ready_and_source_frame_feedback_are_bound_to_current_stream(
     await hold.release()
 
 
+@pytest.mark.parametrize("mode", ["gated", "ready", "paused"])
+async def test_live_readiness_recovers_after_reconnecting_the_same_session(
+    renderer, direct, live_audio, monkeypatch, mode
+):
+    from kalinka_server.live_audio import RECORD
+    from kalinka_server.renderer_proto import renderer_pb2 as pb
+    from kalinka_server.renderer_state import StateChange
+
+    source = live_audio.for_plugin("qobuz").create_pcm(PcmFormat(48000))
+    listener = Listener()
+    hold = await direct.acquire("Bluetooth", listener, seekable=False)
+    await hold.play_live(source, _connect_track()[1])
+    await asyncio.sleep(SETTLE_S)
+    route = next(iter(live_audio.routes.values()))
+    reader = await route.open(0, None)
+    await reader.read(32)
+    source.offer(bytes(480 * 4))
+    ready = pb.PlaybackStateChanged(
+        state=pb.PLAYBACK_STATE_PREPARING,
+        source_token=renderer.current,
+        live_ready=True,
+    )
+    original_snapshot = renderer._snapshot
+
+    def snapshot():
+        result = original_snapshot()
+        if renderer.current is not None:
+            result.current_source.source_token = renderer.current
+            result.playback_state = (
+                pb.PLAYBACK_STATE_PREPARING
+                if mode == "gated"
+                else pb.PLAYBACK_STATE_PLAYING
+            )
+        return result
+
+    monkeypatch.setattr(renderer, "_snapshot", snapshot)
+    try:
+        if mode != "gated":
+            renderer._send(StateChange.PLAYBACK, ready)
+        if mode == "paused":
+            await hold.pause()
+            await asyncio.sleep(SETTLE_S)
+        session_id = renderer.session_id
+        renderer.linked = False
+        renderer.registry.disconnect(renderer.RENDERER_ID, renderer, clean=False)
+        renderer.pool.suspend(renderer.RENDERER_ID, renderer)
+        # ALSA becomes ready while the control link is down; the event is lost.
+        renderer._send(StateChange.PLAYBACK, ready)
+        source.offer(bytes(480 * 4))
+        renderer.linked = True
+        renderer.connect()
+        await renderer.pool.reconcile(
+            renderer_id=renderer.RENDERER_ID,
+            reported_session_id=session_id,
+            reported_owner_server_id="test-server-id",
+            ws_session=renderer,
+        )
+        await asyncio.sleep(0.5)
+        assert renderer.session_id == session_id
+        assert hold.active and not source.closed and listener.revoked == []
+        assert not any(s.state == PlayerStateEnum.ERROR for s in listener.states)
+        if mode == "paused":
+            assert live_audio.routes == {}
+            assert hold.state.state == PlayerStateEnum.PAUSED
+            return
+        current = next(iter(live_audio.routes.values()))
+        assert len(live_audio.routes) == 1
+        if mode == "ready":
+            assert current is route and not route.closed
+            return
+
+        assert route.closed and current is not route
+        assert await asyncio.wait_for(reader.read(4096), 1) == b""
+        assert not current.ready
+        # Late readiness for the retired token cannot open the replacement.
+        renderer._send(StateChange.PLAYBACK, ready)
+        assert not current.ready
+        ready.source_token = renderer.current
+        renderer._send(StateChange.PLAYBACK, ready)
+        assert current.ready and current.cursor == source.frames
+        resumed_reader = await current.open(0, None)
+        try:
+            await resumed_reader.read(32)
+            fresh_pcm = b"abcd" * 480
+            first_frame = source.frames
+            source.offer(fresh_pcm)
+            assert await asyncio.wait_for(resumed_reader.read(4096), 1) == (
+                RECORD.pack(first_frame, 480, len(fresh_pcm)) + fresh_pcm
+            )
+        finally:
+            await resumed_reader.aclose()
+    finally:
+        await reader.aclose()
+        await hold.release()
+
+
 async def test_live_renderer_restart_keeps_capture_and_input_ownership(
     renderer, direct, live_audio
 ):

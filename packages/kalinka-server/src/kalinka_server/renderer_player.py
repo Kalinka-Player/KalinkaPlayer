@@ -507,6 +507,18 @@ class RendererPlayer:
         if translated is None:
             return
         if change is StateChange.SNAPSHOT:
+            if (
+                route is not None
+                and not route.ready
+                and translated.state in _PLAYING_STATES
+                and self._resumable()
+            ):
+                # Readiness is an event, absent from reconnect snapshots. If
+                # it was lost with the control link, both ends would wait
+                # forever. A fresh route repeats the hardware-ready handshake.
+                self._retire_live(to_stream_id(snapshot.get("source_token")))
+                self._resume(0)
+                return
             # At open this restates what we already report and publishing it
             # would be noise. On resume it is the only evidence of what the
             # renderer did while it was unreachable — those transitions were

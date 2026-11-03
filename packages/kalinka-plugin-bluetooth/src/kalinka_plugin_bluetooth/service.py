@@ -130,15 +130,24 @@ class BluetoothService:
         return task
 
     async def connected(self, endpoint: Endpoint):
-        if self.endpoint is not None and self.endpoint.identity == endpoint.identity:
-            if self.endpoint.format != endpoint.format:
+        previous = self.endpoint
+        if previous is not None and previous.identity == endpoint.identity:
+            self.endpoint = endpoint
+            if previous.format != endpoint.format:
                 self.partial.clear()
                 self.source.reset(endpoint.format)
-            if not self.endpoint.running and endpoint.running:
+            if not previous.running and endpoint.running:
                 # A new sender play gesture may take ownership after a takeover.
+                was_paused = self.paused
                 self.blocked = self.paused = False
                 self.last_claim = 0
-            self.endpoint = endpoint
+                if was_paused:
+                    # Kalinka's pause discarded the route, but kept the hold.
+                    # Resume it without echoing Play back to the sender.
+                    self.partial.clear()
+                    self.source.reset()
+                    if self.hold is not None and self.hold.active:
+                        await self.hold.resume()
             return
         await self.disconnected()
         self.endpoint = endpoint

@@ -63,7 +63,7 @@ WORK="$(mktemp -d "$IMAGE_DIR/cache/rpi-image-gen-work.XXXXXXXX")"
 trap 'podman unshare rm -rf "$WORK" 2>/dev/null || rm -rf "$WORK"' EXIT
 mkdir "$WORK/build"
 if [ -n "${TEST_DEBS_DIR:-}" ]; then
-  stage_test_packages "$TEST_DEBS_DIR" "$WORK/test-debs" "$TARGET_ARCH"
+  stage_test_packages "$TEST_DEBS_DIR" "$WORK/test-debs" "$TARGET_ARCH" "${SUPERVISOR_DEB:-}"
   overrides+=(IGconf_kalinka_test_debs=/work/test-debs)
   target+=-test
   supervisor_file="$(awk -F '\t' '$1 == "kalinka-supervisor" { print $4 }' "$WORK/test-debs/packages.tsv")"

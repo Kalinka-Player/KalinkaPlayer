@@ -34,6 +34,48 @@ while IFS=$'\t' read -r package version arch filename checksum; do
     "$(sha256sum "$WORK/staged/$filename" | cut -d ' ' -f1)" "$checksum"
 done < "$WORK/staged/packages.tsv"
 
+make_package "$WORK/override" kalinka-supervisor arm64 2.0
+# An override is included even when the bundle has no supervisor of its own.
+stage_test_packages "$WORK/input" "$WORK/override-only-stage" arm64 \
+  "$WORK/override/kalinka-supervisor_2.0_arm64.deb"
+assert_eq "the explicit supervisor is recorded" \
+  "$(awk -F '\t' '$1 == "kalinka-supervisor" { print $2 }' "$WORK/override-only-stage/packages.tsv")" 2.0
+
+make_package "$WORK/input" kalinka-supervisor arm64
+stage_test_packages "$WORK/input" "$WORK/default-stage" arm64
+assert_eq "without an override the bundled supervisor is used" \
+  "$(awk -F '\t' '$1 == "kalinka-supervisor" { print $2 }' "$WORK/default-stage/packages.tsv")" 1.0
+
+for filename in kalinka-supervisor_2.0_arm64.deb kalinka-supervisor_1.0_arm64.deb; do
+  # Selection comes from package metadata, including when filenames coincide.
+  cp "$WORK/override/kalinka-supervisor_2.0_arm64.deb" "$WORK/$filename"
+  destination="$WORK/override-stage-$filename"
+  stage_test_packages "$WORK/input" "$destination" arm64 "$WORK/$filename"
+  assert_eq "the override replaces the manifest version" \
+    "$(awk -F '\t' '$1 == "kalinka-supervisor" { print $2 }' "$destination/packages.tsv")" 2.0
+  assert_eq "only one supervisor package is staged" \
+    "$(find "$destination" -name 'kalinka-supervisor*.deb' | wc -l)" 1
+  assert_eq "the staged supervisor contains the selected version" \
+    "$(dpkg-deb -f "$destination/$filename" Version 2>/dev/null)" 2.0
+  assert_eq "the override checksum matches the manifest" \
+    "$(awk -F '\t' '$1 == "kalinka-supervisor" { print $5 }' "$destination/packages.tsv")" \
+    "$(sha256sum "$WORK/$filename" | cut -d ' ' -f1)"
+  assert_eq "the other packages remain in the bundle" \
+    "$(wc -l < "$destination/packages.tsv")" 5
+done
+assert_eq "staging leaves the original bundle untouched" \
+  "$(dpkg-deb -f "$WORK/input/kalinka-supervisor_1.0_arm64.deb" Version)" 1.0
+
+stage_test_packages "$WORK/input" "$WORK/same-supervisor-stage" arm64 \
+  "$WORK/input/kalinka-supervisor_1.0_arm64.deb"
+assert_eq "selecting the bundled supervisor does not duplicate it" \
+  "$(wc -l < "$WORK/same-supervisor-stage/packages.tsv")" 5
+
+message="$(stage_test_packages "$WORK/input" "$WORK/wrong-override-stage" arm64 \
+  "$WORK/input/kalinka-server_1.0_all.deb" 2>&1)" \
+  && fail "accepted a Core package as the supervisor override"
+assert_contains "an invalid supervisor override is explained" "$message" 'wrong supervisor package'
+
 make_package "$WORK/wrong" kalinka-renderer amd64
 message="$(stage_test_packages "$WORK/wrong" "$WORK/wrong-stage" arm64 2>&1)" \
   && fail "accepted an x86 renderer for a Pi"
