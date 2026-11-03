@@ -43,7 +43,12 @@ from kalinka_plugin_sdk.storage import LibraryAdopter, StorageBacked
 
 from .config_model import KalinkaConfig
 from .config_route import register_config_routes
-from .config_schema_processor import build_presentation, module_icon, readonly_paths
+from .config_schema_processor import (
+    build_presentation,
+    module_icon,
+    readonly_paths,
+    restart_paths,
+)
 from .catalog_art_service import CatalogArtService
 from .browse_route import register_browse_routes
 from .browse_source import BrowseSource, BrowseSourceRegistry, RegisteredSource
@@ -803,6 +808,7 @@ async def create_app(
         )
         app.state.schema_version = schema.schema_version
         app.state.readonly_paths = readonly_paths(schema)
+        app.state.restart_paths = restart_paths(schema)
         register_plugin_options(
             app.state.options_registry,
             schema,

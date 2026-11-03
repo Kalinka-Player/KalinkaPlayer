@@ -203,14 +203,21 @@ def get_version() -> str:
 # settings. The PUT answers once the plugin has taken them in, or after five
 # seconds while it still is. The Devices page no longer says a restart is
 # needed. Each field of GET /server/config/schema carries `apply`: "instant"
-# for every module and device field and most server fields, "restart_required"
-# for the few the server reads once at startup (port, interface, text
-# embedding, streamer management, screen), so a client restarts only for
+# for most fields, "restart_required" for the few the server reads once at
+# startup (port, interface, text embedding, streamer management, screen) and
+# for a plugin field that turns on a feature whose packages install at the
+# next start (AI search, generated album art), so a client restarts only for
 # those; every field not so marked applies live.
+# A save holding one of a plugin's restart_required fields is not applied
+# live: it waits for that restart, which installs what the plugin then needs.
 # schema_version moves when a plugin is set up again with a changed
 # configuration model, appears or goes; a stale PUT draws its 409 as before.
 # While a module is set up again, GET /content/{module}/… and the routes
-# naming it answer 503 with Retry-After rather than 404, so a renderer retries.
+# naming it answer 503 with Retry-After rather than 404, so a renderer retries;
+# so does a module taken down for an update, and a save made meanwhile
+# applies once it is back. A module whose update the installer never
+# finished is listed ERROR with the reason until it is updated again or the
+# server restarts.
 # Also 0.22: where /server/version reports plugin_management.live_installation,
 # POST /server/plugins/{id}/install, /update and /uninstall answer 202
 # {"status": "applying", ...} and the server carries the operation out while

@@ -108,7 +108,12 @@ class JamendoConfig(ModuleConfig):
             "melancholic for tonight\". The data it needs downloads "
             "automatically the first time."
         ),
-        json_schema_extra={"importance": "simple", "setup": "prompt"},
+        # Its runtime installs at the next start.
+        json_schema_extra={
+            "importance": "simple",
+            "setup": "prompt",
+            "apply": "restart_required",
+        },
     )
     ai_index_path: str = Field(
         # Persistent state dir (<prefix>/var/lib/kalinka), same place CLAP models

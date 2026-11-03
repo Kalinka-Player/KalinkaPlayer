@@ -18,7 +18,7 @@ from kalinka_plugin_sdk import ConfigIssue, paths
 from . import supervisor_management
 from .box_power_off import TIMER_PATHS
 from .config_model import KalinkaConfig
-from .config_overrides import field_info, save_overrides, set_by_path, store_override
+from .config_overrides import save_overrides, set_by_path, store_override
 from .config_schema_processor import (
     build_enum_options,
     build_presentation,
@@ -63,10 +63,14 @@ def register_config_routes(
         settings changed and which paths within them; it applies them,
         setting the plugin up again if it must. The save waits
         ``APPLY_WAIT_S`` for it and answers regardless: the answer says what
-        was saved, the module's own state says what it made of it.
+        was saved, the module's own state says what it made of it. Not told
+        of a plugin one of whose saved fields is in ``restart_paths``: that
+        save is for the restart the client runs next, which also installs
+        the packages the plugin then needs.
     @note Reads ``schema_version``, ``dynamic_paths``, ``readonly_paths``,
-        ``page_banners``, ``dynamic_field_registry``, ``options_registry``,
-        ``overrides`` and ``overrides_file`` off ``app.state`` per request.
+        ``restart_paths``, ``page_banners``, ``dynamic_field_registry``,
+        ``options_registry``, ``overrides`` and ``overrides_file`` off
+        ``app.state`` per request.
     """
 
     # An image or a manual installation is already opted in. Only an explicit
@@ -191,14 +195,24 @@ def register_config_routes(
 
     async def _tell_owners(applied: Dict[str, Any]) -> None:
         """Hand each plugin the paths of its own settings that changed, and
-        the storage manager its own, so a change applies without a restart."""
+        the storage manager its own, so a change applies without a restart.
+        A plugin with a field read once at startup among them is left alone:
+        the restart applies that save whole."""
+        restarting = getattr(app.state, "restart_paths", frozenset())
         by_plugin: Dict[str, set] = {}
+        held: set[str] = set()
         for key in applied:
             root, _, rest = key.partition(".")
-            if root in ("input_modules", "devices"):
-                name, _, path = rest.partition(".")
-                if path:
-                    by_plugin.setdefault(name, set()).add(path)
+            if root not in ("input_modules", "devices"):
+                continue
+            name, _, path = rest.partition(".")
+            if path:
+                by_plugin.setdefault(name, set()).add(path)
+            if key in restarting:
+                held.add(name)
+        for name in held:
+            if by_plugin.pop(name, None) is not None:
+                logger.info("%s settings are left for the restart", name)
         if by_plugin:
             applying = [
                 detach(_apply_settings(name, frozenset(paths)))
@@ -301,7 +315,9 @@ def register_config_routes(
 
         applied: Dict[str, Any] = {}
         committed = []
+        # What applies live is taken back if the save cannot be kept.
         previous_live = {}
+        restarting = getattr(app.state, "restart_paths", frozenset())
         targets = _config_targets()
         power_paths = TIMER_PATHS | {supervisor_management.MANAGE_PATH}
         previous_power = {
@@ -312,9 +328,7 @@ def register_config_routes(
             for key, value in changes.items():
                 try:
                     target = targets.resolve(key)
-                    info = field_info(type(target.model), target.attrs)
-                    extra = info.json_schema_extra if info is not None else None
-                    if not (isinstance(extra, dict) and extra.get("apply") == "restart_required"):
+                    if key not in restarting:
                         previous_live[key] = (
                             target, stored_value(target), app.state.overrides.get(key)
                         )

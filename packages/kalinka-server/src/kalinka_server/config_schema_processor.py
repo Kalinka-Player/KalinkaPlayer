@@ -938,6 +938,14 @@ def readonly_paths(schema: PresentationSchema) -> frozenset[str]:
     return frozenset(f.path for f in schema.expert_fields if f.readonly)
 
 
+def restart_paths(schema: PresentationSchema) -> frozenset[str]:
+    """Every field path the schema shows and a save leaves for a restart:
+    the server, or the plugin, reads it once at startup."""
+    return frozenset(
+        f.path for f in schema.expert_fields if f.apply is Apply.RESTART_REQUIRED
+    )
+
+
 # ---------------------------------------------------------------------------
 # Flat values emitter
 # ---------------------------------------------------------------------------
