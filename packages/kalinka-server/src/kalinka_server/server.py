@@ -94,6 +94,7 @@ from .internal_modules import internal_modules
 from .module_capabilities import capabilities_of
 from .module_artwork import module_icons, register_module_icon_routes
 from .service_discovery import ServiceDiscovery
+from .receiver_control import ReceiverRegistry, register_receiver_routes
 from . import update_check
 from .version import get_rest_api_version, get_version
 from .state_keeper import save_state, restore_state
@@ -152,6 +153,7 @@ async def lifespan(app: FastAPI):
         app.state.log_export.open()
 
         sd = ServiceDiscovery(app.state.config, bind_host=app.state.bind_host)
+        app.state.service_discovery = sd
         await sd.register_service()
 
         # Initialize internal modules (device automation, etc.)
@@ -188,6 +190,9 @@ async def lifespan(app: FastAPI):
 
     finally:
         logger.info("Shutting down...")
+        receivers = getattr(app.state, "receivers", None)
+        if receivers is not None:
+            await receivers.close()
         # These loops run forever by design; cancel them and swallow the result.
         for attr in (
             "device_router_task",
@@ -1211,6 +1216,12 @@ async def create_app(
         ).model_dump(exclude_unset=True)
 
     register_config_routes(app, config, modules)
+    app.state.receivers = ReceiverRegistry(
+        modules, player_context.playqueue_eventbus.dispatch
+    )
+    player_context.receiver_changed = app.state.receivers.changed
+    register_receiver_routes(app, app.state.receivers)
+    app.state.receivers.changed()
 
     async def _storage_location_of(entity_id: EntityId):
         module = modules.enabled_input_module(entity_id.source)
@@ -1445,7 +1456,11 @@ async def create_app(
             state=state.state,
             error_message=state.message,
             missing_packages=state.missing_packages,
-            capabilities=capabilities_of(prepared.interface),
+            capabilities=list(dict.fromkeys([
+                *capabilities_of(prepared.interface),
+                *(["receiver_control"]
+                  if getattr(prepared.plugin_class, "RECEIVER", None) else []),
+            ])),
         )
 
     def _builtin_entries() -> List[ModuleDescriptor]:
@@ -1478,6 +1493,7 @@ async def create_app(
             devices=[_module_entry(d) for d in modules.prepared_devices.values()],
         )
         app.state.module_snapshot = snapshot
+        app.state.receivers.changed()
         player_context.playqueue_eventbus.dispatch(
             ModulesChangedEvent(
                 input_modules=snapshot.input_modules, devices=snapshot.devices

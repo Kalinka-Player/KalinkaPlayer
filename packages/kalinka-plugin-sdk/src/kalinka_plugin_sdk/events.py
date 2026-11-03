@@ -14,6 +14,7 @@ from .datamodel import (
 from .module_health import ModuleHealthState
 from .module_icons import ModuleIcons
 from .storage import VolumeDescriptor
+from .receiver_control import ReceiversSnapshot, ReceiverSnapshot
 
 
 class PlayQueueEventType(Enum):
@@ -29,6 +30,7 @@ class PlayQueueEventType(Enum):
     CurrentRendererChanged = "current_renderer_changed"
     PlaybackControlChanged = "playback_control_changed"
     ModulesChanged = "modules_changed"
+    ReceiversChanged = "receivers_changed"
     VolumesChanged = "volumes_changed"
 
 
@@ -110,6 +112,7 @@ class PlayQueueState(BaseState[PlayQueueEvent]):
     playback_control: PlaybackControl = Field(default_factory=PlaybackControl)
     # SDK 3.17; None from a server that never publishes them.
     modules: Optional[ModulesSnapshot] = None
+    receivers: Optional[ReceiversSnapshot] = None
     # SDK 3.20; None from a server without a storage manager.
     volumes: Optional[List[VolumeDescriptor]] = None
 
@@ -156,6 +159,8 @@ class PlayQueueState(BaseState[PlayQueueEvent]):
             updates["selected_renderer_id"] = event.selected_renderer_id
         elif isinstance(event, PlaybackControlChangedEvent):
             updates["playback_control"] = event.control
+        elif isinstance(event, ReceiversChangedEvent):
+            updates["receivers"] = ReceiversSnapshot(receivers=event.receivers)
         elif isinstance(event, ModulesChangedEvent):
             updates["modules"] = ModulesSnapshot(
                 input_modules=event.input_modules, devices=event.devices
@@ -241,6 +246,11 @@ class PlaybackControlChangedEvent(PlayQueueEvent):
 
     event_type: PlayQueueEventType = PlayQueueEventType.PlaybackControlChanged
     control: PlaybackControl = Field(default_factory=PlaybackControl)
+
+
+class ReceiversChangedEvent(PlayQueueEvent):
+    event_type: PlayQueueEventType = PlayQueueEventType.ReceiversChanged
+    receivers: List[ReceiverSnapshot]
 
 
 class ModulesChangedEvent(PlayQueueEvent):

@@ -110,6 +110,7 @@ class ServiceDiscovery:
         self._config = config
         self._bind_host = bind_host
         self._watcher: asyncio.Task | None = None
+        self._reconcile_lock = asyncio.Lock()
         self.announcements: list[_Announcement] = [
             self._make_announcement(name, ip, endpoint_name)
             for name, ip, endpoint_name in self._select_endpoints(verbose=True)
@@ -230,9 +231,17 @@ class ServiceDiscovery:
                 logger.error(f"[Zeroconf] Network rescan failed: {e}")
 
     async def _reconcile(self):
+        async with self._reconcile_lock:
+            await self._reconcile_locked()
+
+    async def config_changed(self):
+        """Replace advertisements after a saved name change, without Core restart."""
+        await self._reconcile()
+
+    async def _reconcile_locked(self):
         """Bring the announcements in line with the current addresses.
 
-        An announcement whose address is still present keeps its live
+        An announcement whose address and identity are unchanged keeps its live
         responder untouched — no goodbye/re-register churn for instances
         clients may be using. Only gone addresses are closed, new ones
         registered, and failed registrations on still-present addresses
@@ -245,7 +254,16 @@ class ServiceDiscovery:
         kept: list[_Announcement] = []
         stale: list[_Announcement] = []
         for a in self.announcements:
-            target = kept if (a.interface, a.ip_address) in desired else stale
+            endpoint = desired.get((a.interface, a.ip_address))
+            expected = (
+                get_service_info(self._config, endpoint, a.ip_address)
+                if endpoint is not None else None
+            )
+            same_name = expected is not None and (
+                a.service_info.name == expected.name
+                and a.service_info.properties == expected.properties
+            )
+            target = kept if same_name else stale
             target.append(a)
         current = {(a.interface, a.ip_address) for a in kept}
         added = [

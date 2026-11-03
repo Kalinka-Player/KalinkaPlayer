@@ -87,6 +87,8 @@ class PlayerContext:
     direct_playback_for: "Callable[[str], DirectPlaybackService] | None" = None
     external_playback_for: "Callable[[str], ExternalPlaybackService] | None" = None
     live_audio: "LiveAudioRegistry | None" = None
+    server_name: "Callable[[], str] | None" = None
+    receiver_changed: "Callable[[str], None] | None" = None
 
 
 @dataclass
@@ -193,7 +195,9 @@ class PreparedPlugin:
         plugin_instance = plugin_class()
         health_state = ModuleHealthState.DISABLED
         interface = None
-        if plugin_context.config.enabled is True:
+        if plugin_context.config.enabled is True or getattr(
+            plugin_class, "SETUP_WHEN_DISABLED", False
+        ):
             await plugin_instance.setup(plugin_context)
             health_state = ModuleHealthState.READY
             interface = cast_plugin_interface(plugin_instance)
@@ -218,6 +222,10 @@ class PreparedPlugin:
             health_state=health_state,
             plugin_context=plugin_context,
             interface=interface,
+            reported=(
+                ModuleState(state=ModuleHealthState.DISABLED)
+                if not plugin_context.config.enabled else None
+            ),
         )
 
     async def shutdown(self):
@@ -812,6 +820,11 @@ class PreparedModuleCollection:
                     sdk_version=SDK_VERSION,
                     config=config,
                     embedder=self.player_context.embedder,
+                    server_name=self.player_context.server_name,
+                    receiver_changed=lambda: (
+                        self.player_context.receiver_changed(name)
+                        if self.player_context.receiver_changed else None
+                    ),
                     direct_playback=(
                         direct_playback_for(name) if direct_playback_for else None
                     ),
@@ -1022,6 +1035,7 @@ async def setup(
         ),
         )
 
+    player_context.server_name = lambda: config.server.service_name
     # Built before the plugin scan: each device plugin is handed an emitter
     # that only reaches clients while that plugin owns the active renderer.
     player_context.device_router = OutputDeviceRouter(

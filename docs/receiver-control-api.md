@@ -1,0 +1,136 @@
+# Receiver control API v1
+
+Implemented with Core REST/WS API **0.22** and plugin SDK **3.22**. This optional
+control interface is independent of browsing, direct playback, PCM delivery and
+renderer selection. Plugins without it retain their existing behavior.
+
+## Inventory and commands
+
+| Request | Result |
+|---|---|
+| `GET /receivers` | `{"version":1,"receivers":[ReceiverSnapshot, ...]}` |
+| `GET /receivers/{receiver_id}` | One `ReceiverSnapshot` |
+| `POST /receivers/{receiver_id}/commands` | `200 ReceiverSnapshot` after the bounded transition |
+
+Inventory includes disabled receivers and receivers whose backend failed.
+A successful empty list means no receiver is installed; a failed request does
+not. Identity comes from the prepared plugin, never the public plugin catalog.
+
+Example Bluetooth snapshot (opaque handles shortened for readability):
+
+```json
+{
+  "version": 1,
+  "receiver_id": "bluetooth",
+  "title": "Bluetooth",
+  "kind": "bluetooth",
+  "instructions": "Select this name in your device's Bluetooth settings.",
+  "enabled": true,
+  "state": "ready",
+  "message": null,
+  "effective_name": "Kitchen Kalinka",
+  "name_inherited": true,
+  "visibility": "advertising",
+  "pairing": {"window_id": "window-handle", "remaining_seconds": 114.3},
+  "recent_peer_id": null,
+  "peers": [],
+  "sessions": [],
+  "actions": [{"command": "open_pairing", "available": true, "reason": null}]
+}
+```
+
+`state` is `disabled`, `starting`, `ready`, `stopping` or `error`. `visibility`
+is `hidden`, `advertising` or `unknown`; a running child process alone does not
+confirm network advertisement. AirPlay currently reports unknown visibility
+while enabled and its configured receiver name. mDNS collision-renaming is not
+independently observed by this implementation.
+
+Peer rows contain `peer_id`, `name`, `paired`, `audio_allowed`, `connected`.
+Session rows contain `session_id`, `name`, nullable `peer_id`, and `playing`.
+AirPlay offers session information without pretending sender names are stable
+device identities or exposing a device access list.
+
+Supported command bodies:
+
+```json
+{"command":"open_pairing"}
+{"command":"close_pairing","window_id":"window-handle"}
+{"command":"grant_audio","peer_id":"peer-handle"}
+{"command":"revoke_audio","peer_id":"peer-handle"}
+{"command":"disconnect_audio","session_id":"session-handle"}
+```
+
+Opening an existing window does not extend it. The window lasts at most 120
+seconds and ends after the first successfully paired A2DP PCM endpoint appears.
+No song or renderer is needed to complete pairing. Pending candidates are not
+saved grants. Revocation durably denies audio, restores known pre-grant trust,
+and disconnects the A2DP profile without deleting the Bluetooth bond.
+
+Close/disconnect target an opaque runtime handle and cannot affect a newer
+window/session. A gone target is a no-op unless it conflicts with a replacement.
+Commands reject extra fields. There is no operation polling endpoint, request-ID
+cache or automatic replay of a timed-out POST. Refresh state and let the user
+choose another action after an uncertain result.
+
+Errors have `{"detail":{"code":"...","message":"..."}}`:
+
+| HTTP | Codes |
+|---|---|
+| 400 | `unsupported_operation` |
+| 404 | `receiver_not_found` |
+| 409 | `plugin_disabled`, `adapter_busy`, `stale_target` |
+| 422 | Invalid command body |
+| 503 | `backend_unavailable` |
+| 504 | `backend_timeout` |
+
+The Core command budget is 15 seconds; snapshots have a two-second budget.
+Settings callbacks retain their existing three-second budget. AirPlay owns its
+configuration task so callback cancellation cannot interrupt child cleanup;
+Bluetooth's admission watcher also reconciles a cancelled disable callback.
+Protocol calls have their own bounds. Cancellation does not undo a durable
+revocation: failed cleanup remains denied and is retried by the plugin.
+
+## Live settings and events
+
+Enable/disable and receiver-name overrides use the existing `PUT /server/config`
+with its `schema_version` and flat `changes` object. Panel toggles send exactly
+one `input_modules.<id>.enabled` field and retain unrelated app drafts. Fields
+with `applies_live: true` need no Core restart. This flag is separate from
+`apply_immediately`, which still describes one-shot actions in older plugins.
+A batch containing other fields retains the existing restart behavior.
+
+Blank receiver names inherit `base_config.server.service_name`; explicit names
+remain overrides. AirPlay name changes restart only its owned receiver and end
+its current session. Bluetooth names reconcile under the provisioning adapter
+lease. Disabling persists over Core restart; it is not a temporary mute.
+
+The existing queue event connection adds:
+
+```json
+{"event_type":"receivers_changed","seq":42,"receivers":[]}
+```
+
+Replay state contains `receivers: {"version":1,"receivers":[...]}`. Clients
+also GET on initial connection, reconnect, app resume and after commands. Use
+response generations to reject older HTTP responses after a newer snapshot.
+Count down from `remaining_seconds` using monotonic elapsed time, never the
+Pi's wall clock. Offline state must not claim pairing remains open.
+
+## Plugin integration
+
+An input plugin declares a `ReceiverDescriptor` in `RECEIVER`, opts into
+`SETUP_WHEN_DISABLED = True`, and returns its `ReceiverControl` from
+`get_receiver_control()`. `snapshot()` reads cached state; `execute(command)`
+serializes protocol changes and returns a snapshot or raises `ReceiverError`.
+
+`InputPluginContext.receiver_changed()` requests a coalesced snapshot event.
+`context.server_name()` reads the current streamer name; Core calls
+`server_name_changed()` after a saved rename. The plugin handles live
+`config_changed()` transitions and final `shutdown()` cleanup. Controller and
+input registration remain stable while enabled changes. Setup success and
+current module health remain separate.
+
+Bluetooth keeps admission supervision while disabled if BlueALSA still exposes
+A2DP, but opens no PCM stream and acquires no renderer. AirPlay starts no child
+while disabled. The shared media path remains uncompressed PCM with bounded
+live buffers; this API introduces no transcoding or media endpoints.

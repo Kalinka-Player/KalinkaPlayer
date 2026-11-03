@@ -16,6 +16,7 @@ from dbus_fast import BusType, Message, MessageType, Variant
 from dbus_fast.aio import MessageBus
 
 from kalinka_plugin_sdk.live_audio import PcmFormat
+from kalinka_plugin_sdk.receiver_control import ReceiverError
 
 PROPERTIES = "org.freedesktop.DBus.Properties"
 OBJECTS = "org.freedesktop.DBus.ObjectManager"
@@ -23,6 +24,8 @@ PCM = "org.bluealsa.PCM1"
 BLUEZ = "org.bluez"
 DEVICE = "org.bluez.Device1"
 PLAYER = "org.bluez.MediaPlayer1"
+ADAPTER = "org.bluez.Adapter1"
+AUDIO_SOURCE_UUID = "0000110a-0000-1000-8000-00805f9b34fb"
 AUDIO_UUIDS = frozenset(
     f"0000{value}-0000-1000-8000-00805f9b34fb"
     for value in ("110a", "110b", "110c", "110e", "110f")
@@ -67,6 +70,11 @@ class Endpoint:
     codec: str
     running: bool
     sequence: int
+    incarnation: int = 0
+
+    @property
+    def identity(self):
+        return self.path, self.sequence, self.incarnation
 
 
 class PcmPipe:
@@ -114,6 +122,7 @@ class BlueAlsaBackend:
         self.changed = asyncio.Event()
         self.owner = ""
         self._restarted = False
+        self._incarnations = {}
         self.agent_handler = None
 
     async def call(self, destination, path, interface, member, signature="", body=None):
@@ -200,6 +209,16 @@ class BlueAlsaBackend:
             if result is not None:
                 return result
         if message.message_type == MessageType.SIGNAL:
+            if (
+                message.interface == OBJECTS
+                and message.member in ("InterfacesAdded", "InterfacesRemoved")
+                and len(message.body) == 2
+                and PCM in message.body[1]
+            ):
+                # Observe removal/recreation even when a quick reconnect is
+                # coalesced into one refresh or this backend lacks Sequence.
+                path = message.body[0]
+                self._incarnations[path] = self._incarnations.get(path, 0) + 1
             if message.member == "NameOwnerChanged":
                 if message.body[0] not in (BLUEZ, self.service):
                     return
@@ -227,21 +246,71 @@ class BlueAlsaBackend:
             peer = self.bluez.get(device, {}).get(DEVICE, {})
             if not peer.get("Connected") or not peer.get("Paired"):
                 continue
+            try:
+                format = pcm_format(props)
+            except (ValueError, KeyError, TypeError):
+                # Admission still examines the raw transport. An unsupported
+                # layout must not prevent denying an ungranted sender.
+                continue
             result.append(
                 Endpoint(
                     path,
                     device,
                     peer.get("Address", "").upper(),
                     peer.get("Alias", "Bluetooth phone"),
-                    pcm_format(props),
+                    format,
                     props.get("Codec", "SBC"),
                     bool(props.get("Running")),
                     int(props.get("Sequence", 0)),
+                    self._incarnations.get(path, 0),
                 )
             )
         return sorted(
             result, key=lambda item: (item.running, item.sequence), reverse=True
         )
+
+    def devices(self):
+        return {
+            props[DEVICE]["Address"].upper(): (path, props[DEVICE])
+            for path, props in self.bluez.items()
+            if path.startswith(f"/org/bluez/{self.adapter}/")
+            and props.get(DEVICE, {}).get("Address")
+        }
+
+    def audio_devices(self):
+        """Inspect raw transports, including those not eligible for playback."""
+        devices = {
+            props[PCM].get("Device", "")
+            for props in self.bluealsa.values()
+            if props.get(PCM, {}).get("Transport") == "A2DP-sink"
+            and props[PCM].get("Mode") == "source"
+        }
+        devices.update(
+            props["org.bluez.MediaTransport1"].get("Device", "")
+            for props in self.bluez.values()
+            if props.get("org.bluez.MediaTransport1", {}).get("UUID", "").lower()
+            in (AUDIO_SOURCE_UUID, "0000110b-0000-1000-8000-00805f9b34fb")
+        )
+        return {p for p in devices if p.startswith(f"/org/bluez/{self.adapter}/")}
+
+    async def disconnect_audio(self, device):
+        if device not in self.audio_devices():
+            return
+        await self.call(
+            BLUEZ, device, DEVICE, "DisconnectProfile", "s", [AUDIO_SOURCE_UUID]
+        )
+        deadline = asyncio.get_running_loop().time() + 3
+        while device in self.audio_devices():
+            await self.refresh()
+            if device not in self.audio_devices():
+                break
+            if asyncio.get_running_loop().time() >= deadline:
+                raise ReceiverError(
+                    "backend_timeout",
+                    "The phone's audio profile did not disconnect",
+                )
+            await asyncio.sleep(0.05)
+        self.changed.set()
 
     async def events(self) -> AsyncIterator[None]:
         disconnected = asyncio.create_task(self.bus.wait_for_disconnect())
@@ -255,7 +324,9 @@ class BlueAlsaBackend:
                 changed = asyncio.create_task(self.changed.wait())
                 try:
                     done, _ = await asyncio.wait(
-                        (changed, disconnected), return_when=asyncio.FIRST_COMPLETED
+                        (changed, disconnected),
+                        timeout=2,
+                        return_when=asyncio.FIRST_COMPLETED,
                     )
                     if disconnected in done:
                         await disconnected
