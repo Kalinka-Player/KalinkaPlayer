@@ -547,6 +547,9 @@ class KalinkaPluginBluetooth(InputModulePlugin):
                             await self.service.update_metadata(
                                 backend.metadata(selected)
                             )
+                            await self.service.update_activity(
+                                backend.player_status(selected)
+                            )
                             volume = (
                                 backend.bluealsa.get(selected.path, {})
                                 .get(PCM, {})

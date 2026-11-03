@@ -56,6 +56,7 @@ class _Listener:
         if self._current():
             service = self.service
             service.hold = None
+            service.input_idle = False
             service.blocked = True
             service.partial.clear()
             if service.source is not None:
@@ -89,6 +90,7 @@ class BluetoothService:
         self.partial = bytearray()
         self.blocked = False
         self.paused = False
+        self.input_idle = False
         self.closed = False
         self.generation = 0
         self.claiming = None
@@ -108,7 +110,7 @@ class BluetoothService:
             return f"Connected to {self.endpoint.alias}; another input owns playback"
         if self.output_error:
             return self.output_error
-        if self.paused or time.monotonic() - self.last_audio > 1:
+        if self.paused or self.input_idle or not self.endpoint.running:
             return f"Connected to {self.endpoint.alias}; paused"
         if self.hold is None:
             return f"Receiving from {self.endpoint.alias}; waiting for output"
@@ -146,6 +148,7 @@ class BluetoothService:
                     # Resume it without echoing Play back to the sender.
                     self.partial.clear()
                     self.source.reset()
+                    self.input_idle = False
                     if self.hold is not None and self.hold.active:
                         await self.hold.resume()
             return
@@ -170,6 +173,10 @@ class BluetoothService:
         if complete:
             self.source.offer(bytes(self.partial[:complete]))
             del self.partial[:complete]
+            if self.input_idle:
+                # Resume from PCM even if the sender never updates AVRCP or
+                # Running. Keep the FD drain free of output/D-Bus awaits.
+                self.backend.changed.set()
         if (
             self.hold is None
             and (self.claiming is None or self.claiming.done())
@@ -242,6 +249,36 @@ class BluetoothService:
             except (HoldEnded, ValueError):
                 pass
 
+    async def update_activity(self, sender_status: str | None):
+        """An idle sender is paused; an expected audio/output stall is buffering."""
+        hold, endpoint = self.hold, self.endpoint
+        if (
+            endpoint is None
+            or hold is None
+            or not hold.active
+            or self.paused
+            or self.blocked
+            or self.output_error
+        ):
+            return
+        # Allow buffered tail audio and brief track/transport transitions to
+        # drain. Stale AVRCP status must never silence PCM from another app.
+        idle = time.monotonic() - self.last_audio > 1 and (
+            not endpoint.running or sender_status in ("paused", "stopped", "error")
+        )
+        if idle == self.input_idle:
+            return
+        self.input_idle = idle
+        try:
+            if idle:
+                self.partial.clear()
+                self.source.reset()
+                await hold.pause()
+            else:
+                await hold.resume()
+        except HoldEnded:
+            pass  # A queue takeover or disconnect can end the hold meanwhile.
+
     async def remote(self, method, generation=None):
         if generation is not None and generation != self.generation:
             return
@@ -260,7 +297,7 @@ class BluetoothService:
                 await self.hold.pause()
             await self.remote("Pause", generation)
         elif request.kind is TransportKind.RESUME:
-            self.paused = self.blocked = False
+            self.paused = self.blocked = self.input_idle = False
             if self.source:
                 self.source.reset()
             if self.hold and self.hold.active:
@@ -293,6 +330,8 @@ class BluetoothService:
         self.listener_token = None
         self.partial.clear()
         self.endpoint, self.metadata, self._volume = None, {}, None
+        self.input_idle = False
+        self.last_audio = 0.0
         claim, self.claiming = self.claiming, None
         source, self.source = self.source, None
         hold, self.hold = self.hold, None

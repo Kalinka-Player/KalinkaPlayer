@@ -385,7 +385,15 @@ class BlueAlsaBackend:
 
     def metadata(self, endpoint: Endpoint) -> dict:
         player = self.player(endpoint)
-        return player[1].get("Track", {}) if player else {}
+        # Android can retain yesterday's Track after its media session stops,
+        # including while another app sends audio without AVRCP metadata.
+        if player is None or player[1].get("Status") in ("stopped", "error"):
+            return {}
+        return player[1].get("Track", {})
+
+    def player_status(self, endpoint: Endpoint) -> str | None:
+        player = self.player(endpoint)
+        return player[1].get("Status") if player else None
 
     async def command(self, endpoint: Endpoint, method: str):
         player = self.player(endpoint)
