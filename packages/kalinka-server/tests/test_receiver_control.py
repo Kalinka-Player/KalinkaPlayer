@@ -127,6 +127,68 @@ async def test_inventory_contains_disabled_and_failed_receivers(api):
     assert (await client.get("/receivers")).json()["receivers"] == []
 
 
+async def test_password_reveal_is_explicit_opt_in_and_never_broadcast(api):
+    from unittest.mock import AsyncMock
+
+    client, registry, entry, events = api
+    assert (await client.post("/receivers/test/password")).status_code == 409
+    entry.plugin_context.config.enabled = True
+    entry.plugin_instance.snapshot = AsyncMock(
+        return_value=ReceiverSnapshot(
+            enabled=True,
+            state="ready",
+            password_required=True,
+            password_reveal_available=True,
+        )
+    )
+    entry.plugin_instance.reveal_password = AsyncMock(return_value="configured secret")
+    snapshot = await client.get("/receivers/test")
+    assert "configured secret" not in snapshot.text
+    assert (await client.get("/receivers/test/password")).status_code == 405
+    revealed = await client.post("/receivers/test/password")
+    assert revealed.json() == {"password": "configured secret"}
+    assert revealed.headers["cache-control"] == "no-store"
+    registry.changed()
+    await registry._task
+    assert "configured secret" not in events[-1].model_dump_json()
+    entry.plugin_context.config.enabled = False
+    assert (await client.post("/receivers/test/password")).status_code == 409
+    assert entry.plugin_instance.reveal_password.await_count == 1
+
+
+async def test_demo_gate_refuses_password_reveal_and_pairing_approval():
+    from kalinka_server.demo_mode import DemoReadOnlyGate
+
+    app = FastAPI()
+    app.add_middleware(DemoReadOnlyGate, enabled=lambda: True)
+    register_receiver_routes(app, None)  # A refusal must not reach any controller.
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        for path in ("/receivers/test/password", "/receivers/test/commands"):
+            assert (
+                await client.post(
+                    path,
+                    json={
+                        "command": "answer_pairing",
+                        "request_id": "request",
+                        "accept": True,
+                    },
+                )
+            ).status_code == 403
+
+
+async def test_pairing_answers_require_a_real_boolean_and_a_request_token(api):
+    client, _, _, _ = api
+    for body in (
+        {"command": "answer_pairing", "accept": True},
+        {"command": "answer_pairing", "request_id": "request", "accept": "yes"},
+    ):
+        assert (
+            await client.post("/receivers/test/commands", json=body)
+        ).status_code == 422
+
+
 async def test_commands_are_typed_synchronous_and_not_replayed(api):
     client, _, entry, _ = api
     response = await client.post(

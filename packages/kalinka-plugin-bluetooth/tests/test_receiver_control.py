@@ -162,7 +162,156 @@ async def authorize(plugin):
         body=[DEVICE_PATH],
     )
     assert plugin.pairing._agent(message) is True
+    for _ in range(10):
+        if plugin.pairing.request is not None:
+            break
+        await asyncio.sleep(0)
+    await plugin.pairing.answer(plugin.pairing.request.request_id, True)
     await asyncio.gather(*list(plugin.pairing._tasks))
+
+
+async def agent_request(
+    plugin, member="RequestConfirmation", signature="ou", args=None
+):
+    await plugin.execute(OpenPairing(command="open_pairing"))
+    message = Message(
+        path=AGENT,
+        interface="org.bluez.Agent1",
+        member=member,
+        sender=plugin.backend.owner,
+        serial=23,
+        signature=signature,
+        body=[DEVICE_PATH, *(args if args is not None else [42])],
+    )
+    assert plugin.pairing._agent(message) is True
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if plugin.pairing.request is not None:
+            break
+    return message, plugin.pairing.request
+
+
+async def test_numeric_comparison_requires_answer_and_rejects_stale_clients(plugin):
+    from dbus_fast import MessageType
+
+    message, request = await agent_request(plugin)
+    assert request.code == "000042" and request.device_name == "Phone"
+    assert request.method == "confirmation"
+    assert not plugin.backend.bus.send.called
+    assert not plugin.backend.bluez[DEVICE_PATH][DEVICE]["Trusted"]
+    assert not plugin.access.records
+    assert (await plugin.snapshot()).pairing_request.code == "000042"
+    assert plugin.pairing._agent(message).message_type == MessageType.ERROR
+    await plugin.pairing.answer(request.request_id, True)
+    with pytest.raises(ReceiverError, match="already ended"):
+        await plugin.pairing.answer(request.request_id, False)
+    await asyncio.gather(*list(plugin.pairing._tasks))
+    assert (
+        plugin.backend.bus.send.call_args.args[0].message_type
+        == MessageType.METHOD_RETURN
+    )
+    assert not plugin.access.devices
+    assert any(
+        call[1:] == ("RegisterAgent", [AGENT, "DisplayYesNo"])
+        for call in plugin.backend.calls
+    )
+
+
+@pytest.mark.parametrize("end", ["reject", "cancel", "close", "timeout"])
+async def test_unapproved_pairing_never_grants_trust_or_audio(plugin, end):
+    from dbus_fast import MessageType
+    from time import monotonic
+
+    await plugin.execute(OpenPairing(command="open_pairing"))
+    if end == "timeout":
+        plugin.pairing.deadline = monotonic() + 0.03
+    _, request = await agent_request(plugin)
+    tasks = list(plugin.pairing._tasks)
+    if end == "reject":
+        await plugin.pairing.answer(request.request_id, False)
+    elif end == "close":
+        await plugin.pairing.close()
+    elif end == "cancel":
+        plugin.pairing._agent(
+            Message(
+                path=AGENT,
+                interface="org.bluez.Agent1",
+                member="Cancel",
+                sender=plugin.backend.owner,
+                serial=24,
+            )
+        )
+    await asyncio.wait_for(asyncio.gather(*tasks), 1)
+    assert plugin.pairing.request is None
+    assert not plugin.backend.bluez[DEVICE_PATH][DEVICE]["Trusted"]
+    assert plugin.backend.bluez[DEVICE_PATH][DEVICE]["Paired"]
+    assert not plugin.access.records
+    assert plugin.backend.bus.send.call_args.args[0].message_type == MessageType.ERROR
+    with pytest.raises(ReceiverError):
+        await plugin.pairing.answer(request.request_id, True)
+
+
+@pytest.mark.parametrize(
+    "member,method,code,signature,body",
+    [
+        ("RequestAuthorization", "authorization", None, "", []),
+        ("RequestPinCode", "pin", "aB12", "s", ["aB12"]),
+        ("RequestPasskey", "passkey", "000007", "u", [7]),
+    ],
+)
+async def test_other_callbacks_return_the_users_answer(
+    plugin, member, method, code, signature, body
+):
+    _, request = await agent_request(plugin, member, "o", [])
+    assert request.method == method and request.code is None
+    if method == "passkey":
+        with pytest.raises(ReceiverError):
+            await plugin.pairing.answer(request.request_id, True, "7")
+    await plugin.pairing.answer(request.request_id, True, code)
+    await asyncio.gather(*list(plugin.pairing._tasks))
+    reply = plugin.backend.bus.send.call_args.args[0]
+    assert reply.signature == signature and reply.body == body
+
+
+async def test_display_callback_is_not_comparison_and_times_out(plugin):
+    _, request = await agent_request(plugin, "DisplayPasskey", "ouq", [7, 2])
+    await asyncio.gather(*list(plugin.pairing._tasks))
+    assert request.code == "000007" and request.entered == 2
+    assert request.method == "display_passkey" and not plugin.access.records
+    with pytest.raises(ReceiverError, match="on your device"):
+        await plugin.pairing.answer(request.request_id, True)
+    plugin.pairing.pending.deadline = 0
+    await plugin.pairing.expire_request()
+    assert plugin.pairing.request is None
+    assert (DEVICE_PATH, "CancelPairing", None) in plugin.backend.calls
+
+
+async def test_rejected_request_can_be_retried_with_a_fresh_token(plugin):
+    _, old = await agent_request(plugin)
+    await plugin.pairing.answer(old.request_id, False)
+    await asyncio.gather(*list(plugin.pairing._tasks))
+
+    _, new = await agent_request(plugin)
+    assert new.request_id != old.request_id
+    with pytest.raises(ReceiverError):
+        await plugin.pairing.answer(old.request_id, True)
+    await plugin.pairing.answer(new.request_id, False)
+    await asyncio.gather(*list(plugin.pairing._tasks))
+
+
+async def test_window_expiry_preserves_established_audio_and_restores_adapter(plugin):
+    peer = (await plugin.snapshot()).peers[0]
+    await plugin.execute(GrantAudio(command="grant_audio", peer_id=peer.peer_id))
+    plugin.backend.transport()
+    await plugin.execute(OpenPairing(command="open_pairing"))
+    adapter = plugin.backend.bluez["/org/bluez/hci0"][ADAPTER]
+    assert adapter["Discoverable"] and adapter["Pairable"]
+    assert adapter["DiscoverableTimeout"] == 120
+    await plugin.pairing._expire(0)
+    assert not adapter["Discoverable"] and not adapter["Pairable"]
+    assert plugin.backend.audio_devices() == {DEVICE_PATH}
+    assert ADDRESS in plugin.access.devices
+    assert not plugin.pairing.active and plugin.pairing._lock_fd is None
 
 
 async def test_pairing_commits_on_valid_pcm_endpoint_without_playback(plugin):

@@ -126,6 +126,7 @@ from .live_audio import LiveAudio, LiveAudioRef, LivePolicy, LiveSource, PcmForm
 
 from .receiver_control import (
     ReceiverControl,
+    ReceiverPasswordControl,
     ReceiverDescriptor,
     ReceiverSnapshot,
     ReceiversSnapshot,
@@ -133,6 +134,8 @@ from .receiver_control import (
     ReceiverPeer,
     ReceiverSession,
     PairingState,
+    PairingRequest,
+    AnswerPairing,
     ReceiverCommand,
     ReceiverError,
     OpenPairing,
@@ -144,6 +147,7 @@ from .receiver_control import (
 
 __all__ = [
     "ReceiverControl",
+    "ReceiverPasswordControl",
     "ReceiverDescriptor",
     "ReceiverSnapshot",
     "ReceiversSnapshot",
@@ -151,6 +155,8 @@ __all__ = [
     "ReceiverPeer",
     "ReceiverSession",
     "PairingState",
+    "PairingRequest",
+    "AnswerPairing",
     "ReceiverCommand",
     "ReceiverError",
     "OpenPairing",

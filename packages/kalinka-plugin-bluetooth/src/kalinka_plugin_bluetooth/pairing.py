@@ -12,19 +12,28 @@ import asyncio
 import fcntl
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
 from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel
-from kalinka_plugin_sdk.receiver_control import ReceiverError
+from kalinka_plugin_sdk.receiver_control import PairingRequest, ReceiverError
 
 from dbus_fast import Message
 
 from .backend import ADAPTER, AUDIO_UUIDS, BLUEZ, DEVICE, PROPERTIES, plain
 
 AGENT = "/org/kalinka/bluetooth_agent"
+
+
+@dataclass
+class PendingPairing:
+    view: PairingRequest
+    device: str
+    deadline: float
+    answer: asyncio.Future | None = None
 
 
 class AccessRecord(BaseModel):
@@ -180,6 +189,8 @@ class PairingWindow:
         self._old: dict = {}
         self._tasks: set[asyncio.Task] = set()
         self._guard = asyncio.Lock()
+        self.pending: PendingPairing | None = None
+        self.notice: str | None = None
 
     @property
     def adapter(self):
@@ -266,7 +277,7 @@ class PairingWindow:
                     "org.bluez.AgentManager1",
                     "RegisterAgent",
                     "os",
-                    [AGENT, "NoInputNoOutput"],
+                    [AGENT, "DisplayYesNo"],
                 )
                 self._registered = True
                 await self.backend.call(
@@ -281,6 +292,7 @@ class PairingWindow:
                 self.window_id = uuid4().hex
                 self.deadline = monotonic() + seconds
                 self.completed_address = None
+                self.notice = None
                 await self.backend.set_property(
                     BLUEZ, self.adapter, "org.bluez.Adapter1", "Pairable", "b", True
                 )
@@ -309,6 +321,90 @@ class PairingWindow:
             # Denial is durable and the admission watcher retries cleanup.
             self.backend.changed.set()
 
+    @property
+    def request(self):
+        pending = self.pending
+        if pending is None or not self.active:
+            return None
+        return pending.view.model_copy(
+            update={
+                "remaining_seconds": max(
+                    0.0, min(self.remaining_seconds, pending.deadline - monotonic())
+                )
+            }
+        )
+
+    def _cancel_requests(self):
+        self.pending = None
+        for task in self._tasks:
+            task.cancel()
+        # A cancelled handshake must not leave provisional audio permission.
+        self.candidates.clear()
+        self.backend.changed.set()
+
+    async def expire_request(self):
+        pending = self.pending
+        if (
+            pending is not None
+            and pending.answer is None
+            and monotonic() >= pending.deadline
+        ):
+            self.pending = None
+            self.notice = "Pairing approval timed out"
+            self.backend.changed.set()
+            await self.backend.call(BLUEZ, pending.device, DEVICE, "CancelPairing")
+
+    async def answer(self, request_id, accept, code=None):
+        pending = self.pending
+        if (
+            pending is None
+            or pending.view.request_id != request_id
+            or not self.active
+            or not self.remaining_seconds
+            or monotonic() >= pending.deadline
+        ):
+            raise ReceiverError(
+                "stale_target", "This pairing request has already ended"
+            )
+        method = pending.view.method
+        if accept:
+            if pending.answer is None:
+                raise ReceiverError(
+                    "invalid_answer", "Enter the displayed code on your device"
+                )
+            if method == "passkey":
+                if (
+                    code is None
+                    or len(code) != 6
+                    or not code.isascii()
+                    or not code.isdigit()
+                ):
+                    raise ReceiverError(
+                        "invalid_answer", "Enter the six-digit code from your device"
+                    )
+            elif method == "pin":
+                if (
+                    not code
+                    or len(code) > 16
+                    or any(ord(c) < 32 or ord(c) == 127 for c in code)
+                ):
+                    raise ReceiverError(
+                        "invalid_answer",
+                        "Enter the PIN from your device (1–16 characters)",
+                    )
+            elif code is not None:
+                raise ReceiverError(
+                    "invalid_answer", "This request does not accept a code"
+                )
+        # Consume the token before yielding: a second client can never answer it.
+        self.pending = None
+        self.notice = None if accept else "Pairing rejected"
+        if pending.answer is not None:
+            pending.answer.set_result((accept, code))
+        elif not accept:
+            await self.backend.call(BLUEZ, pending.device, DEVICE, "CancelPairing")
+        self.backend.changed.set()
+
     def _agent(self, message):
         if message.path != AGENT or message.interface != "org.bluez.Agent1":
             return None
@@ -317,16 +413,29 @@ class PairingWindow:
                 message, "org.bluez.Error.Rejected", "Only BlueZ may use this agent"
             )
         if message.member in ("Release", "Cancel"):
+            self.notice = "Pairing cancelled"
+            self._cancel_requests()
+            if message.member == "Release":
+                self._registered = False
+                # End the window and restore the provisioning lease promptly.
+                self.deadline = monotonic()
+                if self._timer is not None:
+                    self._timer.cancel()
+                self._timer = asyncio.create_task(self._expire(0))
             return Message.new_method_return(message)
+        methods = {
+            "RequestConfirmation": "confirmation",
+            "RequestAuthorization": "authorization",
+            "RequestPinCode": "pin",
+            "RequestPasskey": "passkey",
+            "DisplayPinCode": "display_pin",
+            "DisplayPasskey": "display_passkey",
+            "AuthorizeService": "authorization",
+        }
         if (
             not self.active
             or not self.remaining_seconds
-            or message.member
-            not in (
-                "RequestAuthorization",
-                "RequestConfirmation",
-                "AuthorizeService",
-            )
+            or message.member not in methods
         ):
             return Message.new_error(
                 message, "org.bluez.Error.Rejected", "Audio pairing is closed"
@@ -337,36 +446,130 @@ class PairingWindow:
             return Message.new_error(
                 message, "org.bluez.Error.Rejected", "Audio services only"
             )
-        task = asyncio.create_task(self._authorize(message))
+        if self._tasks:
+            return Message.new_error(
+                message,
+                "org.bluez.Error.Rejected",
+                "Another pairing request is pending",
+            )
+        task = asyncio.create_task(
+            self._authorize(message, methods[message.member], self.window_id)
+        )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return True
 
-    async def _authorize(self, message):
+    async def _authorize(self, message, method, window_id):
+        pending = None
+        address = None
         try:
             device = message.body[0]
             if not device.startswith(self.adapter + "/dev_"):
                 raise ValueError("Device belongs to another adapter")
-            response = await self.backend.call(
+            reply = await self.backend.call(
                 BLUEZ, device, PROPERTIES, "GetAll", "s", [DEVICE]
             )
-            props = plain(response.body[0])
-            if not self.active:
+            props = plain(reply.body[0])
+            if (
+                not self.active
+                or not self.remaining_seconds
+                or self.window_id != window_id
+            ):
                 raise ValueError("Pairing window expired")
             address = props["Address"].upper()
-            if address not in self.access.devices:
-                self.candidates[address] = device
-                await self.access.begin(
-                    address, props.get("Alias", address), bool(props.get("Trusted"))
-                )
-                if not self.active or not self.remaining_seconds:
-                    raise ValueError("Pairing window expired")
-            await self.backend.set_property(BLUEZ, device, DEVICE, "Trusted", "b", True)
-            response = Message.new_method_return(message)
-        except (Exception, asyncio.CancelledError) as error:
-            response = Message.new_error(
-                message, "org.bluez.Error.Rejected", str(error)
+            approved = message.member == "AuthorizeService" and (
+                address in self.access.devices or self.admits(address)
             )
+            answer_code = None
+            if not approved:
+                code = None
+                if method in ("confirmation", "display_passkey"):
+                    value = message.body[1]
+                    if type(value) is not int or not 0 <= value <= 999999:
+                        raise ValueError("Invalid BlueZ comparison code")
+                    code = f"{value:06d}"
+                elif method == "display_pin":
+                    code = str(message.body[1])
+                display = method.startswith("display_")
+                current = self.pending
+                if current is not None and not (
+                    current.device == device
+                    and current.view.method.startswith("display_")
+                ):
+                    raise ValueError("Another pairing request is pending")
+                pending = PendingPairing(
+                    PairingRequest(
+                        request_id=(
+                            current.view.request_id
+                            if current and display
+                            else uuid4().hex
+                        ),
+                        device_name=props.get("Alias", address),
+                        method=method,
+                        code=code,
+                        entered=message.body[2]
+                        if method == "display_passkey"
+                        else None,
+                        remaining_seconds=min(60, self.remaining_seconds),
+                    ),
+                    device,
+                    monotonic() + min(60, self.remaining_seconds),
+                    None if display else asyncio.get_running_loop().create_future(),
+                )
+                self.pending = pending
+                self.notice = None
+                self.backend.changed.set()
+                if not display:
+                    accepted, answer_code = await asyncio.wait_for(
+                        pending.answer, min(60, self.remaining_seconds)
+                    )
+                    if not accepted:
+                        raise ValueError("Pairing rejected")
+                    if (
+                        not self.active
+                        or not self.remaining_seconds
+                        or self.window_id != window_id
+                    ):
+                        raise ValueError("Pairing window expired")
+            if not method.startswith("display_"):
+                if address not in self.access.devices:
+                    self.candidates[address] = device
+                    await self.access.begin(
+                        address, props.get("Alias", address), bool(props.get("Trusted"))
+                    )
+                    if not self.active or not self.remaining_seconds:
+                        raise ValueError("Pairing window expired")
+                await self.backend.set_property(
+                    BLUEZ, device, DEVICE, "Trusted", "b", True
+                )
+            signature, body = (
+                ("s", [answer_code])
+                if method == "pin"
+                else ("u", [int(answer_code)])
+                if method == "passkey"
+                else ("", [])
+            )
+            response = Message.new_method_return(message, signature, body)
+        except (Exception, asyncio.CancelledError) as error:
+            if address is not None:
+                self.candidates.pop(address, None)
+            self.notice = (
+                "Pairing approval timed out"
+                if isinstance(error, TimeoutError)
+                else "Pairing cancelled"
+                if isinstance(error, asyncio.CancelledError)
+                else str(error)
+            )
+            response = Message.new_error(
+                message, "org.bluez.Error.Rejected", self.notice
+            )
+        finally:
+            if (
+                pending is not None
+                and pending.answer is not None
+                and self.pending is pending
+            ):
+                self.pending = None
         if self.backend.bus is not None:
             await self.backend.bus.send(response)
         self.backend.changed.set()
@@ -435,10 +638,10 @@ class PairingWindow:
         if timer is not None and timer is not asyncio.current_task():
             timer.cancel()
             await asyncio.gather(timer, return_exceptions=True)
+        self.pending = None
         tasks = list(self._tasks)
-        if cancel:
-            for task in tasks:
-                task.cancel()
+        for task in tasks:
+            task.cancel()
         try:
             await asyncio.gather(*tasks, return_exceptions=True)
             for address in list(self.candidates):

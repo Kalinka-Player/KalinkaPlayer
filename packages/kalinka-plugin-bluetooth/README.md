@@ -13,7 +13,7 @@ neither ALSA PCM devices nor `arecord`, PipeWire, or a local playback loopback.
 Replacing BlueALSA with raw BlueZ transport access would also require owning
 A2DP codec negotiation, packet handling, decoding and reconnect behaviour.
 
-Requires SDK 3.22 and a Core/renderer release supporting live PCM v1. Upgrade
+Requires SDK 3.23 and a Core/renderer release supporting live PCM v1. Upgrade
 remote renderers too; an older renderer reports an upgrade requirement.
 
 ## Setup
@@ -38,9 +38,11 @@ status and logs it once while it persists. Reconnection backs off from two
 seconds to at most 30 seconds; starting the backend allows automatic recovery.
 Leave the plugin disabled on hosts that do not receive Bluetooth audio.
 
-Open **Connect a device** on Home or in the server menu. Enable Bluetooth,
-choose **Pair a device**, then select the displayed name in your phone's
-Bluetooth settings. These changes apply without restarting Core, including
+Enable Bluetooth in Configuration. Open **Connect** in the mobile source strip,
+or **Bluetooth** under Connect in the wide sidebar. Choose **Pair a device**,
+then select the displayed name in your phone's Bluetooth settings. Confirm the
+actual code in Kalinka when BlueZ requests comparison; pairing is never
+automatically approved. A pending approval appears even with the panel closed. These changes apply without restarting Core, including
 the first enable after boot. Pairing closes after two minutes or the first
 successful A2DP connection; playback need not start to finish pairing.
 
