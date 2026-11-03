@@ -107,3 +107,34 @@ def test_a_field_read_once_at_startup_says_a_save_needs_a_restart():
     assert by_path["base_config.server.port"].apply is Apply.RESTART_REQUIRED
     assert by_path["base_config.embedding.model_dir"].apply is Apply.RESTART_REQUIRED
     assert by_path["base_config.device_automation.auto_power_on"].apply is Apply.INSTANT
+
+
+def test_a_plugin_field_tagged_so_is_left_for_the_restart():
+    from pydantic import Field
+
+    from kalinka_plugin_sdk.module_config import ModuleConfig
+    from kalinka_server.config_model import KalinkaConfig
+    from kalinka_server.config_schema_processor import build_presentation, restart_paths
+    from kalinka_server.presentation_schema import Apply
+
+    class _Config(ModuleConfig):
+        ai_search: bool = Field(
+            default=False, json_schema_extra={"apply": "restart_required"}
+        )
+        max_results: int = 20
+
+    schema = build_presentation(
+        base_config=KalinkaConfig(),
+        input_modules={"fake": _Config(name="fake")},
+        devices={},
+        input_modules_with_errors={},
+        devices_with_errors={},
+        dynamic_field_registry={},
+    )
+    by_path = {field.path: field for field in schema.expert_fields}
+
+    assert by_path["input_modules.fake.ai_search"].apply is Apply.RESTART_REQUIRED
+    assert by_path["input_modules.fake.max_results"].apply is Apply.INSTANT
+    assert "input_modules.fake.ai_search" in restart_paths(schema)
+    assert "base_config.server.port" in restart_paths(schema)
+    assert "input_modules.fake.max_results" not in restart_paths(schema)

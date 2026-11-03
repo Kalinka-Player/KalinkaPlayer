@@ -88,6 +88,8 @@ class AiSearchConfig(BaseModel):
                 "by name. Needs roughly 500 MB of memory, more while indexing, "
                 "and hours of CPU to index a large library the first time."
             ),
+            # Its packages install at the next start.
+            "apply": "restart_required",
             **_SIMPLE,
             **_PROMPT,
         },
@@ -209,6 +211,8 @@ class ProceduralArtworkConfig(BaseModel):
         title="Generate missing album art",
         json_schema_extra={
             "help": "Draw abstract cover art for albums left without artwork",
+            # numpy installs at the next start.
+            "apply": "restart_required",
             **_SIMPLE,
         },
     )

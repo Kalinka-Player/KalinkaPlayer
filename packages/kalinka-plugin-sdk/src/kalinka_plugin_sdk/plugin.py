@@ -235,6 +235,12 @@ class PluginBase(ABC, Generic[PLUGIN_CLASS, CTX_TYPE]):
         captured at setup time), not the config at last setup, so this
         reflects any changes the user has just staged through
         ``PUT /server/config``.
+
+        SDK 3.21: a save applies without a restart, so the field that turns
+        such a feature on is tagged
+        ``json_schema_extra={"apply": "restart_required"}``. The app then
+        saves and restarts in one step, the server leaves that save for the
+        restart, and the restart installs what this method names.
         """
         return []
 

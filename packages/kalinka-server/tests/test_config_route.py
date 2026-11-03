@@ -74,12 +74,16 @@ def client(tmp_path, library):
     return _client(tmp_path, library)
 
 
-def _client(tmp_path, library, instance=None, settings_changed=None, plugin_class=None):
+def _client(
+    tmp_path, library, instance=None, settings_changed=None, plugin_class=None,
+    restart_paths=frozenset(),
+):
     app = FastAPI()
     app.state.config = KalinkaConfig()
     app.state.schema_version = "1"
     app.state.dynamic_paths = frozenset()
     app.state.readonly_paths = frozenset()
+    app.state.restart_paths = restart_paths
     app.state.page_banners = []
     app.state.dynamic_field_registry = {}
     app.state.options_registry = OptionsRegistry()
@@ -254,6 +258,24 @@ class TestASaveReachesThePlugin:
 
         assert answer.status_code == 200
         assert observed == [(False, [("localfiles", frozenset({"enabled"}))])]
+
+
+    def test_not_when_a_field_read_once_at_startup_is_among_the_changes(
+        self, tmp_path, library
+    ):
+        applying = _Applying()
+        client = _client(
+            tmp_path,
+            library,
+            settings_changed=applying,
+            restart_paths=frozenset({_SOURCES}),
+        )
+
+        answer = client.put("/server/config", json=_body(_read(client)))
+
+        assert answer.status_code == 200
+        assert _read(client) == _body(_read(client))["changes"][_SOURCES]
+        assert applying.told == []
 
 
 class TestARenamedStreamer:
