@@ -1078,8 +1078,6 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
     ) -> Optional[LocationStatus]:
         """A folder on this server joins the library as a folder source.
 
-        @note New sources are read from the next start, until the librarian
-            can take roots while it runs.
         @note Answers from the paths alone, reading nothing from disk: it is
             asked for every folder a Drives page lists, on the event loop,
             and a share that stopped answering must not hold that up. The
@@ -1093,7 +1091,8 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
             holds=any(is_within(target, root) for root in roots.values()),
             library_empty=self._library_empty(),
             removable=target in roots.values(),
-            restart_required=True,
+            # The server sets the module up again on the saved sources.
+            restart_required=False,
         )
 
     async def adopt_location(
@@ -1221,9 +1220,14 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
 
         self._scan_control.available.clear()
         self._scan_control.pending.clear()
-        self._shutdown_process(self._librarian_proc)
-        self._shutdown_process(self._searcher_proc)
-        self._shutdown_process(self._embedder_proc)
+        # Off the loop and side by side: each process gets seconds to go, and
+        # the server's shutdown budget must cover the slowest, not their sum.
+        await asyncio.gather(
+            *(
+                asyncio.to_thread(self._shutdown_process, proc)
+                for proc in (self._librarian_proc, self._searcher_proc, self._embedder_proc)
+            )
+        )
 
         if self._log_listener is not None:
             self._log_listener.stop()

@@ -390,10 +390,9 @@ class LocalFilesInputModule(InputModule):
         self._storage_source = storage_source or (lambda: build_resolver(config))
         # Access boundary: only files under a configured music folder or
         # source may be served / played. Captured once here, so it is fixed
-        # for the lifetime of this module instance — a live config edit via
-        # PUT /server/config does not re-run setup(), so the new boundary only
-        # takes effect on the next restart / re-setup (at which point the
-        # indexer also purges the now-out-of-scope rows).
+        # for the lifetime of this module instance; a saved change to the
+        # sources has the server set the plugin up again, on a new instance,
+        # and the indexer purges the rows then out of scope.
         self._music_folders = library_roots(config, self._storage)
         self._search_request_queue = search_request_queue
         self._search_response_queue = search_response_queue
