@@ -4,6 +4,7 @@ helper repeats the checks that matter from its own fetch of the catalog."""
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import hashlib
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -314,9 +315,10 @@ class Root:
             raise Failure("The plugin catalog could not be fetched.")
         return deepcopy(self.catalog)
 
-    def download(self, url, sha256, size_bytes, dest):
+    def download(self, url, sha256, size_bytes, dest, keepalive=lambda: None):
         self.downloads.append((url, sha256, size_bytes))
         dest.write_bytes(PACKAGE)
+        keepalive()
         assert stat.S_IMODE(os.stat(dest.parent).st_mode) == 0o755
 
     def run(self, command):
@@ -484,7 +486,7 @@ def test_apt_failure_is_recorded_without_its_output(root):
     root.fail = "apt"
     code, result = root.apply(INSTALL)
     assert code == 1
-    assert result["error"] == "apt-get did not complete; see the restart service's log."
+    assert result["error"] == "apt-get did not complete; see the helper's log."
     assert result["finished_at"] is not None
 
 
@@ -570,6 +572,39 @@ def test_download_follows_https_redirects_and_checks_the_bytes(tmp_path):
     assert server.requests[-1].startswith(
         "https://cdn.example.org/x.deb?X-Amz-Signature="
     )
+
+
+def test_download_keeps_the_record_alive_as_bytes_arrive(tmp_path):
+    ticks = []
+    module._download(
+        "https://github.com/example/releases/download/v1/x.deb",
+        DIGEST,
+        len(PACKAGE),
+        tmp_path / "x.deb",
+        transport=httpx.MockTransport(Server()),
+        keepalive=lambda: ticks.append(1),
+    )
+    assert ticks
+
+
+def test_a_record_touched_moves_now_and_then(tmp_path):
+    now = [0.0]
+    record = module._Record(
+        tmp_path / RESULT_FILE,
+        module._record_of(OperationRequest.model_validate(INSTALL), 0.0),
+        lambda: now[0],
+    )
+
+    def written():
+        return json.loads((tmp_path / RESULT_FILE).read_text())["updated_at"]
+
+    now[0] = module.KEEPALIVE_S / 2
+    record.touch()
+    assert written() == 0.0
+
+    now[0] = module.KEEPALIVE_S
+    record.touch()
+    assert written() == module.KEEPALIVE_S
 
 
 @pytest.mark.parametrize(
@@ -685,9 +720,13 @@ async def test_updates_are_unavailable_without_installer_or_catalog(box):
         "updates": [],
         "automatic_updates_enabled": False,
     }
-    assert ops.capabilities() == {"installation": False, "update_checks": False}
+    assert ops.capabilities() == {
+        "installation": False,
+        "update_checks": False,
+        "live_installation": False,
+    }
     box.supported = True
-    assert ops.capabilities() == {"installation": True, "update_checks": True}
+    assert ops.capabilities() == {"installation": True, "update_checks": True, "live_installation": False}
     unavailable = PublicCatalog(
         transport=httpx.MockTransport(lambda request: httpx.Response(500))
     )
@@ -739,3 +778,489 @@ async def test_routes_report_and_apply_updates(box):
         assert response.status_code == 202, response.text
         assert response.json()["operation"] == "update"
         assert box.request()["action"] == "update"
+
+
+# ---------------------------------------------------------------------------
+# Beside a running Core
+
+
+from contextlib import contextmanager
+
+from kalinka_server.plugin_management.operations import ACK_FILE, LiveTools
+
+UPDATE = INSTALL | {"action": "update"}
+
+
+class LiveRoot(Root):
+    """The helper's view of a box whose Core keeps running: what pip would
+    change, what the venv holds, whether Core answers the unload."""
+
+    def __init__(self, tmp_path):
+        super().__init__(tmp_path)
+        self.report = {"install": [{"metadata": {"name": "kalinka-plugin-demo", "version": "1.0.0"}}]}
+        self.venv = {"kalinka-plugin-sdk": "3.21.0", "httpx": "0.27.0"}
+        self.wheel_extensions = False
+        self.installed_extensions = False
+        self.acks = True
+        self.steps = []
+
+    def run(self, command):
+        self.steps.append(json.loads((self.state / RESULT_FILE).read_text())["step"])
+        return super().run(command)
+
+    @contextmanager
+    def marker(self):
+        self.calls.append(["marker", "on"])
+        yield
+        self.calls.append(["marker", "off"])
+
+    def tools(self) -> LiveTools:
+        return LiveTools(
+            extract_wheel=lambda package, scratch: scratch / "demo.whl",
+            pip_report=lambda wheel: self.report,
+            installed_distributions=lambda: dict(self.venv),
+            has_extension_modules=lambda wheel: self.wheel_extensions,
+            installed_has_extension_modules=lambda name: self.installed_extensions,
+            pip_install=lambda wheel: self.calls.append(["pip", "install", wheel.name]),
+            wait_for_unload=self._wait_for_unload,
+            marker=self.marker,
+            before_stop=lambda: self.calls.append(["before-stop"]),
+        )
+
+    def _wait_for_unload(self, state_dir, operation_id):
+        self.calls.append(["wait-for-unload", str(state_dir), operation_id])
+        return self.acks
+
+    def apply_live(self, request):
+        (self.state / REQUEST_FILE).write_text(json.dumps(request))
+        code = apply(
+            self.state,
+            fetch_catalog=self.fetch_catalog,
+            download=self.download,
+            run=self.run,
+            package_version=self.installed.get,
+            live=True,
+            tools=self.tools(),
+        )
+        result = json.loads((self.state / RESULT_FILE).read_text())
+        return code, result
+
+
+@pytest.fixture
+def live(tmp_path):
+    return LiveRoot(tmp_path)
+
+
+def _names(calls):
+    return [call[0] for call in calls]
+
+
+def test_a_live_install_leaves_core_running(live):
+    code, result = live.apply_live(INSTALL)
+
+    assert code == 0 and result["status"] == "ok", result
+    assert "systemctl" not in _names(live.calls)
+    apt = next(i for i, c in enumerate(live.calls) if c[0] == "apt-get" and "-s" not in c)
+    assert live.calls[apt - 1] == ["marker", "on"]
+    assert live.calls[apt + 1] == ["marker", "off"]
+    assert ["pip", "install", "demo.whl"] in live.calls
+    assert live.steps == ["checking", "installing_package"]
+    assert (result["id"], result["step"], result["step_index"], result["step_count"]) == (
+        NOW.isoformat(), "installing_environment", 4, 5
+    )
+
+
+def test_a_live_update_waits_for_core_to_unload_the_plugin(live):
+    live.installed["kalinka-plugin-demo"] = "0.9.0"
+
+    code, result = live.apply_live(UPDATE)
+
+    assert result["status"] == "ok"
+    assert ["wait-for-unload", str(live.state), NOW.isoformat()] in live.calls
+    assert live.steps == ["checking", "installing_package"]
+    assert result["step_count"] == 6 and result["step_index"] == 5
+
+
+def test_a_core_that_does_not_unload_gets_the_restart_instead(live):
+    live.installed["kalinka-plugin-demo"] = "0.9.0"
+    live.acks = False
+    seen = []
+
+    def run(command):
+        seen.append(json.loads((live.state / RESULT_FILE).read_text())["status"])
+        return live.run(command)
+
+    (live.state / REQUEST_FILE).write_text(json.dumps(UPDATE))
+    apply(
+        live.state,
+        fetch_catalog=live.fetch_catalog,
+        download=live.download,
+        run=run,
+        package_version=live.installed.get,
+        live=True,
+        tools=live.tools(),
+    )
+
+    names = _names(live.calls)
+    assert names[names.index("before-stop"):] == ["before-stop", "systemctl", "apt-get", "systemctl"]
+    assert [c for c in live.calls if c[0] == "systemctl"] == [
+        ["systemctl", "stop", "kalinka.service"],
+        ["systemctl", "start", "kalinka.service"],
+    ]
+    assert "marker" not in names and "pip" not in names
+    assert seen == ["running", "restarting", "restarting", "restarting"]
+    assert json.loads((live.state / RESULT_FILE).read_text())["status"] == "ok"
+
+
+def test_core_is_started_again_even_when_the_fallback_install_fails(live):
+    live.installed["kalinka-plugin-demo"] = "0.9.0"
+    live.acks = False
+    live.fail = "apt"
+
+    code, result = live.apply_live(UPDATE)
+
+    assert result["status"] == "failed"
+    assert ["systemctl", "start", "kalinka.service"] in live.calls
+
+
+@pytest.mark.parametrize(
+    "change, restarts",
+    [
+        pytest.param({}, False, id="only the plugin"),
+        pytest.param(
+            {"plans": {"install": "Inst libfoo (1 stable [amd64])\nInst kalinka-plugin-demo (1.0.0 local-deb [all])\n"}},
+            True,
+            id="apt brings another package",
+        ),
+        pytest.param(
+            {"report": {"install": [{"metadata": {"name": "kalinka-plugin-demo", "version": "1.0.0"}}, {"metadata": {"name": "HTTPX", "version": "0.28.0"}}]}},
+            True,
+            id="pip changes an installed distribution",
+        ),
+        pytest.param(
+            {"report": {"install": [{"metadata": {"name": "kalinka-plugin-demo", "version": "1.0.0"}}, {"metadata": {"name": "brand-new", "version": "1.0"}}]}},
+            False,
+            id="pip adds a distribution nothing imported",
+        ),
+        pytest.param({"wheel_extensions": True}, True, id="the new wheel has compiled modules"),
+        pytest.param({"installed_extensions": True}, True, id="the old version has compiled modules"),
+    ],
+)
+def test_what_a_running_process_cannot_take_in_restarts(live, change, restarts):
+    live.installed["kalinka-plugin-demo"] = "0.9.0"
+    for attribute, value in change.items():
+        setattr(live, attribute, value)
+
+    live.apply_live(UPDATE)
+
+    assert (["systemctl", "stop", "kalinka.service"] in live.calls) is restarts
+    assert (["pip", "install", "demo.whl"] in live.calls) is not restarts
+
+
+def test_a_fresh_install_may_carry_compiled_modules(live):
+    live.wheel_extensions = True
+
+    live.apply_live(INSTALL)
+
+    assert "systemctl" not in _names(live.calls)
+    assert ["pip", "install", "demo.whl"] in live.calls
+
+
+def test_a_live_removal_leaves_core_running(live):
+    live.installed["kalinka-plugin-demo"] = "1.0.0"
+
+    code, result = live.apply_live(UNINSTALL)
+
+    assert result["status"] == "ok"
+    assert "systemctl" not in _names(live.calls)
+    assert live.steps == ["checking", "removing_package"]
+    assert live.calls[-3:] == [
+        ["marker", "on"],
+        ["apt-get", "-o", "DPkg::Lock::Timeout=300", "remove", "-y", "kalinka-plugin-demo"],
+        ["marker", "off"],
+    ]
+    assert (result["step_index"], result["step_count"]) == (3, 3)
+
+
+# ---------------------------------------------------------------------------
+# Core following the helper
+
+
+class Lifecycle:
+    def __init__(self):
+        self.calls = []
+        self.fail_load = False
+
+    async def unload(self, name, *, gone):
+        self.calls.append(("unload", name, gone))
+
+    async def suspend(self, name):
+        self.calls.append(("suspend", name))
+
+    async def abandon(self, name, message):
+        self.calls.append(("abandon", name, message))
+
+    async def load(self, name, *, purge):
+        self.calls.append(("load", name, purge))
+        if self.fail_load:
+            raise RuntimeError("setup failed")
+
+
+class LiveBox(Box):
+    def __init__(self, tmp_path):
+        super().__init__(tmp_path)
+        self.lifecycle = Lifecycle()
+        self.live = True
+        self.triggers = 0
+        self.forgotten = 0
+
+    def operations(self, catalog, host=HOST, renderers=(), deadline_s=5.0):
+        return PluginOperations(
+            catalog,
+            CatalogCompatibility(lambda: host, lambda: NOW),
+            lambda: tuple(renderers),
+            state_dir=lambda: str(self.state),
+            supported=lambda: self.supported,
+            live_supported=lambda: self.live,
+            lifecycle=lambda: self.lifecycle,
+            package_version=self.installed.get,
+            newer=lambda candidate, installed: Version(candidate) > Version(installed),
+            restart=self.restart,
+            restarting=lambda: self.restarting,
+            live_trigger=self._trigger,
+            live_pending=lambda: False,
+            live_forget=self._forget,
+            clock=lambda: self.now,
+            poll_s=0.01,
+            deadline_s=deadline_s,
+        )
+
+    def _trigger(self):
+        self.triggers += 1
+
+    def _forget(self):
+        self.forgotten += 1
+
+    def helper_says(self, status, step=None, **more):
+        request = self.request()
+        steps = module.STEPS[request["action"]]
+        record = module._record_of(OperationRequest.model_validate(request), 0.0)
+        record.update(status=status, step=step, step_index=steps.index(step) + 1 if step else 0, **more)
+        module._write_json(self.state / RESULT_FILE, record, 0o644)
+
+    def ack(self):
+        try:
+            return json.loads((self.state / ACK_FILE).read_text())["id"]
+        except OSError:
+            return None
+
+
+@pytest.fixture
+def live_box(tmp_path):
+    return LiveBox(tmp_path)
+
+
+async def _until(condition, timeout_s=3.0):
+    for _ in range(int(timeout_s / 0.01)):
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("never happened")
+
+
+async def test_a_live_install_is_applied_and_loaded(live_box):
+    ops = live_box.operations(await loaded_catalog(document()))
+
+    answer = await ops.request("install", "demo")
+
+    assert answer["status"] == "applying" and live_box.triggers == 1 and live_box.restarts == 0
+    assert ops.operation()["status"] == "running" and ops.operation()["step"] is None
+    live_box.helper_says("ok", "installing_environment")
+    await _until(lambda: ops.operation()["status"] == "ok")
+    assert live_box.lifecycle.calls == [("load", "demo", True)]
+    record = ops.operation()
+    assert (record["step"], record["step_index"], record["step_count"]) == ("loading", 5, 5)
+    assert ops.last_result() == record
+
+
+async def test_a_live_update_unloads_when_the_helper_asks(live_box):
+    live_box.installed["kalinka-plugin-demo"] = "0.9.0"
+    doc = with_release(document(), "1.1.0", DIGEST)
+    ops = live_box.operations(await loaded_catalog(doc))
+
+    await ops.request("update", "demo")
+    assert live_box.lifecycle.calls == []
+
+    live_box.helper_says("running", "preparing")
+    await _until(lambda: live_box.ack() is not None)
+    assert live_box.ack() == NOW.isoformat()
+    assert live_box.lifecycle.calls == [("suspend", "demo")]
+
+    live_box.helper_says("ok", "installing_environment")
+    await _until(lambda: ops.operation()["status"] == "ok")
+    assert live_box.lifecycle.calls[-1] == ("load", "demo", True)
+
+
+async def test_a_live_removal_unloads_before_asking(live_box):
+    live_box.installed["kalinka-plugin-demo"] = "1.0.0"
+    ops = live_box.operations(await loaded_catalog(document()))
+
+    answer = await ops.request("uninstall", "demo")
+
+    assert answer["status"] == "applying"
+    assert live_box.lifecycle.calls == [("unload", "demo", True)]
+    assert (ops.operation()["step"], ops.operation()["step_index"]) == ("preparing", 1)
+    live_box.helper_says("ok", "removing_package")
+    await _until(lambda: ops.operation()["status"] == "ok")
+    assert live_box.lifecycle.calls == [("unload", "demo", True)]
+
+
+async def test_a_refused_removal_loads_the_plugin_back(live_box):
+    live_box.installed["kalinka-plugin-demo"] = "1.0.0"
+    live_box.restarting = True
+    ops = live_box.operations(await loaded_catalog(document()))
+
+    assert await refused(ops.request("uninstall", "demo")) == (409, "operation_in_progress")
+
+    assert live_box.lifecycle.calls == [("unload", "demo", True), ("load", "demo", False)]
+    assert ops.operation() == {"status": "idle"}
+
+
+async def test_a_helper_that_restarts_ends_the_follow(live_box):
+    ops = live_box.operations(await loaded_catalog(document()))
+    await ops.request("install", "demo")
+
+    live_box.helper_says("restarting", "checking")
+    await _until(lambda: ops._following.done())
+
+    assert live_box.lifecycle.calls == []
+    assert ops.operation()["status"] == "restarting"
+
+
+async def test_a_failed_update_loads_the_old_files_back(live_box):
+    live_box.installed["kalinka-plugin-demo"] = "0.9.0"
+    ops = live_box.operations(await loaded_catalog(with_release(document(), "1.1.0", DIGEST)))
+    await ops.request("update", "demo")
+    live_box.helper_says("running", "preparing")
+    await _until(lambda: live_box.ack() is not None)
+
+    live_box.helper_says("failed", "installing_package", error="apt-get did not complete.")
+    await _until(lambda: ops._following.done())
+
+    assert live_box.lifecycle.calls == [("suspend", "demo"), ("load", "demo", False)]
+    assert ops.operation()["error"] == "apt-get did not complete."
+
+
+async def test_a_failed_removal_loads_the_plugin_back(live_box):
+    live_box.installed["kalinka-plugin-demo"] = "1.0.0"
+    ops = live_box.operations(await loaded_catalog(document()))
+    await ops.request("uninstall", "demo")
+
+    live_box.helper_says("failed", "removing_package", error="The package is still installed.")
+    await _until(lambda: ops._following.done())
+
+    assert live_box.lifecycle.calls == [("unload", "demo", True), ("load", "demo", False)]
+    assert ops.operation()["error"] == "The package is still installed."
+
+
+async def test_a_request_refused_while_another_is_submitted_touches_neither(live_box):
+    live_box.installed["kalinka-plugin-demo"] = "0.9.0"
+    ops = live_box.operations(await loaded_catalog(with_release(document(), "1.1.0", DIGEST)))
+    outcomes = await asyncio.gather(
+        ops.request("update", "demo"), ops.request("update", "demo"), return_exceptions=True
+    )
+
+    applied = [o for o in outcomes if isinstance(o, dict)]
+    assert [o["status"] for o in applied] == ["applying"]
+    assert [o.code for o in outcomes if isinstance(o, Refusal)] == ["operation_in_progress"]
+
+    live_box.helper_says("ok", "installing_environment")
+    await _until(lambda: ops.operation()["status"] == "ok")
+    assert live_box.lifecycle.calls == [("load", "demo", True)]
+
+
+async def test_a_helper_whose_record_keeps_moving_is_waited_for(live_box):
+    ops = live_box.operations(await loaded_catalog(document()), deadline_s=0.05)
+    await ops.request("install", "demo")
+
+    for tick in range(1, 6):
+        live_box.helper_says("running", "downloading", updated_at=float(tick))
+        await asyncio.sleep(0.03)
+    live_box.helper_says("ok", "installing_environment", updated_at=9.0)
+    await _until(lambda: ops.operation()["status"] == "ok")
+
+    assert live_box.lifecycle.calls == [("load", "demo", True)]
+
+
+async def test_a_plugin_that_will_not_set_up_fails_the_operation(live_box):
+    live_box.lifecycle.fail_load = True
+    ops = live_box.operations(await loaded_catalog(document()))
+    await ops.request("install", "demo")
+
+    live_box.helper_says("ok", "installing_environment")
+    await _until(lambda: ops.operation()["status"] == "failed")
+
+    assert ops.operation()["error"] == "demo did not set up (RuntimeError)."
+
+
+async def test_a_helper_that_never_answers_fails_the_operation(live_box):
+    ops = live_box.operations(await loaded_catalog(document()), deadline_s=0.05)
+    await ops.request("install", "demo")
+
+    await _until(lambda: ops.operation()["status"] == "failed")
+
+    assert ops.operation()["error"] == "The installer did not answer."
+    # The trigger it never consumed goes, or every later request would be refused.
+    assert live_box.forgotten == 1
+
+
+async def test_a_helper_that_stands_still_is_given_up_on(live_box):
+    ops = live_box.operations(await loaded_catalog(document()), deadline_s=0.05)
+    await ops.request("install", "demo")
+    live_box.helper_says("running", "downloading", updated_at=1.0)
+
+    await _until(lambda: ops.operation()["status"] == "failed")
+
+    assert ops.operation()["error"] == "The installer did not finish."
+    assert ops.operation()["step"] == "downloading"
+
+
+async def test_a_stalled_update_leaves_the_plugin_listed_in_error(live_box):
+    live_box.installed["kalinka-plugin-demo"] = "0.9.0"
+    ops = live_box.operations(
+        await loaded_catalog(with_release(document(), "1.1.0", DIGEST)), deadline_s=0.05
+    )
+    await ops.request("update", "demo")
+    live_box.helper_says("running", "preparing", updated_at=1.0)
+
+    await _until(lambda: ops._following.done())
+
+    assert ops.operation()["error"] == "The installer did not finish."
+    assert live_box.lifecycle.calls == [
+        ("suspend", "demo"),
+        ("abandon", "demo", module.ABANDONED),
+    ]
+
+
+async def test_one_live_operation_at_a_time(live_box):
+    ops = live_box.operations(await loaded_catalog(document()))
+    await ops.request("install", "demo")
+    (live_box.state / REQUEST_FILE).unlink()
+
+    assert await refused(ops.request("install", "demo")) == (409, "operation_in_progress")
+
+
+async def test_without_the_live_units_a_request_restarts_as_before(live_box):
+    live_box.live = False
+    ops = live_box.operations(await loaded_catalog(document()))
+
+    answer = await ops.request("install", "demo")
+
+    assert answer["status"] == "restarting" and live_box.restarts == 1
+    assert ops.capabilities()["live_installation"] is False
+
+
+def test_nothing_ran_yet_is_idle(live_box):
+    ops = live_box.operations(PublicCatalog(""))
+    assert ops.operation() == {"status": "idle"}
+    assert ops.last_result() is None

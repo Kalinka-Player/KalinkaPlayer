@@ -83,6 +83,7 @@ def test_prerm_still_reports_a_real_removal(tmp_path):
     assert "Removing Kalinka Server..." in result.stdout
     assert systemctl_log.read_text().splitlines() == [
         "disable --now kalinka-restart.path",
+        "disable --now kalinka-plugins.path",
         "disable --now kalinka-journal-reader.socket",
         "disable --now kalinka-mounts.path",
     ]
@@ -909,6 +910,50 @@ def test_plugin_trigger_restarts_only_a_running_server(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert log.read_text().splitlines() == ["try-restart kalinka.service"]
+
+
+def test_plugin_trigger_leaves_a_server_taking_the_plugin_in_itself_alone(tmp_path):
+    """Kalinka's own helper, working beside a running Core, holds a marker
+    while apt runs: Core unloads and loads the plugin itself."""
+    marker = tmp_path / "plugin-live-operation"
+    marker.touch()
+    script = tmp_path / "postinst"
+    script.write_text(
+        POSTINST.read_text().replace(
+            'LIVE_OPERATION_MARKER="/run/kalinka/plugin-live-operation"',
+            f'LIVE_OPERATION_MARKER="{marker}"',
+        )
+    )
+    binv = tmp_path / "bin"
+    binv.mkdir()
+    log = tmp_path / "systemctl.log"
+    stub = binv / "systemctl"
+    stub.write_text(f'#!/usr/bin/env bash\necho "$@" >> "{log}"\n')
+    stub.chmod(0o755)
+
+    result = _run(
+        script,
+        "triggered",
+        "kalinka-server-restart",
+        env={"PATH": f"{binv}:{os.environ['PATH']}"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not log.exists()
+
+
+def test_the_live_plugin_units_are_packaged_and_enabled():
+    scripts = REPO / "packages" / "kalinka-server" / "scripts"
+    assert (scripts / "kalinka-plugins.path").exists()
+    service = (scripts / "kalinka-plugins.service").read_text()
+    assert (
+        "ExecStart=-/opt/kalinka/venv/bin/python "
+        "-m kalinka_server.plugin_management.operations --live" in service
+    )
+    assert "ExecStartPost=-/bin/rm -f /run/kalinka/plugin-live-request" in service
+    build = BUILD_DEB.read_text()
+    assert "kalinka-plugins.path" in build and "kalinka-plugins.service" in build
+    assert 'systemctl enable --now "$PLUGINS_PATH_UNIT"' in POSTINST.read_text()
 
 
 def test_restart_service_runs_the_plugin_helper_before_core():

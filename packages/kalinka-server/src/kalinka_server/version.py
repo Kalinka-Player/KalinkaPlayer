@@ -211,6 +211,21 @@ def get_version() -> str:
 # configuration model, appears or goes; a stale PUT draws its 409 as before.
 # While a module is set up again, GET /content/{module}/… and the routes
 # naming it answer 503 with Retry-After rather than 404, so a renderer retries.
+# Also 0.22: where /server/version reports plugin_management.live_installation,
+# POST /server/plugins/{id}/install, /update and /uninstall answer 202
+# {"status": "applying", ...} and the server carries the operation out while
+# it runs, loading the plugin itself; a release it cannot take into the
+# running process answers "restarting" as before, decided before anything
+# changes. GET /server/plugins/operation is the operation in flight or the
+# last one, for a client to poll, reopened or not: {id, action, plugin_id,
+# distribution, version, status: running|restarting|ok|failed, step,
+# step_index, step_count, started_at, updated_at, finished_at, error}, or
+# {"status": "idle"} when none ever ran; an install's steps are downloading,
+# checking, installing_package, installing_environment and loading, an
+# update's add preparing before installing_package, an uninstall's are
+# preparing, checking and removing_package. GET /server/plugins'
+# last_operation is the same record. An update stops that plugin's own
+# playback while its files are replaced; the rest plays on.
 REST_API_VERSION = "0.22"
 
 
