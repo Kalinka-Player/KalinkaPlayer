@@ -195,7 +195,8 @@ def get_version() -> str:
 # 0.22: optional receiver inventory/commands, receivers_changed replay state,
 # and per-field applies_live configuration metadata.
 # 0.23: explicit receiver pairing requests/answers and opt-in password reveal.
-REST_API_VERSION = "0.23"
+# 0.24: receiver pairing mode and explicit saved-device removal.
+REST_API_VERSION = "0.24"
 
 
 def get_rest_api_version() -> str:

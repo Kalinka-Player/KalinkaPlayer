@@ -15,6 +15,7 @@ CommandName: TypeAlias = Literal[
     "grant_audio",
     "revoke_audio",
     "disconnect_audio",
+    "forget_device",
 ]
 
 
@@ -85,6 +86,7 @@ class ReceiverSnapshot(BaseModel):
     visibility: Literal["hidden", "advertising", "unknown"] = "unknown"
     pairing: PairingState | None = None
     pairing_request: PairingRequest | None = None
+    pairing_mode: Literal["just_works", "confirm"] | None = None
     password_required: bool = False
     password_reveal_available: bool = False
     recent_peer_id: str | None = None
@@ -133,13 +135,19 @@ class DisconnectAudio(_Command):
     session_id: str = Field(min_length=1, max_length=128)
 
 
+class ForgetDevice(_Command):
+    command: Literal["forget_device"]
+    peer_id: str = Field(min_length=1, max_length=128)
+
+
 ReceiverCommand: TypeAlias = Annotated[
     OpenPairing
     | ClosePairing
     | AnswerPairing
     | GrantAudio
     | RevokeAudio
-    | DisconnectAudio,
+    | DisconnectAudio
+    | ForgetDevice,
     Field(discriminator="command"),
 ]
 

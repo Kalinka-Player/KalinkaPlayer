@@ -100,6 +100,9 @@ class Backend:
     def endpoints(self):
         return []
 
+    def audio_devices(self):
+        return set()
+
     async def command(self, endpoint, method):
         self.commands.append(method)
 

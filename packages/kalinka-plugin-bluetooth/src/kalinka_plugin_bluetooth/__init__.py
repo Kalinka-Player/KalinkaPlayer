@@ -87,7 +87,7 @@ class BluetoothInput(InputModule):
 
 class KalinkaPluginBluetooth(InputModulePlugin):
     PLUGIN_ID = "bluetooth"
-    REQUIRES_SDK = ">=3.23,<4"
+    REQUIRES_SDK = ">=3.24,<4"
     SETUP_WHEN_DISABLED = True
     RECEIVER = ReceiverDescriptor(
         title="Bluetooth",
@@ -96,10 +96,10 @@ class KalinkaPluginBluetooth(InputModulePlugin):
         commands=(
             "open_pairing",
             "close_pairing",
-            "answer_pairing",
             "grant_audio",
             "revoke_audio",
             "disconnect_audio",
+            "forget_device",
         ),
     )
     CONFIG_MODEL = BluetoothConfig
@@ -124,6 +124,7 @@ class KalinkaPluginBluetooth(InputModulePlugin):
         self._reader = self._pipe = None
         self._connected = False
         self._peer_ids = {}
+        self._peer_versions = {}
         self._sessions = {}
         self._cleanup_retry = {}
         self._name_pending = False
@@ -141,6 +142,16 @@ class KalinkaPluginBluetooth(InputModulePlugin):
             callback()
 
     def _peer_id(self, address):
+        peer = (
+            self.backend.devices().get(address)
+            if self.backend and self._connected
+            else None
+        )
+        if peer:
+            version = self.backend.device_identity(address)
+            if self._peer_versions.get(address) != version:
+                self._peer_ids.pop(address, None)
+                self._peer_versions[address] = version
         return self._peer_ids.setdefault(address, uuid4().hex)
 
     def _name(self):
@@ -200,7 +211,6 @@ class KalinkaPluginBluetooth(InputModulePlugin):
         self._sessions = {old.get(e.identity, uuid4().hex): e for e in endpoints}
 
     async def _reconcile(self, backend):
-        await self.pairing.expire_request()
         if not self.context.config.enabled:
             # Also reconcile here if Core timed out a config callback while
             # it was waiting for protocol cleanup or the receiver lock.
@@ -209,6 +219,8 @@ class KalinkaPluginBluetooth(InputModulePlugin):
             await self._stop_capture()
         if self.context.config.enabled:
             await self._update_name()
+            await self.pairing.admit_connected()
+            await self.pairing.complete_bond()
         endpoints = backend.endpoints()
         if self.context.config.enabled:
             for endpoint in endpoints:
@@ -220,7 +232,20 @@ class KalinkaPluginBluetooth(InputModulePlugin):
             if record.state != "allowed" and not self.pairing.admits(address):
                 if monotonic() >= self._cleanup_retry.get(address, 0):
                     try:
-                        await self.access.cleanup(backend, address)
+                        if record.state == "forgetting":
+                            peer = backend.devices().get(address)
+                            if peer and peer[1].get("Paired"):
+                                # Never replay a destructive RemoveDevice after
+                                # a timeout/restart: this may now be a new bond.
+                                raise ReceiverError(
+                                    "backend_timeout",
+                                    "Device removal has not completed. Try Forget again.",
+                                )
+                            await self.access.cleaned(address)
+                            self._peer_ids.pop(address, None)
+                            self._peer_versions.pop(address, None)
+                        else:
+                            await self.access.cleanup(backend, address)
                         self._cleanup_retry.pop(address, None)
                     except Exception as error:
                         self.error = str(error)
@@ -258,7 +283,9 @@ class KalinkaPluginBluetooth(InputModulePlugin):
                 else (
                     "error"
                     if self.error
-                    else "ready" if self._connected else "starting"
+                    else "ready"
+                    if self._connected
+                    else "starting"
                 )
             )
         )
@@ -268,7 +295,7 @@ class KalinkaPluginBluetooth(InputModulePlugin):
         for address in sorted(set(devices) | set(self.access.records)):
             props = devices.get(address, (None, {}))[1]
             record = self.access.records.get(address)
-            if not props.get("Paired") and record is None:
+            if not props.get("Paired"):
                 continue
             peers.append(
                 ReceiverPeer(
@@ -288,10 +315,10 @@ class KalinkaPluginBluetooth(InputModulePlugin):
         availability = {
             "open_pairing": available,
             "close_pairing": backend is not None and active,
-            "answer_pairing": available and active and pairing.request is not None,
             "grant_audio": available and bool(peers),
             "revoke_audio": bool(peers),
             "disconnect_audio": backend is not None and bool(self._sessions),
+            "forget_device": backend is not None and bool(peers),
         }
         actions = [
             ReceiverAction(
@@ -304,6 +331,9 @@ class KalinkaPluginBluetooth(InputModulePlugin):
                 ),
             )
             for name in self.RECEIVER.commands
+            # Retain old commands for older API clients, but do not offer a
+            # separate audio-permission workflow in the connection UI.
+            if name not in ("grant_audio", "revoke_audio")
         ]
         effective = (
             backend.bluez.get(f"/org/bluez/{backend.adapter}", {})
@@ -334,7 +364,7 @@ class KalinkaPluginBluetooth(InputModulePlugin):
                 else None
             ),
             recent_peer_id=self._peer_id(recent) if recent else None,
-            pairing_request=pairing.request if active else None,
+            pairing_mode="just_works",
             peers=peers,
             actions=actions,
             sessions=[
@@ -411,9 +441,35 @@ class KalinkaPluginBluetooth(InputModulePlugin):
                         await self.pairing.start()
                     except RuntimeError as error:
                         raise ReceiverError("adapter_busy", str(error)) from error
-                elif command.command == "answer_pairing":
-                    self._require_backend()
-                    await self.pairing.answer(command.request_id, command.accept, command.code)
+                elif command.command == "forget_device":
+                    backend = self._require_backend()
+                    address = next(
+                        (
+                            a
+                            for a, token in self._peer_ids.items()
+                            if token == command.peer_id
+                        ),
+                        None,
+                    )
+                    if address is None:
+                        raise ReceiverError("stale_target", "Refresh the device list")
+                    await backend.refresh()
+                    if self._peer_id(address) != command.peer_id:
+                        raise ReceiverError(
+                            "stale_target",
+                            "The phone's pairing has changed; refresh the device list",
+                        )
+                    await self.pairing.forget_device(
+                        address, backend.device_identity(address)
+                    )
+                    self._peer_ids.pop(address, None)
+                    self._peer_versions.pop(address, None)
+                    if (
+                        self.service
+                        and self.service.endpoint
+                        and self.service.endpoint.address == address
+                    ):
+                        await self._stop_capture()
                 elif command.command == "close_pairing":
                     if self.pairing and self.pairing.active:
                         if command.window_id != self.pairing.window_id:
