@@ -224,6 +224,45 @@ async def test_pair_window_authorizes_just_works_without_app_confirmation(plugin
 
 
 @pytest.mark.parametrize(
+    "uuid",
+    ["0000110d-0000-1000-8000-00805f9b34fb", "0000110D-0000-1000-8000-00805F9B34FB"],
+)
+async def test_a2dp_service_authorization_completes_pairing_and_allows_reconnect(
+    plugin, uuid
+):
+    from dbus_fast import MessageType
+
+    # BlueZ authorizes incoming AVDTP using the Advanced Audio profile UUID,
+    # not the Audio Source or Sink role. An already bonded phone may reach
+    # this callback without RequestAuthorization (e.g. after a failed attempt).
+    message = request(plugin, "AuthorizeService", "os", [uuid])
+    assert plugin.pairing._agent(message).message_type == MessageType.ERROR
+    await plugin.execute(OpenPairing(command="open_pairing"))
+    assert plugin.pairing._agent(message) is True
+    await asyncio.gather(*list(plugin.pairing._tasks))
+    assert (
+        plugin.backend.bus.send.call_args.args[0].message_type
+        == MessageType.METHOD_RETURN
+    )
+    assert plugin.backend.bluez[DEVICE_PATH][DEVICE]["Trusted"]
+    assert plugin.access.records[ADDRESS].state == "pending"
+
+    plugin.backend.transport()
+    await plugin._reconcile(plugin.backend)
+    assert ADDRESS in plugin.access.devices
+    assert not plugin.pairing.active
+    assert plugin.backend.audio_devices() == {DEVICE_PATH}
+
+    # The completed grant survives both the closed window and reconnect.
+    plugin.backend.bluealsa.clear()
+    await plugin._reconcile(plugin.backend)
+    plugin.backend.transport(sequence=2)
+    await plugin._reconcile(plugin.backend)
+    assert plugin.backend.audio_devices() == {DEVICE_PATH}
+    assert not any(call[1] == "DisconnectProfile" for call in plugin.backend.calls)
+
+
+@pytest.mark.parametrize(
     "member,signature,args",
     [
         ("RequestConfirmation", "ou", [42]),
@@ -232,6 +271,8 @@ async def test_pair_window_authorizes_just_works_without_app_confirmation(plugin
         ("DisplayPasskey", "ouq", [7, 0]),
         ("DisplayPinCode", "os", ["1234"]),
         ("AuthorizeService", "os", ["unrelated-service"]),
+        ("AuthorizeService", "os", ["00001105-0000-1000-8000-00805f9b34fb"]),
+        ("AuthorizeService", "os", ["00001116-0000-1000-8000-00805f9b34fb"]),
     ],
 )
 async def test_just_works_never_invents_or_accepts_comparison_codes(

@@ -26,9 +26,11 @@ DEVICE = "org.bluez.Device1"
 PLAYER = "org.bluez.MediaPlayer1"
 ADAPTER = "org.bluez.Adapter1"
 AUDIO_SOURCE_UUID = "0000110a-0000-1000-8000-00805f9b34fb"
+# BlueZ authorizes incoming AVDTP with Advanced Audio (0x110d), in addition
+# to the role-specific A2DP and AVRCP service UUIDs.
 AUDIO_UUIDS = frozenset(
     f"0000{value}-0000-1000-8000-00805f9b34fb"
-    for value in ("110a", "110b", "110c", "110e", "110f")
+    for value in ("110a", "110b", "110c", "110d", "110e", "110f")
 )
 
 
