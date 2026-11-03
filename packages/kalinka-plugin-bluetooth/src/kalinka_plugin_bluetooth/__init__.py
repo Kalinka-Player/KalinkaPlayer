@@ -4,6 +4,7 @@ import asyncio
 import logging
 from pathlib import Path
 from time import monotonic
+from typing import ClassVar
 from uuid import uuid4
 
 from pydantic import Field, model_validator
@@ -35,6 +36,8 @@ _LIVE = {"importance": "simple", "applies_live": True}
 
 
 class BluetoothConfig(ModuleConfig):
+    __module_icon__: ClassVar[str] = "bluetooth"
+
     name: str = Field(default="bluetooth", title="Bluetooth", frozen=True, exclude=True)
     enabled: bool = Field(
         default=False,
