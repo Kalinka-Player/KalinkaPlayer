@@ -356,8 +356,8 @@ def is_one_shot_field(model_cls: type[BaseModel], attrs: List[str]) -> bool:
     """True if the field at dotted ``attrs`` on ``model_cls`` is declared a
     one-shot trigger via ``json_schema_extra={"one_shot": True}``.
 
-    A one-shot field is a "do X once on the next restart" toggle: set via the
-    normal config PUT, acted on a single time at startup, then reset by the
+    A one-shot field is a "do X once" toggle: set via the normal config PUT,
+    acted on a single time when the plugin is next set up, then reset by the
     framework.
     """
     info = field_info(model_cls, attrs)

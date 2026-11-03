@@ -57,7 +57,9 @@ dependencies = [
     # >=3.19: TrackSource and PlaybackState carry audio_codec for display.
     # >=3.20: mounts, storage and VolumesChangedEvent; the media extra reads
     # the files Drives lists.
-    # >=3.21: live receiver audio, receiver controls and pairing.
+    # >=3.21: live receiver audio, receiver controls and pairing;
+    # RevokeReason.PLUGIN_UNLOADED, and config_changed says whether the
+    # plugin took a save in.
     "kalinka-plugin-sdk[media]>=3.21,<4",
 ]
 dynamic = ["version"]

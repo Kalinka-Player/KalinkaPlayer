@@ -530,3 +530,31 @@ async def test_auto_off_resumes_after_device_powers_back_on(
         mock_device.power_off.assert_called_once()
     finally:
         await automation.shutdown()
+
+
+async def test_a_forgotten_device_is_not_powered_off_by_its_timer(
+    config, mock_playqueue, playqueue_eventbus, ext_device_eventbus, mock_device
+):
+    """The module is being unloaded: its auto-off timer would otherwise reach
+    an instance that is gone."""
+    automation = await make_automation(config, mock_playqueue, playqueue_eventbus, ext_device_eventbus, mock_device)
+    try:
+        playqueue_eventbus.dispatch(
+            PlaybackStateChangedEvent(state=PlaybackState(state=PlayerStateEnum.PLAYING))
+        )
+        await asyncio.sleep(0.1)
+        playqueue_eventbus.dispatch(
+            PlaybackStateChangedEvent(state=PlaybackState(state=PlayerStateEnum.PAUSED))
+        )
+        await asyncio.sleep(0.1)
+        assert _pending(automation)
+
+        automation.forget("kalinka-renderer")
+
+        await asyncio.sleep(0.05)
+        assert not _pending(automation)
+        assert automation._in_use is None
+        await asyncio.sleep(1.2)
+        mock_device.power_off.assert_not_awaited()
+    finally:
+        await automation.shutdown()

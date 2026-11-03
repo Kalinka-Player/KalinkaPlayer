@@ -366,7 +366,7 @@ class LocalFilesInputModuleDb:
         selective wipe fails (foreign schema, undroppable vec tables) the DB
         file is removed instead — correct, just recomputes the embeddings.
 
-        Used by the "Rebuild library on next restart" one-shot. Call before
+        Used by the "Rebuild library" one-shot. Call before
         any worker opens the DB (i.e. early in setup), so nothing recreates
         the tables mid-purge.
         """

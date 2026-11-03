@@ -48,10 +48,19 @@ class ReceiverRegistry:
 
     @staticmethod
     def _controller(entry):
+        # Only a plugin that is set up is asked: one being set up again, or
+        # that never came up, has no backend to answer for.
         return (
             entry.plugin_instance.get_receiver_control()
-            if entry.plugin_instance
+            if entry.set_up and entry.plugin_instance
             else None
+        )
+
+    @staticmethod
+    def _unavailable(entry):
+        return ReceiverError(
+            "backend_unavailable",
+            entry.error_message or entry.state.message or "Receiver could not initialize",
         )
 
     async def snapshot(self, name):
@@ -60,10 +69,7 @@ class ReceiverRegistry:
         try:
             controller = self._controller(entry)
             if controller is None:
-                raise ReceiverError(
-                    "backend_unavailable",
-                    entry.error_message or "Receiver could not initialize",
-                )
+                raise self._unavailable(entry)
             snapshot = await asyncio.wait_for(controller.snapshot(), 2)
             snapshot = ReceiverSnapshot.model_validate(snapshot)
         except Exception as error:
@@ -128,9 +134,7 @@ class ReceiverRegistry:
                 )
             controller = self._controller(entry)
             if controller is None:
-                raise ReceiverError(
-                    "backend_unavailable", "Receiver could not initialize"
-                )
+                raise self._unavailable(entry)
             await asyncio.wait_for(controller.execute(command), CALL_TIMEOUT)
             return await self.snapshot(name)
         except ReceiverError as error:

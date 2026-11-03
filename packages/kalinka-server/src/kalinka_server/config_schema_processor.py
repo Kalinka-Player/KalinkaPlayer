@@ -67,6 +67,7 @@ from .dynamic_field_registry import DynamicFieldEntry, resolve_value
 from .options_registry import OptionsRegistry
 from .module_artwork import module_icons
 from .presentation_schema import (
+    Apply,
     Banner,
     CollectionSpec,
     Constraints,
@@ -238,6 +239,18 @@ def _importance_from_extras(
         return default
 
 
+def _apply_from_extras(extras: dict[str, Any]) -> Apply:
+    """Resolve the apply-cost tag, INSTANT when untagged."""
+    hint = extras.get("apply")
+    if hint is None:
+        return Apply.INSTANT
+    try:
+        return Apply(hint)
+    except ValueError:
+        logger.warning("Unknown apply cost %r; defaulting to instant", hint)
+        return Apply.INSTANT
+
+
 def _setup_from_extras(extras: dict[str, Any]) -> Setup:
     """Resolve the first-run tag, defaulting to HIDDEN when untagged.
 
@@ -323,9 +336,9 @@ def _build_field_spec(
         readonly=bool(field.frozen) or extras.get("readonly") is True,
         dynamic_options=_dynamic_options_from_extras(extras, widget, path),
         apply_immediately=bool(extras.get("one_shot") and extras.get("apply_immediately")),
-        applies_live=bool(extras.get("applies_live")),
         importance=_importance_from_extras(extras),
         setup=setup,
+        apply=_apply_from_extras(extras),
         enum_values=_enum_values(field) if wire_type == "enum" else None,
         constraints=_extract_constraints(field, extras),
         heading=extras.get("heading"),
@@ -1119,13 +1132,7 @@ def build_presentation(
         id="devices",
         title="Devices",
         banners=[
-            Banner(
-                text=(
-                    "Devices are auto-discovered. Configuration changes require a "
-                    "server restart."
-                ),
-                severity=Severity.INFO,
-            )
+            Banner(text="Devices are auto-discovered.", severity=Severity.INFO)
         ],
         modules=device_specs,
     )

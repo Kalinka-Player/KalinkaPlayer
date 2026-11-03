@@ -108,9 +108,10 @@ and credential logging protection applies. It is passed to Shairport Sync's
 0600 configuration file. It is not a temporary PIN or a Bluetooth approval.
 
 Applying the setting restarts only the plugin's Shairport receiver and ends its
-current AirPlay session. Its help text states this explicitly. The existing
-`applies_live` marker means Core itself does not need to restart. Receiver
-snapshots expose starting/error/ready state while the change is applied.
+current AirPlay session. Its help text states this explicitly. Core itself does
+not restart: the plugin's `config_changed()` takes the save in and returns
+`True`. Receiver snapshots expose starting/error/ready state while the change
+is applied.
 
 The connection panel shows the advertised name, same-network AirPlay
 instructions and password-required status. **Show password** explicitly reads

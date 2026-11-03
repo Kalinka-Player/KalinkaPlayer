@@ -470,7 +470,7 @@ def test_a_disabled_module_serves_no_content(monkeypatch):
     `input_module` alone answers 500 once the interface has been torn down."""
     from kalinka_server import server
 
-    prepared = {"localfiles": SimpleNamespace(interface=None)}
+    prepared = {"localfiles": SimpleNamespace(interface=None, mounted=True)}
     monkeypatch.setattr(
         server.modules,
         "prepared_input_modules",
@@ -483,3 +483,18 @@ def test_a_disabled_module_serves_no_content(monkeypatch):
         server.enabled_input_module("localfiles")
 
     assert raised.value.status_code == 404
+
+
+def test_a_module_being_set_up_again_asks_for_a_retry(monkeypatch):
+    """Between an unload and the load that follows, a stream is interrupted
+    for seconds, not gone: the renderer retries a 5xx and gives a 404 up."""
+    from kalinka_server import server
+
+    prepared = {"localfiles": SimpleNamespace(interface=None, mounted=False)}
+    monkeypatch.setattr(server.modules, "prepared_input_modules", prepared, raising=False)
+
+    with pytest.raises(HTTPException) as raised:
+        server.set_up_input_module("localfiles")
+
+    assert raised.value.status_code == 503
+    assert raised.value.headers["Retry-After"] == "5"

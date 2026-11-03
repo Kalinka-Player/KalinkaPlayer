@@ -31,6 +31,7 @@ from kalinka_plugin_sdk.ext_device_events import ExtDeviceEvent, ExtDeviceState
 
 from .renderer_output_device import RendererOutputPlugin
 from .renderer_prefs import RendererPreferences
+from .scoped_listener import ScopedListener
 from .renderer_registry import RendererRegistry
 from .renderer_sessions import SessionVolumePolicy
 
@@ -119,7 +120,7 @@ class RoutedPlaybackListener:
 
     def __init__(self, plugin_id: str, bus, router: "OutputDeviceRouter"):
         self._plugin_id = plugin_id
-        self._bus = bus
+        self._bus = ScopedListener(bus, plugin_id)
         self._router = router
         self._playing = False
 
@@ -155,6 +156,10 @@ class RoutedPlaybackListener:
 
     def get_snapshot(self):
         return self._bus.get_snapshot()
+
+    def revoke_all(self) -> int:
+        """Close what the plugin left subscribed; how many there were."""
+        return self._bus.revoke_all()
 
 
 class OutputDeviceRouter:

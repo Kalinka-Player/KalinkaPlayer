@@ -32,7 +32,9 @@ from .pairing import AudioAccess, PairingWindow
 from .service import BluetoothService
 
 logger = logging.getLogger(__name__)
-_LIVE = {"importance": "simple", "applies_live": True}
+_SIMPLE = {"importance": "simple"}
+# Taken in by config_changed; any other setting is read when the backend connects.
+_LIVE = frozenset({"enabled", "device_name"})
 
 
 class BluetoothConfig(ModuleConfig):
@@ -42,7 +44,7 @@ class BluetoothConfig(ModuleConfig):
     enabled: bool = Field(
         default=False,
         title="Bluetooth audio input",
-        json_schema_extra=_LIVE,
+        json_schema_extra=_SIMPLE,
     )
     adapter: str = Field(
         default="hci0", pattern=r"^hci[0-9]+$", title="Bluetooth adapter"
@@ -55,7 +57,7 @@ class BluetoothConfig(ModuleConfig):
         max_length=50,
         title="Bluetooth name",
         description="Leave empty to use the streamer name.",
-        json_schema_extra=_LIVE,
+        json_schema_extra=_SIMPLE,
     )
     latency_ms: int = Field(default=60, ge=20, le=500, title="Live latency target (ms)")
     max_backlog_ms: int = Field(
@@ -205,6 +207,7 @@ class KalinkaPluginBluetooth(InputModulePlugin):
         if "enabled" in changed and self.context.config.enabled and not self._connected:
             self._retry_wake.set()
         self._notify()
+        return _LIVE.issuperset(changed) or None
 
     async def server_name_changed(self):
         if not self.context.config.device_name.strip():

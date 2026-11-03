@@ -3,6 +3,7 @@
 The doc quoted the 1.x pins through two major bumps, so a maintainer following
 it to the next bump would have been told to widen pins the tree no longer had.
 Bare versions are checked only in SDK prose; other release lines are independent.
+The server pins the SDK twice, for the wheel and for the deb: both floors are one.
 """
 
 import re
@@ -12,6 +13,7 @@ REPO = Path(__file__).resolve().parents[3]
 RELEASING = REPO / "RELEASING.md"
 SDK_VERSION = REPO / "packages/kalinka-plugin-sdk/src/kalinka_plugin_sdk/_version.py"
 SERVER_PYPROJECT = REPO / "packages/kalinka-server/pyproject.toml"
+SERVER_CONTROL = REPO / "packages/kalinka-server/DEBIAN/control.in"
 PIN = re.compile(r"`(?:kalinka-plugin-sdk)?>=(\d+)(?:\.\d+)*,<(\d+)`")
 UPPER_BOUND = re.compile(r"`<(\d+)`")
 SERIES = re.compile(r"`(\d+)\.x`")
@@ -30,6 +32,10 @@ def _sdk_major() -> int:
 
 def _server_sdk_pin() -> str:
     return re.search(r'"kalinka-plugin-sdk(?:\[[^\]]*\])?(>=[^"]+)"', SERVER_PYPROJECT.read_text())[1]
+
+
+def _server_deb_sdk_floor() -> str:
+    return re.search(r"kalinka-plugin-sdk \(>= ([\d.]+)\)", SERVER_CONTROL.read_text())[1]
 
 
 def _sdk_sections() -> list[str]:
@@ -87,3 +93,7 @@ def test_releasing_quotes_the_servers_own_sdk_pin():
     overview, bump, _ = _sdk_sections()
     for section in (overview, bump):
         assert f"`{_server_sdk_pin()}`" in section
+
+
+def test_the_server_deb_pins_the_sdk_floor_its_wheel_does():
+    assert _server_deb_sdk_floor() == re.match(r">=([\d.]+)", _server_sdk_pin())[1]

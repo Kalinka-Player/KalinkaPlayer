@@ -14,6 +14,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
 
+from unittest.mock import AsyncMock
+
 from kalinka_server import config_route, supervisor_management as management
 from kalinka_server.config_model import KalinkaConfig
 from kalinka_server.config_overrides import apply_overrides_with_prefix
@@ -82,7 +84,7 @@ def _client(box):
     app.state.overrides = overrides
     app.state.overrides_file = str(box.config)
     modules = SimpleNamespace(prepared_input_modules={}, prepared_devices={})
-    register_config_routes(app, config, modules)
+    register_config_routes(app, config, modules, settings_changed=AsyncMock())
     return TestClient(app)
 
 

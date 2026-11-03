@@ -99,6 +99,15 @@ class PluginBase(ABC, Generic[PLUGIN_CLASS, CTX_TYPE]):
     async def shutdown(self) -> None:
         """Called when the plugin is being unloaded. Clean up resources here.
         Should not raise exceptions - log errors instead.
+
+        SDK 3.21: also called while the server runs — after a settings
+        change the plugin did not take in itself, before its package is
+        updated or removed, or when it is switched off — and the same class
+        may be set up again right after. So everything acquired in
+        ``setup()`` goes here: bus subscriptions, sockets and ports, worker
+        threads and processes, open readers and live captures (retired, so
+        their streams end). The server allows 15 seconds and then carries
+        on without waiting.
         """
         pass
 
@@ -182,7 +191,7 @@ class PluginBase(ABC, Generic[PLUGIN_CLASS, CTX_TYPE]):
         """
         return []
 
-    async def config_changed(self, changed: frozenset[str]) -> None:
+    async def config_changed(self, changed: frozenset[str]) -> Optional[bool]:
         """SDK 3.20: the user saved settings of this plugin.
 
         Called after the save is committed and persisted, with the paths
@@ -196,6 +205,12 @@ class PluginBase(ABC, Generic[PLUGIN_CLASS, CTX_TYPE]):
         Copy the action's arguments before scheduling work. Ordinary one-shot
         fields retain their next-setup behavior.
 
+        @return SDK 3.21: True when the change is taken in. Anything else —
+            None, an exception, a timeout — and the server shuts the plugin
+            down and sets it up again on the live config, so a plugin that
+            reads its settings only at ``setup()`` needs no code here. A
+            plugin that handles some paths and not others returns True only
+            for the saves it handled whole.
         @note Bounded by the server's per-call timeout. Long work, such as
             a rescan, is started here and left to run.
         """

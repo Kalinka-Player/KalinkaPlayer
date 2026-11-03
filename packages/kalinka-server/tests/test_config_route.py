@@ -14,14 +14,17 @@ Contract:
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from kalinka_plugin_sdk.receiver_control import ReceiverDescriptor
 from kalinka_plugin_localfiles.config_model import (
     AccountSignIn,
     LocalFilesConfig,
@@ -43,6 +46,12 @@ class _Prepared:
     health_state: ModuleHealthState = ModuleHealthState.READY
     error_message: str | None = None
     plugin_instance: Any = None
+    plugin_class: Any = None
+    mounted: bool = True
+
+    @property
+    def set_up(self) -> bool:
+        return self.mounted and self.health_state == ModuleHealthState.READY
 
 
 def _share(id: str) -> SmbSource:
@@ -65,7 +74,7 @@ def client(tmp_path, library):
     return _client(tmp_path, library)
 
 
-def _client(tmp_path, library, instance=None):
+def _client(tmp_path, library, instance=None, settings_changed=None, plugin_class=None):
     app = FastAPI()
     app.state.config = KalinkaConfig()
     app.state.schema_version = "1"
@@ -78,11 +87,18 @@ def _client(tmp_path, library, instance=None):
     app.state.overrides_file = str(tmp_path / "overrides.json")
     modules = SimpleNamespace(
         prepared_input_modules={
-            "localfiles": _Prepared(SimpleNamespace(config=library), plugin_instance=instance)
+            "localfiles": _Prepared(
+                SimpleNamespace(config=library),
+                plugin_instance=instance,
+                plugin_class=plugin_class,
+            )
         },
         prepared_devices={},
     )
-    register_config_routes(app, app.state.config, modules)
+    app.state.modules = modules
+    register_config_routes(
+        app, app.state.config, modules, settings_changed=settings_changed or AsyncMock()
+    )
     return TestClient(app)
 
 
@@ -182,94 +198,116 @@ class TestWhatASaveAnswers:
         assert SECRET not in json.dumps(answer.json())
 
 
-class _Listening:
-    """A plugin that takes in its settings as they are saved."""
+class _Applying:
+    """Stands where the plugin lifecycle does: told, after a save, which
+    plugin's settings changed and which paths within them."""
 
     def __init__(self):
-        self.changed: list[frozenset[str]] = []
+        self.told: list[tuple[str, frozenset[str]]] = []
 
-    async def validate_config(self, candidate, changed):
-        return []
+    async def __call__(self, name, changed):
+        self.told.append((name, changed))
 
-    async def config_changed(self, changed):
-        self.changed.append(changed)
+    def wait(self) -> list[tuple[str, frozenset[str]]]:
+        # Applied after the save has answered, on the app's loop.
+        for _ in range(200):
+            if self.told:
+                break
+            time.sleep(0.01)
+        return self.told
 
 
 class TestASaveReachesThePlugin:
     def test_with_the_paths_that_changed_within_it(self, tmp_path, library):
-        plugin = _Listening()
-        client = _client(tmp_path, library, plugin)
+        applying = _Applying()
+        client = _client(tmp_path, library, settings_changed=applying)
 
         answer = client.put("/server/config", json=_body(_read(client)))
 
         assert answer.status_code == 200
-        [changed] = plugin.changed
+        [(name, changed)] = applying.wait()
+        assert name == "localfiles"
         assert "music_sources" in changed
         assert not any(path.startswith("input_modules.") for path in changed)
 
     def test_not_when_the_save_is_refused(self, tmp_path, library):
-        plugin = _Listening()
-        client = _client(tmp_path, library, plugin)
+        applying = _Applying()
+        client = _client(tmp_path, library, settings_changed=applying)
 
         answer = client.put("/server/config", json=_body(_edited(client, location={"host": "other.local"})))
 
         assert answer.status_code == 422
-        assert plugin.changed == []
+        assert applying.told == []
+
+    def test_before_the_module_listing_is_republished(self, tmp_path, library):
+        applying = _Applying()
+        client = _client(tmp_path, library, settings_changed=applying)
+        observed = []
+
+        async def republish():
+            observed.append((library.enabled, list(applying.told)))
+
+        client.app.state.republish_modules = republish
+        answer = client.put("/server/config", json={
+            "schema_version": "1", "changes": {"input_modules.localfiles.enabled": False},
+        })
+
+        assert answer.status_code == 200
+        assert observed == [(False, [("localfiles", frozenset({"enabled"}))])]
 
 
-def test_live_config_notification_precedes_health_publication(tmp_path, library):
-    plugin = _Listening()
-    client = _client(tmp_path, library, plugin)
-    observed = []
+class TestARenamedStreamer:
+    def test_the_advertisement_and_the_receivers_follow(self, tmp_path, library):
+        receiver = SimpleNamespace(server_name_changed=AsyncMock())
+        client = _client(
+            tmp_path, library, receiver,
+            plugin_class=SimpleNamespace(RECEIVER=ReceiverDescriptor(title="Receiver", kind="test")),
+        )
+        discovery = SimpleNamespace(config_changed=AsyncMock())
+        client.app.state.service_discovery = discovery
 
-    async def republish():
-        observed.append((library.enabled, list(plugin.changed)))
+        answer = client.put("/server/config", json={
+            "schema_version": "1", "changes": {"base_config.server.service_name": "Kitchen"},
+        })
 
-    client.app.state.republish_modules = republish
-    answer = client.put('/server/config', json={
-        'schema_version': '1', 'changes': {'input_modules.localfiles.enabled': False},
-    })
-    assert answer.status_code == 200
-    assert observed == [(False, [frozenset({'enabled'})])]
+        assert answer.status_code == 200
+        assert client.app.state.config.server.service_name == "Kitchen"
+        discovery.config_changed.assert_awaited_once()
+        receiver.server_name_changed.assert_awaited_once()
 
+    def test_a_receiver_being_set_up_again_is_not_asked(self, tmp_path, library):
+        receiver = SimpleNamespace(server_name_changed=AsyncMock())
+        client = _client(
+            tmp_path, library, receiver,
+            plugin_class=SimpleNamespace(RECEIVER=ReceiverDescriptor(title="Receiver", kind="test")),
+        )
+        client.app.state.service_discovery = SimpleNamespace(config_changed=AsyncMock())
+        client.app.state.modules.prepared_input_modules["localfiles"].mounted = False
 
-def test_saved_streamer_name_notifies_discovery_and_receiver(tmp_path, library, monkeypatch):
-    from unittest.mock import AsyncMock
-    from kalinka_plugin_sdk.receiver_control import ReceiverDescriptor
+        answer = client.put("/server/config", json={
+            "schema_version": "1", "changes": {"base_config.server.service_name": "Kitchen"},
+        })
 
-    plugin = _Listening()
-    plugin.server_name_changed = AsyncMock()
-    # The test helper normally represents an ordinary input without a receiver.
-    monkeypatch.setattr(_Prepared, 'plugin_class', SimpleNamespace(
-        RECEIVER=ReceiverDescriptor(title='Receiver', kind='test')
-    ), raising=False)
-    client = _client(tmp_path, library, plugin)
-    discovery = SimpleNamespace(config_changed=AsyncMock())
-    client.app.state.service_discovery = discovery
-    answer = client.put('/server/config', json={
-        'schema_version': '1', 'changes': {'base_config.server.service_name': 'Kitchen'},
-    })
-    assert answer.status_code == 200
-    assert client.app.state.config.server.service_name == 'Kitchen'
-    discovery.config_changed.assert_awaited_once()
-    plugin.server_name_changed.assert_awaited_once()
+        assert answer.status_code == 200
+        receiver.server_name_changed.assert_not_awaited()
 
+    def test_a_save_that_could_not_be_kept_is_not_applied(self, tmp_path, library, monkeypatch):
+        from kalinka_server import config_route
 
-def test_failed_persistence_does_not_turn_a_live_setting_into_a_temporary_change(tmp_path, library, monkeypatch):
-    from unittest.mock import AsyncMock
-    from kalinka_server import config_route
+        client = _client(tmp_path, library)
+        previous = client.app.state.config.server.service_name
+        discovery = SimpleNamespace(config_changed=AsyncMock())
+        client.app.state.service_discovery = discovery
 
-    client = _client(tmp_path, library)
-    previous = client.app.state.config.server.service_name
-    discovery = SimpleNamespace(config_changed=AsyncMock())
-    client.app.state.service_discovery = discovery
-    def failed(*args):
-        raise OSError("disk full")
-    monkeypatch.setattr(config_route, "save_overrides", failed)
-    response = client.put("/server/config", json={
-        "schema_version": "1", "changes": {"base_config.server.service_name": "Temporary"},
-    })
-    assert response.status_code == 500
-    assert client.app.state.config.server.service_name == previous
-    assert "base_config.server.service_name" not in client.app.state.overrides
-    discovery.config_changed.assert_not_awaited()
+        def failed(*args):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(config_route, "save_overrides", failed)
+        answer = client.put("/server/config", json={
+            "schema_version": "1", "changes": {"base_config.server.service_name": "Temporary"},
+        })
+
+        assert answer.status_code == 500
+        assert client.app.state.config.server.service_name == previous
+        assert "base_config.server.service_name" not in client.app.state.overrides
+        discovery.config_changed.assert_not_awaited()

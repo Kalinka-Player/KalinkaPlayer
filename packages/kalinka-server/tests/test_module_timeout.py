@@ -112,3 +112,39 @@ async def test_inherited_default_get_all_is_also_budgeted():
     # protocol stub returns None; the call must complete, not hang.
     out = await proxy.get_all([eid])
     assert out == []
+
+
+class _HeldModule(SlowModule):
+    """Answers browse only once the test lets it."""
+
+    def __init__(self):
+        self.release = asyncio.Event()
+
+    async def browse(self, entity_id, offset=0, limit=50, filter=None):
+        await self.release.wait()
+        return BrowseItemList(offset=offset, limit=limit, total=0, items=[])
+
+
+async def test_a_closed_proxy_refuses_new_calls_as_the_source_being_away():
+    from kalinka_plugin_sdk.inputmodule import SourceUnavailableError
+
+    proxy = _proxy(1.0)
+    proxy.close()
+
+    with pytest.raises(SourceUnavailableError, match="is restarting"):
+        await proxy.browse(None)
+    with pytest.raises(SourceUnavailableError):
+        await proxy.get_indexer_status()
+
+
+async def test_drain_waits_for_the_calls_under_way():
+    module = _HeldModule()
+    proxy = TimeLimitedInputModule(module, "held", timeout_s=5.0)
+    call = asyncio.create_task(proxy.browse(None))
+    await asyncio.sleep(0)
+    proxy.close()
+
+    assert await proxy.drain(0.05) is False
+    module.release.set()
+    assert await proxy.drain(1.0) is True
+    assert isinstance(await call, BrowseItemList)
