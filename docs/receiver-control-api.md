@@ -1,6 +1,6 @@
 # Receiver control API v1
 
-Implemented with Core REST/WS API **0.22** and plugin SDK **3.22**. This optional
+Implemented with Core REST/WS API **0.23** and plugin SDK **3.23**. This optional
 control interface is independent of browsing, direct playback, PCM delivery and
 renderer selection. Plugins without it retain their existing behavior.
 
@@ -93,8 +93,7 @@ revocation: failed cleanup remains denied and is retried by the plugin.
 ## Live settings and events
 
 Enable/disable and receiver-name overrides use the existing `PUT /server/config`
-with its `schema_version` and flat `changes` object. Panel toggles send exactly
-one `input_modules.<id>.enabled` field and retain unrelated app drafts. Fields
+with its `schema_version` and flat `changes` object. Enable/disable remains in Configuration; the connection panel only lists enabled receivers. Fields
 with `applies_live: true` need no Core restart. This flag is separate from
 `apply_immediately`, which still describes one-shot actions in older plugins.
 A batch containing other fields retains the existing restart behavior.
@@ -134,3 +133,30 @@ Bluetooth keeps admission supervision while disabled if BlueALSA still exposes
 A2DP, but opens no PCM stream and acquires no renderer. AirPlay starts no child
 while disabled. The shared media path remains uncompressed PCM with bounded
 live buffers; this API introduces no transcoding or media endpoints.
+
+
+## Pairing requests and receiver passwords (API 0.23 / SDK 3.23)
+
+Snapshots may include `pairing_request`: an opaque `request_id`, `device_name`,
+`method`, optional string `code`, optional `entered` count, and monotonic
+`remaining_seconds`. Methods are `confirmation`, `authorization`, `pin`,
+`passkey`, `display_pin` and `display_passkey`, corresponding to actual BlueZ
+callbacks. Numeric codes retain all six digits including leading zeroes.
+
+`{"command":"answer_pairing","request_id":"opaque-id","accept":true}`
+answers a comparison or authorization request. `accept` must be a JSON boolean.
+A `pin` or `passkey` request additionally takes the user's `code` string;
+comparison/authorization requests refuse a supplied code. Display-only requests
+cannot be accepted: enter the shown code on the other device. All methods can
+be rejected with `accept:false`. The request ID is consumed before yielding;
+stale, expired or already-answered IDs return 409. No response is auto-replayed.
+The HTTP command completes without waiting for the remote pairing handshake.
+
+`password_required` and `password_reveal_available` are optional booleans.
+Receivers implementing the optional `ReceiverPasswordControl` may opt into
+`POST /receivers/{receiver_id}/password`, returning `{"password":"..."}` with
+`Cache-Control: no-store`. This is an explicit reveal of an applied, shareable
+receiver password, subject to the same management gate as configuration writes;
+demo servers refuse it. It never reveals arbitrary configuration secrets and
+never puts a password into inventory or WebSocket events. Disabled/unready
+receivers refuse reveal. No temporary AirPlay PIN or pairing command exists.

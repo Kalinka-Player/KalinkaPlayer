@@ -194,7 +194,8 @@ def get_version() -> str:
 # GET /server/version carries `storage`.
 # 0.22: optional receiver inventory/commands, receivers_changed replay state,
 # and per-field applies_live configuration metadata.
-REST_API_VERSION = "0.22"
+# 0.23: explicit receiver pairing requests/answers and opt-in password reveal.
+REST_API_VERSION = "0.23"
 
 
 def get_rest_api_version() -> str:

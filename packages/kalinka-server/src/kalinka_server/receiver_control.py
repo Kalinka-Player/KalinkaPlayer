@@ -4,6 +4,7 @@ import asyncio
 import logging
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 
 from kalinka_plugin_sdk.events import ReceiversChangedEvent
 from kalinka_plugin_sdk.receiver_control import (
@@ -161,6 +162,28 @@ class ReceiverRegistry:
         finally:
             self.changed(name)
 
+    async def reveal_password(self, name):
+        """Explicit, plugin-opted-in reveal; never part of snapshots or config reads."""
+        entry = self._entry(name)
+        snapshot = await self.snapshot(name)
+        reveal = getattr(self._controller(entry), "reveal_password", None)
+        if (
+            not snapshot.enabled
+            or not snapshot.password_reveal_available
+            or reveal is None
+        ):
+            raise HTTPException(
+                409,
+                detail={"code": "unavailable", "message": "Password is not available"},
+            )
+        try:
+            return await asyncio.wait_for(reveal(), 2)
+        except (ReceiverError, TimeoutError) as error:
+            raise HTTPException(
+                409,
+                detail={"code": "unavailable", "message": "Password is not available"},
+            ) from error
+
 
 def register_receiver_routes(app: FastAPI, registry: ReceiverRegistry):
     @app.get("/receivers", response_model=ReceiversSnapshot)
@@ -174,3 +197,13 @@ def register_receiver_routes(app: FastAPI, registry: ReceiverRegistry):
     @app.post("/receivers/{receiver_id}/commands", response_model=ReceiverSnapshot)
     async def command(receiver_id: str, command: ReceiverCommand):
         return await registry.execute(receiver_id, command)
+
+    @app.post("/receivers/{receiver_id}/password")
+    async def password(receiver_id: str):
+        # POST uses the same management gate as receiver/config writes (including
+        # demo-mode refusal). This deliberately cannot reveal arbitrary secrets.
+        value = await registry.reveal_password(receiver_id)
+        return JSONResponse(
+            {"password": value},
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )

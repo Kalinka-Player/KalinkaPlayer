@@ -87,7 +87,7 @@ class BluetoothInput(InputModule):
 
 class KalinkaPluginBluetooth(InputModulePlugin):
     PLUGIN_ID = "bluetooth"
-    REQUIRES_SDK = ">=3.22,<4"
+    REQUIRES_SDK = ">=3.23,<4"
     SETUP_WHEN_DISABLED = True
     RECEIVER = ReceiverDescriptor(
         title="Bluetooth",
@@ -96,6 +96,7 @@ class KalinkaPluginBluetooth(InputModulePlugin):
         commands=(
             "open_pairing",
             "close_pairing",
+            "answer_pairing",
             "grant_audio",
             "revoke_audio",
             "disconnect_audio",
@@ -199,6 +200,7 @@ class KalinkaPluginBluetooth(InputModulePlugin):
         self._sessions = {old.get(e.identity, uuid4().hex): e for e in endpoints}
 
     async def _reconcile(self, backend):
+        await self.pairing.expire_request()
         if not self.context.config.enabled:
             # Also reconcile here if Core timed out a config callback while
             # it was waiting for protocol cleanup or the receiver lock.
@@ -286,6 +288,7 @@ class KalinkaPluginBluetooth(InputModulePlugin):
         availability = {
             "open_pairing": available,
             "close_pairing": backend is not None and active,
+            "answer_pairing": available and active and pairing.request is not None,
             "grant_audio": available and bool(peers),
             "revoke_audio": bool(peers),
             "disconnect_audio": backend is not None and bool(self._sessions),
@@ -313,6 +316,7 @@ class KalinkaPluginBluetooth(InputModulePlugin):
             enabled=enabled,
             state=state,
             message=(self.error if enabled or self._cleanup_retry else None)
+            or (pairing.notice if pairing else None)
             or (
                 "Name will update after Bluetooth setup finishes"
                 if self._name_pending
@@ -330,6 +334,7 @@ class KalinkaPluginBluetooth(InputModulePlugin):
                 else None
             ),
             recent_peer_id=self._peer_id(recent) if recent else None,
+            pairing_request=pairing.request if active else None,
             peers=peers,
             actions=actions,
             sessions=[
@@ -406,6 +411,9 @@ class KalinkaPluginBluetooth(InputModulePlugin):
                         await self.pairing.start()
                     except RuntimeError as error:
                         raise ReceiverError("adapter_busy", str(error)) from error
+                elif command.command == "answer_pairing":
+                    self._require_backend()
+                    await self.pairing.answer(command.request_id, command.accept, command.code)
                 elif command.command == "close_pairing":
                     if self.pairing and self.pairing.active:
                         if command.window_id != self.pairing.window_id:
