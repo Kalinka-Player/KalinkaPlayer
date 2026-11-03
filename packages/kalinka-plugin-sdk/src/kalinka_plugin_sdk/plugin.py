@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, ClassVar, Generic, Optional, TypeVar
+from typing import Any, Callable, ClassVar, Generic, Optional, TypeVar
 from .api import EventEmitter, EventListener, LoggerAPI, PlayQueueController
 from .config_feedback import ConfigIssue, ConfigOption
 from .dynamic_fields import DynamicFieldDecl
@@ -16,6 +16,7 @@ from .module_health import ModuleHealthState, ModuleState
 from .optional_packages import OptionalPackageSpec
 from .inputmodule import InputModule
 from .ext_device import ExternalOutputDevice
+from .receiver_control import ReceiverControl, ReceiverDescriptor
 
 
 class PluginType(Enum):
@@ -200,6 +201,10 @@ class PluginBase(ABC, Generic[PLUGIN_CLASS, CTX_TYPE]):
         """
         return None
 
+    async def server_name_changed(self) -> None:
+        """SDK 3.22: reconcile an inherited receiver name after a saved rename."""
+        return None
+
     async def required_packages(self) -> list[str]:
         """Return optional-package keys the plugin would need to install
         given its *current* in-memory config.
@@ -231,6 +236,9 @@ class InputPluginContext(PluginContextBase):
     external_playback: Optional[ExternalPlayback] = field(default=None, kw_only=True)
     # SDK 3.21+: receiver PCM whose lifetime is independent of its output route.
     live_audio: Optional[LiveAudio] = field(default=None, kw_only=True)
+    # SDK 3.22: read the current server name, and invalidate receiver state.
+    server_name: Callable[[], str] | None = field(default=None, kw_only=True)
+    receiver_changed: Callable[[], None] | None = field(default=None, kw_only=True)
 
 
 @dataclass
@@ -245,6 +253,11 @@ class InputModulePlugin(PluginBase[InputModule, InputPluginContext]):
     """Base class for input module plugins."""
 
     PLUGIN_TYPE = PluginType.INPUT_MODULE
+    SETUP_WHEN_DISABLED: ClassVar[bool] = False
+    RECEIVER: ClassVar[ReceiverDescriptor | None] = None
+
+    def get_receiver_control(self) -> ReceiverControl | None:
+        return None
 
 
 @dataclass

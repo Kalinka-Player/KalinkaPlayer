@@ -13,7 +13,7 @@ neither ALSA PCM devices nor `arecord`, PipeWire, or a local playback loopback.
 Replacing BlueALSA with raw BlueZ transport access would also require owning
 A2DP codec negotiation, packet handling, decoding and reconnect behaviour.
 
-Requires SDK 3.21 and a Core/renderer release supporting live PCM v1. Upgrade
+Requires SDK 3.22 and a Core/renderer release supporting live PCM v1. Upgrade
 remote renderers too; an older renderer reports an upgrade requirement.
 
 ## Setup
@@ -38,12 +38,22 @@ status and logs it once while it persists. Reconnection backs off from two
 seconds to at most 30 seconds; starting the backend allows automatic recovery.
 Leave the plugin disabled on hosts that do not receive Bluetooth audio.
 
-Enable the plugin in Kalinka settings and restart the server once to load it.
-Choose **Pair a phone for two minutes**, save, and select the receiver in the
-phone's Bluetooth settings. The action resets after saving. Alternatively,
-**Allow audio from a paired phone** authorizes an existing bond. The settings
-show receiver status and phones with audio access. Audio access is stored
-separately; revoking it does not remove a provisioning bond.
+Open **Connect a device** on Home or in the server menu. Enable Bluetooth,
+choose **Pair a device**, then select the displayed name in your phone's
+Bluetooth settings. These changes apply without restarting Core, including
+the first enable after boot. Pairing closes after two minutes or the first
+successful A2DP connection; playback need not start to finish pairing.
+
+The panel also offers **Allow audio** for an existing bond, **Disconnect audio**
+without losing permission, and **Remove audio access**. Removing access restores
+trust to its pre-grant value and disconnects the A2DP profile; it keeps the bond
+and provisioning access. The receiver denies new ungranted audio connections,
+including while disabled. Grants from older test images have an unknown prior
+trust value: preserve that trust but still disconnect audio on revocation.
+
+Only persistent configuration belongs in plugin settings. Leave **Bluetooth
+name** empty to follow the streamer name. A custom name overrides it. A rename
+waits while provisioning owns the shared adapter lease.
 
 Pairing and the supervisor's BLE setup share an adapter lease under
 `/run/lock/kalinka-bluetooth`. Pairing reports busy while BLE setup owns it.

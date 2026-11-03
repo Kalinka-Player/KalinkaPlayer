@@ -81,6 +81,11 @@ async def test_recovery_clears_status_and_new_outage_warns_again(
             close=Mock(),
             events=events,
             endpoints=lambda: [],
+            devices=lambda: {},
+            audio_devices=lambda: set(),
+            changed=asyncio.Event(),
+            adapter="hci0",
+            bluez={"/org/bluez/hci0": {bluetooth.ADAPTER: {"Alias": "Kalinka"}}},
         )
         backends.append(backend)
         return backend

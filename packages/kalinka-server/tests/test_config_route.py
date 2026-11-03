@@ -215,3 +215,61 @@ class TestASaveReachesThePlugin:
 
         assert answer.status_code == 422
         assert plugin.changed == []
+
+
+def test_live_config_notification_precedes_health_publication(tmp_path, library):
+    plugin = _Listening()
+    client = _client(tmp_path, library, plugin)
+    observed = []
+
+    async def republish():
+        observed.append((library.enabled, list(plugin.changed)))
+
+    client.app.state.republish_modules = republish
+    answer = client.put('/server/config', json={
+        'schema_version': '1', 'changes': {'input_modules.localfiles.enabled': False},
+    })
+    assert answer.status_code == 200
+    assert observed == [(False, [frozenset({'enabled'})])]
+
+
+def test_saved_streamer_name_notifies_discovery_and_receiver(tmp_path, library, monkeypatch):
+    from unittest.mock import AsyncMock
+    from kalinka_plugin_sdk.receiver_control import ReceiverDescriptor
+
+    plugin = _Listening()
+    plugin.server_name_changed = AsyncMock()
+    # The test helper normally represents an ordinary input without a receiver.
+    monkeypatch.setattr(_Prepared, 'plugin_class', SimpleNamespace(
+        RECEIVER=ReceiverDescriptor(title='Receiver', kind='test')
+    ), raising=False)
+    client = _client(tmp_path, library, plugin)
+    discovery = SimpleNamespace(config_changed=AsyncMock())
+    client.app.state.service_discovery = discovery
+    answer = client.put('/server/config', json={
+        'schema_version': '1', 'changes': {'base_config.server.service_name': 'Kitchen'},
+    })
+    assert answer.status_code == 200
+    assert client.app.state.config.server.service_name == 'Kitchen'
+    discovery.config_changed.assert_awaited_once()
+    plugin.server_name_changed.assert_awaited_once()
+
+
+def test_failed_persistence_does_not_turn_a_live_setting_into_a_temporary_change(tmp_path, library, monkeypatch):
+    from unittest.mock import AsyncMock
+    from kalinka_server import config_route
+
+    client = _client(tmp_path, library)
+    previous = client.app.state.config.server.service_name
+    discovery = SimpleNamespace(config_changed=AsyncMock())
+    client.app.state.service_discovery = discovery
+    def failed(*args):
+        raise OSError("disk full")
+    monkeypatch.setattr(config_route, "save_overrides", failed)
+    response = client.put("/server/config", json={
+        "schema_version": "1", "changes": {"base_config.server.service_name": "Temporary"},
+    })
+    assert response.status_code == 500
+    assert client.app.state.config.server.service_name == previous
+    assert "base_config.server.service_name" not in client.app.state.overrides
+    discovery.config_changed.assert_not_awaited()

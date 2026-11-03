@@ -192,7 +192,9 @@ def get_version() -> str:
 # client draws where they have no art.
 # Settings saved through PUT /server/config reach the plugin that owns them.
 # GET /server/version carries `storage`.
-REST_API_VERSION = "0.21"
+# 0.22: optional receiver inventory/commands, receivers_changed replay state,
+# and per-field applies_live configuration metadata.
+REST_API_VERSION = "0.22"
 
 
 def get_rest_api_version() -> str:

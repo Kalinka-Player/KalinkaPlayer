@@ -183,6 +183,7 @@ class FieldSpec(BaseModel):
     # One-shot actions consumed on save. Clients must not restart afterward;
     # in mixed batches these run after ordinary settings have been restarted.
     apply_immediately: bool = False
+    applies_live: bool = False
     importance: Importance = Importance.EXPERT
     setup: Setup = Setup.HIDDEN
     enum_values: Optional[list[str]] = None

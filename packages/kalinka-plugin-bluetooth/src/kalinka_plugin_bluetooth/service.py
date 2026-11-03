@@ -130,7 +130,7 @@ class BluetoothService:
         return task
 
     async def connected(self, endpoint: Endpoint):
-        if self.endpoint is not None and self.endpoint.path == endpoint.path:
+        if self.endpoint is not None and self.endpoint.identity == endpoint.identity:
             if self.endpoint.format != endpoint.format:
                 self.partial.clear()
                 self.source.reset(endpoint.format)

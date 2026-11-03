@@ -1,6 +1,8 @@
 # Receiver controls and device management
 
-Status: proposed, revised 2026-11-02 after review. The interfaces below are not implemented yet. This extends the [Bluetooth and AirPlay media design](bluetooth-audio-sink-design.md) without changing PCM transport, renderer selection or playback ownership.
+Status: implemented in the Bluetooth, AirPlay and app feature PRs, updated 2026-11-03. This extends the [Bluetooth and AirPlay media design](bluetooth-audio-sink-design.md) without changing PCM transport, renderer selection or playback ownership.
+
+Implementation reference: [receiver-control-api.md](receiver-control-api.md) (Core API 0.22 / SDK 3.22). Hardware acceptance remains required for pairing, provisioning coexistence and sender interoperability.
 
 ## Decision and v1 scope
 

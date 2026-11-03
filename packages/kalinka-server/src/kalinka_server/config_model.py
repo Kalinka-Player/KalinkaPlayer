@@ -86,7 +86,8 @@ class ServerConfig(BaseModel):
         default="My Kalinka Service",
         title="Service name",
         json_schema_extra={
-            "help": "How this server appears in the app when found on your network",
+            "applies_live": True,
+            "help": "Name shown in the app and inherited by receivers without a custom name. Changing it can end AirPlay playback.",
             **_SIMPLE,
             **_PROMPT,
         },

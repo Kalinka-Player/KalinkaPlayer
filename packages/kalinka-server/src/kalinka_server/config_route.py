@@ -18,7 +18,9 @@ from kalinka_plugin_sdk import ConfigIssue, paths
 from . import supervisor_management
 from .box_power_off import TIMER_PATHS
 from .config_model import KalinkaConfig
-from .config_overrides import is_immediate_action_field, save_overrides, store_override
+from .config_overrides import (
+    field_info, is_immediate_action_field, save_overrides, set_by_path, store_override,
+)
 from .config_schema_processor import (
     build_enum_options,
     build_presentation,
@@ -215,6 +217,28 @@ def register_config_routes(
                 if consumed:
                     modules.finish_immediate_actions(prepared, consumed)
         storage = getattr(app.state, "storage", None)
+        if "base_config.server.service_name" in applied:
+            discovery = getattr(app.state, "service_discovery", None)
+            if discovery is not None:
+                try:
+                    await asyncio.wait_for(
+                        discovery.config_changed(), PLUGIN_CALL_TIMEOUT_S
+                    )
+                except Exception:
+                    logger.exception("Service discovery could not apply the server name")
+            for prepared in modules.prepared_input_modules.values():
+                instance = prepared.plugin_instance
+                receiver = getattr(getattr(prepared, "plugin_class", None), "RECEIVER", None)
+                if instance is not None and receiver is not None:
+                    try:
+                        await asyncio.wait_for(
+                            instance.server_name_changed(), PLUGIN_CALL_TIMEOUT_S
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Receiver %s could not apply the server name",
+                            prepared.plugin_context.config.name,
+                        )
         if storage is not None:
             if any(key.startswith("base_config.storage.") for key in applied):
                 await storage.config_changed()
@@ -281,6 +305,7 @@ def register_config_routes(
 
         applied: Dict[str, Any] = {}
         committed = []
+        previous_live = {}
         targets = _config_targets()
         power_paths = TIMER_PATHS | {supervisor_management.MANAGE_PATH}
         previous_power = {
@@ -291,6 +316,12 @@ def register_config_routes(
             for key, value in changes.items():
                 try:
                     target = targets.resolve(key)
+                    info = field_info(type(target.model), target.attrs)
+                    extra = info.json_schema_extra if info is not None else None
+                    if isinstance(extra, dict) and extra.get("applies_live"):
+                        previous_live[key] = (
+                            target, stored_value(target), app.state.overrides.get(key)
+                        )
                     reason = commit_change(target, key, value)
                 except ConfigWriteError as exc:
                     logger.warning("Invalid config key '%s': %s", key, exc)
@@ -319,6 +350,14 @@ def register_config_routes(
                         app.state.overrides_file,
                         exc,
                     )
+                    # A live toggle must not silently become temporary when
+                    # its persistence fails. No owner has been notified yet.
+                    for key, (target, value, override) in previous_live.items():
+                        set_by_path(target.model, target.attrs, value)
+                        if override is None:
+                            app.state.overrides.pop(key, None)
+                        else:
+                            app.state.overrides[key] = override
                     if power_paths.intersection(applied):
                         # Failed saves must never authorize a privileged operation.
                         for key in power_paths.intersection(applied):
@@ -335,6 +374,11 @@ def register_config_routes(
                             status_code=500,
                             detail="Could not save streamer management settings; restart was not requested.",
                         ) from exc
+                    if previous_live:
+                        raise HTTPException(
+                            status_code=500,
+                            detail="Could not save live settings; no live change was applied.",
+                        ) from exc
 
         timer = getattr(app.state, "box_power_off_timer", None)
         if timer is not None and TIMER_PATHS.intersection(applied):
@@ -344,14 +388,16 @@ def register_config_routes(
         if router is not None and any(key.startswith("devices.") for key in applied):
             await router.resync()
 
+        await _tell_owners(applied)
+        receivers = getattr(app.state, "receivers", None)
+        if receivers is not None:
+            receivers.changed()
         republish = getattr(app.state, "republish_modules", None)
         if republish is not None and any(
             key.startswith(("input_modules.", "devices.")) for key in applied
         ):
             # A setting can move what the listing shows without a report moving.
             await republish()
-
-        await _tell_owners(applied)
 
         ok_in, _err_in, ok_dev, _err_dev = _partition_modules_and_devices()
         known = build_static_values(config, ok_in, ok_dev)

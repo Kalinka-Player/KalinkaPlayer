@@ -231,3 +231,27 @@ or other-input takeover still revokes the hold. Pause/resume starts fresh audio.
 Older renderers without `OutputCapabilities.live_pcm >= 1` report an upgrade
 requirement. See the [live audio design](../../docs/bluetooth-audio-sink-design.md)
 for wire format, lifecycle and validation limits.
+
+## Optional receiver controls (SDK 3.22)
+
+Receiver plugins may declare a `ReceiverDescriptor` in `RECEIVER`, opt into
+`SETUP_WHEN_DISABLED = True`, and implement `get_receiver_control()` returning a
+`ReceiverControl`. Its asynchronous `snapshot()` reads cached control state;
+`execute(ReceiverCommand)` performs one bounded action and returns a snapshot.
+Use `ReceiverError(code, message)` for expected refusals.
+
+Initialize the controller and input interface once, even while disabled. Handle
+live `enabled`/name changes in `config_changed()`, report disabled health until
+enabled, and clean up tasks in `shutdown()`. `applies_live` config metadata says
+saving a field needs no Core restart; it does not change staging or turn the
+field into a one-shot action.
+
+`InputPluginContext.server_name` is an optional getter for the current streamer
+name. `server_name_changed()` lets an inheriting receiver update its name.
+`context.receiver_changed` is an optional no-argument notification callback;
+call it for control changes, never PCM blocks or playback progress.
+
+The public models and typed command union live in `receiver_control` and are
+also exported at package level. See [the API contract](../../docs/receiver-control-api.md)
+for wire shapes, opaque target handles, idempotence and client reconciliation.
+Existing plugins need no changes unless they implement this capability.

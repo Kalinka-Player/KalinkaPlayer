@@ -447,3 +447,23 @@ async def test_unregister_waits_out_cancelled_reconcile_cleanup(
     await unregister
 
     assert all(fake.closed for fake in created)
+
+
+async def test_live_rename_replaces_advertisements_even_when_dns_label_is_truncated(
+    two_interfaces, monkeypatch
+):
+    created, _ = install_fake_zeroconf(monkeypatch)
+    config = KalinkaConfig()
+    config.server.service_name = "A" * 80 + "old"
+    discovery = ServiceDiscovery(config)
+    await discovery.register_service()
+    try:
+        names = [a.service_info.name for a in discovery.announcements]
+        config.server.service_name = "A" * 80 + "new"
+        await discovery.config_changed()
+        assert len(created) == 4
+        assert all(f.closed for f in created[:2])
+        assert [a.service_info.name for a in discovery.announcements] == names
+        assert all(a.service_info.decoded_properties['display_name'].endswith('new') for a in discovery.announcements)
+    finally:
+        await discovery.unregister_service()
