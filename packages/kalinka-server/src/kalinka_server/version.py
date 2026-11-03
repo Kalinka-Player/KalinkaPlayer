@@ -193,9 +193,24 @@ def get_version() -> str:
 # Settings saved through PUT /server/config reach the plugin that owns them.
 # GET /server/version carries `storage`.
 # 0.22: optional receiver inventory/commands, receivers_changed replay state,
-# per-field applies_live configuration metadata, explicit receiver pairing
-# requests/answers, opt-in password reveal, pairing mode and explicit
-# saved-device removal.
+# explicit receiver pairing requests/answers, opt-in password reveal,
+# pairing mode and explicit saved-device removal.
+# Also 0.22: plugin settings apply as they are saved. A module's on/off switch sets
+# it up or shuts it down there and then, and any other change to a module's
+# or device's settings reaches the plugin, which is set up again on them
+# unless it takes them in itself; the module reports WARNING "Restarting…"
+# meanwhile, through modules_changed, and then what it makes of its new
+# settings. The PUT answers once the plugin has taken them in, or after five
+# seconds while it still is. The Devices page no longer says a restart is
+# needed. Each field of GET /server/config/schema carries `apply`: "instant"
+# for every module and device field and most server fields, "restart_required"
+# for the few the server reads once at startup (port, interface, text
+# embedding, streamer management, screen), so a client restarts only for
+# those; every field not so marked applies live.
+# schema_version moves when a plugin is set up again with a changed
+# configuration model, appears or goes; a stale PUT draws its 409 as before.
+# While a module is set up again, GET /content/{module}/… and the routes
+# naming it answer 503 with Retry-After rather than 404, so a renderer retries.
 REST_API_VERSION = "0.22"
 
 

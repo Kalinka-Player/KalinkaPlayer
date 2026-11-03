@@ -43,7 +43,7 @@ import random
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from pydantic import BaseModel
 
@@ -364,11 +364,11 @@ class SuggestionEngine:
 
     def __init__(
         self,
-        library: Optional[InputModule],
+        library: Callable[[], Optional[InputModule]],
         cfg: SearchConfig,
         cache_path: Optional[str] = None,
     ):
-        self._library = library
+        self._library_now = library
         self._cfg = cfg
         self._cache_path = cache_path or os.path.join(
             paths.state_dir(), "server", "ai_suggestions.json"
@@ -381,6 +381,12 @@ class SuggestionEngine:
         self._recent: deque = deque(maxlen=24)
         self._rng = random.Random()
 
+    @property
+    def _library(self) -> Optional[InputModule]:
+        """The library as it is now: resolved per use, since the module can
+        be switched off, set up again or replaced while the server runs."""
+        return self._library_now()
+
     # -- lifecycle ---------------------------------------------------------
 
     async def refresh_loop(self) -> None:
@@ -392,11 +398,15 @@ class SuggestionEngine:
             # library module was enabled must not filter the pool after it
             # is disabled — everything serves unvalidated, context-only.
             logger.info("suggestions: no library module — serving unvalidated")
-            return
+            while self._library is None:
+                await asyncio.sleep(_BUSY_RECHECK_S)
         self._load_cache()
         await asyncio.sleep(_STARTUP_DELAY_S)
         while True:
             try:
+                if self._library is None:
+                    await asyncio.sleep(_BUSY_RECHECK_S)
+                    continue
                 if await self._pipeline_busy():
                     logger.debug(
                         "suggestions: library pipeline busy — deferring attestation"

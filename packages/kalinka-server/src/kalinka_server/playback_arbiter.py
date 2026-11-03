@@ -158,6 +158,10 @@ class PlaybackArbiter:
     async def shutdown(self) -> None:
         await self._revoke_plugin(RevokeReason.SHUTDOWN)
 
+    async def revoke_plugin(self, plugin_id: str, reason: RevokeReason) -> None:
+        """Take the output back from ``plugin_id`` if it holds it; nothing otherwise."""
+        await self._revoke_plugin(reason, plugin_id=plugin_id)
+
     def report(self, owner: OutputOwner, state: PlaybackState) -> None:
         """Publish an owner's playback; dropped unless it owns the output."""
         if owner is self._owner:
@@ -184,10 +188,14 @@ class PlaybackArbiter:
         """The last playback state published to clients."""
         return self._last_state
 
-    async def _revoke_plugin(self, reason: RevokeReason) -> None:
+    async def _revoke_plugin(
+        self, reason: RevokeReason, *, plugin_id: Optional[str] = None
+    ) -> None:
         async with self._lock:
             owner = self._require_owner()
             if owner is self._queue:
+                return
+            if plugin_id is not None and owner.control.plugin_id != plugin_id:
                 return
             await self._handover(owner, self._require_queue(), reason)
 

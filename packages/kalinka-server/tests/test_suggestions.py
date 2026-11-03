@@ -1,5 +1,6 @@
 """Tests for the /ai_search/suggestions engine (kalinka_server.suggestions)."""
 
+import asyncio
 from datetime import date, datetime
 
 import pytest
@@ -204,7 +205,7 @@ class FakeLibrary:
 
 def _engine(library, tmp_path, seed=1234):
     engine = SuggestionEngine(
-        library, SearchConfig(), cache_path=str(tmp_path / "cache.json")
+        lambda: library, SearchConfig(), cache_path=str(tmp_path / "cache.json")
     )
     engine._rng.seed(seed)
     return engine
@@ -316,7 +317,9 @@ async def test_no_library_ignores_stale_cache(tmp_path, monkeypatch):
     assert (tmp_path / "cache.json").exists()
 
     disabled = _engine(None, tmp_path)
-    await disabled.refresh_loop()
+    refreshing = asyncio.create_task(disabled.refresh_loop())
+    await asyncio.sleep(0)
+    refreshing.cancel()
     assert not disabled._attested and disabled._scores == {}
     result = disabled.suggest(4, now=datetime(2026, 7, 6, 20, 0))
     assert not result.attested
@@ -342,7 +345,7 @@ def test_cache_version_mismatch_ignored(tmp_path):
         '{"data_version": %d, "fingerprint": "x", "scores": {"q": 1.0}}'
         % (DATA_VERSION + 1)
     )
-    engine = SuggestionEngine(None, SearchConfig(), cache_path=str(path))
+    engine = SuggestionEngine(lambda: None, SearchConfig(), cache_path=str(path))
     engine._load_cache()
     assert not engine._attested and engine._scores == {}
 
@@ -381,3 +384,27 @@ def test_count_clamped(tmp_path):
     engine = _engine(None, tmp_path)
     assert len(engine.suggest(0, now=datetime(2026, 7, 6, 9, 0)).suggestions) == 1
     assert len(engine.suggest(500, now=datetime(2026, 7, 6, 9, 0)).suggestions) <= 32
+
+
+@pytest.mark.asyncio
+async def test_a_library_that_arrives_later_is_attested(tmp_path, monkeypatch):
+    monkeypatch.setattr("kalinka_server.suggestions._ATTEST_GAP_S", 0)
+    monkeypatch.setattr("kalinka_server.suggestions._BUSY_RECHECK_S", 0)
+    monkeypatch.setattr("kalinka_server.suggestions._STARTUP_DELAY_S", 0)
+    library = {"now": None}
+    engine = SuggestionEngine(
+        lambda: library["now"], SearchConfig(), cache_path=str(tmp_path / "cache.json")
+    )
+    engine._rng.seed(1234)
+    refreshing = asyncio.create_task(engine.refresh_loop())
+    await asyncio.sleep(0.01)
+    assert not engine._attested
+
+    library["now"] = FakeLibrary()
+    for _ in range(200):
+        if engine._attested:
+            break
+        await asyncio.sleep(0.01)
+    refreshing.cancel()
+
+    assert engine._attested

@@ -9,7 +9,7 @@ import asyncio
 import logging
 import subprocess
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Awaitable, Callable, Dict
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
@@ -18,9 +18,7 @@ from kalinka_plugin_sdk import ConfigIssue, paths
 from . import supervisor_management
 from .box_power_off import TIMER_PATHS
 from .config_model import KalinkaConfig
-from .config_overrides import (
-    field_info, is_immediate_action_field, save_overrides, set_by_path, store_override,
-)
+from .config_overrides import field_info, save_overrides, set_by_path, store_override
 from .config_schema_processor import (
     build_enum_options,
     build_presentation,
@@ -39,17 +37,33 @@ from .config_validation import (
 )
 from .module_timeout import PLUGIN_CALL_TIMEOUT_S
 from .player_setup import ModuleHealthState, PreparedModuleCollection
+from .tasks import detach
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
 
+SettingsChanged = Callable[[str, frozenset[str]], Awaitable[None]]
+# How long a save waits for the plugins to take their settings in before it
+# answers: a quick one is done by the time the client reads again, a slow one
+# carries on after the answer and reports through the module listing.
+APPLY_WAIT_S = 5.0
+
+
 def register_config_routes(
-    app: FastAPI, config: KalinkaConfig, modules: PreparedModuleCollection
+    app: FastAPI,
+    config: KalinkaConfig,
+    modules: PreparedModuleCollection,
+    settings_changed: SettingsChanged,
 ) -> None:
     """Mount the configuration routes on ``app``.
 
     @param modules Read on every request, as its plugins can be set up again
         while the server runs.
+    @param settings_changed Told, once a save is persisted, which plugin's
+        settings changed and which paths within them; it applies them,
+        setting the plugin up again if it must. The save waits
+        ``APPLY_WAIT_S`` for it and answers regardless: the answer says what
+        was saved, the module's own state says what it made of it.
     @note Reads ``schema_version``, ``dynamic_paths``, ``readonly_paths``,
         ``page_banners``, ``dynamic_field_registry``, ``options_registry``,
         ``overrides`` and ``overrides_file`` off ``app.state`` per request.
@@ -184,66 +198,48 @@ def register_config_routes(
             if root in ("input_modules", "devices"):
                 name, _, path = rest.partition(".")
                 if path:
-                    by_plugin.setdefault(f"{root}.{name}", set()).add(path)
-        for owner, paths in by_plugin.items():
-            root, name = owner.split(".", 1)
-            prepared = (
-                modules.prepared_input_modules if root == "input_modules" else modules.prepared_devices
-            ).get(name)
-            instance = prepared.plugin_instance if prepared is not None else None
-            if instance is None:
-                continue
-            immediate = {
-                path
-                for path in paths
-                if is_immediate_action_field(
-                    type(prepared.plugin_context.config), path.split(".")
-                )
-            }
-            consumed = (
-                modules.consume_immediate_actions(
-                    prepared, immediate, app.state.overrides
-                )
-                if immediate
-                else []
-            )
-            try:
-                await asyncio.wait_for(
-                    instance.config_changed(frozenset(paths)), PLUGIN_CALL_TIMEOUT_S
-                )
-            except Exception:  # noqa: BLE001 — the save stands whatever a plugin makes of it
-                logger.exception("%s could not take in its changed settings", name)
-            finally:
-                if consumed:
-                    modules.finish_immediate_actions(prepared, consumed)
-        storage = getattr(app.state, "storage", None)
+                    by_plugin.setdefault(name, set()).add(path)
+        if by_plugin:
+            applying = [
+                detach(_apply_settings(name, frozenset(paths)))
+                for name, paths in by_plugin.items()
+            ]
+            await asyncio.wait(applying, timeout=APPLY_WAIT_S)
         if "base_config.server.service_name" in applied:
-            discovery = getattr(app.state, "service_discovery", None)
-            if discovery is not None:
-                try:
-                    await asyncio.wait_for(
-                        discovery.config_changed(), PLUGIN_CALL_TIMEOUT_S
-                    )
-                except Exception:
-                    logger.exception("Service discovery could not apply the server name")
-            for prepared in modules.prepared_input_modules.values():
-                instance = prepared.plugin_instance
-                receiver = getattr(getattr(prepared, "plugin_class", None), "RECEIVER", None)
-                if instance is not None and receiver is not None:
-                    try:
-                        await asyncio.wait_for(
-                            instance.server_name_changed(), PLUGIN_CALL_TIMEOUT_S
-                        )
-                    except Exception:
-                        logger.exception(
-                            "Receiver %s could not apply the server name",
-                            prepared.plugin_context.config.name,
-                        )
+            await _tell_the_name()
+        storage = getattr(app.state, "storage", None)
         if storage is not None:
             if any(key.startswith("base_config.storage.") for key in applied):
                 await storage.config_changed()
             elif any(key.startswith("input_modules.") for key in applied):
                 await storage.refresh()
+
+    async def _tell_the_name() -> None:
+        """The streamer was renamed: the advertisement and every receiver
+        that inherits the name follow."""
+        discovery = getattr(app.state, "service_discovery", None)
+        if discovery is not None:
+            try:
+                await asyncio.wait_for(discovery.config_changed(), PLUGIN_CALL_TIMEOUT_S)
+            except Exception:  # noqa: BLE001 — the save stands; the next start advertises it
+                logger.exception("Service discovery could not apply the server name")
+        for name, prepared in modules.prepared_input_modules.items():
+            if not prepared.set_up or getattr(prepared.plugin_class, "RECEIVER", None) is None:
+                continue
+            try:
+                await asyncio.wait_for(
+                    prepared.plugin_instance.server_name_changed(), PLUGIN_CALL_TIMEOUT_S
+                )
+            except Exception as e:  # noqa: BLE001 — the type only: its text may carry a credential
+                logger.warning(
+                    "Receiver %s could not apply the server name (%s)", name, type(e).__name__
+                )
+
+    async def _apply_settings(name: str, paths: frozenset[str]) -> None:
+        try:
+            await settings_changed(name, paths)
+        except Exception:  # noqa: BLE001 — the save stands whatever applying it does
+            logger.exception("%s could not take in its changed settings", name)
 
     @app.post("/server/config/validate")
     async def validate_config_fields(payload: Dict[str, Any]):
@@ -318,7 +314,7 @@ def register_config_routes(
                     target = targets.resolve(key)
                     info = field_info(type(target.model), target.attrs)
                     extra = info.json_schema_extra if info is not None else None
-                    if isinstance(extra, dict) and extra.get("applies_live"):
+                    if not (isinstance(extra, dict) and extra.get("apply") == "restart_required"):
                         previous_live[key] = (
                             target, stored_value(target), app.state.overrides.get(key)
                         )

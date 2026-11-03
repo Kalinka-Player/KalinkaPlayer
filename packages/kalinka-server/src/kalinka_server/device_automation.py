@@ -94,6 +94,16 @@ class DeviceAutomation:
     def _device_name(self) -> str:
         return self._router.current_name() if self._router else ""
 
+    def forget(self, name: str) -> None:
+        """Drop every reference to the module ``name``, which is being
+        unloaded: its auto-off timer must not power it off through an
+        instance that is gone."""
+        task = self._auto_off_tasks.pop(name, None)
+        if task is not None:
+            task.cancel()
+        if self._in_use == name:
+            self._in_use = self._in_use_device = None
+
     @staticmethod
     def _can(device: ExternalOutputDevice, function: SupportedFunction) -> bool:
         return function in device.supported_functions()

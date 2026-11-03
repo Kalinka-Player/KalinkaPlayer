@@ -1,6 +1,6 @@
 """Tests for ``LocalFilesInputModuleDb.purge_all``.
 
-The "Rebuild library on next restart" one-shot must wipe everything derived
+The "Rebuild library" one-shot must wipe everything derived
 from the library — index tables and the whole artwork tree — but preserve
 finished CLAP audio embeddings: they depend only on the file bytes and the
 model, and track IDs are stable path hashes, so they are snapshotted into

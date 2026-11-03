@@ -2,6 +2,7 @@
 
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -38,7 +39,7 @@ def client(tmp_path, monkeypatch):
         },
         prepared_devices={},
     )
-    register_config_routes(app, app.state.config, modules)
+    register_config_routes(app, app.state.config, modules, settings_changed=AsyncMock())
     with TestClient(app) as result:
         yield result, config
 

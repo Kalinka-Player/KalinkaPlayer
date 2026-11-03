@@ -25,7 +25,7 @@ import functools
 import inspect
 import logging
 
-from kalinka_plugin_sdk.inputmodule import InputModule
+from kalinka_plugin_sdk.inputmodule import InputModule, SourceUnavailableError
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
@@ -46,13 +46,24 @@ class TimeLimitedInputModule:
     """Delegating proxy that applies the per-call budget to every async
     method of ``inner`` — the protocol methods bound in ``__init__`` and any
     other coroutine attribute reached through ``__getattr__``. Sync
-    attributes pass through unchanged."""
+    attributes pass through unchanged.
+
+    Also the gate that unloading the module closes: a reference handed out
+    earlier — to the suggestions engine, to a request mid-flight — keeps
+    pointing here, and once closed every call through it is refused as the
+    source being unavailable, while :meth:`drain` waits for the calls that
+    were already under way.
+    """
 
     def __init__(self, inner: InputModule, label: str,
                  timeout_s: float = PLUGIN_CALL_TIMEOUT_S):
         self._inner = inner
         self._label = label
         self._timeout_s = timeout_s
+        self._closed = False
+        self._in_flight = 0
+        self._idle = asyncio.Event()
+        self._idle.set()
         # Bind protocol members on the instance (see module docstring).
         for name in _PROTOCOL_METHODS:
             attr = getattr(inner, name, None)
@@ -68,6 +79,10 @@ class TimeLimitedInputModule:
 
         @functools.wraps(attr)
         async def timed(*args, **kwargs):
+            if self._closed:
+                raise SourceUnavailableError(f"{self._title()} is restarting")
+            self._in_flight += 1
+            self._idle.clear()
             try:
                 return await asyncio.wait_for(attr(*args, **kwargs), timeout_s)
             except asyncio.TimeoutError:
@@ -79,8 +94,33 @@ class TimeLimitedInputModule:
                     f"{self._label}.{name} exceeded the "
                     f"{timeout_s:.0f}s per-call budget"
                 ) from None
+            finally:
+                self._in_flight -= 1
+                if self._in_flight == 0:
+                    self._idle.set()
 
         return timed
+
+    def _title(self) -> str:
+        try:
+            return self._inner.display_name()
+        except Exception:  # noqa: BLE001 — a name for a message, from a module on its way out
+            return self._label
+
+    def close(self) -> None:
+        """Refuse every call from now on; calls already under way finish."""
+        self._closed = True
+
+    async def drain(self, timeout_s: float) -> bool:
+        """Wait for the calls under way to finish.
+
+        @return False when some were still running at the deadline.
+        """
+        try:
+            await asyncio.wait_for(self._idle.wait(), timeout_s)
+        except asyncio.TimeoutError:
+            return False
+        return True
 
     @property
     def wrapped(self) -> InputModule:

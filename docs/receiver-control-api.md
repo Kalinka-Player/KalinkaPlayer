@@ -107,10 +107,13 @@ revocation: failed cleanup remains denied and is retried by the plugin.
 ## Live settings and events
 
 Enable/disable and receiver-name overrides use the existing `PUT /server/config`
-with its `schema_version` and flat `changes` object. Enable/disable remains in Configuration; the connection panel only lists enabled receivers. Fields
-with `applies_live: true` need no Core restart. This flag is separate from
-`apply_immediately`, which still describes one-shot actions in older plugins.
-A batch containing other fields retains the existing restart behavior.
+with its `schema_version` and flat `changes` object. Enable/disable remains in
+Configuration; the connection panel only lists enabled receivers. Every plugin
+field applies as it is saved: the plugin takes the change in through
+`config_changed()`, returning `True`, or Core sets it up again on the new
+settings. A client restarts only for a field whose schema entry says
+`apply: restart_required`, which no receiver field does. `apply_immediately`
+is separate: it still describes one-shot actions consumed on save.
 
 Blank receiver names inherit `base_config.server.service_name`; explicit names
 remain overrides. AirPlay name changes restart only its owned receiver and end

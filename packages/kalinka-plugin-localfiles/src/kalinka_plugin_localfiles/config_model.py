@@ -543,12 +543,11 @@ class LocalFilesConfig(ModuleConfig):
     )
     rebuild_library: bool = Field(
         default=False,
-        title="Rebuild library on next restart",
+        title="Rebuild library",
         json_schema_extra={
             "help": (
-                "Purge the index and artwork cache and rescan everything on "
-                "the next restart. Finished AI analysis is kept. Resets itself "
-                "once done."
+                "Purge the index and artwork cache and rescan everything once "
+                "applied. Finished AI analysis is kept. Resets itself once done."
             ),
             # One-shot trigger: the framework resets this (persist-first)
             # before the plugin acts, so it fires at most once per arming.

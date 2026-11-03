@@ -548,6 +548,14 @@ async def test_name_inherits_streamer_and_defers_during_provisioning(plugin, tmp
     assert (await plugin.snapshot()).effective_name == "My Bluetooth"
 
 
+async def test_config_changed_says_which_saves_it_took_in(plugin):
+    assert await plugin.config_changed({"device_name"}) is True
+    assert await plugin.config_changed({"enabled", "device_name"}) is True
+    # Read when the backend connects: the server sets the plugin up again.
+    assert await plugin.config_changed({"latency_ms"}) is None
+    assert await plugin.config_changed({"enabled", "adapter"}) is None
+
+
 async def test_failed_revoke_remains_denied_and_reconciles_cleanup(plugin):
     peer = (await plugin.snapshot()).peers[0]
     await plugin.execute(GrantAudio(command="grant_audio", peer_id=peer.peer_id))

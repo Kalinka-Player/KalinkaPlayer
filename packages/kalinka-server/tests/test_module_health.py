@@ -219,6 +219,22 @@ async def test_a_plugin_whose_answer_is_cancelled_is_a_warning():
     assert "source" in collection.enabled_input_modules
 
 
+async def test_a_check_outlived_by_an_unload_records_nothing():
+    plugin = _HeldPlugin()
+    prepared = _prepared("source", plugin)
+    checking = asyncio.create_task(prepared.refresh_state())
+    await asyncio.sleep(0)
+
+    # As an unload leaves it: unmounted, its check dropped, a fresh instance.
+    prepared.mounted = False
+    prepared.cancel_pending()
+    prepared.reported = None
+    prepared.plugin_instance = _HeldPlugin()
+    await checking
+
+    assert prepared.reported is None
+
+
 @pytest.mark.parametrize(
     "state, ready",
     [

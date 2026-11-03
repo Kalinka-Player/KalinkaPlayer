@@ -85,6 +85,11 @@ def _assets(files: ModuleIconFiles) -> tuple[_Asset, _Asset] | None:
         return None
 
 
+def forget_assets() -> None:
+    """Read every icon afresh: a plugin's files may have changed on disk."""
+    _assets.cache_clear()
+
+
 def module_icons(config: ModuleConfig) -> ModuleIcons | None:
     """@brief Resolve packaged artwork, falling back to declared image URLs."""
     files = config.__module_icon_files__

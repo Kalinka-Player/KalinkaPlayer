@@ -42,7 +42,6 @@ from kalinka_plugin_sdk import paths, wheel_architecture
 from kalinka_plugin_sdk.storage import LibraryAdopter, StorageBacked
 
 from .config_model import KalinkaConfig
-from .config_overrides import save_overrides
 from .config_route import register_config_routes
 from .config_schema_processor import build_presentation, module_icon, readonly_paths
 from .catalog_art_service import CatalogArtService
@@ -77,6 +76,7 @@ from .upgrade_route import register_upgrade_routes
 from .suggestions import SuggestionEngine, SuggestionList
 from .merge_utils import get_favorite_ids_merged, k_way_merge_browse_items
 from .dynamic_field_registry import build_dynamic_field_registry
+from .plugin_lifecycle import PluginLifecycle
 from .options_registry import OptionsRegistry, register_plugin_options
 from .web_ui import WebUiStaticFiles
 from .optional_packages_registry import (
@@ -92,7 +92,7 @@ from .player_setup import (
 )
 from .internal_modules import internal_modules
 from .module_capabilities import capabilities_of
-from .module_artwork import module_icons, register_module_icon_routes
+from .module_artwork import forget_assets, module_icons, register_module_icon_routes
 from .service_discovery import ServiceDiscovery
 from .receiver_control import ReceiverRegistry, register_receiver_routes
 from . import update_check
@@ -349,6 +349,22 @@ def extract_browse_sources(sources: Optional[str]) -> List[BrowseSource]:
     return [by_name[name] for name in wanted]
 
 
+def _restarting(name: str) -> HTTPException:
+    """The module is being set up again: a renderer retries a 5xx, a client
+    asks again."""
+    return HTTPException(
+        status_code=503,
+        detail=f"Input module '{name}' is restarting",
+        headers={"Retry-After": "5"},
+    )
+
+
+def _refuse_unmounted(name: str) -> None:
+    prepared = modules.prepared_input_modules.get(name)
+    if prepared is not None and not prepared.mounted:
+        raise _restarting(name)
+
+
 def input_module(name: str) -> InputModule:
     """Get the currently active input module."""
     if not modules.prepared_input_modules:
@@ -356,6 +372,7 @@ def input_module(name: str) -> InputModule:
 
     if name not in modules.prepared_input_modules:
         raise HTTPException(status_code=404, detail=f"Input module '{name}' not found")
+    _refuse_unmounted(name)
 
     interface = modules.prepared_input_modules[name].interface
     if isinstance(interface, InputModule):
@@ -377,6 +394,7 @@ def enabled_input_module(name: str) -> InputModule:
     module = modules.enabled_input_module(name)
     if module is not None:
         return module
+    _refuse_unmounted(name)
     if name not in modules.enabled_input_modules:
         raise HTTPException(
             status_code=404, detail=f"Input module '{name}' is not available"
@@ -389,6 +407,7 @@ def set_up_input_module(name: str) -> InputModule:
     now, so a stream it is serving is not cut off by a passing error."""
     module = modules.set_up_input_module(name)
     if module is None:
+        _refuse_unmounted(name)
         raise HTTPException(
             status_code=404, detail=f"Input module '{name}' is not available"
         )
@@ -407,6 +426,7 @@ def input_module_from_id(entity_id: str | EntityId) -> InputModule:
         raise HTTPException(
             status_code=404, detail=f"Input module '{source}' not found"
         )
+    _refuse_unmounted(source)
 
     if source not in modules.enabled_input_modules:
         raise HTTPException(
@@ -607,15 +627,9 @@ async def create_app(
     # (localfiles) when it is enabled — a discovery catalog like Jamendo has
     # everything, so validating against it proves nothing. Attestation runs
     # in the background for the server's lifetime; serving never blocks.
-    library = None
-    lf = modules.prepared_input_modules.get("localfiles")
-    if (
-        lf is not None
-        and "localfiles" in modules.enabled_input_modules
-        and isinstance(lf.interface, InputModule)
-    ):
-        library = lf.interface
-    app.state.suggestions = SuggestionEngine(library, config.search)
+    app.state.suggestions = SuggestionEngine(
+        lambda: modules.enabled_input_module("localfiles"), config.search
+    )
     app.state.suggestions_task = asyncio.create_task(
         app.state.suggestions.refresh_loop()
     )
@@ -743,80 +757,64 @@ async def create_app(
         )
     )
 
-    # Persist the overrides dict if plugin setup reconciled it — i.e. a
-    # plugin mutated config fields that came from the overrides file, so
-    # ``app.state.overrides`` now diverges from disk. (One-shot triggers
-    # are handled separately, persist-first *before* setup, so they're not
-    # what this covers.)
-    if modules.overrides_dirty:
-        try:
-            save_overrides(app.state.overrides_file, app.state.overrides)
-            logger.info(
-                "Persisted reconciled overrides to %s", app.state.overrides_file,
-            )
-        except OSError as exc:
-            logger.error(
-                "Failed to persist reconciled overrides to %s: %s",
-                app.state.overrides_file,
-                exc,
-            )
+    modules.flush_overrides(app.state.overrides)
 
-    # Plugin classes are fixed for the process lifetime, so the dynamic-
-    # field registry and the schema_version are stable. Compute once
-    # here and reuse on every request; the alternative (rebuilding on
-    # every GET /server/config and twice per PUT) wastes measurable
-    # work for a quantity that never changes.
-    app.state.dynamic_field_registry = build_dynamic_field_registry(
-        modules.prepared_input_modules, modules.prepared_devices,
-    )
-    # Options registry — resolvers for writable fields whose choices
-    # depend on live system state (shares on the network, drives plugged
-    # into the box). Sits alongside the dynamic-field registry but for
-    # *choices* rather than *values*; bound to the plugins below, once
-    # the schema that declares which fields want them exists.
-    app.state.options_registry = OptionsRegistry()
-    app.state.page_banners = page_banners(config)
-    _initial_ok_in = {
-        name: m.plugin_context.config
-        for name, m in modules.prepared_input_modules.items()
-        if m.health_state != ModuleHealthState.ERROR
-    }
-    _initial_err_in = {
-        name: (m.plugin_context.config, m.error_message or "Unknown error")
-        for name, m in modules.prepared_input_modules.items()
-        if m.health_state == ModuleHealthState.ERROR
-    }
-    _initial_ok_dev = {
-        name: d.plugin_context.config
-        for name, d in modules.prepared_devices.items()
-        if d.health_state != ModuleHealthState.ERROR
-    }
-    _initial_err_dev = {
-        name: (d.plugin_context.config, d.error_message or "Unknown error")
-        for name, d in modules.prepared_devices.items()
-        if d.health_state == ModuleHealthState.ERROR
-    }
-    _initial_schema = build_presentation(
-        base_config=config,
-        input_modules=_initial_ok_in,
-        devices=_initial_ok_dev,
-        input_modules_with_errors=_initial_err_in,
-        devices_with_errors=_initial_err_dev,
-        dynamic_field_registry=app.state.dynamic_field_registry,
-        page_banners=app.state.page_banners,
-    )
-    app.state.schema_version = _initial_schema.schema_version
-    app.state.readonly_paths = readonly_paths(_initial_schema)
-    register_plugin_options(
-        app.state.options_registry,
-        _initial_schema,
-        modules.prepared_input_modules,
-        modules.prepared_devices,
-    )
-    app.state.dynamic_paths = frozenset(app.state.dynamic_field_registry.keys())
-    app.state.options_registry.register(
-        "base_config.storage.mounts.fs_uuid", storage.filesystem_options
-    )
+    def _rebuild_settings_schema() -> None:
+        """What the settings page is built from, derived from the plugins
+        loaded now: the dynamic-field and options registries, the schema
+        version a write must echo, the read-only paths. Rebuilt whenever a
+        plugin comes, goes or is set up again — not per request, where the
+        same work would be repeated for a quantity that moves rarely."""
+        app.state.dynamic_field_registry = build_dynamic_field_registry(
+            modules.prepared_input_modules, modules.prepared_devices,
+        )
+        app.state.options_registry = OptionsRegistry()
+        app.state.page_banners = page_banners(config)
+        ok_in = {
+            name: m.plugin_context.config
+            for name, m in modules.prepared_input_modules.items()
+            if m.health_state != ModuleHealthState.ERROR
+        }
+        err_in = {
+            name: (m.plugin_context.config, m.error_message or "Unknown error")
+            for name, m in modules.prepared_input_modules.items()
+            if m.health_state == ModuleHealthState.ERROR
+        }
+        ok_dev = {
+            name: d.plugin_context.config
+            for name, d in modules.prepared_devices.items()
+            if d.health_state != ModuleHealthState.ERROR
+        }
+        err_dev = {
+            name: (d.plugin_context.config, d.error_message or "Unknown error")
+            for name, d in modules.prepared_devices.items()
+            if d.health_state == ModuleHealthState.ERROR
+        }
+        schema = build_presentation(
+            base_config=config,
+            input_modules=ok_in,
+            devices=ok_dev,
+            input_modules_with_errors=err_in,
+            devices_with_errors=err_dev,
+            dynamic_field_registry=app.state.dynamic_field_registry,
+            page_banners=app.state.page_banners,
+        )
+        app.state.schema_version = schema.schema_version
+        app.state.readonly_paths = readonly_paths(schema)
+        register_plugin_options(
+            app.state.options_registry,
+            schema,
+            modules.prepared_input_modules,
+            modules.prepared_devices,
+        )
+        app.state.dynamic_paths = frozenset(app.state.dynamic_field_registry.keys())
+        app.state.options_registry.register(
+            "base_config.storage.mounts.fs_uuid", storage.filesystem_options
+        )
+        forget_assets()
+
+    _rebuild_settings_schema()
+    app.state.rebuild_settings_schema = _rebuild_settings_schema
     # Volume and power are answered by whichever module owns the *active*
     # renderer, so the target is resolved per request rather than bound here.
     device_router = player_context.device_router
@@ -828,6 +826,18 @@ async def create_app(
         device_router,
         player_context.playqueue_eventbus,
         player_context.ext_device_eventbus,
+    )
+    app.state.plugin_lifecycle = PluginLifecycle(
+        modules,
+        overrides=app.state.overrides,
+        playqueue=player_context.playqueue,
+        arbiter=player_context.playback_arbiter,
+        device_router=device_router,
+        replaygain=app.state.replaygain,
+        storage=storage,
+        device_automation=lambda: internal_modules.device_automation,
+        republish=lambda: modules.refresh_health(publish=True),
+        rebuild_schema=_rebuild_settings_schema,
     )
     # Every session opens with the volume policy its renderer's wiring implies.
     renderer_sessions.set_volume_policy(device_router.session_volume_policy)
@@ -1215,7 +1225,9 @@ async def create_app(
             )
         ).model_dump(exclude_unset=True)
 
-    register_config_routes(app, config, modules)
+    register_config_routes(
+        app, config, modules, settings_changed=app.state.plugin_lifecycle.settings_changed
+    )
     app.state.receivers = ReceiverRegistry(
         modules, player_context.playqueue_eventbus.dispatch
     )

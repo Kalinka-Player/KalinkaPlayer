@@ -86,7 +86,6 @@ class ServerConfig(BaseModel):
         default="My Kalinka Service",
         title="Service name",
         json_schema_extra={
-            "applies_live": True,
             "help": "Name shown in the app and inherited by receivers without a custom name. Changing it can end AirPlay playback.",
             **_SIMPLE,
             **_PROMPT,
@@ -96,6 +95,7 @@ class ServerConfig(BaseModel):
         default="all",
         title="Network interface",
         json_schema_extra={
+            "apply": "restart_required",
             "help": 'Network connection the server listens on — "all" is right for most setups',
         },
     )
@@ -103,6 +103,7 @@ class ServerConfig(BaseModel):
         default=8000,
         title="Port",
         json_schema_extra={
+            "apply": "restart_required",
             "help": (
                 "Port the app uses to connect to this server. After a change, "
                 "apps, browsers and renderers given this address by hand must "
@@ -132,6 +133,7 @@ class ServerConfig(BaseModel):
         default=False,
         title="Manage this streamer",
         json_schema_extra={
+            "apply": "restart_required",
             "importance": "expert",
             "help": (
                 "Apply and restart to install streamer management if it is "
@@ -226,6 +228,7 @@ class DisplayConfig(BaseModel):
         default=False,
         title="Now-playing display on this machine",
         json_schema_extra={
+            "apply": "restart_required",
             "help": (
                 "Show the now-playing display on a screen attached to this "
                 "machine, restarted if it ever stops — needs the "
@@ -237,6 +240,7 @@ class DisplayConfig(BaseModel):
         default=DisplayRotation.r0,
         title="Screen rotation",
         json_schema_extra={
+            "apply": "restart_required",
             "help": "Clockwise, in degrees — for a screen mounted on its side or upside down",
         },
     )
@@ -324,6 +328,7 @@ class EmbeddingConfig(BaseModel):
         ),
         title="Text embedding model directory",
         json_schema_extra={
+            "apply": "restart_required",
             "help": "Where the shared text-embedding model is stored",
         },
     )
@@ -331,6 +336,7 @@ class EmbeddingConfig(BaseModel):
         default=_MINILM_RELEASE,
         title="Text embedding model download URL",
         json_schema_extra={
+            "apply": "restart_required",
             "help": (
                 "Where the model is downloaded from if missing — leave empty "
                 "if you manage the files yourself"

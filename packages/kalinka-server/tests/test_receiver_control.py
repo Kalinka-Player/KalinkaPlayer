@@ -127,6 +127,19 @@ async def test_inventory_contains_disabled_and_failed_receivers(api):
     assert (await client.get("/receivers")).json()["receivers"] == []
 
 
+async def test_a_receiver_being_set_up_again_is_not_asked(api):
+    client, _registry, entry, _ = api
+    entry.mounted = False
+    entry.reported = ModuleState(state=ModuleHealthState.WARNING, message="Restarting…")
+    row = (await client.get("/receivers/test")).json()
+    assert row["state"] == "error" and row["message"] == "Restarting…"
+    answer = await client.post(
+        "/receivers/test/commands", json={"command": "open_pairing"}
+    )
+    assert answer.status_code == 503
+    assert answer.json()["detail"]["message"] == "Restarting…"
+
+
 async def test_password_reveal_is_explicit_opt_in_and_never_broadcast(api):
     from unittest.mock import AsyncMock
 

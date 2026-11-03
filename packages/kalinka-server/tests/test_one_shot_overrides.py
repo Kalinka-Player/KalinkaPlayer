@@ -2,8 +2,8 @@
 
 Covers detection (``is_one_shot_field`` / ``find_one_shot_overrides``) and the
 persist-first consume on ``PreparedModuleCollection`` — the guarantee that an
-armed "do X on next restart" trigger is reset *before* the plugin acts, so it
-fires at most once and can never re-fire on the following boot.
+armed "do X once" trigger is reset *before* the plugin acts, so it fires at
+most once and can never re-fire when the plugin is next set up.
 """
 
 from __future__ import annotations
@@ -108,7 +108,7 @@ def test_consume_resets_persist_first_and_keeps_armed_value(tmp_path):
     assert PREFIX + "rebuild" not in load_overrides(ofile)
     # ...other overrides untouched...
     assert load_overrides(ofile).get(PREFIX + "plain") is True
-    # ...but the armed value stays on config so the plugin acts this boot.
+    # ...but the armed value stays on config so the plugin acts this time.
     assert cfg.rebuild is True
 
 
@@ -142,7 +142,7 @@ def test_consume_disarms_in_memory_when_persist_fails(monkeypatch):
     )
 
     # Override left in place (retried next boot) and config disarmed so the
-    # plugin skips the action this boot — never act without a durable reset.
+    # plugin skips the action this time — never act without a durable reset.
     assert PREFIX + "rebuild" in live
     assert cfg.rebuild is False
     # Nothing durably consumed, so the caller has nothing to reset.

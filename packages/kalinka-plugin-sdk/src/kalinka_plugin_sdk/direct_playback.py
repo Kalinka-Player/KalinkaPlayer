@@ -31,6 +31,9 @@ class RevokeReason(str, Enum):
     OUTPUT_LOST = "output_lost"  # the renderer went away or ended the session
     IDLE = "idle"  # stopped or paused for too long
     SHUTDOWN = "shutdown"
+    # SDK 3.21: the plugin is being unloaded — a settings change set it up
+    # again, or its package is being updated or removed
+    PLUGIN_UNLOADED = "plugin_unloaded"
 
 
 class TransportKind(str, Enum):

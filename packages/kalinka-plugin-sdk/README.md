@@ -241,10 +241,10 @@ Receiver plugins may declare a `ReceiverDescriptor` in `RECEIVER`, opt into
 Use `ReceiverError(code, message)` for expected refusals.
 
 Initialize the controller and input interface once, even while disabled. Handle
-live `enabled`/name changes in `config_changed()`, report disabled health until
-enabled, and clean up tasks in `shutdown()`. `applies_live` config metadata says
-saving a field needs no Core restart; it does not change staging or turn the
-field into a one-shot action.
+live `enabled`/name changes in `config_changed()` and return `True` for the
+saves it took in whole — for any other the server shuts the plugin down and
+sets it up again on the new settings — report disabled health until enabled,
+and clean up tasks in `shutdown()`.
 
 `InputPluginContext.server_name` is an optional getter for the current streamer
 name. `server_name_changed()` lets an inheriting receiver update its name.

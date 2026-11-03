@@ -558,9 +558,9 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
 
         input_module_db = LocalFilesInputModuleDb(config)
 
-        # "Rebuild library on next restart" is a one-shot trigger: the server
-        # has already reset it (persist-first) before this boot, leaving the
-        # armed value here for us to act on exactly once. Purge before any
+        # "Rebuild library" is a one-shot trigger: the server has already
+        # reset it (persist-first) before setting us up, leaving the armed
+        # value here for us to act on exactly once. Purge before any
         # worker opens the DB so the indexer rebuilds it from scratch.
         if config.rebuild_library:
             logger.warning(
