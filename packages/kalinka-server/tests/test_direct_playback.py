@@ -1910,6 +1910,45 @@ async def test_live_renderer_restart_keeps_capture_and_input_ownership(
     await hold.release()
 
 
+async def test_live_source_closed_during_reconnect_releases_the_renderer(
+    renderer, direct, live_audio, arbiter, monkeypatch
+):
+    monkeypatch.setattr(renderer_player, "IDLE_RELEASE_TIMEOUT_S", 0.05)
+    source = live_audio.for_plugin("qobuz").create_pcm(PcmFormat(48000))
+    listener = Listener()
+    hold = await direct.acquire("AirPlay", listener, seekable=False)
+    await hold.play_live(source, _connect_track()[1])
+    await asyncio.sleep(SETTLE_S)
+    enqueued = _enqueued(renderer)
+    opening, proceed = asyncio.Event(), asyncio.Event()
+    open_session = renderer.send_session_open
+
+    async def delayed_open(*args, **kwargs):
+        opening.set()
+        await proceed.wait()
+        await open_session(*args, **kwargs)
+
+    monkeypatch.setattr(renderer, "send_session_open", delayed_open)
+    try:
+        await renderer.restart()
+        await asyncio.wait_for(opening.wait(), 1)
+        refresh = hold._live_task
+        source.close()
+        proceed.set()
+        await asyncio.wait_for(asyncio.shield(refresh), 1)
+        await asyncio.sleep(SETTLE_S)
+
+        assert live_audio.routes == {}
+        assert _enqueued(renderer) == enqueued
+        assert renderer.pool.get(renderer.RENDERER_ID) is None
+        assert renderer.session_id is None
+        assert not hold.active and not arbiter.held_by_plugin
+        assert listener.revoked == [RevokeReason.IDLE]
+    finally:
+        proceed.set()
+        await hold.release()
+
+
 async def test_live_command_failure_retries_without_fatal_input_error(
     renderer, direct, live_audio, monkeypatch
 ):
