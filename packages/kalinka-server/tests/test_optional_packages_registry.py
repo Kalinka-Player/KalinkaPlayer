@@ -318,6 +318,7 @@ class _Running:
     plugin_context: Any = field(
         default_factory=lambda: SimpleNamespace(config=SimpleNamespace(enabled=True))
     )
+    set_up: bool = True
 
 
 def _running(offered: list[str], needs: list[str] = (), **kwargs) -> _Running:
@@ -408,9 +409,9 @@ def test_queue_takes_a_feature_turned_off_back_out(tmp_path: Path):
     assert _queued(tmp_path) is None
 
 
-def test_queue_asks_no_disabled_plugin(tmp_path: Path):
+def test_queue_asks_no_plugin_that_is_not_set_up(tmp_path: Path):
     plugin = _running(["x"], ["x"])
-    plugin.plugin_context.config.enabled = False
+    plugin.set_up = False
 
     assert _queue(tmp_path, {"alpha": plugin}) == ([], [])
 

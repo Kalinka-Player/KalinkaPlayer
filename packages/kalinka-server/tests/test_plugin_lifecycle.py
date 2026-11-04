@@ -354,6 +354,7 @@ def fakes():
         automation=SimpleNamespace(forget=Mock()),
         republish=AsyncMock(),
         rebuild_schema=Mock(),
+        packages_changed=AsyncMock(),
     )
 
 
@@ -369,6 +370,7 @@ def _lifecycle(collection, fakes, **kwargs) -> PluginLifecycle:
         device_automation=lambda: fakes.automation,
         republish=fakes.republish,
         rebuild_schema=fakes.rebuild_schema,
+        packages_changed=fakes.packages_changed,
         **kwargs,
     )
 
@@ -430,6 +432,18 @@ async def test_a_module_being_set_up_again_says_so_meanwhile(bus, fakes):
 
     assert prepared.state.state == ModuleHealthState.WARNING
     assert prepared.state.message == RESTARTING
+
+
+async def test_a_plugin_taken_down_or_set_up_requeues_the_optional_packages(bus, fakes):
+    collection, prepared = await _input_plugin(bus)
+    lifecycle = _lifecycle(collection, fakes)
+
+    await lifecycle.unload("fake", gone=False)
+    await _until(lambda: fakes.packages_changed.await_count == 1)
+
+    collection.prepare_one = AsyncMock(return_value=prepared)
+    await lifecycle.load("fake", purge=False)
+    await _until(lambda: fakes.packages_changed.await_count == 2)
 
 
 async def test_a_save_while_the_plugin_is_down_for_an_update_waits_for_it(bus, fakes):

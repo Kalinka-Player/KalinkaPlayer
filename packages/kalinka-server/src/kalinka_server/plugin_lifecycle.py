@@ -29,6 +29,7 @@ from .player_setup import PreparedModuleCollection, PreparedPlugin
 from .playqueue import PlayQueueImpl
 from .replaygain import ReplayGainController
 from .storage.manager import StorageManager
+from .tasks import detach
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
@@ -62,6 +63,7 @@ class PluginLifecycle:
         device_automation: Callable[[], Optional[DeviceAutomation]],
         republish: Callable[[], Awaitable[None]],
         rebuild_schema: Callable[[], None],
+        packages_changed: Callable[[], Awaitable[None]],
         shutdown_timeout_s: float = SHUTDOWN_TIMEOUT_S,
         drain_timeout_s: float = TRACK_SOURCE_TIMEOUT_S,
     ):
@@ -75,6 +77,7 @@ class PluginLifecycle:
         self._device_automation = device_automation
         self._republish = republish
         self._rebuild_schema = rebuild_schema
+        self._packages_changed = packages_changed
         self._shutdown_timeout_s = shutdown_timeout_s
         self._drain_timeout_s = drain_timeout_s
         self._lock = asyncio.Lock()
@@ -84,6 +87,7 @@ class PluginLifecycle:
         off, its settings still shown."""
         async with self._lock:
             await self._unload(name, gone=gone, resuming=False)
+        self._requeue_packages()
 
     async def load(self, name: str, *, purge: bool) -> PreparedPlugin:
         """Set the plugin up from what is installed now. With ``purge`` its
@@ -92,7 +96,9 @@ class PluginLifecycle:
         @raise PluginNotInstalled When no entry point carries ``name``.
         """
         async with self._lock:
-            return await self._load(name, purge=purge)
+            prepared = await self._load(name, purge=purge)
+        self._requeue_packages()
+        return prepared
 
     async def suspend(self, name: str) -> None:
         """Take the plugin down for its files to be replaced: listed as
@@ -100,6 +106,7 @@ class PluginLifecycle:
         when ``load`` brings it back — or ``abandon`` says it will not."""
         async with self._lock:
             await self._unload(name, gone=False, resuming=True)
+        self._requeue_packages()
 
     async def abandon(self, name: str, message: str) -> None:
         """Give up on a plugin taken down with ``suspend``: reachable again
@@ -120,29 +127,41 @@ class PluginLifecycle:
         takes the switch in as any other setting. Otherwise it is asked to
         take the change in and, unless it says it did, set up again on the
         live config — which also gives a plugin in error a chance with a
-        corrected setting.
+        corrected setting. Once it is up or down, what the next start
+        installs is queued again.
         """
         async with self._lock:
-            prepared = self._modules.prepared(name)
-            if prepared is None:
-                return
-            if not prepared.mounted:
-                # Down for an update: set up on the live config once it is back.
-                logger.info("%s is being set up again; the save applies then", name)
-                return
-            enabled = bool(getattr(prepared.plugin_context.config, "enabled", True))
-            runs_while_off = getattr(prepared.plugin_class, "SETUP_WHEN_DISABLED", False)
-            if not enabled and not runs_while_off:
-                if prepared.health_state != ModuleHealthState.DISABLED:
-                    await self._unload(name, gone=False, resuming=False)
-                return
-            if not prepared.set_up:
-                await self._load(name, purge=False)
-                return
-            if await self._taken_in(prepared, changed):
-                return
-            await self._unload(name, gone=False, resuming=True)
+            touched = await self._settings_changed(name, changed)
+        if touched:
+            self._requeue_packages()
+
+    async def _settings_changed(self, name: str, changed: frozenset[str]) -> bool:
+        prepared = self._modules.prepared(name)
+        if prepared is None:
+            return False
+        if not prepared.mounted:
+            # Down for an update: set up on the live config once it is back.
+            logger.info("%s is being set up again; the save applies then", name)
+            return False
+        enabled = bool(getattr(prepared.plugin_context.config, "enabled", True))
+        runs_while_off = getattr(prepared.plugin_class, "SETUP_WHEN_DISABLED", False)
+        if not enabled and not runs_while_off:
+            if prepared.health_state == ModuleHealthState.DISABLED:
+                return False
+            await self._unload(name, gone=False, resuming=False)
+            return True
+        if not prepared.set_up:
             await self._load(name, purge=False)
+            return True
+        if await self._taken_in(prepared, changed):
+            return False
+        await self._unload(name, gone=False, resuming=True)
+        await self._load(name, purge=False)
+        return True
+
+    def _requeue_packages(self) -> None:
+        # Off this call: what the next start installs is nothing to wait on here.
+        detach(self._packages_changed())
 
     async def _taken_in(self, prepared: PreparedPlugin, changed: frozenset[str]) -> bool:
         instance = prepared.plugin_instance

@@ -245,7 +245,10 @@ def get_version() -> str:
 # plugin, nor are the other packages that plugin asks for with it, though
 # `install` may still name it. A module's error_message ends with what a
 # restart does for its `missing_packages`, or with why one cannot be
-# installed here, and then `missing_packages` is empty.
+# installed here, and then `missing_packages` is empty. A plugin set up
+# again or taken down while the server runs, by a save or a catalog
+# operation, queues again as it goes, and what the page offers follows
+# the plugins set up now.
 REST_API_VERSION = "0.22"
 
 
