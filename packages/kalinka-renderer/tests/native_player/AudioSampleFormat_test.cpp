@@ -87,26 +87,52 @@ TEST(AudioSampleFormatTest, ConvertPCM16ToPCM32KeepsEveryBit) {
 }
 
 TEST(AudioSampleFormatTest, A16BitStreamIsOfferedEveryWiderContainer) {
-  std::vector<AudioSampleFormat> tried;
-  for (auto format = pcmFallback(PCM16_LE, 16); format;
-       format = pcmFallback(*format, 16)) {
-    tried.push_back(*format);
-  }
-  EXPECT_EQ(tried, (std::vector<AudioSampleFormat>{PCM24_LE, PCM32_LE,
-                                                   PCM24_3LE}));
+  EXPECT_EQ(pcmOutputFormats(PCM16_LE, 16),
+            (std::vector<AudioSampleFormat>{PCM16_LE, PCM24_LE, PCM32_LE,
+                                             PCM24_3LE}));
+}
+
+TEST(AudioSampleFormatTest, Packed24BitInputCanUseAnS32OnlyDac) {
+  const auto formats = pcmOutputFormats(PCM24_3LE, 24);
+  ASSERT_EQ(formats, (std::vector<AudioSampleFormat>{PCM24_3LE, PCM24_LE,
+                                                     PCM32_LE}));
+  // The SMSL DAC accepts only S32. Preserve sign, full scale and the least
+  // significant source bit when expanding Shairport's packed stereo samples.
+  const std::vector<uint8_t> source = {
+      0x01, 0x00, 0x00, 0xff, 0xff, 0xff,
+      0xff, 0xff, 0x7f, 0x00, 0x00, 0x80,
+      0x56, 0x34, 0x12, 0xaa, 0xcb, 0xed};
+  std::vector<int32_t> output(source.size() / 3);
+  ASSERT_EQ(convertSampleFormat(source.data(), PCM24_3LE, output.size(),
+                                 output.data(), formats.back(), output.size() * 4),
+            output.size());
+  EXPECT_EQ(output, (std::vector<int32_t>{256, -256, 2147483392,
+                                         -2147483647 - 1, 0x12345600,
+                                         -0x12345600}));
+  std::vector<uint8_t> restored(source.size());
+  ASSERT_EQ(convertSampleFormat(output.data(), PCM32_LE, output.size(),
+                                 restored.data(), PCM24_3LE, restored.size()),
+            output.size());
+  EXPECT_EQ(restored, source);
 }
 
 TEST(AudioSampleFormatTest, DsdHasNoPcmFallback) {
-  EXPECT_FALSE(pcmFallback(DSD_U32_BE, 1).has_value());
-  EXPECT_FALSE(pcmFallback(DOP32_LE, 24).has_value());
+  EXPECT_EQ(pcmOutputFormats(DSD_U32_BE, 1),
+            (std::vector<AudioSampleFormat>{DSD_U32_BE}));
+  EXPECT_EQ(pcmOutputFormats(DOP32_LE, 24),
+            (std::vector<AudioSampleFormat>{DOP32_LE}));
 }
 
 TEST(AudioSampleFormatTest, True32BitAndFloatHaveNoLossyFallback) {
   EXPECT_EQ(sampleBits(PCM32_LE), 32u);
-  EXPECT_FALSE(pcmFallback(PCM32_LE, 32));
-  EXPECT_EQ(pcmFallback(PCM32_LE, 24), PCM24_3LE);
-  EXPECT_FALSE(pcmFallback(PCM_FLOAT32_LE, 32));
-  EXPECT_FALSE(pcmFallback(PCM_FLOAT64_LE, 64));
+  EXPECT_EQ(pcmOutputFormats(PCM32_LE, 32),
+            (std::vector<AudioSampleFormat>{PCM32_LE}));
+  EXPECT_EQ(pcmOutputFormats(PCM32_LE, 24),
+            (std::vector<AudioSampleFormat>{PCM32_LE, PCM24_LE, PCM24_3LE}));
+  EXPECT_EQ(pcmOutputFormats(PCM_FLOAT32_LE, 32),
+            (std::vector<AudioSampleFormat>{PCM_FLOAT32_LE}));
+  EXPECT_EQ(pcmOutputFormats(PCM_FLOAT64_LE, 64),
+            (std::vector<AudioSampleFormat>{PCM_FLOAT64_LE}));
 }
 
 TEST(AudioSampleFormatTest, GainRetainsTrue32BitLowBitsAndFloatPrecision) {

@@ -855,28 +855,20 @@ void AlsaAudioEmitter::setSampleFormat(AudioSampleFormat requestedFormat,
   // A substitution used by a previous 24-in-32 stream may discard real bits
   // from a later 32-bit stream. Negotiate anew for each source format/rate.
   sampleSubstitute.erase(requestedFormat);
-  auto formatToProbe = requestedFormat;
-
-  while (snd_pcm_hw_params_set_format(pcm.handle, params,
-                                      alsaFormat(formatToProbe)) < 0) {
-    const auto next = pcmFallback(formatToProbe, significantBits);
-    if (!next) {
-      throw std::runtime_error(
-          std::string("Output device takes no format that carries ") +
-          sampleFormatToString(requestedFormat));
+  for (const auto format : pcmOutputFormats(requestedFormat, significantBits)) {
+    if (snd_pcm_hw_params_set_format(pcm.handle, params, alsaFormat(format)) < 0)
+      continue;
+    if (requestedFormat != format) {
+      spdlog::info("Using sample format {} instead of {}",
+                   sampleFormatToString(format),
+                   sampleFormatToString(requestedFormat));
+      sampleSubstitute[requestedFormat] = format;
     }
-    spdlog::warn("{} not supported, trying {}",
-                 sampleFormatToString(formatToProbe),
-                 sampleFormatToString(*next));
-    formatToProbe = *next;
+    return;
   }
-
-  if (requestedFormat != formatToProbe) {
-    spdlog::warn("Using sample format {} instead of {}",
-                 sampleFormatToString(formatToProbe),
-                 sampleFormatToString(requestedFormat));
-    sampleSubstitute[requestedFormat] = formatToProbe;
-  }
+  throw std::runtime_error(
+      std::string("Output device takes no format that carries ") +
+      sampleFormatToString(requestedFormat));
 }
 
 void AlsaAudioEmitter::initHwParams(unsigned int &rate,
