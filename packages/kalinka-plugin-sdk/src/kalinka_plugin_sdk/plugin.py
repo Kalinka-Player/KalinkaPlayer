@@ -224,8 +224,9 @@ class PluginBase(ABC, Generic[PLUGIN_CLASS, CTX_TYPE]):
         """Return optional-package keys the plugin would need to install
         given its *current* in-memory config.
 
-        Called by the server after each save of a setting and on restart
-        to queue installs when a user enables a sub-feature whose packages
+        Called by the server after each save of a setting, when the plugin
+        is set up or taken down while the server runs, and on restart, to
+        queue installs when a user enables a sub-feature whose packages
         aren't yet importable.
         Keys must come from this plugin's ``OPTIONAL_PACKAGES`` (or
         another loaded plugin's — the server validates against the

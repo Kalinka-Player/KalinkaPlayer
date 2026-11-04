@@ -857,6 +857,7 @@ async def create_app(
         device_automation=lambda: internal_modules.device_automation,
         republish=lambda: modules.refresh_health(publish=True),
         rebuild_schema=_rebuild_settings_schema,
+        packages_changed=lambda: _requeue(),
     )
     # Every session opens with the volume policy its renderer's wiring implies.
     renderer_sessions.set_volume_policy(device_router.session_volume_policy)
@@ -1309,15 +1310,17 @@ async def create_app(
 
     app.state.queue_required_packages = _queue_required_packages
 
-    async def _queue_at_start():
-        # A feature turned on whose install never ran, or that an upgrade
-        # gave a new package, installs at the next start however it comes.
+    async def _requeue(hold_failed: bool = False) -> None:
+        """Queue without failing the caller: the start, and a plugin set up
+        or taken down meanwhile, change what the next start installs."""
         try:
-            await _queue_required_packages(hold_failed=True)
-        except Exception:  # noqa: BLE001 — shutdown awaits this task silently
+            await _queue_required_packages(hold_failed=hold_failed)
+        except Exception:  # noqa: BLE001 — the queue is for the next start; nothing else waits on it
             logger.exception("Could not queue the optional packages needed")
 
-    app.state.package_queue_task = asyncio.create_task(_queue_at_start())
+    # A feature turned on whose install never ran, or that an upgrade
+    # gave a new package, installs at the next start however it comes.
+    app.state.package_queue_task = asyncio.create_task(_requeue(hold_failed=True))
 
     @app.put("/server/restart")
     async def restart_server(payload: Optional[Dict[str, Any]] = None):

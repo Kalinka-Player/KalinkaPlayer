@@ -397,8 +397,9 @@ async def _required_by_plugin(
     input_modules: dict[str, PreparedPlugin],
     devices: dict[str, PreparedPlugin],
 ) -> list[tuple[str, list[str]]]:
-    """Each enabled plugin with the keys its ``required_packages()`` names
-    now, in load order.
+    """Each plugin set up now with the keys its ``required_packages()``
+    names, in load order. One being set up again is not asked: the
+    lifecycle queues once it is up.
 
     A plugin that raises or does not answer in time is skipped, so neither a
     settings save nor a restart can fail on one.
@@ -406,8 +407,7 @@ async def _required_by_plugin(
     asked = [
         (plugin_id, prepared.plugin_instance)
         for _kind, plugin_id, prepared in _iter_plugin_entries(input_modules, devices)
-        if prepared.plugin_instance is not None
-        and prepared.plugin_context.config.enabled
+        if prepared.set_up
     ]
     answers = await asyncio.gather(
         *(_required_by(plugin_id, instance) for plugin_id, instance in asked)

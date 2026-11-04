@@ -112,6 +112,14 @@ async def client(app):
         yield client
 
 
+async def _eventually(condition) -> None:
+    for _ in range(500):
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("the queue never got there")
+
+
 def _queued(state_dir) -> list[str] | None:
     pending = state_dir / "pending_installs.json"
     return json.loads(pending.read_text())["requested"] if pending.exists() else None
@@ -239,7 +247,9 @@ async def test_a_save_queues_only_once_an_earlier_one_has_written(
     queue = app.state.queue_required_packages
 
     async def queue_again(*requested):
-        queueing.set()
+        # The later save's own queueing: one made once its value is in.
+        if not modules.prepared_input_modules["art"].plugin_context.config.generated_art:
+            queueing.set()
         return await queue(*requested)
 
     monkeypatch.setattr(app.state, "queue_required_packages", queue_again)
@@ -250,8 +260,24 @@ async def test_a_save_queues_only_once_an_earlier_one_has_written(
     answered.set()
     assert (await turning_on).status_code == 200
     assert (await turning_off).status_code == 200
-    assert asked == [[ART], []]
+    # The plugin set up again on each save answers too; none lands [ART] last.
+    assert asked[0] == [ART] and all(answer == [] for answer in asked[1:])
     assert _queued(state_dir) is None
+
+
+async def test_a_plugin_taken_down_leaves_the_queue_and_is_asked_again_once_up(
+    monkeypatch, tmp_path, state_dir
+):
+    app = await _start(monkeypatch, tmp_path, generated_art=True)
+    async with running(app):
+        assert _queued(state_dir) == [ART]
+        lifecycle = app.state.plugin_lifecycle
+
+        await lifecycle.unload("art", gone=False)
+        await _eventually(lambda: _queued(state_dir) is None)
+
+        await lifecycle.load("art", purge=False)
+        await _eventually(lambda: _queued(state_dir) == [ART])
 
 
 async def test_the_start_queues_a_feature_on_whose_packages_never_installed(
