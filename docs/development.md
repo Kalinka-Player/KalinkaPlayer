@@ -64,7 +64,7 @@ sudo apt install python3 python3-venv
 ```
    To use a specific interpreter, pass it explicitly: `make dev-setup PYTHON=/path/to/python3.13`.
    To also build and run the renderer locally (audio playback), see `make renderer-build` — that one needs the C++ toolchain (`g++ cmake pkg-config protobuf-compiler libprotobuf-dev libboost-dev libcurlpp-dev libcurl4-openssl-dev libflac++-dev libvorbis-dev libxml2-dev libfaad-dev libasound2-dev libspdlog-dev libfmt-dev`), and with GoogleTest installed (`libgtest-dev libgmock-dev`) it builds the renderer's tests too, which `ctest --test-dir packages/kalinka-renderer/build` runs.
-2. One-step setup. Creates a virtualenv at `.venv` with `python3` (or **reuses an already-active `$VIRTUAL_ENV`** — it never makes a second venv), installs the SDK, server and all bundled plugins editable, then pytest, flake8 and the other tools in `requirements-dev.txt`, and seeds the fakeroot directory tree. It writes no config: the server starts on its defaults and keeps only the settings you change:
+2. One-step setup. Creates a virtualenv at `.venv` with `python3` (or **reuses an already-active `$VIRTUAL_ENV`** — it never makes a second venv), installs the SDK, server and all bundled plugins editable, and seeds the fakeroot directory tree. It writes no config: the server starts on its defaults and keeps only the settings you change:
 ```bash
 make dev-setup
 ```
@@ -90,7 +90,7 @@ make dev-run
 ```bash
 make test
 ```
-Runs the SDK, server and plugin test suites, each from its own package directory, and the retrieval benchmark's own tests. They run in the venv `make dev-setup` made, or the one that is active, so there is no need to activate it first; `make lint` and `make test-playqueue` do the same. Another environment that has the packages, a conda env say, works with `VENV=/path/to/env`. The server's play queue suite is slow and flaky, so it runs on its own with `make test-playqueue`. The renderer has its own C++ test set under `packages/kalinka-renderer/tests` (built when GoogleTest is installed). Every pull request runs the same targets in CI.
+Runs the SDK, server and plugin test suites, each from its own package directory, and the retrieval benchmark's own tests. The server's play queue suite is slow and flaky, so it runs on its own with `make test-playqueue`. The renderer has its own C++ test set under `packages/kalinka-renderer/tests` (built when GoogleTest is installed). Every pull request runs the same targets in CI.
 
 The renderer's MP4 parsers read DASH segments and MP4 files straight from the network, so they also have libFuzzer targets, built with Clang under AddressSanitizer and UndefinedBehaviorSanitizer:
 
