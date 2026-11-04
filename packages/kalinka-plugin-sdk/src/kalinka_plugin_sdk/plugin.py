@@ -202,7 +202,7 @@ class PluginBase(ABC, Generic[PLUGIN_CLASS, CTX_TYPE]):
         return None
 
     async def server_name_changed(self) -> None:
-        """SDK 3.22: reconcile an inherited receiver name after a saved rename."""
+        """SDK 3.21: reconcile an inherited receiver name after a saved rename."""
         return None
 
     async def required_packages(self) -> list[str]:
@@ -236,7 +236,7 @@ class InputPluginContext(PluginContextBase):
     external_playback: Optional[ExternalPlayback] = field(default=None, kw_only=True)
     # SDK 3.21+: receiver PCM whose lifetime is independent of its output route.
     live_audio: Optional[LiveAudio] = field(default=None, kw_only=True)
-    # SDK 3.22: read the current server name, and invalidate receiver state.
+    # SDK 3.21: read the current server name, and invalidate receiver state.
     server_name: Callable[[], str] | None = field(default=None, kw_only=True)
     receiver_changed: Callable[[], None] | None = field(default=None, kw_only=True)
 

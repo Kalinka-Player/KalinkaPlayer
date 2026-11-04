@@ -232,7 +232,7 @@ Older renderers without `OutputCapabilities.live_pcm >= 1` report an upgrade
 requirement. See the [live audio design](../../docs/bluetooth-audio-sink-design.md)
 for wire format, lifecycle and validation limits.
 
-## Optional receiver controls (SDK 3.22)
+## Optional receiver controls (SDK 3.21)
 
 Receiver plugins may declare a `ReceiverDescriptor` in `RECEIVER`, opt into
 `SETUP_WHEN_DISABLED = True`, and implement `get_receiver_control()` returning a

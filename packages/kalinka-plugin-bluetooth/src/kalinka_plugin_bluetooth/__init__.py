@@ -90,7 +90,7 @@ class BluetoothInput(InputModule):
 
 class KalinkaPluginBluetooth(InputModulePlugin):
     PLUGIN_ID = "bluetooth"
-    REQUIRES_SDK = ">=3.24,<4"
+    REQUIRES_SDK = ">=3.21,<4"
     SETUP_WHEN_DISABLED = True
     RECEIVER = ReceiverDescriptor(
         title="Bluetooth",

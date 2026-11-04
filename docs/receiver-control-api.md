@@ -1,6 +1,6 @@
 # Receiver control API v1
 
-Implemented with Core REST/WS API **0.24** and plugin SDK **3.24**. This optional
+Implemented with Core REST/WS API **0.22** and plugin SDK **3.21**. This optional
 control interface is independent of browsing, direct playback, PCM delivery and
 renderer selection. Plugins without it retain their existing behavior.
 
@@ -149,7 +149,7 @@ while disabled. The shared media path remains uncompressed PCM with bounded
 live buffers; this API introduces no transcoding or media endpoints.
 
 
-## Pairing requests and receiver passwords (API 0.23 / SDK 3.23)
+## Pairing requests and receiver passwords (API 0.22 / SDK 3.21)
 
 Controllers that require explicit approval may include `pairing_request`: an opaque `request_id`, `device_name`,
 `method`, optional string `code`, optional `entered` count, and monotonic

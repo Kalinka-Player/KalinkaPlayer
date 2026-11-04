@@ -193,10 +193,10 @@ def get_version() -> str:
 # Settings saved through PUT /server/config reach the plugin that owns them.
 # GET /server/version carries `storage`.
 # 0.22: optional receiver inventory/commands, receivers_changed replay state,
-# and per-field applies_live configuration metadata.
-# 0.23: explicit receiver pairing requests/answers and opt-in password reveal.
-# 0.24: receiver pairing mode and explicit saved-device removal.
-REST_API_VERSION = "0.24"
+# per-field applies_live configuration metadata, explicit receiver pairing
+# requests/answers, opt-in password reveal, pairing mode and explicit
+# saved-device removal.
+REST_API_VERSION = "0.22"
 
 
 def get_rest_api_version() -> str:

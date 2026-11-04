@@ -57,8 +57,8 @@ dependencies = [
     # >=3.19: TrackSource and PlaybackState carry audio_codec for display.
     # >=3.20: mounts, storage and VolumesChangedEvent; the media extra reads
     # the files Drives lists.
-    # >=3.24: receiver pairing mode and explicit saved-device removal.
-    "kalinka-plugin-sdk[media]>=3.24,<4",
+    # >=3.21: live receiver audio, receiver controls and pairing.
+    "kalinka-plugin-sdk[media]>=3.21,<4",
 ]
 dynamic = ["version"]
 
