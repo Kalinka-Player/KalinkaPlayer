@@ -239,10 +239,16 @@ TEST_F(AlsaAudioEmitterTest, a_pause_before_the_device_starts_holds_until_resume
   EXPECT_FALSE(reported(whilePaused, AudioGraphNodeState::STREAMING));
   ASSERT_TRUE(returnsWithin([emitter] { emitter->pause(false); },
                             std::chrono::milliseconds(300)));
-  EXPECT_EQ(waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING,
-                          std::chrono::seconds(1))
-                .state,
-            AudioGraphNodeState::STREAMING);
+  // The null device can play the supplied PCM and run dry before pause()
+  // returns. Observe the already-subscribed monitor so that transition is kept.
+  bool resumed = false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  while (!resumed && std::chrono::steady_clock::now() < deadline) {
+    resumed = reported(drainStates(monitor), AudioGraphNodeState::STREAMING);
+    if (!resumed)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_TRUE(resumed);
   alsaAudioEmitter->disconnect(source);
 }
 
