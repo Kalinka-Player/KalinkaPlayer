@@ -158,8 +158,9 @@ def _read_last_install(last_install_path: Path) -> Any:
 class InstallHistory:
     """What the installs at earlier starts left for the server.
 
-    These files change only while the server is down, before it starts, so
-    they are read once then.
+    These files change only while the server is down, before it starts;
+    they are read with the registry, at start and whenever a plugin is set
+    up or taken down.
     """
 
     #: {key: {"pip_spec", "reason"}} for each package pip found no wheel of

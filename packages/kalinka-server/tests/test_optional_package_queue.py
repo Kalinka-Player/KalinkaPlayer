@@ -360,14 +360,19 @@ async def test_the_modules_page_offers_nothing_once_pip_found_no_wheel_of_one(
     assert _queued(state_dir) is None
 
 
-async def test_what_earlier_installs_found_is_read_once_as_the_server_starts(
-    client, state_dir, monkeypatch
+async def test_what_earlier_installs_found_is_read_as_a_plugin_is_set_up(
+    app, client, state_dir, monkeypatch
 ):
-    """The installs run before the server does, so nothing reads it again."""
+    """The installs run before the server does; what they found is read
+    with the registry, so a plugin set up again sees it."""
     monkeypatch.setattr(_ArtPlugin, "health", _lacking(ART))
     _no_wheel_found(state_dir, ART)
     await modules.refresh_health(publish=True)
+    assert (await _listed(client))["missing_packages"] == [ART]
+
+    await app.state.plugin_lifecycle.unload("art", gone=False)
+    await app.state.plugin_lifecycle.load("art", purge=False)
 
     art = await _listed(client)
-
-    assert art["missing_packages"] == [ART]
+    assert art["missing_packages"] == []
+    assert "is not available on this device" in art["error_message"]
