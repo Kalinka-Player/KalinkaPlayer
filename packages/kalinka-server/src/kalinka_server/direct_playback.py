@@ -286,6 +286,16 @@ class HolderSession:
                         raise RendererUnavailable("Waiting for the selected output")
                     if self._player.renderer_id is None:
                         await self._player.open(self._live_target)
+                    # Capture can close during the handshake. Its notification
+                    # is coalesced into this refresh, so check again after open.
+                    if self._live_source is None or self._ended:
+                        return
+                    if self._live_source.closed:
+                        await self.stop()
+                        # The new session has no old stream to remove, so no
+                        # renderer stop event will arrive to arm idle release.
+                        self._player.decline_resume()
+                        return
                     self._player.require_live_output(self.renderer_id)
                     self._start_live()
                     return
