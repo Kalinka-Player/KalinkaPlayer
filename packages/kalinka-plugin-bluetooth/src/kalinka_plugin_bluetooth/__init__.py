@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from pydantic import Field, model_validator
 
-from kalinka_plugin_sdk import paths
+from kalinka_plugin_sdk import ConfigIssue, paths
 from kalinka_plugin_sdk.datamodel import EmptyList
 from kalinka_plugin_sdk.dynamic_fields import DynamicFieldDecl
 from kalinka_plugin_sdk.inputmodule import InputModule
@@ -138,6 +138,26 @@ class KalinkaPluginBluetooth(InputModulePlugin):
 
     def get_receiver_control(self):
         return self
+
+    async def validate_config(
+        self, candidate: ModuleConfig, changed: frozenset[str]
+    ) -> list[ConfigIssue]:
+        # Staged settings are assigned to a copy without model validators.
+        if candidate.latency_ms < candidate.max_backlog_ms:
+            return []
+        if "latency_ms" in changed:
+            return [
+                ConfigIssue(
+                    path="latency_ms",
+                    message="Keep the latency target below the maximum live backlog.",
+                )
+            ]
+        return [
+            ConfigIssue(
+                path="max_backlog_ms",
+                message="Set the maximum live backlog above the latency target.",
+            )
+        ]
 
     def _notify(self):
         callback = getattr(self.context, "receiver_changed", None)
