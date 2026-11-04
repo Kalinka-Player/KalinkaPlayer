@@ -10,8 +10,8 @@
 # In-app restart works without systemd: the server touches a trigger file in
 # <prefix>/run/kalinka (just like the prod kalinka-restart.path unit watches),
 # and this script watches that same file, SIGTERMs the server, and relaunches —
-# picking up any edited Python (editable install). Renderer (C++) changes need
-# `make renderer-build` and a restart of the renderer, not of this script.
+# picking up any edited Python (editable install). For C++ changes run
+# `make dev-rebuild-native` then restart.
 #
 # Web UI: served from <prefix>/usr/share/kalinka-web when present. Symlink an
 # app-repo build there to test it — rebuilds are picked up per request, no
