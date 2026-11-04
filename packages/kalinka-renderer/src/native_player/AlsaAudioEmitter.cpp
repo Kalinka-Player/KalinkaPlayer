@@ -925,7 +925,7 @@ void AlsaAudioEmitter::initHwParams(unsigned int &rate,
     if (!isDsd(format) && deviceBits < static_cast<int>(significantBits))
       throw std::runtime_error(
           "Output device cannot preserve source PCM precision");
-    if (requestedPeriodSize == 0 || requestedBufferSize == 0) {
+    if (currentLivePolicy || requestedPeriodSize == 0 || requestedBufferSize == 0) {
       setLatencyBasedBufferSize(params);
     } else {
       throw_on_error(snd_pcm_hw_params_set_buffer_size_near(pcm.handle, params,
