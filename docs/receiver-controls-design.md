@@ -1,6 +1,6 @@
 # Receiver connections and authentication
 
-Implemented design for Core API 0.24 / SDK 3.24 and the companion app.
+Implemented design for Core API 0.22 / SDK 3.21 and the companion app.
 This replaces the earlier large receiver panel design. PCM delivery, renderer
 selection and playback ownership remain as described in
 [the media design](bluetooth-audio-sink-design.md).
@@ -128,7 +128,7 @@ does not introduce a separate user/account permission system.
 
 ## Compatibility and verification
 
-Ship SDK 3.24, Core API 0.24, Bluetooth and the companion app together for this
+Ship SDK 3.21, Core API 0.22, Bluetooth and the companion app together for this
 simplified Bluetooth flow. The existing AirPlay plugin continues to work.
 `forget_device` and optional `pairing_mode` are additive. The old grant/revoke
 commands remain accepted for compatible clients but are not advertised in

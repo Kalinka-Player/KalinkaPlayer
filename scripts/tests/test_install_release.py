@@ -89,7 +89,7 @@ with (pathlib.Path(os.environ["FIXTURE"]) / "dpkg.jsonl").open("a") as log:
         )
         self.base_names = [
             "kalinka-server_5.17.0_all.deb",
-            "kalinka-plugin-sdk_3.23.0_all.deb",
+            "kalinka-plugin-sdk_3.21.0_all.deb",
             "kalinka-plugin-localfiles_5.17.0_all.deb",
         ]
         self.bluetooth = "kalinka-plugin-bluetooth_5.17.0_all.deb"

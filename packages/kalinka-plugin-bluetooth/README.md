@@ -13,7 +13,7 @@ neither ALSA PCM devices nor `arecord`, PipeWire, or a local playback loopback.
 Replacing BlueALSA with raw BlueZ transport access would also require owning
 A2DP codec negotiation, packet handling, decoding and reconnect behaviour.
 
-Requires SDK 3.24 and a Core/renderer release supporting live PCM v1. Upgrade
+Requires SDK 3.21 and a Core/renderer release supporting live PCM v1. Upgrade
 remote renderers too; an older renderer reports an upgrade requirement.
 
 ## Setup
