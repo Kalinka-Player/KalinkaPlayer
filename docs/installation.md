@@ -386,11 +386,8 @@ ExecStart=/usr/bin/kalinka-renderer --server 192.168.1.50:8000
 
 ```bash
 sudo journalctl -u kalinka -u kalinka-upgrade -u kalinka-restart --since "1 day ago" > kalinka.log
-sudo journalctl _TRANSPORT=kernel --since "1 day ago" > kernel.log
 ```
 
-For a renderer, use `-u kalinka-renderer -u kalinka-renderer-upgrade` in the first command.
-
-The second command saves the kernel's messages, among them its report when the streamer ran out of memory and stopped the server. It has to be a command of its own: given `-u` and another match, `journalctl` keeps only the records that fit both, and the kernel's records belong to no unit. It does not use `-k`, which reads only since the streamer last started and would miss a crash that restarted it.
+For a renderer, use `-u kalinka-renderer -u kalinka-renderer-upgrade`.
 
 **Asking for help.** Questions are welcome in [the testing thread](https://github.com/Kalinka-Player/KalinkaPlayer/discussions/133). Something you can reproduce is easier to act on as an [issue](https://github.com/Kalinka-Player/KalinkaPlayer/issues).
