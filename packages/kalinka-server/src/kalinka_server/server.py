@@ -773,7 +773,8 @@ async def create_app(
     def _rebuild_settings_schema() -> None:
         """What the settings page is built from, derived from the plugins
         loaded now: the dynamic-field and options registries, the schema
-        version a write must echo, the read-only paths. Rebuilt whenever a
+        version a write must echo, the read-only paths, and the optional
+        packages the plugins offer. Rebuilt whenever a
         plugin comes, goes or is set up again — not per request, where the
         same work would be repeated for a quantity that moves rarely."""
         app.state.dynamic_field_registry = build_dynamic_field_registry(
@@ -824,6 +825,12 @@ async def create_app(
             "base_config.storage.mounts.fs_uuid", storage.filesystem_options
         )
         forget_assets()
+        app.state.installability = Installability.of(
+            build_optional_packages_registry(
+                modules.prepared_input_modules, modules.prepared_devices
+            ),
+            InstallHistory.read(),
+        )
 
     _rebuild_settings_schema()
     app.state.rebuild_settings_schema = _rebuild_settings_schema
@@ -1285,13 +1292,6 @@ async def create_app(
         app, renderer_upgrades, demo_mode=lambda: app.state.config.server.demo_mode
     )
 
-    # The plugins are set up once per process, and the installs ran before it.
-    installability = Installability.of(
-        build_optional_packages_registry(
-            modules.prepared_input_modules, modules.prepared_devices
-        ),
-        InstallHistory.read(),
-    )
     queueing = asyncio.Lock()
 
     async def _queue_required_packages(
@@ -1302,7 +1302,7 @@ async def create_app(
             return await queue_required_packages(
                 modules.prepared_input_modules,
                 modules.prepared_devices,
-                installability,
+                app.state.installability,
                 requested,
                 hold_failed,
             )
@@ -1440,7 +1440,7 @@ async def create_app(
         """One prepared plugin as clients see it, in the state it last
         reported, offering only the packages this box can install."""
         cfg = prepared.plugin_context.config
-        state = installability.as_offered(prepared.state)
+        state = app.state.installability.as_offered(prepared.state)
         return ModuleDescriptor(
             name=cfg.name,
             title=cfg.__class__.model_fields["name"].title or cfg.name,
