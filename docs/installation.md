@@ -122,7 +122,7 @@ Use this on a computer that already runs one of these 64-bit systems:
 - **Debian 13** (trixie)
 - **Raspberry Pi OS (64-bit)** based on Debian 13 (trixie). The older Bookworm release gets the server but no sound output.
 - **DietPi** on Debian 13
-- **Ubuntu 24.04 LTS**
+- **Ubuntu 24.04 LTS**. The installer skips the Bluetooth input plugin because Ubuntu's BlueALSA package is too old.
 
 `cat /etc/os-release` tells you which one you have. Open a terminal on that computer, or log in to it over SSH, and run:
 

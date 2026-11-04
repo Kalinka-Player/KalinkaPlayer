@@ -70,7 +70,7 @@ jobs:
         run: |
           make dev-setup KALINKA_PREFIX="$RUNNER_TEMP/kalinka"
           .venv/bin/pip install --quiet -r requirements-dev.txt
-      - name: Supervisor release installer tests
+      - name: Release installer and versioning tests
         run: python3 -m unittest discover -s scripts/tests -v
       - name: Lint
         run: . .venv/bin/activate && make lint
