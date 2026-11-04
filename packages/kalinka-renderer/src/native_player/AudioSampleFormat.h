@@ -111,26 +111,21 @@ inline const char *const sampleFormatToString(AudioSampleFormat format) {
   }
 }
 
-/// @brief The next on-wire format to offer a device that refused @p format.
+/// @brief Output formats that preserve every significant source bit.
 ///
-/// Each step holds every significant source bit. Pass the original precision
-/// when walking the chain: a 24-bit source can use packed S24 after S32 fails,
-/// but a true 32-bit source cannot. Float requires a matching output format.
-/// @return std::nullopt for DSD, and once no PCM container is left to try.
-inline std::optional<AudioSampleFormat> pcmFallback(AudioSampleFormat format,
-                                                    unsigned sourceBits) {
-  switch (format) {
-  case AudioSampleFormat::PCM16_LE:
-    return AudioSampleFormat::PCM24_LE;
-  case AudioSampleFormat::PCM24_LE:
-    return AudioSampleFormat::PCM32_LE;
-  case AudioSampleFormat::PCM32_LE:
-    if (sourceBits > 24)
-      return std::nullopt;
-    return AudioSampleFormat::PCM24_3LE;
-  default:
-    return std::nullopt;
+/// Try the source layout first, then each compatible integer container once.
+/// Packed 24-bit input can use padded 24-bit or S32 output. True 32-bit input
+/// cannot use a 24-bit container. Float and DSD require their original format.
+inline std::vector<AudioSampleFormat> pcmOutputFormats(AudioSampleFormat source,
+                                                      unsigned sourceBits) {
+  std::vector<AudioSampleFormat> formats{source};
+  if (isDsd(source) || source == PCM_FLOAT32_LE || source == PCM_FLOAT64_LE)
+    return formats;
+  for (const auto candidate : {PCM16_LE, PCM24_LE, PCM32_LE, PCM24_3LE}) {
+    if (candidate != source && sampleBits(candidate) >= sourceBits)
+      formats.push_back(candidate);
   }
+  return formats;
 }
 
 inline int32_t packIntegers(int32_t a, int32_t b) {
