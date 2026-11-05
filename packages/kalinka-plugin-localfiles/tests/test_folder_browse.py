@@ -388,7 +388,8 @@ def test_the_library_offers_every_genre_and_a_folder_the_genres_in_it(config, mo
 
 
 def test_the_library_card_browses_in_the_folder_layout(module):
-    library, recent = _browse(module, _catalog("root")).items
+    cards = {item.id.id: item for item in _browse(module, _catalog("root")).items}
+    library, recent = cards["files"], cards["recent"]
 
     assert library.id == _catalog("files")
     assert library.catalog.preview_config.type is PreviewType.FOLDER

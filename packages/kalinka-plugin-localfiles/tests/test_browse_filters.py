@@ -233,30 +233,34 @@ def _root_card(module):
     from kalinka_plugin_localfiles import localfiles as lf
 
     root = lf.LocalFilesInputModule._browse_root(module, 0, 10)
-    assert [item.id.id for item in root.items] == ["files", "recent"]
+    assert [item.id.id for item in root.items] == [
+        "files", "albums", "artists", "tracks", "recent", "playlists"
+    ]
     return root.items[0]
 
 
-def test_root_offers_the_library_as_one_catalog_of_its_folders(module):
+def test_root_offers_folders_with_the_existing_catalog_id(module):
     card = _root_card(module)
 
     assert card.id.id == "files"
-    assert card.catalog.title == "My Library"
+    assert card.catalog.title == "Folders"
+    assert card.name == "Folders"
+    assert card.subname == card.catalog.description == "As on your storage"
     assert card.catalog.preview_config.type is PreviewType.FOLDER
     assert [spec.id for spec in card.catalog.filters] == ["q", "genre"]
 
 
-def test_the_library_carries_its_playlists(module):
-    sections = _root_card(module).sections
-
-    assert [section.id.id for section in sections] == ["playlists"]
-    assert all(section.can_browse for section in sections)
+def test_playlists_are_reachable_directly_from_the_root(module):
+    root = module._browse_root(0, 10)
+    assert not _root_card(module).sections
+    assert root.items[-1].id.id == "playlists"
+    assert root.items[-1].can_browse
 
 
 def test_shelves_declare_what_they_can_filter(module):
     declared = {
         section.id.id: {spec.id for spec in section.catalog.filters}
-        for section in _root_card(module).sections
+        for section in module._browse_root(0, 10).items
     }
     # Declared so the shelf answers a genre query like the others — a playlist
     # carries none, so one it must satisfy leaves it empty.
@@ -368,13 +372,16 @@ def test_the_library_is_ordered_newest_first(module):
     assert timestamps == sorted(timestamps, reverse=True)
 
 
-def test_type_narrows_the_library_to_one_kind(module):
+def test_type_narrows_the_library_to_albums_and_the_loose_group(module):
     result = _library(
         module, FilterQuery.model_validate({"type": {"any": ["album"]}})
     )
 
     assert result.items
-    assert {_kind_of(item) for item in result.items} == {"album"}
+    assert {
+        _kind_of(item) for item in result.items if item.id.id != "unknown_album"
+    } == {"album"}
+    assert [item.id.id for item in result.items if item.playlist] == ["unknown_album"]
 
 
 def test_type_takes_several_kinds_at_once(module):
@@ -382,20 +389,25 @@ def test_type_takes_several_kinds_at_once(module):
         module, FilterQuery.model_validate({"type": {"any": ["album", "artist"]}})
     )
 
-    assert {_kind_of(item) for item in result.items} == {"album", "artist"}
+    assert {
+        _kind_of(item) for item in result.items if item.id.id != "unknown_album"
+    } == {"album", "artist"}
+    assert [item.id.id for item in result.items if item.playlist] == ["unknown_album"]
 
 
-def test_a_section_and_the_library_under_its_type_agree(module):
-    """The two addresses for one listing: the section exists so a consumer can
-    preview a kind without knowing how to write the constraint."""
+def test_albums_browser_omits_the_empty_umbrella_and_preserves_legacy_library(module):
     section = asyncio.run(module.browse(_catalog("albums")))
     narrowed = _library(
         module, FilterQuery.model_validate({"type": {"any": ["album"]}})
     )
 
-    assert narrowed.total == section.total
-    assert [item.id.id for item in narrowed.items] == [
+    assert narrowed.total == section.total + 1
+    assert {item.id.id for item in narrowed.items} - {"unknown_album"} == {
         item.id.id for item in section.items
+    }
+    assert [item.name for item in section.items] == [
+        "Everybody Hertz", "Innuendo", "Moon Safari", "Split Tags", "Untagged",
+        "Русский альбом",
     ]
 
 
