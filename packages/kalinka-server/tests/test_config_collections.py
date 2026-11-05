@@ -16,7 +16,8 @@ Contract:
 * A collection holding what older fields hold names them in ``replaces``,
   by full path. Those fields stay described: a client that shows the
   collection hides them, and one that cannot ignores the list.
-* A list of models that are not records is not described at all.
+* A list of models that are not records is not described at all, nor is a
+  collection tagged ``own_screen``, whose value is still sent.
 * Suggestions for a field inside an entry are bound under
   ``<collection path>.<field path>``.
 """
@@ -33,7 +34,7 @@ from kalinka_plugin_localfiles.config_model import LocalFilesConfig
 from kalinka_plugin_sdk import ConfigRecord, Records
 from kalinka_plugin_sdk.module_config import ModuleConfig
 from kalinka_server.config_model import KalinkaConfig
-from kalinka_server.config_schema_processor import build_presentation
+from kalinka_server.config_schema_processor import build_presentation, build_static_values
 from kalinka_server.options_registry import OptionsRegistry, register_plugin_options
 from kalinka_server.presentation_schema import CollectionSpec, ModuleSpec
 
@@ -114,6 +115,7 @@ class _Config(ModuleConfig):
     )
     nested: _Nested = Field(default_factory=_Nested, title="Nested")
     inline: _Inline = Field(default_factory=_Inline, json_schema_extra={"inline": True})
+    elsewhere: Records[_Single] = Field(default_factory=list, json_schema_extra={"own_screen": True})
 
 
 def _module(config=None) -> ModuleSpec:
@@ -145,6 +147,19 @@ class TestWhereACollectionIsDescribed:
     def test_a_list_of_models_that_are_not_records_is_not_described(self):
         schema = build_presentation(KalinkaConfig(), {"mod": _Config()}, {})
         assert ".plain" not in schema.model_dump_json()
+
+    def test_one_a_screen_of_its_own_edits_is_not_described_but_sent(self):
+        config = _Config(elsewhere=[_Single(id="one")])
+        schema = build_presentation(KalinkaConfig(), {"mod": config}, {})
+
+        assert ".elsewhere" not in schema.model_dump_json()
+        values = build_static_values(KalinkaConfig(), {"mod": config}, {}).values
+        assert [entry["id"] for entry in values["input_modules.mod.elsewhere"]] == ["one"]
+
+    def test_the_streamers_mounts_are_left_to_drives_and_shares(self):
+        schema = build_presentation(KalinkaConfig(), {}, {})
+
+        assert "base_config.storage.mounts" not in schema.model_dump_json()
 
     def test_inside_a_nested_section_it_joins_that_section(self):
         section = next(s for s in _module().sections if s.id.endswith(".nested"))

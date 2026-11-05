@@ -25,6 +25,12 @@ def results_dir() -> str:
 #: share that is away retries for a minute.
 ANSWER_TIMEOUT_S = 150.0
 
+#: The answer to a request that could not be handed to the helper at all.
+UNSENT = "Kalinka could not reach its mount helper"
+
+#: The answer to a request the helper let time out.
+UNANSWERED = "The mount helper did not answer"
+
 
 @dataclass(frozen=True)
 class RequestOutcome:
@@ -54,8 +60,14 @@ class MountRequests:
         self._requests_dir = requests or requests_dir()
         self._results_dir = results or results_dir()
         self._sent: dict[str, tuple[str, float]] = {}
+        self._unsent: dict[str, RequestOutcome] = {}
         self._last = 0
         self._lock = threading.Lock()
+
+    def available(self) -> bool:
+        """Whether a helper takes requests here: only the package makes the
+        directory it watches."""
+        return os.path.isdir(self._requests_dir)
 
     def mount(self, volume_id: str, fstype: str, source: str, options: list[str]) -> None:
         self._write(
@@ -72,10 +84,14 @@ class MountRequests:
             seq = f"{self._last:020d}"
             name = f"{seq}.{volume_id}.json"
             partial = os.path.join(self._requests_dir, f".{name}.part")
-            with open(partial, "w", encoding="utf-8") as f:
-                json.dump({"id": volume_id, "seq": seq, **body}, f)
-            os.replace(partial, os.path.join(self._requests_dir, name))
             self._sent[volume_id] = (seq, time.time())
+            try:
+                with open(partial, "w", encoding="utf-8") as f:
+                    json.dump({"id": volume_id, "seq": seq, **body}, f)
+                os.replace(partial, os.path.join(self._requests_dir, name))
+            except OSError:
+                self._unsent[volume_id] = RequestOutcome(False, UNSENT, time.time(), seq)
+                raise
 
     def pending(self, volume_id: str) -> bool:
         """Whether a request is out and neither answered nor timed out."""
@@ -95,7 +111,7 @@ class MountRequests:
         sent = self._sent.get(volume_id)
         if sent is not None and (answered is None or answered.seq < sent[0]):
             if self._overdue(sent[1]):
-                return RequestOutcome(False, "The mount helper did not answer", sent[1], sent[0])
+                return RequestOutcome(False, UNANSWERED, sent[1], sent[0])
             return None
         return answered
 
@@ -110,6 +126,13 @@ class MountRequests:
         return time.time() - max(sent_at, answered_at) >= ANSWER_TIMEOUT_S
 
     def _answer(self, volume_id: str) -> Optional[RequestOutcome]:
+        written = self._written_answer(volume_id)
+        unsent = self._unsent.get(volume_id)
+        if unsent is not None and (written is None or written.seq < unsent.seq):
+            return unsent
+        return written
+
+    def _written_answer(self, volume_id: str) -> Optional[RequestOutcome]:
         path = os.path.join(self._results_dir, f"{volume_id}.json")
         try:
             with open(path, encoding="utf-8") as f:

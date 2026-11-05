@@ -41,7 +41,7 @@ from kalinka_plugin_sdk.events import (
 from kalinka_plugin_sdk import paths
 from kalinka_plugin_sdk.storage import LibraryAdopter, StorageBacked
 
-from .config_model import KalinkaConfig
+from .config_model import KalinkaConfig, NfsMount
 from .config_route import register_config_routes
 from .config_schema_processor import (
     build_presentation,
@@ -58,7 +58,10 @@ from .collections.store import CollectionStore
 from .drives.folders import ServerFolders
 from .drives.fsio import DriveIO
 from .drives.module import DrivesModule
+from .storage.device_routes import register_device_routes, saving_through
+from .storage.devices import StorageDevices
 from .storage.manager import Adopter, StorageManager
+from .storage.nfs_discovery import NfsDiscovery
 from .storage.routes import register_storage_routes
 from .config_secrets import secret_values
 from .content_route import register_content_route
@@ -261,6 +264,9 @@ async def lifespan(app: FastAPI):
         storage = getattr(app.state, "storage", None)
         if storage is not None:
             await storage.stop()
+        nfs_discovery = getattr(app.state, "nfs_discovery", None)
+        if nfs_discovery is not None:
+            nfs_discovery.close()
         drives = getattr(app.state, "drives", None)
         if drives is not None:
             drives.close()
@@ -821,9 +827,6 @@ async def create_app(
             modules.prepared_devices,
         )
         app.state.dynamic_paths = frozenset(app.state.dynamic_field_registry.keys())
-        app.state.options_registry.register(
-            "base_config.storage.mounts.fs_uuid", storage.filesystem_options
-        )
         forget_assets()
         app.state.installability = Installability.of(
             build_optional_packages_registry(
@@ -1270,6 +1273,18 @@ async def create_app(
         apply_changes=app.state.apply_config_changes,
         list_folders=server_folders.list,
     )
+    app.state.nfs_discovery = NfsDiscovery(
+        hosts=lambda: [r.host for r in config.storage.mounts if isinstance(r, NfsMount) and r.host]
+    )
+    register_device_routes(
+        app,
+        StorageDevices(
+            storage,
+            lambda: config.storage,
+            app.state.nfs_discovery,
+            saving_through(app.state.apply_config_changes),
+        ),
+    )
     register_power_off_timer_route(
         app, app.state.box_power_off_timer, player_context.playqueue
     )
@@ -1286,7 +1301,7 @@ async def create_app(
                 **app.state.plugin_operations.capabilities(),
                 "enabled": app.state.config.server.plugin_catalog_enabled,
             },
-            "storage": {"volumes": True, "mounts": True, "adopt": True, "folders": True},
+            "storage": {"volumes": True, "mounts": True, "adopt": True, "folders": True, "devices": True},
         }
 
     register_upgrade_routes(
