@@ -22,6 +22,7 @@ import os
 import re
 import tempfile
 import time
+from collections import Counter
 from pathlib import Path
 from typing import BinaryIO, Callable, Optional
 from urllib.parse import unquote
@@ -43,6 +44,7 @@ from . import ranged_content
 from .browse_source import BrowseSource
 from .catalog_art_render import (
     ArtStyle,
+    background_text_key,
     content_fingerprint,
     encode_jpeg,
     render_catalog_art,
@@ -136,14 +138,41 @@ def _source_owns_art(item: BrowseItem) -> bool:
     return _is_folder(item) and item.catalog.role is None
 
 
-def _textual_hint(item: BrowseItem) -> bool:
+def _content_hint(item: BrowseItem) -> PreviewContentType | None:
     preview = item.catalog.preview_config if item.catalog else None
     if preview is None:
-        return False
-    return (
-        preview.type == PreviewType.TEXT_ONLY
-        or preview.content_type == PreviewContentType.CATALOG
+        return None
+    return preview.content_type or (
+        PreviewContentType.CATALOG if preview.type == PreviewType.TEXT_ONLY else None
     )
+
+
+def _content_kind(
+    items: list[BrowseItem], hint: PreviewContentType | None
+) -> PreviewContentType:
+    counts: Counter[PreviewContentType] = Counter()
+    for item in items:
+        for kind in (
+            PreviewContentType.ALBUM,
+            PreviewContentType.ARTIST,
+            PreviewContentType.PLAYLIST,
+            PreviewContentType.TRACK,
+            PreviewContentType.CATALOG,
+        ):
+            if getattr(item, kind.value) is not None:
+                counts[kind] += 1
+                break
+        else:
+            try:
+                entity_id = (
+                    item.id
+                    if isinstance(item.id, EntityId)
+                    else EntityId.from_string(item.id)
+                )
+                counts[PreviewContentType(entity_id.type.value)] += 1
+            except ValueError:
+                pass
+    return counts.most_common(1)[0][0] if counts else hint or PreviewContentType.CATALOG
 
 
 def _write_atomic(target: Path, data: bytes) -> None:
@@ -176,9 +205,9 @@ class CatalogArtService:
         self._dir = Path(cache_dir)
         self._browse = browse_resolver
         self._resource = resource_resolver
-        self._queue: asyncio.Queue[tuple[str, ArtStyle, bool]] = asyncio.Queue(
-            maxsize=128
-        )
+        self._queue: asyncio.Queue[
+            tuple[str, ArtStyle, PreviewContentType | None, tuple[str, ...]]
+        ] = asyncio.Queue(maxsize=128)
         self._pending: set[str] = set()
         self._http: Optional[httpx.AsyncClient] = None
         # catalog id -> {"file": str|None, "fingerprint": str, "next_check_at": float}
@@ -227,7 +256,9 @@ class CatalogArtService:
                     # The card stands in for it until the card is made again.
                     del entry["thumbnail"]
             previous = [
-                name for name in entry.get("previous", []) if (self._dir / name).is_file()
+                name
+                for name in entry.get("previous", [])
+                if (self._dir / name).is_file()
             ]
             referenced.update(previous)
             entry["previous"] = previous
@@ -266,8 +297,22 @@ class CatalogArtService:
             # the client's to draw.
             if item.playlist is not None and item.playlist.track_count == 0:
                 continue
-            cat_id = item.id.to_string if isinstance(item.id, EntityId) else str(item.id)
+            cat_id = (
+                item.id.to_string if isinstance(item.id, EntityId) else str(item.id)
+            )
             style = _style_of(item)
+            names = (
+                tuple(
+                    text
+                    for text in (
+                        item.catalog.title or item.name,
+                        item.catalog.description,
+                    )
+                    if text
+                )
+                if style is ArtStyle.CARD
+                else ()
+            )
             entry = self._entries.get(cat_id)
             if entry and entry.get("file"):
                 url = f"{ART_URL_PREFIX}/{entry['file']}"
@@ -283,14 +328,27 @@ class CatalogArtService:
                 # playlist, the item shows it too.
                 if item.playlist is not None:
                     item.playlist.image = image
-            if entry is None or time.time() >= entry.get("next_check_at", 0.0):
-                self._schedule(cat_id, style, _textual_hint(item))
+            text_changed = style is ArtStyle.CARD and (entry or {}).get(
+                "text_key"
+            ) != background_text_key(names, cat_id)
+            if (
+                entry is None
+                or text_changed
+                or time.time() >= entry.get("next_check_at", 0.0)
+            ):
+                self._schedule(cat_id, style, _content_hint(item), names)
 
-    def _schedule(self, cat_id: str, style: ArtStyle, textual: bool) -> None:
+    def _schedule(
+        self,
+        cat_id: str,
+        style: ArtStyle,
+        hint: PreviewContentType | None,
+        names: tuple[str, ...],
+    ) -> None:
         if cat_id in self._pending:
             return
         try:
-            self._queue.put_nowait((cat_id, style, textual))
+            self._queue.put_nowait((cat_id, style, hint, names))
             self._pending.add(cat_id)
         except asyncio.QueueFull:
             logger.debug("Catalog art queue full; skipping %s", cat_id)
@@ -313,13 +371,13 @@ class CatalogArtService:
     async def run(self) -> None:
         """Drain the generation queue for the server's lifetime."""
         while True:
-            cat_id, style, textual = await self._queue.get()
+            cat_id, style, hint, names = await self._queue.get()
             try:
-                await self._process(cat_id, style, textual)
+                await self._process(cat_id, style, hint, names)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._record_failure(cat_id)
+                self._record_failure(cat_id, names)
                 logger.warning("Catalog art generation failed for %s: %r", cat_id, exc)
             finally:
                 self._pending.discard(cat_id)
@@ -330,19 +388,30 @@ class CatalogArtService:
             await self._http.aclose()
             self._http = None
 
-    def _record_failure(self, cat_id: str) -> None:
+    def _record_failure(self, cat_id: str, names: tuple[str, ...] = ()) -> None:
         entry = self._entries.setdefault(cat_id, {})
         entry["next_check_at"] = time.time() + FAIL_RETRY_SECONDS
+        entry["text_key"] = background_text_key(names, cat_id)
         self._save_index()
 
-    async def _process(self, cat_id: str, style: ArtStyle, textual: bool) -> None:
+    async def _process(
+        self,
+        cat_id: str,
+        style: ArtStyle,
+        hint: PreviewContentType | None = None,
+        names: tuple[str, ...] = (),
+    ) -> None:
         entity_id = EntityId.from_string(cat_id)
         module = self._browse(entity_id)
         if module is None:
-            self._record_failure(cat_id)
+            self._record_failure(cat_id, names)
             return
 
         cover_style = style is ArtStyle.COVER
+        entry = self._entries.get(cat_id)
+        if cover_style:
+            names = ()
+        text_key = background_text_key(names, cat_id)
         items: list[BrowseItem] = []
         try:
             children = await module.browse(
@@ -352,15 +421,13 @@ class CatalogArtService:
             )
             items = children.items or []
         except Exception as exc:
-            # The source is flaky (Jamendo especially); fall through with no
-            # items -> a background-only tile now, covers added on a later retry.
             logger.debug("Catalog art browse failed for %s: %r", cat_id, exc)
 
-        # A folder carries covers of its own, so a page of them is no index.
-        catalog_children = sum(
-            1 for item in items if item.catalog is not None and not _is_folder(item)
+        previous_kind = (entry or {}).get("content_type")
+        content_kind = _content_kind(
+            items,
+            PreviewContentType(previous_kind) if previous_kind else hint,
         )
-        textual = not cover_style and (textual or catalog_children > len(items) / 2)
 
         wanted = COVER_TILES if cover_style else MAX_COVERS
         covers: list[Image.Image] = []
@@ -368,7 +435,7 @@ class CatalogArtService:
         # Distinct covers this catalog offered, which bounds what the card can
         # ever show however often it is composed.
         offered = 0
-        if items and not textual:
+        if items:
             seen_paths: set[str] = set()
             seen_albums: set[str] = set()
             seen_art: set[bytes] = set()
@@ -409,13 +476,11 @@ class CatalogArtService:
             self._record_failure(cat_id)
             return
 
-        # A card that wants a cascade and has none is held, not finished: a
-        # library rebuilt minutes ago offers no cover either, and filing that
-        # as complete strands the card on a bare background for a day.
-        provisional = (not textual) and not covers
+        provisional = not covers
+        placeholder = content_kind.value if provisional else None
         if provisional:
             next_check = FAIL_RETRY_SECONDS
-        elif not textual and len(covers) < min(wanted, offered):
+        elif len(covers) < min(wanted, offered):
             # Short of what the catalog *had*, so a fetch is what fell short
             # and may not next time. A catalog with fewer albums than the tile
             # holds is already complete, and re-composing it hourly for the
@@ -424,30 +489,45 @@ class CatalogArtService:
         else:
             next_check = REFRESH_SECONDS
 
-        entry = self._entries.get(cat_id)
         have_file = bool(
             entry and entry.get("file") and (self._dir / entry["file"]).is_file()
         )
 
-        # A transient failure must not downgrade a good tile: keep the existing
-        # (non-provisional) art and just retry soon.
-        if provisional and have_file and not entry.get("provisional"):
+        # Old catalog-only entries were bare backgrounds, not real collages.
+        had_covers = bool(entry) and entry.get(
+            "has_covers",
+            not entry.get("provisional")
+            and content_kind != PreviewContentType.CATALOG
+            and hint != PreviewContentType.CATALOG,
+        )
+        same_kind = (
+            bool(entry)
+            and entry.get("content_type", content_kind.value) == content_kind.value
+        )
+        if provisional and have_file and had_covers and same_kind:
             entry["next_check_at"] = time.time() + next_check
+            entry["text_key"] = text_key
             self._save_index()
             return
 
-        fingerprint = content_fingerprint(cover_bytes, [], cat_id, style)
+        fingerprint = content_fingerprint(
+            cover_bytes, names, cat_id, style, placeholder=placeholder
+        )
         # A card made before cards had thumbnails is made again to gain one.
         complete = have_file and (cover_style or bool(entry.get("thumbnail")))
         if entry and entry.get("fingerprint") == fingerprint and complete:
             entry["next_check_at"] = time.time() + next_check
+            entry["content_type"] = content_kind.value
+            entry["text_key"] = text_key
             self._save_index()
             return
 
         if cover_style:
             image = await asyncio.to_thread(render_playlist_cover, covers)
         else:
-            image = await asyncio.to_thread(render_catalog_art, covers, [], cat_id)
+            image = await asyncio.to_thread(
+                render_catalog_art, covers, names, cat_id, placeholder=placeholder
+            )
         data = await asyncio.to_thread(encode_jpeg, image)
 
         stem = f"{hashlib.sha1(cat_id.encode()).hexdigest()[:16]}-{fingerprint[:8]}"
@@ -455,7 +535,13 @@ class CatalogArtService:
         _write_atomic(self._dir / file_name, data)
         thumbnail_name = None
         if not cover_style:
-            thumbnail = await asyncio.to_thread(render_catalog_thumbnail, covers, cat_id)
+            thumbnail = await asyncio.to_thread(
+                render_catalog_thumbnail,
+                covers,
+                cat_id,
+                placeholder=placeholder,
+                names=names,
+            )
             thumbnail_name = f"{stem}-thumb.jpg"
             _write_atomic(
                 self._dir / thumbnail_name,
@@ -484,6 +570,9 @@ class CatalogArtService:
             "fingerprint": fingerprint,
             "next_check_at": time.time() + next_check,
             "provisional": provisional,
+            "has_covers": bool(covers),
+            "content_type": content_kind.value,
+            "text_key": text_key,
         }
         self._save_index()
         logger.info(

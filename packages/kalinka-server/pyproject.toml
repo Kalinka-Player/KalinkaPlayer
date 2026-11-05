@@ -94,7 +94,7 @@ include-package-data = false
 zip-safe = false
 
 [tool.setuptools.package-data]
-kalinka_server = ["assets/tones/*.flac"]
+kalinka_server = ["assets/tones/*.flac", "assets/catalog/placeholder-*.png", "assets/catalog/prompts.json"]
 "kalinka_server.plugin_management" = ["plugin.schema.json"]
 
 [tool.setuptools.packages.find]
