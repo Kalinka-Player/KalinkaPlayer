@@ -35,7 +35,9 @@ A list of records (``Records[...]`` of the SDK) is described as a
 collection: cards a client opens one at a time, each entry laid out by the
 shape its discriminator names. Collections ride lists of their own, which old
 clients ignore, and never the expert list, which has no editor for one. A
-list of models that are not records is not described at all.
+list of models that are not records is not described at all, and neither is
+a collection tagged ``own_screen``, which a screen of its own edits: its
+value is still read and written as any other.
 
 A monotonic ``schema_version`` string lets the client detect staleness
 after plugin reloads.
@@ -527,7 +529,7 @@ def _auto_sections(model: BaseModel, prefix: str) -> list[SectionSpec]:
         child_path = f"{prefix}.{field_name}" if prefix else field_name
         last_field = scalar_fields[-1].path if scalar_fields else None
         if is_record_list(field.annotation):
-            if _is_record_collection(field.annotation):
+            if _is_record_collection(field.annotation) and not _json_extra(field).get("own_screen"):
                 collections.append(_collection_spec(child_path, field, last_field))
             continue
         wire_type = annotation_to_type(field.annotation)

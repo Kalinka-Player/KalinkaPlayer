@@ -35,6 +35,9 @@ _ICONS = {
 }
 
 
+_DRIVE_NAMES = {Medium.USB: "USB drive", Medium.DISK: "Disk"}
+
+
 def icon_of(volume: VolumeDescriptor) -> str:
     return _ICONS[medium_of(volume)]
 
@@ -45,7 +48,7 @@ def _kind_name(volume: VolumeDescriptor) -> str:
         return "On this server"
     if medium == Medium.NETWORK:
         return "NFS share" if (volume.fs_type or "").startswith("nfs") else "Network share"
-    return "USB drive" if medium == Medium.USB else "Disk"
+    return _DRIVE_NAMES[medium]
 
 
 def size_text(n_bytes: Optional[int]) -> Optional[str]:
@@ -57,6 +60,11 @@ def size_text(n_bytes: Optional[int]) -> Optional[str]:
             value = n_bytes / scale
             return f"{value:.0f} {unit}" if value >= 10 else f"{value:.1f} {unit}"
     return f"{n_bytes} B"
+
+
+def drive_summary(medium: Medium, size_bytes: Optional[int]) -> str:
+    """A drive's kind and size, for one that is not mounted yet."""
+    return " · ".join(part for part in (_DRIVE_NAMES[medium], size_text(size_bytes)) if part)
 
 
 def summary_of(volume: VolumeDescriptor) -> str:

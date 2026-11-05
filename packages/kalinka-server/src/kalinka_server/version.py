@@ -249,6 +249,36 @@ def get_version() -> str:
 # again or taken down while the server runs, by a save or a catalog
 # operation, queues again as it goes, and what the page offers follows
 # the plugins set up now.
+# Also 0.22: Drives & shares. GET /server/storage/devices lists every drive and
+# NFS share the server could read music from, mounted or not, with the actions
+# that apply to each (`can_mount`, `can_unmount`, `can_eject`,
+# `can_set_at_start`, `can_edit`, `can_forget`) and its Mount after restart
+# switch (`at_start`, null where there is none; for one not kept yet, the
+# switch keeping it would give it); a failed one carries `error`
+# in plain words and `error_detail`, the mount's own, where Kalinka did not
+# word it. `scan` says whether the search for shares on the network is
+# running; asking keeps it running, POST /shares/scan asks every host again,
+# and `mounting_available` is false where no mount helper is installed. POST
+# /devices/{id}/mount and /unmount mount and unmount one now and answer once
+# the helper has, or after 10 s: {id, state, error}, a mount `mounted`,
+# `failed` with the reason or still `mounting`; an unmount the helper refuses
+# answers 502 with its reason; a failed mount's answer carries
+# `error_detail` too. A mount may carry the body of a PUT, applied as it
+# mounts. A disk or a share not kept yet is kept once its mount succeeds, a
+# USB drive only where the body changes something; one that fails is not
+# kept, and is listed failed with `can_dismiss` until it is tried again,
+# DELETE /devices/{id}/failure puts it away, or the server restarts. Neither
+# a mount nor an unmount changes a switch the body does not. PUT /devices/{id} changes
+# `at_start`, `label`, `read_only` or `version` where `can_edit`, keeping a
+# device not kept and mounting nothing, and DELETE /devices/{id} forgets a
+# kept one. POST
+# /shares/probe asks a host for its exports, and POST /shares {host, export,
+# version, at_start, read_only} mounts a share as asked, answering and
+# keeping it as a mount does, or 409 where it is mounted already. Without the
+# helper both mounts answer 503. A saved mount carries `at_start` and is
+# mounted at start only with it on; saving one no longer mounts it. The
+# settings schema no longer describes base_config.storage.mounts, and
+# /server/version's `storage` has `devices`.
 REST_API_VERSION = "0.22"
 
 

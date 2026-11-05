@@ -4,6 +4,8 @@ import json
 import os
 import time
 
+import pytest
+
 from kalinka_server.storage import requests as requests_mod
 from kalinka_server.storage.requests import MountRequests
 
@@ -74,3 +76,32 @@ def test_a_request_queued_behind_a_slow_one_waits_its_turn(tmp_path, monkeypatch
     os.utime(tmp_path / "res")
     assert requests.pending("rec_b")
     assert requests.outcome("rec_b") is None
+
+
+def test_only_a_directory_the_helper_watches_takes_requests(tmp_path):
+    assert _requests(tmp_path).available()
+    assert not MountRequests(str(tmp_path / "missing"), str(tmp_path / "res")).available()
+
+
+def test_a_request_that_could_not_be_written_is_answered_as_failed(tmp_path):
+    requests = MountRequests(str(tmp_path / "missing"), str(tmp_path / "res"))
+
+    with pytest.raises(OSError):
+        requests.mount("rec_nas", "nfs4", "nas:/music", ["ro"])
+
+    assert not requests.pending("rec_nas")
+    assert (requests.outcome("rec_nas").ok, requests.outcome("rec_nas").error) == (False, requests_mod.UNSENT)
+
+
+def test_a_later_request_written_is_not_answered_by_one_that_was_not(tmp_path):
+    requests = MountRequests(str(tmp_path / "req"), str(tmp_path / "res"))
+    with pytest.raises(OSError):
+        requests.mount("rec_nas", "nfs4", "nas:/music", ["ro"])
+    (tmp_path / "req").mkdir()
+    (tmp_path / "res").mkdir()
+
+    requests.mount("rec_nas", "nfs4", "nas:/music", ["ro"])
+
+    assert requests.pending("rec_nas")
+    _answer(tmp_path, _asked(tmp_path)[0]["seq"])
+    assert requests.outcome("rec_nas").ok
