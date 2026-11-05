@@ -2,6 +2,25 @@
 
 The local library indexes MP3, FLAC, WAV (`.wav`, `.wave`), Ogg Vorbis (`.ogg`, `.oga`), MP4 audio (`.m4a`, or `.alac` as some rippers name Apple Lossless), raw AAC (`.aac`), DSF (`.dsf`) and DSDIFF (`.dff`) files from local folders and configured network shares.
 
+The root offers **Folders** ("As on your storage"), **Albums**, **Artists**,
+**Tracks** and **Recently added**, followed by **Playlists** when present.
+Folders keeps the existing `files` catalog ID and stays available before
+indexing; the music categories appear once tracks have been indexed. Albums,
+Artists, Tracks and Playlists browse alphabetically, ignoring case and accents.
+
+Albums starts with **Singles & loose tracks** when the existing `unknown_album`
+umbrella contains tracks. It includes loose tracks with both known and unknown
+artists. Named one-track albums remain ordinary albums. The umbrella appears
+as a read-only playlist in the Albums grid, with the current loose-track count
+as its subtitle. It can be played or queued and lists its tracks by title with
+individual artwork. Its local ID stays `unknown_album`; old album links still
+resolve, and the database sentinel and file tags are unchanged.
+
+Each root category carries bundled generated artwork in three sizes, served
+through the module's existing resource endpoint. The images and generation
+prompts are in `src/kalinka_plugin_localfiles/catalog_artwork/`; they are
+included in the package and need no runtime generation or network access.
+
 Loose files in a configured library root or a generic container such as
 `Music` or `Downloads` are listed individually in Recently Added. Those
 directory names do not become albums; album tags and cue sheets still name

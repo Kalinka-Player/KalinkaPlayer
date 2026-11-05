@@ -10,6 +10,7 @@ from typing import Any, Callable, FrozenSet, List, Dict, Optional, Tuple
 
 from fastapi import HTTPException
 from .config_model import DISPLAY_NAME, LocalFilesConfig
+from .catalog_art import ART_PREFIX, catalog_art_path, catalog_image
 from kalinka_plugin_sdk.inputmodule import (
     ContentInfo,
     InputModule,
@@ -83,6 +84,7 @@ from .input_module_db import (
     ListingFilter,
     LocalFilesInputModuleDb,
     RECENT_KINDS,
+    SINGLES_TITLE,
     fold_for_match,
     folder_prefix,
     genre_parts,
@@ -131,6 +133,7 @@ FOLDER_FILTERS = [_text_filter("folders and tracks"), GENRE_FILTER]
 LIBRARY_ENDPOINT = "library"
 FILES_ENDPOINT = "files"
 RECENT_ENDPOINT = "recent"
+LOOSE_TRACKS_ID = "unknown_album"
 FOLDER_ENDPOINT_PREFIX = "folder."
 
 #: Covers looked up for a composed cover: enough to fill a mosaic past a few
@@ -142,13 +145,7 @@ _AI_CARD_TITLE = f"FROM {DISPLAY_NAME.upper()}"
 
 @dataclass(frozen=True)
 class _LibrarySection:
-    """One kind's shelf within the library.
-
-    The library and its sections are two addresses for one listing: browsing
-    the library under ``type: [kind]`` and browsing the section answer the
-    same rows. The section exists so a consumer can preview each kind without
-    knowing how to write that constraint.
-    """
+    """A kind's catalog, with its presentation and supported filters."""
 
     kind: str
     endpoint: str
@@ -269,6 +266,13 @@ def track_id(id: str) -> EntityId:
 
 def playlist_id(id: str) -> EntityId:
     return EntityId(id=id, type=EntityType.PLAYLIST, source="localfiles")
+
+
+def _check_playlist_writable(id: str) -> None:
+    if id in (LOOSE_TRACKS_ID, playlist_id(LOOSE_TRACKS_ID).to_string):
+        raise HTTPException(
+            status_code=405, detail=f"{SINGLES_TITLE} is managed automatically"
+        )
 
 
 def label_id(id: str) -> EntityId:
@@ -629,6 +633,8 @@ class LocalFilesInputModule(InputModule):
             return self._browse_library(
                 _filtered_kinds(filter), offset, limit, listing
             )
+        if endpoint == "albums":
+            return self._browse_albums(offset, limit, listing)
         section = SECTION_BY_ENDPOINT.get(endpoint)
         if section is not None:
             if section.recent:
@@ -646,28 +652,32 @@ class LocalFilesInputModule(InputModule):
             return self.db_manager.list_recently_added(limit=0, kinds=(section.kind,))[1]
         return self.db_manager.get_kind_total(section.kind)
 
-    def _section_card(self, section: _LibrarySection) -> Optional[BrowseItem]:
+    def _section_card(
+        self, section: _LibrarySection, *, root: bool = False
+    ) -> Optional[BrowseItem]:
         """The section as a browsable shelf, or None when it holds nothing."""
         total = self._section_total(section)
         if total == 0:
             return None
 
         id = catalog_id(section.endpoint)
+        description = (
+            f"Recently added {section.noun}"
+            if section.recent
+            else f"All your {section.noun}"
+        )
         return BrowseItem(
             id=id,
             name=section.title,
             can_browse=True,
             can_add=False,
-            subname=f"{total} {section.noun}",
+            subname=description if root else f"{total} {section.noun}",
             catalog=Catalog(
                 id=id,
                 title=section.title,
+                image=catalog_image(section.endpoint) if root else None,
                 filters=section.filters,
-                description=(
-                    f"Recently added {section.noun}"
-                    if section.recent
-                    else f"Your {section.noun}"
-                ),
+                description=description,
                 preview_config=Preview(
                     type=PreviewType.IMAGE_TEXT,
                     content_type=section.content_type,
@@ -682,31 +692,29 @@ class LocalFilesInputModule(InputModule):
         )
 
     def _library_card(self) -> BrowseItem:
-        """The library as its folders, over a shelf of its playlists when it
-        has any. It is never added whole; its sources and folders are."""
-        playlists = self._section_card(SECTION_BY_ENDPOINT["playlists"])
+        """The library's storage hierarchy, available before indexing completes."""
         id = catalog_id(FILES_ENDPOINT)
         return BrowseItem(
             id=id,
-            name="My Library",
+            name="Folders",
             can_browse=True,
             can_add=False,
-            subname="Everything in your music folders",
+            subname="As on your storage",
             catalog=Catalog(
                 id=id,
-                title="My Library",
-                description="Everything in your music folders",
+                title="Folders",
+                description="As on your storage",
+                image=catalog_image(FILES_ENDPOINT),
                 filters=FOLDER_FILTERS,
                 preview_config=Preview(
                     type=PreviewType.FOLDER,
-                    icon="library",
+                    icon="folder",
                     items_count=10,
                     rows_count=1,
                     card_size=CardSize.SMALL,
                 ),
                 role=CatalogRole.LIBRARY,
             ),
-            sections=[playlists] if playlists else None,
         )
 
     def _recent_card(self) -> BrowseItem:
@@ -717,11 +725,12 @@ class LocalFilesInputModule(InputModule):
             name="Recently added",
             can_browse=True,
             can_add=False,
-            subname="Newest albums, tracks and artists",
+            subname="Latest additions to your library",
             catalog=Catalog(
                 id=id,
                 title="Recently added",
-                description="Newest albums, tracks and artists",
+                description="Latest additions to your library",
+                image=catalog_image(RECENT_ENDPOINT),
                 filters=RECENT_FILTERS,
                 preview_config=Preview(
                     type=PreviewType.IMAGE_TEXT,
@@ -736,14 +745,20 @@ class LocalFilesInputModule(InputModule):
         )
 
     def _browse_root(self, offset: int, limit: int) -> BrowseItemList:
-        """The module's catalogs: the library as its folders, and what arrived
-        in it last. The folder view stays reachable before any track is indexed."""
+        """Folders, alphabetical library browsers, arrivals, and any playlists."""
         if not self.db_manager.is_good():
             logger.warning("Database is not initialized or corrupted")
             return EmptyList(0, 0)
         items = [self._library_card()]
         if self.db_manager.get_kind_total("track") > 0:
+            for endpoint in ("albums", "artists", "tracks"):
+                card = self._section_card(SECTION_BY_ENDPOINT[endpoint], root=True)
+                if card is not None:
+                    items.append(card)
             items.append(self._recent_card())
+        playlists = self._section_card(SECTION_BY_ENDPOINT["playlists"], root=True)
+        if playlists is not None:
+            items.append(playlists)
         return BrowseItemList(
             offset=offset,
             limit=limit,
@@ -762,10 +777,24 @@ class LocalFilesInputModule(InputModule):
     def _browse_kind(
         self, kind: str, offset: int, limit: int, filter: Optional[ListingFilter] = None
     ) -> BrowseItemList:
-        """One kind of the library, newest first."""
-        rows, total = self.db_manager.list_kind(kind, offset, limit, filter)
+        """One kind of the library, alphabetically by its displayed name."""
+        rows, total = self.db_manager.list_kind(
+            kind, offset, limit, filter, alphabetical=True
+        )
         items = [self._create_kind_browse_item(kind, row) for row in rows]
         return BrowseItemList(offset=offset, limit=limit, total=total, items=items)
+
+    def _browse_albums(
+        self, offset: int, limit: int, filter: ListingFilter
+    ) -> BrowseItemList:
+        """Singles first as one group, then albums; pagination includes the group."""
+        rows, total = self.db_manager.list_albums(offset, limit, filter)
+        return BrowseItemList(
+            offset=offset,
+            limit=limit,
+            total=total,
+            items=[self._create_album_browse_item(row) for row in rows],
+        )
 
     def _browse_library(
         self,
@@ -955,6 +984,8 @@ class LocalFilesInputModule(InputModule):
         self, id: str, offset: int = 0, limit: int = 50
     ) -> BrowseItemList:
         """Browse tracks in a playlist"""
+        if id == LOOSE_TRACKS_ID:
+            return self._browse_album(LOOSE_TRACKS_ID, offset, limit)
         if not self.db_manager.is_good():
             logger.warning("Database is not initialized or corrupted")
             return EmptyList(0, 0)
@@ -1375,6 +1406,8 @@ class LocalFilesInputModule(InputModule):
             logger.warning("Database is not initialized or corrupted")
             raise HTTPException(status_code=503, detail="Database service unavailable")
 
+        if id == LOOSE_TRACKS_ID:
+            return self._loose_tracks_item()
         playlist = self.db_manager.get_playlist_by_id(id)
         if not playlist:
             logger.warning(f"Playlist not found: {id}")
@@ -1436,6 +1469,7 @@ class LocalFilesInputModule(InputModule):
             raise HTTPException(status_code=503, detail="Database service unavailable")
 
         id = EntityId.from_string(id).id
+        _check_playlist_writable(id)
 
         self.db_manager.update_playlist(id, name, description)
         playlist = self.db_manager.get_playlist_by_id(id)
@@ -1469,6 +1503,7 @@ class LocalFilesInputModule(InputModule):
             return
 
         id = EntityId.from_string(id).id
+        _check_playlist_writable(id)
 
         self.db_manager.delete_playlist(id)
 
@@ -1482,6 +1517,7 @@ class LocalFilesInputModule(InputModule):
             raise HTTPException(status_code=503, detail="Database service unavailable")
 
         id = EntityId.from_string(id).id
+        _check_playlist_writable(id)
 
         # Add tracks to the playlist
         tracks_added = self.db_manager.add_tracks_to_playlist(
@@ -1553,6 +1589,7 @@ class LocalFilesInputModule(InputModule):
             logger.warning("Database is not initialized or corrupted")
             raise HTTPException(status_code=503, detail="Database service unavailable")
 
+        _check_playlist_writable(id)
         self.db_manager.remove_tracks_from_playlist(id, playlist_track_ids)
         playlist = self.db_manager.get_playlist_by_id(id)
 
@@ -1656,12 +1693,36 @@ class LocalFilesInputModule(InputModule):
             track=track_metadata,
         )
 
+    def _loose_tracks_item(self) -> BrowseItem:
+        count, duration = self.db_manager.get_album_track_totals(LOOSE_TRACKS_ID)
+        subtitle = _counted(count, "loose track")
+        item = self._create_playlist_browse_item(
+            {
+                "id": LOOSE_TRACKS_ID,
+                "name": SINGLES_TITLE,
+                "description": subtitle,
+                "track_count": count,
+                "last_updated": 0,
+            }
+        )
+        square = catalog_image("tracks").thumbnail
+        item.playlist.image = CoverImage(
+            thumbnail=square, small=square, large=square, aspect_ratio=1.0
+        )
+        item.playlist.duration = duration
+        item.subname = subtitle
+        item.can_add = count > 0
+        return item
+
     def _create_album_browse_item(self, album: Dict) -> BrowseItem:
         """Create a BrowseItem for an album"""
+        if album["id"] == LOOSE_TRACKS_ID:
+            return self._loose_tracks_item()
+        title = album["title"]
         # Create album object
         album_obj = Album(
             id=album_id(album["id"]),
-            title=album["title"],
+            title=title,
             duration=album.get("duration", 0),
             track_count=album.get("track_count", 0),
             year=plausible_year(album.get("year")),
@@ -1684,7 +1745,7 @@ class LocalFilesInputModule(InputModule):
                 can_add=False,
                 catalog=Catalog(
                     id=album_id(album["id"]),
-                    title=album["title"],
+                    title=title,
                     preview_config=Preview(
                         type=PreviewType.TILE_NUMBERED,
                         content_type=PreviewContentType.TRACK,
@@ -1698,7 +1759,7 @@ class LocalFilesInputModule(InputModule):
 
         return BrowseItem(
             id=album_id(album["id"]),
-            name=album["title"],
+            name=title,
             can_browse=True,
             can_add=True,
             subname=album["artist_name"],
@@ -1888,6 +1949,8 @@ class LocalFilesInputModule(InputModule):
 
     async def get_resource_path(self, id: str) -> str | None:
         """Get full path to a resource"""
+        if id.startswith(ART_PREFIX):
+            return catalog_art_path(id)
         if id.startswith(f"{FOLDER_ART}/"):
             return await self._folder_covers.path_of(id)
         resource_path = (self.artwork_path / id).resolve()

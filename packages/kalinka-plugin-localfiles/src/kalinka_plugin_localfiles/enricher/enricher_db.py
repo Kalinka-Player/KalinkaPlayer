@@ -647,22 +647,14 @@ class AsyncEnricherDb(ProvenanceDb):
         await self._update("tracks", track_id, data)
 
     async def update_album_stats(self, album_id: str) -> None:
-        """Update album statistics (track count and duration).
-
-        The "Unknown Album" sentinel counts only unknown-artist tracks —
-        known-artist loose tracks are browsed under their artist, and the
-        card count must match that filtered listing (get_album_tracks)."""
-        cond = (
-            " AND artist_id = 'unknown_artist'"
-            if album_id == "unknown_album" else ""
-        )
+        """Count every album member, including known-artist loose tracks."""
         async with self._open() as conn:
             cursor = await conn.cursor()
             await cursor.execute(
-                f"""
+                """
                 UPDATE albums SET
-                track_count = (SELECT COUNT(*) FROM tracks WHERE album_id = ?{cond}),
-                duration = (SELECT SUM(duration) FROM tracks WHERE album_id = ?{cond})
+                track_count = (SELECT COUNT(*) FROM tracks WHERE album_id = ?),
+                duration = (SELECT SUM(duration) FROM tracks WHERE album_id = ?)
                 WHERE id = ?
             """,
                 (album_id, album_id, album_id),

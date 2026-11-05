@@ -66,8 +66,7 @@ def _seed(db_path: str) -> None:
                 ("t_pf_2", "A2 The Thin Ice", "al_wall", "ar_pinkfloyd", "/f3", "flac"),
                 # Sam Garbett → unknown_album → ORPHAN under both predicates
                 ("t_sg", "The Heat", "unknown_album", "ar_samgarbett", "/f4", "mp3"),
-                # No artist at all → the only track the Unknown Album
-                # sentinel should list when browsed
+                # The umbrella includes tracks with and without a known artist.
                 ("t_lost", "Mystery Song", "unknown_album", "unknown_artist", "/f5", "mp3"),
             ],
         )
@@ -125,18 +124,15 @@ def test_pagination_respects_total(db):
     assert rows == []
 
 
-def test_unknown_album_sentinel_lists_only_unknown_artist_tracks(db):
-    """Regression: a loose track with a KNOWN artist (Sam Garbett)
-    surfaces under that artist's browse view, so the Unknown Album
-    sentinel must not list it too — the same track showed up in two
-    places in the library."""
+def test_unknown_album_sentinel_lists_every_loose_track(db):
+    """The Albums umbrella includes tracks also browsable through their artist."""
     tracks, total = db.get_album_tracks("unknown_album")
-    assert total == 1
-    assert [t["id"] for t in tracks] == ["t_lost"]
+    assert total == 2
+    assert [t["id"] for t in tracks] == ["t_lost", "t_sg"]
 
 
 def test_regular_album_listing_unfiltered(db):
-    """The sentinel filter must not leak into normal albums."""
+    """Ordinary albums still contain all their tracks."""
     tracks, total = db.get_album_tracks("al_wall")
     assert total == 2
     assert {t["id"] for t in tracks} == {"t_pf_1", "t_pf_2"}
