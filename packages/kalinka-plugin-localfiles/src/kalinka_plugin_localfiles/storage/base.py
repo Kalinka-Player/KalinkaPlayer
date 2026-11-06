@@ -206,7 +206,8 @@ class WatchResult:
     changes: set[tuple[ChangeKind, str]] = field(default_factory=set)
     unmounted: set[str] = field(default_factory=set)
     vanished: set[str] = field(default_factory=set)
-    # Armed roots whose change history is incomplete (startup or overflow).
+    # Armed roots whose notification history is incomplete (e.g. overflow).
+    # Startup/reconnect reconciliation belongs to the caller that arms roots.
     rescan: set[str] = field(default_factory=set)
     # A server explicitly refused notifications; periodic scans take over.
     unsupported: set[str] = field(default_factory=set)

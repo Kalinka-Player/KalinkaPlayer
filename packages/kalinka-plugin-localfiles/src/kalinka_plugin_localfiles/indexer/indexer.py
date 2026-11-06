@@ -2399,8 +2399,9 @@ async def _rearm_lost_roots(
     watcher: ChangeWatcher,
     lost_roots: Dict[str, bool],
     db: AsyncIndexerDb,
-) -> None:
-    """Watch the roots that have come back, and rescan the ones that owe it."""
+) -> Set[str]:
+    """Rearm returning roots and report which ones owe reconciliation."""
+    rescan = set()
     candidates = [
         root for root in sorted(lost_roots) if not storage.should_defer_probe(root)
     ]
@@ -2413,20 +2414,25 @@ async def _rearm_lost_roots(
         # Only a root that is actually armed leaves the lost set; one that is
         # back but still unwatchable is retried on the next pass instead of
         # being dropped and never watched again.
-        if not await asyncio.to_thread(watcher.watch, root):
-            logger.debug("Music folder is back but still unwatchable: %s", root)
+        try:
+            if not await asyncio.to_thread(watcher.watch, root):
+                logger.debug("Music folder is back but still unwatchable: %s", root)
+                continue
+            stored = await db.get_root_signature(root)
+        except Exception:
+            # Keep this root retryable without discarding reconciliation
+            # already owed by earlier roots in this pass.
+            logger.exception("Could not finish rearming music folder: %s", root)
             continue
         unmount_seen = lost_roots.pop(root)
-        stored = await db.get_root_signature(root)
         if not rearm_needs_rescan(unmount_seen, status, stored):
             logger.info(
                 f"Music folder is back (same storage), watching it again: {root}"
             )
             continue
         logger.info(f"Music folder is back, watching it again and rescanning: {root}")
-        await _indexer_queue.put(
-            {"incremental_changes": {(ChangeKind.DIR_ADDED, root)}}
-        )
+        rescan.add(root)
+    return rescan
 
 
 async def _watch_roots(
@@ -2451,6 +2457,7 @@ async def _watch_roots(
     lost_roots: Dict[str, bool] = {}
     next_rearm_check = 0.0
     queued = None
+    reconcile: Set[str] = set()
 
     try:
         # Probed together: an unreachable root costs the probe timeout, and
@@ -2477,6 +2484,9 @@ async def _watch_roots(
                     f"Music folder cannot be watched for changes, leaving it "
                     f"to rescans: {root}"
                 )
+            else:
+                # Arm before scanning to cover the initial scan/watch race.
+                reconcile.add(root)
 
         logger.info(
             f"Watching {len(roots) - len(lost_roots)} of {len(roots)} "
@@ -2491,7 +2501,9 @@ async def _watch_roots(
 
                 if lost_roots and time.monotonic() >= next_rearm_check:
                     next_rearm_check = time.monotonic() + REARM_CHECK_INTERVAL_S
-                    await _rearm_lost_roots(storage, watcher, lost_roots, db)
+                    reconcile.update(
+                        await _rearm_lost_roots(storage, watcher, lost_roots, db)
+                    )
 
                 for root in result.unmounted:
                     lost_roots[root] = True
@@ -2507,7 +2519,8 @@ async def _watch_roots(
                 changes = {
                     change for change in result.changes if _worth_indexing(*change)
                 }
-                changes.update((ChangeKind.DIR_ADDED, root) for root in result.rescan)
+                reconcile.update(result.rescan)
+                changes.update((ChangeKind.DIR_ADDED, root) for root in reconcile)
                 if changes:
                     logger.info(
                         f"File watcher detected {len(changes)} relevant events "
@@ -2526,6 +2539,7 @@ async def _watch_roots(
                         pending.update((ChangeKind.DIR_ADDED, root) for root in roots)
                     if enqueue:
                         await _indexer_queue.put(queued)
+                    reconcile.clear()
                     logger.info("Changes added to indexer queue for processing.")
             except asyncio.CancelledError:
                 raise
