@@ -277,6 +277,8 @@ class CollectionSpec(BaseModel):
     # Path of a read-only field reporting on the entries. A client that shows
     # it with the collection does not show it again on its own.
     status: Optional[str] = None
+    # What saving the whole list costs, as `apply` on a field says it.
+    apply: Apply = Apply.INSTANT
 
 
 class SectionSpec(BaseModel):

@@ -138,3 +138,45 @@ def test_a_plugin_field_tagged_so_is_left_for_the_restart():
     assert "input_modules.fake.ai_search" in restart_paths(schema)
     assert "base_config.server.port" in restart_paths(schema)
     assert "input_modules.fake.max_results" not in restart_paths(schema)
+
+
+def test_a_collection_is_left_for_the_restart_only_when_tagged_so():
+    from pydantic import Field
+
+    from kalinka_plugin_sdk import ConfigRecord, Records
+    from kalinka_plugin_sdk.module_config import ModuleConfig
+    from kalinka_server.config_model import KalinkaConfig
+    from kalinka_server.config_schema_processor import build_presentation, restart_paths
+    from kalinka_server.presentation_schema import Apply
+
+    class _Source(ConfigRecord):
+        path: str = ""
+
+    class _Config(ModuleConfig):
+        sources: Records[_Source] = Field(default_factory=list)
+        engines: Records[_Source] = Field(
+            default_factory=list, json_schema_extra={"apply": "restart_required"}
+        )
+
+    schema = build_presentation(
+        base_config=KalinkaConfig(),
+        input_modules={"fake": _Config(name="fake")},
+        devices={},
+        input_modules_with_errors={},
+        devices_with_errors={},
+        dynamic_field_registry={},
+    )
+    by_path = {
+        collection.path: collection
+        for page in schema.pages
+        for module in page.modules
+        for collection in [
+            *module.collections,
+            *(c for section in module.sections for c in section.collections),
+        ]
+    }
+
+    assert by_path["input_modules.fake.sources"].apply is Apply.INSTANT
+    assert by_path["input_modules.fake.engines"].apply is Apply.RESTART_REQUIRED
+    assert "input_modules.fake.engines" in restart_paths(schema)
+    assert "input_modules.fake.sources" not in restart_paths(schema)
