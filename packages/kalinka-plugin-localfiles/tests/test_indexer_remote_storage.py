@@ -872,6 +872,44 @@ class TestReadingThroughOutages:
 
 class TestIncrementalRemoteChanges:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("detection", ["full_scan", "deletion_cleanup"])
+    async def test_outage_without_a_write_event_still_owes_a_recovery_scan(
+        self, library, tmp_path, monkeypatch, detection
+    ):
+        indexer, vault, config = library
+        config.scan_interval_minutes = 0
+        now = [0.0]
+        indexer._source_retries = SourceRetries(clock=lambda: now[0])
+        data = _flac(tmp_path, {"title": "A"})
+        old = vault.add(f"{ROOT}/old.flac", data)
+        await indexer.run_scan()
+        # The in-memory storage has no automount to wait for.
+        monkeypatch.setattr(vault, "await_root_available", vault.probe_root)
+        vault.available = False
+        if detection == "full_scan":
+            await indexer.run_scan()
+        else:
+            await indexer.handle_incremental_changes({("path_removed", old)})
+        assert ROOT in indexer._source_retries
+        assert len(await indexer.db_manager.get_all_tracks()) == 1
+        assert indexer.deferred_retry_in() == 30
+        now[0] += 5
+        await indexer._probe_music_roots([ROOT])
+        assert indexer.deferred_retry_in() == 25  # Observation does not reset backoff.
+        vault.trips.clear()
+        await indexer.handle_incremental_changes({("path_removed", old)})
+        await indexer.retry_deferred_files()
+        assert not vault.trips
+
+        vault.remove(old)
+        new = vault.add(f"{ROOT}/Unreported/new.flac", data)
+        vault.available = True
+        now[0] += 30
+        await indexer.retry_deferred_files()
+        assert [row["file_path"] for row in await indexer.db_manager.get_all_tracks()] == [new]
+        assert ROOT not in indexer._source_retries
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("manual_scan", [False, True])
     async def test_unavailable_source_backs_off_once_for_all_files_and_rescans_on_recovery(
         self, library, tmp_path, caplog, manual_scan
