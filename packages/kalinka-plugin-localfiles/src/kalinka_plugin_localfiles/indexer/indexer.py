@@ -613,7 +613,10 @@ class FileIndexer:
                 for _, path in active_changes
             }
             covers_changed = await self.resolve_artwork(
-                [root for root in self.music_folders if root in roots],
+                [
+                    root for root in self.music_folders
+                    if root in roots and root not in self._source_retries
+                ],
                 dirty_dirs=art_dirs,
             )
 
@@ -2139,6 +2142,8 @@ class FileIndexer:
 
         Together rather than in turn: each root that is not there costs the
         whole retry window, and a scan should not pay for them end to end.
+        Observed outages also schedule recovery independently of the scan
+        interval; repeated observations retain the existing retry deadline.
         """
         roots = list(self.music_folders if roots is None else roots)
         statuses = await asyncio.gather(
@@ -2147,6 +2152,13 @@ class FileIndexer:
                 for root in roots
             )
         )
+        # Scans and deletion cleanup can discover an outage without any
+        # failed file write. They owe the same recovery scan, including
+        # when scheduled scans and notifications are disabled. Observing an
+        # already suspended root must not restart or escalate its timer.
+        for status in statuses:
+            if not status.available and status.root not in self._source_retries:
+                self._suspend_source(status)
         return dict(zip(roots, statuses))
 
     async def _blocked_reason(
