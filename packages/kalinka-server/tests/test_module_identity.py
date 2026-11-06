@@ -26,8 +26,8 @@ def test_the_library_is_called_my_library():
     assert _card().title == "My Library"
 
 
-def test_the_library_is_drawn_as_a_folder():
-    assert module_icon(LocalFilesConfig) == "folder_outlined"
+def test_the_library_has_a_music_note_fallback():
+    assert module_icon(LocalFilesConfig) == "music_note_outlined"
 
 
 def test_the_settings_card_draws_the_icon_the_badge_does():
