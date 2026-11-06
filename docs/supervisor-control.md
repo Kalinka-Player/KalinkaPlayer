@@ -157,7 +157,8 @@ is busy, including after a supervisor restart.
  "server_id": "ee4d496c-3f6c-4388-a02e-f6a2f17829cd",
  "renderer_id": "5c0ffee0-1d2e-4a3b-8c4d-5e6f7a8b9c0d",
  "actions": ["restart_core", "reboot", "poweroff", "reinstall", "set_soundcard", "remove_plugin", "set_timezone"],
- "poweroff_timer": true}
+ "poweroff_timer": true,
+ "poweroff_schedule": true}
 ```
 
 - `version` is the package version.
@@ -228,11 +229,38 @@ invokes systemd.
 | POST | `/v1/actions/restart_core` | 202 `{"action": "restart_core"}` once systemd has queued the restart |
 | POST | `/v1/actions/reboot` | 202 `{"action": "reboot"}`, then the streamer reboots |
 | POST | `/v1/actions/poweroff` | 202 `{"action": "poweroff"}`, then the streamer powers off |
+| GET, HEAD | `/v1/power-off` | Current power state and sleep-timer countdown |
+| POST | `/v1/actions/schedule_poweroff` | Set or replace a sleep timer; body: `{"server_id":"…","minutes":30}` |
+| POST | `/v1/actions/cancel_poweroff` | Cancel the sleep timer; body: `{"server_id":"…"}` |
 | POST | `/v1/actions/reinstall` | 202 `{"action": "reinstall"}` once the reinstall has been queued |
 | POST | `/v1/actions/remove_plugin` | 202 `{"action": "remove_plugin", "package": "..."}` once the removal has been queued; the body also names the `package` |
 | POST | `/v1/actions/set_soundcard` | 202 `{"action": "set_soundcard", "reboot": true}` once the card is set up; when `reboot` is true, the streamer then restarts |
 | POST | `/v1/actions/set_timezone` | 202 `{"action": "set_timezone", "timezone": "Asia/Kolkata"}` once the streamer is on that zone; the body also names the `timezone` |
 | OPTIONS | any API path | CORS preflight |
+
+The three sleep-timer routes require `poweroff_schedule: true` in `/info`.
+Scheduling accepts exactly 30, 60 or 90 minutes; **Now** uses the existing
+`poweroff` action. Scheduling again replaces the previous deadline. Scheduling
+and cancellation return the same JSON shape as `GET /v1/power-off`:
+
+```json
+{"server_id":"…","state":"scheduled","remaining_seconds":1800}
+```
+
+`state` is `on`, `scheduled`, `powering_off` or `restarting`;
+`remaining_seconds` is null unless scheduled. It rounds up to whole seconds
+and stays at zero while a due shutdown waits for an operation guard. All three
+routes use the existing LAN/origin protections; mutations require the matching
+server identity. Cancellation is idempotent, but returns `shutting_down` once
+shutdown has been admitted. An unreachable supervisor cannot report power state.
+
+Supervisor owns this explicit timer with a monotonic deadline. It continues
+when the app closes or Core restarts, and clears on a supervisor restart or
+change of server identity. While scheduled it takes precedence over Core's
+inactivity timer, without changing the saved inactivity settings. Cancelling
+resumes the normal inactivity policy. Expiry uses the same shutdown coordinator
+as immediate power-off, including update, helper and network guards; refusals
+and failed shutdowns are retried on the next five-second tick.
 
 `GET /v1/status` returns:
 

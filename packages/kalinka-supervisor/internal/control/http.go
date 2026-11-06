@@ -39,7 +39,7 @@ var outcomes = map[string]struct {
 	status  int
 	message string
 }{
-	"invalid_request":        {http.StatusBadRequest, "The request body must be a JSON object with only the streamer's identity and, for set_soundcard, a sound card name, for remove_plugin, a package name, or, for set_timezone, a time zone name"},
+	"invalid_request":        {http.StatusBadRequest, "The request body must be a JSON object with only the streamer's identity and, for set_soundcard, a sound card name, for remove_plugin, a package name, for set_timezone, a time zone name, or, for schedule_poweroff, minutes of 30, 60 or 90"},
 	"not_local":              {http.StatusForbidden, "Only the local network may use this API"},
 	"host_not_allowed":       {http.StatusForbidden, "Address this streamer by its IP address or local name"},
 	"origin_not_allowed":     {http.StatusForbidden, "Only pages served by this streamer may use this API"},
@@ -106,6 +106,7 @@ type HandlerConfig struct {
 	EnableSSH     func(context.Context, protocol.Secret) error
 	Simulated     bool
 	NetworkSetup  NetworkSetup
+	PowerOffTimer *PowerOffTimer
 }
 
 type handler struct {
@@ -209,6 +210,12 @@ func (h *handler) route(path string) (route, bool) {
 		return route{http.MethodGet, h.info}, true
 	case path == "/v1/status":
 		return route{http.MethodGet, h.status}, true
+	case path == "/v1/power-off" && h.cfg.PowerOffTimer != nil:
+		return route{http.MethodGet, h.powerStatus}, true
+	case (path == "/v1/actions/schedule_poweroff" || path == "/v1/actions/cancel_poweroff") && h.cfg.PowerOffTimer != nil:
+		return route{http.MethodPost, func(w http.ResponseWriter, r *http.Request) string {
+			return h.schedulePowerOff(w, r, path == "/v1/actions/cancel_poweroff")
+		}}, true
 	case path == "/v1/dashboard":
 		return route{http.MethodGet, h.dashboard}, true
 	case path == "/v1/reinstall/log":
@@ -251,11 +258,12 @@ func (h *handler) info(w http.ResponseWriter, _ *http.Request) string {
 	reply(w, http.StatusOK, map[string]any{
 		"name": "kalinka-supervisor", "version": h.cfg.Version,
 		"protocol": Protocol, "min_protocol": MinProtocol,
-		"server_id":      nullable(coreconf.ReadID(h.cfg.ServerIDFile)),
-		"renderer_id":    nullable(coreconf.ReadID(h.cfg.RendererIDFile)),
-		"actions":        h.actions(),
-		"poweroff_timer": true,
-		"network_setup":  h.cfg.NetworkSetup != nil,
+		"server_id":         nullable(coreconf.ReadID(h.cfg.ServerIDFile)),
+		"renderer_id":       nullable(coreconf.ReadID(h.cfg.RendererIDFile)),
+		"actions":           h.actions(),
+		"poweroff_timer":    true,
+		"poweroff_schedule": h.cfg.PowerOffTimer != nil,
+		"network_setup":     h.cfg.NetworkSetup != nil,
 	}, false)
 	return ""
 }
