@@ -132,8 +132,14 @@ async def until(check, description, timeout=20):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("overflow", [False, True])
 async def test_notifications_update_the_real_indexer_and_recover_after_disconnect(
-    share, tmp_path, monkeypatch, overflow
+    share, tmp_path, monkeypatch, overflow, caplog
 ):
+    from kalinka_plugin_localfiles.indexer.source_retries import SourceRetries
+
+    monkeypatch.setattr(
+        module, "SourceRetries",
+        lambda: SourceRetries(initial_delay=0.2, max_delay=1.0),
+    )
     if overflow:
         from kalinka_plugin_localfiles.storage.smb_watcher import _Notification
 
@@ -219,6 +225,13 @@ async def test_notifications_update_the_real_indexer_and_recover_after_disconnec
 
         await until(lost, "lost subscription")
         assert await row("Artist/Renamed/track.flac")  # outage is not deletion
+        # A write queued before disconnect may reach the indexer only after
+        # the NAS has gone. It must suspend the source, not spin on the file.
+        await module._indexer_queue.put({"incremental_changes": {
+            ("file_closed", share.root + "/Artist/Renamed/track.flac")
+        }})
+        await asyncio.wait_for(module._indexer_queue.join(), timeout=10)
+        assert any("pausing file retries" in record.message for record in caplog.records)
         (share.music / "Artist/Renamed/track.flac").unlink()
         (share.music / "offline.flac").write_bytes(audio(tmp_path, "While offline"))
         await asyncio.to_thread(podman, "start", share.name)

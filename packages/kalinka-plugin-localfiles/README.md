@@ -52,6 +52,12 @@ Notifications are batched, and reconnecting or losing notification details
 triggers reconciliation of that source. Incremental cleanup only checks the
 affected paths, leaving unrelated tracks and shares alone.
 
+Chunk writes share one pending upload check, without resetting its timer or
+logging every notification. If a source becomes unavailable during indexing,
+file retries pause while availability checks back off from 30 seconds to a
+maximum of 5 minutes. Recovery triggers a full scan of that source even when
+periodic scans are disabled, covering changes missed during the outage.
+
 Keep the periodic scan enabled as a fallback. Some servers do not support
 notifications, and a recursive Samba watch may miss changes made directly
 on the NAS in subfolders (for example by a download or sync job). With the
