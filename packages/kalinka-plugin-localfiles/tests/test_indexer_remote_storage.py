@@ -866,3 +866,95 @@ class TestReadingThroughOutages:
         await indexer.cleanup_stale_tracks()
 
         assert len(await indexer.db_manager.get_all_tracks()) == 1
+
+
+class TestIncrementalRemoteChanges:
+    @pytest.mark.asyncio
+    async def test_removing_a_directory_checks_only_its_descendants(self, library, tmp_path):
+        indexer, vault, _ = library
+        removed = vault.add(f"{ROOT}/Album/a.flac", _flac(tmp_path, {"title": "A"}))
+        kept = vault.add(f"{ROOT}/Album Two/b.flac", _flac(tmp_path, {"title": "B"}))
+        await indexer.run_scan()
+        vault.remove(removed)
+        vault.trips.clear()
+
+        await indexer.handle_incremental_changes({("path_removed", f"{ROOT}/Album")})
+
+        assert [t["file_path"] for t in await indexer.db_manager.get_all_tracks()] == [kept]
+        assert kept not in _audio_trips(vault, "stat", "open")
+
+    @pytest.mark.asyncio
+    async def test_an_offline_notification_does_not_delete_tracks(self, library, tmp_path):
+        indexer, vault, _ = library
+        track = vault.add(f"{ROOT}/a.flac", _flac(tmp_path, {"title": "A"}))
+        await indexer.run_scan()
+        vault.available = False
+
+        await indexer.handle_incremental_changes({("path_removed", track)})
+
+        assert [t["file_path"] for t in await indexer.db_manager.get_all_tracks()] == [track]
+
+    @pytest.mark.asyncio
+    async def test_rename_keeps_identity_before_scoped_cleanup(self, library, tmp_path):
+        indexer, vault, _ = library
+        old = vault.add(f"{ROOT}/Before/a.flac", _flac(tmp_path, {"title": "A"}))
+        await indexer.run_scan()
+        before = (await indexer.db_manager.get_all_tracks())[0]
+        new = f"{ROOT}/After/a.flac"
+        vault.rename(old, new)
+
+        await indexer.handle_incremental_changes({
+            ("path_removed", f"{ROOT}/Before"), ("dir_added", f"{ROOT}/After"),
+        })
+
+        after = (await indexer.db_manager.get_all_tracks())[0]
+        assert after["file_path"] == new
+        assert after["id"] == before["id"]
+
+    @pytest.mark.asyncio
+    async def test_write_notification_overrides_unchanged_size_and_timestamp(self, library, tmp_path):
+        indexer, vault, _ = library
+        old = _flac(tmp_path, {"title": "Old"})
+        new = _flac(tmp_path, {"title": "New"})
+        assert len(old) == len(new)
+        track = vault.add(f"{ROOT}/a.flac", old)
+        await indexer.run_scan()
+        vault.nodes[track].data = new
+
+        await indexer.handle_incremental_changes({("file_closed", track)})
+
+        assert (await indexer.db_manager.get_all_tracks())[0]["title"] == "New"
+
+    @pytest.mark.asyncio
+    async def test_locked_upload_is_retried_without_another_notification(self, library, tmp_path):
+        indexer, vault, _ = library
+        track = vault.add(f"{ROOT}/a.flac", _flac(tmp_path, {"title": "A"}))
+        vault.failing[("open", track)] = PermissionError("writer holds the file")
+        await indexer.handle_incremental_changes({("file_closed", track)})
+        assert not await indexer.db_manager.get_all_tracks()
+        assert track in indexer._deferred_files
+
+        del vault.failing[("open", track)]
+        indexer._deferred_files[track] = 0
+        await indexer.retry_deferred_files()
+
+        assert (await indexer.db_manager.get_all_tracks())[0]["file_path"] == track
+
+    @pytest.mark.asyncio
+    async def test_write_and_rename_in_one_batch_keep_the_original_identity(self, library, tmp_path):
+        indexer, vault, _ = library
+        old = vault.add(f"{ROOT}/old.flac", _flac(tmp_path, {"title": "Old"}))
+        await indexer.run_scan()
+        before = (await indexer.db_manager.get_all_tracks())[0]
+        new = f"{ROOT}/new.flac"
+        vault.rename(old, new)
+        vault.nodes[new].data = _flac(tmp_path, {"title": "New"})
+
+        await indexer.handle_incremental_changes({
+            ("path_removed", old), ("file_moved", new), ("file_closed", new),
+        })
+
+        after, = await indexer.db_manager.get_all_tracks()
+        assert after["id"] == before["id"]
+        assert after["title"] == "New"
+        assert after["file_path"] == new

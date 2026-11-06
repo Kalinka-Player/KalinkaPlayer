@@ -181,6 +181,7 @@ def _format_root_status(
     status: RootStatus,
     stored_signature: Optional[str],
     scan_interval_minutes: int,
+    file_watch_enabled: bool = True,
 ) -> str:
     """Render one music folder's mount status as the markdown the UI displays."""
     if _mount_mismatch(status, stored_signature):
@@ -210,10 +211,16 @@ def _format_root_status(
             if scan_interval_minutes
             else "when you rescan the library"
         )
-        notes.append(
-            f"Changes made to the share by other machines are picked up {when}, "
-            "not instantly."
-        )
+        if status.fs_type == "smb" and file_watch_enabled:
+            notes.append(
+                "Changes are watched when the SMB server supports notifications. "
+                f"Missed changes are picked up {when}."
+            )
+        else:
+            notes.append(
+                f"Changes made to the share by other machines are picked up {when}, "
+                "not instantly."
+            )
     if notes:
         text += "\n" + "\n".join(f"- {note}" for note in notes)
     return text
@@ -963,7 +970,9 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
                 return "No music folders configured."
             config = LocalFilesConfig(**self._context.config.model_dump())
             return "\n\n".join(
-                _format_root_status(status, stored, config.scan_interval_minutes)
+                _format_root_status(
+                    status, stored, config.scan_interval_minutes, config.file_watch_enabled
+                )
                 for status, stored in statuses
             )
         # Strip the "<subfeature>." prefix from a "<subfeature>.status_view" path.

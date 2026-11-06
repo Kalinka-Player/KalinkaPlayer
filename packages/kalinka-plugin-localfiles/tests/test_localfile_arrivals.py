@@ -224,6 +224,8 @@ def worker(monkeypatch):
     shutdown = asyncio.Event()
 
     class Indexer:
+        storage = SimpleNamespace(close=lambda: None)
+
         async def start(self):
             run.scans.append(run.now)
             # Back-to-back scans never yield, so end the run instead of hanging.

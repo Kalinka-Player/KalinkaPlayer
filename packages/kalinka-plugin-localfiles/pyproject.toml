@@ -42,7 +42,9 @@ dependencies = [
     "mutagen>=1.46.0",
     # Pure-Python SMB2/3 client. Shares are read over the protocol rather
     # than mounted: mounting needs privileges the unit denies itself.
-    "smbprotocol>=1.10,<2",
+    # 1.16 exposes guest signing options through file APIs; 1.16.1 fixes
+    # receiver teardown deadlocks, important for long-lived notifications.
+    "smbprotocol>=1.16.1,<2",
     # Listens for the shares that announce themselves, so a NAS can be
     # picked from a list rather than typed from memory.
     "zeroconf>=0.47.0",
