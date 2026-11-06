@@ -9,6 +9,7 @@ descriptors that nothing will ever close.
 """
 
 import asyncio
+import logging
 import queue as thread_queue
 import time
 
@@ -208,7 +209,7 @@ async def test_cancelling_the_worker_closes_the_watchers(worker):
 
 
 @pytest.mark.asyncio
-async def test_events_accumulate_in_one_batch_while_the_indexer_is_busy(tmp_path, monkeypatch):
+async def test_events_accumulate_in_one_batch_while_the_indexer_is_busy(tmp_path, monkeypatch, caplog):
     from kalinka_plugin_localfiles.storage import ChangeKind
 
     class BusyWatcher(_Watcher):
@@ -225,6 +226,7 @@ async def test_events_accumulate_in_one_batch_while_the_indexer_is_busy(tmp_path
         db_path=str(tmp_path / "db.sqlite"), artwork_path=str(tmp_path / "art")
     )
     queue = asyncio.Queue()
+    caplog.set_level(logging.INFO)
     monkeypatch.setattr(indexer_mod, "_indexer_queue", queue)
     monkeypatch.setattr(indexer_mod, "_file_watcher_stop_event", asyncio.Event())
     task = asyncio.create_task(indexer_mod._watch_roots(
@@ -233,6 +235,10 @@ async def test_events_accumulate_in_one_batch_while_the_indexer_is_busy(tmp_path
     try:
         await _until(lambda: watcher.polls >= 10)
         assert queue.qsize() == 1
+        assert not any(
+            "File watcher detected" in record.message or "Changes added to indexer queue" in record.message
+            for record in caplog.records
+        )
         command = await queue.get()
         changes = command.take()
         assert len(changes) >= 9
