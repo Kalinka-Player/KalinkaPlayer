@@ -66,6 +66,7 @@ from ..storage import (
     RootStatus,
     StorageResolver,
     build_resolver,
+    is_within,
     library_roots,
     media_type_of,
     storage_failure,
@@ -464,7 +465,7 @@ class FileIndexer:
                 )
 
     async def handle_incremental_changes(self, changes: Set[Tuple[str, str]]):
-        """Process filesystem changes detected by the inotify watcher, the
+        """Process filesystem changes detected by a storage watcher, the
         batch sharing one database connection."""
         async with shared_connection(self.config.db_path):
             await self._apply_changes(changes)
@@ -480,15 +481,23 @@ class FileIndexer:
         processed_files = set()
         art_dirs: Set[str] = set()
 
-        for change_type, file_path in changes:
+        # A batch can contain both a rename and a write for the same file.
+        # Apply writes first so the weaker rename cannot suppress a retag.
+        for change_type, file_path in sorted(
+            changes, key=lambda change: (change[0] != ChangeKind.FILE_WRITTEN, len(change[1]))
+        ):
             logger.debug(f"Change detected: {change_type} - {file_path}")
-            if change_type in (ChangeKind.DIR_ADDED, ChangeKind.DIR_REMOVED):
+            if change_type in (
+                ChangeKind.DIR_ADDED, ChangeKind.DIR_REMOVED, ChangeKind.PATH_REMOVED
+            ):
                 art_dirs.update((file_path, os.path.dirname(file_path)))
             elif is_cover_image_name(os.path.basename(file_path)):
                 art_dirs.add(os.path.dirname(file_path))
                 continue
 
             if change_type == "dir_added":
+                if any(is_within(file_path, directory) for directory in processed_dirs):
+                    continue
                 logger.info(f"New directory detected: {file_path}")
                 try:
                     await self.scan_folder(file_path, changed_items)
@@ -518,7 +527,7 @@ class FileIndexer:
                     )
                     parent_processed = True
                     break
-            if parent_processed:
+            if parent_processed and change_type != ChangeKind.FILE_WRITTEN:
                 continue
 
             if not self._is_supported_audio_file(file_path):
@@ -528,7 +537,11 @@ class FileIndexer:
                 # File was closed after write or moved (atomic rename) - safe to process
                 try:
                     logger.info(f"Processing changed file: {file_path}")
-                    result_changes = await self.process_file(file_path)
+                    # A notification is evidence of a write even if a tagger
+                    # preserved the size and second-resolution timestamp.
+                    result_changes = await self.process_file(
+                        file_path, force=change_type == ChangeKind.FILE_WRITTEN
+                    )
                     processed_files.add(file_path)
                     if result_changes:
                         for key, value in result_changes.items():
@@ -536,10 +549,12 @@ class FileIndexer:
                                 changed_items[key].add(value)
                 except OSError as e:
                     logger.warning(
-                        "Could not read changed file %s (%s); it is tried "
-                        "again on the next scan",
+                        "Could not read changed file %s (%s); retrying after it settles",
                         file_path,
                         e,
+                    )
+                    self._deferred_files[file_path] = (
+                        time.monotonic() + max(5.0, self.config.quiescence_seconds)
                     )
                 except Exception as e:
                     logger.exception(
@@ -551,7 +566,9 @@ class FileIndexer:
             and is_cover_image_name(os.path.basename(path))
             for kind, path in changes
         )
-        removed = {} if only_images else await self.cleanup_stale_tracks()
+        removed = {} if only_images else await self.cleanup_stale_tracks(
+            affected_paths={path for _, path in changes}
+        )
 
         if any(changed_items.values()) or any(removed.values()):
             await self._group_albums()
@@ -987,7 +1004,9 @@ class FileIndexer:
         else:
             title = os.path.basename(file_path)
 
-        track_id = generate_track_id(file_path)
+        # A rename keeps the original id. A subsequent write notification
+        # must update that row rather than derive a second id from its new path.
+        track_id = existing_track["id"] if existing_track else generate_track_id(file_path)
         track_data: Dict[str, Any] = {
             "id": track_id,
             "title": title,
@@ -2033,14 +2052,16 @@ class FileIndexer:
             return True
         return False
 
-    async def _probe_music_roots(self) -> Dict[str, RootStatus]:
+    async def _probe_music_roots(
+        self, roots: Optional[Iterable[str]] = None
+    ) -> Dict[str, RootStatus]:
         """Availability of each configured root, giving a pending automount a
         bounded chance to complete before the root is called unavailable.
 
         Together rather than in turn: each root that is not there costs the
         whole retry window, and a scan should not pay for them end to end.
         """
-        roots = list(self.music_folders)
+        roots = list(self.music_folders if roots is None else roots)
         statuses = await asyncio.gather(
             *(
                 self.storage.for_path(root).await_root_available(root)
@@ -2093,7 +2114,8 @@ class FileIndexer:
             return True
 
     async def cleanup_stale_tracks(
-        self, listed: AbstractSet[str] = frozenset()
+        self, listed: AbstractSet[str] = frozenset(),
+        *, affected_paths: Optional[AbstractSet[str]] = None,
     ) -> Dict[str, int]:
         """Remove entries that are no longer valid for the file system.
 
@@ -2115,12 +2137,30 @@ class FileIndexer:
         @param listed Files a walk has just found, which are known to be
             there without asking again. Any other row costs a check of its
             own, including those in a folder the walk could not list.
+        @param affected_paths Limit an incremental cleanup to these files
+            and subtrees. Full scans still reconcile the complete library.
         """
         logger.debug("Checking for stale files in the database...")
-        root_status = await self._probe_music_roots()
+
+        def affected(path: str) -> bool:
+            return affected_paths is None or any(
+                is_within(path, changed) for changed in affected_paths
+            )
+
+        # Match the innermost source, as credential routing does. A parent
+        # notification must not bypass a nested source's mount guard.
+        configured_roots = sorted(self.music_folders, key=len, reverse=True)
+        roots = configured_roots if affected_paths is None else {
+            root for root in configured_roots
+            if any(
+                is_within(path, root) or is_within(root, path)
+                for path in affected_paths
+            )
+        }
+        root_status = await self._probe_music_roots(roots)
         signatures = {
             root: await self.db_manager.get_root_signature(root)
-            for root in self.music_folders
+            for root in roots
         }
         blocked_reasons = {}
         for root, status in root_status.items():
@@ -2136,7 +2176,9 @@ class FileIndexer:
         kept_per_root: Dict[str, int] = {}
         for track in all_tracks:
             file_path = track["file_path"]
-            root = self.storage.root_of(file_path, self.music_folders)
+            if not affected(file_path):
+                continue
+            root = self.storage.root_of(file_path, configured_roots)
             if root is not None and in_housekeeping(file_path, root):
                 housekeeping.append(track)
             elif root in blocked:
@@ -2215,7 +2257,8 @@ class FileIndexer:
         checkable = [
             path
             for path in await self.db_manager.get_failure_paths()
-            if self.storage.root_of(path, self.music_folders) not in blocked
+            if affected(path)
+            and self.storage.root_of(path, configured_roots) not in blocked
         ]
         gone_failures = await self._missing_paths(checkable, listed)
         for failed_path in checkable:
@@ -2243,12 +2286,25 @@ class FileIndexer:
         }
 
 
+@dataclass
+class _ChangeBatch:
+    """A queued watcher batch, coalesced until the consumer claims it."""
+
+    changes: Set[Tuple[str, str]]
+    claimed: bool = False
+
+    def take(self) -> Set[Tuple[str, str]]:
+        self.claimed = True
+        return self.changes
+
+
 async def _indexer_worker(
     config: LocalFilesConfig,
     db_manager: AsyncIndexerDb,
     scan_control: Optional[ScanControl] = None,
 ):
     """Serialize periodic checks, manual requests and watcher changes."""
+    indexer_instance = None
 
     async def scan():
         if scan_control:
@@ -2295,6 +2351,8 @@ async def _indexer_worker(
                         elif command == "stop":
                             _shutdown_event.set()
                             break
+                        elif isinstance(command, _ChangeBatch):
+                            await indexer_instance.handle_incremental_changes(command.take())
                         elif isinstance(command, dict) and "incremental_changes" in command:
                             await indexer_instance.handle_incremental_changes(
                                 command["incremental_changes"]
@@ -2308,6 +2366,8 @@ async def _indexer_worker(
                 logger.exception("Error in indexer worker")
                 await asyncio.sleep(5)
     finally:
+        if indexer_instance is not None:
+            await asyncio.to_thread(indexer_instance.storage.close)
         if scan_control:
             scan_control.available.clear()
             scan_control.pending.clear()
@@ -2321,7 +2381,9 @@ def _worth_indexing(kind: ChangeKind, path: str) -> bool:
     tracks with it. A file event matters for a format this module indexes,
     and for an image that may be an album's cover.
     """
-    if kind in (ChangeKind.DIR_ADDED, ChangeKind.DIR_REMOVED):
+    if kind in (
+        ChangeKind.DIR_ADDED, ChangeKind.DIR_REMOVED, ChangeKind.PATH_REMOVED
+    ):
         return True
     if is_supported_audio_file(path):
         return True
@@ -2388,6 +2450,7 @@ async def _watch_roots(
     # False when a rescan is owed unconditionally.
     lost_roots: Dict[str, bool] = {}
     next_rearm_check = 0.0
+    queued = None
 
     try:
         # Probed together: an unreachable root costs the probe timeout, and
@@ -2438,16 +2501,31 @@ async def _watch_roots(
                     )
                 for root in result.vanished:
                     lost_roots[root] = False
+                for root in result.unsupported:
+                    lost_roots.pop(root, None)
 
                 changes = {
                     change for change in result.changes if _worth_indexing(*change)
                 }
+                changes.update((ChangeKind.DIR_ADDED, root) for root in result.rescan)
                 if changes:
                     logger.info(
                         f"File watcher detected {len(changes)} relevant events "
                         "(added/changed/removed)."
                     )
-                    await _indexer_queue.put({"incremental_changes": changes})
+                    # The consumer claims the set before processing it. Until
+                    # then, coalesce into its queued batch so a long scan
+                    # cannot accumulate one command per notification window.
+                    enqueue = queued is None or queued.claimed
+                    if enqueue:
+                        queued = _ChangeBatch(set())
+                    pending = queued.changes
+                    pending.update(changes)
+                    if len(pending) > 10000:
+                        pending.clear()
+                        pending.update((ChangeKind.DIR_ADDED, root) for root in roots)
+                    if enqueue:
+                        await _indexer_queue.put(queued)
                     logger.info("Changes added to indexer queue for processing.")
             except asyncio.CancelledError:
                 raise
@@ -2455,7 +2533,7 @@ async def _watch_roots(
                 logger.exception(f"Error reading change events: {e}")
                 await asyncio.sleep(1)
     finally:
-        watcher.close()
+        await asyncio.to_thread(watcher.close)
 
 
 async def _watch_one_storage(
@@ -2528,7 +2606,8 @@ async def _file_watcher_worker(config: LocalFilesConfig):
     finally:
         # Idempotent, so this also covers a loop that never started.
         for _, watcher in watched:
-            watcher.close()
+            await asyncio.to_thread(watcher.close)
+        await asyncio.to_thread(resolver.close)
         logger.info("File watcher task exited")
 
 

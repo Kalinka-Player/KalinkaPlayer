@@ -203,6 +203,8 @@ async def _until(predicate):
 
 
 class _IdleRetries:
+    storage = SimpleNamespace(close=lambda: None)
+
     def deferred_retry_in(self):
         return 30
 
@@ -218,7 +220,7 @@ async def test_deferred_files_are_retried_without_another_watcher_event(
     scans = []
     retried = asyncio.Event()
 
-    class Indexer:
+    class Indexer(_IdleRetries):
         def __init__(self, *_):
             pass
 

@@ -639,11 +639,12 @@ class TestAvailability:
 
 
 class TestChangeNotification:
-    def test_a_share_cannot_report_changes(self):
-        """SMB2 change notification is not something a NAS can be relied on
-        for, so these roots are left to the periodic scan — and saying so is
-        what keeps the watcher from pretending otherwise."""
-        assert _storage().watcher() is None
+    def test_a_share_has_a_watcher_without_connecting(self):
+        from kalinka_plugin_localfiles.storage.base import ChangeWatcher
+
+        watcher = _storage().watcher()
+        assert isinstance(watcher, ChangeWatcher)
+        watcher.close()
 
 
 class TestTellingARefusalFromSilence:

@@ -39,6 +39,7 @@ from smbprotocol.exceptions import (
 from smbprotocol.tree import TreeConnect
 
 from .base import (
+    ChangeWatcher,
     DirEntry,
     FileIdentity,
     FileStat,
@@ -173,6 +174,11 @@ class SmbStorage(FileStorage):
 
     def handles(self, path: str) -> bool:
         return scheme_of(path) == SMB_SCHEME
+
+    def watcher(self) -> ChangeWatcher:
+        from .smb_watcher import SmbChangeWatcher
+
+        return SmbChangeWatcher(self)
 
     def canonical(self, path: str) -> str:
         return str(parse(path))

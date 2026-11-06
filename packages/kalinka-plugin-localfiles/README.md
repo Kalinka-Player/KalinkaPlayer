@@ -43,13 +43,28 @@ type on the parent returns the same filtered listing and total.
 Files whose size or timestamp changes during copying are retried after they
 settle, without requiring another filesystem event or a manual scan.
 
+With **Enable file watching** on, native `smb://` sources subscribe to SMB2/3
+change notifications. New or edited audio, renamed or removed files and
+folders, and cover images update the library after files settle. Each source
+uses one recursive directory subscription with the source's existing login;
+read-only accounts and guest shares can be watched when the server allows it.
+Notifications are batched, and reconnecting or losing notification details
+triggers reconciliation of that source. Incremental cleanup only checks the
+affected paths, leaving unrelated tracks and shares alone.
+
+Keep the periodic scan enabled as a fallback. Some servers do not support
+notifications, and a recursive Samba watch may miss changes made directly
+on the NAS in subfolders (for example by a download or sync job). With the
+scan interval set to 0, unreported changes wait for a manual rescan or restart.
+Shares mounted as local filesystem paths still use local filesystem watching.
+
 An album's cover comes from its own folder when an image there is named `cover`, `folder`, `front` or `album` (JPEG, PNG, GIF or WebP, in any case), preferred in that order. It may sit beside the audio, in an artwork folder under it, or in a disc folder. Otherwise the cover is the embedded front cover most of the album's tracks carry, ties going to the earliest track. Failing that it is the most common embedded picture with no type, then a sleeve scan chosen by how it looks.
 
 A folder only counts when the album is the only one with tracks in it. Several albums sharing a directory, loose tracks beside an album, or a library root give their images to none of them. Local art replaces covers found online or generated, which only fill albums with none of their own.
 
 A track whose embedded cover differs from its album's keeps its own: the queue, Now Playing and track lists show it, while album grids and headers keep the album's. Tracks sharing such a picture share one stored copy, and a track showing its album's cover stores nothing. A loose track with no album keeps the cover it embeds.
 
-Covers follow changes to the files at the next scan: an image added, replaced or removed, a retag, a track moving to another album. In a watched local folder they follow at once. A changed cover gets a new link, so clients that cache covers show the new one. Cover files nothing uses any more are deleted after a full scan, and a link kept under a regrouped album's old id shows the cover of the album it became. Embedded covers are chosen by picture type, front cover first; a back cover, booklet page or artist photo is never the front.
+Covers follow changes to the files at the next scan: an image added, replaced or removed, a retag, a track moving to another album. In a watched local folder or an SMB source reporting notifications they follow at once. A changed cover gets a new link, so clients that cache covers show the new one. Cover files nothing uses any more are deleted after a full scan, and a link kept under a regrouped album's old id shows the cover of the album it became. Embedded covers are chosen by picture type, front cover first; a back cover, booklet page or artist photo is never the front.
 
 Ogg Vorbis tags and `METADATA_BLOCK_PICTURE` covers are read like FLAC's, with
 the older `COVERART` comment as a fallback cover. A chained file, such as a
@@ -105,3 +120,13 @@ See the [renderer settings](../kalinka-renderer/README.md#settings). Native DSD
 and DoP preserve the source rate; there is no PCM fallback or DSD rate
 conversion. DST-compressed DFF can have its metadata indexed but is not
 playable by the renderer.
+
+The SMB notification integration tests run against an isolated Samba container,
+without downloading recordings or AI models:
+
+```sh
+KALINKA_SMB_TEST=1 .venv/bin/python -m pytest packages/kalinka-plugin-localfiles/tests/test_smb_notifications_live.py
+```
+
+They require rootless Podman and build the existing system-test Samba image
+when it is not already cached.

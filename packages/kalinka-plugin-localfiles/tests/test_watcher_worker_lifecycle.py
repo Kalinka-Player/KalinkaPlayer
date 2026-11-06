@@ -202,3 +202,65 @@ async def test_cancelling_the_worker_closes_the_watchers(worker):
         await task
 
     assert (first.closes, second.closes) >= (1, 1)
+
+
+@pytest.mark.asyncio
+async def test_events_accumulate_in_one_batch_while_the_indexer_is_busy(tmp_path, monkeypatch):
+    from kalinka_plugin_localfiles.storage import ChangeKind
+
+    class BusyWatcher(_Watcher):
+        def poll(self, timeout_s):
+            time.sleep(.005)
+            self.polls += 1
+            return WatchResult(changes={
+                (ChangeKind.FILE_WRITTEN, f"alpha://root/{self.polls}.flac")
+            })
+
+    watcher = BusyWatcher()
+    storage = _Storage("alpha", watcher)
+    config = LocalFilesConfig(
+        db_path=str(tmp_path / "db.sqlite"), artwork_path=str(tmp_path / "art")
+    )
+    queue = asyncio.Queue()
+    monkeypatch.setattr(indexer_mod, "_indexer_queue", queue)
+    monkeypatch.setattr(indexer_mod, "_file_watcher_stop_event", asyncio.Event())
+    task = asyncio.create_task(indexer_mod._watch_roots(
+        config, storage, watcher, ["alpha://root"]
+    ))
+    try:
+        await _until(lambda: watcher.polls >= 10)
+        assert queue.qsize() == 1
+        command = await queue.get()
+        changes = command.take()
+        assert len(changes) >= 9
+        queue.task_done()
+        count = len(changes)
+        await _until(lambda: queue.qsize() == 1)
+        assert len(changes) == count  # an in-progress batch is no longer mutated
+    finally:
+        await _stop(task)
+
+
+@pytest.mark.asyncio
+async def test_unsupported_notifications_are_left_to_scans_without_rearming(tmp_path, monkeypatch):
+    class UnsupportedWatcher(_Watcher):
+        def poll(self, timeout_s):
+            time.sleep(.005)
+            self.polls += 1
+            return WatchResult(unsupported={"alpha://root"}) if self.polls == 1 else WatchResult()
+
+    watcher = UnsupportedWatcher()
+    storage = _Storage("alpha", watcher)
+    config = LocalFilesConfig(
+        db_path=str(tmp_path / "db.sqlite"), artwork_path=str(tmp_path / "art")
+    )
+    monkeypatch.setattr(indexer_mod, "REARM_CHECK_INTERVAL_S", 0)
+    monkeypatch.setattr(indexer_mod, "_file_watcher_stop_event", asyncio.Event())
+    task = asyncio.create_task(indexer_mod._watch_roots(
+        config, storage, watcher, ["alpha://root"]
+    ))
+    try:
+        await _until(lambda: watcher.polls >= 10)
+        assert watcher.armed == ["alpha://root"]
+    finally:
+        await _stop(task)

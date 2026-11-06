@@ -206,9 +206,16 @@ class WatchResult:
     changes: set[tuple[ChangeKind, str]] = field(default_factory=set)
     unmounted: set[str] = field(default_factory=set)
     vanished: set[str] = field(default_factory=set)
+    # Armed roots whose change history is incomplete (startup or overflow).
+    rescan: set[str] = field(default_factory=set)
+    # A server explicitly refused notifications; periodic scans take over.
+    unsupported: set[str] = field(default_factory=set)
 
     def __bool__(self) -> bool:
-        return bool(self.changes or self.unmounted or self.vanished)
+        return bool(
+            self.changes or self.unmounted or self.vanished
+            or self.rescan or self.unsupported
+        )
 
 
 class ChangeWatcher(ABC):
