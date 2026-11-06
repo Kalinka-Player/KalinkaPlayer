@@ -229,6 +229,7 @@ func run(ctx context.Context, o options, setupOn, apiOn bool) error {
 		binding = control.NewBinding(o.listenPort, control.NewHandler(controller, control.HandlerConfig{
 			Version:        version,
 			NetworkSetup:   networkSetup,
+			PowerOffTimer:  powerOffTimer,
 			ServerIDFile:   o.IdentityFile,
 			RendererIDFile: o.rendererID,
 			// A simulated run shows every control, whatever the machine it runs on has installed.
