@@ -78,7 +78,7 @@ kalinka_plugin_localfiles = "kalinka_plugin_localfiles:KalinkaPluginLocalFiles"
 include-package-data = true
 
 [tool.setuptools.package-data]
-"kalinka_plugin_localfiles" = ["catalog_artwork/*.jpg", "catalog_artwork/prompts.json"]
+"kalinka_plugin_localfiles" = ["catalog_artwork/*.jpg", "catalog_artwork/prompts.json", "icons/*.svg"]
 # Belt to that finder's braces — a build from an exported tarball has no git
 # and would otherwise ship a wheel with no model in it.
 "kalinka_plugin_localfiles.filename_model.weights" = ["*.crfsuite", "*.json"]

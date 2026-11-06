@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <title>My Library</title>
+  <g fill="none" stroke="#000" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 7v10M6 5v14"/>
+    <rect x="9" y="3" width="12" height="18" rx="2"/>
+    <path d="M16 15.5V8h2.5"/>
+  </g>
+  <ellipse cx="14.25" cy="15.5" rx="2.5" ry="1.9" fill="#000"/>
+</svg>

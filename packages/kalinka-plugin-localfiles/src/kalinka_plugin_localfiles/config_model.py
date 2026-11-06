@@ -1,7 +1,8 @@
 import os
+from pathlib import Path
 from typing import Annotated, Any, ClassVar, Hashable, Literal, Union
 from pydantic import AfterValidator, BaseModel, Field
-from kalinka_plugin_sdk import ConfigRecord, Records, paths
+from kalinka_plugin_sdk import ConfigRecord, ModuleIconFiles, Records, paths
 from kalinka_plugin_sdk.module_config import ModuleConfig
 
 
@@ -438,7 +439,12 @@ def _following(sources: list[MusicSource], folders: list[str]) -> list[MusicSour
 
 
 class LocalFilesConfig(ModuleConfig):
-    __module_icon__: ClassVar[str] = "folder_outlined"
+    __module_icon__: ClassVar[str] = "music_note_outlined"
+    __module_icon_files__: ClassVar[ModuleIconFiles] = ModuleIconFiles(
+        small=Path(__file__).with_name("icons") / "small.svg",
+        standard=Path(__file__).with_name("icons") / "standard.svg",
+        monochrome=True,
+    )
     __preview_fields__: ClassVar[list[str]] = [
         "music_folders",
         "scan_interval_minutes",
