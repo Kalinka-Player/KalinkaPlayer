@@ -436,6 +436,7 @@ def _collection_spec(
         after=after,
         replaces=[f"{parent}.{other}" for other in extras.get("replaces", [])],
         status=f"{parent}.{status}" if status else None,
+        apply=_apply_from_extras(extras),
     )
 
 
@@ -940,11 +941,32 @@ def readonly_paths(schema: PresentationSchema) -> frozenset[str]:
     return frozenset(f.path for f in schema.expert_fields if f.readonly)
 
 
+def _collections_within(sections: list[SectionSpec]) -> list[CollectionSpec]:
+    found: list[CollectionSpec] = []
+    for s in sections:
+        found.extend(s.collections)
+        found.extend(_collections_within(s.sections))
+    return found
+
+
+def _collections_of(schema: PresentationSchema) -> list[CollectionSpec]:
+    """Every collection the schema shows; pruning to SIMPLE keeps them all."""
+    found: list[CollectionSpec] = []
+    for page in schema.pages:
+        found.extend(_collections_within(page.sections))
+        for module in page.modules:
+            found.extend(module.collections)
+            found.extend(_collections_within(module.sections))
+    return found
+
+
 def restart_paths(schema: PresentationSchema) -> frozenset[str]:
-    """Every field path the schema shows and a save leaves for a restart:
-    the server, or the plugin, reads it once at startup."""
+    """Every field and collection path the schema shows and a save leaves
+    for a restart: the server, or the plugin, reads it once at startup."""
     return frozenset(
         f.path for f in schema.expert_fields if f.apply is Apply.RESTART_REQUIRED
+    ) | frozenset(
+        c.path for c in _collections_of(schema) if c.apply is Apply.RESTART_REQUIRED
     )
 
 
