@@ -40,7 +40,16 @@ _LIVE = frozenset({"enabled", "device_name"})
 class BluetoothConfig(ModuleConfig):
     __module_icon__: ClassVar[str] = "bluetooth"
 
-    name: str = Field(default="bluetooth", title="Bluetooth", frozen=True, exclude=True)
+    name: str = Field(
+        default="bluetooth",
+        title="Bluetooth",
+        description=(
+            "Play from a phone or computer over Bluetooth A2DP. Kalinka "
+            "receives the audio and routes it to the renderer you've selected."
+        ),
+        frozen=True,
+        exclude=True,
+    )
     enabled: bool = Field(
         default=False,
         title="Bluetooth audio input",
