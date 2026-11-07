@@ -21,7 +21,16 @@ class UpnpConfig(ModuleConfig):
         monochrome=True,
     )
 
-    name: str = Field(default="upnp", title="UPnP", frozen=True, exclude=True)
+    name: str = Field(
+        default="upnp",
+        title="UPnP",
+        description=(
+            "Makes Kalinka appear as a UPnP renderer on your network, so "
+            "UPnP control apps can play through the output you've selected."
+        ),
+        frozen=True,
+        exclude=True,
+    )
     enabled: bool = Field(
         default=False,
         title="Enable UPnP renderer",
