@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
 
 import httpx
 from packaging.version import Version
@@ -642,6 +643,21 @@ def test_download_stops_reading_past_the_declared_size(tmp_path):
     with pytest.raises(Failure):
         download(server, tmp_path / "x.deb", 10, DIGEST)
     assert (tmp_path / "x.deb").stat().st_size <= 4096
+
+
+def test_run_raises_after_printing_what_a_failing_command_said(capsys):
+    script = (
+        "import sys; "
+        "sys.stdout.write('the following packages have unmet dependencies\\n'); "
+        "sys.stderr.write('E: Unmet dependencies.\\n'); "
+        "sys.exit(1)"
+    )
+    with pytest.raises(subprocess.CalledProcessError) as info:
+        module._run([sys.executable, "-c", script])
+    assert info.value.cmd[0] == sys.executable
+    printed = capsys.readouterr().out
+    assert "unmet dependencies" in printed
+    assert "E: Unmet dependencies." in printed
 
 
 def test_installation_support_needs_the_packaged_restart_service(monkeypatch, tmp_path):

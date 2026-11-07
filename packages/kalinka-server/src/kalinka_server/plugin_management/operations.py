@@ -1015,10 +1015,11 @@ def _download(
 
 def _run(command: list[str]) -> str:
     logger.info("Running: %s", " ".join(command))
+    # check=True would raise past the print below, dropping apt's stdout detail.
     completed = subprocess.run(
         command,
-        check=True,
         stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
         env={
             "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
@@ -1028,6 +1029,7 @@ def _run(command: list[str]) -> str:
     )
     if completed.stdout:
         print(completed.stdout, end="", flush=True)
+    completed.check_returncode()
     return completed.stdout
 
 
