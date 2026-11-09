@@ -7,10 +7,11 @@ render a short, self-contained page telling the admin how to install it.
 
 import os
 
+from starlette.datastructures import MutableHeaders
 from starlette.exceptions import HTTPException
 from starlette.responses import HTMLResponse, Response
 from starlette.staticfiles import StaticFiles
-from starlette.types import Scope
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 # Self-contained: the bundle that would provide external assets is exactly what
 # is missing here.
@@ -97,3 +98,33 @@ class WebUiStaticFiles(StaticFiles):
 
     def _bundle_installed(self) -> bool:
         return os.path.isfile(os.path.join(self.directory, "index.html"))
+
+
+class CrossOriginIsolationMiddleware:
+    """ASGI middleware setting COOP/COEP so a browser cross-origin-isolates
+    the page, letting the web UI's WASM build run skwasm multi-threaded.
+    Without this it still works — skwasm falls back to single-threaded.
+
+    ``credentialless`` rather than ``require-corp``: plugins (Jamendo, etc.)
+    hand back album-art URLs straight from third-party CDNs, fetched without
+    credentials. ``require-corp`` would need those CDNs to send a CORP
+    header we have no control over; ``credentialless`` only enforces one for
+    credentialed requests.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self._app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+
+        async def send_with_coi_headers(message):
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers["Cross-Origin-Opener-Policy"] = "same-origin"
+                headers["Cross-Origin-Embedder-Policy"] = "credentialless"
+            await send(message)
+
+        await self._app(scope, receive, send_with_coi_headers)

@@ -86,7 +86,7 @@ from .merge_utils import get_favorite_ids_merged, k_way_merge_browse_items
 from .dynamic_field_registry import build_dynamic_field_registry
 from .plugin_lifecycle import PluginLifecycle
 from .options_registry import OptionsRegistry, register_plugin_options
-from .web_ui import WebUiStaticFiles
+from .web_ui import CrossOriginIsolationMiddleware, WebUiStaticFiles
 from .optional_packages_registry import (
     InstallHistory,
     Installability,
@@ -531,6 +531,9 @@ async def create_app(
     app.add_middleware(
         DemoReadOnlyGate, enabled=lambda: app.state.config.server.demo_mode
     )
+    # Outermost: wraps every response, including the demo-mode refusals above,
+    # with the headers the web UI's WASM build needs for multi-threaded skwasm.
+    app.add_middleware(CrossOriginIsolationMiddleware)
     app.state.config = config
     app.state.box_power_off_timer = BoxPowerOffTimer(config.server)
     app.state.bind_host = bind_host
