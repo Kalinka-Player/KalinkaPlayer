@@ -1,0 +1,3 @@
+#!/bin/sh
+# systemctl where no systemd runs: notes what a package asked for, for the cases to check.
+echo "$*" >> "$0.calls"
