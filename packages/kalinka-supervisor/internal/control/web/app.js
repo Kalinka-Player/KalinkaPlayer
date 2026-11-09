@@ -39,10 +39,11 @@ const SETUP = { running: "On", waiting: "Waiting", off: "Off" };
 
 const RADIOS = { bluetooth: "Bluetooth", wifi: "Wi-Fi" };
 
-// Past tense: a radio stays listed from its last failed attempt until it next works.
+// Past tense, as a radio stays listed until it next works; a missing adapter is rechecked every ten seconds.
 const RADIO_PROBLEMS = {
   radio_blocked: "was switched off",
   radio_hard_blocked: "was off at a hardware switch",
+  no_adapter: "has no adapter",
   unavailable: "did not respond",
 };
 

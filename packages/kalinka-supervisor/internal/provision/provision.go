@@ -10,6 +10,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -43,13 +44,18 @@ type Service struct {
 	recovering atomic.Bool
 	beat       atomic.Int64
 	hotspot    atomic.Pointer[wifi.Hotspot]
-	// Root prefixes /sys so tests can stage Bluetooth radio blocks.
+	// Root prefixes /sys so tests can stage Bluetooth adapters and radio blocks.
 	root string
 	// openRadio is gatt.New, which tests replace so no session needs BlueZ.
 	openRadio func(context.Context, *machine.Machine, string) (peripheral, string, error)
-	mu        sync.Mutex
-	problems  map[string]string
+	// pause is wifi.Pause between Bluetooth sessions, which tests replace to step through retries.
+	pause    func(context.Context, time.Duration) error
+	mu       sync.Mutex
+	problems map[string]string
 }
+
+// errNoAdapter is a host without the selected Bluetooth adapter, as a PC or a VM usually is.
+var errNoAdapter = errors.New("no such Bluetooth adapter")
 
 // peripheral is the part of gatt.Bluez a Bluetooth session drives.
 type peripheral interface {
@@ -72,7 +78,7 @@ func New(o Options, port func() uint16) *Service {
 	if o.Adapter == "" {
 		o.Adapter = "hci0"
 	}
-	return &Service{opts: o, port: port, root: "/", openRadio: openBluez, problems: map[string]string{}}
+	return &Service{opts: o, port: port, root: "/", openRadio: openBluez, pause: wifi.Pause, problems: map[string]string{}}
 }
 
 // Blocked returns why setup cannot run on this host now, or "" when it can.
@@ -280,9 +286,13 @@ func (s *Service) forget(radio string) {
 }
 
 func (s *Service) forgetBlock(radio string) {
+	s.forgetCode(radio, "radio_blocked", "radio_hard_blocked")
+}
+
+func (s *Service) forgetCode(radio string, codes ...string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if code := s.problems[radio]; code == "radio_blocked" || code == "radio_hard_blocked" {
+	if slices.Contains(codes, s.problems[radio]) {
 		delete(s.problems, radio)
 	}
 }
@@ -297,13 +307,15 @@ func (s *Service) problemCode(radio string, err error) string {
 		return "radio_hard_blocked"
 	case soft || errors.Is(err, rfkill.ErrSoftBlocked):
 		return "radio_blocked"
+	case errors.Is(err, errNoAdapter):
+		return "no_adapter"
 	}
 	return "unavailable"
 }
 
 // Problems maps each radio whose last attempt failed, "bluetooth" or "wifi",
-// to radio_blocked, radio_hard_blocked or unavailable, until that radio next
-// works. Safe from any goroutine.
+// to radio_blocked, radio_hard_blocked, no_adapter or unavailable, until that
+// radio next works. Safe from any goroutine.
 func (s *Service) Problems() map[string]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -355,21 +367,32 @@ func (s *Service) Command(owner string, raw []byte) error {
 }
 
 func (s *Service) serveBluetooth(ctx context.Context, m *machine.Machine) {
+	missing := false
 	for ctx.Err() == nil {
-		if err := s.bluetoothSession(ctx, m); err != nil && ctx.Err() == nil {
-			slog.Warn("Bluetooth setup unavailable; retrying", "error", err)
+		err := s.bluetoothSession(ctx, m)
+		if err != nil && ctx.Err() == nil {
+			// A host without an adapter is said once; the retries still find one plugged in later.
+			if !missing || !errors.Is(err, errNoAdapter) {
+				slog.Warn("Bluetooth setup unavailable; retrying", "error", err)
+			}
 			s.report(ctx, "bluetooth", err)
 		}
-		_ = wifi.Pause(ctx, 10*time.Second)
+		missing = errors.Is(err, errNoAdapter)
+		_ = s.pause(ctx, 10*time.Second)
 	}
 }
 
 func (s *Service) bluetoothSession(ctx context.Context, m *machine.Machine) error {
+	if _, err := os.Stat(filepath.Join(s.root, "sys/class/bluetooth", s.opts.Adapter)); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%s: %w", s.opts.Adapter, errNoAdapter)
+	}
 	radio, name, err := s.openRadio(ctx, m, s.opts.Adapter)
 	if err != nil {
 		return err
 	}
 	defer radio.Close()
+	// Waiting setup never advertises, and the adapter BlueZ just opened is not missing.
+	s.forgetCode("bluetooth", "no_adapter")
 	eventsCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	events := make(chan error, 1)

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,13 +20,19 @@ import (
 	"kalinka/supervisor/internal/wifi"
 )
 
+func stageAdapter(t *testing.T, root, adapter string) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(root, "sys/class/bluetooth", adapter), 0755); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
 func stageHost(t *testing.T, adapter, wifi string) string {
 	t.Helper()
 	root := t.TempDir()
 	if adapter != "" {
-		if err := os.MkdirAll(filepath.Join(root, "sys/class/bluetooth", adapter), 0755); err != nil {
-			t.Fatal(err)
-		}
+		stageAdapter(t, root, adapter)
 	}
 	if wifi != "" {
 		if err := os.MkdirAll(filepath.Join(root, "sys/class/net", wifi, "wireless"), 0755); err != nil {
@@ -126,13 +133,21 @@ func TestChangingNetwork(t *testing.T) {
 	}
 }
 
-type fakeRadio struct{ enable error }
+// fakeRadio stands in for BlueZ: opening answers opening the adapter, enable advertising.
+type fakeRadio struct {
+	opening, enable error
+	opens           atomic.Int32
+}
 
 func (r *fakeRadio) Enable(context.Context) error     { return r.enable }
 func (r *fakeRadio) Disable(context.Context)          {}
 func (r *fakeRadio) Events(ctx context.Context) error { <-ctx.Done(); return nil }
 func (r *fakeRadio) Close()                           {}
 func (r *fakeRadio) open(context.Context, *machine.Machine, string) (peripheral, string, error) {
+	r.opens.Add(1)
+	if r.opening != nil {
+		return nil, "", r.opening
+	}
 	return r, "Kalinka-TEST", nil
 }
 
@@ -145,29 +160,70 @@ func waitFor(t *testing.T, what string, done func() bool) {
 	}
 }
 
+func openSetup(t *testing.T) *machine.Machine {
+	t.Helper()
+	m := machine.New(context.Background(), &radioBackend{}, machine.Config{})
+	t.Cleanup(m.Close)
+	if err := m.Open(); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var logs bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	return &logs
+}
+
+// serveSessions runs serveBluetooth in the caller's goroutine for sessions that
+// end at once, calling after with each one's number before the retry.
+func serveSessions(t *testing.T, s *Service, m *machine.Machine, sessions int, after func(int)) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ended := 0
+	s.pause = func(ctx context.Context, _ time.Duration) error {
+		// A session that outlived the deadline did not end, so after would see a state it never set up.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		ended++
+		after(ended)
+		if ended == sessions {
+			cancel()
+		}
+		return nil
+	}
+	s.serveBluetooth(ctx, m)
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatal("a session did not end")
+	}
+}
+
 func TestBluetoothFailureReachesTheSnapshot(t *testing.T) {
+	reason := errors.New("set Powered: unavailable: Blocked through rfkill")
 	for _, tc := range []struct {
 		name  string
 		block rfkilltest.Radio
+		radio *fakeRadio
 		want  string
 	}{
-		{"soft block", rfkilltest.Radio{Type: "bluetooth", Name: "hci0", Soft: true}, "radio_blocked"},
-		{"hardware switch", rfkilltest.Radio{Type: "bluetooth", Name: "hci0", Soft: true, Hard: true}, "radio_hard_blocked"},
-		{"only another adapter blocked", rfkilltest.Radio{Type: "bluetooth", Name: "hci1", Soft: true}, "unavailable"},
+		{"soft block", rfkilltest.Radio{Type: "bluetooth", Name: "hci0", Soft: true}, &fakeRadio{enable: reason}, "radio_blocked"},
+		{"hardware switch", rfkilltest.Radio{Type: "bluetooth", Name: "hci0", Soft: true, Hard: true}, &fakeRadio{enable: reason}, "radio_hard_blocked"},
+		{"only another adapter blocked", rfkilltest.Radio{Type: "bluetooth", Name: "hci1", Soft: true}, &fakeRadio{enable: reason}, "unavailable"},
+		{"an adapter BlueZ cannot open", rfkilltest.Radio{Type: "bluetooth", Name: "hci0"}, &fakeRadio{opening: reason}, "unavailable"},
+		{"a blocked adapter BlueZ cannot open", rfkilltest.Radio{Type: "bluetooth", Name: "hci0", Soft: true}, &fakeRadio{opening: reason}, "radio_blocked"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var logs bytes.Buffer
-			old := slog.Default()
-			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
-			defer slog.SetDefault(old)
-			m := machine.New(context.Background(), &radioBackend{}, machine.Config{})
-			defer m.Close()
-			if err := m.Open(); err != nil {
-				t.Fatal(err)
-			}
+			logs := captureLogs(t)
+			m := openSetup(t)
 			s := New(Options{}, nil)
-			s.root = rfkilltest.Stage(t, tc.block)
-			s.openRadio = (&fakeRadio{enable: errors.New("set Powered: unavailable: Blocked through rfkill")}).open
+			s.root = stageAdapter(t, rfkilltest.Stage(t, tc.block), "hci0")
+			s.openRadio = tc.radio.open
 			ctx, cancel := context.WithCancel(context.Background())
 			done := make(chan struct{})
 			go func() { defer close(done); s.serveBluetooth(ctx, m) }()
@@ -184,26 +240,94 @@ func TestBluetoothFailureReachesTheSnapshot(t *testing.T) {
 	}
 }
 
-func TestAdvertisingClearsTheBluetoothProblem(t *testing.T) {
-	m := machine.New(context.Background(), &radioBackend{}, machine.Config{})
-	defer m.Close()
-	if err := m.Open(); err != nil {
-		t.Fatal(err)
-	}
+func TestAMissingAdapterIsSaidOnceUntilOneAppears(t *testing.T) {
+	logs := captureLogs(t)
+	m := openSetup(t)
 	s := New(Options{}, nil)
 	s.root = t.TempDir()
-	s.report(context.Background(), "bluetooth", errors.New("unavailable: bluetoothd stopped"))
-	if got := s.Problems()["bluetooth"]; got != "unavailable" {
-		t.Fatalf("reported %q", got)
+	radio := &fakeRadio{opening: errors.New("org.bluez.Error.NotReady")}
+	s.openRadio = radio.open
+	var codes []string
+	var lines []int
+	// Three sessions without an adapter, one with an adapter BlueZ cannot open, then it is unplugged.
+	serveSessions(t, s, m, 6, func(ended int) {
+		codes = append(codes, s.Snapshot()["radio_problems"].(map[string]string)["bluetooth"])
+		lines = append(lines, strings.Count(logs.String(), "Bluetooth setup unavailable; retrying"))
+		switch ended {
+		case 3:
+			stageAdapter(t, s.root, "hci0")
+		case 4:
+			if err := os.Remove(filepath.Join(s.root, "sys/class/bluetooth/hci0")); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+	if want := []string{"no_adapter", "no_adapter", "no_adapter", "unavailable", "no_adapter", "no_adapter"}; !reflect.DeepEqual(codes, want) {
+		t.Fatalf("radio_problems.bluetooth went %q, want %q", codes, want)
 	}
-	s.openRadio = (&fakeRadio{}).open
+	if want := []int{1, 1, 1, 2, 3, 3}; !reflect.DeepEqual(lines, want) {
+		t.Fatalf("log lines after each session %v, want %v:\n%s", lines, want, logs)
+	}
+	if !strings.Contains(logs.String(), "hci0: no such Bluetooth adapter") {
+		t.Fatalf("the log does not say the adapter is missing: %s", logs)
+	}
+	if n := radio.opens.Load(); n != 1 {
+		t.Fatalf("BlueZ was asked %d times; only one session had an adapter", n)
+	}
+}
+
+func TestAnOpenedAdapterIsNoLongerMissingWhileSetupWaits(t *testing.T) {
+	m := machine.New(context.Background(), &radioBackend{}, machine.Config{})
+	t.Cleanup(m.Close)
+	s := New(Options{}, nil)
+	s.root = t.TempDir()
+	s.openRadio = (&fakeRadio{enable: errors.New("setup is waiting, so nothing advertises")}).open
+	serveSessions(t, s, m, 1, func(int) { stageAdapter(t, s.root, "hci0") })
+	if got := s.Problems()["bluetooth"]; got != "no_adapter" {
+		t.Fatalf("reported %q, want no_adapter", got)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- s.bluetoothSession(ctx, m) }()
-	waitFor(t, "advertising did not clear the report", func() bool { return len(s.Problems()) == 0 })
+	waitFor(t, "the plugged-in adapter stayed missing", func() bool { return len(s.Problems()) == 0 })
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAdvertisingClearsTheBluetoothProblem(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fail func(*testing.T, *Service, *machine.Machine)
+		want string
+	}{
+		{"bluetoothd stopped", func(t *testing.T, s *Service, _ *machine.Machine) {
+			stageAdapter(t, s.root, "hci0")
+			s.report(context.Background(), "bluetooth", errors.New("unavailable: bluetoothd stopped"))
+		}, "unavailable"},
+		{"an adapter plugged in later", func(t *testing.T, s *Service, m *machine.Machine) {
+			serveSessions(t, s, m, 1, func(int) { stageAdapter(t, s.root, "hci0") })
+		}, "no_adapter"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := openSetup(t)
+			s := New(Options{}, nil)
+			s.root = t.TempDir()
+			s.openRadio = (&fakeRadio{}).open
+			tc.fail(t, s, m)
+			if got := s.Problems()["bluetooth"]; got != tc.want {
+				t.Fatalf("reported %q, want %q", got, tc.want)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			go func() { done <- s.bluetoothSession(ctx, m) }()
+			waitFor(t, "advertising did not clear the report", func() bool { return len(s.Problems()) == 0 })
+			cancel()
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

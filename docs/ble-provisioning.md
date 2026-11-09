@@ -203,10 +203,11 @@ setup. Administrators can opt into later recovery, or disable it entirely;
 see the [radio recovery policy](supervisor.md#network-setup-over-the-temporary-hotspot).
 
 When the streamer does not advertise over Bluetooth, the supervisor's log says
-why on every retry, ten seconds apart. Once the streamer is reachable, the
-supervisor page's **Nearby setup** line and `radio_problems` in `/v1/status`
-name the radio that last failed: switched off in software, blocked by a
-hardware switch, or not responding. A Bluetooth adapter switched off in
+why on every retry, ten seconds apart, and only once while it has no Bluetooth
+adapter at all. Once the streamer is reachable, the supervisor page's **Nearby
+setup** line and `radio_problems` in `/v1/status` name the radio that last
+failed: switched off in software, blocked by a hardware switch, missing its
+adapter, or not responding. A Bluetooth adapter switched off in
 software comes back on through radio recovery, or by hand with
 `rfkill unblock bluetooth`.
 

@@ -299,7 +299,7 @@ and failed shutdowns are retried on the next five-second tick.
 | `core` | `kalinka.service`'s systemd ActiveState |
 | `upgrading` | Whether an upgrade or reinstall is installing packages |
 | `setup` | Nearby setup: `running`, `waiting` or `off` |
-| `radio_problems` | Each radio, `bluetooth` or `wifi`, whose last attempt to come on failed, with `radio_blocked`, `radio_hard_blocked` or `unavailable`, until it next works; empty while nearby setup is off. See [the supervisor](supervisor.md#network-setup-over-the-temporary-hotspot) |
+| `radio_problems` | Each radio, `bluetooth` or `wifi`, whose last attempt to come on failed, with `radio_blocked`, `radio_hard_blocked`, `no_adapter` or `unavailable`, until it next works; empty while nearby setup is off. See [the supervisor](supervisor.md#network-setup-over-the-temporary-hotspot) |
 | `pending` | `reboot` or `poweroff` once accepted, otherwise `null` |
 | `reinstall.state` | `running`, `succeeded`, `failed`, or `idle` if none has run |
 | `reinstall.finished_at` | When the last reinstall ended, or `null` |
