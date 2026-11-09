@@ -172,3 +172,29 @@ def test_folder_search_matches_a_loose_track_by_its_shown_album(
     assert total == (1 if found else 0)
     assert module.db_manager.holds_tracks(music, match) is found
     assert _ids(_browse(module, "files", query)) == ([loose] if found else [])
+
+
+def test_a_loose_track_names_its_group_wherever_it_is_listed(library):
+    from kalinka_server.queue_add import tracks_for
+
+    module, _, loose, named = library
+    group = EntityId(id="unknown_album", type=EntityType.PLAYLIST, source="localfiles")
+    listed = asyncio.run(module.browse(group))
+    assert [item.track.album.title for item in listed.items] == [SINGLES_TITLE]
+
+    found = asyncio.run(module.search(SearchType.track, "bee moved"))
+    assert [item.track.album.title for item in found.items] == [SINGLES_TITLE]
+
+    queued = asyncio.run(
+        tracks_for([group.to_string], lambda eid: module, lambda source: module)
+    )
+    assert [(track.id.id, track.album.title) for track in queued] == [
+        (loose, SINGLES_TITLE)
+    ]
+
+    infos = asyncio.run(module.get_track_info([loose, named]))
+    assert [info.metadata.album.title for info in infos] == [
+        SINGLES_TITLE,
+        "Moon Safari",
+    ]
+    assert infos[0].metadata.album.id.id == "unknown_album"
