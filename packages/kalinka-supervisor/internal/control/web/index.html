@@ -20,6 +20,7 @@
   <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
   <symbol id="i-sound" viewBox="0 0 24 24"><path d="M4.5 9.5h3l4.5-4v13l-4.5-4h-3z"/><path d="M15.5 9a4 4 0 0 1 0 6"/><path d="M18 6.5a7.5 7.5 0 0 1 0 11"/></symbol>
   <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7.5V12l3 2"/></symbol>
+  <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M3 9.5a13 13 0 0 1 18 0"/><path d="M6.5 13a8 8 0 0 1 11 0"/><path d="M10 16.5a3 3 0 0 1 4 0"/><path d="M12 19.5v.2"/></symbol>
   <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 8.5v5"/><path d="M12 16.8v.2"/><path d="M10.3 4.2L2.8 17.5a2 2 0 0 0 1.7 3h15a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0z"/></symbol>
 </svg>
 
@@ -30,7 +31,13 @@
 </header>
 
 <main class="page">
-<section class="card">
+  {{if and .Error (not .Failed)}}
+  <div class="notice notice-error" role="alert">
+    <svg class="glyph"><use href="#i-alert"/></svg>
+    <span>{{.Error}}</span>
+  </div>
+  {{end}}
+  <section class="card">
     <h2>Network</h2>
     <p>Review your wired connection or set up Wi-Fi.</p>
     <a class="button neutral" href="/setup">Network setup</a>
@@ -40,6 +47,23 @@
       <button class="button neutral" type="button" id="wifi-enable" data-simulated="{{.Simulated}}">Enable Wi-Fi</button>
       <p class="muted" id="wifi-enable-status" role="status" aria-live="polite"></p>
     </details>
+    {{with .WiFi}}
+    <form class="action powersave" id="wifi-powersave" action="/" method="post">
+      <input type="hidden" name="action" value="set_wifi_powersave">
+      <input type="hidden" name="server_id" value="{{$.ServerID}}">
+      <input type="hidden" name="powersave" value="{{.Next}}">
+      <span class="tile"><svg class="glyph"><use href="#i-wifi"/></svg></span>
+      <div class="action-text">
+        <h3>Wi-Fi power saving is {{.State}}</h3>
+        <p>{{if eq .State "on"}}The radio dozes between packets. That can slow Wi-Fi to a crawl, or leave the streamer unreachable until it is unplugged. Off is recommended.{{else}}The radio stays awake, so Wi-Fi stays quick and the streamer stays reachable. This is the recommended setting.{{end}}</p>
+      </div>
+      <button class="button neutral" type="submit">Turn {{.Next}}</button>
+    </form>
+    {{if eq $.Failed "set_wifi_powersave"}}<p class="notice notice-error" role="alert">{{$.Error}}</p>{{end}}
+    {{if eq .Result "applied"}}<p class="notice notice-ok" role="status">Wi-Fi power saving is now {{.State}}, for the current connection and for every network this streamer joins.</p>{{end}}
+    {{if eq .Result "saved"}}<p class="notice notice-wait" role="status">Wi-Fi power saving will be {{.State}} from the next time this streamer connects or restarts. The running connection could not be changed now.</p>{{end}}
+    {{if $.Simulated}}<p class="notice notice-wait">Preview mode: the choice is simulated. No network setting changes.</p>{{end}}
+    {{end}}
   </section>
   <div class="notice notice-error" id="unreachable" hidden>
     <svg class="glyph"><use href="#i-alert"/></svg>
@@ -111,7 +135,7 @@
     <p class="muted">Set up a login to configure this streamer or copy music onto it. The administrator account is <code>{{.Username}}</code>. SSH stays on after a restart.</p>
     <p class="footnote">Use this on a trusted local network. This dashboard uses HTTP, so choose a password you do not use elsewhere.</p>
     {{if .Simulated}}<p class="notice notice-wait">Preview mode: SSH setup is simulated. No account or service will change.</p>{{end}}
-    {{if .Error}}<p class="notice notice-error" role="alert">{{.Error}}</p>{{end}}
+    {{if eq .Failed "enable_ssh"}}<p class="notice notice-error" role="alert">{{.Error}}</p>{{end}}
     {{if .SSHEnabled}}
     <div class="notice notice-ok" role="status">
       {{if .Simulated}}<span>SSH setup simulated successfully.</span>{{else}}<span>SSH is enabled. Connect with <code id="ssh-command" data-username="{{.Username}}"></code> and use the password you just set. Run <code>sudo -i</code> for administrative tasks.</span>{{end}}

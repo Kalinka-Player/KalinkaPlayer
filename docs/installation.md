@@ -365,6 +365,8 @@ Kalinka used to install a C compiler and Python's development files for Smart Se
 
 **The setup Wi-Fi does not appear.** The streamer only opens it when it has no network. If a cable is plugged in, unplug it, or open Kalinka over the cable instead. Give it a few minutes after switching on.
 
+**Wi-Fi is very slow, or the streamer drops off the network until it is unplugged.** The Pi's Wi-Fi power saving does this. Update the streamer: recent supervisors turn it off for every network the streamer joins. The Network card of the [control page](#the-control-page) shows whether it is on or off, and switches it.
+
 **No outputs in the list, or no sound.** On the streamer, `systemctl status kalinka-renderer` should say `active (running)`. If the unit is not found, no output is installed there: run the renderer command from [Add more outputs](#add-more-outputs). If there is no sound, pick another sound device in the output's settings: HDMI, the headphone socket and a USB DAC are separate devices. On a Pi, HDMI, the headphone socket and a HAT without an ID chip stay silent until you choose them as the sound card in the app. Until then, you can listen in the browser.
 
 **An output on another machine does not appear.** On that machine, run `sudo journalctl -u kalinka-renderer -f`. A line with `[Discovery] Found` means it has seen the server. Without one, the network is blocking discovery: put both on the same network, or point the renderer at the server directly:

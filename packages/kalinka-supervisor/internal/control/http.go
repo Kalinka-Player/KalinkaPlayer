@@ -104,9 +104,11 @@ type HandlerConfig struct {
 	Reinstalls    Record
 	Removals      PluginRemovals
 	EnableSSH     func(context.Context, protocol.Secret) error
-	Simulated     bool
-	NetworkSetup  NetworkSetup
-	PowerOffTimer *PowerOffTimer
+	// WiFiPowerSaving is nil where NetworkManager does not run the network.
+	WiFiPowerSaving WiFiPowerSaving
+	Simulated       bool
+	NetworkSetup    NetworkSetup
+	PowerOffTimer   *PowerOffTimer
 }
 
 type handler struct {
@@ -176,9 +178,9 @@ func (h *handler) serve(w http.ResponseWriter, r *http.Request) string {
 		w.Header().Set("Allow", "GET, HEAD, POST, OPTIONS")
 		switch r.Method {
 		case http.MethodGet, http.MethodHead:
-			return h.page(w, r, http.StatusOK, "")
+			return h.page(w, r, http.StatusOK, "", "")
 		case http.MethodPost:
-			return h.enableSSH(w, r)
+			return h.form(w, r)
 		case http.MethodOptions:
 			w.WriteHeader(http.StatusNoContent)
 			return ""
