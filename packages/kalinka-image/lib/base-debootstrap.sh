@@ -101,6 +101,7 @@ base_install_packages() {
 base_finish() {
   log "Installing the first-boot machinery"
   install_overlay debootstrap
+  install_card_settings
   in_chroot systemctl enable kalinka-growroot.service kalinka-hostkeys.service
   # The supervisor turns SSH on when someone sets a password for it.
   in_chroot systemctl disable ssh.service ssh.socket
@@ -116,6 +117,7 @@ verify_debootstrap_setup() {
     '*'|'!'*) ;;
     *) die 'root can log in with a password' ;;
   esac
+  verify_card_settings
 }
 
 base_manifest() {

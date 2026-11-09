@@ -43,7 +43,7 @@ IMAGE_SIZE="${IMAGE_SIZE:-4GiB}"
 OUT_DIR="${OUT_DIR:-$SCRIPT_DIR/out}"
 XZ_LEVEL="${XZ_LEVEL:--6}"
 
-for lib in common chroot-aids display kalinka seal supervisor; do
+for lib in common chroot-aids card-settings display kalinka seal supervisor; do
   # shellcheck source=/dev/null
   . "$SCRIPT_DIR/lib/$lib.sh"
 done

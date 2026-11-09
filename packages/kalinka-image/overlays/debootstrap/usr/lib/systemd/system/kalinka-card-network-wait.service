@@ -1,0 +1,15 @@
+[Unit]
+Description=Give the network from the card time to join before nearby setup can take the radio
+ConditionPathExists=/run/kalinka-image/card-network
+After=NetworkManager.service kalinka-card-settings.service
+# The supervisor opens its hotspot on the same radio soon after it starts without a network.
+Before=kalinka-supervisor.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/nm-online -s -q --timeout=90
+# Timed out: the supervisor starts all the same and offers nearby setup.
+SuccessExitStatus=1
+
+[Install]
+WantedBy=multi-user.target
