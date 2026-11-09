@@ -35,7 +35,7 @@ Your files stay yours — nothing is uploaded, there is no account and no teleme
 1. **Install the server.** On a Raspberry Pi or a spare PC, [flash a ready-made image](docs/installation.md#install-the-server): Kalinka is already on it and plays as soon as the machine starts. On a machine that already runs Debian 13, Raspberry Pi OS (64-bit, Trixie), DietPi or Ubuntu 24.04, one command installs everything:
 
    ```bash
-   sudo apt install -y curl python3
+   sudo apt install -y ca-certificates curl python3
    curl -fsSL https://kalinkaplayer.com/install.sh | sudo bash
    ```
 

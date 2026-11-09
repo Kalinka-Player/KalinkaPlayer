@@ -127,7 +127,7 @@ Use this on a computer that already runs one of these 64-bit systems:
 `cat /etc/os-release` tells you which one you have. Open a terminal on that computer, or log in to it over SSH, and run:
 
 ```bash
-sudo apt install -y curl python3
+sudo apt install -y ca-certificates curl python3
 curl -fsSL https://kalinkaplayer.com/install.sh | sudo bash
 ```
 
