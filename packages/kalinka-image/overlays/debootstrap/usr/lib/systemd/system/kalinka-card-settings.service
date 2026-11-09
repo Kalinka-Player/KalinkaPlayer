@@ -1,0 +1,27 @@
+[Unit]
+Description=Apply the settings Raspberry Pi Imager left on the boot partition
+# Before anything takes the old name, joins a network or lets a login in.
+Wants=network-pre.target
+Before=network-pre.target NetworkManager.service avahi-daemon.service bluetooth.service ssh.service kalinka-supervisor.service kalinka-card-network-wait.service
+# A soft block that systemd restores must not undo clearing it for the card's network.
+After=systemd-rfkill.service
+ConditionPathExists=|/boot/firmware/custom.toml
+ConditionPathExists=|/boot/firmware/firstrun.sh
+ConditionPathExists=|/boot/firmware/user-data
+ConditionPathExists=|/boot/firmware/network-config
+ConditionPathExists=|/boot/efi/custom.toml
+ConditionPathExists=|/boot/efi/firstrun.sh
+ConditionPathExists=|/boot/efi/user-data
+ConditionPathExists=|/boot/efi/network-config
+# Imager's cmdline.txt edit still has to come out when its script is gone.
+ConditionKernelCommandLine=|systemd.run
+ConditionKernelCommandLine=|systemd.unit=kernel-command-line.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /usr/lib/kalinka-image/card-settings.py
+# A oneshot never times out by default, and a hang would hold the network back.
+TimeoutStartSec=2min
+
+[Install]
+WantedBy=multi-user.target

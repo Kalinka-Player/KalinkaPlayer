@@ -1,0 +1,6 @@
+[Unit]
+Description=The normal start, for a command line that still names Imager's first-run target
+# Without this unit, systemd.unit=kernel-command-line.target would start rescue.target.
+Requires=default.target
+After=default.target
+AllowIsolate=yes
