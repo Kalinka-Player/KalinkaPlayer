@@ -22,7 +22,7 @@ from .paths import REPO_ROOT, Layout
 sys.path.insert(0, str(REPO_ROOT / "tests" / "system"))
 
 from server_instance import KalinkaInstance  # noqa: E402
-from waiting import wait_until  # noqa: E402
+from waiting import scan_finished, wait_until  # noqa: E402
 
 TIMING_DIR = Path(__file__).resolve().parent / "timing"
 
@@ -180,6 +180,7 @@ __all__ = [
     "build",
     "describe",
     "free_port",
+    "scan_finished",
     "set_mood",
     "settled",
     "stage",

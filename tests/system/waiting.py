@@ -9,6 +9,17 @@ logger = logging.getLogger("system-test")
 _PROGRESS_EVERY_S = 15.0
 
 
+def scan_finished(stage: Optional[dict]) -> bool:
+    """A completed folder check, with a live worker and no scan queued or running."""
+    return (
+        stage is not None
+        and stage["available"]
+        and stage["last_scan_at"] is not None
+        and not stage["scan_pending"]
+        and not stage["scanning"]
+    )
+
+
 def wait_until(
     condition: Callable[[], bool],
     *,
@@ -28,7 +39,9 @@ def wait_until(
         now = time.monotonic()
         if now >= deadline:
             detail = f" ({progress()})" if progress else ""
-            raise TimeoutError(f"timed out after {timeout:.0f}s waiting for {what}{detail}")
+            raise TimeoutError(
+                f"timed out after {timeout:.0f}s waiting for {what}{detail}"
+            )
         if progress and now >= next_progress:
             logger.info("waiting for %s: %s", what, progress())
             next_progress = now + _PROGRESS_EVERY_S

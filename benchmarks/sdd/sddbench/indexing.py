@@ -15,7 +15,7 @@ from pathlib import Path
 
 from . import logparse
 from .dataset import load_manifest
-from .instance import KalinkaInstance, describe, settled, stage, wait_until
+from .instance import KalinkaInstance, describe, scan_finished, settled, stage, wait_until
 from .paths import Layout
 
 SCAN_TIMEOUT_S = 1800.0
@@ -49,17 +49,11 @@ def index(
     log(f"server up on {instance.base_url} after {reachable - started:.1f}s")
 
     wait_until(
-        lambda: "indexing" in instance.indexer_status()
-        or bool(instance.tracks()),
-        timeout=SCAN_TIMEOUT_S,
-        what="the first scan to begin",
-    )
-    wait_until(
-        lambda: "indexing" not in instance.indexer_status(),
+        lambda: scan_finished(stage(instance, "indexing")),
         timeout=SCAN_TIMEOUT_S,
         what="the scan to finish",
         interval=2.0,
-        progress=lambda: describe(stage(instance, "indexing")),
+        progress=lambda: str(stage(instance, "indexing")),
     )
     scan_done = time.time()
     spans.append(Span("scan", reachable, scan_done))
