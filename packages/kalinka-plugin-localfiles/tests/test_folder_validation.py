@@ -209,8 +209,8 @@ class TestHowASourceIsWritten:
             (_share(username=""), "authentication.username", "name the account"),
             (_share(encrypt=True), "options.require_encryption", "a guest cannot"),
             (_local(""), "location.path", "name the folder"),
-            (_local("smb://nas/music"), "location.path", "on the server"),
-            (_local(r"\\nas\music"), "location.path", "on the server"),
+            (_local("smb://nas/music"), "location.path", "on this streamer"),
+            (_local(r"\\nas\music"), "location.path", "on this streamer"),
         ],
     )
     def test_a_part_that_cannot_be_right_is_refused_by_name(

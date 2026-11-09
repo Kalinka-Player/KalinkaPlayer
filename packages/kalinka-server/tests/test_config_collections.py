@@ -315,7 +315,7 @@ class TestTheLocalLibrary:
 
     def test_a_source_is_a_folder_or_a_share(self):
         assert [(v.key, v.label) for v in self._sources().variants] == [
-            ("local", "Folder on the server"),
+            ("local", "Folder on this streamer"),
             ("smb", "Network share"),
         ]
 
