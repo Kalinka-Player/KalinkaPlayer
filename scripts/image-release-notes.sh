@@ -37,7 +37,9 @@ The Raspberry Pi images play through DAC HATs as well as USB DACs. A HAT with an
 
 A `-display` image is the same player with the now-playing display already installed and switched on: plug in an HDMI or DSI screen and it shows the cover, the track and touch controls from the first start. Without a screen, pick the image without `-display`; it is smaller.
 
-To flash an image and start it, follow [Install the server](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#install-the-server). The images read nothing from the card or the stick: Wi-Fi, a login and, on a Pi, a DAC HAT without an ID chip are set up after the first start, as [Settings on the card](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#settings-on-the-card) describes.
+To flash an image and start it, follow [Install the server](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#install-the-server). On a Raspberry Pi, the Wi-Fi, host name, login and time zone you give Raspberry Pi Imager are applied at the first start, and its files are removed from the card. Everything else, and all of it on a PC, is set up after the first start, as [Settings on the card](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#settings-on-the-card) describes.
+
+Images from `kalinka-image-v4.2.0` and older read none of Imager's settings, and a card Imager customised may not finish their first start: write those without Imager's settings.
 
 On all images, logs are kept on disk rather than in memory.
 
