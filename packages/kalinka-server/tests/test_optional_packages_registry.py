@@ -2,20 +2,31 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from dataclasses import dataclass
+import sys
+from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
-from kalinka_plugin_sdk import OptionalPackageSpec
+from kalinka_plugin_sdk import (
+    ModuleHealthState,
+    ModuleState,
+    OptionalPackageSpec,
+    wheel_architecture,
+)
 from kalinka_plugin_sdk.module_config import ModuleConfig
 from kalinka_plugin_sdk.plugin import InputModulePlugin
-from kalinka_server import optional_packages_registry
+from kalinka_server import install_pending, no_wheel_record, optional_packages_registry
 from kalinka_server.optional_packages_registry import (
+    InstallHistory,
+    Installability,
     build_catalog,
     build_registry,
-    write_pending_installs,
+    queue_required_packages,
 )
 
 SIXTY_FOUR_BIT_ONLY = OptionalPackageSpec(
@@ -287,70 +298,497 @@ def test_catalog_tolerates_malformed_last_install(tmp_path: Path, caplog):
     assert "Cannot read last install" in caplog.text
 
 
-def test_write_pending_installs_validates_and_dedupes(tmp_path: Path):
-    input_modules = {"p": _prepared({"numpy": _spec("numpy"), "scipy": _spec("scipy")})}
-    pending = tmp_path / "pending.json"
-    accepted, rejected = write_pending_installs(
-        ["numpy", "scipy", "bogus", "numpy"],
-        input_modules,
-        {},
-        pending_installs_path=pending,
+class _Needing:
+    """A plugin whose required_packages() answers what the test says."""
+
+    def __init__(self, keys: list[str] | None = None, answer: Any = None):
+        self.keys = keys or []
+        self.answer = answer
+
+    async def required_packages(self) -> list[str]:
+        if self.answer is not None:
+            return await self.answer()
+        return self.keys
+
+
+@dataclass
+class _Running:
+    plugin_class: Any
+    plugin_instance: Any
+    plugin_context: Any = field(
+        default_factory=lambda: SimpleNamespace(config=SimpleNamespace(enabled=True))
     )
-    assert accepted == ["numpy", "scipy"]
-    assert rejected == ["bogus"]
-    payload = json.loads(pending.read_text())
-    assert payload["schema"] == 1
-    assert payload["requested"] == ["numpy", "scipy"]
-    assert "requested_at" in payload
+    set_up: bool = True
 
 
-def test_write_pending_installs_refuses_a_package_with_no_wheel_for_this_box(
-    monkeypatch, tmp_path: Path
+def _running(offered: list[str], needs: list[str] = (), **kwargs) -> _Running:
+    return _Running(
+        plugin_class=FakePluginClass(
+            OPTIONAL_PACKAGES={key: _spec(key) for key in offered}
+        ),
+        plugin_instance=_Needing(list(needs), **kwargs),
+    )
+
+
+def _installability(tmp_path: Path, input_modules, devices=None) -> Installability:
+    return Installability.of(
+        build_registry(input_modules, devices or {}), InstallHistory.read(tmp_path)
+    )
+
+
+def _queue(
+    tmp_path: Path,
+    input_modules,
+    devices=None,
+    requested=(),
+    hold_failed=False,
+    installability=None,
 ):
-    """What My Library's required_packages() asks for on 32-bit Pi OS: the
-    install could only fail, again at every restart."""
-    _on(monkeypatch, "armv7l")
+    return asyncio.run(
+        queue_required_packages(
+            input_modules,
+            devices or {},
+            installability or _installability(tmp_path, input_modules, devices),
+            requested,
+            hold_failed,
+            pending_installs_path=tmp_path / "pending.json",
+        )
+    )
+
+
+def _queued(tmp_path: Path) -> list[str] | None:
+    pending = tmp_path / "pending.json"
+    return json.loads(pending.read_text())["requested"] if pending.exists() else None
+
+
+def _write_queue(tmp_path: Path, keys: list[str]) -> None:
+    (tmp_path / "pending.json").write_text(
+        json.dumps({"schema": 1, "requested": keys, "requested_at": 0})
+    )
+
+
+def test_queue_takes_what_was_asked_for_then_what_plugins_need_in_load_order(
+    tmp_path: Path,
+):
     input_modules = {
-        "localfiles": _prepared(
-            {"onnxruntime": SIXTY_FOUR_BIT_ONLY, "soxr": _spec("soxr")}
+        "alpha": _running(["x", "y", "v"], ["x", "y"]),
+        "beta": _running(["z"], ["y", "z"]),
+    }
+    devices = {"amp": _running(["w"], ["w"])}
+
+    accepted, rejected = _queue(tmp_path, input_modules, devices, ["z", "v"])
+
+    assert (accepted, rejected) == (["z", "v", "x", "y", "w"], [])
+    assert _queued(tmp_path) == ["z", "v", "x", "y", "w"]
+
+
+def test_queue_writes_what_bootstrap_reads(tmp_path: Path):
+    _queue(tmp_path, {"alpha": _running(["x"], ["x"])})
+
+    payload = json.loads((tmp_path / "pending.json").read_text())
+    assert set(payload) == {"schema", "requested_at", "requested"}
+    assert payload["schema"] == 1
+    assert payload["requested"] == ["x"]
+
+
+def test_queue_replaces_the_request_atomically(tmp_path: Path):
+    _write_queue(tmp_path, ["old"])
+
+    _queue(tmp_path, {"alpha": _running(["x"], ["x"])})
+
+    assert _queued(tmp_path) == ["x"]
+    assert list(tmp_path.glob("pending.json.tmp")) == []
+
+
+def test_queue_takes_a_feature_turned_off_back_out(tmp_path: Path):
+    plugin = _running(["x"], ["x"])
+    _queue(tmp_path, {"alpha": plugin})
+    plugin.plugin_instance.keys = []
+
+    assert _queue(tmp_path, {"alpha": plugin}) == ([], [])
+    assert _queued(tmp_path) is None
+
+
+def test_queue_asks_no_plugin_that_is_not_set_up(tmp_path: Path):
+    plugin = _running(["x"], ["x"])
+    plugin.set_up = False
+
+    assert _queue(tmp_path, {"alpha": plugin}) == ([], [])
+
+
+def test_queue_leaves_out_a_plugin_naming_a_key_nobody_offers(tmp_path: Path, caplog):
+    input_modules = {
+        "alpha": _running(["x"], ["x", "q"]),
+        "beta": _running(["y"], ["y"]),
+    }
+
+    with caplog.at_level("WARNING"):
+        accepted, rejected = _queue(tmp_path, input_modules)
+
+    assert (accepted, rejected) == (["y"], [])
+    assert "Not queueing ['x', 'q'] for alpha: ['q'] cannot be installed" in (
+        caplog.text
+    )
+
+
+def test_queueing_again_does_not_warn_of_a_conflicting_declaration_again(
+    tmp_path: Path, caplog
+):
+    """Every save queues; the registry is built once, as the server starts."""
+    input_modules = {
+        "alpha": _running(["shared"], ["shared"]),
+        "beta": _Running(
+            plugin_class=FakePluginClass(
+                OPTIONAL_PACKAGES={"shared": _spec("shared-v2")}
+            ),
+            plugin_instance=_Needing(),
         ),
     }
-    pending = tmp_path / "pending.json"
 
-    accepted, rejected = write_pending_installs(
-        ["onnxruntime", "soxr"], input_modules, {}, pending_installs_path=pending
+    with caplog.at_level("WARNING"):
+        installability = _installability(tmp_path, input_modules)
+        _queue(tmp_path, input_modules, installability=installability)
+        accepted, _rejected = _queue(
+            tmp_path, input_modules, installability=installability
+        )
+
+    assert accepted == ["shared"]
+    assert caplog.text.count("declared by both") == 1
+
+
+def test_a_request_naming_an_unknown_key_queues_nothing(tmp_path: Path):
+    _write_queue(tmp_path, ["old"])
+
+    accepted, rejected = _queue(
+        tmp_path, {"alpha": _running(["x", "y"], ["y"])}, requested=["bogus", "x"]
     )
+
+    assert (accepted, rejected) == (["x"], ["bogus"])
+    assert _queued(tmp_path) == ["old"]
+
+
+def test_a_request_naming_a_key_without_a_wheel_here_queues_nothing(
+    tmp_path: Path, monkeypatch
+):
+    _on(monkeypatch, "armv7l")
+    input_modules = {"alpha": _prepared({"onnxruntime": SIXTY_FOUR_BIT_ONLY})}
+
+    accepted, rejected = _queue(tmp_path, input_modules, requested=["onnxruntime"])
+
+    assert (accepted, rejected) == ([], ["onnxruntime"])
+    assert _queued(tmp_path) is None
+
+
+async def _raises():
+    raise RuntimeError("401 for https://api.test/?client_id=s3cret")
+
+
+async def _hangs():
+    await asyncio.Event().wait()
+
+
+def test_queue_skips_a_plugin_that_raises_or_hangs(tmp_path: Path, monkeypatch, caplog):
+    monkeypatch.setattr(optional_packages_registry, "PLUGIN_CALL_TIMEOUT_S", 0.01)
+    input_modules = {
+        "raising": _running(["r"], answer=_raises),
+        "hanging": _running(["h"], answer=_hangs),
+        "alpha": _running(["x"], ["x"]),
+    }
+
+    with caplog.at_level("WARNING"):
+        accepted, _rejected = _queue(tmp_path, input_modules)
+
+    assert accepted == ["x"]
+    assert "raising required_packages() failed (RuntimeError)" in caplog.text
+    assert "hanging required_packages() failed (TimeoutError)" in caplog.text
+    assert "s3cret" not in caplog.text
+
+
+PYTHON = f"{sys.version_info.major}.{sys.version_info.minor}"
+
+
+def _no_wheel(
+    tmp_path: Path,
+    key: str,
+    pip_spec: str = "",
+    python: str = PYTHON,
+    architecture: str = "",
+) -> str:
+    architecture = architecture or wheel_architecture()
+    reason = f"No prebuilt {key} for Python {python} on {architecture}"
+    no_wheel_record.write(
+        tmp_path / no_wheel_record.FILE_NAME,
+        python,
+        architecture,
+        {key: {"pip_spec": pip_spec or f"{key}==1.0", "reason": reason}},
+    )
+    return reason
+
+
+def _last_install(tmp_path: Path, statuses: dict[str, str]) -> None:
+    (tmp_path / "last_install.json").write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "requested": list(statuses),
+                "results": [
+                    {"key": key, "status": status} for key, status in statuses.items()
+                ],
+            }
+        )
+    )
+
+
+def test_queue_leaves_out_a_plugin_whose_package_pip_found_no_wheel_of(
+    tmp_path: Path, caplog
+):
+    """#332: otherwise every save and restart queues an install that can only
+    fail again. The plugin's other package is of no use alone, so it stays
+    out too."""
+    _no_wheel(tmp_path, "tokenizers")
+    input_modules = {
+        "jamendo": _running(
+            ["onnxruntime", "tokenizers"], ["onnxruntime", "tokenizers"]
+        ),
+        "beta": _running(["x"], ["x"]),
+    }
+
+    with caplog.at_level("WARNING"):
+        accepted, _rejected = _queue(tmp_path, input_modules)
+
+    assert accepted == ["x"]
+    assert _queued(tmp_path) == ["x"]
+    assert (
+        "Not queueing ['onnxruntime', 'tokenizers'] for jamendo: ['tokenizers']"
+        in caplog.text
+    )
+
+
+def test_queue_takes_a_key_asked_for_though_pip_found_no_wheel_of_it(
+    tmp_path: Path,
+):
+    """An index may carry the wheel by now, so a retry stays possible."""
+    _no_wheel(tmp_path, "soxr")
+
+    accepted, rejected = _queue(
+        tmp_path, {"alpha": _running(["soxr"], ["soxr"])}, requested=["soxr"]
+    )
+
+    assert (accepted, rejected) == (["soxr"], [])
+
+
+@pytest.mark.parametrize(
+    "terms",
+    [
+        pytest.param({"python": "3.0"}, id="python"),
+        pytest.param({"architecture": "vax"}, id="arch"),
+        pytest.param({"pip_spec": "soxr==0.9"}, id="older-spec"),
+    ],
+)
+def test_no_wheel_found_under_other_terms_does_not_stop_the_queue(
+    tmp_path: Path, terms
+):
+    _no_wheel(tmp_path, "soxr", **terms)
+
+    accepted, _rejected = _queue(tmp_path, {"alpha": _running(["soxr"], ["soxr"])})
 
     assert accepted == ["soxr"]
-    assert rejected == ["onnxruntime"]
-    assert json.loads(pending.read_text())["requested"] == ["soxr"]
 
 
-def test_write_pending_installs_takes_a_package_where_it_has_wheels(
+def test_a_start_holds_back_a_plugin_whose_package_failed_to_install(
+    tmp_path: Path, caplog
+):
+    """A box offline at every start would otherwise run pip at every one."""
+    _last_install(tmp_path, {"onnxruntime": "ok", "tokenizers": "failed"})
+    input_modules = {
+        "jamendo": _running(["onnxruntime", "tokenizers"], ["tokenizers"]),
+        "beta": _running(["x"], ["x"]),
+    }
+
+    with caplog.at_level("INFO"):
+        at_start, _rejected = _queue(tmp_path, input_modules, hold_failed=True)
+    saved, _rejected = _queue(tmp_path, input_modules)
+
+    assert at_start == ["x"]
+    assert "the last install failed ['tokenizers']" in caplog.text
+    assert saved == ["tokenizers", "x"]
+
+
+def _pip_finding_no_wheel(monkeypatch, *without: str) -> None:
+    def pip(spec: str) -> install_pending.PipRun:
+        if spec.split("==")[0] not in without:
+            return install_pending.PipRun(0, "", "")
+        page = f"https://index.test/simple/{spec.split('==')[0]}/"
+        return install_pending.PipRun(
+            1,
+            f"ERROR: No matching distribution found for {spec}",
+            f"Getting page {page}\nFetched page {page} as text/html\n",
+        )
+
+    monkeypatch.setattr(install_pending, "_pip_install", pip)
+
+
+def _install_at_start(tmp_path: Path, keys: list[str]) -> None:
+    manifests = tmp_path / "manifests"
+    manifests.mkdir(exist_ok=True)
+    (manifests / "alpha.json").write_text(
+        json.dumps(
+            {
+                "plugin": "alpha",
+                "packages": {
+                    key: {"pip_spec": f"{key}==1.0"} for key in ("soxr", "x", "y")
+                },
+            }
+        )
+    )
+    _write_queue(tmp_path, keys)
+    install_pending.main(
+        [
+            "install_pending",
+            str(tmp_path / "pending.json"),
+            str(manifests),
+            str(tmp_path / "last_install.json"),
+        ]
+    )
+
+
+def test_queue_remembers_what_install_pending_found_no_wheel_of_past_later_installs(
+    tmp_path: Path, monkeypatch
+):
+    """last_install.json names only the latest install's keys."""
+    _pip_finding_no_wheel(monkeypatch, "soxr")
+    _install_at_start(tmp_path, ["soxr"])
+    _install_at_start(tmp_path, ["x"])
+    input_modules = {
+        "alpha": _running(["soxr"], ["soxr"]),
+        "beta": _running(["x", "y"], ["y"]),
+    }
+
+    accepted, _rejected = _queue(tmp_path, input_modules)
+    installability = _installability(tmp_path, input_modules)
+
+    assert accepted == ["y"]
+    assert installability.unavailable["soxr"].startswith("No prebuilt soxr==1.0 ")
+
+
+def test_installability_names_declared_and_found_packages_without_wheels(
     monkeypatch, tmp_path: Path
 ):
-    _on(monkeypatch, "x86_64")
-    input_modules = {"localfiles": _prepared({"onnxruntime": SIXTY_FOUR_BIT_ONLY})}
+    _on(monkeypatch, "armv7l")
+    found = _no_wheel(tmp_path, "soxr", architecture="armv7l")
+    offered = {
+        "onnxruntime": SIXTY_FOUR_BIT_ONLY,
+        "soxr": _spec("soxr"),
+        "numpy": _spec("numpy"),
+    }
 
-    accepted, rejected = write_pending_installs(
-        ["onnxruntime"],
-        input_modules,
-        {},
-        pending_installs_path=tmp_path / "pending.json",
+    installability = _installability(tmp_path, {"localfiles": _prepared(offered)})
+
+    assert installability.unavailable == {
+        "onnxruntime": "No prebuilt onnxruntime for armv7l",
+        "soxr": found,
+    }
+    assert installability.installable == {"soxr", "numpy"}
+
+
+def test_install_history_names_what_the_last_install_did_not_install(
+    tmp_path: Path,
+):
+    _last_install(
+        tmp_path, {"a": "ok", "b": "failed", "c": "rejected_unknown_key"}
     )
 
-    assert (accepted, rejected) == (["onnxruntime"], [])
+    assert InstallHistory.read(tmp_path).not_installed == {"b", "c"}
 
 
-def test_write_pending_installs_atomic_replace(tmp_path: Path):
-    """The pending file must be replaced atomically (no half-written state)."""
-    input_modules = {"p": _prepared({"numpy": _spec("numpy")})}
-    pending = tmp_path / "pending.json"
-    pending.write_text(json.dumps({"schema": 1, "requested": ["old"]}))
-    write_pending_installs(
-        ["numpy"], input_modules, {}, pending_installs_path=pending
+def test_install_history_names_what_an_install_cut_off_was_asked_for(
+    tmp_path: Path,
+):
+    """install_pending moves the request aside before pip, so a power cut
+    leaves no pending file: a start must not queue the same install again."""
+    (tmp_path / "last_install.json").write_text(
+        json.dumps({"started_at": 100.5, "results": [{"key": "a", "status": "ok"}]})
     )
-    payload = json.loads(pending.read_text())
-    assert payload["requested"] == ["numpy"]
-    # No leftover .tmp
-    assert list(tmp_path.glob("pending.json.tmp")) == []
+    for started, keys in ((100, ["recorded"]), (99, ["older"]), (200, ["cut"])):
+        (tmp_path / f"pending_installs.in_progress.{started}").write_text(
+            json.dumps({"schema": 1, "requested": keys})
+        )
+
+    assert InstallHistory.read(tmp_path).not_installed == {"cut"}
+
+
+def test_install_history_is_empty_before_any_install(tmp_path: Path):
+    assert InstallHistory.read(tmp_path) == InstallHistory()
+
+
+def _offering(unavailable=None, failed=()) -> Installability:
+    return Installability(
+        installable=frozenset({"numpy", "soxr", "tokenizers"}),
+        unavailable=unavailable or {},
+        failed=frozenset(failed),
+    )
+
+
+def _lacking(*missing: str, message: str | None = "AI search unavailable."):
+    return ModuleState(
+        state=ModuleHealthState.ERROR,
+        message=message,
+        missing_packages=list(missing),
+    )
+
+
+def test_a_module_says_a_restart_installs_its_missing_packages():
+    shown = _offering().as_offered(_lacking("numpy", "soxr"))
+
+    assert shown.missing_packages == ["numpy", "soxr"]
+    assert shown.message == (
+        "AI search unavailable.\n\n"
+        "Restart to finish setting up: `numpy`, `soxr` install as Kalinka starts."
+    )
+
+
+def test_a_module_missing_one_package_says_it_installs():
+    shown = _offering().as_offered(_lacking("soxr", message=None))
+
+    assert shown.message == (
+        "Restart to finish setting up: `soxr` installs as Kalinka starts."
+    )
+
+
+def test_a_module_offers_nothing_when_one_package_cannot_be_installed():
+    """None of them would be queued, so no restart is promised."""
+    state = _lacking("numpy", "soxr")
+
+    shown = _offering({"soxr": "No prebuilt soxr for armv7l"}).as_offered(state)
+
+    assert shown.missing_packages == []
+    assert shown.message == (
+        "AI search unavailable.\n\n"
+        "`soxr` is not available on this device. No prebuilt soxr for armv7l."
+    )
+    assert state.missing_packages == ["numpy", "soxr"]
+
+
+def test_a_module_names_a_package_no_plugin_offers():
+    shown = _offering().as_offered(_lacking("ghost", message=None))
+
+    assert shown.missing_packages == []
+    assert shown.message == "`ghost` cannot be installed: no plugin offers it."
+
+
+def test_a_module_says_which_install_failed_and_how_to_retry_it():
+    """A start holds a failed install back; Restart Kalinka asks again."""
+    shown = _offering(failed={"soxr"}).as_offered(_lacking("numpy", "soxr"))
+
+    assert shown.missing_packages == ["numpy", "soxr"]
+    assert shown.message == (
+        "AI search unavailable.\n\n"
+        "Installing `soxr` failed when Kalinka last started. "
+        "Use **Restart Kalinka** to try again."
+    )
+
+
+def test_a_module_missing_nothing_is_shown_as_it_said():
+    state = ModuleState(state=ModuleHealthState.READY)
+
+    assert _offering().as_offered(state) is state

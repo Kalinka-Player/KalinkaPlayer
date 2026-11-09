@@ -83,6 +83,10 @@ grep -q '^After=dietpi-preboot.service dietpi-firstboot.service kalinka-firstboo
 deb="$pkg_dir/../kalinka-supervisor/build-deb.sh"
 grep -q '^  systemctl reenable kalinka-supervisor.service || true$' "$deb"
 grep -q '^  systemctl --no-block restart kalinka-supervisor.service || true$' "$deb"
+# Streamers already in service: NetworkManager rereads the default, and the running connection follows it now.
+grep -q '^    systemctl reload NetworkManager.service || true$' "$deb"
+grep -q 'set power_save off || true$' "$deb"
+grep -q '^ReadWritePaths=-/etc/NetworkManager/conf.d$' "$unit"
 grep -q '^ExecStart=/usr/lib/kalinka-supervisor/reinstall.sh$' "$pkg_dir/../kalinka-supervisor/systemd/kalinka-reinstall.service"
 
 # Compilation is tested separately; exercise the actual package assembly here.
@@ -114,6 +118,9 @@ for shared in dietpi-conf boot-config; do
   cmp "$pkg_dir/../kalinka-supervisor/$shared.sh" "$root/package/usr/lib/kalinka-supervisor/$shared.sh"
 done
 [ -f "$root/package/usr/lib/systemd/system/kalinka-soundcard.service" ]
+powersave="$root/package/usr/lib/NetworkManager/conf.d/kalinka-wifi-powersave.conf"
+cmp "$pkg_dir/../kalinka-supervisor/networkmanager/kalinka-wifi-powersave.conf" "$powersave"
+grep -q '^wifi.powersave=2$' "$powersave"
 grep -q '^    systemctl enable kalinka-soundcard.service || true$' "$deb"
 # DietPi on a PC has DietPi's tool but no HAT to load.
 grep -qF 'if [ -x /boot/dietpi/func/dietpi-set_hardware ] && [ -f /boot/firmware/config.txt ]; then' "$deb"

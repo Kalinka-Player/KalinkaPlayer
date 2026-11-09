@@ -266,9 +266,10 @@ async def test_a_removed_delegate_cannot_publish_an_inflight_recovery(
             player_setup.modules.prepared_devices["delegate"] = prepared
 
 
-async def test_enabling_a_plugin_that_never_started_keeps_volume_unavailable(isolated):
+async def test_enabling_a_plugin_that_never_started_sets_it_up(isolated):
     app = await _app(isolated, {"devices.delegate.enabled": False})
     async with running(app) as client:
+        assert app.state.device_router.current() is None
         response = await client.put(
             "/server/config",
             json={
@@ -277,8 +278,8 @@ async def test_enabling_a_plugin_that_never_started_keeps_volume_unavailable(iso
             },
         )
         assert response.status_code == 200, response.text
-        assert app.state.device_router.current() is None
-        assert _volume(app).supported is False
+        assert app.state.device_router.current() is not None
+        await _wait_volume(app, True)
 
 
 async def test_unchanged_health_does_not_reread_volume_or_publish(

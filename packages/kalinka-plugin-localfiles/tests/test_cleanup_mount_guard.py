@@ -298,3 +298,20 @@ async def test_a_root_that_hangs_on_the_listing_keeps_its_rows(
 
     assert removed["tracks"] == 0
     assert len(await fi.db_manager.get_all_tracks()) == 2
+
+
+@pytest.mark.asyncio
+async def test_incremental_cleanup_guards_nested_sources_too(tmp_path, fast_probe):
+    music = tmp_path / "music"
+    nested = music / "Other drive"
+    fi = _make_indexer(tmp_path, [music, nested])
+    await init_db(fi.db_manager.db_path)
+    await _index_file(fi, nested / "a.mp3", artist="A", album="AA", title="a")
+    await fi.db_manager.set_root_signature(str(nested), "nfs4 host:/other-drive")
+    (nested / "a.mp3").unlink()
+    (nested / "sentinel.txt").write_text("the unmounted directory")
+
+    removed = await fi.cleanup_stale_tracks(affected_paths={str(music)})
+
+    assert removed["tracks"] == 0
+    assert len(await fi.db_manager.get_all_tracks()) == 1

@@ -6,6 +6,7 @@
 # with apt so system dependencies are pulled in automatically. Every package
 # in the bundle — server, plugins, SDK — is pure Python and arch-independent
 # (_all), so the same artifacts install on any machine.
+# Ubuntu 24.04 skips the Bluetooth plugin: its BlueALSA package is too old.
 #
 # Some pieces ship on their own release trains and are installed alongside,
 # each best-effort so a lookup failure only warns:
@@ -74,6 +75,12 @@ fi
 
 have python3 || die "python3 is required (it is also a runtime dependency of the server)"
 
+# Keep platform exclusions independent of the requested Kalinka version: this
+# script is served from main, including when installing older release bundles.
+ID="" VERSION_ID=""
+[ -r /etc/os-release ] && . /etc/os-release
+PLATFORM="${ID:-unknown}-${VERSION_ID:-unknown}"
+
 # --- fetch helpers (curl or wget) ---------------------------------------------
 AUTH=()
 [ -n "${GITHUB_TOKEN:-}" ] && AUTH=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
@@ -115,7 +122,7 @@ else
 fi
 
 # Parse the release JSON: print the tag on line 1, then one asset URL per line
-# for every arch-independent (_all) deb; the server must be among them.
+# for each supported arch-independent (_all) deb; the server must be among them.
 # The parser is written to a file (not piped via `python3 -`) so the JSON can be
 # fed on stdin without colliding with the program source.
 TMPDIR_DL=""
@@ -140,6 +147,7 @@ for r in (data if isinstance(data, list) else [data]):
 PY
 cat > "$PARSER" <<'PY'
 import sys, json
+platform = sys.argv[1]
 data = json.load(sys.stdin)
 rel = None
 if isinstance(data, list):
@@ -155,7 +163,16 @@ if not rel:
     sys.stderr.write("no matching kalinka-v* release found\n")
     sys.exit(1)
 assets = {a["name"]: a["browser_download_url"] for a in rel.get("assets", [])}
-urls = [u for n, u in assets.items() if n.endswith("_all.deb")]
+urls = []
+for name, url in assets.items():
+    if not name.endswith("_all.deb"):
+        continue
+    if platform == "ubuntu-24.04" and name.startswith("kalinka-plugin-bluetooth_"):
+        sys.stderr.write(
+            "note: skipping the Bluetooth plugin on Ubuntu 24.04; "
+            "its BlueALSA package is older than the plugin requires.\n")
+        continue
+    urls.append(url)
 if not any(n.startswith("kalinka-server_") and n.endswith("_all.deb")
            for n in assets):
     sys.stderr.write(
@@ -167,7 +184,7 @@ print(rel["tag_name"])
 for u in urls:
     print(u)
 PY
-parsed="$(printf '%s' "$json" | python3 "$PARSER")" \
+parsed="$(printf '%s' "$json" | python3 "$PARSER" "$PLATFORM")" \
   || die "failed to parse release metadata"
 
 TAG="$(printf '%s\n' "$parsed" | sed -n '1p')"

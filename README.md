@@ -14,6 +14,7 @@ Bit-perfect playback from your own library, on your own hardware — with on-dev
 [![Latest release](https://img.shields.io/github/v/release/Kalinka-Player/KalinkaPlayer?filter=kalinka-v*&label=release&color=2ea043)](https://github.com/Kalinka-Player/KalinkaPlayer/releases/latest)
 [![License](https://img.shields.io/badge/license-GPL--3.0--or--later-2ea043)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-arm64%20%7C%20amd64-2ea043)](#-requirements)
+[![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/madenvel)
 
 **[💿 Flash an image](https://github.com/Kalinka-Player/KalinkaPlayer/releases?q=kalinka-image-v&expanded=true) · [📦 Releases](https://github.com/Kalinka-Player/KalinkaPlayer/releases/latest) · [📱 Control app](https://github.com/Kalinka-Player/KalinkaAI) · [🌐 kalinkaplayer.com](https://kalinkaplayer.com) · [💬 Help test it](https://github.com/Kalinka-Player/KalinkaPlayer/discussions/133)**
 
@@ -34,7 +35,7 @@ Your files stay yours — nothing is uploaded, there is no account and no teleme
 1. **Install the server.** On a Raspberry Pi or a spare PC, [flash a ready-made image](docs/installation.md#install-the-server): Kalinka is already on it and plays as soon as the machine starts. On a machine that already runs Debian 13, Raspberry Pi OS (64-bit, Trixie), DietPi or Ubuntu 24.04, one command installs everything:
 
    ```bash
-   sudo apt install -y curl python3
+   sudo apt install -y ca-certificates curl python3
    curl -fsSL https://kalinkaplayer.com/install.sh | sudo bash
    ```
 

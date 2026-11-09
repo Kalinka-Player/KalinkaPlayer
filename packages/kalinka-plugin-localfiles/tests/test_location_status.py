@@ -39,7 +39,7 @@ async def test_a_new_folder_is_offered_as_a_folder_source(tmp_path):
     change = await plugin.adopt_location(_at(jazz))
 
     assert not status.holds and not status.removable
-    assert status.library_empty and status.restart_required
+    assert status.library_empty and not status.restart_required
     assert change.collection == "music_sources"
     assert change.add == {"kind": "local", "location": {"path": str(jazz)}}
     LocalFilesConfig(music_sources=[change.add])

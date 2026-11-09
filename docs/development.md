@@ -64,7 +64,7 @@ sudo apt install python3 python3-venv
 ```
    To use a specific interpreter, pass it explicitly: `make dev-setup PYTHON=/path/to/python3.13`.
    To also build and run the renderer locally (audio playback), see `make renderer-build` — that one needs the C++ toolchain (`g++ cmake pkg-config protobuf-compiler libprotobuf-dev libboost-dev libcurlpp-dev libcurl4-openssl-dev libflac++-dev libvorbis-dev libxml2-dev libfaad-dev libasound2-dev libspdlog-dev libfmt-dev`), and with GoogleTest installed (`libgtest-dev libgmock-dev`) it builds the renderer's tests too, which `ctest --test-dir packages/kalinka-renderer/build` runs.
-2. One-step setup. Creates a virtualenv at `.venv` with `python3` (or **reuses an already-active `$VIRTUAL_ENV`** — it never makes a second venv), installs the SDK, server and all bundled plugins editable, and seeds the fakeroot directory tree. It writes no config: the server starts on its defaults and keeps only the settings you change:
+2. One-step setup. Creates a virtualenv at `.venv` with `python3` (or **reuses an already-active `$VIRTUAL_ENV`** — it never makes a second venv), installs the SDK, server and all bundled plugins editable, then pytest, flake8 and the other tools in `requirements-dev.txt`, and seeds the fakeroot directory tree. It writes no config: the server starts on its defaults and keeps only the settings you change:
 ```bash
 make dev-setup
 ```
@@ -82,7 +82,7 @@ make dev-run
 
    Logs here carry the full `date time LEVEL thread name: message` format. Under systemd both the server and the renderer switch to the terser format journald expects — no timestamp or level of their own, since journald records those itself — and `KALINKA_LOG_FORMAT=journal make dev-run` shows you that format from a source checkout (`full` forces the other direction). It is not auto-detected here because `dev-run` pipes output through `tee`.
 4. **Restart to pick up changes.** Python edits go live on restart — either click **Restart** in the app (this works without systemd: `dev-run` watches the restart trigger in the fakeroot and relaunches) or Ctrl-C and re-run `make dev-run`. After editing renderer C++, rebuild with `make renderer-build` and restart the renderer binary.
-   Enabling an optional feature (Smart Search) in **Settings** and hitting **Restart** also just works: `dev-run` installs the requested optional packages into the venv before relaunching — the same flow `kalinka.service` runs at boot in production.
+   Enabling an optional feature (Smart Search) in **Settings** queues its optional packages, and the next start installs them into the venv before the server comes up, whether **Restart** in the app or Ctrl-C and `make dev-run` again — the same flow `kalinka.service` runs at boot in production.
 5. Open the Kalinka app: the server appears in its list under the name you configured. Pick it and tap **Connect**, or use **Enter Address Manually** with `<host>:8000`.
 
 # Testing
@@ -90,7 +90,7 @@ make dev-run
 ```bash
 make test
 ```
-Runs the SDK, server and plugin test suites, each from its own package directory, and the retrieval benchmark's own tests. The server's play queue suite is slow and flaky, so it runs on its own with `make test-playqueue`. The renderer has its own C++ test set under `packages/kalinka-renderer/tests` (built when GoogleTest is installed). Every pull request runs the same targets in CI.
+Runs the SDK, server and plugin test suites, each from its own package directory, and the retrieval benchmark's own tests. They run in the venv `make dev-setup` made, or the one that is active, so there is no need to activate it first; `make lint` and `make test-playqueue` do the same. Another environment that has the packages, a conda env say, works with `VENV=/path/to/env`. The server's play queue suite is slow and flaky, so it runs on its own with `make test-playqueue`. The renderer has its own C++ test set under `packages/kalinka-renderer/tests` (built when GoogleTest is installed). Every pull request runs the same targets in CI.
 
 The renderer's MP4 parsers read DASH segments and MP4 files straight from the network, so they also have libFuzzer targets, built with Clang under AddressSanitizer and UndefinedBehaviorSanitizer:
 

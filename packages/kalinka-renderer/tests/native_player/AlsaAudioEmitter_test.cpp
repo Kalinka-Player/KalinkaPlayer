@@ -38,19 +38,21 @@ public:
 // A live source that runs out of bytes without reaching EOF.
 class StarvedOutputNode : public AudioGraphOutputNode {
 public:
-  StarvedOutputNode() {
+  explicit StarvedOutputNode(
+      std::optional<LiveAudioPolicy> live = std::nullopt) {
     setState({AudioGraphNodeState::STREAMING, 0,
               StreamInfo{.format = {.sampleRate = 44100,
                                     .channels = 2,
                                     .bitsPerSample = 16},
-                         .streamType = StreamType::FRAMES}});
+                         .streamType = StreamType::FRAMES,
+                         .live = live}});
   }
   size_t read(void *data, size_t size) override {
     return buffer.read(static_cast<uint8_t *>(data), size);
   }
   size_t waitForData(std::stop_token token, size_t size) override {
     if (!waiting.exchange(true)) {
-      firstWait.set_value();
+      firstWait.set_value(size);
     }
     return buffer.waitForData(token, size);
   }
@@ -68,7 +70,7 @@ public:
     buffer.write(silence.data(), silence.size());
   }
 
-  std::promise<void> firstWait;
+  std::promise<size_t> firstWait;
   std::atomic<size_t> soughtTo{0};
 
 private:
@@ -136,6 +138,32 @@ protected:
 };
 
 TEST_F(AlsaAudioEmitterTest, constructor_destructor) {}
+
+TEST(AlsaAudioEmitter, ExplicitBufferSizesApplyOnlyToNonLiveAudio) {
+  using namespace std::chrono_literals;
+  Config config{{"output.alsa.device", "null"},
+                {"output.alsa.buffer_size", "44100"},
+                {"output.alsa.period_size", "8820"}};
+  AlsaAudioEmitter emitter(config);
+  // Switch back to ordinary playback too: its explicit sizes must survive
+  // the live stream's temporary latency policy.
+  for (bool live : {false, true, false}) {
+    SCOPED_TRACE(live ? "live" : "ordinary");
+    auto source = std::make_shared<StarvedOutputNode>(
+        live ? std::optional{LiveAudioPolicy{60, 250}} : std::nullopt);
+    auto waiting = source->firstWait.get_future();
+    emitter.connectTo(source);
+    ASSERT_EQ(waiting.wait_for(2s), std::future_status::ready);
+    // The first read fills the negotiated ALSA buffer. At 44.1 kHz,
+    // stereo S16, live's 30 ms hardware buffer needs 5292 bytes; ordinary
+    // playback keeps the configured one-second buffer. A regressed live
+    // setup negotiates ALSA's minimum of one frame and asks for 4 bytes.
+    EXPECT_EQ(waiting.get(), (live ? 1323u : 44100u) * 4);
+    EXPECT_EQ(emitter.getState().state, AudioGraphNodeState::PREPARING);
+    EXPECT_EQ(emitter.getState().liveReady, live);
+    emitter.disconnect(source);
+  }
+}
 
 TEST_F(AlsaAudioEmitterTest, starved_live_input_buffers_then_resumes_without_pause) {
   auto source = std::make_shared<StarvedOutputNode>();
@@ -211,10 +239,16 @@ TEST_F(AlsaAudioEmitterTest, a_pause_before_the_device_starts_holds_until_resume
   EXPECT_FALSE(reported(whilePaused, AudioGraphNodeState::STREAMING));
   ASSERT_TRUE(returnsWithin([emitter] { emitter->pause(false); },
                             std::chrono::milliseconds(300)));
-  EXPECT_EQ(waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING,
-                          std::chrono::seconds(1))
-                .state,
-            AudioGraphNodeState::STREAMING);
+  // The null device can play the supplied PCM and run dry before pause()
+  // returns. Observe the already-subscribed monitor so that transition is kept.
+  bool resumed = false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  while (!resumed && std::chrono::steady_clock::now() < deadline) {
+    resumed = reported(drainStates(monitor), AudioGraphNodeState::STREAMING);
+    if (!resumed)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_TRUE(resumed);
   alsaAudioEmitter->disconnect(source);
 }
 

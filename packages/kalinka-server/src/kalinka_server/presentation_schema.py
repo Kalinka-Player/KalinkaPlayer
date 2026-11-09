@@ -63,6 +63,19 @@ class Importance(str, Enum):
     EXPERT = "expert"
 
 
+class Apply(str, Enum):
+    """What saving the field costs, as the renderer's ApplyCost says it.
+
+    * INSTANT — the server takes the value in as it is saved; a plugin's
+      field is always this, the plugin being set up again if it must.
+    * RESTART_REQUIRED — read once at startup; the app offers a restart
+      when a save includes one.
+    """
+
+    INSTANT = "instant"
+    RESTART_REQUIRED = "restart_required"
+
+
 class Setup(str, Enum):
     """First-run wizard participation — orthogonal to :class:`Importance`.
 
@@ -180,8 +193,12 @@ class FieldSpec(BaseModel):
     readonly: bool = False
     dynamic: bool = False           # Value is resolved by the owning module at request time
     dynamic_options: bool = False   # Options are resolved by the owning module at request time
+    # One-shot actions consumed on save. Clients must not restart afterward;
+    # in mixed batches these run after ordinary settings have been restarted.
+    apply_immediately: bool = False
     importance: Importance = Importance.EXPERT
     setup: Setup = Setup.HIDDEN
+    apply: Apply = Apply.INSTANT
     enum_values: Optional[list[str]] = None
     constraints: Optional[Constraints] = None
     # Title of a group this field opens, on a page that lays its settings
@@ -260,6 +277,8 @@ class CollectionSpec(BaseModel):
     # Path of a read-only field reporting on the entries. A client that shows
     # it with the collection does not show it again on its own.
     status: Optional[str] = None
+    # What saving the whole list costs, as `apply` on a field says it.
+    apply: Apply = Apply.INSTANT
 
 
 class SectionSpec(BaseModel):

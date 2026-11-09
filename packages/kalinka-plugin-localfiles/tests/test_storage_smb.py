@@ -193,6 +193,36 @@ class TestCredentials:
         assert client.calls[0][1]["connection_timeout"] > 0
 
 
+def test_watch_directories_use_the_storage_session_without_locking_writers(
+    fake_client, monkeypatch
+):
+    from kalinka_plugin_localfiles.storage import smb_watcher
+
+    root = "smb://nas:4450/music"
+    client = fake_client(files={r"\\nas\music": b""})
+    storage = _storage(username="media", password="hunter2", encrypt=True)
+
+    class Subscription:
+        def __init__(self, open_directory, stat):
+            self.open_directory = open_directory
+
+    monkeypatch.setattr(smb_watcher, "SmbChangeWatcher", Subscription)
+    subscription = storage.watcher()
+    try:
+        with subscription.open_directory(root):
+            unc, options = client.calls[-1]
+            assert unc == r"\\nas\music"
+            assert options["file_type"] == "dir"
+            assert options["share_access"] == "rwd"
+            assert options["desired_access"] == smb_mod.DirectoryAccessMask.FILE_LIST_DIRECTORY
+            assert options["username"] == "media"
+            assert options["encrypt"] is True
+            assert options["port"] == 4450
+            assert options["connection_cache"] is client.logons[-1][1]["connection_cache"]
+    finally:
+        storage.close()
+
+
 class TestTheLogon:
     """``smbclient`` pools connections and sessions in process-global
     dictionaries and fills them with an unsynchronised check-then-create, so
@@ -639,11 +669,12 @@ class TestAvailability:
 
 
 class TestChangeNotification:
-    def test_a_share_cannot_report_changes(self):
-        """SMB2 change notification is not something a NAS can be relied on
-        for, so these roots are left to the periodic scan — and saying so is
-        what keeps the watcher from pretending otherwise."""
-        assert _storage().watcher() is None
+    def test_a_share_has_a_watcher_without_connecting(self):
+        from kalinka_plugin_localfiles.storage.base import ChangeWatcher
+
+        watcher = _storage().watcher()
+        assert isinstance(watcher, ChangeWatcher)
+        watcher.close()
 
 
 class TestTellingARefusalFromSilence:

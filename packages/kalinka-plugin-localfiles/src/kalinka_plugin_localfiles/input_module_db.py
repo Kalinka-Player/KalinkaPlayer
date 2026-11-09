@@ -3,7 +3,7 @@ import re
 import shutil
 import sqlite3
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import List, Dict, Optional, Any, Sequence, Tuple
 import time
 from functools import lru_cache
@@ -92,7 +92,8 @@ class _KindQuery:
 #: so a page of artists costs one query rather than one per artist. Requires
 #: the row source to alias ``artists`` as ``ar``.
 ARTIST_COLUMNS = (
-    "ar.*, (SELECT COUNT(*) FROM albums al WHERE al.artist_id = ar.id)"
+    "ar.*, (SELECT COUNT(*) FROM albums al"
+    " WHERE al.artist_id = ar.id AND al.id != 'unknown_album')"
     " AS album_count"
 )
 
@@ -147,6 +148,8 @@ KINDS: Dict[str, _KindQuery] = {
 }
 
 RECENT_KINDS = ("album", "track", "artist")
+
+SINGLES_TITLE = "Singles & loose tracks"
 
 
 def folder_prefix(folder: str) -> str:
@@ -366,7 +369,7 @@ class LocalFilesInputModuleDb:
         selective wipe fails (foreign schema, undroppable vec tables) the DB
         file is removed instead — correct, just recomputes the embeddings.
 
-        Used by the "Rebuild library on next restart" one-shot. Call before
+        Used by the "Rebuild library" one-shot. Call before
         any worker opens the DB (i.e. early in setup), so nothing recreates
         the tables mid-purge.
         """
@@ -1023,17 +1026,53 @@ class LocalFilesInputModuleDb:
         offset: int = 0,
         limit: int = 50,
         filter: Optional[ListingFilter] = None,
+        *,
+        alphabetical: bool = False,
     ) -> Tuple[List[Dict], int]:
-        """One page of a single kind's listing, and how many it has in all.
-
-        The page and the count come from one WHERE, which is what keeps
-        pagination meaningful under a filter. Ties on the timestamp are broken
-        by id so a row cannot cross pages between requests.
-        """
+        """A filtered kind, newest updated first unless alphabetical is requested."""
         query = KINDS[kind]
+        order = query.text_fields[0] if alphabetical else f"{query.ts_expr} DESC"
+        return self._list_kind(query, offset, limit, filter, order)
+
+    def list_albums(
+        self,
+        offset: int = 0,
+        limit: int = 50,
+        filter: Optional[ListingFilter] = None,
+    ) -> Tuple[List[Dict], int]:
+        """The loose-track umbrella first when populated, then named albums A–Z."""
+        query = replace(
+            KINDS["album"],
+            text_fields=(
+                "fold(CASE WHEN a.id = 'unknown_album'"
+                f" THEN '{SINGLES_TITLE}' ELSE a.title END)",
+                "fold(ar.name)",
+            ),
+        )
+        return self._list_kind(
+            query,
+            offset,
+            limit,
+            filter,
+            "CASE WHEN a.id = 'unknown_album' THEN 0 ELSE 1 END, fold(a.title)",
+            "(a.id != 'unknown_album' OR EXISTS"
+            " (SELECT 1 FROM tracks t WHERE t.album_id = a.id))",
+        )
+
+    def _list_kind(
+        self,
+        query: _KindQuery,
+        offset: int,
+        limit: int,
+        filter: Optional[ListingFilter],
+        order: str,
+        predicate: str = "1",
+    ) -> Tuple[List[Dict], int]:
+        """Count and page the same selection, with stable ordering across pages."""
         where, params = self._listing_where(
             filter or ListingFilter(), query.text_fields, query.genre_predicate
         )
+        where = f"({where}) AND ({predicate})"
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
@@ -1047,7 +1086,7 @@ class LocalFilesInputModuleDb:
                 f"""
                 SELECT {query.columns} FROM {query.source}
                 WHERE {where}
-                ORDER BY {query.ts_expr} DESC, {query.id_expr}
+                ORDER BY {order}, {query.id_expr}
                 LIMIT ? OFFSET ?
                 """,
                 (*params, limit, offset),
@@ -1399,15 +1438,11 @@ class LocalFilesInputModuleDb:
     def get_album_tracks(
         self, album_id: str, offset: int = 0, limit: int = 50
     ) -> Tuple[List[Dict], int]:
-        """Get tracks for an album.
-
-        The "Unknown Album" sentinel only owns tracks whose artist is also
-        unknown: a loose track WITH a known artist already surfaces under
-        that artist (``get_artist_orphan_tracks``), so listing it here too
-        would show the same track in two places in the library."""
-        artist_cond = (
-            " AND t.artist_id = 'unknown_artist'"
-            if album_id == "unknown_album" else ""
+        """Album tracks, including every artist in the loose-track umbrella."""
+        order = (
+            "fold(t.title), t.id"
+            if album_id == "unknown_album"
+            else "COALESCE(t.disc_number, 1), t.track_number, t.title, t.id"
         )
         conn = self._get_connection()
         try:
@@ -1415,8 +1450,7 @@ class LocalFilesInputModuleDb:
 
             # Get total count
             cursor.execute(
-                "SELECT COUNT(*) as count FROM tracks t WHERE t.album_id = ?"
-                + artist_cond,
+                "SELECT COUNT(*) as count FROM tracks t WHERE t.album_id = ?",
                 (album_id,),
             )
             total = cursor.fetchone()["count"]
@@ -1429,16 +1463,25 @@ class LocalFilesInputModuleDb:
                 JOIN albums a ON t.album_id = a.id
                 JOIN artists ar ON t.artist_id = ar.id
                 WHERE t.album_id = ?
-                """
-                + artist_cond
-                + """
-                ORDER BY COALESCE(t.disc_number, 1), t.track_number, t.title
+                ORDER BY {order}
                 LIMIT ? OFFSET ?
             """,
                 (album_id, limit, offset),
             )
 
             return [dict(row) for row in cursor.fetchall()], total
+        finally:
+            conn.close()
+
+    def get_album_track_totals(self, album_id: str) -> Tuple[int, int]:
+        """Current count and duration, including tracks absent from cached statistics."""
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(duration), 0) FROM tracks WHERE album_id = ?",
+                (album_id,),
+            ).fetchone()
+            return row[0], row[1]
         finally:
             conn.close()
 
@@ -1452,7 +1495,9 @@ class LocalFilesInputModuleDb:
 
             # Get total count
             cursor.execute(
-                "SELECT COUNT(*) as count FROM albums WHERE artist_id = ?", (artist_id,)
+                "SELECT COUNT(*) as count FROM albums"
+                " WHERE artist_id = ? AND id != 'unknown_album'",
+                (artist_id,),
             )
             total = cursor.fetchone()["count"]
 
@@ -1462,7 +1507,7 @@ class LocalFilesInputModuleDb:
                 SELECT a.*, ar.name as artist_name
                 FROM albums a
                 JOIN artists ar ON a.artist_id = ar.id
-                WHERE a.artist_id = ?
+                WHERE a.artist_id = ? AND a.id != 'unknown_album'
                 ORDER BY a.title
                 LIMIT ? OFFSET ?
             """,
@@ -1477,7 +1522,7 @@ class LocalFilesInputModuleDb:
         self, artist_id: str, offset: int = 0, limit: int = 50
     ) -> Tuple[List[Dict], int]:
         """Get tracks attributed to an artist whose album is anchored
-        elsewhere, so they wouldn't show up under ``get_artist_albums``.
+        elsewhere or to the loose-track umbrella.
 
         Two real cases this catches:
 
@@ -1506,7 +1551,8 @@ class LocalFilesInputModuleDb:
                 SELECT COUNT(*) as count
                 FROM tracks t
                 JOIN albums a ON t.album_id = a.id
-                WHERE t.artist_id = ? AND a.artist_id != t.artist_id
+                WHERE t.artist_id = ?
+                  AND (a.id = 'unknown_album' OR a.artist_id != t.artist_id)
                 """,
                 (artist_id,),
             )
@@ -1518,7 +1564,8 @@ class LocalFilesInputModuleDb:
                 FROM tracks t
                 JOIN albums a ON t.album_id = a.id
                 JOIN artists ar ON t.artist_id = ar.id
-                WHERE t.artist_id = ? AND a.artist_id != t.artist_id
+                WHERE t.artist_id = ?
+                  AND (a.id = 'unknown_album' OR a.artist_id != t.artist_id)
                 ORDER BY t.title COLLATE NOCASE
                 LIMIT ? OFFSET ?
                 """,

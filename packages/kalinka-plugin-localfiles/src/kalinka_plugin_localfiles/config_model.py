@@ -1,7 +1,8 @@
 import os
+from pathlib import Path
 from typing import Annotated, Any, ClassVar, Hashable, Literal, Union
 from pydantic import AfterValidator, BaseModel, Field
-from kalinka_plugin_sdk import ConfigRecord, Records, paths
+from kalinka_plugin_sdk import ConfigRecord, ModuleIconFiles, Records, paths
 from kalinka_plugin_sdk.module_config import ModuleConfig
 
 
@@ -88,6 +89,8 @@ class AiSearchConfig(BaseModel):
                 "by name. Needs roughly 500 MB of memory, more while indexing, "
                 "and hours of CPU to index a large library the first time."
             ),
+            # Its packages install at the next start.
+            "apply": "restart_required",
             **_SIMPLE,
             **_PROMPT,
         },
@@ -209,6 +212,8 @@ class ProceduralArtworkConfig(BaseModel):
         title="Generate missing album art",
         json_schema_extra={
             "help": "Draw abstract cover art for albums left without artwork",
+            # numpy installs at the next start.
+            "apply": "restart_required",
             **_SIMPLE,
         },
     )
@@ -434,7 +439,12 @@ def _following(sources: list[MusicSource], folders: list[str]) -> list[MusicSour
 
 
 class LocalFilesConfig(ModuleConfig):
-    __module_icon__: ClassVar[str] = "folder_outlined"
+    __module_icon__: ClassVar[str] = "music_note_outlined"
+    __module_icon_files__: ClassVar[ModuleIconFiles] = ModuleIconFiles(
+        small=Path(__file__).with_name("icons") / "small.svg",
+        standard=Path(__file__).with_name("icons") / "standard.svg",
+        monochrome=True,
+    )
     __preview_fields__: ClassVar[list[str]] = [
         "music_folders",
         "scan_interval_minutes",
@@ -543,12 +553,11 @@ class LocalFilesConfig(ModuleConfig):
     )
     rebuild_library: bool = Field(
         default=False,
-        title="Rebuild library on next restart",
+        title="Rebuild library",
         json_schema_extra={
             "help": (
-                "Purge the index and artwork cache and rescan everything on "
-                "the next restart. Finished AI analysis is kept. Resets itself "
-                "once done."
+                "Purge the index and artwork cache and rescan everything once "
+                "applied. Finished AI analysis is kept. Resets itself once done."
             ),
             # One-shot trigger: the framework resets this (persist-first)
             # before the plugin acts, so it fires at most once per arming.

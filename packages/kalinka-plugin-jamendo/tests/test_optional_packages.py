@@ -113,7 +113,10 @@ async def test_mood_search_without_onnxruntime_reports_it_missing():
 
     assert state.state == ModuleHealthState.WARNING
     assert state.missing_packages == ["onnxruntime"]
-    assert "`onnxruntime`" in state.message
+    # What a restart does is the server's to say, which knows what it queues.
+    assert state.message == (
+        "Mood search unavailable. Missing package(s): `onnxruntime`."
+    )
     assert await plugin.required_packages() == ["onnxruntime"]
 
 

@@ -64,6 +64,7 @@ class _Box:
         self.results_dir = tmp_path / "results"
         self.results_dir.mkdir()
         self.marker = tmp_path / "state" / "no-automount"
+        self.remembered = tmp_path / "state" / "mount-when-present"
         self.mountinfo = mountinfo
         self.space = (31_000_000_000, 12_000_000_000)
         self.manager = StorageManager(
@@ -75,6 +76,7 @@ class _Box:
             mountinfo=lambda: list_mounts(self.mountinfo),
             udev_data_dir=_udev(tmp_path),
             marker=str(self.marker),
+            remembered=str(self.remembered),
             statvfs=lambda _p: self.space,
             fstab=str(tmp_path / "fstab"),
             sys_dev_block=str(tmp_path / "sysdev"),
@@ -241,20 +243,92 @@ def test_the_automount_switch_is_left_where_the_helper_reads_it(tmp_path, enable
     assert box.marker.exists() is not enabled
 
 
-async def test_saved_mounts_are_mounted_and_removed_ones_unmounted(tmp_path):
+async def test_saved_mounts_are_mounted_at_start_only_with_their_switch_on(tmp_path):
+    box = _Box(
+        tmp_path,
+        config=StorageConfig(
+            mounts=[
+                NfsMount(id="rec_nas", host="nas.local", export="/export/music"),
+                DiskMount(id="rec_disk", fs_uuid="1111-2222", at_start=False),
+            ]
+        ),
+    )
+
+    await box.manager.start()
+    await box.manager.stop()
+
+    assert box.request("rec_nas")["options"] == ["ro", "soft", "timeo=100", "vers=4.2"]
+    assert box.request("rec_nas")["fstype"] == "nfs4"
+    assert list(box.requests_dir.glob("*.rec_disk.json")) == []
+
+
+async def test_saving_a_mount_mounts_nothing_and_forgetting_one_unmounts_it(tmp_path):
     box = _Box(tmp_path, config=StorageConfig())
     await box.manager.start()
     await box.manager.stop()
-    assert list(box.requests_dir.iterdir()) == []
 
     box.config = StorageConfig(mounts=[NfsMount(id="rec_nas", host="nas.local", export="/export/music")])
     await box.manager.config_changed()
-    assert box.request("rec_nas")["options"] == ["ro", "soft", "timeo=100", "vers=4.2"]
-    assert box.request("rec_nas")["fstype"] == "nfs4"
+    assert list(box.requests_dir.iterdir()) == []
 
     box.config = StorageConfig()
     await box.manager.config_changed()
     assert box.request("rec_nas") == {"id": "rec_nas", "action": "unmount", "eject": False}
+
+
+async def test_a_mounted_share_set_to_mount_another_way_is_mounted_again(tmp_path):
+    """rec_nas is mounted; its name and switch are no reason to touch it."""
+    box = _Box(tmp_path)
+    await box.manager.start()
+    await box.manager.stop()
+    asked = len(list(box.requests_dir.iterdir()))
+    nas, disk = box.config.mounts
+
+    box.config = StorageConfig(mounts=[nas.model_copy(update={"label": "Music", "at_start": False}), disk])
+    await box.manager.config_changed()
+    assert len(list(box.requests_dir.iterdir())) == asked
+
+    box.config = StorageConfig(mounts=[nas.model_copy(update={"read_only": False}), disk])
+    await box.manager.config_changed()
+    unmount, mount = sorted(box.requests_dir.glob("*.rec_nas.json"))[-2:]
+    assert json.loads(unmount.read_text())["action"] == "unmount"
+    assert json.loads(mount.read_text())["options"][0] == "rw"
+
+
+async def test_a_record_changed_while_not_mounted_is_left_unmounted(tmp_path):
+    box = _Box(tmp_path)
+    await box.manager.start()
+    await box.manager.stop()
+    nas, disk = box.config.mounts
+
+    box.config = StorageConfig(mounts=[nas, disk.model_copy(update={"read_only": False})])
+    await box.manager.config_changed()
+
+    assert [json.loads(p.read_text())["action"] for p in box.requests_dir.glob("*.rec_disk.json")] == ["mount"]
+
+
+async def test_the_drives_kept_with_their_switch_on_are_left_where_the_helper_reads_them(tmp_path):
+    """Only a record named after its UUID: the helper mounts a drive there."""
+    box = _Box(
+        tmp_path,
+        config=StorageConfig(
+            automount_usb=False,
+            mounts=[
+                DiskMount(id="9999-0000", fs_uuid="9999-0000", usb=True),
+                DiskMount(id="AB12-CD34", fs_uuid="AB12-CD34", usb=True, read_only=False),
+                DiskMount(id="5555-6666", fs_uuid="5555-6666", usb=True, at_start=False),
+                DiskMount(id="rec_disk", fs_uuid="1111-2222"),
+                NfsMount(id="rec_nas", host="nas.local", export="/export/music"),
+            ],
+        ),
+    )
+
+    await box.manager.config_changed()
+    assert box.remembered.read_text() == "9999-0000\nAB12-CD34 rw\n"
+
+    box.config = StorageConfig(automount_usb=False)
+    await box.manager.config_changed()
+    assert box.remembered.read_text() == ""
 
 
 async def test_only_what_kalinka_mounted_can_be_ejected(tmp_path):
@@ -268,28 +342,88 @@ async def test_only_what_kalinka_mounted_can_be_ejected(tmp_path):
     assert not box.manager.eject("nope")
 
 
-def test_the_disk_picker_offers_unmounted_internal_filesystems(tmp_path):
-    offered = [uuid for uuid, _ in _Box(tmp_path).manager.unmounted_filesystems()]
+async def test_a_kept_usb_drive_is_ejected_off_its_bus_and_a_disk_only_unmounted(tmp_path):
+    box = _Box(
+        tmp_path,
+        config=StorageConfig(
+            mounts=[
+                DiskMount(id="3A1F-9C2B", fs_uuid="3A1F-9C2B", usb=True),
+                DiskMount(id="rec_disk", fs_uuid="1111-2222"),
+            ]
+        ),
+        mountinfo=MOUNTINFO + "\n60 1 8:33 / /media/kalinka/rec_disk ro - ext4 /dev/sdc1 ro",
+    )
+    await box.manager.refresh()
 
-    assert offered == ["1111-2222"]
+    assert box.manager.eject("3A1F-9C2B") and box.manager.eject("rec_disk")
+
+    assert box.request("3A1F-9C2B")["eject"] is True
+    assert box.request("rec_disk")["eject"] is False
 
 
-def test_with_automount_off_a_usb_drive_is_offered_as_a_disk(tmp_path):
+async def test_a_kept_disk_in_a_usb_enclosure_is_ejected_off_its_bus(tmp_path):
+    """udev says ata for it, as for a disk built in."""
+    box = _Box(
+        tmp_path,
+        config=StorageConfig(mounts=[DiskMount(id="1111-2222", fs_uuid="1111-2222", usb=True)]),
+        mountinfo=MOUNTINFO + "\n60 1 8:33 / /media/kalinka/1111-2222 ro - ext4 /dev/sdc1 ro",
+    )
+    enclosure = tmp_path / "sys/devices/pci0/usb2/2-1/block/sdc/sdc1"
+    enclosure.mkdir(parents=True)
+    (tmp_path / "sysdev").mkdir()
+    (tmp_path / "sysdev" / "8:33").symlink_to(enclosure)
+    await box.manager.refresh()
+
+    assert box.manager.eject("1111-2222")
+
+    assert box.request("1111-2222")["eject"] is True
+
+
+async def test_unmounting_leaves_the_disk_powered(tmp_path):
+    box = _Box(tmp_path)
+    await box.manager.refresh()
+
+    assert box.manager.unmount("3A1F-9C2B")
+    assert box.request("3A1F-9C2B") == {"id": "3A1F-9C2B", "action": "unmount", "eject": False}
+    assert not box.manager.unmount("aaaa-bbbb") and not box.manager.unmount("internal")
+
+
+def test_filesystems_nothing_mounted_are_offered_with_their_size(tmp_path):
+    box = _Box(tmp_path)
+    (tmp_path / "sysdev" / "8:33").mkdir(parents=True)
+    (tmp_path / "sysdev" / "8:33" / "size").write_text("1953525168\n")
+
+    (spare,) = box.manager.unmounted_filesystems()
+
+    assert (spare.uuid, spare.label, spare.usb, spare.size_bytes) == ("1111-2222", "Spare", False, 1_000_204_886_016)
+
+
+def test_with_automount_off_a_usb_drive_is_offered_too(tmp_path):
     box = _Box(tmp_path)
     box.config = box.config.model_copy(update={"automount_usb": False})
 
-    offered = [uuid for uuid, _ in box.manager.unmounted_filesystems()]
+    offered = [(fs.uuid, fs.usb) for fs in box.manager.unmounted_filesystems()]
 
-    assert offered == ["1111-2222", "9999-0000"]
+    assert offered == [("1111-2222", False), ("9999-0000", True)]
 
 
-def test_a_saved_disk_keeps_its_filesystem_among_the_choices(tmp_path):
-    """Spare is mounted for rec_disk, so nothing else would offer it."""
+def test_a_disk_in_a_usb_enclosure_is_a_usb_drive(tmp_path):
+    """udev says ata for it; the rule that mounts drives goes by the bus."""
+    box = _Box(tmp_path)
+    box.config = box.config.model_copy(update={"automount_usb": False})
+    enclosure = tmp_path / "sys/devices/pci0/usb2/2-1/block/sdc/sdc1"
+    enclosure.mkdir(parents=True)
+    (tmp_path / "sysdev").mkdir()
+    (tmp_path / "sysdev" / "8:33").symlink_to(enclosure)
+
+    offered = {fs.uuid: fs.usb for fs in box.manager.unmounted_filesystems()}
+
+    assert offered["1111-2222"] is True
+
+
+def test_a_filesystem_kalinka_mounted_is_not_offered_again(tmp_path):
     box = _Box(tmp_path, mountinfo=MOUNTINFO + "\n60 1 8:33 / /media/kalinka/rec_disk ro - ext4 /dev/sdc1 ro")
 
-    options = box.manager.filesystem_options()
-
-    assert [(o["value"], o["label"]) for o in options] == [("1111-2222", "Spare")]
     assert box.manager.unmounted_filesystems() == []
 
 

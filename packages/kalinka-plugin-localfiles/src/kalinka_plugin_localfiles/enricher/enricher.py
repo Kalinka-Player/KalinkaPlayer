@@ -207,8 +207,7 @@ class MetadataEnricher:
             else:
                 logger.warning(
                     "Generated album art is enabled but numpy is not "
-                    "installed; skipping. Use 'Restart with install' on the "
-                    "modules page to fetch it."
+                    "installed; skipping until a restart installs it."
                 )
 
         logger.info(

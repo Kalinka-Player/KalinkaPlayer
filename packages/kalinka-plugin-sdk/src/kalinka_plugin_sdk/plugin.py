@@ -1,12 +1,13 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, ClassVar, Generic, Optional, TypeVar
+from typing import Any, Callable, ClassVar, Generic, Optional, TypeVar
 from .api import EventEmitter, EventListener, LoggerAPI, PlayQueueController
 from .config_feedback import ConfigIssue, ConfigOption
 from .dynamic_fields import DynamicFieldDecl
 from .direct_playback import DirectPlayback
 from .external_playback import ExternalPlayback
+from .live_audio import LiveAudio
 from .embedding import TextEmbedder
 from .events import PlayQueueEventType, PlayQueueEvent, PlayQueueState
 from .ext_device_events import ExtDeviceEventType, ExtDeviceEvent, ExtDeviceState
@@ -15,6 +16,7 @@ from .module_health import ModuleHealthState, ModuleState
 from .optional_packages import OptionalPackageSpec
 from .inputmodule import InputModule
 from .ext_device import ExternalOutputDevice
+from .receiver_control import ReceiverControl, ReceiverDescriptor
 
 
 class PluginType(Enum):
@@ -97,6 +99,15 @@ class PluginBase(ABC, Generic[PLUGIN_CLASS, CTX_TYPE]):
     async def shutdown(self) -> None:
         """Called when the plugin is being unloaded. Clean up resources here.
         Should not raise exceptions - log errors instead.
+
+        SDK 3.21: also called while the server runs — after a settings
+        change the plugin did not take in itself, before its package is
+        updated or removed, or when it is switched off — and the same class
+        may be set up again right after. So everything acquired in
+        ``setup()`` goes here: bus subscriptions, sockets and ports, worker
+        threads and processes, open readers and live captures (retired, so
+        their streams end). The server allows 15 seconds and then carries
+        on without waiting.
         """
         pass
 
@@ -180,7 +191,7 @@ class PluginBase(ABC, Generic[PLUGIN_CLASS, CTX_TYPE]):
         """
         return []
 
-    async def config_changed(self, changed: frozenset[str]) -> None:
+    async def config_changed(self, changed: frozenset[str]) -> Optional[bool]:
         """SDK 3.20: the user saved settings of this plugin.
 
         Called after the save is committed and persisted, with the paths
@@ -188,17 +199,35 @@ class PluginBase(ABC, Generic[PLUGIN_CLASS, CTX_TYPE]):
         holds the new values; a plugin that copied any of them at setup
         takes them in here, so the change applies without a restart.
 
+        SDK 3.21: a field declaring both ``one_shot`` and ``apply_immediately``
+        in json_schema_extra is durably reset before this call. Its armed
+        value is visible during the callback and reset in memory afterwards.
+        Copy the action's arguments before scheduling work. Ordinary one-shot
+        fields retain their next-setup behavior.
+
+        @return SDK 3.21: True when the change is taken in. Anything else —
+            None, an exception, a timeout — and the server shuts the plugin
+            down and sets it up again on the live config, so a plugin that
+            reads its settings only at ``setup()`` needs no code here. A
+            plugin that handles some paths and not others returns True only
+            for the saves it handled whole.
         @note Bounded by the server's per-call timeout. Long work, such as
             a rescan, is started here and left to run.
         """
+        return None
+
+    async def server_name_changed(self) -> None:
+        """SDK 3.21: reconcile an inherited receiver name after a saved rename."""
         return None
 
     async def required_packages(self) -> list[str]:
         """Return optional-package keys the plugin would need to install
         given its *current* in-memory config.
 
-        Called by the server on restart to auto-queue installs when a
-        user enables a sub-feature whose packages aren't yet importable.
+        Called by the server after each save of a setting, when the plugin
+        is set up or taken down while the server runs, and on restart, to
+        queue installs when a user enables a sub-feature whose packages
+        aren't yet importable.
         Keys must come from this plugin's ``OPTIONAL_PACKAGES`` (or
         another loaded plugin's — the server validates against the
         global registry). The default returns ``[]``: thin plugins
@@ -208,6 +237,12 @@ class PluginBase(ABC, Generic[PLUGIN_CLASS, CTX_TYPE]):
         captured at setup time), not the config at last setup, so this
         reflects any changes the user has just staged through
         ``PUT /server/config``.
+
+        SDK 3.21: a save applies without a restart, so the field that turns
+        such a feature on is tagged
+        ``json_schema_extra={"apply": "restart_required"}``. The app then
+        saves and restarts in one step, the server leaves that save for the
+        restart, and the restart installs what this method names.
         """
         return []
 
@@ -222,6 +257,11 @@ class InputPluginContext(PluginContextBase):
     direct_playback: Optional[DirectPlayback] = field(default=None, kw_only=True)
     # SDK 3.7+: ownership and metadata for plugins with their own audio engine.
     external_playback: Optional[ExternalPlayback] = field(default=None, kw_only=True)
+    # SDK 3.21+: receiver PCM whose lifetime is independent of its output route.
+    live_audio: Optional[LiveAudio] = field(default=None, kw_only=True)
+    # SDK 3.21: read the current server name, and invalidate receiver state.
+    server_name: Callable[[], str] | None = field(default=None, kw_only=True)
+    receiver_changed: Callable[[], None] | None = field(default=None, kw_only=True)
 
 
 @dataclass
@@ -236,6 +276,11 @@ class InputModulePlugin(PluginBase[InputModule, InputPluginContext]):
     """Base class for input module plugins."""
 
     PLUGIN_TYPE = PluginType.INPUT_MODULE
+    SETUP_WHEN_DISABLED: ClassVar[bool] = False
+    RECEIVER: ClassVar[ReceiverDescriptor | None] = None
+
+    def get_receiver_control(self) -> ReceiverControl | None:
+        return None
 
 
 @dataclass

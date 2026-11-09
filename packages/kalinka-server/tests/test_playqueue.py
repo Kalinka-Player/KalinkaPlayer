@@ -2095,3 +2095,67 @@ async def test_a_stop_while_a_resume_is_fetching_stays_stopped(
     assert len(_enqueued(renderer)) == enqueued, "the resume was not made"
     assert renderer.session_id is None
     assert (await playqueue.get_playback_state()).state == PlayerStateEnum.STOPPED
+
+
+def _foreign_track(id: str) -> Track:
+    """A track another module serves."""
+    entity = EntityId(id=id, type=EntityType.TRACK, source="other")
+    return Track(id=entity, title=f"other{id}", duration=10, album=Album(id=entity, title="album"))
+
+
+@pytest.mark.asyncio
+async def test_dropping_a_source_stops_only_what_plays_from_it(event_emitter, playqueue):
+    await playqueue.add([create_track("1"), _foreign_track("2")])
+    await playqueue.play(0)
+    await asyncio.sleep(0.2)
+    assert (await playqueue.get_playback_state()).state == PlayerStateEnum.PLAYING
+
+    await playqueue.drop_source("other", gone=False)
+    await asyncio.sleep(0.2)
+    assert (await playqueue.get_playback_state()).state == PlayerStateEnum.PLAYING
+
+    await playqueue.drop_source("test_source", gone=False)
+    await asyncio.sleep(0.3)
+    assert (await playqueue.get_playback_state()).state == PlayerStateEnum.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_dropping_a_source_forgets_what_was_prepared_from_it(event_emitter, playqueue):
+    await playqueue.add([create_track("1"), _foreign_track("2")])
+    await playqueue.play(0)
+    await asyncio.sleep(0.2)
+    await playqueue.play_next(1)
+    await asyncio.sleep(0.2)
+    assert 1 in playqueue.prepared_tracks
+
+    await playqueue.drop_source("other", gone=False)
+    await asyncio.sleep(0.1)
+
+    assert 1 not in playqueue.prepared_tracks
+    assert (await playqueue.get_playback_state()).state == PlayerStateEnum.PLAYING
+
+
+@pytest.mark.asyncio
+async def test_a_gone_source_flags_its_tracks_until_it_returns(event_emitter, playqueue):
+    from kalinka_server.track_sources import NO_MODULE
+
+    await playqueue.add([create_track("1"), _foreign_track("2"), _foreign_track("3")])
+    event_emitter.reset_mock()
+
+    await playqueue.drop_source("other", gone=True)
+
+    flagged = [
+        e for e in dispatched_events(event_emitter) if isinstance(e, TrackUnavailableEvent)
+    ]
+    assert [(e.index, e.unavailable, e.reason) for e in flagged] == [
+        (1, True, NO_MODULE),
+        (2, True, NO_MODULE),
+    ]
+    event_emitter.reset_mock()
+
+    await playqueue.source_returned("other")
+
+    cleared = [
+        e for e in dispatched_events(event_emitter) if isinstance(e, TrackUnavailableEvent)
+    ]
+    assert [(e.index, e.unavailable) for e in cleared] == [(1, False), (2, False)]

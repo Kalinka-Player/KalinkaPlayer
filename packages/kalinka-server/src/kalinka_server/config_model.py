@@ -17,6 +17,8 @@ recognized by the presentation emitter:
                    titles read on their own.
     readonly     — True: shown, never written through PUT /server/config;
                    only the overrides file sets it
+    own_screen   — on a record collection: edited on a screen of its own,
+                   so the settings page does not describe it
 
 The default tier for unmarked fields is EXPERT — they're reachable only
 through the about:config-style search. To put a field on the main
@@ -86,7 +88,7 @@ class ServerConfig(BaseModel):
         default="My Kalinka Service",
         title="Service name",
         json_schema_extra={
-            "help": "How this server appears in the app when found on your network",
+            "help": "Name shown in the app and inherited by receivers without a custom name. Changing it can end AirPlay playback.",
             **_SIMPLE,
             **_PROMPT,
         },
@@ -95,6 +97,7 @@ class ServerConfig(BaseModel):
         default="all",
         title="Network interface",
         json_schema_extra={
+            "apply": "restart_required",
             "help": 'Network connection the server listens on — "all" is right for most setups',
         },
     )
@@ -102,6 +105,7 @@ class ServerConfig(BaseModel):
         default=8000,
         title="Port",
         json_schema_extra={
+            "apply": "restart_required",
             "help": (
                 "Port the app uses to connect to this server. After a change, "
                 "apps, browsers and renderers given this address by hand must "
@@ -131,6 +135,7 @@ class ServerConfig(BaseModel):
         default=False,
         title="Manage this streamer",
         json_schema_extra={
+            "apply": "restart_required",
             "importance": "expert",
             "help": (
                 "Apply and restart to install streamer management if it is "
@@ -225,6 +230,7 @@ class DisplayConfig(BaseModel):
         default=False,
         title="Now-playing display on this machine",
         json_schema_extra={
+            "apply": "restart_required",
             "help": (
                 "Show the now-playing display on a screen attached to this "
                 "machine, restarted if it ever stops — needs the "
@@ -236,6 +242,7 @@ class DisplayConfig(BaseModel):
         default=DisplayRotation.r0,
         title="Screen rotation",
         json_schema_extra={
+            "apply": "restart_required",
             "help": "Clockwise, in degrees — for a screen mounted on its side or upside down",
         },
     )
@@ -323,6 +330,7 @@ class EmbeddingConfig(BaseModel):
         ),
         title="Text embedding model directory",
         json_schema_extra={
+            "apply": "restart_required",
             "help": "Where the shared text-embedding model is stored",
         },
     )
@@ -330,6 +338,7 @@ class EmbeddingConfig(BaseModel):
         default=_MINILM_RELEASE,
         title="Text embedding model download URL",
         json_schema_extra={
+            "apply": "restart_required",
             "help": (
                 "Where the model is downloaded from if missing — leave empty "
                 "if you manage the files yourself"
@@ -363,6 +372,7 @@ class NfsMount(ConfigRecord):
     )
     version: NfsVersion = Field(default=NfsVersion.v4_2, title="NFS version")
     read_only: bool = Field(default=True, title="Read-only")
+    at_start: bool = Field(default=True, title="Mount after restart")
 
 
 class DiskMount(ConfigRecord):
@@ -380,9 +390,12 @@ class DiskMount(ConfigRecord):
     fs_uuid: str = Field(
         default="",
         title="Filesystem",
-        json_schema_extra={**_SIMPLE, "dynamic_options": True},
+        json_schema_extra=_SIMPLE,
     )
     read_only: bool = Field(default=True, title="Read-only")
+    at_start: bool = Field(default=True, title="Mount after restart")
+    #: Plugged in rather than built in, which says where it is listed while away.
+    usb: bool = Field(default=False, title="USB drive")
 
 
 MountRecord = Annotated[Union[NfsMount, DiskMount], Field(discriminator="kind")]
@@ -404,7 +417,9 @@ class StorageConfig(BaseModel):
         title="Show drives as a source",
         json_schema_extra={**_SIMPLE, "help": "Browse and play mounted drives without adding them to My Library"},
     )
-    mounts: Records[MountRecord] = Field(default_factory=list, title="Mounts")
+    mounts: Records[MountRecord] = Field(
+        default_factory=list, title="Mounts", json_schema_extra={"own_screen": True}
+    )
 
 
 class KalinkaConfig(BaseModel):

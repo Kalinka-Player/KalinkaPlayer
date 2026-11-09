@@ -122,12 +122,12 @@ Use this on a computer that already runs one of these 64-bit systems:
 - **Debian 13** (trixie)
 - **Raspberry Pi OS (64-bit)** based on Debian 13 (trixie). The older Bookworm release gets the server but no sound output.
 - **DietPi** on Debian 13
-- **Ubuntu 24.04 LTS**
+- **Ubuntu 24.04 LTS**. The installer skips the Bluetooth input plugin because Ubuntu's BlueALSA package is too old.
 
 `cat /etc/os-release` tells you which one you have. Open a terminal on that computer, or log in to it over SSH, and run:
 
 ```bash
-sudo apt install -y curl python3
+sudo apt install -y ca-certificates curl python3
 curl -fsSL https://kalinkaplayer.com/install.sh | sudo bash
 ```
 
@@ -244,9 +244,12 @@ Kalinka can read music from several places at once. Choose them during setup, an
 
 Albums appear once they have finished copying.
 
-**On a USB disk or stick plugged into the server.** Just plug it in. Kalinka mounts it read-only, and within a few seconds **Drives** appears among your music sources: browse its folders and play straight from it, with its tags and cover art, without waiting for anything to be indexed. To keep a disk's music in My Library, open it or one of its folders and choose **Add to library**. FAT32, exFAT, NTFS, HFS+, ext4, XFS, Btrfs and F2FS are mounted; a disk you have put in `/etc/fstab` is left to you. On ext4, XFS, Btrfs and F2FS the server, which runs as the user `kalusr`, reads only the files that every user may read. Pulling the disk out without ejecting it is safe, as Kalinka never writes to it; **Eject** in the drive's menu also powers it down.
+**On a USB disk or stick plugged into the server.** Just plug it in. Kalinka mounts it read-only, and within a few seconds **Drives** appears among your music sources: browse its folders and play straight from it, with its tags and cover art, without waiting for anything to be indexed. To keep a disk's music in My Library, open it or one of its folders and choose **Add to library**. FAT32, exFAT, NTFS, HFS+, ext4, XFS, Btrfs and F2FS are mounted; a disk you have put in `/etc/fstab` is left to you. On ext4, XFS, Btrfs and F2FS the server, which runs as the user `kalusr`, reads only the files that every user may read. Pulling the disk out without ejecting it is safe, as Kalinka never writes to it; **Eject** in the drive's menu also powers it down. With **Mount USB drives automatically** off, in **Configuration → Streamer → Storage**, a drive waits in **Drives & shares** to be mounted; once it is mounted, tick its **Mount when plugged in** and Kalinka mounts it at every start and whenever it is plugged in.
 
-**On an NFS share, or a second disk inside the server.** Add it in **Configuration → Storage**. Kalinka mounts it read-only now and at every start, and it appears under **Drives** like a USB disk. NFS needs the `nfs-common` package, which the installer adds when it can.
+**On an NFS share, or a second disk inside the server.** Open **Configuration → Streamer → Storage → Drives & shares**. Disks inside the server that nothing has mounted are listed under **On this streamer**, and the shares of a NAS that announces itself on the network under **Found on your network**; reach any other with **+**, **Add network share**. Tap one and choose **Mount**: it mounts read-only and is kept with **Mount after restart** on, so Kalinka mounts it again at every start. **Unmount** leaves that as it is; a mounted one's dialog changes it. A share that will not mount says what to put right, with the mount's own words under **Technical details**. It appears under **Drives** like a USB disk. Mounting needs the helper the Kalinka package installs, so a server run from a source checkout lists drives and shares but cannot mount them. NFS needs the `nfs-common` package, which the installer adds when it can.
+
+- Kalinka reads a share as the user `kalusr`, and NFS lets a reader in by its user id. Make the files readable by everyone, or have the NAS map every client to one user (*squashing*, called *Map all users* on many NAS boxes).
+- A NAS that serves only NFSv4 often lists no shares. Type the export's path, such as `/volume1/music`, as the **Folder** in **Add network share**.
 
 **In another folder on the server's machine.** Add it as a **Folder on the server**. The server runs as the user `kalusr` and can only read files that every user may read. A folder in your home usually needs this once:
 
@@ -362,6 +365,8 @@ Kalinka used to install a C compiler and Python's development files for Smart Se
 
 **The setup Wi-Fi does not appear.** The streamer only opens it when it has no network. If a cable is plugged in, unplug it, or open Kalinka over the cable instead. Give it a few minutes after switching on.
 
+**Wi-Fi is very slow, or the streamer drops off the network until it is unplugged.** The Pi's Wi-Fi power saving does this. Update the streamer: recent supervisors turn it off for every network the streamer joins. The Network card of the [control page](#the-control-page) shows whether it is on or off, and switches it.
+
 **No outputs in the list, or no sound.** On the streamer, `systemctl status kalinka-renderer` should say `active (running)`. If the unit is not found, no output is installed there: run the renderer command from [Add more outputs](#add-more-outputs). If there is no sound, pick another sound device in the output's settings: HDMI, the headphone socket and a USB DAC are separate devices. On a Pi, HDMI, the headphone socket and a HAT without an ID chip stay silent until you choose them as the sound card in the app. Until then, you can listen in the browser.
 
 **An output on another machine does not appear.** On that machine, run `sudo journalctl -u kalinka-renderer -f`. A line with `[Discovery] Found` means it has seen the server. Without one, the network is blocking discovery: put both on the same network, or point the renderer at the server directly:
@@ -386,8 +391,11 @@ ExecStart=/usr/bin/kalinka-renderer --server 192.168.1.50:8000
 
 ```bash
 sudo journalctl -u kalinka -u kalinka-upgrade -u kalinka-restart --since "1 day ago" > kalinka.log
+sudo journalctl _TRANSPORT=kernel --since "1 day ago" > kernel.log
 ```
 
-For a renderer, use `-u kalinka-renderer -u kalinka-renderer-upgrade`.
+For a renderer, use `-u kalinka-renderer -u kalinka-renderer-upgrade` in the first command.
+
+The second command saves the kernel's messages, among them its report when the streamer ran out of memory and stopped the server. It has to be a command of its own: given `-u` and another match, `journalctl` keeps only the records that fit both, and the kernel's records belong to no unit. It does not use `-k`, which reads only since the streamer last started and would miss a crash that restarted it.
 
 **Asking for help.** Questions are welcome in [the testing thread](https://github.com/Kalinka-Player/KalinkaPlayer/discussions/133). Something you can reproduce is easier to act on as an [issue](https://github.com/Kalinka-Player/KalinkaPlayer/issues).

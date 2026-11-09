@@ -111,8 +111,7 @@ class KalinkaPluginJamendo(InputModulePlugin):
                 message=(
                     "Mood search unavailable. Missing package(s): "
                     + ", ".join(f"`{m}`" for m in to_install)
-                    + ". Use **Restart with install** in the modules page to "
-                    "fetch them."
+                    + "."
                 ),
                 missing_packages=to_install,
             )
@@ -163,5 +162,7 @@ class KalinkaPluginJamendo(InputModulePlugin):
         logger.info("Shutting down Jamendo input module")
         if self._provision_task is not None:
             self._provision_task.cancel()
+            await asyncio.gather(self._provision_task, return_exceptions=True)
+            self._provision_task = None
         if self._client is not None:
             await self._client.aclose()

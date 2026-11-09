@@ -61,7 +61,7 @@ from .module_timeout import TRACK_SOURCE_TIMEOUT_S
 from .renderer_registry import RendererRegistry, RendererUnavailable
 from .renderer_sessions import CloseReason, SessionPool
 from .tasks import detach
-from .track_sources import TrackSources
+from .track_sources import NO_MODULE, TrackSources
 
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -495,6 +495,43 @@ class PlayQueueImpl(PlayQueueController):
         stream_id = self._new_stream_id()
         self._track_player.append(stream_id, track_source)
         self.prepared_tracks[index] = (track_source, stream_id)
+
+    def _owned_by(self, index: Optional[int], source: str) -> bool:
+        return (
+            index is not None
+            and 0 <= index < len(self.track_list)
+            and self.track_list[index].id.source == source
+        )
+
+    @serialised
+    async def drop_source(self, source: str, *, gone: bool) -> None:
+        """The module ``source`` is being unloaded: what plays or was prepared
+        from it stops, and with ``gone`` its tracks are flagged unavailable,
+        as a restore flags tracks nobody can serve. Everything else plays on.
+        """
+        self._resolution.cancel_if(lambda target: self._owned_by(target, source))
+        for index, (_, stream_id) in list(self.prepared_tracks.items()):
+            if self._owned_by(index, source):
+                self._track_player.remove(stream_id)
+                del self.prepared_tracks[index]
+        if self.current_stream_id is not None and self._owned_by(
+            self.current_track_id, source
+        ):
+            # Forgotten first, or the stop shown to clients starts the next track.
+            self._forget_streams()
+            self._track_player.stop()
+        if gone:
+            for index, track in enumerate(self.track_list):
+                if track.id.source == source:
+                    self._set_track_unavailable(index, True, NO_MODULE)
+
+    @serialised
+    async def source_returned(self, source: str) -> None:
+        """The module ``source`` serves again: its tracks are offered again,
+        and refused anew only if they must be."""
+        for index in sorted(self._unavailable_indices):
+            if self._owned_by(index, source):
+                self._set_track_unavailable(index, False)
 
     @serialised
     async def pause(self, paused: bool):

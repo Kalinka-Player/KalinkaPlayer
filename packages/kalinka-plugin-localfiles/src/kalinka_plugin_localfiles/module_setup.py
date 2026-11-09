@@ -181,6 +181,7 @@ def _format_root_status(
     status: RootStatus,
     stored_signature: Optional[str],
     scan_interval_minutes: int,
+    file_watch_enabled: bool = True,
 ) -> str:
     """Render one music folder's mount status as the markdown the UI displays."""
     if _mount_mismatch(status, stored_signature):
@@ -210,10 +211,16 @@ def _format_root_status(
             if scan_interval_minutes
             else "when you rescan the library"
         )
-        notes.append(
-            f"Changes made to the share by other machines are picked up {when}, "
-            "not instantly."
-        )
+        if status.fs_type == "smb" and file_watch_enabled:
+            notes.append(
+                "Changes are watched when the SMB server supports notifications. "
+                f"Missed changes are picked up {when}."
+            )
+        else:
+            notes.append(
+                f"Changes made to the share by other machines are picked up {when}, "
+                "not instantly."
+            )
     if notes:
         text += "\n" + "\n".join(f"- {note}" for note in notes)
     return text
@@ -558,9 +565,9 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
 
         input_module_db = LocalFilesInputModuleDb(config)
 
-        # "Rebuild library on next restart" is a one-shot trigger: the server
-        # has already reset it (persist-first) before this boot, leaving the
-        # armed value here for us to act on exactly once. Purge before any
+        # "Rebuild library" is a one-shot trigger: the server has already
+        # reset it (persist-first) before setting us up, leaving the armed
+        # value here for us to act on exactly once. Purge before any
         # worker opens the DB so the indexer rebuilds it from scratch.
         if config.rebuild_library:
             logger.warning(
@@ -727,10 +734,7 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
             "numpy"
         ):
             enr.state = ModuleHealthState.WARNING
-            enr.message = (
-                "Generated album art unavailable. Missing package: `numpy`. "
-                "Use **Restart with install** in the modules page to fetch it."
-            )
+            enr.message = "Generated album art unavailable. Missing package: `numpy`."
             enr.missing_packages = ("numpy",)
         else:
             enr.state = ModuleHealthState.READY
@@ -790,8 +794,7 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
                 ai.message = (
                     "AI search unavailable. Missing package(s): "
                     + ", ".join(f"`{m}`" for m in missing)
-                    + ". Use **Restart with install** in the modules page to "
-                    "fetch them."
+                    + "."
                 )
                 ai.missing_packages = tuple(missing)
             elif dead:
@@ -967,7 +970,9 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
                 return "No music folders configured."
             config = LocalFilesConfig(**self._context.config.model_dump())
             return "\n\n".join(
-                _format_root_status(status, stored, config.scan_interval_minutes)
+                _format_root_status(
+                    status, stored, config.scan_interval_minutes, config.file_watch_enabled
+                )
                 for status, stored in statuses
             )
         # Strip the "<subfeature>." prefix from a "<subfeature>.status_view" path.
@@ -1078,8 +1083,6 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
     ) -> Optional[LocationStatus]:
         """A folder on this server joins the library as a folder source.
 
-        @note New sources are read from the next start, until the librarian
-            can take roots while it runs.
         @note Answers from the paths alone, reading nothing from disk: it is
             asked for every folder a Drives page lists, on the event loop,
             and a share that stopped answering must not hold that up. The
@@ -1093,7 +1096,8 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
             holds=any(is_within(target, root) for root in roots.values()),
             library_empty=self._library_empty(),
             removable=target in roots.values(),
-            restart_required=True,
+            # The server sets the module up again on the saved sources.
+            restart_required=False,
         )
 
     async def adopt_location(
@@ -1151,9 +1155,9 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
 
         Reads context.config (which reflects any staged PUT /server/config
         changes), not the config captured at setup. The server calls this
-        when handling /server/restart so an install is auto-queued for
-        sub-features the user just enabled but whose deps aren't yet
-        importable.
+        after each save of a setting and on /server/restart, so the next
+        start installs what sub-features the user just enabled need but
+        cannot yet import.
         """
         if self._context is None:
             return []
@@ -1221,9 +1225,14 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
 
         self._scan_control.available.clear()
         self._scan_control.pending.clear()
-        self._shutdown_process(self._librarian_proc)
-        self._shutdown_process(self._searcher_proc)
-        self._shutdown_process(self._embedder_proc)
+        # Off the loop and side by side: each process gets seconds to go, and
+        # the server's shutdown budget must cover the slowest, not their sum.
+        await asyncio.gather(
+            *(
+                asyncio.to_thread(self._shutdown_process, proc)
+                for proc in (self._librarian_proc, self._searcher_proc, self._embedder_proc)
+            )
+        )
 
         if self._log_listener is not None:
             self._log_listener.stop()

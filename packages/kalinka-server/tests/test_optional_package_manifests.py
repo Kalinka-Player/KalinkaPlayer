@@ -2,7 +2,7 @@
 
 install_pending installs only what a manifest under
 /opt/kalinka/allowed_packages names, so an offer the packages do not ship
-is a "Restart with install" that never installs anything. These run the
+is a restart that never installs anything. These run the
 plugin deb builds and the bundle RPM build with their packaging tools
 stubbed, and read the manifests they staged.
 """

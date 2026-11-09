@@ -271,3 +271,21 @@ async def test_shutdown_tells_the_holder(arbiter, queue):
 
     assert plugin.preempted == [RevokeReason.SHUTDOWN]
     assert arbiter.owns(queue)
+
+
+async def test_revoke_plugin_takes_the_output_from_the_named_plugin_only(arbiter, queue):
+    qobuz = _plugin("qobuz")
+    await arbiter.acquire(qobuz)
+
+    await arbiter.revoke_plugin("spotify", RevokeReason.PLUGIN_UNLOADED)
+    assert arbiter.owns(qobuz) and qobuz.preempted == []
+
+    await arbiter.revoke_plugin("qobuz", RevokeReason.PLUGIN_UNLOADED)
+    assert arbiter.owns(queue)
+    assert qobuz.preempted == [RevokeReason.PLUGIN_UNLOADED]
+
+
+async def test_revoke_plugin_leaves_the_queue_alone(arbiter, queue):
+    await arbiter.revoke_plugin("qobuz", RevokeReason.PLUGIN_UNLOADED)
+
+    assert arbiter.owns(queue) and queue.preempted == []

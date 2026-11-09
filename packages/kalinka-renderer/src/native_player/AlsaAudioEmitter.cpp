@@ -627,7 +627,7 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
         throw std::runtime_error("Unsupported stream type");
       }
 
-      setupAudioFormat(streamInfo.value().format);
+      setupAudioFormat(streamInfo.value().format, streamInfo->live);
       streamInfo.value().format = currentStreamAudioFormat;
 
       bool started = false;
@@ -648,9 +648,12 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
       snd_pcm_uframes_t streamStartPosition = std::max(
           currentSourceStartFrames, currentSourceTotalFramesWritten - queued);
       // Zero would rewind a live producer's credit for what already played.
-      setState({AudioGraphNodeState::PREPARING,
-                framesToTimeMs(streamStartPosition).count(), streamInfo});
+      StreamState prepared{AudioGraphNodeState::PREPARING,
+                           framesToTimeMs(streamStartPosition).count(), streamInfo};
+      prepared.liveReady = streamInfo->live.has_value();
+      setState(prepared);
       paused = false;
+      auto lastLiveReport = std::chrono::steady_clock::now();
 
       while (!token.stop_requested()) {
         auto combinedToken =
@@ -702,6 +705,22 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
           startPcmStream(streamInfo.value(), streamStartPosition);
           started = true;
         }
+        // Feedback uses the device's audible frame position. Comparing clocks
+        // from the two hosts would conflate network delay and clock offsets.
+        const auto now = std::chrono::steady_clock::now();
+        if (streamInfo->live && !paused &&
+            now - lastLiveReport >= std::chrono::milliseconds(250)) {
+          const auto audible = std::max<snd_pcm_sframes_t>(
+              0, currentSourceTotalFramesWritten - queuedFrames());
+          StreamState report{AudioGraphNodeState::STREAMING,
+                             framesToTimeMs(audible).count(), streamInfo};
+          if (auto frame = inputNode->liveSourceFrame()) {
+            const auto queued = uint64_t(std::max<snd_pcm_sframes_t>(0, queuedFrames()));
+            report.liveSourceFrame = *frame > queued ? *frame - queued : 0;
+          }
+          setState(report);
+          lastLiveReport = now;
+        }
       }
     }
   } catch (const std::exception &ex) {
@@ -724,15 +743,19 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
 }
 
 void AlsaAudioEmitter::setupAudioFormat(
-    const StreamAudioFormat &streamAudioFormat) {
+    const StreamAudioFormat &streamAudioFormat,
+    std::optional<LiveAudioPolicy> live) {
 
   spdlog::debug("Setting up audio format: {}", streamAudioFormat.toString());
 
-  if (pcm.handle != nullptr && streamAudioFormat == currentStreamAudioFormat) {
+  if (pcm.handle != nullptr && streamAudioFormat == currentStreamAudioFormat &&
+      live == currentLivePolicy) {
     spdlog::debug("Audio format is already set up - ignoring");
     throw_on_error(snd_pcm_prepare(pcm.handle));
     return;
   }
+
+  currentLivePolicy = live;
 
   if ((reopenDeviceWithNewFormat || pcm.iec958) && pcm.handle != nullptr) {
     closeDevice();
@@ -746,8 +769,8 @@ void AlsaAudioEmitter::setupAudioFormat(
   if (sampleRate == 0) {
     throw std::runtime_error("Invalid stream sample rate: 0");
   }
-  bufferSize = requestedBufferSize;
-  periodSize = requestedPeriodSize;
+  bufferSize = live ? 0 : requestedBufferSize;
+  periodSize = live ? 0 : requestedPeriodSize;
 
   if (isDsd(streamAudioFormat.sampleFormat)) {
     if (!dsdAllowed.load())
@@ -832,28 +855,20 @@ void AlsaAudioEmitter::setSampleFormat(AudioSampleFormat requestedFormat,
   // A substitution used by a previous 24-in-32 stream may discard real bits
   // from a later 32-bit stream. Negotiate anew for each source format/rate.
   sampleSubstitute.erase(requestedFormat);
-  auto formatToProbe = requestedFormat;
-
-  while (snd_pcm_hw_params_set_format(pcm.handle, params,
-                                      alsaFormat(formatToProbe)) < 0) {
-    const auto next = pcmFallback(formatToProbe, significantBits);
-    if (!next) {
-      throw std::runtime_error(
-          std::string("Output device takes no format that carries ") +
-          sampleFormatToString(requestedFormat));
+  for (const auto format : pcmOutputFormats(requestedFormat, significantBits)) {
+    if (snd_pcm_hw_params_set_format(pcm.handle, params, alsaFormat(format)) < 0)
+      continue;
+    if (requestedFormat != format) {
+      spdlog::info("Using sample format {} instead of {}",
+                   sampleFormatToString(format),
+                   sampleFormatToString(requestedFormat));
+      sampleSubstitute[requestedFormat] = format;
     }
-    spdlog::warn("{} not supported, trying {}",
-                 sampleFormatToString(formatToProbe),
-                 sampleFormatToString(*next));
-    formatToProbe = *next;
+    return;
   }
-
-  if (requestedFormat != formatToProbe) {
-    spdlog::warn("Using sample format {} instead of {}",
-                 sampleFormatToString(formatToProbe),
-                 sampleFormatToString(requestedFormat));
-    sampleSubstitute[requestedFormat] = formatToProbe;
-  }
+  throw std::runtime_error(
+      std::string("Output device takes no format that carries ") +
+      sampleFormatToString(requestedFormat));
 }
 
 void AlsaAudioEmitter::initHwParams(unsigned int &rate,
@@ -910,7 +925,7 @@ void AlsaAudioEmitter::initHwParams(unsigned int &rate,
     if (!isDsd(format) && deviceBits < static_cast<int>(significantBits))
       throw std::runtime_error(
           "Output device cannot preserve source PCM precision");
-    if (requestedPeriodSize == 0 || requestedBufferSize == 0) {
+    if (currentLivePolicy || requestedPeriodSize == 0 || requestedBufferSize == 0) {
       setLatencyBasedBufferSize(params);
     } else {
       throw_on_error(snd_pcm_hw_params_set_buffer_size_near(pcm.handle, params,
@@ -958,8 +973,12 @@ void AlsaAudioEmitter::setLatencyBasedBufferSize(snd_pcm_hw_params_t *params) {
   snd_pcm_hw_params_copy(paramsSaved, params);
 
   int dir = 0;
-  auto latencyMcs = requestedLatencyMs * 1000;
-  auto periodMcs = requestedPeriodMs * 1000;
+  const auto latencyMs = currentLivePolicy
+      ? std::clamp(currentLivePolicy->targetLatencyMs / 2, 10u, 60u)
+      : requestedLatencyMs;
+  const auto periodMs = currentLivePolicy ? 5u : requestedPeriodMs;
+  auto latencyMcs = latencyMs * 1000;
+  auto periodMcs = periodMs * 1000;
   int err = snd_pcm_hw_params_set_buffer_time_near(pcm.handle, params,
                                                    &latencyMcs, &dir);
   try {
@@ -972,7 +991,7 @@ void AlsaAudioEmitter::setLatencyBasedBufferSize(snd_pcm_hw_params_t *params) {
 
       throw_on_error(snd_pcm_hw_params_get_period_size(params, &periodSize, 0));
 
-      bufferSize = periodSize * (requestedLatencyMs / requestedPeriodMs);
+      bufferSize = periodSize * (latencyMs / periodMs);
       throw_on_error(snd_pcm_hw_params_set_buffer_size_near(pcm.handle, params,
                                                             &bufferSize));
 
@@ -984,7 +1003,7 @@ void AlsaAudioEmitter::setLatencyBasedBufferSize(snd_pcm_hw_params_t *params) {
       throw_on_error(snd_pcm_hw_params_get_buffer_time(params, &latencyMcs, 0));
 
       /* set the period time */
-      periodMcs = latencyMcs / (requestedLatencyMs / requestedPeriodMs);
+      periodMcs = latencyMcs / (latencyMs / periodMs);
       throw_on_error(snd_pcm_hw_params_set_period_time_near(pcm.handle, params,
                                                             &periodMcs, 0));
 

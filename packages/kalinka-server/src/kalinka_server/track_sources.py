@@ -18,7 +18,7 @@ from kalinka_plugin_sdk.inputmodule import (
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
-_NO_MODULE = "This track's source is not available"
+NO_MODULE = "This track's source is not available"
 
 
 class TrackSources(Protocol):
@@ -53,7 +53,7 @@ class ModuleTrackSources(TrackSources):
     async def resolve(self, track_id: EntityId) -> TrackSource:
         module = self._module_for(track_id.source)
         if module is None:
-            raise SourceUnavailableError(_NO_MODULE)
+            raise SourceUnavailableError(NO_MODULE)
         try:
             return await module.get_track_source(track_id.id)
         except SourceUnavailableError:
@@ -75,5 +75,5 @@ class ModuleTrackSources(TrackSources):
 
     def unavailable_reason(self, track_id: EntityId) -> Optional[str]:
         if self._module_for(track_id.source) is None:
-            return _NO_MODULE
+            return NO_MODULE
         return None

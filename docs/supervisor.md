@@ -39,7 +39,8 @@ The DietPi backend also requires DietPi's own `dietpi-network apply --no-restart
 API. The package enables and starts the service. It also carries the sound
 card helper and `kalinka-soundcard.service`, which applies `CONFIG_SOUNDCARD`
 from `dietpi.txt` at boot; the package enables that unit where DietPi's
-`dietpi-set_hardware` exists. The Pi images keep the serial console off the
+`dietpi-set_hardware` exists. It also carries a NetworkManager default that
+turns [Wi-Fi power saving](#wi-fi-power-saving) off. The Pi images keep the serial console off the
 Bluetooth UART and switch the HAT's I2C bus on for sound card detection.
 
 All image targets install an architecture-specific Debian package containing the same static Go service. `--backend auto`
@@ -133,7 +134,10 @@ trigger the operating system's captive Wi-Fi activation page, which opens
 `http://192.168.4.1/activate` and then the standard Kalinka web app at
 `/?setup=network`. Devices that do not open it automatically can use
 `http://192.168.4.1` directly. The supervisor serves `/usr/share/kalinka-web`
-itself, independently of Core, on the AP address's port 80. Install the updated
+itself, independently of Core, on the AP address's port 80. The activation page
+is that package's `activate.html`, in the app's colours; a streamer
+without `kalinka-web`, or with one that predates the page, gets a plain page
+built into the supervisor instead. Install the updated
 `kalinka-web` package with the supervisor for this flow. Flutter's bundled
 CanvasKit and fonts need no internet connection. HTTPS sites are not intercepted.
 On hosts with a firewall, the AP interface must permit DHCP (UDP 67), DNS
@@ -180,6 +184,28 @@ Physical acceptance still requires a supported Wi-Fi adapter and phone: cold
 offline boot, wired boot, captive activation on Android/iOS/Windows, correct and
 incorrect passwords, hotspot reconnection, and a reboot during joining. Recorder
 and browser tests do not establish radio/driver or OS captive-window behavior.
+
+## Wi-Fi power saving
+
+NetworkManager leaves Wi-Fi power saving to the driver unless told otherwise,
+and brcmfmac, the Pi's driver, turns it on. A dozing radio can slow a network
+share to a crawl, or stay associated while passing no traffic at all, which
+only a power cycle clears. The package therefore ships
+`/usr/lib/NetworkManager/conf.d/kalinka-wifi-powersave.conf`, a `[connection]`
+default of `wifi.powersave=2` (off). A default governs every profile that
+leaves the property at its own default, which every profile Kalinka has ever
+written does, so streamers already in service pick it up: the package's
+post-install hook has NetworkManager reread its configuration and switches
+the running connection with `iw`, and every later activation follows the
+default by itself. The setup hotspot sets the property outright and is
+unaffected either way.
+
+The control page's **Wi-Fi power saving** row shows the choice in force and
+switches it. A choice is written to a file of the same name in
+`/etc/NetworkManager/conf.d`, which shadows the package's; the supervisor's
+unit opens that directory for writing. Removing the file returns the streamer
+to the default. DietPi's ifupdown networking is left alone, and the row is
+absent there.
 
 ## Current boundaries
 
@@ -245,6 +271,11 @@ same adapter/interface.
 - A time zone change is a call to systemd-timedated's `SetTimezone` over
   D-Bus, so timedated, outside the sandbox, writes `/etc/localtime`. The only
   input is a zone name the streamer's tzdata has, which timedated checks again.
+- A Wi-Fi power-saving change is the one file the supervisor itself writes
+  under `/etc` on a NetworkManager streamer, the snippet in
+  `/etc/NetworkManager/conf.d`, which the unit opens for writing. It then asks
+  NetworkManager to reread its configuration over D-Bus and runs `iw` on the
+  interface names sysfs lists. The only input is `on` or `off`.
 - The control page and API answer local peers only, cannot be framed by other
   sites, and offer a closed set of typed actions;
   [their trust model](supervisor-control.md#trust-model) lists the rest.

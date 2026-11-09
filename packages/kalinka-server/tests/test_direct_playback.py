@@ -52,6 +52,8 @@ from kalinka_server.renderer_output_device import RendererVolumeDevice
 from kalinka_server.renderer_registry import RendererRegistry
 from kalinka_server.renderer_sessions import RendererBusy, SessionPool
 from kalinka_server.renderer_test_tone import TonePlayer
+from kalinka_plugin_sdk.live_audio import PcmFormat
+from kalinka_server.live_audio import LiveAudioRegistry
 
 from tests.fake_track_sources import FakeTrackSources, example_source, example_track
 from tests.sim_renderer import DURATION_MS, SimRenderer
@@ -937,6 +939,96 @@ def _second_renderer(renderer: SimRenderer) -> SimRenderer:
     return other
 
 
+@pytest.fixture
+def live_audio(direct, renderer):
+    registry = LiveAudioRegistry()
+    direct._live_audio = registry
+    renderer.announce_capabilities(OutputCapabilities(live_pcm=1))
+    yield registry
+    registry.close()
+
+
+async def test_live_capture_and_hold_survive_identical_capability_renderer_moves(
+    queue, renderer, direct, live_audio
+):
+    other = _second_renderer(renderer)
+    other.announce_capabilities(OutputCapabilities(live_pcm=1))
+    other.server_addr = ("192.0.2.20", 8000)
+    other.registry.get(other.RENDERER_ID).server_addr = other.server_addr
+    source = live_audio.for_plugin("qobuz").create_pcm(PcmFormat(48000))
+    listener = Listener()
+    hold = await direct.acquire("Bluetooth", listener, seekable=False)
+    await hold.play_live(source, _connect_track()[1])
+    await asyncio.sleep(SETTLE_S)
+    first = list(live_audio.routes.values())[0]
+    first.activate()
+    source.offer(bytes(480 * 4))
+    await queue.switch_renderer("rid-b")
+    await asyncio.sleep(SETTLE_S)
+    assert hold.active and hold.renderer_id == "rid-b"
+    assert not source.closed and source.frames == 480 and source.epoch == 1
+    assert first.closed and len(live_audio.routes) == 1
+    assert "192.0.2.20:8000/live-audio/" in _enqueued(other)[-1]
+    assert listener.revoked == []
+    await queue.switch_renderer(renderer.RENDERER_ID)
+    await asyncio.sleep(SETTLE_S)
+    assert hold.active and hold.renderer_id == renderer.RENDERER_ID
+    assert source.epoch == 1
+    await hold.release()
+    assert not live_audio.routes
+
+
+async def test_live_route_preflight_keeps_output_when_target_needs_upgrade(
+    queue, renderer, direct, live_audio
+):
+    _second_renderer(renderer)
+    source = live_audio.for_plugin("qobuz").create_pcm(PcmFormat(48000))
+    hold = await direct.acquire("Bluetooth", Listener(), seekable=False)
+    await hold.play_live(source, _connect_track()[1])
+    await asyncio.sleep(SETTLE_S)
+    with pytest.raises(OutputUnavailable, match="upgrade"):
+        await queue.switch_renderer("rid-b")
+    assert hold.active and hold.renderer_id == renderer.RENDERER_ID
+    assert len(live_audio.routes) == 1
+    await hold.release()
+
+
+async def test_live_reset_pause_and_resume_retire_old_routes(direct, live_audio):
+    source = live_audio.for_plugin("qobuz").create_pcm(PcmFormat(48000))
+    hold = await direct.acquire("Bluetooth", Listener(), seekable=False)
+    await hold.play_live(source, _connect_track()[1])
+    await asyncio.sleep(SETTLE_S)
+    first = next(iter(live_audio.routes.values()))
+    source.reset(PcmFormat(44100, 2, "S24_3LE"))
+    await asyncio.sleep(SETTLE_S)
+    assert first.closed and len(live_audio.routes) == 1
+    assert next(iter(live_audio.routes.values())).format.sample_rate == 44100
+    await hold.pause()
+    await asyncio.sleep(SETTLE_S)
+    assert not live_audio.routes
+    source.offer(bytes(441 * 6))
+    await hold.resume()
+    await asyncio.sleep(SETTLE_S)
+    fresh = next(iter(live_audio.routes.values()))
+    fresh.activate()
+    assert fresh.cursor == 441
+    await hold.release()
+
+
+async def test_live_takeover_cancels_pending_recovery(queue, direct, live_audio):
+    source = live_audio.for_plugin("qobuz").create_pcm(PcmFormat(48000))
+    listener = Listener()
+    hold = await direct.acquire("Bluetooth", listener, seekable=False)
+    await hold.play_live(source, _connect_track()[1])
+    await asyncio.sleep(SETTLE_S)
+    source.reset()
+    await queue.add([example_track("1")])
+    await queue.play(0)
+    await asyncio.sleep(SETTLE_S)
+    assert not hold.active and not live_audio.routes
+    assert listener.revoked == [RevokeReason.QUEUE_PLAY]
+
+
 async def test_the_plugins_playback_moves_with_the_renderer(
     queue, renderer, direct, emitter
 ):
@@ -1632,3 +1724,277 @@ async def test_a_manual_upgrade_hands_the_plugin_back_normally(
     assert listener.revoked == [RevokeReason.OTHER_HOLDER]
     assert not hold.active
     assert renderer.pool.get(renderer.RENDERER_ID) is None
+
+
+async def test_live_http_recovery_keeps_input_and_does_not_publish_fatal_error(
+    renderer, direct, live_audio
+):
+    source = live_audio.for_plugin("qobuz").create_pcm(PcmFormat(48000))
+    listener = Listener()
+    hold = await direct.acquire("Bluetooth", listener, seekable=False)
+    await hold.play_live(source, _connect_track()[1])
+    await asyncio.sleep(SETTLE_S)
+    first = next(iter(live_audio.routes.values()))
+    renderer.fail_current()
+    await asyncio.sleep(0.7)
+    assert hold.active and listener.revoked == []
+    assert first.closed and not source.closed
+    assert len(live_audio.routes) == 1
+    assert not any(state.state == PlayerStateEnum.ERROR for state in listener.states)
+    await hold.pause()
+    await asyncio.sleep(SETTLE_S)
+    assert hold.state.state == PlayerStateEnum.PAUSED
+    assert hold._player._release_task is None
+    await hold.release()
+
+
+async def test_live_ready_and_source_frame_feedback_are_bound_to_current_stream(
+    renderer, direct, live_audio
+):
+    from kalinka_server.renderer_proto import renderer_pb2 as pb
+    from kalinka_server.renderer_state import StateChange
+
+    source = live_audio.for_plugin("qobuz").create_pcm(PcmFormat(48000))
+    hold = await direct.acquire("Bluetooth", Listener(), seekable=False)
+    await hold.play_live(source, _connect_track()[1])
+    await asyncio.sleep(SETTLE_S)
+    route = next(iter(live_audio.routes.values()))
+    reader = await route.open(0, None)
+    await reader.read(32)
+    source.offer(bytes(480 * 4))
+    ready = pb.PlaybackStateChanged(
+        state=pb.PLAYBACK_STATE_PREPARING,
+        source_token="999999",
+        live_ready=True,
+    )
+    renderer._send(StateChange.PLAYBACK, ready)
+    assert not route.ready
+    ready.source_token = renderer.current
+    renderer._send(StateChange.PLAYBACK, ready)
+    assert route.ready and route.cursor == 480
+    source.offer(bytes(480 * 4))
+    await reader.read(4096)
+    # Nominal playback time is misleading after clock correction; actual
+    # source-frame feedback must win and force a fresh route at excessive lag.
+    source.offer(bytes(48000 * 4))
+    renderer._send(
+        StateChange.PLAYBACK,
+        pb.PlaybackStateChanged(
+            state=pb.PLAYBACK_STATE_PLAYING,
+            source_token=renderer.current,
+            position_ms=1000,
+            position_valid=True,
+            live_source_frame=480,
+        ),
+    )
+    await asyncio.sleep(0.4)
+    assert route.closed and hold.active
+    assert len(live_audio.routes) == 1
+    assert next(iter(live_audio.routes.values())).id != route.id
+    await reader.aclose()
+    await hold.release()
+
+
+@pytest.mark.parametrize("mode", ["gated", "ready", "paused"])
+async def test_live_readiness_recovers_after_reconnecting_the_same_session(
+    renderer, direct, live_audio, monkeypatch, mode
+):
+    from kalinka_server.live_audio import RECORD
+    from kalinka_server.renderer_proto import renderer_pb2 as pb
+    from kalinka_server.renderer_state import StateChange
+
+    source = live_audio.for_plugin("qobuz").create_pcm(PcmFormat(48000))
+    listener = Listener()
+    hold = await direct.acquire("Bluetooth", listener, seekable=False)
+    await hold.play_live(source, _connect_track()[1])
+    await asyncio.sleep(SETTLE_S)
+    route = next(iter(live_audio.routes.values()))
+    reader = await route.open(0, None)
+    await reader.read(32)
+    source.offer(bytes(480 * 4))
+    ready = pb.PlaybackStateChanged(
+        state=pb.PLAYBACK_STATE_PREPARING,
+        source_token=renderer.current,
+        live_ready=True,
+    )
+    original_snapshot = renderer._snapshot
+
+    def snapshot():
+        result = original_snapshot()
+        if renderer.current is not None:
+            result.current_source.source_token = renderer.current
+            result.playback_state = (
+                pb.PLAYBACK_STATE_PREPARING
+                if mode == "gated"
+                else pb.PLAYBACK_STATE_PLAYING
+            )
+        return result
+
+    monkeypatch.setattr(renderer, "_snapshot", snapshot)
+    try:
+        if mode != "gated":
+            renderer._send(StateChange.PLAYBACK, ready)
+        if mode == "paused":
+            await hold.pause()
+            await asyncio.sleep(SETTLE_S)
+        session_id = renderer.session_id
+        renderer.linked = False
+        renderer.registry.disconnect(renderer.RENDERER_ID, renderer, clean=False)
+        renderer.pool.suspend(renderer.RENDERER_ID, renderer)
+        # ALSA becomes ready while the control link is down; the event is lost.
+        renderer._send(StateChange.PLAYBACK, ready)
+        source.offer(bytes(480 * 4))
+        renderer.linked = True
+        renderer.connect()
+        await renderer.pool.reconcile(
+            renderer_id=renderer.RENDERER_ID,
+            reported_session_id=session_id,
+            reported_owner_server_id="test-server-id",
+            ws_session=renderer,
+        )
+        await asyncio.sleep(0.5)
+        assert renderer.session_id == session_id
+        assert hold.active and not source.closed and listener.revoked == []
+        assert not any(s.state == PlayerStateEnum.ERROR for s in listener.states)
+        if mode == "paused":
+            assert live_audio.routes == {}
+            assert hold.state.state == PlayerStateEnum.PAUSED
+            return
+        current = next(iter(live_audio.routes.values()))
+        assert len(live_audio.routes) == 1
+        if mode == "ready":
+            assert current is route and not route.closed
+            return
+
+        assert route.closed and current is not route
+        assert await asyncio.wait_for(reader.read(4096), 1) == b""
+        assert not current.ready
+        # Late readiness for the retired token cannot open the replacement.
+        renderer._send(StateChange.PLAYBACK, ready)
+        assert not current.ready
+        ready.source_token = renderer.current
+        renderer._send(StateChange.PLAYBACK, ready)
+        assert current.ready and current.cursor == source.frames
+        resumed_reader = await current.open(0, None)
+        try:
+            await resumed_reader.read(32)
+            fresh_pcm = b"abcd" * 480
+            first_frame = source.frames
+            source.offer(fresh_pcm)
+            assert await asyncio.wait_for(resumed_reader.read(4096), 1) == (
+                RECORD.pack(first_frame, 480, len(fresh_pcm)) + fresh_pcm
+            )
+        finally:
+            await resumed_reader.aclose()
+    finally:
+        await reader.aclose()
+        await hold.release()
+
+
+async def test_live_renderer_restart_keeps_capture_and_input_ownership(
+    renderer, direct, live_audio
+):
+    source = live_audio.for_plugin("qobuz").create_pcm(PcmFormat(48000))
+    listener = Listener()
+    hold = await direct.acquire("Bluetooth", listener, seekable=False)
+    await hold.play_live(source, _connect_track()[1])
+    await asyncio.sleep(SETTLE_S)
+    route = next(iter(live_audio.routes.values()))
+    await renderer.restart()
+    source.offer(bytes(480 * 4))
+    await asyncio.sleep(1.2)
+    assert hold.active and not source.closed and listener.revoked == []
+    assert source.frames == 480 and source.epoch == 1
+    assert route.closed and len(live_audio.routes) == 1
+    assert next(iter(live_audio.routes.values())).id != route.id
+    await hold.release()
+
+
+async def test_live_source_closed_during_reconnect_releases_the_renderer(
+    renderer, direct, live_audio, arbiter, monkeypatch
+):
+    monkeypatch.setattr(renderer_player, "IDLE_RELEASE_TIMEOUT_S", 0.05)
+    source = live_audio.for_plugin("qobuz").create_pcm(PcmFormat(48000))
+    listener = Listener()
+    hold = await direct.acquire("AirPlay", listener, seekable=False)
+    await hold.play_live(source, _connect_track()[1])
+    await asyncio.sleep(SETTLE_S)
+    enqueued = _enqueued(renderer)
+    opening, proceed = asyncio.Event(), asyncio.Event()
+    open_session = renderer.send_session_open
+
+    async def delayed_open(*args, **kwargs):
+        opening.set()
+        await proceed.wait()
+        await open_session(*args, **kwargs)
+
+    monkeypatch.setattr(renderer, "send_session_open", delayed_open)
+    try:
+        await renderer.restart()
+        await asyncio.wait_for(opening.wait(), 1)
+        refresh = hold._live_task
+        source.close()
+        proceed.set()
+        await asyncio.wait_for(asyncio.shield(refresh), 1)
+        await asyncio.sleep(SETTLE_S)
+
+        assert live_audio.routes == {}
+        assert _enqueued(renderer) == enqueued
+        assert renderer.pool.get(renderer.RENDERER_ID) is None
+        assert renderer.session_id is None
+        assert not hold.active and not arbiter.held_by_plugin
+        assert listener.revoked == [RevokeReason.IDLE]
+    finally:
+        proceed.set()
+        await hold.release()
+
+
+async def test_live_command_failure_retries_without_fatal_input_error(
+    renderer, direct, live_audio, monkeypatch
+):
+    from kalinka_server.renderer_sessions import SessionNotActive
+
+    source = live_audio.for_plugin("qobuz").create_pcm(PcmFormat(48000))
+    listener = Listener()
+    hold = await direct.acquire("Bluetooth", listener, seekable=False)
+    enqueue = hold._player._session.enqueue_source
+    calls = 0
+
+    async def fail_once(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise SessionNotActive("socket lost during enqueue")
+        await enqueue(*args, **kwargs)
+
+    monkeypatch.setattr(hold._player._session, "enqueue_source", fail_once)
+    await hold.play_live(source, _connect_track()[1])
+    await asyncio.sleep(0.7)
+    assert calls == 2 and hold.active and not source.closed
+    assert len(live_audio.routes) == 1
+    assert listener.revoked == []
+    assert not any(state.state == PlayerStateEnum.ERROR for state in listener.states)
+    await hold.release()
+
+
+async def test_live_pending_append_cannot_claim_a_fallback_renderer(
+    renderer, direct, live_audio
+):
+    from kalinka_server.renderer_sessions import CloseReason
+
+    other = _second_renderer(renderer)
+    other.announce_capabilities(OutputCapabilities(live_pcm=1))
+    source = live_audio.for_plugin("qobuz").create_pcm(PcmFormat(48000))
+    listener = Listener()
+    hold = await direct.acquire("Bluetooth", listener, seekable=False)
+    await hold.play_live(source, _connect_track()[1])
+    # Close synchronously before the queued append can run, then let the
+    # registry's ordinary fallback choose a different connected renderer.
+    renderer.registry.disconnect(renderer.RENDERER_ID, renderer, clean=False)
+    await hold._player._session.close(CloseReason.RENDERER_LOST)
+    renderer.registry.select("rid-b")
+    await asyncio.sleep(0.5)
+    assert hold.active and not source.closed
+    assert _enqueued(other) == [] and not live_audio.routes
+    assert not any(state.state == PlayerStateEnum.ERROR for state in listener.states)
+    await hold.release()

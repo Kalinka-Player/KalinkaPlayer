@@ -11,6 +11,7 @@
 #include "FileInputNode.h"
 #include "FlacStreamDecoder.h"
 #include "Log.h"
+#include "LivePcmStreamDecoder.h"
 #include "Mp3StreamDecoder.h"
 #include "Mp4StreamDecoder.h"
 #include "PerfMon.h"
@@ -179,8 +180,8 @@ struct StreamNodes {
       // Use AudioGraphHttpStream for network streams
       spdlog::debug("Creating AudioGraphHttpStream for URL: {}", url);
       nodeChain.emplace_back(std::make_shared<AudioGraphHttpStream>(
-          id, url, value_or(config, "input.http.buffer_size", HTTP_BUFFER_SIZE),
-          value_or(config, "input.http.chunk_size", CHUNK_SIZE),
+          id, url, format == FormatLivePcm ? size_t(16384) : value_or(config, "input.http.buffer_size", HTTP_BUFFER_SIZE),
+          format == FormatLivePcm ? size_t(0) : value_or(config, "input.http.chunk_size", CHUNK_SIZE),
           std::chrono::seconds(value_or(
               config, "input.http.stall_timeout",
               AudioGraphHttpStream::DEFAULT_STALL_TIMEOUT.count())),
@@ -200,6 +201,12 @@ struct StreamNodes {
   decoderFor(const Config &config, const AudioFormat format,
              size_t startOffsetMs) const {
     switch (format) {
+    case AudioFormat::FormatLivePcm:
+      if (startOffsetMs)
+        return std::unexpected("Live PCM cannot start at an offset");
+      return [id = id](auto input) {
+        return connected(std::make_shared<LivePcmStreamDecoder>(id), input);
+      };
     case AudioFormat::FormatDsd:
       if (value_or(config, "output.dsd_mode", std::string("disabled")) ==
           "disabled")

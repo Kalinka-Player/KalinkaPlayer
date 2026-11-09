@@ -30,10 +30,13 @@ import time
 from dataclasses import replace
 from typing import Any, Awaitable, Callable, Optional
 
+from kalinka_plugin_sdk.direct_playback import OutputUnavailable
 from kalinka_plugin_sdk.inputmodule import DirectUrl, TrackSource
+from kalinka_plugin_sdk.live_audio import LiveAudioRef
 
 from .config_model import KalinkaConfig
 from .content_urls import content_url
+from .live_audio import LiveAudioRegistry, LiveRoute, route_url
 from .renderer_registry import RendererRegistry, RendererUnavailable
 from .renderer_sessions import (
     CloseReason,
@@ -82,6 +85,7 @@ _PLAYING_STATES = (
 
 
 class RendererPlayer:
+
     def __init__(
         self,
         config: KalinkaConfig,
@@ -90,8 +94,12 @@ class RendererPlayer:
         monitor: StateMonitor,
         *,
         before_claim: Optional[Callable[[str], Awaitable[None]]] = None,
+        live_audio: Optional[LiveAudioRegistry] = None,
     ):
         self._config = config
+        self._live_audio = live_audio
+        self._live_routes: dict[int, LiveRoute] = {}
+        self._live_input = False
         # Awaited with the renderer id before every claim, so whoever owns
         # the output can hand it over first.
         self._before_claim = before_claim
@@ -184,6 +192,7 @@ class RendererPlayer:
 
     async def shutdown(self) -> None:
         """Drop the session and stop the sender; the monitor is the caller's."""
+        self._retire_live()
         for task in (self._release_task, self._sender_task):
             if task is not None:
                 task.cancel()
@@ -211,6 +220,7 @@ class RendererPlayer:
             try:
                 await self._dispatch(op, *args)
             except (
+                OutputUnavailable,
                 RendererUnavailable,
                 RendererBusy,
                 SessionOpenFailed,
@@ -218,6 +228,18 @@ class RendererPlayer:
                 asyncio.TimeoutError,
             ) as exc:
                 logger.warning("Renderer command %s failed: %s", op, exc)
+                if self._live_input and self._interrupted is not None:
+                    self._publish(
+                        replace(
+                            self._last_state,
+                            state=AudioGraphNodeState.PREPARING,
+                            position=self._last_state.position_at(time.monotonic_ns()),
+                            timestamp=time.monotonic_ns(),
+                            error=None,
+                        )
+                    )
+                    self._resume(0)
+                    continue
                 self._publish(
                     StreamState(
                         state=AudioGraphNodeState.ERROR,
@@ -234,14 +256,32 @@ class RendererPlayer:
     async def _dispatch(self, op: str, *args) -> None:
         if op == "append":
             stream_id, source, start_offset_ms = args
-            session = await self._ensure_session()
-            uri = self._resolve_uri(source, session.renderer_id)
-            await session.enqueue_source(
-                uri,
-                mime_type=source.format or "",
-                source_token=str(stream_id),
-                start_offset_ms=start_offset_ms,
-            )
+            if isinstance(source.source, LiveAudioRef):
+                session = self._session
+                if (
+                    session is None
+                    or session.state is not SessionState.ACTIVE
+                    or not session.connected
+                ):
+                    raise RendererUnavailable("Waiting for the selected live output")
+                self.require_live_output(session.renderer_id)
+                record = self._registry.get(session.renderer_id)
+                route = self._live_audio.bind(source.source, source.live_policy)
+                self._live_routes[stream_id] = route
+                uri = route_url(record.server_addr, route)
+            else:
+                session = await self._ensure_session()
+                uri = self._resolve_uri(source, session.renderer_id)
+            try:
+                await session.enqueue_source(
+                    uri,
+                    mime_type=source.format or "",
+                    source_token=str(stream_id),
+                    start_offset_ms=start_offset_ms,
+                )
+            except BaseException:
+                self._retire_live(stream_id)
+                raise
             self._stream_uris[stream_id] = uri
             return
         if op == "stop":
@@ -253,9 +293,11 @@ class RendererPlayer:
             logger.debug("Dropping %s: no renderer session", op)
             return
         if op == "remove":
+            self._retire_live(args[0])
             self._stream_uris.pop(args[0], None)
             await session.remove_source(str(args[0]))
         elif op == "clear_all":
+            self._retire_live()
             self._stream_uris.clear()
             await session.clear_queue()
         elif op == "pause":
@@ -264,6 +306,30 @@ class RendererPlayer:
             await session.resume()
         elif op == "seek":
             await session.seek(args[0])
+
+    def retain_live_input(self, active: bool) -> None:
+        self._live_input = active
+        self._arm_release(self._last_state)
+
+    def require_live_output(self, renderer_id: str) -> None:
+        record = self._registry.get(renderer_id)
+        if (
+            self._live_audio is None
+            or record is None
+            or not record.server_addr
+            or record.capabilities is None
+            or record.capabilities.live_pcm < 1
+        ):
+            raise OutputUnavailable(
+                "This renderer needs an upgrade to play live PCM audio"
+            )
+
+    def _retire_live(self, stream_id: int | None = None) -> None:
+        ids = list(self._live_routes) if stream_id is None else [stream_id]
+        for key in ids:
+            route = self._live_routes.pop(key, None)
+            if route is not None:
+                self._live_audio.retire(route)
 
     def _resolve_uri(self, source: TrackSource, renderer_id: str) -> str:
         """The URI this renderer should fetch the source from.
@@ -327,6 +393,7 @@ class RendererPlayer:
         return session
 
     async def _release(self, synthesize_stopped: bool) -> None:
+        self._retire_live()
         self._cancel_release()
         self._stream_uris.clear()
         session, self._session = self._session, None
@@ -346,6 +413,7 @@ class RendererPlayer:
     def _on_session_closed(self, session: PlaybackSession, reason: CloseReason) -> None:
         if session is not self._session:
             return  # a close we initiated; already detached
+        self._retire_live()
         self._session = None
         self._registry.session_released(session.renderer_id)
         self._cancel_release()
@@ -415,6 +483,17 @@ class RendererPlayer:
     ) -> None:
         if session is not self._session:
             return
+        route = self._live_routes.get(to_stream_id(snapshot.get("source_token")))
+        if route is not None and change is StateChange.PLAYBACK:
+            if snapshot.get("live_ready"):
+                route.activate()
+            if snapshot.get("playback_state") == "playing":
+                if not route.feedback(
+                    snapshot.get("position_ms", 0), snapshot.get("live_source_frame")
+                ):
+                    self._retire_live(to_stream_id(snapshot.get("source_token")))
+                    self._resume(0)
+                    return
         if change is StateChange.SOURCE:
             self._publish(
                 StreamState(
@@ -428,6 +507,18 @@ class RendererPlayer:
         if translated is None:
             return
         if change is StateChange.SNAPSHOT:
+            if (
+                route is not None
+                and not route.ready
+                and translated.state in _PLAYING_STATES
+                and self._resumable()
+            ):
+                # Readiness is an event, absent from reconnect snapshots. If
+                # it was lost with the control link, both ends would wait
+                # forever. A fresh route repeats the hardware-ready handshake.
+                self._retire_live(to_stream_id(snapshot.get("source_token")))
+                self._resume(0)
+                return
             # At open this restates what we already report and publishing it
             # would be noise. On resume it is the only evidence of what the
             # renderer did while it was unreachable — those transitions were
@@ -482,7 +573,9 @@ class RendererPlayer:
     # Idle release
 
     def _arm_release(self, state: StreamState) -> None:
-        if state.state is AudioGraphNodeState.PAUSED:
+        if self._live_input:
+            self._cancel_release()
+        elif state.state is AudioGraphNodeState.PAUSED:
             self._release_later(PAUSE_RELEASE_TIMEOUT_S, synthesize=True)
         elif state.state in (
             AudioGraphNodeState.FINISHED,

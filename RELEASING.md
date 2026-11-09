@@ -9,7 +9,7 @@ There are four independent things to version, and they work differently:
 
 | What | Packages | Versioned by | Needs a git tag? |
 |------|----------|--------------|------------------|
-| **App bundle** | `kalinka-server`, `kalinka-plugin-localfiles`, `kalinka-plugin-musiccast`, `kalinka-plugin-dummydevice`, `kalinka-plugin-jamendo`, `kalinka-plugin-upnp` | A single `kalinka-vX.Y.Z` git tag (via setuptools_scm) | **Yes** |
+| **App bundle** | `kalinka-server`, `kalinka-plugin-localfiles`, `kalinka-plugin-musiccast`, `kalinka-plugin-dummydevice`, `kalinka-plugin-jamendo`, `kalinka-plugin-upnp`, `kalinka-plugin-bluetooth` | A single `kalinka-vX.Y.Z` git tag (via setuptools_scm) | **Yes** |
 | **Renderer** | `kalinka-renderer` (deb/rpm/flatpak) | Its own `kalinka-renderer-vX.Y.Z` git tag | **Yes** (its own) |
 | **Plugin SDK** | `kalinka-plugin-sdk` | Its **own SemVer** — a constant in source | **No** |
 | **Appliance images** | `kalinka-*-rpi234-arm64.img.xz`, `kalinka-*-rpi5-arm64.img.xz`, `kalinka-*-rpi234-display-arm64.img.xz`, `kalinka-*-rpi5-display-arm64.img.xz`, `kalinka-*-amd64.img.xz` | Their own `kalinka-image-vX.Y.Z` git tag | **Yes** (its own) |
@@ -26,7 +26,7 @@ There are four independent things to version, and they work differently:
   change; **minor** = a backwards-compatible addition; **patch** = a fix.
   Plugins and the server pin it within the current major, as
   `kalinka-plugin-sdk>=3,<4` (some with a minor floor, such as the server's
-  `>=3.20,<4`), so backwards-compatible minor/patch bumps (`3.19 → 3.20 → …`)
+  `>=3.21,<4`), so backwards-compatible minor/patch bumps (`3.20 → 3.21 → …`)
   never break existing plugins, while a major bump (`→ 4.0`) does — those
   plugins must be re-pinned and rebuilt. The SDK's `3.x` measures **API
   compatibility**; the app's own `kalinka-v*` version measures **product
@@ -48,12 +48,12 @@ SemVer picks the digit, the calendar picks the date. Keep those two decisions ap
 |------|-----------|
 | **App bundle** (`kalinka-v*`) | At most weekly. Finished work waits for the window. |
 | **Renderer** (`kalinka-renderer-v*`) | Only when renderer code changes — no schedule. |
-| **SDK** | Not a release at all: bump it in the commit that changes the API. |
+| **SDK** | Once per app release: the first API change after a release bumps it, and the API changes that follow before that release ships ride on the same number. |
 
 - **App bundle — a weekly ceiling, not a weekly quota.** Every release is an `install-release.sh` run for every user, so four releases in a week is four interruptions carrying value they would have taken in one. Nothing says you must ship each week; the rule only caps how often. Between windows `main` accumulates unreleased work, which is fine as long as `main` stays releasable — that is the standing cost of holding the line.
 - **A defect that is hurting users in the field ships immediately**, as a PATCH, window or no window. Having that escape hatch is exactly what makes the weekly ceiling comfortable to hold for everything else.
 - **The renderer is deliberately rarer.** Upgrading it restarts playback on the device, so it moves only when its own code changes and never merely to keep pace with a server release. When a change spans both, release the renderer first so no renderer is left talking to a server it cannot understand.
-- **The SDK is a contract identifier, not a shipping event.** It costs one line and triggers no CI, so batching bumps saves nothing and risks the one thing the number is for: `make build-all-deb` publishes `kalinka-plugin-sdk_<version>_all.deb` on every app release, and shipping two different APIs under one version leaves plugin authors unable to pin the difference. Bumping in the same commit as the API change also means it can never be forgotten.
+- **The SDK moves once per release.** The first API change after a release bumps it in the same commit, so the bump is never forgotten; the API changes that follow before the next release extend that version rather than bumping again. `make build-all-deb` publishes `kalinka-plugin-sdk_<version>_all.deb` only on an app release, so a number that never shipped is a difference no plugin author can pin, while two different *shipped* APIs under one number is the thing the number must never allow — an API change after a release always bumps. The REST API version moves the same way.
 
 ---
 
@@ -121,9 +121,16 @@ The on-device display (`kalinka-kiosk_*_<arch>.deb`, arm64 only for now) comes f
    release to carry it. Renderers on separate boxes still upgrade by
    running the script there.
 
-2. The package version comes from the tag; the `VERSION` in
-   `packages/kalinka-renderer/CMakeLists.txt` is only the dev-build fallback.
-   Bump it to match the tag when convenient, not as a release step.
+2. There is no version to bump: the tag is the version.
+   `packages/kalinka-renderer/scripts/version.sh` derives it with
+   `scripts/tag_version.sh` from the newest `kalinka-renderer-v*` tag
+   reachable from the commit. A build of the tagged commit with no local
+   changes gets the tag's own version; a build of any later commit, or with
+   local changes, gets the next patch with a `~dev` count, such as
+   `0.13.1~dev4+gabc1234`, which sorts below the release it leads up to.
+   The release workflow hands the build the tag it is building, and CMake
+   asks the same script when nothing is passed, so a plain
+   `make renderer-build` reports that version too.
 
 Local builds (current distro/arch only, for testing the packaging):
 ```bash
@@ -200,7 +207,7 @@ so you never edit the version in two places.
 ### Minor or patch (backwards compatible — e.g. `3.6.0` → `3.7.0`)
 Added an API, fixed a bug, nothing removed/changed:
 
-1. Edit `__version__` in `_version.py` — in the same commit as the API change, not as a later release chore ([When to release](#when-to-release)).
+1. Edit `__version__` in `_version.py` in the same commit as the first API change after a release; an API change before that release ships leaves the number where it is ([When to release](#when-to-release)).
 2. Done. Consumers pin `<4`, which already accepts it — **no plugin
    changes, no re-pinning, no rebuild required**. Existing plugins keep working.
    A consumer that starts using the new API raises its own floor, e.g. to
@@ -219,6 +226,7 @@ Removed or changed an existing public API (a protocol change):
    - `packages/kalinka-plugin-musiccast/` — likewise
    - `packages/kalinka-plugin-dummydevice/` — likewise
    - `packages/kalinka-plugin-upnp/` — likewise
+   - `packages/kalinka-plugin-bluetooth/` — likewise
    - the plugin template, so a plugin generated after the bump is born on the new major: `sdk_version_constraint` in `template/cookiecutter-kalinka-plugin/cookiecutter.json` (the generated wheel's pin and `REQUIRES_SDK`) and `template/cookiecutter-kalinka-plugin/{{cookiecutter.plugin_name}}/debian/control.in`. `make test` fails until both accept the new SDK. `template/cookiecutter-kalinka-plugin/README.md` quotes the default three times; move those along with it.
 3. Move each plugin's `REQUIRES_SDK` range onto the new major too. This is a
    *second* gate, checked when the plugin is loaded rather than installed: a
@@ -250,7 +258,7 @@ not need a tag or a separate release step.
 
 Dependency pins only fire when an install goes through the resolver. As a
 backstop, the **server checks the installed SDK at startup**: it reads its own
-`kalinka-plugin-sdk` requirement (from package metadata — the same `>=3.20,<4`
+`kalinka-plugin-sdk` requirement (from package metadata — the same `>=3.21,<4`
 pin, no second source of truth) and **refuses to start** if the installed SDK
 falls outside it. This catches the cases pins can't — `pip install --no-deps`,
 `dpkg --force-depends`, or upgrading the SDK in place to a different major.

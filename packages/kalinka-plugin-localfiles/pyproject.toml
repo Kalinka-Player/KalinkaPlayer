@@ -42,7 +42,9 @@ dependencies = [
     "mutagen>=1.46.0",
     # Pure-Python SMB2/3 client. Shares are read over the protocol rather
     # than mounted: mounting needs privileges the unit denies itself.
-    "smbprotocol>=1.10,<2",
+    # 1.16 exposes guest signing options through file APIs; 1.16.1 fixes
+    # receiver teardown deadlocks, important for long-lived notifications.
+    "smbprotocol>=1.16.1,<2",
     # Listens for the shares that announce themselves, so a NAS can be
     # picked from a list rather than typed from memory.
     "zeroconf>=0.47.0",
@@ -76,6 +78,7 @@ kalinka_plugin_localfiles = "kalinka_plugin_localfiles:KalinkaPluginLocalFiles"
 include-package-data = true
 
 [tool.setuptools.package-data]
+"kalinka_plugin_localfiles" = ["catalog_artwork/*.jpg", "catalog_artwork/prompts.json", "icons/*.svg"]
 # Belt to that finder's braces — a build from an exported tarball has no git
 # and would otherwise ship a wheel with no model in it.
 "kalinka_plugin_localfiles.filename_model.weights" = ["*.crfsuite", "*.json"]

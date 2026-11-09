@@ -1,5 +1,6 @@
 """The production app, built by ``create_app``, with only the outside world
-faked: installed plugins, mDNS and the release check."""
+faked: installed plugins, mDNS, the search for NFS shares and the release
+check."""
 
 import asyncio
 from contextlib import asynccontextmanager
@@ -8,6 +9,7 @@ import httpx
 
 from kalinka_server import server, update_check
 from kalinka_server.player_setup import modules
+from kalinka_server.storage.nfs_discovery import HostAnswer, ScanState
 
 
 class _NoServiceDiscovery:
@@ -18,6 +20,23 @@ class _NoServiceDiscovery:
         pass
 
     async def unregister_service(self):
+        pass
+
+
+class _NoNfsDiscovery:
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    def exports(self):
+        return []
+
+    def scan_state(self):
+        return ScanState(running=False, finished_at=None)
+
+    def probe(self, host):
+        return HostAnswer(host=host, reachable=False, error="No answer from this host")
+
+    def close(self):
         pass
 
 
@@ -37,6 +56,7 @@ def isolate_app(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(server, "_browse_registry", server._browse_registry)
     monkeypatch.setattr(modules, "_scan_entry_points", lambda: iter(()))
     monkeypatch.setattr(server, "ServiceDiscovery", _NoServiceDiscovery)
+    monkeypatch.setattr(server, "NfsDiscovery", _NoNfsDiscovery)
     monkeypatch.setattr(update_check.checker, "run", _no_release_check)
 
 

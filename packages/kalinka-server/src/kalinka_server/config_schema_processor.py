@@ -35,7 +35,9 @@ A list of records (``Records[...]`` of the SDK) is described as a
 collection: cards a client opens one at a time, each entry laid out by the
 shape its discriminator names. Collections ride lists of their own, which old
 clients ignore, and never the expert list, which has no editor for one. A
-list of models that are not records is not described at all.
+list of models that are not records is not described at all, and neither is
+a collection tagged ``own_screen``, which a screen of its own edits: its
+value is still read and written as any other.
 
 A monotonic ``schema_version`` string lets the client detect staleness
 after plugin reloads.
@@ -67,6 +69,7 @@ from .dynamic_field_registry import DynamicFieldEntry, resolve_value
 from .options_registry import OptionsRegistry
 from .module_artwork import module_icons
 from .presentation_schema import (
+    Apply,
     Banner,
     CollectionSpec,
     Constraints,
@@ -238,6 +241,18 @@ def _importance_from_extras(
         return default
 
 
+def _apply_from_extras(extras: dict[str, Any]) -> Apply:
+    """Resolve the apply-cost tag, INSTANT when untagged."""
+    hint = extras.get("apply")
+    if hint is None:
+        return Apply.INSTANT
+    try:
+        return Apply(hint)
+    except ValueError:
+        logger.warning("Unknown apply cost %r; defaulting to instant", hint)
+        return Apply.INSTANT
+
+
 def _setup_from_extras(extras: dict[str, Any]) -> Setup:
     """Resolve the first-run tag, defaulting to HIDDEN when untagged.
 
@@ -322,8 +337,10 @@ def _build_field_spec(
         default=None if is_secret(field) else field.default,
         readonly=bool(field.frozen) or extras.get("readonly") is True,
         dynamic_options=_dynamic_options_from_extras(extras, widget, path),
+        apply_immediately=bool(extras.get("one_shot") and extras.get("apply_immediately")),
         importance=_importance_from_extras(extras),
         setup=setup,
+        apply=_apply_from_extras(extras),
         enum_values=_enum_values(field) if wire_type == "enum" else None,
         constraints=_extract_constraints(field, extras),
         heading=extras.get("heading"),
@@ -419,6 +436,7 @@ def _collection_spec(
         after=after,
         replaces=[f"{parent}.{other}" for other in extras.get("replaces", [])],
         status=f"{parent}.{status}" if status else None,
+        apply=_apply_from_extras(extras),
     )
 
 
@@ -512,7 +530,7 @@ def _auto_sections(model: BaseModel, prefix: str) -> list[SectionSpec]:
         child_path = f"{prefix}.{field_name}" if prefix else field_name
         last_field = scalar_fields[-1].path if scalar_fields else None
         if is_record_list(field.annotation):
-            if _is_record_collection(field.annotation):
+            if _is_record_collection(field.annotation) and not _json_extra(field).get("own_screen"):
                 collections.append(_collection_spec(child_path, field, last_field))
             continue
         wire_type = annotation_to_type(field.annotation)
@@ -923,6 +941,35 @@ def readonly_paths(schema: PresentationSchema) -> frozenset[str]:
     return frozenset(f.path for f in schema.expert_fields if f.readonly)
 
 
+def _collections_within(sections: list[SectionSpec]) -> list[CollectionSpec]:
+    found: list[CollectionSpec] = []
+    for s in sections:
+        found.extend(s.collections)
+        found.extend(_collections_within(s.sections))
+    return found
+
+
+def _collections_of(schema: PresentationSchema) -> list[CollectionSpec]:
+    """Every collection the schema shows; pruning to SIMPLE keeps them all."""
+    found: list[CollectionSpec] = []
+    for page in schema.pages:
+        found.extend(_collections_within(page.sections))
+        for module in page.modules:
+            found.extend(module.collections)
+            found.extend(_collections_within(module.sections))
+    return found
+
+
+def restart_paths(schema: PresentationSchema) -> frozenset[str]:
+    """Every field and collection path the schema shows and a save leaves
+    for a restart: the server, or the plugin, reads it once at startup."""
+    return frozenset(
+        f.path for f in schema.expert_fields if f.apply is Apply.RESTART_REQUIRED
+    ) | frozenset(
+        c.path for c in _collections_of(schema) if c.apply is Apply.RESTART_REQUIRED
+    )
+
+
 # ---------------------------------------------------------------------------
 # Flat values emitter
 # ---------------------------------------------------------------------------
@@ -1117,13 +1164,7 @@ def build_presentation(
         id="devices",
         title="Devices",
         banners=[
-            Banner(
-                text=(
-                    "Devices are auto-discovered. Configuration changes require a "
-                    "server restart."
-                ),
-                severity=Severity.INFO,
-            )
+            Banner(text="Devices are auto-discovered.", severity=Severity.INFO)
         ],
         modules=device_specs,
     )

@@ -57,7 +57,10 @@ dependencies = [
     # >=3.19: TrackSource and PlaybackState carry audio_codec for display.
     # >=3.20: mounts, storage and VolumesChangedEvent; the media extra reads
     # the files Drives lists.
-    "kalinka-plugin-sdk[media]>=3.20,<4",
+    # >=3.21: live receiver audio, receiver controls and pairing;
+    # RevokeReason.PLUGIN_UNLOADED, and config_changed says whether the
+    # plugin took a save in.
+    "kalinka-plugin-sdk[media]>=3.21,<4",
 ]
 dynamic = ["version"]
 
@@ -91,7 +94,7 @@ include-package-data = false
 zip-safe = false
 
 [tool.setuptools.package-data]
-kalinka_server = ["assets/tones/*.flac"]
+kalinka_server = ["assets/tones/*.flac", "assets/catalog/placeholder-*.png", "assets/catalog/prompts.json"]
 "kalinka_server.plugin_management" = ["plugin.schema.json"]
 
 [tool.setuptools.packages.find]

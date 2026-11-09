@@ -28,6 +28,7 @@ public:
   virtual size_t seekTo(size_t absolutePosition) override;
 
   virtual std::optional<long> streamReadPosition() const override;
+  std::optional<uint64_t> liveSourceFrame() const override;
 
   virtual void acceptSourceChange() override;
 

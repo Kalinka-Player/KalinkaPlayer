@@ -62,6 +62,7 @@ _QUIET_HOURS = range(3, 6)  # local time — auto-upgrade fires in [3:00, 6:00)
 _UPGRADE_SCRIPT = "/opt/kalinka/upgrade.sh"
 _UPGRADE_PATH_UNIT = "/etc/systemd/system/kalinka-upgrade.path"
 _RESTART_TRIGGER = "restart-request"
+_LIVE_PLUGIN_TRIGGER = "plugin-live-request"
 _DPKG_STATUS = "/var/lib/dpkg/status"
 
 
@@ -191,6 +192,27 @@ def request_restart() -> None:
     and then restarts kalinka.service; Core exits when systemd stops it.
     """
     _touch_trigger(_RESTART_TRIGGER)
+
+
+def request_live_plugin_operation() -> None:
+    """Touch the trigger watched by kalinka-plugins.path. Raises OSError.
+
+    The root-owned kalinka-plugins.service it fires runs the plugin helper
+    beside a running Core, which loads the result itself.
+    """
+    _touch_trigger(_LIVE_PLUGIN_TRIGGER)
+
+
+def live_plugin_operation_pending() -> bool:
+    """True from a live plugin request until its helper has finished: the
+    path unit takes the trigger away once the service has run."""
+    return (Path(paths.run_dir()) / _LIVE_PLUGIN_TRIGGER).exists()
+
+
+def forget_live_plugin_operation() -> None:
+    """Take the trigger away after a helper that never ran: left, it would
+    say an operation is still under way."""
+    (Path(paths.run_dir()) / _LIVE_PLUGIN_TRIGGER).unlink(missing_ok=True)
 
 
 def restart_pending() -> bool:

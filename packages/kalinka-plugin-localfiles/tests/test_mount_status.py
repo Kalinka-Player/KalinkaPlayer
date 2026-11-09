@@ -237,3 +237,18 @@ def test_a_disk_is_named_by_its_filesystem_uuid(tmp_path, monkeypatch):
     assert (status.identity, status.legacy_identity) == ("vfat uuid:3A1F-9C2B", "vfat /dev/sdb1")
     assert status.matches("vfat uuid:3A1F-9C2B") and status.matches("vfat /dev/sdb1")
     assert not status.matches("vfat uuid:FFFF-0000")
+
+
+def test_smb_status_describes_notifications_and_the_scan_fallback():
+    from kalinka_plugin_localfiles.module_setup import _format_root_status
+    from kalinka_plugin_localfiles.storage import RootStatus
+
+    status = RootStatus(
+        root="smb://nas/music", available=True, reason="", fs_type="smb",
+        is_network=True, is_autofs=False, identity="smb nas 1",
+    )
+    text = _format_root_status(status, None, 15)
+    assert "notifications" in text
+    assert "every 15 min" in text
+    assert "notifications" not in _format_root_status(status, None, 15, False)
+    assert "when you rescan" in _format_root_status(status, None, 0)

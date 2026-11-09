@@ -354,6 +354,7 @@ CAPABILITIES = {
     "independent_verification": False,
     "update_checks": False,
     "installation": False,
+    "live_installation": False,
     "automatic_updates": False,
 }
 

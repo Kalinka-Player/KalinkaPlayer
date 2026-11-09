@@ -38,13 +38,17 @@ from kalinka_plugin_sdk.events import (
     PlayQueueEventType,
     RenderersChangedEvent,
 )
-from kalinka_plugin_sdk import paths, wheel_architecture
+from kalinka_plugin_sdk import paths
 from kalinka_plugin_sdk.storage import LibraryAdopter, StorageBacked
 
-from .config_model import KalinkaConfig
-from .config_overrides import save_overrides
+from .config_model import KalinkaConfig, NfsMount
 from .config_route import register_config_routes
-from .config_schema_processor import build_presentation, module_icon, readonly_paths
+from .config_schema_processor import (
+    build_presentation,
+    module_icon,
+    readonly_paths,
+    restart_paths,
+)
 from .catalog_art_service import CatalogArtService
 from .browse_route import register_browse_routes
 from .browse_source import BrowseSource, BrowseSourceRegistry, RegisteredSource
@@ -54,10 +58,14 @@ from .collections.store import CollectionStore
 from .drives.folders import ServerFolders
 from .drives.fsio import DriveIO
 from .drives.module import DrivesModule
+from .storage.device_routes import register_device_routes, saving_through
+from .storage.devices import StorageDevices
 from .storage.manager import Adopter, StorageManager
+from .storage.nfs_discovery import NfsDiscovery
 from .storage.routes import register_storage_routes
 from .config_secrets import secret_values
 from .content_route import register_content_route
+from .live_audio import register_live_audio_route
 from .demo_mode import (
     DEMO_QUEUE,
     DemoReadOnlyGate,
@@ -76,11 +84,15 @@ from .upgrade_route import register_upgrade_routes
 from .suggestions import SuggestionEngine, SuggestionList
 from .merge_utils import get_favorite_ids_merged, k_way_merge_browse_items
 from .dynamic_field_registry import build_dynamic_field_registry
+from .plugin_lifecycle import PluginLifecycle
 from .options_registry import OptionsRegistry, register_plugin_options
 from .web_ui import WebUiStaticFiles
 from .optional_packages_registry import (
+    InstallHistory,
+    Installability,
     build_catalog as build_optional_packages_catalog,
-    write_pending_installs,
+    build_registry as build_optional_packages_registry,
+    queue_required_packages,
 )
 from .player_setup import (
     modules,
@@ -91,8 +103,9 @@ from .player_setup import (
 )
 from .internal_modules import internal_modules
 from .module_capabilities import capabilities_of
-from .module_artwork import module_icons, register_module_icon_routes
+from .module_artwork import forget_assets, module_icons, register_module_icon_routes
 from .service_discovery import ServiceDiscovery
+from .receiver_control import ReceiverRegistry, register_receiver_routes
 from . import update_check
 from .version import get_rest_api_version, get_version
 from .state_keeper import save_state, restore_state
@@ -151,6 +164,7 @@ async def lifespan(app: FastAPI):
         app.state.log_export.open()
 
         sd = ServiceDiscovery(app.state.config, bind_host=app.state.bind_host)
+        app.state.service_discovery = sd
         await sd.register_service()
 
         # Initialize internal modules (device automation, etc.)
@@ -187,6 +201,9 @@ async def lifespan(app: FastAPI):
 
     finally:
         logger.info("Shutting down...")
+        receivers = getattr(app.state, "receivers", None)
+        if receivers is not None:
+            await receivers.close()
         # These loops run forever by design; cancel them and swallow the result.
         for attr in (
             "device_router_task",
@@ -197,6 +214,7 @@ async def lifespan(app: FastAPI):
             "update_check_task",
             "upgrade_task",
             "plugin_catalog_task",
+            "package_queue_task",
         ):
             task = getattr(app.state, attr, None)
             if task is not None:
@@ -246,6 +264,9 @@ async def lifespan(app: FastAPI):
         storage = getattr(app.state, "storage", None)
         if storage is not None:
             await storage.stop()
+        nfs_discovery = getattr(app.state, "nfs_discovery", None)
+        if nfs_discovery is not None:
+            nfs_discovery.close()
         drives = getattr(app.state, "drives", None)
         if drives is not None:
             drives.close()
@@ -255,6 +276,8 @@ async def lifespan(app: FastAPI):
 
         # Then shutdown plugins, including the built-in renderer volume device.
         await shutdown()
+        if app.state.player_context.live_audio is not None:
+            app.state.player_context.live_audio.close()
 
         app.state.player_context.playqueue_eventbus.close()
         await save_state(app.state.player_context.playqueue_eventbus)
@@ -341,6 +364,22 @@ def extract_browse_sources(sources: Optional[str]) -> List[BrowseSource]:
     return [by_name[name] for name in wanted]
 
 
+def _restarting(name: str) -> HTTPException:
+    """The module is being set up again: a renderer retries a 5xx, a client
+    asks again."""
+    return HTTPException(
+        status_code=503,
+        detail=f"Input module '{name}' is restarting",
+        headers={"Retry-After": "5"},
+    )
+
+
+def _refuse_unmounted(name: str) -> None:
+    prepared = modules.prepared_input_modules.get(name)
+    if prepared is not None and not prepared.mounted:
+        raise _restarting(name)
+
+
 def input_module(name: str) -> InputModule:
     """Get the currently active input module."""
     if not modules.prepared_input_modules:
@@ -348,6 +387,7 @@ def input_module(name: str) -> InputModule:
 
     if name not in modules.prepared_input_modules:
         raise HTTPException(status_code=404, detail=f"Input module '{name}' not found")
+    _refuse_unmounted(name)
 
     interface = modules.prepared_input_modules[name].interface
     if isinstance(interface, InputModule):
@@ -369,6 +409,7 @@ def enabled_input_module(name: str) -> InputModule:
     module = modules.enabled_input_module(name)
     if module is not None:
         return module
+    _refuse_unmounted(name)
     if name not in modules.enabled_input_modules:
         raise HTTPException(
             status_code=404, detail=f"Input module '{name}' is not available"
@@ -381,6 +422,7 @@ def set_up_input_module(name: str) -> InputModule:
     now, so a stream it is serving is not cut off by a passing error."""
     module = modules.set_up_input_module(name)
     if module is None:
+        _refuse_unmounted(name)
         raise HTTPException(
             status_code=404, detail=f"Input module '{name}' is not available"
         )
@@ -399,6 +441,7 @@ def input_module_from_id(entity_id: str | EntityId) -> InputModule:
         raise HTTPException(
             status_code=404, detail=f"Input module '{source}' not found"
         )
+    _refuse_unmounted(source)
 
     if source not in modules.enabled_input_modules:
         raise HTTPException(
@@ -512,6 +555,8 @@ async def create_app(
         known_renderers,
         supported=lambda: not app.state.config.server.demo_mode
         and installation_supported(),
+        # Built later in create_app; asked for only once a request comes.
+        lifecycle=lambda: getattr(app.state, "plugin_lifecycle", None),
     )
     register_plugin_routes(
         app,
@@ -599,15 +644,9 @@ async def create_app(
     # (localfiles) when it is enabled — a discovery catalog like Jamendo has
     # everything, so validating against it proves nothing. Attestation runs
     # in the background for the server's lifetime; serving never blocks.
-    library = None
-    lf = modules.prepared_input_modules.get("localfiles")
-    if (
-        lf is not None
-        and "localfiles" in modules.enabled_input_modules
-        and isinstance(lf.interface, InputModule)
-    ):
-        library = lf.interface
-    app.state.suggestions = SuggestionEngine(library, config.search)
+    app.state.suggestions = SuggestionEngine(
+        lambda: modules.enabled_input_module("localfiles"), config.search
+    )
     app.state.suggestions_task = asyncio.create_task(
         app.state.suggestions.refresh_loop()
     )
@@ -735,80 +774,69 @@ async def create_app(
         )
     )
 
-    # Persist the overrides dict if plugin setup reconciled it — i.e. a
-    # plugin mutated config fields that came from the overrides file, so
-    # ``app.state.overrides`` now diverges from disk. (One-shot triggers
-    # are handled separately, persist-first *before* setup, so they're not
-    # what this covers.)
-    if modules.overrides_dirty:
-        try:
-            save_overrides(app.state.overrides_file, app.state.overrides)
-            logger.info(
-                "Persisted reconciled overrides to %s", app.state.overrides_file,
-            )
-        except OSError as exc:
-            logger.error(
-                "Failed to persist reconciled overrides to %s: %s",
-                app.state.overrides_file,
-                exc,
-            )
+    modules.flush_overrides(app.state.overrides)
 
-    # Plugin classes are fixed for the process lifetime, so the dynamic-
-    # field registry and the schema_version are stable. Compute once
-    # here and reuse on every request; the alternative (rebuilding on
-    # every GET /server/config and twice per PUT) wastes measurable
-    # work for a quantity that never changes.
-    app.state.dynamic_field_registry = build_dynamic_field_registry(
-        modules.prepared_input_modules, modules.prepared_devices,
-    )
-    # Options registry — resolvers for writable fields whose choices
-    # depend on live system state (shares on the network, drives plugged
-    # into the box). Sits alongside the dynamic-field registry but for
-    # *choices* rather than *values*; bound to the plugins below, once
-    # the schema that declares which fields want them exists.
-    app.state.options_registry = OptionsRegistry()
-    app.state.page_banners = page_banners(config)
-    _initial_ok_in = {
-        name: m.plugin_context.config
-        for name, m in modules.prepared_input_modules.items()
-        if m.health_state != ModuleHealthState.ERROR
-    }
-    _initial_err_in = {
-        name: (m.plugin_context.config, m.error_message or "Unknown error")
-        for name, m in modules.prepared_input_modules.items()
-        if m.health_state == ModuleHealthState.ERROR
-    }
-    _initial_ok_dev = {
-        name: d.plugin_context.config
-        for name, d in modules.prepared_devices.items()
-        if d.health_state != ModuleHealthState.ERROR
-    }
-    _initial_err_dev = {
-        name: (d.plugin_context.config, d.error_message or "Unknown error")
-        for name, d in modules.prepared_devices.items()
-        if d.health_state == ModuleHealthState.ERROR
-    }
-    _initial_schema = build_presentation(
-        base_config=config,
-        input_modules=_initial_ok_in,
-        devices=_initial_ok_dev,
-        input_modules_with_errors=_initial_err_in,
-        devices_with_errors=_initial_err_dev,
-        dynamic_field_registry=app.state.dynamic_field_registry,
-        page_banners=app.state.page_banners,
-    )
-    app.state.schema_version = _initial_schema.schema_version
-    app.state.readonly_paths = readonly_paths(_initial_schema)
-    register_plugin_options(
-        app.state.options_registry,
-        _initial_schema,
-        modules.prepared_input_modules,
-        modules.prepared_devices,
-    )
-    app.state.dynamic_paths = frozenset(app.state.dynamic_field_registry.keys())
-    app.state.options_registry.register(
-        "base_config.storage.mounts.fs_uuid", storage.filesystem_options
-    )
+    def _rebuild_settings_schema() -> None:
+        """What the settings page is built from, derived from the plugins
+        loaded now: the dynamic-field and options registries, the schema
+        version a write must echo, the read-only paths, and the optional
+        packages the plugins offer. Rebuilt whenever a
+        plugin comes, goes or is set up again — not per request, where the
+        same work would be repeated for a quantity that moves rarely."""
+        app.state.dynamic_field_registry = build_dynamic_field_registry(
+            modules.prepared_input_modules, modules.prepared_devices,
+        )
+        app.state.options_registry = OptionsRegistry()
+        app.state.page_banners = page_banners(config)
+        ok_in = {
+            name: m.plugin_context.config
+            for name, m in modules.prepared_input_modules.items()
+            if m.health_state != ModuleHealthState.ERROR
+        }
+        err_in = {
+            name: (m.plugin_context.config, m.error_message or "Unknown error")
+            for name, m in modules.prepared_input_modules.items()
+            if m.health_state == ModuleHealthState.ERROR
+        }
+        ok_dev = {
+            name: d.plugin_context.config
+            for name, d in modules.prepared_devices.items()
+            if d.health_state != ModuleHealthState.ERROR
+        }
+        err_dev = {
+            name: (d.plugin_context.config, d.error_message or "Unknown error")
+            for name, d in modules.prepared_devices.items()
+            if d.health_state == ModuleHealthState.ERROR
+        }
+        schema = build_presentation(
+            base_config=config,
+            input_modules=ok_in,
+            devices=ok_dev,
+            input_modules_with_errors=err_in,
+            devices_with_errors=err_dev,
+            dynamic_field_registry=app.state.dynamic_field_registry,
+            page_banners=app.state.page_banners,
+        )
+        app.state.schema_version = schema.schema_version
+        app.state.readonly_paths = readonly_paths(schema)
+        app.state.restart_paths = restart_paths(schema)
+        register_plugin_options(
+            app.state.options_registry,
+            schema,
+            modules.prepared_input_modules,
+            modules.prepared_devices,
+        )
+        app.state.dynamic_paths = frozenset(app.state.dynamic_field_registry.keys())
+        forget_assets()
+        app.state.installability = Installability.of(
+            build_optional_packages_registry(
+                modules.prepared_input_modules, modules.prepared_devices
+            ),
+            InstallHistory.read(),
+        )
+
+    _rebuild_settings_schema()
+    app.state.rebuild_settings_schema = _rebuild_settings_schema
     # Volume and power are answered by whichever module owns the *active*
     # renderer, so the target is resolved per request rather than bound here.
     device_router = player_context.device_router
@@ -820,6 +848,19 @@ async def create_app(
         device_router,
         player_context.playqueue_eventbus,
         player_context.ext_device_eventbus,
+    )
+    app.state.plugin_lifecycle = PluginLifecycle(
+        modules,
+        overrides=app.state.overrides,
+        playqueue=player_context.playqueue,
+        arbiter=player_context.playback_arbiter,
+        device_router=device_router,
+        replaygain=app.state.replaygain,
+        storage=storage,
+        device_automation=lambda: internal_modules.device_automation,
+        republish=lambda: modules.refresh_health(publish=True),
+        rebuild_schema=_rebuild_settings_schema,
+        packages_changed=lambda: _requeue(),
     )
     # Every session opens with the volume policy its renderer's wiring implies.
     renderer_sessions.set_volume_policy(device_router.session_volume_policy)
@@ -1207,7 +1248,15 @@ async def create_app(
             )
         ).model_dump(exclude_unset=True)
 
-    register_config_routes(app, config, modules)
+    register_config_routes(
+        app, config, modules, settings_changed=app.state.plugin_lifecycle.settings_changed
+    )
+    app.state.receivers = ReceiverRegistry(
+        modules, player_context.playqueue_eventbus.dispatch
+    )
+    player_context.receiver_changed = app.state.receivers.changed
+    register_receiver_routes(app, app.state.receivers)
+    app.state.receivers.changed()
 
     async def _storage_location_of(entity_id: EntityId):
         module = modules.enabled_input_module(entity_id.source)
@@ -1223,6 +1272,18 @@ async def create_app(
         current_value=app.state.config_value,
         apply_changes=app.state.apply_config_changes,
         list_folders=server_folders.list,
+    )
+    app.state.nfs_discovery = NfsDiscovery(
+        hosts=lambda: [r.host for r in config.storage.mounts if isinstance(r, NfsMount) and r.host]
+    )
+    register_device_routes(
+        app,
+        StorageDevices(
+            storage,
+            lambda: config.storage,
+            app.state.nfs_discovery,
+            saving_through(app.state.apply_config_changes),
+        ),
     )
     register_power_off_timer_route(
         app, app.state.box_power_off_timer, player_context.playqueue
@@ -1240,36 +1301,56 @@ async def create_app(
                 **app.state.plugin_operations.capabilities(),
                 "enabled": app.state.config.server.plugin_catalog_enabled,
             },
-            "storage": {"volumes": True, "mounts": True, "adopt": True, "folders": True},
+            "storage": {"volumes": True, "mounts": True, "adopt": True, "folders": True, "devices": True},
         }
 
     register_upgrade_routes(
         app, renderer_upgrades, demo_mode=lambda: app.state.config.server.demo_mode
     )
 
+    queueing = asyncio.Lock()
+
+    async def _queue_required_packages(
+        requested: Sequence[str] = (), hold_failed: bool = False
+    ):
+        # One at a time, so an answer read before a later save never lands last.
+        async with queueing:
+            return await queue_required_packages(
+                modules.prepared_input_modules,
+                modules.prepared_devices,
+                app.state.installability,
+                requested,
+                hold_failed,
+            )
+
+    app.state.queue_required_packages = _queue_required_packages
+
+    async def _requeue(hold_failed: bool = False) -> None:
+        """Queue without failing the caller: the start, and a plugin set up
+        or taken down meanwhile, change what the next start installs."""
+        try:
+            await _queue_required_packages(hold_failed=hold_failed)
+        except Exception:  # noqa: BLE001 — the queue is for the next start; nothing else waits on it
+            logger.exception("Could not queue the optional packages needed")
+
+    # A feature turned on whose install never ran, or that an upgrade
+    # gave a new package, installs at the next start however it comes.
+    app.state.package_queue_task = asyncio.create_task(_requeue(hold_failed=True))
+
     @app.put("/server/restart")
     async def restart_server(payload: Optional[Dict[str, Any]] = None):
         """Request a full systemd-driven restart of the server.
 
-        Before triggering the restart, the server polls every loaded
-        plugin's ``required_packages()`` and unions the result with an
-        optional ``{"install": [...]}`` body. Any allowed keys land in
-        ``/var/lib/kalinka/pending_installs.json`` so the bootstrap-time
-        install runs automatically on the way back up. This keeps the
-        optional-packages mechanism invisible from the user's perspective:
-        flipping a sub-feature toggle and clicking restart just works,
-        with a longer restart while the install completes.
+        Before triggering the restart, the server queues what an optional
+        ``{"install": [...]}`` body asks for, then what the plugins'
+        ``required_packages()`` name, as a settings save does, so the
+        bootstrap-time install runs on the way back up.
 
-        The explicit body is kept as a power-user override (and for
-        future "retry failed install" affordances). Unknown keys in
-        the body are rejected with 400; keys returned by plugins'
-        ``required_packages()`` but absent from the registry are
-        dropped with a log line (the plugin is misconfigured, but the
-        restart itself should still proceed). A package with no wheel
-        for this box counts as unknown either way, so no restart runs
-        an install that can only fail.
+        The explicit body is kept as a power-user override, and to retry
+        an install that failed. Unknown keys in the body, and keys with no
+        wheel declared for this box, are rejected with 400, and then nothing
+        is queued or restarted.
         """
-        # Explicit body keys
         body_requested: list[str] = []
         if payload and isinstance(payload, dict):
             raw = payload.get("install") or []
@@ -1279,78 +1360,23 @@ async def create_app(
                 )
             body_requested = [str(k) for k in raw]
 
-        # Auto-collect from plugins' required_packages(). Defensive: a
-        # misbehaving plugin must not block the restart.
-        auto_keys: list[str] = []
-        for prepared in list(modules.prepared_input_modules.values()) + list(
-            modules.prepared_devices.values()
-        ):
-            instance = prepared.plugin_instance
-            if instance is None:
-                continue
-            try:
-                keys = await instance.required_packages()
-            except Exception as e:  # noqa: BLE001 — defensive
-                logger.warning(
-                    "Plugin %s required_packages() raised; ignoring: %s",
-                    prepared.plugin_class.PLUGIN_ID,
-                    e,
-                )
-                continue
-            for k in keys or []:
-                if k not in auto_keys:
-                    auto_keys.append(str(k))
-
-        # Union, body first (so explicit user intent ordering wins for
-        # display) then auto-detected.
-        combined: list[str] = []
-        seen: set[str] = set()
-        for k in list(body_requested) + list(auto_keys):
-            if k not in seen:
-                seen.add(k)
-                combined.append(k)
-
-        accepted: list[str] = []
-        rejected: list[str] = []
-        if combined:
-            try:
-                accepted, rejected = write_pending_installs(
-                    combined,
-                    modules.prepared_input_modules,
-                    modules.prepared_devices,
-                )
-            except OSError as e:
-                logger.error("Failed to write pending installs: %s", e)
-                raise HTTPException(
-                    status_code=500,
-                    detail="Failed to record install request",
-                ) from e
-            # Body-provided keys must be valid (user-facing API). Keys
-            # we auto-collected from plugins are best-effort — drop with
-            # a log if the plugin is misconfigured.
-            body_rejected = [k for k in rejected if k in body_requested]
-            auto_rejected = [k for k in rejected if k not in body_requested]
-            if auto_rejected:
-                logger.warning(
-                    "Plugin required_packages() returned keys not in the "
-                    "registry or with no wheel for %s; dropping: %s",
-                    wheel_architecture(),
-                    auto_rejected,
-                )
-            if body_rejected:
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "message": "Unknown optional-package keys",
-                        "rejected": body_rejected,
-                        "accepted": accepted,
-                    },
-                )
-            if accepted:
-                logger.info(
-                    "Queued optional packages for next-boot install: %s",
-                    accepted,
-                )
+        try:
+            accepted, rejected = await _queue_required_packages(body_requested)
+        except OSError as e:
+            logger.error("Failed to write pending installs: %s", e)
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to record install request",
+            ) from e
+        if rejected:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Unknown optional-package keys",
+                    "rejected": rejected,
+                    "accepted": accepted,
+                },
+            )
 
         try:
             update_check.request_restart()
@@ -1430,9 +1456,9 @@ async def create_app(
 
     def _module_entry(prepared) -> ModuleDescriptor:
         """One prepared plugin as clients see it, in the state it last
-        reported."""
+        reported, offering only the packages this box can install."""
         cfg = prepared.plugin_context.config
-        state = prepared.state
+        state = app.state.installability.as_offered(prepared.state)
         return ModuleDescriptor(
             name=cfg.name,
             title=cfg.__class__.model_fields["name"].title or cfg.name,
@@ -1442,7 +1468,11 @@ async def create_app(
             state=state.state,
             error_message=state.message,
             missing_packages=state.missing_packages,
-            capabilities=capabilities_of(prepared.interface),
+            capabilities=list(dict.fromkeys([
+                *capabilities_of(prepared.interface),
+                *(["receiver_control"]
+                  if getattr(prepared.plugin_class, "RECEIVER", None) else []),
+            ])),
         )
 
     def _builtin_entries() -> List[ModuleDescriptor]:
@@ -1475,6 +1505,7 @@ async def create_app(
             devices=[_module_entry(d) for d in modules.prepared_devices.values()],
         )
         app.state.module_snapshot = snapshot
+        app.state.receivers.changed()
         player_context.playqueue_eventbus.dispatch(
             ModulesChangedEvent(
                 input_modules=snapshot.input_modules, devices=snapshot.devices
@@ -1526,6 +1557,7 @@ async def create_app(
         return FileResponse(resolved_path, media_type=mime_type)
 
     register_content_route(app, set_up_input_module)
+    register_live_audio_route(app, player_context.live_audio)
 
     def _configured_secrets() -> List[str]:
         configs = [app.state.config] + [

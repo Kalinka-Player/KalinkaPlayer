@@ -29,6 +29,10 @@ Open `http://<streamer>:8001/` in a browser. The page is built into the supervis
 binary and loads nothing from the internet, so it works offline and when
 Core's files are damaged. It follows the app's dark style.
 
+- **Network.** A link to network setup, **Enable Wi-Fi** for a radio that
+  was switched off, and, where NetworkManager runs the network and a wireless
+  interface exists, the **Wi-Fi power saving** row: the choice in force and a
+  button to switch it. See **Wi-Fi power saving** below.
 - **Status.** Whether Core is running, starting, stopped or failed, with a
   link to Kalinka itself while it runs. Notices explain anything in the way:
   - a running upgrade or reinstall;
@@ -83,6 +87,23 @@ streamer's identity. Success redirects back to the page with connection
 instructions; errors return the page with an explanation and empty password
 fields. `/info` and `/v1/actions/` are unchanged. Test and unprivileged runs
 simulate setup and label the result accordingly.
+
+**Wi-Fi power saving** is the other dashboard form, under the same rules:
+posted to `/` with `action=set_wifi_powersave`, the streamer's identity and
+`powersave` as `on` or `off`, from the dashboard's exact Origin, with no other
+field. The supervisor package turns Wi-Fi power saving off for every network
+the streamer joins, through a NetworkManager default: with it on, a Raspberry
+Pi's radio can stay associated yet pass traffic slowly or not at all. The row
+shows the choice in force. **Turn on** or **Turn off** writes the streamer's
+own choice to `/etc/NetworkManager/conf.d/kalinka-wifi-powersave.conf`, which
+shadows the package's default of the same name, has NetworkManager reread its
+configuration so the next activation of any saved network follows it, and
+switches every wireless interface over with `iw` at once. Success redirects
+back to the page, which says whether the running connection followed or only
+the next one will; a choice that could not be saved returns the page with an
+explanation. The row is absent where DietPi runs the network or the streamer
+has no wireless interface. See [Wi-Fi power saving](supervisor.md#wi-fi-power-saving)
+for the default and what it rests on.
 
 ## Trust model
 
@@ -157,7 +178,8 @@ is busy, including after a supervisor restart.
  "server_id": "ee4d496c-3f6c-4388-a02e-f6a2f17829cd",
  "renderer_id": "5c0ffee0-1d2e-4a3b-8c4d-5e6f7a8b9c0d",
  "actions": ["restart_core", "reboot", "poweroff", "reinstall", "set_soundcard", "remove_plugin", "set_timezone"],
- "poweroff_timer": true}
+ "poweroff_timer": true,
+ "poweroff_schedule": true}
 ```
 
 - `version` is the package version.
@@ -228,11 +250,38 @@ invokes systemd.
 | POST | `/v1/actions/restart_core` | 202 `{"action": "restart_core"}` once systemd has queued the restart |
 | POST | `/v1/actions/reboot` | 202 `{"action": "reboot"}`, then the streamer reboots |
 | POST | `/v1/actions/poweroff` | 202 `{"action": "poweroff"}`, then the streamer powers off |
+| GET, HEAD | `/v1/power-off` | Current power state and sleep-timer countdown |
+| POST | `/v1/actions/schedule_poweroff` | Set or replace a sleep timer; body: `{"server_id":"…","minutes":30}` |
+| POST | `/v1/actions/cancel_poweroff` | Cancel the sleep timer; body: `{"server_id":"…"}` |
 | POST | `/v1/actions/reinstall` | 202 `{"action": "reinstall"}` once the reinstall has been queued |
 | POST | `/v1/actions/remove_plugin` | 202 `{"action": "remove_plugin", "package": "..."}` once the removal has been queued; the body also names the `package` |
 | POST | `/v1/actions/set_soundcard` | 202 `{"action": "set_soundcard", "reboot": true}` once the card is set up; when `reboot` is true, the streamer then restarts |
 | POST | `/v1/actions/set_timezone` | 202 `{"action": "set_timezone", "timezone": "Asia/Kolkata"}` once the streamer is on that zone; the body also names the `timezone` |
 | OPTIONS | any API path | CORS preflight |
+
+The three sleep-timer routes require `poweroff_schedule: true` in `/info`.
+Scheduling accepts exactly 30, 60 or 90 minutes; **Now** uses the existing
+`poweroff` action. Scheduling again replaces the previous deadline. Scheduling
+and cancellation return the same JSON shape as `GET /v1/power-off`:
+
+```json
+{"server_id":"…","state":"scheduled","remaining_seconds":1800}
+```
+
+`state` is `on`, `scheduled`, `powering_off` or `restarting`;
+`remaining_seconds` is null unless scheduled. It rounds up to whole seconds
+and stays at zero while a due shutdown waits for an operation guard. All three
+routes use the existing LAN/origin protections; mutations require the matching
+server identity. Cancellation is idempotent, but returns `shutting_down` once
+shutdown has been admitted. An unreachable supervisor cannot report power state.
+
+Supervisor owns this explicit timer with a monotonic deadline. It continues
+when the app closes or Core restarts, and clears on a supervisor restart or
+change of server identity. While scheduled it takes precedence over Core's
+inactivity timer, without changing the saved inactivity settings. Cancelling
+resumes the normal inactivity policy. Expiry uses the same shutdown coordinator
+as immediate power-off, including update, helper and network guards; refusals
+and failed shutdowns are retried on the next five-second tick.
 
 `GET /v1/status` returns:
 
@@ -610,6 +659,9 @@ belongs in that change's threat model.
   - the policy and the HTTP layer;
   - the page and its security headers;
   - SSH form validation, origin checks, action serialization, secret handling and the helper with simulated account/service tools;
+  - the Wi-Fi power-saving form against a fake switch, and the switch itself
+    against a staged streamer and a fake NetworkManager bus: the choice saved,
+    read back, applied with `iw`, and reported as saved only when it is not;
   - plugin removal: the package rules, the request file, the unit and its script against simulated apt, dpkg and systemctl;
   - the host and origin rules;
   - the systemd calls against a fake bus;

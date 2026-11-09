@@ -8,24 +8,32 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"kalinka/supervisor/internal/coreconf"
 )
 
-// PowerOffTimer follows Core's inactivity clock and applies the normal shutdown guards.
-// A missing, unreachable or older Core never authorizes a shutdown.
+// PowerOffTimer owns an explicit sleep timer and follows Core's inactivity clock.
+// Both use the normal shutdown guards. Without an explicit timer, a missing,
+// unreachable or older Core never authorizes a shutdown.
 type PowerOffTimer struct {
 	coord    Coordinator
 	core     func() coreconf.Config
 	identity func() string
 	resolve  func(string) (string, error)
 	client   *http.Client
+	// Serializes timer changes with shutdown admission. Once shutdown is
+	// admitted, cancellation reports shutting_down instead of a false success.
+	mu       sync.Mutex
+	now      func() time.Time
+	deadline time.Time
+	owner    string
 }
 
 func NewPowerOffTimer(coord Coordinator, core func() coreconf.Config, identity func() string) *PowerOffTimer {
 	return &PowerOffTimer{
-		coord: coord, core: core, identity: identity, resolve: InterfaceIPv4,
+		coord: coord, core: core, identity: identity, resolve: InterfaceIPv4, now: time.Now,
 		client: &http.Client{
 			Timeout:       3 * time.Second,
 			Transport:     &http.Transport{Proxy: nil},
@@ -34,7 +42,7 @@ func NewPowerOffTimer(coord Coordinator, core func() coreconf.Config, identity f
 	}
 }
 
-// Run consults a fresh Core decision every five seconds until ctx ends.
+// Run checks the sleep timer or a fresh Core decision every five seconds.
 func (t *PowerOffTimer) Run(ctx context.Context) {
 	defer t.client.CloseIdleConnections()
 	ticker := time.NewTicker(5 * time.Second)
@@ -85,6 +93,18 @@ func (t *PowerOffTimer) due(ctx context.Context) bool {
 }
 
 func (t *PowerOffTimer) check(ctx context.Context) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.owner != "" && t.owner != t.identity() {
+		t.deadline, t.owner = time.Time{}, ""
+	}
+	if !t.deadline.IsZero() {
+		if !t.now().Before(t.deadline) {
+			t.powerOffScheduled(ctx)
+		}
+		// An explicit sleep timer takes precedence over inactivity settings.
+		return
+	}
 	if !t.due(ctx) {
 		return
 	}

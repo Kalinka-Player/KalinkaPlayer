@@ -16,7 +16,7 @@ REPO = Path(__file__).resolve().parents[3]
 MAKEFILE = REPO / "Makefile"
 MAKE = shutil.which("make")
 # Phony targets meant only as another target's step, so help leaves them out.
-INTERNAL = frozenset()
+INTERNAL = frozenset({"require-venv"})
 
 pytestmark = pytest.mark.skipif(MAKE is None, reason="needs make")
 

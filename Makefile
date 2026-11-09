@@ -1,6 +1,6 @@
 ## KalinkaPlayer Development Makefile
 
-.PHONY: supervisor-build supervisor-test supervisor-deb clean test test-playqueue test-plugin-template system-test bench-sdd lint help venv-env kalinka-server-deb kalinka-server-rpm kalinka-plugins-deb build-all-deb copy-debs build-env dev-setup dev-run renderer-build renderer-clean renderer-deb renderer-rpm proto image-rpi234 image-rpi5 image-rpi234-display image-rpi5-display image-amd64 image-test
+.PHONY: supervisor-build supervisor-test supervisor-deb clean test test-playqueue test-plugin-template system-test bench-sdd lint help venv-env require-venv kalinka-server-deb kalinka-server-rpm kalinka-plugins-deb build-all-deb copy-debs build-env dev-setup dev-run renderer-build renderer-clean renderer-deb renderer-rpm proto image-rpi234 image-rpi5 image-rpi234-display image-rpi5-display image-amd64 image-test
 
 ## --- Local-from-source dev environment (no root, no systemd) ------------------
 ## Everything lands in a per-user fakeroot under $(KALINKA_PREFIX) instead of the
@@ -11,16 +11,17 @@
 ## venv is created. Otherwise we fall back to ./.venv (created on first setup).
 VENV ?= $(if $(VIRTUAL_ENV),$(VIRTUAL_ENV),.venv)
 KALINKA_PREFIX ?= $(HOME)/kalinka
-PY := $(VENV)/bin/python
-PIP := $(VENV)/bin/pip
+## Absolute, so a recipe that cds into a package still runs the venv's tools.
+## The deb builds also put it first on PATH, so their bare `python3` / `pip`
+## skip the system interpreter (whose pip refuses installs on PEP 668
+## "externally managed" distros).
+VENV_BIN := $(abspath $(VENV))/bin
+PY := $(VENV_BIN)/python
+PIP := $(VENV_BIN)/pip
 ## Interpreter used to create a fresh venv. Requires Python >= 3.11; the
 ## production image (Raspberry Pi) runs 3.13. Override to pick a specific
 ## interpreter, e.g. PYTHON=/opt/python3.13/bin/python3.
 PYTHON ?= python3
-## Prepended to PATH when running the deb build scripts, so their bare
-## `python3` / `pip` resolve to the venv instead of the system interpreter
-## (whose pip refuses installs on PEP 668 "externally managed" distros).
-VENV_BIN := $(abspath $(VENV))/bin
 
 ## Every editable package in the workspace, SDK first. dev-setup installs them
 ## in a single pip run so the resolver sees one consistent set: installing the
@@ -54,6 +55,15 @@ venv-env:
 	@echo "Using $$($(PY) --version)"
 	@$(PIP) install --upgrade --quiet pip build setuptools-scm
 
+## Prerequisite of the targets that run the venv's Python without making it,
+## so a missing venv says what to do instead of "No such file or directory".
+require-venv:
+	@[ -x "$(PY)" ] || { \
+		echo "ERROR: no venv at $(VENV)."; \
+		echo "  Run 'make dev-setup', activate a venv, or point VENV at an"; \
+		echo "  environment that has the packages, e.g. make test VENV=/path/to/env"; \
+		exit 1; }
+
 ## venv-env plus the SDK, which the plugin deb builds need importable: their
 ## manifest-export step imports kalinka_plugin_sdk (pulling pydantic/pyyaml).
 ## Installing it editable lets pip track those deps — no hardcoded list to
@@ -63,9 +73,12 @@ build-env: venv-env
 	@$(PIP) install --quiet -e packages/kalinka-plugin-sdk
 
 ## One-shot setup: create venv (unless one is active/exists), install sdk +
-## server + all plugins (editable), and seed the fakeroot directory tree +
-## config. The server is pure Python — audio output lives in the renderer
-## (make renderer-build).
+## server + all plugins (editable) and the test and lint tools, and seed the
+## fakeroot directory tree + config. The server is pure Python — audio output
+## lives in the renderer (make renderer-build).
+##
+## The tools go in after the import check, so none of them can stand in for an
+## undeclared runtime dependency.
 dev-setup: venv-env
 	@echo "Installing sdk, server and plugins (editable)..."
 	@$(PIP) install $(addprefix -e ,$(DEV_PACKAGES))
@@ -74,6 +87,8 @@ dev-setup: venv-env
 		echo "ERROR: kalinka_server failed to import after install — likely an"; \
 		echo "  undeclared runtime dependency. See the traceback above."; \
 		exit 1; }
+	@echo "Installing the test and lint tools (requirements-dev.txt)..."
+	@$(PIP) install --quiet -r requirements-dev.txt
 	@echo "Seeding fakeroot under $(KALINKA_PREFIX)..."
 	@mkdir -p \
 		$(KALINKA_PREFIX)/etc/kalinka \
@@ -122,7 +137,7 @@ renderer-rpm:
 
 ## Regenerate the committed Python protobuf bindings (needs grpcio-tools in
 ## the venv: pip install grpcio-tools).
-proto:
+proto: require-venv
 	@$(PY) -m grpc_tools.protoc \
 		-I $(RENDERER_DIR)/proto/kalinka/renderer/v1 \
 		--python_out=packages/kalinka-server/src/kalinka_server/renderer_proto \
@@ -144,21 +159,21 @@ clean:
 ## Extra pytest args via ARGS, e.g. make test ARGS="-q -rfE"
 PLUGIN_TEST_DIRS := $(filter-out packages/kalinka-plugin-sdk,$(patsubst %/tests/,%,$(wildcard packages/kalinka-plugin-*/tests/)))
 
-test:
+test: require-venv
 	@echo "Running tests..."
-	@cd packages/kalinka-plugin-sdk && python -m pytest tests/ -v $(ARGS)
-	@cd packages/kalinka-server && python -m pytest tests/ -v --ignore=tests/test_playqueue.py $(ARGS)
+	@cd packages/kalinka-plugin-sdk && $(PY) -m pytest tests/ -v $(ARGS)
+	@cd packages/kalinka-server && $(PY) -m pytest tests/ -v --ignore=tests/test_playqueue.py $(ARGS)
 	@for dir in $(PLUGIN_TEST_DIRS); do \
 		echo "Testing $$dir..."; \
-		(cd $$dir && python -m pytest tests/ -v $(ARGS)) || exit 1; \
+		(cd $$dir && $(PY) -m pytest tests/ -v $(ARGS)) || exit 1; \
 	done
-	@python -m pytest benchmarks/sdd/tests -v $(ARGS)
-	@python -m pytest template/cookiecutter-kalinka-plugin/tests -v $(ARGS)
+	@$(PY) -m pytest benchmarks/sdd/tests -v $(ARGS)
+	@$(PY) -m pytest template/cookiecutter-kalinka-plugin/tests -v $(ARGS)
 
 ## The server's play queue suite. Extra pytest args via ARGS, e.g.
 ## make test-playqueue ARGS=--last-failed
-test-playqueue:
-	@cd packages/kalinka-server && python -m pytest tests/test_playqueue.py -v $(ARGS)
+test-playqueue: require-venv
+	@cd packages/kalinka-server && $(PY) -m pytest tests/test_playqueue.py -v $(ARGS)
 
 ## Render the plugin template as each plugin type and run the generated tests.
 ## Slow and needs the network, so not part of make test.
@@ -169,23 +184,23 @@ test-plugin-template:
 ## Dataset through the shipped pipeline and scores the search endpoint against
 ## its captions. Long-running and needs the network; artifacts land under
 ## tmp/sdd_bench. Extra args via ARGS, e.g. make bench-sdd ARGS="--runs mood_on"
-bench-sdd:
+bench-sdd: require-venv
 	@$(PY) benchmarks/sdd/run.py $(ARGS)
 
 ## Full-stack system test (tests/system): fakeroot + Samba in podman + real
 ## indexing, enrichment and AI search over downloaded recordings. Opt-in
 ## because it is slow and needs podman and the network. Extra pytest args via
 ## ARGS, e.g. make system-test ARGS=-x
-system-test:
+system-test: require-venv
 	@KALINKA_SYSTEM_TEST=1 $(PY) -m pytest tests/system -o log_cli=true --log-cli-level=INFO $(ARGS)
 
 ## Catch names that do not exist before a user does, and code that could log a
 ## credential (the same check every pull request runs)
-lint:
+lint: require-venv
 	@echo "Checking for undefined names..."
-	@python -m flake8 --select=F821,F822 packages/*/src
+	@$(PY) -m flake8 --select=F821,F822 packages/*/src
 	@echo "Checking for credentials in logs..."
-	@python scripts/check_credential_logging.py
+	@$(PY) scripts/check_credential_logging.py
 
 ## Helper function to move debs to debs directory
 copy-debs:
@@ -289,7 +304,7 @@ image-test:
 help:
 	@echo "KalinkaPlayer Development Commands:"
 	@echo ""
-	@echo "  dev-setup         One-shot local setup: venv + editable installs + ~/kalinka fakeroot"
+	@echo "  dev-setup         One-shot local setup: venv + editable installs + test tools + ~/kalinka fakeroot"
 	@echo "  dev-run           Run the server in the foreground against the fakeroot (Ctrl-C to stop)"
 	@echo "  system-test       Full-stack indexing test: fakeroot + Samba in podman + real enrichment/AI search"
 	@echo "  bench-sdd         Retrieval-quality benchmark on the Song Describer Dataset (benchmarks/sdd)"

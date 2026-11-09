@@ -2,8 +2,8 @@
 
 Covers detection (``is_one_shot_field`` / ``find_one_shot_overrides``) and the
 persist-first consume on ``PreparedModuleCollection`` — the guarantee that an
-armed "do X on next restart" trigger is reset *before* the plugin acts, so it
-fires at most once and can never re-fire on the following boot.
+armed "do X once" trigger is reset *before* the plugin acts, so it fires at
+most once and can never re-fire when the plugin is next set up.
 """
 
 from __future__ import annotations
@@ -108,7 +108,7 @@ def test_consume_resets_persist_first_and_keeps_armed_value(tmp_path):
     assert PREFIX + "rebuild" not in load_overrides(ofile)
     # ...other overrides untouched...
     assert load_overrides(ofile).get(PREFIX + "plain") is True
-    # ...but the armed value stays on config so the plugin acts this boot.
+    # ...but the armed value stays on config so the plugin acts this time.
     assert cfg.rebuild is True
 
 
@@ -142,7 +142,7 @@ def test_consume_disarms_in_memory_when_persist_fails(monkeypatch):
     )
 
     # Override left in place (retried next boot) and config disarmed so the
-    # plugin skips the action this boot — never act without a durable reset.
+    # plugin skips the action this time — never act without a durable reset.
     assert PREFIX + "rebuild" in live
     assert cfg.rebuild is False
     # Nothing durably consumed, so the caller has nothing to reset.
@@ -219,3 +219,61 @@ def test_is_one_shot_field_walks_optional_nested_model():
         sub: Optional[_OptNested] = None
 
     assert is_one_shot_field(_OptCfg, ["sub", "flag"]) is True
+
+
+def test_immediate_actions_reset_durably_without_consuming_restart_actions(tmp_path):
+    from types import SimpleNamespace
+    from kalinka_plugin_sdk.module_health import ModuleHealthState
+
+    class Immediate(_Cfg):
+        pair: bool = Field(
+            default=False,
+            json_schema_extra={"one_shot": True, "apply_immediately": True},
+        )
+
+    class Plugin(_Plugin):
+        CONFIG_MODEL = Immediate
+
+    config = Immediate(name="fake", pair=True, rebuild=True)
+    prepared = SimpleNamespace(
+        plugin_class=Plugin,
+        plugin_context=SimpleNamespace(config=config),
+        health_state=ModuleHealthState.READY,
+    )
+    overrides = {PREFIX + "pair": True, PREFIX + "rebuild": True}
+    collection = _collection(str(tmp_path / "overrides.json"))
+    consumed = collection.consume_immediate_actions(
+        prepared, {"pair", "rebuild"}, overrides
+    )
+    assert consumed == [PREFIX + "pair"]
+    assert config.pair and config.rebuild  # Callback still sees the action.
+    assert load_overrides(collection.overrides_file) == {PREFIX + "rebuild": True}
+    collection.finish_immediate_actions(prepared, consumed)
+    assert not config.pair and config.rebuild
+
+    config.pair = True
+    overrides[PREFIX + "pair"] = True
+    prepared.health_state = ModuleHealthState.DISABLED
+    assert collection.consume_immediate_actions(prepared, {"pair"}, overrides) == []
+    assert config.pair and overrides[PREFIX + "pair"]
+
+
+def test_immediate_action_detection_requires_both_flags_and_handles_nested_models():
+    from kalinka_server.config_overrides import is_immediate_action_field
+
+    class Actions(BaseModel):
+        pair: bool = Field(
+            default=False,
+            json_schema_extra={"one_shot": True, "apply_immediately": True},
+        )
+        ordinary: bool = Field(
+            default=False, json_schema_extra={"apply_immediately": True}
+        )
+
+    class Config(_Cfg):
+        actions: Actions | None = None
+
+    assert is_immediate_action_field(Config, ["actions", "pair"])
+    assert not is_immediate_action_field(Config, ["actions", "ordinary"])
+    assert not is_immediate_action_field(Config, ["rebuild"])
+    assert not is_immediate_action_field(Config, ["unknown"])

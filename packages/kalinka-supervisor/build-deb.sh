@@ -10,11 +10,12 @@ dpkg --validate-version "$version"
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 chmod 755 "$stage"
-mkdir -p "$stage/DEBIAN" "$stage/usr/lib/kalinka-supervisor" "$stage/usr/lib/systemd/system" "$out_dir"
+mkdir -p "$stage/DEBIAN" "$stage/usr/lib/kalinka-supervisor" "$stage/usr/lib/systemd/system" "$stage/usr/lib/NetworkManager/conf.d" "$out_dir"
 GOARCH="$arch" VERSION="$version" "$pkg_dir/build.sh" "$stage/usr/lib/kalinka-supervisor/kalinka-supervisor"
 install -m 755 "$pkg_dir/reinstall.sh" "$pkg_dir/ssh-setup.sh" "$pkg_dir/soundcard.sh" "$pkg_dir/remove-plugin.sh" "$stage/usr/lib/kalinka-supervisor/"
 install -m 644 "$pkg_dir/dietpi-conf.sh" "$pkg_dir/boot-config.sh" "$stage/usr/lib/kalinka-supervisor/"
 install -m 644 "$pkg_dir/systemd/"* "$stage/usr/lib/systemd/system/"
+install -m 644 "$pkg_dir/networkmanager/kalinka-wifi-powersave.conf" "$stage/usr/lib/NetworkManager/conf.d/"
 cat > "$stage/DEBIAN/control" <<CONTROL
 Package: kalinka-supervisor
 Version: $version
@@ -42,6 +43,17 @@ if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
   # The image's unit stayed active after its run, which the supervisor reads as busy until a restart.
   if [ "$(systemctl show --property=SubState --value kalinka-soundcard.service 2>/dev/null)" = exited ]; then
     systemctl stop kalinka-soundcard.service || true
+  fi
+  # Saved Wi-Fi profiles follow the package's power-saving default when next activated; the running one follows now.
+  if systemctl is-active --quiet NetworkManager.service; then
+    systemctl reload NetworkManager.service || true
+    if [ ! -e /etc/NetworkManager/conf.d/kalinka-wifi-powersave.conf ]; then
+      for phy in /sys/class/net/*/phy80211; do
+        [ -e "$phy" ] || continue
+        iface="${phy%/phy80211}"
+        iw dev "${iface##*/}" set power_save off || true
+      done
+    fi
   fi
   # Core's upgrade installs this package under set -e: a start failure must not abort it.
   systemctl --no-block restart kalinka-supervisor.service || true

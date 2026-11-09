@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 import logging
 import os
 from dataclasses import dataclass, field
@@ -36,6 +37,7 @@ from .config_overrides import (
     apply_overrides_with_prefix,
     find_one_shot_overrides,
     is_one_shot_field,
+    is_immediate_action_field,
     reconcile_config,
     save_overrides,
     store_override,
@@ -43,6 +45,7 @@ from .config_overrides import (
 )
 from .config_secrets import is_private_path, loggable
 from .direct_playback import DirectPlaybackService
+from .live_audio import LiveAudioRegistry
 from .external_playback import ExternalPlaybackService
 from .module_timeout import PLUGIN_CALL_TIMEOUT_S, TimeLimitedInputModule
 from .output_capabilities import OutputCapabilityTracker
@@ -53,6 +56,7 @@ from .renderer_output_device import RendererOutputPlugin
 from .renderer_prefs import RendererPreferences
 from .renderer_registry import RendererRegistry
 from .renderer_sessions import SessionPool
+from .scoped_listener import ScopedListener
 from .sdk_compat import plugin_sdk_mismatch
 from .text_embedder import SharedTextEmbedder
 from .track_sources import ModuleTrackSources
@@ -84,6 +88,9 @@ class PlayerContext:
     # An input plugin's handle for playing outside the queue, by plugin id.
     direct_playback_for: "Callable[[str], DirectPlaybackService] | None" = None
     external_playback_for: "Callable[[str], ExternalPlaybackService] | None" = None
+    live_audio: "LiveAudioRegistry | None" = None
+    server_name: "Callable[[], str] | None" = None
+    receiver_changed: "Callable[[str], None] | None" = None
 
 
 @dataclass
@@ -105,6 +112,9 @@ class PreparedPlugin:
     interface: InputModule | ExternalOutputDevice | None
     error_message: str | None = None
     reported: ModuleState | None = None
+    # False from the moment the plugin is being unloaded: nothing new reaches
+    # it, whatever setup said and whatever it last reported.
+    mounted: bool = True
     _asking: "asyncio.Future[Any] | None" = field(
         default=None, repr=False, compare=False
     )
@@ -117,40 +127,40 @@ class PreparedPlugin:
         return ModuleState(state=self.health_state, message=self.error_message)
 
     @property
+    def set_up(self) -> bool:
+        """Whether ``setup()`` ran and the plugin is not being unloaded: the
+        instance holds what it opened, whatever it reports of itself — a
+        receiver set up while switched off reports DISABLED and still runs."""
+        return self.mounted and self.health_state == ModuleHealthState.READY
+
+    @property
     def serves(self) -> bool:
         """Whether requests may reach it: it set up, and says it can answer."""
-        return (
-            self.health_state == ModuleHealthState.READY
-            and self.state.state in SERVING_STATES
-        )
+        return self.set_up and self.state.state in SERVING_STATES
 
     @property
     def reports_ready(self) -> bool:
         """Whether it set up and its last answer was READY — the stricter test
         for a device given the output."""
-        return (
-            self.health_state == ModuleHealthState.READY
-            and self.state.state == ModuleHealthState.READY
-        )
+        return self.set_up and self.state.state == ModuleHealthState.READY
 
     async def refresh_state(self) -> None:
         """Ask the plugin how it is now.
 
-        Only a plugin that set up is asked; for any other, setup's verdict
-        stands. One that fails to answer is held at WARNING: an input module
-        stays served, a device loses the output, and the modules page says
-        why. A plugin is asked once at a time: callers arriving while an
-        answer is still pending wait on that same answer, so one stuck on a
-        hung mount never claims another thread.
+        Only a plugin that set up and is not being unloaded is asked; for any
+        other, setup's verdict stands, or what the unload said of it. One that
+        fails to answer is held at WARNING: an input module stays served, a
+        device loses the output, and the modules page says why. A plugin is
+        asked once at a time: callers arriving while an answer is still
+        pending wait on that same answer, so one stuck on a hung mount never
+        claims another thread.
         """
-        if (
-            self.health_state != ModuleHealthState.READY
-            or self.plugin_instance is None
-        ):
+        instance = self.plugin_instance
+        if not self.set_up or instance is None:
             return
         try:
             if self._asking is None or self._asking.done():
-                self._asking = asyncio.ensure_future(self.plugin_instance.get_state())
+                self._asking = asyncio.ensure_future(instance.get_state())
                 # Retrieved here, or asyncio would log a late failure's text.
                 self._asking.add_done_callback(
                     lambda asked: asked.cancelled() or asked.exception()
@@ -158,6 +168,9 @@ class PreparedPlugin:
             asking = self._asking
             # Not wait_for(shield()): shield logs a late failure's text itself.
             await asyncio.wait({asking}, timeout=PLUGIN_CALL_TIMEOUT_S)
+            if not self.mounted or self.plugin_instance is not instance:
+                # Unloaded meanwhile: whatever it answered was the old instance's.
+                return
             if not asking.done():
                 raise TimeoutError
             if asking.cancelled():
@@ -170,6 +183,12 @@ class PreparedPlugin:
         except Exception as e:
             # The type only: a plugin's exception text may carry a credential.
             self._hold_at_warning(type(e).__name__)
+
+    def cancel_pending(self) -> None:
+        """Drop a health check still waiting on the plugin: it is going away."""
+        if self._asking is not None and not self._asking.done():
+            self._asking.cancel()
+        self._asking = None
 
     def _hold_at_warning(self, failure: str) -> None:
         self.reported = ModuleState(
@@ -190,7 +209,9 @@ class PreparedPlugin:
         plugin_instance = plugin_class()
         health_state = ModuleHealthState.DISABLED
         interface = None
-        if plugin_context.config.enabled is True:
+        if plugin_context.config.enabled is True or getattr(
+            plugin_class, "SETUP_WHEN_DISABLED", False
+        ):
             await plugin_instance.setup(plugin_context)
             health_state = ModuleHealthState.READY
             interface = cast_plugin_interface(plugin_instance)
@@ -215,6 +236,10 @@ class PreparedPlugin:
             health_state=health_state,
             plugin_context=plugin_context,
             interface=interface,
+            reported=(
+                ModuleState(state=ModuleHealthState.DISABLED)
+                if not plugin_context.config.enabled else None
+            ),
         )
 
     async def shutdown(self):
@@ -263,10 +288,33 @@ class PreparedModuleCollection:
         if core is not None:
             return core
         prepared = self.prepared_input_modules.get(name)
-        if prepared is None or prepared.health_state != ModuleHealthState.READY:
+        if (
+            prepared is None
+            or not prepared.mounted
+            or prepared.health_state != ModuleHealthState.READY
+        ):
             return None
         interface = prepared.interface
         return interface if isinstance(interface, InputModule) else None
+
+    def prepared(self, name: str) -> PreparedPlugin | None:
+        """The plugin ``name``, input module or device, as it stands."""
+        return self.prepared_input_modules.get(name) or self.prepared_devices.get(name)
+
+    def remove(self, name: str) -> None:
+        """Forget the plugin ``name``; its package is gone."""
+        self.prepared_input_modules.pop(name, None)
+        self.prepared_devices.pop(name, None)
+        self._update_enabled_input_modules()
+
+    def find_class(self, name: str) -> type[PluginBase] | None:
+        """The class behind the entry point whose plugin id is ``name``, read
+        afresh from what is installed now."""
+        importlib.invalidate_caches()
+        for plugin_name, plugin_class in self._scan_entry_points():
+            if plugin_name == name:
+                return plugin_class
+        return None
 
     def serving_input_modules(self) -> list[InputModule]:
         """Every input module that can be asked for content now: the enabled
@@ -405,20 +453,22 @@ class PreparedModuleCollection:
         plugin_class: type[PluginBase],
         plugin_config: ModuleConfig,
         overrides: MutableMapping[str, Any],
+        only_keys: set[str] | None = None,
     ) -> list[str]:
         """Reset any *armed* one-shot triggers for this plugin, persist-first,
         before its ``setup()`` runs. Returns the override keys durably consumed
-        this boot (empty if none were armed or a persist failure forced a
+        this time (empty if none were armed or a persist failure forced a
         disarm), so the caller can reset their *loaded* value once the plugin
         has acted (see ``_reset_consumed_one_shot_values``).
 
         A one-shot field (``json_schema_extra={"one_shot": True}``) is a "do X
-        once on next restart" toggle. We clear it from the overrides — on disk
-        *first* — while leaving the armed value on ``plugin_config`` so the
-        plugin acts this boot. Because the reset is durable before the action,
-        a crash/power-loss mid-action can't make it re-fire next boot. If the
-        reset can't be persisted, we instead *disarm* the in-memory value and
-        skip it this boot, so an action never runs without a durable reset.
+        once" toggle, acted on when the plugin is next set up. We clear it from
+        the overrides — on disk *first* — while leaving the armed value on
+        ``plugin_config`` so the plugin acts this time. Because the reset is
+        durable before the action, a crash/power-loss mid-action can't make it
+        re-fire next boot. If the reset can't be persisted, we instead *disarm*
+        the in-memory value and skip it, so an action never runs without a
+        durable reset.
         """
         prefix = (
             "input_modules."
@@ -429,6 +479,8 @@ class PreparedModuleCollection:
         armed = find_one_shot_overrides(
             plugin_class.CONFIG_MODEL, prefix, plugin_config, overrides
         )
+        if only_keys is not None:
+            armed = [key for key in armed if key in only_keys]
         if not armed:
             return []
 
@@ -441,8 +493,8 @@ class PreparedModuleCollection:
                 save_overrides(self.overrides_file, cleared)
             except OSError as exc:
                 logger.error(
-                    "Could not persist one-shot reset to %s; disarming %s this "
-                    "boot so the action doesn't run without a durable reset: %s",
+                    "Could not persist one-shot reset to %s; disarming %s for "
+                    "now so the action doesn't run without a durable reset: %s",
                     self.overrides_file,
                     armed,
                     exc,
@@ -465,7 +517,7 @@ class PreparedModuleCollection:
                     except (AttributeError, IndexError) as disarm_exc:
                         logger.error(
                             "Could not disarm one-shot '%s' after a persist "
-                            "failure; it may still act this boot: %s",
+                            "failure; it may still act this time: %s",
                             key,
                             disarm_exc,
                         )
@@ -480,11 +532,50 @@ class PreparedModuleCollection:
         for key in armed:
             overrides.pop(key, None)
             logger.warning(
-                "One-shot override '%s' armed — consuming it this boot; %s.",
+                "One-shot override '%s' armed — consuming it now; %s.",
                 key,
                 reset_kind,
             )
         return armed
+
+    def consume_immediate_actions(
+        self, prepared: PreparedPlugin, paths: set[str], overrides
+    ) -> list[str]:
+        """Persistently disarm explicitly immediate one-shots before their callback.
+
+        Ordinary one-shots still wait for setup. A disabled/uninitialized
+        plugin also keeps its actions for setup, when its dependencies exist.
+        """
+        if prepared.health_state == ModuleHealthState.DISABLED:
+            return []
+        config = prepared.plugin_context.config
+        prefix = (
+            (
+                "input_modules."
+                if prepared.plugin_class.PLUGIN_TYPE == PluginType.INPUT_MODULE
+                else "devices."
+            )
+            + config.name
+            + "."
+        )
+        keys = {
+            prefix + path
+            for path in paths
+            if is_immediate_action_field(type(config), path.split("."))
+        }
+        return self._consume_one_shot_overrides(
+            config.name, prepared.plugin_class, config, overrides, only_keys=keys
+        )
+
+    def finish_immediate_actions(
+        self, prepared: PreparedPlugin, keys: list[str]
+    ) -> None:
+        self._reset_consumed_one_shot_values(
+            prepared.plugin_context.config.name,
+            prepared.plugin_class,
+            prepared.plugin_context.config,
+            keys,
+        )
 
     def _reset_consumed_one_shot_values(
         self,
@@ -494,13 +585,13 @@ class PreparedModuleCollection:
         consumed_keys: list[str],
     ) -> None:
         """Reset the *loaded* value of already-consumed one-shot triggers back
-        to their field default, after the plugin has acted on them this boot.
+        to their field default, after the plugin has acted on them.
 
         ``_consume_one_shot_overrides`` clears the override from disk but leaves
         the armed value on ``plugin_config`` so the plugin can act. That live
         object is what ``GET /server/config`` reports, so without this reset the
         trigger reads as still-armed for the rest of the process — the UI shows
-        it "on" until the next restart rebuilds config from the (now-clean)
+        it "on" until the plugin is next set up from the (now-clean)
         overrides. Clearing it here keeps the loaded value in step with disk.
         """
         if not consumed_keys:
@@ -525,7 +616,7 @@ class PreparedModuleCollection:
             except (AttributeError, IndexError) as exc:
                 logger.error(
                     "Could not reset consumed one-shot '%s' on the loaded "
-                    "config; it may read as still-armed until restart: %s",
+                    "config; it may read as still-armed until it is next set up: %s",
                     key,
                     exc,
                 )
@@ -608,6 +699,161 @@ class PreparedModuleCollection:
                 )
         return changed
 
+    def _prepare_entry(
+        self,
+        plugin_name: str,
+        plugin_class: type[PluginBase],
+        overrides: MutableMapping[str, Any],
+    ) -> dict[str, Any]:
+        """Phase 1 of setting a plugin up, sequential and never awaiting:
+        its config built from the overrides, armed one-shot triggers
+        consumed before it can act on them, its context made. Touching
+        ``overrides`` here, single-threaded, keeps the shared mapping
+        race-free."""
+        entry: dict[str, Any] = {
+            "name": plugin_name,
+            "class": plugin_class,
+            "config": None,
+            "context": None,
+            "error": plugin_sdk_mismatch(plugin_class, SDK_VERSION),
+            "consumed_one_shot": [],
+        }
+        if entry["error"]:
+            logger.error(
+                "Not setting up plugin %s: %s", plugin_name, entry["error"]
+            )
+        try:
+            config = self._build_module_config(
+                plugin_name, plugin_class, overrides
+            )
+            entry["config"] = config
+            # Reset armed one-shot triggers on disk *before* the plugin
+            # acts, leaving the armed value on ``config`` for this setup.
+            # Only when the module will actually run (setup() is skipped
+            # for disabled modules and for ones the SDK rules out) —
+            # otherwise the trigger waits, armed, until the module runs
+            # rather than being silently lost.
+            if not entry["error"] and getattr(config, "enabled", True):
+                entry["consumed_one_shot"] = self._consume_one_shot_overrides(
+                    plugin_name, plugin_class, config, overrides
+                )
+            entry["context"] = self._make_plugin_context(
+                plugin_name, plugin_class, config
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to prepare plugin {plugin_name}: {e}", exc_info=True
+            )
+            entry["error"] = entry["error"] or str(e)
+        return entry
+
+    @staticmethod
+    async def _run_setup(entry: dict[str, Any]) -> PreparedPlugin | None:
+        """Phase 2: the slow ``setup()`` call, skipped for an entry phase 1
+        already failed."""
+        if entry["context"] is None or entry["error"]:
+            return None
+        return await PreparedPlugin.setup(entry["class"], entry["context"])
+
+    def _fold_result(
+        self,
+        entry: dict[str, Any],
+        result: PreparedPlugin | BaseException | None,
+        overrides: MutableMapping[str, Any],
+    ) -> PreparedPlugin | None:
+        """Phase 3, sequential: the outcome as a PreparedPlugin, ERROR when
+        setup failed, and the overrides reconciled with what setup changed.
+        None only when not even a config and context could be built."""
+        plugin_name = entry["name"]
+        prepared_module: PreparedPlugin | None = None
+
+        if isinstance(result, BaseException):
+            # The type only: a setting just saved may be in its text.
+            logger.error(
+                "Failed to set up plugin %s (%s)", plugin_name, type(result).__name__
+            )
+            entry["error"] = str(result)
+        elif result is not None:
+            prepared_module = result
+
+        # Create a PreparedPlugin with error state even if setup failed,
+        # as long as we got far enough to have a config + context.
+        if (
+            prepared_module is None
+            and entry["config"] is not None
+            and entry["context"] is not None
+        ):
+            prepared_module = PreparedPlugin(
+                plugin_class=entry["class"],
+                plugin_instance=None,
+                health_state=ModuleHealthState.ERROR,
+                plugin_context=entry["context"],
+                interface=None,
+                error_message=entry["error"],
+            )
+
+        # Reconcile overrides regardless of READY/ERROR state: a
+        # plugin that crashed midway through setup may still have
+        # consumed an override before crashing (e.g. localfiles
+        # purges the DB before raising) and we don't want that
+        # consumption to repeat on every restart.
+        if entry["config"] is not None:
+            changed = self._reconcile_consumed_overrides(
+                plugin_name, entry["class"], entry["config"], overrides
+            )
+            if changed:
+                self.overrides_dirty = True
+            # The plugin has now acted on any armed one-shot trigger; reset
+            # its loaded value to default so GET /server/config reflects the
+            # disarmed state immediately, matching the already-cleared disk
+            # override instead of echoing the armed value until it is next set up.
+            self._reset_consumed_one_shot_values(
+                plugin_name,
+                entry["class"],
+                entry["config"],
+                entry.get("consumed_one_shot") or [],
+            )
+        return prepared_module
+
+    async def prepare_one(
+        self,
+        plugin_name: str,
+        plugin_class: type[PluginBase],
+        overrides: MutableMapping[str, Any],
+    ) -> PreparedPlugin | None:
+        """Set one plugin up while the server runs, exactly as the boot scan
+        would: config from the overrides, one-shots consumed, ``setup()``
+        run, what it changed reconciled back into ``overrides``.
+
+        @return The plugin as setup left it, ERROR included; None when not
+            even its config could be built.
+        @note Sets ``overrides_dirty`` as the boot scan does; the caller
+            persists the overrides.
+        """
+        entry = self._prepare_entry(plugin_name, plugin_class, overrides)
+        try:
+            result: PreparedPlugin | BaseException | None = await self._run_setup(
+                entry
+            )
+        except Exception as e:  # noqa: BLE001 — setup's failure is the plugin's state
+            result = e
+        return self._fold_result(entry, result, overrides)
+
+    def flush_overrides(self, overrides: Mapping[str, Any]) -> None:
+        """Persist ``overrides`` if a plugin's setup changed them — reconciled
+        fields that came from the file, so what is loaded diverges from disk.
+        One-shot triggers are not this: they are reset on disk before setup."""
+        if not self.overrides_dirty or self.overrides_file is None:
+            return
+        try:
+            save_overrides(self.overrides_file, overrides)
+            self.overrides_dirty = False
+            logger.info("Persisted reconciled overrides to %s", self.overrides_file)
+        except OSError as exc:
+            logger.error(
+                "Could not persist overrides to %s: %s", self.overrides_file, exc
+            )
+
     async def _scan_and_setup_plugins_from_entry_points(
         self,
         overrides: MutableMapping[str, Any],
@@ -618,9 +864,9 @@ class PreparedModuleCollection:
 
         A plugin's ``setup()`` can block for many seconds (a network login, a
         web-bundle download, spawning subprocesses). Awaiting them one after
-        another — as this used to — serialised every plugin behind the slowest
-        one and delayed the server from accepting connections. We instead fan
-        the ``setup()`` calls out with ``asyncio.gather``.
+        another serialises every plugin behind the slowest one and delays the
+        server from accepting connections, so the ``setup()`` calls are fanned
+        out with ``asyncio.gather``.
 
         The override-mutating work stays sequential to avoid races on the
         shared ``overrides`` mapping and its on-disk persistence: per-plugin
@@ -629,120 +875,21 @@ class PreparedModuleCollection:
         order regardless of which finished first, so the default-module choice
         (first enabled) stays deterministic.
         """
-
-        # Phase 1 (sequential, no awaiting): build each plugin's config and
-        # context and consume any armed one-shot overrides before the plugin
-        # acts on them. Touching ``overrides`` here, single-threaded, keeps the
-        # shared mapping race-free.
         prepared: list[dict[str, Any]] = []
         for plugin_name, plugin_class in self._scan_entry_points():
             logger.info(f"Found plugin: {plugin_name}")
-            entry: dict[str, Any] = {
-                "name": plugin_name,
-                "class": plugin_class,
-                "config": None,
-                "context": None,
-                "error": plugin_sdk_mismatch(plugin_class, SDK_VERSION),
-                "consumed_one_shot": [],
-            }
-            if entry["error"]:
-                logger.error(
-                    "Not setting up plugin %s: %s", plugin_name, entry["error"]
-                )
-            try:
-                config = self._build_module_config(
-                    plugin_name, plugin_class, overrides
-                )
-                entry["config"] = config
-                # Reset armed one-shot triggers on disk *before* the plugin
-                # acts, leaving the armed value on ``config`` for this boot.
-                # Only when the module will actually run (setup() is skipped
-                # for disabled modules and for ones the SDK rules out) —
-                # otherwise the trigger waits, armed, until the module runs
-                # rather than being silently lost.
-                if not entry["error"] and getattr(config, "enabled", True):
-                    entry["consumed_one_shot"] = self._consume_one_shot_overrides(
-                        plugin_name, plugin_class, config, overrides
-                    )
-                entry["context"] = self._make_plugin_context(
-                    plugin_name, plugin_class, config
-                )
-            except Exception as e:
-                logger.error(
-                    f"Failed to prepare plugin {plugin_name}: {e}", exc_info=True
-                )
-                entry["error"] = entry["error"] or str(e)
-            prepared.append(entry)
-
-        # Phase 2 (concurrent): run the slow setup() calls in parallel. Entries
-        # that failed in phase 1 are skipped here and handled as errors below.
-        async def _do_setup(entry: dict[str, Any]):
-            if entry["context"] is None or entry["error"]:
-                return None
-            return await PreparedPlugin.setup(entry["class"], entry["context"])
+            prepared.append(self._prepare_entry(plugin_name, plugin_class, overrides))
 
         results = await asyncio.gather(
-            *(_do_setup(entry) for entry in prepared),
+            *(self._run_setup(entry) for entry in prepared),
             return_exceptions=True,
         )
 
-        # Phase 3 (sequential): fold results back into PreparedPlugins,
-        # reconcile consumed overrides, and emit in entry-point order.
         out: list[tuple[str, PreparedPlugin]] = []
         for entry, result in zip(prepared, results):
-            plugin_name = entry["name"]
-            prepared_module: PreparedPlugin | None = None
-
-            if isinstance(result, BaseException):
-                logger.error(
-                    f"Failed to setup plugin {plugin_name}: {result}",
-                    exc_info=(type(result), result, result.__traceback__),
-                )
-                entry["error"] = str(result)
-            elif result is not None:
-                prepared_module = result
-
-            # Create a PreparedPlugin with error state even if setup failed,
-            # as long as we got far enough to have a config + context.
-            if (
-                prepared_module is None
-                and entry["config"] is not None
-                and entry["context"] is not None
-            ):
-                prepared_module = PreparedPlugin(
-                    plugin_class=entry["class"],
-                    plugin_instance=None,
-                    health_state=ModuleHealthState.ERROR,
-                    plugin_context=entry["context"],
-                    interface=None,
-                    error_message=entry["error"],
-                )
-
-            # Reconcile overrides regardless of READY/ERROR state: a
-            # plugin that crashed midway through setup may still have
-            # consumed an override before crashing (e.g. localfiles
-            # purges the DB before raising) and we don't want that
-            # consumption to repeat on every restart.
-            if entry["config"] is not None:
-                changed = self._reconcile_consumed_overrides(
-                    plugin_name, entry["class"], entry["config"], overrides
-                )
-                if changed:
-                    self.overrides_dirty = True
-                # The plugin has now acted on any armed one-shot trigger; reset
-                # its loaded value to default so GET /server/config reflects the
-                # disarmed state immediately, matching the already-cleared disk
-                # override instead of echoing the armed value until next restart.
-                self._reset_consumed_one_shot_values(
-                    plugin_name,
-                    entry["class"],
-                    entry["config"],
-                    entry.get("consumed_one_shot") or [],
-                )
-
+            prepared_module = self._fold_result(entry, result, overrides)
             if prepared_module is not None:
-                out.append((plugin_name, prepared_module))
-
+                out.append((entry["name"], prepared_module))
         return out
 
     def _make_plugin_context(
@@ -754,24 +901,34 @@ class PreparedModuleCollection:
         """Create a PluginContext instance."""
         if self.player_context is None:
             raise ValueError("PlayerContext is not set in PreparedModuleCollection")
-        
+
         match plugin_class.PLUGIN_TYPE:
             case PluginType.INPUT_MODULE:
                 direct_playback_for = self.player_context.direct_playback_for
                 external_playback_for = self.player_context.external_playback_for
                 return InputPluginContext(
                     playqueue=self.player_context.playqueue,
-                    listener=self.player_context.playqueue_eventbus,  # type: ignore[arg-type]
+                    listener=ScopedListener(self.player_context.playqueue_eventbus, name),  # type: ignore[arg-type]
                     logger=logging.getLogger(name),
                     plugin_id=name,
                     sdk_version=SDK_VERSION,
                     config=config,
                     embedder=self.player_context.embedder,
+                    server_name=self.player_context.server_name,
+                    receiver_changed=lambda: (
+                        self.player_context.receiver_changed(name)
+                        if self.player_context.receiver_changed else None
+                    ),
                     direct_playback=(
                         direct_playback_for(name) if direct_playback_for else None
                     ),
                     external_playback=(
                         external_playback_for(name) if external_playback_for else None
+                    ),
+                    live_audio=(
+                        self.player_context.live_audio.for_plugin(name)
+                        if self.player_context.live_audio
+                        else None
                     ),
                 )
             case PluginType.OUTPUT_DEVICE:
@@ -906,7 +1063,7 @@ def volume_control_modules(devices: Mapping[str, PreparedPlugin]) -> list[str]:
         name
         for name, prepared in devices.items()
         if name != RendererOutputPlugin.PLUGIN_ID
-        and prepared.health_state == ModuleHealthState.READY
+        and prepared.set_up
         and isinstance(prepared.interface, ExternalOutputDevice)
         and SupportedFunction.SET_VOLUME in prepared.interface.supported_functions()
     ]
@@ -972,6 +1129,7 @@ async def setup(
         ),
         )
 
+    player_context.server_name = lambda: config.server.service_name
     # Built before the plugin scan: each device plugin is handed an emitter
     # that only reaches clients while that plugin owns the active renderer.
     player_context.device_router = OutputDeviceRouter(
@@ -984,6 +1142,7 @@ async def setup(
     player_context.external_playback_for = lambda plugin_id: ExternalPlaybackService(
         plugin_id, arbiter, renderer_registry.active_id, player_context.device_router
     )
+    player_context.live_audio = LiveAudioRegistry()
     player_context.direct_playback_for = lambda plugin_id: DirectPlaybackService(
         plugin_id,
         config=config,
@@ -993,6 +1152,7 @@ async def setup(
         arbiter=arbiter,
         device_router=lambda: player_context.device_router,
         device_events=device_eventbus,
+        live_audio=player_context.live_audio,
     )
 
     # Scan and setup plugins

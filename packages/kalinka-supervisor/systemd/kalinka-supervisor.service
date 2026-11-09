@@ -36,6 +36,8 @@ ReadWritePaths=/var/lib/kalinka-supervisor /run
 ReadWritePaths=-/etc/network -/etc/wpa_supplicant -/etc/resolv.conf -/etc/dhcp
 # The nm backend keeps the joined network's Wi-Fi country in kalinka-regdom.conf.
 ReadWritePaths=-/etc/modprobe.d
+# The dashboard's Wi-Fi power-saving choice is a NetworkManager snippet.
+ReadWritePaths=-/etc/NetworkManager/conf.d
 ReadWritePaths=-/boot -/var/lib/dietpi -/var/lib/dhcp -/var/lib/kalinka-image
 
 [Install]

@@ -102,6 +102,9 @@ void fillPlaybackStateChanged(const StreamState &state,
     out.set_source_token(*sourceToken);
   }
   out.set_at_unix_ms(atUnixMs);
+  out.set_live_ready(state.liveReady);
+  if (state.liveSourceFrame)
+    out.set_live_source_frame(*state.liveSourceFrame);
   if (state.streamInfo) {
     fillAudioFormat(state.streamInfo->format, *out.mutable_format());
     if (state.streamInfo->format.dsdSampleRate) {

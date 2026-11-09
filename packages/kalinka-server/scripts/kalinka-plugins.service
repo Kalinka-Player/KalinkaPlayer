@@ -1,0 +1,11 @@
+[Unit]
+Description=Install, update or remove a plugin beside a running Core
+
+[Service]
+Type=oneshot
+# A download over a slow link, then apt and pip.
+TimeoutStartSec=infinity
+# Core's request runs here, outside its sandbox; the outcome is recorded for Core.
+# "-": a failed operation is in the record, and the trigger has to go either way.
+ExecStart=-/opt/kalinka/venv/bin/python -m kalinka_server.plugin_management.operations --live
+ExecStartPost=-/bin/rm -f /run/kalinka/plugin-live-request

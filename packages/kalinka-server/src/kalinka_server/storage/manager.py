@@ -9,6 +9,7 @@ import os
 import re
 import select
 import threading
+import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Iterable, Optional, Sequence
 
@@ -35,8 +36,8 @@ from kalinka_plugin_sdk.storage import (
 )
 
 from ..config_model import DiskMount, NfsMount, StorageConfig
-from .describe import summary_of
-from .requests import MountRequests
+from .describe import Medium, medium_of, summary_of
+from .requests import MountRequests, RequestOutcome
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
@@ -46,6 +47,12 @@ INTERNAL_ID = "internal"
 def no_automount_marker() -> str:
     """What tells the root helper to leave USB drives alone."""
     return os.path.join(paths.state_dir(), "storage", "no-automount")
+
+
+def remembered_drives_file() -> str:
+    """The drives the root helper mounts when they are plugged in, whatever
+    the automount switch says."""
+    return os.path.join(paths.state_dir(), "storage", "mount-when-present")
 
 #: Where a desktop, the owner's fstab or an automounter puts a disk. Kalinka's
 #: own root is under the first.
@@ -57,6 +64,26 @@ _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 LIBRARY_TIMEOUT_S = 2.0
 #: How often mountinfo is read again when no change was signalled.
 FALLBACK_POLL_S = 5.0
+#: How often a wait for the helper's answer looks for it.
+ANSWER_POLL_S = 0.2
+
+
+@dataclass(frozen=True)
+class Filesystem:
+    """A filesystem nothing has mounted, which Kalinka could.
+
+    @param usb Whether its disk is on the USB bus, as the rule that mounts
+        drives sees it: a disk in a USB enclosure reports another bus.
+    """
+
+    uuid: str
+    facts: BlockFacts
+    size_bytes: Optional[int] = None
+    usb: bool = False
+
+    @property
+    def label(self) -> str:
+        return _label(self.facts, self.uuid)
 
 
 @dataclass(frozen=True)
@@ -114,6 +141,42 @@ def _disk_of(numbers: str, sys_dev_block: str) -> Optional[str]:
     return os.path.basename(real)
 
 
+def _on_usb(numbers: str, facts: BlockFacts, sys_dev_block: str) -> bool:
+    if facts.bus == "usb":
+        return True
+    link = os.path.join(sys_dev_block, numbers)
+    return os.path.exists(link) and f"{os.sep}usb" in os.path.realpath(link)
+
+
+def _block_size(numbers: str, sys_dev_block: str) -> Optional[int]:
+    try:
+        with open(os.path.join(sys_dev_block, numbers, "size"), encoding="ascii") as f:
+            # In 512-byte sectors, whatever the disk's own.
+            return int(f.read().strip()) * 512 or None
+    except (OSError, ValueError):
+        return None
+
+
+def _mount_shape(record) -> dict:
+    """What a record says about how it is mounted: a change to anything
+    else is no reason to mount it again."""
+    return record.model_dump(exclude={"label", "at_start", "usb"})
+
+
+def _replace_if_changed(path: str, content: str) -> None:
+    try:
+        with open(path, encoding="utf-8") as f:
+            if f.read() == content:
+                return
+    except OSError:
+        pass
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    partial = f"{path}.part"
+    with open(partial, "w", encoding="utf-8") as f:
+        f.write(content)
+    os.replace(partial, path)
+
+
 def _derived_id(mount: Mount, facts: BlockFacts) -> str:
     if facts.uuid and _SAFE_ID.match(facts.uuid):
         return facts.uuid
@@ -151,6 +214,7 @@ class StorageManager:
         udev_data_dir: str = UDEV_DATA_DIR,
         media_root: str = KALINKA_MEDIA_ROOT,
         marker: Optional[str] = None,
+        remembered: Optional[str] = None,
         statvfs: Callable[[str], tuple[Optional[int], Optional[int]]] = _statvfs,
         fstab: str = "/etc/fstab",
         sys_dev_block: str = "/sys/dev/block",
@@ -164,6 +228,7 @@ class StorageManager:
         self._udev = udev_data_dir
         self._media_root = media_root
         self._marker = marker or no_automount_marker()
+        self._remembered = remembered or remembered_drives_file()
         self._statvfs = statvfs
         self._fstab = fstab
         self._sys_dev_block = sys_dev_block
@@ -194,7 +259,7 @@ class StorageManager:
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._apply_automount()
-        self._apply_mounts()
+        self._mount_at_start()
         await self.refresh()
         self._watch = threading.Thread(target=self._watch_mountinfo, name="kal-mounts", daemon=True)
         self._watch.start()
@@ -205,28 +270,63 @@ class StorageManager:
             self._refreshing.cancel()
 
     async def config_changed(self) -> None:
-        """Bring the automount switch and the configured mounts in line with
-        the saved settings, and tell the listeners: switching Drives on or
-        off changes no volume but what the server offers."""
+        """Bring the automount switch and the saved mounts in line with the
+        saved settings, and tell the listeners: switching Drives on or off
+        changes no volume but what the server offers."""
         self._apply_automount()
-        self._apply_mounts()
+        self._apply_mount_changes()
         if not await self.refresh():
             await self._tell_listeners()
 
+    def manages(self, volume: VolumeDescriptor) -> bool:
+        """Whether Kalinka mounts and unmounts ``volume``: one under the
+        media root, mounted or not."""
+        return volume.kind != VolumeKind.INTERNAL and _under(volume.mount_point, (self._media_root,))
+
     def eject(self, volume_id: str) -> bool:
+        """Unmount a volume Kalinka mounted, with every other filesystem on
+        its disk, and power a USB disk off."""
         volume = self.volume(volume_id)
-        if volume is None or volume.kind == VolumeKind.INTERNAL:
+        if volume is None or not self.manages(volume):
             return False
-        if not _under(volume.mount_point, (self._media_root,)):
-            return False
-        self._safely(lambda: self._requests.unmount(volume_id, eject=volume.kind == VolumeKind.REMOVABLE))
+        usb = medium_of(volume) == Medium.USB
+        self._safely(lambda: self._requests.unmount(volume_id, eject=usb))
         return True
 
+    def unmount(self, volume_id: str) -> bool:
+        """Unmount a volume Kalinka mounted and leave its disk be."""
+        volume = self.volume(volume_id)
+        if volume is None or not self.manages(volume):
+            return False
+        self._safely(lambda: self._requests.unmount(volume_id))
+        return True
+
+    def can_mount(self) -> bool:
+        """Whether anything here carries out what Kalinka asks to mount: not
+        on an install without the package's mount helper."""
+        return self._requests.available()
+
+    async def answer(self, volume_id: str, wait: float) -> Optional[RequestOutcome]:
+        """The helper's answer to the last request for ``volume_id``, waited
+        on for up to ``wait`` seconds; None while the request is still out.
+        The list is rebuilt either way."""
+        deadline = time.monotonic() + wait
+        while self._requests.pending(volume_id) and time.monotonic() < deadline:
+            await asyncio.sleep(min(ANSWER_POLL_S, max(0.0, deadline - time.monotonic())))
+        await self.refresh()
+        return None if self._requests.pending(volume_id) else self._requests.outcome(volume_id)
+
+    def attempt(self, record) -> VolumeDescriptor:
+        """How the last mount asked for ``record`` stands, kept or not:
+        mounted, under way, failed with the reason, or not asked."""
+        return self.volume(record.id) or self._unmounted(record)
+
     def mount(self, volume_id: str) -> bool:
+        """Mount the saved record ``volume_id`` now, whatever its switch says."""
         record = next((r for r in self._config().mounts if r.id == volume_id), None)
         if record is None:
             return False
-        self._request_mount(record)
+        self.request_mount(record)
         return True
 
     async def location_status(self, location: StorageLocation) -> Optional[tuple[Adopter, LocationStatus]]:
@@ -402,7 +502,7 @@ class StorageManager:
             volume_id, record = _derived_id(mount, facts), None
 
         if record is not None:
-            kind, label = VolumeKind.MOUNT, record.label or self._record_name(record)
+            kind, label = VolumeKind.MOUNT, record.label or _label(facts, self._record_name(record))
         elif _under(point, (self._media_root,)) and not network:
             kind, label = VolumeKind.REMOVABLE, _label(facts, volume_id)
         else:
@@ -418,7 +518,7 @@ class StorageManager:
             device=mount.source,
             size_bytes=size,
             free_bytes=free,
-            bus=facts.bus or None,
+            bus="usb" if not network and _on_usb(mount.device, facts, self._sys_dev_block) else facts.bus or None,
             vendor=facts.vendor or None,
             model=facts.model or None,
         )
@@ -444,35 +544,55 @@ class StorageManager:
             state=state,
             error=error,
             fs_type="nfs4" if isinstance(record, NfsMount) else None,
+            bus="usb" if isinstance(record, DiskMount) and record.usb else None,
         )
 
     def _apply_automount(self) -> None:
-        enabled = self._config().automount_usb
+        """Tell the root helper which USB drives to mount as they are plugged
+        in: every one, or only those kept with their switch on."""
+        config = self._config()
+        # The helper mounts a drive at its UUID, which only these records
+        # are named after.
+        kept = sorted(
+            record.fs_uuid if record.read_only else f"{record.fs_uuid} rw"
+            for record in config.mounts
+            if isinstance(record, DiskMount) and record.at_start and record.fs_uuid and record.id == record.fs_uuid
+        )
         try:
-            if enabled and os.path.exists(self._marker):
+            if config.automount_usb and os.path.exists(self._marker):
                 os.unlink(self._marker)
-            elif not enabled and not os.path.exists(self._marker):
+            elif not config.automount_usb and not os.path.exists(self._marker):
                 os.makedirs(os.path.dirname(self._marker), exist_ok=True)
                 with open(self._marker, "w"):
                     pass
+            _replace_if_changed(self._remembered, "".join(f"{line}\n" for line in kept))
         except OSError as e:
             logger.warning("Could not record the automount setting: %s", e)
 
-    def _apply_mounts(self) -> None:
+    def _mount_at_start(self) -> None:
+        for record in self._config().mounts:
+            self._applied_mounts[record.id] = _mount_shape(record)
+            if record.at_start:
+                self.request_mount(record)
+
+    def _apply_mount_changes(self) -> None:
+        """Unmount what was forgotten, and mount again what is mounted and
+        now mounts another way. Saving a record mounts nothing by itself."""
         wanted = {record.id: record for record in self._config().mounts}
         for volume_id in set(self._applied_mounts) - set(wanted):
             self._safely(lambda vid=volume_id: self._requests.unmount(vid))
             del self._applied_mounts[volume_id]
         for volume_id, record in wanted.items():
-            shape = record.model_dump(exclude={"label"})
-            if self._applied_mounts.get(volume_id) == shape:
-                continue
-            if volume_id in self._applied_mounts:
-                self._safely(lambda vid=volume_id: self._requests.unmount(vid))
-            self._request_mount(record)
+            shape = _mount_shape(record)
+            before = self._applied_mounts.get(volume_id)
             self._applied_mounts[volume_id] = shape
+            volume = self.volume(volume_id)
+            if before not in (None, shape) and volume is not None and volume.state == VolumeState.MOUNTED:
+                self._safely(lambda vid=volume_id: self._requests.unmount(vid))
+                self.request_mount(record)
 
-    def _request_mount(self, record) -> None:
+    def request_mount(self, record) -> None:
+        """Ask the helper to mount ``record`` under its id, saved or not."""
         options = ["ro" if record.read_only else "rw"]
         if isinstance(record, NfsMount):
             if not record.host or not record.export:
@@ -495,30 +615,13 @@ class StorageManager:
         except OSError as e:
             logger.warning("Could not ask for a mount: %s", e)
 
-    def filesystem_options(self) -> list[dict]:
-        """What a disk mount's filesystem can be set to: those nothing has
-        mounted, and those the saved mounts name, mounted or not."""
-        options = [
-            {
-                "value": uuid,
-                "label": facts.label or uuid,
-                "description": " · ".join(p for p in (facts.fs_type, facts.vendor, facts.model) if p),
-            }
-            for uuid, facts in self.unmounted_filesystems()
-        ]
-        offered = {option["value"] for option in options}
-        for record in self._config().mounts:
-            if isinstance(record, DiskMount) and record.fs_uuid and record.fs_uuid not in offered:
-                offered.add(record.fs_uuid)
-                options.append(
-                    {"value": record.fs_uuid, "label": record.label or record.fs_uuid, "description": "A saved mount"}
-                )
-        return options
+    def unmounted_filesystems(self) -> list[Filesystem]:
+        """Filesystems udev knows of that nothing has mounted: none that
+        /etc/fstab places, and none on a disk the system runs from, which
+        the mount helper refuses as well.
 
-    def unmounted_filesystems(self) -> list[tuple[str, BlockFacts]]:
-        """Filesystems udev knows of that nothing has mounted, by UUID: none
-        that /etc/fstab places, and none on a disk the system runs from,
-        which the mount helper refuses as well."""
+        @note Reads udev's records and sysfs: call it off the event loop.
+        """
         mounts = self._mountinfo()
         mounted = {m.device for m in mounts}
         system = {
@@ -533,15 +636,19 @@ class StorageManager:
         except OSError:
             return []
         for name in sorted(names):
-            if not name.startswith("b") or name[1:] in mounted:
+            numbers = name[1:]
+            if not name.startswith("b") or numbers in mounted:
                 continue
-            if _disk_of(name[1:], self._sys_dev_block) in system - {None}:
+            if _disk_of(numbers, self._sys_dev_block) in system - {None}:
                 continue
-            facts = block_facts(name[1:], self._udev)
+            facts = block_facts(numbers, self._udev)
+            if facts.fs_usage != "filesystem" or not _SAFE_ID.match(facts.uuid) or facts.uuid in listed:
+                continue
+            usb = _on_usb(numbers, facts, self._sys_dev_block)
             # A USB drive mounts by itself, unless that is switched off.
-            automounted = facts.bus == "usb" and self._config().automount_usb
-            if facts.fs_usage == "filesystem" and facts.uuid and not automounted and facts.uuid not in listed:
-                found.append((facts.uuid, facts))
+            if usb and self._config().automount_usb:
+                continue
+            found.append(Filesystem(facts.uuid, facts, _block_size(numbers, self._sys_dev_block), usb))
         return found
 
     def _watch_mountinfo(self) -> None:

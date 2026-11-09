@@ -242,8 +242,10 @@ async def test_the_server_offers_drives_and_says_it_has_storage(app):
         modules = (await client.get("/server/modules")).json()["input_modules"]
         roots = (await client.get("/browse", params={"limit": 100})).json()["items"]
         volumes = (await client.get("/server/storage/volumes")).json()["volumes"]
+        devices = (await client.get("/server/storage/devices")).json()["devices"]
 
-    assert version["storage"] == {"volumes": True, "mounts": True, "adopt": True, "folders": True}
+    assert version["storage"] == {"volumes": True, "mounts": True, "adopt": True, "folders": True, "devices": True}
+    assert devices[0]["id"] == "internal" and devices[0]["managed_by"] == "kalinka"
     drives = next(m for m in modules if m["name"] == "drives")
     assert drives["builtin"] is True and drives["title"] == "Drives"
     assert drives["icon"] == "hard_drive_outlined"

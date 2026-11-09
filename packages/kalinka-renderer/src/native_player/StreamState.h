@@ -60,6 +60,8 @@ struct StreamState {
   std::optional<StreamError> error;
   std::optional<StreamId> streamId;
   unsigned long long timestamp;
+  bool liveReady = false;
+  std::optional<uint64_t> liveSourceFrame;
 
   StreamState(AudioGraphNodeState state, long position,
               std::optional<StreamInfo> streamInfo)

@@ -10,6 +10,9 @@ import (
 	"kalinka/supervisor/internal/wifi"
 )
 
+// activationFallback stands in for the web build's page on a streamer without kalinka-web, or with one that predates it.
+const activationFallback = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="1;url=/?setup=network"><title>Set up Kalinka</title><body><h1>Set up your Kalinka streamer</h1><p>Opening Network setup…</p><p><a href="/?setup=network">Open Kalinka setup</a></p><p>If this window closes, open http://192.168.4.1 in your browser.</p></body></html>`
+
 // NewSetupHandler serves the installed Kalinka web app even before Core is ready.
 func NewSetupHandler(setup NetworkSetup, port func() int, webDir string) http.Handler {
 	api := NewHandler(nil, HandlerConfig{NetworkSetup: setup, CorePort: port})
@@ -35,17 +38,29 @@ func NewSetupHandler(setup NetworkSetup, port func() int, webDir string) http.Ha
 			http.Redirect(w, r, "http://"+wifi.APAddress+"/activate", http.StatusFound)
 			return
 		}
+		name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+		// The file server would serve the page without its policy.
+		if name == "activate.html" {
+			http.Redirect(w, r, "/activate", http.StatusFound)
+			return
+		}
 		if r.URL.Path == "/activate" {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Header().Set("Content-Security-Policy", pagePolicy)
-			io.WriteString(w, `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="1;url=/?setup=network"><title>Set up Kalinka</title><body><h1>Set up your Kalinka streamer</h1><p>Opening Network setup…</p><p><a href="/?setup=network">Open Kalinka setup</a></p><p>If this window closes, open http://192.168.4.1 in your browser.</p></body></html>`)
+			if page, err := os.Open(webDir + "/activate.html"); err == nil {
+				defer page.Close()
+				if info, err := page.Stat(); err == nil && !info.IsDir() {
+					http.ServeContent(w, r, "", info.ModTime(), page)
+					return
+				}
+			}
+			io.WriteString(w, activationFallback)
 			return
 		}
 		if r.URL.Path == "/" && r.URL.Query().Get("setup") != "network" {
 			http.Redirect(w, r, "/?setup=network", http.StatusSeeOther)
 			return
 		}
-		name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
 		if name == "" {
 			name = "index.html"
 		}

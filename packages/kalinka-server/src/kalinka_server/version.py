@@ -192,7 +192,94 @@ def get_version() -> str:
 # client draws where they have no art.
 # Settings saved through PUT /server/config reach the plugin that owns them.
 # GET /server/version carries `storage`.
-REST_API_VERSION = "0.21"
+# 0.22: optional receiver inventory/commands, receivers_changed replay state,
+# explicit receiver pairing requests/answers, opt-in password reveal,
+# pairing mode and explicit saved-device removal.
+# Also 0.22: plugin settings apply as they are saved. A module's on/off switch sets
+# it up or shuts it down there and then, and any other change to a module's
+# or device's settings reaches the plugin, which is set up again on them
+# unless it takes them in itself; the module reports WARNING "Restarting…"
+# meanwhile, through modules_changed, and then what it makes of its new
+# settings. The PUT answers once the plugin has taken them in, or after five
+# seconds while it still is. The Devices page no longer says a restart is
+# needed. Each field and each collection of GET /server/config/schema carries
+# `apply`: "instant" for most, "restart_required" for the few the server reads
+# once at startup (port, interface, text embedding, streamer management,
+# screen) and for a plugin field that turns on a feature whose packages install
+# at the next start (AI search, generated album art), so a client restarts only
+# for those; everything not so marked applies live.
+# A save holding one of a plugin's restart_required fields is not applied
+# live: it waits for that restart, which installs what the plugin then needs.
+# schema_version moves when a plugin is set up again with a changed
+# configuration model, appears or goes; a stale PUT draws its 409 as before.
+# While a module is set up again, GET /content/{module}/… and the routes
+# naming it answer 503 with Retry-After rather than 404, so a renderer retries;
+# so does a module taken down for an update, and a save made meanwhile
+# applies once it is back. A module whose update the installer never
+# finished is listed ERROR with the reason until it is updated again or the
+# server restarts.
+# Also 0.22: where /server/version reports plugin_management.live_installation,
+# POST /server/plugins/{id}/install, /update and /uninstall answer 202
+# {"status": "applying", ...} and the server carries the operation out while
+# it runs, loading the plugin itself; a release it cannot take into the
+# running process answers "restarting" as before, decided before anything
+# changes. GET /server/plugins/operation is the operation in flight or the
+# last one, for a client to poll, reopened or not: {id, action, plugin_id,
+# distribution, version, status: running|restarting|ok|failed, step,
+# step_index, step_count, started_at, updated_at, finished_at, error}, or
+# {"status": "idle"} when none ever ran; an install's steps are downloading,
+# checking, installing_package, installing_environment and loading, an
+# update's add preparing before installing_package, an uninstall's are
+# preparing, checking and removing_package. GET /server/plugins'
+# last_operation is the same record. An update stops that plugin's own
+# playback while its files are replaced; the rest plays on.
+# Also 0.22: a PUT /server/config to a module or device queues the optional
+# packages the plugins need under the new settings, so whatever starts the
+# server next installs them; GET /server/optional_packages marks them
+# `pending`, and turning the feature off again takes them back out. The
+# server's own start queues them too, except a plugin's whose install failed
+# or was cut off at the last start. PUT /server/restart queues the same after what `install`
+# names; a 400 for a key it refuses now queues nothing, and its `accepted`
+# lists the keys it would have taken. A package any install found no wheel
+# of for the server's Python and architecture is no longer queued for a
+# plugin, nor are the other packages that plugin asks for with it, though
+# `install` may still name it. A module's error_message ends with what a
+# restart does for its `missing_packages`, or with why one cannot be
+# installed here, and then `missing_packages` is empty. A plugin set up
+# again or taken down while the server runs, by a save or a catalog
+# operation, queues again as it goes, and what the page offers follows
+# the plugins set up now.
+# Also 0.22: Drives & shares. GET /server/storage/devices lists every drive and
+# NFS share the server could read music from, mounted or not, with the actions
+# that apply to each (`can_mount`, `can_unmount`, `can_eject`,
+# `can_set_at_start`, `can_edit`, `can_forget`) and its Mount after restart
+# switch (`at_start`, null where there is none; for one not kept yet, the
+# switch keeping it would give it); a failed one carries `error`
+# in plain words and `error_detail`, the mount's own, where Kalinka did not
+# word it. `scan` says whether the search for shares on the network is
+# running; asking keeps it running, POST /shares/scan asks every host again,
+# and `mounting_available` is false where no mount helper is installed. POST
+# /devices/{id}/mount and /unmount mount and unmount one now and answer once
+# the helper has, or after 10 s: {id, state, error}, a mount `mounted`,
+# `failed` with the reason or still `mounting`; an unmount the helper refuses
+# answers 502 with its reason; a failed mount's answer carries
+# `error_detail` too. A mount may carry the body of a PUT, applied as it
+# mounts. A disk or a share not kept yet is kept once its mount succeeds, a
+# USB drive only where the body changes something; one that fails is not
+# kept, and is listed failed with `can_dismiss` until it is tried again,
+# DELETE /devices/{id}/failure puts it away, or the server restarts. Neither
+# a mount nor an unmount changes a switch the body does not. PUT /devices/{id} changes
+# `at_start`, `label`, `read_only` or `version` where `can_edit`, keeping a
+# device not kept and mounting nothing, and DELETE /devices/{id} forgets a
+# kept one. POST
+# /shares/probe asks a host for its exports, and POST /shares {host, export,
+# version, at_start, read_only} mounts a share as asked, answering and
+# keeping it as a mount does, or 409 where it is mounted already. Without the
+# helper both mounts answer 503. A saved mount carries `at_start` and is
+# mounted at start only with it on; saving one no longer mounts it. The
+# settings schema no longer describes base_config.storage.mounts, and
+# /server/version's `storage` has `devices`.
+REST_API_VERSION = "0.22"
 
 
 def get_rest_api_version() -> str:

@@ -36,9 +36,11 @@ from smbprotocol.exceptions import (
     SMBOSError,
     SMBResponseException,
 )
+from smbprotocol.open import DirectoryAccessMask
 from smbprotocol.tree import TreeConnect
 
 from .base import (
+    ChangeWatcher,
     DirEntry,
     FileIdentity,
     FileStat,
@@ -173,6 +175,25 @@ class SmbStorage(FileStorage):
 
     def handles(self, path: str) -> bool:
         return scheme_of(path) == SMB_SCHEME
+
+    def watcher(self) -> ChangeWatcher:
+        from .smb_watcher import SmbChangeWatcher
+
+        return SmbChangeWatcher(self._open_watch_directory, self.stat)
+
+    def _open_watch_directory(self, root: str):
+        """Give a subscription a directory on this storage's authenticated pool."""
+        locator = parse(root)
+        with self._as_os_error(locator):
+            return smbclient.open_file(
+                self._unc(locator),
+                mode="rb",
+                buffering=0,
+                file_type="dir",
+                share_access=_SHARE_ACCESS,
+                desired_access=DirectoryAccessMask.FILE_LIST_DIRECTORY,
+                **self._logon(locator),
+            )
 
     def canonical(self, path: str) -> str:
         return str(parse(path))

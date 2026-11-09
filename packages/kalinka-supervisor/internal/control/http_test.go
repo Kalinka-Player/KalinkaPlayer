@@ -187,8 +187,9 @@ func TestInfo(t *testing.T) {
 			"name": "kalinka-supervisor", "version": "1.2.3", "protocol": 1.0, "min_protocol": 1.0,
 			"actions":   []any{"restart_core", "reboot", "poweroff", "reinstall", "set_soundcard", "remove_plugin", "set_timezone"},
 			"server_id": nil, "renderer_id": nil,
-			"poweroff_timer": true,
-			"network_setup":  false,
+			"poweroff_timer":    true,
+			"poweroff_schedule": false,
+			"network_setup":     false,
 		}
 		if box.server {
 			want["server_id"] = testID

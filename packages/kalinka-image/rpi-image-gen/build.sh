@@ -10,6 +10,7 @@
 #   SUPERVISOR_VERSION the version of the one built (default: from the last tag)
 #   OUT_DIR            where the image lands (default: ../out/rpi-image-gen)
 #   XZ_LEVEL           xz compression preset (default: -6)
+#   TEST_DEBS_DIR      local arm64/all packages for a Bluetooth test image
 #   GITHUB_TOKEN       optional, raises the GitHub API rate limit while the
 #                      install finds the release
 #   SPIKE_SSH_PUBKEY   public key file: adds a kalinka-dev login with it and
@@ -34,6 +35,8 @@ TARGET_ARCH=arm64
 . "$IMAGE_DIR/lib/supervisor.sh"
 # shellcheck source=../lib/seal.sh
 . "$IMAGE_DIR/lib/seal.sh"
+# shellcheck source=../lib/test-packages.sh
+. "$IMAGE_DIR/lib/test-packages.sh"
 
 [ -f "$HERE/$CONFIG" ] || die "no config $CONFIG"
 [ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ] || [ "$(uname -m)" = aarch64 ] \
@@ -59,6 +62,15 @@ mkdir -p "$IMAGE_DIR/cache" "$OUT_DIR"
 WORK="$(mktemp -d "$IMAGE_DIR/cache/rpi-image-gen-work.XXXXXXXX")"
 trap 'podman unshare rm -rf "$WORK" 2>/dev/null || rm -rf "$WORK"' EXIT
 mkdir "$WORK/build"
+if [ -n "${TEST_DEBS_DIR:-}" ]; then
+  stage_test_packages "$TEST_DEBS_DIR" "$WORK/test-debs" "$TARGET_ARCH" "${SUPERVISOR_DEB:-}"
+  overrides+=(IGconf_kalinka_test_debs=/work/test-debs)
+  target+=-test
+  supervisor_file="$(awk -F '\t' '$1 == "kalinka-supervisor" { print $4 }' "$WORK/test-debs/packages.tsv")"
+  if [ -z "${SUPERVISOR_DEB:-}" ] && [ -n "$supervisor_file" ]; then
+    SUPERVISOR_DEB="$WORK/test-debs/$supervisor_file"
+  fi
+fi
 # rpi-image-gen prints every setting it is given, so the token goes over as a file.
 if [ -n "${GITHUB_TOKEN:-}" ]; then
   ( umask 077 && printf '%s' "$GITHUB_TOKEN" > "$WORK/github-token" )
@@ -93,5 +105,8 @@ read -r core supervisor renderer display < "$WORK/contents"
 name="$(image_name "$core" "$target" arm64)"
 write_manifest "$OUT_DIR/$name.manifest.json" "$target" arm64 "$display" "$core" "$supervisor" "$renderer" \
   "rpi_image_gen=$RIG_REF"
+if [ -n "${TEST_DEBS_DIR:-}" ]; then
+  cp "$WORK/test-debs/packages.tsv" "$OUT_DIR/$name.packages.tsv"
+fi
 compress_image "$image" "$name"
 ls -lh "$OUT_DIR/$name.xz"

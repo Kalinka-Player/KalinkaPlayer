@@ -42,6 +42,7 @@ class _Box:
             "REQUESTS_DIR": "run/requests",
             "RESULTS_DIR": "run/results",
             "NO_AUTOMOUNT_MARKER": "state/no-automount",
+            "REMEMBERED_DRIVES": "state/mount-when-present",
             "FSTAB": "etc/fstab",
             "MOUNTINFO": "proc/mountinfo",
             "SWAPS": "proc/swaps",
@@ -56,6 +57,9 @@ class _Box:
         self.media_root = str(tmp_path / "media/kalinka")
         monkeypatch.setattr(module, "_service_ids", lambda: (998, 997))
         monkeypatch.setattr(module.subprocess, "run", self._run)
+        monkeypatch.setattr(module.time, "sleep", lambda _s: None)
+        #: What journalctl answers, by its --unit argument.
+        self.journal: dict = {}
         self._write_mountinfo()
 
     def _run(self, command, **_kwargs):
@@ -65,6 +69,10 @@ class _Box:
             props = self.udev.get(name, {})
             out = "\n".join(f"{k}={v}" for k, v in props.items())
             return subprocess.CompletedProcess(command, 0, out, "")
+        if command[0] == "systemd-escape":
+            return subprocess.CompletedProcess(command, 0, "media-kalinka-rec_nas.mount\n", "")
+        if command[0] == "journalctl":
+            return subprocess.CompletedProcess(command, 0, self.journal.get(command[1], ""), "")
         if command[0] in self.failing or command[0] in self.failing_once:
             self.failing_once.discard(command[0])
             return subprocess.CompletedProcess(command, 1, "", "it broke")
@@ -255,6 +263,68 @@ def test_automount_switched_off_mounts_nothing(box):
     assert box.calls == []
 
 
+def _automount_off(box, remembered=None):
+    state = Path(box.module.NO_AUTOMOUNT_MARKER).parent
+    state.mkdir(parents=True, exist_ok=True)
+    Path(box.module.NO_AUTOMOUNT_MARKER).write_text("")
+    if remembered is not None:
+        Path(box.module.REMEMBERED_DRIVES).write_text(remembered)
+
+
+def test_with_automount_off_a_drive_the_server_keeps_is_mounted(box):
+    _automount_off(box, "3A1F-9C2B\n")
+    box.udev["/dev/sdb1"] = USB_VFAT
+
+    box.module.mount_device("/dev/sdb1")
+
+    command, options = _mount_command(box)
+    assert command[-1] == f"{box.media_root}/3A1F-9C2B"
+    assert options[0] == "ro"
+
+
+def test_with_automount_off_a_drive_the_server_does_not_keep_is_left_alone(box):
+    _automount_off(box, "AB12-CD34\n")
+    box.udev["/dev/sdb1"] = USB_VFAT
+
+    box.module.mount_device("/dev/sdb1")
+
+    assert box.commands("systemd-mount") == []
+
+
+@pytest.mark.parametrize("automount", [True, False])
+def test_a_kept_drive_set_writable_is_mounted_writable(box, automount):
+    if automount:
+        Path(box.module.REMEMBERED_DRIVES).parent.mkdir(parents=True)
+        Path(box.module.REMEMBERED_DRIVES).write_text("3A1F-9C2B rw\n")
+    else:
+        _automount_off(box, "3A1F-9C2B rw\n")
+    box.udev["/dev/sdb1"] = USB_VFAT
+
+    box.module.mount_device("/dev/sdb1")
+
+    _command, options = _mount_command(box)
+    assert options[:4] == ["rw", "nosuid", "nodev", "noexec"]
+
+
+def test_a_malformed_line_in_the_kept_drives_is_left_out(box):
+    _automount_off(box, "../../etc rw\n3A1F-9C2B ro\n3A1F-9C2B,uid=0\n9999-0000\n")
+
+    assert box.module.remembered_drives() == {"9999-0000": "ro"}
+
+
+def test_the_kept_drives_are_never_read_through_a_link(box, tmp_path):
+    _automount_off(box)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.write_text("3A1F-9C2B\n")
+    Path(box.module.REMEMBERED_DRIVES).symlink_to(elsewhere)
+    box.udev["/dev/sdb1"] = USB_VFAT
+
+    box.module.mount_device("/dev/sdb1")
+
+    assert box.module.remembered_drives() == {}
+    assert box.calls == []
+
+
 def test_an_nfs_share_is_mounted_on_request(box):
     path = box.request(
         "rec_nas",
@@ -345,6 +415,22 @@ def test_a_failed_mount_is_reported_with_its_reason(box):
 
     result = box.result("rec_nas")
     assert (result["ok"], result["error"], result["action"]) == (False, "it broke", "mount")
+
+
+def test_a_failed_mount_is_reported_in_the_mount_programs_words(box):
+    box.failing.add("systemd-mount")
+    box.journal["--unit=media-kalinka-rec_nas.mount"] = (
+        "Mounting media-kalinka-rec_nas.mount - /media/kalinka/rec_nas...\n"
+        "mount.nfs4: access denied by server while mounting nas:/music\n"
+        "media-kalinka-rec_nas.mount: Mount process exited, code=exited, status=32/n/a\n"
+    )
+    box.request("rec_nas", action="mount", fstype="nfs4", source="nas:/music")
+
+    box.module.apply_requests()
+
+    assert box.result("rec_nas")["error"] == "mount.nfs4: access denied by server while mounting nas:/music"
+    (escape,) = box.commands("systemd-escape")
+    assert escape[-1].endswith("/media/kalinka/rec_nas")
 
 
 def test_a_second_stick_plugged_in_at_boot_with_the_same_uuid_mounts_beside_it(box):

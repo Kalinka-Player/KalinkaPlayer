@@ -93,6 +93,7 @@ private:
   unsigned outputChannels = 2;
 
   StreamAudioFormat currentStreamAudioFormat;
+  std::optional<LiveAudioPolicy> currentLivePolicy;
   // What the open device took, which is not always what was asked for.
   std::optional<DeviceInfo> deviceInfo;
   PlayedFramesCounter playedFramesCounter;
@@ -141,7 +142,8 @@ private:
   AudioSampleFormat deviceFormatFor(AudioSampleFormat streamFormat) const;
   void stampDop(void *dest, size_t frames);
 
-  void setupAudioFormat(const StreamAudioFormat &streamAudioFormat);
+  void setupAudioFormat(const StreamAudioFormat &streamAudioFormat,
+                        std::optional<LiveAudioPolicy> live = std::nullopt);
   snd_pcm_sframes_t queuedFrames();
   /// Frames the running device will still play after a drop.
   snd_pcm_sframes_t framesHeardAfterDrop();

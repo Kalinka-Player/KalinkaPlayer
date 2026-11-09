@@ -14,6 +14,7 @@ it and the library has to be correct without it.
 
 import io
 import itertools
+import logging
 import time
 from dataclasses import dataclass
 from typing import BinaryIO, Optional
@@ -32,6 +33,7 @@ from kalinka_plugin_localfiles.indexer.indexer import (
     FileIndexer,
 )
 from kalinka_plugin_localfiles.indexer.indexer_db import AsyncIndexerDb
+from kalinka_plugin_localfiles.indexer.source_retries import SourceRetries
 from kalinka_plugin_localfiles.localfiles import LocalFilesInputModule
 from kalinka_plugin_localfiles.input_module_db import LocalFilesInputModuleDb
 from kalinka_plugin_localfiles.storage import (
@@ -866,3 +868,271 @@ class TestReadingThroughOutages:
         await indexer.cleanup_stale_tracks()
 
         assert len(await indexer.db_manager.get_all_tracks()) == 1
+
+
+class TestIncrementalRemoteChanges:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("detection", ["full_scan", "deletion_cleanup"])
+    async def test_outage_without_a_write_event_still_owes_a_recovery_scan(
+        self, library, tmp_path, monkeypatch, detection
+    ):
+        indexer, vault, config = library
+        config.scan_interval_minutes = 0
+        now = [0.0]
+        indexer._source_retries = SourceRetries(clock=lambda: now[0])
+        data = _flac(tmp_path, {"title": "A"})
+        old = vault.add(f"{ROOT}/old.flac", data)
+        await indexer.run_scan()
+        # The in-memory storage has no automount to wait for.
+        monkeypatch.setattr(vault, "await_root_available", vault.probe_root)
+        vault.available = False
+        if detection == "full_scan":
+            await indexer.run_scan()
+        else:
+            await indexer.handle_incremental_changes({("path_removed", old)})
+        assert ROOT in indexer._source_retries
+        assert len(await indexer.db_manager.get_all_tracks()) == 1
+        assert indexer.deferred_retry_in() == 30
+        now[0] += 5
+        await indexer._probe_music_roots([ROOT])
+        assert indexer.deferred_retry_in() == 25  # Observation does not reset backoff.
+        vault.trips.clear()
+        await indexer.handle_incremental_changes({("path_removed", old)})
+        await indexer.retry_deferred_files()
+        assert not vault.trips
+
+        vault.remove(old)
+        new = vault.add(f"{ROOT}/Unreported/new.flac", data)
+        vault.available = True
+        now[0] += 30
+        await indexer.retry_deferred_files()
+        assert [row["file_path"] for row in await indexer.db_manager.get_all_tracks()] == [new]
+        assert ROOT not in indexer._source_retries
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("manual_scan", [False, True])
+    async def test_unavailable_source_backs_off_once_for_all_files_and_rescans_on_recovery(
+        self, library, tmp_path, caplog, manual_scan
+    ):
+        indexer, vault, config = library
+        config.scan_interval_minutes = 0
+        now = [0.0]
+        indexer._source_retries = SourceRetries(clock=lambda: now[0])
+        old = _flac(tmp_path, {"title": "Old"})
+        new = _flac(tmp_path, {"title": "New"})
+        assert len(old) == len(new)
+        changed = vault.add(f"{ROOT}/a.flac", old)
+        deleted = vault.add(f"{ROOT}/b.flac", old)
+        await indexer.run_scan()
+        vault.available = False
+        vault.trips.clear()
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            await indexer.handle_incremental_changes({
+                ("file_closed", changed), ("file_closed", deleted),
+            })
+            assert len(vault.trips) == 2
+            assert vault.trips[0] in [("stat", changed), ("stat", deleted)]
+            assert vault.trips[1] == ("probe", ROOT)
+            assert indexer.deferred_retry_in() == 30
+            assert not indexer._deferred_files
+            vault.trips.clear()
+            for _ in range(20):
+                await indexer.handle_incremental_changes({("file_closed", changed)})
+                await indexer.retry_deferred_files()
+            assert not vault.trips
+            assert len(await indexer.db_manager.get_all_tracks()) == 2
+            for expected in (60, 120, 240, 300, 300):
+                now[0] += indexer.deferred_retry_in()
+                vault.trips.clear()
+                await indexer.retry_deferred_files()
+                assert vault.trips == [("probe", ROOT)]
+                assert indexer.deferred_retry_in() == expected
+            assert len([r for r in caplog.records if r.levelno >= logging.WARNING]) == 1
+
+        # No notification announces these additions/deletions. A same-size,
+        # timestamp-preserving edit still needs the remembered write event.
+        vault.nodes[changed].data = new
+        vault.remove(deleted)
+        added = vault.add(f"{ROOT}/Unreported Album/new.flac", old)
+        vault.available = True
+        now[0] += indexer.deferred_retry_in()
+        vault.trips.clear()
+        if manual_scan:
+            await indexer.run_scan()  # An explicit scan can discover recovery early.
+        await indexer.retry_deferred_files()
+        tracks = {row["file_path"]: row for row in await indexer.db_manager.get_all_tracks()}
+        assert set(tracks) == {changed, added}
+        assert tracks[changed]["title"] == "New"
+        assert ("listdir", ROOT) in vault.trips
+        assert ROOT not in indexer._source_retries
+        vault.trips.clear()
+        await indexer.retry_deferred_files()
+        assert not vault.trips  # Recovery owes exactly one full source scan.
+
+    @pytest.mark.asyncio
+    async def test_pending_upload_absorbs_chunk_events_without_restarting_its_timer(
+        self, library, tmp_path, caplog
+    ):
+        indexer, vault, _ = library
+        track = vault.add(f"{ROOT}/upload.flac", _flac(tmp_path, {"title": "Upload"}))
+        vault.failing[("open", track)] = PermissionError("still uploading")
+        await indexer.handle_incremental_changes({("file_closed", track)})
+        deadline = indexer._deferred_files[track]
+        assert ROOT not in indexer._source_retries  # A readable root is not an outage.
+        vault.trips.clear()
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            for _ in range(100):
+                await indexer.handle_incremental_changes({("file_closed", track)})
+        assert not vault.trips  # No stat, read, cleanup or root probe per chunk.
+        assert not caplog.records
+        assert indexer._deferred_files[track] == deadline
+        del vault.failing[("open", track)]
+        indexer._deferred_files[track] = 0
+        await indexer.retry_deferred_files()
+        assert (await indexer.db_manager.get_all_tracks())[0]["file_path"] == track
+        assert track not in indexer._deferred_files
+
+    @pytest.mark.asyncio
+    async def test_growing_upload_keeps_one_check_even_when_a_directory_scan_arrives(
+        self, library, tmp_path, monkeypatch
+    ):
+        import kalinka_plugin_localfiles.indexer.indexer as module
+
+        indexer, vault, config = library
+        config.quiescence_seconds = 5
+        track = vault.add(f"{ROOT}/upload.flac", _flac(tmp_path, {"title": "Upload"}))
+        original = vault.nodes[track].data
+
+        async def next_chunk(delay):
+            vault.nodes[track].data += b"another chunk"
+            vault.nodes[track].mtime_ns += 1000000000
+
+        with monkeypatch.context() as patch:
+            patch.setattr(module.asyncio, "sleep", next_chunk)
+            await indexer.handle_incremental_changes({("file_closed", track)})
+        deadline = indexer._deferred_files[track]
+        vault.trips.clear()
+        for _ in range(100):
+            await indexer.handle_incremental_changes({("file_closed", track)})
+        assert not vault.trips
+        await indexer.handle_incremental_changes({("dir_added", ROOT)})
+        assert not _audio_trips(vault, "open")
+        assert indexer._deferred_files[track] == deadline
+        assert not await indexer.db_manager.get_all_tracks()
+        config.quiescence_seconds = 0
+        vault.nodes[track].data = original
+        indexer._deferred_files[track] = 0
+        await indexer.retry_deferred_files()
+        assert (await indexer.db_manager.get_all_tracks())[0]["file_path"] == track
+
+    @pytest.mark.asyncio
+    async def test_outage_does_not_block_a_healthy_nested_source(self, library, tmp_path):
+        indexer, vault, _ = library
+        nested = ROOT + "/Other source"
+        healthy = VaultStorage()
+        indexer.music_folders = [ROOT, nested]
+        indexer.storage = StorageResolver([vault], roots={ROOT: vault, nested: healthy})
+        indexer.artwork_resolver.storage = indexer.storage
+        data = _flac(tmp_path, {"title": "A"})
+        unavailable = vault.add(f"{ROOT}/a.flac", data)
+        available = healthy.add(f"{nested}/b.flac", data)
+        vault.available = False
+        await indexer.handle_incremental_changes({
+            ("file_closed", unavailable), ("file_closed", available),
+        })
+        assert [row["file_path"] for row in await indexer.db_manager.get_all_tracks()] == [available]
+        assert ROOT in indexer._source_retries
+        assert nested not in indexer._source_retries
+        assert vault.trips == [("stat", unavailable), ("probe", ROOT)]
+
+    @pytest.mark.asyncio
+    async def test_removing_a_directory_checks_only_its_descendants(self, library, tmp_path):
+        indexer, vault, _ = library
+        removed = vault.add(f"{ROOT}/Album/a.flac", _flac(tmp_path, {"title": "A"}))
+        kept = vault.add(f"{ROOT}/Album Two/b.flac", _flac(tmp_path, {"title": "B"}))
+        await indexer.run_scan()
+        vault.remove(removed)
+        vault.trips.clear()
+
+        await indexer.handle_incremental_changes({("path_removed", f"{ROOT}/Album")})
+
+        assert [t["file_path"] for t in await indexer.db_manager.get_all_tracks()] == [kept]
+        assert kept not in _audio_trips(vault, "stat", "open")
+
+    @pytest.mark.asyncio
+    async def test_an_offline_notification_does_not_delete_tracks(self, library, tmp_path):
+        indexer, vault, _ = library
+        track = vault.add(f"{ROOT}/a.flac", _flac(tmp_path, {"title": "A"}))
+        await indexer.run_scan()
+        vault.available = False
+
+        await indexer.handle_incremental_changes({("path_removed", track)})
+
+        assert [t["file_path"] for t in await indexer.db_manager.get_all_tracks()] == [track]
+
+    @pytest.mark.asyncio
+    async def test_rename_keeps_identity_before_scoped_cleanup(self, library, tmp_path):
+        indexer, vault, _ = library
+        old = vault.add(f"{ROOT}/Before/a.flac", _flac(tmp_path, {"title": "A"}))
+        await indexer.run_scan()
+        before = (await indexer.db_manager.get_all_tracks())[0]
+        new = f"{ROOT}/After/a.flac"
+        vault.rename(old, new)
+
+        await indexer.handle_incremental_changes({
+            ("path_removed", f"{ROOT}/Before"), ("dir_added", f"{ROOT}/After"),
+        })
+
+        after = (await indexer.db_manager.get_all_tracks())[0]
+        assert after["file_path"] == new
+        assert after["id"] == before["id"]
+
+    @pytest.mark.asyncio
+    async def test_write_notification_overrides_unchanged_size_and_timestamp(self, library, tmp_path):
+        indexer, vault, _ = library
+        old = _flac(tmp_path, {"title": "Old"})
+        new = _flac(tmp_path, {"title": "New"})
+        assert len(old) == len(new)
+        track = vault.add(f"{ROOT}/a.flac", old)
+        await indexer.run_scan()
+        vault.nodes[track].data = new
+
+        await indexer.handle_incremental_changes({("file_closed", track)})
+
+        assert (await indexer.db_manager.get_all_tracks())[0]["title"] == "New"
+
+    @pytest.mark.asyncio
+    async def test_locked_upload_is_retried_without_another_notification(self, library, tmp_path):
+        indexer, vault, _ = library
+        track = vault.add(f"{ROOT}/a.flac", _flac(tmp_path, {"title": "A"}))
+        vault.failing[("open", track)] = PermissionError("writer holds the file")
+        await indexer.handle_incremental_changes({("file_closed", track)})
+        assert not await indexer.db_manager.get_all_tracks()
+        assert track in indexer._deferred_files
+
+        del vault.failing[("open", track)]
+        indexer._deferred_files[track] = 0
+        await indexer.retry_deferred_files()
+
+        assert (await indexer.db_manager.get_all_tracks())[0]["file_path"] == track
+
+    @pytest.mark.asyncio
+    async def test_write_and_rename_in_one_batch_keep_the_original_identity(self, library, tmp_path):
+        indexer, vault, _ = library
+        old = vault.add(f"{ROOT}/old.flac", _flac(tmp_path, {"title": "Old"}))
+        await indexer.run_scan()
+        before = (await indexer.db_manager.get_all_tracks())[0]
+        new = f"{ROOT}/new.flac"
+        vault.rename(old, new)
+        vault.nodes[new].data = _flac(tmp_path, {"title": "New"})
+
+        await indexer.handle_incremental_changes({
+            ("path_removed", old), ("file_moved", new), ("file_closed", new),
+        })
+
+        after, = await indexer.db_manager.get_all_tracks()
+        assert after["id"] == before["id"]
+        assert after["title"] == "New"
+        assert after["file_path"] == new
