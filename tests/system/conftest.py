@@ -23,7 +23,7 @@ import pytest
 from recordings import ART_OF_FUGUE, GOLDBERG, PlantedTrack, plant
 from samba import SambaShare
 from server_instance import KalinkaInstance
-from waiting import wait_until
+from waiting import scan_finished, wait_until
 
 logger = logging.getLogger("system-test")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -193,9 +193,10 @@ def library(kalinka: KalinkaInstance, planted: PlantedLibrary) -> dict:
         progress=lambda: f"{len(expected & set(kalinka.tracks()))}/{len(expected)} indexed",
     )
     wait_until(
-        lambda: "indexing" not in kalinka.indexer_status(),
+        lambda: scan_finished(kalinka.indexer_status().get("indexing")),
         timeout=INDEX_TIMEOUT_S,
         what="the scan to finish",
+        progress=lambda: str(kalinka.indexer_status().get("indexing")),
     )
     wait_until(
         lambda: _stage_settled(kalinka.indexer_status().get("enrichment")),
