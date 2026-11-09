@@ -1,0 +1,31 @@
+# Raspberry Pi OS custom.toml
+# This file is used for the initial setup of the system on the first boot, if
+# it's present in the boot partition of the installation.
+config_version = 1
+
+[system]
+hostname = "livingroom"
+
+[user]
+name = "listener"
+password = "$5$fixturesalt$J0a1n2u3a4r5y6f7i8x9t0u1r2e3h4a5s6h7f8i9x0A1B"
+password_encrypted = true
+
+[ssh]
+enabled = true
+password_authentication = false
+authorized_keys = [
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMTAXUCow+vA6wxO3P9dTplkpfu14khgcRqSqhZmi/vX listener@laptop",
+  "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAgFjZ6rLZ6SgF8jairlWgsyzkIY3gPcRTdoKDgxVZEx8Q= listener@phone",
+]
+
+[wlan]
+ssid = "Home Network"
+password = "71b81377d300cb6b621dcf5fcef399c47b73d1bf524901aff20f0c3a8c87223a"
+password_encrypted = true
+hidden = false
+country = "GB"
+
+[locale]
+keymap = "gb"
+timezone = "Europe/London"
