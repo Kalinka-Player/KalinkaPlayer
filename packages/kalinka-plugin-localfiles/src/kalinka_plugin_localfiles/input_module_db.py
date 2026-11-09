@@ -957,7 +957,7 @@ class LocalFilesInputModuleDb:
                 JOIN albums a ON t.album_id = a.id
                 JOIN artists ar ON t.artist_id = ar.id
                 WHERE {where}
-                ORDER BY t.title
+                ORDER BY t.title, t.id
                 LIMIT ? OFFSET ?
             """,
                 (*params, limit, offset),
