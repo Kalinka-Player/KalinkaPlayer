@@ -1618,10 +1618,11 @@ class LocalFilesInputModule(InputModule):
 
     def _create_track_metadata(self, track: Dict) -> Track:
         """Create a Track object from database data"""
+        loose = track["album_id"] == LOOSE_TRACKS_ID
         # Create album object
         album = Album(
             id=album_id(track["album_id"]),
-            title=track["album_title"],
+            title=SINGLES_TITLE if loose else track["album_title"],
             year=plausible_year(track.get("album_year")),
             artist=Artist(
                 id=artist_id(track["artist_id"]),
@@ -1643,7 +1644,7 @@ class LocalFilesInputModule(InputModule):
             album_cover = self._get_album_image_urls(track["album_id"])
         own_cover = self._get_track_image_urls(track)
         # A single has no album cover; older clients read its own from there.
-        if track["album_id"] == "unknown_album":
+        if loose:
             album_cover = album_cover or own_cover
         if album_cover:
             album.image = album_cover
