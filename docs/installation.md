@@ -35,7 +35,7 @@ Kalinka needs a 64-bit system. Playback and the library run in 512 MB of memory;
 - a microSD card or USB SSD of 8 GB or more. **Everything on it is erased.** Kalinka uses the whole card, so take a bigger one if you will keep music on it;
 - a computer with a card reader;
 - a DAC HAT or a USB DAC. The Pi's HDMI and, on a Pi 3 or 4, its headphone socket work too;
-- a network cable, if you can. Wi-Fi can be set up after the first start.
+- a network cable, if you can. Otherwise give Imager your Wi-Fi in step 5, or set it up after the first start.
 
 #### 1. Download the image
 
@@ -54,18 +54,18 @@ The file is about 450 MB. Do not unpack it.
 2. In Imager, choose your Pi model.
 3. For the operating system, scroll to the bottom of the list, choose **Use custom**, and pick the file you downloaded.
 4. Choose your card. Check its name and size: whatever you pick is erased.
-5. If Imager offers to set a user name, Wi-Fi or SSH, skip it. The Kalinka image does not read those settings.
+5. When Imager offers to customise the card, fill in your Wi-Fi, a host name, a login and your time zone here, and turn on **SSH** if you want to log in to the streamer. Kalinka applies them at the first start, as [Settings on the card](#settings-on-the-card) describes. You can also leave them out.
 6. Write, and wait until Imager has finished verifying.
 
-[balenaEtcher](https://etcher.balena.io/) works too: **Flash from file**, **Select target**, **Flash!**
+[balenaEtcher](https://etcher.balena.io/) works too: **Flash from file**, **Select target**, **Flash!** It offers none of these settings.
 
-The image reads nothing from the card, so there is nothing to change on it: Wi-Fi and a DAC HAT are set up after the first start.
+There is nothing else to change on the card. A DAC HAT without an ID chip is set up after the first start, and so is Wi-Fi if you did not give it to Imager.
 
 #### 3. Switch it on
 
 Put the card in the Pi, connect your DAC and the network cable, and plug in the power. The first start takes a couple of minutes.
 
-Then [connect it to your network](#connect-your-streamer-to-the-network) if it has no cable, or go straight to [Open Kalinka](#open-kalinka).
+Then [connect it to your network](#connect-your-streamer-to-the-network) if it has neither a cable nor the Wi-Fi you gave Imager, or go straight to [Open Kalinka](#open-kalinka).
 
 ### B. PC image
 
@@ -74,7 +74,7 @@ This turns a spare PC into a Kalinka player. You write the image to a USB stick 
 **You need:** a 64-bit Intel or AMD PC, a USB stick or disk of 8 GB or more (**it is erased**; a small USB SSD lasts longer than a cheap stick), and a network cable if you can.
 
 1. **Download** the file that ends in **`-amd64.img.xz`** from the [image releases](https://github.com/Kalinka-Player/KalinkaPlayer/releases?q=kalinka-image-v&expanded=true). Do not unpack it.
-2. **Write it** to the USB stick with [balenaEtcher](https://etcher.balena.io/) or Raspberry Pi Imager (**Use custom**, as in [option A](#2-write-it-to-the-card)).
+2. **Write it** to the USB stick with [balenaEtcher](https://etcher.balena.io/) or Raspberry Pi Imager (**Use custom**, as in [option A](#2-write-it-to-the-card), but without its settings: the PC image does not support them).
 3. **Start the PC from the stick.** Switch the PC on, press the boot menu key straight away (usually F12, F11, F10, F8 or Esc) and choose the USB drive. Secure Boot can stay on. To start from it every time, put USB first in the boot order.
 4. The first start takes a couple of minutes. Then [connect it to your network](#connect-your-streamer-to-the-network) if it has no cable, or go straight to [Open Kalinka](#open-kalinka).
 
@@ -143,7 +143,7 @@ If the computer runs a firewall, let your home network reach TCP port 8000 (and 
 <summary>Starting from a blank Raspberry Pi</summary>
 
 1. In [Raspberry Pi Imager](https://www.raspberrypi.com/software/), choose your Pi, then **Raspberry Pi OS (other)** → **Raspberry Pi OS Lite (64-bit)**, then your card.
-2. When Imager offers settings, set a host name (for example `kalinka`), a user name and password, your Wi-Fi if you need it, and turn on **SSH**. Unlike with the Kalinka image, this is what you want here.
+2. When Imager offers settings, set a host name (for example `kalinka`), a user name and password, your Wi-Fi if you need it, and turn on **SSH**.
 3. Write the card, start the Pi, and log in from your computer: `ssh <your-user>@kalinka.local`.
 4. For a DAC HAT without an ID chip, set it up as its maker describes. This is usually one `dtoverlay=` line in `/boot/firmware/config.txt`, followed by a restart. With the [supervisor](#the-supervisor) installed, the app can do this instead.
 5. Run the install command above.
@@ -196,6 +196,8 @@ To upgrade, install the newer `.rpm` the same way.
 
 **With a network cable**, there is nothing to do: plug it into your router before switching the streamer on.
 
+**With the Wi-Fi you gave Raspberry Pi Imager**, a Raspberry Pi joins it by itself at its first start. If it cannot, it opens the setup network below instead, two or three minutes after it starts.
+
 **For Wi-Fi**, a streamer with no network opens a temporary Wi-Fi network of its own, about a minute after it starts. A streamer that was connected before waits about five minutes after losing its network. Use any phone or laptop:
 
 1. In its Wi-Fi settings, join **`Kalinka-Setup-XXXX`**. The four characters after the dash differ from streamer to streamer.
@@ -214,10 +216,10 @@ Both ways need Wi-Fi in the streamer, and Bluetooth needs Bluetooth in it too. E
 
 **With the Kalinka app.** Install it on a phone or computer on the same network; the [app's page](https://github.com/Kalinka-Player/KalinkaAI#-install) says which file to download for Android, Windows or Linux. The app finds the server by itself. A new server is called **My Kalinka Service**.
 
-**With a web browser.** Open `http://kalinka.local:8000` for a streamer started from an image. A second one on the same network becomes `kalinka-2.local`. Otherwise open `http://<address>:8000`, for example `http://192.168.1.50:8000`. Type the `http://` and the `:8000`. To find the address:
+**With a web browser.** Open `http://kalinka.local:8000` for a streamer started from an image, or the host name you gave Raspberry Pi Imager in place of `kalinka`, as in `http://livingroom.local:8000`. A second one called `kalinka` on the same network becomes `kalinka-2.local`. Otherwise open `http://<address>:8000`, for example `http://192.168.1.50:8000`. Type the `http://` and the `:8000`. To find the address:
 
 - the Kalinka app shows it under the server's name;
-- your router's list of connected devices shows the streamer as **kalinka**;
+- your router's list of connected devices shows the streamer as **kalinka**, or by the host name you gave Imager;
 - a screen plugged into a Raspberry Pi streamer shows it above the login prompt, unless it runs the now-playing display;
 - on a computer where you ran the install command, `hostname -I` prints it.
 
@@ -233,7 +235,7 @@ Kalinka can read music from several places at once. Choose them during setup, an
 - Kalinka looks for new and changed music on a share every 15 minutes. Set **Scan interval** to 0 in the **My Library** settings to have it look only when Kalinka starts and when you choose **Rescan library**.
 - Recycle bins, snapshots, thumbnail folders and hidden folders are skipped.
 
-**Copied onto the streamer.** Every installation has a music folder, `/srv/kalinka/music`, that Kalinka reads from the start. Copy into it with a program that speaks **SFTP**. On an image you need a login first: create one with **SSH access** on [the control page](#the-control-page).
+**Copied onto the streamer.** Every installation has a music folder, `/srv/kalinka/music`, that Kalinka reads from the start. Copy into it with a program that speaks **SFTP**. On an image you need a login first: the one you gave Raspberry Pi Imager, with SSH on, or one you create with **SSH access** on [the control page](#the-control-page).
 
 | On | Use |
 |---|---|
@@ -333,7 +335,22 @@ The page answers anyone on your home network, over plain HTTP, and nobody outsid
 
 ## Settings on the card
 
-The images read nothing from the card or the stick, and start with no login and no Wi-Fi. If Raspberry Pi Imager offers settings, skip them. Everything is set up after the first start:
+The Raspberry Pi images apply what Raspberry Pi Imager writes onto the card, at the first start:
+
+- the host name, which also names the streamer on your network as `<name>.local`;
+- your Wi-Fi network, hidden or not, with its country;
+- a login with administrator rights: your user name and password, your SSH public keys, or both. SSH is switched on if you asked for it. With **public-key authentication only**, that login takes no password over SSH. Call it `kalinka-admin`, and it is the login the control page's **SSH access** sets a password for;
+- the time zone.
+
+The keyboard layout is not used, as there is no keyboard to type on, and neither is Raspberry Pi Connect.
+
+Then the files Imager wrote are overwritten and removed: they hold your Wi-Fi and login passwords, on a partition anyone with the card can read. A setting that cannot be used is left out and the rest still apply; with a login, `journalctl -u kalinka-card-settings` says what was left out and why. If the streamer cannot join the Wi-Fi you gave, it opens the [setup network](#connect-your-streamer-to-the-network) instead, two or three minutes after it starts.
+
+A `custom.toml` you write onto the card yourself, in the format Raspberry Pi OS reads (`config_version = 1`, with `[system]`, `[user]`, `[ssh]`, `[wlan]` and `[locale]` tables), is applied the same way at the next start. A login given only SSH keys can log in, but cannot use `sudo`, which asks for a password.
+
+Images from the `kalinka-image-v4.2.0` release and older read none of these settings, and a card Imager customised may not finish their first start: write those without Imager's settings, or take a newer image.
+
+Without Imager's settings, and always on the PC image, which does not support them, the streamer starts with no login and no Wi-Fi, and everything is set up after the first start:
 
 - Wi-Fi, over the [setup network or Bluetooth](#connect-your-streamer-to-the-network);
 - a login, with **SSH access** on [the control page](#the-control-page);

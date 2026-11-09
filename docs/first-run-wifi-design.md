@@ -8,9 +8,9 @@
 >
 > - **The images** are all Debian 13, with no DietPi: the Pi images are built
 >   with rpi-image-gen, the PC image with debootstrap
->   ([the image README](../packages/kalinka-image/README.md)). They read
->   nothing from the card or the disk. Wi-Fi, a login and the time zone are
->   set up after the first start.
+>   ([the image README](../packages/kalinka-image/README.md)). Wi-Fi, a
+>   login and the time zone are set up after the first start, or on the Pi
+>   images taken from Raspberry Pi Imager's settings on the card.
 > - **Bluetooth LE setup (path B)** shipped inside the Go supervisor, not as
 >   the Python daemon and `wifi.sh` of §5 ([BLE provisioning](ble-provisioning.md),
 >   [Kalinka Supervisor](supervisor.md)). It runs the supervisor's
@@ -19,10 +19,12 @@
 >   backend serves only a DietPi system Kalinka was installed on by hand.
 > - **The hotspot (path C)**, which §2.3 and §8 decide against, shipped in the
 >   same supervisor.
-> - **Imager customisation (path A)** was not built. §4's applier writes
->   DietPi's inputs, so it no longer applies; honouring Imager on the
->   rpi-image-gen images is
->   [issue 193](https://github.com/Kalinka-Player/KalinkaPlayer/issues/193).
+> - **Imager customisation (path A)** was not built as §4 describes, since
+>   its applier writes DietPi's inputs. The rpi-image-gen images apply
+>   Imager's `custom.toml` or `firstrun.sh` themselves, before the network
+>   starts, and never run the script
+>   ([issue 193](https://github.com/Kalinka-Player/KalinkaPlayer/issues/193),
+>   [the image README](../packages/kalinka-image/README.md#raspberry-pi-imagers-settings)).
 > - **Bluetooth playback (§7)** was not built.
 >
 > Wherever the sections below mention DietPi, `dietpi.txt`,
