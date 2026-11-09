@@ -3,7 +3,7 @@ import re
 import shutil
 import sqlite3
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import List, Dict, Optional, Any, Sequence, Tuple
 import time
 from functools import lru_cache
@@ -88,6 +88,22 @@ class _KindQuery:
     genre_predicate: str
 
 
+SINGLES_TITLE = "Singles & loose tracks"
+
+#: An album's title as the app shows it: the loose-track group goes by
+#: :data:`SINGLES_TITLE`, not the placeholder its row stores. Requires the row
+#: source to alias ``albums`` as ``a``.
+ALBUM_TITLE = (
+    f"CASE WHEN a.id = 'unknown_album' THEN '{SINGLES_TITLE}' ELSE a.title END"
+)
+
+#: Whether an album is listed: the loose-track group only while it holds a
+#: track. Requires the row source to alias ``albums`` as ``a``.
+LISTED_ALBUM = (
+    "(a.id != 'unknown_album' OR EXISTS"
+    " (SELECT 1 FROM tracks t WHERE t.album_id = a.id))"
+)
+
 #: Artist row plus the albums credited to them, counted in the same statement
 #: so a page of artists costs one query rather than one per artist. Requires
 #: the row source to alias ``artists`` as ``ar``.
@@ -114,7 +130,7 @@ KINDS: Dict[str, _KindQuery] = {
         ),
         id_expr="t.id",
         ts_expr="t.last_updated",
-        text_fields=("fold(t.title)", "fold(a.title)", "fold(ar.name)"),
+        text_fields=("fold(t.title)", f"fold({ALBUM_TITLE})", "fold(ar.name)"),
         genre_predicate="has_genre(a.genre, ?)",
     ),
     "album": _KindQuery(
@@ -122,7 +138,12 @@ KINDS: Dict[str, _KindQuery] = {
         source="albums a JOIN artists ar ON a.artist_id = ar.id",
         id_expr="a.id",
         ts_expr="a.last_updated",
-        text_fields=("fold(a.title)", "fold(ar.name)"),
+        text_fields=(
+            f"fold({ALBUM_TITLE})",
+            # The loose-track group shows no artist, so its placeholder's
+            # name finds nothing.
+            "fold(CASE WHEN a.id = 'unknown_album' THEN NULL ELSE ar.name END)",
+        ),
         genre_predicate="has_genre(a.genre, ?)",
     ),
     "artist": _KindQuery(
@@ -148,8 +169,6 @@ KINDS: Dict[str, _KindQuery] = {
 }
 
 RECENT_KINDS = ("album", "track", "artist")
-
-SINGLES_TITLE = "Singles & loose tracks"
 
 
 def folder_prefix(folder: str) -> str:
@@ -252,7 +271,7 @@ _NESTED = """
 #: its music source, so a folder found by name keeps everything in it.
 _FOLDER_TEXT_FIELDS = (
     "fold(t.title)",
-    "fold(a.title)",
+    f"fold({ALBUM_TITLE})",
     "fold(ar.name)",
     "fold(substr(t.file_path, :root_start))",
 )
@@ -913,9 +932,7 @@ class LocalFilesInputModuleDb:
         self, query: str, offset: int = 0, limit: int = 50
     ) -> Tuple[List[Dict], int]:
         """Search tracks by query (every token must match title/album/artist)"""
-        where, params = self._token_where(
-            query, ("fold(t.title)", "fold(a.title)", "fold(ar.name)")
-        )
+        where, params = self._token_where(query, KINDS["track"].text_fields)
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
@@ -954,9 +971,8 @@ class LocalFilesInputModuleDb:
         self, query: str, offset: int = 0, limit: int = 50
     ) -> Tuple[List[Dict], int]:
         """Search albums by query (every token must match title/artist)"""
-        where, params = self._token_where(
-            query, ("fold(a.title)", "fold(ar.name)")
-        )
+        where, params = self._token_where(query, KINDS["album"].text_fields)
+        where = f"({where}) AND {LISTED_ALBUM}"
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
@@ -979,7 +995,7 @@ class LocalFilesInputModuleDb:
                 FROM albums a
                 JOIN artists ar ON a.artist_id = ar.id
                 WHERE {where}
-                ORDER BY a.title
+                ORDER BY fold({ALBUM_TITLE}), a.id
                 LIMIT ? OFFSET ?
             """,
                 (*params, limit, offset),
@@ -1041,22 +1057,13 @@ class LocalFilesInputModuleDb:
         filter: Optional[ListingFilter] = None,
     ) -> Tuple[List[Dict], int]:
         """The loose-track umbrella first when populated, then named albums A–Z."""
-        query = replace(
-            KINDS["album"],
-            text_fields=(
-                "fold(CASE WHEN a.id = 'unknown_album'"
-                f" THEN '{SINGLES_TITLE}' ELSE a.title END)",
-                "fold(ar.name)",
-            ),
-        )
         return self._list_kind(
-            query,
+            KINDS["album"],
             offset,
             limit,
             filter,
             "CASE WHEN a.id = 'unknown_album' THEN 0 ELSE 1 END, fold(a.title)",
-            "(a.id != 'unknown_album' OR EXISTS"
-            " (SELECT 1 FROM tracks t WHERE t.album_id = a.id))",
+            LISTED_ALBUM,
         )
 
     def _list_kind(
