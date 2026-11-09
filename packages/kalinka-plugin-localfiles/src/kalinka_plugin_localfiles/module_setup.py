@@ -243,7 +243,7 @@ async def _probe_roots(
 
 
 _NOT_A_FOLDER = (
-    "only folders on the server go here; add a network share as a music "
+    "only folders on this streamer go here; add a network share as a music "
     "source in an up-to-date Kalinka app"
 )
 
@@ -304,7 +304,7 @@ def _misspelling(
             return "location.path", (
                 _NOT_A_FOLDER
                 if as_folder
-                else "a local source is a folder on the server"
+                else "a local source is a folder on this streamer"
             )
         return None
 

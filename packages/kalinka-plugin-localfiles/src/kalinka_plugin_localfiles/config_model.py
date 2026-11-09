@@ -292,7 +292,7 @@ class LocalLocation(BaseModel):
         title="Folder",
         json_schema_extra={
             "help": (
-                "Use the path on the server, even when you control Kalinka "
+                "Use the path on this streamer, even when you control Kalinka "
                 "from another device."
             ),
             "widget": "path",
@@ -358,8 +358,8 @@ class SmbOptions(BaseModel):
         default=False,
         title="Require encryption",
         description=(
-            "Encrypt share traffic. Needs SMB3 on the server and costs CPU on "
-            "this device."
+            "Encrypt share traffic. Needs a share that offers SMB3 and costs "
+            "CPU on this streamer."
         ),
     )
 
@@ -369,8 +369,8 @@ class LocalSource(ConfigRecord):
 
     kind: Literal["local"] = Field(
         default="local",
-        title="Folder on the server",
-        description="A disk, or a share mounted on the server",
+        title="Folder on this streamer",
+        description="A disk, or a share mounted on this streamer",
         json_schema_extra={"icon": "folder_outlined"},
     )
     location: LocalLocation = Field(default_factory=LocalLocation, title="Location")
@@ -454,7 +454,7 @@ class LocalFilesConfig(ModuleConfig):
         default="localfiles",
         title=DISPLAY_NAME,
         description=(
-            "Music on the server or a network share, indexed into a browsable "
+            "Music on this streamer or a network share, indexed into a browsable "
             "library with artwork and metadata filled in online."
         ),
         frozen=True,
@@ -469,7 +469,7 @@ class LocalFilesConfig(ModuleConfig):
         title="Music folders",
         json_schema_extra={
             "help": (
-                "A folder on the server, including a disk or share mounted "
+                "A folder on this streamer, including a disk or share mounted "
                 "on it. Network shares are added as music sources in an "
                 "up-to-date Kalinka app."
             ),
@@ -485,7 +485,7 @@ class LocalFilesConfig(ModuleConfig):
         default_factory=lambda: [_starter_folder()],
         title="Music sources",
         json_schema_extra={
-            "help": "Folders on the server and shares on the network",
+            "help": "Folders on this streamer and shares on the network",
             "replaces": ["music_folders"],
             "status": "storage.status_view",
             **_PRIVATE,
