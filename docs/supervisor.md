@@ -110,23 +110,29 @@ failed while it was disabled. Hardware blocks are reported and left intact.
 
 A radio that fails says why. Each failed recovery attempt logs `Radio recovery
 failed` with `wifi:` or `bluetooth:` and the reason, and every `Bluetooth setup
-unavailable; retrying` line carries BlueZ's or the bus's reason. Clients get
-one fixed code per radio in `radio_problems`, in `GET /v1/setup` and in the
-control API's `/v1/status`, and the control page shows it beside nearby setup:
+unavailable; retrying` line carries BlueZ's or the bus's reason. A streamer
+without the `--adapter` Bluetooth adapter in `/sys/class/bluetooth`, as a PC or
+a VM usually is, logs that line once, not every ten seconds. It still looks
+every ten seconds, so a USB adapter plugged in later comes up, and one
+unplugged again is logged again. Clients get one fixed code per radio in
+`radio_problems`, in `GET /v1/setup` and in the control API's `/v1/status`, and
+the control page shows it beside nearby setup:
 
 | Code | Meaning |
 |---|---|
 | `radio_blocked` | The radio is switched off in software and stayed off: by rfkill, or for Wi-Fi by NetworkManager refusing to switch it on |
 | `radio_hard_blocked` | A hardware switch blocks the radio |
-| `unavailable` | Anything else; the log has the detail |
+| `no_adapter` | Bluetooth only: the streamer has no adapter by the `--adapter` name (`hci0` by default) |
+| `unavailable` | Anything else, such as an adapter BlueZ cannot drive; the log has the detail |
 
 A radio is listed from its last failed attempt, by recovery, **Enable Wi-Fi**
 or a Bluetooth setup session, until it next works: until recovery or Enable
 Wi-Fi succeeds for Wi-Fi, and until recovery clears its block or nearby setup
 advertises for Bluetooth. Clearing a block leaves an `unavailable` Bluetooth
-listed, since only advertising shows BlueZ works. A cancelled or `busy`
-attempt changes nothing, and neither does bluetoothd restarting; an attempt
-that runs out of time is `unavailable`.
+listed, since only advertising shows BlueZ works; `no_adapter` goes as soon as
+BlueZ opens the adapter, even while nearby setup is waiting. A cancelled or
+`busy` attempt changes nothing, and neither does bluetoothd restarting; an
+attempt that runs out of time is `unavailable`.
 
 Join the hotspot in the phone/computer's Wi-Fi settings. DHCP and local DNS
 trigger the operating system's captive Wi-Fi activation page, which opens

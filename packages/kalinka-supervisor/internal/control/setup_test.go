@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -127,6 +128,7 @@ func TestStatusNamesTheRadioThatFailed(t *testing.T) {
 		{"nearby setup off", nil, `"radio_problems":{}`},
 		{"every radio works", setupFake{m}, `"radio_problems":{}`},
 		{"Bluetooth switched off", problemSetup{setupFake{m}, map[string]string{"bluetooth": "radio_blocked"}}, `"radio_problems":{"bluetooth":"radio_blocked"}`},
+		{"no Bluetooth adapter", problemSetup{setupFake{m}, map[string]string{"bluetooth": "no_adapter"}}, `"radio_problems":{"bluetooth":"no_adapter"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := NewHandler(coord, HandlerConfig{CorePort: func() int { return 8000 }, Setup: func() string { return "running" }, NetworkSetup: tc.setup})
@@ -134,6 +136,29 @@ func TestStatusNamesTheRadioThatFailed(t *testing.T) {
 				t.Fatalf("status = %s, want %s", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestThePageWordsEveryRadioProblem(t *testing.T) {
+	b, err := web.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	table := regexp.MustCompile(`(?s)\nconst RADIO_PROBLEMS = \{\n(.*?)\n\};`).FindSubmatch(b)
+	if table == nil {
+		t.Fatal("app.js has no RADIO_PROBLEMS table")
+	}
+	words := map[string]string{}
+	for _, entry := range regexp.MustCompile(`(?m)^\s*(\w+): "([^"]+)",$`).FindAllSubmatch(table[1], -1) {
+		words[string(entry[1])] = string(entry[2])
+	}
+	for _, code := range []string{"radio_blocked", "radio_hard_blocked", "no_adapter", "unavailable"} {
+		if words[code] == "" {
+			t.Errorf("the page has no words for %s: %q", code, words)
+		}
+	}
+	if words["no_adapter"] != "has no adapter" {
+		t.Errorf("the page reads Bluetooth %s", words["no_adapter"])
 	}
 }
 
