@@ -280,10 +280,7 @@ class MetadataEnricher:
             self.running = True
 
         try:
-            # Idle-path logs demoted to DEBUG: the indexer sends "enrich"
-            # after every scheduled scan (default every 5 min), so on a
-            # quiescent library the user used to see 11 INFO lines of
-            # nothing-to-do noise per pass.
+            # DEBUG: every scan ends in a pass, mostly with nothing to do.
             logger.debug("Starting enrichment process")
             await self.run_enrichment()
             logger.debug("Enricher process completed")
