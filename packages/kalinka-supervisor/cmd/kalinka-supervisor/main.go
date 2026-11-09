@@ -220,6 +220,10 @@ func run(ctx context.Context, o options, setupOn, apiOn bool) error {
 			Timezone:   timezone.NewSetter(simulated),
 			Now:        time.Now,
 		})
+		var powerSaving control.WiFiPowerSaving
+		if o.Backend == "nm" {
+			powerSaving = wifi.NewPowerSaving("/", simulated)
+		}
 		powerOffTimer := control.NewPowerOffTimer(controller, func() coreconf.Config {
 			cfg := core.Current()
 			cfg.Port = corePort()
@@ -233,16 +237,17 @@ func run(ctx context.Context, o options, setupOn, apiOn bool) error {
 			ServerIDFile:   o.IdentityFile,
 			RendererIDFile: o.rendererID,
 			// A simulated run shows every control, whatever the machine it runs on has installed.
-			CoreInstalled: func() bool { return simulated || coreconf.Installed("/") },
-			Soundcards:    cards,
-			Timezones:     timezone.New("/"),
-			CorePort:      corePort,
-			Setup:         setup.Phase,
-			Dashboard:     func(ctx context.Context) any { return board.Snapshot(ctx) },
-			Reinstalls:    reinstalls,
-			Removals:      removals,
-			EnableSSH:     controller.EnableSSH,
-			Simulated:     simulated,
+			CoreInstalled:   func() bool { return simulated || coreconf.Installed("/") },
+			Soundcards:      cards,
+			Timezones:       timezone.New("/"),
+			CorePort:        corePort,
+			Setup:           setup.Phase,
+			Dashboard:       func(ctx context.Context) any { return board.Snapshot(ctx) },
+			Reinstalls:      reinstalls,
+			Removals:        removals,
+			EnableSSH:       controller.EnableSSH,
+			WiFiPowerSaving: powerSaving,
+			Simulated:       simulated,
 		}))
 		defer binding.Close()
 	}

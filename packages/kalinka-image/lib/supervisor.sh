@@ -57,6 +57,7 @@ verify_supervisor() {
   in_chroot /usr/lib/kalinka-supervisor/kalinka-supervisor --version
   require_timezone_support
   [ -x "$ROOTFS/usr/lib/kalinka-supervisor/soundcard.sh" ] || die 'no sound card helper'
+  [ -f "$ROOTFS/usr/lib/NetworkManager/conf.d/kalinka-wifi-powersave.conf" ] || die 'no Wi-Fi power-saving default'
 }
 
 # Apart from verify_supervisor: rpi-image-gen writes config.txt and cmdline.txt only after the supervisor is in.

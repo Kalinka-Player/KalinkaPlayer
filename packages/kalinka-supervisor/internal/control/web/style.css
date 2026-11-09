@@ -140,6 +140,8 @@ body {
 .action h3 { margin: 0 0 2px; font: 500 16px/1.3 var(--sans); }
 .action p { margin: 0; font-size: 14px; color: var(--text-secondary); }
 .action .button { flex: none; min-width: 116px; }
+.powersave { margin-top: 16px; }
+.powersave + .notice { margin-top: 10px; }
 .tile {
   display: inline-flex; align-items: center; justify-content: center; flex: none;
   width: 44px; height: 44px; border-radius: 14px;

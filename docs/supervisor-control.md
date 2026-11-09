@@ -29,6 +29,10 @@ Open `http://<streamer>:8001/` in a browser. The page is built into the supervis
 binary and loads nothing from the internet, so it works offline and when
 Core's files are damaged. It follows the app's dark style.
 
+- **Network.** A link to network setup, **Enable Wi-Fi** for a radio that
+  was switched off, and, where NetworkManager runs the network and a wireless
+  interface exists, the **Wi-Fi power saving** row: the choice in force and a
+  button to switch it. See **Wi-Fi power saving** below.
 - **Status.** Whether Core is running, starting, stopped or failed, with a
   link to Kalinka itself while it runs. Notices explain anything in the way:
   - a running upgrade or reinstall;
@@ -83,6 +87,23 @@ streamer's identity. Success redirects back to the page with connection
 instructions; errors return the page with an explanation and empty password
 fields. `/info` and `/v1/actions/` are unchanged. Test and unprivileged runs
 simulate setup and label the result accordingly.
+
+**Wi-Fi power saving** is the other dashboard form, under the same rules:
+posted to `/` with `action=set_wifi_powersave`, the streamer's identity and
+`powersave` as `on` or `off`, from the dashboard's exact Origin, with no other
+field. The supervisor package turns Wi-Fi power saving off for every network
+the streamer joins, through a NetworkManager default: with it on, a Raspberry
+Pi's radio can stay associated yet pass traffic slowly or not at all. The row
+shows the choice in force. **Turn on** or **Turn off** writes the streamer's
+own choice to `/etc/NetworkManager/conf.d/kalinka-wifi-powersave.conf`, which
+shadows the package's default of the same name, has NetworkManager reread its
+configuration so the next activation of any saved network follows it, and
+switches every wireless interface over with `iw` at once. Success redirects
+back to the page, which says whether the running connection followed or only
+the next one will; a choice that could not be saved returns the page with an
+explanation. The row is absent where DietPi runs the network or the streamer
+has no wireless interface. See [Wi-Fi power saving](supervisor.md#wi-fi-power-saving)
+for the default and what it rests on.
 
 ## Trust model
 
@@ -638,6 +659,9 @@ belongs in that change's threat model.
   - the policy and the HTTP layer;
   - the page and its security headers;
   - SSH form validation, origin checks, action serialization, secret handling and the helper with simulated account/service tools;
+  - the Wi-Fi power-saving form against a fake switch, and the switch itself
+    against a staged streamer and a fake NetworkManager bus: the choice saved,
+    read back, applied with `iw`, and reported as saved only when it is not;
   - plugin removal: the package rules, the request file, the unit and its script against simulated apt, dpkg and systemctl;
   - the host and origin rules;
   - the systemd calls against a fake bus;

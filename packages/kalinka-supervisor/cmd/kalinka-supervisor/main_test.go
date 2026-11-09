@@ -191,24 +191,27 @@ func TestUnitRunsUnconditionally(t *testing.T) {
 	}
 }
 
-func TestUnitLetsNetworkManagerKeepTheCountry(t *testing.T) {
+func TestUnitLetsTheSupervisorWriteItsNetworkManagerFiles(t *testing.T) {
 	b, err := os.ReadFile("../../systemd/kalinka-supervisor.service")
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Dir(wifi.NewNetworkManager("wlan0", t.TempDir()).RegulatoryConf)
+	writable := map[string]bool{}
 	for _, line := range strings.Split(string(b), "\n") {
-		paths, ok := strings.CutPrefix(line, "ReadWritePaths=")
-		if !ok {
-			continue
-		}
-		for _, path := range strings.Fields(paths) {
-			if strings.TrimPrefix(path, "-") == dir {
-				return
+		if paths, ok := strings.CutPrefix(line, "ReadWritePaths="); ok {
+			for _, path := range strings.Fields(paths) {
+				writable[strings.TrimPrefix(path, "-")] = true
 			}
 		}
 	}
-	t.Errorf("unit keeps %s read-only, so every join rolls back", dir)
+	for dir, consequence := range map[string]string{
+		filepath.Dir(wifi.NewNetworkManager("wlan0", t.TempDir()).RegulatoryConf): "every join rolls back",
+		filepath.Dir("/" + wifi.PowerSavingConf):                                  "the dashboard cannot switch Wi-Fi power saving",
+	} {
+		if !writable[dir] {
+			t.Errorf("unit keeps %s read-only, so %s", dir, consequence)
+		}
+	}
 }
 
 func TestUnitLetsTheSupervisorClearAuthorizedRadioBlocks(t *testing.T) {
