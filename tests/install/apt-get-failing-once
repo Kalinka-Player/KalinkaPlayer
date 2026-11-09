@@ -1,0 +1,14 @@
+#!/bin/sh
+# apt-get whose first install of downloaded packages fails, as apt's does when
+# it cannot resolve them; every other call is apt-get's own.
+if [ ! -e "$0.fired" ]; then
+  for arg in "$@"; do
+    case "$arg" in
+      */*.deb)
+        : > "$0.fired"
+        echo "E: the install test fails this install of $arg on purpose" >&2
+        exit 100 ;;
+    esac
+  done
+fi
+exec /usr/bin/apt-get "$@"
