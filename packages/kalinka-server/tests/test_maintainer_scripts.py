@@ -108,61 +108,6 @@ def test_prerm_still_reports_a_real_removal(tmp_path):
     ]
 
 
-RENDERER_DEBIAN = REPO / "packages" / "kalinka-renderer" / "DEBIAN"
-ENABLING = re.compile(r'\s*systemctl (enable|start|restart)( --now)? "?([^"\s]+)"?')
-ANY_ENABLING = re.compile(
-    r"\bsystemctl\s+(-\S+\s+)*"
-    r"((re)?(enable|start|restart)|reload-or-restart|preset|add-wants|add-requires)\b"
-)
-
-
-def _units_the_postinst_enables(postinst):
-    """The units its systemctl calls enable, and those of them it starts too.
-
-    A call it cannot read fails here, so a unit enabled some new way is not
-    left out of the check unseen.
-    """
-    text = postinst.read_text()
-    enabled, started = set(), set()
-    for line in text.splitlines():
-        if line.lstrip().startswith("#") or not ANY_ENABLING.search(line):
-            continue
-        match = ENABLING.fullmatch(line)
-        assert match, f"cannot read the unit in {line!r}"
-        verb, now, unit = match.groups()
-        if unit.startswith("$"):
-            variable = unit.strip("${}")
-            [unit] = re.findall(rf'^{variable}="([^"$]+)"$', text, re.M)
-        if verb == "enable":
-            enabled.add(unit)
-        if verb != "enable" or now:
-            started.add(unit)
-    return enabled, started
-
-
-@pytest.mark.parametrize(
-    "debian", [PRERM.parent, RENDERER_DEBIAN], ids=["server", "renderer"]
-)
-def test_prerm_stops_every_unit_the_postinst_enables(debian, tmp_path):
-    """A unit left behind outlives the files it runs from: the server's prerm
-    once left Core and its upgrade watch running while pip emptied the venv
-    and dpkg took the unit files."""
-    enabled, started = _units_the_postinst_enables(debian / "postinst")
-    script, env, calls = _sandboxed_prerm(tmp_path, debian / "prerm")
-
-    result = _run(script, "remove", env=env)
-
-    assert result.returncode == 0, result.stderr
-    disables = [
-        match
-        for call in calls.read_text().splitlines()
-        if (match := re.fullmatch(r"systemctl disable( --now)? (\S+)", call))
-    ]
-    assert enabled
-    assert enabled - {match[2] for match in disables} == set()
-    assert started - {match[2] for match in disables if match[1]} == set()
-
-
 def _stub_bin(tmp_path, *, installed_version, apt_fails=True):
     """A PATH where apt fails and dpkg reports what is really installed."""
     binv = tmp_path / "bin"
@@ -966,6 +911,12 @@ SERVER_ID_UNIT = (
 PLUGINS_DROPIN = (
     REPO / "packages" / "kalinka-server" / "scripts" / "kalinka-restart-plugins.conf"
 )
+SERVER_UNITS = sorted(
+    unit.name
+    for unit in BUILD_DEB.parent.iterdir()
+    if unit.suffix in {".service", ".path", ".socket"}
+)
+RENDERER_DEBIAN = REPO / "packages" / "kalinka-renderer" / "DEBIAN"
 
 
 def test_plugin_trigger_restarts_only_a_running_server(tmp_path):
@@ -1047,11 +998,12 @@ def _recorder(name, then=""):
     return f'#!/usr/bin/env bash\necho "{name} $*" >> "$STUB_STATE/calls.log"\n{then}'
 
 
-def _sandboxed_configure(tmp_path, server_id=None):
-    """The postinst's configure, run against a root under tmp_path.
+def _sandboxed_configure(tmp_path, server_id=None, postinst=POSTINST):
+    """A postinst's configure, the server's unless another is given, run
+    against a root under tmp_path.
 
-    Every system path in it is moved under that root, where the package has
-    put its units and the id helper, and what reaches past the files — users,
+    Every system path in it is moved under that root, where the server package
+    has put its units and the id helper, and what reaches past the files — users,
     systemd, udev — is a recorder. Only root can give a file away, so install
     drops the owner it is asked for and chown only records it. ``server_id``
     is what the box already holds there, if anything. Returns the result, the
@@ -1064,12 +1016,12 @@ def _sandboxed_configure(tmp_path, server_id=None):
         re.sub(
             r'(?<=[\s"=])/(?=(?:etc|opt|srv|sys|usr|var)/)',
             lambda _: f"{root}/",
-            POSTINST.read_text(),
+            postinst.read_text(),
         )
     )
     units = root / "etc" / "systemd" / "system"
     units.mkdir(parents=True)
-    for name in ("kalinka.service", SERVER_ID_UNIT.name):
+    for name in SERVER_UNITS:
         (units / name).touch()
     helper = root / "usr" / "lib" / "kalinka" / "server-id"
     helper.parent.mkdir(parents=True)
@@ -1174,6 +1126,52 @@ def test_the_postinst_enables_the_first_boot_unit_without_starting_it(held, tmp_
     assert [call for call in calls if SERVER_ID_UNIT.name in call] == [
         f"systemctl enable {SERVER_ID_UNIT.name}"
     ]
+
+
+def _systemctl_calls(calls):
+    """Each recorded systemctl call as its verb, whether it has --now, and
+    the units it names."""
+    for call in calls:
+        tool, *args = call.split()
+        if tool == "systemctl":
+            verb, *units = [arg for arg in args if not arg.startswith("-")]
+            yield verb, "--now" in args, set(units)
+
+
+@pytest.mark.parametrize(
+    "debian", [PRERM.parent, RENDERER_DEBIAN], ids=["server", "renderer"]
+)
+def test_prerm_stops_every_unit_the_postinst_enables(debian, tmp_path):
+    """A unit left behind outlives the files it runs from: the server's prerm
+    once left Core and its upgrade watch running while pip emptied the venv
+    and dpkg took the unit files. A postinst call the check cannot classify
+    fails it, so a unit enabled some new way is not missed."""
+    for stage in ("configure", "remove"):
+        (tmp_path / stage).mkdir()
+    configured, installing, _, _ = _sandboxed_configure(
+        tmp_path / "configure", postinst=debian / "postinst"
+    )
+    script, env, removing = _sandboxed_prerm(tmp_path / "remove", debian / "prerm")
+
+    removed = _run(script, "remove", env=env)
+
+    assert configured.returncode == 0, configured.stderr
+    assert removed.returncode == 0, removed.stderr
+    enabled, started, disabled, stopped = set(), set(), set(), set()
+    for verb, now, units in _systemctl_calls(installing):
+        assert verb in {"daemon-reload", "enable", "start", "restart", "status"}, verb
+        if verb == "enable":
+            enabled |= units
+        if verb in {"start", "restart"} or now:
+            started |= units
+    for verb, now, units in _systemctl_calls(removing.read_text().splitlines()):
+        if verb == "disable":
+            disabled |= units
+        if verb == "stop" or now:
+            stopped |= units
+    assert enabled
+    assert enabled - disabled == set()
+    assert started - stopped == set()
 
 
 def _make_id(path):
