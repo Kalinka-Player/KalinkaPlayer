@@ -21,6 +21,7 @@ if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
     systemctl disable --now kalinka-plugins.path 2>/dev/null || true
     systemctl disable --now kalinka-upgrade.path 2>/dev/null || true
     systemctl disable --now kalinka-journal-reader.socket 2>/dev/null || true
+    systemctl stop 'kalinka-journal-reader@*.service' 2>/dev/null || true
     systemctl disable --now kalinka-mounts.path 2>/dev/null || true
     systemctl disable kalinka-server-id.service 2>/dev/null || true
     systemctl disable --now kalinka.service 2>/dev/null || true
