@@ -77,6 +77,7 @@ STALE_REQUEST_SECONDS = 15 * 60
 ACK_TIMEOUT_S = 60.0
 FOLLOW_DEADLINE_S = 15 * 60
 ABANDONED = "The update did not finish. Restart the server to bring it back."
+EXPIRED = "The request expired before the server carried it out. Try again."
 POLL_INTERVAL_S = 1.0
 KEEPALIVE_S = 5.0
 MAX_ARTIFACT_BYTES = 512 * 1024 * 1024
@@ -144,6 +145,17 @@ class OperationRequest(BaseModel):
         ):
             raise ValueError("An install names a release and its package digest")
         return self
+
+    def fresh(self, now: float) -> bool:
+        """Whether it was made less than STALE_REQUEST_SECONDS before ``now``,
+        a Unix time, and not after it."""
+        try:
+            made = datetime.fromisoformat(self.requested_at)
+        except ValueError:
+            return False
+        if made.tzinfo is None:
+            return False
+        return 0 <= now - made.timestamp() < STALE_REQUEST_SECONDS
 
 
 @dataclass(frozen=True)
@@ -560,11 +572,9 @@ class PluginOperations:
         # A request the helper never consumed must not refuse every later one.
         try:
             pending = OperationRequest.model_validate_json(path.read_bytes())
-            requested = datetime.fromisoformat(pending.requested_at)
-            age = (self._clock() - requested).total_seconds()
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError):
             return None
-        return pending if 0 <= age < STALE_REQUEST_SECONDS else None
+        return pending if pending.fresh(self._clock().timestamp()) else None
 
     async def _follow(
         self, request: OperationRequest, lifecycle: "PluginLifecycle", core: dict
@@ -741,10 +751,13 @@ def apply(
     """Carry out the pending request as root, recording the outcome for Core.
 
     The request is consumed before anything runs, so a crash cannot replay it
-    at every restart. With ``live`` Core keeps running: it is asked to unload
-    the plugin before its files change and loads the result itself — unless
-    the release cannot be taken into a running process, when the helper
-    stops Core, installs, and starts it again, as without ``live``.
+    at every restart. One that is not :meth:`~OperationRequest.fresh` is
+    recorded as failed instead: nobody is waiting for it any more, and the
+    restart that runs the helper may be for something else. With ``live``
+    Core keeps running: it is asked to unload the plugin before its files
+    change and loads the result itself — unless the release cannot be taken
+    into a running process, when the helper stops Core, installs, and starts
+    it again, as without ``live``.
     """
     request_path = state_dir / REQUEST_FILE
     if not request_path.is_file():
@@ -759,6 +772,17 @@ def apply(
         return 1
     finally:
         request_path.unlink(missing_ok=True)
+    if not request.fresh(clock()):
+        logger.warning(
+            "Not carrying out %s %s requested at %s: the request expired",
+            request.action,
+            request.distribution,
+            request.requested_at,
+        )
+        _Record(result_path, _record_of(request, clock()), clock).finish(
+            "failed", EXPIRED
+        )
+        return 0
     record = _Record(result_path, _record_of(request, clock()), clock)
     logger.info("%s %s", request.action, request.distribution)
     try:
