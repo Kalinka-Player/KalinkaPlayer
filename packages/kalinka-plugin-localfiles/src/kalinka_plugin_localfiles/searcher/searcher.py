@@ -28,6 +28,7 @@ from typing import Optional
 
 from ..config_model import LocalFilesConfig
 from ..embedding_utils import decode_embedding
+from ..ipc import RequestChannel, reply
 from ..pip_utils import ensure_package
 from ..worker_utils import configure_worker_logging, set_proc_title
 from .searcher_db import AsyncSearcherDb
@@ -96,9 +97,14 @@ class SearchWorker:
     ):
         self.config = config
         self.db = db
-        # IPC queues for CLAP text encoding (served by the embedder process)
-        self._text_encode_request_queue = text_encode_request_queue
-        self._text_encode_response_queue = text_encode_response_queue
+        self._embedder = (
+            RequestChannel(
+                text_encode_request_queue, text_encode_response_queue, timeout=30.0
+            )
+            if text_encode_request_queue is not None
+            and text_encode_response_queue is not None
+            else None
+        )
         # Mood index (words, va[M,2], text_emb[M,512]); lazy-loaded, retried.
         self._mood_index: Optional[tuple] = None
         # -inf: monotonic time starts at boot, so 0.0 reads as "just tried".
@@ -110,18 +116,17 @@ class SearchWorker:
 
     def _encode_query_text(self, query: str) -> Optional[bytes]:
         """Encode a text query with CLAP via IPC to the embedder process."""
-        if (
-            self._text_encode_request_queue is None
-            or self._text_encode_response_queue is None
-        ):
+        if self._embedder is None:
             return None
         try:
-            self._text_encode_request_queue.put({"query": query})
-            resp = self._text_encode_response_queue.get(timeout=30)
-            return resp.get("blob")
+            resp = self._embedder.ask({"query": query})
         except Exception as e:
             logger.warning("CLAP text encoding IPC failed: %s", e)
             return None
+        if resp is None:
+            logger.warning("CLAP text encoding timed out")
+            return None
+        return resp.get("blob")
 
     # ------------------------------------------------------------------
     # Mood (valence/arousal) query mapping
@@ -329,10 +334,7 @@ class SearchWorker:
         if not query.isascii():
             logger.info("CLAP encode skipped: non-ASCII query %r", query)
             return None
-        if (
-            self._text_encode_request_queue is None
-            or self._text_encode_response_queue is None
-        ):
+        if self._embedder is None:
             return None
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._encode_query_text, query)
@@ -373,7 +375,7 @@ class SearchWorker:
                 logger.error("Search handler error: %s", e, exc_info=True)
                 result = {"tracks": []}
 
-            search_response_queue.put(result)
+            reply(search_response_queue, req, result)
 
     # ------------------------------------------------------------------
     # Main loop
