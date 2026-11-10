@@ -80,6 +80,9 @@ class BluetoothConfig(ModuleConfig):
 
 
 class BluetoothInput(InputModule):
+    def __init__(self, plugin):
+        self.plugin = plugin
+
     def module_name(self):
         return "bluetooth"
 
@@ -96,7 +99,8 @@ class BluetoothInput(InputModule):
         return []
 
     async def get_content_info(self, asset_id):
-        return None
+        service = self.plugin.service
+        return service.artwork.content(asset_id) if service else None
 
 
 class KalinkaPluginBluetooth(InputModulePlugin):
@@ -127,7 +131,7 @@ class KalinkaPluginBluetooth(InputModulePlugin):
 
     def __init__(self):
         self.context = None
-        self.interface = BluetoothInput()
+        self.interface = BluetoothInput(self)
         self.task = None
         self.backend = self.service = self.pairing = None
         self.access = AudioAccess(

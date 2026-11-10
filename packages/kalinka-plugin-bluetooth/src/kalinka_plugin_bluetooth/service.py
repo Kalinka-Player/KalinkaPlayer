@@ -9,6 +9,7 @@ import time
 from kalinka_plugin_sdk.datamodel import (
     Album,
     Artist,
+    CoverImage,
     EntityId,
     EntityType,
     PlayerStateEnum,
@@ -22,6 +23,7 @@ from kalinka_plugin_sdk.direct_playback import (
 from kalinka_plugin_sdk.live_audio import LivePolicy
 
 from .backend import Endpoint
+from .artwork import BluetoothArtwork
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +100,8 @@ class BluetoothService:
         self.last_claim = 0.0
         self.last_audio = 0.0
         self.metadata = {}
+        self.artwork = BluetoothArtwork(backend, self.update_artwork)
+        self.artwork_url = None
         self.playback_state = None
         self.output_error = None
         self._volume = None
@@ -200,10 +204,20 @@ class BluetoothService:
                 or source is not self.source
             ):
                 return
-            await hold.play_live(source, self.track(), policy=self.policy)
+            track = self.track()
+            await hold.play_live(source, track, policy=self.policy)
+            if (
+                self.closed
+                or generation != self.generation
+                or self.blocked
+                or source is not self.source
+            ):
+                return
             self.hold = hold
             self.output_error = None
             hold = None
+            if track != self.track():
+                await self._show_metadata()
         except (OutputUnavailable, HoldEnded, ValueError) as error:
             self.output_error = str(error)
         finally:
@@ -218,13 +232,24 @@ class BluetoothService:
         title = self.metadata.get("Title") or "Bluetooth audio"
         artist = self.metadata.get("Artist")
         album = self.metadata.get("Album")
+        image = (
+            CoverImage(
+                small=self.artwork_url,
+                thumbnail=self.artwork_url,
+                large=self.artwork_url,
+            )
+            if self.artwork_url
+            else None
+        )
         return Track(
             id=entity,
             title=title,
             duration=max(0, int(self.metadata.get("Duration", 0))) // 1000,
+            image=image,
             album=Album(
                 id=EntityId(id="album", source="bluetooth", type=EntityType.ALBUM),
                 title=album or (self.endpoint.alias if self.endpoint else "Bluetooth"),
+                image=image,
             ),
             performer=(
                 Artist(
@@ -239,13 +264,38 @@ class BluetoothService:
         )
 
     async def update_metadata(self, metadata: dict):
-        if metadata == self.metadata:
+        artwork_changed = self.artwork.update(self.endpoint, metadata)
+        if metadata == self.metadata and not artwork_changed:
             return
-        self.metadata = metadata
+        # A late image handle changes metadata without starting a new track.
+        previous_track = {
+            key: value for key, value in self.metadata.items() if key != "ImgHandle"
+        }
+        next_track = {
+            key: value for key, value in metadata.items() if key != "ImgHandle"
+        }
+        position = self._sender_position() if previous_track == next_track else 0
+        self.metadata = dict(metadata)
+        self.artwork_url = None
+        await self._show_metadata(position)
+
+    async def update_artwork(self, url):
+        self.artwork_url = url
+        await self._show_metadata(self._sender_position())
+
+    def _sender_position(self):
+        player = self.backend.player(self.endpoint) if self.endpoint else None
+        position = player[1].get("Position", 0) if player else 0
+        # BlueZ uses UINT32_MAX for an unknown end-of-track position.
+        return (
+            position if isinstance(position, int) and 0 <= position < 0xFFFFFFFF else 0
+        )
+
+    async def _show_metadata(self, position_ms=0):
         hold = self.hold
         if hold is not None and hold.active:
             try:
-                await hold.show(self.track(), 0)
+                await hold.show(self.track(), position_ms)
             except (HoldEnded, ValueError):
                 pass
 
@@ -327,6 +377,8 @@ class BluetoothService:
 
     async def disconnected(self):
         self.generation += 1
+        self.artwork.update(None, {})
+        self.artwork_url = None
         self.listener_token = None
         self.partial.clear()
         self.endpoint, self.metadata, self._volume = None, {}, None
@@ -342,8 +394,11 @@ class BluetoothService:
                 claim.cancel()
                 await asyncio.gather(claim, return_exceptions=True)
         finally:
-            if hold is not None:
-                await hold.release()
+            try:
+                await self.artwork.close()
+            finally:
+                if hold is not None:
+                    await hold.release()
 
     async def close(self):
         self.closed = True

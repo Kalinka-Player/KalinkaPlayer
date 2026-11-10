@@ -89,6 +89,37 @@ idle detection; incoming PCM wakes it immediately and resumes at the live edge
 without sending Play back to the phone. Brief gaps do not restart the output,
 and renderer errors or stalls while the sender is still playing remain visible.
 
+## Bluetooth artwork
+
+The plugin downloads artwork supplied by the sender over AVRCP 1.6 Cover Art
+(OBEX BIP) and serves it at `/content/bluetooth/art-*`. It requests the native
+JPEG/PNG image, with the linked JPEG thumbnail as a fallback. Artwork updates
+Now Playing without restarting the audio stream. A new track clears the old
+cover immediately; late downloads cannot overwrite the new track. Paused
+players keep their cover, while stopped players and disconnects clear it.
+
+On the Core host, install **BlueZ and bluez-obexd 5.79 or newer**, plus
+`dbus-daemon`. The Debian plugin package includes the OBEX dependency; Fedora
+users need to install `bluez-obexd` alongside their optional Bluetooth backend.
+Enable `Experimental = true` in the existing `[General]` section of
+`/etc/bluetooth/main.conf`, restart `bluetooth.service` when no input is playing,
+then reconnect the phone. BlueZ currently marks the player's `ObexPort` and
+`Track.ImgHandle` properties as experimental. Both the phone and its media app
+must support sending cover art; text metadata alone does not imply support.
+
+Kalinka starts its own private D-Bus session and `obexd` as the Core user when
+a connected, authorized sender advertises a cover-art port. No desktop login
+or user-session service is needed. The OBEX connection remains open across
+tracks because image handles belong to that connection. Downloads run outside
+the audio/control loop, are limited to 4 MiB each, and retain at most four
+images in memory. Temporary files and child processes are cleaned up on
+disconnect, disable or shutdown. Failed transfers retry with a delay and log
+the cause; audio and text metadata keep working when artwork is unavailable.
+
+API references: [BlueZ MediaPlayer](https://github.com/bluez/bluez/blob/5.79/doc/org.bluez.MediaPlayer.rst),
+[OBEX Image](https://github.com/bluez/bluez/blob/5.79/doc/org.bluez.obex.Image.rst),
+and [OBEX Client](https://github.com/bluez/bluez/blob/5.79/doc/org.bluez.obex.Client.rst).
+
 ## Development and limits
 
 Install with `pip install -e packages/kalinka-plugin-sdk -e
