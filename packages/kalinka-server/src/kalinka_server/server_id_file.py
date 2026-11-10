@@ -26,8 +26,8 @@ _LONGEST_READ = 4096
 def read_id(path: Path) -> str | None:
     """The id the file holds, or None where there is no file or no id in it."""
     try:
-        # Non-blocking: a FIFO kalusr left here would hold root's postinst forever.
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        # No link, no wait: root's postinst must open no device or FIFO kalusr left.
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
     except OSError:
         return None
     with os.fdopen(fd, "rb") as handle:
@@ -60,13 +60,21 @@ def ensure_id(path: Path) -> str:
         # A lost id orphans Core's renderer sessions and the app's pins.
         os.fsync(handle.fileno())
     os.replace(new, path)
-    directory = os.open(path.parent, os.O_RDONLY)
     try:
-        os.fsync(directory)
-    finally:
-        os.close(directory)
+        _sync_directory(path.parent)
+    except OSError as exc:
+        # The id is in place: a caller taking this for none would run on another.
+        logger.warning("Could not sync %s after writing the id (%s)", path.parent, exc)
     logger.info("Generated server id %s at %s", made, path)
     return made
+
+
+def _sync_directory(directory: Path) -> None:
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _give_to_directory_owner(fd: int, directory: Path) -> None:
@@ -79,4 +87,5 @@ def _give_to_directory_owner(fd: int, directory: Path) -> None:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     ensure_id(Path(sys.argv[1]))
