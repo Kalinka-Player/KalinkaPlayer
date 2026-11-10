@@ -487,9 +487,9 @@ class MatchTier(str, Enum):
     """
     How closely a search hit's name answers the query, best first.
 
-    Assigned by the server's name ranking, so a consumer holding hits from
-    several sources can merge them by tier and then by
-    :attr:`NameMatch.score` without ranking anything itself.
+    Assigned by the server to every search hit. It labels the hit and orders
+    the hits of a source that does not rank its own; hits are merged by
+    :attr:`NameMatch.relevance`, not by tier.
 
     Values:
         EXACT: The name, once case, diacritics and punctuation are set aside.
@@ -517,14 +517,19 @@ class NameMatch(BaseModel):
     Why a search hit stands where it does in its listing.
 
     Attributes:
-        tier (MatchTier): The band the hit ranks in; every hit of a better
-            tier outranks it.
+        tier (MatchTier): How the hit's name answers the query.
         score (float): Whole-string similarity to the query, 0..100, ordering
-            hits within a tier. Not comparable across tiers.
+            an unranked source's hits within a tier. Not comparable across
+            tiers.
+        relevance (Optional[float]): SDK 3.22. The hit's standing among every
+            hit of the same search, higher first, comparable across kinds and
+            sources: a consumer holding several sources' hits sorts them by it.
+            Absent from servers before SDK 3.22, which ordered hits by tier.
     """
 
     tier: MatchTier
     score: float
+    relevance: Optional[float] = None
 
 
 class BrowseItem(BaseModel):

@@ -279,7 +279,13 @@ def get_version() -> str:
 # mounted at start only with it on; saving one no longer mounts it. The
 # settings schema no longer describes base_config.storage.mounts, and
 # /server/version's `storage` has `devices`.
-REST_API_VERSION = "0.22"
+# 0.23: /search/matches keeps the order of a source whose module names
+# `ranked_search` among its capabilities within each kind, and orders an
+# unranked source's hits of each kind by name tier. Kinds and sources merge by
+# reciprocal rank: every hit's `match` carries `relevance`, and a client merging
+# several sources' listings sorts them by it, ties going to the less granular
+# kind, then to the earlier source.
+REST_API_VERSION = "0.23"
 
 
 def get_rest_api_version() -> str:

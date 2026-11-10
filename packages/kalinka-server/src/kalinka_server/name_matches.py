@@ -1,18 +1,25 @@
-"""One source's name hits, ranked against the query.
+"""One search's name hits, ranked.
 
-A hit's place is decided by tier first and similarity second. The tiers say
-*how* the name answers the query — exactly, once an edition suffix is set
-aside, a typo away, as a fragment, through its artist or album, or barely —
-and nothing is ever cut: the sources chose what to return, ranking only
-decides what leads. Within a tier the kind leads — artists, then albums,
-playlists and tracks — so a list reads as runs rather than a shuffle, and
-within a kind a whole-string similarity orders the hits, with a penalty for
-words the query never asked for, so "The Beatles" leads "The Beatles
-1962–1966" even though both contain the query.
+A source that ranks its own hits (``ModuleCapability.RANKED_SEARCH``) keeps
+its order: a streaming service weighs relevance and popularity across a
+catalogue that no name comparison can see into, and its exact-name hits
+include profiles nobody listens to. A source that lists hits by name instead
+(the library, collections) is ordered by how each name answers the query: by
+tier first — exactly, once an edition suffix is set aside, a typo away, as a
+fragment, through its artist or album, or barely — then by a whole-string
+similarity with a penalty for words the query never asked for, so "The
+Beatles" leads "The Beatles 1962–1966" even though both contain the query.
 
-Every hit is annotated with its tier and score, which is what lets a client
-holding several sources' listings merge them by tier without ranking anything
-itself.
+Kinds and sources then merge by reciprocal rank: a hit's relevance is
+1 / (1 + its place among its source's hits of that kind), which needs no
+score comparable between services. Ties go to the less granular kind, so the
+list opens with the best artist, album, playlist and track rather than a run
+of one kind, and then to the earlier source. Nothing is ever cut: the sources
+chose what to return, ranking only decides what leads.
+
+Every hit is annotated with its tier, score and relevance, which is what lets
+a client holding several sources' listings merge them by relevance without
+ranking anything itself.
 """
 
 from __future__ import annotations
@@ -20,7 +27,8 @@ from __future__ import annotations
 import asyncio
 import re
 import unicodedata
-from typing import Iterable, List, Optional, Sequence
+from dataclasses import dataclass
+from typing import List, Optional, Sequence, Tuple
 
 from rapidfuzz import fuzz
 
@@ -32,10 +40,11 @@ from kalinka_plugin_sdk.datamodel import (
     MatchTier,
     NameMatch,
 )
-from kalinka_plugin_sdk.inputmodule import SearchType
+from kalinka_plugin_sdk.inputmodule import ModuleCapability, SearchType
 
 from .browse_source import BrowseSource
 from .config_model import SearchConfig
+from .module_capabilities import capabilities_of
 from .source_failed import SourceFailed
 
 # Whole-string similarity at which a name is a typo away from the query.
@@ -43,8 +52,8 @@ CLOSE_RATIO = 85.0
 
 _TIER_ORDER = {tier: index for index, tier in enumerate(MatchTier)}
 
-# Within a tier the less granular entity leads, so an artist is never sorted
-# under its own tracks and each kind reads as one run.
+# At equal relevance the less granular entity leads, so an artist is never
+# sorted under its own tracks.
 _GRANULARITY = {
     EntityType.ARTIST: 0,
     EntityType.ALBUM: 1,
@@ -153,27 +162,58 @@ def match_of(query: str, item: BrowseItem) -> NameMatch:
     return NameMatch(tier=MatchTier.WEAK, score=score)
 
 
-def rank(query: str, items: Iterable[BrowseItem]) -> List[BrowseItem]:
-    """Every distinct item, annotated with its match and ordered by tier,
-    then kind, then score, then the order the sources gave."""
+@dataclass(frozen=True)
+class SourceHits:
+    """One source's answer: each kind's hits in the order it gave them, and
+    whether that order is a ranking."""
+
+    kinds: Sequence[Sequence[BrowseItem]]
+    ranked: bool
+
+
+def rank(query: str, sources: Sequence[SourceHits]) -> List[BrowseItem]:
+    """Every distinct hit, annotated with its match and relevance, best first.
+
+    Relevance falls with a hit's place among its source's hits of its kind;
+    ties go to the less granular kind, then to the earlier source.
+    """
     seen = set()
-    ranked = []
-    for position, item in enumerate(items):
+    entries = []
+    for source_index, source in enumerate(sources):
+        for hits in source.kinds:
+            placed = _placed(query, hits, source.ranked, seen)
+            for place, (item, match) in enumerate(placed):
+                relevance = 1.0 / (1 + place)
+                annotated = item.model_copy(
+                    update={
+                        "match": match.model_copy(update={"relevance": relevance})
+                    }
+                )
+                order = (
+                    -relevance,
+                    _GRANULARITY.get(item.id.type, len(_GRANULARITY)),
+                    source_index,
+                )
+                entries.append((order, annotated))
+    entries.sort(key=lambda entry: entry[0])
+    return [item for _, item in entries]
+
+
+def _placed(
+    query: str, hits: Sequence[BrowseItem], ranked: bool, seen: set
+) -> List[Tuple[BrowseItem, NameMatch]]:
+    """One kind's hits not yet seen, with their matches, in the order of their
+    places: the source's own when it ranks them, by name otherwise."""
+    placed = []
+    for item in hits:
         key = item.id.to_string
         if key in seen:
             continue
         seen.add(key)
-        annotated = item.model_copy(update={"match": match_of(query, item)})
-        ranked.append((position, annotated))
-    ranked.sort(
-        key=lambda entry: (
-            _TIER_ORDER[entry[1].match.tier],
-            _GRANULARITY.get(entry[1].id.type, len(_GRANULARITY)),
-            -entry[1].match.score,
-            entry[0],
-        )
-    )
-    return [item for _, item in ranked]
+        placed.append((item, match_of(query, item)))
+    if not ranked:
+        placed.sort(key=lambda entry: (_TIER_ORDER[entry[1].tier], -entry[1].score))
+    return placed
 
 
 async def collect_name_matches(
@@ -196,23 +236,24 @@ async def collect_name_matches(
     per_source = await asyncio.gather(
         *(_search_all_kinds(source, query, cfg.candidate_limit) for source in sources)
     )
-    ranked = rank(query, (item for items in per_source for item in items))
+    ranked = rank(query, per_source)
     return BrowseItemList(offset=0, limit=len(ranked), total=len(ranked), items=ranked)
 
 
 async def _search_all_kinds(
     source: BrowseSource, query: str, limit: int
-) -> List[BrowseItem]:
+) -> SourceHits:
     legs = await asyncio.gather(
         *(source.search(kind, query, 0, limit) for kind in _CANDIDATE_TYPES),
         return_exceptions=True,
     )
-    items: List[BrowseItem] = []
     for leg in legs:
         if isinstance(leg, BaseException):
             raise SourceFailed(source.module_name(), leg)
-        items.extend(leg.items)
-    return items
+    return SourceHits(
+        kinds=[leg.items for leg in legs],
+        ranked=ModuleCapability.RANKED_SEARCH.value in capabilities_of(source),
+    )
 
 
 # Descriptor vocabulary (instruments + genres + moods). A query token in here is

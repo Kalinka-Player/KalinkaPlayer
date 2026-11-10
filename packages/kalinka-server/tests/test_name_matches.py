@@ -1,5 +1,5 @@
-"""Name matches: every hit a source returns, ranked by how its name answers
-the query and never cut."""
+"""Name matches: every hit a source returns, in the source's own order when it
+ranks its hits and by name otherwise, merged by reciprocal rank and never cut."""
 
 import pytest
 
@@ -15,11 +15,16 @@ from kalinka_plugin_sdk.datamodel import (
     Playlist,
     Track,
 )
-from kalinka_plugin_sdk.inputmodule import InputModule, SearchType
+from kalinka_plugin_sdk.inputmodule import (
+    InputModule,
+    ModuleCapability,
+    SearchType,
+)
 
 from kalinka_server.config_model import SearchConfig
 from kalinka_server.source_failed import SourceFailed
 from kalinka_server.name_matches import (
+    SourceHits,
     collect_name_matches,
     equivalent_form,
     has_navigational_intent,
@@ -87,6 +92,22 @@ def _tiers(items):
     return [item.match.tier for item in items]
 
 
+def _ids(items):
+    return [item.id.id for item in items]
+
+
+def _hits(items, ranked=False):
+    """One source's hits, each kind in the order given."""
+    kinds = {}
+    for item in items:
+        kinds.setdefault(item.id.type, []).append(item)
+    return SourceHits(kinds=list(kinds.values()), ranked=ranked)
+
+
+def _rank(query, items, ranked=False):
+    return rank(query, [_hits(items, ranked)])
+
+
 class TestNormalisation:
     def test_case_diacritics_punctuation_and_spacing_are_set_aside(self):
         assert normalize("  Jean-Michel  JARRE ") == "jean michel jarre"
@@ -133,7 +154,7 @@ class TestTiers:
         assert name_tier("", "The Beatles") is None
 
     def test_context_places_a_hit_below_every_name_tier(self):
-        ranked = rank(
+        ranked = _rank(
             "the beatles",
             [
                 _track("q", "t1", "Come Together", performer="The Beatles"),
@@ -151,8 +172,8 @@ class TestTiers:
 
 
 class TestOrdering:
-    def test_tiers_lead_scores_within_them(self):
-        ranked = rank(
+    def test_an_unranked_source_orders_each_kind_by_tier_then_score(self):
+        ranked = _rank(
             "the beatles",
             [
                 _album("q", "long", "The Beatles 1962–1966"),
@@ -162,17 +183,84 @@ class TestOrdering:
                 _artist("q", "art", "Beatles"),
             ],
         )
-        assert [item.id.id for item in ranked] == [
-            "exact", "art", "typo", "long", "ctx"
+        assert _ids(ranked) == ["art", "exact", "ctx", "typo", "long"]
+        assert _tiers(ranked) == [
+            MatchTier.EQUIVALENT,
+            MatchTier.EXACT,
+            MatchTier.CONTEXTUAL,
+            MatchTier.CLOSE,
+            MatchTier.PARTIAL,
         ]
+
+    def test_a_ranked_source_keeps_its_own_order_within_each_kind(self):
+        ranked = _rank(
+            "pink floyd",
+            [
+                _artist("tidal", "band", "Pink Floyd"),
+                _artist("tidal", "gilmour", "David Gilmour"),
+                _artist("tidal", "empty", "Pink Floyd"),
+            ],
+            ranked=True,
+        )
+        assert _ids(ranked) == ["band", "gilmour", "empty"]
+        assert _tiers(ranked) == [MatchTier.EXACT, MatchTier.WEAK, MatchTier.EXACT]
+
+    def test_kinds_take_turns_by_place(self):
+        ranked = _rank(
+            "pink floyd",
+            [
+                _artist("tidal", "a0", "Pink Floyd"),
+                _artist("tidal", "a1", "David Gilmour"),
+                _album("tidal", "b0", "The Wall", artist_name="Pink Floyd"),
+                _album("tidal", "b1", "Animals", artist_name="Pink Floyd"),
+                _track("tidal", "t0", "Time", performer="Pink Floyd"),
+            ],
+            ranked=True,
+        )
+        assert _ids(ranked) == ["a0", "b0", "t0", "a1", "b1"]
+
+    def test_sources_take_turns_by_place(self):
+        ranked = rank(
+            "pink floyd",
+            [
+                _hits(
+                    [
+                        _artist("localfiles", "l0", "Pink Floyd"),
+                        _artist("localfiles", "l1", "Pink Floyd Tribute"),
+                    ]
+                ),
+                _hits(
+                    [
+                        _artist("tidal", "t0", "Pink Floyd"),
+                        _artist("tidal", "t1", "David Gilmour"),
+                    ],
+                    ranked=True,
+                ),
+            ],
+        )
+        assert [(item.id.source, item.id.id) for item in ranked] == [
+            ("localfiles", "l0"),
+            ("tidal", "t0"),
+            ("localfiles", "l1"),
+            ("tidal", "t1"),
+        ]
+
+    def test_relevance_falls_with_place(self):
+        ranked = _rank(
+            "help",
+            [_track("q", "a", "Help"), _track("q", "b", "Help"), _track("q", "c", "Help")],
+        )
+        assert [item.match.relevance for item in ranked] == pytest.approx(
+            [1.0, 1 / 2, 1 / 3]
+        )
 
     def test_extra_words_rank_a_containing_title_below_the_bare_one(self):
         assert similarity("the beatles", "The Beatles") > similarity(
             "the beatles", "The Beatles 1962–1966"
         )
 
-    def test_within_a_tier_the_artist_leads_its_own_track(self):
-        ranked = rank(
+    def test_at_equal_relevance_the_artist_leads_its_own_track(self):
+        ranked = _rank(
             "yesterday",
             [_track("q", "t", "Yesterday"), _artist("q", "a", "Yesterday")],
         )
@@ -181,8 +269,8 @@ class TestOrdering:
             EntityType.TRACK,
         ]
 
-    def test_within_a_tier_the_kind_leads_the_score(self):
-        ranked = rank(
+    def test_at_equal_relevance_the_kind_leads_the_score(self):
+        ranked = _rank(
             "come together",
             [
                 _track("q", "t", "Come Together (Live)"),
@@ -190,28 +278,28 @@ class TestOrdering:
             ],
         )
         assert _tiers(ranked) == [MatchTier.PARTIAL, MatchTier.PARTIAL]
-        assert [item.id.id for item in ranked] == ["a", "t"]
+        assert _ids(ranked) == ["a", "t"]
         assert ranked[0].match.score < ranked[1].match.score
 
-    def test_within_a_kind_the_closer_name_leads(self):
-        ranked = rank(
+    def test_within_an_unranked_kind_the_closer_name_leads(self):
+        ranked = _rank(
             "the beatles",
             [
                 _album("q", "bbc", "The Beatles Live at the BBC"),
                 _album("q", "red", "The Beatles 1962–1966"),
             ],
         )
-        assert [item.id.id for item in ranked] == ["red", "bbc"]
+        assert _ids(ranked) == ["red", "bbc"]
 
     def test_a_full_tie_keeps_the_sources_own_order(self):
-        ranked = rank(
+        ranked = _rank(
             "help",
             [_track("q", "first", "Help"), _track("q", "second", "Help")],
         )
-        assert [item.id.id for item in ranked] == ["first", "second"]
+        assert _ids(ranked) == ["first", "second"]
 
     def test_nothing_is_cut(self):
-        ranked = rank("the beatles", [_track("q", "t", "Yellow", performer="Coldplay")])
+        ranked = _rank("the beatles", [_track("q", "t", "Yellow", performer="Coldplay")])
         assert len(ranked) == 1
         assert ranked[0].match.tier is MatchTier.WEAK
 
@@ -219,19 +307,20 @@ class TestOrdering:
         ranked = rank(
             "the beatles",
             [
-                _artist("localfiles", "1", "The Beatles"),
-                _artist("qobuz", "1", "The Beatles"),
+                _hits([_artist("localfiles", "1", "The Beatles")]),
+                _hits([_artist("qobuz", "1", "The Beatles")]),
             ],
         )
         assert [item.id.source for item in ranked] == ["localfiles", "qobuz"]
 
     def test_an_id_returned_twice_is_one_row(self):
         item = _artist("q", "1", "The Beatles")
-        assert len(rank("the beatles", [item, item])) == 1
+        assert len(_rank("the beatles", [item, item])) == 1
 
     def test_every_hit_carries_its_match(self):
-        ranked = rank("help", [_track("q", "t", "Help"), _album("q", "a", "Let It Be")])
+        ranked = _rank("help", [_track("q", "t", "Help"), _album("q", "a", "Let It Be")])
         assert all(item.match is not None for item in ranked)
+        assert all(item.match.relevance == 1.0 for item in ranked)
         assert 0 <= ranked[-1].match.score <= 100
 
 
@@ -252,14 +341,18 @@ class TestIntent:
 
 
 class _Module(InputModule):
-    def __init__(self, name, hits=None, failing=None):
+    def __init__(self, name, hits=None, failing=None, ranked=False):
         self._name = name
         self._hits = hits or {}
         self._failing = failing or set()
+        self._ranked = ranked
         self.asked = []
 
     def module_name(self):
         return self._name
+
+    def capabilities(self):
+        return frozenset({ModuleCapability.RANKED_SEARCH} if self._ranked else ())
 
     async def search(self, type, query, offset=0, limit=50):
         self.asked.append((type, limit))
@@ -297,6 +390,28 @@ class TestCollection:
         ]
         assert {kind for kind, _ in local.asked} == set(SearchType)
         assert all(limit == SearchConfig().candidate_limit for _, limit in local.asked)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "ranked,order", [(True, ["gilmour", "band"]), (False, ["band", "gilmour"])]
+    )
+    async def test_only_a_source_declaring_ranked_search_keeps_its_order(
+        self, ranked, order
+    ):
+        module = _Module(
+            "tidal",
+            {
+                SearchType.artist: [
+                    _artist("tidal", "gilmour", "David Gilmour"),
+                    _artist("tidal", "band", "Pink Floyd"),
+                ]
+            },
+            ranked=ranked,
+        )
+
+        result = await collect_name_matches([module], "pink floyd", SearchConfig())
+
+        assert _ids(result.items) == order
 
     @pytest.mark.asyncio
     async def test_a_query_that_names_nothing_asks_nothing(self):
