@@ -355,6 +355,7 @@ CAPABILITIES = {
     "update_checks": False,
     "installation": False,
     "live_installation": False,
+    "operation_queue": False,
     "automatic_updates": False,
 }
 

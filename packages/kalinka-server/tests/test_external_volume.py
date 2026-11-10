@@ -19,6 +19,8 @@ from kalinka_server.playback_arbiter import PlaybackArbiter
 
 from tests.test_renderer_volume_control import _bus, _Device, _prepared, _registry_with
 
+HANG_GUARD_S = 5
+
 
 def _devices():
     local = _Device(
@@ -222,14 +224,26 @@ async def test_old_plugin_without_volume_keeps_existing_routing(rig):
 
 
 async def test_slow_volume_resync_cannot_block_audio_stop(rig):
-    _, listener, router, _, arbiter, _, _, _, _, _ = rig
+    _, listener, router, _, arbiter, queue, _, _, _, _ = rig
+    cancelled, unstall = asyncio.Event(), asyncio.Event()
 
     async def stalled():
-        await asyncio.Event().wait()
+        try:
+            await unstall.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
 
     router.resync = stalled
-    await asyncio.wait_for(arbiter.take_back(), 0.5)
+    stop = asyncio.create_task(arbiter.take_back())
+    # Not wait_for: the arbiter shields the stop, so a stuck one would hang.
+    finished, _ = await asyncio.wait({stop}, timeout=HANG_GUARD_S)
+    unstall.set()
+    await stop
+    assert stop in finished
+    assert cancelled.is_set()
     listener.on_revoked.assert_awaited_once()
+    assert arbiter.owns(queue)
 
 
 async def test_a_plugin_ignoring_cancellation_cannot_block_audio_stop(rig):
@@ -249,7 +263,7 @@ async def test_a_plugin_ignoring_cancellation_cannot_block_audio_stop(rig):
     request = asyncio.create_task(router.current().set_volume(20))
     await entered.wait()
     stop = asyncio.create_task(arbiter.take_back())
-    finished, _ = await asyncio.wait({stop}, timeout=0.5)
+    finished, _ = await asyncio.wait({stop}, timeout=HANG_GUARD_S)
     done.set()
     await asyncio.gather(stop, request, return_exceptions=True)
     assert stop in finished

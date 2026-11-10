@@ -27,6 +27,9 @@ from .renderer_registry import RendererRegistry
 
 logger = logging.getLogger(__name__)
 
+# A slow renderer or amp must not hold up the next owner.
+VOLUME_RESYNC_TIMEOUT_S = 0.2
+
 
 class ExternalSession:
     def __init__(
@@ -141,8 +144,7 @@ class ExternalSession:
                 self._registry.external_released(self)
         if self._router is not None:
             try:
-                # A slow renderer or amp must not hold up the next owner.
-                async with asyncio.timeout(0.2):
+                async with asyncio.timeout(VOLUME_RESYNC_TIMEOUT_S):
                     await self._router.resync()
             except Exception:
                 logger.exception("Could not restore output volume state")

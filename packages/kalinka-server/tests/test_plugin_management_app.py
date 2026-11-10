@@ -18,7 +18,7 @@ from kalinka_server.plugin_management.compatibility import (
     HostEnvironment,
 )
 from kalinka_server.plugin_management.inventory import CAPABILITIES
-from kalinka_server.plugin_management.operations import REQUEST_FILE
+from kalinka_server.plugin_management.operations import QUEUE_FILE, REQUEST_FILE
 from tests.app_harness import isolate_app, running
 from tests.plugin_catalog_fakes import catalog_document
 
@@ -152,18 +152,19 @@ async def test_install_request_restarts_through_the_packaged_helper(
         assert request["action"] == "install" and request["version"] == "1.0.0"
         assert (tmp_path / "run/kalinka/restart-request").exists()
 
-        # One request at a time: the restart it fired carries this one out.
-        response = await client.post("/server/plugins/demo/install")
-        assert response.status_code == 409
-        assert response.json()["detail"]["code"] == "operation_in_progress"
-        # Its helper has taken the request, but the restart is not over yet.
+        # One request at a time: the restart it fired carries this one out,
+        # and one asked for meanwhile waits for the server to be back.
         (tmp_path / "var/lib/kalinka" / REQUEST_FILE).unlink()
         response = await client.post("/server/plugins/demo/install")
-        assert response.status_code == 409
-        assert "already restarting." in response.json()["detail"]["message"]
+        assert response.status_code == 202, response.text
+        assert response.json()["status"] == "queued"
         assert not (tmp_path / "var/lib/kalinka" / REQUEST_FILE).exists()
+        saved = json.loads((tmp_path / "var/lib/kalinka" / QUEUE_FILE).read_text())
+        assert [entry["id"] for entry in saved["operations"]] == [response.json()["id"]]
+        operation = (await client.get("/server/plugins/operation")).json()
+        assert [entry["plugin_id"] for entry in operation["queue"]] == ["demo"]
         response = await client.post("/server/plugins/demo/uninstall")
-        assert response.json()["detail"]["code"] == "not_installed"
+        assert response.json()["detail"]["code"] == "operation_in_progress"
 
         await _save_flag(client, False)
         response = await client.post("/server/plugins/demo/install")
@@ -178,5 +179,5 @@ async def test_the_operation_record_is_idle_until_one_runs(upstream, tmp_path):
         answer = await client.get("/server/plugins/operation")
 
         assert answer.status_code == 200
-        assert answer.json() == {"status": "idle"}
+        assert answer.json() == {"status": "idle", "queue": [], "results": []}
         assert (await client.get("/server/plugins")).json()["last_operation"] is None

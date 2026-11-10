@@ -100,6 +100,9 @@ class Backend:
     def endpoints(self):
         return []
 
+    def player(self, endpoint):
+        return None
+
     def audio_devices(self):
         return set()
 
@@ -506,3 +509,47 @@ async def test_disconnect_closes_source_before_waiting_for_pending_claim(service
     assert source.closed and service.source is None
     finish.set()
     await disconnecting
+
+
+@pytest.mark.parametrize("finish_after_cancellation", [False, True])
+async def test_disconnect_cannot_retain_claim_while_artwork_closes(
+    service, finish_after_cancellation
+):
+    playing, finish_play = asyncio.Event(), asyncio.Event()
+    cleaning, finish_cleanup = asyncio.Event(), asyncio.Event()
+    acquire = service.direct.acquire
+
+    async def delayed_acquire(*args, **kwargs):
+        hold = await acquire(*args, **kwargs)
+
+        async def play_live(*args, **kwargs):
+            playing.set()
+            try:
+                await finish_play.wait()
+            except asyncio.CancelledError:
+                if not finish_after_cancellation:
+                    raise
+
+        hold.play_live = play_live
+        return hold
+
+    async def slow_cleanup():
+        cleaning.set()
+        await finish_cleanup.wait()
+
+    service.direct.acquire = delayed_acquire
+    service.artwork.close = slow_cleanup
+    service.audio(b"123456")
+    await asyncio.wait_for(playing.wait(), 1)
+    hold = service.direct.holds[0]
+    disconnecting = asyncio.create_task(service.disconnected())
+    try:
+        await asyncio.wait_for(cleaning.wait(), 1)
+        finish_play.set()
+        await settle(service)
+        assert service.hold is None
+        assert not hold.active
+    finally:
+        finish_play.set()
+        finish_cleanup.set()
+        await disconnecting
