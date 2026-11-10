@@ -596,7 +596,8 @@ async def create_app(
 
     renderer_upgrades = RendererUpgradeService(
         renderer_registry,
-        lambda renderer_id: renderer_sessions.get(renderer_id) is not None,
+        lambda renderer_id: renderer_sessions.get(renderer_id) is not None
+        or renderer_registry.held_externally(renderer_id),
         stop_for_upgrade,
     )
     renderer_sessions.set_upgrade_guard(renderer_upgrades.is_upgrading)

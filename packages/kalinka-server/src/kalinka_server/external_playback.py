@@ -35,13 +35,11 @@ class ExternalSession:
         title: str,
         listener: ExternalPlaybackListener,
         arbiter: PlaybackArbiter,
-        renderer_id: str | None,
+        registry: RendererRegistry | None = None,
         router: OutputDeviceRouter | None = None,
         volume_control: ExternalVolumeControl | None = None,
-        registry: RendererRegistry | None = None,
     ) -> None:
         self.control: PlaybackControl = PlaybackControl.exclusive(plugin_id, title)
-        self.renderer_id: str | None = renderer_id
         self._registry = registry
         self._listener: ExternalPlaybackListener = listener
         self._arbiter: PlaybackArbiter = arbiter
@@ -61,6 +59,12 @@ class ExternalSession:
     @property
     def active(self) -> bool:
         return self._active
+
+    @property
+    def renderer_id(self) -> str | None:
+        # The engine runs on this machine, so it plays through the renderer
+        # here, whichever one is selected, even one that registers mid-hold.
+        return self._registry.local_id() if self._registry is not None else None
 
     @property
     def volume_device(self) -> ExternalVolumeDevice | None:
@@ -168,7 +172,8 @@ class ExternalSession:
                 logger.exception("External playback command failed")
 
     async def move_to(self, renderer_id: str, commit: Callable[[], None]) -> None:
-        await self._release(RevokeReason.OUTPUT_LOST)
+        if renderer_id != self.renderer_id:
+            await self._release(RevokeReason.OUTPUT_LOST)
         commit()
 
 
@@ -203,12 +208,9 @@ class ExternalPlaybackService:
                 title,
                 listener,
                 self._arbiter,
-                # The engine runs on this machine, so it plays through the
-                # renderer here, whichever one is selected.
-                self._registry.local_id() if self._registry else None,
+                self._registry,
                 self._router,
                 volume_control,
-                self._registry,
             )
             try:
                 await self._arbiter.acquire(session)
@@ -216,7 +218,7 @@ class ExternalPlaybackService:
                     # Claimed before any await, so a preemption that lands
                     # during the resync releases it instead of missing it.
                     if self._registry is not None:
-                        self._registry.external_claimed(session, session.renderer_id)
+                        self._registry.external_claimed(session)
                     if session.volume_device is not None:
                         self._router.set_external(session, session.volume_device)
                     if self._router is not None:

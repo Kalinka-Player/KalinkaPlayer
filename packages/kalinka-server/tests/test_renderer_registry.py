@@ -626,7 +626,7 @@ async def test_an_external_claim_reports_the_renderer_it_plays_through():
     events = _wire(registry)
     owner, stranger = object(), object()
 
-    registry.external_claimed(owner, "here")
+    registry.external_claimed(owner)
     assert events == [("current", "here", "remote")]
     assert registry.serving_id() == "here"
     assert registry.active_id() == "remote"
@@ -643,12 +643,28 @@ async def test_an_external_claim_reports_the_renderer_it_plays_through():
     await registry.shutdown()
 
 
-async def test_an_external_claim_through_no_known_renderer_reports_none():
+async def test_only_the_claimed_renderer_is_held_externally():
+    registry = RendererRegistry()
+    _register(registry, object(), renderer_id="remote")
+    _register(registry, object(), renderer_id="here", local=True)
+    owner = object()
+    assert not registry.held_externally("here")
+
+    registry.external_claimed(owner)
+    assert registry.held_externally("here")
+    assert not registry.held_externally("remote")
+
+    registry.external_released(owner)
+    assert not registry.held_externally("here")
+    await registry.shutdown()
+
+
+async def test_an_external_claim_with_no_renderer_here_reports_none():
     registry = RendererRegistry()
     _register(registry, object(), renderer_id="remote")
     events = _wire(registry)
 
-    registry.external_claimed(object(), None)
+    registry.external_claimed(object())
 
     assert events == [("current", None, None)]
     assert not any(row["active"] for row in registry.list())
@@ -661,7 +677,7 @@ async def test_a_claimed_renderer_that_leaves_is_no_longer_reported():
     here = object()
     _register(registry, object(), renderer_id="remote")
     _register(registry, here, renderer_id="here", local=True)
-    registry.external_claimed(object(), "here")
+    registry.external_claimed(object())
 
     registry.disconnect("here", here, clean=True)
 

@@ -128,9 +128,8 @@ class RendererRegistry:
         self._prefs = prefs if prefs is not None else RendererPreferences()
         # The renderer playback holds a session on, while it holds one.
         self._playing_on: Optional[str] = None
-        # An engine outside the renderers and the renderer whose output it
-        # plays through, while it holds playback.
-        self._external: Optional[tuple[object, Optional[str]]] = None
+        # An engine outside the renderers, while it holds playback.
+        self._external: Optional[object] = None
         self._restore_selected()
 
     def _restore_selected(self) -> None:
@@ -441,15 +440,14 @@ class RendererRegistry:
         """The renderer whose output the current playback comes out of.
 
         :meth:`active_id`, except while an engine outside the renderers holds
-        playback: then the renderer it shares an output with, or None when it
-        shares none. This is what clients are told plays, and what an amp
-        delegated to a renderer follows. Where playback goes next stays
-        :meth:`active_id`, so the queue taking over still goes to the
-        selection."""
+        playback: that engine runs on this machine, so then it is
+        :meth:`local_id`, or None when no renderer runs here. This is what
+        clients are told plays, and what an amp delegated to a renderer
+        follows. Where playback goes next stays :meth:`active_id`, so the
+        queue taking over still goes to the selection."""
         if self._external is None:
             return self.active_id()
-        renderer_id = self._external[1]
-        return renderer_id if renderer_id in self._renderers else None
+        return self.local_id()
 
     def local_id(self) -> Optional[str]:
         """The renderer on this server's machine, whose output an engine running
@@ -462,15 +460,19 @@ class RendererRegistry:
             (rid for rid, record in self._renderers.items() if record.local), None
         )
 
-    def external_claimed(self, owner: object, renderer_id: Optional[str]) -> None:
-        """``owner``, an engine outside the renderers, plays through
-        ``renderer_id``'s output (None: through none Kalinka knows)."""
-        self._external = (owner, renderer_id)
+    def external_claimed(self, owner: object) -> None:
+        """``owner``, an engine outside the renderers, holds playback now."""
+        self._external = owner
         self._publish_current()
+
+    def held_externally(self, renderer_id: str) -> bool:
+        """Whether an engine outside the renderers plays through this renderer's
+        output now, though no session runs on it."""
+        return self._external is not None and self.local_id() == renderer_id
 
     def external_released(self, owner: object) -> None:
         """Its claim is over. Ignored unless ``owner`` holds the claim."""
-        if self._external is None or self._external[0] is not owner:
+        if self._external is not owner:
             return
         self._external = None
         self._publish_current()

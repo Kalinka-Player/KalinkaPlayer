@@ -191,6 +191,45 @@ async def test_the_renderer_here_is_reported_until_the_engine_is_silent(rig):
     assert registry.serving_id() == "remote"
 
 
+async def test_selecting_the_renderer_the_hold_plays_through_keeps_it(rig):
+    arbiter, _, listener, _ = rig
+    registry = _remote_selected_and_one_here()
+    service = ExternalPlaybackService("roon", arbiter, registry)
+    hold = await service.acquire("Roon endpoint", listener)
+    commit = Mock()
+
+    assert await arbiter.move_holder("here", commit)
+
+    commit.assert_called_once()
+    assert hold.active
+    listener.on_revoked.assert_not_called()
+    await hold.release()
+
+
+async def test_a_renderer_here_registering_mid_hold_is_the_one_it_plays_through(rig):
+    arbiter, queue, listener, _ = rig
+    queue.release_renderer = AsyncMock()
+    registry, _ = _registry_with("remote")
+    service = ExternalPlaybackService("roon", arbiter, registry)
+    hold = await service.acquire("Roon endpoint", listener)
+    assert registry.serving_id() is None
+
+    registry.register(
+        renderer_id="here",
+        instance_id="inst-1",
+        friendly_name="here",
+        software_version="0.1.0",
+        kind="native",
+        platform={},
+        session=object(),
+        local=True,
+    )
+    assert registry.serving_id() == "here"
+    assert hold.renderer_id == "here"
+    await arbiter.vacate("here")
+    assert not hold.active
+
+
 async def test_with_no_renderer_here_the_hold_reports_none():
     arbiter = PlaybackArbiter(Mock())
     queue = Mock(control=PlaybackControl.queue(), renderer_id=None, preempt=AsyncMock())
