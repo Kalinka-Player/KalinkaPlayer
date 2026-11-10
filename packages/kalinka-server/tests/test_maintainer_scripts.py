@@ -87,7 +87,8 @@ def test_prerm_removes_nothing_on_an_upgrade(action, tmp_path):
 def test_prerm_still_reports_a_real_removal(tmp_path):
     """The message belongs to removal; only the upgrade path is silenced. Core
     stops once nothing is left to start it again, and before pip takes the
-    server out of the venv it runs from."""
+    server out of the venv it runs from, as do the log readers the socket has
+    already started from it."""
     script, env, calls = _sandboxed_prerm(tmp_path)
 
     result = _run(script, "remove", env=env)
@@ -99,6 +100,7 @@ def test_prerm_still_reports_a_real_removal(tmp_path):
         "systemctl disable --now kalinka-plugins.path",
         "systemctl disable --now kalinka-upgrade.path",
         "systemctl disable --now kalinka-journal-reader.socket",
+        "systemctl stop kalinka-journal-reader@*.service",
         "systemctl disable --now kalinka-mounts.path",
         "systemctl disable kalinka-server-id.service",
         "systemctl disable --now kalinka.service",
