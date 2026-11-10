@@ -301,6 +301,7 @@ class Root:
     def __init__(self, tmp_path):
         self.state = tmp_path / "state"
         self.state.mkdir()
+        self.now = NOW.timestamp()
         self.catalog = {"status": "available", "plugins": document()["plugins"]}
         self.installed = {}
         self.calls = []
@@ -339,6 +340,9 @@ class Root:
                 self.installed.pop(command[-1], None)
         return ""
 
+    def clock(self):
+        return self.now
+
     def apply(self, request):
         (self.state / REQUEST_FILE).write_text(json.dumps(request))
         code = apply(
@@ -347,6 +351,7 @@ class Root:
             download=self.download,
             run=self.run,
             package_version=self.installed.get,
+            clock=self.clock,
         )
         result = json.loads((self.state / RESULT_FILE).read_text())
         assert stat.S_IMODE(os.stat(self.state / RESULT_FILE).st_mode) == 0o644
@@ -514,6 +519,35 @@ def test_an_unreadable_request_is_consumed_and_reported(root):
     assert not (root.state / REQUEST_FILE).exists() and root.calls == []
 
 
+@pytest.mark.parametrize(
+    "age_s, change",
+    [
+        pytest.param(module.STALE_REQUEST_SECONDS, {}, id="as old as the limit"),
+        pytest.param(3 * 24 * 3600, {}, id="days old"),
+        pytest.param(-60, {}, id="from the future"),
+        pytest.param(0, {"requested_at": "yesterday"}, id="no time"),
+        pytest.param(0, {"requested_at": "2026-10-12T12:00:00"}, id="no zone"),
+    ],
+)
+def test_helper_drops_a_request_nobody_is_waiting_for(root, caplog, age_s, change):
+    """A request left behind would run at whatever restart came next, a
+    settings Apply days later, with nobody expecting it."""
+    root.now += age_s
+    code, result = root.apply(INSTALL | change)
+    assert code == 0
+    assert (result["status"], result["error"]) == ("failed", module.EXPIRED)
+    assert result["plugin_id"] == "demo" and result["finished_at"] is not None
+    assert root.calls == [] and root.downloads == []
+    assert "the request expired" in caplog.text
+
+
+def test_helper_carries_out_a_request_just_short_of_the_limit(root):
+    root.now += module.STALE_REQUEST_SECONDS - 1
+    code, result = root.apply(INSTALL)
+    assert code == 0 and result["status"] == "ok", result
+    assert root.installed["kalinka-plugin-demo"] == "1.0.0"
+
+
 def test_the_result_shows_running_while_the_helper_works(root):
     seen = []
 
@@ -528,6 +562,7 @@ def test_the_result_shows_running_while_the_helper_works(root):
         download=root.download,
         run=run,
         package_version=root.installed.get,
+        clock=root.clock,
     )
     assert seen == ["running"] * 3
 
@@ -857,6 +892,7 @@ class LiveRoot(Root):
             package_version=self.installed.get,
             live=True,
             tools=self.tools(),
+            clock=self.clock,
         )
         result = json.loads((self.state / RESULT_FILE).read_text())
         return code, result
@@ -915,6 +951,7 @@ def test_a_core_that_does_not_unload_gets_the_restart_instead(live):
         package_version=live.installed.get,
         live=True,
         tools=live.tools(),
+        clock=live.clock,
     )
 
     names = _names(live.calls)
