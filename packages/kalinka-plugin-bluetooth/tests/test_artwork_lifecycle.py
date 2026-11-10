@@ -19,6 +19,43 @@ receiver = artwork_tests.receiver
 endpoint = artwork_tests.endpoint
 
 
+@pytest.mark.parametrize("stage", ["initial_snapshot", "idle"])
+async def test_worker_cancellation_wins_when_metadata_wait_completes(receiver, stage):
+    service, backend, client = receiver
+    controller = service.artwork
+    event_wait = controller.changed.wait
+    waits = 0
+    cancel_on_ready = False
+
+    async def ready_with_cancellation():
+        nonlocal waits, cancel_on_ready
+        waits += 1
+        await event_wait()
+        if cancel_on_ready:
+            cancel_on_ready = False
+            controller.task.cancel()
+        return True
+
+    controller.changed.wait = ready_with_cancellation
+    await connect_artwork(service, backend, client)
+    await until(lambda: waits == 1)
+    if stage == "idle":
+        await service.update_metadata(backend.metadata(service.endpoint))
+        await until(lambda: waits == 2)
+    worker = controller.task
+    try:
+        cancel_on_ready = True
+        controller.changed.set()
+        done, _ = await asyncio.wait({worker}, timeout=0.2)
+        assert worker in done, "Metadata readiness swallowed worker cancellation"
+        assert worker.cancelled()
+        client.close.assert_awaited_once()
+    finally:
+        # A failed regression must not hang fixture teardown too.
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+
+
 @pytest.mark.parametrize("loss", ["obexd", "bus", "session"])
 async def test_missing_handle_does_not_prevent_reconnection(
     receiver, monkeypatch, loss

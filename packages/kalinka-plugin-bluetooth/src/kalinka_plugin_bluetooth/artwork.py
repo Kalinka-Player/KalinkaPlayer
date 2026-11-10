@@ -34,6 +34,13 @@ HEALTH_CHECK_INTERVAL = 2.0
 RETRY_DELAY = 10.0
 
 
+async def _with_timeout(awaitable, timeout):
+    """@brief Bound a wait without losing caller cancellation on Python 3.11."""
+    # wait_for can swallow cancellation when its child completes simultaneously.
+    async with asyncio.timeout(timeout):
+        return await awaitable
+
+
 async def _finish_cleanup(future):
     """Finish bounded cleanup before propagating even repeated cancellation."""
     cancelled = False
@@ -99,7 +106,7 @@ class ObexClient:
     async def call(self, path, interface, member, signature="", body=None):
         if self.obexd is not None and self.obexd.returncode is not None:
             raise RuntimeError("Bluetooth artwork daemon exited")
-        reply = await asyncio.wait_for(
+        reply = await _with_timeout(
             self.bus.call(
                 Message(
                     destination=OBEX,
@@ -142,19 +149,17 @@ class ObexClient:
             stderr=asyncio.subprocess.DEVNULL,
         )
         bus_address = (
-            (await asyncio.wait_for(self.daemon.stdout.readline(), 5)).decode().strip()
+            (await _with_timeout(self.daemon.stdout.readline(), 5)).decode().strip()
         )
         if not bus_address:
             raise RuntimeError("Could not start the Bluetooth artwork bus")
-        self.bus = await asyncio.wait_for(
-            MessageBus(bus_address=bus_address).connect(), 5
-        )
+        self.bus = await _with_timeout(MessageBus(bus_address=bus_address).connect(), 5)
         self.bus.add_message_handler(self._message)
         for interface, member in (
             (PROPERTIES, "PropertiesChanged"),
             (OBJECTS, "InterfacesRemoved"),
         ):
-            reply = await asyncio.wait_for(
+            reply = await _with_timeout(
                 self.bus.call(
                     Message(
                         destination="org.freedesktop.DBus",
@@ -250,7 +255,7 @@ class ObexClient:
                     if props.get("Status") == "error":
                         raise RuntimeError("Bluetooth artwork transfer failed")
                     with suppress(TimeoutError):
-                        await asyncio.wait_for(self._progress.wait(), 0.1)
+                        await _with_timeout(self._progress.wait(), 0.1)
                 # Never follow a remote-supplied Filename or return a file URL.
                 with target.open("rb") as stream:
                     data = stream.read(MAX_IMAGE_BYTES + 1)
@@ -340,7 +345,7 @@ class ObexClient:
         async def reap(process):
             if process is not None:
                 try:
-                    await asyncio.wait_for(process.wait(), PROCESS_EXIT_TIMEOUT)
+                    await _with_timeout(process.wait(), PROCESS_EXIT_TIMEOUT)
                 except TimeoutError:
                     with suppress(ProcessLookupError):
                         process.kill()
@@ -428,7 +433,7 @@ class BluetoothArtwork:
                             # Wait for the next BlueZ snapshot before using one.
                             while not self.changed.is_set():
                                 with suppress(TimeoutError):
-                                    await asyncio.wait_for(
+                                    await _with_timeout(
                                         self.changed.wait(), HEALTH_CHECK_INTERVAL
                                     )
                                 client.check_alive()
@@ -464,9 +469,7 @@ class BluetoothArtwork:
                     continue
                 if self.desired is request:
                     with suppress(TimeoutError):
-                        await asyncio.wait_for(
-                            self.changed.wait(), HEALTH_CHECK_INTERVAL
-                        )
+                        await _with_timeout(self.changed.wait(), HEALTH_CHECK_INTERVAL)
         finally:
             if client:
                 await client.close()
