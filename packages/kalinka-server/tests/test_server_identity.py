@@ -71,6 +71,37 @@ def test_core_runs_on_a_temporary_id_where_it_cannot_write_one(
     assert "using an ephemeral id" in caplog.text
 
 
+def test_core_keeps_the_id_it_wrote_where_the_directory_will_not_sync(
+    state, monkeypatch
+):
+    """The file already holds it, so a temporary id would differ from the one
+    the supervisor reports and Core reads at its next start."""
+
+    def no_sync(directory):
+        raise OSError("fsync not supported")
+
+    monkeypatch.setattr(server_id_file, "_sync_directory", no_sync)
+
+    made = server_identity.get_server_id()
+
+    assert (state / "server_id").read_text() == made + "\n"
+
+
+def test_a_link_in_the_ids_place_is_replaced_not_read(tmp_path):
+    """Root's postinst would otherwise open whatever kalusr aimed it at."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.write_text(KEPT_ID + "\n")
+    path = tmp_path / "server_id"
+    path.symlink_to(elsewhere)
+
+    made = server_id_file.ensure_id(path)
+
+    assert made != KEPT_ID
+    assert not path.is_symlink()
+    assert path.read_text() == made + "\n"
+    assert elsewhere.read_text() == KEPT_ID + "\n"
+
+
 def _directory_owned_by(monkeypatch, directory, uid, gid):
     real_stat = os.stat
 

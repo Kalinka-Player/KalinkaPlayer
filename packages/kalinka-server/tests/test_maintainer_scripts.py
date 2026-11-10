@@ -1122,6 +1122,7 @@ def _make_id(path):
 
 @NO_ID
 def test_the_id_helper_makes_an_id_where_there_is_none(left, tmp_path):
+    """And says which, for the postinst's output and the unit's journal."""
     path = tmp_path / "server_id"
     if left is not None:
         path.write_text(left)
@@ -1133,6 +1134,7 @@ def test_the_id_helper_makes_an_id_where_there_is_none(left, tmp_path):
     assert path.read_text() == f"{uuid.UUID(made)}\n"
     assert uuid.UUID(made).version == 4
     assert [p.name for p in tmp_path.iterdir()] == ["server_id"]
+    assert f"Generated server id {made}" in result.stderr
 
 
 def test_the_id_helper_writes_through_no_link_left_in_its_way(tmp_path):
