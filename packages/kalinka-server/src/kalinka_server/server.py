@@ -1660,7 +1660,7 @@ async def create_app(
 
     def _renderer_selection() -> Dict[str, Any]:
         return {
-            "renderer_id": renderer_registry.active_id(),
+            "renderer_id": renderer_registry.serving_id(),
             "selected_renderer_id": renderer_registry.selected_id,
         }
 

@@ -1140,7 +1140,7 @@ async def setup(
     )
     player_context.playback_arbiter = arbiter
     player_context.external_playback_for = lambda plugin_id: ExternalPlaybackService(
-        plugin_id, arbiter, renderer_registry.active_id, player_context.device_router
+        plugin_id, arbiter, renderer_registry, player_context.device_router
     )
     player_context.live_audio = LiveAudioRegistry()
     player_context.direct_playback_for = lambda plugin_id: DirectPlaybackService(

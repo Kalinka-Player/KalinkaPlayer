@@ -269,7 +269,7 @@ async def test_external_engine_releases_the_renderer_and_waits_before_queue_resu
 
     await _play_queue(queue, renderer, "1", "2")
     listener = Mock(on_command=AsyncMock(), on_revoked=AsyncMock())
-    service = ExternalPlaybackService("roon", arbiter, renderer.registry.active_id)
+    service = ExternalPlaybackService("roon", arbiter, renderer.registry)
     hold = await service.acquire("Roon endpoint", listener)
     await asyncio.sleep(SETTLE_S)
     assert renderer.session_id is None

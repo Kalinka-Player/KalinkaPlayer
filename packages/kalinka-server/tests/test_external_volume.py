@@ -20,10 +20,7 @@ from kalinka_server.playback_arbiter import PlaybackArbiter
 from tests.test_renderer_volume_control import _bus, _Device, _prepared, _registry_with
 
 
-@pytest.fixture
-async def rig():
-    registry, prefs = _registry_with("rid-a")
-    bus = _bus()
+def _devices():
     local = _Device(
         SupportedFunction.GET_VOLUME, SupportedFunction.SET_VOLUME, volume=42
     )
@@ -35,6 +32,10 @@ async def rig():
     )
     local.set_volume = AsyncMock()
     amp.set_volume = AsyncMock()
+    return local, amp
+
+
+def _service(registry, prefs, bus, local, amp):
     router = OutputDeviceRouter(
         registry,
         prefs,
@@ -51,7 +52,17 @@ async def rig():
         snapshot=lambda: PlaybackState(),
     )
     arbiter.set_queue(queue)
-    service = ExternalPlaybackService("roon", arbiter, registry.active_id, router)
+    return router, arbiter, queue, ExternalPlaybackService(
+        "roon", arbiter, registry, router
+    )
+
+
+@pytest.fixture
+async def rig():
+    registry, prefs = _registry_with("rid-a", local=("rid-a",))
+    bus = _bus()
+    local, amp = _devices()
+    router, arbiter, queue, service = _service(registry, prefs, bus, local, amp)
     listener = Mock(
         on_revoked=AsyncMock(), on_command=AsyncMock(), set_volume=AsyncMock()
     )
@@ -105,6 +116,56 @@ async def test_amp_delegation_keeps_precedence_and_power(rig):
     prefs.set_volume_control("rid-a", None)
     await router.resync()
     assert bus.get_snapshot().volume.current_volume == 100
+
+
+@pytest.fixture
+async def remote_selected():
+    """The amp is wired to the renderer here, but another one is selected."""
+    registry, prefs = _registry_with("here", "remote", local=("here",))
+    registry.select("remote")
+    bus = _bus()
+    local, amp = _devices()
+    router, arbiter, _, service = _service(registry, prefs, bus, local, amp)
+    listener = Mock(
+        on_revoked=AsyncMock(), on_command=AsyncMock(), set_volume=AsyncMock()
+    )
+    try:
+        yield registry, prefs, router, bus, arbiter, service, listener, amp
+    finally:
+        await arbiter.shutdown()
+        bus.close()
+        await registry.shutdown()
+
+
+async def test_the_amp_behind_the_renderer_here_serves_roon(remote_selected):
+    """Its volume and power stay Roon's whichever renderer is selected, so
+    power automation does not count it idle and switch it off."""
+    registry, prefs, router, bus, arbiter, service, listener, amp = remote_selected
+    prefs.set_volume_control("here", "musiccast")
+    hold = await service.acquire("Roon endpoint", listener, volume_control=listener)
+    hold.report_volume(DeviceVolume(max_volume=100, current_volume=60))
+
+    assert router.current_name() == "musiccast"
+    assert router.current() is amp
+    assert bus.get_snapshot().volume.current_volume == 27
+    await router.current().set_volume(20)
+    amp.set_volume.assert_awaited_once_with(20)
+    listener.set_volume.assert_not_called()
+
+    await arbiter.take_back()
+    assert router.current_name() == "kalinka-renderer"
+
+
+async def test_the_selected_renderer_s_amp_does_not_serve_roon(remote_selected):
+    registry, prefs, router, bus, _, service, listener, amp = remote_selected
+    prefs.set_volume_control("remote", "musiccast")
+    hold = await service.acquire("Roon endpoint", listener, volume_control=listener)
+    hold.report_volume(DeviceVolume(max_volume=100, current_volume=60))
+
+    assert router.current() is hold.volume_device
+    assert bus.get_snapshot().volume.current_volume == 60
+    await hold.release()
+    assert router.current() is amp
 
 
 async def test_fixed_volume_does_not_fall_back_to_renderer(rig):

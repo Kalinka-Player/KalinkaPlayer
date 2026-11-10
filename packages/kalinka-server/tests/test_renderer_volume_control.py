@@ -83,7 +83,7 @@ def test_the_renderer_module_is_never_a_candidate():
 
 
 def _registry_with(
-    *renderer_ids: str,
+    *renderer_ids: str, local: tuple[str, ...] = ()
 ) -> tuple[RendererRegistry, RendererPreferences]:
     prefs = RendererPreferences()
     registry = RendererRegistry(prefs=prefs)
@@ -96,6 +96,7 @@ def _registry_with(
             kind="native",
             platform={},
             session=object(),
+            local=renderer_id in local,
         )
     return registry, prefs
 
