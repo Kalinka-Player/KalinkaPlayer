@@ -567,8 +567,7 @@ from the LAN for the page to be reachable.
 
 ## Using it from the app
 
-The Kalinka app shows the streamer under **Settings › General › Streamer**, and
-under **Management** on the plugin catalog's **Streamer** tab:
+The Kalinka app shows the streamer under **Management** on the **Streamer** tab of **Settings**:
 - **Streamer dashboard** opens this page in the browser. That covers the
   dashboard and reinstalling, so the app has no copy of either.
 - **Restart streamer** and **Power off streamer** run through the app's own
@@ -586,8 +585,7 @@ app points the streamer's own renderer at the new card. The row is there for
 the server's own Pi as well as for a streamer that runs only a renderer and has a
 supervisor.
 
-When Core stops answering, the app's "unavailable" card and the Settings
-placeholder offer **Restart server** through the supervisor.
+When Core stops answering, the app's "unavailable" card offers **Restart server** through the supervisor.
 
 None of this appears for a demo server, for a server reached over HTTPS, or
 for a streamer whose supervisor does not match the server. Another client

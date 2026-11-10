@@ -311,22 +311,9 @@ it does not authorize future destructive recovery. Disable both
 
 ## Package updates today
 
-On an existing Debian-based installation, **Settings › EXPERT › Manage this
-streamer** (`base_config.server.manage_box`) opts into Supervisor. It is absent
-from the simple Server section. **Apply** saves the preference and restarts
-Kalinka, not the operating system. When enabled it installs Supervisor only
-if missing; when disabled it removes that package, preserving networking
-dependencies and persistent setup data. Internet access and a published
-Supervisor release for amd64 or arm64 are required to install.
+On an existing Debian-based installation, **Manage this streamer** (`base_config.server.manage_box`), on the **Streamer** tab of **Settings** with Expert on, opts into Supervisor. It is absent from the simple Server section. **Apply** saves the preference and restarts Kalinka, not the operating system. When enabled it installs Supervisor only if missing; when disabled it removes that package, preserving networking dependencies and persistent setup data. Internet access and a published Supervisor release for amd64 or arm64 are required to install.
 
-The separate read-only `base_config.server.supervisor_status` appears in the
-normal **Settings › General › Server** section and reports the actual package
-version or absence, pending work and the last failed attempt.
-An installed package is not a claim that its service is running or reachable;
-the app continues to discover the controls through the Supervisor API. With
-no saved preference, existing images and manual installations show the toggle
-enabled, and ordinary servers show it disabled. A failure leaves the requested
-preference visible alongside the actual state; restart from the app to retry.
+The separate read-only `base_config.server.supervisor_status` appears in the simple **Server** section of the same **Streamer** tab and reports the actual package version or absence, pending work and the last failed attempt. An installed package is not a claim that its service is running or reachable; the app continues to discover the controls through the Supervisor API. With no saved preference, existing images and manual installations show the toggle enabled, and ordinary servers show it disabled. A failure leaves the requested preference visible alongside the actual state; restart from the app to retry.
 
 The Debian package adds a pre-start step to `kalinka-restart.service`, using
 system Python and a root-owned copy of the verified release installer. Only
