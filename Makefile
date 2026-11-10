@@ -304,11 +304,13 @@ image-test:
 		echo "Running the image tests in $$image via $$(basename $$engine)"; \
 		$$engine run --pull=never --rm -v "$(CURDIR)/$(IMAGE_DIR):/packages/kalinka-image:z" \
 			-v "$(CURDIR)/packages/kalinka-supervisor:/packages/kalinka-supervisor:z" \
+			-v "$(CURDIR)/packages/kalinka-server:/packages/kalinka-server:ro,z" \
+			-v "$(CURDIR)/packages/kalinka-renderer:/packages/kalinka-renderer:ro,z" \
 			-v "$(CURDIR)/scripts:/scripts:ro,z" -w /packages/kalinka-image \
 			-e KALINKA_IMAGE_TEST_DISPOSABLE=1 -e DEBIAN_FRONTEND=noninteractive \
 			"$$image" bash -c 'apt-get update -qq >/dev/null && \
 				apt-get install -y -qq --no-install-recommends \
-					python3 util-linux fdisk dosfstools mtools e2fsprogs tzdata >/dev/null && \
+					python3 util-linux fdisk dosfstools mtools e2fsprogs tzdata systemd adduser >/dev/null && \
 				bash tests/run-tests.sh'; \
 	else \
 		echo "No podman or docker: running only the tests that need neither root nor a container."; \

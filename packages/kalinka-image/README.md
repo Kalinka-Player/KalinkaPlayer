@@ -145,9 +145,10 @@ The build switches the HAT's I2C bus on (`dtparam=i2c_arm=on`) and loads `i2c-de
 - **`test_card_settings.sh`** runs `card_settings_test.py`: `card-settings.py` on fake roots, with a recorder in place of the commands it runs. It reads the `custom.toml` and `firstrun.sh` in `fixtures/imager`, a BOM, CRLF, malformed and wrongly typed files and every value it refuses; checks the profile, the regulatory file, the accounts, keys, SSH and time zone it writes and the exact commands it runs; that every input is zeroed before it is removed and `cmdline.txt` loses Imager's tokens and nothing else; and that no password, key, hash or passphrase reaches the journal, its output or a command line.
 - **`test_card_settings_image.sh`** checks the units' order and conditions and the target, that both bases install and check them, and that `verify_card_settings` fails a root missing any piece.
 - **`test_systemctl_shim.sh`** pins down which verbs reach the real `systemctl` and which are swallowed.
+- **`test_package_units.sh`** runs this checkout's server and renderer postinsts behind that `systemctl`, as the build installs them, and checks that `kalinka.service`, `kalinka-renderer.service` and their watchers come out enabled.
 - **`test_soundcard.sh`**, for the sound-card helper, and **`test_dietpi_conf.sh`**, for reading `dietpi.txt` as DietPi does, are in the supervisor package; `make supervisor-test` runs them.
 
-`test_systemctl_shim.sh` edits `/etc`, so it skips itself unless `KALINKA_IMAGE_TEST_DISPOSABLE=1` says the system is throwaway. `make image-test` supplies that by running it in a container.
+`test_systemctl_shim.sh` and `test_package_units.sh` edit `/etc`, so they skip themselves unless `KALINKA_IMAGE_TEST_DISPOSABLE=1` says the system is throwaway. `make image-test` supplies that by running them in a container, with the systemd package installed for `test_package_units.sh`.
 
 The test container uses the official Debian `trixie` image from the ECR mirror,
 falling back to Docker Hub if the mirror cannot supply it. Cached images are
