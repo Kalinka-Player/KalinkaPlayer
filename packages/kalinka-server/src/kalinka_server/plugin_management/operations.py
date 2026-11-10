@@ -598,8 +598,10 @@ class PluginOperations:
             record = self._helper_record()
             if record is None or record.get("id") != request.requested_at:
                 if time.monotonic() - moved > self._deadline_s:
-                    # Left, the trigger would refuse every later request.
+                    # Left, the trigger would refuse every later request, and
+                    # the request would run at whatever restart came next.
                     self._live_forget()
+                    (Path(self._state_dir()) / REQUEST_FILE).unlink(missing_ok=True)
                     self._core_finish(core, "failed", "The installer did not answer.")
                     return
                 continue
