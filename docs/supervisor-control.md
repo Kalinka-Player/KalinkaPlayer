@@ -187,7 +187,8 @@ is busy, including after a supervisor restart.
   supervisors omit it; apps hide the timer controls on those streamers.
 - `server_id` is Core's identity from `/var/lib/kalinka/server_id`, or `null`
   before there is one. The server's package makes it as it installs; on a
-  streamer flashed from an image, Core makes it on its first start.
+  streamer flashed from an image, `kalinka-server-id.service` makes it on the
+  first boot, before the supervisor starts.
 - `renderer_id` is the renderer's identity from
   `/var/lib/kalinka-renderer/renderer_id`, or `null` where no renderer has
   created one. It is the `renderer_id` Core lists the renderer under.

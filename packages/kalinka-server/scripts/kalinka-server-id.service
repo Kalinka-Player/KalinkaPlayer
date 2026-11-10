@@ -1,0 +1,17 @@
+[Unit]
+Description=Make Kalinka's server id
+# The postinst makes it as the package installs; an image's build seals that one out.
+ConditionPathExists=!/var/lib/kalinka/server_id
+# The supervisor then reports it from the start, and Core does not make a second one.
+Before=kalinka-supervisor.service kalinka.service
+
+[Service]
+Type=oneshot
+User=kalusr
+Group=kalusr
+StateDirectory=kalinka
+StateDirectoryMode=0750
+ExecStart=/usr/bin/python3 -I /usr/lib/kalinka/server-id /var/lib/kalinka/server_id
+
+[Install]
+WantedBy=multi-user.target

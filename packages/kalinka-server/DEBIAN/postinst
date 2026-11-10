@@ -7,6 +7,9 @@ INSTALL_DIR="/opt/kalinka"
 CONFIG_DIR="/etc/kalinka"
 STATE_DIR="/var/lib/kalinka"
 SERVER_ID="${STATE_DIR}/server_id"
+SERVER_ID_HELPER="/usr/lib/kalinka/server-id"
+SERVER_ID_UNIT="kalinka-server-id.service"
+SERVER_ID_UNIT_PATH="/etc/systemd/system/${SERVER_ID_UNIT}"
 UNIT_NAME="kalinka.service"
 UNIT_PATH="/etc/systemd/system/${UNIT_NAME}"
 RESTART_PATH_UNIT="kalinka-restart.path"
@@ -71,16 +74,10 @@ case "$1" in
 
     # Here rather than at Core's first start, so the supervisor can report it before Core has run.
     echo "[4/5] Create the server id if there is none"
-    # A file Core would take for malformed and replace is none either.
-    if ! python3 -c 'import sys, uuid; uuid.UUID(open(sys.argv[1]).read().strip())' "$SERVER_ID" 2>/dev/null; then
-      [ -d "$STATE_DIR" ] || install -d -m 0750 -o "$USER" -g "$USER" "$STATE_DIR"
-      python3 -c 'import uuid; print(uuid.uuid4())' > "$SERVER_ID.new"
-      chown "$USER:$USER" "$SERVER_ID.new"
-      # Core and the app key on it from now on, so it has to outlast a power cut.
-      sync "$SERVER_ID.new"
-      mv "$SERVER_ID.new" "$SERVER_ID"
-      sync "$STATE_DIR"
-    fi
+    [ -d "$STATE_DIR" ] || install -d -m 0750 -o "$USER" -g "$USER" "$STATE_DIR"
+    python3 -I "$SERVER_ID_HELPER" "$SERVER_ID"
+    # Not through a link: the directory is kalusr's, so kalusr could have put one there.
+    chown -h "$USER:$USER" "$SERVER_ID"
 
     echo "[5/5] systemd: reload; enable/start if units exist"
     systemd-tmpfiles --create /usr/lib/tmpfiles.d/kalinka.conf || true
@@ -107,6 +104,10 @@ case "$1" in
     fi
     if [ -f "$MOUNTS_PATH_UNIT_PATH" ]; then
       systemctl enable --now "$MOUNTS_PATH_UNIT"
+    fi
+    # No --now: [4/5] has made the id, and the unit is for an image's first boot.
+    if [ -f "$SERVER_ID_UNIT_PATH" ]; then
+      systemctl enable "$SERVER_ID_UNIT"
     fi
     # Drives plugged in before this install are mounted now, not at the next plug.
     if command -v udevadm >/dev/null 2>&1; then

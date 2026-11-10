@@ -10,18 +10,22 @@ apt to bring: on a headless box, one flag decides between the packages Kalinka
 uses and a graphics stack that nothing on it will ever draw with.
 
 The postinst makes the server's id, which the app keeps a server's pins under,
-before Core first starts, and an upgrade must keep it.
+before Core first starts, and an upgrade must keep it. On an image, whose build
+seals that id out, a first-boot unit makes it with the same helper.
 """
 
+import configparser
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 import uuid
 from pathlib import Path
 
 import pytest
+from kalinka_server import server_identity
 
 REPO = Path(__file__).resolve().parents[3]
 PRERM = REPO / "packages" / "kalinka-server" / "DEBIAN" / "prerm"
@@ -86,6 +90,7 @@ def test_prerm_still_reports_a_real_removal(tmp_path):
         "disable --now kalinka-plugins.path",
         "disable --now kalinka-journal-reader.socket",
         "disable --now kalinka-mounts.path",
+        "disable kalinka-server-id.service",
     ]
 
 
@@ -885,6 +890,10 @@ def test_a_supervisor_looks_up_its_release_where_the_project_publishes_it(
 
 POSTINST = REPO / "packages" / "kalinka-server" / "DEBIAN" / "postinst"
 BUILD_DEB = REPO / "packages" / "kalinka-server" / "scripts" / "build_deb.sh"
+SERVER_ID_HELPER = REPO / "packages" / "kalinka-server" / "scripts" / "server-id"
+SERVER_ID_UNIT = (
+    REPO / "packages" / "kalinka-server" / "scripts" / "kalinka-server-id.service"
+)
 PLUGINS_DROPIN = (
     REPO / "packages" / "kalinka-server" / "scripts" / "kalinka-restart-plugins.conf"
 )
@@ -972,12 +981,13 @@ def _recorder(name, then=""):
 def _sandboxed_configure(tmp_path, server_id=None):
     """The postinst's configure, run against a root under tmp_path.
 
-    Every system path in it is moved under that root, and what reaches past
-    the files — users, systemd, udev — is a recorder. Only root can give a
-    file away, so install drops the owner it is asked for and chown only
-    records it. ``server_id`` is what the box already holds there, if
-    anything. Returns the result, the recorded calls, the id path and what
-    it held when kalinka.service was started.
+    Every system path in it is moved under that root, where the package has
+    put its units and the id helper, and what reaches past the files — users,
+    systemd, udev — is a recorder. Only root can give a file away, so install
+    drops the owner it is asked for and chown only records it. ``server_id``
+    is what the box already holds there, if anything. Returns the result, the
+    recorded calls, the id path and what it held when kalinka.service was
+    started.
     """
     root = tmp_path / "root"
     script = tmp_path / "postinst"
@@ -988,9 +998,13 @@ def _sandboxed_configure(tmp_path, server_id=None):
             POSTINST.read_text(),
         )
     )
-    unit = root / "etc" / "systemd" / "system" / "kalinka.service"
-    unit.parent.mkdir(parents=True)
-    unit.touch()
+    units = root / "etc" / "systemd" / "system"
+    units.mkdir(parents=True)
+    for name in ("kalinka.service", SERVER_ID_UNIT.name):
+        (units / name).touch()
+    helper = root / "usr" / "lib" / "kalinka" / "server-id"
+    helper.parent.mkdir(parents=True)
+    shutil.copy(SERVER_ID_HELPER, helper)
     path = root / "var" / "lib" / "kalinka" / "server_id"
     if server_id is not None:
         path.parent.mkdir(parents=True)
@@ -1042,9 +1056,16 @@ def _sandboxed_configure(tmp_path, server_id=None):
     return result, calls, path, at_start.read_text() if at_start.exists() else None
 
 
-@pytest.mark.parametrize(
-    "left", [None, "", "\n", "not-a-uuid\n"], ids=["none", "empty", "blank", "malformed"]
+KEPT_ID = "0b0c5a3e-8c1b-4a51-9a0d-6c9b1c7f1e2a\n"
+
+NO_ID = pytest.mark.parametrize(
+    "left",
+    [None, "", "\n", "not-a-uuid\n"],
+    ids=["none", "empty", "blank", "malformed"],
 )
+
+
+@NO_ID
 def test_a_fresh_install_has_its_server_id_before_core_first_starts(left, tmp_path):
     """The supervisor reports it from install on, rather than once Core has
     run; an empty file, which a power cut mid-write can leave, is no id, nor
@@ -1055,7 +1076,7 @@ def test_a_fresh_install_has_its_server_id_before_core_first_starts(left, tmp_pa
     server_id = path.read_text().strip()
     assert uuid.UUID(server_id).version == 4
     assert at_start == path.read_text()
-    assert f"chown kalusr:kalusr {path}.new" in calls
+    assert f"chown -h kalusr:kalusr {path}" in calls
     assert not path.with_name("server_id.new").exists()
     if left is None:
         assert f"install -d -m 0750 -o kalusr -g kalusr {path.parent}" in calls
@@ -1065,11 +1086,131 @@ def test_a_fresh_install_has_its_server_id_before_core_first_starts(left, tmp_pa
 def test_an_upgrade_keeps_the_server_id(tmp_path):
     """A new one would orphan the renderer sessions Core holds and leave the
     app's pins under an id nobody has."""
-    kept = "0b0c5a3e-8c1b-4a51-9a0d-6c9b1c7f1e2a\n"
-
-    result, calls, path, at_start = _sandboxed_configure(tmp_path, server_id=kept)
+    result, calls, path, at_start = _sandboxed_configure(tmp_path, server_id=KEPT_ID)
 
     assert result.returncode == 0, result.stderr
-    assert path.read_text() == kept
-    assert at_start == kept
-    assert not any(str(path) in call for call in calls)
+    assert path.read_text() == KEPT_ID
+    assert at_start == KEPT_ID
+    assert [call for call in calls if str(path) in call] == [
+        f"chown -h kalusr:kalusr {path}"
+    ]
+
+
+@pytest.mark.parametrize("held", [None, KEPT_ID], ids=["install", "upgrade"])
+def test_the_postinst_enables_the_first_boot_unit_without_starting_it(held, tmp_path):
+    """The id is there by then. The unit is for an image, whose build seals
+    out the id this install made."""
+    result, calls, _, _ = _sandboxed_configure(tmp_path, server_id=held)
+
+    assert result.returncode == 0, result.stderr
+    assert [call for call in calls if SERVER_ID_UNIT.name in call] == [
+        f"systemctl enable {SERVER_ID_UNIT.name}"
+    ]
+
+
+def _make_id(path):
+    """The helper, run the way kalinka-server-id.service runs it."""
+    return subprocess.run(
+        [sys.executable, "-I", str(SERVER_ID_HELPER), str(path)],
+        capture_output=True,
+        text=True,
+    )
+
+
+@NO_ID
+def test_the_id_helper_makes_an_id_where_there_is_none(left, tmp_path):
+    path = tmp_path / "server_id"
+    if left is not None:
+        path.write_text(left)
+
+    result = _make_id(path)
+
+    assert result.returncode == 0, result.stderr
+    made = path.read_text().strip()
+    assert path.read_text() == f"{uuid.UUID(made)}\n"
+    assert uuid.UUID(made).version == 4
+    assert [p.name for p in tmp_path.iterdir()] == ["server_id"]
+
+
+def test_the_id_helper_writes_through_no_link_left_in_its_way(tmp_path):
+    """As root, through a link kalusr left in its own directory, it would
+    overwrite whatever file that link names."""
+    state = tmp_path / "state"
+    state.mkdir()
+    victim = tmp_path / "shadow"
+    victim.write_text("root:secret\n")
+    (state / "server_id.new").symlink_to(victim)
+
+    result = _make_id(state / "server_id")
+
+    assert result.returncode == 0, result.stderr
+    assert victim.read_text() == "root:secret\n"
+    assert uuid.UUID((state / "server_id").read_text().strip()).version == 4
+    assert [p.name for p in state.iterdir()] == ["server_id"]
+
+
+@pytest.mark.parametrize(
+    "kept", [KEPT_ID, KEPT_ID.strip()], ids=["as-written", "no-newline"]
+)
+def test_the_id_helper_leaves_an_id_as_it_is(kept, tmp_path):
+    path = tmp_path / "server_id"
+    path.write_text(kept)
+    before = path.stat()
+
+    result = _make_id(path)
+
+    assert result.returncode == 0, result.stderr
+    assert path.read_bytes() == kept.encode()
+    assert path.stat().st_ino == before.st_ino
+    assert [p.name for p in tmp_path.iterdir()] == ["server_id"]
+
+
+@pytest.mark.parametrize(
+    "held",
+    [None, "", "\n", "not-a-uuid\n", KEPT_ID, KEPT_ID.strip(), KEPT_ID.upper()],
+)
+def test_the_id_helper_keeps_just_what_core_would(held, tmp_path):
+    """Core still makes the id where neither the postinst nor the unit ran,
+    so the two must agree on what is one already."""
+    path = tmp_path / "server_id"
+    if held is not None:
+        path.write_text(held)
+    core_keeps = server_identity._read(path) is not None
+
+    result = _make_id(path)
+
+    assert result.returncode == 0, result.stderr
+    assert (path.read_text() == held) == core_keeps
+
+
+def test_the_first_boot_unit_makes_the_id_only_where_there_is_none():
+    """Only on an image's first boot, and in time for the supervisor to report
+    it and for Core not to make another."""
+    unit = configparser.ConfigParser(interpolation=None)
+    unit.optionxform = str
+    unit.read_string(SERVER_ID_UNIT.read_text())
+    server_id = "/var/lib/kalinka/server_id"
+
+    assert unit["Unit"]["ConditionPathExists"] == f"!{server_id}"
+    assert set(unit["Unit"]["Before"].split()) == {
+        "kalinka-supervisor.service",
+        "kalinka.service",
+    }
+    assert unit["Install"]["WantedBy"] == "multi-user.target"
+    service = unit["Service"]
+    assert service["Type"] == "oneshot"
+    assert (service["User"], service["StateDirectory"]) == ("kalusr", "kalinka")
+    assert service["ExecStart"] == (
+        f"/usr/bin/python3 -I /usr/lib/kalinka/server-id {server_id}"
+    )
+
+
+def test_the_package_ships_the_id_helper_and_its_unit():
+    build = BUILD_DEB.read_text()
+    assert (
+        'install -m 755 scripts/server-id "$TARGET_DIR/usr/lib/kalinka/server-id"'
+        in build
+    )
+    assert (
+        f'cp scripts/{SERVER_ID_UNIT.name} "$TARGET_DIR/etc/systemd/system/"' in build
+    )
