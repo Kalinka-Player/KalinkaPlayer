@@ -598,11 +598,10 @@ class PluginOperations:
             record = self._helper_record()
             if record is None or record.get("id") != request.requested_at:
                 if time.monotonic() - moved > self._deadline_s:
-                    # Left, the trigger would refuse every later request, and
-                    # the request would run at whatever restart came next.
+                    self._core_finish(core, "failed", "The installer did not answer.")
+                    # Left, the trigger refuses later requests and a restart would run this one.
                     self._live_forget()
                     (Path(self._state_dir()) / REQUEST_FILE).unlink(missing_ok=True)
-                    self._core_finish(core, "failed", "The installer did not answer.")
                     return
                 continue
             if record.get("updated_at") != seen:
@@ -774,6 +773,7 @@ def apply(
         return 1
     finally:
         request_path.unlink(missing_ok=True)
+    record = _Record(result_path, _record_of(request, clock()), clock)
     if not request.fresh(clock()):
         logger.warning(
             "Not carrying out %s %s requested at %s: the request expired",
@@ -781,11 +781,8 @@ def apply(
             request.distribution,
             request.requested_at,
         )
-        _Record(result_path, _record_of(request, clock()), clock).finish(
-            "failed", EXPIRED
-        )
+        record.finish("failed", EXPIRED)
         return 0
-    record = _Record(result_path, _record_of(request, clock()), clock)
     logger.info("%s %s", request.action, request.distribution)
     try:
         if request.action == "uninstall":
