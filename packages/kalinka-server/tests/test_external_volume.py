@@ -236,9 +236,8 @@ async def test_slow_volume_resync_cannot_block_audio_stop(rig):
 
     router.resync = stalled
     stop = asyncio.create_task(arbiter.take_back())
+    # Not wait_for: the arbiter shields the stop, so a stuck one would hang.
     finished, _ = await asyncio.wait({stop}, timeout=HANG_GUARD_S)
-    # The arbiter shields the stop from cancellation, so a stop that never
-    # cuts the resync off would hang the test instead of failing it.
     unstall.set()
     await stop
     assert stop in finished
@@ -264,7 +263,7 @@ async def test_a_plugin_ignoring_cancellation_cannot_block_audio_stop(rig):
     request = asyncio.create_task(router.current().set_volume(20))
     await entered.wait()
     stop = asyncio.create_task(arbiter.take_back())
-    finished, _ = await asyncio.wait({stop}, timeout=0.5)
+    finished, _ = await asyncio.wait({stop}, timeout=HANG_GUARD_S)
     done.set()
     await asyncio.gather(stop, request, return_exceptions=True)
     assert stop in finished
