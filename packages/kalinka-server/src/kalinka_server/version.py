@@ -279,7 +279,22 @@ def get_version() -> str:
 # mounted at start only with it on; saving one no longer mounts it. The
 # settings schema no longer describes base_config.storage.mounts, and
 # /server/version's `storage` has `devices`.
-REST_API_VERSION = "0.22"
+# 0.23: plugin operations queue. Where /server/version reports
+# plugin_management.operation_queue, POST /server/plugins/{id}/install,
+# /update and /uninstall asked for while another runs, or while the server
+# restarts, answer 202 {"status": "queued", "position", ...} instead of 409,
+# and run in turn, checked again when their turn comes; asked again for one
+# queued or under way, the answer is that one, and another operation on the
+# same plugin is 409 operation_in_progress. Every acceptance carries `id`, as
+# does the operation's record. POST /server/plugins/updates, optionally
+# {"plugin_ids": [...]}, updates those or every plugin with an update:
+# {"operations": [acceptances], "refused": [{plugin_id, code, message}]}, 202
+# when it accepted any. GET /server/plugins/operation adds `queue` (next
+# first: {id, action, plugin_id, distribution, version, installed_version,
+# queued_at}) and `results` (the latest finished records, oldest first). A
+# queue left by a restart runs once the server is back, unless it stood for
+# fifteen minutes; its operations then end failed.
+REST_API_VERSION = "0.23"
 
 
 def get_rest_api_version() -> str:

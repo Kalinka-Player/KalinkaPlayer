@@ -5,6 +5,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import hashlib
 import asyncio
+import itertools
 import json
 import os
 from pathlib import Path
@@ -23,6 +24,8 @@ from kalinka_server.plugin_management.compatibility import (
     HostEnvironment,
 )
 from kalinka_server.plugin_management.operations import (
+    EXPIRED,
+    QUEUE_FILE,
     REQUEST_FILE,
     RESULT_FILE,
     Failure,
@@ -46,6 +49,29 @@ def document():
     artifact = doc["plugins"][0]["releases"][0]["artifacts"][0]
     artifact["sha256"] = DIGEST
     artifact["size_bytes"] = len(PACKAGE)
+    return doc
+
+
+def op_id(n):
+    return f"{n:032x}"
+
+
+def with_other(doc, version="1.0.0"):
+    """Add a second plugin, ``other``, installable as the demo is."""
+    other = deepcopy(doc["plugins"][0])
+    other.update(
+        id="other",
+        name="Other input",
+        distribution="kalinka-plugin-other",
+        entry_point="kalinka_plugin_other",
+    )
+    release = other["releases"][0]
+    release["version"] = version
+    artifact = release["artifacts"][0]
+    artifact["filename"] = f"kalinka-plugin-other_{version}_all.deb"
+    artifact["package"].update(name="kalinka-plugin-other", version=version)
+    artifact["url"] = f"https://example.org/other/{artifact['filename']}"
+    doc["plugins"].append(other)
     return doc
 
 
@@ -84,6 +110,7 @@ class Box:
         self.supported = True
         self.restart_error = None
         self.restarting = False
+        self.ids = (op_id(n) for n in itertools.count(1))
 
     def restart(self):
         if self.restart_error:
@@ -102,6 +129,8 @@ class Box:
             restart=self.restart,
             restarting=lambda: self.restarting,
             clock=lambda: self.now,
+            poll_s=0.01,
+            new_id=lambda: next(self.ids),
         )
 
     def request(self):
@@ -124,6 +153,7 @@ async def test_install_writes_a_catalog_release_request_and_restarts(box):
     body = await ops.request("install", "demo")
     assert body == {
         "status": "restarting",
+        "id": op_id(1),
         "operation": "install",
         "plugin_id": "demo",
         "distribution": "kalinka-plugin-demo",
@@ -140,7 +170,11 @@ async def test_install_writes_a_catalog_release_request_and_restarts(box):
         "version": "1.0.0",
         "artifact_sha256": DIGEST,
         "requested_at": NOW.isoformat(),
+        "operation_id": op_id(1),
     }
+    # Followed by its id from the start, though Core goes down with it.
+    assert ops.operation()["status"] == "restarting"
+    assert ops.operation()["id"] == op_id(1)
     assert stat.S_IMODE(os.stat(box.state / REQUEST_FILE).st_mode) == 0o640
     # Root reads only what it will check against its own fetch: no URL here.
     assert "url" not in json.dumps(request)
@@ -216,38 +250,73 @@ async def test_catalog_must_be_available(box):
     )
 
 
-async def test_one_request_at_a_time_until_it_goes_stale(box):
-    ops = box.operations(await loaded_catalog(document()))
+def stopped(ops):
+    """Core stops: what it had under way goes with it."""
+    for task in (ops._draining, ops._following):
+        if task is not None:
+            task.cancel()
+
+
+async def test_one_request_goes_at_a_time_and_the_next_waits_its_turn(box):
+    ops = box.operations(await loaded_catalog(with_other(document())))
     await ops.request("install", "demo")
-    assert await refused(ops.request("install", "demo")) == (
-        409,
-        "operation_in_progress",
-    )
+
+    answer = await ops.request("install", "other")
+
+    assert answer["status"] == "queued" and answer["position"] == 1
+    assert box.restarts == 1 and box.request()["plugin_id"] == "demo"
+    assert [entry["id"] for entry in ops.queue()] == [answer["id"]]
+    # A request nobody consumed holds the queue up only until it goes stale.
     box.now = NOW + timedelta(minutes=16)
-    await ops.request("install", "demo")
-    assert box.restarts == 2
+    await _until(lambda: box.restarts == 2)
+    assert box.request()["operation_id"] == answer["id"]
+    assert ops.queue() == []
 
 
-async def test_none_while_the_server_is_already_restarting(box):
+async def test_a_request_while_the_server_restarts_waits_for_it(box):
     """A trigger fired while kalinka-restart.service runs starts no second run,
-    so a request its helper has already passed would never be carried out."""
+    so a request asked for then waits for the server to be back."""
     box.installed["kalinka-plugin-demo"] = "1.0.0"
-    ops = box.operations(
-        await loaded_catalog(with_release(document(), "1.1.0", DIGEST))
-    )
-    await ops.request("update", "demo")
+    catalog = await loaded_catalog(with_release(document(), "1.1.0", DIGEST))
+    ops = box.operations(catalog)
     box.restarting = True
-    (box.state / REQUEST_FILE).unlink()
-    assert await refused(ops.request("update", "demo")) == (
-        409,
-        "operation_in_progress",
-    )
-    assert not (box.state / REQUEST_FILE).exists()
-    assert box.restarts == 1
+
+    answer = await ops.request("update", "demo")
+
+    assert answer["status"] == "queued"
+    assert not (box.state / REQUEST_FILE).exists() and box.restarts == 0
+    assert stat.S_IMODE(os.stat(box.state / QUEUE_FILE).st_mode) == 0o644
+    stopped(ops)
     box.restarting = False
-    box.installed["kalinka-plugin-demo"] = "1.1.0"
-    await ops.request("uninstall", "demo")
-    assert box.restarts == 2
+    box.now += timedelta(minutes=2)
+    ops = box.operations(catalog)
+    assert [entry["id"] for entry in ops.queue()] == [answer["id"]]
+    ops.resume()
+    await _until(lambda: box.restarts == 1)
+    assert box.request()["operation_id"] == answer["id"]
+    assert box.request()["requested_at"] == box.now.isoformat()
+    assert ops.queue() == []
+
+
+async def test_a_queue_left_too_long_is_not_carried_out(box):
+    ops = box.operations(await loaded_catalog(document()))
+    box.restarting = True
+    answer = await ops.request("install", "demo")
+    stopped(ops)
+
+    box.restarting = False
+    box.now += timedelta(minutes=16)
+    ops = box.operations(await loaded_catalog(document()))
+    ops.resume()
+    await asyncio.sleep(0.05)
+
+    assert ops.queue() == [] and box.restarts == 0
+    [result] = ops.results()
+    assert (result["id"], result["status"], result["error"]) == (
+        answer["id"],
+        "failed",
+        EXPIRED,
+    )
 
 
 async def test_a_failed_restart_request_withdraws_the_request(box):
@@ -715,6 +784,7 @@ async def test_update_names_the_newer_release(box):
     body = await ops.request("update", "demo")
     assert body == {
         "status": "restarting",
+        "id": op_id(1),
         "operation": "update",
         "plugin_id": "demo",
         "distribution": "kalinka-plugin-demo",
@@ -775,9 +845,15 @@ async def test_updates_are_unavailable_without_installer_or_catalog(box):
         "installation": False,
         "update_checks": False,
         "live_installation": False,
+        "operation_queue": False,
     }
     box.supported = True
-    assert ops.capabilities() == {"installation": True, "update_checks": True, "live_installation": False}
+    assert ops.capabilities() == {
+        "installation": True,
+        "update_checks": True,
+        "live_installation": False,
+        "operation_queue": True,
+    }
     unavailable = PublicCatalog(
         transport=httpx.MockTransport(lambda request: httpx.Response(500))
     )
@@ -829,6 +905,23 @@ async def test_routes_report_and_apply_updates(box):
         assert response.status_code == 202, response.text
         assert response.json()["operation"] == "update"
         assert box.request()["action"] == "update"
+        update = response.json()
+
+        # Every plugin with an update: this one is already under way.
+        response = await client.post("/server/plugins/updates")
+        assert response.status_code == 202, response.text
+        assert response.json() == {"operations": [update], "refused": []}
+        response = await client.post(
+            "/server/plugins/updates", json={"plugin_ids": ["nonesuch"]}
+        )
+        assert response.status_code == 200
+        assert [r["code"] for r in response.json()["refused"]] == ["unknown_plugin"]
+        response = await client.post("/server/plugins/updates", json={"plugin_id": "demo"})
+        assert response.status_code == 422
+        operation = (await client.get("/server/plugins/operation")).json()
+        assert (operation["id"], operation["status"]) == (update["id"], "restarting")
+        assert operation["queue"] == [] and operation["results"] == []
+        assert box.restarts == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1066,6 +1159,8 @@ class LiveBox(Box):
         self.live = True
         self.triggers = 0
         self.forgotten = 0
+        self.trigger_error = None
+        self.taken = None
 
     def operations(self, catalog, host=HOST, renderers=(), deadline_s=5.0):
         return PluginOperations(
@@ -1086,16 +1181,24 @@ class LiveBox(Box):
             clock=lambda: self.now,
             poll_s=0.01,
             deadline_s=deadline_s,
+            new_id=lambda: next(self.ids),
         )
 
     def _trigger(self):
+        if self.trigger_error:
+            raise self.trigger_error
         self.triggers += 1
 
     def _forget(self):
         self.forgotten += 1
 
     def helper_says(self, status, step=None, **more):
-        request = self.request()
+        """The helper's record of the request, which it takes away as it starts."""
+        path = self.state / REQUEST_FILE
+        if path.is_file():
+            self.taken = self.request()
+            path.unlink()
+        request = self.taken
         steps = module.STEPS[request["action"]]
         record = module._record_of(OperationRequest.model_validate(request), 0.0)
         record.update(status=status, step=step, step_index=steps.index(step) + 1 if step else 0, **more)
@@ -1170,10 +1273,10 @@ async def test_a_live_removal_unloads_before_asking(live_box):
 
 async def test_a_refused_removal_loads_the_plugin_back(live_box):
     live_box.installed["kalinka-plugin-demo"] = "1.0.0"
-    live_box.restarting = True
+    live_box.trigger_error = OSError("read-only")
     ops = live_box.operations(await loaded_catalog(document()))
 
-    assert await refused(ops.request("uninstall", "demo")) == (409, "operation_in_progress")
+    assert await refused(ops.request("uninstall", "demo")) == (500, "restart_failed")
 
     assert live_box.lifecycle.calls == [("unload", "demo", True), ("load", "demo", False)]
     assert ops.operation() == {"status": "idle"}
@@ -1216,16 +1319,16 @@ async def test_a_failed_removal_loads_the_plugin_back(live_box):
     assert ops.operation()["error"] == "The package is still installed."
 
 
-async def test_a_request_refused_while_another_is_submitted_touches_neither(live_box):
+async def test_one_asked_for_twice_at_once_is_one_operation(live_box):
     live_box.installed["kalinka-plugin-demo"] = "0.9.0"
     ops = live_box.operations(await loaded_catalog(with_release(document(), "1.1.0", DIGEST)))
     outcomes = await asyncio.gather(
-        ops.request("update", "demo"), ops.request("update", "demo"), return_exceptions=True
+        ops.request("update", "demo"), ops.request("update", "demo")
     )
 
-    applied = [o for o in outcomes if isinstance(o, dict)]
-    assert [o["status"] for o in applied] == ["applying"]
-    assert [o.code for o in outcomes if isinstance(o, Refusal)] == ["operation_in_progress"]
+    assert [o["status"] for o in outcomes] == ["applying", "applying"]
+    assert outcomes[0]["id"] == outcomes[1]["id"] and live_box.triggers == 1
+    assert ops.queue() == []
 
     live_box.helper_says("ok", "installing_environment")
     await _until(lambda: ops.operation()["status"] == "ok")
@@ -1306,12 +1409,125 @@ async def test_a_stalled_update_leaves_the_plugin_listed_in_error(live_box):
     ]
 
 
-async def test_one_live_operation_at_a_time(live_box):
-    ops = live_box.operations(await loaded_catalog(document()))
-    await ops.request("install", "demo")
-    (live_box.state / REQUEST_FILE).unlink()
+async def test_live_operations_queue_and_run_in_turn(live_box):
+    ops = live_box.operations(await loaded_catalog(with_other(document())))
+    first = await ops.request("install", "demo")
+    live_box.helper_says("running", "downloading")
 
-    assert await refused(ops.request("install", "demo")) == (409, "operation_in_progress")
+    second = await ops.request("install", "other")
+
+    assert (first["status"], second["status"], second["position"]) == ("applying", "queued", 1)
+    assert [entry["plugin_id"] for entry in ops.queue()] == ["other"]
+    assert live_box.triggers == 1
+    live_box.helper_says("ok", "installing_environment")
+    await _until(lambda: live_box.triggers == 2)
+    assert live_box.request()["operation_id"] == second["id"]
+    assert ops.queue() == [] and ops.operation()["id"] == second["id"]
+    assert [(r["id"], r["status"]) for r in ops.results()] == [(first["id"], "ok")]
+
+    live_box.helper_says("ok", "installing_environment")
+    await _until(lambda: ops.operation()["status"] == "ok")
+    assert [(r["id"], r["status"]) for r in ops.results()] == [
+        (first["id"], "ok"),
+        (second["id"], "ok"),
+    ]
+    assert live_box.lifecycle.calls == [("load", "demo", True), ("load", "other", True)]
+
+
+async def test_asked_again_a_queued_operation_is_the_same_one(live_box):
+    live_box.installed["kalinka-plugin-other"] = "1.0.0"
+    ops = live_box.operations(await loaded_catalog(with_other(document())))
+    first = await ops.request("install", "demo")
+    queued = await ops.request("uninstall", "other")
+
+    assert await ops.request("install", "demo") == first
+    assert (await ops.request("uninstall", "other"))["id"] == queued["id"]
+    assert await refused(ops.request("uninstall", "demo")) == (409, "operation_in_progress")
+    assert await refused(ops.request("install", "other")) == (409, "operation_in_progress")
+    assert len(ops.queue()) == 1
+
+
+async def test_a_queued_operation_is_checked_again_when_its_turn_comes(live_box):
+    live_box.installed["kalinka-plugin-other"] = "0.9.0"
+    ops = live_box.operations(await loaded_catalog(with_other(document())))
+    await ops.request("install", "demo")
+    update = await ops.request("update", "other")
+    # Updated meanwhile, from elsewhere: there is nothing left to do.
+    live_box.installed["kalinka-plugin-other"] = "1.0.0"
+
+    live_box.helper_says("ok", "installing_environment")
+    await _until(lambda: ops.queue() == [])
+
+    assert live_box.triggers == 1
+    assert ops.results()[-1]["id"] == update["id"]
+    assert ops.results()[-1]["status"] == "ok"
+
+
+async def test_a_queued_operation_that_no_longer_applies_fails_on_its_own(live_box):
+    ops = live_box.operations(await loaded_catalog(with_other(document())))
+    await ops.request("install", "demo")
+    install = await ops.request("install", "other")
+    live_box.supported = False
+
+    live_box.helper_says("ok", "installing_environment")
+    await _until(lambda: ops.queue() == [])
+
+    result = ops.results()[-1]
+    assert (result["id"], result["status"]) == (install["id"], "failed")
+    assert result["error"].startswith("This server cannot install or remove plugins")
+    assert live_box.triggers == 1
+
+
+async def test_a_helper_that_restarts_core_leaves_the_queue_for_after(live_box):
+    catalog = await loaded_catalog(with_other(document()))
+    ops = live_box.operations(catalog)
+    first = await ops.request("install", "demo")
+    second = await ops.request("install", "other")
+
+    live_box.helper_says("restarting", "checking", updated_at=NOW.timestamp())
+    await _until(lambda: ops._following.done())
+    await asyncio.sleep(0.05)
+    # Still finishing: the restart is the helper's, and Core goes down with it.
+    assert live_box.triggers == 1
+    stopped(ops)
+
+    # Back before the helper has finished.
+    live_box.now += timedelta(seconds=2)
+    ops = live_box.operations(catalog)
+    ops.resume()
+    await asyncio.sleep(0.05)
+    assert live_box.triggers == 1
+    live_box.helper_says("ok", "installing_package", updated_at=live_box.now.timestamp())
+    await _until(lambda: live_box.triggers == 2)
+
+    assert live_box.request()["operation_id"] == second["id"]
+    # How the first ended is kept, though the helper's record now follows the next.
+    assert [(r["id"], r["status"]) for r in ops.results()] == [(first["id"], "ok")]
+
+
+async def test_update_all_starts_one_and_queues_the_rest(live_box):
+    live_box.installed["kalinka-plugin-demo"] = "0.9.0"
+    live_box.installed["kalinka-plugin-other"] = "0.9.0"
+    ops = live_box.operations(await loaded_catalog(with_other(document())))
+
+    result = await ops.update_all()
+
+    assert [(o["plugin_id"], o["status"]) for o in result["operations"]] == [
+        ("demo", "applying"),
+        ("other", "queued"),
+    ]
+    assert result["refused"] == []
+    named = await ops.update_all(["other", "nonesuch", "other"])
+    assert [o["id"] for o in named["operations"]] == [result["operations"][1]["id"]]
+    assert named["refused"] == [
+        {
+            "plugin_id": "nonesuch",
+            "code": "unknown_plugin",
+            "message": "The catalog lists no such plugin.",
+        }
+    ]
+    live_box.supported = False
+    assert await refused(ops.update_all()) == (503, "installer_unavailable")
 
 
 async def test_without_the_live_units_a_request_restarts_as_before(live_box):
