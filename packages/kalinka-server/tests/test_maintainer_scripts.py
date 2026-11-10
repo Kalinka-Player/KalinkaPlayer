@@ -56,7 +56,6 @@ def _sandboxed_prerm(tmp_path, prerm=PRERM):
     """
     script = tmp_path / "prerm"
     script.write_text(prerm.read_text().replace("/opt/kalinka", f"{tmp_path}/opt"))
-    calls = tmp_path / "calls.log"
     binv = tmp_path / "bin"
     venv_bin = tmp_path / "opt" / "venv" / "bin"
     for directory in (binv, venv_bin):
@@ -65,9 +64,10 @@ def _sandboxed_prerm(tmp_path, prerm=PRERM):
         f'PATH="{venv_bin}:$PATH"\ndeactivate() {{ :; }}\n'
     )
     for stub in (binv / "systemctl", venv_bin / "pip"):
-        stub.write_text(f'#!/usr/bin/env bash\necho "{stub.name} $*" >> "{calls}"\n')
+        stub.write_text(_recorder(stub.name))
         stub.chmod(0o755)
-    return script, {"PATH": f"{binv}:{os.environ['PATH']}"}, calls
+    env = {"PATH": f"{binv}:{os.environ['PATH']}", "STUB_STATE": str(tmp_path)}
+    return script, env, tmp_path / "calls.log"
 
 
 @pytest.mark.parametrize("action", ["upgrade", "failed-upgrade"])
@@ -108,6 +108,7 @@ def test_prerm_still_reports_a_real_removal(tmp_path):
 
 RENDERER_DEBIAN = REPO / "packages" / "kalinka-renderer" / "DEBIAN"
 ENABLING = re.compile(r'\s*systemctl (enable|start|restart)( --now)? "?([^"\s]+)"?')
+ANY_ENABLING = re.compile(r"\bsystemctl\s+(-\S+\s+)*(re)?(enable|start|restart)\b")
 
 
 def _units_the_postinst_enables(postinst):
@@ -119,7 +120,7 @@ def _units_the_postinst_enables(postinst):
     text = postinst.read_text()
     enabled, started = set(), set()
     for line in text.splitlines():
-        if not re.search(r"\bsystemctl (enable|start|restart)\b", line):
+        if not ANY_ENABLING.search(line):
             continue
         match = ENABLING.fullmatch(line)
         assert match, f"cannot read the unit in {line!r}"
