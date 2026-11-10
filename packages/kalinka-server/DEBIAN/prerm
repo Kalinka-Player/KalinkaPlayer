@@ -15,9 +15,7 @@ esac
 
 echo "Removing Kalinka Server..."
 
-# Stop and disable the trigger units before their files are removed, and the
-# first-boot one that has nothing running to stop. Core goes once nothing is
-# left to start it again, and before pip takes the server out from under it.
+# Triggers before Core so nothing restarts it, Core before pip empties its venv.
 if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
     systemctl disable --now kalinka-restart.path 2>/dev/null || true
     systemctl disable --now kalinka-plugins.path 2>/dev/null || true
