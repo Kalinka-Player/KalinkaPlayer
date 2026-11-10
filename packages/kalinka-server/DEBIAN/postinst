@@ -75,9 +75,8 @@ case "$1" in
     # Here rather than at Core's first start, so the supervisor can report it before Core has run.
     echo "[4/5] Create the server id if there is none"
     [ -d "$STATE_DIR" ] || install -d -m 0750 -o "$USER" -g "$USER" "$STATE_DIR"
+    # The helper gives a new id to the directory's owner, kalusr.
     python3 -I "$SERVER_ID_HELPER" "$SERVER_ID"
-    # Not through a link: the directory is kalusr's, so kalusr could have put one there.
-    chown -h "$USER:$USER" "$SERVER_ID"
 
     echo "[5/5] systemd: reload; enable/start if units exist"
     systemd-tmpfiles --create /usr/lib/tmpfiles.d/kalinka.conf || true
