@@ -300,7 +300,7 @@ class Root:
 
     def __init__(self, tmp_path):
         self.state = tmp_path / "state"
-        self.state.mkdir()
+        self.state.mkdir(exist_ok=True)
         self.now = NOW.timestamp()
         self.catalog = {"status": "available", "plugins": document()["plugins"]}
         self.installed = {}
@@ -1265,6 +1265,31 @@ async def test_a_helper_that_never_answers_fails_the_operation(live_box):
     assert ops.operation()["error"] == "The installer did not answer."
     # The trigger it never consumed goes, or every later request would be refused.
     assert live_box.forgotten == 1
+
+
+async def test_a_request_whose_helper_never_ran_is_not_left_for_a_restart(
+    live_box, tmp_path
+):
+    """The restart's helper runs while the request is still fresh, so only
+    its being gone keeps the install from happening then."""
+    ops = live_box.operations(await loaded_catalog(document()), deadline_s=0.05)
+    await ops.request("install", "demo")
+    await _until(lambda: ops._following.done())
+
+    root = Root(tmp_path)
+    assert (
+        apply(
+            root.state,
+            fetch_catalog=root.fetch_catalog,
+            download=root.download,
+            run=root.run,
+            package_version=root.installed.get,
+            clock=root.clock,
+        )
+        == 0
+    )
+    assert root.calls == [] and root.downloads == []
+    assert ops.operation()["error"] == "The installer did not answer."
 
 
 async def test_a_helper_that_stands_still_is_given_up_on(live_box):
