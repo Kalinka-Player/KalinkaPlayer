@@ -1,0 +1,46 @@
+#!/usr/bin/python3 -I
+"""Makes the server's id in the given file, unless it holds one already.
+
+The deb's postinst runs it as the package installs, and
+``kalinka-server-id.service`` on the first boot of a streamer flashed from an
+image, whose build sealed its own id out: either way the supervisor reports the
+id before Core first starts. Core's ``server_identity`` keeps the same rules,
+for where neither has run.
+"""
+
+import os
+import sys
+import uuid
+from pathlib import Path
+
+
+def _holds_an_id(path: Path) -> bool:
+    try:
+        uuid.UUID(path.read_text().strip())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def ensure_id(path: Path) -> None:
+    if _holds_an_id(path):
+        return
+    new = path.with_name(path.name + ".new")
+    # The postinst runs as root in a directory kalusr owns: follow no link left here.
+    new.unlink(missing_ok=True)
+    fd = os.open(new, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(f"{uuid.uuid4()}\n")
+        handle.flush()
+        # Core and the app key on it from now on, so it has to outlast a power cut.
+        os.fsync(handle.fileno())
+    os.replace(new, path)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+if __name__ == "__main__":
+    ensure_id(Path(sys.argv[1]))
