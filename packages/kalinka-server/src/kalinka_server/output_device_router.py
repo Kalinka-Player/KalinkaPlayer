@@ -193,8 +193,8 @@ class OutputDeviceRouter:
 
     def current_name(self) -> str:
         """Plugin id of the module in charge, delegated or not."""
-        active = self._registry.active_id()
-        delegate = self._prefs.volume_control(active) if active else None
+        serving = self._registry.serving_id()
+        delegate = self._prefs.volume_control(serving) if serving else None
         if delegate:
             return delegate
         return self._external_name() or RendererOutputPlugin.PLUGIN_ID

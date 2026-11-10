@@ -15,7 +15,12 @@ from kalinka_server.renderer_registry import (
 
 
 def _register(
-    registry, session, instance_id="inst-1", renderer_id="rid-1", server_addr=None
+    registry,
+    session,
+    instance_id="inst-1",
+    renderer_id="rid-1",
+    server_addr=None,
+    local=False,
 ):
     return registry.register(
         renderer_id=renderer_id,
@@ -26,6 +31,7 @@ def _register(
         platform={"os": "linux"},
         session=session,
         server_addr=server_addr,
+        local=local,
     )
 
 
@@ -584,6 +590,82 @@ async def test_claiming_and_releasing_a_session_tell_clients():
 
     registry.session_released("rid-b")
     assert events == [("current", "rid-a", "rid-a")]
+    await registry.shutdown()
+
+
+async def test_the_local_renderer_is_the_one_on_this_machine():
+    registry = RendererRegistry()
+    _register(registry, object(), renderer_id="remote")
+    assert registry.local_id() is None
+
+    _register(registry, object(), renderer_id="here", local=True)
+    registry.select("remote")
+    assert registry.local_id() == "here"
+    await registry.shutdown()
+
+
+async def test_of_several_local_renderers_the_active_one_is_local():
+    registry = RendererRegistry()
+    _register(registry, object(), renderer_id="dac-1", local=True)
+    _register(registry, object(), renderer_id="dac-2", local=True)
+    assert registry.local_id() == "dac-1"
+
+    registry.select("dac-2")
+    assert registry.local_id() == "dac-2"
+    await registry.shutdown()
+
+
+async def test_an_external_claim_reports_the_renderer_it_plays_through():
+    """Roon plays on this machine whichever renderer is selected: clients are
+    told that one plays, while the selection, and where the queue would go,
+    stay as they were."""
+    registry = RendererRegistry()
+    _register(registry, object(), renderer_id="remote")
+    _register(registry, object(), renderer_id="here", local=True)
+    registry.select("remote")
+    events = _wire(registry)
+    owner, stranger = object(), object()
+
+    registry.external_claimed(owner, "here")
+    assert events == [("current", "here", "remote")]
+    assert registry.serving_id() == "here"
+    assert registry.active_id() == "remote"
+    rows = {row["renderer_id"]: row for row in registry.list()}
+    assert rows["here"]["active"] and not rows["here"]["selected"]
+    assert rows["remote"]["selected"] and not rows["remote"]["active"]
+    events.clear()
+
+    registry.external_released(stranger)
+    assert events == []
+    registry.external_released(owner)
+    assert events == [("current", "remote", "remote")]
+    assert registry.serving_id() == "remote"
+    await registry.shutdown()
+
+
+async def test_an_external_claim_through_no_known_renderer_reports_none():
+    registry = RendererRegistry()
+    _register(registry, object(), renderer_id="remote")
+    events = _wire(registry)
+
+    registry.external_claimed(object(), None)
+
+    assert events == [("current", None, None)]
+    assert not any(row["active"] for row in registry.list())
+    assert registry.active_id() == "remote"
+    await registry.shutdown()
+
+
+async def test_a_claimed_renderer_that_leaves_is_no_longer_reported():
+    registry = RendererRegistry()
+    here = object()
+    _register(registry, object(), renderer_id="remote")
+    _register(registry, here, renderer_id="here", local=True)
+    registry.external_claimed(object(), "here")
+
+    registry.disconnect("here", here, clean=True)
+
+    assert registry.serving_id() is None
     await registry.shutdown()
 
 

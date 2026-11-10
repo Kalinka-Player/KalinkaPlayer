@@ -128,6 +128,9 @@ class RendererRegistry:
         self._prefs = prefs if prefs is not None else RendererPreferences()
         # The renderer playback holds a session on, while it holds one.
         self._playing_on: Optional[str] = None
+        # An engine outside the renderers and the renderer whose output it
+        # plays through, while it holds playback.
+        self._external: Optional[tuple[object, Optional[str]]] = None
         self._restore_selected()
 
     def _restore_selected(self) -> None:
@@ -352,7 +355,7 @@ class RendererRegistry:
 
     def _publish_current(self) -> None:
         self._notify_observers()
-        current = (self.active_id(), self.selected_id)
+        current = (self.serving_id(), self.selected_id)
         if current == self._last_current:
             return
         self._last_current = current
@@ -434,6 +437,44 @@ class RendererRegistry:
             return self._playing_on
         return self.resolve_active(self._prefs.selected_renderer_id)
 
+    def serving_id(self) -> Optional[str]:
+        """The renderer whose output the current playback comes out of.
+
+        :meth:`active_id`, except while an engine outside the renderers holds
+        playback: then the renderer it shares an output with, or None when it
+        shares none. This is what clients are told plays, and what an amp
+        delegated to a renderer follows. Where playback goes next stays
+        :meth:`active_id`, so the queue taking over still goes to the
+        selection."""
+        if self._external is None:
+            return self.active_id()
+        renderer_id = self._external[1]
+        return renderer_id if renderer_id in self._renderers else None
+
+    def local_id(self) -> Optional[str]:
+        """The renderer on this server's machine, whose output an engine running
+        here plays through: the active one if it is local, else the first
+        registered. None when no renderer runs here."""
+        active = self.active_id()
+        if active is not None and self._renderers[active].local:
+            return active
+        return next(
+            (rid for rid, record in self._renderers.items() if record.local), None
+        )
+
+    def external_claimed(self, owner: object, renderer_id: Optional[str]) -> None:
+        """``owner``, an engine outside the renderers, plays through
+        ``renderer_id``'s output (None: through none Kalinka knows)."""
+        self._external = (owner, renderer_id)
+        self._publish_current()
+
+    def external_released(self, owner: object) -> None:
+        """Its claim is over. Ignored unless ``owner`` holds the claim."""
+        if self._external is None or self._external[0] is not owner:
+            return
+        self._external = None
+        self._publish_current()
+
     def session_claimed(self, renderer_id: str) -> None:
         """Playback took a session on this renderer; it is the active one now."""
         if self._playing_on == renderer_id:
@@ -460,7 +501,7 @@ class RendererRegistry:
         return self._first_playable_id()
 
     def list(self) -> list[dict]:
-        active = self.active_id()
+        active = self.serving_id()
         selected = self.selected_id
         return [
             record.descriptor().model_dump()

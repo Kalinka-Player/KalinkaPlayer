@@ -23,6 +23,7 @@ from .external_volume import ExternalVolumeDevice
 from .module_timeout import PLUGIN_CALL_TIMEOUT_S
 from .output_device_router import OutputDeviceRouter
 from .playback_arbiter import PlaybackArbiter
+from .renderer_registry import RendererRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +38,11 @@ class ExternalSession:
         renderer_id: str | None,
         router: OutputDeviceRouter | None = None,
         volume_control: ExternalVolumeControl | None = None,
+        registry: RendererRegistry | None = None,
     ) -> None:
         self.control: PlaybackControl = PlaybackControl.exclusive(plugin_id, title)
         self.renderer_id: str | None = renderer_id
+        self._registry = registry
         self._listener: ExternalPlaybackListener = listener
         self._arbiter: PlaybackArbiter = arbiter
         self._active: bool = True
@@ -113,24 +116,30 @@ class ExternalSession:
             await self._arbiter.release(self)
 
     async def _stop(self, reason: RevokeReason | None, from_command: bool) -> None:
-        if self._volume_device is not None:
-            self._router.clear_external(self)
-            await self._volume_device.close()
-        if not from_command:
-            self._worker.cancel()
-            await asyncio.gather(self._worker, return_exceptions=True)
-        if reason is not None:
-            # Unlike renderer playback, this callback *is* the audio stop.
-            # Wait before allowing the next owner to open the physical DAC.
-            try:
-                await asyncio.wait_for(
-                    self._listener.on_revoked(reason), PLUGIN_CALL_TIMEOUT_S
-                )
-            except Exception:
-                logger.exception(
-                    "%s failed to stop external audio", self.control.plugin_id
-                )
-        if self._volume_device is not None:
+        try:
+            if self._volume_device is not None:
+                self._router.clear_external(self)
+                await self._volume_device.close()
+            if not from_command:
+                self._worker.cancel()
+                await asyncio.gather(self._worker, return_exceptions=True)
+            if reason is not None:
+                # Unlike renderer playback, this callback *is* the audio stop.
+                # Wait before allowing the next owner to open the physical DAC.
+                try:
+                    await asyncio.wait_for(
+                        self._listener.on_revoked(reason), PLUGIN_CALL_TIMEOUT_S
+                    )
+                except Exception:
+                    logger.exception(
+                        "%s failed to stop external audio", self.control.plugin_id
+                    )
+        finally:
+            # Only once the engine is silent: until then its output and the
+            # amp behind it are still what plays.
+            if self._registry is not None:
+                self._registry.external_released(self)
+        if self._router is not None:
             try:
                 # A slow renderer or amp must not hold up the next owner.
                 async with asyncio.timeout(0.2):
@@ -168,12 +177,12 @@ class ExternalPlaybackService:
         self,
         plugin_id: str,
         arbiter: PlaybackArbiter,
-        renderer_id: Callable[[], str | None] = lambda: None,
+        registry: RendererRegistry | None = None,
         router: OutputDeviceRouter | None = None,
     ) -> None:
         self._plugin_id: str = plugin_id
         self._arbiter: PlaybackArbiter = arbiter
-        self._renderer_id: Callable[[], str | None] = renderer_id
+        self._registry = registry
         self._lock: asyncio.Lock = asyncio.Lock()
         self._router = router
 
@@ -194,16 +203,24 @@ class ExternalPlaybackService:
                 title,
                 listener,
                 self._arbiter,
-                self._renderer_id(),
+                # The engine runs on this machine, so it plays through the
+                # renderer here, whichever one is selected.
+                self._registry.local_id() if self._registry else None,
                 self._router,
                 volume_control,
+                self._registry,
             )
             try:
                 await self._arbiter.acquire(session)
-                device = session.volume_device
-                if device is not None and session.active and self._arbiter.owns(session):
-                    self._router.set_external(session, device)
-                    await self._router.resync()
+                if session.active and self._arbiter.owns(session):
+                    # Claimed before any await, so a preemption that lands
+                    # during the resync releases it instead of missing it.
+                    if self._registry is not None:
+                        self._registry.external_claimed(session, session.renderer_id)
+                    if session.volume_device is not None:
+                        self._router.set_external(session, session.volume_device)
+                    if self._router is not None:
+                        await self._router.resync()
             except BaseException:
                 await session.release()
                 raise

@@ -15,6 +15,8 @@ from kalinka_plugin_sdk.events import PlaybackControlChangedEvent
 from kalinka_server.external_playback import ExternalPlaybackService
 from kalinka_server.playback_arbiter import PlaybackArbiter
 
+from tests.test_renderer_volume_control import _registry_with
+
 
 @pytest.fixture
 def emitter():
@@ -138,11 +140,91 @@ async def test_failed_stop_callback_does_not_leak_holder(rig):
 async def test_speaker_test_vacates_bound_renderer(rig):
     arbiter, queue, listener, _ = rig
     queue.release_renderer = AsyncMock()
-    service = ExternalPlaybackService("roon", arbiter, lambda: "local")
+    registry, _ = _registry_with("local", local=("local",))
+    service = ExternalPlaybackService("roon", arbiter, registry)
     hold = await service.acquire("Roon", listener)
     await arbiter.vacate("local")
     assert not hold.active
     listener.on_revoked.assert_awaited_once_with(RevokeReason.OTHER_HOLDER)
+
+
+def _remote_selected_and_one_here():
+    registry, _ = _registry_with("remote", "here", local=("here",))
+    registry.select("remote")
+    return registry
+
+
+async def test_the_hold_plays_through_the_renderer_here_not_the_selection(rig):
+    arbiter, queue, listener, _ = rig
+    queue.release_renderer = AsyncMock()
+    registry = _remote_selected_and_one_here()
+    service = ExternalPlaybackService("roon", arbiter, registry)
+
+    hold = await service.acquire("Roon endpoint", listener)
+    assert hold.renderer_id == "here"
+    assert registry.serving_id() == "here"
+    assert registry.active_id() == "remote"
+    await arbiter.vacate("remote")
+    assert hold.active
+
+    await hold.release()
+    assert registry.serving_id() == "remote"
+
+
+async def test_the_renderer_here_is_reported_until_the_engine_is_silent(rig):
+    arbiter, queue, listener, _ = rig
+    registry = _remote_selected_and_one_here()
+    service = ExternalPlaybackService("roon", arbiter, registry)
+    entered, stopped = asyncio.Event(), asyncio.Event()
+
+    async def stop(reason):
+        entered.set()
+        await stopped.wait()
+
+    listener.on_revoked.side_effect = stop
+    await service.acquire("Roon endpoint", listener)
+    take = asyncio.create_task(arbiter.acquire(queue))
+    await asyncio.wait_for(entered.wait(), 1)
+    assert registry.serving_id() == "here"
+    stopped.set()
+    await take
+    assert registry.serving_id() == "remote"
+
+
+async def test_with_no_renderer_here_the_hold_reports_none():
+    arbiter = PlaybackArbiter(Mock())
+    queue = Mock(control=PlaybackControl.queue(), renderer_id=None, preempt=AsyncMock())
+    queue.snapshot.return_value = PlaybackState()
+    arbiter.set_queue(queue)
+    registry, _ = _registry_with("remote")
+    service = ExternalPlaybackService("roon", arbiter, registry)
+
+    hold = await service.acquire("Roon endpoint", Mock(on_revoked=AsyncMock()))
+    assert hold.renderer_id is None
+    assert registry.serving_id() is None
+
+    await hold.release()
+    assert registry.serving_id() == "remote"
+
+
+async def test_a_preemption_during_the_acquire_resync_leaves_no_claim(rig):
+    arbiter, _, listener, _ = rig
+    registry = _remote_selected_and_one_here()
+    router = Mock()
+    preempted = []
+
+    async def resync():
+        if not preempted:
+            preempted.append(True)
+            await arbiter.take_back()
+
+    router.resync = AsyncMock(side_effect=resync)
+    service = ExternalPlaybackService("roon", arbiter, registry, router)
+
+    hold = await service.acquire("Roon endpoint", listener)
+
+    assert not hold.active
+    assert registry.serving_id() == "remote"
 
 
 async def test_plugin_can_release_from_transport_callback(rig):
@@ -173,7 +255,8 @@ async def test_cancelled_handover_finishes_stopping_before_returning_to_queue(
         await stopped.wait()
 
     listener.on_revoked.side_effect = stop
-    service = ExternalPlaybackService("roon", arbiter, lambda: "local")
+    registry, _ = _registry_with("local", local=("local",))
+    service = ExternalPlaybackService("roon", arbiter, registry)
     hold = await service.acquire("Roon", listener)
     operations = {
         "queue": lambda: arbiter.acquire(queue),
