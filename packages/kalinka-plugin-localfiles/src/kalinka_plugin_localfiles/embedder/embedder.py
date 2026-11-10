@@ -34,6 +34,7 @@ from ..embedding_utils import (
     encode_embedding,
     normalise,
 )
+from ..ipc import reply
 from ..pip_utils import ensure_package
 from ..storage import build_resolver, library_roots, storage_failure
 from ..worker_utils import configure_worker_logging, set_proc_title, sleep_interruptible
@@ -595,10 +596,10 @@ class EmbeddingWorker:
                 # cheap no-op then, and a safety net if eager load failed.
                 await loop.run_in_executor(None, self._ensure_text_model)
                 blob = await loop.run_in_executor(None, self._encode_query, query)
-                response_queue.put({"blob": blob})
+                reply(response_queue, req, {"blob": blob})
             except Exception as e:
                 logger.warning("Text-encode handler error: %s", e)
-                response_queue.put({"blob": None})
+                reply(response_queue, req, {"blob": None})
 
     # ------------------------------------------------------------------
     # Main loop

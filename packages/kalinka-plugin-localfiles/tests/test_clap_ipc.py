@@ -2,13 +2,13 @@
 
 import asyncio
 import multiprocessing
-import queue
 import threading
 from unittest.mock import Mock, patch
 
 import pytest
 
 from kalinka_plugin_localfiles.config_model import LocalFilesConfig
+from kalinka_plugin_localfiles.ipc import RequestChannel, reply
 from kalinka_plugin_localfiles.searcher.searcher import SearchWorker
 from kalinka_plugin_localfiles.searcher.searcher_db import AsyncSearcherDb
 
@@ -43,7 +43,7 @@ class TestSearchWorkerEncodeQueryText:
         def fake_embedder():
             msg = req_q.get(timeout=5)
             assert msg["query"] == "relaxing piano"
-            resp_q.put({"blob": fake_blob})
+            reply(resp_q, msg, {"blob": fake_blob})
 
         t = threading.Thread(target=fake_embedder)
         t.start()
@@ -59,8 +59,7 @@ class TestSearchWorkerEncodeQueryText:
         worker = _make_worker(req_q, resp_q)
 
         def fake_embedder():
-            req_q.get(timeout=5)
-            resp_q.put({"blob": None})
+            reply(resp_q, req_q.get(timeout=5), {"blob": None})
 
         t = threading.Thread(target=fake_embedder)
         t.start()
@@ -79,29 +78,139 @@ class TestSearchWorkerEncodeQueryText:
         req_q = multiprocessing.Queue()
         resp_q = multiprocessing.Queue()
         worker = _make_worker(req_q, resp_q)
+        worker._embedder = RequestChannel(req_q, resp_q, timeout=0.1)
 
-        # Patch timeout to be short for testing
-        with patch.object(
-            type(worker), "_encode_query_text",
-            wraps=worker._encode_query_text,
-        ):
-            # Don't put anything on resp_q — simulate embedder not responding
-            # We need to test with a very short timeout
-            original_method = SearchWorker._encode_query_text
+        assert worker._encode_query_text("timeout query") is None
 
-            def short_timeout_encode(self, query):
-                if self._text_encode_request_queue is None or self._text_encode_response_queue is None:
-                    return None
-                try:
-                    self._text_encode_request_queue.put({"query": query})
-                    resp = self._text_encode_response_queue.get(timeout=0.1)
-                    return resp.get("blob")
-                except Exception:
-                    return None
 
-            with patch.object(SearchWorker, "_encode_query_text", short_timeout_encode):
-                result = worker._encode_query_text("timeout query")
-                assert result is None
+async def _ask_handler(handler, request: dict) -> dict:
+    """Run a request handler loop, ask it one thing, and stop it."""
+    req_q, resp_q = multiprocessing.Queue(), multiprocessing.Queue()
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(handler(req_q, resp_q, shutdown))
+    try:
+        return await asyncio.get_running_loop().run_in_executor(
+            None, RequestChannel(req_q, resp_q, timeout=10).ask, request
+        )
+    finally:
+        shutdown.set()
+        await task
+
+
+class TestHandlersAnswerTheirOwnRequest:
+    """Both answering loops echo the request id; without it every ask would
+    time out once the asker matches replies to requests."""
+
+    @pytest.mark.asyncio
+    async def test_embedder_text_encode_handler(self):
+        from kalinka_plugin_localfiles.embedder.embedder import EmbeddingWorker
+        from kalinka_plugin_localfiles.embedder.embedder_db import AsyncEmbedderDb
+
+        worker = EmbeddingWorker(_make_config(), Mock(spec=AsyncEmbedderDb))
+        worker._ensure_text_model = lambda: True
+        worker._encode_query = lambda query: f"vector:{query}".encode()
+
+        answer = await _ask_handler(
+            worker._run_text_encode_handler, {"query": "piano"}
+        )
+
+        assert answer["blob"] == b"vector:piano"
+
+    @pytest.mark.asyncio
+    async def test_searcher_search_handler(self):
+        worker = _make_worker()
+
+        async def fake_search(query, limit):
+            return {"tracks": [f"{query}:{limit}"]}
+
+        worker._do_search = fake_search
+
+        answer = await _ask_handler(
+            worker._run_search_handler, {"query": "piano", "limit": 3}
+        )
+
+        assert answer["tracks"] == ["piano:3"]
+
+
+class _TracksDb:
+    def __init__(self, *tracks):
+        self._tracks = {t["id"]: t for t in tracks}
+
+    def get_tracks_by_ids(self, track_ids):
+        return [self._tracks[i] for i in track_ids if i in self._tracks]
+
+    def get_album_by_id(self, album_id):
+        return None
+
+
+def _track(tmp_path, track_id: str, title: str) -> dict:
+    return {
+        "id": track_id,
+        "album_id": "album_1",
+        "artist_id": "artist_1",
+        "album_title": "Album",
+        "artist_name": "Artist",
+        "title": title,
+        "duration": 100,
+        "format": "audio/mpeg",
+        "file_path": str(tmp_path / "music" / f"{track_id}.mp3"),
+    }
+
+
+class TestAiSearchAfterATimeout:
+    @pytest.mark.asyncio
+    async def test_the_next_search_gets_its_own_tracks(self, tmp_path):
+        """A search that timed out leaves the searcher's late answer queued;
+        the next search must not show it."""
+        from kalinka_plugin_localfiles.localfiles import LocalFilesInputModule
+
+        config = _make_config(
+            music_folders=[str(tmp_path / "music")],
+            db_path=str(tmp_path / "localfiles.db"),
+            artwork_path=str(tmp_path / "artwork"),
+        )
+        req_q, resp_q = multiprocessing.Queue(), multiprocessing.Queue()
+        module = LocalFilesInputModule(
+            config,
+            _TracksDb(
+                _track(tmp_path, "track_first", "First"),
+                _track(tmp_path, "track_second", "Second"),
+            ),
+            req_q,
+            resp_q,
+        )
+
+        module._searcher = RequestChannel(req_q, resp_q, timeout=0.2)
+        assert (await module.ai_search("first")).items == []
+        reply(resp_q, req_q.get(timeout=5), {"tracks": ["track_first"]})
+
+        def searcher():
+            reply(resp_q, req_q.get(timeout=5), {"tracks": ["track_second"]})
+
+        thread = threading.Thread(target=searcher)
+        thread.start()
+        module._searcher = RequestChannel(req_q, resp_q, timeout=5)
+        result = await module.ai_search("second")
+        thread.join()
+
+        [card] = result.items
+        assert [item.name for item in card.sections] == ["Second"]
+
+    @pytest.mark.asyncio
+    async def test_a_closed_searcher_channel_is_no_result(self, tmp_path):
+        from kalinka_plugin_localfiles.localfiles import LocalFilesInputModule
+
+        config = _make_config(
+            music_folders=[str(tmp_path / "music")],
+            db_path=str(tmp_path / "localfiles.db"),
+            artwork_path=str(tmp_path / "artwork"),
+        )
+        module = LocalFilesInputModule(
+            config, _TracksDb(), multiprocessing.Queue(), multiprocessing.Queue()
+        )
+        module._searcher = Mock(ask=Mock(side_effect=ValueError("Queue is closed")))
+
+        assert (await module.ai_search("piano")).items == []
 
 
 class TestSearchWorkerKnnLegAvailability:

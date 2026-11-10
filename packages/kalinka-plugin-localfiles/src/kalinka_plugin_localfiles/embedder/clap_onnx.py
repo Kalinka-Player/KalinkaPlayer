@@ -40,6 +40,7 @@ if TYPE_CHECKING:  # imported lazily at the call site; heavy to load
     import soundfile
 
 from ..embedding_utils import VA_HEAD_VERSION
+from ..worker_utils import release_freed_memory
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
@@ -467,7 +468,7 @@ class ClapOnnxModel:
         if self._audio_session is None:
             return
         self._audio_session = None
-        gc.collect()
+        release_freed_memory()
         logger.info("CLAP audio ONNX session unloaded")
 
     def unload(self) -> None:
@@ -476,6 +477,7 @@ class ClapOnnxModel:
         self._text_session = None
         self._tokenizer = None
         self._va_head_session = None
+        release_freed_memory()
 
     def get_audio_embedding(self, audio: BinaryIO) -> Optional[np.ndarray]:
         """Compute 512-dim audio embedding. Returns None on failure.

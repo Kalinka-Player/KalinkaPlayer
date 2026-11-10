@@ -78,6 +78,7 @@ from .storage import (
     root_of,
     scheme_of,
 )
+from .ipc import RequestChannel
 from .scan_control import ScanControl
 from .input_module_db import (
     FolderSummary,
@@ -398,9 +399,11 @@ class LocalFilesInputModule(InputModule):
         # sources has the server set the plugin up again, on a new instance,
         # and the indexer purges the rows then out of scope.
         self._music_folders = library_roots(config, self._storage)
-        self._search_request_queue = search_request_queue
-        self._search_response_queue = search_response_queue
-        self._search_lock = asyncio.Lock()
+        self._searcher = (
+            RequestChannel(search_request_queue, search_response_queue, timeout=30.0)
+            if search_request_queue is not None and search_response_queue is not None
+            else None
+        )
 
         # Ensure artwork directories exist
         os.makedirs(self.artwork_path / "album", exist_ok=True)
@@ -436,10 +439,7 @@ class LocalFilesInputModule(InputModule):
         return frozenset({ModuleCapability.CATALOGS})
 
     def _has_searcher(self) -> bool:
-        return (
-            self._search_request_queue is not None
-            and self._search_response_queue is not None
-        )
+        return self._searcher is not None
 
     async def ai_search(
         self, query: str, offset: int = 0, limit: int = 50
@@ -460,18 +460,18 @@ class LocalFilesInputModule(InputModule):
         logger.info(
             "ai_search: sending query %r (limit=%d)", query, ai_cfg.max_results
         )
-        async with self._search_lock:
-            self._search_request_queue.put(
-                {"query": query, "limit": ai_cfg.max_results}
+        try:
+            ids = await asyncio.get_running_loop().run_in_executor(
+                None,
+                self._searcher.ask,
+                {"query": query, "limit": ai_cfg.max_results},
             )
-            try:
-                ids: dict = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: self._search_response_queue.get(timeout=30),
-                )
-            except Exception:
-                logger.warning("ai_search: timed out waiting for searcher response")
-                return EmptyList(offset, limit)
+        except Exception as e:
+            logger.warning("ai_search: searcher IPC failed: %s", e)
+            return EmptyList(offset, limit)
+        if ids is None:
+            logger.warning("ai_search: timed out waiting for searcher response")
+            return EmptyList(offset, limit)
 
         track_ids = ids.get("tracks", [])
         logger.info("ai_search: response — %d tracks", len(track_ids))
