@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import functools
+import gc
 import inspect
 import logging
 import logging.handlers
@@ -152,6 +153,27 @@ def set_proc_title(name: str) -> None:
         libc.prctl(_PR_SET_NAME, name.encode("utf-8")[:15], 0, 0, 0)
     except Exception:  # noqa: BLE001 — diagnostic only
         pass
+
+
+@functools.cache
+def _malloc_trim():
+    try:
+        return ctypes.CDLL("libc.so.6").malloc_trim
+    except (OSError, AttributeError):
+        return None
+
+
+def release_freed_memory() -> None:
+    """Collect garbage and give the heap memory it frees back to the OS.
+
+    glibc keeps freed blocks for reuse, so a process that drops a model stays
+    as large as it was with the model loaded until ``malloc_trim`` runs. Where
+    libc has no ``malloc_trim`` only the collection happens.
+    """
+    gc.collect()
+    trim = _malloc_trim()
+    if trim is not None:
+        trim(0)
 
 
 def nudge(nudge_queue: Optional[multiprocessing.Queue]) -> None:
