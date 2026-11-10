@@ -3,7 +3,7 @@ Version: @VERSION@
 Section: sound
 Priority: optional
 Architecture: all
-Depends: kalinka-server, kalinka-plugin-sdk (>= 3.21), kalinka-plugin-sdk (<< 4), python3 (>= 3.11), bluez, bluez-alsa-utils (>= 4.3.1)
+Depends: kalinka-server, kalinka-plugin-sdk (>= 3.21), kalinka-plugin-sdk (<< 4), python3 (>= 3.11), bluez (>= 5.79), bluez-alsa-utils (>= 4.3.1), bluez-obexd (>= 5.79), dbus-daemon
 Maintainer: Dmitry Savin <envelsavinds@gmail.com>
 Description: Bluetooth audio input for Kalinka
  Receives A2DP audio with BlueALSA and routes live PCM to the selected

@@ -24,8 +24,10 @@ BuildRequires:  systemd-rpm-macros
 Requires:       python3 >= 3.11
 Requires:       python3-pip
 Suggests:       nfs-utils
-Suggests:       bluez
+Suggests:       bluez >= 5.79
 Suggests:       bluez-alsa
+Suggests:       bluez-obexd >= 5.79
+Suggests:       dbus-daemon
 %{?systemd_requires}
 
 %description
