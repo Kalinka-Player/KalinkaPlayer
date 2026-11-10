@@ -196,10 +196,10 @@ class SearchType(str, Enum):
 
 class ModuleCapability(str, Enum):
     """
-    Optional calls an input module answers, as :meth:`InputModule.capabilities`
-    reports them. Browsing and name search are what make a module a module, so
-    they are not listed. The value is the name clients read in
-    ``/server/modules``.
+    Optional calls an input module answers, and promises it makes about the
+    calls every module answers, as :meth:`InputModule.capabilities` reports
+    them. Browsing and name search are what make a module a module, so they
+    are not listed. The value is the name clients read in ``/server/modules``.
 
     Values:
         AI_SEARCH: :meth:`InputModule.ai_search` answers natural-language queries
@@ -207,10 +207,15 @@ class ModuleCapability(str, Enum):
             root, leads to catalogs a client may offer on its home screen and
             pin with filters. Never inferred from :meth:`InputModule.browse`,
             which a receiver implements without having a catalog to show.
+        RANKED_SEARCH: SDK 3.22. :meth:`InputModule.search` returns each kind's
+            hits best first, by the source's own relevance, so the server keeps
+            that order. Without it the server orders hits by how their names
+            answer the query, which suits a source listing them alphabetically.
     """
 
     AI_SEARCH = "ai_search"
     CATALOGS = "catalogs"
+    RANKED_SEARCH = "ranked_search"
 
 
 @runtime_checkable

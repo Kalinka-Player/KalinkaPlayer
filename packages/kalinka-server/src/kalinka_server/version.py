@@ -294,6 +294,12 @@ def get_version() -> str:
 # queued_at}) and `results` (the latest finished records, oldest first). A
 # queue left by a restart runs once the server is back, unless it stood for
 # fifteen minutes; its operations then end failed.
+# Also 0.23: /search/matches keeps the order of a source whose module names
+# `ranked_search` among its capabilities within each kind, and orders an
+# unranked source's hits of each kind by name tier. Kinds and sources merge by
+# reciprocal rank: every hit's `match` carries `relevance`, and a client merging
+# several sources' listings sorts them by it, ties going to the less granular
+# kind, then to the earlier source.
 REST_API_VERSION = "0.23"
 
 

@@ -81,7 +81,11 @@ def test_matches_arrive_annotated(client):
     assert response.status_code == 200
     body = response.json()
     assert body["total"] == 1
-    assert body["items"][0]["match"] == {"tier": "exact", "score": 100.0}
+    assert body["items"][0]["match"] == {
+        "tier": "exact",
+        "score": 100.0,
+        "relevance": 1.0,
+    }
 
 
 def test_a_failing_source_is_503_naming_it(client):
