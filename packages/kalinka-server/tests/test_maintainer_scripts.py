@@ -44,55 +44,117 @@ def _run(script, *args, env=None):
     )
 
 
-def _sandboxed_prerm(tmp_path):
-    """The prerm under test, unable to reach the machine it runs on.
+def _sandboxed_prerm(tmp_path, prerm=PRERM):
+    """A prerm under test, unable to reach the machine it runs on.
 
-    It is written to run as root against fixed paths: it disables a systemd
-    unit and uninstalls /opt/kalinka. Run as-is, the removal case prompts the
+    It is written to run as root against fixed paths: it disables systemd
+    units and uninstalls /opt/kalinka. Run as-is, the removal case prompts the
     tester's polkit agent and — on a box that has Kalinka installed — would
-    really uninstall it. Only the two roots are rewritten, into tmp_path, and
-    systemctl becomes a stub that records its arguments.
+    really uninstall it. Only the two roots are rewritten, into tmp_path, where
+    a venv stands whose pip, like systemctl, is a stub that records its
+    arguments, in order, in the one log returned.
     """
     script = tmp_path / "prerm"
-    script.write_text(PRERM.read_text().replace("/opt/kalinka", f"{tmp_path}/opt"))
+    script.write_text(prerm.read_text().replace("/opt/kalinka", f"{tmp_path}/opt"))
+    calls = tmp_path / "calls.log"
     binv = tmp_path / "bin"
-    binv.mkdir()
-    systemctl_log = tmp_path / "systemctl.log"
-    stub = binv / "systemctl"
-    stub.write_text(f'#!/usr/bin/env bash\necho "$@" >> "{systemctl_log}"\n')
-    stub.chmod(0o755)
-    return script, {"PATH": f"{binv}:{os.environ['PATH']}"}, systemctl_log
+    venv_bin = tmp_path / "opt" / "venv" / "bin"
+    for directory in (binv, venv_bin):
+        directory.mkdir(parents=True)
+    (venv_bin / "activate").write_text(
+        f'PATH="{venv_bin}:$PATH"\ndeactivate() {{ :; }}\n'
+    )
+    for stub in (binv / "systemctl", venv_bin / "pip"):
+        stub.write_text(f'#!/usr/bin/env bash\necho "{stub.name} $*" >> "{calls}"\n')
+        stub.chmod(0o755)
+    return script, {"PATH": f"{binv}:{os.environ['PATH']}"}, calls
 
 
 @pytest.mark.parametrize("action", ["upgrade", "failed-upgrade"])
 def test_prerm_removes_nothing_on_an_upgrade(action, tmp_path):
     """It runs as root on a real box, so the guard has to come before anything
     it could act on — nothing is uninstalled and nothing is announced."""
-    script, env, systemctl_log = _sandboxed_prerm(tmp_path)
+    script, env, calls = _sandboxed_prerm(tmp_path)
 
     result = _run(script, action, "4.3.2", env=env)
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
     assert "Removing" not in result.stdout + result.stderr
-    assert not systemctl_log.exists()
+    assert not calls.exists()
 
 
 def test_prerm_still_reports_a_real_removal(tmp_path):
-    """The message belongs to removal; only the upgrade path is silenced. No
-    venv under the sandbox root, so it stops before touching pip."""
-    script, env, systemctl_log = _sandboxed_prerm(tmp_path)
+    """The message belongs to removal; only the upgrade path is silenced. Core
+    stops once nothing is left to start it again, and before pip takes the
+    server out of the venv it runs from."""
+    script, env, calls = _sandboxed_prerm(tmp_path)
 
     result = _run(script, "remove", env=env)
 
+    assert result.returncode == 0, result.stderr
     assert "Removing Kalinka Server..." in result.stdout
-    assert systemctl_log.read_text().splitlines() == [
-        "disable --now kalinka-restart.path",
-        "disable --now kalinka-plugins.path",
-        "disable --now kalinka-journal-reader.socket",
-        "disable --now kalinka-mounts.path",
-        "disable kalinka-server-id.service",
+    assert calls.read_text().splitlines() == [
+        "systemctl disable --now kalinka-restart.path",
+        "systemctl disable --now kalinka-plugins.path",
+        "systemctl disable --now kalinka-upgrade.path",
+        "systemctl disable --now kalinka-journal-reader.socket",
+        "systemctl disable --now kalinka-mounts.path",
+        "systemctl disable kalinka-server-id.service",
+        "systemctl disable --now kalinka.service",
+        "pip uninstall -y kalinka-server",
     ]
+
+
+RENDERER_DEBIAN = REPO / "packages" / "kalinka-renderer" / "DEBIAN"
+ENABLING = re.compile(r'\s*systemctl (enable|start|restart)( --now)? "?([^"\s]+)"?')
+
+
+def _units_the_postinst_enables(postinst):
+    """The units its systemctl calls enable, and those of them it starts too.
+
+    A call it cannot read fails here, so a unit enabled some new way is not
+    left out of the check unseen.
+    """
+    text = postinst.read_text()
+    enabled, started = set(), set()
+    for line in text.splitlines():
+        if not re.search(r"\bsystemctl (enable|start|restart)\b", line):
+            continue
+        match = ENABLING.fullmatch(line)
+        assert match, f"cannot read the unit in {line!r}"
+        verb, now, unit = match.groups()
+        if unit.startswith("$"):
+            variable = unit.strip("${}")
+            [unit] = re.findall(rf'^{variable}="([^"$]+)"$', text, re.M)
+        if verb == "enable":
+            enabled.add(unit)
+        if verb != "enable" or now:
+            started.add(unit)
+    return enabled, started
+
+
+@pytest.mark.parametrize(
+    "debian", [PRERM.parent, RENDERER_DEBIAN], ids=["server", "renderer"]
+)
+def test_prerm_stops_every_unit_the_postinst_enables(debian, tmp_path):
+    """A unit left behind outlives the files it runs from: the server's prerm
+    once left Core and its upgrade watch running while pip emptied the venv
+    and dpkg took the unit files."""
+    enabled, started = _units_the_postinst_enables(debian / "postinst")
+    script, env, calls = _sandboxed_prerm(tmp_path, debian / "prerm")
+
+    result = _run(script, "remove", env=env)
+
+    assert result.returncode == 0, result.stderr
+    disables = [
+        match
+        for call in calls.read_text().splitlines()
+        if (match := re.fullmatch(r"systemctl disable( --now)? (\S+)", call))
+    ]
+    assert enabled
+    assert enabled - {match[2] for match in disables} == set()
+    assert started - {match[2] for match in disables if match[1]} == set()
 
 
 def _stub_bin(tmp_path, *, installed_version, apt_fails=True):
