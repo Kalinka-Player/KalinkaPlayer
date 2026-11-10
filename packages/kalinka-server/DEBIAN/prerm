@@ -15,13 +15,11 @@ esac
 
 echo "Removing Kalinka Server..."
 
-# Stop the trigger units before their files are removed. Their links stay, as
-# deb-systemd-helper needs them to enable the units again on a reinstall; the
-# postrm drops them on purge.
+# Links stay for deb-systemd-helper to re-enable on a reinstall; the postrm drops them on purge.
 if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
     if [ -d /run/systemd/system ]; then
-        deb-systemd-invoke stop kalinka-restart.path kalinka-plugins.path \
-            kalinka-journal-reader.socket kalinka-mounts.path 2>/dev/null || true
+        deb-systemd-invoke stop kalinka.service kalinka-restart.path kalinka-plugins.path \
+            kalinka-upgrade.path kalinka-journal-reader.socket kalinka-mounts.path 2>/dev/null || true
     fi
 fi
 

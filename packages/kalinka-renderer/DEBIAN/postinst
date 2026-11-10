@@ -10,8 +10,7 @@ STATE_DIR="/var/lib/kalinka-renderer"
 UNIT_NAME="kalinka-renderer.service"
 UPGRADE_PATH_UNIT="kalinka-renderer-upgrade.path"
 
-# As dh_installsystemd does it: no running systemd or systemctl needed, and a
-# unit its owner disabled stays disabled across upgrades.
+# As dh_installsystemd does: needs no running systemd, and keeps an owner's disable across upgrades.
 enable_unit() {
   if deb-systemd-helper --quiet was-enabled "$1"; then
     deb-systemd-helper enable "$1"

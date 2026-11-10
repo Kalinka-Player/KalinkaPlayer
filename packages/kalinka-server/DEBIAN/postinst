@@ -19,8 +19,7 @@ UPGRADE_PATH_UNIT="kalinka-upgrade.path"
 JOURNAL_READER_SOCKET="kalinka-journal-reader.socket"
 MOUNTS_PATH_UNIT="kalinka-mounts.path"
 
-# As dh_installsystemd does it: no running systemd or systemctl needed, and a
-# unit its owner disabled stays disabled across upgrades.
+# As dh_installsystemd does: needs no running systemd, and keeps an owner's disable across upgrades.
 enable_unit() {
   if deb-systemd-helper --quiet was-enabled "$1"; then
     deb-systemd-helper enable "$1"
@@ -94,17 +93,19 @@ case "$1" in
       systemctl daemon-reload
     fi
     # Enabled with or without a running systemd: that is how an image build gets the units it boots with.
+    found_units=()
     for unit in "$RESTART_PATH_UNIT" "$PLUGINS_PATH_UNIT" "$UPGRADE_PATH_UNIT" \
                 "$JOURNAL_READER_SOCKET" "$MOUNTS_PATH_UNIT"; do
       if [ ! -f "$UNIT_DIR/$unit" ]; then
         echo "Note: $unit not found at $UNIT_DIR/$unit. Skipping."
       else
         enable_unit "$unit"
-        if [ -d /run/systemd/system ]; then
-          deb-systemd-invoke start "$unit"
-        fi
+        found_units+=("$unit")
       fi
     done
+    if [ -d /run/systemd/system ] && [ "${#found_units[@]}" -gt 0 ]; then
+      deb-systemd-invoke start "${found_units[@]}"
+    fi
     # Drives plugged in before this install are mounted now, not at the next plug.
     if command -v udevadm >/dev/null 2>&1; then
       udevadm control --reload-rules || true

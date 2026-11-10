@@ -4,8 +4,7 @@ set -e
 # On upgrade the new version's postinst restarts the unit; only a real
 # removal stops it.
 if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
-    # Enabled by postinst through deb-systemd-helper, which needs their links
-    # to enable them again on a reinstall; the postrm drops them on purge.
+    # Links stay for deb-systemd-helper to re-enable on a reinstall; the postrm drops them on purge.
     if [ -d /run/systemd/system ]; then
         deb-systemd-invoke stop kalinka-renderer.service \
             kalinka-renderer-upgrade.path 2>/dev/null || true

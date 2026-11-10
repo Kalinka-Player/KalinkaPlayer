@@ -69,8 +69,8 @@ def test_prerm_still_reports_a_real_removal(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "Removing Kalinka Server..." in result.stdout
     assert _invoke_calls(calls) == [
-        "stop kalinka-restart.path kalinka-plugins.path "
-        "kalinka-journal-reader.socket kalinka-mounts.path"
+        "stop kalinka.service kalinka-restart.path kalinka-plugins.path "
+        "kalinka-upgrade.path kalinka-journal-reader.socket kalinka-mounts.path"
     ]
     assert _systemctl_calls(calls) == []
 
@@ -889,7 +889,8 @@ def test_the_live_plugin_units_are_packaged_and_enabled(tmp_path):
     assert "kalinka-plugins.path" in build and "kalinka-plugins.service" in build
     _, calls, _, _ = _sandboxed_configure(tmp_path)
     assert "multi-user.target.wants/kalinka-plugins.path" in _boot_links(tmp_path)
-    assert "deb-systemd-invoke start kalinka-plugins.path" in calls
+    started = _invoke_calls(calls)[0].split()
+    assert started[0] == "start" and "kalinka-plugins.path" in started
 
 
 def test_restart_service_runs_the_plugin_helper_before_core():
@@ -1165,7 +1166,7 @@ def test_where_systemd_runs_the_server_units_are_enabled_and_started(tmp_path):
     assert result.returncode == 0, result.stderr
     assert _boot_links(tmp_path) == SERVER_LINKS
     assert _invoke_calls(calls) == [
-        *(f"start {unit}" for unit in SERVER_UNITS),
+        f"start {' '.join(SERVER_UNITS)}",
         "restart kalinka.service",
     ]
     assert _systemctl_calls(calls) == [
