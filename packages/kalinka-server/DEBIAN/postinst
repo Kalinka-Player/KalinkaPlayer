@@ -7,21 +7,17 @@ INSTALL_DIR="/opt/kalinka"
 CONFIG_DIR="/etc/kalinka"
 STATE_DIR="/var/lib/kalinka"
 SERVER_ID="${STATE_DIR}/server_id"
+UNIT_DIR="/etc/systemd/system"
 UNIT_NAME="kalinka.service"
-UNIT_PATH="/etc/systemd/system/${UNIT_NAME}"
+UNIT_PATH="${UNIT_DIR}/${UNIT_NAME}"
 RESTART_PATH_UNIT="kalinka-restart.path"
-RESTART_PATH_UNIT_PATH="/etc/systemd/system/${RESTART_PATH_UNIT}"
 PLUGINS_PATH_UNIT="kalinka-plugins.path"
-PLUGINS_PATH_UNIT_PATH="/etc/systemd/system/${PLUGINS_PATH_UNIT}"
 # While the plugin helper works beside a running Core, a plugin package's
 # trigger must leave Core alone.
 LIVE_OPERATION_MARKER="/run/kalinka/plugin-live-operation"
 UPGRADE_PATH_UNIT="kalinka-upgrade.path"
-UPGRADE_PATH_UNIT_PATH="/etc/systemd/system/${UPGRADE_PATH_UNIT}"
 JOURNAL_READER_SOCKET="kalinka-journal-reader.socket"
-JOURNAL_READER_SOCKET_PATH="/etc/systemd/system/${JOURNAL_READER_SOCKET}"
 MOUNTS_PATH_UNIT="kalinka-mounts.path"
-MOUNTS_PATH_UNIT_PATH="/etc/systemd/system/${MOUNTS_PATH_UNIT}"
 
 case "$1" in
   configure)
@@ -82,32 +78,31 @@ case "$1" in
       sync "$STATE_DIR"
     fi
 
-    echo "[5/5] systemd: reload; enable/start if units exist"
+    echo "[5/5] systemd: enable the units, and start them if systemd is running"
     systemd-tmpfiles --create /usr/lib/tmpfiles.d/kalinka.conf || true
-    systemctl daemon-reload
-    if [ -f "$RESTART_PATH_UNIT_PATH" ]; then
-      systemctl enable --now "$RESTART_PATH_UNIT"
+    # A container or chroot runs no systemd, and may have no systemctl. Enabling
+    # needs only the unit files, and is how an image build gets the units it
+    # boots with; starting is left to a running systemd.
+    have_systemctl=""
+    if command -v systemctl >/dev/null 2>&1; then
+      have_systemctl=1
     else
-      echo "Note: $RESTART_PATH_UNIT not found at $RESTART_PATH_UNIT_PATH. Skipping."
+      echo "Note: no systemctl here. Skipping enable/start."
     fi
-    if [ -f "$PLUGINS_PATH_UNIT_PATH" ]; then
-      systemctl enable --now "$PLUGINS_PATH_UNIT"
-    else
-      echo "Note: $PLUGINS_PATH_UNIT not found at $PLUGINS_PATH_UNIT_PATH. Skipping."
+    if [ -n "$have_systemctl" ] && [ -d /run/systemd/system ]; then
+      systemctl daemon-reload
     fi
-    if [ -f "$UPGRADE_PATH_UNIT_PATH" ]; then
-      systemctl enable --now "$UPGRADE_PATH_UNIT"
-    else
-      echo "Note: $UPGRADE_PATH_UNIT not found at $UPGRADE_PATH_UNIT_PATH. Skipping."
-    fi
-    if [ -f "$JOURNAL_READER_SOCKET_PATH" ]; then
-      systemctl enable --now "$JOURNAL_READER_SOCKET"
-    else
-      echo "Note: $JOURNAL_READER_SOCKET not found at $JOURNAL_READER_SOCKET_PATH. Skipping."
-    fi
-    if [ -f "$MOUNTS_PATH_UNIT_PATH" ]; then
-      systemctl enable --now "$MOUNTS_PATH_UNIT"
-    fi
+    for unit in "$RESTART_PATH_UNIT" "$PLUGINS_PATH_UNIT" "$UPGRADE_PATH_UNIT" \
+                "$JOURNAL_READER_SOCKET" "$MOUNTS_PATH_UNIT"; do
+      if [ ! -f "$UNIT_DIR/$unit" ]; then
+        echo "Note: $unit not found at $UNIT_DIR/$unit. Skipping."
+      elif [ -n "$have_systemctl" ]; then
+        systemctl enable "$unit"
+        if [ -d /run/systemd/system ]; then
+          systemctl start "$unit"
+        fi
+      fi
+    done
     # Drives plugged in before this install are mounted now, not at the next plug.
     if command -v udevadm >/dev/null 2>&1; then
       udevadm control --reload-rules || true
@@ -118,12 +113,16 @@ case "$1" in
         esac
       done
     fi
-    if [ -f "$UNIT_PATH" ]; then
-      systemctl enable "$UNIT_NAME"
-      systemctl restart "$UNIT_NAME"
-      systemctl --no-pager --full status "$UNIT_NAME" || true
-    else
+    if [ ! -f "$UNIT_PATH" ]; then
       echo "Note: $UNIT_NAME not found at $UNIT_PATH. Skipping enable/start."
+    elif [ -n "$have_systemctl" ]; then
+      systemctl enable "$UNIT_NAME"
+      if [ -d /run/systemd/system ]; then
+        systemctl restart "$UNIT_NAME"
+        systemctl --no-pager --full status "$UNIT_NAME" || true
+      else
+        echo "Note: systemd is not running here. $UNIT_NAME is enabled, not started."
+      fi
     fi
 
     echo "Installation complete."

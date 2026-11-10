@@ -25,13 +25,26 @@ case "$1" in
       chown -R "$USER:$USER" "$STATE_DIR"
     fi
 
-    systemctl daemon-reload
-    systemctl enable "$UNIT_NAME"
-    # Enabling arms the watcher at boot; starting arms it for this one, so an
-    # upgrade requested before the next reboot is still acted on.
-    systemctl enable "$UPGRADE_PATH_UNIT"
-    systemctl start "$UPGRADE_PATH_UNIT"
-    systemctl restart "$UNIT_NAME"
+    # A container or chroot runs no systemd, and may have no systemctl. Enabling
+    # needs only the unit files, and is how an image build gets the renderer it
+    # boots with; starting is left to a running systemd.
+    if ! command -v systemctl >/dev/null 2>&1; then
+      echo "Note: no systemctl here. Skipping enable/start."
+    else
+      if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload
+      fi
+      systemctl enable "$UNIT_NAME"
+      # Enabling arms the watcher at boot; starting arms it for this one, so an
+      # upgrade requested before the next reboot is still acted on.
+      systemctl enable "$UPGRADE_PATH_UNIT"
+      if [ -d /run/systemd/system ]; then
+        systemctl start "$UPGRADE_PATH_UNIT"
+        systemctl restart "$UNIT_NAME"
+      else
+        echo "Note: systemd is not running here. $UNIT_NAME is enabled, not started."
+      fi
+    fi
     ;;
 esac
 

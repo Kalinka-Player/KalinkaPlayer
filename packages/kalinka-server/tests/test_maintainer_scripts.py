@@ -11,6 +11,10 @@ uses and a graphics stack that nothing on it will ever draw with.
 
 The postinst makes the server's id, which the app keeps a server's pins under,
 before Core first starts, and an upgrade must keep it.
+
+The server's and the renderer's postinst configure where systemd is not
+running, or not installed, as in a container or a chroot, and still enable the
+units an image build boots with.
 """
 
 import json
@@ -942,7 +946,7 @@ def test_plugin_trigger_leaves_a_server_taking_the_plugin_in_itself_alone(tmp_pa
     assert not log.exists()
 
 
-def test_the_live_plugin_units_are_packaged_and_enabled():
+def test_the_live_plugin_units_are_packaged_and_enabled(tmp_path):
     scripts = REPO / "packages" / "kalinka-server" / "scripts"
     assert (scripts / "kalinka-plugins.path").exists()
     service = (scripts / "kalinka-plugins.service").read_text()
@@ -953,7 +957,9 @@ def test_the_live_plugin_units_are_packaged_and_enabled():
     assert "ExecStartPost=-/bin/rm -f /run/kalinka/plugin-live-request" in service
     build = BUILD_DEB.read_text()
     assert "kalinka-plugins.path" in build and "kalinka-plugins.service" in build
-    assert 'systemctl enable --now "$PLUGINS_PATH_UNIT"' in POSTINST.read_text()
+    _, calls, _, _ = _sandboxed_configure(tmp_path)
+    assert "systemctl enable kalinka-plugins.path" in calls
+    assert "systemctl start kalinka-plugins.path" in calls
 
 
 def test_restart_service_runs_the_plugin_helper_before_core():
@@ -969,32 +975,64 @@ def _recorder(name, then=""):
     return f'#!/usr/bin/env bash\necho "{name} $*" >> "$STUB_STATE/calls.log"\n{then}'
 
 
-def _sandboxed_configure(tmp_path, server_id=None):
-    """The postinst's configure, run against a root under tmp_path.
+RENDERER_POSTINST = REPO / "packages" / "kalinka-renderer" / "DEBIAN" / "postinst"
+SERVER_UNITS = (
+    "kalinka-restart.path",
+    "kalinka-plugins.path",
+    "kalinka-upgrade.path",
+    "kalinka-journal-reader.socket",
+    "kalinka-mounts.path",
+)
+SYSTEMD_RUNNING = "systemd running"
+SYSTEMD_STOPPED = "systemd not running"
+NO_SYSTEMCTL = "no systemctl"
+# What systemctl answers where systemd is not PID 1: verbs on unit files work,
+# anything that needs the manager does not.
+UNBOOTED_SYSTEMCTL = """\
+verb="" now=""
+for arg; do
+  case "$arg" in
+    --now) now=1 ;;
+    -*) ;;
+    *) [ -n "$verb" ] || verb="$arg" ;;
+  esac
+done
+case "$verb" in
+  enable|disable|reenable|is-enabled|mask|unmask|preset) [ -n "$now" ] || exit 0 ;;
+esac
+echo "System has not been booted with systemd as init system (PID 1)." >&2
+exit 1
+"""
+# What the postinsts run from the host where no systemctl may be found.
+HOST_TOOLS = "bash cat chmod find grep mv python3 readlink sync tr".split()
+
+
+def _postinst_sandbox(tmp_path, postinst, systemd, units=(), on_systemctl=""):
+    """*postinst*'s configure, run against a root under tmp_path.
 
     Every system path in it is moved under that root, and what reaches past
     the files — users, systemd, udev — is a recorder. Only root can give a
     file away, so install drops the owner it is asked for and chown only
-    records it. ``server_id`` is what the box already holds there, if
-    anything. Returns the result, the recorded calls, the id path and what
-    it held when kalinka.service was started.
+    records it. *systemd* is one of SYSTEMD_RUNNING, SYSTEMD_STOPPED, as in
+    a container or chroot, and NO_SYSTEMCTL. *units* are unit files made in
+    the root's /etc/systemd/system, and *on_systemctl* is shell the systemctl
+    recorder runs. Returns the result, the recorded calls and the root.
     """
     root = tmp_path / "root"
     script = tmp_path / "postinst"
     script.write_text(
         re.sub(
-            r'(?<=[\s"=])/(?=(?:etc|opt|srv|sys|usr|var)/)',
+            r'(?<=[\s"=])/(?=(?:etc|opt|run|srv|sys|usr|var)/)',
             lambda _: f"{root}/",
-            POSTINST.read_text(),
+            postinst.read_text(),
         )
     )
-    unit = root / "etc" / "systemd" / "system" / "kalinka.service"
-    unit.parent.mkdir(parents=True)
-    unit.touch()
-    path = root / "var" / "lib" / "kalinka" / "server_id"
-    if server_id is not None:
-        path.parent.mkdir(parents=True)
-        path.write_text(server_id)
+    unit_dir = root / "etc" / "systemd" / "system"
+    unit_dir.mkdir(parents=True)
+    for unit in units:
+        (unit_dir / unit).touch()
+    if systemd == SYSTEMD_RUNNING:
+        (root / "run" / "systemd" / "system").mkdir(parents=True)
 
     binv = tmp_path / "bin"
     binv.mkdir()
@@ -1011,11 +1049,6 @@ def _sandboxed_configure(tmp_path, server_id=None):
             "done\n"
             f'exec {shutil.which("install")} "${{args[@]}}"\n',
         ),
-        "systemctl": _recorder(
-            "systemctl",
-            '[ "$*" != "restart kalinka.service" ] || '
-            f'cat "{path}" > "$STUB_STATE/id-at-start" 2>/dev/null || true\n',
-        ),
         **{
             name: _recorder(name)
             for name in (
@@ -1028,17 +1061,46 @@ def _sandboxed_configure(tmp_path, server_id=None):
             )
         },
     }
+    if systemd == SYSTEMD_RUNNING:
+        stubs["systemctl"] = _recorder("systemctl", on_systemctl)
+    elif systemd == SYSTEMD_STOPPED:
+        stubs["systemctl"] = _recorder("systemctl", on_systemctl + UNBOOTED_SYSTEMCTL)
     for name, text in stubs.items():
         (binv / name).write_text(text)
         (binv / name).chmod(0o755)
+    if systemd == NO_SYSTEMCTL:
+        for tool in HOST_TOOLS:
+            (binv / tool).symlink_to(shutil.which(tool))
+        path = str(binv)
+    else:
+        path = f"{binv}:{os.environ['PATH']}"
 
-    result = _run(
-        script,
-        "configure",
-        env={"PATH": f"{binv}:{os.environ['PATH']}", "STUB_STATE": str(state)},
+    result = _run(script, "configure", env={"PATH": path, "STUB_STATE": str(state)})
+    log = state / "calls.log"
+    calls = log.read_text().splitlines() if log.exists() else []
+    return result, calls, root
+
+
+def _sandboxed_configure(tmp_path, server_id=None, systemd=SYSTEMD_RUNNING):
+    """The server postinst's configure, as _postinst_sandbox runs it.
+
+    ``server_id`` is what the box already holds there, if anything. Returns
+    the result, the recorded calls, the id path and what it held when
+    kalinka.service was started.
+    """
+    path = tmp_path / "root" / "var" / "lib" / "kalinka" / "server_id"
+    if server_id is not None:
+        path.parent.mkdir(parents=True)
+        path.write_text(server_id)
+    result, calls, _ = _postinst_sandbox(
+        tmp_path,
+        POSTINST,
+        systemd,
+        units=("kalinka.service", *SERVER_UNITS),
+        on_systemctl='[ "$*" != "restart kalinka.service" ] || '
+        f'cat "{path}" > "$STUB_STATE/id-at-start" 2>/dev/null || true\n',
     )
-    calls = (state / "calls.log").read_text().splitlines()
-    at_start = state / "id-at-start"
+    at_start = tmp_path / "state" / "id-at-start"
     return result, calls, path, at_start.read_text() if at_start.exists() else None
 
 
@@ -1073,3 +1135,151 @@ def test_an_upgrade_keeps_the_server_id(tmp_path):
     assert path.read_text() == kept
     assert at_start == kept
     assert not any(str(path) in call for call in calls)
+
+
+def _systemctl_calls(calls):
+    return [
+        call.removeprefix("systemctl ")
+        for call in calls
+        if call.startswith("systemctl ")
+    ]
+
+
+def test_where_systemd_runs_the_server_units_are_enabled_and_started(tmp_path):
+    result, calls, _, _ = _sandboxed_configure(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert _systemctl_calls(calls) == [
+        "daemon-reload",
+        *(f"{verb} {unit}" for unit in SERVER_UNITS for verb in ("enable", "start")),
+        "enable kalinka.service",
+        "restart kalinka.service",
+        "--no-pager --full status kalinka.service",
+    ]
+
+
+def test_where_systemd_is_not_running_the_server_units_are_still_enabled(tmp_path):
+    """A container or a chroot. An image build gets the units it boots with
+    from these links, through its own systemctl."""
+    result, calls, _, _ = _sandboxed_configure(tmp_path, systemd=SYSTEMD_STOPPED)
+
+    assert result.returncode == 0, result.stderr
+    assert _systemctl_calls(calls) == [
+        f"enable {unit}" for unit in (*SERVER_UNITS, "kalinka.service")
+    ]
+    assert "kalinka.service is enabled, not started" in result.stdout
+
+
+def test_the_server_configures_where_there_is_no_systemctl(tmp_path):
+    result, calls, path, _ = _sandboxed_configure(tmp_path, systemd=NO_SYSTEMCTL)
+
+    assert result.returncode == 0, result.stderr
+    assert _systemctl_calls(calls) == []
+    assert "no systemctl here" in result.stdout
+    assert uuid.UUID(path.read_text().strip()).version == 4
+    assert "Installation complete." in result.stdout
+
+
+RENDERER_ENABLED = [
+    "enable kalinka-renderer.service",
+    "enable kalinka-renderer-upgrade.path",
+]
+
+
+@pytest.mark.parametrize(
+    "systemd, asked",
+    [
+        (
+            SYSTEMD_RUNNING,
+            [
+                "daemon-reload",
+                *RENDERER_ENABLED,
+                "start kalinka-renderer-upgrade.path",
+                "restart kalinka-renderer.service",
+            ],
+        ),
+        (SYSTEMD_STOPPED, RENDERER_ENABLED),
+        (NO_SYSTEMCTL, []),
+    ],
+)
+def test_the_renderer_configures_with_or_without_systemd(systemd, asked, tmp_path):
+    result, calls, _ = _postinst_sandbox(tmp_path, RENDERER_POSTINST, systemd)
+
+    assert result.returncode == 0, result.stderr
+    assert _systemctl_calls(calls) == asked
+
+
+SYSTEMD_GUARD = re.compile(r"(?<!! )\[ -d /run/systemd/system \]")
+MANAGER_VERBS = set(
+    "daemon-reload start restart try-restart reload stop status".split()
+)
+
+
+def _unguarded_manager_calls(script):
+    """The lines of *script* whose systemctl call fails where systemd is not
+    running, and would fail the script with it.
+
+    Such a call belongs in a branch taken only when /run/systemd/system
+    exists, which is what systemd itself checks, or has to let failure pass.
+    """
+    guarded = []
+    found = []
+    for line in script.splitlines():
+        words = line.split()
+        if not words:
+            continue
+        if words[0] == "if":
+            guarded.append(bool(SYSTEMD_GUARD.search(line)))
+        elif words[0] == "elif":
+            guarded[-1] = bool(SYSTEMD_GUARD.search(line))
+        elif words[0] == "else":
+            guarded[-1] = False
+        elif words[0] == "fi":
+            guarded.pop()
+        if "systemctl" not in words or any(guarded) or line.endswith("|| true"):
+            continue
+        args = words[words.index("systemctl") + 1 :]
+        verb = next((arg for arg in args if not arg.startswith("-")), "")
+        if verb in MANAGER_VERBS or "--now" in args:
+            found.append(line.strip())
+    return found
+
+
+@pytest.mark.parametrize(
+    "postinst", [POSTINST, RENDERER_POSTINST], ids=["server", "renderer"]
+)
+def test_no_postinst_needs_systemd_running_to_configure(postinst):
+    assert _unguarded_manager_calls(postinst.read_text()) == []
+
+
+@pytest.mark.parametrize(
+    "script, found",
+    [
+        ("systemctl daemon-reload\n", ["systemctl daemon-reload"]),
+        ("systemctl enable --now a.path\n", ["systemctl enable --now a.path"]),
+        ("systemctl --no-pager status a\n", ["systemctl --no-pager status a"]),
+        ("systemctl enable a\n", []),
+        ("systemctl try-restart a || true\n", []),
+        (
+            'if [ -n "$x" ] && [ -d /run/systemd/system ]; then\n'
+            "  systemctl daemon-reload\nfi\n",
+            [],
+        ),
+        (
+            "if [ -d /run/systemd/system ]; then\n  :\nelse\n"
+            "  systemctl restart a\nfi\n",
+            ["systemctl restart a"],
+        ),
+        (
+            "if [ -f a ]; then\n  if [ -d /run/systemd/system ]; then\n"
+            "    systemctl start a\n  fi\n  systemctl start b\nfi\n",
+            ["systemctl start b"],
+        ),
+        (
+            "if ! [ -d /run/systemd/system ]; then\n  systemctl start a\nfi\n",
+            ["systemctl start a"],
+        ),
+    ],
+)
+def test_the_guard_check_finds_what_a_stopped_systemd_refuses(script, found):
+    assert _unguarded_manager_calls(script) == found
