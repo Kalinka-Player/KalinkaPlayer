@@ -11,7 +11,8 @@ uses and a graphics stack that nothing on it will ever draw with.
 
 The postinst makes the server's id, which the app keeps a server's pins under,
 before Core first starts, and an upgrade must keep it. On an image, whose build
-seals that id out, a first-boot unit makes it with the same helper.
+seals that id out, a first-boot unit makes it with the same helper, which is
+Core's own server_id_file.
 """
 
 import configparser
@@ -25,7 +26,7 @@ import uuid
 from pathlib import Path
 
 import pytest
-from kalinka_server import server_identity
+from kalinka_server import server_id_file
 
 REPO = Path(__file__).resolve().parents[3]
 PRERM = REPO / "packages" / "kalinka-server" / "DEBIAN" / "prerm"
@@ -890,7 +891,7 @@ def test_a_supervisor_looks_up_its_release_where_the_project_publishes_it(
 
 POSTINST = REPO / "packages" / "kalinka-server" / "DEBIAN" / "postinst"
 BUILD_DEB = REPO / "packages" / "kalinka-server" / "scripts" / "build_deb.sh"
-SERVER_ID_HELPER = REPO / "packages" / "kalinka-server" / "scripts" / "server-id"
+SERVER_ID_HELPER = Path(server_id_file.__file__)
 SERVER_ID_UNIT = (
     REPO / "packages" / "kalinka-server" / "scripts" / "kalinka-server-id.service"
 )
@@ -1108,9 +1109,11 @@ def test_the_postinst_enables_the_first_boot_unit_without_starting_it(held, tmp_
 
 
 def _make_id(path):
-    """The helper, run the way kalinka-server-id.service runs it."""
+    """The helper, run the way kalinka-server-id.service runs it, and with -S
+    on the standard library alone, as it runs before bootstrap.sh has built
+    the venv."""
     return subprocess.run(
-        [sys.executable, "-I", str(SERVER_ID_HELPER), str(path)],
+        [sys.executable, "-I", "-S", str(SERVER_ID_HELPER), str(path)],
         capture_output=True,
         text=True,
         timeout=10,
@@ -1176,24 +1179,6 @@ def test_the_id_helper_leaves_an_id_as_it_is(kept, tmp_path):
     assert [p.name for p in tmp_path.iterdir()] == ["server_id"]
 
 
-@pytest.mark.parametrize(
-    "held",
-    [None, "", "\n", "not-a-uuid\n", KEPT_ID, KEPT_ID.strip(), KEPT_ID.upper()],
-)
-def test_the_id_helper_keeps_just_what_core_would(held, tmp_path):
-    """Core still makes the id where neither the postinst nor the unit ran,
-    so the two must agree on what is one already."""
-    path = tmp_path / "server_id"
-    if held is not None:
-        path.write_text(held)
-    core_keeps = server_identity._read(path) is not None
-
-    result = _make_id(path)
-
-    assert result.returncode == 0, result.stderr
-    assert (path.read_text() == held) == core_keeps
-
-
 def test_the_first_boot_unit_makes_the_id_only_where_there_is_none():
     """Only on an image's first boot, and in time for the supervisor to report
     it and for Core not to make another."""
@@ -1219,8 +1204,8 @@ def test_the_first_boot_unit_makes_the_id_only_where_there_is_none():
 def test_the_package_ships_the_id_helper_and_its_unit():
     build = BUILD_DEB.read_text()
     assert (
-        'install -m 755 scripts/server-id "$TARGET_DIR/usr/lib/kalinka/server-id"'
-        in build
+        "cp src/kalinka_server/server_id_file.py"
+        ' "$TARGET_DIR/usr/lib/kalinka/server-id"' in build
     )
     assert (
         f'cp scripts/{SERVER_ID_UNIT.name} "$TARGET_DIR/etc/systemd/system/"' in build
