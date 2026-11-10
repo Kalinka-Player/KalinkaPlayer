@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+# deb-systemd-helper keeps the units' links, and its record of them, until a purge.
+if [ "$1" = purge ] && [ -x /usr/bin/deb-systemd-helper ]; then
+    deb-systemd-helper purge kalinka.service kalinka-restart.path kalinka-plugins.path \
+        kalinka-upgrade.path kalinka-journal-reader.socket kalinka-mounts.path >/dev/null || true
+fi
+
+exit 0

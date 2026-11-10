@@ -14,7 +14,9 @@ before Core first starts, and an upgrade must keep it.
 
 The server's and the renderer's postinst configure where systemd is not
 running, or not installed, as in a container or a chroot, and still enable the
-units an image build boots with.
+units an image build boots with. They enable through deb-systemd-helper, as
+dh_installsystemd's scripts do, so a unit its owner disabled stays disabled,
+and a removal keeps the links until a purge.
 """
 
 import json
@@ -43,54 +45,34 @@ def _run(script, *args, env=None):
     )
 
 
-def _sandboxed_prerm(tmp_path):
-    """The prerm under test, unable to reach the machine it runs on.
-
-    It is written to run as root against fixed paths: it disables a systemd
-    unit and uninstalls /opt/kalinka. Run as-is, the removal case prompts the
-    tester's polkit agent and — on a box that has Kalinka installed — would
-    really uninstall it. Only the two roots are rewritten, into tmp_path, and
-    systemctl becomes a stub that records its arguments.
-    """
-    script = tmp_path / "prerm"
-    script.write_text(PRERM.read_text().replace("/opt/kalinka", f"{tmp_path}/opt"))
-    binv = tmp_path / "bin"
-    binv.mkdir()
-    systemctl_log = tmp_path / "systemctl.log"
-    stub = binv / "systemctl"
-    stub.write_text(f'#!/usr/bin/env bash\necho "$@" >> "{systemctl_log}"\n')
-    stub.chmod(0o755)
-    return script, {"PATH": f"{binv}:{os.environ['PATH']}"}, systemctl_log
-
-
 @pytest.mark.parametrize("action", ["upgrade", "failed-upgrade"])
 def test_prerm_removes_nothing_on_an_upgrade(action, tmp_path):
     """It runs as root on a real box, so the guard has to come before anything
     it could act on — nothing is uninstalled and nothing is announced."""
-    script, env, systemctl_log = _sandboxed_prerm(tmp_path)
-
-    result = _run(script, action, "4.3.2", env=env)
+    result, calls, _ = _maintscript_sandbox(
+        tmp_path, PRERM, SYSTEMD_RUNNING, args=(action, "4.3.2")
+    )
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
     assert "Removing" not in result.stdout + result.stderr
-    assert not systemctl_log.exists()
+    assert calls == []
 
 
 def test_prerm_still_reports_a_real_removal(tmp_path):
     """The message belongs to removal; only the upgrade path is silenced. No
     venv under the sandbox root, so it stops before touching pip."""
-    script, env, systemctl_log = _sandboxed_prerm(tmp_path)
+    result, calls, _ = _maintscript_sandbox(
+        tmp_path, PRERM, SYSTEMD_RUNNING, args=("remove",)
+    )
 
-    result = _run(script, "remove", env=env)
-
+    assert result.returncode == 0, result.stderr
     assert "Removing Kalinka Server..." in result.stdout
-    assert systemctl_log.read_text().splitlines() == [
-        "disable --now kalinka-restart.path",
-        "disable --now kalinka-plugins.path",
-        "disable --now kalinka-journal-reader.socket",
-        "disable --now kalinka-mounts.path",
+    assert _invoke_calls(calls) == [
+        "stop kalinka-restart.path kalinka-plugins.path "
+        "kalinka-journal-reader.socket kalinka-mounts.path"
     ]
+    assert _systemctl_calls(calls) == []
 
 
 def _stub_bin(tmp_path, *, installed_version, apt_fails=True):
@@ -906,8 +888,8 @@ def test_the_live_plugin_units_are_packaged_and_enabled(tmp_path):
     build = BUILD_DEB.read_text()
     assert "kalinka-plugins.path" in build and "kalinka-plugins.service" in build
     _, calls, _, _ = _sandboxed_configure(tmp_path)
-    assert "systemctl enable kalinka-plugins.path" in calls
-    assert "systemctl start kalinka-plugins.path" in calls
+    assert "multi-user.target.wants/kalinka-plugins.path" in _boot_links(tmp_path)
+    assert "deb-systemd-invoke start kalinka-plugins.path" in calls
 
 
 def test_restart_service_runs_the_plugin_helper_before_core():
@@ -923,7 +905,25 @@ def _recorder(name, then=""):
     return f'#!/usr/bin/env bash\necho "{name} $*" >> "$STUB_STATE/calls.log"\n{then}'
 
 
-RENDERER_POSTINST = REPO / "packages" / "kalinka-renderer" / "DEBIAN" / "postinst"
+POSTRM = REPO / "packages" / "kalinka-server" / "DEBIAN" / "postrm"
+RENDERER_DEBIAN = REPO / "packages" / "kalinka-renderer" / "DEBIAN"
+RENDERER_POSTINST = RENDERER_DEBIAN / "postinst"
+RENDERER_PRERM = RENDERER_DEBIAN / "prerm"
+RENDERER_POSTRM = RENDERER_DEBIAN / "postrm"
+MAINTAINER_SCRIPTS = {
+    "server postinst": POSTINST,
+    "server prerm": PRERM,
+    "server postrm": POSTRM,
+    "renderer postinst": RENDERER_POSTINST,
+    "renderer prerm": RENDERER_PRERM,
+    "renderer postrm": RENDERER_POSTRM,
+}
+HELPER = shutil.which("deb-systemd-helper")
+# Where each package's build_deb.sh installs its units, from its scripts/.
+UNIT_DIRS = {
+    "kalinka-server": ("etc/systemd/system", ("service", "path", "socket")),
+    "kalinka-renderer": ("usr/lib/systemd/system", ("service", "path", "timer")),
+}
 SERVER_UNITS = (
     "kalinka-restart.path",
     "kalinka-plugins.path",
@@ -951,48 +951,75 @@ esac
 echo "System has not been booted with systemd as init system (PID 1)." >&2
 exit 1
 """
-# What the postinsts run from the host where no systemctl may be found.
+# What the maintainer scripts run from the host where no systemctl may be found.
 HOST_TOOLS = "bash cat chmod find grep mv python3 readlink sync tr".split()
 
 
 def _sandbox_root(tmp_path):
-    """Where _postinst_sandbox moves the system paths of a postinst."""
+    """Where _maintscript_sandbox moves the system paths of a script."""
     return tmp_path / "root"
 
 
-def _postinst_sandbox(
-    tmp_path, postinst, systemd, units=(), on_systemctl="", args=("configure",)
-):
-    """*postinst* run with *args*, against _sandbox_root(tmp_path).
+def _boot_links(tmp_path):
+    """The unit links under the sandbox root's /etc/systemd/system/*.wants."""
+    unit_dir = _sandbox_root(tmp_path) / "etc" / "systemd" / "system"
+    return {
+        str(link.relative_to(unit_dir))
+        for link in unit_dir.glob("*.wants/*")
+        if link.is_symlink()
+    }
 
-    Every system path in it is moved under that root, and what reaches past
-    the files — users, systemd, udev — is a recorder. Only root can give a
+
+def _maintscript_sandbox(tmp_path, script, systemd, args=("configure",), on_invoke=""):
+    """*script*, a maintainer script of the server or the renderer, run with
+    *args* as dpkg runs it, against _sandbox_root(tmp_path).
+
+    Every system path in it is moved under that root, which holds the
+    package's unit files where its build_deb.sh puts them, and what reaches
+    past the files — users, systemd, udev — is a recorder. deb-systemd-helper
+    is the host's own, given the root as DPKG_ROOT; the root has no systemctl
+    of its own, so the helper links the units itself. Only root can give a
     file away, so install drops the owner it is asked for and chown only
-    records it. *systemd* is one of SYSTEMD_RUNNING, SYSTEMD_STOPPED, as in
-    a container or chroot, and NO_SYSTEMCTL. *units* are unit files made in
-    the root's /etc/systemd/system, and *on_systemctl* is shell the systemctl
-    recorder runs. Returns the result, the recorded calls and the root.
+    records it. *systemd* is one of SYSTEMD_RUNNING, SYSTEMD_STOPPED, as in a
+    container or chroot, and NO_SYSTEMCTL, and *on_invoke* is shell the
+    deb-systemd-invoke recorder runs. Another script run with the same
+    tmp_path finds the root as this one left it. Returns the result, this
+    run's recorded calls and the root.
     """
+    if HELPER is None:
+        pytest.skip("needs deb-systemd-helper, from init-system-helpers")
+    package = script.parents[1].name
     root = _sandbox_root(tmp_path)
-    script = tmp_path / "postinst"
-    script.write_text(
+    sandboxed = tmp_path / f"{package}.{script.name}"
+    sandboxed.write_text(
         re.sub(
             r'(?<=[\s"=])/(?=(?:etc|opt|run|srv|sys|usr|var)/)',
             lambda _: f"{root}/",
-            postinst.read_text(),
+            script.read_text(),
         )
     )
-    unit_dir = root / "etc" / "systemd" / "system"
-    unit_dir.mkdir(parents=True)
-    for unit in units:
-        (unit_dir / unit).touch()
+    unit_dir, suffixes = UNIT_DIRS[package]
+    (root / unit_dir).mkdir(parents=True, exist_ok=True)
+    for suffix in suffixes:
+        for unit in (script.parents[1] / "scripts").glob(f"*.{suffix}"):
+            shutil.copy(unit, root / unit_dir)
+    helper = root / "usr" / "bin" / "deb-systemd-helper"
+    helper.parent.mkdir(parents=True, exist_ok=True)
+    if not helper.is_symlink():
+        helper.symlink_to(HELPER)
+    booted = root / "run" / "systemd" / "system"
     if systemd == SYSTEMD_RUNNING:
-        (root / "run" / "systemd" / "system").mkdir(parents=True)
+        booted.mkdir(parents=True, exist_ok=True)
+    elif booted.exists():
+        booted.rmdir()
 
     binv = tmp_path / "bin"
+    shutil.rmtree(binv, ignore_errors=True)
     binv.mkdir()
     state = tmp_path / "state"
-    state.mkdir()
+    state.mkdir(exist_ok=True)
+    log = state / "calls.log"
+    log.unlink(missing_ok=True)
     stubs = {
         "id": "#!/usr/bin/env bash\nexit 1\n",
         "install": _recorder(
@@ -1015,29 +1042,42 @@ def _postinst_sandbox(
                 "udevadm",
             )
         },
+        "deb-systemd-invoke": _recorder("deb-systemd-invoke", on_invoke),
     }
     if systemd == SYSTEMD_RUNNING:
-        stubs["systemctl"] = _recorder("systemctl", on_systemctl)
+        stubs["systemctl"] = _recorder("systemctl")
     elif systemd == SYSTEMD_STOPPED:
-        stubs["systemctl"] = _recorder("systemctl", on_systemctl + UNBOOTED_SYSTEMCTL)
+        stubs["systemctl"] = _recorder("systemctl", UNBOOTED_SYSTEMCTL)
     for name, text in stubs.items():
         (binv / name).write_text(text)
         (binv / name).chmod(0o755)
     if systemd == NO_SYSTEMCTL:
         for tool in HOST_TOOLS:
             (binv / tool).symlink_to(shutil.which(tool))
+        (binv / "deb-systemd-helper").symlink_to(HELPER)
         path = str(binv)
     else:
         path = f"{binv}:{os.environ['PATH']}"
 
-    result = _run(script, *args, env={"PATH": path, "STUB_STATE": str(state)})
-    log = state / "calls.log"
+    result = _run(
+        sandboxed,
+        *args,
+        env={
+            "PATH": path,
+            "STUB_STATE": str(state),
+            "DPKG_ROOT": str(root),
+            "DPKG_MAINTSCRIPT_PACKAGE": package,
+            "DPKG_MAINTSCRIPT_NAME": script.name,
+        },
+    )
     calls = log.read_text().splitlines() if log.exists() else []
     return result, calls, root
 
 
-def _sandboxed_configure(tmp_path, server_id=None, systemd=SYSTEMD_RUNNING):
-    """The server postinst's configure, as _postinst_sandbox runs it.
+def _sandboxed_configure(
+    tmp_path, server_id=None, systemd=SYSTEMD_RUNNING, args=("configure",)
+):
+    """The server postinst, as _maintscript_sandbox runs it.
 
     ``server_id`` is what the box already holds there, if anything. Returns
     the result, the recorded calls, the id path and what it held when
@@ -1048,12 +1088,12 @@ def _sandboxed_configure(tmp_path, server_id=None, systemd=SYSTEMD_RUNNING):
         path.parent.mkdir(parents=True)
         path.write_text(server_id)
     at_start = tmp_path / "id-at-start"
-    result, calls, _ = _postinst_sandbox(
+    result, calls, _ = _maintscript_sandbox(
         tmp_path,
         POSTINST,
         systemd,
-        units=("kalinka.service", *SERVER_UNITS),
-        on_systemctl='[ "$*" != "restart kalinka.service" ] || '
+        args=args,
+        on_invoke='[ "$*" != "restart kalinka.service" ] || '
         f'cat "{path}" > "{at_start}" 2>/dev/null || true\n',
     )
     return result, calls, path, at_start.read_text() if at_start.exists() else None
@@ -1092,47 +1132,117 @@ def test_an_upgrade_keeps_the_server_id(tmp_path):
     assert not any(str(path) in call for call in calls)
 
 
-def _systemctl_calls(calls):
+def _calls_of(command, calls):
     return [
-        call.removeprefix("systemctl ")
+        call.removeprefix(f"{command} ")
         for call in calls
-        if call.startswith("systemctl ")
+        if call.startswith(f"{command} ")
     ]
+
+
+def _systemctl_calls(calls):
+    return _calls_of("systemctl", calls)
+
+
+def _invoke_calls(calls):
+    return _calls_of("deb-systemd-invoke", calls)
+
+
+SERVER_LINKS = {
+    "multi-user.target.wants/kalinka.service",
+    "multi-user.target.wants/kalinka-restart.path",
+    "multi-user.target.wants/kalinka-plugins.path",
+    "multi-user.target.wants/kalinka-upgrade.path",
+    "multi-user.target.wants/kalinka-mounts.path",
+    "sockets.target.wants/kalinka-journal-reader.socket",
+}
+NOT_STARTED = "systemd is not running here, so nothing was started"
 
 
 def test_where_systemd_runs_the_server_units_are_enabled_and_started(tmp_path):
     result, calls, _, _ = _sandboxed_configure(tmp_path)
 
     assert result.returncode == 0, result.stderr
+    assert _boot_links(tmp_path) == SERVER_LINKS
+    assert _invoke_calls(calls) == [
+        *(f"start {unit}" for unit in SERVER_UNITS),
+        "restart kalinka.service",
+    ]
     assert _systemctl_calls(calls) == [
         "daemon-reload",
-        *(f"{verb} {unit}" for unit in SERVER_UNITS for verb in ("enable", "start")),
-        "enable kalinka.service",
-        "restart kalinka.service",
         "--no-pager --full status kalinka.service",
     ]
 
 
-def test_where_systemd_is_not_running_the_server_units_are_still_enabled(tmp_path):
-    """A container or a chroot. An image build gets the units it boots with
-    from these links, through its own systemctl."""
-    result, calls, _, _ = _sandboxed_configure(tmp_path, systemd=SYSTEMD_STOPPED)
+@pytest.mark.parametrize("systemd", [SYSTEMD_STOPPED, NO_SYSTEMCTL])
+def test_where_systemd_is_not_running_the_server_units_are_still_enabled(
+    systemd, tmp_path
+):
+    """A container or a chroot, with or without the systemd package. An image
+    build gets the units it boots with from these links."""
+    result, calls, path, _ = _sandboxed_configure(tmp_path, systemd=systemd)
 
     assert result.returncode == 0, result.stderr
-    assert _systemctl_calls(calls) == [
-        f"enable {unit}" for unit in (*SERVER_UNITS, "kalinka.service")
-    ]
-    assert "kalinka.service is enabled, not started" in result.stdout
-
-
-def test_the_server_configures_where_there_is_no_systemctl(tmp_path):
-    result, calls, path, _ = _sandboxed_configure(tmp_path, systemd=NO_SYSTEMCTL)
-
-    assert result.returncode == 0, result.stderr
-    assert _systemctl_calls(calls) == []
-    assert "no systemctl here" in result.stdout
+    assert _boot_links(tmp_path) == SERVER_LINKS
+    assert _invoke_calls(calls) == _systemctl_calls(calls) == []
+    assert NOT_STARTED in result.stdout
     assert uuid.UUID(path.read_text().strip()).version == 4
     assert "Installation complete." in result.stdout
+
+
+def test_an_upgrade_leaves_a_unit_its_owner_disabled_disabled(tmp_path):
+    _sandboxed_configure(tmp_path)
+    disabled = "multi-user.target.wants/kalinka-upgrade.path"
+    (_sandbox_root(tmp_path) / "etc" / "systemd" / "system" / disabled).unlink()
+
+    result, _, _, _ = _sandboxed_configure(tmp_path, args=("configure", "5.18.0"))
+
+    assert result.returncode == 0, result.stderr
+    assert _boot_links(tmp_path) == SERVER_LINKS - {disabled}
+
+
+def test_an_upgrade_from_a_release_that_enabled_with_systemctl_keeps_its_units(
+    tmp_path,
+):
+    """Those releases left links and no deb-systemd-helper record of them."""
+    unit_dir = _sandbox_root(tmp_path) / "etc" / "systemd" / "system"
+    for link in SERVER_LINKS:
+        (unit_dir / link).parent.mkdir(parents=True, exist_ok=True)
+        (unit_dir / link).symlink_to(f"/etc/systemd/system/{Path(link).name}")
+
+    result, _, _, _ = _sandboxed_configure(tmp_path, args=("configure", "5.18.0"))
+    assert result.returncode == 0, result.stderr
+    (unit_dir / "multi-user.target.wants/kalinka.service").unlink()
+    result, _, _, _ = _sandboxed_configure(tmp_path, args=("configure", "5.19.0"))
+
+    assert result.returncode == 0, result.stderr
+    assert _boot_links(tmp_path) == SERVER_LINKS - {
+        "multi-user.target.wants/kalinka.service"
+    }
+
+
+def test_a_removal_keeps_the_links_for_a_reinstall_and_a_purge_drops_them(tmp_path):
+    _sandboxed_configure(tmp_path)
+
+    result, _, _ = _maintscript_sandbox(
+        tmp_path, PRERM, SYSTEMD_RUNNING, args=("remove",)
+    )
+    assert result.returncode == 0, result.stderr
+    result, _, _, _ = _sandboxed_configure(tmp_path, args=("configure", "5.18.0"))
+    assert result.returncode == 0, result.stderr
+    assert _boot_links(tmp_path) == SERVER_LINKS
+
+    result, _, _ = _maintscript_sandbox(
+        tmp_path, POSTRM, SYSTEMD_RUNNING, args=("remove",)
+    )
+    assert result.returncode == 0, result.stderr
+    assert _boot_links(tmp_path) == SERVER_LINKS
+    result, _, root = _maintscript_sandbox(
+        tmp_path, POSTRM, SYSTEMD_RUNNING, args=("purge",)
+    )
+    assert result.returncode == 0, result.stderr
+    assert _boot_links(tmp_path) == set()
+    assert not list(root.glob("var/lib/systemd/deb-systemd-helper-enabled/**/*"))
 
 
 def test_the_server_units_are_packaged_where_the_postinst_looks_for_them():
@@ -1160,7 +1270,9 @@ def test_plugin_trigger_restarts_only_a_running_server(systemd, asked, tmp_path)
     the restart service that stopped it, not by every plugin package's
     trigger in between. Where systemd is not running there is no Core to
     restart, and a plugin installs without a word from systemctl."""
-    result, calls, _ = _postinst_sandbox(tmp_path, POSTINST, systemd, args=TRIGGERED)
+    result, calls, _ = _maintscript_sandbox(
+        tmp_path, POSTINST, systemd, args=TRIGGERED
+    )
 
     assert result.returncode == 0, result.stderr
     assert _systemctl_calls(calls) == asked
@@ -1174,7 +1286,7 @@ def test_plugin_trigger_leaves_a_server_taking_the_plugin_in_itself_alone(tmp_pa
     marker.parent.mkdir(parents=True)
     marker.touch()
 
-    result, calls, _ = _postinst_sandbox(
+    result, calls, _ = _maintscript_sandbox(
         tmp_path, POSTINST, SYSTEMD_RUNNING, args=TRIGGERED
     )
 
@@ -1183,33 +1295,79 @@ def test_plugin_trigger_leaves_a_server_taking_the_plugin_in_itself_alone(tmp_pa
     assert "taking the plugin in itself" in result.stdout
 
 
-RENDERER_ENABLED = [
-    "enable kalinka-renderer.service",
-    "enable kalinka-renderer-upgrade.path",
-]
+RENDERER_LINKS = {
+    "multi-user.target.wants/kalinka-renderer.service",
+    "multi-user.target.wants/kalinka-renderer-upgrade.path",
+}
 
 
 @pytest.mark.parametrize(
-    "systemd, asked",
+    "systemd, reloaded, invoked",
     [
         (
             SYSTEMD_RUNNING,
+            ["daemon-reload"],
             [
-                "daemon-reload",
-                *RENDERER_ENABLED,
                 "start kalinka-renderer-upgrade.path",
                 "restart kalinka-renderer.service",
             ],
         ),
-        (SYSTEMD_STOPPED, RENDERER_ENABLED),
-        (NO_SYSTEMCTL, []),
+        (SYSTEMD_STOPPED, [], []),
+        (NO_SYSTEMCTL, [], []),
     ],
 )
-def test_the_renderer_configures_with_or_without_systemd(systemd, asked, tmp_path):
-    result, calls, _ = _postinst_sandbox(tmp_path, RENDERER_POSTINST, systemd)
+def test_the_renderer_configures_with_or_without_systemd(
+    systemd, reloaded, invoked, tmp_path
+):
+    result, calls, _ = _maintscript_sandbox(tmp_path, RENDERER_POSTINST, systemd)
 
     assert result.returncode == 0, result.stderr
-    assert _systemctl_calls(calls) == asked
+    assert _boot_links(tmp_path) == RENDERER_LINKS
+    assert _systemctl_calls(calls) == reloaded
+    assert _invoke_calls(calls) == invoked
+
+
+def test_a_renderer_upgrade_leaves_it_disabled_if_its_owner_disabled_it(tmp_path):
+    _maintscript_sandbox(tmp_path, RENDERER_POSTINST, SYSTEMD_STOPPED)
+    disabled = "multi-user.target.wants/kalinka-renderer.service"
+    (_sandbox_root(tmp_path) / "etc" / "systemd" / "system" / disabled).unlink()
+
+    result, _, _ = _maintscript_sandbox(
+        tmp_path, RENDERER_POSTINST, SYSTEMD_STOPPED, args=("configure", "0.14.0")
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _boot_links(tmp_path) == RENDERER_LINKS - {disabled}
+
+
+def test_a_renderer_removal_stops_it_and_a_purge_drops_its_links(tmp_path):
+    _maintscript_sandbox(tmp_path, RENDERER_POSTINST, SYSTEMD_RUNNING)
+
+    result, calls, _ = _maintscript_sandbox(
+        tmp_path, RENDERER_PRERM, SYSTEMD_RUNNING, args=("remove",)
+    )
+    assert result.returncode == 0, result.stderr
+    assert _invoke_calls(calls) == [
+        "stop kalinka-renderer.service kalinka-renderer-upgrade.path"
+    ]
+    assert _systemctl_calls(calls) == ["disable --now kalinka-renderer-upgrade.timer"]
+    assert _boot_links(tmp_path) == RENDERER_LINKS
+
+    result, _, _ = _maintscript_sandbox(
+        tmp_path, RENDERER_POSTRM, SYSTEMD_RUNNING, args=("purge",)
+    )
+    assert result.returncode == 0, result.stderr
+    assert _boot_links(tmp_path) == set()
+
+
+@pytest.mark.parametrize("package", ["kalinka-server", "kalinka-renderer"])
+def test_every_maintainer_script_is_packaged_executable(package):
+    """dpkg-deb refuses one that is not, and a checkout may not keep the bit."""
+    build = (REPO / "packages" / package / "scripts" / "build_deb.sh").read_text()
+    for name in ("postinst", "prerm", "postrm"):
+        assert re.search(
+            rf'(?:chmod 755|install -m 755)[^\n]*"\$TARGET_DIR/DEBIAN/{name}"', build
+        ), name
 
 
 SYSTEMD_GUARD = re.compile(r"(?<!! )\[ -d /run/systemd/system \]")
@@ -1219,11 +1377,12 @@ MANAGER_VERBS = set(
 
 
 def _unguarded_manager_calls(script):
-    """The lines of *script* whose systemctl call fails where systemd is not
-    running, and would fail the script with it.
+    """The lines of *script* whose systemctl or deb-systemd-invoke call fails
+    where systemd is not running, and would fail the script with it.
 
     Such a call belongs in a branch taken only when /run/systemd/system
     exists, which is what systemd itself checks, or has to let failure pass.
+    Every deb-systemd-invoke verb asks the manager.
     """
     guarded = []
     found = []
@@ -1244,20 +1403,23 @@ def _unguarded_manager_calls(script):
         passes = any(guarded) or line.endswith("|| true")
         if words[0] == "if" and words[-1] == "fi":
             guarded.pop()
-        if "systemctl" not in words or passes:
+        if passes:
             continue
-        args = words[words.index("systemctl") + 1 :]
-        verb = next((arg for arg in args if not arg.startswith("-")), "")
-        if verb in MANAGER_VERBS or "--now" in args:
+        if "deb-systemd-invoke" in words:
             found.append(line.strip())
+        elif "systemctl" in words:
+            args = words[words.index("systemctl") + 1 :]
+            verb = next((arg for arg in args if not arg.startswith("-")), "")
+            if verb in MANAGER_VERBS or "--now" in args:
+                found.append(line.strip())
     return found
 
 
 @pytest.mark.parametrize(
-    "postinst", [POSTINST, RENDERER_POSTINST], ids=["server", "renderer"]
+    "script", list(MAINTAINER_SCRIPTS.values()), ids=list(MAINTAINER_SCRIPTS)
 )
-def test_no_postinst_needs_systemd_running_to_configure(postinst):
-    assert _unguarded_manager_calls(postinst.read_text()) == []
+def test_no_maintainer_script_needs_systemd_running(script):
+    assert _unguarded_manager_calls(script.read_text()) == []
 
 
 @pytest.mark.parametrize(
@@ -1268,6 +1430,13 @@ def test_no_postinst_needs_systemd_running_to_configure(postinst):
         ("systemctl --no-pager status a\n", ["systemctl --no-pager status a"]),
         ("systemctl enable a\n", []),
         ("systemctl try-restart a || true\n", []),
+        ("deb-systemd-invoke restart a\n", ["deb-systemd-invoke restart a"]),
+        ("deb-systemd-helper enable a\n", []),
+        (
+            "if [ -d /run/systemd/system ]; then\n"
+            "  deb-systemd-invoke start a\nfi\n",
+            [],
+        ),
         (
             'if [ -n "$x" ] && [ -d /run/systemd/system ]; then\n'
             "  systemctl daemon-reload\nfi\n",

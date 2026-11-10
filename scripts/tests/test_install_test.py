@@ -418,14 +418,22 @@ class StepTests(unittest.TestCase):
 
 class PostinstTests(TemporaryDirectoryTest):
     def configure(self, text):
-        postinst = self.root / "postinst"
+        postinst = self.root / "kalinka-server" / "DEBIAN" / "postinst"
+        postinst.parent.mkdir(parents=True)
         postinst.write_text(text)
         with contextlib.redirect_stdout(io.StringIO()):
             return cases.configure(postinst, "5.18.0")
 
     def test_configure_runs_it_as_dpkg_does_and_returns_what_it_said(self):
-        output = self.configure('echo "$1 $2 on $PATH"\necho noted >&2\n')
-        self.assertEqual(output, f"configure 5.18.0 on {cases.DPKG_PATH}\nnoted\n")
+        output = self.configure(
+            'echo "$1 $2 on $PATH"\n'
+            'echo "$DPKG_MAINTSCRIPT_PACKAGE $DPKG_MAINTSCRIPT_NAME"\n'
+            "echo noted >&2\n"
+        )
+        self.assertEqual(
+            output,
+            f"configure 5.18.0 on {cases.DPKG_PATH}\nkalinka-server postinst\nnoted\n",
+        )
 
     def test_a_configure_that_fails_fails_the_step(self):
         with self.assertRaisesRegex(cases.CheckFailed, "exited with status 127"):

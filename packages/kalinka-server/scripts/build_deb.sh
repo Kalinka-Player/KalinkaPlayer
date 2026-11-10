@@ -48,6 +48,8 @@ echo "Target file: $TARGET_FILE"
 rm -rf "$TARGET_DIR"
 mkdir -p "$TARGET_DIR"
 cp -r DEBIAN "$TARGET_DIR"
+# dpkg-deb refuses a maintainer script without its execute bit, whatever mode the checkout left it in.
+chmod 755 "$TARGET_DIR/DEBIAN/postinst" "$TARGET_DIR/DEBIAN/prerm" "$TARGET_DIR/DEBIAN/postrm"
 
 sed "s/@VERSION@/$DEB_VERSION/" DEBIAN/control.in > "$TARGET_DIR/DEBIAN/control"
 rm "$TARGET_DIR/DEBIAN/control.in"

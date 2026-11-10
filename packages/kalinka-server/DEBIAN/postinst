@@ -19,6 +19,16 @@ UPGRADE_PATH_UNIT="kalinka-upgrade.path"
 JOURNAL_READER_SOCKET="kalinka-journal-reader.socket"
 MOUNTS_PATH_UNIT="kalinka-mounts.path"
 
+# As dh_installsystemd does it: no running systemd or systemctl needed, and a
+# unit its owner disabled stays disabled across upgrades.
+enable_unit() {
+  if deb-systemd-helper --quiet was-enabled "$1"; then
+    deb-systemd-helper enable "$1"
+  else
+    deb-systemd-helper update-state "$1"
+  fi
+}
+
 case "$1" in
   configure)
     echo "[1/5] Ensure system user exists (nologin)"
@@ -80,24 +90,18 @@ case "$1" in
 
     echo "[5/5] systemd: enable the units, and start them if systemd is running"
     systemd-tmpfiles --create /usr/lib/tmpfiles.d/kalinka.conf || true
-    # Enabling needs no running systemd, and is how an image build gets the units it boots with.
-    have_systemctl=""
-    if command -v systemctl >/dev/null 2>&1; then
-      have_systemctl=1
-    else
-      echo "Note: no systemctl here. Skipping enable/start."
-    fi
-    if [ -n "$have_systemctl" ] && [ -d /run/systemd/system ]; then
+    if [ -d /run/systemd/system ]; then
       systemctl daemon-reload
     fi
+    # Enabled with or without a running systemd: that is how an image build gets the units it boots with.
     for unit in "$RESTART_PATH_UNIT" "$PLUGINS_PATH_UNIT" "$UPGRADE_PATH_UNIT" \
                 "$JOURNAL_READER_SOCKET" "$MOUNTS_PATH_UNIT"; do
       if [ ! -f "$UNIT_DIR/$unit" ]; then
         echo "Note: $unit not found at $UNIT_DIR/$unit. Skipping."
-      elif [ -n "$have_systemctl" ]; then
-        systemctl enable "$unit"
+      else
+        enable_unit "$unit"
         if [ -d /run/systemd/system ]; then
-          systemctl start "$unit"
+          deb-systemd-invoke start "$unit"
         fi
       fi
     done
@@ -113,13 +117,13 @@ case "$1" in
     fi
     if [ ! -f "$UNIT_PATH" ]; then
       echo "Note: $UNIT_NAME not found at $UNIT_PATH. Skipping enable/start."
-    elif [ -n "$have_systemctl" ]; then
-      systemctl enable "$UNIT_NAME"
+    else
+      enable_unit "$UNIT_NAME"
       if [ -d /run/systemd/system ]; then
-        systemctl restart "$UNIT_NAME"
+        deb-systemd-invoke restart "$UNIT_NAME"
         systemctl --no-pager --full status "$UNIT_NAME" || true
       else
-        echo "Note: systemd is not running here. $UNIT_NAME is enabled, not started."
+        echo "Note: systemd is not running here, so nothing was started."
       fi
     fi
 

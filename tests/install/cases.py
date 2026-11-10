@@ -60,9 +60,8 @@ RENDERER_STEP = ">> Installing the renderer on this machine"
 RENDERER_WARNING = ">> note: the renderer could not be installed"
 APP_LOOKUP = ">> Looking up the latest app packages"
 MISSING_EXTRA = "could not be installed, so"
-# And the postinsts, where systemd is not running or not there.
-NOT_STARTED = "is enabled, not started"
-NO_SYSTEMCTL = "no systemctl here"
+# And the postinsts, where systemd is not running.
+NOT_STARTED = "so nothing was started"
 
 
 class CheckFailed(Exception):
@@ -395,7 +394,11 @@ def check_asked_to_enable(*units):
 
 
 def configure(postinst, version):
-    """What *postinst* prints for ``configure``, run as dpkg runs it, or CheckFailed."""
+    """What *postinst* prints for ``configure``, run as dpkg runs it, or CheckFailed.
+
+    deb-systemd-helper refuses to run outside dpkg, which it tells by what
+    dpkg puts in a maintainer script's environment.
+    """
     command = ["bash", str(postinst), "configure", version]
     print("$", *command, flush=True)
     try:
@@ -406,7 +409,12 @@ def configure(postinst, version):
             stderr=subprocess.STDOUT,
             text=True,
             errors="replace",
-            env={**os.environ, "PATH": DPKG_PATH},
+            env={
+                **os.environ,
+                "PATH": DPKG_PATH,
+                "DPKG_MAINTSCRIPT_PACKAGE": postinst.parents[1].name,
+                "DPKG_MAINTSCRIPT_NAME": postinst.name,
+            },
             timeout=CONFIGURE_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
@@ -523,7 +531,8 @@ def dietpi_like(releases):
         SYSTEMCTL.unlink()
         check(not shutil.which("systemctl", path=DPKG_PATH), "systemctl is still there")
         output = configure(SERVER_POSTINST, installed_version("kalinka-server"))
-        check(NO_SYSTEMCTL in output, "the server's postinst did not skip systemd")
+        check(NOT_STARTED in output, "the postinst did not note that it started nothing")
+        check_enabled("kalinka.service")
 
 
 SYSTEMS = {"debian": fresh_debian, "dietpi": dietpi_like}

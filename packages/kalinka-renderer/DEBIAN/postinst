@@ -10,6 +10,16 @@ STATE_DIR="/var/lib/kalinka-renderer"
 UNIT_NAME="kalinka-renderer.service"
 UPGRADE_PATH_UNIT="kalinka-renderer-upgrade.path"
 
+# As dh_installsystemd does it: no running systemd or systemctl needed, and a
+# unit its owner disabled stays disabled across upgrades.
+enable_unit() {
+  if deb-systemd-helper --quiet was-enabled "$1"; then
+    deb-systemd-helper enable "$1"
+  else
+    deb-systemd-helper update-state "$1"
+  fi
+}
+
 case "$1" in
   configure)
     if ! id -u "$USER" >/dev/null 2>&1; then
@@ -25,23 +35,19 @@ case "$1" in
       chown -R "$USER:$USER" "$STATE_DIR"
     fi
 
-    # Enabling needs no running systemd, and is how an image build gets the renderer it boots with.
-    if ! command -v systemctl >/dev/null 2>&1; then
-      echo "Note: no systemctl here. Skipping enable/start."
+    if [ -d /run/systemd/system ]; then
+      systemctl daemon-reload
+    fi
+    # Enabled with or without a running systemd: that is how an image build gets the renderer it boots with.
+    enable_unit "$UNIT_NAME"
+    # Enabling arms the watcher at boot; starting arms it for this one, so an
+    # upgrade requested before the next reboot is still acted on.
+    enable_unit "$UPGRADE_PATH_UNIT"
+    if [ -d /run/systemd/system ]; then
+      deb-systemd-invoke start "$UPGRADE_PATH_UNIT"
+      deb-systemd-invoke restart "$UNIT_NAME"
     else
-      if [ -d /run/systemd/system ]; then
-        systemctl daemon-reload
-      fi
-      systemctl enable "$UNIT_NAME"
-      # Enabling arms the watcher at boot; starting arms it for this one, so an
-      # upgrade requested before the next reboot is still acted on.
-      systemctl enable "$UPGRADE_PATH_UNIT"
-      if [ -d /run/systemd/system ]; then
-        systemctl start "$UPGRADE_PATH_UNIT"
-        systemctl restart "$UNIT_NAME"
-      else
-        echo "Note: systemd is not running here. $UNIT_NAME is enabled, not started."
-      fi
+      echo "Note: systemd is not running here, so nothing was started."
     fi
     ;;
 esac

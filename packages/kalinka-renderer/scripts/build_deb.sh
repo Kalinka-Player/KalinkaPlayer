@@ -68,6 +68,7 @@ sed "s/@ARCH@/$ARCH/; s/@VERSION@/$VERSION/; s|@SHLIBDEPS@|$SHLIBDEPS|" \
     DEBIAN/control.in > "$TARGET_DIR/DEBIAN/control"
 install -m 755 DEBIAN/postinst "$TARGET_DIR/DEBIAN/postinst"
 install -m 755 DEBIAN/prerm "$TARGET_DIR/DEBIAN/prerm"
+install -m 755 DEBIAN/postrm "$TARGET_DIR/DEBIAN/postrm"
 
 dpkg-deb --root-owner-group --build "$TARGET_DIR"
 mv "$TARGET_DIR.deb" "$TARGET_FILE"

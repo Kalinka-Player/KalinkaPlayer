@@ -19,7 +19,7 @@ Each system's whole output lands in `tmp/install-test/<system>.log` (`INSTALL_TE
 
 No systemd runs in the containers. `policy-rc.d` keeps maintainer scripts from starting anything. While the published packages install, `/usr/bin/systemctl` is `systemctl-recorder`, diverted so that the systemd package bluez brings in installs its own beside it: a released postinst may still need a `systemctl` that answers everything. The recorder notes what the packages asked for, and the cases check that the server's and the renderer's postinst asked for their service to be enabled. The server is started by hand from its installed unit: the directories systemd would make, `ExecStartPre` as root, `ExecStart` as its user, but without the unit's sandboxing.
 
-The last step of each system runs this checkout's postinsts, which `run.sh` mounts beside the scripts, as dpkg would run them, where systemd is not running: on `debian` with the systemd package's own `systemctl`, after which `kalinka.service` and `kalinka-renderer.service` have to be linked into `multi-user.target.wants`, and on `dietpi` with no `systemctl` at all. Either way `configure` has to succeed.
+The last step of each system runs this checkout's postinsts, which `run.sh` mounts beside the scripts, as dpkg would run them, where systemd is not running: on `debian` with the systemd package's own `systemctl`, and on `dietpi` with no `systemctl` at all. Either way `configure` has to succeed, and leave `kalinka.service`, and on `debian` `kalinka-renderer.service`, linked into `multi-user.target.wants`.
 
 | File | Runs |
 |---|---|

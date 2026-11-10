@@ -28,7 +28,9 @@ cleanup() {
   # Before start_build_aids, the systemctl stop_build_aids removes is systemd's own.
   [ -z "$AIDS" ] || stop_build_aids
   [ ! -e "$ASIDE/policy-rc.d" ] || mv "$ASIDE/policy-rc.d" /usr/sbin/policy-rc.d
-  rm -f "${UNITS[@]}" /etc/systemd/system/*.wants/kalinka*
+  rm -f "${UNITS[@]}" /etc/systemd/system/*.wants/kalinka* \
+    /var/lib/systemd/deb-systemd-helper-enabled/kalinka* \
+    /var/lib/systemd/deb-systemd-helper-enabled/*.wants/kalinka*
   rm -rf "$ASIDE"
 }
 trap cleanup EXIT
@@ -54,10 +56,12 @@ done
 
 echo "  -- each postinst configures"
 for package in kalinka-server kalinka-renderer; do
-  output="$(in_chroot bash "$PACKAGES/$package/DEBIAN/postinst" configure 2>&1)"
+  # deb-systemd-helper runs only for dpkg, which it tells by this.
+  output="$(in_chroot env DPKG_MAINTSCRIPT_PACKAGE="$package" DPKG_MAINTSCRIPT_NAME=postinst \
+    bash "$PACKAGES/$package/DEBIAN/postinst" configure 2>&1)"
   status=$?
   assert_eq "$package's postinst succeeds" "$status" 0
-  assert_contains "and starts nothing" "$output" "is enabled, not started"
+  assert_contains "and starts nothing" "$output" "so nothing was started"
   [ "$status" -eq 0 ] || echo "$output"
 done
 
