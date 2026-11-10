@@ -2,14 +2,14 @@
 
 #include <utility>
 
-namespace pb = kalinka::renderer::v1;
+namespace renderer_pb = kalinka::renderer::v1;
 
 CapabilityService::CapabilityService(
     std::shared_ptr<const CapabilitySource> source)
     : source_(std::move(source)), announced_(current().SerializeAsString()) {}
 
-pb::Capabilities CapabilityService::current() const {
-  pb::Capabilities capabilities;
+renderer_pb::Capabilities CapabilityService::current() const {
+  renderer_pb::Capabilities capabilities;
   source_->fillCapabilities(capabilities);
   return capabilities;
 }
@@ -26,7 +26,7 @@ void CapabilityService::forgetExpired() {
 }
 
 void CapabilityService::refresh() {
-  const pb::Capabilities capabilities = current();
+  const renderer_pb::Capabilities capabilities = current();
   std::string serialized = capabilities.SerializeAsString();
   if (serialized == announced_) {
     return;

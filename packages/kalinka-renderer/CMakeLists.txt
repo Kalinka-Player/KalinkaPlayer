@@ -37,7 +37,11 @@ set_source_files_properties(src/main.cpp src/net/ProtocolSession.cpp PROPERTIES
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Protobuf REQUIRED)
+# Protobuf's package config includes its transitive dependencies, such as Abseil.
+find_package(Protobuf CONFIG QUIET)
+if(NOT Protobuf_FOUND)
+  find_package(Protobuf MODULE REQUIRED)
+endif()
 # CONFIG: use Boost's own package config (the FindBoost module is removed in
 # new CMake, policy CMP0167). Header-only use: asio + beast.
 find_package(Boost CONFIG REQUIRED)
@@ -78,7 +82,7 @@ file(MAKE_DIRECTORY ${PROTO_GEN_DIR})
 add_custom_command(
   OUTPUT ${PROTO_GEN_DIR}/kalinka/renderer/v1/renderer.pb.cc
          ${PROTO_GEN_DIR}/kalinka/renderer/v1/renderer.pb.h
-  COMMAND ${Protobuf_PROTOC_EXECUTABLE}
+  COMMAND protobuf::protoc
           -I ${CMAKE_CURRENT_SOURCE_DIR}/proto
           --cpp_out=${PROTO_GEN_DIR}
           ${PROTO_FILE}

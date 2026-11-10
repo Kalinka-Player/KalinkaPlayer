@@ -6,7 +6,7 @@
 #include "capabilities/CapabilityService.h"
 #include "fakes.h"
 
-namespace pb = kalinka::renderer::v1;
+namespace renderer_pb = kalinka::renderer::v1;
 
 namespace {
 
@@ -14,7 +14,8 @@ class RecordingListener : public CapabilityListener {
 public:
   std::vector<bool> told;
 
-  void onCapabilitiesChanged(const pb::Capabilities &capabilities) override {
+  void onCapabilitiesChanged(
+      const renderer_pb::Capabilities &capabilities) override {
     told.push_back(capabilities.dsd());
   }
 };

@@ -6,18 +6,18 @@
 #include <charconv>
 #include <functional>
 
-namespace pb = kalinka::renderer::v1;
+namespace renderer_pb = kalinka::renderer::v1;
 
 namespace {
 
 // Over the shape and the options, never the values: the version tells a Core
 // whether the page it is holding still looks like this, and a volume knob
 // moving is not a new page.
-std::string versionOf(const pb::ConfigSnapshot &snapshot) {
+std::string versionOf(const renderer_pb::ConfigSnapshot &snapshot) {
   std::string blob;
-  for (const pb::ConfigSection &section : snapshot.sections()) {
+  for (const renderer_pb::ConfigSection &section : snapshot.sections()) {
     blob += section.path() + '\x1f' + section.title() + '\x1e';
-    for (const pb::ConfigField &field : section.fields()) {
+    for (const renderer_pb::ConfigField &field : section.fields()) {
       blob += field.path() + '\x1f' + field.title() + '\x1f' +
               std::to_string(field.type()) + '\x1f' +
               std::to_string(field.apply()) + '\x1f' +
@@ -27,7 +27,7 @@ std::string versionOf(const pb::ConfigSnapshot &snapshot) {
               std::to_string(field.range().min()) + '\x1f' +
               std::to_string(field.range().max()) + '\x1f' +
               std::to_string(field.range().step());
-      for (const pb::ConfigOption &option : field.options()) {
+      for (const renderer_pb::ConfigOption &option : field.options()) {
         blob += '\x1f' + option.value();
       }
       blob += '\x1e';
@@ -40,11 +40,12 @@ std::string versionOf(const pb::ConfigSnapshot &snapshot) {
 
 // The section index says which contributor declared the field: sections are
 // filled one per contributor, in registration order.
-const pb::ConfigField *findField(const pb::ConfigSnapshot &snapshot,
-                                 const std::string &path,
-                                 int *sectionIndex = nullptr) {
+const renderer_pb::ConfigField *
+findField(const renderer_pb::ConfigSnapshot &snapshot, const std::string &path,
+          int *sectionIndex = nullptr) {
   for (int i = 0; i < snapshot.sections_size(); ++i) {
-    for (const pb::ConfigField &field : snapshot.sections(i).fields()) {
+    for (const renderer_pb::ConfigField &field :
+         snapshot.sections(i).fields()) {
       if (field.path() == path) {
         if (sectionIndex != nullptr) {
           *sectionIndex = i;
@@ -58,15 +59,15 @@ const pb::ConfigField *findField(const pb::ConfigSnapshot &snapshot,
 
 }  // namespace
 
-bool fieldAccepts(const pb::ConfigField &field, const std::string &value,
-                  std::string &error) {
+bool fieldAccepts(const renderer_pb::ConfigField &field,
+                  const std::string &value, std::string &error) {
   if (field.read_only()) {
     error = "read-only setting";
     return false;
   }
   switch (field.type()) {
-  case pb::CONFIG_FIELD_TYPE_ENUM: {
-    for (const pb::ConfigOption &option : field.options()) {
+  case renderer_pb::CONFIG_FIELD_TYPE_ENUM: {
+    for (const renderer_pb::ConfigOption &option : field.options()) {
       if (option.value() == value) {
         return true;
       }
@@ -75,7 +76,7 @@ bool fieldAccepts(const pb::ConfigField &field, const std::string &value,
                                     : "not one of the offered options";
     return false;
   }
-  case pb::CONFIG_FIELD_TYPE_INT: {
+  case renderer_pb::CONFIG_FIELD_TYPE_INT: {
     int64_t parsed = 0;
     const char *end = value.data() + value.size();
     auto [stop, ec] = std::from_chars(value.data(), end, parsed);
@@ -91,7 +92,7 @@ bool fieldAccepts(const pb::ConfigField &field, const std::string &value,
     }
     return true;
   }
-  case pb::CONFIG_FIELD_TYPE_BOOL:
+  case renderer_pb::CONFIG_FIELD_TYPE_BOOL:
     if (value != "true" && value != "false") {
       error = "expected 'true' or 'false'";
       return false;
@@ -108,25 +109,25 @@ ConfigService::ConfigService(
     : contributors_(std::move(contributors)),
       onApplied_(std::move(onApplied)) {}
 
-void ConfigService::fillSnapshot(pb::ConfigSnapshot &out) const {
+void ConfigService::fillSnapshot(renderer_pb::ConfigSnapshot &out) const {
   for (const auto &contributor : contributors_) {
     contributor->fillConfig(*out.add_sections());
   }
   out.set_config_version(versionOf(out));
 }
 
-void ConfigService::apply(const pb::ConfigUpdate &update,
-                          pb::ConfigResult &out) {
-  pb::ConfigSnapshot before;
+void ConfigService::apply(const renderer_pb::ConfigUpdate &update,
+                          renderer_pb::ConfigResult &out) {
+  renderer_pb::ConfigSnapshot before;
   fillSnapshot(before);
 
-  for (const pb::ConfigUpdate::Setting &setting : update.settings()) {
-    pb::ConfigResult::Outcome *outcome = out.add_outcomes();
+  for (const renderer_pb::ConfigUpdate::Setting &setting : update.settings()) {
+    renderer_pb::ConfigResult::Outcome *outcome = out.add_outcomes();
     outcome->set_path(setting.path());
 
     int declaredBy = 0;
-    const pb::ConfigField *field = findField(before, setting.path(),
-                                             &declaredBy);
+    const renderer_pb::ConfigField *field =
+        findField(before, setting.path(), &declaredBy);
     if (field == nullptr) {
       outcome->set_error("no such setting");
       spdlog::warn("Refusing config write to unknown setting '{}'",
@@ -152,10 +153,11 @@ void ConfigService::apply(const pb::ConfigUpdate &update,
 
   // Re-read: a player may normalise what it was given, and the options may
   // look different once it has been applied.
-  pb::ConfigSnapshot after;
+  renderer_pb::ConfigSnapshot after;
   fillSnapshot(after);
-  for (pb::ConfigResult::Outcome &outcome : *out.mutable_outcomes()) {
-    if (const pb::ConfigField *field = findField(after, outcome.path())) {
+  for (renderer_pb::ConfigResult::Outcome &outcome : *out.mutable_outcomes()) {
+    if (const renderer_pb::ConfigField *field =
+            findField(after, outcome.path())) {
       outcome.set_value(field->value());
     }
   }

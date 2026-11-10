@@ -13,14 +13,14 @@
 #include "session/SessionManager.h"
 #include "upgrade/UpgradeService.h"
 
-namespace pb = kalinka::renderer::v1;
+namespace renderer_pb = kalinka::renderer::v1;
 using namespace std::chrono_literals;
 
 namespace {
 
 /// Captures everything the protocol sends, already parsed.
 struct FakeWire {
-  std::vector<pb::Envelope> sent;
+  std::vector<renderer_pb::Envelope> sent;
   bool up = true;
   bool gaveUp = false;
 
@@ -30,7 +30,7 @@ struct FakeWire {
           if (!up) {
             return false;
           }
-          pb::Envelope env;
+          renderer_pb::Envelope env;
           EXPECT_TRUE(env.ParseFromString(data));
           sent.push_back(env);
           return true;
@@ -72,20 +72,20 @@ protected:
 
   void welcome(ProtocolSession &protocol, const std::string &serverId,
                uint32_t protocolVersion = kMaxRendererProtocolVersion) {
-    pb::Envelope env;
+    renderer_pb::Envelope env;
     env.set_message_id(1);
     env.mutable_welcome()->set_server_id(serverId);
     env.mutable_welcome()->set_protocol_version(protocolVersion);
     protocol.onMessage(env.SerializeAsString());
   }
 
-  void feed(ProtocolSession &protocol, const pb::Envelope &env) {
+  void feed(ProtocolSession &protocol, const renderer_pb::Envelope &env) {
     protocol.onMessage(env.SerializeAsString());
   }
 
   std::shared_ptr<Session> openSession(ProtocolSession &protocol,
                                        const std::string &sessionId) {
-    pb::Envelope env;
+    renderer_pb::Envelope env;
     env.mutable_session_open()->set_session_id(sessionId);
     feed(protocol, env);
     return services.sessions->current();
@@ -114,7 +114,7 @@ TEST_F(ProtocolSessionTest, HelloGoesOutWhenTheLinkComesUp) {
   protocol->onUp();
 
   ASSERT_EQ(wire.sent.size(), 1u);
-  const pb::Hello &hello = wire.sent[0].hello();
+  const renderer_pb::Hello &hello = wire.sent[0].hello();
   EXPECT_EQ(hello.renderer_id(), "rid-1");
   EXPECT_EQ(hello.instance_id(), "iid-1");
   EXPECT_EQ(hello.platform().machine_id(), identity.machineId);
@@ -132,7 +132,7 @@ TEST_F(ProtocolSessionTest, HelloBroadcastsTheRunningSession) {
 
   protocol->onUp();
 
-  const pb::Hello &hello = wire.sent[0].hello();
+  const renderer_pb::Hello &hello = wire.sent[0].hello();
   EXPECT_EQ(hello.active_session_id(), "sid-1");
   EXPECT_EQ(hello.session_owner_server_id(), "owner-1");
 }
@@ -144,7 +144,7 @@ TEST_F(ProtocolSessionTest, HelloSaysWhatTheRendererCanPlay) {
 
   protocol->onUp();
 
-  const pb::Hello &hello = wire.sent[0].hello();
+  const renderer_pb::Hello &hello = wire.sent[0].hello();
   ASSERT_TRUE(hello.has_capabilities());
   EXPECT_TRUE(hello.capabilities().dsd());
 }
@@ -219,9 +219,10 @@ TEST_F(ProtocolSessionTest, SessionOpenBeforeWelcomeIsRefused) {
   openSession(*protocol, "sid-1");
 
   ASSERT_EQ(wire.sent.size(), 1u);
-  const pb::SessionOpenResult &result = wire.sent[0].session_open_result();
+  const renderer_pb::SessionOpenResult &result =
+      wire.sent[0].session_open_result();
   EXPECT_FALSE(result.accepted());
-  EXPECT_EQ(result.error(), pb::SessionOpenResult::ERROR_INTERNAL);
+  EXPECT_EQ(result.error(), renderer_pb::SessionOpenResult::ERROR_INTERNAL);
   EXPECT_EQ(services.sessions->current(), nullptr);
 }
 
@@ -245,8 +246,8 @@ TEST_F(ProtocolSessionTest, FixedOutputOverrideReachesThePlayer) {
   auto protocol = makeProtocol(wire);
   welcome(*protocol, "server-a");
 
-  pb::Envelope env;
-  pb::SessionOpen *open = env.mutable_session_open();
+  renderer_pb::Envelope env;
+  renderer_pb::SessionOpen *open = env.mutable_session_open();
   open->set_session_id("sid-1");
   open->set_force_fixed_output(true);
   feed(*protocol, env);
@@ -264,9 +265,10 @@ TEST_F(ProtocolSessionTest, FailedVolumeSafetyRefusesTheSession) {
   openSession(*protocol, "sid-1");
 
   ASSERT_EQ(wire.sent.size(), 1u);
-  const pb::SessionOpenResult &result = wire.sent[0].session_open_result();
+  const renderer_pb::SessionOpenResult &result =
+      wire.sent[0].session_open_result();
   EXPECT_FALSE(result.accepted());
-  EXPECT_EQ(result.error(), pb::SessionOpenResult::ERROR_INTERNAL);
+  EXPECT_EQ(result.error(), renderer_pb::SessionOpenResult::ERROR_INTERNAL);
   EXPECT_EQ(result.detail(), "safe starting volume unavailable");
   EXPECT_EQ(services.sessions->current(), nullptr);
 }
@@ -281,9 +283,10 @@ TEST_F(ProtocolSessionTest, ASecondCoreIsToldWhoOwnsTheSession) {
 
   openSession(*b, "sid-2");
 
-  const pb::SessionOpenResult &result = wireB.sent[0].session_open_result();
+  const renderer_pb::SessionOpenResult &result =
+      wireB.sent[0].session_open_result();
   EXPECT_FALSE(result.accepted());
-  EXPECT_EQ(result.error(), pb::SessionOpenResult::ERROR_BUSY);
+  EXPECT_EQ(result.error(), renderer_pb::SessionOpenResult::ERROR_BUSY);
   EXPECT_EQ(result.owner_server_id(), "server-a");
 }
 
@@ -295,15 +298,16 @@ TEST_F(ProtocolSessionTest, TheGateRejectsCommandsForForeignSessions) {
   welcome(*b, "server-b");
   openSession(*a, "sid-1");
 
-  pb::Envelope env;
+  renderer_pb::Envelope env;
   env.set_session_id("sid-1");  // the other Core's session, replayed
   env.mutable_command()->mutable_resume();
   feed(*b, env);
 
   ASSERT_EQ(wireB.sent.size(), 1u);
-  const pb::CommandRejected &rejected = wireB.sent[0].command_rejected();
+  const renderer_pb::CommandRejected &rejected =
+      wireB.sent[0].command_rejected();
   EXPECT_EQ(rejected.session_id(), "sid-1");
-  EXPECT_EQ(rejected.command(), pb::CONTROL_KIND_RESUME);
+  EXPECT_EQ(rejected.command(), renderer_pb::CONTROL_KIND_RESUME);
   EXPECT_EQ(rejected.detail(), "another session is running");
   EXPECT_TRUE(player->calls.empty());
 }
@@ -313,7 +317,7 @@ TEST_F(ProtocolSessionTest, NoSessionGetsItsOwnRejectionDetail) {
   auto protocol = makeProtocol(wire);
   welcome(*protocol, "server-a");
 
-  pb::Envelope env;
+  renderer_pb::Envelope env;
   env.set_session_id("sid-unknown");
   env.mutable_command()->mutable_resume();
   feed(*protocol, env);
@@ -329,7 +333,7 @@ TEST_F(ProtocolSessionTest, GatedCommandsReachThePlayer) {
   openSession(*protocol, "sid-1");
   wire.sent.clear();
 
-  pb::Envelope env;
+  renderer_pb::Envelope env;
   env.set_session_id("sid-1");
   env.mutable_command()->mutable_resume();
   feed(*protocol, env);
@@ -345,14 +349,14 @@ TEST_F(ProtocolSessionTest, SessionCloseIsAcknowledged) {
   openSession(*protocol, "sid-1");
   wire.sent.clear();
 
-  pb::Envelope env;
+  renderer_pb::Envelope env;
   env.mutable_session_close()->set_session_id("sid-1");
   feed(*protocol, env);
 
   ASSERT_EQ(wire.sent.size(), 1u);
-  const pb::SessionClosed &closed = wire.sent[0].session_closed();
+  const renderer_pb::SessionClosed &closed = wire.sent[0].session_closed();
   EXPECT_EQ(closed.session_id(), "sid-1");
-  EXPECT_EQ(closed.reason(), pb::SessionClosed::REASON_ACK);
+  EXPECT_EQ(closed.reason(), renderer_pb::SessionClosed::REASON_ACK);
   EXPECT_EQ(services.sessions->current(), nullptr);
 }
 
@@ -393,7 +397,7 @@ TEST_F(ProtocolSessionTest, ConfigIsAnsweredInReplyWithoutASession) {
   auto protocol = makeProtocol(wire);
   welcome(*protocol, "server-a");
 
-  pb::Envelope request;
+  renderer_pb::Envelope request;
   request.set_message_id(7);
   request.mutable_config_request();
   feed(*protocol, request);
@@ -402,9 +406,9 @@ TEST_F(ProtocolSessionTest, ConfigIsAnsweredInReplyWithoutASession) {
   EXPECT_TRUE(wire.sent[0].has_config_snapshot());
   EXPECT_EQ(wire.sent[0].in_reply_to(), 7u);
 
-  pb::Envelope update;
+  renderer_pb::Envelope update;
   update.set_message_id(8);
-  pb::ConfigUpdate::Setting *setting =
+  renderer_pb::ConfigUpdate::Setting *setting =
       update.mutable_config_update()->add_settings();
   setting->set_path("output.buffer_ms");
   setting->set_value("250");
@@ -416,11 +420,11 @@ TEST_F(ProtocolSessionTest, ConfigIsAnsweredInReplyWithoutASession) {
 }
 
 TEST_F(ProtocolSessionTest, FatalGoodbyesGiveUpTheLink) {
-  for (const auto reason : {pb::Goodbye::REASON_VERSION_UNSUPPORTED,
-                            pb::Goodbye::REASON_REPLACED}) {
+  for (const auto reason : {renderer_pb::Goodbye::REASON_VERSION_UNSUPPORTED,
+                            renderer_pb::Goodbye::REASON_REPLACED}) {
     FakeWire wire;
     auto protocol = makeProtocol(wire);
-    pb::Envelope env;
+    renderer_pb::Envelope env;
     env.mutable_goodbye()->set_reason(reason);
     feed(*protocol, env);
     EXPECT_TRUE(wire.gaveUp);
@@ -428,8 +432,8 @@ TEST_F(ProtocolSessionTest, FatalGoodbyesGiveUpTheLink) {
 
   FakeWire wire;
   auto protocol = makeProtocol(wire);
-  pb::Envelope env;
-  env.mutable_goodbye()->set_reason(pb::Goodbye::REASON_SHUTDOWN);
+  renderer_pb::Envelope env;
+  env.mutable_goodbye()->set_reason(renderer_pb::Goodbye::REASON_SHUTDOWN);
   feed(*protocol, env);
   EXPECT_FALSE(wire.gaveUp);
 }
@@ -440,9 +444,9 @@ TEST_F(ProtocolSessionTest, ShutdownFrameExistsOnlyOnceWelcomed) {
   EXPECT_TRUE(protocol->shutdownFrame().empty());
 
   welcome(*protocol, "server-a");
-  pb::Envelope env;
+  renderer_pb::Envelope env;
   ASSERT_TRUE(env.ParseFromString(protocol->shutdownFrame()));
-  EXPECT_EQ(env.goodbye().reason(), pb::Goodbye::REASON_SHUTDOWN);
+  EXPECT_EQ(env.goodbye().reason(), renderer_pb::Goodbye::REASON_SHUTDOWN);
 }
 
 TEST_F(ProtocolSessionTest, GarbageIsDroppedWithoutSideEffects) {
@@ -492,9 +496,10 @@ TEST_F(ProtocolSessionTest, ACoreWeCannotFollowIsRefusedPlayback) {
   openSession(*protocol, "sid-1");
 
   ASSERT_EQ(wire.sent.size(), 1u);
-  const pb::SessionOpenResult &result = wire.sent[0].session_open_result();
+  const renderer_pb::SessionOpenResult &result =
+      wire.sent[0].session_open_result();
   EXPECT_FALSE(result.accepted());
-  EXPECT_EQ(result.error(), pb::SessionOpenResult::ERROR_INTERNAL);
+  EXPECT_EQ(result.error(), renderer_pb::SessionOpenResult::ERROR_INTERNAL);
   EXPECT_EQ(services.sessions->current(), nullptr);
 }
 
@@ -517,7 +522,7 @@ TEST_F(ProtocolSessionTest, AnUpgradeRequestIsPassedToTheUpgradePlane) {
   auto protocol = makeProtocol(wire);
   welcome(*protocol, "server-a");
 
-  pb::Envelope env;
+  renderer_pb::Envelope env;
   env.set_message_id(7);
   env.mutable_upgrade()->set_target_version("0.4.0");
   feed(*protocol, env);
@@ -535,7 +540,7 @@ TEST_F(ProtocolSessionTest, ACoreWeCannotFollowCanStillUpgradeUs) {
   auto protocol = makeProtocol(wire);
   welcome(*protocol, "server-a", kMaxRendererProtocolVersion + 1);
 
-  pb::Envelope env;
+  renderer_pb::Envelope env;
   env.mutable_upgrade()->set_target_version("0.4.0");
   feed(*protocol, env);
 
@@ -551,7 +556,7 @@ TEST_F(ProtocolSessionTest, PlaybackIsNotCutOffByAnUpgrade) {
   openSession(*protocol, "sid-1");
   wire.sent.clear();
 
-  pb::Envelope env;
+  renderer_pb::Envelope env;
   env.mutable_upgrade()->set_target_version("0.4.0");
   feed(*protocol, env);
 
@@ -573,7 +578,7 @@ TEST_F(ProtocolSessionTest, AnInstallThatCannotUpgradeItselfSaysSo) {
   EXPECT_FALSE(wire.sent[0].hello().upgrade_supported());
 
   wire.sent.clear();
-  pb::Envelope env;
+  renderer_pb::Envelope env;
   env.mutable_upgrade();
   feed(*protocol, env);
 
@@ -599,14 +604,14 @@ TEST_F(ProtocolSessionTest, ACoreWeCannotFollowGetsNothingButTheRescueMessages) 
   auto protocol = makeProtocol(wire);
   welcome(*protocol, "server-a", kMaxRendererProtocolVersion + 1);
 
-  pb::Envelope request;
+  renderer_pb::Envelope request;
   request.set_message_id(7);
   request.mutable_config_request();
   feed(*protocol, request);
 
-  pb::Envelope update;
+  renderer_pb::Envelope update;
   update.set_message_id(8);
-  pb::ConfigUpdate::Setting *setting =
+  renderer_pb::ConfigUpdate::Setting *setting =
       update.mutable_config_update()->add_settings();
   setting->set_path("output.buffer_ms");
   setting->set_value("250");

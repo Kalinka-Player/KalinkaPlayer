@@ -8,7 +8,7 @@
 #include "../Protocol.h"
 #include "kalinka/renderer/v1/renderer.pb.h"
 
-namespace pb = kalinka::renderer::v1;
+namespace renderer_pb = kalinka::renderer::v1;
 
 namespace {
 int64_t nowUnixMs() {
@@ -17,44 +17,45 @@ int64_t nowUnixMs() {
       .count();
 }
 
-pb::ControlKind kindOf(const pb::Command &command) {
+renderer_pb::ControlKind kindOf(const renderer_pb::Command &command) {
   switch (command.op_case()) {
-  case pb::Command::kSetSource:
-    return pb::CONTROL_KIND_SET_SOURCE;
-  case pb::Command::kEnqueueSource:
-    return pb::CONTROL_KIND_ENQUEUE_SOURCE;
-  case pb::Command::kRemoveSource:
-    return pb::CONTROL_KIND_REMOVE_SOURCE;
-  case pb::Command::kClearQueue:
-    return pb::CONTROL_KIND_CLEAR_QUEUE;
-  case pb::Command::kPause:
-    return pb::CONTROL_KIND_PAUSE;
-  case pb::Command::kResume:
-    return pb::CONTROL_KIND_RESUME;
-  case pb::Command::kStop:
-    return pb::CONTROL_KIND_STOP;
-  case pb::Command::kSetVolume:
-    return pb::CONTROL_KIND_SET_VOLUME;
-  case pb::Command::kRequestSnapshot:
-    return pb::CONTROL_KIND_REQUEST_SNAPSHOT;
-  case pb::Command::kSeek:
-    return pb::CONTROL_KIND_SEEK;
-  case pb::Command::OP_NOT_SET:
-    return pb::CONTROL_KIND_UNSPECIFIED;
+  case renderer_pb::Command::kSetSource:
+    return renderer_pb::CONTROL_KIND_SET_SOURCE;
+  case renderer_pb::Command::kEnqueueSource:
+    return renderer_pb::CONTROL_KIND_ENQUEUE_SOURCE;
+  case renderer_pb::Command::kRemoveSource:
+    return renderer_pb::CONTROL_KIND_REMOVE_SOURCE;
+  case renderer_pb::Command::kClearQueue:
+    return renderer_pb::CONTROL_KIND_CLEAR_QUEUE;
+  case renderer_pb::Command::kPause:
+    return renderer_pb::CONTROL_KIND_PAUSE;
+  case renderer_pb::Command::kResume:
+    return renderer_pb::CONTROL_KIND_RESUME;
+  case renderer_pb::Command::kStop:
+    return renderer_pb::CONTROL_KIND_STOP;
+  case renderer_pb::Command::kSetVolume:
+    return renderer_pb::CONTROL_KIND_SET_VOLUME;
+  case renderer_pb::Command::kRequestSnapshot:
+    return renderer_pb::CONTROL_KIND_REQUEST_SNAPSHOT;
+  case renderer_pb::Command::kSeek:
+    return renderer_pb::CONTROL_KIND_SEEK;
+  case renderer_pb::Command::OP_NOT_SET:
+    return renderer_pb::CONTROL_KIND_UNSPECIFIED;
   }
-  return pb::CONTROL_KIND_UNSPECIFIED;
+  return renderer_pb::CONTROL_KIND_UNSPECIFIED;
 }
 
 // The rescue messages every version carries, plus SessionOpen — refused, but
 // refused out loud, since dropping it would leave the Core waiting for a
 // result that never comes. Anything else means whatever the two versions
 // agreed it meant, which is exactly what no longer holds.
-bool handledFromACoreWeCannotFollow(pb::Envelope::PayloadCase payload) {
+bool handledFromACoreWeCannotFollow(
+    renderer_pb::Envelope::PayloadCase payload) {
   switch (payload) {
-  case pb::Envelope::kWelcome:
-  case pb::Envelope::kGoodbye:
-  case pb::Envelope::kUpgrade:
-  case pb::Envelope::kSessionOpen:
+  case renderer_pb::Envelope::kWelcome:
+  case renderer_pb::Envelope::kGoodbye:
+  case renderer_pb::Envelope::kUpgrade:
+  case renderer_pb::Envelope::kSessionOpen:
     return true;
   default:
     return false;
@@ -76,8 +77,8 @@ void ProtocolSession::bind(Wire wire) {
 }
 
 void ProtocolSession::onUp() {
-  pb::Envelope env;
-  pb::Hello *hello = env.mutable_hello();
+  renderer_pb::Envelope env;
+  renderer_pb::Hello *hello = env.mutable_hello();
   hello->mutable_protocol_versions()->set_min(kMinRendererProtocolVersion);
   hello->mutable_protocol_versions()->set_max(kMaxRendererProtocolVersion);
   hello->set_upgrade_supported(services_.upgrade &&
@@ -86,7 +87,7 @@ void ProtocolSession::onUp() {
   hello->set_instance_id(identity_.instanceId);
   hello->set_friendly_name(friendlyName_);
   hello->set_software_version(KALINKA_RENDERER_VERSION);
-  hello->set_kind(pb::RENDERER_KIND_NATIVE);
+  hello->set_kind(renderer_pb::RENDERER_KIND_NATIVE);
   capabilitiesMoved_ = false;
   if (services_.capabilities) {
     *hello->mutable_capabilities() = services_.capabilities->current();
@@ -100,7 +101,7 @@ void ProtocolSession::onUp() {
   utsname u{};
   hello->mutable_platform()->set_machine_id(identity_.machineId);
   if (uname(&u) == 0) {
-    pb::Platform *platform = hello->mutable_platform();
+    renderer_pb::Platform *platform = hello->mutable_platform();
     platform->set_os("linux");
     platform->set_os_version(u.release);
     platform->set_arch(u.machine);
@@ -111,7 +112,7 @@ void ProtocolSession::onUp() {
 }
 
 void ProtocolSession::onMessage(const std::string &data) {
-  pb::Envelope env;
+  renderer_pb::Envelope env;
   if (!env.ParseFromString(data)) {
     spdlog::warn("[{}] Dropping unparseable {}-byte message", name_,
                  data.size());
@@ -125,34 +126,34 @@ void ProtocolSession::onMessage(const std::string &data) {
     return;
   }
   switch (env.payload_case()) {
-  case pb::Envelope::kWelcome:
+  case renderer_pb::Envelope::kWelcome:
     handleWelcome(env.welcome());
     break;
-  case pb::Envelope::kSessionOpen:
+  case renderer_pb::Envelope::kSessionOpen:
     handleSessionOpen(env.session_open());
     break;
-  case pb::Envelope::kSessionClose:
+  case renderer_pb::Envelope::kSessionClose:
     handleSessionClose(env.session_close().session_id());
     break;
-  case pb::Envelope::kCommand:
+  case renderer_pb::Envelope::kCommand:
     handleCommand(env);
     break;
-  case pb::Envelope::kConfigRequest: {
-    pb::Envelope out;
+  case renderer_pb::Envelope::kConfigRequest: {
+    renderer_pb::Envelope out;
     services_.config->fillSnapshot(*out.mutable_config_snapshot());
     sendReply(out, env.message_id());
     break;
   }
-  case pb::Envelope::kConfigUpdate: {
-    pb::Envelope out;
+  case renderer_pb::Envelope::kConfigUpdate: {
+    renderer_pb::Envelope out;
     services_.config->apply(env.config_update(), *out.mutable_config_result());
     sendReply(out, env.message_id());
     break;
   }
-  case pb::Envelope::kUpgrade:
+  case renderer_pb::Envelope::kUpgrade:
     handleUpgrade(env);
     break;
-  case pb::Envelope::kGoodbye:
+  case renderer_pb::Envelope::kGoodbye:
     handleGoodbye(env.goodbye());
     break;
   default:
@@ -162,7 +163,7 @@ void ProtocolSession::onMessage(const std::string &data) {
   }
 }
 
-void ProtocolSession::handleWelcome(const pb::Welcome &welcome) {
+void ProtocolSession::handleWelcome(const renderer_pb::Welcome &welcome) {
   if (welcomed_) {
     spdlog::warn("[{}] Ignoring a second Welcome on one connection", name_);
     return;
@@ -193,11 +194,11 @@ void ProtocolSession::handleWelcome(const pb::Welcome &welcome) {
   adoptSession();
 }
 
-void ProtocolSession::handleUpgrade(const pb::Envelope &env) {
+void ProtocolSession::handleUpgrade(const renderer_pb::Envelope &env) {
   // Answered whatever the Core speaks: one we cannot follow is exactly the
   // one that needs to replace this binary.
-  pb::Envelope out;
-  pb::UpgradeResult *result = out.mutable_upgrade_result();
+  renderer_pb::Envelope out;
+  renderer_pb::UpgradeResult *result = out.mutable_upgrade_result();
   const std::string &target = env.upgrade().target_version();
 
   if (!services_.upgrade || !services_.upgrade->supported()) {
@@ -226,20 +227,20 @@ void ProtocolSession::handleUpgrade(const pb::Envelope &env) {
   sendReply(out, env.message_id());
 }
 
-void ProtocolSession::handleSessionOpen(const pb::SessionOpen &open) {
+void ProtocolSession::handleSessionOpen(const renderer_pb::SessionOpen &open) {
   const std::string &sessionId = open.session_id();
-  pb::Envelope env;
-  pb::SessionOpenResult *result = env.mutable_session_open_result();
+  renderer_pb::Envelope env;
+  renderer_pb::SessionOpenResult *result = env.mutable_session_open_result();
   result->set_session_id(sessionId);
   bool accepted = false;
 
   if (!welcomed_) {
     result->set_accepted(false);
-    result->set_error(pb::SessionOpenResult::ERROR_INTERNAL);
+    result->set_error(renderer_pb::SessionOpenResult::ERROR_INTERNAL);
     result->set_detail("session opened before the handshake completed");
   } else if (!coreSpeaksOurProtocol_) {
     result->set_accepted(false);
-    result->set_error(pb::SessionOpenResult::ERROR_INTERNAL);
+    result->set_error(renderer_pb::SessionOpenResult::ERROR_INTERNAL);
     result->set_detail("renderer does not speak this server's protocol");
   } else {
     std::string busyOwner;
@@ -252,11 +253,11 @@ void ProtocolSession::handleSessionOpen(const pb::SessionOpen &open) {
       accepted = true;
     } else if (!openError.empty()) {
       result->set_accepted(false);
-      result->set_error(pb::SessionOpenResult::ERROR_INTERNAL);
+      result->set_error(renderer_pb::SessionOpenResult::ERROR_INTERNAL);
       result->set_detail(openError);
     } else {
       result->set_accepted(false);
-      result->set_error(pb::SessionOpenResult::ERROR_BUSY);
+      result->set_error(renderer_pb::SessionOpenResult::ERROR_BUSY);
       result->set_detail("another playback session is running");
       result->set_owner_server_id(busyOwner);
     }
@@ -273,14 +274,14 @@ void ProtocolSession::handleSessionClose(const std::string &sessionId) {
   // Closing notifies every attached connection through onSessionClosed(),
   // which is what clears session_ here.
   services_.sessions->close(sessionId, serverId_);
-  pb::Envelope env;
-  pb::SessionClosed *closed = env.mutable_session_closed();
+  renderer_pb::Envelope env;
+  renderer_pb::SessionClosed *closed = env.mutable_session_closed();
   closed->set_session_id(sessionId);
-  closed->set_reason(pb::SessionClosed::REASON_ACK);
+  closed->set_reason(renderer_pb::SessionClosed::REASON_ACK);
   sendEnvelope(env);
 }
 
-void ProtocolSession::handleCommand(const pb::Envelope &in) {
+void ProtocolSession::handleCommand(const renderer_pb::Envelope &in) {
   // The gate: a command must name the session this link is attached to.
   // session_ is only ever set while this Core owns it, so the owner check is
   // implied. Past the gate nothing is refused — what a command did is
@@ -292,8 +293,8 @@ void ProtocolSession::handleCommand(const pb::Envelope &in) {
   spdlog::warn("[{}] Rejecting command from server {}: session '{}' is not "
                "the one being run",
                name_, serverId_, in.session_id());
-  pb::Envelope out;
-  pb::CommandRejected *rejection = out.mutable_command_rejected();
+  renderer_pb::Envelope out;
+  renderer_pb::CommandRejected *rejection = out.mutable_command_rejected();
   rejection->set_session_id(in.session_id());
   rejection->set_command(kindOf(in.command()));
   rejection->set_at_unix_ms(nowUnixMs());
@@ -305,12 +306,12 @@ void ProtocolSession::handleCommand(const pb::Envelope &in) {
   sendEnvelope(out);
 }
 
-void ProtocolSession::handleGoodbye(const pb::Goodbye &goodbye) {
-  if (goodbye.reason() == pb::Goodbye::REASON_VERSION_UNSUPPORTED) {
+void ProtocolSession::handleGoodbye(const renderer_pb::Goodbye &goodbye) {
+  if (goodbye.reason() == renderer_pb::Goodbye::REASON_VERSION_UNSUPPORTED) {
     spdlog::error("[{}] Server rejected protocol version; giving up: {}",
                   name_, goodbye.detail());
     wire_.giveUp();
-  } else if (goodbye.reason() == pb::Goodbye::REASON_REPLACED) {
+  } else if (goodbye.reason() == renderer_pb::Goodbye::REASON_REPLACED) {
     // Duplicated renderer_id; reconnecting would displace it back and forth.
     spdlog::error("[{}] Replaced by another connection with the same "
                   "renderer_id; giving up (duplicated renderer identity?): {}",
@@ -351,13 +352,13 @@ std::string ProtocolSession::shutdownFrame() {
   if (!welcomed_) {
     return {};
   }
-  pb::Envelope env;
+  renderer_pb::Envelope env;
   env.set_message_id(nextMessageId_++);
-  env.mutable_goodbye()->set_reason(pb::Goodbye::REASON_SHUTDOWN);
+  env.mutable_goodbye()->set_reason(renderer_pb::Goodbye::REASON_SHUTDOWN);
   return env.SerializeAsString();
 }
 
-bool ProtocolSession::sendSessionMessage(pb::Envelope &env) {
+bool ProtocolSession::sendSessionMessage(renderer_pb::Envelope &env) {
   if (!welcomed_) {
     return false;
   }
@@ -368,7 +369,7 @@ bool ProtocolSession::sendSessionMessage(pb::Envelope &env) {
 void ProtocolSession::onSessionClosed() { session_.reset(); }
 
 void ProtocolSession::onCapabilitiesChanged(
-    const pb::Capabilities &capabilities) {
+    const renderer_pb::Capabilities &capabilities) {
   if (!welcomed_) {
     capabilitiesMoved_ = true;
     return;
@@ -376,18 +377,20 @@ void ProtocolSession::onCapabilitiesChanged(
   sendCapabilities(capabilities);
 }
 
-void ProtocolSession::sendCapabilities(const pb::Capabilities &capabilities) {
-  pb::Envelope env;
+void ProtocolSession::sendCapabilities(
+    const renderer_pb::Capabilities &capabilities) {
+  renderer_pb::Envelope env;
   *env.mutable_capabilities_changed()->mutable_capabilities() = capabilities;
   sendEnvelope(env);
 }
 
-void ProtocolSession::sendEnvelope(pb::Envelope &env) {
+void ProtocolSession::sendEnvelope(renderer_pb::Envelope &env) {
   env.set_message_id(nextMessageId_++);
   wire_.send(env.SerializeAsString());
 }
 
-void ProtocolSession::sendReply(pb::Envelope &out, uint64_t inReplyTo) {
+void ProtocolSession::sendReply(renderer_pb::Envelope &out,
+                                uint64_t inReplyTo) {
   out.set_in_reply_to(inReplyTo);
   sendEnvelope(out);
 }

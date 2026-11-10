@@ -9,7 +9,7 @@
 #include "fakes.h"
 #include "session/Session.h"
 
-namespace pb = kalinka::renderer::v1;
+namespace renderer_pb = kalinka::renderer::v1;
 using namespace std::chrono_literals;
 
 class SessionTest : public ::testing::Test {
@@ -37,7 +37,7 @@ TEST_F(SessionTest, AttachAnswersWithSnapshot) {
 TEST_F(SessionTest, CommandsBecomePlayerCalls) {
   auto session = makeSession();
 
-  pb::Command cmd;
+  renderer_pb::Command cmd;
   cmd.mutable_set_source()->mutable_source()->set_uri("http://a/1.flac");
   session->onCommand(cmd);
   cmd.Clear();
@@ -77,7 +77,7 @@ TEST_F(SessionTest, RequestSnapshotPublishesInsteadOfTouchingThePlayer) {
   auto transport = std::make_shared<FakeTransport>();
   session->attach(transport);
 
-  pb::Command cmd;
+  renderer_pb::Command cmd;
   cmd.mutable_request_snapshot();
   session->onCommand(cmd);
 
@@ -93,7 +93,7 @@ TEST_F(SessionTest, StateGoesOutOnTheNewestRoute) {
   session->attach(older);
   session->attach(newer);
 
-  player->emitPlaybackState(pb::PLAYBACK_STATE_ERROR);
+  player->emitPlaybackState(renderer_pb::PLAYBACK_STATE_ERROR);
 
   ASSERT_EQ(newer->sent.size(), 2u);  // its attach snapshot, then the state
   EXPECT_TRUE(newer->sent[1].has_playback_state_changed());
@@ -108,7 +108,7 @@ TEST_F(SessionTest, StateFallsBackWhenTheNewestRouteCannotCarryIt) {
   session->attach(newer);
 
   newer->carry = false;
-  player->emitPlaybackState(pb::PLAYBACK_STATE_ERROR);
+  player->emitPlaybackState(renderer_pb::PLAYBACK_STATE_ERROR);
 
   ASSERT_EQ(older->sent.size(), 2u);
   EXPECT_TRUE(older->sent[1].has_playback_state_changed());
@@ -192,7 +192,7 @@ TEST_F(SessionTest, UnknownConnectionClosingChangesNothing) {
   session->onConnectionClosed(&stranger);
 
   EXPECT_EQ(ended, 0);
-  player->emitPlaybackState(pb::PLAYBACK_STATE_ERROR);
+  player->emitPlaybackState(renderer_pb::PLAYBACK_STATE_ERROR);
   EXPECT_EQ(transport->sent.size(), 2u);  // still routed
 }
 

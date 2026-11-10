@@ -63,6 +63,7 @@ def _field_to_dict(field) -> dict:
         "path": field.path,
         "title": field.title,
         "description": field.description,
+        "help_details": field.help_details,
         "type": renderer_state.enum_name(
             pb.ConfigFieldType, field.type, "CONFIG_FIELD_TYPE_"
         ),

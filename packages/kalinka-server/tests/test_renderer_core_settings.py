@@ -195,6 +195,8 @@ def test_replaygain_choices_and_volume_requirement(settings, prefs, mode, availa
     assert field["value"] == ("disabled" if available else "Disabled")
     assert [o["value"] for o in field["options"]] == ["disabled", "album", "track"]
     assert all(o["description"] for o in field["options"])
+    assert field["help_details"]
+    assert field["help_details"] != field["description"]
     assert field["read_only"] is not available
     prefs.set_volume_control(RENDERER, "musiccast")
     assert (

@@ -6,6 +6,7 @@ so the client renders unambiguously without re-mapping anything.
 
 Authoring entry points:
     * Per-field via `Field(..., json_schema_extra={"widget": ..., "help": ...,
+      "help_details": ...,
       "importance": ..., "setup": ..., "constraints": ..., "heading": ...})`.
       A collection's ``"status"`` names the read-only field reporting on its
       entries, relative to the model declaring the collection.
@@ -189,6 +190,7 @@ class FieldSpec(BaseModel):
     widget: Widget
     type: str                       # "bool" | "int" | "float" | "str" | "enum" | "list"
     help: Optional[str] = None
+    help_details: Optional[str] = None
     default: Any = None
     readonly: bool = False
     dynamic: bool = False           # Value is resolved by the owning module at request time

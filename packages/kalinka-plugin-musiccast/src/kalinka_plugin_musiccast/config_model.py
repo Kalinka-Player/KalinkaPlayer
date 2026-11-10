@@ -21,8 +21,8 @@ class KalinkaPluginMusiccastConfig(ModuleConfig):
         default="musiccast",
         title="MusicCast",
         description=(
-            "A Yamaha MusicCast receiver or speaker on your network. Kalinka "
-            "switches its input and follows its volume and power state."
+            "Control input, volume and power on a Yamaha MusicCast receiver or "
+            "speaker."
         ),
         frozen=True,
         exclude=True,
@@ -34,7 +34,7 @@ class KalinkaPluginMusiccastConfig(ModuleConfig):
         default="",
         title="Device IP address",
         json_schema_extra={
-            "help": "IP address of your MusicCast device — leave empty to find it automatically",
+            "help": "Leave empty to find the device automatically.",
             "private": True,
             **_SIMPLE,
         },
@@ -47,7 +47,7 @@ class KalinkaPluginMusiccastConfig(ModuleConfig):
         default="optical1",
         title="Connected input",
         json_schema_extra={
-            "help": "The input on your receiver that the server's audio is wired into",
+            "help": "Receiver input connected to the renderer’s audio output.",
             **_SIMPLE,
             **_PROMPT,
         },

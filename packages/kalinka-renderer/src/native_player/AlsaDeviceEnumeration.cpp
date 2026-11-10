@@ -199,30 +199,26 @@ struct Wording {
 Wording wordingFor(const std::string &name) {
   if (name == "default") {
     return {"System default", "",
-            "Whatever ALSA is set to use, with mixing and resampling as "
-            "needed."};
+            "Use the system’s default output, which may mix and resample audio."};
   }
   if (name == "pipewire" || name == "pulse" || name == "jack") {
     return {"", "",
-            "Hands the audio to the sound server, which mixes and resamples "
-            "it."};
+            "Play through the system’s sound server, which mixes and resamples "
+            "audio."};
   }
   const std::string prefix = prefixOf(name);
   if (prefix == "hw" || prefix == "hdmi") {
     return {"", " (direct)",
-            "Sends samples to the card unchanged. The card must support the "
-            "track's sample rate and format, and nothing else can play "
-            "meanwhile."};
+            "Play without conversion. The card must support the track’s format, "
+            "and other apps cannot use it while Kalinka plays."};
   }
   if (prefix == "plughw") {
     return {"", " (converted)",
-            "Same card, with software conversion: resamples and reformats "
-            "whatever the card cannot take as it is."};
+            "Convert audio only when the sound card cannot play its format."};
   }
   if (prefix == "default" || prefix == "sysdefault") {
     return {"", " (shared)",
-            "The card's default route: mixed with other applications, "
-            "resampled when needed."};
+            "Share the output with other apps and convert audio when needed."};
   }
   return {};
 }

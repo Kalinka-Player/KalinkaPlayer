@@ -8,7 +8,7 @@
 #include "../src/config/SettingsPersistence.h"
 
 namespace fs = std::filesystem;
-namespace pb = kalinka::renderer::v1;
+namespace renderer_pb = kalinka::renderer::v1;
 
 namespace {
 
@@ -29,7 +29,7 @@ protected:
   }
 
   static std::string field(const RendererName &name, bool *readOnly = nullptr) {
-    pb::ConfigSection section;
+    renderer_pb::ConfigSection section;
     name.fillConfig(section);
     EXPECT_EQ(section.fields_size(), 1);
     if (readOnly != nullptr) {
