@@ -317,6 +317,32 @@ async def test_a_queue_left_too_long_is_not_carried_out(box):
         "failed",
         EXPIRED,
     )
+    # Written back, so the next start does not expire it again.
+    saved = json.loads((box.state / QUEUE_FILE).read_text())
+    assert saved["operations"] == [] and saved["results"] == [result]
+
+
+def test_a_queue_entry_that_is_not_ours_is_dropped(box):
+    box.state.mkdir()
+    entry = {"id": op_id(7), "action": "install", "plugin_id": "demo"}
+    queue = [entry, entry | {"id": "not-an-id"}, entry | {"action": ["install"]}]
+    (box.state / QUEUE_FILE).write_text(
+        json.dumps({"updated_at": NOW.timestamp(), "operations": queue})
+    )
+
+    assert [e["id"] for e in box.operations(None).queue()] == [op_id(7)]
+
+
+async def test_the_helpers_record_says_how_a_restart_request_went(box):
+    ops = box.operations(await loaded_catalog(document()))
+    answer = await ops.request("install", "demo")
+
+    # The download failed before the helper stopped Core.
+    record = module._record_of(OperationRequest.model_validate(box.request()), 0.0)
+    record.update(status="failed", error="The package download answered HTTP 404.")
+    module._write_json(box.state / RESULT_FILE, record, 0o644)
+
+    assert (ops.operation()["id"], ops.operation()["status"]) == (answer["id"], "failed")
 
 
 async def test_a_failed_restart_request_withdraws_the_request(box):
@@ -1423,6 +1449,8 @@ async def test_live_operations_queue_and_run_in_turn(live_box):
     await _until(lambda: live_box.triggers == 2)
     assert live_box.request()["operation_id"] == second["id"]
     assert ops.queue() == [] and ops.operation()["id"] == second["id"]
+    # Off the saved queue once root has it: a restart now does not run it again.
+    assert json.loads((live_box.state / QUEUE_FILE).read_text())["operations"] == []
     assert [(r["id"], r["status"]) for r in ops.results()] == [(first["id"], "ok")]
 
     live_box.helper_says("ok", "installing_environment")
@@ -1503,6 +1531,48 @@ async def test_a_helper_that_restarts_core_leaves_the_queue_for_after(live_box):
     assert live_box.request()["operation_id"] == second["id"]
     # How the first ended is kept, though the helper's record now follows the next.
     assert [(r["id"], r["status"]) for r in ops.results()] == [(first["id"], "ok")]
+
+
+async def test_after_a_restart_the_catalog_is_waited_for_once_the_queue_is_free(live_box):
+    doc = with_other(document())
+    ops = live_box.operations(await loaded_catalog(doc), deadline_s=0.3)
+    await ops.request("install", "demo")
+    queued = await ops.request("install", "other")
+    live_box.helper_says("restarting", "checking", updated_at=NOW.timestamp())
+    await _until(lambda: ops._following.done())
+    stopped(ops)
+
+    # Back without a catalog yet, while the helper is still finishing.
+    catalog = PublicCatalog(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=doc))
+    )
+    ops = live_box.operations(catalog, deadline_s=0.3)
+    ops.resume()
+    await asyncio.sleep(0.5)
+    live_box.helper_says("ok", "installing_package", updated_at=NOW.timestamp())
+    await asyncio.sleep(0.05)
+    await catalog.refresh()
+
+    await _until(lambda: live_box.triggers == 2)
+    assert live_box.request()["operation_id"] == queued["id"]
+
+
+async def test_update_all_reports_every_plugin_whatever_befalls_one(live_box):
+    class Dpkg(dict):
+        def get(self, name, default=None):
+            if name == "kalinka-plugin-other":
+                raise RuntimeError("dpkg-query crashed")
+            return super().get(name, default)
+
+    live_box.installed = Dpkg({"kalinka-plugin-demo": "0.9.0"})
+    ops = live_box.operations(await loaded_catalog(with_other(document())))
+
+    result = await ops.update_all(["demo", "other"])
+
+    assert [o["plugin_id"] for o in result["operations"]] == ["demo"]
+    assert result["refused"] == [
+        {"plugin_id": "other", "code": "failed", "message": "The server could not start it."}
+    ]
 
 
 async def test_update_all_starts_one_and_queues_the_rest(live_box):
