@@ -1135,6 +1135,15 @@ def test_the_server_configures_where_there_is_no_systemctl(tmp_path):
     assert "Installation complete." in result.stdout
 
 
+def test_the_server_units_are_packaged_where_the_postinst_looks_for_them():
+    """It skips a unit it does not find there, so a unit the package moved
+    would never be enabled, nor would the image boot with it."""
+    unit_dir = re.search(r'^UNIT_DIR="(.+)"$', POSTINST.read_text(), re.M)[1]
+    build = BUILD_DEB.read_text()
+    for unit in ("kalinka.service", *SERVER_UNITS):
+        assert f'cp scripts/{unit} "$TARGET_DIR{unit_dir}/"' in build
+
+
 TRIGGERED = ("triggered", "kalinka-server-restart")
 
 
@@ -1222,15 +1231,20 @@ def _unguarded_manager_calls(script):
         words = line.split()
         if not words:
             continue
+        # An "or" lets the branch run without systemd.
+        guards = "||" not in line and bool(SYSTEMD_GUARD.search(line))
         if words[0] == "if":
-            guarded.append(bool(SYSTEMD_GUARD.search(line)))
+            guarded.append(guards)
         elif words[0] == "elif":
-            guarded[-1] = bool(SYSTEMD_GUARD.search(line))
+            guarded[-1] = guards
         elif words[0] == "else":
             guarded[-1] = False
         elif words[0] == "fi":
             guarded.pop()
-        if "systemctl" not in words or any(guarded) or line.endswith("|| true"):
+        passes = any(guarded) or line.endswith("|| true")
+        if words[0] == "if" and words[-1] == "fi":
+            guarded.pop()
+        if "systemctl" not in words or passes:
             continue
         args = words[words.index("systemctl") + 1 :]
         verb = next((arg for arg in args if not arg.startswith("-")), "")
@@ -1272,6 +1286,16 @@ def test_no_postinst_needs_systemd_running_to_configure(postinst):
         (
             "if ! [ -d /run/systemd/system ]; then\n  systemctl start a\nfi\n",
             ["systemctl start a"],
+        ),
+        (
+            'if [ -n "$x" ] || [ -d /run/systemd/system ]; then\n'
+            "  systemctl start a\nfi\n",
+            ["systemctl start a"],
+        ),
+        (
+            "if [ -d /run/systemd/system ]; then systemctl start a; fi\n"
+            "systemctl start b\n",
+            ["systemctl start b"],
         ),
     ],
 )

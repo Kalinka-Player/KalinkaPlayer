@@ -25,9 +25,7 @@ case "$1" in
       chown -R "$USER:$USER" "$STATE_DIR"
     fi
 
-    # A container or chroot runs no systemd, and may have no systemctl. Enabling
-    # needs only the unit files, and is how an image build gets the renderer it
-    # boots with; starting is left to a running systemd.
+    # Enabling needs no running systemd, and is how an image build gets the renderer it boots with.
     if ! command -v systemctl >/dev/null 2>&1; then
       echo "Note: no systemctl here. Skipping enable/start."
     else

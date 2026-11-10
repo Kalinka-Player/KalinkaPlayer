@@ -80,9 +80,7 @@ case "$1" in
 
     echo "[5/5] systemd: enable the units, and start them if systemd is running"
     systemd-tmpfiles --create /usr/lib/tmpfiles.d/kalinka.conf || true
-    # A container or chroot runs no systemd, and may have no systemctl. Enabling
-    # needs only the unit files, and is how an image build gets the units it
-    # boots with; starting is left to a running systemd.
+    # Enabling needs no running systemd, and is how an image build gets the units it boots with.
     have_systemctl=""
     if command -v systemctl >/dev/null 2>&1; then
       have_systemctl=1
