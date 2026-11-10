@@ -119,6 +119,9 @@ if sys.argv[1] == "run":
             self.assertEqual(run[:3], ["run", "--pull=never", "--rm"])
             self.assertIn(f"{REPO}/scripts:/kalinka/scripts:ro,z", run)
             self.assertIn(f"{REPO}/tests/install:/kalinka/tests/install:ro,z", run)
+            for package in ("kalinka-server", "kalinka-renderer"):
+                scripts = f"packages/{package}/DEBIAN"
+                self.assertIn(f"{REPO}/{scripts}:/kalinka/{scripts}:ro,z", run)
             self.assertIn("GITHUB_TOKEN", run)
             self.assertEqual(
                 run[-4:-1], [BASE, "bash", "/kalinka/tests/install/system.sh"]
@@ -411,6 +414,43 @@ class StepTests(unittest.TestCase):
             ):
                 with cases.step("start it"):
                     Path("/nonexistent/kalinka.service").read_text()
+
+
+class PostinstTests(TemporaryDirectoryTest):
+    def configure(self, text):
+        postinst = self.root / "postinst"
+        postinst.write_text(text)
+        with contextlib.redirect_stdout(io.StringIO()):
+            return cases.configure(postinst, "5.18.0")
+
+    def test_configure_runs_it_as_dpkg_does_and_returns_what_it_said(self):
+        output = self.configure('echo "$1 $2 on $PATH"\necho noted >&2\n')
+        self.assertEqual(output, f"configure 5.18.0 on {cases.DPKG_PATH}\nnoted\n")
+
+    def test_a_configure_that_fails_fails_the_step(self):
+        with self.assertRaisesRegex(cases.CheckFailed, "exited with status 127"):
+            self.configure("exit 127\n")
+
+    def test_enabled_is_linked_into_the_boot_target_wherever_the_link_points(self):
+        wants = self.root / "multi-user.target.wants"
+        wants.mkdir()
+        (wants / "kalinka.service").symlink_to("/etc/systemd/system/kalinka.service")
+        with mock.patch.object(cases, "BOOT_WANTS", wants):
+            cases.check_enabled("kalinka.service")
+            with self.assertRaisesRegex(
+                cases.CheckFailed, "no kalinka-renderer.service link"
+            ):
+                cases.check_enabled("kalinka.service", "kalinka-renderer.service")
+
+    def test_asked_to_enable_is_what_the_recorder_noted(self):
+        calls = self.root / "systemctl.calls"
+        calls.write_text("daemon-reload\nenable kalinka.service\n")
+        with mock.patch.object(cases, "SYSTEMCTL_CALLS", calls):
+            cases.check_asked_to_enable("kalinka.service")
+            with self.assertRaisesRegex(
+                cases.CheckFailed, "asked to enable kalinka-renderer.service"
+            ):
+                cases.check_asked_to_enable("kalinka-renderer.service")
 
 
 class ApiQuotaTests(unittest.TestCase):

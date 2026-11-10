@@ -18,6 +18,7 @@ esac
 # No init runs here: maintainer scripts start nothing, and what they ask systemctl is only noted.
 printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
 chmod 755 /usr/sbin/policy-rc.d
+# A released postinst may predate the ones that configure without systemd running, and needs a systemctl that answers.
 # Diverted, as apt runs maintainer scripts on a PATH of its own and systemd, which bluez brings, ships one.
 dpkg-divert --local --rename --divert /usr/bin/systemctl.real --add /usr/bin/systemctl
 install -m 755 "$here/systemctl-recorder" /usr/bin/systemctl

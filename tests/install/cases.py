@@ -22,7 +22,10 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-INSTALLER = HERE.parents[1] / "scripts" / "install-release.sh"
+CHECKOUT = HERE.parents[1]
+INSTALLER = CHECKOUT / "scripts" / "install-release.sh"
+SERVER_POSTINST = CHECKOUT / "packages" / "kalinka-server" / "DEBIAN" / "postinst"
+RENDERER_POSTINST = CHECKOUT / "packages" / "kalinka-renderer" / "DEBIAN" / "postinst"
 REPO = os.environ.get("KALINKA_REPO") or "Kalinka-Player/KalinkaPlayer"
 RELEASES_URL = f"https://api.github.com/repos/{REPO}/releases?per_page=30"
 # Reading it costs none of the quota it reports.
@@ -33,7 +36,11 @@ API_CALLS = 1 + 2 * 3
 RESET_SLACK = 5
 QUOTA_TIMEOUT = 65 * 60
 SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# What apt runs maintainer scripts on.
+DPKG_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+SYSTEMCTL = Path("/usr/bin/systemctl")
 SYSTEMCTL_CALLS = Path("/usr/bin/systemctl.calls")
+BOOT_WANTS = Path("/etc/systemd/system/multi-user.target.wants")
 APT_GET = Path("/usr/local/sbin/apt-get")
 SERVER_UNIT = Path("/etc/systemd/system/kalinka.service")
 SERVER_ID = Path("/var/lib/kalinka/server_id")
@@ -44,6 +51,7 @@ UNREACHABLE_INSTALLER = "http://127.0.0.1:9/install-renderer.sh"
 INSTALL_TIMEOUT = 30 * 60
 BOOTSTRAP_TIMEOUT = 20 * 60
 ANSWER_TIMEOUT = 5 * 60
+CONFIGURE_TIMEOUT = 5 * 60
 
 # What install-release.sh says at the turns the cases look for.
 DONE = ">> Done. {tag} installed."
@@ -52,6 +60,9 @@ RENDERER_STEP = ">> Installing the renderer on this machine"
 RENDERER_WARNING = ">> note: the renderer could not be installed"
 APP_LOOKUP = ">> Looking up the latest app packages"
 MISSING_EXTRA = "could not be installed, so"
+# And the postinsts, where systemd is not running or not there.
+NOT_STARTED = "is enabled, not started"
+NO_SYSTEMCTL = "no systemctl here"
 
 
 class CheckFailed(Exception):
@@ -376,11 +387,59 @@ def check_installed(release, output, *, web, renderer):
     check(not audit.stdout.strip(), f"dpkg --audit finds:\n{audit.stdout}")
 
 
-def check_started(*units):
-    """Each unit's postinst asked for it to be restarted, as a real system would."""
+def check_asked_to_enable(*units):
+    """Each unit's postinst asked for it to be enabled, systemd running or not."""
     calls = SYSTEMCTL_CALLS.read_text().splitlines() if SYSTEMCTL_CALLS.exists() else []
     for unit in units:
-        check(f"restart {unit}" in calls, f"no postinst asked to restart {unit}")
+        check(f"enable {unit}" in calls, f"no postinst asked to enable {unit}")
+
+
+def configure(postinst, version):
+    """What *postinst* prints for ``configure``, run as dpkg runs it, or CheckFailed."""
+    command = ["bash", str(postinst), "configure", version]
+    print("$", *command, flush=True)
+    try:
+        result = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+            env={**os.environ, "PATH": DPKG_PATH},
+            timeout=CONFIGURE_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        raise CheckFailed(f"{postinst} took over {CONFIGURE_TIMEOUT} s") from None
+    print(result.stdout, end="", flush=True)
+    check(result.returncode == 0, f"{postinst} exited with status {result.returncode}")
+    return result.stdout
+
+
+def installed_version(package):
+    state = package_state(package)
+    check(state.startswith("installed "), f"{package} is {state}")
+    return state.removeprefix("installed ")
+
+
+def use_systemds_systemctl():
+    """Puts back the systemctl of the systemd package, which system.sh moved aside."""
+    SYSTEMCTL.unlink()
+    undivert = subprocess.run(
+        ["dpkg-divert", "--local", "--rename", "--remove", str(SYSTEMCTL)],
+        capture_output=True,
+        text=True,
+    )
+    check(
+        undivert.returncode == 0 and SYSTEMCTL.exists(),
+        f"systemd's systemctl did not come back:\n{undivert.stdout}{undivert.stderr}",
+    )
+
+
+def check_enabled(*units):
+    """Each unit is linked to start at boot, as systemctl enable links it."""
+    for unit in units:
+        check((BOOT_WANTS / unit).is_symlink(), f"no {unit} link in {BOOT_WANTS}")
 
 
 def check_server_answers(release):
@@ -412,15 +471,27 @@ def fresh_debian(releases):
     with step(f"install {previous['tag_name']}, asked for by its version"):
         output = install(previous["tag_name"].removeprefix("kalinka-v"))
         check_installed(previous, output, web=True, renderer=True)
-        check_started("kalinka.service", "kalinka-renderer.service")
+        check_asked_to_enable("kalinka.service", "kalinka-renderer.service")
         check_server_answers(previous)
         server_id = SERVER_ID.read_text()
     with step(f"run it again, which upgrades it in place to {latest['tag_name']}"):
         output = install()
         check_installed(latest, output, web=True, renderer=True)
-        check_started("kalinka.service")
+        check_asked_to_enable("kalinka.service")
         check(SERVER_ID.read_text() == server_id, "the upgrade changed the server id")
         check_server_answers(latest)
+    with step("configure it with this checkout's postinsts and systemd's systemctl"):
+        use_systemds_systemctl()
+        for package, postinst in (
+            ("kalinka-server", SERVER_POSTINST),
+            ("kalinka-renderer", RENDERER_POSTINST),
+        ):
+            output = configure(postinst, installed_version(package))
+            check(
+                NOT_STARTED in output,
+                f"{package}'s postinst did not note that it started nothing",
+            )
+        check_enabled("kalinka.service", "kalinka-renderer.service")
 
 
 def dietpi_like(releases):
@@ -442,12 +513,17 @@ def dietpi_like(releases):
         check(RENDERER_STEP not in output, "KALINKA_RENDERER=0 still ran the renderer")
         check(APP_LOOKUP not in output, "KALINKA_WEB=0 still looked the web player up")
         check_installed(latest, output, web=False, renderer=False)
-        check_started("kalinka.service")
+        check_asked_to_enable("kalinka.service")
         check_server_answers(latest)
     with step("run it again piped into bash, with the renderer installer unreachable"):
         output = install(piped=True, KALINKA_RENDERER_INSTALLER=UNREACHABLE_INSTALLER)
         check(RENDERER_WARNING in output, "no warning that the renderer did not come")
         check_installed(latest, output, web=True, renderer=False)
+    with step("configure it with this checkout's server postinst and no systemctl"):
+        SYSTEMCTL.unlink()
+        check(not shutil.which("systemctl", path=DPKG_PATH), "systemctl is still there")
+        output = configure(SERVER_POSTINST, installed_version("kalinka-server"))
+        check(NO_SYSTEMCTL in output, "the server's postinst did not skip systemd")
 
 
 SYSTEMS = {"debian": fresh_debian, "dietpi": dietpi_like}

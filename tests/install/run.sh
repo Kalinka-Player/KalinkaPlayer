@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # Run install-release.sh from this checkout on each throwaway system, one
-# container apiece, keeping each one's output in a log. `make install-test`
-# picks the engine and the Debian 13 image.
+# container apiece, keeping each one's output in a log. The checkout's server
+# and renderer maintainer scripts go in beside it. `make install-test` picks
+# the engine and the Debian 13 image.
 #
 # Usage: run.sh <container-engine> <debian-13-image>
 # Env:   INSTALL_TEST_LOGS  where the logs go (default: tmp/install-test)
@@ -25,6 +26,8 @@ for system in debian dietpi; do
   if "$engine" run --pull=never --rm \
       -v "$root/scripts:/kalinka/scripts:ro,z" \
       -v "$root/tests/install:/kalinka/tests/install:ro,z" \
+      -v "$root/packages/kalinka-server/DEBIAN:/kalinka/packages/kalinka-server/DEBIAN:ro,z" \
+      -v "$root/packages/kalinka-renderer/DEBIAN:/kalinka/packages/kalinka-renderer/DEBIAN:ro,z" \
       -e DEBIAN_FRONTEND=noninteractive -e GITHUB_TOKEN -e KALINKA_REPO -e KALINKA_WEB_REPO \
       "$image" bash /kalinka/tests/install/system.sh "$system" 2>&1 | tee "$log"; then
     echo "== $system: passed"
