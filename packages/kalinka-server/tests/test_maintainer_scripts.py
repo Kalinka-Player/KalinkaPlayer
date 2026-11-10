@@ -110,7 +110,10 @@ def test_prerm_still_reports_a_real_removal(tmp_path):
 
 RENDERER_DEBIAN = REPO / "packages" / "kalinka-renderer" / "DEBIAN"
 ENABLING = re.compile(r'\s*systemctl (enable|start|restart)( --now)? "?([^"\s]+)"?')
-ANY_ENABLING = re.compile(r"\bsystemctl\s+(-\S+\s+)*(re)?(enable|start|restart)\b")
+ANY_ENABLING = re.compile(
+    r"\bsystemctl\s+(-\S+\s+)*"
+    r"((re)?(enable|start|restart)|reload-or-restart|preset|add-wants|add-requires)\b"
+)
 
 
 def _units_the_postinst_enables(postinst):
@@ -122,7 +125,7 @@ def _units_the_postinst_enables(postinst):
     text = postinst.read_text()
     enabled, started = set(), set()
     for line in text.splitlines():
-        if not ANY_ENABLING.search(line):
+        if line.lstrip().startswith("#") or not ANY_ENABLING.search(line):
             continue
         match = ENABLING.fullmatch(line)
         assert match, f"cannot read the unit in {line!r}"
