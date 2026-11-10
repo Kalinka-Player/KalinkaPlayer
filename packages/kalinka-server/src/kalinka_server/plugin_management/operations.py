@@ -9,6 +9,11 @@ only kalinka-restart.service, or where the helper finds that the release
 cannot be taken into a running process, the helper stops Core, installs with
 apt and starts Core again, as it always did.
 
+Core takes one operation to the helper at a time and queues the rest,
+persisted so that one whose turn comes after a restart still runs: each is
+checked again as it comes up, since what ran before it may have changed
+what it does.
+
 Either way the helper fetches the catalog itself, downloads the release's
 package, checks the digest the catalog pins and installs it with apt, or
 removes the package. Root never acts on a URL, a digest or a free-form
@@ -33,6 +38,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from typing import TYPE_CHECKING, Callable, Iterator, Literal, Optional
 from urllib.parse import urljoin, urlsplit
 import zipfile
@@ -66,6 +72,9 @@ logger = logging.getLogger("plugin_operations")
 
 REQUEST_FILE = "plugin-request.json"
 RESULT_FILE = "plugin-operation.json"
+# Core's own: what waits its turn, and how the latest operations ended.
+QUEUE_FILE = "plugin-queue.json"
+RESULTS_KEPT = 20
 ACK_FILE = "plugin-unload-ack"
 RESTART_DROPIN = "/etc/systemd/system/kalinka-restart.service.d/plugins.conf"
 RESTART_PATH_UNIT = "/etc/systemd/system/kalinka-restart.path"
@@ -135,6 +144,8 @@ class OperationRequest(BaseModel):
     version: str | None = Field(default=None, min_length=1, max_length=100)
     artifact_sha256: SHA256 | None = None
     requested_at: str
+    # What the app follows it by, from the moment it was queued.
+    operation_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
 
     @model_validator(mode="after")
     def check_identity(self) -> OperationRequest:
@@ -156,6 +167,10 @@ class OperationRequest(BaseModel):
         if made.tzinfo is None:
             return False
         return 0 <= now - made.timestamp() < STALE_REQUEST_SECONDS
+
+    @property
+    def record_id(self) -> str:
+        return self.operation_id or self.requested_at
 
 
 @dataclass(frozen=True)
@@ -217,7 +232,7 @@ def _record_of(request: Optional[OperationRequest], now: float) -> dict:
     could not be read."""
     return {
         "schema_version": 2,
-        "id": request.requested_at if request else None,
+        "id": request.record_id if request else None,
         "action": request.action if request else None,
         "plugin_id": request.plugin_id if request else None,
         "distribution": request.distribution if request else None,
@@ -231,6 +246,36 @@ def _record_of(request: Optional[OperationRequest], now: float) -> dict:
         "finished_at": None,
         "error": None,
     }
+
+
+def _ended(entry: dict, status: str, error: Optional[str], now: float) -> dict:
+    """The record of a queued operation that ended before it reached the helper."""
+    return {
+        "schema_version": 2,
+        "id": entry["id"],
+        "action": entry["action"],
+        "plugin_id": entry["plugin_id"],
+        "distribution": entry.get("distribution"),
+        "version": entry.get("version"),
+        "status": status,
+        "step": None,
+        "step_index": 0,
+        "step_count": len(STEPS[entry["action"]]),
+        "started_at": now,
+        "updated_at": now,
+        "finished_at": now,
+        "error": error,
+    }
+
+
+def _queued_entry(value) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("id"), str)
+        and isinstance(value.get("action"), str)
+        and value["action"] in STEPS
+        and isinstance(value.get("plugin_id"), str)
+    )
 
 
 class _Record:
@@ -286,11 +331,11 @@ class PluginOperations:
 
     Every check runs against Core's own cached catalog and its metadata
     preflight; the helper repeats what matters for trust from its own fetch.
-    One request is pending at a time, and none while the server is already
-    restarting. Where the box runs the helper beside Core, the request is
-    followed here: the plugin is unloaded when the helper is about to replace
-    its files, and loaded again from what it installed. Elsewhere accepting a
-    request restarts the server.
+    One request goes to the helper at a time; one asked for meanwhile, or
+    while the server restarts, waits in the queue for its turn. Where the box
+    runs the helper beside Core, the request is followed here: the plugin is
+    unloaded when the helper is about to replace its files, and loaded again
+    from what it installed. Elsewhere accepting a request restarts the server.
     """
 
     def __init__(
@@ -313,6 +358,7 @@ class PluginOperations:
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         poll_s: float = POLL_INTERVAL_S,
         deadline_s: float = FOLLOW_DEADLINE_S,
+        new_id: Callable[[], str] = lambda: uuid.uuid4().hex,
     ):
         self._catalog = catalog
         self._compatibility = compatibility
@@ -331,12 +377,18 @@ class PluginOperations:
         self._clock = clock
         self._poll_s = poll_s
         self._deadline_s = deadline_s
+        self._new_id = new_id
         self._submitting = threading.Lock()
-        # A live request unloads and records before its pending check: one at a time.
-        self._live_lock = asyncio.Lock()
-        # Core's part of the operation in flight, or the last one's end.
+        # The queue changes, and a request starts, one at a time: a live one
+        # unloads and records before its pending check.
+        self._lock = asyncio.Lock()
+        # Core's part of the operation in flight, or the last one's end, and
+        # what accepting it answered.
         self._core: Optional[dict] = None
+        self._accepted: dict = {}
         self._following: Optional[asyncio.Task] = None
+        self._queue, self._results = self._load_queue()
+        self._draining: Optional[asyncio.Task] = None
 
     def capabilities(self) -> dict:
         """An update is only worth reporting where it can also be applied."""
@@ -345,7 +397,25 @@ class PluginOperations:
             "installation": supported,
             "update_checks": supported,
             "live_installation": supported and self._live_supported(),
+            "operation_queue": supported,
         }
+
+    def queue(self) -> list[dict]:
+        """What waits its turn, next first."""
+        return [dict(entry) for entry in self._queue]
+
+    def results(self) -> list[dict]:
+        """How the latest operations ended, oldest first."""
+        results = [dict(record) for record in self._results]
+        last = self.operation()
+        if _finished(last) and all(r.get("id") != last["id"] for r in results):
+            results.append(last)
+        return results[-RESULTS_KEPT:]
+
+    def resume(self) -> None:
+        """Carry on with what was queued before the server stopped."""
+        if self._queue:
+            self._drain_soon()
 
     async def updates(self) -> dict:
         """Newer compatible releases of the plugin packages dpkg has installed."""
@@ -418,6 +488,99 @@ class PluginOperations:
         return data if isinstance(data, dict) else None
 
     async def request(self, action: Action, plugin_id: str) -> dict:
+        """Start the operation, or queue it behind the one under way.
+
+        Asked again for one already queued or under way, it answers with
+        that one rather than queueing it twice.
+        """
+        if (same := self._listed(action, plugin_id)) is not None:
+            return same
+        request, accepted = await self._prepare(action, plugin_id, self._new_id())
+        async with self._lock:
+            if (same := self._listed(action, plugin_id)) is not None:
+                return same
+            if self._queue or self._busy():
+                entry = {k: v for k, v in accepted.items() if k != "operation"}
+                self._queue.append(
+                    entry | {"action": action, "queued_at": self._clock().timestamp()}
+                )
+                self._save_queue()
+                self._drain_soon()
+                return accepted | {"status": "queued", "position": len(self._queue)}
+            status = await self._start(request, accepted)
+        return accepted | {"status": status}
+
+    async def update_all(self, plugin_ids: Optional[list[str]] = None) -> dict:
+        """Update the plugins named, or every one with a newer release: the
+        first starts, the rest queue behind it."""
+        if plugin_ids is None:
+            listing = await self.updates()
+            if listing["status"] != "available":
+                raise self._unavailable(listing["reason"])
+            plugin_ids = [update["plugin_id"] for update in listing["updates"]]
+        operations, refused = [], []
+        for plugin_id in dict.fromkeys(plugin_ids):
+            try:
+                operations.append(await self.request("update", plugin_id))
+            except Refusal as refusal:
+                refused.append(
+                    {"plugin_id": plugin_id, "code": refusal.code, "message": refusal.message}
+                )
+        return {"operations": operations, "refused": refused}
+
+    def _listed(self, action: Action, plugin_id: str) -> Optional[dict]:
+        """The operation on ``plugin_id`` already queued or followed, as its
+        acceptance said; a different one on it is refused."""
+        for position, entry in enumerate(self._queue, start=1):
+            if entry["plugin_id"] == plugin_id:
+                if entry["action"] != action:
+                    raise Refusal(
+                        409,
+                        "operation_in_progress",
+                        f"The server is already set to {entry['action']} {plugin_id}.",
+                    )
+                listed = {k: v for k, v in entry.items() if k not in ("action", "queued_at")}
+                return listed | {"operation": action, "status": "queued", "position": position}
+        core = self._core
+        if core is not None and core["plugin_id"] == plugin_id and self._under_way(core):
+            if core["action"] != action:
+                raise Refusal(
+                    409,
+                    "operation_in_progress",
+                    f"The server is already working to {core['action']} {plugin_id}.",
+                )
+            status = "restarting" if core["status"] == "restarting" else "applying"
+            return self._accepted | {"status": status}
+        return None
+
+    def _under_way(self, core: dict) -> bool:
+        """Whether Core follows ``core`` still, or its request still waits
+        for the restart that carries it out."""
+        if self._following is not None and not self._following.done():
+            return True
+        pending = self._pending(Path(self._state_dir()) / REQUEST_FILE)
+        return pending is not None and pending.record_id == core["id"]
+
+    @staticmethod
+    def _unavailable(reason: str) -> Refusal:
+        if reason == "installer_unavailable":
+            return Refusal(
+                503,
+                "installer_unavailable",
+                "This server cannot install or remove plugins: it is not "
+                "managed by the Debian package's restart service.",
+            )
+        return Refusal(
+            503,
+            "catalog_unavailable",
+            "The plugin catalog is not available yet. Try again shortly.",
+        )
+
+    async def _prepare(
+        self, action: Action, plugin_id: str, operation_id: str
+    ) -> tuple[OperationRequest, dict]:
+        """The request for the helper, checked against the catalog and what
+        is installed now, and what accepting it answers with."""
         if not self._supported():
             raise Refusal(
                 503,
@@ -479,6 +642,7 @@ class PluginOperations:
                 version=candidate.version if candidate else None,
                 artifact_sha256=candidate.artifact_sha256 if candidate else None,
                 requested_at=self._clock().isoformat(),
+                operation_id=operation_id,
             )
         except ValueError:
             raise Refusal(
@@ -486,21 +650,29 @@ class PluginOperations:
                 "unsupported_package",
                 f"{plugin['name']} is not packaged as a Kalinka plugin.",
             ) from None
-        lifecycle = self._lifecycle() if self._live_supported() else None
-        if lifecycle is None:
-            await run_in_threadpool(self._submit, request, live=False)
-            status = "restarting"
-        else:
-            await self._submit_live(request, lifecycle)
-            status = "applying"
-        return {
-            "status": status,
+        return request, {
+            "id": operation_id,
             "operation": action,
             "plugin_id": plugin_id,
             "distribution": distribution,
             "version": candidate.version if candidate else installed,
             "installed_version": installed,
         }
+
+    async def _start(self, request: OperationRequest, accepted: dict) -> str:
+        """Hand the request to the helper; how the server carries it out."""
+        # The helper writes its record afresh: keep how the last one ended.
+        self._remember(self._helper_record())
+        self._accepted = accepted
+        lifecycle = self._lifecycle() if self._live_supported() else None
+        if lifecycle is None:
+            await run_in_threadpool(self._submit, request, live=False)
+            self._core = _record_of(request, self._clock().timestamp()) | {
+                "status": "restarting"
+            }
+            return "restarting"
+        await self._submit_live(request, lifecycle)
+        return "applying"
 
     async def _submit_live(
         self, request: OperationRequest, lifecycle: "PluginLifecycle"
@@ -511,23 +683,146 @@ class PluginOperations:
         the request goes; an update keeps playing until the helper has the
         package in hand and asks.
         """
-        async with self._live_lock:
-            if self._in_flight():
-                raise _still_applying()
-            core = _record_of(request, self._clock().timestamp())
-            self._core = core
-            try:
-                if request.action == "uninstall":
-                    core.update(step="preparing", step_index=1)
-                    await lifecycle.unload(request.plugin_id, gone=True)
-                await run_in_threadpool(self._submit, request, live=True)
-            except Exception:
-                # Nothing follows a request that never went: the record would stay "running".
-                self._core = None
-                if request.action == "uninstall":
-                    await self._reload(lifecycle, request.plugin_id, purge=False)
-                raise
-            self._following = detach(self._follow(request, lifecycle, core))
+        if self._in_flight():
+            raise _still_applying()
+        core = _record_of(request, self._clock().timestamp())
+        self._core = core
+        try:
+            if request.action == "uninstall":
+                core.update(step="preparing", step_index=1)
+                await lifecycle.unload(request.plugin_id, gone=True)
+            await run_in_threadpool(self._submit, request, live=True)
+        except Exception:
+            # Nothing follows a request that never went: the record would stay "running".
+            self._core = None
+            if request.action == "uninstall":
+                await self._reload(lifecycle, request.plugin_id, purge=False)
+            raise
+        self._following = detach(self._follow(request, lifecycle, core))
+
+    def _drain_soon(self) -> None:
+        if self._draining is None or self._draining.done():
+            self._draining = detach(self._drain())
+
+    async def _drain(self) -> None:
+        """Work through the queue, one operation after another.
+
+        Each is checked again as it comes up: what ran before it may have
+        changed what it does. Once the server has restarted, the catalog is
+        waited for — for as long as the helper is given to answer.
+        """
+        waited = time.monotonic()
+        while True:
+            await asyncio.sleep(self._poll_s)
+            if self._busy():
+                continue
+            if (
+                self._catalog.snapshot()["status"] == "unavailable"
+                and time.monotonic() - waited < self._deadline_s
+            ):
+                continue
+            async with self._lock:
+                if not self._queue:
+                    return
+                if self._busy():
+                    continue
+                entry = self._queue[0]
+                try:
+                    request, accepted = await self._prepare(
+                        entry["action"], entry["plugin_id"], entry["id"]
+                    )
+                    await self._start(request, accepted)
+                except Refusal as refusal:
+                    # Something else got there first, a restart: wait for it.
+                    if refusal.code == "operation_in_progress":
+                        continue
+                    self._remember(self._refused(entry, refusal))
+                except Exception:  # noqa: BLE001 — the rest of the queue still runs
+                    logger.exception("Could not start the queued plugin operation")
+                    self._remember(
+                        _ended(
+                            entry,
+                            "failed",
+                            "The server could not start it.",
+                            self._clock().timestamp(),
+                        )
+                    )
+                # Taken off only now: a restart before this point runs it then.
+                self._queue.remove(entry)
+                self._save_queue()
+
+    def _refused(self, entry: dict, refusal: Refusal) -> dict:
+        """How a queued operation ends that its turn found no longer applied."""
+        now = self._clock().timestamp()
+        # What it was queued for has come about meanwhile.
+        if (entry["action"], refusal.code) in {
+            ("install", "already_installed"),
+            ("update", "up_to_date"),
+            ("uninstall", "not_installed"),
+        }:
+            return _ended(entry, "ok", None, now)
+        return _ended(entry, "failed", refusal.message, now)
+
+    def _busy(self) -> bool:
+        """Whether a request now has to wait its turn: one is under way, or
+        waits for the helper or a restart, or the server is restarting."""
+        if self._in_flight() or self._restarting():
+            return True
+        if self._pending(Path(self._state_dir()) / REQUEST_FILE) is not None:
+            return True
+        # A helper that restarted Core may still be finishing; Core's runtime
+        # directory, and its trigger with it, went when Core stopped.
+        helper = self._helper_record()
+        updated = helper.get("updated_at") if helper else None
+        return (
+            helper is not None
+            and helper.get("status") in ("running", "restarting")
+            and isinstance(updated, (int, float))
+            and 0 <= self._clock().timestamp() - updated < self._deadline_s
+        )
+
+    def _remember(self, record: Optional[dict]) -> None:
+        if not _finished(record) or any(r.get("id") == record["id"] for r in self._results):
+            return
+        self._results = [*self._results, dict(record)][-RESULTS_KEPT:]
+        self._save_queue()
+
+    def _save_queue(self) -> None:
+        data = {
+            "schema_version": 1,
+            "updated_at": self._clock().timestamp(),
+            "operations": self._queue,
+            "results": self._results,
+        }
+        try:
+            _write_json(Path(self._state_dir()) / QUEUE_FILE, data, 0o644)
+        except OSError as exc:
+            logger.warning("Could not save the plugin operation queue: %s", exc)
+
+    def _load_queue(self) -> tuple[list[dict], list[dict]]:
+        """The queue as Core left it, unless it was left too long ago for
+        anyone to be waiting for it still."""
+        try:
+            data = json.loads((Path(self._state_dir()) / QUEUE_FILE).read_text())
+        except (OSError, ValueError):
+            return [], []
+        if not isinstance(data, dict):
+            return [], []
+        queue = [e for e in data.get("operations") or () if _queued_entry(e)]
+        results = [r for r in data.get("results") or () if isinstance(r, dict)]
+        now = self._clock().timestamp()
+        updated = data.get("updated_at")
+        if queue and not (
+            isinstance(updated, (int, float)) and 0 <= now - updated < STALE_REQUEST_SECONDS
+        ):
+            logger.warning(
+                "Not carrying out %d plugin operations queued before the "
+                "server stopped: the queue expired",
+                len(queue),
+            )
+            results += [_ended(entry, "failed", EXPIRED, now) for entry in queue]
+            queue = []
+        return queue, results[-RESULTS_KEPT:]
 
     def _submit(self, request: OperationRequest, *, live: bool) -> None:
         path = Path(self._state_dir()) / REQUEST_FILE
@@ -579,6 +874,17 @@ class PluginOperations:
     async def _follow(
         self, request: OperationRequest, lifecycle: "PluginLifecycle", core: dict
     ) -> None:
+        try:
+            await self._follow_helper(request, lifecycle, core)
+        finally:
+            self._remember(self.operation())
+            # A restart under way: what is queued is still wanted after it.
+            if self._queue:
+                self._save_queue()
+
+    async def _follow_helper(
+        self, request: OperationRequest, lifecycle: "PluginLifecycle", core: dict
+    ) -> None:
         """Keep up with the helper's record until the operation ends.
 
         An update's plugin is taken down when the helper says it is about to
@@ -596,7 +902,7 @@ class PluginOperations:
         while True:
             await asyncio.sleep(self._poll_s)
             record = self._helper_record()
-            if record is None or record.get("id") != request.requested_at:
+            if record is None or record.get("id") != request.record_id:
                 if time.monotonic() - moved > self._deadline_s:
                     self._core_finish(core, "failed", "The installer did not answer.")
                     # Left, the trigger refuses later requests and a restart would run this one.
@@ -660,6 +966,14 @@ class PluginOperations:
         return _plugin(
             self._compatibility.annotate(snapshot, self._renderers()), plugin_id
         )
+
+
+def _finished(record: Optional[dict]) -> bool:
+    return (
+        isinstance(record, dict)
+        and record.get("status") in ("ok", "failed")
+        and bool(record.get("id"))
+    )
 
 
 def _plugin(snapshot: dict, plugin_id: str) -> dict | None:

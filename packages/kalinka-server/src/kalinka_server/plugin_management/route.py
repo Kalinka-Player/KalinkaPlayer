@@ -4,10 +4,11 @@ Missing trust is never reported as up to date; an accepted operation is a
 record to follow, not a result.
 """
 
-from typing import Callable
+from typing import Callable, Optional
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException
+from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from .catalog import PublicCatalog
@@ -16,6 +17,14 @@ from .inventory import PluginInventory
 from .operations import PluginOperations, Refusal
 
 _HEADERS = {"Cache-Control": "no-store"}
+
+
+class UpdatesRequest(BaseModel):
+    """The plugins to update; every one with a newer release when left out."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    plugin_ids: Optional[list[str]] = Field(default=None, max_length=100)
 
 
 def register_plugin_routes(
@@ -64,10 +73,7 @@ def register_plugin_routes(
             try:
                 body = await operations.request(action, plugin_id)
             except Refusal as refusal:
-                raise HTTPException(
-                    refusal.status,
-                    detail={"code": refusal.code, "message": refusal.message},
-                ) from None
+                raise _refused(refusal) from None
             return JSONResponse(body, status_code=202, headers=_HEADERS)
 
         @router.post("/{plugin_id}/install", status_code=202)
@@ -82,11 +88,30 @@ def register_plugin_routes(
         async def uninstall_plugin(plugin_id: str):
             return await operate("uninstall", plugin_id)
 
+        @router.post("/updates")
+        async def update_plugins(body: Optional[UpdatesRequest] = Body(default=None)):
+            """Update several plugins at once: the first starts, the rest
+            queue behind it, each refused on its own."""
+            try:
+                result = await operations.update_all(body.plugin_ids if body else None)
+            except Refusal as refusal:
+                raise _refused(refusal) from None
+            return JSONResponse(
+                result,
+                status_code=202 if result["operations"] else 200,
+                headers=_HEADERS,
+            )
+
         @router.get("/operation")
         def operation():
             """The operation in flight or the last one, step by step, for a
-            client to poll — reopened later or not."""
-            return JSONResponse(operations.operation(), headers=_HEADERS)
+            client to poll — reopened later or not — with what waits its
+            turn and how the latest ones ended."""
+            return JSONResponse(
+                operations.operation()
+                | {"queue": operations.queue(), "results": operations.results()},
+                headers=_HEADERS,
+            )
 
     @router.get("/catalog")
     async def catalog():
@@ -119,3 +144,9 @@ def register_plugin_routes(
         return JSONResponse(headers=_HEADERS, content=content)
 
     app.include_router(router)
+
+
+def _refused(refusal: Refusal) -> HTTPException:
+    return HTTPException(
+        refusal.status, detail={"code": refusal.code, "message": refusal.message}
+    )

@@ -194,6 +194,8 @@ async def lifespan(app: FastAPI):
         app.state.plugin_catalog_task = asyncio.create_task(
             app.state.plugin_catalog.run()
         )
+        # Waits for the catalog the first fetch brings.
+        app.state.plugin_operations.resume()
         yield
 
     except Exception as e:
