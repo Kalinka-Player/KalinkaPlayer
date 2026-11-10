@@ -132,7 +132,7 @@ case "$1" in
     # A Core stopped for a package operation is started once, afterwards, by whoever stopped it.
     if [ -e "$LIVE_OPERATION_MARKER" ]; then
       echo "[triggered] $UNIT_NAME is taking the plugin in itself; not restarting it."
-    else
+    elif [ -d /run/systemd/system ]; then
       echo "[triggered] Restarting $UNIT_NAME if it is running..."
       systemctl try-restart "$UNIT_NAME" || true
     fi

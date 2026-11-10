@@ -894,58 +894,6 @@ PLUGINS_DROPIN = (
 )
 
 
-def test_plugin_trigger_restarts_only_a_running_server(tmp_path):
-    """A Core stopped for a package operation is started once, afterwards, by
-    the restart service that stopped it, not by every plugin package's
-    trigger in between."""
-    binv = tmp_path / "bin"
-    binv.mkdir()
-    log = tmp_path / "systemctl.log"
-    stub = binv / "systemctl"
-    stub.write_text(f'#!/usr/bin/env bash\necho "$@" >> "{log}"\n')
-    stub.chmod(0o755)
-
-    result = _run(
-        POSTINST,
-        "triggered",
-        "kalinka-server-restart",
-        env={"PATH": f"{binv}:{os.environ['PATH']}"},
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert log.read_text().splitlines() == ["try-restart kalinka.service"]
-
-
-def test_plugin_trigger_leaves_a_server_taking_the_plugin_in_itself_alone(tmp_path):
-    """Kalinka's own helper, working beside a running Core, holds a marker
-    while apt runs: Core unloads and loads the plugin itself."""
-    marker = tmp_path / "plugin-live-operation"
-    marker.touch()
-    script = tmp_path / "postinst"
-    script.write_text(
-        POSTINST.read_text().replace(
-            'LIVE_OPERATION_MARKER="/run/kalinka/plugin-live-operation"',
-            f'LIVE_OPERATION_MARKER="{marker}"',
-        )
-    )
-    binv = tmp_path / "bin"
-    binv.mkdir()
-    log = tmp_path / "systemctl.log"
-    stub = binv / "systemctl"
-    stub.write_text(f'#!/usr/bin/env bash\necho "$@" >> "{log}"\n')
-    stub.chmod(0o755)
-
-    result = _run(
-        script,
-        "triggered",
-        "kalinka-server-restart",
-        env={"PATH": f"{binv}:{os.environ['PATH']}"},
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert not log.exists()
-
-
 def test_the_live_plugin_units_are_packaged_and_enabled(tmp_path):
     scripts = REPO / "packages" / "kalinka-server" / "scripts"
     assert (scripts / "kalinka-plugins.path").exists()
@@ -1007,8 +955,15 @@ exit 1
 HOST_TOOLS = "bash cat chmod find grep mv python3 readlink sync tr".split()
 
 
-def _postinst_sandbox(tmp_path, postinst, systemd, units=(), on_systemctl=""):
-    """*postinst*'s configure, run against a root under tmp_path.
+def _sandbox_root(tmp_path):
+    """Where _postinst_sandbox moves the system paths of a postinst."""
+    return tmp_path / "root"
+
+
+def _postinst_sandbox(
+    tmp_path, postinst, systemd, units=(), on_systemctl="", args=("configure",)
+):
+    """*postinst* run with *args*, against _sandbox_root(tmp_path).
 
     Every system path in it is moved under that root, and what reaches past
     the files — users, systemd, udev — is a recorder. Only root can give a
@@ -1018,7 +973,7 @@ def _postinst_sandbox(tmp_path, postinst, systemd, units=(), on_systemctl=""):
     the root's /etc/systemd/system, and *on_systemctl* is shell the systemctl
     recorder runs. Returns the result, the recorded calls and the root.
     """
-    root = tmp_path / "root"
+    root = _sandbox_root(tmp_path)
     script = tmp_path / "postinst"
     script.write_text(
         re.sub(
@@ -1075,7 +1030,7 @@ def _postinst_sandbox(tmp_path, postinst, systemd, units=(), on_systemctl=""):
     else:
         path = f"{binv}:{os.environ['PATH']}"
 
-    result = _run(script, "configure", env={"PATH": path, "STUB_STATE": str(state)})
+    result = _run(script, *args, env={"PATH": path, "STUB_STATE": str(state)})
     log = state / "calls.log"
     calls = log.read_text().splitlines() if log.exists() else []
     return result, calls, root
@@ -1088,19 +1043,19 @@ def _sandboxed_configure(tmp_path, server_id=None, systemd=SYSTEMD_RUNNING):
     the result, the recorded calls, the id path and what it held when
     kalinka.service was started.
     """
-    path = tmp_path / "root" / "var" / "lib" / "kalinka" / "server_id"
+    path = _sandbox_root(tmp_path) / "var" / "lib" / "kalinka" / "server_id"
     if server_id is not None:
         path.parent.mkdir(parents=True)
         path.write_text(server_id)
+    at_start = tmp_path / "id-at-start"
     result, calls, _ = _postinst_sandbox(
         tmp_path,
         POSTINST,
         systemd,
         units=("kalinka.service", *SERVER_UNITS),
         on_systemctl='[ "$*" != "restart kalinka.service" ] || '
-        f'cat "{path}" > "$STUB_STATE/id-at-start" 2>/dev/null || true\n',
+        f'cat "{path}" > "{at_start}" 2>/dev/null || true\n',
     )
-    at_start = tmp_path / "state" / "id-at-start"
     return result, calls, path, at_start.read_text() if at_start.exists() else None
 
 
@@ -1178,6 +1133,45 @@ def test_the_server_configures_where_there_is_no_systemctl(tmp_path):
     assert "no systemctl here" in result.stdout
     assert uuid.UUID(path.read_text().strip()).version == 4
     assert "Installation complete." in result.stdout
+
+
+TRIGGERED = ("triggered", "kalinka-server-restart")
+
+
+@pytest.mark.parametrize(
+    "systemd, asked",
+    [
+        (SYSTEMD_RUNNING, ["try-restart kalinka.service"]),
+        (SYSTEMD_STOPPED, []),
+        (NO_SYSTEMCTL, []),
+    ],
+)
+def test_plugin_trigger_restarts_only_a_running_server(systemd, asked, tmp_path):
+    """A Core stopped for a package operation is started once, afterwards, by
+    the restart service that stopped it, not by every plugin package's
+    trigger in between. Where systemd is not running there is no Core to
+    restart, and a plugin installs without a word from systemctl."""
+    result, calls, _ = _postinst_sandbox(tmp_path, POSTINST, systemd, args=TRIGGERED)
+
+    assert result.returncode == 0, result.stderr
+    assert _systemctl_calls(calls) == asked
+    assert result.stderr == ""
+
+
+def test_plugin_trigger_leaves_a_server_taking_the_plugin_in_itself_alone(tmp_path):
+    """Kalinka's own helper, working beside a running Core, holds a marker
+    while apt runs: Core unloads and loads the plugin itself."""
+    marker = _sandbox_root(tmp_path) / "run" / "kalinka" / "plugin-live-operation"
+    marker.parent.mkdir(parents=True)
+    marker.touch()
+
+    result, calls, _ = _postinst_sandbox(
+        tmp_path, POSTINST, SYSTEMD_RUNNING, args=TRIGGERED
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _systemctl_calls(calls) == []
+    assert "taking the plugin in itself" in result.stdout
 
 
 RENDERER_ENABLED = [
