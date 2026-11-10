@@ -9,14 +9,26 @@ for where neither has run.
 """
 
 import os
+import stat
 import sys
 import uuid
 from pathlib import Path
 
+# Past any spelling uuid.UUID takes: a link kalusr aims at a huge file costs nothing.
+_LONGEST_READ = 4096
+
 
 def _holds_an_id(path: Path) -> bool:
     try:
-        uuid.UUID(path.read_text().strip())
+        # Non-blocking: a FIFO kalusr left here would hold root's postinst forever.
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError:
+        return False
+    try:
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                return False
+            uuid.UUID(handle.read(_LONGEST_READ).decode().strip())
     except (OSError, ValueError):
         return False
     return True
@@ -26,9 +38,12 @@ def ensure_id(path: Path) -> None:
     if _holds_an_id(path):
         return
     new = path.with_name(path.name + ".new")
+    owner = os.stat(path.parent)
     # The postinst runs as root in a directory kalusr owns: follow no link left here.
     new.unlink(missing_ok=True)
     fd = os.open(new, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    # Owned from birth: a later chown by path could land on a link kalusr made.
+    os.fchown(fd, owner.st_uid, owner.st_gid)
     with os.fdopen(fd, "w") as handle:
         handle.write(f"{uuid.uuid4()}\n")
         handle.flush()

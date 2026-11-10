@@ -1076,7 +1076,8 @@ def test_a_fresh_install_has_its_server_id_before_core_first_starts(left, tmp_pa
     server_id = path.read_text().strip()
     assert uuid.UUID(server_id).version == 4
     assert at_start == path.read_text()
-    assert f"chown -h kalusr:kalusr {path}" in calls
+    assert not any(call.startswith("chown") and str(path) in call for call in calls)
+    assert path.stat().st_uid == path.parent.stat().st_uid
     assert not path.with_name("server_id.new").exists()
     if left is None:
         assert f"install -d -m 0750 -o kalusr -g kalusr {path.parent}" in calls
@@ -1091,9 +1092,7 @@ def test_an_upgrade_keeps_the_server_id(tmp_path):
     assert result.returncode == 0, result.stderr
     assert path.read_text() == KEPT_ID
     assert at_start == KEPT_ID
-    assert [call for call in calls if str(path) in call] == [
-        f"chown -h kalusr:kalusr {path}"
-    ]
+    assert not any(str(path) in call for call in calls)
 
 
 @pytest.mark.parametrize("held", [None, KEPT_ID], ids=["install", "upgrade"])
@@ -1114,6 +1113,7 @@ def _make_id(path):
         [sys.executable, "-I", str(SERVER_ID_HELPER), str(path)],
         capture_output=True,
         text=True,
+        timeout=10,
     )
 
 
@@ -1147,6 +1147,17 @@ def test_the_id_helper_writes_through_no_link_left_in_its_way(tmp_path):
     assert victim.read_text() == "root:secret\n"
     assert uuid.UUID((state / "server_id").read_text().strip()).version == 4
     assert [p.name for p in state.iterdir()] == ["server_id"]
+
+
+def test_the_id_helper_is_not_held_by_a_fifo_in_the_ids_place(tmp_path):
+    """Read as root at install, a FIFO kalusr left there would hang dpkg."""
+    path = tmp_path / "server_id"
+    os.mkfifo(path)
+
+    result = _make_id(path)
+
+    assert result.returncode == 0, result.stderr
+    assert uuid.UUID(path.read_text().strip()).version == 4
 
 
 @pytest.mark.parametrize(
