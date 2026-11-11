@@ -441,6 +441,12 @@ class LocalFilesInputModule(InputModule):
     def _has_searcher(self) -> bool:
         return self._searcher is not None
 
+    def root_preview(self) -> Optional[Preview]:
+        """The root opens as cards: its catalogs each have their own art."""
+        return Preview(
+            type=PreviewType.IMAGE_TEXT, content_type=PreviewContentType.CATALOG
+        )
+
     async def ai_search(
         self, query: str, offset: int = 0, limit: int = 50
     ) -> BrowseItemList:

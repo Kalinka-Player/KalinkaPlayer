@@ -117,6 +117,13 @@ def test_root_categories_have_stable_ids_and_page_without_duplicates(module):
     assert not browse(module, "root", offset=20).items
 
 
+def test_root_opens_as_cards_of_its_catalogs(module):
+    preview = module.root_preview()
+    assert preview.type == PreviewType.IMAGE_TEXT
+    assert preview.content_type == PreviewContentType.CATALOG
+    assert all(item.catalog.image for item in browse(module, "root").items)
+
+
 def test_empty_library_keeps_folders_without_phantom_categories(module):
     with sqlite3.connect(module.db_manager.db_path) as conn:
         conn.execute("DELETE FROM tracks")

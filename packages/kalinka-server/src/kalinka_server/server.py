@@ -51,7 +51,12 @@ from .config_schema_processor import (
 )
 from .catalog_art_service import CatalogArtService
 from .browse_route import register_browse_routes
-from .browse_source import BrowseSource, BrowseSourceRegistry, RegisteredSource
+from .browse_source import (
+    BrowseSource,
+    BrowseSourceRegistry,
+    RegisteredSource,
+    root_preview_of,
+)
 from .collections.route import register_collection_routes
 from .collections.source import CollectionsSource
 from .collections.store import CollectionStore
@@ -677,6 +682,7 @@ async def create_app(
                     name=name,
                     title=config.__class__.model_fields["name"].title or config.name,
                     source=plugin.interface,
+                    preview=root_preview_of(plugin.interface),
                 )
             )
         return entries
