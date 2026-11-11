@@ -37,7 +37,6 @@ void StubPlayer::stop() { reportStopped(); }
 void StubPlayer::fillConfig(renderer_pb::ConfigSection &out) const {
   out.set_path("output");
   out.set_title("Output");
-  out.set_description("Audio device and volume settings.");
 
   renderer_pb::ConfigField *driver = out.add_fields();
   driver->set_path("output.driver");

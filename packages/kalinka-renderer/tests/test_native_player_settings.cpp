@@ -274,6 +274,7 @@ TEST_F(NativePlayerSettingsTest, DetailedHelpTravelsSeparatelyFromDescriptions) 
   ASSERT_TRUE(received.ParseFromString(snapshot.SerializeAsString()));
 
   const auto &out = received.sections(0);
+  EXPECT_TRUE(out.description().empty());
   for (const auto *path : {"output.device", "output.volume_mode",
                            "output.session_start_volume_ceiling_percent",
                            "output.dsd_mode", "output.format_change_delay_ms",

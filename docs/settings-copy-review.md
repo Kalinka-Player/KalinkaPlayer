@@ -14,7 +14,7 @@ Sources: [NativePlayer.cpp](../packages/kalinka-renderer/src/player/NativePlayer
 |---|---|
 | Name | Name shown in Kalinka. Leave empty to use the default name, which includes the hostname. |
 | Name overridden by command line | Set by the `--name` command-line option. |
-| Output section | Audio device and volume settings. |
+| Output section | *(No description.)* |
 | Driver | Audio backend used to reach the sound card. |
 | Output device | Changing the device interrupts playback and sets DSD output to Disabled. |
 | Output device unavailable | Device not found. It may be disconnected or renamed. |
