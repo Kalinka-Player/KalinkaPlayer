@@ -13,8 +13,9 @@ declares nothing to take part.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Protocol, Sequence
+from typing import Any, Callable, List, Optional, Protocol, Sequence
 
 from kalinka_plugin_sdk.datamodel import (
     BrowseItem,
@@ -25,7 +26,9 @@ from kalinka_plugin_sdk.datamodel import (
     Preview,
 )
 from kalinka_plugin_sdk.filters import FilterQuery, FilterValueList
-from kalinka_plugin_sdk.inputmodule import SearchType
+from kalinka_plugin_sdk.inputmodule import InputModule, SearchType
+
+logger = logging.getLogger(__name__)
 
 
 class BrowseSource(Protocol):
@@ -139,6 +142,28 @@ class BrowseSourceRegistry:
             total=len(entries),
             items=[_root_item(entry) for entry in entries[offset : offset + limit]],
         )
+
+
+def root_preview_of(interface: Any) -> Optional[Preview]:
+    """The layout ``interface`` declares for its root
+    (:meth:`InputModule.root_preview`), or None where it declares none, is
+    not an input module, or raises."""
+    if not isinstance(interface, InputModule):
+        return None
+    name = type(getattr(interface, "wrapped", interface)).__name__
+    try:
+        preview = interface.root_preview()
+    except Exception as e:  # noqa: BLE001 — one plugin must not sink the listing
+        logger.warning("%s.root_preview failed: %r", name, e)
+        return None
+    if preview is not None and not isinstance(preview, Preview):
+        logger.warning(
+            "%s.root_preview returned %s, not a Preview",
+            name,
+            type(preview).__name__,
+        )
+        return None
+    return preview
 
 
 def _root_item(entry: RegisteredSource) -> BrowseItem:

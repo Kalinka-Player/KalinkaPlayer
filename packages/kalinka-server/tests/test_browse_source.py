@@ -1,7 +1,15 @@
 """The registry of browsable sources: plugins as they stand right now, plus
 the server's own."""
 
-from kalinka_server.browse_source import BrowseSourceRegistry, RegisteredSource
+from kalinka_plugin_sdk.datamodel import Preview, PreviewType
+from kalinka_plugin_sdk.inputmodule import InputModule
+
+from kalinka_server.browse_source import (
+    BrowseSourceRegistry,
+    RegisteredSource,
+    root_preview_of,
+)
+from kalinka_server.module_timeout import TimeLimitedInputModule
 
 
 class _Source:
@@ -89,3 +97,57 @@ def test_a_root_entry_is_the_sources_root_catalog():
     assert item.can_browse and not item.can_add
     assert item.catalog.id == item.id
     assert item.catalog.title == item.name == "Jamendo"
+
+
+class _Module(InputModule):
+    def module_name(self):
+        return "module"
+
+
+class _Cards(_Module):
+    def root_preview(self):
+        return Preview(type=PreviewType.IMAGE_TEXT)
+
+
+class _Broken(_Module):
+    def root_preview(self):
+        raise RuntimeError("no preview")
+
+
+def test_a_plugin_root_is_laid_out_as_its_module_declares():
+    module = TimeLimitedInputModule(_Cards(), "cards")
+    registry = BrowseSourceRegistry(
+        lambda: [
+            RegisteredSource(
+                name="cards",
+                title="Cards",
+                source=module,
+                preview=root_preview_of(module),
+            )
+        ]
+    )
+
+    (item,) = registry.root_listing(offset=0, limit=10).items
+
+    assert item.catalog.preview_config.type == PreviewType.IMAGE_TEXT
+
+
+def test_a_module_declaring_no_root_layout_leaves_it_to_the_client():
+    assert root_preview_of(_Module()) is None
+
+
+def test_a_module_whose_root_layout_raises_is_listed_without_one():
+    assert root_preview_of(_Broken()) is None
+
+
+def test_a_source_that_is_not_a_module_declares_no_root_layout():
+    assert root_preview_of(_Source("collections")) is None
+
+
+class _Untyped(_Module):
+    def root_preview(self):
+        return {"type": "image"}
+
+
+def test_a_module_whose_root_layout_is_not_a_preview_is_listed_without_one():
+    assert root_preview_of(_Untyped()) is None

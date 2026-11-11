@@ -300,6 +300,9 @@ def get_version() -> str:
 # reciprocal rank: every hit's `match` carries `relevance`, and a client merging
 # several sources' listings sorts them by it, ties going to the less granular
 # kind, then to the earlier source.
+# Also 0.23: a plugin's root in GET /browse carries the `preview_config` its
+# module declares; My Library's is an `image` preview of `catalog`s, so a
+# client opens it as cards.
 REST_API_VERSION = "0.23"
 
 

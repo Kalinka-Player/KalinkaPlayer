@@ -21,6 +21,7 @@ from .datamodel import (
     BrowseItemList,
     FavoriteIds,
     EmptyList,
+    Preview,
 )
 from .filters import FilterQuery, FilterValueList
 from .live_content import LiveContent
@@ -305,6 +306,19 @@ class InputModule(Protocol):
         if type(self).ai_search is not InputModule.ai_search:
             return frozenset({ModuleCapability.AI_SEARCH})
         return frozenset()
+
+    def root_preview(self) -> Optional[Preview]:
+        """
+        SDK 3.22. How a client lays out this module's root, sent as the
+        ``preview_config`` of its entry in the server's browse root: an
+        ``IMAGE_TEXT`` preview opens it as cards, say. Asked each time the
+        browse root is listed, so keep it cheap.
+
+        Returns:
+            Optional[Preview]: The root's layout; None, the default, leaves
+            it to the client.
+        """
+        return None
 
     async def search(
         self, type: SearchType, query: str, offset=0, limit=50

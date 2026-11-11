@@ -60,7 +60,8 @@ dependencies = [
     # >=3.21: live receiver audio, receiver controls and pairing;
     # RevokeReason.PLUGIN_UNLOADED, and config_changed says whether the
     # plugin took a save in.
-    "kalinka-plugin-sdk[media]>=3.21,<4",
+    # >=3.22: ModuleCapability.RANKED_SEARCH and InputModule.root_preview.
+    "kalinka-plugin-sdk[media]>=3.22,<4",
 ]
 dynamic = ["version"]
 
