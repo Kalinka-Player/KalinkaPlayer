@@ -5,7 +5,7 @@
 #include <algorithm>
 
 namespace asio = boost::asio;
-namespace pb = kalinka::renderer::v1;
+namespace renderer_pb = kalinka::renderer::v1;
 
 std::shared_ptr<Session> Session::create(asio::io_context &ioc,
                                          std::string sessionId,
@@ -20,7 +20,7 @@ std::shared_ptr<Session> Session::create(asio::io_context &ioc,
                   ownerGrace, std::move(player), std::move(onEnded)));
   // Weak: the player must not keep its session alive.
   session->player_->setStateSink(
-      [weak = std::weak_ptr<Session>(session)](pb::Envelope &env) {
+      [weak = std::weak_ptr<Session>(session)](renderer_pb::Envelope &env) {
         if (auto self = weak.lock()) {
           self->publish(env);
         }
@@ -60,39 +60,39 @@ void Session::attach(std::weak_ptr<SessionTransport> transport) {
   publishSnapshot();
 }
 
-void Session::onCommand(const pb::Command &command) {
+void Session::onCommand(const renderer_pb::Command &command) {
   switch (command.op_case()) {
-  case pb::Command::kSetSource:
+  case renderer_pb::Command::kSetSource:
     player_->setSource(command.set_source().source());
     break;
-  case pb::Command::kEnqueueSource:
+  case renderer_pb::Command::kEnqueueSource:
     player_->enqueueSource(command.enqueue_source().source());
     break;
-  case pb::Command::kRemoveSource:
+  case renderer_pb::Command::kRemoveSource:
     player_->removeSource(command.remove_source().source_token());
     break;
-  case pb::Command::kClearQueue:
+  case renderer_pb::Command::kClearQueue:
     player_->clearQueue();
     break;
-  case pb::Command::kPause:
+  case renderer_pb::Command::kPause:
     player_->pause();
     break;
-  case pb::Command::kResume:
+  case renderer_pb::Command::kResume:
     player_->resume();
     break;
-  case pb::Command::kStop:
+  case renderer_pb::Command::kStop:
     player_->stop();
     break;
-  case pb::Command::kSetVolume:
+  case renderer_pb::Command::kSetVolume:
     player_->setVolume(command.set_volume().percent());
     break;
-  case pb::Command::kSeek:
+  case renderer_pb::Command::kSeek:
     player_->seek(command.seek().position_ms());
     break;
-  case pb::Command::kRequestSnapshot:
+  case renderer_pb::Command::kRequestSnapshot:
     publishSnapshot();
     break;
-  case pb::Command::OP_NOT_SET:
+  case renderer_pb::Command::OP_NOT_SET:
     spdlog::warn("Dropping a command with no operation set");
     break;
   }
@@ -137,12 +137,12 @@ void Session::close(const char *reason) {
 }
 
 void Session::publishSnapshot() {
-  pb::Envelope env;
+  renderer_pb::Envelope env;
   player_->fillSnapshot(*env.mutable_state_snapshot());
   publish(env);
 }
 
-bool Session::publish(pb::Envelope &env) {
+bool Session::publish(renderer_pb::Envelope &env) {
   if (closed_) {
     return false;
   }

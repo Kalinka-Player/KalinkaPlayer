@@ -332,6 +332,7 @@ def _build_field_spec(
         path=path,
         label=field.title or field_name,
         help=extras.get("help") or field.description or None,
+        help_details=extras.get("help_details") or None,
         widget=widget,
         type=wire_type,
         default=None if is_secret(field) else field.default,

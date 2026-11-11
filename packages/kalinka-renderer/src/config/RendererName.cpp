@@ -7,7 +7,7 @@
 
 #include "SettingsPersistence.h"
 
-namespace pb = kalinka::renderer::v1;
+namespace renderer_pb = kalinka::renderer::v1;
 
 namespace {
 
@@ -44,25 +44,24 @@ RendererName::RendererName(std::string commandLineName)
   }
 }
 
-void RendererName::fillConfig(pb::ConfigSection &out) const {
+void RendererName::fillConfig(renderer_pb::ConfigSection &out) const {
   out.set_path("renderer");
   out.set_title("Renderer");
 
-  pb::ConfigField *name = out.add_fields();
+  renderer_pb::ConfigField *name = out.add_fields();
   name->set_path(kPath);
   name->set_title("Name");
   name->set_description(
       commandLineName_.empty()
-          ? "The name this renderer shows up under. Applies when it "
-            "reconnects. Leave it empty to use the host name."
-          : "Set with --name on the command line, which overrides this "
-            "setting.");
-  name->set_type(pb::CONFIG_FIELD_TYPE_STRING);
+          ? "Name shown in Kalinka. Leave empty to use the default name, which "
+            "includes the hostname."
+          : "Set by the `--name` command-line option.");
+  name->set_type(renderer_pb::CONFIG_FIELD_TYPE_STRING);
   name->set_value(effective_);
   name->set_default_value(defaultRendererName());
-  name->set_apply(pb::APPLY_COST_RESTART_REQUIRED);
+  name->set_apply(renderer_pb::APPLY_COST_RESTART_REQUIRED);
   name->set_read_only(!commandLineName_.empty());
-  name->set_importance(pb::CONFIG_IMPORTANCE_SIMPLE);
+  name->set_importance(renderer_pb::CONFIG_IMPORTANCE_SIMPLE);
 }
 
 bool RendererName::applyConfig(const std::string &path,

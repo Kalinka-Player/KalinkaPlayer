@@ -44,8 +44,7 @@ class BluetoothConfig(ModuleConfig):
         default="bluetooth",
         title="Bluetooth",
         description=(
-            "Play from a phone or computer over Bluetooth A2DP. Kalinka "
-            "receives the audio and routes it to the renderer you've selected."
+            "Play audio from a phone or computer through the selected renderer."
         ),
         frozen=True,
         exclude=True,

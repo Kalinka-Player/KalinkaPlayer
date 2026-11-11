@@ -69,36 +69,36 @@ public:
   }
 
   void fillConfig(kalinka::renderer::v1::ConfigSection &out) const override {
-    namespace pb = kalinka::renderer::v1;
+    namespace renderer_pb = kalinka::renderer::v1;
     out.set_path("output");
     out.set_title("Output");
 
-    pb::ConfigField *driver = out.add_fields();
+    renderer_pb::ConfigField *driver = out.add_fields();
     driver->set_path("output.driver");
-    driver->set_type(pb::CONFIG_FIELD_TYPE_ENUM);
+    driver->set_type(renderer_pb::CONFIG_FIELD_TYPE_ENUM);
     driver->set_value(values.at("output.driver"));
-    driver->set_apply(pb::APPLY_COST_RESTART_REQUIRED);
+    driver->set_apply(renderer_pb::APPLY_COST_RESTART_REQUIRED);
     driver->set_read_only(driverReadOnly);
     for (const std::string &option : driverOptions) {
       driver->add_options()->set_value(option);
     }
 
-    pb::ConfigField *buffer = out.add_fields();
+    renderer_pb::ConfigField *buffer = out.add_fields();
     buffer->set_path("output.buffer_ms");
-    buffer->set_type(pb::CONFIG_FIELD_TYPE_INT);
+    buffer->set_type(renderer_pb::CONFIG_FIELD_TYPE_INT);
     buffer->set_value(values.at("output.buffer_ms"));
-    buffer->set_apply(pb::APPLY_COST_INSTANT);
+    buffer->set_apply(renderer_pb::APPLY_COST_INSTANT);
     buffer->set_importance(bufferImportance);
     if (bufferRange) {
       buffer->mutable_range()->set_min(bufferRange->first);
       buffer->mutable_range()->set_max(bufferRange->second);
     }
 
-    pb::ConfigField *exclusive = out.add_fields();
+    renderer_pb::ConfigField *exclusive = out.add_fields();
     exclusive->set_path("output.exclusive");
-    exclusive->set_type(pb::CONFIG_FIELD_TYPE_BOOL);
+    exclusive->set_type(renderer_pb::CONFIG_FIELD_TYPE_BOOL);
     exclusive->set_value(values.at("output.exclusive"));
-    exclusive->set_apply(pb::APPLY_COST_INTERRUPTS_PLAYBACK);
+    exclusive->set_apply(renderer_pb::APPLY_COST_INTERRUPTS_PLAYBACK);
   }
 
   bool applyConfig(const std::string &path, const std::string &value,

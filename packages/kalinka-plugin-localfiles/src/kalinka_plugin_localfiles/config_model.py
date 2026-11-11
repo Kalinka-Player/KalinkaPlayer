@@ -37,25 +37,25 @@ class MoodConfig(BaseModel):
     weight: float = Field(
         default=0.6, ge=0.0, le=1.0, title="Mood weight",
         json_schema_extra={
-            "help": "How strongly mood affects ranking; other searches are unaffected",
+            "help": "How strongly mood affects ranking in mood searches.",
         },
     )
     candidates: int = Field(
         default=200, title="Mood candidates before re-ranking",
         json_schema_extra={
-            "help": "Tracks considered when ranking by mood — higher is slower",
+            "help": "Tracks considered for mood ranking. Higher values are slower.",
         },
     )
     nn_fallback: bool = Field(
         default=True, title="CLAP-text nearest-neighbour fallback",
         json_schema_extra={
-            "help": "Guess the mood when the search has no known mood word",
+            "help": "Estimate the mood when the search has no mood keyword.",
         },
     )
     nn_threshold: float = Field(
         default=0.3, ge=0.0, le=1.0, title="NN fallback confidence threshold",
         json_schema_extra={
-            "help": "Minimum confidence for a mood guess to affect ranking",
+            "help": "Minimum confidence required to use an estimated mood.",
         },
     )
     nn_top_k: int = Field(
@@ -64,7 +64,7 @@ class MoodConfig(BaseModel):
     backfill_batch: int = Field(
         default=256, title="Mood backfill batch size",
         json_schema_extra={
-            "help": "Tracks processed per pass when computing mood data",
+            "help": "Tracks processed together when calculating mood data.",
         },
     )
 
@@ -84,10 +84,12 @@ class AiSearchConfig(BaseModel):
         default=False,
         title="Enable AI search",
         json_schema_extra={
+            "help_details": (
+                "The first analysis of a large library can take hours and uses "
+                "more memory while it runs. Searches run on this streamer."
+            ),
             "help": (
-                "Search by mood, genre and how the music sounds rather than "
-                "by name. Needs roughly 500 MB of memory, more while indexing, "
-                "and hours of CPU to index a large library the first time."
+                "Search by mood, genre or sound. Needs about 500 MB of memory."
             ),
             # Its packages install at the next start.
             "apply": "restart_required",
@@ -120,8 +122,8 @@ class AiSearchConfig(BaseModel):
         title="Audio model idle timeout",
         json_schema_extra={
             "help": (
-                "Unload the AI indexing model after this long idle "
-                "(0 = keep loaded)"
+                "Unload the indexing model after this many idle seconds, or set to "
+                "0 to keep it loaded."
             ),
             "constraints": {"unit": "s"},
         },
@@ -140,9 +142,16 @@ class AiSearchConfig(BaseModel):
         # Expected contents: clap_audio_encoder.onnx, clap_text_encoder.onnx,
         # clap_tokenizer.json.
         description=(
-            "Folder holding a custom CLAP model. Leave empty for the standard one."
+            "Choose a custom CLAP model folder, or leave empty to use the "
+            "standard model."
         ),
-        json_schema_extra={"widget": "path"},
+        json_schema_extra={
+            "help_details": (
+                "The folder must contain `clap_audio_encoder.onnx`, "
+                "`clap_text_encoder.onnx` and `clap_tokenizer.json`."
+            ),
+            "widget": "path",
+        },
     )
     mood: MoodConfig = Field(
         default_factory=MoodConfig, title="Mood ranking"
@@ -179,8 +188,8 @@ class AcoustIDConfig(BaseModel):
         title="AcoustID API key",
         json_schema_extra={
             "help": (
-                "Recognises songs by their sound when the tags are missing or "
-                "wrong. [Get a free key](https://acoustid.org/new-application)"
+                "Identify tracks by their sound when tags are missing or wrong. "
+                "[Get a free API key](https://acoustid.org/new-application)."
             ),
             "widget": "password",
             **_SIMPLE,
@@ -201,7 +210,7 @@ class CoverArtArchiveConfig(BaseModel):
         default=True,
         title="Enable Cover Art Archive",
         json_schema_extra={
-            "help": "Fetch album covers for releases no other source has art for",
+            "help": "Find album covers missing from other sources.",
         },
     )
 
@@ -211,7 +220,7 @@ class ProceduralArtworkConfig(BaseModel):
         default=False,
         title="Generate missing album art",
         json_schema_extra={
-            "help": "Draw abstract cover art for albums left without artwork",
+            "help": "Create abstract artwork for albums without covers.",
             # numpy installs at the next start.
             "apply": "restart_required",
             **_SIMPLE,
@@ -260,8 +269,7 @@ class EnricherConfig(BaseModel):
         title="Fill in missing details",
         json_schema_extra={
             "help": (
-                "Look up artists, albums, genres and covers online when the "
-                "tags leave them out"
+                "Find missing artist, album, genre and artwork details online."
             ),
             **_SIMPLE,
         },
@@ -273,8 +281,8 @@ class EnricherConfig(BaseModel):
         title="Parallel lookups",
         json_schema_extra={
             "help": (
-                "Metadata lookups to run at once. Services rate-limit anyway, "
-                "so high values buy little."
+                "Metadata lookups to run at once. High values help little, as the "
+                "services limit request rates."
             ),
             "constraints": {"min": 1, "max": 16},
         },
@@ -292,8 +300,7 @@ class LocalLocation(BaseModel):
         title="Folder",
         json_schema_extra={
             "help": (
-                "Use the path on this streamer, even when you control Kalinka "
-                "from another device."
+                "Enter the folder path on this streamer."
             ),
             "widget": "path",
             "dynamic_options": True,
@@ -307,7 +314,7 @@ class SmbLocation(BaseModel):
         default="",
         title="Server",
         json_schema_extra={
-            "help": "A name or an address, e.g. 192.168.1.20",
+            "help": "Server name or IP address, such as 192.168.1.20.",
             "dynamic_options": True,
             **_SIMPLE,
         },
@@ -317,7 +324,7 @@ class SmbLocation(BaseModel):
         default="",
         title="Folder",
         json_schema_extra={
-            "help": "The share, then any folder inside it, e.g. Music/Jazz",
+            "help": "Share name, then any folder inside it, such as Music/Jazz.",
             **_SIMPLE,
         },
     )
@@ -336,8 +343,7 @@ class GuestSignIn(BaseModel):
         default="guest",
         title="Guest",
         description=(
-            "For a share open to guests. Most NAS boxes keep guest access off "
-            "until it is turned on for a share."
+            "Requires guest access on the share."
         ),
     )
 
@@ -358,8 +364,8 @@ class SmbOptions(BaseModel):
         default=False,
         title="Require encryption",
         description=(
-            "Encrypt share traffic. Needs a share that offers SMB3 and costs "
-            "CPU on this streamer."
+            "Encrypt the connection. Requires an account sign-in and SMB3 "
+            "encryption on the server."
         ),
     )
 
@@ -370,7 +376,7 @@ class LocalSource(ConfigRecord):
     kind: Literal["local"] = Field(
         default="local",
         title="Folder on this streamer",
-        description="A disk, or a share mounted on this streamer",
+        description="A drive, or a share mounted on this streamer.",
         json_schema_extra={"icon": "folder_outlined"},
     )
     location: LocalLocation = Field(default_factory=LocalLocation, title="Location")
@@ -382,7 +388,7 @@ class SmbSource(ConfigRecord):
     kind: Literal["smb"] = Field(
         default="smb",
         title="Network share",
-        description="An SMB share on a NAS or a computer, no mount needed",
+        description="An SMB share on a NAS or computer. No mounting needed.",
         json_schema_extra={"icon": "lan_outlined"},
     )
     location: SmbLocation = Field(default_factory=SmbLocation, title="Location")
@@ -454,8 +460,7 @@ class LocalFilesConfig(ModuleConfig):
         default="localfiles",
         title=DISPLAY_NAME,
         description=(
-            "Music on this streamer or a network share, indexed into a browsable "
-            "library with artwork and metadata filled in online."
+            "Browse and play music from this streamer or a network share."
         ),
         frozen=True,
         exclude=True,
@@ -469,9 +474,8 @@ class LocalFilesConfig(ModuleConfig):
         title="Music folders",
         json_schema_extra={
             "help": (
-                "A folder on this streamer, including a disk or share mounted "
-                "on it. Network shares are added as music sources in an "
-                "up-to-date Kalinka app."
+                "Folders on this streamer, including mounted drives and shares. To "
+                "add a network share, update the Kalinka app."
             ),
             "widget": "folder_list",
             "dynamic_options": True,
@@ -485,7 +489,7 @@ class LocalFilesConfig(ModuleConfig):
         default_factory=lambda: [_starter_folder()],
         title="Music sources",
         json_schema_extra={
-            "help": "Folders on this streamer and shares on the network",
+            "help": "Folders on this streamer and network shares.",
             "replaces": ["music_folders"],
             "status": "storage.status_view",
             **_PRIVATE,
@@ -503,9 +507,12 @@ class LocalFilesConfig(ModuleConfig):
         ge=0,
         title="Scan interval",
         json_schema_extra={
+            "help_details": (
+                "Setting this to 0 stops scheduled scans, but startup scans, "
+                "manual rescans and file watching remain available."
+            ),
             "help": (
-                "How often every source is checked for new and changed music; "
-                "0 checks only when Kalinka starts and when you rescan."
+                "Minutes between library scans, or 0 to disable scheduled scans."
             ),
             "constraints": {"unit": "min"},
             "heading": "Library",
@@ -515,16 +522,24 @@ class LocalFilesConfig(ModuleConfig):
     file_watch_enabled: bool = Field(
         default=True,
         title="Enable file watching",
-        json_schema_extra={"help": "Rescan on filesystem changes"},
+        json_schema_extra={
+            "help_details": (
+                "Network shares may not report every change, but scheduled or "
+                "manual scans pick up missed changes."
+            ),
+            "help": "Scan when files change.",
+        },
     )
     folder_first_clustering: bool = Field(
         default=True,
         title="Folder-first album grouping",
         json_schema_extra={
+            "help_details": (
+                "Uses folders and tags to keep an album together when its tags "
+                "differ between tracks."
+            ),
             "help": (
-                "Group albums by folder and several signals rather than the "
-                "album tag alone, so tag variance doesn't fragment an album. "
-                "Re-clusters on the next scan."
+                "Group albums mainly by folder, starting with the next scan."
             ),
             **_PROMPT,
         },
@@ -533,9 +548,14 @@ class LocalFilesConfig(ModuleConfig):
         default="",
         title="Repair garbled tags",
         json_schema_extra={
+            "help_details": (
+                "This setting repairs tags written with an older character "
+                "encoding, while UTF-8 repair runs automatically even when the "
+                "field is empty."
+            ),
             "help": (
-                "The code page old taggers wrote them in, such as cp1251. "
-                "Leave empty to skip; mixed-up UTF-8 is always repaired."
+                "Enter the original tag encoding, such as cp1251, or leave empty "
+                "to skip."
             ),
             **_SIMPLE,
         },
@@ -545,8 +565,7 @@ class LocalFilesConfig(ModuleConfig):
         title="Upload quiescence window",
         json_schema_extra={
             "help": (
-                "Wait for a file to stop changing before indexing it, so "
-                "half-copied uploads are skipped"
+                "Seconds a file must remain unchanged before indexing."
             ),
             "constraints": {"unit": "s"},
         },
@@ -556,8 +575,9 @@ class LocalFilesConfig(ModuleConfig):
         title="Rebuild library",
         json_schema_extra={
             "help": (
-                "Purge the index and artwork cache and rescan everything once "
-                "applied. Finished AI analysis is kept. Resets itself once done."
+                "Clear the index and artwork cache, then rescan everything. "
+                "Completed AI analysis is kept. The switch turns itself off "
+                "afterwards."
             ),
             # One-shot trigger: the framework resets this (persist-first)
             # before the plugin acts, so it fires at most once per arming.

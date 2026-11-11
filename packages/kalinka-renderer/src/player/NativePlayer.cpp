@@ -19,7 +19,7 @@
 #include "StateTranslator.h"
 
 namespace asio = boost::asio;
-namespace pb = kalinka::renderer::v1;
+namespace renderer_pb = kalinka::renderer::v1;
 
 namespace {
 
@@ -29,7 +29,7 @@ int64_t nowUnixMs() {
       .count();
 }
 
-AudioFormat formatOf(const pb::Source &source) {
+AudioFormat formatOf(const renderer_pb::Source &source) {
   auto lower = [](std::string value) {
     std::transform(value.begin(), value.end(), value.begin(),
                    [](unsigned char c) { return std::tolower(c); });
@@ -136,67 +136,118 @@ struct Knob {
   const char *path;
   const char *title;
   const char *description;
-  pb::ConfigFieldType type;
+  renderer_pb::ConfigFieldType type;
   const char *unit = "";
   Bounds bounds{};
+  const char *helpDetails = "";
 };
 
+constexpr const char *kFormatChangeHelp =
+    "Some DACs need extra time or must be reopened after a format change. Adjust "
+    "these settings if tracks fail to start correctly.";
+
 const Knob kOutputKnobs[] = {
-    {"output.latency_ms", "Output latency",
-     "How much audio is kept ready ahead of the sound card. Raise it if "
-     "playback stutters.",
-     pb::CONFIG_FIELD_TYPE_INT, "ms", {20, 1000, 10, true}},
-    {"output.period_ms", "Period size",
+    {"output.latency_ms",
+     "Output latency",
+     "Audio buffered ahead of playback. Increase if playback stutters.",
+     renderer_pb::CONFIG_FIELD_TYPE_INT,
+     "ms",
+     {20, 1000, 10, true}},
+    {"output.period_ms",
+     "Period size",
      "How often audio is sent to the sound card.",
-     pb::CONFIG_FIELD_TYPE_INT, "ms", {5, 200, 5, true}},
-    {"output.format_change_delay_ms", "Pause after a format change",
-     "How long to wait after the sample rate changes, for a sound card that "
-     "needs a moment to get ready. Raise it if the start of a track is silent.",
-     pb::CONFIG_FIELD_TYPE_INT, "ms", {0, 2000, 50, true}},
-    {"output.reopen_on_format_change", "Reopen on a format change",
-     "Closes and reopens the sound card when the next track has a different "
-     "format. Some DACs need this.",
-     pb::CONFIG_FIELD_TYPE_BOOL},
+     renderer_pb::CONFIG_FIELD_TYPE_INT,
+     "ms",
+     {5, 200, 5, true}},
+    {"output.format_change_delay_ms",
+     "Pause after a format change",
+     "Wait after the audio format changes. Increase if track beginnings are "
+     "cut "
+     "off.",
+     renderer_pb::CONFIG_FIELD_TYPE_INT,
+     "ms",
+     {0, 2000, 50, true},
+     kFormatChangeHelp},
+    {"output.reopen_on_format_change",
+     "Reopen on a format change",
+     "Close and reopen the sound card when the audio format changes. Some DACs "
+     "need this.",
+     renderer_pb::CONFIG_FIELD_TYPE_BOOL,
+     "",
+     {},
+     kFormatChangeHelp},
 };
 
 // Bytes, and the useful settings span orders of magnitude: bounded to keep a
 // typo from starving or exhausting the machine, but typed rather than dragged.
 const Knob kBufferKnobs[] = {
-    {"buffers.network_stream", "Network buffer",
-     "How much of a streamed track is held in memory. Raise it on a slow or "
-     "unreliable connection.",
-     pb::CONFIG_FIELD_TYPE_INT, "bytes", {64000, 33554432}},
-    {"buffers.network_request", "Network request size",
+    {"buffers.network_stream",
+     "Network buffer",
+     "Memory used to buffer streamed audio.",
+     renderer_pb::CONFIG_FIELD_TYPE_INT,
+     "bytes",
+     {64000, 33554432},
+     "A larger buffer can help with an unreliable connection, but uses more "
+     "memory."},
+    {"buffers.network_request",
+     "Network request size",
      "How much is downloaded from the server at a time.",
-     pb::CONFIG_FIELD_TYPE_INT, "bytes", {16000, 8388608}},
-    {"buffers.flac", "FLAC buffer",
-     "How much audio is kept ready when playing FLAC.",
-     pb::CONFIG_FIELD_TYPE_INT, "bytes", {64000, 33554432}},
-    {"buffers.mpeg", "MP3 buffer",
-     "How much audio is kept ready when playing MP3.",
-     pb::CONFIG_FIELD_TYPE_INT, "bytes", {64000, 33554432}},
-    {"buffers.vorbis", "Ogg Vorbis buffer",
-     "How much audio is kept ready when playing Ogg Vorbis.",
-     pb::CONFIG_FIELD_TYPE_INT, "bytes", {64000, 33554432}},
-    {"buffers.wav", "WAV buffer",
-     "How much audio is kept ready when playing WAV.",
-     pb::CONFIG_FIELD_TYPE_INT, "bytes", {64000, 33554432}},
-    {"buffers.dsd", "DSD buffer",
-     "How much audio is kept ready when playing DSF and DSDIFF.",
-     pb::CONFIG_FIELD_TYPE_INT, "bytes", {64000, 33554432}},
-    {"buffers.aac", "AAC and MP4 buffer",
-     "How much audio is kept ready when playing AAC and MP4.",
-     pb::CONFIG_FIELD_TYPE_INT, "bytes", {64000, 33554432}},
+     renderer_pb::CONFIG_FIELD_TYPE_INT,
+     "bytes",
+     {16000, 8388608}},
+    {"buffers.flac",
+     "FLAC buffer",
+     "Memory for audio kept ready when playing FLAC.",
+     renderer_pb::CONFIG_FIELD_TYPE_INT,
+     "bytes",
+     {64000, 33554432}},
+    {"buffers.mpeg",
+     "MP3 buffer",
+     "Memory for audio kept ready when playing MP3.",
+     renderer_pb::CONFIG_FIELD_TYPE_INT,
+     "bytes",
+     {64000, 33554432}},
+    {"buffers.vorbis",
+     "Ogg Vorbis buffer",
+     "Memory for audio kept ready when playing Ogg Vorbis.",
+     renderer_pb::CONFIG_FIELD_TYPE_INT,
+     "bytes",
+     {64000, 33554432}},
+    {"buffers.wav",
+     "WAV buffer",
+     "Memory for audio kept ready when playing WAV.",
+     renderer_pb::CONFIG_FIELD_TYPE_INT,
+     "bytes",
+     {64000, 33554432}},
+    {"buffers.dsd",
+     "DSD buffer",
+     "Memory for audio kept ready when playing DSD.",
+     renderer_pb::CONFIG_FIELD_TYPE_INT,
+     "bytes",
+     {64000, 33554432}},
+    {"buffers.aac",
+     "AAC and MP4 buffer",
+     "Memory for audio kept ready when playing AAC and MP4.",
+     renderer_pb::CONFIG_FIELD_TYPE_INT,
+     "bytes",
+     {64000, 33554432}},
 };
 
 const Knob kNetworkKnobs[] = {
-    {"network.stall_timeout_s", "Stall timeout",
-     "How long to wait when a download stalls before trying again. A track "
-     "that keeps stalling fails to play. Raise it on a very slow connection.",
-     pb::CONFIG_FIELD_TYPE_INT, "s", {5, 300, 5, true}},
-    {"network.max_redirects", "Maximum redirects",
-     "How many redirects to follow when fetching a track. 0 turns them off.",
-     pb::CONFIG_FIELD_TYPE_INT, "", {0, 10, 1}},
+    {"network.stall_timeout_s",
+     "Stall timeout",
+     "Seconds without data before a download is retried. Increase on a very "
+     "slow "
+     "connection.",
+     renderer_pb::CONFIG_FIELD_TYPE_INT,
+     "s",
+     {5, 300, 5, true}},
+    {"network.max_redirects",
+     "Maximum redirects",
+     "Maximum redirects when loading a track. Set to 0 to disable redirects.",
+     renderer_pb::CONFIG_FIELD_TYPE_INT,
+     "",
+     {0, 10, 1}},
 };
 
 // A section of the settings page that holds nothing but knobs.
@@ -208,8 +259,7 @@ struct Section {
 };
 
 const Section kBuffering{"buffers", "Buffering",
-                         "How much of a track the renderer holds in memory "
-                         "while it plays.",
+                         "Audio held in memory during playback.",
                          kBufferKnobs};
 
 const Section kNetwork{"network", "Network",
@@ -225,32 +275,30 @@ struct Choice {
 
 const Choice kVolumeChoices[] = {
     {"auto", "Automatic",
-     "Uses the sound card's volume control if it has one, otherwise software."},
+     "Use the sound card’s volume control when available, otherwise software."},
     {"hardware", "Card mixer",
-     "Uses the sound card's own volume control. The audio reaches the card "
-     "unchanged. Needs a card that has one."},
+     "Use the sound card’s volume control. Needs a card that has one."},
     {"software", "Software",
-     "The renderer lowers the volume itself and leaves the sound card at full. "
-     "Works with any card, but quiet levels lose a little quality."},
+     "Adjust volume in the renderer."},
     {"fixed", "Fixed output",
-     "Always plays at full level and ignores volume changes. Use it when an "
-     "amplifier or receiver sets the volume."},
+     "Play at full volume and control volume on your amplifier or receiver."},
 };
 
 const Choice kDsdChoices[] = {
     {"disabled", "Disabled", "DSD tracks do not play."},
     {"auto", "Automatic",
-     "Plays native DSD if the DAC supports the track's rate. Never uses DoP."},
+     "Send native DSD when the DAC supports the track’s rate, and never DoP."},
     {"native", "Native DSD",
-     "Sends DSD to the DAC as it is. The DAC must support the track's rate."},
+     "Send DSD directly to a compatible DAC."},
     {"dop", "DoP",
-     "Sends DSD wrapped in PCM. Choose it only if the DAC supports DoP. Other "
-     "DACs play it as noise."},
+     "Send DSD wrapped in PCM. Choose only if the DAC supports DoP, as other DACs "
+     "play it as noise."},
 };
 
-void addChoices(pb::ConfigField &field, std::span<const Choice> choices) {
+void addChoices(renderer_pb::ConfigField &field,
+                std::span<const Choice> choices) {
   for (const Choice &choice : choices) {
-    pb::ConfigOption *option = field.add_options();
+    renderer_pb::ConfigOption *option = field.add_options();
     option->set_value(choice.value);
     option->set_label(choice.label);
     option->set_description(choice.description);
@@ -311,32 +359,34 @@ const Knob *findKnob(const std::string &path) {
 }
 
 // Everything the settings page is told about a knob but its values.
-void describe(pb::ConfigField &field, const Knob &knob) {
+void describe(renderer_pb::ConfigField &field, const Knob &knob) {
   field.set_path(knob.path);
   field.set_title(knob.title);
   field.set_description(knob.description);
+  field.set_help_details(knob.helpDetails);
   field.set_type(knob.type);
-  field.set_apply(readPerStream(knob.path) ? pb::APPLY_COST_INSTANT
-                                           : pb::APPLY_COST_INTERRUPTS_PLAYBACK);
+  field.set_apply(readPerStream(knob.path)
+                      ? renderer_pb::APPLY_COST_INSTANT
+                      : renderer_pb::APPLY_COST_INTERRUPTS_PLAYBACK);
   // Reached for when the card or the link misbehaves, which is not what a
   // settings page is for.
-  field.set_importance(pb::CONFIG_IMPORTANCE_EXPERT);
+  field.set_importance(renderer_pb::CONFIG_IMPORTANCE_EXPERT);
   field.set_unit(knob.unit);
   if (!knob.bounds.declared()) {
     return;
   }
-  pb::ConfigRange *range = field.mutable_range();
+  renderer_pb::ConfigRange *range = field.mutable_range();
   range->set_min(knob.bounds.min);
   range->set_max(knob.bounds.max);
   range->set_step(knob.bounds.step);
-  field.set_widget(knob.bounds.slider ? pb::CONFIG_WIDGET_SLIDER
-                                      : pb::CONFIG_WIDGET_NUMBER);
+  field.set_widget(knob.bounds.slider ? renderer_pb::CONFIG_WIDGET_SLIDER
+                                      : renderer_pb::CONFIG_WIDGET_NUMBER);
 }
 
-void declare(pb::ConfigSection &out, const Knob &knob,
+void declare(renderer_pb::ConfigSection &out, const Knob &knob,
              const std::map<std::string, std::string> &settings,
              const std::map<std::string, std::string> &defaults) {
-  pb::ConfigField *field = out.add_fields();
+  renderer_pb::ConfigField *field = out.add_fields();
   describe(*field, knob);
   field->set_value(settings.at(knob.path));
   field->set_default_value(defaults.at(knob.path));
@@ -355,7 +405,7 @@ bool knobTakes(const std::string &path, const std::string &value,
   if (knob == nullptr) {
     return true;
   }
-  pb::ConfigField field;
+  renderer_pb::ConfigField field;
   describe(field, *knob);
   return fieldAccepts(field, value, error);
 }
@@ -397,7 +447,7 @@ public:
   KnobSection(std::shared_ptr<NativePlayer> player, const Section &section)
       : player_(std::move(player)), section_(section) {}
 
-  void fillConfig(pb::ConfigSection &out) const override {
+  void fillConfig(renderer_pb::ConfigSection &out) const override {
     out.set_path(section_.path);
     out.set_title(section_.title);
     out.set_description(section_.description);
@@ -579,18 +629,19 @@ void NativePlayer::stopPumps() {
 
 void NativePlayer::reportUnavailable(const char *command) {
   spdlog::warn("Command {}: audio graph unavailable", command);
-  pb::Envelope env;
-  pb::PlaybackStateChanged *changed = env.mutable_playback_state_changed();
-  changed->set_state(pb::PLAYBACK_STATE_ERROR);
+  renderer_pb::Envelope env;
+  renderer_pb::PlaybackStateChanged *changed =
+      env.mutable_playback_state_changed();
+  changed->set_state(renderer_pb::PLAYBACK_STATE_ERROR);
   changed->set_position_valid(false);
   changed->set_at_unix_ms(nowUnixMs());
-  changed->mutable_error()->set_source(pb::ERROR_SOURCE_AUDIO_OUTPUT);
+  changed->mutable_error()->set_source(renderer_pb::ERROR_SOURCE_AUDIO_OUTPUT);
   changed->mutable_error()->set_message(
       "audio output is unavailable; check the configured device");
   emit(env);
 }
 
-StreamId NativePlayer::appendSource(const pb::Source &source) {
+StreamId NativePlayer::appendSource(const renderer_pb::Source &source) {
   const StreamId id = nextStreamId_++;
   sources_.push_back(TrackedSource{source, id});
   player_->append(id, source.uri(), formatOf(source),
@@ -598,7 +649,7 @@ StreamId NativePlayer::appendSource(const pb::Source &source) {
   return id;
 }
 
-void NativePlayer::setSource(const pb::Source &source) {
+void NativePlayer::setSource(const renderer_pb::Source &source) {
   if (!ensurePlayer()) {
     return reportUnavailable("set_source");
   }
@@ -616,7 +667,7 @@ void NativePlayer::setSource(const pb::Source &source) {
   // in flight for them must keep resolving to a token.
 }
 
-void NativePlayer::enqueueSource(const pb::Source &source) {
+void NativePlayer::enqueueSource(const renderer_pb::Source &source) {
   if (!ensurePlayer()) {
     return reportUnavailable("enqueue_source");
   }
@@ -689,7 +740,7 @@ void NativePlayer::seek(uint64_t positionMs) {
   player_->seek(positionMs);
 }
 
-const pb::Source *
+const renderer_pb::Source *
 NativePlayer::sourceFor(const std::optional<StreamId> &streamId) const {
   if (!streamId) {
     return nullptr;
@@ -703,7 +754,7 @@ NativePlayer::sourceFor(const std::optional<StreamId> &streamId) const {
 
 std::optional<std::string>
 NativePlayer::tokenFor(const std::optional<StreamId> &streamId) const {
-  const pb::Source *source = sourceFor(streamId);
+  const renderer_pb::Source *source = sourceFor(streamId);
   if (source == nullptr) {
     return std::nullopt;
   }
@@ -736,8 +787,8 @@ void NativePlayer::onStreamState(const StreamState &state) {
     forgetSourcesBefore(*state.streamId);
     spdlog::info("Now playing source '{}' (stream {})", *currentToken(),
                  *currentId_);
-    pb::Envelope env;
-    pb::SourceChanged *changed = env.mutable_source_changed();
+    renderer_pb::Envelope env;
+    renderer_pb::SourceChanged *changed = env.mutable_source_changed();
     changed->set_source_token(*currentToken());
     if (previous) {
       changed->set_previous_source_token(*previous);
@@ -747,8 +798,9 @@ void NativePlayer::onStreamState(const StreamState &state) {
     return;
   }
 
-  pb::Envelope env;
-  pb::PlaybackStateChanged *changed = env.mutable_playback_state_changed();
+  renderer_pb::Envelope env;
+  renderer_pb::PlaybackStateChanged *changed =
+      env.mutable_playback_state_changed();
   state_translator::fillPlaybackStateChanged(state, tokenFor(state.streamId),
                                              nowUnixMs(), *changed);
   if (state.state == AudioGraphNodeState::STOPPED && interruptPending_) {
@@ -759,56 +811,59 @@ void NativePlayer::onStreamState(const StreamState &state) {
 }
 
 void NativePlayer::emitVolume(const VolumeState &volume, bool external) {
-  pb::Envelope env;
-  pb::VolumeChanged *changed = env.mutable_volume_changed();
+  renderer_pb::Envelope env;
+  renderer_pb::VolumeChanged *changed = env.mutable_volume_changed();
   state_translator::fillVolume(volume, *changed->mutable_volume());
   changed->set_external(external);
   emit(env);
 }
 
-void NativePlayer::emit(pb::Envelope &env) {
+void NativePlayer::emit(renderer_pb::Envelope &env) {
   if (sink_) {
     sink_(env);
   }
 }
 
-void NativePlayer::fillConfig(pb::ConfigSection &out) const {
+void NativePlayer::fillConfig(renderer_pb::ConfigSection &out) const {
   out.set_path("output");
   out.set_title("Output");
-  out.set_description("Where this renderer sends audio and how it sets the "
-                      "level.");
 
-  pb::ConfigField *driver = out.add_fields();
+  renderer_pb::ConfigField *driver = out.add_fields();
   driver->set_path("output.driver");
   driver->set_title("Driver");
   driver->set_description("Audio backend used to reach the sound card.");
-  driver->set_type(pb::CONFIG_FIELD_TYPE_ENUM);
+  driver->set_type(renderer_pb::CONFIG_FIELD_TYPE_ENUM);
   driver->set_value(settings_.at("output.driver"));
   driver->set_default_value("alsa");
-  driver->set_apply(pb::APPLY_COST_RESTART_REQUIRED);
+  driver->set_apply(renderer_pb::APPLY_COST_RESTART_REQUIRED);
   // One backend to choose from, so far.
-  driver->set_importance(pb::CONFIG_IMPORTANCE_EXPERT);
-  pb::ConfigOption *alsa = driver->add_options();
+  driver->set_importance(renderer_pb::CONFIG_IMPORTANCE_EXPERT);
+  renderer_pb::ConfigOption *alsa = driver->add_options();
   alsa->set_value("alsa");
   alsa->set_label("ALSA");
 
-  pb::ConfigField *device = out.add_fields();
+  renderer_pb::ConfigField *device = out.add_fields();
   device->set_path("output.device");
   device->set_title("Output device");
+  device->set_help_details(
+      "Direct output requires the sound card to support the track’s sample rate "
+      "and format. Converted output adapts unsupported formats. Shared output "
+      "allows other apps to play audio too. Changing the device turns DSD output "
+      "off, as the new card may not support it, and switches Card mixer volume to "
+      "Automatic when the new card has no volume control.");
   device->set_description(
-      "The sound card to play through. Changing it stops playback and turns "
-      "DSD output off, as the new card may not support it.");
-  device->set_type(pb::CONFIG_FIELD_TYPE_ENUM);
+      "Changing the device interrupts playback and sets DSD output to Disabled.");
+  device->set_type(renderer_pb::CONFIG_FIELD_TYPE_ENUM);
   device->set_value(settings_.at("output.device"));
   device->set_default_value("default");
-  device->set_apply(pb::APPLY_COST_INTERRUPTS_PLAYBACK);
-  device->set_importance(pb::CONFIG_IMPORTANCE_SIMPLE);
+  device->set_apply(renderer_pb::APPLY_COST_INTERRUPTS_PLAYBACK);
+  device->set_importance(renderer_pb::CONFIG_IMPORTANCE_SIMPLE);
   bool currentOffered = false;
   for (const AlsaPcmDevice &pcm : listAlsaPcmDevices()) {
     if (!isPlaybackPcm(pcm)) {
       continue;
     }
-    pb::ConfigOption *option = device->add_options();
+    renderer_pb::ConfigOption *option = device->add_options();
     option->set_value(pcm.name);
     option->set_label(pcm.label.empty() ? pcm.name : pcm.label);
     option->set_description(pcm.description);
@@ -818,7 +873,7 @@ void NativePlayer::fillConfig(pb::ConfigSection &out) const {
     // The configured device may be unplugged right now; it must stay
     // selectable or the page could not even show what is set.
     const AlsaPcmDevice missing = describeAlsaPcm(device->value(), "");
-    pb::ConfigOption *option = device->add_options();
+    renderer_pb::ConfigOption *option = device->add_options();
     option->set_value(device->value());
     if (device->value() == "default") {
       // ALSA does not always hint "default", but it always resolves it.
@@ -827,7 +882,7 @@ void NativePlayer::fillConfig(pb::ConfigSection &out) const {
     } else {
       option->set_label(missing.label + " (not detected)");
       option->set_description(
-          "Selected, but not found. The card may be unplugged or renamed.");
+          "Device not found. It may be disconnected or renamed.");
     }
   }
 
@@ -844,9 +899,9 @@ void NativePlayer::fillConfig(pb::ConfigSection &out) const {
     auto *field = out.add_fields();
     field->set_path(path);
     field->set_title(title);
-    field->set_type(pb::CONFIG_FIELD_TYPE_STRING);
+    field->set_type(renderer_pb::CONFIG_FIELD_TYPE_STRING);
     field->set_read_only(true);
-    field->set_importance(pb::CONFIG_IMPORTANCE_SIMPLE);
+    field->set_importance(renderer_pb::CONFIG_IMPORTANCE_SIMPLE);
     field->set_value(value);
   };
   addCapability("output.bit_depth", "Bit depth",
@@ -857,49 +912,59 @@ void NativePlayer::fillConfig(pb::ConfigSection &out) const {
   addCapability("output.sample_rate", "Sample rate",
                 maxRate ? sampleRate.str() : "Unavailable");
 
-  pb::ConfigField *mode = out.add_fields();
+  renderer_pb::ConfigField *mode = out.add_fields();
   mode->set_path("output.volume_mode");
   mode->set_title("Volume control");
-  mode->set_description("How this renderer sets the volume.");
-  mode->set_type(pb::CONFIG_FIELD_TYPE_ENUM);
+  mode->set_help_details(
+      "Automatic uses the sound card’s volume control when it has one, otherwise "
+      "software. Card mixer uses the card’s volume control and leaves the audio "
+      "samples unchanged. Software adjusts the samples and leaves the card at full "
+      "volume. It works with any card, but quiet levels lose a little quality. "
+      "Fixed output leaves volume control to an amplifier or receiver.");
+  mode->set_type(renderer_pb::CONFIG_FIELD_TYPE_ENUM);
   mode->set_value(settings_.at("output.volume_mode"));
   mode->set_default_value("auto");
-  mode->set_apply(pb::APPLY_COST_INTERRUPTS_PLAYBACK);
-  mode->set_importance(pb::CONFIG_IMPORTANCE_SIMPLE);
+  mode->set_apply(renderer_pb::APPLY_COST_INTERRUPTS_PLAYBACK);
+  mode->set_importance(renderer_pb::CONFIG_IMPORTANCE_SIMPLE);
   addChoices(*mode, kVolumeChoices);
 
-  pb::ConfigField *startCeiling = out.add_fields();
+  renderer_pb::ConfigField *startCeiling = out.add_fields();
   startCeiling->set_path("output.session_start_volume_ceiling_percent");
   startCeiling->set_title("Session start volume ceiling");
+  startCeiling->set_help_details(
+      "When playback starts, a volume above the ceiling is lowered to it and a "
+      "lower volume stays as it is. The check runs when playback starts from a "
+      "stop or a long pause, not between tracks.");
   startCeiling->set_description(
-      "The highest volume playback can start at, so it never starts too loud. "
-      "A lower volume is left as it is. Not used with Fixed output or a "
-      "connected device.");
-  startCeiling->set_type(pb::CONFIG_FIELD_TYPE_INT);
+      "Highest volume playback can start at. A louder setting is lowered to it. "
+      "Not used with Fixed output or a connected device.");
+  startCeiling->set_type(renderer_pb::CONFIG_FIELD_TYPE_INT);
   startCeiling->set_value(
       settings_.at("output.session_start_volume_ceiling_percent"));
   startCeiling->set_default_value("30");
-  startCeiling->set_apply(pb::APPLY_COST_INSTANT);
-  startCeiling->set_importance(pb::CONFIG_IMPORTANCE_SIMPLE);
+  startCeiling->set_apply(renderer_pb::APPLY_COST_INSTANT);
+  startCeiling->set_importance(renderer_pb::CONFIG_IMPORTANCE_SIMPLE);
   startCeiling->set_unit("%");
   startCeiling->mutable_range()->set_min(0);
   startCeiling->mutable_range()->set_max(100);
   startCeiling->mutable_range()->set_step(1);
-  startCeiling->set_widget(pb::CONFIG_WIDGET_SLIDER);
+  startCeiling->set_widget(renderer_pb::CONFIG_WIDGET_SLIDER);
 
   auto *dsd = out.add_fields();
   dsd->set_path("output.dsd_mode");
   dsd->set_title("DSD output");
-  dsd->set_type(pb::CONFIG_FIELD_TYPE_ENUM);
+  dsd->set_help_details(
+      "Plays DSF and DSDIFF files without converting them to PCM. The DAC must "
+      "support the selected mode and the track’s DSD rate. Unsupported tracks fail "
+      "to play.");
+  dsd->set_type(renderer_pb::CONFIG_FIELD_TYPE_ENUM);
   dsd->set_value(settings_.at("output.dsd_mode"));
   dsd->set_default_value("disabled");
-  dsd->set_importance(pb::CONFIG_IMPORTANCE_SIMPLE);
-  dsd->set_apply(pb::APPLY_COST_INTERRUPTS_PLAYBACK);
+  dsd->set_importance(renderer_pb::CONFIG_IMPORTANCE_SIMPLE);
+  dsd->set_apply(renderer_pb::APPLY_COST_INTERRUPTS_PLAYBACK);
   dsd->set_description(
-      "Plays DSF and DSDIFF files as DSD. Needs an output device marked "
-      "(direct) and Fixed output volume, or a connected device. If the DAC "
-      "cannot play a DSD track, the track fails. It is never converted to "
-      "PCM.");
+      "Requires an output device marked (direct), and either Fixed output volume "
+      "or a connected device.");
   addChoices(*dsd, kDsdChoices);
 
   for (const Knob &knob : kOutputKnobs) {
@@ -1077,16 +1142,16 @@ void NativePlayer::endSessionVolume() {
   sessionRestoreVolume_.reset();
 }
 
-void NativePlayer::fillSnapshot(pb::StateSnapshot &out) const {
+void NativePlayer::fillSnapshot(renderer_pb::StateSnapshot &out) const {
   out.set_captured_at_unix_ms(nowUnixMs());
   out.set_selected_device_id(settings_.at("output.device"));
 
   if (!player_) {
-    out.set_playback_state(pb::PLAYBACK_STATE_ERROR);
+    out.set_playback_state(renderer_pb::PLAYBACK_STATE_ERROR);
     out.set_position_valid(false);
     out.mutable_volume()->set_supported(false);
-    out.mutable_volume()->set_backend(pb::VOLUME_BACKEND_NONE);
-    out.mutable_error()->set_source(pb::ERROR_SOURCE_AUDIO_OUTPUT);
+    out.mutable_volume()->set_backend(renderer_pb::VOLUME_BACKEND_NONE);
+    out.mutable_error()->set_source(renderer_pb::ERROR_SOURCE_AUDIO_OUTPUT);
     out.mutable_error()->set_message(
         "audio output is unavailable; check the configured device");
     return;
@@ -1096,7 +1161,7 @@ void NativePlayer::fillSnapshot(pb::StateSnapshot &out) const {
   state.position = state.positionAt(getTimestampNs());
   const std::optional<StreamId> onAir =
       state.streamId ? state.streamId : currentId_;
-  pb::PlaybackStateChanged translated;
+  renderer_pb::PlaybackStateChanged translated;
   state_translator::fillPlaybackStateChanged(state, tokenFor(onAir),
                                              nowUnixMs(), translated);
   out.set_playback_state(translated.state());
@@ -1105,7 +1170,7 @@ void NativePlayer::fillSnapshot(pb::StateSnapshot &out) const {
   if (translated.has_error()) {
     *out.mutable_error() = translated.error();
   }
-  if (const pb::Source *source = sourceFor(onAir)) {
+  if (const renderer_pb::Source *source = sourceFor(onAir)) {
     *out.mutable_current_source() = *source;
   }
   if (translated.has_format()) {
@@ -1125,7 +1190,7 @@ void NativePlayer::fillSnapshot(pb::StateSnapshot &out) const {
   }
 }
 
-void NativePlayer::fillCapabilities(pb::Capabilities &out) const {
+void NativePlayer::fillCapabilities(renderer_pb::Capabilities &out) const {
   out.set_dsd(settings_.at("output.dsd_mode") != "disabled");
   out.set_live_pcm(1);
 }

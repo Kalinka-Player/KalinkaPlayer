@@ -25,7 +25,7 @@
 #include "player/NativePlayer.h"
 
 namespace fs = std::filesystem;
-namespace pb = kalinka::renderer::v1;
+namespace renderer_pb = kalinka::renderer::v1;
 
 namespace {
 
@@ -50,9 +50,9 @@ protected:
     fs::remove_all(prefix_, ec);
   }
 
-  static const pb::ConfigField *field(const pb::ConfigSection &section,
-                                      const std::string &path) {
-    for (const pb::ConfigField &candidate : section.fields()) {
+  static const renderer_pb::ConfigField *
+  field(const renderer_pb::ConfigSection &section, const std::string &path) {
+    for (const renderer_pb::ConfigField &candidate : section.fields()) {
       if (candidate.path() == path) {
         return &candidate;
       }
@@ -60,20 +60,20 @@ protected:
     return nullptr;
   }
 
-  pb::ConfigSection output() const {
-    pb::ConfigSection section;
+  renderer_pb::ConfigSection output() const {
+    renderer_pb::ConfigSection section;
     player_->fillConfig(section);
     return section;
   }
 
-  pb::ConfigSection buffers() const {
-    pb::ConfigSection section;
+  renderer_pb::ConfigSection buffers() const {
+    renderer_pb::ConfigSection section;
     player_->bufferSettings()->fillConfig(section);
     return section;
   }
 
-  pb::ConfigSection network() const {
-    pb::ConfigSection section;
+  renderer_pb::ConfigSection network() const {
+    renderer_pb::ConfigSection section;
     player_->networkSettings()->fillConfig(section);
     return section;
   }
@@ -103,8 +103,8 @@ class CustomHdmiSettingsTest : public NativePlayerSettingsTest {
 // TearDown() drops the player before the server goes, as its streams need.
 class NativePlayerStreamTest : public NativePlayerSettingsTest {
 protected:
-  pb::Source sourceAt(const std::string &path) const {
-    pb::Source source;
+  renderer_pb::Source sourceAt(const std::string &path) const {
+    renderer_pb::Source source;
     source.set_source_token(path);
     source.set_uri(server_.url(path));
     source.set_mime_type("audio/flac");
@@ -125,17 +125,18 @@ protected:
   }
 
   /// Every state the player reports for `source` until it finishes or fails.
-  std::vector<pb::PlaybackStateChanged> playToTheEnd(const pb::Source &source) {
-    std::vector<pb::PlaybackStateChanged> states;
-    player_->setStateSink([&](pb::Envelope &env) {
+  std::vector<renderer_pb::PlaybackStateChanged>
+  playToTheEnd(const renderer_pb::Source &source) {
+    std::vector<renderer_pb::PlaybackStateChanged> states;
+    player_->setStateSink([&](renderer_pb::Envelope &env) {
       if (env.has_playback_state_changed())
         states.push_back(env.playback_state_changed());
     });
     player_->setSource(source);
     EXPECT_TRUE(runUntil([&] {
       return std::ranges::any_of(states, [](const auto &state) {
-        return state.state() == pb::PLAYBACK_STATE_FINISHED ||
-               state.state() == pb::PLAYBACK_STATE_ERROR;
+        return state.state() == renderer_pb::PLAYBACK_STATE_FINISHED ||
+               state.state() == renderer_pb::PLAYBACK_STATE_ERROR;
       });
     }));
     player_->setStateSink({});
@@ -153,18 +154,19 @@ protected:
 
   // Records every playback state from here on.
   void recordStates() {
-    player_->setStateSink([this](pb::Envelope &env) {
+    player_->setStateSink([this](renderer_pb::Envelope &env) {
       if (env.has_playback_state_changed()) {
         states_.push_back(env.playback_state_changed());
       }
     });
   }
 
-  std::vector<pb::PlaybackStateChanged> stops() const {
-    std::vector<pb::PlaybackStateChanged> stopped;
+  std::vector<renderer_pb::PlaybackStateChanged> stops() const {
+    std::vector<renderer_pb::PlaybackStateChanged> stopped;
     std::ranges::copy_if(states_, std::back_inserter(stopped),
-                         [](const pb::PlaybackStateChanged &state) {
-                           return state.state() == pb::PLAYBACK_STATE_STOPPED;
+                         [](const renderer_pb::PlaybackStateChanged &state) {
+                           return state.state() ==
+                                  renderer_pb::PLAYBACK_STATE_STOPPED;
                          });
     return stopped;
   }
@@ -181,14 +183,14 @@ protected:
     player_->setSource(sourceAt("/held"));
     const bool playing = runUntil([this] {
       return std::ranges::any_of(states_, [](const auto &state) {
-        return state.state() == pb::PLAYBACK_STATE_PLAYING;
+        return state.state() == renderer_pb::PLAYBACK_STATE_PLAYING;
       });
     });
     states_.clear();
     return playing;
   }
 
-  std::vector<pb::PlaybackStateChanged> states_;
+  std::vector<renderer_pb::PlaybackStateChanged> states_;
   LocalHttpServer server_{testFile("tone880.flac")};
 };
 
@@ -208,7 +210,7 @@ TEST_F(NativePlayerSettingsTest, DsdSettingsExposeCapabilitiesAndPersistMode) {
   ASSERT_NE(dsd, nullptr);
   EXPECT_EQ(dsd->value(), "disabled");
   EXPECT_EQ(dsd->options_size(), 4);
-  EXPECT_EQ(dsd->apply(), pb::APPLY_COST_INTERRUPTS_PLAYBACK);
+  EXPECT_EQ(dsd->apply(), renderer_pb::APPLY_COST_INTERRUPTS_PLAYBACK);
   ASSERT_TRUE(player_->applyConfig("output.dsd_mode", "dop", error_));
   EXPECT_EQ(loadSettingsOverrides().at("output.dsd_mode"), "dop");
   player_.reset();
@@ -264,11 +266,36 @@ TEST_F(HdmiSettingsTest, ACardWithoutAMixerTakesCardMixerBackToAutomatic) {
   EXPECT_FALSE(loadSettingsOverrides().contains("output.volume_mode"));
 }
 
+TEST_F(NativePlayerSettingsTest, DetailedHelpTravelsSeparatelyFromDescriptions) {
+  ConfigService service({player_, player_->bufferSettings()});
+  renderer_pb::ConfigSnapshot snapshot;
+  service.fillSnapshot(snapshot);
+  renderer_pb::ConfigSnapshot received;
+  ASSERT_TRUE(received.ParseFromString(snapshot.SerializeAsString()));
+
+  const auto &out = received.sections(0);
+  EXPECT_TRUE(out.description().empty());
+  for (const auto *path : {"output.device", "output.volume_mode",
+                           "output.session_start_volume_ceiling_percent",
+                           "output.dsd_mode", "output.format_change_delay_ms",
+                           "output.reopen_on_format_change"}) {
+    const auto *setting = field(out, path);
+    ASSERT_NE(setting, nullptr) << path;
+    EXPECT_FALSE(setting->help_details().empty()) << path;
+    EXPECT_NE(setting->help_details(), setting->description()) << path;
+  }
+  EXPECT_TRUE(field(out, "output.volume_mode")->description().empty());
+  EXPECT_TRUE(field(out, "output.driver")->help_details().empty());
+  EXPECT_FALSE(field(received.sections(1), "buffers.network_stream")
+                   ->help_details().empty());
+}
+
 TEST_F(NativePlayerSettingsTest, ModeChoicesAreDescribedInTheirOwnOrder) {
   const auto section = output();
   auto described = [&section](const std::string &path) {
     std::vector<std::string> values;
-    for (const pb::ConfigOption &option : field(section, path)->options()) {
+    for (const renderer_pb::ConfigOption &option :
+         field(section, path)->options()) {
       EXPECT_FALSE(option.description().empty()) << path << " " << option.value();
       values.push_back(option.value());
     }
@@ -282,7 +309,7 @@ TEST_F(NativePlayerSettingsTest, ModeChoicesAreDescribedInTheirOwnOrder) {
 
 TEST_F(NativePlayerSettingsTest, DsdIsTakenWhileTheDsdModeIsNotDisabled) {
   auto dsd = [this] {
-    pb::Capabilities capabilities;
+    renderer_pb::Capabilities capabilities;
     player_->fillCapabilities(capabilities);
     return capabilities.dsd();
   };
@@ -300,8 +327,8 @@ TEST_F(NativePlayerSettingsTest, ANewDeviceRestatesTheVolume) {
   // Landing on the null device keeps the test off whatever card CI has.
   ASSERT_TRUE(player_->applyConfig("output.device", "default", error_))
       << error_;
-  std::vector<pb::VolumeChanged> told;
-  player_->setStateSink([&told](pb::Envelope &env) {
+  std::vector<renderer_pb::VolumeChanged> told;
+  player_->setStateSink([&told](renderer_pb::Envelope &env) {
     if (env.has_volume_changed()) {
       told.push_back(env.volume_changed());
     }
@@ -310,7 +337,7 @@ TEST_F(NativePlayerSettingsTest, ANewDeviceRestatesTheVolume) {
   ASSERT_TRUE(player_->applyConfig("output.device", "null", error_)) << error_;
 
   ASSERT_EQ(told.size(), 1u);
-  pb::StateSnapshot snapshot;
+  renderer_pb::StateSnapshot snapshot;
   player_->fillSnapshot(snapshot);
   EXPECT_EQ(told.back().volume().backend(), snapshot.volume().backend());
   EXPECT_EQ(told.back().volume().current(), snapshot.volume().current());
@@ -326,25 +353,26 @@ TEST_F(NativePlayerSettingsTest, InvalidPersistedDsdModeUsesDisabled) {
 }
 
 TEST_F(NativePlayerSettingsTest, TheSinkIsBufferedAsTheServerUsedToBufferIt) {
-  const pb::ConfigSection section = output();
+  const renderer_pb::ConfigSection section = output();
 
-  const pb::ConfigField *latency = field(section, "output.latency_ms");
+  const renderer_pb::ConfigField *latency = field(section, "output.latency_ms");
   ASSERT_NE(latency, nullptr);
   EXPECT_EQ(latency->value(), "160");
   EXPECT_EQ(latency->default_value(), "160");
-  EXPECT_EQ(latency->type(), pb::CONFIG_FIELD_TYPE_INT);
-  EXPECT_EQ(latency->apply(), pb::APPLY_COST_INTERRUPTS_PLAYBACK);
+  EXPECT_EQ(latency->type(), renderer_pb::CONFIG_FIELD_TYPE_INT);
+  EXPECT_EQ(latency->apply(), renderer_pb::APPLY_COST_INTERRUPTS_PLAYBACK);
 
-  const pb::ConfigField *period = field(section, "output.period_ms");
+  const renderer_pb::ConfigField *period = field(section, "output.period_ms");
   ASSERT_NE(period, nullptr);
   EXPECT_EQ(period->value(), "40");
   EXPECT_EQ(period->default_value(), "40");
 }
 
 TEST_F(NativePlayerSettingsTest, TheCardIsGivenTimeToSyncAfterAFormatChange) {
-  const pb::ConfigSection section = output();
+  const renderer_pb::ConfigSection section = output();
 
-  const pb::ConfigField *delay = field(section, "output.format_change_delay_ms");
+  const renderer_pb::ConfigField *delay =
+      field(section, "output.format_change_delay_ms");
   ASSERT_NE(delay, nullptr);
   EXPECT_EQ(delay->value(), "500");
   EXPECT_EQ(delay->default_value(), "500");
@@ -355,69 +383,71 @@ TEST_F(NativePlayerSettingsTest, RepeatedSnapshotsAdvanceAndPauseFreezesPosition
   ASSERT_TRUE(player_->applyConfig("output.device", testDevice(), error_)) << error_;
   ASSERT_TRUE(player_->applyConfig("output.volume_mode", "software", error_)) << error_;
   player_->setVolume(0);
-  pb::Source source;
+  renderer_pb::Source source;
   source.set_source_token("snapshot-clock");
   source.set_uri("file://" + std::string(KALINKA_TEST_DATA_DIR) + "/ladder.ogg");
   source.set_mime_type("audio/ogg");
   player_->setSource(source);
-  auto awaitState = [&](pb::PlaybackState wanted) {
+  auto awaitState = [&](renderer_pb::PlaybackState wanted) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-    pb::StateSnapshot state;
+    renderer_pb::StateSnapshot state;
     do {
       ioc_.restart();
       ioc_.run_for(std::chrono::milliseconds(10));
       player_->fillSnapshot(state);
-      if (state.playback_state() == wanted) return true;
+      if (state.playback_state() == wanted)
+        return true;
     } while (std::chrono::steady_clock::now() < deadline);
     return false;
   };
-  ASSERT_TRUE(awaitState(pb::PLAYBACK_STATE_PLAYING));
-  pb::StateSnapshot previous;
+  ASSERT_TRUE(awaitState(renderer_pb::PLAYBACK_STATE_PLAYING));
+  renderer_pb::StateSnapshot previous;
   player_->fillSnapshot(previous);
   for (int i = 0; i < 3; ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
-    pb::StateSnapshot next;
+    renderer_pb::StateSnapshot next;
     player_->fillSnapshot(next);
-    EXPECT_EQ(next.playback_state(), pb::PLAYBACK_STATE_PLAYING);
+    EXPECT_EQ(next.playback_state(), renderer_pb::PLAYBACK_STATE_PLAYING);
     EXPECT_GE(next.position_ms(), previous.position_ms() + 100);
     previous = next;
   }
   player_->pause();
-  ASSERT_TRUE(awaitState(pb::PLAYBACK_STATE_PAUSED));
+  ASSERT_TRUE(awaitState(renderer_pb::PLAYBACK_STATE_PAUSED));
   player_->fillSnapshot(previous);
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
-  pb::StateSnapshot paused;
+  renderer_pb::StateSnapshot paused;
   player_->fillSnapshot(paused);
   EXPECT_EQ(paused.position_ms(), previous.position_ms());
   player_->stop();
 }
 
 TEST_F(NativePlayerSettingsTest, OnlyWhatAUserPicksIsOnThePageProper) {
-  const pb::ConfigSection section = output();
+  const renderer_pb::ConfigSection section = output();
 
   EXPECT_EQ(field(section, "output.device")->importance(),
-            pb::CONFIG_IMPORTANCE_SIMPLE);
+            renderer_pb::CONFIG_IMPORTANCE_SIMPLE);
   EXPECT_EQ(field(section, "output.volume_mode")->importance(),
-            pb::CONFIG_IMPORTANCE_SIMPLE);
+            renderer_pb::CONFIG_IMPORTANCE_SIMPLE);
   EXPECT_EQ(field(section, "output.session_start_volume_ceiling_percent")
                 ->importance(),
-            pb::CONFIG_IMPORTANCE_SIMPLE);
+            renderer_pb::CONFIG_IMPORTANCE_SIMPLE);
   EXPECT_EQ(field(section, "output.driver")->importance(),
-            pb::CONFIG_IMPORTANCE_EXPERT);
+            renderer_pb::CONFIG_IMPORTANCE_EXPERT);
   EXPECT_EQ(field(section, "output.latency_ms")->importance(),
-            pb::CONFIG_IMPORTANCE_EXPERT);
-  const pb::ConfigSection buffering = buffers();
-  for (const pb::ConfigField &knob : buffering.fields()) {
-    EXPECT_EQ(knob.importance(), pb::CONFIG_IMPORTANCE_EXPERT) << knob.path();
+            renderer_pb::CONFIG_IMPORTANCE_EXPERT);
+  const renderer_pb::ConfigSection buffering = buffers();
+  for (const renderer_pb::ConfigField &knob : buffering.fields()) {
+    EXPECT_EQ(knob.importance(), renderer_pb::CONFIG_IMPORTANCE_EXPERT)
+        << knob.path();
   }
 }
 
 TEST_F(NativePlayerSettingsTest, BufferingIsItsOwnSection) {
-  const pb::ConfigSection section = buffers();
+  const renderer_pb::ConfigSection section = buffers();
 
   EXPECT_EQ(section.path(), "buffers");
   EXPECT_EQ(section.fields_size(), 8);
-  for (const pb::ConfigField &knob : section.fields()) {
+  for (const renderer_pb::ConfigField &knob : section.fields()) {
     EXPECT_TRUE(knob.path().starts_with("buffers."));
     EXPECT_FALSE(knob.value().empty()) << knob.path();
     EXPECT_EQ(knob.value(), knob.default_value()) << knob.path();
@@ -450,32 +480,33 @@ TEST_F(NativePlayerSettingsTest, BufferWritesGoThroughTheBufferingSection) {
 }
 
 TEST_F(NativePlayerSettingsTest, TheStallTimeoutIsInTheNetworkSection) {
-  const pb::ConfigSection section = network();
+  const renderer_pb::ConfigSection section = network();
 
   EXPECT_EQ(section.path(), "network");
   ASSERT_EQ(section.fields_size(), 2);
-  const pb::ConfigField &timeout = section.fields(0);
+  const renderer_pb::ConfigField &timeout = section.fields(0);
   EXPECT_EQ(timeout.path(), "network.stall_timeout_s");
   EXPECT_EQ(timeout.value(), "15");
   EXPECT_EQ(timeout.default_value(), "15");
-  EXPECT_EQ(timeout.type(), pb::CONFIG_FIELD_TYPE_INT);
+  EXPECT_EQ(timeout.type(), renderer_pb::CONFIG_FIELD_TYPE_INT);
   EXPECT_EQ(timeout.unit(), "s");
-  EXPECT_EQ(timeout.importance(), pb::CONFIG_IMPORTANCE_EXPERT);
-  EXPECT_EQ(timeout.apply(), pb::APPLY_COST_INSTANT);
+  EXPECT_EQ(timeout.importance(), renderer_pb::CONFIG_IMPORTANCE_EXPERT);
+  EXPECT_EQ(timeout.apply(), renderer_pb::APPLY_COST_INSTANT);
   ASSERT_TRUE(timeout.has_range());
   EXPECT_EQ(timeout.range().min(), 5);
   EXPECT_EQ(timeout.range().max(), 300);
 }
 
 TEST_F(NativePlayerSettingsTest, RedirectLimitDefaultsToThreeInTheNetworkSection) {
-  const pb::ConfigSection section = network();
-  const pb::ConfigField *limit = field(section, "network.max_redirects");
+  const renderer_pb::ConfigSection section = network();
+  const renderer_pb::ConfigField *limit =
+      field(section, "network.max_redirects");
   ASSERT_NE(limit, nullptr);
   EXPECT_EQ(limit->value(), "3");
   EXPECT_EQ(limit->default_value(), "3");
-  EXPECT_EQ(limit->type(), pb::CONFIG_FIELD_TYPE_INT);
-  EXPECT_EQ(limit->importance(), pb::CONFIG_IMPORTANCE_EXPERT);
-  EXPECT_EQ(limit->apply(), pb::APPLY_COST_INSTANT);
+  EXPECT_EQ(limit->type(), renderer_pb::CONFIG_FIELD_TYPE_INT);
+  EXPECT_EQ(limit->importance(), renderer_pb::CONFIG_IMPORTANCE_EXPERT);
+  EXPECT_EQ(limit->apply(), renderer_pb::APPLY_COST_INSTANT);
   ASSERT_TRUE(limit->has_range());
   EXPECT_EQ(limit->range().min(), 0);
   EXPECT_EQ(limit->range().max(), 10);
@@ -499,13 +530,13 @@ TEST_F(NativePlayerSettingsTest, RedirectLimitIsPersistedAndCanResetToDefault) {
 
 TEST_F(NativePlayerSettingsTest, RedirectLimitWritesValidateTheDeclaredRange) {
   ConfigService service{{player_->networkSettings()}};
-  pb::ConfigUpdate update;
+  renderer_pb::ConfigUpdate update;
   auto *setting = update.add_settings();
   setting->set_path("network.max_redirects");
   for (const char *value : {"-1", "11", "1.5", "many"}) {
     SCOPED_TRACE(value);
     setting->set_value(value);
-    pb::ConfigResult result;
+    renderer_pb::ConfigResult result;
     service.apply(update, result);
     ASSERT_EQ(result.outcomes_size(), 1);
     EXPECT_FALSE(result.outcomes(0).applied());
@@ -516,7 +547,7 @@ TEST_F(NativePlayerSettingsTest, RedirectLimitWritesValidateTheDeclaredRange) {
   for (const char *value : {"0", "10"}) {
     SCOPED_TRACE(value);
     setting->set_value(value);
-    pb::ConfigResult result;
+    renderer_pb::ConfigResult result;
     service.apply(update, result);
     ASSERT_EQ(result.outcomes_size(), 1);
     EXPECT_TRUE(result.outcomes(0).applied());
@@ -550,10 +581,11 @@ TEST_F(NativePlayerStreamTest, TheGraphWaitsOnAStallForTheConfiguredTime) {
   ASSERT_TRUE(player_->networkSettings()->applyConfig(
       "network.stall_timeout_s", "1", error_))
       << error_;
-  std::optional<pb::PlaybackStateChanged> failed;
-  player_->setStateSink([&failed](pb::Envelope &env) {
+  std::optional<renderer_pb::PlaybackStateChanged> failed;
+  player_->setStateSink([&failed](renderer_pb::Envelope &env) {
     if (!failed && env.has_playback_state_changed() &&
-        env.playback_state_changed().state() == pb::PLAYBACK_STATE_ERROR) {
+        env.playback_state_changed().state() ==
+            renderer_pb::PLAYBACK_STATE_ERROR) {
       failed = env.playback_state_changed();
     }
   });
@@ -561,31 +593,33 @@ TEST_F(NativePlayerStreamTest, TheGraphWaitsOnAStallForTheConfiguredTime) {
   player_->setSource(sourceAt("/stall"));
 
   ASSERT_TRUE(runUntil([&failed] { return failed.has_value(); }));
-  EXPECT_EQ(failed->error().source(), pb::ERROR_SOURCE_HTTP_STREAM);
+  EXPECT_EQ(failed->error().source(), renderer_pb::ERROR_SOURCE_HTTP_STREAM);
   EXPECT_THAT(failed->error().message(),
               ::testing::HasSubstr("Nothing received for 1 s"));
 }
 
 TEST_F(NativePlayerSettingsTest, WhatTheGraphReadsPerStreamAppliesAtOnce) {
-  for (const pb::ConfigSection &section : {buffers(), network()}) {
-    for (const pb::ConfigField &knob : section.fields()) {
-      EXPECT_EQ(knob.apply(), pb::APPLY_COST_INSTANT) << knob.path();
+  for (const renderer_pb::ConfigSection &section : {buffers(), network()}) {
+    for (const renderer_pb::ConfigField &knob : section.fields()) {
+      EXPECT_EQ(knob.apply(), renderer_pb::APPLY_COST_INSTANT) << knob.path();
     }
   }
-  const pb::ConfigSection sink = output();
+  const renderer_pb::ConfigSection sink = output();
   for (const char *path :
        {"output.device", "output.latency_ms", "output.period_ms",
         "output.format_change_delay_ms", "output.reopen_on_format_change"}) {
-    EXPECT_EQ(field(sink, path)->apply(), pb::APPLY_COST_INTERRUPTS_PLAYBACK)
+    EXPECT_EQ(field(sink, path)->apply(),
+              renderer_pb::APPLY_COST_INTERRUPTS_PLAYBACK)
         << path;
   }
 }
 
 TEST_F(NativePlayerStreamTest, NewStreamsUseTheConfiguredRedirectLimit) {
-  std::optional<pb::PlaybackStateChanged> failed;
-  player_->setStateSink([&failed](pb::Envelope &env) {
+  std::optional<renderer_pb::PlaybackStateChanged> failed;
+  player_->setStateSink([&failed](renderer_pb::Envelope &env) {
     if (!failed && env.has_playback_state_changed() &&
-        env.playback_state_changed().state() == pb::PLAYBACK_STATE_ERROR) {
+        env.playback_state_changed().state() ==
+            renderer_pb::PLAYBACK_STATE_ERROR) {
       failed = env.playback_state_changed();
     }
   });
@@ -598,7 +632,7 @@ TEST_F(NativePlayerStreamTest, NewStreamsUseTheConfiguredRedirectLimit) {
     player_->setSource(sourceAt("/redirect-loop"));
 
     ASSERT_TRUE(runUntil([&failed] { return failed.has_value(); }));
-    EXPECT_EQ(failed->error().source(), pb::ERROR_SOURCE_HTTP_STREAM);
+    EXPECT_EQ(failed->error().source(), renderer_pb::ERROR_SOURCE_HTTP_STREAM);
     EXPECT_THAT(failed->error().message(), ::testing::HasSubstr("redirect"));
     requests += limit + 1;
     EXPECT_EQ(server_.requestsTo("/redirect-loop"), requests);
@@ -606,18 +640,18 @@ TEST_F(NativePlayerStreamTest, NewStreamsUseTheConfiguredRedirectLimit) {
 }
 
 TEST_F(NativePlayerStreamTest, AStreamKnobLeavesThePlayingTrackAlone) {
-  std::vector<pb::PlaybackState> states;
-  player_->setStateSink([&states](pb::Envelope &env) {
+  std::vector<renderer_pb::PlaybackState> states;
+  player_->setStateSink([&states](renderer_pb::Envelope &env) {
     if (env.has_playback_state_changed()) {
       states.push_back(env.playback_state_changed().state());
     }
   });
-  const auto reached = [&states](pb::PlaybackState state) {
+  const auto reached = [&states](renderer_pb::PlaybackState state) {
     return [&states, state] { return std::ranges::count(states, state) > 0; };
   };
   // Held after its first bytes, so the track is still on when the knobs move.
   player_->setSource(sourceAt("/held"));
-  ASSERT_TRUE(runUntil(reached(pb::PLAYBACK_STATE_PLAYING)));
+  ASSERT_TRUE(runUntil(reached(renderer_pb::PLAYBACK_STATE_PLAYING)));
   states.clear();
 
   ASSERT_TRUE(player_->networkSettings()->applyConfig(
@@ -630,8 +664,8 @@ TEST_F(NativePlayerStreamTest, AStreamKnobLeavesThePlayingTrackAlone) {
       << error_;
   server_.release();
 
-  EXPECT_TRUE(runUntil(reached(pb::PLAYBACK_STATE_FINISHED)));
-  EXPECT_EQ(std::ranges::count(states, pb::PLAYBACK_STATE_STOPPED), 0);
+  EXPECT_TRUE(runUntil(reached(renderer_pb::PLAYBACK_STATE_FINISHED)));
+  EXPECT_EQ(std::ranges::count(states, renderer_pb::PLAYBACK_STATE_STOPPED), 0);
   EXPECT_EQ(network().fields(0).value(), "60");
   EXPECT_EQ(field(network(), "network.max_redirects")->value(), "5");
   EXPECT_EQ(field(buffers(), "buffers.flac")->value(), "2000000");
@@ -760,8 +794,8 @@ TEST_F(NativePlayerStreamTest, NeitherAnEndNorAFailureIsInterrupted) {
       "network.stall_timeout_s", "1", error_))
       << error_;
   for (const auto &[path, ending] :
-       {std::pair{"/ranged", pb::PLAYBACK_STATE_FINISHED},
-        std::pair{"/stall", pb::PLAYBACK_STATE_ERROR}}) {
+       {std::pair{"/ranged", renderer_pb::PLAYBACK_STATE_FINISHED},
+        std::pair{"/stall", renderer_pb::PLAYBACK_STATE_ERROR}}) {
     SCOPED_TRACE(path);
     const auto states = playToTheEnd(sourceAt(path));
     ASSERT_TRUE(std::ranges::any_of(states, [ending](const auto &state) {
@@ -788,7 +822,7 @@ TEST_F(NativePlayerSettingsTest, AStoredValueItsKnobWouldRefuseIsIgnored) {
   EXPECT_EQ(field(network(), "network.max_redirects")->value(), "3");
   EXPECT_EQ(field(buffers(), "buffers.flac")->value(), "1536000");
   EXPECT_EQ(field(buffers(), "buffers.mpeg")->value(), "768000");
-  const pb::ConfigSection sink = output();
+  const renderer_pb::ConfigSection sink = output();
   EXPECT_EQ(field(sink, "output.reopen_on_format_change")->value(), "false");
   EXPECT_EQ(field(sink, "output.latency_ms")->value(), "250");
   EXPECT_EQ(field(sink, "output.device")->value(), "null");
@@ -806,11 +840,11 @@ TEST_F(NativePlayerSettingsTest, DsdBufferIsPersistedAndReachesTheNextTrack) {
                                                      error_))
       << error_;
 
-  const pb::ConfigSection section = buffers();
-  const pb::ConfigField *knob = field(section, "buffers.dsd");
+  const renderer_pb::ConfigSection section = buffers();
+  const renderer_pb::ConfigField *knob = field(section, "buffers.dsd");
   ASSERT_NE(knob, nullptr);
   EXPECT_EQ(knob->value(), "200000");
-  EXPECT_EQ(knob->apply(), pb::APPLY_COST_INSTANT);
+  EXPECT_EQ(knob->apply(), renderer_pb::APPLY_COST_INSTANT);
   EXPECT_EQ(loadSettingsOverrides().at("buffers.dsd"), "200000");
 }
 
@@ -874,13 +908,13 @@ TEST_F(NativePlayerSettingsTest, SupportedSourcesPlayThroughTheProtocolAdapter) 
     else
       fs::copy_file(fs::path(KALINKA_TEST_DATA_DIR) / test.fixture, path,
                     fs::copy_options::overwrite_existing);
-    std::vector<pb::PlaybackStateChanged> states;
-    player_->setStateSink([&](pb::Envelope &env) {
+    std::vector<renderer_pb::PlaybackStateChanged> states;
+    player_->setStateSink([&](renderer_pb::Envelope &env) {
       if (env.has_playback_state_changed()) {
         states.push_back(env.playback_state_changed());
       }
     });
-    pb::Source source;
+    renderer_pb::Source source;
     source.set_uri("file://" + path.string());
     source.set_mime_type(test.mime);
     source.set_source_token(test.name);
@@ -888,8 +922,8 @@ TEST_F(NativePlayerSettingsTest, SupportedSourcesPlayThroughTheProtocolAdapter) 
     player_->setSource(source);
     const auto finished = [&] {
       return std::any_of(states.begin(), states.end(), [](const auto &state) {
-        return state.state() == pb::PLAYBACK_STATE_FINISHED ||
-               state.state() == pb::PLAYBACK_STATE_ERROR;
+        return state.state() == renderer_pb::PLAYBACK_STATE_FINISHED ||
+               state.state() == renderer_pb::PLAYBACK_STATE_ERROR;
       });
     };
     ioc_.restart();
@@ -899,15 +933,20 @@ TEST_F(NativePlayerSettingsTest, SupportedSourcesPlayThroughTheProtocolAdapter) 
     }
     player_->setStateSink({});
     player_->stop();
-    EXPECT_TRUE(std::any_of(states.begin(), states.end(), [](const auto &state) {
-      return state.state() == pb::PLAYBACK_STATE_PLAYING && state.has_format() &&
-             state.format().sample_rate_hz() == 22050 && state.position_ms() >= 2000;
-    }));
-    EXPECT_TRUE(std::any_of(states.begin(), states.end(), [](const auto &state) {
-      return state.state() == pb::PLAYBACK_STATE_FINISHED;
-    }));
+    EXPECT_TRUE(
+        std::any_of(states.begin(), states.end(), [](const auto &state) {
+          return state.state() == renderer_pb::PLAYBACK_STATE_PLAYING &&
+                 state.has_format() &&
+                 state.format().sample_rate_hz() == 22050 &&
+                 state.position_ms() >= 2000;
+        }));
+    EXPECT_TRUE(
+        std::any_of(states.begin(), states.end(), [](const auto &state) {
+          return state.state() == renderer_pb::PLAYBACK_STATE_FINISHED;
+        }));
     for (const auto &state : states) {
-      EXPECT_NE(state.state(), pb::PLAYBACK_STATE_ERROR) << state.error().message();
+      EXPECT_NE(state.state(), renderer_pb::PLAYBACK_STATE_ERROR)
+          << state.error().message();
     }
     // Deliver the stop before installing the next source's event recorder.
     ioc_.poll();
@@ -915,23 +954,25 @@ TEST_F(NativePlayerSettingsTest, SupportedSourcesPlayThroughTheProtocolAdapter) 
 }
 
 TEST_F(NativePlayerStreamTest, SpeakerTestToneNeedsNoStreamFormat) {
-  std::vector<pb::PlaybackState> states;
-  player_->setStateSink([&](pb::Envelope &env) {
+  std::vector<renderer_pb::PlaybackState> states;
+  player_->setStateSink([&](renderer_pb::Envelope &env) {
     if (env.has_playback_state_changed()) {
       states.push_back(env.playback_state_changed().state());
     }
   });
-  pb::Source source;
+  renderer_pb::Source source;
   source.set_source_token("speaker-test");
   source.set_uri("tone://both?duration_ms=1000");
   player_->setSource(source);
   EXPECT_TRUE(runUntil([&] {
-    return std::ranges::count(states, pb::PLAYBACK_STATE_FINISHED) > 0 ||
-           std::ranges::count(states, pb::PLAYBACK_STATE_ERROR) > 0;
+    return std::ranges::count(states, renderer_pb::PLAYBACK_STATE_FINISHED) >
+               0 ||
+           std::ranges::count(states, renderer_pb::PLAYBACK_STATE_ERROR) > 0;
   }));
-  EXPECT_GT(std::ranges::count(states, pb::PLAYBACK_STATE_PLAYING), 0);
-  EXPECT_GT(std::ranges::count(states, pb::PLAYBACK_STATE_FINISHED), 0);
-  EXPECT_EQ(std::ranges::count(states, pb::PLAYBACK_STATE_ERROR), 0);
+  EXPECT_GT(std::ranges::count(states, renderer_pb::PLAYBACK_STATE_PLAYING), 0);
+  EXPECT_GT(std::ranges::count(states, renderer_pb::PLAYBACK_STATE_FINISHED),
+            0);
+  EXPECT_EQ(std::ranges::count(states, renderer_pb::PLAYBACK_STATE_ERROR), 0);
   player_->setStateSink({});
 }
 
@@ -943,22 +984,24 @@ TEST_F(NativePlayerStreamTest, DashMimeAndSuffixPlayThroughTheNativeRenderer) {
            std::pair{"application/dash+xml", "/opaque-asset"},
            std::pair{"", "/manifest.mpd"}}) {
     SCOPED_TRACE(mime);
-    pb::Source source;
+    renderer_pb::Source source;
     source.set_uri(dash.url(path));
     source.set_mime_type(mime);
     source.set_source_token(path);
     source.set_start_offset_ms(500);
     const auto states = playToTheEnd(source);
     EXPECT_TRUE(std::ranges::any_of(states, [](const auto &state) {
-      return state.state() == pb::PLAYBACK_STATE_PLAYING &&
+      return state.state() == renderer_pb::PLAYBACK_STATE_PLAYING &&
              state.format().sample_rate_hz() == 96000 &&
-             state.format().bits_per_sample() == 24 && state.position_ms() >= 500;
+             state.format().bits_per_sample() == 24 &&
+             state.position_ms() >= 500;
     }));
     EXPECT_TRUE(std::ranges::any_of(states, [](const auto &state) {
-      return state.state() == pb::PLAYBACK_STATE_FINISHED;
+      return state.state() == renderer_pb::PLAYBACK_STATE_FINISHED;
     }));
     for (const auto &state : states)
-      EXPECT_NE(state.state(), pb::PLAYBACK_STATE_ERROR) << state.error().message();
+      EXPECT_NE(state.state(), renderer_pb::PLAYBACK_STATE_ERROR)
+          << state.error().message();
   }
 }
 
@@ -976,21 +1019,21 @@ TEST_F(NativePlayerStreamTest,
         std::pair{"", "/track.m4a"}, std::pair{"audio/aacp", "/radio"},
         std::pair{"", "/track.aac"}}) {
     SCOPED_TRACE(std::string(mime) + " " + path);
-    pb::Source source;
+    renderer_pb::Source source;
     source.set_uri(aac.url(path));
     source.set_mime_type(mime);
     source.set_source_token(path);
     const auto states = playToTheEnd(source);
     EXPECT_TRUE(std::ranges::any_of(states, [](const auto &state) {
-      return state.state() == pb::PLAYBACK_STATE_PLAYING &&
+      return state.state() == renderer_pb::PLAYBACK_STATE_PLAYING &&
              state.format().sample_rate_hz() == 44100 &&
              state.format().bits_per_sample() == 16;
     }));
     EXPECT_TRUE(std::ranges::any_of(states, [](const auto &state) {
-      return state.state() == pb::PLAYBACK_STATE_FINISHED;
+      return state.state() == renderer_pb::PLAYBACK_STATE_FINISHED;
     }));
     for (const auto &state : states)
-      EXPECT_NE(state.state(), pb::PLAYBACK_STATE_ERROR)
+      EXPECT_NE(state.state(), renderer_pb::PLAYBACK_STATE_ERROR)
           << state.error().message();
   }
 }
@@ -1014,8 +1057,8 @@ TEST_F(NativePlayerStreamTest, UnsupportedSourcesFailBeforeOpeningTheStream) {
   };
   for (const auto &test : cases) {
     SCOPED_TRACE(std::string(test.mime) + " " + test.path);
-    std::vector<pb::PlaybackStateChanged> states;
-    player_->setStateSink([&](pb::Envelope &env) {
+    std::vector<renderer_pb::PlaybackStateChanged> states;
+    player_->setStateSink([&](renderer_pb::Envelope &env) {
       if (env.has_playback_state_changed()) {
         states.push_back(env.playback_state_changed());
       }
@@ -1025,22 +1068,23 @@ TEST_F(NativePlayerStreamTest, UnsupportedSourcesFailBeforeOpeningTheStream) {
     player_->setSource(source);
     EXPECT_TRUE(runUntil([&] {
       return std::any_of(states.begin(), states.end(), [](const auto &state) {
-        return state.state() == pb::PLAYBACK_STATE_ERROR ||
-               state.state() == pb::PLAYBACK_STATE_FINISHED;
+        return state.state() == renderer_pb::PLAYBACK_STATE_ERROR ||
+               state.state() == renderer_pb::PLAYBACK_STATE_FINISHED;
       });
     }));
-    pb::StateSnapshot snapshot;
+    renderer_pb::StateSnapshot snapshot;
     player_->fillSnapshot(snapshot);
-    EXPECT_EQ(snapshot.playback_state(), pb::PLAYBACK_STATE_ERROR);
-    EXPECT_EQ(snapshot.error().source(), pb::ERROR_SOURCE_DECODER);
+    EXPECT_EQ(snapshot.playback_state(), renderer_pb::PLAYBACK_STATE_ERROR);
+    EXPECT_EQ(snapshot.error().source(), renderer_pb::ERROR_SOURCE_DECODER);
     EXPECT_EQ(snapshot.error().message(), test.error);
     EXPECT_EQ(snapshot.current_source().source_token(), source.source_token());
     EXPECT_FALSE(snapshot.position_valid());
-    EXPECT_TRUE(std::any_of(states.begin(), states.end(), [&](const auto &state) {
-      return state.state() == pb::PLAYBACK_STATE_ERROR &&
-             state.source_token() == source.source_token() &&
-             state.error().message() == test.error;
-    }));
+    EXPECT_TRUE(
+        std::any_of(states.begin(), states.end(), [&](const auto &state) {
+          return state.state() == renderer_pb::PLAYBACK_STATE_ERROR &&
+                 state.source_token() == source.source_token() &&
+                 state.error().message() == test.error;
+        }));
     EXPECT_EQ(server_.requestsTo(test.path), 0);
     player_->setStateSink({});
     player_->stop();
@@ -1049,37 +1093,42 @@ TEST_F(NativePlayerStreamTest, UnsupportedSourcesFailBeforeOpeningTheStream) {
 }
 
 TEST_F(NativePlayerStreamTest, QueuedUnsupportedSourceReportsItsOwnErrorAndRecovers) {
-  std::vector<pb::PlaybackStateChanged> states;
-  player_->setStateSink([&](pb::Envelope &env) {
+  std::vector<renderer_pb::PlaybackStateChanged> states;
+  player_->setStateSink([&](renderer_pb::Envelope &env) {
     if (env.has_playback_state_changed()) {
       states.push_back(env.playback_state_changed());
     }
   });
-  const auto reached = [&](const std::string &token, pb::PlaybackState wanted) {
+  const auto reached = [&](const std::string &token,
+                           renderer_pb::PlaybackState wanted) {
     return std::any_of(states.begin(), states.end(), [&](const auto &state) {
       return state.source_token() == token && state.state() == wanted;
     });
   };
   player_->setSource(sourceAt("/held"));
-  EXPECT_TRUE(runUntil([&] { return reached("/held", pb::PLAYBACK_STATE_PLAYING); }));
+  EXPECT_TRUE(runUntil(
+      [&] { return reached("/held", renderer_pb::PLAYBACK_STATE_PLAYING); }));
   auto unsupported = sourceAt("/whole");
   unsupported.set_mime_type("audio/opus");
   player_->enqueueSource(unsupported);
   ioc_.run_for(std::chrono::milliseconds(100));
-  EXPECT_FALSE(reached("/whole", pb::PLAYBACK_STATE_ERROR));
+  EXPECT_FALSE(reached("/whole", renderer_pb::PLAYBACK_STATE_ERROR));
   EXPECT_EQ(server_.requestsTo("/whole"), 0);
 
   server_.release();
-  EXPECT_TRUE(runUntil([&] { return reached("/whole", pb::PLAYBACK_STATE_ERROR); }));
-  pb::StateSnapshot snapshot;
+  EXPECT_TRUE(runUntil(
+      [&] { return reached("/whole", renderer_pb::PLAYBACK_STATE_ERROR); }));
+  renderer_pb::StateSnapshot snapshot;
   player_->fillSnapshot(snapshot);
   EXPECT_EQ(snapshot.current_source().source_token(), "/whole");
   EXPECT_EQ(snapshot.error().message(), "Unsupported stream format");
 
   player_->setSource(sourceAt("/ranged"));
-  EXPECT_TRUE(runUntil([&] { return reached("/ranged", pb::PLAYBACK_STATE_FINISHED); }));
-  EXPECT_TRUE(reached("/ranged", pb::PLAYBACK_STATE_PLAYING));
-  EXPECT_FALSE(reached("/ranged", pb::PLAYBACK_STATE_ERROR));
+  EXPECT_TRUE(runUntil([&] {
+    return reached("/ranged", renderer_pb::PLAYBACK_STATE_FINISHED);
+  }));
+  EXPECT_TRUE(reached("/ranged", renderer_pb::PLAYBACK_STATE_PLAYING));
+  EXPECT_FALSE(reached("/ranged", renderer_pb::PLAYBACK_STATE_ERROR));
   player_->setStateSink({});
 }
 
@@ -1092,14 +1141,14 @@ TEST_F(NativePlayerSettingsTest, ANegativeSizeIsRefusedRatherThanStored) {
 }
 
 TEST_F(NativePlayerSettingsTest, ADraggedKnobSaysWhatItAccepts) {
-  const pb::ConfigSection section = output();
+  const renderer_pb::ConfigSection section = output();
 
-  const pb::ConfigField *latency = field(section, "output.latency_ms");
+  const renderer_pb::ConfigField *latency = field(section, "output.latency_ms");
   ASSERT_NE(latency, nullptr);
   ASSERT_TRUE(latency->has_range());
 
   EXPECT_EQ(latency->unit(), "ms");
-  EXPECT_EQ(latency->widget(), pb::CONFIG_WIDGET_SLIDER);
+  EXPECT_EQ(latency->widget(), renderer_pb::CONFIG_WIDGET_SLIDER);
   EXPECT_EQ(latency->range().min(), 20);
   EXPECT_EQ(latency->range().max(), 1000);
   EXPECT_EQ(latency->range().step(), 10);
@@ -1108,10 +1157,10 @@ TEST_F(NativePlayerSettingsTest, ADraggedKnobSaysWhatItAccepts) {
 }
 
 TEST_F(NativePlayerSettingsTest, ABufferIsBoundedButTyped) {
-  const pb::ConfigSection section = buffers();
-  for (const pb::ConfigField &knob : section.fields()) {
+  const renderer_pb::ConfigSection section = buffers();
+  for (const renderer_pb::ConfigField &knob : section.fields()) {
     ASSERT_TRUE(knob.has_range()) << knob.path();
-    EXPECT_EQ(knob.widget(), pb::CONFIG_WIDGET_NUMBER) << knob.path();
+    EXPECT_EQ(knob.widget(), renderer_pb::CONFIG_WIDGET_NUMBER) << knob.path();
     EXPECT_EQ(knob.unit(), "bytes") << knob.path();
     EXPECT_GE(std::stoll(knob.default_value()), knob.range().min())
         << knob.path();
@@ -1121,14 +1170,14 @@ TEST_F(NativePlayerSettingsTest, ABufferIsBoundedButTyped) {
 }
 
 TEST_F(NativePlayerSettingsTest, ABoolKnobDeclaresNoRange) {
-  const pb::ConfigSection section = output();
+  const renderer_pb::ConfigSection section = output();
 
-  const pb::ConfigField *reopen =
+  const renderer_pb::ConfigField *reopen =
       field(section, "output.reopen_on_format_change");
   ASSERT_NE(reopen, nullptr);
 
   EXPECT_FALSE(reopen->has_range());
-  EXPECT_EQ(reopen->widget(), pb::CONFIG_WIDGET_UNSPECIFIED);
+  EXPECT_EQ(reopen->widget(), renderer_pb::CONFIG_WIDGET_UNSPECIFIED);
   EXPECT_TRUE(reopen->unit().empty());
 }
 
@@ -1144,8 +1193,8 @@ TEST_F(NativePlayerSettingsTest, TheEdgesOfTheRangeAreAccepted) {
 
 TEST_F(NativePlayerSettingsTest,
        SessionStartVolumeCeilingIsConfigurablePerRenderer) {
-  const pb::ConfigSection initial = output();
-  const pb::ConfigField *ceiling =
+  const renderer_pb::ConfigSection initial = output();
+  const renderer_pb::ConfigField *ceiling =
       field(initial, "output.session_start_volume_ceiling_percent");
   ASSERT_NE(ceiling, nullptr);
   EXPECT_EQ(ceiling->value(), "30");
@@ -1153,12 +1202,12 @@ TEST_F(NativePlayerSettingsTest,
   ASSERT_TRUE(ceiling->has_range());
   EXPECT_EQ(ceiling->range().min(), 0);
   EXPECT_EQ(ceiling->range().max(), 100);
-  EXPECT_EQ(ceiling->apply(), pb::APPLY_COST_INSTANT);
+  EXPECT_EQ(ceiling->apply(), renderer_pb::APPLY_COST_INSTANT);
 
   ASSERT_TRUE(player_->applyConfig(
       "output.session_start_volume_ceiling_percent", "45", error_))
       << error_;
-  const pb::ConfigSection updated = output();
+  const renderer_pb::ConfigSection updated = output();
   EXPECT_EQ(field(updated, "output.session_start_volume_ceiling_percent")
                 ->value(),
             "45");
@@ -1168,7 +1217,7 @@ TEST_F(NativePlayerSettingsTest,
 
   std::string sessionError;
   ASSERT_TRUE(player_->beginSessionVolume({}, sessionError)) << sessionError;
-  pb::StateSnapshot snapshot;
+  renderer_pb::StateSnapshot snapshot;
   player_->fillSnapshot(snapshot);
   EXPECT_EQ(snapshot.volume().current(), 45u);
   player_->endSessionVolume();
@@ -1178,7 +1227,7 @@ TEST_F(NativePlayerSettingsTest, DirectSessionCapsALouderVolumeAtTheCeiling) {
   std::string error;
   ASSERT_TRUE(player_->beginSessionVolume({}, error)) << error;
 
-  pb::StateSnapshot snapshot;
+  renderer_pb::StateSnapshot snapshot;
   player_->fillSnapshot(snapshot);
   EXPECT_TRUE(snapshot.volume().supported());
   EXPECT_EQ(snapshot.volume().current(), 30u);
@@ -1190,7 +1239,7 @@ TEST_F(NativePlayerSettingsTest, DirectSessionDoesNotRaiseAQuieterVolume) {
   std::string error;
   ASSERT_TRUE(player_->beginSessionVolume({}, error)) << error;
 
-  pb::StateSnapshot snapshot;
+  renderer_pb::StateSnapshot snapshot;
   player_->fillSnapshot(snapshot);
   EXPECT_EQ(snapshot.volume().current(), 20u);
   player_->endSessionVolume();
@@ -1203,7 +1252,7 @@ TEST_F(NativePlayerSettingsTest,
   ASSERT_TRUE(player_->beginSessionVolume(SessionVolumePolicy{true}, error))
       << error;
 
-  pb::StateSnapshot snapshot;
+  renderer_pb::StateSnapshot snapshot;
   player_->fillSnapshot(snapshot);
   EXPECT_FALSE(snapshot.volume().supported());
   EXPECT_EQ(snapshot.volume().current(), 100u);
@@ -1223,7 +1272,7 @@ TEST_F(NativePlayerSettingsTest, AModeChangedMidFixedSessionAppliesWhenItEnds) {
   ASSERT_TRUE(player_->applyConfig("output.volume_mode", "fixed", error_))
       << error_;
 
-  pb::StateSnapshot snapshot;
+  renderer_pb::StateSnapshot snapshot;
   player_->fillSnapshot(snapshot);
   EXPECT_FALSE(snapshot.volume().supported())
       << "the session override stays in force until the session ends";
@@ -1243,7 +1292,7 @@ TEST_F(NativePlayerSettingsTest, PersistentlyFixedOutputIsAcceptedAtUnity) {
   std::string error;
   ASSERT_TRUE(player_->beginSessionVolume({}, error)) << error;
 
-  pb::StateSnapshot snapshot;
+  renderer_pb::StateSnapshot snapshot;
   player_->fillSnapshot(snapshot);
   EXPECT_FALSE(snapshot.volume().supported());
   EXPECT_EQ(snapshot.volume().current(), 100u);

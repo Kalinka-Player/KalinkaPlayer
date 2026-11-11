@@ -69,9 +69,8 @@ class JamendoConfig(ModuleConfig):
         default="jamendo",
         title="Jamendo",
         description=(
-            "A catalogue of free, legally streamable music from independent "
-            "artists. Needs a free Client ID from the Jamendo developer "
-            "portal."
+            "Stream music from independent artists. Requires a free Jamendo Client "
+            "ID."
         ),
         frozen=True,
         exclude=True,
@@ -80,12 +79,14 @@ class JamendoConfig(ModuleConfig):
         default="",
         title="Client ID",
         description=(
-            "Required for Jamendo to work. Create a free account and "
-            "application at the "
-            "[Jamendo Dev Portal](https://devportal.jamendo.com), then "
-            "paste the application's Client ID here."
+            "Required. Paste the Client ID of your application in the [Jamendo "
+            "developer portal](https://devportal.jamendo.com)."
         ),
         json_schema_extra={
+            "help_details": (
+                "Create an account and an application in the Jamendo developer "
+                "portal, then copy the application’s Client ID into this field."
+            ),
             "widget": "password",
             "importance": "simple",
             "setup": "required",
@@ -95,8 +96,7 @@ class JamendoConfig(ModuleConfig):
         default=JamendoAudioFormat.MP3_VBR,
         title="Audio quality",
         description=(
-            "Streaming format. FLAC is only available for tracks whose "
-            "artist allowed lossless download and falls back to MP3 otherwise."
+            "Streaming format, with MP3 used when FLAC is unavailable."
         ),
         json_schema_extra={"importance": "simple", "setup": "prompt"},
     )
@@ -104,9 +104,8 @@ class JamendoConfig(ModuleConfig):
         default=True,
         title="Mood / AI search",
         description=(
-            "Search Jamendo by mood or description, e.g. \"something "
-            "melancholic for tonight\". The data it needs downloads "
-            "automatically the first time."
+            "Search by mood or description. The search data downloads "
+            "automatically."
         ),
         # Its runtime installs at the next start.
         json_schema_extra={
@@ -129,7 +128,7 @@ class JamendoConfig(ModuleConfig):
         default=f"{_RELEASE}/{_INDEX_ASSET}",
         title="Mood index download URL",
         description=(
-            "Downloaded automatically if the index is missing — leave empty "
-            "if you manage the file yourself."
+            "Download missing search data from this URL, or leave empty to supply "
+            "the file yourself."
         ),
     )

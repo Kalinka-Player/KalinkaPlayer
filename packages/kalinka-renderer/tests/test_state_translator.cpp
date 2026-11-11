@@ -5,7 +5,7 @@
 
 #include "player/StateTranslator.h"
 
-namespace pb = kalinka::renderer::v1;
+namespace renderer_pb = kalinka::renderer::v1;
 using state_translator::fillAudioFormat;
 using state_translator::fillPlaybackStateChanged;
 using state_translator::fillVolume;
@@ -27,47 +27,55 @@ TEST(StreamClock, PollingBetweenStateChangesAdvancesOnlyWhilePlaying) {
 }
 
 TEST(StateTranslator, EveryGraphStateHasExactlyOneProtoState) {
-  EXPECT_EQ(toProto(AudioGraphNodeState::STOPPED), pb::PLAYBACK_STATE_STOPPED);
+  EXPECT_EQ(toProto(AudioGraphNodeState::STOPPED),
+            renderer_pb::PLAYBACK_STATE_STOPPED);
   EXPECT_EQ(toProto(AudioGraphNodeState::PREPARING),
-            pb::PLAYBACK_STATE_PREPARING);
+            renderer_pb::PLAYBACK_STATE_PREPARING);
   EXPECT_EQ(toProto(AudioGraphNodeState::STREAMING),
-            pb::PLAYBACK_STATE_PLAYING);
-  EXPECT_EQ(toProto(AudioGraphNodeState::PAUSED), pb::PLAYBACK_STATE_PAUSED);
+            renderer_pb::PLAYBACK_STATE_PLAYING);
+  EXPECT_EQ(toProto(AudioGraphNodeState::PAUSED),
+            renderer_pb::PLAYBACK_STATE_PAUSED);
   EXPECT_EQ(toProto(AudioGraphNodeState::FINISHED),
-            pb::PLAYBACK_STATE_FINISHED);
-  EXPECT_EQ(toProto(AudioGraphNodeState::ERROR), pb::PLAYBACK_STATE_ERROR);
+            renderer_pb::PLAYBACK_STATE_FINISHED);
+  EXPECT_EQ(toProto(AudioGraphNodeState::ERROR),
+            renderer_pb::PLAYBACK_STATE_ERROR);
   // A transition, not a state: reported as SourceChanged by the caller.
   EXPECT_EQ(toProto(AudioGraphNodeState::SOURCE_CHANGED),
-            pb::PLAYBACK_STATE_UNSPECIFIED);
+            renderer_pb::PLAYBACK_STATE_UNSPECIFIED);
 }
 
 TEST(StateTranslator, EveryErrorSourceMaps) {
-  EXPECT_EQ(toProto(StreamErrorSource::NONE), pb::ERROR_SOURCE_NONE);
+  EXPECT_EQ(toProto(StreamErrorSource::NONE), renderer_pb::ERROR_SOURCE_NONE);
   EXPECT_EQ(toProto(StreamErrorSource::HTTP_STREAM),
-            pb::ERROR_SOURCE_HTTP_STREAM);
+            renderer_pb::ERROR_SOURCE_HTTP_STREAM);
   EXPECT_EQ(toProto(StreamErrorSource::AUDIO_OUTPUT),
-            pb::ERROR_SOURCE_AUDIO_OUTPUT);
-  EXPECT_EQ(toProto(StreamErrorSource::DECODER), pb::ERROR_SOURCE_DECODER);
+            renderer_pb::ERROR_SOURCE_AUDIO_OUTPUT);
+  EXPECT_EQ(toProto(StreamErrorSource::DECODER),
+            renderer_pb::ERROR_SOURCE_DECODER);
 }
 
 TEST(StateTranslator, EveryDeviceAccessMaps) {
-  EXPECT_EQ(toProto(DeviceAccess::Unknown), pb::DEVICE_ACCESS_UNSPECIFIED);
-  EXPECT_EQ(toProto(DeviceAccess::Exclusive), pb::DEVICE_ACCESS_EXCLUSIVE);
-  EXPECT_EQ(toProto(DeviceAccess::Shared), pb::DEVICE_ACCESS_SHARED);
+  EXPECT_EQ(toProto(DeviceAccess::Unknown),
+            renderer_pb::DEVICE_ACCESS_UNSPECIFIED);
+  EXPECT_EQ(toProto(DeviceAccess::Exclusive),
+            renderer_pb::DEVICE_ACCESS_EXCLUSIVE);
+  EXPECT_EQ(toProto(DeviceAccess::Shared), renderer_pb::DEVICE_ACCESS_SHARED);
 }
 
 TEST(StateTranslator, EveryVolumeBackendMaps) {
-  EXPECT_EQ(toProto(VolumeBackend::None), pb::VOLUME_BACKEND_NONE);
-  EXPECT_EQ(toProto(VolumeBackend::Hardware), pb::VOLUME_BACKEND_HARDWARE);
-  EXPECT_EQ(toProto(VolumeBackend::Software), pb::VOLUME_BACKEND_SOFTWARE);
+  EXPECT_EQ(toProto(VolumeBackend::None), renderer_pb::VOLUME_BACKEND_NONE);
+  EXPECT_EQ(toProto(VolumeBackend::Hardware),
+            renderer_pb::VOLUME_BACKEND_HARDWARE);
+  EXPECT_EQ(toProto(VolumeBackend::Software),
+            renderer_pb::VOLUME_BACKEND_SOFTWARE);
 }
 
 TEST(StateTranslator, StreamingCarriesTokenAndLivePosition) {
   StreamState state(AudioGraphNodeState::STREAMING, 41750);
-  pb::PlaybackStateChanged out;
+  renderer_pb::PlaybackStateChanged out;
   fillPlaybackStateChanged(state, "tok-7", 1234, out);
 
-  EXPECT_EQ(out.state(), pb::PLAYBACK_STATE_PLAYING);
+  EXPECT_EQ(out.state(), renderer_pb::PLAYBACK_STATE_PLAYING);
   EXPECT_EQ(out.position_ms(), 41750u);
   EXPECT_TRUE(out.position_valid());
   EXPECT_EQ(out.source_token(), "tok-7");
@@ -77,10 +85,10 @@ TEST(StateTranslator, StreamingCarriesTokenAndLivePosition) {
 
 TEST(StateTranslator, StoppedWithoutTokenMeansTornDown) {
   StreamState state(AudioGraphNodeState::STOPPED);
-  pb::PlaybackStateChanged out;
+  renderer_pb::PlaybackStateChanged out;
   fillPlaybackStateChanged(state, std::nullopt, 1234, out);
 
-  EXPECT_EQ(out.state(), pb::PLAYBACK_STATE_STOPPED);
+  EXPECT_EQ(out.state(), renderer_pb::PLAYBACK_STATE_STOPPED);
   EXPECT_FALSE(out.has_source_token());
   EXPECT_FALSE(out.position_valid());
 }
@@ -88,25 +96,25 @@ TEST(StateTranslator, StoppedWithoutTokenMeansTornDown) {
 TEST(StateTranslator, ErrorsCarrySourceAndFaultedToken) {
   StreamState state(AudioGraphNodeState::ERROR,
                     StreamError{StreamErrorSource::HTTP_STREAM, "410 gone"});
-  pb::PlaybackStateChanged out;
+  renderer_pb::PlaybackStateChanged out;
   fillPlaybackStateChanged(state, "tok-7", 1234, out);
 
-  EXPECT_EQ(out.state(), pb::PLAYBACK_STATE_ERROR);
+  EXPECT_EQ(out.state(), renderer_pb::PLAYBACK_STATE_ERROR);
   ASSERT_TRUE(out.has_error());
-  EXPECT_EQ(out.error().source(), pb::ERROR_SOURCE_HTTP_STREAM);
+  EXPECT_EQ(out.error().source(), renderer_pb::ERROR_SOURCE_HTTP_STREAM);
   EXPECT_EQ(out.error().message(), "410 gone");
   EXPECT_EQ(out.error().source_token(), "tok-7");
 }
 
 TEST(StateTranslator, NegativePositionIsClampedNotWrapped) {
   StreamState state(AudioGraphNodeState::STREAMING, -1);
-  pb::PlaybackStateChanged out;
+  renderer_pb::PlaybackStateChanged out;
   fillPlaybackStateChanged(state, std::nullopt, 0, out);
   EXPECT_EQ(out.position_ms(), 0u);
 }
 
 TEST(StateTranslator, FormatCarriesEveryField) {
-  pb::AudioFormat out;
+  renderer_pb::AudioFormat out;
   fillAudioFormat(StreamAudioFormat{44100, 2, 16, AudioSampleFormat::PCM16_LE},
                   out);
 
@@ -124,7 +132,7 @@ TEST(StateTranslator, TheDurationIsTheStreamsNotTheFormats) {
   info.streamSize = 9876543;
 
   StreamState state(AudioGraphNodeState::STREAMING, 0, info);
-  pb::PlaybackStateChanged out;
+  renderer_pb::PlaybackStateChanged out;
   fillPlaybackStateChanged(state, "tok-7", 1234, out);
 
   ASSERT_TRUE(out.has_duration_ms());
@@ -139,7 +147,7 @@ TEST(StateTranslator, AStreamOfUnknownLengthReportsNoDuration) {
   info.streamSize = 0;
 
   StreamState state(AudioGraphNodeState::STREAMING, 0, info);
-  pb::PlaybackStateChanged out;
+  renderer_pb::PlaybackStateChanged out;
   fillPlaybackStateChanged(state, "tok-7", 1234, out);
 
   EXPECT_TRUE(out.has_format());
@@ -154,7 +162,7 @@ TEST(StateTranslator, AStateCarriesTheFormatItWasReportedWith) {
 
   // A pause carries the format forward, so it is not a playing-only field.
   StreamState state(AudioGraphNodeState::PAUSED, 1000, info);
-  pb::PlaybackStateChanged out;
+  renderer_pb::PlaybackStateChanged out;
   fillPlaybackStateChanged(state, "tok-7", 1234, out);
 
   ASSERT_TRUE(out.has_format());
@@ -166,7 +174,7 @@ TEST(StateTranslator, AStateWithNoFormatSaysSoRatherThanSendingAnEmptyOne) {
   StreamState state(AudioGraphNodeState::STOPPED);
   ASSERT_FALSE(state.streamInfo.has_value());
 
-  pb::PlaybackStateChanged out;
+  renderer_pb::PlaybackStateChanged out;
   fillPlaybackStateChanged(state, std::nullopt, 1234, out);
 
   EXPECT_FALSE(out.has_format());
@@ -184,7 +192,7 @@ TEST(StateTranslator, TheDeviceFormatRidesAlongsideTheDecodedOne) {
       StreamAudioFormat{44100, 2, 24, AudioSampleFormat::PCM32_LE},
       DeviceAccess::Exclusive};
 
-  pb::PlaybackStateChanged out;
+  renderer_pb::PlaybackStateChanged out;
   fillPlaybackStateChanged(state, "tok-7", 1234, out);
 
   ASSERT_TRUE(out.has_format());
@@ -193,7 +201,7 @@ TEST(StateTranslator, TheDeviceFormatRidesAlongsideTheDecodedOne) {
             sampleFormatToString(AudioSampleFormat::PCM24_LE));
   EXPECT_EQ(out.device_info().format().sample_format(),
             sampleFormatToString(AudioSampleFormat::PCM32_LE));
-  EXPECT_EQ(out.device_info().access(), pb::DEVICE_ACCESS_EXCLUSIVE);
+  EXPECT_EQ(out.device_info().access(), renderer_pb::DEVICE_ACCESS_EXCLUSIVE);
 }
 
 TEST(StateTranslator, ADeviceThatIsNotOpenReportsNoFormat) {
@@ -205,7 +213,7 @@ TEST(StateTranslator, ADeviceThatIsNotOpenReportsNoFormat) {
   StreamState state(AudioGraphNodeState::STREAMING, 0, info);
   ASSERT_FALSE(state.deviceInfo.has_value());
 
-  pb::PlaybackStateChanged out;
+  renderer_pb::PlaybackStateChanged out;
   fillPlaybackStateChanged(state, "tok-7", 1234, out);
 
   EXPECT_TRUE(out.has_format());
@@ -221,13 +229,13 @@ TEST(StateTranslator, VolumeCarriesEveryField) {
   volume.dbValues = {-200.0, -60.0, 0.0};
   volume.controlMode = "auto";
 
-  pb::VolumeState out;
+  renderer_pb::VolumeState out;
   fillVolume(volume, out);
 
   EXPECT_TRUE(out.supported());
   EXPECT_EQ(out.current(), 42u);
   EXPECT_EQ(out.max(), 100u);
-  EXPECT_EQ(out.backend(), pb::VOLUME_BACKEND_HARDWARE);
+  EXPECT_EQ(out.backend(), renderer_pb::VOLUME_BACKEND_HARDWARE);
   ASSERT_EQ(out.db_values_size(), 3);
   EXPECT_DOUBLE_EQ(out.db_values(1), -60.0);
   EXPECT_EQ(out.control_mode(), "auto");

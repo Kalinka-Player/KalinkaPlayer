@@ -55,10 +55,10 @@ TEST(AlsaDeviceNaming, ASecondSubdeviceStaysDistinguishable) {
 
 TEST(AlsaDeviceNaming, TheAccessModeDecidesWhatTheDescriptionSays) {
   EXPECT_NE(describeAlsaPcm("hw:CARD=Headphones,DEV=0", kHwDesc)
-                .description.find("unchanged"),
+                .description.find("without conversion"),
             std::string::npos);
   EXPECT_NE(describeAlsaPcm("plughw:CARD=sndrpihifiberry,DEV=0", kHifiberryDesc)
-                .description.find("software conversion"),
+                .description.find("Convert audio only when"),
             std::string::npos);
 }
 

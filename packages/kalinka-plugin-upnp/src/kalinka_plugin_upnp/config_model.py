@@ -25,8 +25,7 @@ class UpnpConfig(ModuleConfig):
         default="upnp",
         title="UPnP",
         description=(
-            "Makes Kalinka appear as a UPnP renderer on your network, so "
-            "UPnP control apps can play through the output you've selected."
+            "Play from UPnP apps through the selected renderer."
         ),
         frozen=True,
         exclude=True,
@@ -41,13 +40,16 @@ class UpnpConfig(ModuleConfig):
         min_length=1,
         max_length=100,
         title="UPnP device name",
-        description="Name shown in UPnP apps. Playback uses the renderer selected in Kalinka.",
+        description="Name shown in UPnP apps.",
         json_schema_extra={"importance": "simple"},
     )
     interface_address: str = Field(
         default="",
         title="Network interface address",
-        description="Local IPv4 address for discovery and control. Leave empty to use the default network interface.",
+        description=(
+            "Enter a local IPv4 address for UPnP, or leave empty to use the "
+            "default interface."
+        ),
     )
     port: int = Field(default=49152, ge=1024, le=65535, title="UPnP HTTP port")
 

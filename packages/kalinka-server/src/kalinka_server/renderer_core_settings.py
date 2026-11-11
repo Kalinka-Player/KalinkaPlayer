@@ -37,22 +37,21 @@ REPLAYGAIN_OPTIONS = [
     {
         "value": "disabled",
         "label": "Disabled",
-        "description": "Tracks play at the volume you set.",
+        "description": "Do not adjust loudness.",
     },
     {
         "value": "album",
         "label": "Album level",
         "description": (
-            "Each album plays at a similar loudness. Quiet and loud songs "
-            "within an album stay as they are."
+            "Match loudness across albums while preserving volume differences "
+            "within each album."
         ),
     },
     {
         "value": "track",
         "label": "Track level",
         "description": (
-            "Every track plays at a similar loudness. Good for playlists and "
-            "shuffle."
+            "Match loudness across tracks."
         ),
     },
 ]
@@ -66,6 +65,7 @@ def _enum_field(
     default: str,
     options: list[dict],
     read_only: bool,
+    help_details: str = "",
 ) -> dict:
     if read_only:
         # The page shows a read-only field as its value, not as a chosen option.
@@ -77,6 +77,7 @@ def _enum_field(
         "path": path,
         "title": title,
         "description": description,
+        "help_details": help_details,
         "type": "enum",
         "value": value,
         "default": default,
@@ -139,8 +140,8 @@ class CoreRendererSettings:
                     DEVICE_MODULE_PATH,
                     "Volume and power",
                     "The amplifier or receiver this renderer is connected to. "
-                    "Volume and power changes then go to that device, and the "
-                    "renderer plays at full level from the next track.",
+                    "Kalinka then controls its volume and power, and the renderer "
+                    "plays at full level from the next track.",
                     mapped,
                     RENDERER_ITSELF,
                     options,
@@ -164,16 +165,20 @@ class CoreRendererSettings:
         return _enum_field(
             REPLAYGAIN_PATH,
             "ReplayGain",
-            "Plays tracks at a similar loudness using their ReplayGain tags. "
-            "The volume is moved for each track and set back when playback "
-            "stops. Tracks without tags are left as they are. Does not work "
-            "with Fixed output, or with a card mixer that does not report its "
-            "volume in dB.",
+            "Match loudness using ReplayGain tags, leaving untagged tracks as they "
+            "are. Unavailable with Fixed output unless a connected device controls "
+            "the volume.",
             # Not applied without a volume it can move, whatever is saved.
             self._prefs.replaygain(renderer_id) if available else "disabled",
             "disabled",
             [dict(option) for option in REPLAYGAIN_OPTIONS],
             read_only=not available,
+            help_details=(
+                "The volume adjusts for each track and returns to its previous "
+                "level when playback stops. Fixed output does not support "
+                "ReplayGain unless a connected device controls the volume. A card "
+                "mixer must report its volume in dB."
+            ),
         )
 
     def split(self, changes: Mapping[str, Any]) -> tuple[dict, dict]:

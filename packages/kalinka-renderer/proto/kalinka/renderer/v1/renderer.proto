@@ -574,6 +574,7 @@ message ConfigField {
   optional ConfigRange range = 11;  // INT only
   string unit = 12;                 // shown beside the value, e.g. "ms"
   ConfigWidget widget = 13;
+  string help_details = 14;
 }
 
 message ConfigSection {

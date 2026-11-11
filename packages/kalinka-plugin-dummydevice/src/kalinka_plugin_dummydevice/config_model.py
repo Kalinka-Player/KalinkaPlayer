@@ -9,7 +9,7 @@ class DummydeviceConfig(ModuleConfig):
     name: str = Field(
         default="dummydevice",
         title="Dummy device",
-        description="A stand-in output device used for development.",
+        description="Stand-in connected device for development.",
         frozen=True,
         exclude=True,
     )

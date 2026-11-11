@@ -2,11 +2,26 @@ import asyncio
 
 import pytest
 
-from kalinka_server.renderer_config import RendererConfigService
+from kalinka_server.renderer_config import RendererConfigService, snapshot_to_dict
 from kalinka_server.renderer_proto import renderer_pb2 as pb
 from kalinka_server.renderer_registry import RendererRegistry, RendererUnavailable
 
 RENDERER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+
+
+@pytest.mark.parametrize("details", ["", "Extra setup information."])
+def test_detailed_help_survives_the_renderer_protocol(details):
+    snapshot = pb.ConfigSnapshot()
+    field = snapshot.sections.add().fields.add()
+    field.path = "output.device"
+    field.description = "Choose an output."
+    field.help_details = details
+    received = pb.ConfigSnapshot.FromString(snapshot.SerializeToString())
+
+    exposed = snapshot_to_dict(received)["sections"][0]["fields"][0]
+
+    assert exposed["description"] == "Choose an output."
+    assert exposed["help_details"] == details
 
 
 class FakeWs:
