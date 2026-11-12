@@ -25,7 +25,7 @@ The steps:
 
 If you are not sure, use an image. It is a complete system with Kalinka and the [supervisor](#the-supervisor) already installed, and needs no typing.
 
-Kalinka needs a 64-bit system. Playback and the library run in 512 MB of memory; 1 GB is comfortable. Smart search needs 2 GB or more, so leave it off on a Pi 3 or Zero 2 W. See the [requirements](../README.md#-requirements).
+Kalinka needs a 64-bit system. Playback and the library run in 512 MB of memory; 1 GB is comfortable. Smart search needs 2 GB or more, so leave it off on a Pi 3 or Zero 2 W. See the [requirements](../README.md#requirements).
 
 ### A. Raspberry Pi image
 
