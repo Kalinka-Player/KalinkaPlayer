@@ -9,8 +9,11 @@
 
 Bit-perfect playback of your own music library, with search that runs on the device. No cloud, no subscription, no account.
 
+[![Release](https://github.com/Kalinka-Player/KalinkaPlayer/actions/workflows/release.yml/badge.svg)](https://github.com/Kalinka-Player/KalinkaPlayer/actions/workflows/release.yml)
+[![Renderer release](https://github.com/Kalinka-Player/KalinkaPlayer/actions/workflows/renderer-release.yml/badge.svg)](https://github.com/Kalinka-Player/KalinkaPlayer/actions/workflows/renderer-release.yml)
 [![Latest release](https://img.shields.io/github/v/release/Kalinka-Player/KalinkaPlayer?filter=kalinka-v*&label=release&color=2ea043)](https://github.com/Kalinka-Player/KalinkaPlayer/releases/latest)
 [![License](https://img.shields.io/badge/license-GPL--3.0--or--later-2ea043)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-arm64%20%7C%20amd64-2ea043)](#requirements)
 [![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/madenvel)
 
 **[Flash an image](https://github.com/Kalinka-Player/KalinkaPlayer/releases?q=kalinka-image-v&expanded=true) · [Releases](https://github.com/Kalinka-Player/KalinkaPlayer/releases/latest) · [Control app](https://github.com/Kalinka-Player/KalinkaAI) · [kalinkaplayer.com](https://kalinkaplayer.com) · [Help test it](https://github.com/Kalinka-Player/KalinkaPlayer/discussions/133)**
@@ -21,9 +24,11 @@ Bit-perfect playback of your own music library, with search that runs on the dev
 
 ## What is it
 
-Kalinka is a music player for a Raspberry Pi or any other Linux computer, controlled from a phone, a desktop computer or a web browser. It has two parts. The server keeps the music library and the play queue. The renderer plays the sound, writing to ALSA directly. A renderer is installed with the server, and more can run on other computers on the network, such as a Pi next to each amplifier in the house.
+Kalinka is a music player for home-built streamers. It runs on a dedicated computer or a single-board computer such as a Raspberry Pi 4, with or without a display, and is controlled from a phone, a desktop computer or a web browser.
 
-The library is not uploaded anywhere. Kalinka needs no account and sends no telemetry, and its search by description runs on the device. Its optional internet requests are metadata lookups that repair tags (MusicBrainz, Wikidata, Deezer and the Cover Art Archive), an hourly check for new releases, and the public plugin catalog, which is fetched without an account. The catalog's [configuration and trust model](docs/plugin-catalog-design.md#public-access-and-hosting) are documented separately.
+It indexes and plays a music library kept on the streamer itself or on a NAS, and plays streaming services through plugins.
+
+Kalinka is not based on MPD. It has its own renderer, which plays directly to ALSA.
 
 ## Installation
 
