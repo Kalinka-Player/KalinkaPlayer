@@ -7,113 +7,110 @@
 
 ### Self-hosted Hi-Fi for Raspberry Pi and Linux
 
-Bit-perfect playback from your own library, on your own hardware — with on-device semantic search. No cloud, no subscription, no account.
+Bit-perfect playback of your own music library, with search that runs on the device. No cloud, no subscription, no account.
 
-[![Release](https://github.com/Kalinka-Player/KalinkaPlayer/actions/workflows/release.yml/badge.svg)](https://github.com/Kalinka-Player/KalinkaPlayer/actions/workflows/release.yml)
-[![Renderer release](https://github.com/Kalinka-Player/KalinkaPlayer/actions/workflows/renderer-release.yml/badge.svg)](https://github.com/Kalinka-Player/KalinkaPlayer/actions/workflows/renderer-release.yml)
 [![Latest release](https://img.shields.io/github/v/release/Kalinka-Player/KalinkaPlayer?filter=kalinka-v*&label=release&color=2ea043)](https://github.com/Kalinka-Player/KalinkaPlayer/releases/latest)
 [![License](https://img.shields.io/badge/license-GPL--3.0--or--later-2ea043)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-arm64%20%7C%20amd64-2ea043)](#-requirements)
 [![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/madenvel)
 
-**[💿 Flash an image](https://github.com/Kalinka-Player/KalinkaPlayer/releases?q=kalinka-image-v&expanded=true) · [📦 Releases](https://github.com/Kalinka-Player/KalinkaPlayer/releases/latest) · [📱 Control app](https://github.com/Kalinka-Player/KalinkaAI) · [🌐 kalinkaplayer.com](https://kalinkaplayer.com) · [💬 Help test it](https://github.com/Kalinka-Player/KalinkaPlayer/discussions/133)**
+**[Flash an image](https://github.com/Kalinka-Player/KalinkaPlayer/releases?q=kalinka-image-v&expanded=true) · [Releases](https://github.com/Kalinka-Player/KalinkaPlayer/releases/latest) · [Control app](https://github.com/Kalinka-Player/KalinkaAI) · [kalinkaplayer.com](https://kalinkaplayer.com) · [Help test it](https://github.com/Kalinka-Player/KalinkaPlayer/discussions/133)**
 
 <img src="docs/images/app-screenshot.png" alt="Kalinka desktop app showing Jamendo’s new releases alongside the current track and play queue" width="820">
 
 </div>
 
----
-
 ## What is it
 
-Kalinka turns a Raspberry Pi or any Linux computer into a music player you control from your phone, desktop or a browser. The server holds your library; a separate **renderer** does the playing, talking to ALSA directly — so it can sit on the same machine, or on a Pi next to each amplifier in the house.
+Kalinka is a music player for a Raspberry Pi or any other Linux computer, controlled from a phone, a desktop computer or a web browser. It has two parts. The server keeps the music library and the play queue. The renderer plays the sound, writing to ALSA directly. A renderer is installed with the server, and more can run on other computers on the network, such as a Pi next to each amplifier in the house.
 
-Your files stay yours — nothing is uploaded, there is no account and no telemetry, and the semantic search runs on the device. Optional internet requests cover metadata lookups that repair your tags (MusicBrainz, Wikidata, Deezer, Cover Art Archive), hourly checks for published releases, and the public plugin catalog, from which the app installs, updates and removes plugins. Fetching requires no account; see the [catalog configuration and trust model](docs/plugin-catalog-design.md#public-access-and-hosting).
+The library is not uploaded anywhere. Kalinka needs no account and sends no telemetry, and its search by description runs on the device. Its optional internet requests are metadata lookups that repair tags (MusicBrainz, Wikidata, Deezer and the Cover Art Archive), an hourly check for new releases, and the public plugin catalog, which is fetched without an account. The catalog's [configuration and trust model](docs/plugin-catalog-design.md#public-access-and-hosting) are documented separately.
 
 ## Installation
 
-1. **Install the server.** On a Raspberry Pi or a spare PC, [flash a ready-made image](docs/installation.md#install-the-server): Kalinka is already on it and plays as soon as the machine starts. On a machine that already runs Debian 13, Raspberry Pi OS (64-bit, Trixie), DietPi or Ubuntu 24.04, one command installs everything:
+1. Install the server. On a Raspberry Pi or a spare PC, [flash a ready-made image](docs/installation.md#install-the-server): Kalinka is already on it and plays as soon as the machine starts. On a machine that already runs Debian 13, Raspberry Pi OS (64-bit, Trixie), DietPi or Ubuntu 24.04, one command installs everything:
 
    ```bash
    sudo apt install -y ca-certificates curl python3
    curl -fsSL https://kalinkaplayer.com/install.sh | sudo bash
    ```
 
-   It runs in a [virtual machine](docs/installation.md#c-virtual-machine) too.
+   Kalinka also runs in a [virtual machine](docs/installation.md#c-virtual-machine).
 
-2. **Open a remote.** Install the [Kalinka app](https://github.com/Kalinka-Player/KalinkaAI#-install) (Android, Windows, Linux), which finds the server by itself, or open `http://<server-address>:8000` in any browser.
-3. **Follow the setup in the app.** It asks where your music is and where the sound should come out. There are no config files to edit.
-4. **Add your music, and more outputs if you like.** [Copy music onto it or point it at a NAS](docs/installation.md#put-your-music-on-it), and [put a renderer on any Linux computer next to an amplifier, or play in a browser tab](docs/installation.md#add-more-outputs).
+2. Open a remote. Install the [Kalinka app](https://github.com/Kalinka-Player/KalinkaAI#install) for Android, Windows, macOS or Linux, which finds the server by itself, or open `http://<server-address>:8000` in a browser.
+3. Follow the setup the app shows. It asks where the music is and where the sound should come out. There are no configuration files to edit.
+4. Add music, and more outputs if needed. [Copy music onto the server or point it at a NAS](docs/installation.md#put-your-music-on-it). For another room, [put a renderer on a Linux computer next to an amplifier, or play in a browser tab](docs/installation.md#add-more-outputs).
 
-**[Full installation guide →](docs/installation.md)** It covers the images, virtual machines, Wi-Fi and logins, the supervisor, updates and troubleshooting.
+A server that is not on the network yet can be set up from a laptop over its own temporary Wi-Fi. Join `Kalinka-Setup-XXXX` with the password `kalinka-setup`, stay connected although it has no internet, and open `http://192.168.4.1`. [Connect your streamer to the network](docs/installation.md#connect-your-streamer-to-the-network) has the full steps, and covers Bluetooth setup from the app.
 
-**Setting up Wi-Fi from a laptop?** Join `Kalinka-Setup-XXXX` with password **`kalinka-setup`**, stay connected without internet, then open **`http://192.168.4.1`**. [The full steps](docs/installation.md#connect-your-streamer-to-the-network) also cover Bluetooth setup from the app.
+The [installation guide](docs/installation.md) covers the rest: the images, virtual machines, Wi-Fi and logins, the supervisor, updates and troubleshooting.
 
-## ✨ What it does
+## Features
 
-| | |
-|---|---|
-| 🎵 **Your library** | Indexes your directories, watches them for changes, and repairs the metadata — MusicBrainz, Wikidata and Deezer, plus AcoustID fingerprinting once you add a key of your own, falling back to filename heuristics. Artwork is extracted, cached, and generated when there is none. |
-| 🔍 **Smart Search** | Ask for *"dreamy ambient guitar"* and get matching tracks. My Library analyses the audio itself with a CLAP model; Jamendo matches a prebuilt index of track descriptions. Opt-in per plugin. |
-| 🔊 **Bit-perfect playback** | A C++ renderer with direct ALSA access. FLAC and WAV include 24-bit/96 kHz and 192 kHz playback; WAV also supports 32-bit PCM and float on compatible outputs. MP3 and Ogg Vorbis are supported too. Gapless between tracks of the same format; samples are not altered unless you turn on software volume. Mono and stereo DSF and uncompressed DFF play as native DSD or DoP through a compatible direct ALSA output at fixed volume, once DSD output is selected in the renderer's settings. |
-| 🏠 **Renderers anywhere** | Put a renderer on any computer on your network and it appears as an output. They find the server over mDNS and upgrade themselves. |
-| 🌐 **Browser player** | The server serves a web player, so any browser is both a remote control and an output. |
-| 🧩 **Plugins** | Sources, enrichers and device integrations are ordinary Python packages discovered at runtime. My Library, Jamendo and a [UPnP renderer input](packages/kalinka-plugin-upnp/README.md) ship in the box; MusicCast handles Yamaha volume and power. |
-| 🪄 **Guided first run** | The app and the browser player walk you through the first setup. Nothing to edit on the server itself. |
-| ⚙️ **Live configuration** | Everything stays editable afterwards from the app, with the common settings up front and an `about:config`-style search for the rest. |
-| 🔄 **Updates itself** | The server checks published releases hourly; with auto-upgrade on it installs during quiet hours while playback is stopped, otherwise the app offers a button. Server, plugins, browser player and renderers move together — renderers first, so the pair never lands on a combination that cannot play. |
+### Library
 
-## 💻 Requirements
+Kalinka indexes the music folders it is pointed at and watches them for changes. It repairs their metadata from MusicBrainz, Wikidata and Deezer, and identifies recordings by AcoustID fingerprint once an AcoustID key is added. Where no source has a match, it falls back to the file names. Cover art is extracted and cached, and generated where there is none.
 
-A **64-bit OS is required** — packages are built for arm64 and amd64 only. On Raspberry Pi that means the Kalinka image, Raspberry Pi OS (64-bit) or DietPi (64-bit); the Pi 2, Pi 1 and original Pi Zero are not supported.
+### Smart Search
+
+Search accepts a description of the music as well as a name: *"dreamy ambient guitar"* returns tracks that fit. In My Library, a CLAP model analyses the audio itself. For Jamendo, the query is matched against a prebuilt index of track descriptions. Smart Search is opt-in and is turned on per plugin.
+
+### Playback
+
+The renderer is a C++ program with direct ALSA access. It plays FLAC, WAV, MP3 and Ogg Vorbis. FLAC and WAV playback includes 24-bit/96 kHz and 24-bit/192 kHz, and WAV also plays as 32-bit PCM and float on outputs that accept them. Consecutive tracks of the same format play without a gap. Mono and stereo DSD files, in DSF or uncompressed DFF, play as native DSD or DoP through a direct ALSA output that supports it, at fixed volume, once DSD output is selected in the renderer's settings.
+
+The renderer does not alter the samples unless software volume is turned on. Whether they reach the DAC unchanged depends on the ALSA device it plays to: a `hw:` device takes them as they are, `plughw:` resamples and reformats whatever the card does not accept, and `default` or a sound server mixes them with other audio. The app shows whether the current route is 1:1. A resampler configured elsewhere in the ALSA stack is invisible to it: playback should still work, but may no longer be bit-perfect.
+
+Playback in a browser goes through the browser's audio stack, so it is not gapless and not guaranteed to be bit-perfect.
+
+The renderer was developed and tested on a Raspberry Pi 4 with a HiFiBerry Digi2 card set up according to its manual. It should work with any ALSA-compatible card, though some may need workarounds.
+
+### Outputs
+
+A renderer installed on any Linux computer on the network appears in the app as an output. Renderers find the server over mDNS and upgrade themselves. The server also serves a web player, so a browser can be both a remote control and an output.
+
+### Plugins
+
+Music sources, metadata enrichers and device integrations are plugins: ordinary Python packages that the server discovers at runtime. My Library, Jamendo and a [UPnP renderer input](packages/kalinka-plugin-upnp/README.md) are included, and a MusicCast plugin controls the volume and power of Yamaha devices. The app installs, updates and removes further plugins from the public catalog.
+
+### Settings
+
+The app and the browser player guide the first setup, and every setting stays editable from the app afterwards. Common settings come first, and an `about:config`-style search reaches the rest.
+
+### Updates
+
+The server checks for new releases every hour. With auto-upgrade on, it installs them during quiet hours while playback is stopped. Otherwise the app offers an update button. The server, plugins, browser player and renderers are upgraded together, renderers first, so a server and a renderer never end up on versions that cannot play together.
+
+## Requirements
+
+Kalinka needs a 64-bit operating system: packages are built for arm64 and amd64 only. On a Raspberry Pi that means the Kalinka image, Raspberry Pi OS (64-bit) or DietPi (64-bit). The Pi 1, Pi 2 and original Pi Zero are not supported.
 
 | Configuration | Minimum hardware | Notes |
 |---|---|---|
-| Playback + library | Raspberry Pi 3 / Zero 2 W, or any arm64/amd64 computer with **512 MB RAM** | Headless OS recommended at 512 MB; enable swap for the first install and large scans. 1 GB is comfortable. |
-| With Smart Search | Raspberry Pi 4B with **2 GB RAM**, or any arm64/amd64 computer with 2 GB+ | Measured on a 4 GB Pi 4B: ~1.15 GB resident with the library indexed and idle, and ~1.5 GB at the peak — the embedding pass, which loads a second model on top and is CPU-heavy. 2 GB should therefore work; 4 GB is what has actually been tested end to end. Allow ~1 GB extra disk. |
+| Playback and library | Raspberry Pi 3 or Zero 2 W, or any arm64 or amd64 computer with 512 MB of RAM | At 512 MB, use a headless OS and enable swap for the first install and for large scans. 1 GB is comfortable. |
+| With Smart Search | Raspberry Pi 4B with 2 GB of RAM, or any arm64 or amd64 computer with 2 GB or more | Measured on a 4 GB Pi 4B: about 1.15 GB in use with the library indexed and idle, and about 1.5 GB at the peak, during the CPU-heavy embedding pass. 2 GB should therefore be enough, but only 4 GB has been tested end to end. Allow about 1 GB of extra disk space. |
 
-Smart Search can be toggled per install, so you can start small and enable it after moving the library to a bigger board.
+Smart Search can be switched on later, so an installation can start on a small board and enable it once the library has moved to a bigger one.
 
-## 🔊 About bit-perfect
+## Feedback
 
-Audio is played by a renderer, not by the server, so gapless and bit-perfect behaviour depend on which renderer you use.
+Kalinka is a young project, and many of its problems only show up on other people's hardware and with other people's music. If you try it, say how it went in the [testing thread](https://github.com/Kalinka-Player/KalinkaPlayer/discussions/133): what it ran on, where the music is stored, what it played through, and where you got stuck. Setup questions belong there too. Something you can reproduce is easier to act on as an [issue](https://github.com/Kalinka-Player/KalinkaPlayer/issues).
 
-The default one (`kalinka-renderer`, C++) talks to the sound card directly. It does not alter the audio unless specifically instructed to — software volume being the one thing that does. The app shows whether the current route is 1:1: a `hw:` device takes the samples unchanged, `plughw:` resamples and reformats whatever the card will not accept, and `default` or a sound server mixes with everything else. What it cannot see is a resampler configured elsewhere in your ALSA stack.\*
+## Development
 
-In-browser playback goes through the browser's audio stack, so there is no gapless and no bit-perfect guarantee there — it is a convenience path.
+[CONTRIBUTING.md](CONTRIBUTING.md) says which issues and pull requests are accepted, and carries the project's disclosure on AI-assisted development.
 
-## 📖 Documentation
-
-| | |
-|---|---|
-| [Installation](docs/installation.md) | Installing the server, connecting it to your network, adding music and more outputs, the supervisor, updates, troubleshooting |
-
-## 🙋 Help test it
-
-Kalinka is young, and the interesting problems are the ones that only happen on someone else's hardware, with someone else's music. If you try it, say how it went in [the testing thread](https://github.com/Kalinka-Player/KalinkaPlayer/discussions/133) — what you ran it on, where your music lives, what you played it through, and where you got stuck. Setup questions belong there too; something you can reproduce is easier to act on as an [issue](https://github.com/Kalinka-Player/KalinkaPlayer/issues).
-
-## 🛠️ For developers
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for what issues and pull requests are accepted, and for the project's disclosure on AI-assisted development.
-
-| | |
-|---|---|
-| [Architecture](docs/architecture.md) | How the pieces fit, the package layout, the REST/WS API, configuration and tuning |
-| [Development](docs/development.md) | Building the Debian packages, running from source, tests |
-| [Renderer design](docs/native-renderer-design.md) | The contract a renderer implements |
-| [Plugin catalog design](docs/plugin-catalog-design.md) | Proposed discovery, installation, compatibility checks, and updates |
-| [TIDAL plugin](https://github.com/Kalinka-Player/kalinka-plugin-tidal) | Account sign-in, discovery catalogs, collection browsing, and lossless streaming |
-| [Appliance images](packages/kalinka-image/README.md) | How the ready-to-flash images are built |
-| [Releasing](RELEASING.md) | Version model and release procedure |
+- [Architecture](docs/architecture.md): how the pieces fit, the package layout, the REST and WebSocket API, configuration and tuning
+- [Development](docs/development.md): building the Debian packages, running from source, tests
+- [Renderer design](docs/native-renderer-design.md): the contract a renderer implements
+- [Plugin catalog design](docs/plugin-catalog-design.md): discovery, installation, compatibility checks and updates
+- [TIDAL plugin](https://github.com/Kalinka-Player/kalinka-plugin-tidal): account sign-in, discovery catalogs, collection browsing and lossless streaming
+- [Appliance images](packages/kalinka-image/README.md): how the ready-to-flash images are built
+- [Releasing](RELEASING.md): the version model and the release procedure
 
 ## License
 
-Source code is **GPL-3.0-or-later** — see [LICENSE](LICENSE).
+The source code is under **GPL-3.0-or-later**: see [LICENSE](LICENSE).
 
-The visual assets are not. The Kalinka logo, icon and related artwork under `docs/images/` are covered by the [Kalinka Asset License](LICENSE-ASSETS) and need the author's permission to use. Fork the code freely; put your own branding on it.
+The visual assets are not. The Kalinka logo, icon and related artwork under `docs/images/` are covered by the [Kalinka Asset License](LICENSE-ASSETS) and need the author's permission to use. Fork the code freely, but put your own branding on it.
 
 Third-party components and their terms are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
-
----
-
-\* The audio engine uses ALSA directly and relies on its configuration. If automatic resampling is configured it will likely affect the path but should still work. Developed and tested on a Raspberry Pi 4 with a HiFiBerry Digi2 card configured per its manual; it should work with any ALSA-compatible card, though some may need extra quirks.
