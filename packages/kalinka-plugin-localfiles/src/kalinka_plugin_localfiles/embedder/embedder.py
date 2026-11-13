@@ -37,7 +37,12 @@ from ..embedding_utils import (
 from ..ipc import reply
 from ..pip_utils import ensure_package
 from ..storage import build_resolver, library_roots, storage_failure
-from ..worker_utils import configure_worker_logging, set_proc_title, sleep_interruptible
+from ..worker_utils import (
+    configure_worker_logging,
+    lower_priority,
+    set_proc_title,
+    sleep_interruptible,
+)
 from .embedder_db import AsyncEmbedderDb
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -790,6 +795,7 @@ def main(
     set_proc_title("kal-embedder")
 
     configure_worker_logging(logger_queue)
+    lower_priority()
 
     asyncio.run(
         async_main(

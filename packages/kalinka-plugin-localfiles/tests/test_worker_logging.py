@@ -46,6 +46,9 @@ def test_workers_skip_packet_formatting_but_forward_warnings(
 
     monkeypatch.setattr(worker, "async_main", probe)
     monkeypatch.setattr(worker, "set_proc_title", lambda name: None)
+    # A worker's priority, once lowered, could not be raised back for the
+    # rest of this test run.
+    monkeypatch.setattr(worker, "lower_priority", lambda: None, raising=False)
     try:
         # Reproduce a fresh spawned worker: no inherited logger overrides.
         for logger in loggers:

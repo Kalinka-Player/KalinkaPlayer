@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ctypes
 import functools
 import gc
@@ -10,6 +11,7 @@ import inspect
 import logging
 import logging.handlers
 import multiprocessing
+import os
 import queue
 import random
 import sqlite3
@@ -124,6 +126,33 @@ def stage_status(
         "failed": failed,
         "coverage_pct": round(100.0 * done / total, 1) if total else 0.0,
     }
+
+
+# Background work waits for whatever runs at normal priority.
+BACKGROUND_NICE = 10
+
+
+def lower_priority() -> None:
+    """Run this worker after everything at normal priority, the renderer
+    and the server streaming to it among them. What the worker answers,
+    such as the embedder's encoding of search queries, waits too, but only
+    while normal-priority work fills every core.
+
+    Linux keeps a priority per thread, so this lowers every thread the
+    worker has, including those its imports started (numpy's BLAS pool),
+    and a thread started later takes its creator's. A worker calls it
+    before starting its own threads. A thread already below this priority
+    stays there.
+    """
+    try:
+        for name in os.listdir("/proc/self/task"):
+            thread = int(name)
+            # A thread that ended since the listing has nothing to lower.
+            with contextlib.suppress(ProcessLookupError):
+                if os.getpriority(os.PRIO_PROCESS, thread) < BACKGROUND_NICE:
+                    os.setpriority(os.PRIO_PROCESS, thread, BACKGROUND_NICE)
+    except OSError as e:
+        logger.warning("could not lower this worker's priority: %s", e)
 
 
 # Linux prctl op for setting the kernel-level process name (visible as

@@ -17,7 +17,7 @@ from typing import Optional
 
 from .config_model import LocalFilesConfig
 from .scan_control import ScanControl
-from .worker_utils import configure_worker_logging, set_proc_title
+from .worker_utils import configure_worker_logging, lower_priority, set_proc_title
 from .indexer import indexer as indexer_mod
 from .indexer.indexer_db import AsyncIndexerDb
 from .enricher import enricher as enricher_mod
@@ -98,6 +98,7 @@ def main(
     set_proc_title("kal-librarian")
 
     configure_worker_logging(logger_queue)
+    lower_priority()
 
     try:
         asyncio.run(
