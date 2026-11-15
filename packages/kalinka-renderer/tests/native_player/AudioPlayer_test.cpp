@@ -42,7 +42,7 @@ protected:
   }
 
   Config withOverrides(const Config &overrides) const {
-    Config merged = config;
+    Config merged = withTestDsp(config);
     for (const auto &[key, value] : overrides) {
       merged.insert_or_assign(key, value);
     }

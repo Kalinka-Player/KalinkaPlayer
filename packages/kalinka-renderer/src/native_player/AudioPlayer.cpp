@@ -6,8 +6,10 @@
 #include "Config.h"
 #include "ContainerStreamDecoder.h"
 #include "DashStreamDecoder.h"
+#include "DelayLine.h"
 #include "DsdContainer.h"
 #include "DsdFormat.h"
+#include "DspStage.h"
 #include "FileInputNode.h"
 #include "FlacStreamDecoder.h"
 #include "Log.h"
@@ -42,6 +44,13 @@ const size_t AAC_BUFFER_SIZE = 1536000;
 const size_t HTTP_BUFFER_SIZE = 768000;
 
 const size_t CHUNK_SIZE = HTTP_BUFFER_SIZE / 2;
+
+// `dsp.delay_ms` stands in for a filter's latency until real stages exist.
+std::unique_ptr<DspProcessor> dspProcessorFor(const Config &config) {
+  const auto delay =
+      std::chrono::milliseconds(value_or(config, "dsp.delay_ms", 0));
+  return delay.count() > 0 ? std::make_unique<DelayLine>(delay) : nullptr;
+}
 
 bool isInvalidState(AudioGraphNodeState state) {
   return state == AudioGraphNodeState::FINISHED ||
@@ -298,7 +307,9 @@ struct StreamNodes {
 AudioPlayer::AudioPlayer(const Config &config)
     : config(config), streamConfig(config),
       audioEmitter(std::make_shared<AlsaAudioEmitter>(config)),
-      streamSwitcher(std::make_shared<AudioStreamSwitcher>()) {
+      streamSwitcher(std::make_shared<AudioStreamSwitcher>()),
+      dspStage(std::make_shared<DspStage>(dspProcessorFor(config))) {
+  dspStage->connectTo(streamSwitcher);
   std::erase_if(streamConfig,
                 [](const auto &entry) { return !isStreamKey(entry.first); });
   if (value_or(config, "output.dsd_mode", std::string("disabled")) !=
@@ -371,7 +382,7 @@ void AudioPlayer::append(StreamId id, const std::string &url,
                 startOffsetMs);
   StreamNodes newStream(id, url, currentStreamConfig(), format, startOffsetMs);
   streamSwitcher->connectTo(newStream.nodeChain.back());
-  audioEmitter->connectTo(streamSwitcher);
+  audioEmitter->connectTo(dspStage);
   streamNodesList.emplace_back(std::move(newStream));
 }
 
@@ -380,17 +391,22 @@ void AudioPlayer::remove(StreamId id) {
                              [id](const StreamNodes &s) { return s.id == id; });
   if (stream != streamNodesList.end()) {
     streamSwitcher->disconnect(stream->nodeChain.back());
+    dspStage->discard(id);
     streamNodesList.erase(stream);
   } else {
     spdlog::warn("Stream id={} not found", id);
   }
 }
 
-void AudioPlayer::clearAll() { disconnectAllStreams(); }
+void AudioPlayer::clearAll() {
+  disconnectAllStreams();
+  dspStage->discardAll();
+}
 
 void AudioPlayer::stop() {
-  audioEmitter->disconnect(streamSwitcher);
+  audioEmitter->disconnect(dspStage);
   disconnectAllStreams();
+  dspStage->discardAll();
 }
 
 void AudioPlayer::pause() { audioEmitter->pause(true); }

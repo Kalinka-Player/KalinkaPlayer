@@ -1,5 +1,9 @@
 #include <gtest/gtest.h>
 
+#include "AudioStreamSwitcher.h"
+#include "Config.h"
+#include "DelayLine.h"
+#include "DspStage.h"
 #include "StateMonitor.h"
 #include "StreamState.h"
 
@@ -33,6 +37,47 @@ std::string testFile(const std::string &name) {
 std::string testDevice() {
   const char *configured = std::getenv("KALINKA_TEST_ALSA_DEVICE");
   return configured != nullptr ? configured : "null";
+}
+
+// Set KALINKA_TEST_DSP_DELAY_MS to send playback through a DSP stage that
+// holds the audio back that long; 0 is the stage with nothing in it.
+std::optional<int> testDspDelayMs() {
+  const char *configured = std::getenv("KALINKA_TEST_DSP_DELAY_MS");
+  return configured != nullptr ? std::optional<int>(std::atoi(configured))
+                               : std::nullopt;
+}
+
+Config withTestDsp(Config config) {
+  if (const auto delay = testDspDelayMs()) {
+    config["dsp.delay_ms"] = std::to_string(*delay);
+  }
+  return config;
+}
+
+// The node a sink reads: @p source, behind the DSP stage when one is asked for.
+std::shared_ptr<AudioGraphOutputNode>
+throughTestDsp(std::shared_ptr<AudioGraphOutputNode> source) {
+  const auto delay = testDspDelayMs();
+  if (!delay) {
+    return source;
+  }
+  auto stage = std::make_shared<DspStage>(
+      *delay > 0 ? std::make_unique<DelayLine>(std::chrono::milliseconds(*delay))
+                 : nullptr);
+  stage->connectTo(std::move(source));
+  return stage;
+}
+
+// Removes @p node from @p switcher as AudioPlayer does, dropping whatever the
+// stage in front of the sink still holds of it.
+void removeStream(AudioStreamSwitcher &switcher,
+                  const std::shared_ptr<AudioGraphOutputNode> &node,
+                  const std::shared_ptr<AudioGraphOutputNode> &output) {
+  switcher.disconnect(node);
+  if (auto stage = std::dynamic_pointer_cast<DspStage>(output);
+      stage && node->streamId()) {
+    stage->discard(*node->streamId());
+  }
 }
 
 // Whether call() returns within the timeout. On a timeout the call is left
