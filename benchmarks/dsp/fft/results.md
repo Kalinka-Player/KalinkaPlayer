@@ -273,7 +273,8 @@ library's version string confirms `sse2-avx-avx2-avx2_128`.
 
 ## Recommendation
 
-**PFFFT (marton78 fork, pinned release) vendored into the renderer**, with the
+**PFFFT (marton78 fork, pinned release), fetched at build time and built into
+the renderer**, with the
 spectra kept in its unordered layout, multiplied with
 `pffft_zconvolve_accumulate()` (`pffftd_zconvolve_accumulate()` in double),
 and float as the default precision. The
@@ -283,8 +284,9 @@ reasons, against the criteria:
   the caller. FFTW matched it here only because of the plans its planner happened
   to choose, and FFTW allocates per call as soon as it picks a buffered solver.
   pocketfft allocates on every call and is out for the audio thread.
-- **NEON in both precisions on arm64**, the platform that matters most. On
-  Debian, FFTW's double is scalar code.
+- **NEON in both precisions on arm64**, the platform that matters most, and
+  the fastest library there in both (see [Raspberry Pi 5](#raspberry-pi-5)).
+  On Debian, FFTW's double is scalar code.
 - **Built for this job.** The unordered layout and the z-domain
   multiply-accumulate exist for partitioned convolution. The unordered layout
   takes 0.89–0.92× the time of the ordered one in the generic build. Planning
@@ -295,7 +297,7 @@ reasons, against the criteria:
   the sources and the documentation of binary packages.
 - **Packaging**: it is in none of Debian 13, Ubuntu 24.04 or Fedora, but it
   is a handful of
-  C99 files with no dependencies, about as cheap to vendor as a library gets.
+  C99 files with no dependencies, about as cheap to fetch and build as a library gets.
   KFR, the other strong option, is 55 heavy translation units on x86 (see
   [Building](#building)) and is not packaged either.
 - **What it costs, x86-64**: a generic package gets SSE only. It is 1.27–1.54×
@@ -355,10 +357,61 @@ convolver.
   variants were compiling. Even at `-j1`, that much has to be free. Setting
   `KFR_ARCHS` without `avx512` should lower it, but that was not tried.
 
+## Raspberry Pi 5
+
+Two runs on 15 November 2026:
+
+- **Machine:** a Raspberry Pi 5 (Cortex-A76, 4 GB, Debian 13), built on the
+  board with its own GCC 14.2 at `-O3`.
+- **Libraries:** FFTW is Debian 13's 3.3.10-2. The others are the same pinned
+  sources as on x86, KFR included; it built at `-j2` in under two minutes
+  alongside the rest.
+- **Conditions:** pinned to core 3, governor `ondemand`, since changing it
+  needs root. The installed renderer was idle. The board reached 84 C in both
+  runs, near where a Pi 5 begins to throttle, and its throttle state could
+  not be read without root.
+
+The libraries are timed in interleaved rounds, so a change of clock affects
+them all alike; the comparison holds, but the larger absolute times may be
+slightly throttled. Forward plus inverse, ns per pair, as the range over the
+two runs where they differ by more than 3 %:
+
+| float | 512 | 1024 | 2048 | 4096 | 8192 |
+|---|---:|---:|---:|---:|---:|
+| FFTW | 2301–2536 | 4809–5275 | 10107–11108 | 22340–25071 | 50020–52906 |
+| PFFFT unordered | 1407–1553 | 2869–3120 | 6340–6824 | 13431–14861 | 32795–34356 |
+| zldsp_fft | 1661–1833 | 3647–3975 | 7693–8295 | 17247–19081 | 38876–40293 |
+| KFR | 12475–13833 | 26776–29230 | 57120–61512 | 134008–146654 | 280035–291104 |
+| pocketfft | 5021–5536 | 10361–11301 | 23108–24919 | 48644–53718 | 118388–123105 |
+
+| double | 512 | 1024 | 2048 | 4096 | 8192 |
+|---|---:|---:|---:|---:|---:|
+| FFTW | 4212 | 9148 | 20222 | 45996 | 106921 |
+| PFFFT unordered | 2758 | 5647 | 13059 | 29275 | 74154 |
+| zldsp_fft | 3365 | 7093 | 16006 | 35672 | 82898 |
+| KFR | 12865 | 27074 | 59856 | 121376 | 245948 |
+| pocketfft | 5716 | 11574 | 25713 | 55816 | 143850 |
+
+- **PFFFT's unordered layout is the fastest in both precisions at every
+  convolver size.** FFTW takes 1.5–1.7× its time in float and 1.4–1.6× in
+  double, zldsp_fft 1.2–1.3× and 1.1–1.3×.
+- **Debian 13's FFTW runs scalar code in double on arm64**, as its own report
+  of the plan says ("scalar / scalar"), which confirms the packaging finding.
+  In float it runs NEON.
+- **FFTW's `FFTW_MEASURE` planning took 20 to 190 s per size in float.** In
+  double it took 11 to 59 ms. Either way, FFTW on the Pi would need wisdom
+  saved ahead of time, or `FFTW_ESTIMATE`.
+- **FFTW allocates on every call at 131072 points in double**, both
+  directions, even without `FFTW_PRESERVE_INPUT`. PFFFT, KFR and zldsp_fft
+  never allocated. pocketfft allocated on every call, as on x86.
+- **KFR, built with GCC 14, took 8.5–9.9× PFFFT's time on the A76 in float
+  and 3.3–4.8× in double**, unlike on x86. Whether Clang would change that was not tested.
+- **Accuracy** matched x86 and the libraries agreed within about 2 dB:
+  -134 to -141 dB in float, -308 to -317 dB in double.
+
 ## Not measured
 
-- **Anything on arm64**: neither speed nor accuracy. The qemu accuracy check
-  was skipped. NEON statements come from documentation and source.
+- **A Raspberry Pi 4 (Cortex-A72)**: only the Pi 5 was measured on arm64.
 - **A Clang build**: every number is from GCC 16. KFR's documentation no
   longer prefers Clang since 7.1, but whether Clang is faster here was not
   tested.

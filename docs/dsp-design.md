@@ -4,8 +4,8 @@ Status: Phase 0, for review. Nothing here processes audio yet. What exists is
 a DSP stage that holds the audio back and changes nothing, the test and
 benchmark harness, and the measurements this note rests on. Every number is
 from a run named in [benchmarks/dsp/results.md](../benchmarks/dsp/results.md);
-nothing was measured on arm64 yet, and the
-[runbook](../benchmarks/dsp/RUNBOOK.md) is how the Pi numbers get made.
+the arm64 ones are from a Raspberry Pi 5. A Pi 4 has not been measured; the
+[runbook](../benchmarks/dsp/RUNBOOK.md) is how its numbers get made.
 
 The note covers the renderer in `packages/kalinka-renderer`. The rules in
 [`CLAUDE.md`](../CLAUDE.md) and
@@ -104,7 +104,14 @@ write and a read, about 3.6 GB/s. The same machine copies flat memory tens of
 times faster. That makes `Buffer` the largest cost in today's output path
 outside the decoder. Phase 1 replaces it with a ring (section 13).
 
-The Pi 4 numbers will come from the runbook. Expect them several times higher.
+On a Raspberry Pi 5 (Cortex-A76, Debian 13's GCC 14.2 and libraries) the
+same files cost 0.14–0.15 % and 0.50 % of a core. There the decoder's thread
+takes 91 % of the time and the ALSA thread 6–8 %. Debian 13's GCC already
+turns the deque's copies into `memmove`, so `Buffer::read` is 0.02–0.03 % of
+the samples on the Pi 5. The ring is still worth having for its lock, its
+allocations and x86, but on the Pi it is not a speed fix.
+
+A Pi 4 has not been measured. Expect its numbers to be higher still.
 
 ## 3. Placement: one stage after the switcher
 
@@ -163,10 +170,11 @@ join larger than any the continuous output makes. The FIR and PEQ errors are
 smooth enough to pass that test and still plainly audible.
 
 **The pulling thread has room.** The stage processes inline on the emitter's
-thread. Today that thread spends 18–22 % of 0.1–0.4 % of a core, and the
-kernels measured so far cost fractions of a percent per stage on x86
-(section 11). Whether a 65536-tap stereo convolver fits beside the ALSA thread
-on a Pi 4 is a Phase 2 measurement. If it doesn't, the stage gets its own
+thread. Today that thread spends 18–22 % of 0.1–0.4 % of a core on x86, and
+6–8 % of 0.14–0.5 % on the Pi 5. The kernels measured so far cost fractions
+of a percent per stage on x86, and about 1 % at most on the Pi 5
+(section 11). Whether a 65536-tap stereo
+convolver fits beside the ALSA thread on a Pi 4 is a Phase 2 measurement. If it doesn't, the stage gets its own
 thread between switcher and emitter, as the prompt allows. Moving it into each
 stream would bring back every error in the table above.
 
@@ -384,7 +392,7 @@ What the Core gains, as additions to `renderer.proto` in Phase 1 and 2:
   since the source began, true peak from 4× oversampling, and DSP load as
   processing time over real time, a moving average.
 
-## 9. SIMD: Highway, pending the Pi
+## 9. SIMD: Highway
 
 `kalinka-dsp-bench simd` compares the mechanisms on a float64 FIR dot product
 (64 and 256 taps) and a 10-section stereo biquad with left and right in one
@@ -420,12 +428,34 @@ does not decide this, so the other properties do:
   successor `std::simd` is C++26, which arrives with GCC 16; Debian 13 has
   GCC 14.
 
-Recommendation: Highway, as the system package, coded against Debian 13's
-1.2.0 API, with SVE disabled until a measured gain on hardware we have. The Pi run of the
-same table decides it: if Highway's NEON trails hand NEON on the A72, the
-answer changes.
+On the Pi 5, with Debian 13's Highway 1.2.0, the three are within 7 % of
+each other on every kernel:
 
-## 10. FFT: PFFFT, vendored, pending the Pi
+| Mechanism, Cortex-A76 | FIR 64 | FIR 256 | 10 biquads | FIR null | Biquad null |
+|---|---|---|---|---|---|
+| scalar | 110.9 ns | 430.6 ns | 54.6 ns | — | — |
+| intrinsics NEON | 37.4 ns | 151.3 ns | 31.1 ns | -294 dB | -258 dB |
+| std::experimental::simd, NEON | 36.2 ns | 130.3 ns | 31.4 ns | -294 dB | -258 dB |
+| Highway, dispatched to NEON | 37.3 ns | 139.9 ns | 30.7 ns | -294 dB | -258 dB |
+| Highway, sections pipelined | 37.4 ns | 139.6 ns | 23.0 ns | -294 dB | -258 dB |
+
+Intrinsics' 256-tap FIR measured 139.5 ns in an earlier build with the same
+kernel code, so read that cell as ±8 %.
+
+The biquad cascade is bound by latency, not width: each section waits for
+the one before it. Pipelined, each section works a frame behind the one
+before it, so the ten are independent within a step. Each call fills and
+drains the pipeline, so the output lines up with the input, there is no
+added latency, and the state carries between calls as before. That takes
+26 % off on the A76 and 20 % on x86, written once in Highway. Phase 2's PEQ
+uses it.
+
+Recommendation: Highway, as the system package, coded against Debian 13's
+1.2.0 API, with SVE disabled until a measured gain on hardware we have. The
+Pi 5 confirms it. The A72 in a Pi 4 is not measured yet. If Highway's NEON
+trails hand NEON there, the answer changes.
+
+## 10. FFT: PFFFT, fetched at build time
 
 `kalinka-fft-bench`, a standalone project in
 [`benchmarks/dsp/fft/`](../benchmarks/dsp/fft/README.md), compared real
@@ -469,11 +499,25 @@ afterwards agreed within 7 %.
   - zldsp_fft: about six months old, with no release. It was built here on
     Highway 1.4.0; whether Debian 13's 1.2.0 suffices is not checked.
   - pocketfft: BSD-3, in Fedora only.
-- **arm64**, from the documentation and sources, not measured: PFFFT has
-  NEON in float and double; its double NEON path was rewritten in 1.2.0, two
-  weeks before these runs. Debian 13 and Ubuntu 24.04 build their arm64 FFTW
-  with `--enable-neon` for single precision only (`debian/rules` of 3.3.10-2
-  and of the noble branch), so FFTW's double there is scalar.
+- **arm64**, measured on the Pi 5 and built on it with GCC 14.2, in ns per
+  pair:
+
+  | Cortex-A76 | float 512 | float 2048 | float 8192 | double 512 | double 2048 | double 8192 |
+  |---|---:|---:|---:|---:|---:|---:|
+  | FFTW 3.3.10 (Debian 13) | 2301–2536 | 10107–11108 | 50020–52906 | 4212 | 20222 | 106921 |
+  | PFFFT, unordered | 1407–1553 | 6340–6824 | 32795–34356 | 2758 | 13059 | 74154 |
+  | KFR | 12475–13833 | 57120–61512 | 280035–291104 | 12865 | 59856 | 245948 |
+  | zldsp_fft | 1661–1833 | 7693–8295 | 38876–40293 | 3365 | 16006 | 82898 |
+  | pocketfft | 5021–5536 | 23108–24919 | 118388–123105 | 5716 | 25713 | 143850 |
+
+  PFFFT is the fastest in both precisions at every size. It runs 1.4–1.7×
+  as fast as FFTW, and 1.1–1.3× as fast as zldsp_fft. Debian 13 builds its
+  arm64 FFTW with NEON for single precision only, and FFTW's own report of
+  its double plans confirms they are scalar. In float, FFTW's
+  `FFTW_MEASURE` planning took 20–190 s per size on the Pi. Accuracy matched
+  x86. The ranges are over two runs in which the board reached 84 C, where a
+  Pi 5 may throttle. The libraries were timed in interleaved rounds, so the
+  order between them holds.
 
 Recommendation: **PFFFT**, fetched at configure time rather than committed:
 `FetchContent` from the v1.3.0 release archive, pinned by its SHA-256. The
@@ -499,25 +543,32 @@ Reasons:
 Its cost is x86: a generic build uses SSE, so it runs 1.27–1.54× FFTW in
 float. At 8192 points that is 14 µs a pair, and x86 has headroom. If it ever
 matters, two builds behind a dispatch fix it. KFR is the strongest
-alternative on speed, but a 7.4 GB build is not something a Pi can do. The Pi
-run of `kalinka-fft-bench` confirms or overturns this choice.
+alternative on x86, but on the Pi 5 it took 8.5–9.9× PFFFT's time in float
+and 3.3–4.8× in double. The Pi 5
+run confirms the choice.
 
 ## 11. Budgets
 
 These are per-stage budgets on a Pi 4 core in real time, under the 5 % rule:
 a stage above 5 % is optimised for speed, one below for memory. The figures
-are targets for later phases, not measurements. The x86 column is measured,
-scaled where noted.
+are targets for later phases, not measurements. The two right-hand columns
+are measured, scaled where noted.
 
-| Stage | CPU target, Pi 4 | Memory target | Measured so far, x86 |
-|---|---|---|---|
-| DSD to PCM, DSD64 to 176.4 kHz stereo | < 2 % | stage 1 tables ≤ 32 KB | — |
-| DSD to PCM, DSD256 to 352.8 kHz stereo | < 6 % | ≤ 32 KB tables, then by benchmark | — |
-| PEQ, 20 bands stereo at 192 kHz | < 1 % | coefficients only | 10 biquads 8.7 ns/frame, so 20 bands at 192 kHz would be about 0.33 % |
-| FIR, 65536 taps stereo at 44.1 kHz | < 3 % | spectra of every partition, float64 ≈ 4 MB stereo | FFT table (section 10) |
-| Upsampling 44.1 to 352.8 kHz | < 5 % | filter tables | libsoxr VHQ 2×: 10 ns per input frame, 0.04 % at 44.1 kHz |
-| Gain, dither, pack | < 0.5 % | none | today's GainFade 2.5 ns/frame |
-| Stage overhead (FIFO, segments) | < 0.2 % | one 32768-frame FIFO | DelayLine stage 0.4 ns/frame |
+| Stage | CPU target, Pi 4 | Memory target | Measured so far, x86 | Measured so far, Pi 5 |
+|---|---|---|---|---|
+| DSD to PCM, DSD64 to 176.4 kHz stereo | < 2 % | stage 1 tables ≤ 32 KB | — | — |
+| DSD to PCM, DSD256 to 352.8 kHz stereo | < 6 % | ≤ 32 KB tables, then by benchmark | — | — |
+| PEQ, 20 bands stereo at 192 kHz | < 1 % | coefficients only | 10 biquads 8.7 ns/frame, so 20 bands at 192 kHz would be about 0.33 % | 10 biquads 23.0 ns/frame pipelined, so about 0.9 % (1.2 % unpipelined) |
+| FIR, 65536 taps stereo at 44.1 kHz | < 3 % | spectra of every partition, float64 ≈ 4 MB stereo | FFT table (section 10) | FFT table (section 10) |
+| Upsampling 44.1 to 352.8 kHz | < 5 % | filter tables | libsoxr VHQ 2×: 10 ns per input frame, 0.04 % at 44.1 kHz | libsoxr VHQ 2×: 60 ns per input frame, 0.27 % at 44.1 kHz |
+| Gain, dither, pack | < 0.5 % | none | today's GainFade 2.5 ns/frame | today's GainFade 8.4 ns/frame |
+| Stage overhead (FIFO, segments) | < 0.2 % | one 32768-frame FIFO | DelayLine stage 0.4 ns/frame | DelayLine stage 1.8 ns/frame, 0.07 % at 352.8 kHz |
+
+The PEQ is the one budget the Pi 5 already comes close to, so a Pi 4 at
+full load will likely be over it. That load means twenty active bands at 192 kHz. A band at
+0 dB passes audio unchanged, so the PEQ can leave it out of the cascade. The
+Phase 2 kernel starts from the pipelined cascade and is measured on a Pi 4
+before its budget is settled.
 
 ## 12. Harness
 
