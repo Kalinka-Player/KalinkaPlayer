@@ -911,11 +911,7 @@ SERVER_ID_UNIT = (
 PLUGINS_DROPIN = (
     REPO / "packages" / "kalinka-server" / "scripts" / "kalinka-restart-plugins.conf"
 )
-SERVER_UNITS = sorted(
-    unit.name
-    for unit in BUILD_DEB.parent.iterdir()
-    if unit.suffix in {".service", ".path", ".socket"}
-)
+UNIT_SUFFIXES = {".service", ".socket", ".path", ".timer", ".mount", ".target"}
 RENDERER_DEBIAN = REPO / "packages" / "kalinka-renderer" / "DEBIAN"
 
 
@@ -1002,9 +998,10 @@ def _sandboxed_configure(tmp_path, server_id=None, postinst=POSTINST):
     """A postinst's configure, the server's unless another is given, run
     against a root under tmp_path.
 
-    Every system path in it is moved under that root, where the server package
-    has put its units and the id helper, and what reaches past the files — users,
-    systemd, udev — is a recorder. Only root can give a file away, so install
+    Every system path in it is moved under that root, where its package has
+    put every unit it ships, so no presence guard skips one, and the server
+    package its id helper; what reaches past the files — users, systemd,
+    udev — is a recorder. Only root can give a file away, so install
     drops the owner it is asked for and chown only records it. ``server_id``
     is what the box already holds there, if anything. Returns the result, the
     recorded calls, the id path and what it held when kalinka.service was
@@ -1019,10 +1016,18 @@ def _sandboxed_configure(tmp_path, server_id=None, postinst=POSTINST):
             postinst.read_text(),
         )
     )
-    units = root / "etc" / "systemd" / "system"
-    units.mkdir(parents=True)
-    for name in SERVER_UNITS:
-        (units / name).touch()
+    shipped = [
+        unit.name
+        for unit in (postinst.parents[1] / "scripts").iterdir()
+        if unit.suffix in UNIT_SUFFIXES
+    ]
+    for units in (
+        root / "etc" / "systemd" / "system",
+        root / "usr" / "lib" / "systemd" / "system",
+    ):
+        units.mkdir(parents=True)
+        for name in shipped:
+            (units / name).touch()
     helper = root / "usr" / "lib" / "kalinka" / "server-id"
     helper.parent.mkdir(parents=True)
     shutil.copy(SERVER_ID_HELPER, helper)
