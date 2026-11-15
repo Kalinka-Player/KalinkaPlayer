@@ -1,0 +1,281 @@
+#include "Measure.h"
+#include "Simd.h"
+
+#include "AudioSampleFormat.h"
+#include "Buffer.h"
+#include "DelayLine.h"
+#include "DspStage.h"
+#include "GainFade.h"
+#include "Analysis.h"
+#include "ReferenceFilters.h"
+#include "SigmaDelta.h"
+#include "Signals.h"
+
+#include <soxr.h>
+
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <functional>
+#include <memory>
+#include <random>
+
+namespace bench {
+namespace {
+constexpr size_t kBlock = 1024;
+
+/// A stereo S32 source that never runs dry, for timing what reads it.
+class EndlessSource : public AudioGraphOutputNode {
+public:
+  explicit EndlessSource(unsigned rate) : AudioGraphNode(StreamId(1)) {
+    pattern.resize(kBlock * 2);
+    for (size_t i = 0; i < pattern.size(); ++i) {
+      pattern[i] = int32_t(i * 2654435761u);
+    }
+    setState({AudioGraphNodeState::STREAMING, 0,
+              StreamInfo{.format = {.sampleRate = rate,
+                                    .channels = 2,
+                                    .bitsPerSample = 32,
+                                    .sampleFormat = PCM32_LE},
+                         .streamType = StreamType::FRAMES}});
+  }
+  size_t read(void *data, size_t size) override {
+    size = std::min(size, pattern.size() * 4);
+    std::memcpy(data, pattern.data(), size);
+    position += size / 8;
+    return size;
+  }
+  size_t waitForData(std::stop_token, size_t size) override { return size; }
+  size_t waitForDataFor(std::stop_token, std::chrono::milliseconds,
+                        size_t size) override {
+    return size;
+  }
+  std::optional<long> streamReadPosition() const override {
+    return long(position);
+  }
+
+private:
+  std::vector<int32_t> pattern;
+  size_t position = 0;
+};
+
+using Factory = std::function<std::function<void(size_t)>(unsigned rate)>;
+
+struct Kernel {
+  const char *name;
+  Factory make;
+};
+
+std::vector<Kernel> kernels() {
+  return {
+      {"Buffer<uint8_t> write + read, S32 stereo",
+       [](unsigned) {
+         auto buffer = std::make_shared<Buffer<uint8_t>>(1536000);
+         auto bytes = std::make_shared<std::vector<uint8_t>>(kBlock * 8, 1);
+         return [buffer, bytes](size_t frames) {
+           buffer->write(bytes->data(), frames * 8);
+           buffer->read(bytes->data(), frames * 8);
+         };
+       }},
+      {"DspStage without a processor, S32 stereo",
+       [](unsigned rate) {
+         auto source = std::make_shared<EndlessSource>(rate);
+         auto stage = std::make_shared<DspStage>();
+         stage->connectTo(source);
+         auto out = std::make_shared<std::vector<uint8_t>>(kBlock * 8);
+         return [stage, out](size_t frames) {
+           stage->read(out->data(), frames * 8);
+         };
+       }},
+      {"DspStage with a 300 ms DelayLine, S32 stereo",
+       [](unsigned rate) {
+         auto source = std::make_shared<EndlessSource>(rate);
+         auto stage = std::make_shared<DspStage>(
+             std::make_unique<DelayLine>(std::chrono::milliseconds(300)));
+         stage->connectTo(source);
+         auto out = std::make_shared<std::vector<uint8_t>>(kBlock * 8);
+         return [stage, out](size_t frames) {
+           stage->read(out->data(), frames * 8);
+         };
+       }},
+      {"convertSampleFormat S16 to S32, stereo",
+       [](unsigned) {
+         auto in = std::make_shared<std::vector<int16_t>>(kBlock * 2, 1234);
+         auto out = std::make_shared<std::vector<int32_t>>(kBlock * 2);
+         return [in, out](size_t frames) {
+           convertSampleFormat(in->data(), PCM16_LE, frames * 2, out->data(),
+                               PCM32_LE, out->size() * 4);
+         };
+       }},
+      {"GainFade at -6 dB, S32 stereo (today's software volume)",
+       [](unsigned rate) {
+         auto fade = std::make_shared<GainFade>(std::chrono::milliseconds(25));
+         fade->settle(0.5f);
+         auto data = std::make_shared<std::vector<int32_t>>(kBlock * 2, 1 << 20);
+         return [fade, data, rate](size_t frames) {
+           fade->apply(data->data(), frames * 8, PCM32_LE, 2, rate, 0.5f);
+         };
+       }},
+      {"libsoxr VHQ, float64, 2x up, stereo",
+       [](unsigned rate) {
+         const auto io = soxr_io_spec(SOXR_FLOAT64_I, SOXR_FLOAT64_I);
+         const auto quality = soxr_quality_spec(SOXR_VHQ, 0);
+         std::shared_ptr<soxr> engine(soxr_create(rate, 2.0 * rate, 2, nullptr,
+                                                  &io, &quality, nullptr),
+                                      soxr_delete);
+         auto in = std::make_shared<std::vector<double>>(
+             harness::sine(997, rate, kBlock * 2, 0.5));
+         auto out = std::make_shared<std::vector<double>>(kBlock * 2 * 2 + 64);
+         return [engine, in, out](size_t frames) {
+           size_t used = 0, made = 0;
+           soxr_process(engine.get(), in->data(), frames, &used, out->data(),
+                        out->size() / 2, &made);
+         };
+       }},
+  };
+}
+
+/// Left and right planar, with `taps` frames of history before frame 0.
+struct Planar {
+  std::vector<double> left, right;
+};
+
+Planar noise(size_t frames, size_t history) {
+  std::mt19937_64 generator(7);
+  std::uniform_real_distribution<double> uniform(-0.5, 0.5);
+  Planar out{std::vector<double>(frames + history),
+             std::vector<double>(frames + history)};
+  for (size_t i = 0; i < frames + history; ++i) {
+    out.left[i] = uniform(generator);
+    out.right[i] = uniform(generator);
+  }
+  return out;
+}
+
+double worstDb(const std::vector<double> &a, const std::vector<double> &b) {
+  double worst = 0;
+  for (size_t i = 0; i < a.size(); ++i) {
+    worst = std::max(worst, std::abs(a[i] - b[i]));
+  }
+  return worst > 0 ? 20 * std::log10(worst) : -400;
+}
+} // namespace
+
+void runKernels() {
+  std::printf("| Kernel |");
+  for (unsigned rate : kRates) {
+    std::printf(" %.1f kHz |", rate / 1000.0);
+  }
+  std::printf("\n|---|");
+  for (size_t i = 0; i < std::size(kRates); ++i) {
+    std::printf("---|");
+  }
+  std::printf("\n");
+  for (const auto &kernel : kernels()) {
+    std::printf("| %s |", kernel.name);
+    for (unsigned rate : kRates) {
+      auto process = kernel.make(rate);
+      const double ns = nsPerFrame(process, kBlock, std::max(rate, 200000u));
+      std::printf(" %s |", cost(ns, rate).c_str());
+    }
+    std::printf("\n");
+    std::fflush(stdout);
+  }
+}
+
+void runSimd() {
+  const auto mechanisms = simdKernels();
+  const size_t frames = 1 << 16;
+  std::printf("Null against the scalar reference is the largest absolute "
+              "difference, in dB below full scale.\n\n");
+  std::printf("| Mechanism | FIR 64 taps, f64 stereo | FIR 256 taps, f64 stereo "
+              "| 10 biquads, f64 stereo | FIR null | biquad null |\n");
+  std::printf("|---|---|---|---|---|---|\n");
+  std::vector<double> referenceFir, referenceBiquad;
+  for (const auto &m : mechanisms) {
+    if (!m.available()) {
+      std::printf("| %s | not on this CPU | | | | |\n", m.name);
+      continue;
+    }
+    std::string fir[2];
+    std::vector<double> firOut;
+    for (int which = 0; which < 2; ++which) {
+      const size_t taps = which == 0 ? 64 : 256;
+      auto input = noise(frames, taps - 1);
+      std::vector<double> h(taps);
+      for (size_t k = 0; k < taps; ++k) {
+        h[k] = std::sin(0.37 * double(k + 1)) / double(k + 1);
+      }
+      std::vector<double> left(frames), right(frames);
+      const auto run = [&](size_t) {
+        m.fir(input.left.data() + taps - 1, h.data(), taps, left.data(),
+              frames);
+        m.fir(input.right.data() + taps - 1, h.data(), taps, right.data(),
+              frames);
+      };
+      fir[which] = cost(nsPerFrame(run, frames, frames, 5), 44100);
+      if (which == 1) {
+        firOut = left;
+      }
+    }
+    const size_t sections = 10;
+    std::vector<double> coefficients;
+    for (size_t s = 0; s < sections; ++s) {
+      const auto c = harness::peaking(100.0 * (s + 1), 3.0, 1.0, 44100);
+      for (double v : {c.b0, c.b1, c.b2, c.a1, c.a2}) {
+        coefficients.push_back(v);
+        coefficients.push_back(v);
+      }
+    }
+    auto input = noise(frames, 0);
+    std::vector<double> interleaved(2 * frames), out(2 * frames),
+        state(4 * sections, 0.0);
+    for (size_t i = 0; i < frames; ++i) {
+      interleaved[2 * i] = input.left[i];
+      interleaved[2 * i + 1] = input.right[i];
+    }
+    const auto run = [&](size_t) {
+      m.biquad(interleaved.data(), out.data(), frames, coefficients.data(),
+               state.data(), sections);
+    };
+    const double biquadNs = nsPerFrame(run, frames, frames, 5);
+    std::ranges::fill(state, 0.0);
+    run(frames);
+    if (referenceFir.empty()) {
+      referenceFir = firOut;
+      referenceBiquad = out;
+    }
+    std::printf("| %s | %s | %s | %s | %.1f dB | %.1f dB |\n", m.name,
+                fir[0].c_str(), fir[1].c_str(), cost(biquadNs, 44100).c_str(),
+                worstDb(firOut, referenceFir), worstDb(out, referenceBiquad));
+    std::fflush(stdout);
+  }
+  std::printf("\nCosts in percent are of one core at 44.1 kHz; per frame they "
+              "do not depend on the rate.\n");
+}
+
+void runFixtures() {
+  std::printf("A 1 kHz tone at half modulation (-6 dB against full "
+              "modulation) and silence, 0.5 s each, through the seventh-order "
+              "modulator; THD+N and noise in 20 Hz - 20 kHz.\n\n");
+  std::printf("| Rate | tone level | tone THD+N | silence noise |\n");
+  std::printf("|---|---|---|---|\n");
+  for (unsigned multiple : {64u, 128u, 256u}) {
+    const unsigned rate = 44100 * multiple;
+    harness::SigmaDelta tone(7, multiple), quiet(7, multiple);
+    const auto bits = tone.modulate(harness::sine(1000, rate, rate / 2, 0.5));
+    const auto idle = quiet.modulate(std::vector<double>(rate / 2, 0.0));
+    std::vector<double> levels(bits.size()), idleLevels(idle.size());
+    for (size_t i = 0; i < bits.size(); ++i) {
+      levels[i] = bits[i] ? 1.0 : -1.0;
+      idleLevels[i] = idle[i] ? 1.0 : -1.0;
+    }
+    const auto distortion = harness::thdPlusN(levels, rate, 1000);
+    std::printf("| DSD%u | %.3f dBFS | %.1f dB | %.1f dBFS |\n", multiple,
+                distortion.fundamentalDbfs, distortion.thdnDb,
+                harness::bandPowerDb(idleLevels, rate, 20, 20000));
+    std::fflush(stdout);
+  }
+}
+
+} // namespace bench

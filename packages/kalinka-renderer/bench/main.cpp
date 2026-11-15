@@ -1,0 +1,119 @@
+#include "Measure.h"
+
+#include <spdlog/spdlog.h>
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <sstream>
+#include <sys/utsname.h>
+
+namespace bench {
+namespace {
+std::string firstLine(const std::string &path) {
+  std::ifstream in(path);
+  std::string line;
+  std::getline(in, line);
+  return line;
+}
+
+std::string cpuModel() {
+  std::ifstream in("/proc/cpuinfo");
+  std::string line;
+  while (std::getline(in, line)) {
+    for (const char *key : {"model name", "Model"}) {
+      if (line.rfind(key, 0) == 0) {
+        return line.substr(line.find(':') + 2);
+      }
+    }
+  }
+  return "unknown";
+}
+
+int usage() {
+  std::fputs(
+      "usage: kalinka-dsp-bench kernels | simd | fixtures | join\n"
+      "       kalinka-dsp-bench playback [--delay-ms N] FILE...\n"
+      "       kalinka-dsp-bench make-wav FILE RATE BITS SECONDS\n",
+      stderr);
+  return 2;
+}
+} // namespace
+
+std::string machine() {
+  utsname name{};
+  uname(&name);
+  std::ostringstream out;
+  out << "- CPU: " << cpuModel() << "\n";
+  if (const auto board = firstLine("/proc/device-tree/model"); !board.empty()) {
+    out << "- Board: " << board.c_str() << "\n";
+  }
+  out << "- Kernel: " << name.sysname << " " << name.release << " "
+      << name.machine << "\n";
+  out << "- Compiler: " << __VERSION__ << ", flags: " << KALINKA_BENCH_FLAGS
+      << "\n";
+  out << "- cpu0 governor: "
+      << firstLine("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
+      << ", clock now: "
+      << firstLine("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq")
+      << " kHz";
+  if (const auto temp = firstLine("/sys/class/thermal/thermal_zone0/temp");
+      !temp.empty()) {
+    out << ", zone0: " << std::atoi(temp.c_str()) / 1000.0 << " C";
+  }
+  out << "\n";
+  return out.str();
+}
+
+std::string cost(double ns, unsigned rate) {
+  char text[64];
+  std::snprintf(text, sizeof text, "%.2f ns (%.3f %%)", ns,
+                percentOfCore(ns, rate));
+  return text;
+}
+
+} // namespace bench
+
+int main(int argc, char **argv) {
+  spdlog::set_level(spdlog::level::warn);
+  if (argc < 2) {
+    return bench::usage();
+  }
+  const std::string command = argv[1];
+  if (command == "make-wav") {
+    if (argc != 6) {
+      return bench::usage();
+    }
+    bench::writeWav(argv[2], std::atoi(argv[3]), std::atoi(argv[4]),
+                    std::atoi(argv[5]));
+    return 0;
+  }
+  std::printf("%s\n", bench::machine().c_str());
+  if (command == "kernels") {
+    bench::runKernels();
+  } else if (command == "simd") {
+    bench::runSimd();
+  } else if (command == "fixtures") {
+    bench::runFixtures();
+  } else if (command == "join") {
+    bench::runJoin();
+  } else if (command == "playback") {
+    int delayMs = 0;
+    std::vector<std::string> files;
+    for (int i = 2; i < argc; ++i) {
+      if (std::strcmp(argv[i], "--delay-ms") == 0 && i + 1 < argc) {
+        delayMs = std::atoi(argv[++i]);
+      } else {
+        files.emplace_back(argv[i]);
+      }
+    }
+    if (files.empty()) {
+      return bench::usage();
+    }
+    bench::runPlayback(files, delayMs);
+  } else {
+    return bench::usage();
+  }
+  return 0;
+}
