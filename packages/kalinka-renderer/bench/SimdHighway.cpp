@@ -32,7 +32,7 @@ void Fir(const double *x, const double *reversed, size_t taps, double *y,
 #if HWY_MAJOR > 1 || HWY_MINOR >= 1
     y[n] = hn::ReduceSum(d, hn::Add(a, b)) + tail;
 #else
-    // Bookworm's Highway 1.0 predates ReduceSum.
+    // Ubuntu 24.04's Highway 1.0.7 predates ReduceSum.
     y[n] = hn::GetLane(hn::SumOfLanes(d, hn::Add(a, b))) + tail;
 #endif
   }
