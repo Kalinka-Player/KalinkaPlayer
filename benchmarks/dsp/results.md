@@ -70,8 +70,20 @@ bit-identical.
 | std::experimental::simd, SSE2 | 16.78 ns (0.074 %) | 64.69 ns (0.285 %) | 10.78 ns (0.048 %) | -295.0 dB | -400.0 dB |
 | std::experimental::simd, AVX2+FMA | 8.83 ns (0.039 %) | 40.44 ns (0.178 %) | 8.48 ns (0.037 %) | -295.0 dB | -259.0 dB |
 | Highway, dispatched to AVX2 | 8.97 ns (0.040 %) | 42.24 ns (0.186 %) | 9.40 ns (0.041 %) | -295.0 dB | -257.9 dB |
+| Highway, sections pipelined, AVX2 | 9.25 ns (0.041 %) | 42.19 ns (0.186 %) | 7.05 ns (0.031 %) | -295.0 dB | -257.9 dB |
 
-Highway 1.3.0, Fedora's package.
+Highway 1.3.0, Fedora's package. The pipelined row comes from a later run, in
+which intrinsics AVX2+FMA took 8.96 ns for the biquads. Two more runs gave
+7.24 and 7.34 ns against 9.10 and 9.27 ns.
+
+In the pipelined cascade each section works a frame behind the one before it.
+The ten sections are then independent within a step and run side by side,
+instead of each waiting for the latency of the one before. Each call fills
+and drains the pipeline, with every section stepping only over that call's
+frames, so the output lines up with the input and the state carries over
+between calls exactly as in the plain cascade. The null is taken over three
+calls of uneven length, one shorter than the cascade, to prove that. It is
+20-21 % faster on x86.
 
 ### DSD fixtures (`fixtures`)
 
@@ -109,6 +121,96 @@ Continuous processing, which the stage does, has no join error by
 construction. The stage's own tests prove it delivers a gapless join frame
 for frame.
 
-## arm64: Raspberry Pi 4 and Pi 5
+## arm64: Raspberry Pi 5, 15 November 2026
+
+- CPU: Arm Cortex-A76, 4 cores at up to 2.4 GHz; Raspberry Pi 5 Model B
+  Rev 1.1, 4 GB
+- Kernel: Linux 6.18.50+rpt-rpi-2712 aarch64 (Raspberry Pi OS, Debian 13)
+- Compiler: Debian 13's GCC 14.2, `-O3 -DNDEBUG`, built on the Pi against
+  Debian 13's own libraries, as the packages are
+- Every run pinned to core 3, with the governor left at `ondemand`. Changing
+  it needs root, which the run did not have. Core 3 was sampled at 2400 MHz
+  throughout the kernel, SIMD and fixture runs, and the board peaked at
+  66.1 C. `vcgencmd get_throttled` could not be read without root.
+- The installed renderer was running but idle (0.1 % CPU) during all runs.
+
+### Playback today (`playback`)
+
+The same 60 s files as on x86, written by `make-wav` and encoded by Debian
+13's `flac -5` on the Pi. Three runs:
+
+| File | Format | Audio | CPU | Of one core in real time |
+|---|---|---|---|---|
+| pink-16-44k.flac | 16-bit 44.1 kHz | 60.0 s | 0.09 s | 0.15 %, 0.14 %, 0.14 % |
+| pink-24-192k.flac | 24-bit 192.0 kHz | 60.0 s | 0.30 s | 0.50 %, 0.50 %, 0.50 % |
+
+Through the stage with a 300 ms `DelayLine`: 0.15 % and 0.54 %.
+
+### Where playback's time goes (`perf record -F 10000 -e cpu-clock`, five plays each)
+
+| | 16-bit 44.1 kHz | 24-bit 192 kHz |
+|---|---|---|
+| Decoder thread | 90.7 % | 90.8 % |
+| ALSA thread | 5.5 % | 7.9 % |
+| Main thread | 3.8 % | 1.3 % |
+
+Debian's libFLAC is stripped, so its symbols show as addresses. On the ALSA
+thread the time is in libc's copies and frees and in the atomics of
+reference counting; `Buffer::read` itself is 0.02-0.03 % of all samples. With
+Debian 13's GCC the deque's copies already run as `memmove`, so on the Pi 5
+the deque costs far less than on x86, where it was 13-19 % of playback.
+
+### Kernels (`kernels`)
+
+| Kernel | 44.1 kHz | 96.0 kHz | 192.0 kHz | 352.8 kHz |
+|---|---|---|---|---|
+| Buffer<uint8_t> write + read, S32 stereo | 1.69 ns (0.007 %) | 1.66 ns (0.016 %) | 1.66 ns (0.032 %) | 1.37 ns (0.048 %) |
+| DspStage without a processor, S32 stereo | 0.23 ns (0.001 %) | 0.23 ns (0.002 %) | 0.23 ns (0.004 %) | 0.23 ns (0.008 %) |
+| DspStage with a 300 ms DelayLine, S32 stereo | 1.72 ns (0.008 %) | 1.79 ns (0.017 %) | 1.83 ns (0.035 %) | 1.87 ns (0.066 %) |
+| convertSampleFormat S16 to S32, stereo | 17.60 ns (0.078 %) | 17.60 ns (0.169 %) | 17.60 ns (0.338 %) | 17.56 ns (0.620 %) |
+| GainFade at -6 dB, S32 stereo (today's software volume) | 8.38 ns (0.037 %) | 8.38 ns (0.080 %) | 8.38 ns (0.161 %) | 8.37 ns (0.295 %) |
+| libsoxr VHQ, float64, 2x up, stereo | 60.27 ns (0.266 %) | 60.25 ns (0.578 %) | 60.27 ns (1.157 %) | 60.08 ns (2.120 %) |
+
+### SIMD mechanisms (`simd`)
+
+| Mechanism | FIR 64 taps, f64 stereo | FIR 256 taps, f64 stereo | 10 biquads, f64 stereo | FIR null | biquad null |
+|---|---|---|---|---|---|
+| scalar reference | 110.87 ns (0.489 %) | 430.59 ns (1.899 %) | 54.60 ns (0.241 %) | -400.0 dB | -400.0 dB |
+| intrinsics NEON | 37.42 ns (0.165 %) | 151.25 ns (0.667 %) | 31.05 ns (0.137 %) | -294.0 dB | -258.0 dB |
+| std::experimental::simd, NEON | 36.23 ns (0.160 %) | 130.31 ns (0.575 %) | 31.35 ns (0.138 %) | -294.0 dB | -257.6 dB |
+| Highway, dispatched to NEON | 37.32 ns (0.165 %) | 139.88 ns (0.617 %) | 30.74 ns (0.136 %) | -294.0 dB | -258.0 dB |
+| Highway, sections pipelined, NEON | 37.41 ns (0.165 %) | 139.64 ns (0.616 %) | 23.03 ns (0.102 %) | -294.0 dB | -258.0 dB |
+
+Highway 1.2.0, Debian 13's package. A second run gave the same to within
+1.1 %. Core 3 was at 2400 MHz and the board at 72-75 C. Pipelining takes
+26 % off the cascade on the A76.
+
+An earlier build, whose pipelined kernel left wrong state between calls,
+measured hand NEON's 256-tap FIR at 139.5 ns over three runs. This build
+measures 151.2 ns in both runs, though that kernel's code did not change and
+the others moved by under 2 %. So that one figure depends on something like code
+alignment, and the 8 % is noise in the comparison, not a property of
+intrinsics.
+
+Highway's NEON code is within 7 % of hand-written NEON and
+`std::experimental::simd` on every kernel, and ahead of hand NEON on the
+longer FIR in this build. A 20-band PEQ at 192 kHz, extrapolated from the ten-section
+figure, costs about 2 × 23.0 ns × 192000 = 8.8 ms a second: 0.9 % of a
+core pipelined, 1.2 % not.
+
+### FFT
+
+PFFFT is the fastest of the five libraries on the Pi 5 too, in float and in
+double; see [fft/results.md](fft/results.md#raspberry-pi-5).
+
+### DSD fixtures and join error
+
+`fixtures` matches x86 to within 0.5 dB at DSD64 and DSD128 (tone -128.1
+and -172.4 dB, silence -142.5 and -187.6 dBFS). At DSD256 the figures sit
+near the analyser's own floor and differ by up to 3.4 dB: tone -189.9 dB,
+silence -203.0 dBFS. `long double` is 80-bit on x86 and 128-bit on arm64.
+`join` printed the x86 tables digit for digit.
+
+## arm64: Raspberry Pi 4
 
 Not measured yet; see [RUNBOOK.md](RUNBOOK.md).
