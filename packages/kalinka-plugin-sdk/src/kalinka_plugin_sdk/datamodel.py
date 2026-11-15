@@ -769,6 +769,8 @@ class OutputInfo(BaseModel):
             device it is applied by, because only there is it current.
     """
 
+    # Renderer format identifier, including DSD and DoP transport variants.
+    sample_format: str = ""
     sample_rate: int = 0
     bits_per_sample: int = 0
     channels: int = 0
@@ -789,6 +791,8 @@ class AudioInfo(BaseModel):
             absent when the renderer has none open or cannot describe it
     """
 
+    # Renderer format identifier, including DSD and DoP transport variants.
+    sample_format: str = ""
     sample_rate: int
     bits_per_sample: int
     channels: int

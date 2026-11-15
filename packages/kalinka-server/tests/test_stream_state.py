@@ -1,6 +1,7 @@
 """Renderer snapshot -> the play queue's StreamState."""
 
 from kalinka_server import renderer_state
+from kalinka_server.playback_view import to_audio_info
 from kalinka_server.stream_state import (
     StreamState,
     AudioGraphNodeState,
@@ -209,3 +210,22 @@ def test_dsd_source_rate_and_native_or_dop_carrier_are_lossless():
         assert not _path(source, {"format": device | {"sample_rate_hz": rate * 2},
                                   "access": "exclusive"})
     assert not _path(source, {"format": _CD, "access": "exclusive"})
+
+
+def test_client_sees_dsd_source_and_dop_carrier_separately():
+    state = from_snapshot(
+        {
+            "playback_state": "playing",
+            "format": {"sample_rate_hz": 2822400, "bits_per_sample": 1,
+                       "channels": 2, "sample_format": "DSD"},
+            "device_info": {
+                "access": "exclusive",
+                "format": {"sample_rate_hz": 176400, "bits_per_sample": 24,
+                           "channels": 2, "sample_format": "DoP_S24_LE"},
+            },
+        }
+    )
+    audio = to_audio_info(state.stream_info)
+    assert audio.sample_format == "DSD"
+    assert audio.output.sample_format == "DoP_S24_LE"
+    assert audio.output.lossless_path
