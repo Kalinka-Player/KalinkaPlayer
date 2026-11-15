@@ -252,6 +252,57 @@ target_include_directories(kalinka_dsp_harness PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/tests/dsp
 )
 
+# --- kalinka-dsp-bench (optional): per-kernel cost against real time ---------
+option(KALINKA_BUILD_BENCHMARKS "Build kalinka-dsp-bench" OFF)
+if(KALINKA_BUILD_BENCHMARKS)
+  add_executable(kalinka-dsp-bench
+    bench/JoinError.cpp
+    bench/Kernels.cpp
+    bench/Playback.cpp
+    bench/SimdScalar.cpp
+    bench/main.cpp
+  )
+  target_include_directories(kalinka-dsp-bench PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/bench
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/native_player
+  )
+  target_link_libraries(kalinka-dsp-bench PRIVATE
+    kalinka_native_player
+    kalinka_dsp_harness
+  )
+  string(TOUPPER "${CMAKE_BUILD_TYPE}" bench_config)
+  string(STRIP "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${bench_config}}" bench_flags)
+  target_compile_definitions(kalinka-dsp-bench PRIVATE
+    KALINKA_BENCH_FLAGS="${bench_flags}")
+
+  # std::experimental::simd sizes at compile time: one build per instruction set.
+  function(kalinka_bench_experimental suffix label)
+    add_library(kalinka_bench_simd_${suffix} OBJECT bench/SimdExperimental.cpp)
+    target_include_directories(kalinka_bench_simd_${suffix} PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/bench)
+    target_compile_definitions(kalinka_bench_simd_${suffix} PRIVATE
+      KALINKA_BENCH_EXPERIMENTAL=experimental${suffix}Kernels
+      "KALINKA_BENCH_EXPERIMENTAL_NAME=\"std::experimental::simd, ${label}\"")
+    target_compile_options(kalinka_bench_simd_${suffix} PRIVATE ${ARGN})
+    target_sources(kalinka-dsp-bench PRIVATE
+      $<TARGET_OBJECTS:kalinka_bench_simd_${suffix}>)
+  endfunction()
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    target_sources(kalinka-dsp-bench PRIVATE bench/SimdX86.cpp)
+    kalinka_bench_experimental(Sse2 "SSE2")
+    kalinka_bench_experimental(Avx2 "AVX2+FMA" -mavx2 -mfma)
+  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+    target_sources(kalinka-dsp-bench PRIVATE bench/SimdNeon.cpp)
+    kalinka_bench_experimental(Neon "NEON")
+  endif()
+  find_package(hwy CONFIG QUIET)
+  if(hwy_FOUND)
+    target_sources(kalinka-dsp-bench PRIVATE bench/SimdHighway.cpp)
+    target_compile_definitions(kalinka-dsp-bench PRIVATE KALINKA_BENCH_HIGHWAY)
+    target_link_libraries(kalinka-dsp-bench PRIVATE hwy::hwy)
+  endif()
+endif()
+
 # --- unit tests (optional: built only when GoogleTest is installed) ----------
 find_package(GTest CONFIG)
 if(GTest_FOUND)
