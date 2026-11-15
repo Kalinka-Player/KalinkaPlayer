@@ -1,18 +1,19 @@
 #include "Measure.h"
 #include "Simd.h"
 
+#include "Analysis.h"
 #include "AudioSampleFormat.h"
 #include "Buffer.h"
 #include "DelayLine.h"
 #include "DspStage.h"
 #include "GainFade.h"
-#include "Analysis.h"
 #include "ReferenceFilters.h"
 #include "SigmaDelta.h"
 #include "Signals.h"
 
 #include <soxr.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -111,7 +112,8 @@ std::vector<Kernel> kernels() {
        [](unsigned rate) {
          auto fade = std::make_shared<GainFade>(std::chrono::milliseconds(25));
          fade->settle(0.5f);
-         auto data = std::make_shared<std::vector<int32_t>>(kBlock * 2, 1 << 20);
+         auto data =
+             std::make_shared<std::vector<int32_t>>(kBlock * 2, 1 << 20);
          return [fade, data, rate](size_t frames) {
            fade->apply(data->data(), frames * 8, PCM32_LE, 2, rate, 0.5f);
          };
@@ -120,9 +122,9 @@ std::vector<Kernel> kernels() {
        [](unsigned rate) {
          const auto io = soxr_io_spec(SOXR_FLOAT64_I, SOXR_FLOAT64_I);
          const auto quality = soxr_quality_spec(SOXR_VHQ, 0);
-         std::shared_ptr<soxr> engine(soxr_create(rate, 2.0 * rate, 2, nullptr,
-                                                  &io, &quality, nullptr),
-                                      soxr_delete);
+         std::shared_ptr<soxr> engine(
+             soxr_create(rate, 2.0 * rate, 2, nullptr, &io, &quality, nullptr),
+             soxr_delete);
          auto in = std::make_shared<std::vector<double>>(
              harness::sine(997, rate, kBlock * 2, 0.5));
          auto out = std::make_shared<std::vector<double>>(kBlock * 2 * 2 + 64);
@@ -188,8 +190,9 @@ void runSimd() {
   const size_t frames = 1 << 16;
   std::printf("Null against the scalar reference is the largest absolute "
               "difference, in dB below full scale.\n\n");
-  std::printf("| Mechanism | FIR 64 taps, f64 stereo | FIR 256 taps, f64 stereo "
-              "| 10 biquads, f64 stereo | FIR null | biquad null |\n");
+  std::printf(
+      "| Mechanism | FIR 64 taps, f64 stereo | FIR 256 taps, f64 stereo "
+      "| 10 biquads, f64 stereo | FIR null | biquad null |\n");
   std::printf("|---|---|---|---|---|---|\n");
   std::vector<double> referenceFir, referenceBiquad;
   for (const auto &m : mechanisms) {
@@ -240,7 +243,14 @@ void runSimd() {
     };
     const double biquadNs = nsPerFrame(run, frames, frames, 5);
     std::ranges::fill(state, 0.0);
-    run(frames);
+    // In pieces, one shorter than the cascade, so the null also proves the
+    // state carries from one call to the next.
+    for (size_t from = 0; size_t piece : {frames / 2 + 3, size_t(5), frames}) {
+      piece = std::min(piece, frames - from);
+      m.biquad(interleaved.data() + 2 * from, out.data() + 2 * from, piece,
+               coefficients.data(), state.data(), sections);
+      from += piece;
+    }
     if (referenceFir.empty()) {
       referenceFir = firOut;
       referenceBiquad = out;
