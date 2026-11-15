@@ -18,17 +18,25 @@ std::string firstLine(const std::string &path) {
   return line;
 }
 
+// Arm's /proc/cpuinfo names no model, only the part number of the core.
 std::string cpuModel() {
   std::ifstream in("/proc/cpuinfo");
-  std::string line;
+  std::string line, part;
   while (std::getline(in, line)) {
-    for (const char *key : {"model name", "Model"}) {
-      if (line.rfind(key, 0) == 0) {
-        return line.substr(line.find(':') + 2);
-      }
+    if (line.rfind("model name", 0) == 0) {
+      return line.substr(line.find(':') + 2);
+    }
+    if (line.rfind("CPU part", 0) == 0 && part.empty()) {
+      part = line.substr(line.find(':') + 2);
     }
   }
-  return "unknown";
+  if (part == "0xd08") {
+    return "Arm Cortex-A72";
+  }
+  if (part == "0xd0b") {
+    return "Arm Cortex-A76";
+  }
+  return part.empty() ? "unknown" : "Arm core, part " + part;
 }
 
 int usage() {

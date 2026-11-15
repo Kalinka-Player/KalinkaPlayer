@@ -85,7 +85,9 @@ std::vector<double> butterworthPoles(unsigned order, double omega) {
 }
 
 void put(std::vector<uint8_t> &out, const char *tag) {
-  out.insert(out.end(), tag, tag + 4);
+  for (int i = 0; i < 4; ++i) {
+    out.push_back(uint8_t(tag[i]));
+  }
 }
 
 void put(std::vector<uint8_t> &out, uint64_t value, unsigned width,
