@@ -50,6 +50,7 @@ std::vector<SimdKernels> simdKernels() {
 #endif
 #ifdef KALINKA_BENCH_HIGHWAY
   all.push_back(highwayKernels());
+  all.push_back(highwayPipelinedKernels());
 #endif
   return all;
 }

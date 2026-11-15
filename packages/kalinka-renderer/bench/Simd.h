@@ -43,6 +43,14 @@ SimdKernels experimentalNeonKernels();
 #endif
 #ifdef KALINKA_BENCH_HIGHWAY
 SimdKernels highwayKernels();
+/**
+ * @brief The biquad cascade with each section a frame behind the one before
+ * it, so the sections of one step run side by side.
+ * @note Pipelined for ten sections, the count the bench runs; any other count
+ * runs the plain cascade. Not available on SVE, whose vectors cannot be held
+ * in an array.
+ */
+SimdKernels highwayPipelinedKernels();
 #endif
 
 } // namespace bench
