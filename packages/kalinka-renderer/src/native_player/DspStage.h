@@ -21,8 +21,12 @@
  * frame has been handed on. At any other join it plays the outgoing tail out
  * first. Formats the processor does not handle pass untouched.
  *
- * @note read(), the waits, seekTo() and acceptSourceChange() belong to the one
- * thread that pulls audio. discard() and discardAll() may come from any thread.
+ * @note read(), the waits, seekTo(), acceptSourceChange(),
+ * streamReadPosition() and liveSourceFrame() belong to the one thread that
+ * pulls audio, which owns everything the stage holds. discard() and
+ * discardAll() may come from any thread; connectTo() and disconnect() only
+ * while nothing pulls. The stage has no lock of its own: upstream states and
+ * discards reach the pulling thread through the node's state lock alone.
  */
 class DspStage : public AudioGraphOutputNode, public AudioGraphInputNode {
 public:
@@ -69,19 +73,40 @@ private:
   /// What fill() returns when the audio upstream is not for the processor.
   static constexpr size_t kPassThrough = size_t(-1);
 
+  /// How the state shown downstream follows upstream's.
+  enum class Follow {
+    Upstream,       ///< As it is.
+    UntilInputEnds, ///< As it is, until it ends the input of what plays.
+    Fixed           ///< Not at all.
+  };
+
+  /// What other threads hand the pulling thread, and what is shown.
+  /// @note Touched only inside updateState(), under the node's state lock.
+  struct Shared {
+    StreamState upstream{AudioGraphNodeState::STOPPED};
+    uint64_t upstreamChanges = 0;
+    Follow follow = Follow::Upstream;
+    StreamState fixed{AudioGraphNodeState::STOPPED};
+    std::optional<StreamId> playing; ///< The stream the sink is reading.
+    /// What a discard of the playing stream shows at once.
+    std::optional<StreamState> afterPlaying;
+    std::vector<StreamId> discards;
+    bool discardEverything = false;
+  };
+
   const std::unique_ptr<DspProcessor> processor;
   std::shared_ptr<AudioGraphOutputNode> upstream;
   int upstreamCallback = -1;
+  Shared shared;
 
-  mutable std::mutex mutex;
-  StreamState upstreamState{AudioGraphNodeState::STOPPED};
-  uint64_t upstreamChanges = 0;
+  StreamState upstreamSeen{AudioGraphNodeState::STOPPED};
+  uint64_t upstreamChangesSeen = 0;
+  std::vector<StreamId> discardsTaken;
   std::deque<Segment> segments;
   /// A source upstream was switched to that cannot continue the run: it is
   /// announced once everything held has been handed on.
   std::optional<std::optional<StreamId>> boundary;
 
-  uint64_t generation = 0;
   size_t frameBytes = 0;
   size_t latency = 0;
   uint64_t fedIn = 0;
@@ -99,7 +124,7 @@ private:
   size_t fill(std::stop_token token, size_t bytes, bool wait,
               std::optional<std::chrono::steady_clock::time_point> deadline);
   Step plan(size_t frames, size_t &count);
-  bool perform(Step step, size_t count, uint64_t run);
+  bool perform(Step step, size_t count);
   bool startRun(std::optional<long> position);
   void endRun();
   void append(const uint8_t *frames, size_t count);
@@ -111,7 +136,13 @@ private:
   bool headExhausted() const;
   const Segment *nextAfterHead() const;
   void skipDropped();
-  void present();
+  /// Takes what other threads left: upstream's state and pending discards.
+  void sync();
+  void drop(StreamId id);
+  void dropEverything();
+  /// Shows downstream what the stage now holds.
+  void publish();
+  static StreamState shown(const Shared &shared);
   void onUpstreamState(const StreamState &state);
 };
 

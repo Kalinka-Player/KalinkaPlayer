@@ -3,11 +3,14 @@
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
+#include <utility>
 
 namespace {
 // Room for what the sink asks for at once, and the read-ahead around it.
 constexpr size_t kFifoFrames = 32768;
 constexpr size_t kChunkFrames = 4096;
+// Discards waiting for the pulling thread, held without allocating.
+constexpr size_t kDiscardRoom = 32;
 
 bool endsInput(AudioGraphNodeState state) {
   return state == AudioGraphNodeState::SOURCE_CHANGED ||
@@ -23,7 +26,10 @@ StreamState about(AudioGraphNodeState state, std::optional<StreamId> id) {
 } // namespace
 
 DspStage::DspStage(std::unique_ptr<DspProcessor> processor)
-    : processor(std::move(processor)) {}
+    : processor(std::move(processor)) {
+  shared.discards.reserve(kDiscardRoom);
+  discardsTaken.reserve(kDiscardRoom);
+}
 
 DspStage::~DspStage() {
   if (upstream) {
@@ -53,16 +59,20 @@ void DspStage::disconnect(std::shared_ptr<AudioGraphOutputNode> source) {
   if (source == nullptr || source != upstream) {
     return;
   }
-  // Unlocked: the callback takes our mutex under the upstream node's.
   upstream->removeStateChangeCallback(upstreamCallback);
   upstreamCallback = -1;
-  std::lock_guard lock(mutex);
-  segments.clear();
-  boundary.reset();
-  endRun();
   upstream = nullptr;
-  upstreamState = StreamState(AudioGraphNodeState::STOPPED);
-  setState(upstreamState);
+  dropEverything();
+  upstreamSeen = StreamState(AudioGraphNodeState::STOPPED);
+  updateState([this](const StreamState &) -> std::optional<StreamState> {
+    shared.upstream = StreamState(AudioGraphNodeState::STOPPED);
+    shared.follow = Follow::Upstream;
+    shared.playing.reset();
+    shared.afterPlaying.reset();
+    shared.discards.clear();
+    shared.discardEverything = false;
+    return shown(shared);
+  });
 }
 
 void DspStage::onUpstreamState(const StreamState &state) {
@@ -70,10 +80,87 @@ void DspStage::onUpstreamState(const StreamState &state) {
     setState(state);
     return;
   }
-  std::lock_guard lock(mutex);
-  upstreamState = state;
-  ++upstreamChanges;
-  present();
+  updateState([this, &state](const StreamState &) -> std::optional<StreamState> {
+    shared.upstream = state;
+    ++shared.upstreamChanges;
+    return shown(shared);
+  });
+}
+
+StreamState DspStage::shown(const Shared &shared) {
+  const bool fixed =
+      shared.follow == Follow::Fixed ||
+      (shared.follow == Follow::UntilInputEnds && endsInput(shared.upstream.state));
+  StreamState state = fixed ? shared.fixed : shared.upstream;
+  // Always now: a waiter only takes a state newer than the one it last saw.
+  state.timestamp = getTimestampNs();
+  return state;
+}
+
+void DspStage::sync() {
+  bool everything = false;
+  updateState([this, &everything](const StreamState &)
+                  -> std::optional<StreamState> {
+    upstreamSeen = shared.upstream;
+    upstreamChangesSeen = shared.upstreamChanges;
+    discardsTaken.swap(shared.discards);
+    everything = std::exchange(shared.discardEverything, false);
+    return std::nullopt;
+  });
+  if (everything) {
+    dropEverything();
+  }
+  for (const StreamId id : discardsTaken) {
+    drop(id);
+  }
+  discardsTaken.clear();
+}
+
+void DspStage::publish() {
+  skipDropped();
+  Follow follow = Follow::Upstream;
+  StreamState fixed{AudioGraphNodeState::STOPPED};
+  std::optional<StreamId> playing;
+  std::optional<StreamState> afterPlaying;
+  if (!segments.empty()) {
+    const Segment &head = segments.front();
+    const Segment *next = nextAfterHead();
+    std::optional<StreamState> announced;
+    if (next) {
+      announced = about(AudioGraphNodeState::SOURCE_CHANGED, next->id);
+    } else if (boundary) {
+      announced = about(AudioGraphNodeState::SOURCE_CHANGED, *boundary);
+    }
+    if (!headExhausted()) {
+      follow = head.open ? Follow::UntilInputEnds : Follow::Fixed;
+      fixed = StreamState(AudioGraphNodeState::STREAMING,
+                          head.start.value_or(0) + long(handed - head.begin),
+                          head.info);
+      fixed.streamId = head.id;
+      playing = head.id;
+      afterPlaying = announced;
+    } else if (announced) {
+      follow = Follow::Fixed;
+      fixed = *announced;
+    } else {
+      segments.clear();
+      endRun();
+    }
+  } else if (boundary) {
+    follow = Follow::Fixed;
+    fixed = about(AudioGraphNodeState::SOURCE_CHANGED, *boundary);
+  }
+  updateState([&, this](const StreamState &) -> std::optional<StreamState> {
+    // A discard not yet taken showed its outcome already; that stands.
+    if (!shared.discards.empty() || shared.discardEverything) {
+      return std::nullopt;
+    }
+    shared.follow = follow;
+    shared.fixed = fixed;
+    shared.playing = playing;
+    shared.afterPlaying = afterPlaying;
+    return shown(shared);
+  });
 }
 
 size_t DspStage::passRead(void *data, size_t size) {
@@ -140,18 +227,44 @@ void DspStage::skipDropped() {
   }
 }
 
+void DspStage::drop(StreamId id) {
+  if (boundary && *boundary == id) {
+    boundary.reset();
+  }
+  for (auto it = segments.begin(); it != segments.end(); ++it) {
+    if (it->id != id) {
+      continue;
+    }
+    if (it->open) {
+      it->open = false;
+      flushLeft = latency;
+    }
+    if (it == segments.begin()) {
+      // What is playing ends here, as a removed source does upstream.
+      it->end = std::max(handed, it->begin);
+    } else {
+      it->dropped = true;
+    }
+  }
+}
+
+void DspStage::dropEverything() {
+  segments.clear();
+  boundary.reset();
+  endRun();
+}
+
 void DspStage::endRun() {
-  ++generation;
   fedIn = fedOut = handed = 0;
   flushLeft = 0;
   fifoOffset = 0;
 }
 
 bool DspStage::startRun(std::optional<long> position) {
-  const auto &info = upstreamState.streamInfo;
+  const auto &info = upstreamSeen.streamInfo;
   // A source still buffering may already hold frames, and they are processed.
-  const bool live = upstreamState.state == AudioGraphNodeState::STREAMING ||
-                    upstreamState.state == AudioGraphNodeState::PREPARING;
+  const bool live = upstreamSeen.state == AudioGraphNodeState::STREAMING ||
+                    upstreamSeen.state == AudioGraphNodeState::PREPARING;
   if (!live || !info.has_value() || !processor->handles(info->format)) {
     return false;
   }
@@ -161,7 +274,7 @@ bool DspStage::startRun(std::optional<long> position) {
   fifo.resize(kFifoFrames * frameBytes);
   input.resize(kChunkFrames * frameBytes);
   output.resize(kChunkFrames * frameBytes);
-  segments.push_back({upstreamState.streamId, *info, position, 0, 0});
+  segments.push_back({upstreamSeen.streamId, *info, position, 0, 0});
   return true;
 }
 
@@ -187,34 +300,6 @@ void DspStage::append(const uint8_t *frames, size_t count) {
   fedOut += count - skip;
 }
 
-void DspStage::present() {
-  skipDropped();
-  StreamState shown = upstreamState;
-  if (!segments.empty()) {
-    const Segment &head = segments.front();
-    if (!headExhausted()) {
-      if (!head.open || endsInput(upstreamState.state)) {
-        shown = StreamState(AudioGraphNodeState::STREAMING,
-                            head.start.value_or(0) + long(handed - head.begin),
-                            head.info);
-        shown.streamId = head.id;
-      }
-    } else if (const Segment *next = nextAfterHead()) {
-      shown = about(AudioGraphNodeState::SOURCE_CHANGED, next->id);
-    } else if (boundary) {
-      shown = about(AudioGraphNodeState::SOURCE_CHANGED, *boundary);
-    } else {
-      segments.clear();
-      endRun();
-    }
-  } else if (boundary) {
-    shown = about(AudioGraphNodeState::SOURCE_CHANGED, *boundary);
-  }
-  // Always now: a waiter only takes a state newer than the one it last saw.
-  shown.timestamp = getTimestampNs();
-  setState(shown);
-}
-
 DspStage::Step DspStage::plan(size_t frames, size_t &count) {
   while (true) {
     if (segments.empty() || readable() >= frames || headExhausted()) {
@@ -226,13 +311,13 @@ DspStage::Step DspStage::plan(size_t frames, size_t &count) {
       count = std::min({flushLeft, kChunkFrames, room});
       return count ? Step::Flush : Step::Done;
     }
-    if (upstreamState.state == AudioGraphNodeState::SOURCE_CHANGED) {
+    if (upstreamSeen.state == AudioGraphNodeState::SOURCE_CHANGED) {
       return Step::Accept;
     }
-    if (endsInput(upstreamState.state)) {
+    if (endsInput(upstreamSeen.state)) {
       tail.open = false;
       flushLeft = latency;
-      present();
+      publish();
       continue;
     }
     const uint64_t priming = fedOut < latency ? latency - fedOut : 0;
@@ -243,7 +328,7 @@ DspStage::Step DspStage::plan(size_t frames, size_t &count) {
   }
 }
 
-bool DspStage::perform(Step step, size_t count, uint64_t run) {
+bool DspStage::perform(Step step, size_t count) {
   switch (step) {
   case Step::Read: {
     const size_t frames = upstream->read(input.data(), count * frameBytes) /
@@ -252,34 +337,28 @@ bool DspStage::perform(Step step, size_t count, uint64_t run) {
       return false;
     }
     processor->process(input.data(), output.data(), frames);
-    std::lock_guard lock(mutex);
-    if (run == generation && !segments.empty() && segments.back().open) {
-      segments.back().end += frames;
-      fedIn += frames;
-      append(output.data(), frames);
-      present();
-    }
+    segments.back().end += frames;
+    fedIn += frames;
+    append(output.data(), frames);
+    publish();
     return true;
   }
   case Step::Flush: {
     processor->process(nullptr, output.data(), count);
-    std::lock_guard lock(mutex);
-    if (run == generation) {
-      flushLeft -= std::min(flushLeft, count);
-      append(output.data(), count);
-      present();
-    }
+    flushLeft -= std::min(flushLeft, count);
+    append(output.data(), count);
+    publish();
     return true;
   }
   case Step::Accept: {
     upstream->acceptSourceChange();
     const auto position = upstream->streamReadPosition();
-    std::lock_guard lock(mutex);
-    if (run != generation || segments.empty() || !segments.back().open) {
+    sync();
+    if (segments.empty() || !segments.back().open) {
       return true;
     }
     Segment &tail = segments.back();
-    const StreamState &now = upstreamState;
+    const StreamState &now = upstreamSeen;
     tail.open = false;
     const bool idle = (now.state == AudioGraphNodeState::FINISHED ||
                        now.state == AudioGraphNodeState::ERROR) &&
@@ -297,7 +376,7 @@ bool DspStage::perform(Step step, size_t count, uint64_t run) {
         boundary = now.streamId;
       }
     }
-    present();
+    publish();
     return true;
   }
   case Step::Done:
@@ -314,17 +393,13 @@ size_t DspStage::fill(std::stop_token token, size_t bytes, bool wait,
   }
   bool waited = false;
   while (true) {
-    std::unique_lock lock(mutex);
+    sync();
     skipDropped();
     if (segments.empty()) {
       if (boundary) {
         return 0;
       }
-      lock.unlock();
-      const auto position = upstream->streamReadPosition();
-      lock.lock();
-      skipDropped();
-      if (segments.empty() && !boundary && !startRun(position)) {
+      if (!startRun(upstream->streamReadPosition())) {
         return kPassThrough;
       }
       continue;
@@ -338,20 +413,17 @@ size_t DspStage::fill(std::stop_token token, size_t bytes, bool wait,
     if (step == Step::Done) {
       return readable();
     }
-    const uint64_t run = generation;
-    const uint64_t changes = upstreamChanges;
-    const size_t needed = count * frameBytes;
-    lock.unlock();
-    if (perform(step, count, run)) {
+    const uint64_t changes = upstreamChangesSeen;
+    if (perform(step, count)) {
       waited = false;
       continue;
     }
     // Upstream said it had data and then gave none: let the caller retry.
     if (!wait || waited || token.stop_requested() ||
         (deadline && std::chrono::steady_clock::now() >= *deadline)) {
-      lock.lock();
       return readable();
     }
+    const size_t needed = count * frameBytes;
     const size_t available =
         deadline ? upstream->waitForDataFor(
                        token,
@@ -359,8 +431,8 @@ size_t DspStage::fill(std::stop_token token, size_t bytes, bool wait,
                            *deadline - std::chrono::steady_clock::now()),
                        needed)
                  : upstream->waitForData(token, needed);
-    lock.lock();
-    if (available == 0 && upstreamChanges == changes) {
+    sync();
+    if (available == 0 && upstreamChangesSeen == changes) {
       return readable();
     }
     waited = available > 0;
@@ -375,15 +447,17 @@ size_t DspStage::read(void *data, size_t size) {
   if (ready == kPassThrough) {
     return passRead(data, size);
   }
-  std::lock_guard lock(mutex);
-  const size_t frames = std::min(readable(), size / frameBytes);
+  if (ready == 0) {
+    return 0;
+  }
+  const size_t frames = std::min(ready, size / frameBytes);
   std::memcpy(data, fifo.data() + fifoOffset, frames * frameBytes);
   fifoOffset += frames * frameBytes;
   handed += frames;
   if (fifoFrames() == 0) {
     fifoOffset = 0;
   }
-  present();
+  publish();
   return frames * frameBytes;
 }
 
@@ -416,23 +490,19 @@ size_t DspStage::seekTo(size_t absolutePosition) {
   if (!processor) {
     return upstream ? upstream->seekTo(absolutePosition) : size_t(-1);
   }
-  {
-    std::lock_guard lock(mutex);
-    skipDropped();
-    // Upstream has moved on: what it would seek is not what is playing.
-    if (boundary || (!segments.empty() && segments.front().left)) {
-      return size_t(-1);
-    }
-    segments.clear();
-    endRun();
-    present();
+  sync();
+  skipDropped();
+  // Upstream has moved on: what it would seek is not what is playing.
+  if (boundary || (!segments.empty() && segments.front().left)) {
+    return size_t(-1);
   }
+  dropEverything();
+  publish();
   return upstream ? upstream->seekTo(absolutePosition) : size_t(-1);
 }
 
 std::optional<long> DspStage::streamReadPosition() const {
   if (processor) {
-    std::lock_guard lock(mutex);
     for (const Segment &segment : segments) {
       if (!segment.dropped) {
         if (!segment.start) {
@@ -449,11 +519,7 @@ std::optional<long> DspStage::streamReadPosition() const {
 
 std::optional<uint64_t> DspStage::liveSourceFrame() const {
   const auto frame = upstream ? upstream->liveSourceFrame() : std::nullopt;
-  if (!processor || !frame) {
-    return frame;
-  }
-  std::lock_guard lock(mutex);
-  if (segments.empty() || !segments.back().open) {
+  if (!processor || !frame || segments.empty() || !segments.back().open) {
     return frame;
   }
   const Segment &tail = segments.back();
@@ -469,15 +535,18 @@ void DspStage::acceptSourceChange() {
     }
     return;
   }
-  std::unique_lock lock(mutex);
+  sync();
   skipDropped();
+  // A discard taken just now may have ended what played with nothing after it.
+  if (headExhausted() && !nextAfterHead() && !boundary) {
+    dropEverything();
+  }
   if (segments.empty()) {
     if (boundary) {
       boundary.reset();
-      present();
+      publish();
       return;
     }
-    lock.unlock();
     if (upstream) {
       upstream->acceptSourceChange();
     }
@@ -490,45 +559,40 @@ void DspStage::acceptSourceChange() {
     popHead();
   } else if (boundary) {
     boundary.reset();
-    segments.clear();
-    endRun();
+    dropEverything();
   }
-  present();
+  publish();
 }
 
 void DspStage::discard(StreamId id) {
   if (!processor) {
     return;
   }
-  std::lock_guard lock(mutex);
-  if (boundary && *boundary == id) {
-    boundary.reset();
-  }
-  for (auto it = segments.begin(); it != segments.end(); ++it) {
-    if (it->id != id) {
-      continue;
+  updateState([this, id](const StreamState &) -> std::optional<StreamState> {
+    shared.discards.push_back(id);
+    if (shared.playing == id) {
+      shared.follow =
+          shared.afterPlaying ? Follow::Fixed : Follow::Upstream;
+      if (shared.afterPlaying) {
+        shared.fixed = *shared.afterPlaying;
+      }
+      shared.playing.reset();
+      shared.afterPlaying.reset();
     }
-    if (it->open) {
-      it->open = false;
-      flushLeft = latency;
-    }
-    if (it == segments.begin()) {
-      // What is playing ends here, as a removed source does upstream.
-      it->end = std::max(handed, it->begin);
-    } else {
-      it->dropped = true;
-    }
-  }
-  present();
+    return shown(shared);
+  });
 }
 
 void DspStage::discardAll() {
   if (!processor) {
     return;
   }
-  std::lock_guard lock(mutex);
-  segments.clear();
-  boundary.reset();
-  endRun();
-  present();
+  updateState([this](const StreamState &) -> std::optional<StreamState> {
+    shared.discards.clear();
+    shared.discardEverything = true;
+    shared.follow = Follow::Upstream;
+    shared.playing.reset();
+    shared.afterPlaying.reset();
+    return shown(shared);
+  });
 }

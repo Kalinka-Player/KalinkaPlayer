@@ -37,6 +37,10 @@ std::optional<StreamId> AudioGraphNode::streamId() {
 
 void AudioGraphNode::setState(const StreamState &newState) {
   std::lock_guard lock(mutex);
+  apply(newState);
+}
+
+void AudioGraphNode::apply(const StreamState &newState) {
   StreamState stamped = newState;
   if (!stamped.streamId.has_value()) {
     stamped.streamId = boundStreamId;

@@ -49,7 +49,26 @@ protected:
   // names a stream keeps it, so forwarding passes the original through.
   void setStreamId(std::optional<StreamId> id);
 
+  /**
+   * @brief Sets the state @p next derives from the current one, deciding and
+   * setting under the node's own lock, so no other thread's change can fall
+   * between the two.
+   * @param next Called under the lock with the current state; returns the state
+   * to set, or nullopt to leave it as it is.
+   * @note @p next runs where state callbacks run: it must not call into any
+   * node. It bypasses setState() overrides.
+   */
+  template <typename Next> void updateState(Next &&next) {
+    std::lock_guard lock(mutex);
+    if (std::optional<StreamState> derived = next(state)) {
+      apply(*derived);
+    }
+  }
+
 private:
+  /// setState() with the lock already held.
+  void apply(const StreamState &newState);
+
   std::mutex mutex;
   StreamState state;
   std::optional<StreamId> boundStreamId;
