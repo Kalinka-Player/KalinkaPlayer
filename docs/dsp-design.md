@@ -11,17 +11,22 @@ The note covers the renderer in `packages/kalinka-renderer`. The rules in
 [`CLAUDE.md`](../CLAUDE.md) and
 [native-renderer-design.md](native-renderer-design.md) bind it.
 
-It builds wherever the renderer ships:
+It builds for:
 
 - Debian 13 debs, arm64 and amd64, which the images and the Raspberry Pi run;
-- Ubuntu 24.04 debs, arm64 and amd64;
-- Fedora 44 RPMs.
+- Fedora 44 RPMs;
+- the Ubuntu debs, which are to move to 26.04.1 LTS.
+
+Debian 13 is the floor: GCC 14.2, CMake 3.31 and Highway 1.2.0 are the
+oldest any language or library feature the DSP uses may need. Ubuntu 24.04
+is not a constraint. The release workflow still builds 24.04 debs. If the DSP
+needs anything 24.04 does not have, that build is dropped, and the Ubuntu debs
+move to 26.04.1 LTS; the DSP is never held back to fit 24.04.
 
 The release workflow also has a flatpak job, on freedesktop 24.08, but no
 flatpak has shipped. Its manifest matches `.gitignore`'s `*.yml` and was
 never committed, so the job fails on every release, and `continue-on-error`
-hides that. Ubuntu 24.04 is the oldest target. Its toolchain, GCC 13.2 and CMake 3.28,
-is the floor for any language or library feature the DSP uses.
+hides that.
 
 ## 1. How the graph behaves today
 
@@ -405,18 +410,18 @@ does not decide this, so the other properties do:
   (SSE2, SSE4, AVX2, AVX-512, NEON, SVE). It has the byte lookups the DSD
   stage needs (`TableLookupBytes`, which is `pshufb` and `tbl`). It is
   Apache-2.0, compatible with GPL-3. It is packaged as `libhwy-dev` 1.2.0 in
-  Debian 13 and 1.0.7 in Ubuntu 24.04, and as `highway-devel` 1.3.0 in
-  Fedora 44.
+  Debian 13 and as `highway-devel` 1.3.0 in Fedora 44.
 - **Intrinsics** give full control and nothing to depend on, but every
   kernel has to be written three times (SSE2, AVX2+FMA, NEON), plus hand-made
   dispatch.
 - **std::experimental::simd** picks its width at compile time only, so
   runtime dispatch means one translation unit per instruction set and an ODR
   hazard between them. It has no byte shuffle. It is libstdc++-only, and its
-  successor `std::simd` is C++26, which Ubuntu 24.04's GCC 13 lacks.
+  successor `std::simd` is C++26, which arrives with GCC 16; Debian 13 has
+  GCC 14.
 
-Recommendation: Highway, as the system package, coded against Ubuntu 24.04's
-1.0.7 API, with SVE disabled until a measured gain on hardware we have. The Pi run of the
+Recommendation: Highway, as the system package, coded against Debian 13's
+1.2.0 API, with SVE disabled until a measured gain on hardware we have. The Pi run of the
 same table decides it: if Highway's NEON trails hand NEON on the A72, the
 answer changes.
 
@@ -457,12 +462,12 @@ afterwards agreed within 7 %.
   chooses on each machine. FFTW's `FFTW_MEASURE` planning takes 0.15–0.6 s per
   size; the others take microseconds.
 - **Licence and packaging:**
-  - FFTW: GPL-2+, packaged everywhere: `libfftw3-dev` 3.3.10 in Debian 13
-    and Ubuntu 24.04, `fftw-devel` 3.3.10 in Fedora 44.
+  - FFTW: GPL-2+, packaged everywhere: `libfftw3-dev` 3.3.10 in Debian 13,
+    `fftw-devel` 3.3.10 in Fedora 44.
   - PFFFT: BSD-style, in neither distribution. It is a few C99 files.
   - KFR: GPL-2+, in neither. Its build peaked at 7.4 GB here.
-  - zldsp_fft: about six months old, with no release, and it needs a newer
-    Highway than Ubuntu 24.04's.
+  - zldsp_fft: about six months old, with no release. It was built here on
+    Highway 1.4.0; whether Debian 13's 1.2.0 suffices is not checked.
   - pocketfft: BSD-3, in Fedora only.
 - **arm64**, from the documentation and sources, not measured: PFFFT has
   NEON in float and double; its double NEON path was rewritten in 1.2.0, two
@@ -586,7 +591,7 @@ The modulator's own quality, a 1 kHz tone at half modulation over 0.5 s:
    when the ring goes from empty to holding data, or from full to having
    room. The `kernels` benchmark gets a row for it beside `std::deque`, and
    it replaces the deque only once it is faster on the Pi.
-5. **Highway: the system package**, on the 1.0.7 floor.
+5. **Highway: the system package**, on Debian 13's 1.2.0 floor.
 6. **Targets** are the ones at the top of this note, not Debian 12. The
    runbook and the FFT project now say so.
 7. **The stage is lock-free now** (section 3): its only lock is
