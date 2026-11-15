@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <cstring>
+#include <thread>
 
 #include "CountingNode.h"
 #include "TestHelpers.h"
@@ -316,6 +317,23 @@ TEST_P(DspStageTest, ClearingEverythingLeavesNothingToPlay) {
   EXPECT_EQ(played.left, counting(*next, 0, 4800));
 }
 
+TEST_P(DspStageTest, ARemovalWhileNothingReadsStillLetsTheNextSourceIn) {
+  auto first = queue(1, 96000);
+  pull(*stage, 1000, 8000);
+
+  switcher->disconnect(first);
+  stage->discard(1);
+  EXPECT_EQ(stage->getState().state, AudioGraphNodeState::FINISHED);
+  auto next = queue(2, 4800);
+  ASSERT_EQ(stage->getState().state, AudioGraphNodeState::SOURCE_CHANGED);
+  stage->acceptSourceChange();
+  EXPECT_EQ(stage->getState().state, AudioGraphNodeState::STREAMING);
+  EXPECT_EQ(stage->getState().streamId, std::optional<StreamId>(2));
+
+  const auto played = pull(*stage);
+  EXPECT_EQ(played.left, counting(*next, 0, 4800));
+}
+
 TEST_P(DspStageTest, AWaitReturnsWhenTheCurrentSourceIsRemoved) {
   class Waiting : public AudioGraphOutputNode {
   public:
@@ -448,7 +466,7 @@ private:
                         .streamType = StreamType::FRAMES};
   Buffer<uint8_t> buffer{1 << 20};
   int32_t fed = 0;
-  bool ended = false;
+  std::atomic<bool> ended = false;
 };
 
 TEST(DspStageDelayTest, ARunDryHoldsTheLatencyBackUntilMoreArrives) {
@@ -523,6 +541,39 @@ TEST(DspStageDelayTest, AStageWithNothingUpstreamHasNothingToGive) {
   std::vector<int32_t> buffer(64);
   EXPECT_EQ(stage.read(buffer.data(), buffer.size() * 4), 0u);
   EXPECT_EQ(stage.waitForData(std::stop_token(), 8), 0u);
+}
+
+TEST(DspStageDelayTest, AnotherThreadFeedingAndDiscardingKeepsTheFramesInOrder) {
+  auto source = std::make_shared<FedNode>();
+  DspStage stage(std::make_unique<DelayLine>(std::chrono::milliseconds(50)));
+  stage.connectTo(source);
+  constexpr int kFeeds = 200;
+  constexpr size_t kFrames = 480;
+  std::thread feeder([&] {
+    for (int i = 0; i < kFeeds; ++i) {
+      source->feed(kFrames, i + 1 == kFeeds);
+      stage.discard(StreamId(99));
+      std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
+  });
+  std::vector<int32_t> left, buffer(2 * 1024);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (stage.getState().state != AudioGraphNodeState::FINISHED &&
+         std::chrono::steady_clock::now() < deadline) {
+    const size_t bytes = stage.read(buffer.data(), buffer.size() * 4);
+    for (size_t i = 0; i < bytes / 8; ++i) {
+      left.push_back(buffer[2 * i]);
+    }
+    if (bytes == 0) {
+      stage.waitForDataFor(std::stop_token(), std::chrono::milliseconds(2),
+                           buffer.size() * 4);
+    }
+  }
+  feeder.join();
+  ASSERT_EQ(left.size(), size_t(kFeeds) * kFrames);
+  for (size_t i = 0; i < left.size(); ++i) {
+    ASSERT_EQ(left[i], int32_t(i + 1)) << "frame " << i;
+  }
 }
 
 TEST(DelayLineTest, OutputIsTheInputLate) {

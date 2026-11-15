@@ -340,6 +340,7 @@ if(GTest_FOUND)
     tests/native_player/AlsaAudioEmitter_test.cpp
     tests/native_player/AlsaDeviceEnumeration_test.cpp
     tests/native_player/AlsaVolumeControl_test.cpp
+    tests/native_player/AudioGraphNode_test.cpp
     tests/native_player/AudioGraphHttpStream_test.cpp
     tests/native_player/AudioInfo_test.cpp
     tests/native_player/AudioPlayer_test.cpp
