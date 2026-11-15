@@ -116,10 +116,12 @@ add_library(kalinka_native_player STATIC
   src/native_player/BufferedStreamDecoder.cpp
   src/native_player/Config.cpp
   src/native_player/ContainerStreamDecoder.cpp
+  src/native_player/DelayLine.cpp
   src/native_player/DsdContainer.cpp
   src/native_player/DsdFormat.cpp
   src/native_player/DashStreamDecoder.cpp
   src/native_player/DashManifest.cpp
+  src/native_player/DspStage.cpp
   src/native_player/FragmentedMp4.cpp
   src/native_player/FlacFrameDecoder.cpp
   src/native_player/FlacStreamDecoder.cpp
@@ -280,12 +282,14 @@ if(GTest_FOUND)
     tests/native_player/AudioPlayer_test.cpp
     tests/native_player/AudioSampleFormat_test.cpp
     tests/native_player/AudioStreamSwitcher_test.cpp
+    tests/native_player/BitPerfectOutput_test.cpp
     tests/native_player/Buffer_test.cpp
     tests/native_player/BufferedStreamDecoder_test.cpp
     tests/native_player/ContainerStreamDecoder_test.cpp
     tests/native_player/DsdContainer_test.cpp
     tests/native_player/DashStreamDecoder_test.cpp
     tests/native_player/DashFormat_test.cpp
+    tests/native_player/DspStage_test.cpp
     tests/native_player/FileInputNode_test.cpp
     tests/native_player/FlacStreamDecoder_test.cpp
     tests/native_player/GainFade_test.cpp

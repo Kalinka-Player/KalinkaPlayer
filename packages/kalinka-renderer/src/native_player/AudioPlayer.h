@@ -12,6 +12,7 @@
 
 struct StreamState;
 class AudioStreamSwitcher;
+class DspStage;
 struct StreamNodes;
 class StateMonitor;
 
@@ -116,6 +117,7 @@ private:
   Config streamConfig;
   std::shared_ptr<AlsaAudioEmitter> audioEmitter;
   std::shared_ptr<AudioStreamSwitcher> streamSwitcher;
+  std::shared_ptr<DspStage> dspStage;
   std::list<StreamNodes> streamNodesList;
 
   // Outlives every mixer handed to it, and is shared with whoever listens: the

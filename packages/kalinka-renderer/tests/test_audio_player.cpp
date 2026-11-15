@@ -39,9 +39,9 @@ bool deviceOpens() {
 class Playing {
 public:
   Playing()
-      : config_({{"output.alsa.device", testDevice()},
-                 {"output.alsa.latency_ms", "100"},
-                 {"output.alsa.period_ms", "25"}}),
+      : config_(withTestDsp({{"output.alsa.device", testDevice()},
+                             {"output.alsa.latency_ms", "100"},
+                             {"output.alsa.period_ms", "25"}})),
         player_(config_) {
     player_.configureVolume("software", "");
     player_.setVolume(0);

@@ -135,6 +135,16 @@ protected:
     alsaAudioEmitter = std::make_shared<AlsaAudioEmitter>(config);
     alsaAudioEmitter->setSoftwareVolume(0.0f);
   }
+
+  // What the sink reads, through the stage KALINKA_TEST_DSP_DELAY_MS asks for.
+  std::shared_ptr<AudioGraphOutputNode> playing;
+
+  void play(std::shared_ptr<AudioGraphOutputNode> source) {
+    playing = throughTestDsp(std::move(source));
+    alsaAudioEmitter->connectTo(playing);
+  }
+
+  void stopPlaying() { alsaAudioEmitter->disconnect(playing); }
 };
 
 TEST_F(AlsaAudioEmitterTest, constructor_destructor) {}
@@ -280,8 +290,8 @@ TEST_F(AlsaAudioEmitterTest, an_input_that_runs_dry_buffers_where_playback_reach
 
 TEST_F(AlsaAudioEmitterTest, connectTo) {
   auto outputNode = std::make_shared<SineWaveNode>(1, 440, 1000);
-  alsaAudioEmitter->connectTo(outputNode);
-  alsaAudioEmitter->disconnect(outputNode);
+  play(outputNode);
+  stopPlaying();
 }
 
 TEST_F(AlsaAudioEmitterTest, connectTo_nullptr) {
@@ -291,24 +301,24 @@ TEST_F(AlsaAudioEmitterTest, connectTo_nullptr) {
 TEST_F(AlsaAudioEmitterTest, disconnect) {
   auto outputNode = std::make_shared<SineWaveNode>(1, 440, 1000);
   EXPECT_EQ(outputNode->getState().state, AudioGraphNodeState::STREAMING);
-  alsaAudioEmitter->connectTo(outputNode);
+  play(outputNode);
   EXPECT_EQ(
       waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING).state,
       AudioGraphNodeState::STREAMING);
-  alsaAudioEmitter->disconnect(outputNode);
+  stopPlaying();
   EXPECT_EQ(alsaAudioEmitter->getState().state, AudioGraphNodeState::STOPPED);
 }
 
 TEST_F(AlsaAudioEmitterTest, a_stop_waits_only_for_what_is_past_the_buffer) {
   auto outputNode = std::make_shared<SineWaveNode>(1, 440, 10000);
-  alsaAudioEmitter->connectTo(outputNode);
+  play(outputNode);
   ASSERT_EQ(
       waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING).state,
       AudioGraphNodeState::STREAMING);
 
   auto emitter = alsaAudioEmitter;
-  EXPECT_TRUE(returnsWithin([emitter, outputNode] {
-    emitter->disconnect(outputNode);
+  EXPECT_TRUE(returnsWithin([emitter, playing = playing] {
+    emitter->disconnect(playing);
   }, std::chrono::milliseconds(500)))
       << "not the 10 s still to come, nor the cap for a wrong delay";
 }
@@ -332,7 +342,7 @@ TEST(FramesBeyondBufferTest, AnEmptyBufferLeavesTheWholeDelay) {
 TEST_F(AlsaAudioEmitterTest, getState) {
   auto outputNode = std::make_shared<SineWaveNode>(1, 440, 1000);
   EXPECT_EQ(alsaAudioEmitter->getState().state, AudioGraphNodeState::STOPPED);
-  alsaAudioEmitter->connectTo(outputNode);
+  play(outputNode);
   EXPECT_EQ(
       waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING).state,
       AudioGraphNodeState::STREAMING);
@@ -340,7 +350,7 @@ TEST_F(AlsaAudioEmitterTest, getState) {
   EXPECT_EQ(outputNode->getState().state, AudioGraphNodeState::FINISHED);
   std::this_thread::sleep_for(std::chrono::milliseconds(341));
   EXPECT_EQ(alsaAudioEmitter->getState().state, AudioGraphNodeState::FINISHED);
-  alsaAudioEmitter->disconnect(outputNode);
+  stopPlaying();
   EXPECT_EQ(alsaAudioEmitter->getState().state, AudioGraphNodeState::STOPPED);
 }
 
@@ -348,7 +358,7 @@ TEST_F(AlsaAudioEmitterTest, pause) {
   SKIP_UNLESS_PLAYED_IN_REAL_TIME();
   const auto totalDuration = 1000;
   auto outputNode = std::make_shared<SineWaveNode>(1, 440, totalDuration);
-  alsaAudioEmitter->connectTo(outputNode);
+  play(outputNode);
   EXPECT_EQ(
       waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING).state,
       AudioGraphNodeState::STREAMING);
@@ -375,7 +385,7 @@ TEST_F(AlsaAudioEmitterTest, pause) {
 
 TEST_F(AlsaAudioEmitterTest, a_playing_state_names_what_the_device_opened) {
   auto outputNode = std::make_shared<SineWaveNode>(1, 440, 1000);
-  alsaAudioEmitter->connectTo(outputNode);
+  play(outputNode);
 
   const auto state =
       waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING);
@@ -396,7 +406,7 @@ TEST_F(AlsaAudioEmitterTest, a_playing_state_names_what_the_device_opened) {
     EXPECT_NE(state.deviceInfo->access, DeviceAccess::Unknown);
   }
 
-  alsaAudioEmitter->disconnect(outputNode);
+  stopPlaying();
   EXPECT_FALSE(alsaAudioEmitter->getState().deviceInfo.has_value())
       << "a closed device is open at nothing";
 }
@@ -455,7 +465,7 @@ TEST_F(AlsaAudioEmitterTest, slow_output_node_goes_into_preparing) {
 TEST_F(AlsaAudioEmitterTest, test_seekToForward) {
   const auto totalDuration = 2000;
   auto outputNode = std::make_shared<SineWaveNode>(1, 440, totalDuration);
-  alsaAudioEmitter->connectTo(outputNode);
+  play(outputNode);
   EXPECT_EQ(
       waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING).state,
       AudioGraphNodeState::STREAMING);
@@ -467,13 +477,13 @@ TEST_F(AlsaAudioEmitterTest, test_seekToForward) {
   EXPECT_EQ(
       waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::FINISHED).state,
       AudioGraphNodeState::FINISHED);
-  alsaAudioEmitter->disconnect(outputNode);
+  stopPlaying();
 }
 
 TEST_F(AlsaAudioEmitterTest, test_seekBackwards) {
   const auto totalDuration = 2000;
   auto outputNode = std::make_shared<SineWaveNode>(1, 440, totalDuration);
-  alsaAudioEmitter->connectTo(outputNode);
+  play(outputNode);
   EXPECT_EQ(
       waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING).state,
       AudioGraphNodeState::STREAMING);
@@ -485,7 +495,7 @@ TEST_F(AlsaAudioEmitterTest, test_seekBackwards) {
   EXPECT_EQ(
       waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::FINISHED).state,
       AudioGraphNodeState::FINISHED);
-  alsaAudioEmitter->disconnect(outputNode);
+  stopPlaying();
 }
 
 TEST_F(AlsaAudioEmitterTest, test_seekWhenStopped) {
@@ -495,7 +505,7 @@ TEST_F(AlsaAudioEmitterTest, test_seekWhenStopped) {
 TEST_F(AlsaAudioEmitterTest, test_seekAfterFinished) {
   const auto totalDuration = 2000;
   auto outputNode = std::make_shared<SineWaveNode>(1, 440, totalDuration);
-  alsaAudioEmitter->connectTo(outputNode);
+  play(outputNode);
   EXPECT_EQ(
       waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING).state,
       AudioGraphNodeState::STREAMING);
@@ -513,7 +523,7 @@ TEST_F(AlsaAudioEmitterTest, test_seekAfterFinished) {
 TEST_F(AlsaAudioEmitterTest, test_seekPastEnd) {
   const auto totalDuration = 2000;
   auto outputNode = std::make_shared<SineWaveNode>(1, 440, totalDuration);
-  alsaAudioEmitter->connectTo(outputNode);
+  play(outputNode);
   waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING);
   EXPECT_EQ(alsaAudioEmitter->seek(totalDuration + 100), totalDuration);
   auto state = waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::FINISHED,
@@ -524,7 +534,7 @@ TEST_F(AlsaAudioEmitterTest, test_seekPastEnd) {
 TEST_F(AlsaAudioEmitterTest, test_seekToEndAndBack) {
   const auto totalDuration = 2000;
   auto outputNode = std::make_shared<SineWaveNode>(1, 440, totalDuration);
-  alsaAudioEmitter->connectTo(outputNode);
+  play(outputNode);
   EXPECT_EQ(
       waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING).state,
       AudioGraphNodeState::STREAMING);
@@ -543,7 +553,7 @@ TEST_F(AlsaAudioEmitterTest, test_play_after_finished) {
   const auto totalDuration = 1000;
 
   auto firstNode = std::make_shared<SineWaveNode>(1, 440, totalDuration);
-  alsaAudioEmitter->connectTo(firstNode);
+  play(firstNode);
   EXPECT_EQ(
       waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING).state,
       AudioGraphNodeState::STREAMING);
@@ -554,10 +564,10 @@ TEST_F(AlsaAudioEmitterTest, test_play_after_finished) {
                 .state,
             AudioGraphNodeState::FINISHED);
 
-  alsaAudioEmitter->disconnect(firstNode);
+  stopPlaying();
 
   auto secondNode = std::make_shared<SineWaveNode>(1, 440, totalDuration);
-  alsaAudioEmitter->connectTo(secondNode);
+  play(secondNode);
 
   auto state = waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING,
                              std::chrono::milliseconds(1000));
