@@ -64,9 +64,8 @@ cmake --build build/fft-bench -j2
 taskset -c 3 build/fft-bench/kalinka-fft-bench > fft-pi.md
 ```
 
-The project needs CMake 3.25 or newer and builds on Debian 13 (CMake 3.31,
-GCC 14.2) and Ubuntu 24.04 (CMake 3.28, GCC 13.2), both newer than the GCC 11
-KFR 7.2 asks for. It has not been built on either yet. KFR builds one DFT
+The project needs CMake 3.25 or newer. Debian 13 has CMake 3.31 and GCC 14.2,
+newer than the GCC 11 KFR 7.2 asks for. It has not been built there yet. KFR builds one DFT
 library per instruction set only on x86, so on
 arm64 it compiles 11 files rather than 55. On x86, single GCC processes
 compiling them reached several GB (see below). A Pi with 4 GB may not build
