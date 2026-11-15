@@ -32,6 +32,7 @@ def to_output_info(stream_info: StreamInfo) -> Optional[OutputInfo]:
     if stream_info.device is None:
         return None
     return OutputInfo(
+        sample_format=stream_info.device.format.sample_format,
         sample_rate=stream_info.device.format.sample_rate,
         channels=stream_info.device.format.channels,
         bits_per_sample=stream_info.device.format.bits_per_sample,
@@ -44,6 +45,7 @@ def to_audio_info(stream_info: StreamInfo):
     if stream_info is None:
         return None
     return AudioInfo(
+        sample_format=stream_info.format.sample_format,
         sample_rate=stream_info.format.sample_rate,
         channels=stream_info.format.channels,
         bits_per_sample=stream_info.format.bits_per_sample,

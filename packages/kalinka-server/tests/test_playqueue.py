@@ -55,11 +55,13 @@ from tests.sim_renderer import (
 
 # What the simulator plays: an exclusive device running the decoded format.
 AUDIO_INFO = AudioInfo(
+    sample_format="S16_LE",
     sample_rate=SAMPLE_RATE,
     bits_per_sample=BITS_PER_SAMPLE,
     channels=CHANNELS,
     duration_ms=DURATION_MS,
     output=OutputInfo(
+        sample_format="S16_LE",
         sample_rate=SAMPLE_RATE,
         bits_per_sample=BITS_PER_SAMPLE,
         channels=CHANNELS,
