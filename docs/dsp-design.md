@@ -15,10 +15,12 @@ It builds wherever the renderer ships:
 
 - Debian 13 debs, arm64 and amd64, which the images and the Raspberry Pi run;
 - Ubuntu 24.04 debs, arm64 and amd64;
-- Fedora 44 RPMs;
-- flatpak bundles on freedesktop 24.08.
+- Fedora 44 RPMs.
 
-Ubuntu 24.04 is the oldest of these. Its toolchain, GCC 13.2 and CMake 3.28,
+The release workflow also has a flatpak job, on freedesktop 24.08, but no
+flatpak has shipped. Its manifest matches `.gitignore`'s `*.yml` and was
+never committed, so the job fails on every release, and `continue-on-error`
+hides that. Ubuntu 24.04 is the oldest target. Its toolchain, GCC 13.2 and CMake 3.28,
 is the floor for any language or library feature the DSP uses.
 
 ## 1. How the graph behaves today
@@ -184,7 +186,7 @@ latency. The upstream position stays ahead of what has been handed on, and
 | The sink accepts a change across formats | The old run ends; the next read starts a new run in the new format |
 | Upstream `FINISHED` or `ERROR` | The input closes and the tail is flushed; the state is shown once the last frame has been handed on |
 | Upstream runs dry | The stage holds what it has and shows upstream's `PREPARING`; nothing is flushed, so a short stall leaves no seam |
-| `seekTo` | Everything held is dropped, upstream seeks, a new run starts from the target. While what plays belongs to a source upstream has already left, the seek is refused for now; section 14 proposes making it land where the listener expects |
+| `seekTo` | Everything held is dropped, upstream seeks, a new run starts from the target. While what plays belongs to a source upstream has already left, the seek is refused until Phase 1 makes it land where the listener expects (section 13) |
 | `discard(id)`, from `AudioPlayer::remove` | What plays of that stream ends at once and the next held segment is announced; a later segment of it is skipped |
 | `discardAll()`, from `clearAll` and `stop` | Everything held is dropped |
 | DSD and DoP | The processor declines them; they pass untouched in every phase |
@@ -329,8 +331,7 @@ It gets a libFuzzer target like the existing ones.
 ## 7. Settings
 
 The protocol has no decimal field type, and preamp and filter frequencies
-need one. Section 14 asks how to add it. Until then a decimal setting is an
-INT in hundredths, shown with its unit.
+need one. Review chose a new DECIMAL field type (section 13).
 
 Phase 1:
 
@@ -405,8 +406,7 @@ does not decide this, so the other properties do:
   stage needs (`TableLookupBytes`, which is `pshufb` and `tbl`). It is
   Apache-2.0, compatible with GPL-3. It is packaged as `libhwy-dev` 1.2.0 in
   Debian 13 and 1.0.7 in Ubuntu 24.04, and as `highway-devel` 1.3.0 in
-  Fedora 44. Whether the freedesktop 24.08 SDK carries it is not checked; if
-  not, the flatpak manifest builds it as a module.
+  Fedora 44.
 - **Intrinsics** give full control and nothing to depend on, but every
   kernel has to be written three times (SSE2, AVX2+FMA, NEON), plus hand-made
   dispatch.
@@ -470,10 +470,16 @@ afterwards agreed within 7 %.
   with `--enable-neon` for single precision only (`debian/rules` of 3.3.10-2
   and of the noble branch), so FFTW's double there is scalar.
 
-Recommendation: **PFFFT**, vendored under `third_party/` with
-`THIRD-PARTY-NOTICES.md` updated. That is 23 files, 5,727 lines and 211 KB
-with its licence. Three C files are compiled, and the largest file is a
-2,604-line header. Its spectra stay in its unordered layout,
+Recommendation: **PFFFT**, fetched at configure time rather than committed:
+`FetchContent` from the v1.3.0 release archive, pinned by its SHA-256. The
+renderer's CMake builds its own static library from PFFFT's three C files
+rather than PFFFT's build, which carries tests, benchmarks and extra libraries.
+The deb and RPM builds run with network access, as they do today.
+`FETCHCONTENT_SOURCE_DIR_PFFFT` points an offline build at an unpacked copy,
+and a flatpak manifest would list the archive as a source.
+`THIRD-PARTY-NOTICES.md` and the packages' documentation still carry its
+notice, as its licence asks. The fetch lands with the convolver in Phase 2;
+nothing before it uses an FFT. Its spectra stay in its unordered layout,
 and `pffft_zconvolve_accumulate` does the partitioned multiply-accumulate.
 Reasons:
 
@@ -483,7 +489,7 @@ Reasons:
    float64 convolver.
 3. It plans in microseconds, so a profile change or a rate change never
    stalls.
-4. It is small enough to carry.
+4. It is small: 23 files and 5,727 lines, three of them compiled.
 
 Its cost is x86: a generic build uses SSE, so it runs 1.27–1.54× FFTW in
 float. At 8192 points that is 14 µs a pair, and x86 has headroom. If it ever
@@ -546,10 +552,23 @@ The modulator's own quality, a 1 kHz tone at half modulation over 0.5 s:
 ## 13. Decided in review
 
 1. **Seek near a track's end** should do what the listener expects: seek in
-   the track they hear, not refuse and not land in the next one. Section 14
-   proposes how. The latency that widens the window is a consequence, not a
-   requirement. Phase 2 reduces it where it can: minimum-phase and
-   intermediate filters, and partitions sized for latency.
+   the track they hear, not refuse and not land in the next one. A Seek
+   carries only a position, so it means the source the renderer last
+   reported. Two windows break that, because upstream has already moved on
+   in both: the ALSA queue, today, and the stage's read-ahead. Phase 1 starts
+   with the fix:
+   - the switcher keeps each finished source until it is no longer audible,
+     and can make it current again with the next one requeued, wound back to
+     where it began;
+   - `AudioPlayer` keeps those nodes alive until then;
+   - the emitter seeks the stream it reports, and drops a pending
+     source-change report instead of sending it;
+   - `AudioGraphOutputNode::seekTo` names the stream.
+
+   Until then the stage refuses such a seek. The latency that widens the
+   window is a consequence, not a requirement. Phase 2 reduces it where it
+   can: minimum-phase and intermediate filters, and partitions sized for
+   latency.
 2. **DSD level: full scale, with no clipping the source did not have.** The
    SACD specification, as commonly quoted, puts 0 dB at half modulation and
    allows peaks 3.1 dB above it, about 71 % modulation. The default gain,
@@ -577,29 +596,17 @@ The modulator's own quality, a 1 kHz tone at half modulation over 0.5 s:
    at a pause and a resume. At a seek, the frames ALSA has queued but not yet
    played are rewound with `snd_pcm_rewind`, faded in place and committed
    again before the drop. Everywhere else the stream stays untouched.
-9. **PFFFT**: vendoring is fine at its size (section 10).
+9. **PFFFT** is fetched and built with the renderer, pinned by its
+   checksum, not committed (section 10).
+10. **Decimal settings get a new field type**, `CONFIG_FIELD_TYPE_DECIMAL`.
+    Its bounds come in a `ConfigDecimalRange` of doubles, and the value is
+    decimal text such as `-3.5`. A renderer declares it only to a Core whose
+    negotiated protocol version knows it. An older Core gets the same field
+    as STRING, which its app shows as a text box with the right value and
+    the renderer validates. The Core's `enum_name()` learns to tolerate
+    unknown values, so a future type cannot break a settings page again. It
+    lands with the first decimal setting, the Phase 2 preamp.
 
 ## 14. Open questions
 
-1. **Seeking the track the listener hears.** A Seek carries only a
-   position, so it always means the source the renderer last reported. Two
-   windows break that today:
-   - the ALSA queue, about 160 ms after the emitter has taken the next source
-     but before it reports it;
-   - with latency, the stage's read-ahead.
-
-   In both, upstream has already moved on. Doing it right means:
-   - the switcher keeps each finished source until it is no longer audible,
-     and can make it current again with the next one requeued, wound back
-     to where it began;
-   - `AudioPlayer` keeps those streams' nodes alive until then;
-   - the emitter seeks the stream it reports, not the one it is reading, and
-     drops a pending source-change report instead of sending it.
-
-   That changes `AudioGraphOutputNode::seekTo` to name a stream, an interface
-   every node implements, in the fragile part of the graph. May I make that
-   change, as the first piece of Phase 1 or on its own?
-2. **Which decimal type.** The choices, and what an older Core and app would
-   do with them, were shown in review. A new field type needs a protocol
-   version gate, because an older Core's settings code raises on a field type
-   it does not know. Which do you want?
+None from review. New ones come with Phase 1.
