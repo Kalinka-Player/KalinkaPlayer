@@ -246,7 +246,12 @@ The plan is made once per filter length, off the audio thread.
 ## Licence, packaging and SIMD
 
 Licences are from each project's licence file. Packages were checked on
-packages.debian.org (bookworm) and with `dnf repoquery` (Fedora 45). The SIMD
+packages.debian.org (bookworm) and with `dnf repoquery` (Fedora 45), and
+after these runs for the renderer's actual targets: Debian 13 has
+`libfftw3-dev` 3.3.10-2 and `libhwy-dev` 1.2.0, Ubuntu 24.04 has 3.3.10 and
+1.0.7, Fedora 44 has 3.3.10 and 1.3.0, and none of the three packages PFFFT,
+KFR or zldsp_fft. Debian 13's and Ubuntu 24.04's `debian/rules` enable NEON
+for single precision only, as bookworm's does. The SIMD
 columns come from the documentation and source; only the x86-64 behaviour was
 observed, through the code path each library reported in these runs.
 
@@ -288,7 +293,8 @@ reasons, against the criteria:
   (worst forward error −137.0 dB in float, −311.9 dB in double).
 - **Licence**: BSD-style, GPL-3 compatible. It must keep its NCAR notice in
   the sources and the documentation of binary packages.
-- **Packaging**: it is in neither bookworm nor Fedora, but it is a handful of
+- **Packaging**: it is in none of Debian 13, Ubuntu 24.04 or Fedora, but it
+  is a handful of
   C99 files with no dependencies, about as cheap to vendor as a library gets.
   KFR, the other strong option, is 55 heavy translation units on x86 (see
   [Building](#building)) and is not packaged either.
@@ -308,7 +314,8 @@ was timed on arm64:
   allocated here. What counts against it is the build: a 7457 MiB peak at
   `-j2` for the x86 multi-architecture build, and no packages.
 - **zldsp_fft was the fastest in float up to 4096 points.** It is about six
-  months old, has no release, and needs a newer Highway than bookworm ships.
+  months old, has no release, and needs a newer Highway than Ubuntu 24.04
+  ships.
   Worth rechecking later, not depending on now.
 
 Keep the convolver's FFT behind an interface like `RealFft` here, owning its

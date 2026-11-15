@@ -25,7 +25,7 @@ stage keeps one core busy 5 % of the time while it plays.
 The FFT library comparison is a separate project with its own README:
 [fft/](fft/README.md).
 
-## On a Raspberry Pi 4 or 5 (Raspberry Pi OS / Debian bookworm, arm64)
+## On a Raspberry Pi 4 or 5 (Raspberry Pi OS or Debian 13, arm64)
 
 Stop playback first. The renderer competing for the CPU spoils every number:
 

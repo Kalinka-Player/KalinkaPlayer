@@ -11,6 +11,16 @@ The note covers the renderer in `packages/kalinka-renderer`. The rules in
 [`CLAUDE.md`](../CLAUDE.md) and
 [native-renderer-design.md](native-renderer-design.md) bind it.
 
+It builds wherever the renderer ships:
+
+- Debian 13 debs, arm64 and amd64, which the images and the Raspberry Pi run;
+- Ubuntu 24.04 debs, arm64 and amd64;
+- Fedora 44 RPMs;
+- flatpak bundles on freedesktop 24.08.
+
+Ubuntu 24.04 is the oldest of these. Its toolchain, GCC 13.2 and CMake 3.28,
+is the floor for any language or library feature the DSP uses.
+
 ## 1. How the graph behaves today
 
 ### Source changes
@@ -85,7 +95,7 @@ element through deque iterators, and every block it frees or allocates goes
 through malloc. Measured on its own it costs 2.2 ns per stereo S32 frame for a
 write and a read, about 3.6 GB/s. The same machine copies flat memory tens of
 times faster. That makes `Buffer` the largest cost in today's output path
-outside the decoder. Section 13 proposes replacing it with a ring.
+outside the decoder. Phase 1 replaces it with a ring (section 13).
 
 The Pi 4 numbers will come from the runbook. Expect them several times higher.
 
@@ -100,21 +110,20 @@ For tests it can hold PCM back through a `DelayLine` (`dsp.delay_ms`, a graph
 key, not a setting). Setting `KALINKA_TEST_DSP_DELAY_MS` sends the existing
 gapless, seek, pause, position, switcher and integration tests through it.
 
-| Run | Null device, whole suite | PipeWire, the 126 playback tests in real time |
+| Run | Null device, whole suite | PipeWire, the 135 playback tests in real time |
 |---|---|---|
-| Without the variable | 764 / 764 | 124 / 126 |
-| Stage with no processor | 764 / 764 | 125 / 126 |
-| Stage holding audio 300 ms | 764 / 764 | 125 / 126 |
+| Without the variable | 776 / 776 | 134 / 135 |
+| Stage with no processor | 776 / 776 | 134 / 135 |
+| Stage holding audio 300 ms | 776 / 776 | 134 / 135 |
 
-Two tests fail on PipeWire, and neither is the stage. The first is
-`PlaybackPositionTest.PlaysOggVorbis`. It waits 5 s for a 6 s track to
-finish, and fails the same way before this work. The second,
-`AlsaAudioEmitterTest.pause`, failed 1 run in 8 without the variable and 1 in
-8 with the empty stage, with no failures in 8 at 300 ms. Its captured failure
-paused at 293 ms where it expects 580 ± 30. PipeWire had taken about 290 ms
-to start the stream, so the test's sleep began before any audio played.
-`getState` fails the same way about once in six runs after PipeWire has been
-idle. A new test
+The PipeWire failure is `PlaybackPositionTest.PlaysOggVorbis`. It waits 5 s
+for a 6 s track to finish, and fails the same way before this work. Three
+older tests are flaky with or without the stage. `AlsaAudioEmitterTest.pause`
+failed 1 run in 8: PipeWire took about 290 ms to start the stream, so the
+test's sleep began before any audio played. `getState` fails about once in six
+runs after PipeWire has been idle. `PlaybackPositionTest.SeekAfterSeekLandsOnTheLastOne`
+failed 2 runs in 60 on HEAD and 1 in 60 here: the second seek's state lands
+after the test's mark. A new test
 writes through the ALSA `file` plugin and compares bytes with the decoder's
 own output, for one track and across a gapless join. The bytes are identical
 with no stage delay and through 300 ms of delay.
@@ -175,10 +184,19 @@ latency. The upstream position stays ahead of what has been handed on, and
 | The sink accepts a change across formats | The old run ends; the next read starts a new run in the new format |
 | Upstream `FINISHED` or `ERROR` | The input closes and the tail is flushed; the state is shown once the last frame has been handed on |
 | Upstream runs dry | The stage holds what it has and shows upstream's `PREPARING`; nothing is flushed, so a short stall leaves no seam |
-| `seekTo` | Everything held is dropped, upstream seeks, a new run starts from the target. Refused while what plays belongs to a source upstream has already left (section 13) |
+| `seekTo` | Everything held is dropped, upstream seeks, a new run starts from the target. While what plays belongs to a source upstream has already left, the seek is refused for now; section 14 proposes making it land where the listener expects |
 | `discard(id)`, from `AudioPlayer::remove` | What plays of that stream ends at once and the next held segment is announced; a later segment of it is skipped |
 | `discardAll()`, from `clearAll` and `stop` | Everything held is dropped |
 | DSD and DoP | The processor declines them; they pass untouched in every phase |
+
+**Threads.** Everything the stage holds belongs to the thread that pulls
+audio, and the stage has no lock of its own. Upstream state callbacks, from
+decoder and control threads, and `discard()` from the control thread hand
+their part over through `AudioGraphNode`'s existing state lock. They do it
+with `updateState()`, which decides and sets the shown state under that one
+lock. A discard of what plays shows the next source at once, even while the
+sink is paused and reads nothing. The pulling thread then applies it on its
+next call.
 
 The only gapless decision is still the emitter's format comparison. It now
 compares what the stage presents: the processor's output format and rate
@@ -187,9 +205,8 @@ keeps that format constant across a mixed-rate queue. The stage's output
 `StreamInfo` carries the translated rate, sample format and `streamSize`.
 
 **Pause.** The emitter writes silence while paused and reads nothing, and the
-stage sits idle. Phase 2 fades the pause in float, inside the stage, by
-sending the gain ramp below to zero. Today a pause cuts mid-waveform. It is the
-same for seeks: section 13 lists both as clicks the harness can detect.
+stage sits idle. Today a pause cuts mid-waveform, and so does a seek. Phase 1
+fades both briefly (section 13, decision 8).
 
 **Live streams.** `LiveAudioPolicy` targets 60 ms. Stages with no latency
 (PEQ, crossfeed, channel tools, gain, dither) apply to live PCM. A stage with
@@ -312,7 +329,7 @@ It gets a libFuzzer target like the existing ones.
 ## 7. Settings
 
 The protocol has no decimal field type, and preamp and filter frequencies
-need one. Section 13 asks how to add it. Until then a decimal setting is an
+need one. Section 14 asks how to add it. Until then a decimal setting is an
 INT in hundredths, shown with its unit.
 
 Phase 1:
@@ -322,7 +339,7 @@ Phase 1:
 | `output.dsd_mode` | ENUM | gains `pcm`; `auto` becomes native when verified, else PCM | `disabled` | interrupts playback (as now) | simple |
 | `dsd.pcm_rate` | ENUM | `auto`, `2x`, `4x`, `8x` of 44.1/48 kHz, by source family | `auto` | instant: the next DSD source takes it | expert |
 | `dsd.filter` | ENUM | `auto` (30 kHz for DSD64, 50 kHz above), `30k`, `50k`, `wide` | `auto` | instant, crossfaded | expert |
-| `dsd.gain_db` | ENUM | `0`, `3`, `6` | `6` | instant, ramped | expert |
+| `dsd.gain_db` | ENUM | `0`, `safe`, `6` | `safe` | instant, ramped | expert |
 
 Phase 2:
 
@@ -353,7 +370,7 @@ What the Core gains, as additions to `renderer.proto` in Phase 1 and 2:
   most FIR taps, the most output channels.
 - `StateSnapshot` and `PlaybackStateChanged` gain `signal_path`. It holds the
   source format, the active stages in order (name plus a short summary, such
-  as "DSD64 to PCM 176.4 kHz, 30 kHz filter, +6 dB"), and the device format.
+  as "DSD64 to PCM 176.4 kHz, 30 kHz filter, +2.8 dB"), and the device format.
   It is empty when the stage is untouched. With `device_info` and
   `VolumeState` it settles whether playback is bit-perfect.
 - `dsp_latency_ms`: what the stage holds back.
@@ -386,18 +403,20 @@ does not decide this, so the other properties do:
 - **Highway** gives one source per kernel with runtime dispatch built in
   (SSE2, SSE4, AVX2, AVX-512, NEON, SVE). It has the byte lookups the DSD
   stage needs (`TableLookupBytes`, which is `pshufb` and `tbl`). It is
-  Apache-2.0, compatible with GPL-3, and packaged as `libhwy-dev` 1.0.3 in
-  bookworm and `highway-devel` 1.3.0 in Fedora.
+  Apache-2.0, compatible with GPL-3. It is packaged as `libhwy-dev` 1.2.0 in
+  Debian 13 and 1.0.7 in Ubuntu 24.04, and as `highway-devel` 1.3.0 in
+  Fedora 44. Whether the freedesktop 24.08 SDK carries it is not checked; if
+  not, the flatpak manifest builds it as a module.
 - **Intrinsics** give full control and nothing to depend on, but every
   kernel has to be written three times (SSE2, AVX2+FMA, NEON), plus hand-made
   dispatch.
 - **std::experimental::simd** picks its width at compile time only, so
   runtime dispatch means one translation unit per instruction set and an ODR
   hazard between them. It has no byte shuffle. It is libstdc++-only, and its
-  successor `std::simd` is C++26, which bookworm's GCC 12 lacks.
+  successor `std::simd` is C++26, which Ubuntu 24.04's GCC 13 lacks.
 
-Recommendation: Highway, as the system package, coded against the 1.0.3 API,
-with SVE disabled until a measured gain on hardware we have. The Pi run of the
+Recommendation: Highway, as the system package, coded against Ubuntu 24.04's
+1.0.7 API, with SVE disabled until a measured gain on hardware we have. The Pi run of the
 same table decides it: if Highway's NEON trails hand NEON on the A72, the
 answer changes.
 
@@ -438,19 +457,23 @@ afterwards agreed within 7 %.
   chooses on each machine. FFTW's `FFTW_MEASURE` planning takes 0.15–0.6 s per
   size; the others take microseconds.
 - **Licence and packaging:**
-  - FFTW: GPL-2+, in bookworm (`libfftw3-dev` 3.3.10) and Fedora
-    (`fftw-devel` 3.3.10).
+  - FFTW: GPL-2+, packaged everywhere: `libfftw3-dev` 3.3.10 in Debian 13
+    and Ubuntu 24.04, `fftw-devel` 3.3.10 in Fedora 44.
   - PFFFT: BSD-style, in neither distribution. It is a few C99 files.
   - KFR: GPL-2+, in neither. Its build peaked at 7.4 GB here.
   - zldsp_fft: about six months old, with no release, and it needs a newer
-    Highway than bookworm's.
+    Highway than Ubuntu 24.04's.
   - pocketfft: BSD-3, in Fedora only.
 - **arm64**, from the documentation and sources, not measured: PFFFT has
-  NEON in float and double. Debian builds its arm64 FFTW with NEON for float
-  only, so FFTW's double there is scalar.
+  NEON in float and double; its double NEON path was rewritten in 1.2.0, two
+  weeks before these runs. Debian 13 and Ubuntu 24.04 build their arm64 FFTW
+  with `--enable-neon` for single precision only (`debian/rules` of 3.3.10-2
+  and of the noble branch), so FFTW's double there is scalar.
 
 Recommendation: **PFFFT**, vendored under `third_party/` with
-`THIRD-PARTY-NOTICES.md` updated. Its spectra stay in its unordered layout,
+`THIRD-PARTY-NOTICES.md` updated. That is 23 files, 5,727 lines and 211 KB
+with its licence. Three C files are compiled, and the largest file is a
+2,604-line header. Its spectra stay in its unordered layout,
 and `pffft_zconvolve_accumulate` does the partitioned multiply-accumulate.
 Reasons:
 
@@ -520,49 +543,63 @@ The modulator's own quality, a 1 kHz tone at half modulation over 0.5 s:
 | DSD128 | -172.9 dB | -187.7 dBFS |
 | DSD256 | -193.3 dB | -200.9 dBFS |
 
-## 13. Open questions
+## 13. Decided in review
 
-1. **Seeking in the last moments of a track.** Once the stage has read into
-   the next source, upstream has left the one still playing, so a seek can't
-   reach it. Today that window is the ALSA queue, and a seek there lands in
-   the *next* track. With the stage it grows by the latency, up to about
-   0.75 s for a 65536-tap FIR, and the stage refuses such a seek (it returns
-   -1, the emitter keeps playing). Should it refuse, or keep today's landing
-   in the next track?
-2. **What "-6 dBFS" means for DSD.** The harness counts DSD level against
-   full modulation, so half modulation is -6 dB, which is 0 dB SACD. With the
-   +6 dB default gain such a tone converts to full-scale PCM. Should the
-   Phase 1 acceptance tone be at half modulation, which makes 0 dBFS PCM with
-   no headroom at +6 dB, or lower?
-3. **Phase 1's THD+N row is tight.** The DSD64 fixture is -128 dB. For the
-   converter to stay within 0.1 dB of it, the converter's own noise and
-   aliasing must sit about 16 dB lower, near -144 dB, which is where 24-bit
-   TPDF dither already is. Should the row be measured before dither, or
-   against DSD128 fixtures?
-4. **Replace `Buffer`.** It is the largest cost in today's output path after
-   libFLAC (section 2). A single-producer single-consumer ring with `memcpy`
-   would remove most of it. It is used by every decoder and input node, so
-   that touches many files: may Phase 1 do it, or should it be its own change?
-5. **A decimal setting type.** Preamp, PEQ and shelf settings need decimals,
-   and `ConfigFieldType` has none. Should we add `decimals` to `ConfigRange`
-   for INT fields, so older Cores show the raw integer, or a new DECIMAL
-   type?
-6. **Highway as a system package or vendored.** Bookworm has 1.0.3 and
-   Fedora 1.3.0. Coding to 1.0.3 works with both, and vendoring a pinned
-   release removes the version skew at the cost of carrying it. Which do you
-   prefer?
-7. **The stage's lock.** In Phase 0 the stage takes one mutex on the pulling
-   thread, which upstream state callbacks also take, briefly, on decoder
-   threads. That breaks the "never waits on a lock a control thread holds"
-   rule in spirit if not in measured effect. Phase 2 can make the callback
-   path lock-free (an atomic snapshot of upstream state). Is that acceptable
-   for Phase 1?
-8. **Pause and seek clicks.** Today both cut mid-waveform, and the click
-   detector will flag them. They are emitter behaviour, older than this work.
-   Should Phase 1 fade them through the new gain step, or leave them for the
-   Phase 2 transition work?
-9. **Vendoring PFFFT.** The recommendation (section 10) carries a third-party
-   library in the tree for the first time in the DSP. Do you accept that, or
-   would you rather depend on FFTW? FFTW is packaged everywhere but has scalar
-   double on Debian arm64, and stays allocation-free only by the plan it
-   happens to choose.
+1. **Seek near a track's end** should do what the listener expects: seek in
+   the track they hear, not refuse and not land in the next one. Section 14
+   proposes how. The latency that widens the window is a consequence, not a
+   requirement. Phase 2 reduces it where it can: minimum-phase and
+   intermediate filters, and partitions sized for latency.
+2. **DSD level: full scale, with no clipping the source did not have.** The
+   SACD specification, as commonly quoted, puts 0 dB at half modulation and
+   allows peaks 3.1 dB above it, about 71 % modulation. The default gain,
+   `safe`, lands that maximum 0.1 dB under full scale: +2.8 dB. +6 dB stays
+   a choice for those who accept that loud masters clip; it is counted and
+   reported. Phase 1's acceptance adds a fixture at 71 % modulation that must
+   convert with no clipped sample.
+3. **THD+N is measured before dither**, against DSD64 and DSD128 fixtures.
+   The dither is tested on its own, against the noise statistics it must have.
+4. **`Buffer` becomes a ring in Phase 1.** It will be single producer, single
+   consumer, with atomic positions. A read or write is at most two `memcpy`
+   calls over contiguous spans, never an iterator copy: a ring whose
+   iterators wrap falls back to a scalar loop per element, which is what took
+   `boost::circular_buffer` from 2 % to 25 % of a Pi. Waiters are woken only
+   when the ring goes from empty to holding data, or from full to having
+   room. The `kernels` benchmark gets a row for it beside `std::deque`, and
+   it replaces the deque only once it is faster on the Pi.
+5. **Highway: the system package**, on the 1.0.7 floor.
+6. **Targets** are the ones at the top of this note, not Debian 12. The
+   runbook and the FFT project now say so.
+7. **The stage is lock-free now** (section 3): its only lock is
+   `AudioGraphNode`'s, which existed before it.
+8. **Pause and seek fade**, briefly, and stay bit-perfect between. In
+   Phase 1 the new gain step gives the emitter a fade of a few milliseconds
+   at a pause and a resume. At a seek, the frames ALSA has queued but not yet
+   played are rewound with `snd_pcm_rewind`, faded in place and committed
+   again before the drop. Everywhere else the stream stays untouched.
+9. **PFFFT**: vendoring is fine at its size (section 10).
+
+## 14. Open questions
+
+1. **Seeking the track the listener hears.** A Seek carries only a
+   position, so it always means the source the renderer last reported. Two
+   windows break that today:
+   - the ALSA queue, about 160 ms after the emitter has taken the next source
+     but before it reports it;
+   - with latency, the stage's read-ahead.
+
+   In both, upstream has already moved on. Doing it right means:
+   - the switcher keeps each finished source until it is no longer audible,
+     and can make it current again with the next one requeued, wound back
+     to where it began;
+   - `AudioPlayer` keeps those streams' nodes alive until then;
+   - the emitter seeks the stream it reports, not the one it is reading, and
+     drops a pending source-change report instead of sending it.
+
+   That changes `AudioGraphOutputNode::seekTo` to name a stream, an interface
+   every node implements, in the fragile part of the graph. May I make that
+   change, as the first piece of Phase 1 or on its own?
+2. **Which decimal type.** The choices, and what an older Core and app would
+   do with them, were shown in review. A new field type needs a protocol
+   version gate, because an older Core's settings code raises on a field type
+   it does not know. Which do you want?
