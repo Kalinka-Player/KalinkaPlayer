@@ -240,6 +240,18 @@ if(KALINKA_BUILD_FUZZERS)
   endforeach()
 endif()
 
+# --- DSP test harness: signals, analysers and DSD fixtures ------------------
+# Shared by the unit tests and the DSP benchmark; never shipped.
+add_library(kalinka_dsp_harness STATIC EXCLUDE_FROM_ALL
+  tests/dsp/Analysis.cpp
+  tests/dsp/ReferenceFilters.cpp
+  tests/dsp/SigmaDelta.cpp
+  tests/dsp/Signals.cpp
+)
+target_include_directories(kalinka_dsp_harness PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests/dsp
+)
+
 # --- unit tests (optional: built only when GoogleTest is installed) ----------
 find_package(GTest CONFIG)
 if(GTest_FOUND)
@@ -306,10 +318,12 @@ if(GTest_FOUND)
     tests/native_player/VorbisStreamDecoder_test.cpp
     tests/native_player/WavContainer_test.cpp
     tests/native_player/integration_test.cpp
+    tests/dsp/Harness_test.cpp
   )
   target_link_libraries(kalinka-renderer-tests PRIVATE
     kalinka_renderer_core
     kalinka_native_player
+    kalinka_dsp_harness
     GTest::gmock
     GTest::gtest_main
   )
