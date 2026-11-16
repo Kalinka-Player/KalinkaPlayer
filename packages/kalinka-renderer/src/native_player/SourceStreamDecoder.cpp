@@ -26,29 +26,37 @@ void SourceStreamDecoder::disconnect(
   input.reset();
 }
 
-size_t SourceStreamDecoder::readSome(void *dest, size_t bytes) {
+size_t SourceStreamDecoder::take(void *dest, size_t bytes, size_t wanted) {
   auto combined = interruption();
+  const auto available = input->waitForData(combined.get_token(), wanted);
+  if (combined.get_token().stop_requested())
+    throw Interrupted{};
+  const auto state = input->getState();
+  if (state.state == AudioGraphNodeState::ERROR)
+    throw SourceFailed{state.error.value_or(
+        StreamError{StreamErrorSource::DECODER, name() + " input failed"})};
+  const auto count =
+      available ? input->read(dest, std::min(bytes, available)) : 0;
+  // Counted as it arrives, so an interrupted read leaves it exact.
+  position += count;
+  return count;
+}
+
+size_t SourceStreamDecoder::readSome(void *dest, size_t bytes) {
   auto *p = static_cast<uint8_t *>(dest);
   size_t done = 0;
   while (done < bytes) {
-    const auto available = input->waitForData(
-        combined.get_token(), std::min(bytes - done, size_t(4096)));
-    if (combined.get_token().stop_requested())
-      throw Interrupted{};
-    const auto state = input->getState();
-    if (state.state == AudioGraphNodeState::ERROR)
-      throw SourceFailed{state.error.value_or(
-          StreamError{StreamErrorSource::DECODER, name() + " input failed"})};
     const auto count =
-        available ? input->read(p + done, std::min(bytes - done, available))
-                  : 0;
+        take(p + done, bytes - done, std::min(bytes - done, size_t(4096)));
     if (!count)
       break;
-    // Counted as it arrives, so an interrupted read leaves it exact.
-    position += count;
     done += count;
   }
   return done;
+}
+
+size_t SourceStreamDecoder::readAvailable(void *dest, size_t bytes) {
+  return bytes ? take(dest, bytes, 1) : 0;
 }
 
 void SourceStreamDecoder::readExact(void *dest, size_t bytes) {

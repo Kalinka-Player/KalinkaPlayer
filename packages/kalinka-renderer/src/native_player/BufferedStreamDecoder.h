@@ -4,6 +4,7 @@
 #include "Utils.h"
 
 #include <atomic>
+#include <optional>
 #include <span>
 #include <stop_token>
 #include <string>
@@ -56,6 +57,13 @@ protected:
   }
   /// Appends whole frames, waiting for room; throws Interrupted.
   void write(std::span<const uint8_t> frames);
+  /**
+   * @brief Answers the seek in progress now, for a seekSource() that reads to
+   * move: a later seek or shutdown can then cut that read short.
+   * @note A failure after this ends the stream in ERROR instead of failing
+   * the seek, which has already been answered.
+   */
+  void answerSeek();
   void setBufferSize(size_t bytes) { buffer.setCapacity(bytes); }
   size_t bufferedBytes() const { return buffer.size(); }
   /// The stream open() described; valid on the worker once open() returns.
@@ -71,6 +79,8 @@ private:
   std::atomic<long> startFrame{0}, bytesRead{0};
   std::atomic<unsigned> frameBytes{0};
   StreamInfo info{};
+  /// The seek being handled and not yet answered; worker-only.
+  std::optional<size_t> seeking;
   std::stop_token workerToken;
   std::jthread worker;
 
@@ -79,7 +89,8 @@ private:
   /// Appends the next block through write(); false once the source is done.
   virtual bool decodeNext() = 0;
   /// Repositions the source so decodeNext() resumes at `frame`, which is at
-  /// most the stream's length.
+  /// most the stream's length. A failure fails the seek, unless answerSeek()
+  /// ran first.
   virtual void seekSource(uint64_t frame) = 0;
   /// Whether seekSource() works; asked once open() has returned.
   virtual bool canSeek() const { return true; }
