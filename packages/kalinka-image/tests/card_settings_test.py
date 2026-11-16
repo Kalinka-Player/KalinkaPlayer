@@ -833,6 +833,31 @@ class ClassicFilesTest(CardTest):
         self.wpa('\tssid="Cafe"\n\tkey_mgmt=NONE\n')
         self.assertEqual(self.settings().wifi, Wifi("Cafe", "", False))
 
+    def test_wep_keys_are_refused_in_every_slot(self):
+        for slot in range(4):
+            for key in ('"abcde"', "6162636465"):
+                with self.subTest(slot=slot, key=key):
+                    self.wpa(
+                        '\tssid="Legacy"\n\tkey_mgmt=NONE\n'
+                        f'\twep_key{slot}={key}\n\twep_tx_keyidx={slot}\n'
+                    )
+                    settings = self.settings()
+                    self.assertIsNone(settings.wifi)
+                    self.assertEqual(settings.country, "GB")
+                    self.assertJournal("WEP networks are not supported")
+
+    def test_a_wep_network_is_not_saved_and_the_other_files_still_apply(self):
+        self.classic_card()
+        self.wpa('\tssid="Legacy"\n\tkey_mgmt=NONE\n\twep_key0="abcde"\n')
+        self.assertEqual(self.run_program(), 1, "\n".join(self.journal))
+        self.assertEqual(len(self.warnings()), 1)
+        self.assertJournal("WEP networks are not supported")
+        self.assertFalse((self.root.path / card_settings.PROFILE).exists())
+        self.assertFalse((self.root.path / card_settings.NETWORK_MARKER).exists())
+        self.assertEqual(self.recorder.commands(), CLASSIC_COMMANDS)
+        self.assertEqual(self.root.left_on_card(), ["cmdline.txt"])
+        self.assertNotIn("abcde", "\n".join(self.journal))
+
     def test_wpa_psk_among_other_key_managements_is_taken(self):
         self.wpa('\tssid="Home"\n\tpsk="passphrase1"\n\tkey_mgmt=WPA-PSK SAE\n')
         self.assertEqual(self.settings().wifi, Wifi("Home", "passphrase1", False))
@@ -861,7 +886,7 @@ class ClassicFilesTest(CardTest):
         self.assertIsNone(self.settings().wifi)
         self.assertJournal("wpa_supplicant.conf line 2: the network has no ssid")
 
-    def test_comments_start_after_the_last_quote_as_for_wpa_supplicant(self):
+    def test_hashes_inside_quoted_values_are_preserved(self):
         self.root.card(
             "wpa_supplicant.conf",
             "# by hand\ncountry=GB # the UK\nnetwork={\n"
@@ -870,6 +895,35 @@ class ClassicFilesTest(CardTest):
         settings = self.settings()
         self.assertEqual(settings.wifi, Wifi("Flat #2", "pass#word1", False))
         self.assertEqual(settings.country, "GB")
+        self.assertEqual(self.warnings(), [])
+
+    def test_quotes_in_inline_comments_do_not_change_the_network(self):
+        for comment in ('# "living room"', '# "unfinished', '# "one" and "two"'):
+            with self.subTest(comment=comment):
+                self.wpa(
+                    f'\tssid="Flat #2" {comment}\n'
+                    f'\tpsk="pass#word1" {comment}\n'
+                )
+                self.assertEqual(
+                    self.settings().wifi, Wifi("Flat #2", "pass#word1", False)
+                )
+                self.assertEqual(self.warnings(), [])
+        self.assertEqual(self.run_program(), 0, "\n".join(self.journal))
+        profile = (self.root.path / card_settings.PROFILE).read_text()
+        self.assertIn("\nid=Flat\\s#2\n", profile)
+        self.assertIn("\npsk=pass#word1\n", profile)
+
+    def test_quoted_comments_after_unquoted_fields_and_network_braces(self):
+        self.root.card(
+            "wpa_supplicant.conf",
+            'country=GB # "United Kingdom"\nnetwork={ # "home"\n'
+            f'\tssid=486f6d65 # "Home"\n\tpsk={PSK} # "key"\n'
+            '\tscan_ssid=1 # "hidden"\n\tkey_mgmt=WPA-PSK # "personal"\n'
+            '} # "end"\n',
+        )
+        self.assertEqual(
+            self.settings(), Settings(country="GB", wifi=Wifi("Home", PSK, True))
+        )
         self.assertEqual(self.warnings(), [])
 
     def test_a_line_starting_with_a_comment_is_skipped_whatever_its_quotes(self):
