@@ -159,7 +159,9 @@ private:
   snd_pcm_sframes_t framesHeardAfterDrop();
   void beginSourceAt(std::optional<long> position);
   StreamState waitForInputToBeReady(std::stop_token token);
-  snd_pcm_sframes_t waitForAlsaBufferSpace();
+  /// Waits for a period of room on the device; @p token is the worker's own,
+  /// as its thread object may still be being assigned.
+  snd_pcm_sframes_t waitForAlsaBufferSpace(std::stop_token token);
   bool handleInputNodeStateChange();
   snd_pcm_sframes_t writeToAlsa(
       snd_pcm_uframes_t framesToWrite,
