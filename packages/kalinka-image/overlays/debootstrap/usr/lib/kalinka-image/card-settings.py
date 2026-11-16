@@ -372,7 +372,10 @@ def read_userconf_txt(text: str) -> Optional[dict[str, Any]]:
 
 
 def without_wpa_comment(line: str) -> str:
-    """line without its # comment, which wpa_supplicant finds after the last quote."""
+    """line without its # comment, as wpa_supplicant finds one: the whole line when
+    it starts with #, else from the first # after the line's last quote."""
+    if line.lstrip().startswith("#"):
+        return ""
     first, last = line.find('"'), line.rfind('"')
     end = line.find("#", last if first < last else 0)
     return line if end < 0 else line[:end]
