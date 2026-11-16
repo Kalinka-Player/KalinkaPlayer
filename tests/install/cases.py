@@ -9,6 +9,7 @@ import contextlib
 import grp
 import json
 import os
+import platform
 import pwd
 import shlex
 import shutil
@@ -27,14 +28,16 @@ REPO = os.environ.get("KALINKA_REPO") or "Kalinka-Player/KalinkaPlayer"
 RELEASES_URL = f"https://api.github.com/repos/{REPO}/releases?per_page=30"
 # Reading it costs none of the quota it reports.
 RATE_LIMIT_URL = "https://api.github.com/rate_limit"
-# The feed here, then per install-release.sh run at most the bundle, the browser
-# player and the renderer.
+# The feed here, then the bundle, the browser player and the renderer for each of
+# debian's two runs, the most any system looks up.
 API_CALLS = 1 + 2 * 3
 RESET_SLACK = 5
 QUOTA_TIMEOUT = 65 * 60
 SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 SYSTEMCTL_CALLS = Path("/usr/bin/systemctl.calls")
 APT_GET = Path("/usr/local/sbin/apt-get")
+BLOCKED_DEPENDENCY = "python3-venv"
+BLOCK = Path(f"/etc/apt/preferences.d/install-test-blocks-{BLOCKED_DEPENDENCY}")
 SERVER_UNIT = Path("/etc/systemd/system/kalinka.service")
 SERVER_ID = Path("/var/lib/kalinka/server_id")
 VERSION_URL = "http://127.0.0.1:8000/server/version"
@@ -51,7 +54,15 @@ FALLBACK = ">> apt-get install failed; falling back to dpkg -i + apt-get -f inst
 RENDERER_STEP = ">> Installing the renderer on this machine"
 RENDERER_WARNING = ">> note: the renderer could not be installed"
 APP_LOOKUP = ">> Looking up the latest app packages"
+RELEASE_LOOKUP = ">> Looking up"
 MISSING_EXTRA = "could not be installed, so"
+SAID_DONE = ">> Done."
+OLD_PYTHON = "error: Kalinka needs Python 3.11 or newer, and {system} has Python {python}."
+SUPPORTED = (
+    "It installs on Debian 13, Raspberry Pi OS (64-bit) or DietPi on Debian 13, "
+    "or Ubuntu 24.04"
+)
+SERVER_NOT_INSTALLED = "error: {tag} is not installed: dpkg reports kalinka-server as"
 
 
 class CheckFailed(Exception):
@@ -146,6 +157,7 @@ def wait_for_api_quota(needed):
 
 
 def published_releases():
+    wait_for_api_quota(API_CALLS)
     releases = kalinka_releases(github(RELEASES_URL))
     check(releases, f"no published kalinka-v* release in {REPO}")
     return releases
@@ -289,7 +301,14 @@ def stop(process, grace=30):
 
 
 def install(*args, piped=False, **env):
-    """install-release.sh's output, or CheckFailed when it fails.
+    """install-release.sh's output, or CheckFailed when it fails."""
+    status, output = run_installer(*args, piped=piped, **env)
+    check(status == 0, f"install-release.sh exited with status {status}")
+    return output
+
+
+def run_installer(*args, piped=False, **env):
+    """install-release.sh's exit status and output; CheckFailed if it runs too long.
 
     *piped* feeds the script to ``bash -s`` through a pipe, as ``curl … | bash``
     does.
@@ -308,7 +327,8 @@ def install(*args, piped=False, **env):
         text=True,
         errors="replace",
         env={**os.environ, "PATH": SYSTEM_PATH, **env},
-        process_group=0,
+        # Not process_group, which old-python's 3.10 lacks: a new session leads a group too.
+        start_new_session=True,
     )
     if piped:
         threading.Thread(target=_feed, args=(process.stdin,), daemon=True).start()
@@ -323,13 +343,11 @@ def install(*args, piped=False, **env):
         process.wait()
     finally:
         timer.cancel()
-    timed_out = process.returncode == -signal.SIGKILL
     check(
-        process.returncode == 0,
-        f"install-release.sh exited with status {process.returncode}"
-        + (f", stopped after {INSTALL_TIMEOUT} s" if timed_out else ""),
+        process.returncode != -signal.SIGKILL,
+        f"install-release.sh was stopped after {INSTALL_TIMEOUT} s",
     )
-    return "".join(lines)
+    return process.returncode, "".join(lines)
 
 
 def _feed(pipe):
@@ -406,7 +424,8 @@ def check_server_answers(release):
     )
 
 
-def fresh_debian(releases):
+def fresh_debian():
+    releases = published_releases()
     check(len(releases) >= 2, "an upgrade needs two published kalinka-v* releases")
     latest, previous = releases[0], releases[1]
     with step(f"install {previous['tag_name']}, asked for by its version"):
@@ -423,8 +442,8 @@ def fresh_debian(releases):
         check_server_answers(latest)
 
 
-def dietpi_like(releases):
-    latest = releases[0]
+def dietpi_like():
+    latest = published_releases()[0]
     with step(
         f"install {latest['tag_name']} with KALINKA_RENDERER=0 KALINKA_WEB=0, "
         "apt's install of the downloaded packages failing"
@@ -448,9 +467,55 @@ def dietpi_like(releases):
         output = install(piped=True, KALINKA_RENDERER_INSTALLER=UNREACHABLE_INSTALLER)
         check(RENDERER_WARNING in output, "no warning that the renderer did not come")
         check_installed(latest, output, web=True, renderer=False)
+    with step(
+        f"run it again where apt can never install the server's {BLOCKED_DEPENDENCY},"
+        " as on too old a Python: it has to fail"
+    ):
+        removal = subprocess.run(
+            ["apt-get", "remove", "-y", "-q", BLOCKED_DEPENDENCY],
+            stdin=subprocess.DEVNULL,
+        )
+        check(removal.returncode == 0, f"removing {BLOCKED_DEPENDENCY} failed")
+        state = package_state("kalinka-server")
+        check(
+            not state.startswith("installed "),
+            f"kalinka-server is still {state} without {BLOCKED_DEPENDENCY}",
+        )
+        BLOCK.write_text(
+            f"Package: {BLOCKED_DEPENDENCY}\nPin: version *\nPin-Priority: -1\n"
+        )
+        try:
+            status, output = run_installer(KALINKA_RENDERER="0", KALINKA_WEB="0")
+        finally:
+            BLOCK.unlink()
+        check(status != 0, "install-release.sh exited with status 0")
+        check(FALLBACK in output, "the failed install was not followed by dpkg's")
+        check(SAID_DONE not in output, "it said it was done")
+        check(
+            SERVER_NOT_INSTALLED.format(tag=latest["tag_name"]) in output,
+            "it did not say that the server is not installed",
+        )
+        state = package_state("kalinka-server")
+        check(not state.startswith("installed "), f"kalinka-server is {state}")
 
 
-SYSTEMS = {"debian": fresh_debian, "dietpi": dietpi_like}
+def old_python():
+    system = platform.freedesktop_os_release().get("PRETTY_NAME") or "this system"
+    python = "%d.%d.%d" % sys.version_info[:3]
+    with step(f"refuse to install on {system}, whose Python is {python}"):
+        status, output = run_installer()
+        check(status != 0, "install-release.sh exited with status 0")
+        check(
+            OLD_PYTHON.format(system=system, python=python) in output,
+            "it did not say that the server needs a newer Python than this one",
+        )
+        check(SUPPORTED in output, "it did not name the systems it installs on")
+        check(RELEASE_LOOKUP not in output, "it looked a release up before it refused")
+        state = package_state("kalinka-server")
+        check(state == "unknown to dpkg", f"kalinka-server is {state}")
+
+
+SYSTEMS = {"debian": fresh_debian, "dietpi": dietpi_like, "old-python": old_python}
 
 
 def main(argv):
@@ -458,8 +523,7 @@ def main(argv):
         print(f"usage: cases.py {'|'.join(SYSTEMS)}", file=sys.stderr)
         return 2
     try:
-        wait_for_api_quota(API_CALLS)
-        SYSTEMS[argv[1]](published_releases())
+        SYSTEMS[argv[1]]()
     except CheckFailed as failure:
         print(f"\nFAIL {failure}", flush=True)
         return 1

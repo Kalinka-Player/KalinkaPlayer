@@ -1,25 +1,35 @@
 #!/usr/bin/env bash
 #
 # Run install-release.sh from this checkout on each throwaway system, one
-# container apiece, keeping each one's output in a log. `make install-test`
-# picks the engine and the Debian 13 image.
+# container apiece from the image named for it, keeping each one's output in
+# a log. `make install-test` picks the engine and the images.
 #
-# Usage: run.sh <container-engine> <debian-13-image>
+# Usage: run.sh <container-engine> <system>=<image>...
 # Env:   INSTALL_TEST_LOGS  where the logs go (default: tmp/install-test)
 set -uo pipefail
 
-if [ "$#" -ne 2 ]; then
-  echo 'usage: run.sh <container-engine> <debian-13-image>' >&2
+usage() {
+  echo 'usage: run.sh <container-engine> <system>=<image>...' >&2
   exit 2
-fi
+}
 
-engine="$1" image="$2"
+[ "$#" -ge 2 ] || usage
+engine="$1"
+shift
+for pair in "$@"; do
+  case "$pair" in
+    ?*=?*) ;;
+    *) usage ;;
+  esac
+done
+
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 logs="${INSTALL_TEST_LOGS:-$root/tmp/install-test}"
 mkdir -p "$logs" || exit 1
 
 failed=()
-for system in debian dietpi; do
+for pair in "$@"; do
+  system="${pair%%=*}" image="${pair#*=}"
   log="$logs/$system.log"
   echo "== $system: install-release.sh on a throwaway $image via ${engine##*/}"
   if "$engine" run --pull=never --rm \

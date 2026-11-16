@@ -8,9 +8,10 @@ fi
 
 engine="$1"
 images=("$2")
-if [ "$2" = public.ecr.aws/docker/library/debian:trixie ]; then
-  images+=(docker.io/library/debian:trixie)
-fi
+mirror=public.ecr.aws/docker/library/
+case "$2" in
+  "$mirror"*) images+=("docker.io/library/${2#"$mirror"}") ;;
+esac
 
 for image in "${images[@]}"; do
   if "$engine" image inspect "$image" >/dev/null 2>&1 || "$engine" pull "$image" >&2; then

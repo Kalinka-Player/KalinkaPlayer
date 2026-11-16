@@ -43,6 +43,7 @@ FLOOR_STATEMENTS = [
     ("docs/installation.md", r"needs Python (\d+\.\d+) or newer"),
     ("scripts/install-release.sh", r"version_info < \((\d+), (\d+)\)"),
     ("scripts/install-release.sh", r"needs Python (\d+\.\d+) or newer"),
+    ("tests/install/cases.py", r"needs Python (\d+\.\d+) or newer"),
     ("template/cookiecutter-kalinka-plugin/README.md", r"Python (\d+\.\d+)\+"),
     (
         "template/cookiecutter-kalinka-plugin/README.md",
