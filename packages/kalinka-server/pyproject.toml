@@ -60,8 +60,8 @@ dependencies = [
     # >=3.21: live receiver audio, receiver controls and pairing;
     # RevokeReason.PLUGIN_UNLOADED, and config_changed says whether the
     # plugin took a save in.
-    # >=3.22: ModuleCapability.RANKED_SEARCH and InputModule.root_preview.
-    "kalinka-plugin-sdk[media]>=3.22,<4",
+    # >=3.23: Catalog.play_individually for radio station listings.
+    "kalinka-plugin-sdk[media]>=3.23,<4",
 ]
 dynamic = ["version"]
 

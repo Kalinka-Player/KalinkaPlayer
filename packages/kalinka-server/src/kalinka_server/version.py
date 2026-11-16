@@ -303,7 +303,13 @@ def get_version() -> str:
 # Also 0.23: a plugin's root in GET /browse carries the `preview_config` its
 # module declares; My Library's is an `image` preview of `catalog`s, so a
 # client opens it as cards.
-REST_API_VERSION = "0.23"
+# 0.24: catalogs may declare `play_individually`: activating a track replaces
+# the queue with that track alone, rather than its neighbours in the listing.
+# Absent or false retains the existing behaviour; explicit queue actions stay
+# available. WebRadio uses this for its station lists.
+# Also 0.24: playback state's `audio_info` and its `output` carry
+# `sample_format`, the renderer's name for the decoded and the device format.
+REST_API_VERSION = "0.24"
 
 
 def get_rest_api_version() -> str:
