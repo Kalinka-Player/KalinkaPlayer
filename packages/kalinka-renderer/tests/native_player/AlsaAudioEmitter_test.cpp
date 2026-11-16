@@ -54,7 +54,7 @@ public:
                          .live = live}});
   }
   size_t read(void *data, size_t size) override {
-    return buffer.read(static_cast<uint8_t *>(data), size);
+    return buffer.read(data, size);
   }
   size_t waitForData(std::stop_token token, size_t size) override {
     if (!waiting.exchange(true)) {
@@ -94,7 +94,7 @@ public:
     provideAudio();
   }
   size_t read(void *data, size_t size) override {
-    return buffer.read(static_cast<uint8_t *>(data), size);
+    return buffer.read(data, size);
   }
   size_t waitForData(std::stop_token token, size_t size) override {
     runDryIfEmpty();

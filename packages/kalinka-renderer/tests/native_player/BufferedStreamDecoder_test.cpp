@@ -78,6 +78,44 @@ private:
   void close() override { ++calls->closed; }
 };
 
+/// Stereo 16-bit frames written split: a frame and a half, then the rest
+/// once released.
+class SplitFrameDecoder final : public BufferedStreamDecoder {
+public:
+  SplitFrameDecoder() : AudioGraphNode(1), BufferedStreamDecoder(64, 0) {
+    start();
+  }
+  ~SplitFrameDecoder() override { stop(); }
+
+  std::atomic<bool> released{false};
+
+private:
+  const std::array<uint8_t, 8> frames{1, 2, 3, 4, 5, 6, 7, 8};
+  int blocks = 0;
+
+  std::string name() const override { return "Split"; }
+  StreamInfo open() override {
+    return {{RATE, 2, 16, PCM16_LE}, StreamType::FRAMES, 2};
+  }
+  bool decodeNext() override {
+    switch (blocks++) {
+    case 0:
+      write(std::span(frames).first(6));
+      return true;
+    case 1:
+      while (!released) {
+        checkInterrupted();
+        std::this_thread::sleep_for(1ms);
+      }
+      write(std::span(frames).subspan(6));
+      return true;
+    default:
+      return false;
+    }
+  }
+  void seekSource(uint64_t) override {}
+};
+
 std::vector<uint16_t> drain(BufferedStreamDecoder &node) {
   std::vector<uint16_t> samples;
   std::array<uint8_t, 33> data;
@@ -232,4 +270,16 @@ TEST(BufferedStreamDecoder, ASourceFailureCarriesTheSourceError) {
   EXPECT_EQ(state.error->source, StreamErrorSource::HTTP_STREAM);
   EXPECT_EQ(state.error->message, "Source went away");
   EXPECT_EQ(node.seekTo(0), size_t(-1));
+}
+
+TEST(BufferedStreamDecoder, AFrameHalfWrittenIsHeldBackUntilItIsWhole) {
+  SplitFrameDecoder node;
+  ASSERT_EQ(node.waitForDataFor({}, 2s, 6), 6u);
+  std::array<uint8_t, 8> data{};
+  EXPECT_EQ(node.read(data.data(), data.size()), 4u);
+  EXPECT_EQ(node.read(data.data(), data.size()), 0u);
+  node.released = true;
+  ASSERT_EQ(node.waitForDataFor({}, 2s, 4), 4u);
+  EXPECT_EQ(node.read(data.data() + 4, 4), 4u);
+  EXPECT_EQ(data, (std::array<uint8_t, 8>{1, 2, 3, 4, 5, 6, 7, 8}));
 }

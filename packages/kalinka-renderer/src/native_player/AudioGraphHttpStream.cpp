@@ -466,8 +466,7 @@ size_t AudioGraphHttpStream::read(void *data, size_t size) {
   return count;
 }
 
-// Finished here as well as by the transfer, so whoever finds the end also
-// finds the stream FINISHED.
+// Also finished here, so whoever finds the end finds the stream FINISHED.
 size_t AudioGraphHttpStream::waitForData(std::stop_token stopToken,
                                          size_t size) {
   auto combinedToken =
