@@ -121,6 +121,40 @@ Continuous processing, which the stage does, has no join error by
 construction. The stage's own tests prove it delivers a gapless join frame
 for frame.
 
+### The ring against the deque (16 November 2026)
+
+Phase 1 replaced `Buffer`, a deque under a lock, with `ByteRing`. Same
+machine and build. The kernels ran pinned to cpus 2 and 3, playback and
+`perf` to cpu 2. Playback alternated a build of `main` from before the change
+with the change itself, three runs each.
+
+| Kernel | 44.1 kHz | 96.0 kHz | 192.0 kHz | 352.8 kHz |
+|---|---|---|---|---|
+| std::deque buffer write + read, S32 stereo | 2.15 ns (0.009 %) | 2.18 ns (0.021 %) | 2.23 ns (0.043 %) | 2.24 ns (0.079 %) |
+| ByteRing write + read, S32 stereo | 0.21 ns (0.001 %) | 0.22 ns (0.002 %) | 0.22 ns (0.004 %) | 0.21 ns (0.008 %) |
+| std::deque buffer read, written from another thread | 4.15 ns (0.018 %) | 4.08 ns (0.039 %) | 4.10 ns (0.079 %) | 4.10 ns (0.145 %) |
+| ByteRing read, written from another thread | 0.30 ns (0.001 %) | 0.27 ns (0.003 %) | 0.26 ns (0.005 %) | 0.26 ns (0.009 %) |
+
+The deque row is a copy of the old `Buffer`'s hot path kept in the bench, so
+the comparison survives the class. The two-thread rows read 1024 frames at a
+time while a writer on its own thread keeps the queue full, as a decoder does.
+
+| File | Before: CPU, of one core | After |
+|---|---|---|
+| pink-16-44k.flac | 0.04 s; 0.06 %, 0.06 %, 0.06 % | 0.03–0.04 s; 0.06 %, 0.06 %, 0.06 % |
+| pink-24-192k.flac | 0.19 s; 0.31 %, 0.31 %, 0.31 % | 0.16 s; 0.27 %, 0.26 %, 0.26 % |
+
+`perf record -F 20000 -e cpu-clock` over three 24/192 plays of each build, in
+CPU time:
+
+| | Before | After |
+|---|---|---|
+| All threads | 531 ms | 450 ms |
+| Decoder thread | 446 ms | 441 ms |
+| ALSA thread | 84 ms | 8 ms |
+| The deque's copy, inlined into `BufferedStreamDecoder::read` | 73 ms | gone |
+| `memmove` on the ALSA thread | none: the deque copied element by element | 4 ms |
+
 ## arm64: Raspberry Pi 5, 15 November 2026
 
 - CPU: Arm Cortex-A76, 4 cores at up to 2.4 GHz; Raspberry Pi 5 Model B
@@ -210,6 +244,39 @@ and -172.4 dB, silence -142.5 and -187.6 dBFS). At DSD256 the figures sit
 near the analyser's own floor and differ by up to 3.4 dB: tone -189.9 dB,
 silence -203.0 dBFS. `long double` is 80-bit on x86 and 128-bit on arm64.
 `join` printed the x86 tables digit for digit.
+
+### The ring against the deque (16 November 2026)
+
+Same board and build as above, still without root, the installed renderer
+idle. The kernels ran pinned to cores 2 and 3, playback and `perf` to core 3,
+alternating a build of `main` from before the change with the change itself,
+three runs each. Core 3 ran at 1500–2400 MHz and the board at 58–62 C.
+
+| Kernel | 44.1 kHz | 96.0 kHz | 192.0 kHz | 352.8 kHz |
+|---|---|---|---|---|
+| std::deque buffer write + read, S32 stereo | 1.39 ns (0.006 %) | 1.31 ns (0.013 %) | 1.31 ns (0.025 %) | 1.30 ns (0.046 %) |
+| ByteRing write + read, S32 stereo | 0.54 ns (0.002 %) | 0.53 ns (0.005 %) | 0.54 ns (0.010 %) | 0.53 ns (0.019 %) |
+| std::deque buffer read, written from another thread | 5.49 ns (0.024 %) | 5.28 ns (0.051 %) | 5.41 ns (0.104 %) | 5.39 ns (0.190 %) |
+| ByteRing read, written from another thread | 0.65 ns (0.003 %) | 0.64 ns (0.006 %) | 0.64 ns (0.012 %) | 0.65 ns (0.023 %) |
+
+| File | Before: CPU, of one core | After |
+|---|---|---|
+| pink-16-44k.flac | 0.09 s; 0.14 %, 0.14 %, 0.14 % | 0.08 s; 0.14 %, 0.14 %, 0.14 % |
+| pink-24-192k.flac | 0.30 s; 0.51 %, 0.50 %, 0.50 % | 0.27 s; 0.46 %, 0.45 %, 0.46 % |
+
+`perf record -F 10000 -e cpu-clock` over three 24/192 plays of each build, in
+CPU time:
+
+| | Before | After |
+|---|---|---|
+| All threads | 831 ms | 774 ms |
+| Decoder thread | 764 ms | 727 ms |
+| ALSA thread | 67 ms | 47 ms |
+
+Debian's libc is stripped, so most of the ALSA thread's samples sit at
+unnamed libc addresses in both builds. Debian 13's GCC already turned the
+deque's copy into `memmove`, so a single thread gains least here; the larger
+gain is in the two-thread row, where writer and reader share the deque's lock.
 
 ## arm64: Raspberry Pi 4
 
