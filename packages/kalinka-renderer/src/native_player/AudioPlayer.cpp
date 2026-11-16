@@ -26,6 +26,7 @@
 #include <cstdlib>
 #include <expected>
 #include <functional>
+#include <string_view>
 
 namespace {
 // These numbers can be reduced depending on audio bitness,
@@ -50,6 +51,12 @@ std::unique_ptr<DspProcessor> dspProcessorFor(const Config &config) {
   const auto delay =
       std::chrono::milliseconds(value_or(config, "dsp.delay_ms", 0));
   return delay.count() > 0 ? std::make_unique<DelayLine>(delay) : nullptr;
+}
+
+// On a desktop's own device, raising the mixer raises everything it plays.
+bool mixerLeftAlone() {
+  const char *value = std::getenv("KALINKA_LEAVE_MIXER");
+  return value != nullptr && *value != '\0' && std::string_view(value) != "0";
 }
 
 bool isInvalidState(AudioGraphNodeState state) {
@@ -338,8 +345,12 @@ bool AudioPlayer::configureVolume(const std::string &mode,
   // Software attenuation and fixed output both require the card-side stage at
   // unity. Without this, software mode attenuates twice and fixed does not mean
   // bit-perfect output when an ALSA mixer was previously left below 100%.
-  if ((requested == VolumeMode::Software || requested == VolumeMode::Fixed) &&
-      mixer->available()) {
+  const bool needsUnity =
+      requested == VolumeMode::Software || requested == VolumeMode::Fixed;
+  if (needsUnity && mixer->available() && mixerLeftAlone()) {
+    spdlog::info("KALINKA_LEAVE_MIXER is set: the ALSA mixer stays at {}%",
+                 mixer->getVolume());
+  } else if (needsUnity && mixer->available()) {
     if (!mixer->setVolume(100) || mixer->getVolume() != 100) {
       if (error != nullptr) {
         *error = "ALSA mixer could not be set to 100%";
