@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 BufferedStreamDecoder::BufferedStreamDecoder(size_t bufferSize,
                                              size_t startOffsetMs)
@@ -127,11 +128,18 @@ void BufferedStreamDecoder::seek(size_t frame) {
   setState(StreamState{AudioGraphNodeState::PREPARING});
   buffer.clear();
   buffer.resetEof();
-  seekSource(frame);
   startFrame = frame;
   bytesRead = 0;
+  seeking = frame;
+  seekSource(frame);
   setState({AudioGraphNodeState::STREAMING, long(frame), info});
-  seekSignal.respond(frame);
+  answerSeek();
+}
+
+void BufferedStreamDecoder::answerSeek() {
+  if (seeking) {
+    seekSignal.respond(*std::exchange(seeking, std::nullopt));
+  }
 }
 
 void BufferedStreamDecoder::run(std::stop_token token) {

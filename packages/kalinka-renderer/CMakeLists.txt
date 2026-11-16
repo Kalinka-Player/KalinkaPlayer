@@ -365,6 +365,7 @@ if(GTest_FOUND)
     tests/native_player/Mp4StreamDecoder_test.cpp
     tests/native_player/PlaybackPcm_test.cpp
     tests/native_player/SineWaveNode_test.cpp
+    tests/native_player/SourceStreamDecoder_test.cpp
     tests/native_player/StateMonitor_test.cpp
     tests/native_player/Utils_test.cpp
     tests/native_player/VorbisStreamDecoder_test.cpp

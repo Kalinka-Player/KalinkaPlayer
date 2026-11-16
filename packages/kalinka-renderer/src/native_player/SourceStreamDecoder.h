@@ -26,6 +26,11 @@ protected:
   /// Reads up to `bytes`, fewer only where the source ends. Throws
   /// Interrupted, or SourceFailed when the source fails.
   size_t readSome(void *dest, size_t bytes);
+  /// Reads what the source holds, up to `bytes`, waiting only for the first
+  /// byte; 0 only where it ends. Throws as readSome() does. A producer pacing
+  /// on playback holds its next bytes until these play, so nothing may wait
+  /// for more than it has sent.
+  size_t readAvailable(void *dest, size_t bytes);
   /// Reads exactly `bytes`; throws "Truncated <name> file" at the end.
   void readExact(void *dest, size_t bytes);
   /// Moves the source to `offset`; false where it cannot.
@@ -46,6 +51,8 @@ private:
   uint64_t position = 0;
 
   bool canSeek() const final { return seekable; }
+  /// Reads once what `wanted` bytes have arrived, or fewer at the end.
+  size_t take(void *dest, size_t bytes, size_t wanted);
   /// Forgets the previous source, before the worker starts on a new one.
   virtual void forget() {}
 };

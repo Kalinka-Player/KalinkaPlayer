@@ -4,6 +4,7 @@
 
 #include <array>
 #include <atomic>
+#include <future>
 #include <memory>
 #include <optional>
 #include <span>
@@ -35,6 +36,10 @@ public:
 
   void halt() { stop(); }
 
+  /// A seek to this frame answers, then reads on until a later seek or
+  /// shutdown cuts it, as a decoder library seeking through its input does.
+  std::atomic<long> stallSeekAt{-1};
+
 private:
   const std::shared_ptr<Calls> calls;
   const bool seekable;
@@ -60,6 +65,12 @@ private:
     return true;
   }
   void seekSource(uint64_t frame) override {
+    if (long(frame) == stallSeekAt)
+      answerSeek();
+    while (long(frame) == stallSeekAt) {
+      checkInterrupted();
+      std::this_thread::sleep_for(1ms);
+    }
     calls->lastSeek = long(frame);
     next = uint16_t(frame);
   }
@@ -153,6 +164,25 @@ TEST(BufferedStreamDecoder, SeekRestartsFromTheRequestedFrame) {
   ASSERT_EQ(node.seekTo(120), 120u);
   EXPECT_EQ(node.streamReadPosition(), 120);
   EXPECT_EQ(drain(node), countFrom(120));
+}
+
+TEST(BufferedStreamDecoder, ASeekAnsweredBeforeItsSourceMovesCanBeCutShort) {
+  auto calls = std::make_shared<Calls>();
+  FakeDecoder node(calls);
+  waitStreaming(node);
+  node.stallSeekAt = 100;
+
+  auto first =
+      std::async(std::launch::async, [&node] { return node.seekTo(100); });
+  const bool answered = first.wait_for(1s) == std::future_status::ready;
+  if (!answered)
+    node.halt(); // Stopping answers it, so a failure cannot hang the test.
+  ASSERT_TRUE(answered) << "the seek waited for a source that had not moved";
+  EXPECT_EQ(first.get(), 100u);
+  EXPECT_EQ(node.getState().state, AudioGraphNodeState::PREPARING);
+
+  EXPECT_EQ(node.seekTo(200), 200u);
+  EXPECT_EQ(drain(node), countFrom(200));
 }
 
 TEST(BufferedStreamDecoder, SeekPastTheEndFinishes) {
