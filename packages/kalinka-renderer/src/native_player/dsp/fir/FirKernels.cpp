@@ -1,4 +1,4 @@
-#include "FirKernels.h"
+#include "dsp/fir/FirKernels.h"
 
 #include <algorithm>
 
@@ -8,7 +8,7 @@
 #endif
 
 #undef HWY_TARGET_INCLUDE
-#define HWY_TARGET_INCLUDE "FirKernels.cpp"
+#define HWY_TARGET_INCLUDE "dsp/fir/FirKernels.cpp"
 #include <hwy/foreach_target.h> // IWYU pragma: keep
 #include <hwy/highway.h>
 

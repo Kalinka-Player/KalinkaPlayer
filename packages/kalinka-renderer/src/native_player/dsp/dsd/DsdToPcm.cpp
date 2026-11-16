@@ -1,6 +1,6 @@
-#include "DsdToPcm.h"
+#include "dsp/dsd/DsdToPcm.h"
 
-#include "DsdFilterTaps.h"
+#include "dsp/dsd/DsdFilterTaps.h"
 
 #include <algorithm>
 #include <array>

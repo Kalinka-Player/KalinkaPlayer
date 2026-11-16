@@ -1,6 +1,6 @@
 #include "Measure.h"
 
-#include "DsdToPcm.h"
+#include "dsp/dsd/DsdToPcm.h"
 
 #include <cstdio>
 #include <random>

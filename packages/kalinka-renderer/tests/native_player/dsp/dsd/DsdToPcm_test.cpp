@@ -1,9 +1,9 @@
-#include "DsdToPcm.h"
+#include "dsp/dsd/DsdToPcm.h"
 
 #include "Analysis.h"
-#include "DsdFilterTaps.h"
 #include "SigmaDelta.h"
 #include "Signals.h"
+#include "dsp/dsd/DsdFilterTaps.h"
 
 #include <gtest/gtest.h>
 

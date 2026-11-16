@@ -4,12 +4,12 @@
 #include "Analysis.h"
 #include "AudioSampleFormat.h"
 #include "ByteRing.h"
-#include "DelayLine.h"
-#include "DspStage.h"
 #include "GainFade.h"
 #include "ReferenceFilters.h"
 #include "SigmaDelta.h"
 #include "Signals.h"
+#include "dsp/DelayLine.h"
+#include "dsp/DspStage.h"
 
 #include <soxr.h>
 

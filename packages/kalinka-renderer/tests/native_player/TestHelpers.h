@@ -2,10 +2,10 @@
 
 #include "AudioStreamSwitcher.h"
 #include "Config.h"
-#include "DelayLine.h"
-#include "DspStage.h"
 #include "StateMonitor.h"
 #include "StreamState.h"
+#include "dsp/DelayLine.h"
+#include "dsp/DspStage.h"
 
 #include <algorithm>
 #include <chrono>

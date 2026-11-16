@@ -1,8 +1,8 @@
 #include "AudioStreamSwitcher.h"
 #include "ByteRing.h"
-#include "DelayLine.h"
-#include "DspStage.h"
 #include "SineWaveNode.h"
+#include "dsp/DelayLine.h"
+#include "dsp/DspStage.h"
 
 #include <gtest/gtest.h>
 

@@ -1,4 +1,4 @@
-#include "DsdKernels.h"
+#include "dsp/dsd/DsdKernels.h"
 
 #include <algorithm>
 
@@ -8,7 +8,7 @@
 #endif
 
 #undef HWY_TARGET_INCLUDE
-#define HWY_TARGET_INCLUDE "DsdKernels.cpp"
+#define HWY_TARGET_INCLUDE "dsp/dsd/DsdKernels.cpp"
 #include <hwy/foreach_target.h> // IWYU pragma: keep
 #include <hwy/highway.h>
 
