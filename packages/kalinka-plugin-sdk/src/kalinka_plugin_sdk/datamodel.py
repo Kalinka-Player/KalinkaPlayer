@@ -469,6 +469,9 @@ class Catalog(BaseModel):
             mounted, or the list of them: ``GET /server/storage/location``
             answers for it, and it may list what a volume that went away
             held.
+        play_individually (bool): SDK 3.23. Activating a track plays only that
+            track instead of queuing its neighbours in this listing. Useful
+            for endless radio stations. Explicit queue actions are unchanged.
     """
 
     id: EntityId
@@ -481,6 +484,7 @@ class Catalog(BaseModel):
     sources: List[str] = []
     live: bool = False
     on_storage: bool = False
+    play_individually: bool = False
 
 
 class MatchTier(str, Enum):
@@ -759,6 +763,9 @@ class OutputInfo(BaseModel):
     What the output device runs at, against the stream that was decoded for it.
 
     Attributes:
+        sample_format (str): SDK 3.23. The renderer's identifier for the
+            device's sample format, including DSD and DoP transport variants;
+            empty when the renderer does not say
         sample_rate (int): Device sample rate in Hz
         bits_per_sample (int): Significant bits the device carries, not the
             width of the container they are shifted into
@@ -769,7 +776,6 @@ class OutputInfo(BaseModel):
             device it is applied by, because only there is it current.
     """
 
-    # Renderer format identifier, including DSD and DoP transport variants.
     sample_format: str = ""
     sample_rate: int = 0
     bits_per_sample: int = 0
@@ -783,6 +789,9 @@ class AudioInfo(BaseModel):
     Technical information about the currently playing audio stream.
 
     Attributes:
+        sample_format (str): SDK 3.23. The renderer's identifier for the
+            decoded sample format, including DSD and DoP transport variants;
+            empty when the renderer does not say
         sample_rate (int): Audio sample rate in Hz (e.g., 44100, 48000)
         bits_per_sample (int): Bit depth (e.g., 16, 24)
         channels (int): Number of audio channels (1=mono, 2=stereo)
@@ -791,7 +800,6 @@ class AudioInfo(BaseModel):
             absent when the renderer has none open or cannot describe it
     """
 
-    # Renderer format identifier, including DSD and DoP transport variants.
     sample_format: str = ""
     sample_rate: int
     bits_per_sample: int

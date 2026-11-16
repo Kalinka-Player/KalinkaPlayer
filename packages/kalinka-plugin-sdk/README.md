@@ -192,6 +192,7 @@ their wheel/deb dependencies and `REQUIRES_SDK` declaration.
 - `LibraryAdopter` is how a library plugin keeps a folder from a drive. It implements `location_status(location)`, answering with a `LocationStatus` that says whether it already holds the folder and whether one of its sources is exactly that folder, plus `adopt_location` and `release_location`, which return the `SourcesChange` that adds or removes the folder: one record added to, or removed by id from, a record list of its settings. The server asks only plugins that implement all three.
 - `StorageBacked` is an input module whose pages are folders on storage; it answers `storage_location(entity_id)`.
 - `Catalog.live` marks a listing that changes without Kalinka, so a client lists it again each time it is shown; `Catalog.on_storage` marks a folder of a mounted volume. `ModuleDescriptor.count` is a number a client may show on the source's icon.
+- `Catalog.play_individually` (SDK 3.23) asks clients to play only the activated track, instead of queuing its neighbours. Use it for station listings of endless radio streams. It defaults to false; explicit queue actions are unaffected.
 - `BrowseItem.icon` names what a client draws where the item has no art (`track`, `folder`, `usb_drive`, `network_share`, `disk`, `internal_storage`), in place of art it would make up.
 - `VolumesChangedEvent` on the queue bus, and `PlayQueueState.volumes`, carry the server's volumes as `VolumeDescriptor`s, each with a `summary` to show under its label.
 
