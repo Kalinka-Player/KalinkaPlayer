@@ -258,6 +258,8 @@ void FlacStreamDecoder::handleSeekSignal(size_t position) {
       spdlog::warn("FlacDecoder flush failed");
     }
   }
+  // Unmarked first: emptying a buffer that holds the end reports FINISHED.
+  buffer.resetEof();
   buffer.clear();
   if (position >= flacStreamInfo.value().total_samples) {
     // Answered with where it landed, not what was asked for, as a seek
@@ -267,7 +269,6 @@ void FlacStreamDecoder::handleSeekSignal(size_t position) {
     return;
   }
 
-  buffer.resetEof();
   setState(StreamState{AudioGraphNodeState::PREPARING});
   seekSignal.respond(position);
   if (!seek_absolute(position)) {

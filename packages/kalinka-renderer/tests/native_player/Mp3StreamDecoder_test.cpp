@@ -109,6 +109,17 @@ TEST_F(Mp3StreamDecoderTest, ReadWholeFile) {
   EXPECT_EQ(decoder->getState().state, AudioGraphNodeState::FINISHED);
 }
 
+TEST_F(Mp3StreamDecoderTest, ASeekOnceDecodedToTheEndNeverFinishes) {
+  decoder = std::make_unique<Mp3StreamDecoder>(1, 64 * 1024 * 1024);
+  decoder->connectTo(std::make_shared<FileInputNode>(1, mp3file));
+
+  const auto seen = seekOnceDecodedToTheEnd(*decoder, 1000);
+
+  EXPECT_EQ(std::count(seen.begin(), seen.end(), AudioGraphNodeState::FINISHED),
+            0)
+      << "a queued track would take over from a seek";
+}
+
 TEST_F(Mp3StreamDecoderTest, test_SeekTo_consistent) {
   auto outputNode = std::make_shared<FileInputNode>(1, mp3file);
   decoder->connectTo(outputNode);
