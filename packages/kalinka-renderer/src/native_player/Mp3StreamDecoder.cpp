@@ -210,6 +210,7 @@ void Mp3StreamDecoder::disconnect(
 }
 
 void Mp3StreamDecoder::threadRun(std::stop_token token) {
+  workerToken = token;
 
   mp3dec_ex_t mp3{};
   mp3dec_io_t io = {
@@ -460,11 +461,11 @@ void Mp3StreamDecoder::finishIfDrained() {
 size_t Mp3StreamDecoder::readCallback(void *buf, size_t size) {
   spdlog::trace("Mp3StreamDecoder::readCallback({})", size);
 
-  auto stopToken = decodingThread.get_stop_token();
-  auto combinedToken = combineStopTokens(stopToken, seekSignal.getStopToken());
+  auto combinedToken =
+      combineStopTokens(workerToken, seekSignal.getStopToken());
   auto token = initCompleteSignal.getValue().value_or(false)
                    ? combinedToken.get_token()
-                   : stopToken;
+                   : workerToken;
   // minimp3 treats a short read as EOF, including while counting CBR samples.
   // Drain partial source buffers until the request is full or truly at EOF;
   // waiting for the whole request can also exceed the HTTP producer's reserve.

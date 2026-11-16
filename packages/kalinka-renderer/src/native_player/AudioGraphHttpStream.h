@@ -57,6 +57,9 @@ public:
 
 private:
   std::jthread readerThread;
+  /// The reader's own stop token, which its callbacks read: the thread object
+  /// may still be being assigned when they first run.
+  std::stop_token readerToken;
   std::string url;
   Buffer<uint8_t> buffer;
   size_t contentLength = 0;
