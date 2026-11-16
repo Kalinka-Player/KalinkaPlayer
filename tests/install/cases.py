@@ -56,6 +56,7 @@ RENDERER_WARNING = ">> note: the renderer could not be installed"
 APP_LOOKUP = ">> Looking up the latest app packages"
 RELEASE_LOOKUP = ">> Looking up"
 MISSING_EXTRA = "could not be installed, so"
+MISSING_DEB = "did not install: dpkg reports it as"
 SAID_DONE = ">> Done."
 OLD_PYTHON = "error: Kalinka needs Python 3.11 or newer, and {system} has Python {python}."
 SUPPORTED = (
@@ -389,6 +390,7 @@ def check_installed(release, output, *, web, renderer):
             f"{package} is {state}, but should {'' if wanted else 'not '}be installed",
         )
     check(MISSING_EXTRA not in output, "a package for an optional feature did not come")
+    check(MISSING_DEB not in output, "a downloaded package did not install")
     check(shutil.which("fpcalc"), "no fpcalc came for AcoustID")
     audit = subprocess.run(["dpkg", "--audit"], capture_output=True, text=True)
     check(not audit.stdout.strip(), f"dpkg --audit finds:\n{audit.stdout}")
@@ -500,7 +502,10 @@ def dietpi_like():
 
 
 def old_python():
-    system = platform.freedesktop_os_release().get("PRETTY_NAME") or "this system"
+    try:
+        system = platform.freedesktop_os_release().get("PRETTY_NAME") or "this system"
+    except OSError:
+        system = "this system"
     python = "%d.%d.%d" % sys.version_info[:3]
     with step(f"refuse to install on {system}, whose Python is {python}"):
         status, output = run_installer()

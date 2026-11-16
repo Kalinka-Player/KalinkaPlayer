@@ -135,9 +135,11 @@ sys.exit(1 if sys.argv[-1] == {unobtainable!r} else 0)
         calls = self.engine_calls()
         self.assertEqual(
             [call for call in calls if call[0] == "image"],
-            [["image", "inspect", base] for base in (BASE, BASE, OLD_PYTHON_BASE)],
+            [["image", "inspect", base] for base in (BASE, OLD_PYTHON_BASE)],
         )
-        self.assertEqual([call[0] for call in calls], ["image", "run"] * 3)
+        self.assertEqual(
+            [call[0] for call in calls], ["image", "run", "run", "image", "run"]
+        )
         runs = [call for call in calls if call[0] == "run"]
         self.assertEqual(
             [(run[-1], run[-4]) for run in runs],
@@ -185,6 +187,25 @@ sys.exit(1 if sys.argv[-1] == {unobtainable!r} else 0)
         runs = [call[-1] for call in self.engine_calls() if call[0] == "run"]
         self.assertEqual(runs, ["debian", "dietpi"])
 
+    def test_an_image_two_systems_share_is_tried_once_and_fails_both(self):
+        self.fake_engine(unobtainable=BASE)
+        result = self.make(f"{self.bin}:{os.environ['PATH']}")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("install-test failed on: debian dietpi", result.stdout)
+        for system in ("debian", "dietpi"):
+            self.assertEqual(
+                (self.logs / f"{system}.log").read_text(),
+                f"could not obtain {BASE}\n",
+            )
+        calls = self.engine_calls()
+        self.assertEqual(
+            [call for call in calls if call[-1] == BASE],
+            [["image", "inspect", BASE], ["pull", BASE]],
+        )
+        self.assertEqual(
+            [call[-1] for call in calls if call[0] == "run"], ["old-python"]
+        )
+
     def test_a_system_without_its_image_is_refused(self):
         self.fake_engine()
         engine = str(self.bin / "podman")
@@ -200,6 +221,7 @@ sys.exit(1 if sys.argv[-1] == {unobtainable!r} else 0)
         engine = str(self.bin / "podman")
         for args, reason in (
             ([f"debian={BASE}", f"debain={BASE}"], "no system 'debain'"),
+            ([f"debian dietpi={BASE}"], "no system 'debian dietpi'"),
             ([f"debian={BASE}", f"dietpi={BASE}", f"debian={BASE}"], "named twice"),
         ):
             with self.subTest(args=args):
