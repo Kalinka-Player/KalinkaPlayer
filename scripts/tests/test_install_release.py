@@ -32,8 +32,10 @@ class ReleaseInstallerTests(unittest.TestCase):
             NO_APT_UPDATE="1",
             GITHUB_TOKEN="",
             FAIL_BUNDLE="0",
-            REPAIR_REMOVES="0",
+            DPKG_LOCKED="0",
+            REPAIR_REMOVES="",
         )
+        self.installed = {}
         self.installer = self.root / "install-release.sh"
         # Only redirect the OS identity file and the system's Python, which is
         # the real one unless a test stands one in; run the full installer unchanged.
@@ -49,10 +51,11 @@ class ReleaseInstallerTests(unittest.TestCase):
             """#!/usr/bin/env python3
 import json, os, pathlib, sys
 status = pathlib.Path(os.environ["FIXTURE"]) / "status.json"
-state = json.loads(status.read_text()).get(sys.argv[-1]) if status.exists() else None
-if state is None or sys.argv[1:3] != ["-W", "-f=${db:Status-Status}"]:
+state = json.loads(status.read_text()).get(sys.argv[-1])
+formats = ("-f=${db:Status-Status}", "-f=${db:Status-Status} ${Version}")
+if state is None or sys.argv[1] != "-W" or sys.argv[2] not in formats:
     sys.exit(1)
-print(state, end="")
+print(state if sys.argv[2] == formats[1] else state.split()[0], end="")
 """,
         )
         self.command(
@@ -91,12 +94,17 @@ assert all(p.is_file() for p in packages), packages
 if packages and os.environ["FAIL_BUNDLE"] == "1":
     sys.exit(1)
 status = root / "status.json"
-states = json.loads(status.read_text()) if status.exists() else {}
-states.update((p.name.split("_")[0], "installed") for p in packages)
+states = json.loads(status.read_text())
+for package, version, _ in (p.name.split("_") for p in packages):
+    states[package] = f"installed {version}"
 if "-f" in args:
     # What dpkg -i left unconfigured is configured, or removed where it cannot be.
-    fixed = "config-files" if os.environ["REPAIR_REMOVES"] == "1" else "installed"
-    states.update((name, fixed) for name, state in states.items() if state == "unpacked")
+    removed = os.environ["REPAIR_REMOVES"].split()
+    for package, state in list(states.items()):
+        status_word, version = state.split()
+        if status_word == "unpacked":
+            fixed = "config-files" if package in removed else "installed"
+            states[package] = f"{fixed} {version}"
 status.write_text(json.dumps(states))
 """,
         )
@@ -107,10 +115,13 @@ import json, os, pathlib, sys
 root = pathlib.Path(os.environ["FIXTURE"])
 with (root / "dpkg.jsonl").open("a") as log:
     log.write(json.dumps(sys.argv[1:]) + "\\n")
+if os.environ["DPKG_LOCKED"] == "1":
+    sys.exit(2)
 status = root / "status.json"
-states = json.loads(status.read_text()) if status.exists() else {}
-names = [pathlib.Path(a).name for a in sys.argv[1:] if a.endswith(".deb")]
-states.update((name.split("_")[0], "unpacked") for name in names)
+states = json.loads(status.read_text())
+debs = [pathlib.Path(a).name for a in sys.argv[1:] if a.endswith(".deb")]
+for package, version, _ in (name.split("_") for name in debs):
+    states[package] = f"unpacked {version}"
 status.write_text(json.dumps(states))
 """,
         )
@@ -192,7 +203,7 @@ else:
     def run_installer(self, *args, piped=False):
         for log in self.root.glob("*.jsonl"):
             log.unlink()
-        (self.root / "status.json").unlink(missing_ok=True)
+        (self.root / "status.json").write_text(json.dumps(self.installed))
         return subprocess.run(
             ["bash", "-s", "--", *args]
             if piped
@@ -226,6 +237,7 @@ else:
         self.assert_packages(self.base_names + [self.web])
         self.assertIn("skipping the Bluetooth plugin on Ubuntu 24.04", result.stderr)
         self.assertIn("kalinka-v5.17.0 installed", result.stdout)
+        self.assertNotIn("did not install", result.stderr)
         self.assertEqual(self.calls("dpkg"), [])
 
     def test_other_platforms_keep_the_complete_bundle(self):
@@ -282,18 +294,70 @@ else:
             set(names),
         )
         self.assertTrue(any("-f" in call for call in self.calls("apt")))
+        self.assertNotIn("did not install", result.stderr)
 
     def test_a_repair_that_removes_the_server_fails_the_install(self):
-        self.env.update(FAIL_BUNDLE="1", REPAIR_REMOVES="1")
+        self.env.update(
+            FAIL_BUNDLE="1", REPAIR_REMOVES="kalinka-server kalinka-plugin-localfiles"
+        )
         result = self.run_installer()
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertTrue(any("-f" in call for call in self.calls("apt")))
         self.assertIn(
             "error: kalinka-v5.17.0 is not installed: dpkg reports kalinka-server "
-            "as 'config-files', not 'installed'.",
+            "as 'config-files 5.17.0', not 'installed 5.17.0'.",
             result.stderr,
         )
         self.assertNotIn(">> Done", result.stdout)
+
+    def test_an_upgrade_that_leaves_the_previous_server_fails_the_install(self):
+        """dpkg -i waits for no lock, and a repair with nothing unpacked succeeds."""
+        self.installed = {
+            "kalinka-server": "installed 5.16.0",
+            "kalinka-plugin-sdk": "installed 3.20.0",
+        }
+        self.env.update(FAIL_BUNDLE="1", DPKG_LOCKED="1")
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertTrue(any("-f" in call for call in self.calls("apt")))
+        self.assertIn(
+            "error: kalinka-v5.17.0 is not installed: dpkg reports kalinka-server "
+            "as 'installed 5.16.0', not 'installed 5.17.0'.",
+            result.stderr,
+        )
+        self.assertNotIn(">> Done", result.stdout)
+
+    def test_another_package_the_repair_removes_is_named_and_the_server_runs(self):
+        """Bookworm has the server's Python, but not the BlueZ of the Bluetooth plugin."""
+        self.platform("debian", "12")
+        self.env.update(FAIL_BUNDLE="1", REPAIR_REMOVES="kalinka-plugin-bluetooth")
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(">> Done. kalinka-v5.17.0 installed.", result.stdout)
+        notes = [line for line in result.stderr.splitlines() if "did not install" in line]
+        self.assertEqual(
+            notes,
+            [
+                ">> note: kalinka-plugin-bluetooth did not install: dpkg reports it "
+                "as 'config-files 5.17.0', not 'installed 5.17.0'."
+            ],
+        )
+        self.assertIn("The server runs without what is missing", result.stderr)
+
+    def test_a_package_left_at_its_older_version_is_named(self):
+        self.installed = {
+            name.split("_")[0]: f"installed {name.split('_')[1]}"
+            for name in self.base_names
+        }
+        self.installed["kalinka-web"] = "installed 0.24.0"
+        self.env.update(FAIL_BUNDLE="1", DPKG_LOCKED="1")
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            ">> note: kalinka-web did not install: dpkg reports it as "
+            "'installed 0.24.0', not 'installed 0.25.0'.",
+            result.stderr,
+        )
 
     def test_a_python_older_than_the_servers_is_refused_before_any_lookup(self):
         for name, version in [
