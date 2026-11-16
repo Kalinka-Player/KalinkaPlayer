@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -23,6 +24,42 @@ waitForStatus(AudioGraphNode &node, AudioGraphNodeState status,
   StateChangeWaitLock lock(std::stop_token(), node, status, timeout);
 
   return lock.state();
+}
+
+// A decoder that has decoded its whole file, seeked: every state it reported
+// from just before the seek until it streamed again.
+std::vector<AudioGraphNodeState>
+seekOnceDecodedToTheEnd(AudioGraphOutputNode &decoder, size_t frame) {
+  const auto streaming = waitForStatus(decoder, AudioGraphNodeState::STREAMING,
+                                       std::chrono::seconds(5));
+  EXPECT_TRUE(streaming.streamInfo.has_value());
+  if (!streaming.streamInfo) {
+    return {};
+  }
+  const auto &format = streaming.streamInfo->format;
+  const size_t whole = streaming.streamInfo->streamSize * format.channels *
+                       sampleSize(format.sampleFormat);
+  EXPECT_GE(decoder.waitForDataFor(std::stop_token(), std::chrono::seconds(10),
+                                   whole),
+            whole)
+      << "never decoded to the end";
+  // The end is marked just after the last frame is written.
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  std::mutex mutex;
+  std::vector<AudioGraphNodeState> seen;
+  const int callback = decoder.onStateChange(
+      [&mutex, &seen](AudioGraphNode *, StreamState state) {
+        std::lock_guard lock(mutex);
+        seen.push_back(state.state);
+        return true;
+      });
+  EXPECT_EQ(decoder.seekTo(frame), frame);
+  waitForStatus(decoder, AudioGraphNodeState::STREAMING,
+                std::chrono::seconds(5));
+  decoder.removeStateChangeCallback(callback);
+  std::lock_guard lock(mutex);
+  return seen;
 }
 
 // Fixtures live beside the tests, and are found from there rather than from

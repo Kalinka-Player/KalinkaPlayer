@@ -107,6 +107,18 @@ TEST_F(FlacStreamDecoderTest, stream_error) {
 // A decoder whose thread has already ended, here on a start offset past the
 // end of the stream, must still answer a seek: the renderer asks from its
 // only command thread, and an unanswered seek froze it for good.
+TEST_F(FlacStreamDecoderTest, a_seek_once_decoded_to_the_end_never_finishes) {
+  auto decoder = std::make_shared<FlacStreamDecoder>(1, 64 * 1024 * 1024);
+  decoder->connectTo(
+      std::make_shared<FileInputNode>(1, testFile("tone440.flac")));
+
+  const auto seen = seekOnceDecodedToTheEnd(*decoder, 1000);
+
+  EXPECT_EQ(std::count(seen.begin(), seen.end(), AudioGraphNodeState::FINISHED),
+            0)
+      << "a queued track would take over from a seek";
+}
+
 TEST_F(FlacStreamDecoderTest, seek_after_the_decoder_has_stopped_returns) {
   auto flacStreamDecoder =
       std::make_shared<FlacStreamDecoder>(1, bufferSize, 60000);
