@@ -17,11 +17,11 @@ size_t DelayLine::start(const StreamAudioFormat &format) {
   return frames;
 }
 
-void DelayLine::process(const uint8_t *in, uint8_t *out, size_t frames) {
+size_t DelayLine::process(const uint8_t *in, uint8_t *out, size_t frames) {
   size_t bytes = frames * frameBytes;
   if (held.empty()) {
     in ? std::memcpy(out, in, bytes) : std::memset(out, 0, bytes);
-    return;
+    return frames;
   }
   while (bytes > 0) {
     const size_t n = std::min(bytes, held.size() - oldest);
@@ -36,4 +36,5 @@ void DelayLine::process(const uint8_t *in, uint8_t *out, size_t frames) {
     bytes -= n;
     oldest = (oldest + n) % held.size();
   }
+  return frames;
 }

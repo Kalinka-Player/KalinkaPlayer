@@ -388,6 +388,7 @@ if(GTest_FOUND)
     tests/native_player/WavContainer_test.cpp
     tests/native_player/integration_test.cpp
     tests/native_player/dsp/DspStage_test.cpp
+    tests/native_player/dsp/DspStageConversion_test.cpp
     tests/native_player/dsp/dsd/DsdToPcm_test.cpp
     tests/native_player/dsp/dsd/Stage1_test.cpp
     tests/native_player/dsp/fir/FirFilters_test.cpp
