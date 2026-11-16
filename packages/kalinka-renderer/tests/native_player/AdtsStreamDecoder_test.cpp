@@ -69,6 +69,27 @@ TEST(AdtsStreamDecoder, EstimatesTheLengthOfAFileOfKnownSize) {
   EXPECT_NEAR(double(length), double(ADTS_FRAMES), 2048);
 }
 
+TEST(AdtsStreamDecoder, RadioDoesNotSeekOrSpliceSeparateBroadcasts) {
+  const auto expected =
+      decode(std::make_shared<BytesInput>(aacFixture("tones.aac")));
+  LocalHttpServer server(aacFixturePath("tones.aac"));
+  auto source = std::make_shared<AudioGraphHttpStream>(1, server.url("/radio"),
+                                                       32768, 4096);
+  EXPECT_EQ(decode(source), expected);
+  EXPECT_EQ(server.requestsTo("/radio"), 2u);
+}
+
+TEST(AdtsStreamDecoder, PlaysShoutcastAacAfterAnHttpRedirect) {
+  const auto expected =
+      decode(std::make_shared<BytesInput>(aacFixture("tones.aac")));
+  LocalHttpServer server(aacFixturePath("tones.aac"));
+  auto source = std::make_shared<AudioGraphHttpStream>(
+      1, server.url("/redirect/302//shoutcast"), 32768, 4096);
+  EXPECT_EQ(decode(source), expected);
+  EXPECT_EQ(server.requestsTo("/redirect/302//shoutcast"), 1u);
+  EXPECT_EQ(server.requestsTo("/shoutcast"), 1u);
+}
+
 TEST(AdtsStreamDecoder, SkipsTagsAndJunkBeforeTheFirstFrame) {
   const auto plain =
       decode(std::make_shared<BytesInput>(aacFixture("tones.aac")));
@@ -108,6 +129,21 @@ TEST(AdtsStreamDecoder, PlaysAStreamOfUnknownLengthWithoutSeeking) {
   EXPECT_EQ(decoder.getState().streamInfo->streamSize, 0u);
   EXPECT_EQ(decoder.seekTo(1000), size_t(-1));
   EXPECT_EQ(drain(decoder).size(), ADTS_FRAMES * 4);
+}
+
+TEST(AdtsStreamDecoder, RadioCanJoinBeforeTheNextParametricStereoHeader) {
+  AdtsStreamDecoder decoder(1, BUFFER_SIZE);
+  decoder.connectTo(std::make_shared<BytesInput>(
+      aacFixture("tones-ps-joined.aac"), false, false));
+  waitStreaming(decoder);
+  ASSERT_EQ(decoder.getState().streamInfo->format.channels, 2u);
+  EXPECT_EQ(decoder.getState().streamInfo->format.sampleRate, 44100u);
+  EXPECT_EQ(decoder.getState().streamInfo->streamSize, 0u);
+  EXPECT_EQ(decoder.seekTo(1000), size_t(-1));
+  const auto pcm = drain(decoder);
+  EXPECT_GT(pcm.size(), 44100u * 4);
+  EXPECT_EQ(pcm.size() % (2048 * 4), 0u);
+  EXPECT_EQ(decoder.getState().state, AudioGraphNodeState::FINISHED);
 }
 
 TEST(AdtsStreamDecoder, SeeksOverHttpOnlyWhereTheServerHonoursRanges) {

@@ -144,7 +144,7 @@ StreamInfo AdtsStreamDecoder::open() {
   }
   // Probe past the start: an HTTP source restarts at 0 even without ranges.
   const auto probe = dataStart ? dataStart : first.length;
-  const auto seeks = reposition(probe);
+  const auto seeks = sourceSize && reposition(probe);
   if (seeks) {
     if (probe != dataStart && !reposition(dataStart))
       throw std::runtime_error("ADTS stream seek failed");
@@ -152,8 +152,11 @@ StreamInfo AdtsStreamDecoder::open() {
     windowStart = 0;
   }
   setSeekable(seeks && length > delay);
-  return {decoder->format(), StreamType::FRAMES,
-          static_cast<unsigned long>(length > delay ? length - delay : 0)};
+  return {.format = decoder->format(),
+          .streamType = StreamType::FRAMES,
+          .streamSize =
+              static_cast<unsigned long>(length > delay ? length - delay : 0),
+          .prebufferMs = sourcePrebufferMs()};
 }
 
 bool AdtsStreamDecoder::decodeNext() {

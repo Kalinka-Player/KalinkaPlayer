@@ -44,11 +44,15 @@ private:
   std::atomic<long> runStartFrame = 0;
   std::atomic<long> bytesReadInRun = 0;
   std::atomic<unsigned int> frameSizeBytes = 0;
+  std::atomic<bool> seekable = false;
+  uint64_t sourcePosition = 0; // Worker-only cursor for minimp3's buffered input.
 
   void threadRun(std::stop_token token);
+  void decodeStream(std::stop_token token);
+  void writePcm(const void *data, size_t size, std::stop_token token);
   long framesRead() const;
   void restartRunAt(long frame);
-  void onEmptyBuffer(Buffer<uint8_t> &buffer);
+  void finishIfDrained();
 
   typedef size_t (*MP3D_READ_CB)(void *buf, size_t size, void *user_data);
   typedef int (*MP3D_SEEK_CB)(uint64_t position, void *user_data);

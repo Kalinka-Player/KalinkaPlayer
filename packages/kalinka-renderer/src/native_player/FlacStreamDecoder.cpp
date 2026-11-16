@@ -229,7 +229,9 @@ void FlacStreamDecoder::setStreamingState() {
               .sampleFormat =
                   bitsToFormat(flacStreamInfo.value().bits_per_sample)},
       .streamType = StreamType::FRAMES,
-      .streamSize = flacStreamInfo.value().total_samples};
+      .streamSize = flacStreamInfo.value().total_samples,
+      .prebufferMs =
+          inputNode->getState().streamInfo.value_or(StreamInfo{}).prebufferMs};
 
   setState({AudioGraphNodeState::STREAMING, framesRead(), streamInfo});
 }

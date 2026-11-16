@@ -67,3 +67,8 @@ uint64_t SourceStreamDecoder::sourceLength() const {
   const auto info = input->getState().streamInfo;
   return info ? info->streamSize : 0;
 }
+
+unsigned SourceStreamDecoder::sourcePrebufferMs() const {
+  const auto info = input->getState().streamInfo;
+  return info ? info->prebufferMs : 0;
+}

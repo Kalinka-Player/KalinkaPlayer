@@ -47,6 +47,15 @@
  * `/redirect/<status>/<location>` serves a redirect with a non-audio body;
  * `/redirect-loop` never resolves and `/redirect-headers` sends misleading
  * stream headers before redirecting to `/whole`.
+ * `/radio` advertises a fictitious 1 GB range over an ICY broadcast, then
+ * serves the body continuously on a plain GET. `/radio-always-ranged` refuses
+ * that fallback by answering 206 even without a Range request.
+ * `/shoutcast` ignores ranges and sends `ICY 200 OK`, radio headers and the
+ * body until the connection closes, without a Content-Length.
+ * `/close-delimited` sends an ordinary HTTP response without Content-Length
+ * or chunking, with EOF signalled by closing the connection.
+ * `/requires-user-agent` returns 401 to unidentified clients and otherwise
+ * serves byte ranges, including after a redirect.
  *
  * Every connection is served on a thread of its own. The server must outlive
  * the streams reading from it: destroying it closes their connections and

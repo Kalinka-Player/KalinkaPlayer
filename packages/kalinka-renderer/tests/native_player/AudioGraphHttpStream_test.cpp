@@ -78,6 +78,58 @@ TEST_F(AudioGraphHttpStreamTest, constructor_destructor) {
       std::make_shared<AudioGraphHttpStream>(1, url, bufferSize);
 }
 
+TEST_F(AudioGraphHttpStreamTest,
+       RadioDiscardsFictitiousRangesBeforeDeliveringAudio) {
+  AudioGraphHttpStream stream(1, server.url("/radio"), bufferSize, 384000);
+  ASSERT_GT(stream.waitForDataFor({}, std::chrono::seconds(2), 1), 0u);
+  ASSERT_TRUE(stream.getState().streamInfo);
+  EXPECT_EQ(stream.getState().streamInfo->streamSize, 0u);
+  EXPECT_EQ(stream.getState().streamInfo->prebufferMs, 1000u);
+  EXPECT_EQ(readToEnd(stream), fileContent(file));
+  EXPECT_EQ(server.requestsTo("/radio"), 2u);
+}
+
+TEST_F(AudioGraphHttpStreamTest,
+       ExplicitLiveCaptureDoesNotRequestABroadcastReserve) {
+  AudioGraphHttpStream stream(1, server.url("/live-held"), bufferSize);
+  ASSERT_GT(stream.waitForDataFor({}, std::chrono::seconds(2), 1), 0u);
+  ASSERT_TRUE(stream.getState().streamInfo);
+  EXPECT_EQ(stream.getState().streamInfo->streamSize, 0u);
+  EXPECT_EQ(stream.getState().streamInfo->prebufferMs, 0u);
+}
+
+TEST_F(AudioGraphHttpStreamTest, RadioCannotLoopOnARefusedContinuousRequest) {
+  AudioGraphHttpStream stream(1, server.url("/radio-always-ranged"),
+                              bufferSize);
+  EXPECT_TRUE(readToEnd(stream).empty());
+  EXPECT_EQ(stream.getState().state, AudioGraphNodeState::ERROR);
+  EXPECT_EQ(server.requestsTo("/radio-always-ranged"), 2u);
+}
+
+TEST_F(AudioGraphHttpStreamTest, ShoutcastStatusAndHeadersAreNotAudio) {
+  AudioGraphHttpStream stream(1, server.url("/shoutcast"), bufferSize);
+  ASSERT_GT(stream.waitForDataFor({}, std::chrono::seconds(2), 1), 0u);
+  ASSERT_TRUE(stream.getState().streamInfo);
+  EXPECT_EQ(stream.getState().streamInfo->streamSize, 0u);
+  EXPECT_EQ(stream.getState().streamInfo->prebufferMs, 1000u);
+  EXPECT_EQ(readToEnd(stream), fileContent(file));
+  EXPECT_EQ(stream.getState().state, AudioGraphNodeState::FINISHED);
+  EXPECT_EQ(server.requestsTo("/shoutcast"), 1u);
+}
+
+TEST_F(AudioGraphHttpStreamTest, IdentifiesItselfOnRangeRequestsAndRedirects) {
+  for (const auto *path : {"/requires-user-agent",
+                            "/redirect/302//requires-user-agent"}) {
+    SCOPED_TRACE(path);
+    const auto requestsBefore = server.requestsTo("/requires-user-agent");
+    AudioGraphHttpStream stream(1, server.url(path), bufferSize, 8192);
+    EXPECT_EQ(readToEnd(stream), fileContent(file));
+    EXPECT_EQ(stream.getState().state, AudioGraphNodeState::FINISHED);
+    // Every range resets the request; its identity must survive that too.
+    EXPECT_GT(server.requestsTo("/requires-user-agent"), requestsBefore + 1);
+  }
+}
+
 TEST_F(AudioGraphHttpStreamTest, read) {
   auto audioGraphHttpStream =
       std::make_shared<AudioGraphHttpStream>(1, url, bufferSize);

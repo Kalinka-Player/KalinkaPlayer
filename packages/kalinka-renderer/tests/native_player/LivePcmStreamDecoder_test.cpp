@@ -58,6 +58,7 @@ TEST(LivePcm, EveryLayoutDecodesAcrossFragmentedRecords) {
     EXPECT_EQ(decoder.getState().state, AudioGraphNodeState::FINISHED);
     const auto info = decoder.getState().streamInfo;
     ASSERT_TRUE(info && info->live);
+    EXPECT_EQ(info->prebufferMs, 0u);
     const auto count = decoded.size() / sample.size();
     ASSERT_GT(count, 1920u);
     const double expected = code == 1 ? 10000. / 32768 : .25;
@@ -196,6 +197,9 @@ TEST(LivePcm, OutputReadinessPrecedesFirstPcmFrame) {
         ready = true;
         EXPECT_EQ(state.state, AudioGraphNodeState::PREPARING);
         EXPECT_EQ(state.streamId, 42);
+        ASSERT_TRUE(state.streamInfo && state.streamInfo->live);
+        EXPECT_EQ(state.streamInfo->prebufferMs, 0u);
+        EXPECT_EQ(state.streamInfo->live->targetLatencyMs, 60u);
       }
     }
     std::this_thread::sleep_for(1ms);

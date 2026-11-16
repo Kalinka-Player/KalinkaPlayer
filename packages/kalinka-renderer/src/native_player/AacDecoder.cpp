@@ -69,12 +69,16 @@ std::span<const uint8_t> AacDecoder::decode(std::span<const uint8_t> unit) {
                              NeAACDecGetErrorMessage(info.error));
   if (!info.samples)
     return {};
-  if (!samples || info.channels != CHANNELS || info.samplerate != rate ||
-      info.samples != frameLength * CHANNELS)
+  if (!samples || (info.channels != 1 && info.channels != CHANNELS) ||
+      info.samplerate != rate || info.samples != frameLength * info.channels)
     throw std::runtime_error("AAC audio format changed during playback");
-  pcm.resize(info.samples * sizeof(int16_t));
-  for (size_t i = 0; i < info.samples; ++i) {
-    const auto sample = uint16_t(samples[i]);
+  // An HE-AAC v2 broadcast may start with mono frames until its next
+  // parametric-stereo header arrives. Preserve those frames and keep the
+  // advertised stereo output stable, just as for a wholly mono stream.
+  const auto outputSamples = frameLength * CHANNELS;
+  pcm.resize(outputSamples * sizeof(int16_t));
+  for (size_t i = 0; i < outputSamples; ++i) {
+    const auto sample = uint16_t(samples[info.channels == 1 ? i / CHANNELS : i]);
     pcm[2 * i] = uint8_t(sample);
     pcm[2 * i + 1] = uint8_t(sample >> 8);
   }

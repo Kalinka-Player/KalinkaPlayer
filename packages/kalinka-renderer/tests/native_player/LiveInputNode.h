@@ -12,9 +12,11 @@
  */
 class LiveInputNode : public AudioGraphOutputNode {
 public:
-  explicit LiveInputNode(size_t capacity = 16384) : bytes(capacity) {
+  explicit LiveInputNode(size_t capacity = 16384, unsigned prebufferMs = 0)
+      : bytes(capacity) {
     setState({AudioGraphNodeState::STREAMING, 0,
-              StreamInfo{.streamType = StreamType::BYTES}});
+              StreamInfo{.streamType = StreamType::BYTES,
+                         .prebufferMs = prebufferMs}});
   }
   size_t read(void *out, size_t count) override {
     return bytes.read(static_cast<uint8_t *>(out), count);

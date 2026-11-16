@@ -150,3 +150,26 @@ TEST_F(FlacStreamDecoderTest, starts_before_a_live_producer_sends_the_rest) {
   EXPECT_GE(decoder->waitForDataFor({}, std::chrono::seconds(1), 1024), 1024u);
   decoder->disconnect(source);
 }
+
+TEST_F(FlacStreamDecoderTest, UnknownLengthInheritsTheSourceBufferingPolicy) {
+  std::ifstream file(testFile("tone440.flac"), std::ios::binary);
+  std::vector<uint8_t> flac(std::istreambuf_iterator<char>(file), {});
+  ASSERT_GT(flac.size(), 26u);
+  // STREAMINFO's low 36 bits of bytes 18..25 hold total_samples; zero means
+  // unknown length. Keep its sample rate, channel count and bit depth intact.
+  flac[21] &= 0xf0;
+  std::fill(flac.begin() + 22, flac.begin() + 26, 0);
+  for (unsigned prebufferMs : {0u, 1000u}) {
+    auto source = std::make_shared<LiveInputNode>(flac.size(), prebufferMs);
+    source->bytes.write(flac.data(), flac.size());
+    FlacStreamDecoder decoder(1, bufferSize);
+    decoder.connectTo(source);
+    const auto state = waitForStatus(decoder, AudioGraphNodeState::STREAMING,
+                                     std::chrono::seconds(2));
+    ASSERT_TRUE(state.streamInfo);
+    EXPECT_EQ(state.streamInfo->streamSize, 0u);
+    EXPECT_EQ(state.streamInfo->prebufferMs, prebufferMs);
+    EXPECT_EQ(state.streamInfo->format.sampleRate, 44100u);
+    decoder.disconnect(source);
+  }
+}

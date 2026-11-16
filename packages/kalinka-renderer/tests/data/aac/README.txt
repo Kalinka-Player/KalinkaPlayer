@@ -13,3 +13,10 @@ ends in a short frame. No music is used.
 
 Regenerate with python3 generate.py (needs ffmpeg), then rerun
 ../dash/generate.py so the DASH segments match.
+
+tones-mono.aac is AAC-LC mono. tones-ps-joined.aac is HE-AAC v2 with its
+first three ADTS frames removed, simulating joining a radio station before
+its next parametric-stereo header: faad2 initially emits mono, then stereo.
+Both encode generated tones, never music. Regenerate these two separately
+with python3 generate_radio.py (ffmpeg with full libfdk_aac; generated with
+FDK AAC 2.0.3).

@@ -35,6 +35,8 @@ protected:
   /// The source's length in bytes, or 0 while unknown; an HTTP source knows
   /// it once its first bytes have arrived.
   uint64_t sourceLength() const;
+  /// Reserve requested by a broadcast transport, in milliseconds of audio.
+  unsigned sourcePrebufferMs() const;
   /// Whether playback may seek; reported by canSeek().
   void setSeekable(bool value) { seekable = value; }
 
