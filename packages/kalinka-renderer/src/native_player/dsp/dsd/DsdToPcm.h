@@ -1,7 +1,8 @@
 #pragma once
 
-#include "DsdKernels.h"
-#include "FirFilters.h"
+#include "dsp/dsd/DsdKernels.h"
+#include "dsp/fir/HalfBandDecimator.h"
+#include "dsp/fir/SymmetricFir.h"
 
 #include <array>
 #include <cstddef>

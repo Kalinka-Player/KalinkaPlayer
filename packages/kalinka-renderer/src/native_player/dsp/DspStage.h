@@ -2,7 +2,7 @@
 #define DSP_STAGE_H
 
 #include "AudioGraphNode.h"
-#include "DspProcessor.h"
+#include "dsp/DspProcessor.h"
 
 #include <deque>
 #include <memory>

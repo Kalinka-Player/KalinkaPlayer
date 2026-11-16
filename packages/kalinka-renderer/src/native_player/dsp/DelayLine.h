@@ -1,7 +1,7 @@
 #ifndef DELAY_LINE_H
 #define DELAY_LINE_H
 
-#include "DspProcessor.h"
+#include "dsp/DspProcessor.h"
 
 #include <chrono>
 #include <vector>

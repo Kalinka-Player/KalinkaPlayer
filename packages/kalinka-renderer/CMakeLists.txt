@@ -118,16 +118,10 @@ add_library(kalinka_native_player STATIC
   src/native_player/BufferedStreamDecoder.cpp
   src/native_player/Config.cpp
   src/native_player/ContainerStreamDecoder.cpp
-  src/native_player/DelayLine.cpp
   src/native_player/DsdContainer.cpp
   src/native_player/DsdFormat.cpp
-  src/native_player/DsdKernels.cpp
-  src/native_player/DsdToPcm.cpp
-  src/native_player/FirFilters.cpp
-  src/native_player/FirKernels.cpp
   src/native_player/DashStreamDecoder.cpp
   src/native_player/DashManifest.cpp
-  src/native_player/DspStage.cpp
   src/native_player/FragmentedMp4.cpp
   src/native_player/FlacFrameDecoder.cpp
   src/native_player/FlacStreamDecoder.cpp
@@ -148,9 +142,16 @@ add_library(kalinka_native_player STATIC
   src/native_player/TrackDecoder.cpp
   src/native_player/VorbisStreamDecoder.cpp
   src/native_player/WavContainer.cpp
+  src/native_player/dsp/DelayLine.cpp
+  src/native_player/dsp/DspStage.cpp
+  src/native_player/dsp/dsd/DsdKernels.cpp
+  src/native_player/dsp/dsd/DsdToPcm.cpp
+  src/native_player/dsp/fir/FirKernels.cpp
+  src/native_player/dsp/fir/HalfBandDecimator.cpp
+  src/native_player/dsp/fir/SymmetricFir.cpp
 )
 # The source directory too: Highway's dispatch includes each kernel source
-# again by name, once per instruction set.
+# again by its path from there, once per instruction set.
 target_include_directories(kalinka_native_player PRIVATE
   ${FAAD2_INCLUDE_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/src/native_player
@@ -359,11 +360,8 @@ if(GTest_FOUND)
     tests/native_player/BufferedStreamDecoder_test.cpp
     tests/native_player/ContainerStreamDecoder_test.cpp
     tests/native_player/DsdContainer_test.cpp
-    tests/native_player/DsdToPcm_test.cpp
-    tests/native_player/FirFilters_test.cpp
     tests/native_player/DashStreamDecoder_test.cpp
     tests/native_player/DashFormat_test.cpp
-    tests/native_player/DspStage_test.cpp
     tests/native_player/FileInputNode_test.cpp
     tests/native_player/FlacStreamDecoder_test.cpp
     tests/native_player/GainFade_test.cpp
@@ -381,6 +379,9 @@ if(GTest_FOUND)
     tests/native_player/VorbisStreamDecoder_test.cpp
     tests/native_player/WavContainer_test.cpp
     tests/native_player/integration_test.cpp
+    tests/native_player/dsp/DspStage_test.cpp
+    tests/native_player/dsp/dsd/DsdToPcm_test.cpp
+    tests/native_player/dsp/fir/FirFilters_test.cpp
     tests/dsp/Harness_test.cpp
   )
   target_link_libraries(kalinka-renderer-tests PRIVATE

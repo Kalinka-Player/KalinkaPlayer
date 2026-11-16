@@ -1,4 +1,5 @@
-#include "FirFilters.h"
+#include "dsp/fir/HalfBandDecimator.h"
+#include "dsp/fir/SymmetricFir.h"
 
 #include <gtest/gtest.h>
 

@@ -6,10 +6,8 @@
 #include "Config.h"
 #include "ContainerStreamDecoder.h"
 #include "DashStreamDecoder.h"
-#include "DelayLine.h"
 #include "DsdContainer.h"
 #include "DsdFormat.h"
-#include "DspStage.h"
 #include "FileInputNode.h"
 #include "FlacStreamDecoder.h"
 #include "Log.h"
@@ -21,6 +19,8 @@
 #include "StateMonitor.h"
 #include "VorbisStreamDecoder.h"
 #include "WavContainer.h"
+#include "dsp/DelayLine.h"
+#include "dsp/DspStage.h"
 
 #include <algorithm>
 #include <cstdlib>
