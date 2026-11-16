@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 import os
 import queue
+import threading
 import time
 from types import SimpleNamespace
 
@@ -17,6 +19,7 @@ from kalinka_plugin_localfiles.embedder import embedder as embedder_module
 from kalinka_plugin_localfiles.embedder.embedder import EmbeddingWorker
 from kalinka_plugin_localfiles.embedder.embedder_db import AsyncEmbedderDb
 from kalinka_plugin_localfiles.embedding_utils import CLAP_MODEL_VERSION
+from kalinka_plugin_localfiles.ipc import RequestChannel
 
 SECONDS_SINCE_BOOT = 175.0
 
@@ -122,6 +125,51 @@ async def test_an_embedder_woken_soon_after_boot_embeds_the_audio(
         await asyncio.wait_for(task, timeout=5)
 
     assert await _jobs(db, "clap_audio") == {n: ("done", 1) for n in "abc"}
+
+
+@pytest.mark.asyncio
+async def test_search_queries_are_encoded_while_the_audio_model_unloads(
+    tmp_path, monkeypatch
+):
+    config, db = await _library(tmp_path, ["a"])
+    worker = _worker(config, db)
+    clap = worker._new_clap()
+    unloading, release, unloaded = threading.Event(), threading.Event(), threading.Event()
+
+    def slow_unload() -> None:
+        unloading.set()
+        release.wait(timeout=10)
+        clap.is_audio_loaded = False
+        unloaded.set()
+
+    clap.unload_audio = slow_unload
+    # Each reading is far past the last, so the audio model idles out as soon as the work runs out.
+    clock = itertools.count(step=1000.0)
+    monkeypatch.setattr(
+        embedder_module, "time", SimpleNamespace(monotonic=lambda: next(clock))
+    )
+    monkeypatch.setattr(embedder_module, "_ensure_package", lambda _name: True)
+
+    shutdown = asyncio.Event()
+    nudges: queue.Queue = queue.Queue()
+    nudges.put_nowait("nudge")
+    requests: queue.Queue = queue.Queue()
+    replies: queue.Queue = queue.Queue()
+    task = asyncio.create_task(worker.run(shutdown, nudges, requests, replies))
+    loop = asyncio.get_running_loop()
+    try:
+        assert await loop.run_in_executor(None, unloading.wait, 10)
+        answer = await loop.run_in_executor(
+            None, RequestChannel(requests, replies, timeout=5).ask, {"query": "piano"}
+        )
+        answered_during_unload = not unloaded.is_set()
+    finally:
+        release.set()
+        shutdown.set()
+        await asyncio.wait_for(task, timeout=5)
+
+    assert answered_during_unload
+    assert answer is not None and answer["blob"] is not None
 
 
 @pytest.mark.asyncio

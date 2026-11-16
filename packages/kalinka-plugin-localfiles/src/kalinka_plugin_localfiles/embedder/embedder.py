@@ -733,7 +733,9 @@ class EmbeddingWorker:
             # (default poll=300s, so ~288 lines/day per process). Real
             # work is already announced by "CLAP embeddings written" /
             # "CLAP text embedded".
-            self._maybe_unload_audio(audio_idle_timeout)
+            await loop.run_in_executor(
+                None, self._maybe_unload_audio, audio_idle_timeout
+            )
             logger.debug("No pending embedding work; sleeping %ds", poll)
             await sleep_interruptible(poll, shutdown_event, nudge_queue, "Embedder")
 

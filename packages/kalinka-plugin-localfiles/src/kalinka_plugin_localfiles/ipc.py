@@ -39,6 +39,11 @@ class RequestChannel:
         self._timeout = timeout
         self._lock = threading.Lock()
 
+    @property
+    def timeout(self) -> float:
+        """How long ask() waits for a reply, its turn included."""
+        return self._timeout
+
     def ask(self, request: dict) -> Optional[dict]:
         """Send ``request`` and wait for its reply.
 
