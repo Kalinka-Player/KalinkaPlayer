@@ -272,6 +272,7 @@ class PreparedModuleCollection:
     _published: ModuleReports | None = field(default=None, repr=False)
     _reported: bool = field(default=False, repr=False)
     _republishing: "asyncio.Task[None] | None" = field(default=None, repr=False)
+    _republishing_stopped: bool = field(default=False, repr=False)
 
     def enabled_input_module(self, name: str) -> InputModule | None:
         """The input module ``name`` while it is enabled and set up, else None."""
@@ -379,6 +380,8 @@ class PreparedModuleCollection:
         """A plugin says its state or its capabilities moved: ask every plugin
         and publish now, rather than at the next check, which publishes only a
         changed state. Reports made before that refresh begins share it."""
+        if self._republishing_stopped:
+            return
         self._reported = True
         if self._republishing is None or self._republishing.done():
             self._republishing = asyncio.get_running_loop().create_task(
@@ -391,7 +394,9 @@ class PreparedModuleCollection:
             await self._refresh_logging_failure(publish=True)
 
     async def stop_republishing(self) -> None:
-        """Drop a refresh a report asked for: the plugins are going away."""
+        """Drop a refresh a report asked for, and ignore any report after it,
+        made while the plugins shut down: they are going away."""
+        self._republishing_stopped = True
         task, self._republishing = self._republishing, None
         self._reported = False
         if task is not None and not task.done():

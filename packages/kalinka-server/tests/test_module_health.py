@@ -525,6 +525,20 @@ async def test_a_refresh_a_report_asked_for_is_dropped_at_shutdown():
     assert len(told) == 1
 
 
+async def test_a_report_made_while_the_plugins_shut_down_is_ignored():
+    jamendo = _Plugin()
+    collection = _collection(jamendo=jamendo)
+    await collection.refresh_health()
+    told = _told(collection, "jamendo")
+
+    await collection.stop_republishing()
+    collection.report_state_changed()
+    await asyncio.sleep(0.05)
+
+    assert len(told) == 1
+    assert jamendo.asked == 1
+
+
 class _FakeConfig(ModuleConfig):
     name: str = Field(default="fake", title="Fake", frozen=True, exclude=True)
 
