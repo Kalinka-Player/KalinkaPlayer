@@ -35,7 +35,9 @@ void biquad(const double *in, double *out, size_t frames,
 }
 } // namespace
 
-SimdKernels scalarKernels() { return {"scalar reference", always, fir, biquad}; }
+SimdKernels scalarKernels() {
+  return {"scalar reference", always, fir, biquad};
+}
 
 std::vector<SimdKernels> simdKernels() {
   std::vector<SimdKernels> all{scalarKernels()};
@@ -48,10 +50,8 @@ std::vector<SimdKernels> simdKernels() {
   all.push_back(neonKernels());
   all.push_back(experimentalNeonKernels());
 #endif
-#ifdef KALINKA_BENCH_HIGHWAY
   all.push_back(highwayKernels());
   all.push_back(highwayPipelinedKernels());
-#endif
   return all;
 }
 
