@@ -63,72 +63,96 @@ class JamendoMoodIndex:
         self._embedder = embedder
         self._lock = asyncio.Lock()  # one provisioning; concurrent callers await it
         self._available: Optional[bool] = None
+        self._failure: Optional[str] = None
         self._dtype = "float32"
         self._int8_scale = 508.0
 
+    @property
+    def failure(self) -> Optional[str]:
+        """Why mood search is off once provisioning has failed, worded for
+        the modules page and free of anything secret; None while provisioning
+        runs and once it has succeeded."""
+        return self._failure
+
     async def available(self) -> bool:
-        if self._embedder is None:
-            # Server predates the shared embedder (SDK < 1.2) — no model to
-            # encode queries with.
-            return False
         if self._available is None:
             async with self._lock:
                 if self._available is None:
-                    ok = True
-                    if (
-                        self._embedder.model_id != _EXPECTED_MODEL_ID
-                        or self._embedder.model_version
-                        != _EXPECTED_MODEL_VERSION
-                    ):
-                        logger.warning(
-                            "shared embedder is %s v%s but the index needs "
-                            "%s v%s; ai_search off (update the Jamendo "
-                            "plugin/index)",
-                            self._embedder.model_id,
-                            self._embedder.model_version,
-                            _EXPECTED_MODEL_ID, _EXPECTED_MODEL_VERSION)
-                        ok = False
-                    loop = asyncio.get_running_loop()
-                    # Cheap checks before the model's and the index's downloads.
-                    if ok:
-                        ok = await loop.run_in_executor(
-                            None, self._index_obtainable)
-                    if ok:
-                        ok = await self._embedder.available()
-                        if not ok:
-                            logger.warning(
-                                "shared text embedder unavailable; ai_search off")
-                    if ok:
-                        ok = await loop.run_in_executor(None, self._provision)
-                    self._available = ok
+                    self._failure = await self._provisioning_failure()
+                    self._available = self._failure is None
         return self._available
 
-    def _index_obtainable(self) -> bool:
-        """Whether the index can be queried once present, and is present or
-        can be fetched; checked without downloading anything."""
+    async def _provisioning_failure(self) -> Optional[str]:
+        """Provision the index; None once it can be searched, else why not."""
+        if self._embedder is None:
+            # Server predates the shared embedder (SDK < 1.2) — no model to
+            # encode queries with.
+            return "this server has no text embedder."
+        if (
+            self._embedder.model_id != _EXPECTED_MODEL_ID
+            or self._embedder.model_version != _EXPECTED_MODEL_VERSION
+        ):
+            logger.warning(
+                "shared embedder is %s v%s but the index needs %s v%s; "
+                "ai_search off (update the Jamendo plugin/index)",
+                self._embedder.model_id,
+                self._embedder.model_version,
+                _EXPECTED_MODEL_ID,
+                _EXPECTED_MODEL_VERSION,
+            )
+            return (
+                f"the server's text model is {self._embedder.model_id} "
+                f"v{self._embedder.model_version}, and the mood index was built "
+                f"with {_EXPECTED_MODEL_ID} v{_EXPECTED_MODEL_VERSION}. Update "
+                "the Jamendo plugin."
+            )
+        loop = asyncio.get_running_loop()
+        # Cheap checks before the model's and the index's downloads.
+        failure = await loop.run_in_executor(None, self._index_unobtainable)
+        if failure is not None:
+            return failure
+        if not await self._embedder.available():
+            logger.warning("shared text embedder unavailable; ai_search off")
+            return (
+                "the server's text model could not be set up. Check the "
+                "network; it is tried again when the server restarts."
+            )
+        return await loop.run_in_executor(None, self._provision)
+
+    def _index_unobtainable(self) -> Optional[str]:
+        """Why the index could not be queried once present, or is neither
+        present nor to be fetched; None when it can. Checked without
+        downloading anything."""
         try:
             import sqlite_vec  # noqa: F401
         except Exception as e:
             logger.warning("sqlite-vec unavailable (%s); ai_search off", e)
-            return False
+            return "`sqlite-vec` does not load. Reinstall the Jamendo plugin."
         if not os.path.exists(self._index_path) and not self._index_url:
             logger.warning("Jamendo index missing (%s); ai_search off",
                            self._index_path)
-            return False
-        return True
+            return (
+                f"the mood index is not at `{self._index_path}`, and **Mood "
+                "index download URL** is empty."
+            )
+        return None
 
-    def _provision(self) -> bool:
-        """Fetch the index if missing; read the index dtype/scale.
+    def _provision(self) -> Optional[str]:
+        """Fetch the index if missing; read the index dtype/scale. None once
+        the index is ready, else why it is not.
 
         Blocking (downloads, sqlite) — always called via an executor, and
-        only once _index_obtainable() has passed.
+        only once _index_unobtainable() has passed.
         """
         if not os.path.exists(self._index_path) and not (
             self._index_url and download_file(self._index_url, self._index_path)
         ):
             logger.warning("could not fetch the Jamendo index to %s; "
                            "ai_search off", self._index_path)
-            return False
+            return (
+                "the mood index could not be downloaded. Check the network; it "
+                "is tried again when the server restarts."
+            )
         try:
             meta = self._read_meta()
             self._dtype = meta.get("dtype", "float32")
@@ -136,11 +160,11 @@ class JamendoMoodIndex:
         except Exception as e:  # corrupt/partial index -> stay off, don't crash
             logger.warning("unreadable index %s (%s); ai_search off",
                            self._index_path, e)
-            return False
+            return f"the mood index at `{self._index_path}` cannot be read."
         logger.info("Jamendo mood index ready (%s, %s)",
                     self._index_path, self._dtype)
         self._remove_legacy_indexes()
-        return True
+        return None
 
     def _remove_legacy_indexes(self) -> None:
         """Best-effort: delete superseded index assets in the index dir.

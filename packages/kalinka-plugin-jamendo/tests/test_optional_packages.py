@@ -50,6 +50,8 @@ class OlderEmbedder:
 class UnprovisionedIndex:
     """Stands in for the mood index whose provisioning setup() starts."""
 
+    failure = None
+
     def __init__(self, *args):
         pass
 
@@ -75,7 +77,11 @@ async def set_up(monkeypatch):
 
     async def set_up(embedder, config: JamendoConfig) -> KalinkaPluginJamendo:
         plugin = KalinkaPluginJamendo()
-        await plugin.setup(SimpleNamespace(config=config, embedder=embedder))
+        await plugin.setup(
+            SimpleNamespace(
+                config=config, embedder=embedder, report_state_changed=None
+            )
+        )
         plugins.append(plugin)
         return plugin
 
