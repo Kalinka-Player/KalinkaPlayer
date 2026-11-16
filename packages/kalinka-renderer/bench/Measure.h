@@ -50,6 +50,8 @@ std::string cost(double ns, unsigned rate);
 void runKernels();
 /// The SIMD mechanisms side by side, each null-tested against scalar.
 void runSimd();
+/// DSD-to-PCM conversion's cost, per conversion and kernel.
+void runDsd();
 /// The harness modulator's own THD+N and idle noise at DSD64 to DSD256.
 void runFixtures();
 /// What per-stream processing leaves at a gapless join, against continuous.
