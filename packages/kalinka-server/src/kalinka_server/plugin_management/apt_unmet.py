@@ -7,7 +7,8 @@ unmet dependency, and an indented line for each further one, such as
 going to be installed`` or ``… but it is not installable``.
 
 A report is explained only when every line about the package is read here:
-an alternative, a virtual package or a conflict keeps the generic message.
+an alternative, a virtual package, a conflict or an unversioned dependency
+apt means to install keeps the generic message.
 """
 
 from __future__ import annotations
@@ -63,7 +64,8 @@ def unmet_dependencies(output: str, package: str) -> list[Unmet]:
         if not mine:
             continue
         entry = _ENTRY.fullmatch(line.strip())
-        if entry is None:
+        # With no version asked for, the version apt names does not say what failed.
+        if entry is None or (entry["found"] and entry["relation"] is None):
             return []
         unmet.append(
             Unmet(

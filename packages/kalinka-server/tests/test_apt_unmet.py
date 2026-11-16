@@ -120,6 +120,12 @@ def test_reads_only_the_plugins_own_lines():
             id="conflict",
         ),
         pytest.param(
+            report(
+                " kalinka-plugin-demo : Depends: libdemo7 but 7.0-1 is to be installed"
+            ),
+            id="unversioned yet to be installed",
+        ),
+        pytest.param(
             "Reading package lists...\n"
             "E: dpkg was interrupted, you must manually run 'dpkg --configure -a' to correct the problem.\n",
             id="dpkg interrupted",
