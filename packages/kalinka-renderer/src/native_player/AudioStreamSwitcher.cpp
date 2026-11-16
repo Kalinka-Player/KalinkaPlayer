@@ -132,10 +132,14 @@ void AudioStreamSwitcher::follow(
 
     return true;
   });
-  std::lock_guard lock(mutex);
+  std::unique_lock lock(mutex);
   if (currentInputNode == inputNode) {
     stateCallbackId = id;
+    return;
   }
+  lock.unlock();
+  // Retired before the id was known, maybe by the very call that hooked it.
+  inputNode->removeStateChangeCallback(id);
 }
 
 size_t AudioStreamSwitcher::read(void *data, size_t size) {
@@ -211,19 +215,20 @@ size_t AudioStreamSwitcher::seekStream(StreamId stream, size_t position) {
     lock.unlock();
     return current->seekTo(position);
   }
-  const auto found =
-      std::find_if(finished.begin(), finished.end(),
+  // The latest of a stream queued twice is the one still heard.
+  const auto latest =
+      std::find_if(finished.rbegin(), finished.rend(),
                    [stream](const Played &p) { return p.id == stream; });
-  if (found == finished.end()) {
+  if (latest == finished.rend()) {
     return size_t(-1);
+  }
+  const auto found = std::prev(latest.base());
+  if (currentInputNode != nullptr) {
+    retireCurrent(false);
   }
   const Played again = *found;
   std::vector<Played> requeued(std::next(found), finished.end());
   finished.erase(found, finished.end());
-  if (currentInputNode != nullptr) {
-    requeued.push_back(
-        {currentInputNode, currentId, currentBeganAt, stateCallbackId});
-  }
   for (auto it = requeued.rbegin(); it != requeued.rend(); ++it) {
     inputNodes.push_front(it->node);
   }

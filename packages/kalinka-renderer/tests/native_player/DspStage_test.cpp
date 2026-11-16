@@ -504,6 +504,26 @@ TEST(DspStageDelayTest, ANamedSeekLandsInTheStreamUpstreamHasLeft) {
   EXPECT_EQ(played.events[0].id, std::optional<StreamId>(2));
 }
 
+TEST(DspStageDelayTest, ASeekUpstreamRefusesKeepsEverythingHeld) {
+  auto switcher = std::make_shared<AudioStreamSwitcher>();
+  DspStage stage(std::make_unique<DelayLine>(std::chrono::milliseconds(300)));
+  stage.connectTo(switcher);
+  auto first = std::make_shared<CountingNode>(1, 1000000, 4800);
+  auto second = std::make_shared<CountingNode>(2, 2000000, 96000);
+  switcher->connectTo(first);
+  switcher->connectTo(second);
+  stage.acceptSourceChange();
+  std::vector<int32_t> buffer(2000);
+  ASSERT_EQ(stage.read(buffer.data(), buffer.size() * 4), buffer.size() * 4);
+
+  EXPECT_EQ(stage.seekStream(9, 0), size_t(-1));
+  const auto played = pull(stage);
+
+  EXPECT_EQ(played.left,
+            joined({first->values(1000, 4800), second->values(0, 96000)}))
+      << "a refused seek lost what the stage had read ahead";
+}
+
 TEST(DspStageDelayTest, ASourceWithoutASwitcherPlaysToItsEnd) {
   auto source = std::make_shared<SineWaveNode>(1, 440, 1000);
   DspStage stage(std::make_unique<DelayLine>(std::chrono::milliseconds(300)));

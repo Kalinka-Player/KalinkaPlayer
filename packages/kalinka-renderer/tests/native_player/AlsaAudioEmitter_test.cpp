@@ -589,6 +589,26 @@ TEST_F(AlsaAudioEmitterTest, test_seekBackwards) {
   stopPlaying();
 }
 
+namespace {
+class UnseekableSineNode : public SineWaveNode {
+public:
+  UnseekableSineNode() : AudioGraphNode(1), SineWaveNode(1, 440, 2000) {}
+  size_t seekTo(size_t) override { return size_t(-1); }
+};
+} // namespace
+
+TEST_F(AlsaAudioEmitterTest, ARefusedSeekIsRefusedAndPlaybackCarriesOn) {
+  play(std::make_shared<UnseekableSineNode>());
+  waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING);
+
+  EXPECT_EQ(alsaAudioEmitter->seek(1000), size_t(-1));
+  EXPECT_EQ(alsaAudioEmitter->getState().state, AudioGraphNodeState::STREAMING);
+  EXPECT_EQ(
+      waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::FINISHED).state,
+      AudioGraphNodeState::FINISHED);
+  stopPlaying();
+}
+
 TEST_F(AlsaAudioEmitterTest, test_seekWhenStopped) {
   EXPECT_EQ(alsaAudioEmitter->seek(0), -1);
 }
