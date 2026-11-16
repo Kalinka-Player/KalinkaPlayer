@@ -19,9 +19,10 @@
  *
  * It presents each PCM source in the format chooseOutput() picks for the
  * device, and passes everything else on as upstream has it: states,
- * positions, seeks and source changes. At unity gain the samples are left
+ * positions, seeks and source changes. At unity gain integer samples are left
  * alone, put into a wider container only where the device needs one; in the
- * source's own format they are upstream's very bytes. Any other gain ramps
+ * source's own format they are upstream's very bytes. Float going to an
+ * integer format is quantised, at unity too. Any other gain ramps
  * over 25 ms and goes through the Quantiser. It settles at once after a seek
  * or once nothing plays, with no audio to click against. DSD and DoP pass
  * untouched, and refuse any gain but unity.

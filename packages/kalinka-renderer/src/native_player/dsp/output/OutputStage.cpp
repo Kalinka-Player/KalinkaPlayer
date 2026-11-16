@@ -75,7 +75,11 @@ void OutputStage::onUpstreamState(const StreamState &state) {
     if (!presented || presented->source != source)
       presented =
           Presented{source, chooseOutput(source, device, kPcmDeviceChannels)};
-    shown.streamInfo->format.sampleFormat = presented->output.format;
+    auto &format = shown.streamInfo->format;
+    format.sampleFormat = presented->output.format;
+    // Quantised, float keeps the bits it is dithered at.
+    if (isFloat(source.sampleFormat) && !isFloat(format.sampleFormat))
+      format.bitsPerSample = presented->output.bits;
   }
   if (nothingPlays(state.state))
     settlePending = true;
@@ -142,11 +146,13 @@ void OutputStage::produce(const Presented &now, const uint8_t *in,
   const unsigned channels = now.source.channels;
   const size_t inFrame = frameBytes(from, channels);
   const size_t outFrame = frameBytes(to, channels);
+  // Integer to a wider container is exact; float to integer is quantised.
+  const bool exact = from == to || (!isFloat(from) && !isFloat(to));
   for (size_t at = 0; at < frames;) {
     const auto span = ramp.take(frames - at);
     const uint8_t *source = in + at * inFrame;
     uint8_t *dest = out + at * outFrame;
-    if (span.from == 1.0 && span.to == 1.0) {
+    if (span.from == 1.0 && span.to == 1.0 && exact) {
       if (from == to)
         std::memcpy(dest, source, span.frames * inFrame);
       else

@@ -220,6 +220,18 @@ TEST(OutputStage, ClampedSamplesAreCounted) {
   EXPECT_GT(s.stage->clippedSamples(), 0u);
 }
 
+TEST(OutputStage, FloatOntoAnIntegerDeviceIsQuantisedAtUnityToo) {
+  Stage s(pcm(PCM_FLOAT64_LE), asBytes(std::vector<double>(2 * 1000, 0.5)),
+          k24In32);
+  const auto shown = s.stage->getState().streamInfo->format;
+  EXPECT_EQ(shown.sampleFormat, PCM32_LE);
+  EXPECT_EQ(shown.bitsPerSample, 24u) << "the bits it is dithered at";
+  for (const int32_t v : readSamples<int32_t>(*s.stage, 2 * 1000)) {
+    EXPECT_LE(std::abs(double(v / 256) - double(1 << 22)), 1.5);
+    EXPECT_EQ(v % 256, 0) << "24 bits at the top of the container";
+  }
+}
+
 TEST(OutputStage, MonoStaysMonoForTheSinkToSpread) {
   Stage s(pcm(PCM16_LE, 1), randomBytes(100 * 2), k24In32);
   const auto shown = s.stage->getState().streamInfo;
