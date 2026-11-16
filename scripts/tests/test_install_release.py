@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,6 +32,7 @@ class ReleaseInstallerTests(unittest.TestCase):
             NO_APT_UPDATE="1",
             GITHUB_TOKEN="",
             FAIL_BUNDLE="0",
+            REPAIR_REMOVES="0",
         )
         self.installer = self.root / "install-release.sh"
         # Only redirect the OS identity file; run the full installer unchanged.
@@ -41,7 +43,17 @@ class ReleaseInstallerTests(unittest.TestCase):
         )
         self.platform("ubuntu", "24.04")
         self.command("id", "#!/bin/sh\necho 0\n")
-        self.command("dpkg-query", "#!/bin/sh\nexit 1\n")
+        self.command(
+            "dpkg-query",
+            """#!/usr/bin/env python3
+import json, os, pathlib, sys
+status = pathlib.Path(os.environ["FIXTURE"]) / "status.json"
+state = json.loads(status.read_text()).get(sys.argv[-1]) if status.exists() else None
+if state is None or sys.argv[1:3] != ["-W", "-f=${db:Status-Status}"]:
+    sys.exit(1)
+print(state, end="")
+""",
+        )
         self.command(
             "curl",
             """#!/usr/bin/env python3
@@ -77,14 +89,28 @@ packages = [pathlib.Path(a) for a in args if a.endswith(".deb")]
 assert all(p.is_file() for p in packages), packages
 if packages and os.environ["FAIL_BUNDLE"] == "1":
     sys.exit(1)
+status = root / "status.json"
+states = json.loads(status.read_text()) if status.exists() else {}
+states.update((p.name.split("_")[0], "installed") for p in packages)
+if "-f" in args:
+    # What dpkg -i left unconfigured is configured, or removed where it cannot be.
+    fixed = "config-files" if os.environ["REPAIR_REMOVES"] == "1" else "installed"
+    states.update((name, fixed) for name, state in states.items() if state == "unpacked")
+status.write_text(json.dumps(states))
 """,
         )
         self.command(
             "dpkg",
             """#!/usr/bin/env python3
 import json, os, pathlib, sys
-with (pathlib.Path(os.environ["FIXTURE"]) / "dpkg.jsonl").open("a") as log:
+root = pathlib.Path(os.environ["FIXTURE"])
+with (root / "dpkg.jsonl").open("a") as log:
     log.write(json.dumps(sys.argv[1:]) + "\\n")
+status = root / "status.json"
+states = json.loads(status.read_text()) if status.exists() else {}
+names = [pathlib.Path(a).name for a in sys.argv[1:] if a.endswith(".deb")]
+states.update((name.split("_")[0], "unpacked") for name in names)
+status.write_text(json.dumps(states))
 """,
         )
         self.base_names = [
@@ -142,9 +168,26 @@ with (pathlib.Path(os.environ["FIXTURE"]) / "dpkg.jsonl").open("a") as log:
             else []
         )
 
+    def python(self, *version):
+        """python3 is the real one, but says it is *version* to the code it runs."""
+        self.command(
+            "python3",
+            f"""#!{sys.executable}
+import runpy, sys
+sys.version_info = {(*version, "final", 0)!r}
+if sys.argv[1] == "-c":
+    code, sys.argv = sys.argv[2], ["-c", *sys.argv[3:]]
+    exec(code, {{"__name__": "__main__"}})
+else:
+    sys.argv = sys.argv[1:]
+    runpy.run_path(sys.argv[0], run_name="__main__")
+""",
+        )
+
     def run_installer(self, *args, piped=False):
         for log in self.root.glob("*.jsonl"):
             log.unlink()
+        (self.root / "status.json").unlink(missing_ok=True)
         return subprocess.run(
             ["bash", "-s", "--", *args]
             if piped
@@ -234,6 +277,60 @@ with (pathlib.Path(os.environ["FIXTURE"]) / "dpkg.jsonl").open("a") as log:
             set(names),
         )
         self.assertTrue(any("-f" in call for call in self.calls("apt")))
+
+    def test_a_repair_that_removes_the_server_fails_the_install(self):
+        self.env.update(FAIL_BUNDLE="1", REPAIR_REMOVES="1")
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertTrue(any("-f" in call for call in self.calls("apt")))
+        self.assertIn(
+            "error: kalinka-v5.17.0 is not installed: dpkg reports kalinka-server "
+            "as 'config-files', not 'installed'.",
+            result.stderr,
+        )
+        self.assertNotIn(">> Done", result.stdout)
+
+    def test_a_python_older_than_the_servers_is_refused_before_any_lookup(self):
+        for name, version in [
+            ("Debian GNU/Linux 11 (bullseye)", (3, 9, 2)),
+            ("Ubuntu 22.04.5 LTS", (3, 10, 12)),
+        ]:
+            with self.subTest(name=name):
+                (self.root / "os-release").write_text(f'PRETTY_NAME="{name}"\n')
+                self.python(*version)
+                result = self.run_installer()
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(
+                    "error: Kalinka needs Python 3.11 or newer, and "
+                    f"{name} has Python {'.'.join(map(str, version))}.\n"
+                    "  It installs on Debian 13, Raspberry Pi OS (64-bit) or DietPi "
+                    "on Debian 13, or Ubuntu 24.04:\n"
+                    "  https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/"
+                    "docs/installation.md#d-install-with-one-command\n",
+                    result.stderr,
+                )
+                self.assertNotIn(">> Looking up", result.stdout)
+                self.assertEqual(self.calls("requests"), [])
+                self.assertEqual(self.calls("apt"), [])
+
+    def test_an_unnamed_system_is_refused_by_its_python_without_an_inherited_name(
+        self,
+    ):
+        (self.root / "os-release").unlink()
+        self.env.update(PRETTY_NAME="Ubuntu 24.04.3 LTS")
+        self.python(3, 10, 12)
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("and this system has Python 3.10.12.", result.stderr)
+        self.assertEqual(self.calls("requests"), [])
+
+    def test_python_311_installs(self):
+        self.platform("debian", "12")
+        self.python(3, 11, 2)
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_packages(self.base_names + [self.bluetooth, self.web])
+        self.assertIn("kalinka-v5.17.0 installed", result.stdout)
 
     def test_missing_os_release_preserves_selection_and_ignores_inherited_identity(
         self,

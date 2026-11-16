@@ -278,15 +278,19 @@ case "$out" in
   *) : > "$out" ;;
 esac
 """,
-    # Records what it installed by name, the way dpkg-query below reads it. A
-    # simulation takes no lock and installs nothing, so it is not logged.
+    # Records what it installed by name, and apart from that the bundle's
+    # packages, the way dpkg-query below reads them; a repair configures what
+    # dpkg -i unpacked. A simulation takes no lock and installs nothing, so it
+    # is not logged.
     "apt-get": """#!/usr/bin/env bash
 if [ "$1" = -s ]; then
   grep -qxF "${!#}" "$STUB_STATE/unknown" && exit 100
   exit 0
 fi
 echo "$*" >> "$STUB_STATE/apt-get.log"
-[ "${STUB_REPAIR_FAILS:-0}" = 1 ] && [[ " $* " == *" -f "* ]] && exit 100
+repair=0
+[[ " $* " == *" -f "* ]] && repair=1
+[ "${STUB_REPAIR_FAILS:-0}" = 1 ] && [ "$repair" = 1 ] && exit 100
 names=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -304,18 +308,25 @@ for name in "${names[@]}"; do
   grep -qxF "$name" "$STUB_STATE/unknown" && exit 100
 done
 for name in "${names[@]}"; do
-  case "$name" in *.deb) ;; *) echo "$name" >> "$STUB_STATE/installed" ;; esac
+  case "$name" in
+    *.deb) deb="${name##*/}"; echo "${deb%%_*}" >> "$STUB_STATE/bundle" ;;
+    *) echo "$name" >> "$STUB_STATE/installed" ;;
+  esac
 done
+[ "$repair" = 1 ] && cat "$STUB_STATE/unpacked" >> "$STUB_STATE/bundle" 2>/dev/null
 exit 0
 """,
     "dpkg": """#!/usr/bin/env bash
 [ "$1" = --print-architecture ] && { echo arm64; exit 0; }
 echo "$*" >> "$STUB_STATE/dpkg.log"
+for name in "$@"; do
+  case "$name" in *.deb) deb="${name##*/}"; echo "${deb%%_*}" >> "$STUB_STATE/unpacked" ;; esac
+done
 exit 1
 """,
     "dpkg-query": """#!/usr/bin/env bash
 pkg="${!#}"
-grep -qxF "$pkg" "$STUB_STATE/installed" || exit 1
+cat "$STUB_STATE/installed" "$STUB_STATE/bundle" 2>/dev/null | grep -qxF "$pkg" || exit 1
 case "$2" in
   *db:Status-Status*) printf installed ;;
   *Status*) printf 'install ok installed' ;;
