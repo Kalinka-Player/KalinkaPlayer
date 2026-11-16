@@ -107,16 +107,21 @@ jobs:
     needs: changes
     if: needs.changes.outputs.renderer == 'true'
     runs-on: ubuntu-24.04
+    # Debian 13 is the floor the renderer builds on: its GCC 14.2 and
+    # Highway 1.2.0 are the oldest it may need.
+    container: debian:trixie
     timeout-minutes: 40
+    env:
+      DEBIAN_FRONTEND: noninteractive
     steps:
       - uses: actions/checkout@v4
       - name: Install build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake ninja-build pkg-config libboost-dev libcurlpp-dev libcurl4-openssl-dev \
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config libboost-dev libcurlpp-dev libcurl4-openssl-dev \
             libflac++-dev libvorbis-dev libxml2-dev libfaad-dev libsoxr-dev libasound2-dev libspdlog-dev libfmt-dev protobuf-compiler libprotobuf-dev \
-            libgtest-dev libgmock-dev
+            libhwy-dev libgtest-dev libgmock-dev
       - name: Build the tests
         run: |
           cmake -S packages/kalinka-renderer -B build/tests -G Ninja -DCMAKE_BUILD_TYPE=Debug

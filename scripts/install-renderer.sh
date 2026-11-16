@@ -61,6 +61,11 @@ else
   die "neither dpkg nor rpm found — install the flatpak instead (see packages/kalinka-renderer/flatpak/README.md)"
 fi
 
+# The Ubuntu debs are built on 26.04; older releases lack the libraries.
+if [ "$ID" = ubuntu ] && dpkg --compare-versions "${VERSION_ID:-0}" lt 26.04; then
+  die "no renderer package for Ubuntu $VERSION_ID (need 26.04 or newer)"
+fi
+
 if [ "${KALINKA_SUPERVISOR:-0}" = 1 ] && [ "$FORMAT" != deb ]; then
   die "the supervisor is packaged for Debian-based systems only; leave KALINKA_SUPERVISOR unset"
 fi

@@ -33,8 +33,8 @@ Stop playback first. The renderer competing for the CPU spoils every number:
 sudo systemctl stop kalinka-renderer
 ```
 
-Build. Every package but `libhwy-dev`, `flac` and `linux-perf` is the
-renderer's own build set from its README. With 2 GB of RAM or less, use
+Build. Every package but `flac` and `linux-perf` is the renderer's own
+build set from its README. With 2 GB of RAM or less, use
 `-j2`.
 
 ```
@@ -47,9 +47,8 @@ cmake -G Ninja -B build-bench -DCMAKE_BUILD_TYPE=Release -DKALINKA_BUILD_BENCHMA
 cmake --build build-bench -j3 --target kalinka-dsp-bench
 ```
 
-Highway is optional; without `libhwy-dev` the `simd` table lacks its row. On
-arm64 the table has scalar, NEON intrinsics, `std::experimental::simd` and
-Highway (NEON).
+On arm64 the `simd` table has scalar, NEON intrinsics,
+`std::experimental::simd` and Highway (NEON).
 
 Fix the clock, or the first table runs at one frequency and the last at
 another:
