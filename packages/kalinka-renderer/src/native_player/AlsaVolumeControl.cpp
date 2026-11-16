@@ -29,6 +29,10 @@ VolumeMode parseVolumeMode(const std::string &mode) {
   return VolumeMode::Auto;
 }
 
+bool allowsDsd(VolumeMode mode, std::optional<int> mixerPercent) {
+  return mode == VolumeMode::Fixed && (!mixerPercent || *mixerPercent == 100);
+}
+
 std::vector<double> cubicVolumeDb() {
   std::vector<double> values{-200.0};
   for (int percent = 1; percent <= 100; ++percent) {
