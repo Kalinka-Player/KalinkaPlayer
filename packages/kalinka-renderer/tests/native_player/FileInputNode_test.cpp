@@ -29,6 +29,22 @@ TEST_F(FileInputNodeTest, read) {
   EXPECT_EQ(bytesRead, fileSize);
 }
 
+TEST_F(FileInputNodeTest, waitForDataReportsAllThatIsLeft) {
+  FileInputNode fileInputNode(1, filename);
+  const auto fileSize = fileInputNode.getState().streamInfo->streamSize;
+  uint8_t data[100];
+  ASSERT_EQ(fileInputNode.read(data, sizeof(data)), sizeof(data));
+  EXPECT_EQ(fileInputNode.waitForData({}, 1), fileSize - sizeof(data));
+}
+
+TEST_F(FileInputNodeTest, waitForDataReportsNothingOnceRead) {
+  FileInputNode fileInputNode(1, filename);
+  uint8_t data[100];
+  while (fileInputNode.read(data, sizeof(data))) {
+  }
+  EXPECT_EQ(fileInputNode.waitForData({}, 1), 0u);
+}
+
 TEST_F(FileInputNodeTest, seek) {
   FileInputNode fileInputNode(1, filename);
   auto state = waitForStatus(fileInputNode, AudioGraphNodeState::STREAMING);
