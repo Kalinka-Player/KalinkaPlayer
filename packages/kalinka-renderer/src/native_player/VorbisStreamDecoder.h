@@ -4,8 +4,6 @@
 
 #include <vorbis/vorbisfile.h>
 
-#include <exception>
-
 /**
  * @brief Ogg/Vorbis input, decoded to interleaved signed 16-bit little-endian
  * PCM.
@@ -25,8 +23,6 @@ private:
   bool opened = false;
   /// An interrupted seek can leave libvorbisfile's decode state cleared.
   bool resetBeforeSeek = false;
-  /// What a callback caught, rethrown once libvorbisfile has returned.
-  std::exception_ptr callbackException;
 
   std::string name() const override { return "Vorbis"; }
   StreamInfo open() override;

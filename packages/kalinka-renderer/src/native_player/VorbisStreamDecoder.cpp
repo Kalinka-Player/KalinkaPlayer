@@ -6,7 +6,6 @@
 #include <limits>
 #include <span>
 #include <stdexcept>
-#include <utility>
 
 VorbisStreamDecoder::VorbisStreamDecoder(std::optional<StreamId> streamId,
                                          size_t bufferSize,
@@ -23,7 +22,6 @@ void VorbisStreamDecoder::forget() {
   file = {};
   opened = false;
   resetBeforeSeek = false;
-  callbackException = nullptr;
 }
 
 StreamInfo VorbisStreamDecoder::open() {
@@ -66,7 +64,7 @@ bool VorbisStreamDecoder::decodeNext() {
   const auto bytes = ov_read(&file, pcm.data(), pcm.size(), 0, 2, 1, &section);
   // A missing or corrupt page is recoverable: libvorbisfile has moved on to
   // the next one.
-  if (bytes == OV_HOLE && !callbackException) {
+  if (bytes == OV_HOLE && !callbackFailed()) {
     return true;
   }
   check(bytes, "decode");
@@ -85,7 +83,6 @@ void VorbisStreamDecoder::seekSource(uint64_t frame) {
   answerSeek();
   if (resetBeforeSeek) {
     check(ov_raw_seek(&file, 0), "reset seek");
-    resetBeforeSeek = false;
   }
   resetBeforeSeek = true;
   check(ov_pcm_seek(&file, ogg_int64_t(frame)), "seek");
@@ -117,7 +114,7 @@ size_t VorbisStreamDecoder::readCallback(void *data, size_t size, size_t count,
   try {
     return self.readInput(data, size, count);
   } catch (...) {
-    self.callbackException = std::current_exception();
+    self.keepCallbackFailure();
     errno = EIO;
     return 0;
   }
@@ -156,7 +153,7 @@ int VorbisStreamDecoder::seekCallback(void *source, ogg_int64_t offset,
   try {
     return self.seekInput(offset, whence);
   } catch (...) {
-    self.callbackException = std::current_exception();
+    self.keepCallbackFailure();
     return -1;
   }
 }
@@ -168,9 +165,7 @@ long VorbisStreamDecoder::tellCallback(void *source) noexcept {
 }
 
 void VorbisStreamDecoder::check(long result, const char *operation) {
-  if (callbackException) {
-    std::rethrow_exception(std::exchange(callbackException, nullptr));
-  }
+  rethrowCallbackFailure();
   if (result < 0) {
     throw std::runtime_error(std::string("Vorbis ") + operation + " failed (" +
                              std::to_string(result) + ")");

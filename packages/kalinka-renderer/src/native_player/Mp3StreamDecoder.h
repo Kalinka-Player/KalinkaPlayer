@@ -3,7 +3,6 @@
 
 #include "SourceStreamDecoder.h"
 
-#include <exception>
 #include <memory>
 #include <vector>
 
@@ -33,8 +32,6 @@ private:
   /// Read to learn what the source is, and played back before it.
   std::vector<uint8_t> prefix;
   size_t prefixUsed = 0;
-  /// What one of minimp3's callbacks caught, rethrown once it has returned.
-  std::exception_ptr callbackException;
 
   std::string name() const override { return "MP3"; }
   StreamInfo open() override;
@@ -48,7 +45,6 @@ private:
   size_t readInput(void *dest, size_t bytes, bool partial);
   /// Where the next byte read comes from.
   uint64_t inputPosition() const;
-  void rethrowCallbackException();
 };
 
 #endif // MP3STREAMDECODER_H

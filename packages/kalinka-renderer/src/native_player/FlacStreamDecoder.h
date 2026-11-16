@@ -5,7 +5,6 @@
 
 #include <FLAC++/decoder.h>
 
-#include <exception>
 #include <optional>
 #include <vector>
 
@@ -29,7 +28,6 @@ private:
   /// Set by a seek to the end: nothing is left to decode.
   bool atEnd = false;
   std::vector<uint8_t> converted;
-  std::exception_ptr callbackException;
 
   std::string name() const override { return "FLAC"; }
   StreamInfo open() override;

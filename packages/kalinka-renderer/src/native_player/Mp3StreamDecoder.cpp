@@ -115,6 +115,8 @@ public:
   virtual StreamInfo open() = 0;
   /// Appends the next block through write(); false once the source is done.
   virtual bool decodeNext() = 0;
+  /// Repositions to @p frame. Asked only of a codec whose open() made the
+  /// decoder seekable.
   virtual void seek(uint64_t frame) = 0;
 };
 
@@ -126,7 +128,7 @@ public:
 
   StreamInfo open() override {
     const int result = mp3dec_ex_open_cb(&mp3, &io, MP3D_SEEK_TO_SAMPLE);
-    owner.rethrowCallbackException();
+    owner.rethrowCallbackFailure();
     if (result != 0)
       throw std::runtime_error("Failed to open MP3 decoder");
     if (!mp3.info.channels || !mp3.info.hz)
@@ -144,7 +146,7 @@ public:
     if (atEnd)
       return false;
     const size_t samples = mp3dec_ex_read(&mp3, pcm.data(), pcm.size());
-    owner.rethrowCallbackException();
+    owner.rethrowCallbackFailure();
     if (samples == 0) {
       // minimp3 also reports E_DECODE for non-audio trailers such as ID3v2.4.
       // Accept a tag covering the remainder of the file, while preserving
@@ -171,7 +173,7 @@ public:
       return;
     // minimp3 counts every channel's sample.
     const int result = mp3dec_ex_seek(&mp3, frame * mp3.info.channels);
-    owner.rethrowCallbackException();
+    owner.rethrowCallbackFailure();
     if (result != 0)
       throw std::runtime_error("MP3 decoder seek failure");
   }
@@ -188,7 +190,7 @@ private:
                    try {
                      return owner.readInput(buffer, size, false);
                    } catch (...) {
-                     owner.callbackException = std::current_exception();
+                     owner.keepCallbackFailure();
                      return 0;
                    }
                  },
@@ -196,10 +198,17 @@ private:
                  .seek = [](uint64_t position, void *self) -> int {
                    auto &owner = static_cast<FileCodec *>(self)->owner;
                    try {
+                     // The prefix holds the source's first bytes: rewinding
+                     // into it spares the source a seek.
+                     if (position <= owner.prefix.size() &&
+                         owner.sourcePosition() == owner.prefix.size()) {
+                       owner.prefixUsed = position;
+                       return 0;
+                     }
                      owner.prefixUsed = owner.prefix.size();
                      return owner.reposition(position) ? 0 : -1;
                    } catch (...) {
-                     owner.callbackException = std::current_exception();
+                     owner.keepCallbackFailure();
                      return -1;
                    }
                  },
@@ -343,7 +352,6 @@ void Mp3StreamDecoder::forget() {
   codec.reset();
   prefix.clear();
   prefixUsed = 0;
-  callbackException = nullptr;
 }
 
 StreamInfo Mp3StreamDecoder::open() {
@@ -379,7 +387,3 @@ uint64_t Mp3StreamDecoder::inputPosition() const {
   return sourcePosition() - (prefix.size() - prefixUsed);
 }
 
-void Mp3StreamDecoder::rethrowCallbackException() {
-  if (callbackException)
-    std::rethrow_exception(std::exchange(callbackException, nullptr));
-}

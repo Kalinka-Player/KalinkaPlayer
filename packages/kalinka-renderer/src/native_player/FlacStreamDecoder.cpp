@@ -5,7 +5,6 @@
 #include <span>
 #include <stdexcept>
 #include <string>
-#include <utility>
 
 namespace {
 AudioSampleFormat bitsToFormat(unsigned bits) {
@@ -36,7 +35,6 @@ void FlacStreamDecoder::forget() {
   }
   flacInfo.reset();
   atEnd = false;
-  callbackException = nullptr;
 }
 
 StreamInfo FlacStreamDecoder::open() {
@@ -48,8 +46,9 @@ StreamInfo FlacStreamDecoder::open() {
     throw std::runtime_error("FLAC decoder supports stereo audio");
   }
   const auto format = bitsToFormat(flacInfo->bits_per_sample);
-  // Probe without moving: libFLAC has read exactly up to here.
-  setSeekable(reposition(sourcePosition()));
+  // Probe without moving: libFLAC has read exactly up to here. Without a
+  // length, every seek would be clamped to the start.
+  setSeekable(flacInfo->total_samples && reposition(sourcePosition()));
   return {.format = {.sampleRate = flacInfo->sample_rate,
                      .channels = flacInfo->channels,
                      .bitsPerSample = flacInfo->bits_per_sample,
@@ -100,7 +99,7 @@ FlacStreamDecoder::write_callback(const ::FLAC__Frame *frame,
     write(std::span(converted.data(), bytes));
     return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
   } catch (...) {
-    callbackException = std::current_exception();
+    keepCallbackFailure();
     return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
   }
 }
@@ -112,7 +111,7 @@ FlacStreamDecoder::read_callback(FLAC__byte buffer[], size_t *bytes) {
     return *bytes ? FLAC__STREAM_DECODER_READ_STATUS_CONTINUE
                   : FLAC__STREAM_DECODER_READ_STATUS_END_OF_STREAM;
   } catch (...) {
-    callbackException = std::current_exception();
+    keepCallbackFailure();
     *bytes = 0;
     return FLAC__STREAM_DECODER_READ_STATUS_ABORT;
   }
@@ -120,10 +119,10 @@ FlacStreamDecoder::read_callback(FLAC__byte buffer[], size_t *bytes) {
 
 void FlacStreamDecoder::error_callback(
     ::FLAC__StreamDecoderErrorStatus status) {
-  if (!callbackException) {
-    callbackException = std::make_exception_ptr(
+  if (!callbackFailed()) {
+    keepCallbackFailure(std::make_exception_ptr(
         std::runtime_error(std::string("Flac decoder error: ") +
-                           FLAC__StreamDecoderErrorStatusString[status]));
+                           FLAC__StreamDecoderErrorStatusString[status])));
   }
 }
 
@@ -141,7 +140,7 @@ FlacStreamDecoder::seek_callback(FLAC__uint64 absolute_byte_offset) {
                ? FLAC__STREAM_DECODER_SEEK_STATUS_OK
                : FLAC__STREAM_DECODER_SEEK_STATUS_UNSUPPORTED;
   } catch (...) {
-    callbackException = std::current_exception();
+    keepCallbackFailure();
     return FLAC__STREAM_DECODER_SEEK_STATUS_ERROR;
   }
 }
@@ -157,7 +156,7 @@ FlacStreamDecoder::length_callback(FLAC__uint64 *stream_length) {
   try {
     *stream_length = sourceLength();
   } catch (...) {
-    callbackException = std::current_exception();
+    keepCallbackFailure();
     return FLAC__STREAM_DECODER_LENGTH_STATUS_ERROR;
   }
   return *stream_length ? FLAC__STREAM_DECODER_LENGTH_STATUS_OK
@@ -174,9 +173,7 @@ bool FlacStreamDecoder::eof_callback() {
 }
 
 void FlacStreamDecoder::check(bool succeeded, const char *operation) {
-  if (callbackException) {
-    std::rethrow_exception(std::exchange(callbackException, nullptr));
-  }
+  rethrowCallbackFailure();
   if (!succeeded) {
     throw std::runtime_error(std::string("FLAC ") + operation +
                              " failed: " + get_state().as_cstring());
