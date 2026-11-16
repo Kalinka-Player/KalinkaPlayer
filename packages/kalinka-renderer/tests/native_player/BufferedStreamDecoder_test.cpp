@@ -33,6 +33,8 @@ public:
   }
   ~FakeDecoder() override { stop(); }
 
+  void halt() { stop(); }
+
 private:
   const std::shared_ptr<Calls> calls;
   const bool seekable;
@@ -119,6 +121,22 @@ TEST(BufferedStreamDecoder, ClosesTheSourceOnceTheWorkerStops) {
     drain(failing);
   }
   EXPECT_EQ(calls->closed, 2);
+}
+
+TEST(BufferedStreamDecoder, AStoppedDecoderSaysSo) {
+  auto calls = std::make_shared<Calls>();
+  FakeDecoder node(calls);
+  waitStreaming(node);
+  node.halt();
+  EXPECT_EQ(node.getState().state, AudioGraphNodeState::STOPPED);
+}
+
+TEST(BufferedStreamDecoder, AStoppedDecoderKeepsItsError) {
+  auto calls = std::make_shared<Calls>();
+  FakeDecoder failing(calls, 0, true, 10);
+  drain(failing);
+  failing.halt();
+  EXPECT_EQ(failing.getState().state, AudioGraphNodeState::ERROR);
 }
 
 TEST(BufferedStreamDecoder, StartOffsetSeeksTheSource) {
