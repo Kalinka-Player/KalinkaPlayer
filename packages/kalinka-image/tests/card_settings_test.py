@@ -872,6 +872,16 @@ class ClassicFilesTest(CardTest):
         self.assertEqual(settings.country, "GB")
         self.assertEqual(self.warnings(), [])
 
+    def test_a_line_starting_with_a_comment_is_skipped_whatever_its_quotes(self):
+        self.root.card(
+            "wpa_supplicant.conf",
+            'country=GB\n# your "network" below\nnetwork={\n\tssid="Home"\n'
+            '\t#psk="old password"\n\tpsk="passphrase1"\n}\n',
+        )
+        self.assertEqual(self.settings().wifi, Wifi("Home", "passphrase1", False))
+        self.assertEqual(self.warnings(), [])
+        self.assertNotIn("an unnamed entry", "\n".join(self.journal))
+
     def test_only_the_first_network_is_applied(self):
         self.root.card(
             "wpa_supplicant.conf",
