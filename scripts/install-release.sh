@@ -81,8 +81,7 @@ ID="" VERSION_ID="" PRETTY_NAME=""
 [ -r /etc/os-release ] && . /etc/os-release
 PLATFORM="${ID:-unknown}-${VERSION_ID:-unknown}"
 
-# apt refuses the server on an older Python, and its repair then removes what was installed.
-# The server depends on the system's python3, whatever else comes first on PATH.
+# apt refuses the server on an older system python3, whatever comes first on PATH.
 SYSTEM_PYTHON=/usr/bin/python3
 [ -x "$SYSTEM_PYTHON" ] || SYSTEM_PYTHON=python3
 if ! python_version="$("$SYSTEM_PYTHON" -c 'import sys
@@ -392,11 +391,11 @@ echo ">> Installing ${#URLS[@]} package(s) with apt ..."
 if ! $SUDO "${APT_INSTALL[@]}" "${BUNDLE_OPTS[@]}" "$TMPDIR_DL"/*.deb; then
   echo ">> apt-get install failed; falling back to dpkg -i + apt-get -f install"
   $SUDO dpkg -i "$TMPDIR_DL"/*.deb || true
-  $SUDO "${APT_INSTALL[@]}" -f
+  $SUDO "${APT_INSTALL[@]}" -f \
+    || die "$TAG is not installed: apt could not repair the failed install. apt's output above says why."
 fi
 
-# The repair succeeds by removing what it cannot configure, the server included,
-# and a failed upgrade leaves the previous server in place.
+# The repair succeeds by removing what it cannot configure, and a failed upgrade keeps the old server.
 server_debs=("$TMPDIR_DL"/kalinka-server_*.deb)
 server_wanted="$(deb_wanted "${server_debs[0]}")"
 server_state="$(dpkg_state kalinka-server)"
@@ -427,16 +426,14 @@ fi
 # --- report -------------------------------------------------------------------
 echo
 echo ">> Installed:"
-if have dpkg-query; then
-  for pkg in kalinka-server kalinka-plugin-sdk kalinka-plugin-localfiles \
-             kalinka-plugin-musiccast kalinka-plugin-jamendo kalinka-plugin-upnp \
-             kalinka-plugin-dummydevice kalinka-web kalinka-kiosk \
-             kalinka-renderer; do
-    dpkg-query -W -f='   ${Package} ${Version}\n' "$pkg" 2>/dev/null || true
-  done
-  report_missing_extras
-  report_missing_debs
-fi
+for pkg in kalinka-server kalinka-plugin-sdk kalinka-plugin-localfiles \
+           kalinka-plugin-musiccast kalinka-plugin-jamendo kalinka-plugin-upnp \
+           kalinka-plugin-dummydevice kalinka-web kalinka-kiosk \
+           kalinka-renderer; do
+  dpkg-query -W -f='   ${Package} ${Version}\n' "$pkg" 2>/dev/null || true
+done
+report_missing_extras
+report_missing_debs
 
 echo
 echo ">> Done. $TAG installed."
