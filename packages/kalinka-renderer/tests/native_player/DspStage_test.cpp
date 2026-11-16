@@ -1,4 +1,5 @@
 #include "AudioStreamSwitcher.h"
+#include "ByteRing.h"
 #include "DelayLine.h"
 #include "DspStage.h"
 #include "SineWaveNode.h"
@@ -575,7 +576,7 @@ private:
                                    .bitsPerSample = 32,
                                    .sampleFormat = PCM32_LE},
                         .streamType = StreamType::FRAMES};
-  Buffer<uint8_t> buffer{1 << 20};
+  ByteRing buffer{1 << 20};
   int32_t fed = 0;
   std::atomic<bool> ended = false;
 };

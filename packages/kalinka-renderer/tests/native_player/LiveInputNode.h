@@ -2,7 +2,7 @@
 #define LIVE_INPUT_NODE_H
 
 #include "AudioGraphNode.h"
-#include "Buffer.h"
+#include "ByteRing.h"
 
 /**
  * @brief Bytes of unknown length, as a live producer sends them.
@@ -29,7 +29,7 @@ public:
     return bytes.waitForDataFor(token, timeout, count);
   }
 
-  Buffer<uint8_t> bytes;
+  ByteRing bytes;
 };
 
 #endif

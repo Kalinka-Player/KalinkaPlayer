@@ -1,5 +1,6 @@
 #include "AlsaAudioEmitter.h"
 #include "AudioStreamSwitcher.h"
+#include "ByteRing.h"
 #include "Config.h"
 #include "ContainerTestSupport.h"
 #include "LivePcmStreamDecoder.h"
@@ -164,7 +165,7 @@ public:
   }
 
 private:
-  Buffer<uint8_t> buffer{128 * 1024};
+  ByteRing buffer{128 * 1024};
 };
 } // namespace
 
