@@ -138,7 +138,7 @@
     {{if eq .Failed "enable_ssh"}}<p class="notice notice-error" role="alert">{{.Error}}</p>{{end}}
     {{if .SSHEnabled}}
     <div class="notice notice-ok" role="status">
-      {{if .Simulated}}<span>SSH setup simulated successfully.</span>{{else}}<span>SSH is enabled. Connect with <code id="ssh-command" data-username="{{.Username}}"></code> and use the password you just set. Run <code>sudo -i</code> for administrative tasks.</span>{{end}}
+      {{if .Simulated}}<span>SSH setup simulated successfully.</span>{{else}}<span>SSH is enabled and the password is set. Try connecting with <code id="ssh-command" data-username="{{.Username}}"></code> and the new password. Other SSH access rules still apply. Run <code>sudo -i</code> for administrative tasks.</span>{{end}}
     </div>
     {{end}}
     <form id="ssh-form" action="/" method="post">

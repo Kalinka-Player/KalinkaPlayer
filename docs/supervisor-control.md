@@ -82,19 +82,25 @@ server takes precedence. Existing accounts are kept; a pre-existing
 the form resets that account's password. Setting it removes the keys-only
 drop-in a Raspberry Pi Imager card wrote for `kalinka-admin`
 (`/etc/ssh/sshd_config.d/kalinka-card-kalinka-admin.conf`) and reloads
-OpenSSH if it was already running, since the form's request is the later one.
-Every other SSH authentication policy is kept. With OpenSSH the helper then
-reads the policy in force for `kalinka-admin` coming from the address the
-form was sent from (`sshd -T -C user=kalinka-admin,host=<address>,addr=<address>`),
-so `Match Address` blocks answer as they would for that computer. It checks
-`AllowUsers`, `DenyUsers`, `AllowGroups` and `DenyGroups` the way OpenSSH
-matches them, with the address standing for the host name as it does under
-`UseDNS no`. A password counts as taken through `PasswordAuthentication`, or
-through `KbdInteractiveAuthentication` with `UsePAM`. If the server turns
-`kalinka-admin` away, or those or `AuthenticationMethods` keep a password
-alone from logging in, the page says which, and how to fix it, instead of
-reporting success. The account and SSH are still set up. Dropbear has no such
-check, so its policy is not read.
+every running OpenSSH service, including one running alongside Dropbear.
+Reloads are repeated on each submission so a failed reload can be retried even
+after the drop-in has been removed. Every other SSH policy is kept.
+
+For OpenSSH, the helper reads `sshd -T -C
+user=kalinka-admin,host=<address>,addr=<address>` using the browser's source
+address. It checks `PasswordAuthentication`, `KbdInteractiveAuthentication`,
+`UsePAM` and `AuthenticationMethods` for a password-only authentication path.
+Both lowercase and mixed-case keyword output are accepted. If those settings
+refuse a password on its own, the page explains that the account and password
+were set but the SSH configuration needs attention. If the policy cannot be
+read, it reports that the check could not be completed.
+
+This is an authentication-settings check, not a test login. It does not evaluate
+user/group access lists, PAM account restrictions, reverse DNS, the SSH
+service's custom command-line options, or `Match LocalAddress`/`LocalPort`
+conditions. Dropbear's authentication flags are not checked. Successful setup
+confirms that SSH is enabled and the password was set; other access rules may
+still prevent a login.
 
 The form posts to `/` and requires the dashboard's exact Origin and the
 streamer's identity. Success redirects back to the page with connection

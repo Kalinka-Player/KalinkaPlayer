@@ -12,32 +12,36 @@ import (
 const fakeAccountTools = `#!/bin/bash
 printf '%s %s\n' "${0##*/}" "$*" >> "$SSH_TEST_DIR/calls"
 card_policy=$KALINKA_SSH_ROOT/etc/ssh/sshd_config.d/kalinka-card-kalinka-admin.conf
+setting() {
+  local key=$1
+  [[ $SSH_TEST_CASE == mixed ]] || key=${key,,}
+  printf '%s %s\n' "$key" "$2"
+}
 case ${0##*/} in
   systemctl)
     case $1 in
-      show) if [[ $4 == "$SSH_TEST_SERVER" || $4 == "$SSH_TEST_ACTIVE" ]]; then echo loaded; else echo not-found; fi ;;
-      is-active) [[ $3 == "$SSH_TEST_ACTIVE" || -f $SSH_TEST_DIR/started ]] ;;
+      show) if [[ $4 == "$SSH_TEST_SERVER" || " $SSH_TEST_ACTIVE " == *" $4 "* ]]; then echo loaded; else echo not-found; fi ;;
+      is-active) [[ " $SSH_TEST_ACTIVE " == *" $3 "* || (-f $SSH_TEST_DIR/started && $(< "$SSH_TEST_DIR/started") == "$3") ]] ;;
       enable) [[ $SSH_TEST_FAIL != start ]] || exit 1; printf '%s' "$3" > "$SSH_TEST_DIR/started" ;;
-      reload-or-restart) [[ -f $SSH_TEST_DIR/started && ! -e $card_policy ]] ;;
+      reload-or-restart) [[ $SSH_TEST_FAIL != reload && -f $SSH_TEST_DIR/credential && ! -e $card_policy ]] ;;
     esac ;;
   getent)
     if [[ $1 == group ]]; then exit 0; fi
     [[ -n $SSH_TEST_ACCOUNT ]] || exit 2
     printf '%s\n' "$SSH_TEST_ACCOUNT" ;;
   useradd|usermod) [[ $SSH_TEST_FAIL != account ]] ;;
-  id) echo "${SSH_TEST_GROUPS:-kalinka-admin sudo}" ;;
   chpasswd)
     IFS= read -r credential
     printf '%s' "$credential" > "$SSH_TEST_DIR/credential"
     [[ $SSH_TEST_FAIL != password ]] ;;
   sshd)
     [[ $SSH_TEST_FAIL != policy ]] || exit 255
-    printf 'port 22\npermitrootlogin without-password\n'
-    if [[ -e $card_policy ]]; then echo 'passwordauthentication no'; else echo "passwordauthentication ${SSH_TEST_PASSWORDS:-yes}"; fi
-    echo "authenticationmethods ${SSH_TEST_METHODS:-any}"
-    echo "kbdinteractiveauthentication ${SSH_TEST_PROMPT:-no}"
-    echo "usepam ${SSH_TEST_PAM:-yes}"
-    printf '%b' "$SSH_TEST_ACCESS" ;;
+    [[ $SSH_TEST_FAIL != empty-policy ]] || exit 0
+    if [[ -e $card_policy ]]; then setting PasswordAuthentication no; else setting PasswordAuthentication "${SSH_TEST_PASSWORDS:-yes}"; fi
+    [[ $SSH_TEST_FAIL != partial-policy ]] || exit 0
+    setting AuthenticationMethods "${SSH_TEST_METHODS:-any}"
+    setting KbdInteractiveAuthentication "${SSH_TEST_PROMPT:-no}"
+    setting UsePAM "${SSH_TEST_PAM:-yes}" ;;
 esac
 `
 
@@ -53,7 +57,7 @@ type helper struct {
 func newHelper(t *testing.T) *helper {
 	t.Helper()
 	h := &helper{root: t.TempDir(), tools: t.TempDir(), peer: "192.168.1.20"}
-	for _, name := range []string{"systemctl", "getent", "useradd", "usermod", "id", "chpasswd", "sshd"} {
+	for _, name := range []string{"systemctl", "getent", "useradd", "usermod", "chpasswd", "sshd"} {
 		put(t, filepath.Join(h.tools, name), fakeAccountTools, 0700)
 	}
 	rm, err := exec.LookPath("rm")
@@ -110,12 +114,12 @@ func (h *helper) run(t *testing.T, password string, env ...string) {
 	}
 }
 
-// outcome is "" for a usable password, "turned away" and "refused" for the
-// statuses the supervisor reports, and "failed" for any other.
+// outcome distinguishes successful setup, refused password authentication, an
+// unreadable policy, and failures before setup completed.
 func (h *helper) outcome() string {
 	switch {
-	case h.status == helperLoginRefused:
-		return "turned away"
+	case h.status == helperPolicyUnknown:
+		return "unknown"
 	case h.status == helperPasswordsRefused:
 		return "refused"
 	case h.status != 0:
@@ -136,8 +140,6 @@ func TestHelperSetsOnlyItsOwnLoginBeforeStartingSSH(t *testing.T) {
 		{name: "asked from loopback", server: "ssh.service", peer: "::1", ok: true},
 		{name: "a peer with more than an address", server: "ssh.service", peer: "192.168.1.20,user=root"},
 		{name: "a peer with a zone", server: "ssh.service", peer: "fe80::1%wlan0"},
-		{name: "a peer out of range", server: "ssh.service", peer: "192.168.1.256"},
-		{name: "a peer of nine groups", server: "ssh.service", peer: "1:2:3:4:5:6:7:8:9"},
 		{name: "no peer", server: "ssh.service", peer: "none"},
 		{name: "prefer running server", server: "dropbear.service", active: "ssh.service", ok: true},
 		{name: "reset managed account", server: "ssh.service", account: "kalinka-admin:x:1001:1001:Kalinka dashboard administrator:/home/kalinka-admin:/bin/bash", ok: true},
@@ -166,7 +168,7 @@ func TestHelperSetsOnlyItsOwnLoginBeforeStartingSSH(t *testing.T) {
 			if (h.status == 0) != tc.ok {
 				t.Fatalf("helper success = %v, want %v: %s", h.status == 0, tc.ok, h.output)
 			}
-			if h.status == helperLoginRefused || h.status == helperPasswordsRefused {
+			if h.status == helperPolicyUnknown || h.status == helperPasswordsRefused {
 				t.Fatal("a failed setup reads as an SSH server refusing the login")
 			}
 			if tc.peer != "" && !tc.ok && strings.Contains(h.calls, "useradd") {
@@ -205,12 +207,12 @@ func TestHelperSetsOnlyItsOwnLoginBeforeStartingSSH(t *testing.T) {
 
 func TestHelperSaysWhenTheSSHServerRefusesThePassword(t *testing.T) {
 	for _, tc := range []struct {
-		name, server, active, passwords, methods, prompt, pam, fail, outcome string
-		cardPolicy, reload, checked                                          bool
+		name, server, active, passwords, methods, prompt, pam, fail, outcome, casing string
+		cardPolicy, checked                                                          bool
 	}{
 		{name: "the card made the login keys only", server: "ssh.service", cardPolicy: true, checked: true},
-		{name: "the card's policy under a running server", server: "ssh.service", active: "ssh.service", cardPolicy: true, reload: true, checked: true},
-		{name: "keys only beyond the card's policy", server: "ssh.service", active: "ssh.service", cardPolicy: true, passwords: "no", reload: true, checked: true, outcome: "refused"},
+		{name: "the card's policy under a running server", server: "ssh.service", active: "ssh.service", cardPolicy: true, checked: true},
+		{name: "keys only beyond the card's policy", server: "ssh.service", active: "ssh.service", cardPolicy: true, passwords: "no", checked: true, outcome: "refused"},
 		{name: "a running server without the card's policy", server: "ssh.service", active: "ssh.service", checked: true},
 		{name: "a password through PAM's prompt", server: "ssh.service", passwords: "no", prompt: "yes", checked: true},
 		{name: "a prompt without PAM", server: "ssh.service", passwords: "no", prompt: "yes", pam: "no", checked: true, outcome: "refused"},
@@ -220,7 +222,11 @@ func TestHelperSaysWhenTheSSHServerRefusesThePassword(t *testing.T) {
 		{name: "a public key required", server: "sshd.service", methods: "publickey", checked: true, outcome: "refused"},
 		{name: "a key and then a password", server: "ssh.service", methods: "publickey,password", checked: true, outcome: "refused"},
 		{name: "a key or a password", server: "ssh.service", methods: "publickey password", checked: true},
-		{name: "an unreadable policy", server: "ssh.service", fail: "policy", checked: true, outcome: "failed"},
+		{name: "an unreadable policy", server: "ssh.service", fail: "policy", checked: true, outcome: "unknown"},
+		{name: "mixed case OpenSSH keywords", server: "ssh.service", casing: "mixed", checked: true},
+		{name: "mixed case refusing passwords", server: "ssh.service", casing: "mixed", passwords: "no", checked: true, outcome: "refused"},
+		{name: "empty policy output", server: "ssh.service", fail: "empty-policy", checked: true, outcome: "unknown"},
+		{name: "incomplete policy output", server: "ssh.service", fail: "partial-policy", checked: true, outcome: "unknown"},
 		{name: "Dropbear", server: "dropbear.service", cardPolicy: true, passwords: "no"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -229,15 +235,15 @@ func TestHelperSaysWhenTheSSHServerRefusesThePassword(t *testing.T) {
 				h.putCardPolicy(t)
 			}
 			h.run(t, defaultPassword, "SSH_TEST_SERVER="+tc.server, "SSH_TEST_ACTIVE="+tc.active,
-				"SSH_TEST_PASSWORDS="+tc.passwords, "SSH_TEST_METHODS="+tc.methods, "SSH_TEST_PROMPT="+tc.prompt, "SSH_TEST_PAM="+tc.pam, "SSH_TEST_FAIL="+tc.fail)
+				"SSH_TEST_PASSWORDS="+tc.passwords, "SSH_TEST_METHODS="+tc.methods, "SSH_TEST_PROMPT="+tc.prompt, "SSH_TEST_PAM="+tc.pam, "SSH_TEST_FAIL="+tc.fail, "SSH_TEST_CASE="+tc.casing)
 			if outcome := h.outcome(); outcome != tc.outcome {
 				t.Fatalf("helper exited %d, read as %q, want %q: %s", h.status, outcome, tc.outcome, h.output)
 			}
 			if _, err := os.Lstat(h.cardPolicy()); !errors.Is(err, os.ErrNotExist) {
 				t.Fatal("the card's keys-only policy outlived the password")
 			}
-			if reloaded := strings.Contains(h.calls, "systemctl reload-or-restart "+tc.server+"\n"); reloaded != tc.reload {
-				t.Fatalf("reloaded the SSH server = %v, want %v:\n%s", reloaded, tc.reload, h.calls)
+			if reloaded := strings.Contains(h.calls, "systemctl reload-or-restart "+tc.server+"\n"); reloaded != tc.checked {
+				t.Fatalf("reloaded the SSH server = %v, want %v:\n%s", reloaded, tc.checked, h.calls)
 			}
 			if checked := strings.Contains(h.calls, h.policyCheck()); checked != tc.checked {
 				t.Fatalf("read the SSH server's policy = %v, want %v:\n%s", checked, tc.checked, h.calls)
@@ -253,52 +259,54 @@ func TestHelperSaysWhenTheSSHServerRefusesThePassword(t *testing.T) {
 	}
 }
 
-func TestHelperSaysWhenTheSSHServerTurnsTheLoginAway(t *testing.T) {
-	for _, tc := range []struct {
-		// access is sshd -T's lines for AllowUsers, DenyUsers, AllowGroups and DenyGroups.
-		name, access, groups, peer, passwords, outcome string
-	}{
-		{name: "only another login", access: "allowusers pi\n", outcome: "turned away"},
-		{name: "another login and this one", access: "allowusers pi\nallowusers kalinka-admin\n"},
-		{name: "a wildcard", access: "allowusers kalinka-*\n"},
-		{name: "a single-character wildcard", access: "allowusers kalinka-adm?n\n"},
-		{name: "brackets, which OpenSSH reads as themselves", access: "allowusers kalinka-[a]dmin\n", outcome: "turned away"},
-		{name: "a backslash, which OpenSSH reads as itself", access: "allowusers kalinka\\\\-admin\n", outcome: "turned away"},
-		{name: "this login from the home network", access: "allowusers kalinka-admin@192.168.1.0/24\n"},
-		{name: "this login from elsewhere", access: "allowusers kalinka-admin@192.168.1.0/24\n", peer: "10.0.0.5", outcome: "turned away"},
-		{name: "any login from the home network", access: "allowusers *@192.168.*\n"},
-		{name: "this login from its own address", access: "allowusers kalinka-admin@192.168.1.20\n"},
-		{name: "every address but the peer's", access: "allowusers kalinka-admin@*,!192.168.1.20\n", outcome: "turned away"},
-		{name: "every network but the peer's", access: "allowusers kalinka-admin@!192.168.0.0/16,*\n", outcome: "turned away"},
-		{name: "an IPv6 network", access: "allowusers kalinka-admin@fe80::/10\n", peer: "fe80::1c2:3ff:fe04:506"},
-		{name: "another IPv6 network", access: "allowusers kalinka-admin@fd00::/8\n", peer: "fe80::1c2:3ff:fe04:506", outcome: "turned away"},
-		{name: "an IPv4 network to an IPv6 peer", access: "allowusers kalinka-admin@0.0.0.0/0\n", peer: "::1", outcome: "turned away"},
-		{name: "every IPv4 address", access: "allowusers kalinka-admin@0.0.0.0/0\n"},
-		{name: "one IPv6 address as a network", access: "allowusers kalinka-admin@::1/128\n", peer: "::1"},
-		{name: "this login denied", access: "denyusers kalinka-admin\n", outcome: "turned away"},
-		{name: "this login denied elsewhere", access: "denyusers *@10.0.0.0/8\n"},
-		{name: "this login denied after it is allowed", access: "allowusers kalinka-admin\ndenyusers kalinka-*\n", outcome: "turned away"},
-		{name: "a group it is in", access: "allowgroups sudo\n"},
-		{name: "a group it is in by a wildcard", access: "allowgroups su*\n"},
-		{name: "only a group it is not in", access: "allowgroups ssh-users\n", outcome: "turned away"},
-		{name: "a group it is in denied", access: "denygroups sudo\n", outcome: "turned away"},
-		{name: "a group it is in, with a sudo it lacks", access: "allowgroups sudo\n", groups: "kalinka-admin", outcome: "turned away"},
-		{name: "allowed by name but not by group", access: "allowusers kalinka-admin\nallowgroups ssh-users\n", outcome: "turned away"},
-		{name: "turned away before its password is weighed", access: "allowusers pi\n", passwords: "no", outcome: "turned away"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+func TestHelperKeepsUnrelatedPoliciesAndWaitsForThePassword(t *testing.T) {
+	for _, fail := range []string{"", "password"} {
+		t.Run("password failure="+fail, func(t *testing.T) {
 			h := newHelper(t)
-			if tc.peer != "" {
-				h.peer = tc.peer
+			h.putCardPolicy(t)
+			other := filepath.Join(h.root, "etc/ssh/sshd_config.d/kalinka-card-listener.conf")
+			custom := filepath.Join(h.root, "etc/ssh/sshd_config.d/01pubkey-only.conf")
+			for _, path := range []string{other, custom} {
+				put(t, path, "PasswordAuthentication no\n", 0644)
 			}
-			h.run(t, defaultPassword, "SSH_TEST_SERVER=ssh.service", "SSH_TEST_ACCESS="+tc.access, "SSH_TEST_GROUPS="+tc.groups, "SSH_TEST_PASSWORDS="+tc.passwords)
-			if outcome := h.outcome(); outcome != tc.outcome || !strings.Contains(h.calls, h.policyCheck()) {
-				t.Fatalf("helper exited %d, read as %q, want %q: %s\n%s", h.status, outcome, tc.outcome, h.output, h.calls)
+			h.run(t, defaultPassword, "SSH_TEST_SERVER=ssh.service", "SSH_TEST_FAIL="+fail)
+			if _, err := os.Stat(h.cardPolicy()); (err == nil) != (fail != "") {
+				t.Fatal("card policy removal did not follow a successful password change")
 			}
-			if h.read("started") != "ssh.service" || h.read("credential") != Username+":"+defaultPassword {
-				t.Fatal("the login or SSH was not left set up")
+			for _, path := range []string{other, custom} {
+				if data, err := os.ReadFile(path); err != nil || string(data) != "PasswordAuthentication no\n" {
+					t.Fatalf("changed unrelated policy %s: %v", path, err)
+				}
 			}
 		})
+	}
+}
+
+func TestHelperRetriesReloadAfterTheCardPolicyWasRemoved(t *testing.T) {
+	h := newHelper(t)
+	h.putCardPolicy(t)
+	h.run(t, defaultPassword, "SSH_TEST_SERVER=ssh.service", "SSH_TEST_ACTIVE=ssh.service", "SSH_TEST_FAIL=reload")
+	if h.outcome() != "failed" {
+		t.Fatalf("failed reload reported %q", h.outcome())
+	}
+	if _, err := os.Stat(h.cardPolicy()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the first attempt did not remove the card policy")
+	}
+	h.run(t, defaultPassword, "SSH_TEST_SERVER=ssh.service", "SSH_TEST_ACTIVE=ssh.service")
+	if h.outcome() != "" || strings.Count(h.calls, "systemctl reload-or-restart ssh.service\n") != 2 {
+		t.Fatalf("second attempt did not retry reload: %s\n%s", h.output, h.calls)
+	}
+}
+
+func TestHelperReloadsOpenSSHAlongsideDropbear(t *testing.T) {
+	h := newHelper(t)
+	h.putCardPolicy(t)
+	h.run(t, defaultPassword, "SSH_TEST_SERVER=dropbear.service", "SSH_TEST_ACTIVE=dropbear.service ssh.service", "SSH_TEST_PASSWORDS=no")
+	if h.outcome() != "refused" || !strings.Contains(h.calls, "systemctl reload-or-restart ssh.service\n") || !strings.Contains(h.calls, h.policyCheck()) {
+		t.Fatalf("running OpenSSH was not reloaded and checked: %s\n%s", h.output, h.calls)
+	}
+	if h.read("started") != "dropbear.service" {
+		t.Fatal("changed the preference for the running server")
 	}
 }
 
@@ -328,11 +336,6 @@ func TestHelperReadsOpenSSHsOwnAnswer(t *testing.T) {
 		{name: "a public key required", policy: "AuthenticationMethods publickey\n", outcome: "refused"},
 		{name: "passwords from the home network, asked from it", policy: passwordsAtHome},
 		{name: "passwords from the home network, asked from elsewhere", policy: passwordsAtHome, peer: "10.0.0.5", outcome: "refused"},
-		{name: "only another login", policy: "AllowUsers pi\n", outcome: "turned away"},
-		{name: "this login from the home network", policy: "AllowUsers pi kalinka-admin@192.168.1.0/24\n"},
-		{name: "this login from elsewhere", policy: "AllowUsers pi kalinka-admin@192.168.1.0/24\n", peer: "10.0.0.5", outcome: "turned away"},
-		{name: "a group it is in denied", policy: "DenyGroups sudo\n", outcome: "turned away"},
-		{name: "a group it is in allowed", policy: "AllowGroups sudo\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHelper(t)

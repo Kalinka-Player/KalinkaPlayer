@@ -177,8 +177,8 @@ func TestSSHFormSaysWhenTheSSHServerRefusesTheLogin(t *testing.T) {
 		code  string
 		wants []string
 	}{
-		{sshaccess.ErrPasswordsRefused, "ssh_passwords_refused", []string{"set to refuse passwords", "with an SSH key", "/home/kalinka-admin/.ssh/authorized_keys"}},
-		{sshaccess.ErrLoginRefused, "ssh_login_refused", []string{"lets in only some logins", "from where you are", "AllowUsers, AllowGroups, DenyUsers and DenyGroups"}},
+		{sshaccess.ErrPasswordsRefused, "ssh_passwords_refused", []string{"do not allow a password on its own", "with an SSH key", "/home/kalinka-admin/.ssh/authorized_keys"}},
+		{sshaccess.ErrPolicyUnknown, "ssh_policy_unknown", []string{"could not be checked", "Try connecting with SSH"}},
 	} {
 		var logs bytes.Buffer
 		previous := slog.Default()

@@ -329,7 +329,7 @@ Open `http://<address>:8001` in a browser. It shows:
 - the installed plugins, each with a **Remove** button, so a plugin that stops Kalinka from starting can be taken away;
 - on a Raspberry Pi, the DAC HAT it found and the one it is set up for;
 - the time zone;
-- **SSH access**: enter a password of 12 characters or more to create the login `kalinka-admin`, with administrator rights. Connect with `ssh kalinka-admin@<address>` and use `sudo` for administrator commands. If the streamer's SSH server is set to refuse passwords, or that login, the page says so instead.
+- **SSH access**: enter a password of 12 characters or more to create the login `kalinka-admin`, with administrator rights. Connect with `ssh kalinka-admin@<address>` and use `sudo` for administrator commands. The page also checks OpenSSH's password authentication settings and reports a refusal or an incomplete check. Other SSH access rules still apply.
 
 The page answers anyone on your home network, over plain HTTP, and nobody outside it. Anyone who can open it can set the administrator password, so use it on a network you trust. To turn it off, add `KALINKA_CONTROL_API=0` to `/etc/default/kalinka-supervisor` and run `sudo systemctl restart kalinka-supervisor`. [The supervisor's control page and API](supervisor-control.md) describes it in full.
 
@@ -339,7 +339,7 @@ The Raspberry Pi images apply what Raspberry Pi Imager writes onto the card, at 
 
 - the host name, which also names the streamer on your network as `<name>.local`;
 - your Wi-Fi network, hidden or not, with its country;
-- a login with administrator rights: your user name and password, your SSH public keys, or both. SSH is switched on if you asked for it. With **public-key authentication only**, that login takes no password over SSH. Call it `kalinka-admin`, and it is the login the control page's **SSH access** sets a password for, which then works over SSH too;
+- a login with administrator rights: your user name and password, your SSH public keys, or both. SSH is switched on if you asked for it. With **public-key authentication only**, that login takes no password over SSH. Call it `kalinka-admin`, and it is the login the control page's **SSH access** sets a password for, which removes that account's card-written password restriction. Other SSH policies still apply;
 - the time zone.
 
 The keyboard layout is not used, as there is no keyboard to type on, and neither is Raspberry Pi Connect.

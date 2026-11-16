@@ -174,14 +174,13 @@ func (h *handler) enableSSH(w http.ResponseWriter, r *http.Request, reject func(
 		case errors.As(err, &refusal):
 			outcome := outcomes[refusal.Code]
 			return reject(outcome.status, refusal.Code, outcome.message)
-		case errors.Is(err, sshaccess.ErrLoginRefused):
-			return reject(http.StatusConflict, "ssh_login_refused", "SSH is on and "+sshaccess.Username+" has the new password, "+
-				"but this streamer's SSH server lets in only some logins, and "+sshaccess.Username+" is not one of them from where you are. "+
-				"Log in another way, then let "+sshaccess.Username+" in through AllowUsers, AllowGroups, DenyUsers and DenyGroups "+
-				"in /etc/ssh/sshd_config and /etc/ssh/sshd_config.d.")
+		case errors.Is(err, sshaccess.ErrPolicyUnknown):
+			return reject(http.StatusConflict, "ssh_policy_unknown", "SSH is on and "+sshaccess.Username+" has the new password, "+
+				"but its authentication settings could not be checked. Try connecting with SSH; "+
+				"if the login is refused, check the SSH server configuration using an existing login.")
 		case errors.Is(err, sshaccess.ErrPasswordsRefused):
 			return reject(http.StatusConflict, "ssh_passwords_refused", "SSH is on and "+sshaccess.Username+" has the new password, "+
-				"but this streamer's SSH server is set to refuse passwords, so the login will not work with one. "+
+				"but the checked SSH settings do not allow a password on its own. "+
 				"Log in another way, with an SSH key, then allow password logins through PasswordAuthentication and AuthenticationMethods "+
 				"in /etc/ssh/sshd_config and /etc/ssh/sshd_config.d, "+
 				"or add your public key to /home/"+sshaccess.Username+"/.ssh/authorized_keys.")

@@ -65,7 +65,7 @@ func TestSetupNamesThePeerAsSSHWouldSeeIt(t *testing.T) {
 
 func TestSetupTellsARefusalFromAFailure(t *testing.T) {
 	s := New(false)
-	for status, want := range map[int]error{helperLoginRefused: ErrLoginRefused, helperPasswordsRefused: ErrPasswordsRefused, 1: ErrSetup, 255: ErrSetup} {
+	for status, want := range map[int]error{helperPolicyUnknown: ErrPolicyUnknown, helperPasswordsRefused: ErrPasswordsRefused, 1: ErrSetup, 255: ErrSetup} {
 		s.run = func(*exec.Cmd) error { return exec.Command("sh", "-c", fmt.Sprintf("exit %d", status)).Run() }
 		if err := s.Enable(context.Background(), protocol.NewSecret("valid-test-password"), lanPeer); err != want {
 			t.Errorf("helper exit %d read as %v", status, err)

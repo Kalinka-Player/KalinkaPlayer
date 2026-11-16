@@ -15,18 +15,18 @@ const Username = "kalinka-admin"
 
 var ErrSetup = errors.New("SSH setup failed")
 
-// ErrPasswordsRefused reports the login made and SSH on, but an OpenSSH policy
-// the helper keeps refusing that login a password.
+// ErrPasswordsRefused reports successful setup whose OpenSSH authentication
+// settings do not permit a password on its own.
 var ErrPasswordsRefused = errors.New("the SSH server refuses the login a password")
 
-// ErrLoginRefused reports the login made and SSH on, but OpenSSH's AllowUsers,
-// AllowGroups, DenyUsers or DenyGroups turning that login away.
-var ErrLoginRefused = errors.New("the SSH server turns the login away")
+// ErrPolicyUnknown reports successful setup whose OpenSSH authentication policy
+// could not be read. It does not imply that password login is refused.
+var ErrPolicyUnknown = errors.New("SSH authentication policy could not be checked")
 
 // The helper's exit statuses for those errors; systemd-run passes them through.
 const (
-	helperLoginRefused     = 77
 	helperPasswordsRefused = 78
+	helperPolicyUnknown    = 79
 )
 
 // Setup runs the fixed SSH helper, passing credentials only through standard input.
@@ -69,8 +69,8 @@ func (s *Setup) Enable(ctx context.Context, password protocol.Secret, from netip
 	err := s.run(cmd)
 	if exit := (*exec.ExitError)(nil); errors.As(err, &exit) {
 		switch exit.ExitCode() {
-		case helperLoginRefused:
-			return ErrLoginRefused
+		case helperPolicyUnknown:
+			return ErrPolicyUnknown
 		case helperPasswordsRefused:
 			return ErrPasswordsRefused
 		}
