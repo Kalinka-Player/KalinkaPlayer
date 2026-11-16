@@ -26,7 +26,7 @@ for unit in network-pre.target NetworkManager.service avahi-daemon.service bluet
   assert_contains "runs before $unit" "$before" " $unit "
 done
 for boot in /boot/firmware /boot/efi; do
-  for file in custom.toml firstrun.sh user-data network-config; do
+  for file in custom.toml firstrun.sh user-data network-config userconf.txt wpa_supplicant.conf ssh ssh.txt; do
     assert_contains "runs for $boot/$file" "$settings" "ConditionPathExists=|$boot/$file"
   done
 done
