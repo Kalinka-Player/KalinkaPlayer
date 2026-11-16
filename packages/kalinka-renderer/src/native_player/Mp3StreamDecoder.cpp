@@ -2,12 +2,17 @@
 #define MINIMP3_ONLY_SIMD
 
 #include "Mp3StreamDecoder.h"
-#include "Log.h"
-#include "PerfMon.h"
 
 #include "minimp3/minimp3_ex.h"
 
+#include <algorithm>
+#include <array>
+#include <cstring>
+#include <optional>
 #include <span>
+#include <stdexcept>
+#include <string>
+#include <utility>
 
 namespace {
 bool atId3Trailer(const mp3dec_ex_t &decoder, uint64_t sourcePosition,
@@ -54,7 +59,8 @@ struct GaplessInfo {
     auto end = frames;
     if (remainingFrames) {
       end = std::min<uint64_t>(
-          frames, remainingFrames - std::min<uint64_t>(remainingFrames, padding));
+          frames,
+          remainingFrames - std::min<uint64_t>(remainingFrames, padding));
       remainingFrames -= std::min<uint64_t>(remainingFrames, frames);
     }
     // The tag describes this encoded track, not the lifetime of a broadcast.
@@ -72,9 +78,8 @@ std::optional<GaplessInfo> readGaplessTag(std::span<const uint8_t> frame) {
   size_t at = HDR_SIZE + (HDR_IS_CRC(header) ? 2 : 0) +
               (HDR_TEST_MPEG1(header) ? (HDR_IS_MONO(header) ? 17 : 32)
                                       : (HDR_IS_MONO(header) ? 9 : 17));
-  if (frame.size() < at + 8 ||
-      (std::memcmp(header + at, "Xing", 4) &&
-       std::memcmp(header + at, "Info", 4)))
+  if (frame.size() < at + 8 || (std::memcmp(header + at, "Xing", 4) &&
+                                std::memcmp(header + at, "Info", 4)))
     return std::nullopt;
   const auto flags = frame[at + 7];
   if (!(flags & FRAMES_FLAG))
@@ -95,7 +100,8 @@ std::optional<GaplessInfo> readGaplessTag(std::span<const uint8_t> frame) {
     at += 21;
     // minimp3's synthesis delay is 529 samples in addition to the encoder's.
     info.delay = (unsigned(frame[at]) << 4 | frame[at + 1] >> 4) + 529;
-    info.padding = std::max(0, ((frame[at + 1] & 15) << 8 | frame[at + 2]) - 529);
+    info.padding =
+        std::max(0, ((frame[at + 1] & 15) << 8 | frame[at + 2]) - 529);
   }
   if (uint64_t(info.delay) + info.padding > info.remainingFrames)
     return GaplessInfo{}; // Ignore inconsistent lengths, but skip the tag.
@@ -103,441 +109,277 @@ std::optional<GaplessInfo> readGaplessTag(std::span<const uint8_t> frame) {
 }
 } // namespace
 
-Mp3StreamDecoder::Mp3StreamDecoder(std::optional<StreamId> streamId,
-                                   size_t bufferSize, size_t startOffsetMs)
-    : AudioGraphNode(streamId),
-      buffer(bufferSize),
-      startOffsetMs(startOffsetMs) {}
+class Mp3StreamDecoder::Codec {
+public:
+  virtual ~Codec() = default;
+  virtual StreamInfo open() = 0;
+  /// Appends the next block through write(); false once the source is done.
+  virtual bool decodeNext() = 0;
+  virtual void seek(uint64_t frame) = 0;
+};
 
-Mp3StreamDecoder::~Mp3StreamDecoder() {
-  if (decodingThread.joinable()) {
-    decodingThread.request_stop();
-    decodingThread.join();
-    decodingThread = std::jthread();
-  }
-}
+/// minimp3's extended API, which indexes the whole source as it opens.
+class Mp3StreamDecoder::FileCodec final : public Codec {
+public:
+  explicit FileCodec(Mp3StreamDecoder &owner) : owner(owner) {}
+  ~FileCodec() override { mp3dec_ex_close(&mp3); }
 
-size_t Mp3StreamDecoder::read(void *data, size_t size) {
-  auto readBytes = buffer.read(static_cast<uint8_t *>(data), size);
-  bytesReadInRun += readBytes;
-  finishIfDrained();
-  return readBytes;
-}
-
-long Mp3StreamDecoder::framesRead() const {
-  const auto frameSize = frameSizeBytes.load();
-  if (frameSize == 0) {
-    return runStartFrame.load(); // not open yet, so nothing has been read
-  }
-  return runStartFrame.load() + bytesReadInRun.load() / frameSize;
-}
-
-std::optional<long> Mp3StreamDecoder::streamReadPosition() const {
-  return framesRead();
-}
-
-void Mp3StreamDecoder::restartRunAt(long frame) {
-  runStartFrame = frame;
-  bytesReadInRun = 0;
-}
-
-size_t Mp3StreamDecoder::waitForData(std::stop_token stopToken, size_t size) {
-  auto combinedToken = combineStopTokens(stopToken, seekSignal.getStopToken());
-  auto availableSize = buffer.waitForData(combinedToken.get_token(), size);
-  finishIfDrained();
-  return availableSize;
-}
-
-size_t Mp3StreamDecoder::waitForDataFor(std::stop_token stopToken,
-                                        std::chrono::milliseconds timeout,
-                                        size_t size) {
-  auto combinedToken = combineStopTokens(stopToken, seekSignal.getStopToken());
-  const auto availableSize =
-      buffer.waitForDataFor(combinedToken.get_token(), timeout, size);
-  finishIfDrained();
-  return availableSize;
-}
-
-size_t Mp3StreamDecoder::seekTo(size_t absolutePosition) {
-  if (getState().state == AudioGraphNodeState::ERROR || seekSignal.getValue()) {
-    return -1;
-  }
-  auto token = decodingThread.get_stop_token();
-
-  if (!initCompleteSignal.waitValue(token).value_or(false) || !seekable) {
-    return -1;
-  }
-  spdlog::trace("Mp3StreamDecoder::seekTo({})", absolutePosition);
-  seekSignal.sendValue(absolutePosition);
-  auto retVal = seekSignal.getResponse(token);
-  spdlog::trace("Mp3StreamDecoder::seekTo({}) -> {}", absolutePosition, retVal);
-  return retVal;
-}
-
-void Mp3StreamDecoder::connectTo(
-    std::shared_ptr<AudioGraphOutputNode> inputNode) {
-  if (inputNode == nullptr) {
-    throw std::runtime_error("Input node is null");
+  StreamInfo open() override {
+    const int result = mp3dec_ex_open_cb(&mp3, &io, MP3D_SEEK_TO_SAMPLE);
+    owner.rethrowCallbackException();
+    if (result != 0)
+      throw std::runtime_error("Failed to open MP3 decoder");
+    if (!mp3.info.channels || !mp3.info.hz)
+      throw std::runtime_error("No MP3 audio found");
+    owner.setSeekable(true);
+    return {.format = {.sampleRate = unsigned(mp3.info.hz),
+                       .channels = unsigned(mp3.info.channels),
+                       .bitsPerSample = 16,
+                       .sampleFormat = AudioSampleFormat::PCM16_LE},
+            .streamType = StreamType::FRAMES,
+            .streamSize = mp3.samples / mp3.info.channels};
   }
 
-  if (this->inputNode != nullptr) {
-    throw std::runtime_error("Input node is already connected");
-  }
-
-  this->inputNode = inputNode;
-
-  if (!decodingThread.joinable()) {
-    setState(StreamState(AudioGraphNodeState::PREPARING));
-    seekSignal.reopen();
-    initCompleteSignal.reopen();
-    decodingThread =
-        std::jthread(std::bind_front(&Mp3StreamDecoder::threadRun, this));
-  }
-}
-
-void Mp3StreamDecoder::disconnect(
-    std::shared_ptr<AudioGraphOutputNode> outputNode) {
-  if (outputNode != this->inputNode) {
-    return;
-  }
-
-  if (decodingThread.joinable()) {
-    decodingThread.request_stop();
-    decodingThread.join();
-  }
-
-  this->inputNode = nullptr;
-}
-
-void Mp3StreamDecoder::threadRun(std::stop_token token) {
-  workerToken = token;
-
-  mp3dec_ex_t mp3{};
-  mp3dec_io_t io = {
-      .read =
-          [](void *buf, size_t size, void *user_data) {
-            return static_cast<Mp3StreamDecoder *>(user_data)->readCallback(
-                buf, size);
-          },
-      .read_data = this,
-      .seek =
-          [](uint64_t position, void *user_data) {
-            return static_cast<Mp3StreamDecoder *>(user_data)->seekCallback(
-                position);
-          },
-      .seek_data = this};
-
-  try {
-
-    // HTTP headers are only available once the source has delivered bytes.
-    inputNode->waitForData(token, 1);
-    const auto source = inputNode->getState();
-    if (source.state == AudioGraphNodeState::ERROR) {
-      setState({AudioGraphNodeState::ERROR, *source.error});
-    } else if (!token.stop_requested() &&
-               (!source.streamInfo || !source.streamInfo->streamSize)) {
-      decodeStream(token);
-    } else if (!token.stop_requested()) {
-      seekable = true;
-
-      int ret = mp3dec_ex_open_cb(&mp3, &io, MP3D_SEEK_TO_SAMPLE);
-      spdlog::trace("mp3dec_ex_open_cb ret: {}", ret);
-
-      if (ret != 0) {
-        initCompleteSignal.sendValue(false);
-        spdlog::error("Failed to open MP3 decoder: {}", ret);
-        throw std::runtime_error("Failed to open MP3 decoder");
-      };
-
-      if (!mp3.info.channels || !mp3.info.hz)
-        throw std::runtime_error("No MP3 audio found");
-      frameSizeBytes = sizeof(mp3d_sample_t) * mp3.info.channels;
-      initCompleteSignal.sendValue(true);
-
-      constexpr size_t frameBufferSize = MINIMP3_MAX_SAMPLES_PER_FRAME;
-      std::array<mp3d_sample_t, frameBufferSize> frameBuffer;
-
-      if (startOffsetMs > 0) {
-        auto startOffsetSamples =
-            static_cast<size_t>(startOffsetMs * mp3.info.hz / 1000);
-        if (startOffsetSamples > mp3.samples / mp3.info.channels) {
-          throw std::runtime_error(
-              "Start offset is greater than the total number of samples");
-        }
-        handleSeekSignal(&mp3, startOffsetSamples);
-      }
-
-      while (!token.stop_requested()) {
-        while (!token.stop_requested()) {
-          if (seekSignal.getValue().has_value()) {
-            handleSeekSignal(&mp3, seekSignal.getValue().value());
-            continue;
-          }
-          size_t size =
-              mp3dec_ex_read(&mp3, frameBuffer.data(), frameBufferSize);
-
-          if (seekSignal.getValue().has_value()) {
-            continue;
-          }
-
-          if (size == 0) {
-            // minimp3 also reports E_DECODE for non-audio trailers such as
-            // ID3v2.4. Accept a tag covering the remainder of the file, while
-            // preserving actual audio decoding and source failures.
-            const bool trailer = mp3.last_error == MP3D_E_DECODE &&
-                                 atId3Trailer(mp3, sourcePosition,
-                                               source.streamInfo->streamSize);
-            if (mp3.last_error && !trailer && !token.stop_requested()) {
-              throw std::runtime_error("MP3 decode failure: " +
-                                       std::to_string(mp3.last_error));
-            }
-            buffer.setEof();
-            finishIfDrained();
-            break;
-          }
-
-          setState(StreamState{
-              AudioGraphNodeState::STREAMING, framesRead(),
-              StreamInfo{
-                  .format =
-                      StreamAudioFormat{
-                          .sampleRate = static_cast<unsigned int>(mp3.info.hz),
-                          .channels =
-                              static_cast<unsigned int>(mp3.info.channels),
-                          .bitsPerSample = 16,
-                          .sampleFormat = AudioSampleFormat::PCM16_LE},
-                  .streamType = StreamType::FRAMES,
-                  .streamSize = mp3.samples / mp3.info.channels}});
-
-          writePcm(frameBuffer.data(), size * sizeof(mp3d_sample_t), token);
-        }
-        seekSignal.waitValue(token);
-      }
+  bool decodeNext() override {
+    if (atEnd)
+      return false;
+    const size_t samples = mp3dec_ex_read(&mp3, pcm.data(), pcm.size());
+    owner.rethrowCallbackException();
+    if (samples == 0) {
+      // minimp3 also reports E_DECODE for non-audio trailers such as ID3v2.4.
+      // Accept a tag covering the remainder of the file, while preserving
+      // actual audio decoding and source failures.
+      const bool trailer =
+          mp3.last_error == MP3D_E_DECODE &&
+          atId3Trailer(mp3, owner.inputPosition(), owner.sourceLength());
+      if (mp3.last_error && !trailer)
+        throw std::runtime_error("MP3 decode failure: " +
+                                 std::to_string(mp3.last_error));
+      return false;
     }
-  } catch (std::exception &ex) {
-    if (getState().state != AudioGraphNodeState::ERROR) {
-      std::string message =
-          std::string("Mp3 decoder thread exception: ") + ex.what();
-      spdlog::error(message);
-      setState({AudioGraphNodeState::ERROR,
-                StreamError{StreamErrorSource::DECODER, message}});
-    }
+    owner.write(std::span(reinterpret_cast<const uint8_t *>(pcm.data()),
+                          samples * sizeof(mp3d_sample_t)));
+    return true;
   }
 
-  mp3dec_ex_close(&mp3);
-  buffer.setEof();
-  finishIfDrained();
-  seekSignal.close(static_cast<size_t>(-1));
-  initCompleteSignal.close(false);
-  if (token.stop_requested() && getState().state != AudioGraphNodeState::ERROR)
-    setState(StreamState{AudioGraphNodeState::STOPPED});
-  spdlog::trace("Mp3StreamDecoder::threadRun finished");
-}
-
-void Mp3StreamDecoder::writePcm(const void *data, size_t size,
-                                std::stop_token token) {
-  auto combined = combineStopTokens(token, seekSignal.getStopToken());
-  size_t written = 0;
-  while (written < size) {
-    buffer.waitForSpace(combined.get_token());
-    if (combined.get_token().stop_requested())
+  void seek(uint64_t frame) override {
+    // minimp3 reads its way to the target, which a stalled source can hold
+    // up: the seek is answered now, and a later one can cut it short.
+    owner.answerSeek();
+    atEnd = frame >= mp3.samples / mp3.info.channels;
+    if (atEnd)
       return;
-    written += buffer.write(static_cast<const uint8_t *>(data) + written,
-                            size - written);
+    // minimp3 counts every channel's sample.
+    const int result = mp3dec_ex_seek(&mp3, frame * mp3.info.channels);
+    owner.rethrowCallbackException();
+    if (result != 0)
+      throw std::runtime_error("MP3 decoder seek failure");
   }
-}
 
-void Mp3StreamDecoder::decodeStream(std::stop_token token) {
-  if (startOffsetMs)
-    throw std::runtime_error("MP3 start offset requires a seekable stream");
+private:
+  Mp3StreamDecoder &owner;
+  mp3dec_ex_t mp3{};
+  bool atEnd = false;
+  std::array<mp3d_sample_t, MINIMP3_MAX_SAMPLES_PER_FRAME> pcm;
+  // minimp3 is compiled here, but its state after an unwound read is its own
+  // business: a callback keeps what it meets and reports a short read.
+  mp3dec_io_t io{.read = [](void *buffer, size_t size, void *self) -> size_t {
+                   auto &owner = static_cast<FileCodec *>(self)->owner;
+                   try {
+                     return owner.readInput(buffer, size, false);
+                   } catch (...) {
+                     owner.callbackException = std::current_exception();
+                     return 0;
+                   }
+                 },
+                 .read_data = this,
+                 .seek = [](uint64_t position, void *self) -> int {
+                   auto &owner = static_cast<FileCodec *>(self)->owner;
+                   try {
+                     owner.prefixUsed = owner.prefix.size();
+                     return owner.reposition(position) ? 0 : -1;
+                   } catch (...) {
+                     owner.callbackException = std::current_exception();
+                     return -1;
+                   }
+                 },
+                 .seek_data = this};
+};
 
-  // The extended file API scans for duration and rewinds even with
-  // MP3D_DO_NOT_SCAN. Decode sequentially with minimp3's frame API instead.
-  // Its recommended lookahead holds ten frames even at the largest bitrate.
+/// minimp3's frame API, decoding a stream it can neither measure nor rewind.
+class Mp3StreamDecoder::BroadcastCodec final : public Codec {
+public:
+  explicit BroadcastCodec(Mp3StreamDecoder &owner) : owner(owner) {
+    mp3dec_init(&decoder);
+  }
+
+  StreamInfo open() override {
+    pending = nextAudio();
+    if (!pending)
+      throw std::runtime_error("No MP3 audio found");
+    format = pending->format;
+    return {.format = *format,
+            .streamType = StreamType::FRAMES,
+            .prebufferMs = owner.sourcePrebufferMs()};
+  }
+
+  bool decodeNext() override {
+    auto audio = std::exchange(pending, std::nullopt);
+    if (!audio)
+      audio = nextAudio();
+    if (!audio)
+      return false;
+    if (audio->format != *format)
+      throw std::runtime_error("MP3 audio format changed during playback");
+    owner.write(
+        std::span(reinterpret_cast<const uint8_t *>(pcm.data() + audio->skip),
+                  audio->samples * sizeof(mp3d_sample_t)));
+    return true;
+  }
+
+  void seek(uint64_t) override {
+    throw std::logic_error("An MP3 broadcast does not seek");
+  }
+
+private:
+  /// What one frame left to play, in samples of every channel.
+  struct Audio {
+    StreamAudioFormat format;
+    size_t skip;
+    size_t samples;
+  };
+
+  Mp3StreamDecoder &owner;
+  // minimp3's recommended lookahead holds ten frames even at the largest
+  // bitrate.
   std::array<uint8_t, MINIMP3_BUF_SIZE> encoded;
   std::array<uint8_t, HDR_SIZE> previousHeader{};
   std::array<mp3d_sample_t, MINIMP3_MAX_SAMPLES_PER_FRAME> pcm;
   mp3dec_t decoder{};
-  mp3dec_init(&decoder);
   size_t held = 0;
   bool eof = false;
   bool firstFrame = true;
   std::optional<GaplessInfo> gapless;
   std::optional<StreamAudioFormat> format;
-  while (!token.stop_requested()) {
-    // Once synchronized, decode complete buffered frames before asking for
-    // more network data. In particular, skipping a Xing frame must not add
-    // another full lookahead wait before the first audible samples.
-    const auto completeFrameBytes = [&]() -> size_t {
-      if (firstFrame || held < HDR_SIZE ||
-          !hdr_compare(previousHeader.data(), encoded.data()))
-        return 0;
-      const auto bytes =
-          hdr_frame_bytes(encoded.data(), decoder.free_format_bytes) +
-          hdr_padding(encoded.data());
-      return bytes > 0 && held >= size_t(bytes) ? bytes : 0;
-    };
-    while (!completeFrameBytes() && held < encoded.size() && !eof &&
-           !token.stop_requested()) {
-      const auto available = inputNode->waitForData(token, 1);
-      if (token.stop_requested())
-        return;
-      const auto state = inputNode->getState();
-      if (state.state == AudioGraphNodeState::ERROR) {
-        setState({AudioGraphNodeState::ERROR, *state.error});
-        return;
+  /// The first audible frame, decoded by open() and played first.
+  std::optional<Audio> pending;
+
+  // With a matching header at the expected boundary, the next frame complete.
+  size_t completeFrameBytes() const {
+    if (firstFrame || held < HDR_SIZE ||
+        !hdr_compare(previousHeader.data(), encoded.data()))
+      return 0;
+    const auto bytes =
+        hdr_frame_bytes(encoded.data(), decoder.free_format_bytes) +
+        hdr_padding(encoded.data());
+    return bytes > 0 && held >= size_t(bytes) ? bytes : 0;
+  }
+
+  /// Decodes on to the next frame with something to play, or the end.
+  std::optional<Audio> nextAudio() {
+    while (true) {
+      // Once synchronized, decode complete buffered frames before asking for
+      // more network data. In particular, skipping a Xing frame must not add
+      // another full lookahead wait before the first audible samples.
+      while (!completeFrameBytes() && held < encoded.size() && !eof) {
+        const auto count =
+            owner.readInput(encoded.data() + held, encoded.size() - held, true);
+        held += count;
+        eof = count == 0;
       }
-      const auto count = inputNode->read(
-          encoded.data() + held, std::min(available, encoded.size() - held));
-      held += count;
-      eof = count == 0;
-    }
-    if (token.stop_requested() || !held)
-      break;
-    mp3dec_frame_info_t info{};
-    // With a matching header at the expected boundary, submit exactly one
-    // frame. Otherwise minimp3 can reject the final audio frame because an
-    // ID3 trailer, rather than another MPEG header, follows it.
-    const auto frameBytes = completeFrameBytes();
-    const auto frames = mp3dec_decode_frame(
-        &decoder, encoded.data(), frameBytes ? frameBytes : held, pcm.data(), &info);
-    if (!info.frame_bytes)
-      break;
-    bool tag = false;
-    unsigned encodedFrames = 0;
-    if (info.hz) {
-      const auto frame = std::span(encoded).subspan(
-          info.frame_offset, info.frame_bytes - info.frame_offset);
-      std::copy_n(frame.data(), HDR_SIZE, previousHeader.data());
-      encodedFrames = hdr_frame_samples(frame.data());
-      if (firstFrame) {
-        firstFrame = false;
-        if (info.layer == 3)
-          gapless = readGaplessTag(frame);
-        tag = gapless.has_value();
+      if (!held)
+        return std::nullopt;
+      mp3dec_frame_info_t info{};
+      // Exactly one frame where its header says it ends. Otherwise minimp3
+      // can reject the final audio frame because an ID3 trailer, rather than
+      // another MPEG header, follows it.
+      const auto frameBytes = completeFrameBytes();
+      const auto frames = mp3dec_decode_frame(&decoder, encoded.data(),
+                                              frameBytes ? frameBytes : held,
+                                              pcm.data(), &info);
+      if (!info.frame_bytes)
+        return std::nullopt;
+      bool tag = false;
+      unsigned encodedFrames = 0;
+      if (info.hz) {
+        const auto frame = std::span(encoded).subspan(
+            info.frame_offset, info.frame_bytes - info.frame_offset);
+        std::copy_n(frame.data(), HDR_SIZE, previousHeader.data());
+        encodedFrames = hdr_frame_samples(frame.data());
+        if (firstFrame) {
+          firstFrame = false;
+          if (info.layer == 3)
+            gapless = readGaplessTag(frame);
+          tag = gapless.has_value();
+        }
       }
-    }
-    held -= info.frame_bytes;
-    std::memmove(encoded.data(), encoded.data() + info.frame_bytes, held);
-    if (tag) {
-      mp3dec_init(&decoder); // File decoding also starts after the tag frame.
-      continue;
-    }
-    const auto [skip, count] = gapless ? gapless->trim(encodedFrames)
-                                     : std::pair<size_t, size_t>{0, frames};
-    if (!frames)
-      continue; // Skip junk or prime a stream joined mid-reservoir.
-    const StreamAudioFormat decoded{unsigned(info.hz), unsigned(info.channels),
-                                    16, AudioSampleFormat::PCM16_LE};
-    if (format && *format != decoded)
-      throw std::runtime_error("MP3 audio format changed during playback");
-    if (!format) {
-      format = decoded;
-      frameSizeBytes = sizeof(mp3d_sample_t) * info.channels;
-      setState({AudioGraphNodeState::STREAMING, framesRead(),
-                StreamInfo{.format = decoded,
-                           .streamType = StreamType::FRAMES,
-                           .prebufferMs = inputNode->getState()
-                                              .streamInfo.value_or(StreamInfo{})
-                                              .prebufferMs}});
-      initCompleteSignal.sendValue(true);
-    }
-    writePcm(pcm.data() + skip * info.channels,
-             count * info.channels * sizeof(mp3d_sample_t), token);
-  }
-  if (!format && !token.stop_requested())
-    throw std::runtime_error("No MP3 audio found");
-}
-
-void Mp3StreamDecoder::finishIfDrained() {
-  // A read may empty the buffer just before the worker appends its final
-  // samples and marks EOF. Recheck the current size before reporting FINISHED.
-  if (buffer.isEof() && buffer.empty() &&
-      getState().state == AudioGraphNodeState::STREAMING) {
-    setState(StreamState{AudioGraphNodeState::FINISHED});
-  }
-}
-
-size_t Mp3StreamDecoder::readCallback(void *buf, size_t size) {
-  spdlog::trace("Mp3StreamDecoder::readCallback({})", size);
-
-  auto combinedToken =
-      combineStopTokens(workerToken, seekSignal.getStopToken());
-  auto token = initCompleteSignal.getValue().value_or(false)
-                   ? combinedToken.get_token()
-                   : workerToken;
-  // minimp3 treats a short read as EOF, including while counting CBR samples.
-  // Drain partial source buffers until the request is full or truly at EOF;
-  // waiting for the whole request can also exceed the HTTP producer's reserve.
-  size_t filled = 0;
-  while (filled < size && !token.stop_requested()) {
-    const auto available = inputNode->waitForData(token, 1);
-    if (!available || token.stop_requested()) {
-      if (!token.stop_requested()) {
-        const auto state = inputNode->getState();
-        if (state.state == AudioGraphNodeState::ERROR)
-          setState({AudioGraphNodeState::ERROR, *state.error});
+      held -= info.frame_bytes;
+      std::memmove(encoded.data(), encoded.data() + info.frame_bytes, held);
+      if (tag) {
+        mp3dec_init(&decoder); // File decoding also starts after the tag frame.
+        continue;
       }
-      break;
+      const auto [skip, count] = gapless ? gapless->trim(encodedFrames)
+                                         : std::pair<size_t, size_t>{0, frames};
+      if (!frames)
+        continue; // Skip junk or prime a stream joined mid-reservoir.
+      const auto channels = unsigned(info.channels);
+      return Audio{
+          {unsigned(info.hz), channels, 16, AudioSampleFormat::PCM16_LE},
+          skip * channels,
+          count * channels};
     }
-    const auto count = inputNode->read(static_cast<uint8_t *>(buf) + filled,
-                                       std::min(available, size - filled));
-    if (!count)
-      break;
-    filled += count;
-    sourcePosition += count;
   }
-  spdlog::trace("Mp3StreamDecoder::readCallback({}) -> {}", size, filled);
-  return filled;
+};
+
+Mp3StreamDecoder::Mp3StreamDecoder(std::optional<StreamId> streamId,
+                                   size_t bufferSize, size_t startOffsetMs)
+    : AudioGraphNode(streamId), SourceStreamDecoder(bufferSize, startOffsetMs) {
 }
 
-int Mp3StreamDecoder::seekCallback(uint64_t position) {
-  spdlog::trace("Mp3StreamDecoder::seekCallback({})", position);
-  auto actualPosition = inputNode->seekTo(position);
-  if (actualPosition != size_t(-1))
-    sourcePosition = actualPosition;
-  spdlog::trace("Mp3StreamDecoder::seekCallback({}) -> {}", position,
-                actualPosition);
-  return position - actualPosition;
+Mp3StreamDecoder::~Mp3StreamDecoder() { stop(); }
+
+void Mp3StreamDecoder::forget() {
+  codec.reset();
+  prefix.clear();
+  prefixUsed = 0;
+  callbackException = nullptr;
 }
 
-void Mp3StreamDecoder::handleSeekSignal(void *mp3dec_ex, size_t seekPosFrames) {
-  mp3dec_ex_t *mp3 = static_cast<mp3dec_ex_t *>(mp3dec_ex);
-  // minimp3 returns interleaved data and counts
-  // every sample for each channel,so we need
-  // to multiply the position by the number of channels.
-  auto seekPosSamples = seekPosFrames * mp3->info.channels;
-  const auto totalFrames = mp3->samples / mp3->info.channels;
+StreamInfo Mp3StreamDecoder::open() {
+  // An HTTP source names its length only once its first bytes have arrived.
+  prefix.resize(4096);
+  prefix.resize(readAvailable(prefix.data(), prefix.size()));
+  prefixUsed = 0;
+  if (sourceLength())
+    codec = std::make_unique<FileCodec>(*this);
+  else
+    codec = std::make_unique<BroadcastCodec>(*this);
+  return codec->open();
+}
 
-  spdlog::trace("Mp3StreamDecoder::handleSeekSignal seek to {}/{}",
-                seekPosFrames, totalFrames);
-  setState(StreamState{AudioGraphNodeState::PREPARING});
+bool Mp3StreamDecoder::decodeNext() { return codec->decodeNext(); }
 
-  buffer.clear();
-  if (seekPosSamples >= mp3->samples) {
-    spdlog::trace(
-        "Mp3StreamDecoder::handleSeekSignal seekPos is too large {} -> {}",
-        seekPosSamples, mp3->samples);
-    seekPosSamples = mp3->samples;
-    seekSignal.respond(seekPosSamples / mp3->info.channels);
-    buffer.setEof();
-    setState(StreamState{AudioGraphNodeState::FINISHED});
-    return;
-  }
+void Mp3StreamDecoder::seekSource(uint64_t frame) { codec->seek(frame); }
 
-  if (!mp3->indexes_built) {
-    spdlog::trace("Index is not built, seeking to {}", seekPosFrames);
-  }
+void Mp3StreamDecoder::close() { codec.reset(); }
 
-  seekSignal.respond(seekPosFrames);
-  buffer.resetEof();
-  int ret = mp3dec_ex_seek(mp3, seekPosSamples);
-  if (ret != 0) {
-    spdlog::error("MP3 decoder seek failure: {}", ret);
-    throw std::runtime_error("MP3 decoder seek failure");
-  }
+size_t Mp3StreamDecoder::readInput(void *dest, size_t bytes, bool partial) {
+  auto *out = static_cast<uint8_t *>(dest);
+  const auto held = std::min(bytes, prefix.size() - prefixUsed);
+  std::copy_n(prefix.data() + prefixUsed, held, out);
+  prefixUsed += held;
+  if (held == bytes || (partial && held))
+    return held;
+  return held + (partial ? readAvailable(out + held, bytes - held)
+                         : readSome(out + held, bytes - held));
+}
 
-  restartRunAt(seekPosFrames);
-  spdlog::trace("Mp3StreamDecoder::handleSeekSignal seek to {} -> {}",
-                seekPosFrames, framesRead());
+uint64_t Mp3StreamDecoder::inputPosition() const {
+  return sourcePosition() - (prefix.size() - prefixUsed);
+}
+
+void Mp3StreamDecoder::rethrowCallbackException() {
+  if (callbackException)
+    std::rethrow_exception(std::exchange(callbackException, nullptr));
 }
