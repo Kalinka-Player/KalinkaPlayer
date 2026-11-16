@@ -757,8 +757,8 @@ class JamendoInputModule(InputModule):
 
     def capabilities(self) -> FrozenSet[ModuleCapability]:
         """Catalogs always; AI search only while the setting gave this module
-        a mood index."""
-        if self._mood_index is not None:
+        a mood index, and that index is being set up or is ready."""
+        if self._mood_index is not None and self._mood_index.failure is None:
             return frozenset({ModuleCapability.CATALOGS, ModuleCapability.AI_SEARCH})
         return frozenset({ModuleCapability.CATALOGS})
 
