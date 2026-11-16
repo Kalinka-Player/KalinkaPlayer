@@ -35,11 +35,12 @@ class ReleaseInstallerTests(unittest.TestCase):
             REPAIR_REMOVES="0",
         )
         self.installer = self.root / "install-release.sh"
-        # Only redirect the OS identity file; run the full installer unchanged.
+        # Only redirect the OS identity file and the system's Python, which is
+        # the real one unless a test stands one in; run the full installer unchanged.
         self.installer.write_text(
-            INSTALLER.read_text().replace(
-                "/etc/os-release", str(self.root / "os-release")
-            )
+            INSTALLER.read_text()
+            .replace("/etc/os-release", str(self.root / "os-release"))
+            .replace("/usr/bin/python3", str(self.bin / "python3"))
         )
         self.platform("ubuntu", "24.04")
         self.command("id", "#!/bin/sh\necho 0\n")
@@ -168,10 +169,13 @@ status.write_text(json.dumps(states))
             else []
         )
 
-    def python(self, *version):
-        """python3 is the real one, but says it is *version* to the code it runs."""
-        self.command(
-            "python3",
+    def python(self, *version, directory=None):
+        """python3 is the real one, but says it is *version* to the code it runs.
+
+        It stands in for the system's Python unless *directory* puts it elsewhere.
+        """
+        path = (directory or self.bin) / "python3"
+        path.write_text(
             f"""#!{sys.executable}
 import runpy, sys
 sys.version_info = {(*version, "final", 0)!r}
@@ -183,6 +187,7 @@ else:
     runpy.run_path(sys.argv[0], run_name="__main__")
 """,
         )
+        path.chmod(0o755)
 
     def run_installer(self, *args, piped=False):
         for log in self.root.glob("*.jsonl"):
@@ -324,6 +329,17 @@ else:
         self.assertIn("and this system has Python 3.10.12.", result.stderr)
         self.assertEqual(self.calls("requests"), [])
 
+    def test_a_python_that_does_not_run_is_not_called_too_old(self):
+        self.command("python3", "#!/bin/sh\nexit 1\n")
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(
+            f"error: {self.bin / 'python3'} does not run, and the server needs it",
+            result.stderr,
+        )
+        self.assertNotIn("Python 3.11 or newer", result.stderr)
+        self.assertEqual(self.calls("requests"), [])
+
     def test_python_311_installs(self):
         self.platform("debian", "12")
         self.python(3, 11, 2)
@@ -331,6 +347,18 @@ else:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_packages(self.base_names + [self.bluetooth, self.web])
         self.assertIn("kalinka-v5.17.0 installed", result.stdout)
+
+    def test_an_older_python_first_on_path_is_not_the_systems(self):
+        """A virtual environment or pyenv on PATH is not what apt installs against."""
+        self.platform("debian", "13")
+        self.python(3, 13, 5)
+        user_bin = self.root / "user-bin"
+        user_bin.mkdir()
+        self.python(3, 10, 12, directory=user_bin)
+        self.env["PATH"] = f"{user_bin}:{self.env['PATH']}"
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_packages(self.base_names + [self.bluetooth, self.web])
 
     def test_missing_os_release_preserves_selection_and_ignores_inherited_identity(
         self,
