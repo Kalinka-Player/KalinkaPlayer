@@ -372,13 +372,17 @@ def read_userconf_txt(text: str) -> Optional[dict[str, Any]]:
 
 
 def without_wpa_comment(line: str) -> str:
-    """line without its # comment, as wpa_supplicant finds one: the whole line when
-    it starts with #, else from the first # after the line's last quote."""
-    if line.lstrip().startswith("#"):
-        return ""
-    first, last = line.find('"'), line.rfind('"')
-    end = line.find("#", last if first < last else 0)
-    return line if end < 0 else line[:end]
+    """Remove # comments outside pairs of double quotes, as wpa_supplicant does."""
+    position = 0
+    while position < len(line):
+        if line[position] == "#":
+            return line[:position]
+        if line[position] == '"':
+            closing = line.find('"', position + 1)
+            if closing >= 0:
+                position = closing
+        position += 1
+    return line
 
 
 def quoted(value: str) -> Optional[str]:
@@ -456,6 +460,13 @@ def read_wpa_network(fields: dict[str, str], number: int) -> dict[str, Any]:
             number,
         )
         return {}
+    if any(f"wep_key{slot}" in fields for slot in range(4)):
+        log.warning(
+            "wpa_supplicant.conf line %d: WEP networks are not supported, "
+            "so the network is not applied",
+            number,
+        )
+        return {}
     values: dict[str, Any] = {"ssid": wpa_ssid(fields["ssid"])}
     if "psk" in fields:
         passphrase = quoted(fields["psk"])
@@ -467,7 +478,6 @@ def read_wpa_network(fields: dict[str, str], number: int) -> dict[str, Any]:
     for name in fields:
         if name not in WPA_NETWORK_FIELDS:
             log.info("wpa_supplicant.conf: network.%s is not applied", loggable(name))
-    # As wpa_supplicant has it: a psk for WPA-PSK, and key_mgmt=NONE for an open one.
     methods = fields.get("key_mgmt", "WPA-PSK").split()
     if "psk" in fields:
         joinable = "WPA-PSK" in methods and values["wifi_key"] != ""
