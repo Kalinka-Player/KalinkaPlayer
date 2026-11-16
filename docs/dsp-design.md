@@ -558,15 +558,15 @@ are measured, scaled where noted.
 
 | Stage | CPU target, Pi 4 | Memory target | Measured so far, x86 | Measured so far, Pi 5 |
 |---|---|---|---|---|
-| DSD to PCM, DSD64 to 176.4 kHz stereo | < 2 % | stage 1 tables ≤ 32 KB | 0.32 %, tables 20 KB | 1.07 % |
-| DSD to PCM, DSD256 to 352.8 kHz stereo | < 6 % | ≤ 32 KB tables, then by benchmark | 1.15 %, tables 14 KB | 3.85 % |
+| DSD to PCM, DSD64 to 176.4 kHz stereo | < 2 % | stage 1 tables ≤ 32 KB | 0.32 %, tables 20 KB | 1.00 % |
+| DSD to PCM, DSD256 to 352.8 kHz stereo | < 6 % | ≤ 32 KB tables, then by benchmark | 1.17 %, tables 14 KB | 3.60 % |
 | PEQ, 20 bands stereo at 192 kHz | < 1 % | coefficients only | 10 biquads 8.7 ns/frame, so 20 bands at 192 kHz would be about 0.33 % | 10 biquads 23.0 ns/frame pipelined, so about 0.9 % (1.2 % unpipelined) |
 | FIR, 65536 taps stereo at 44.1 kHz | < 3 % | spectra of every partition, float64 ≈ 4 MB stereo | FFT table (section 10) | FFT table (section 10) |
 | Upsampling 44.1 to 352.8 kHz | < 5 % | filter tables | libsoxr VHQ 2×: 10 ns per input frame, 0.04 % at 44.1 kHz | libsoxr VHQ 2×: 60 ns per input frame, 0.27 % at 44.1 kHz |
 | Gain, dither, pack | < 0.5 % | none | today's GainFade 2.5 ns/frame | today's GainFade 8.4 ns/frame |
 | Stage overhead (FIFO, segments) | < 0.2 % | one 32768-frame FIFO | DelayLine stage 0.4 ns/frame | DelayLine stage 1.8 ns/frame, 0.07 % at 352.8 kHz |
 
-The DSD rows are measured on a Pi 4 too: 3.43 % and 11.5 %, over both
+The DSD rows are measured on a Pi 4 too: 3.24 % and 11.0 %, over both
 budgets. Review accepted that (section 14).
 
 The PEQ is the one budget the Pi 5 already comes close to, so a Pi 4 at
@@ -796,7 +796,9 @@ channel pairs, of one core:
 | | Kaiser | 1.60 % | 5.44 % | 20.1–21.3 % |
 
 The equiripple figures are medians of three runs, ten on the Pi 4. The Kaiser
-ones are one run each, two on the Pi 4.
+ones are one run each, two on the Pi 4. Both are from before stage 1's
+kernels became classes, which took up to a further 11 % off on the Pis
+without changing a loop; the figures below are from after.
 
 **Stage 1 kernels.** Beside the scalar reference, the three variants the plan
 asked for. Stage 1 adds whole numbers, so all four agree bit for bit, and the
@@ -806,19 +808,19 @@ FIRs after them are the same vector code:
 - nibble lookups: each 4-bit partial sum split into five byte planes, 16
   entries each, looked up in registers with `tbl` on NEON and `pshufb` on x86.
 
-Channel pairs were fastest on x86-64 in 24 of 33 rows, and within 5 % in the
-rest. They were fastest on the A76 in every row, by 2–14 %. On the Pi 4's A72,
-nibble lookups were fastest below DSD256, by 2–16 % on medians, and the only
-kernel steady between runs, within 3 %. The byte-table kernels moved by
-8–36 %, most likely because the A72's L1 data cache is 32 KB and two-way.
-Channel pairs led there from DSD512 up. Review chose one kernel for every
-machine over a pick per CPU, so `DsdKernel::Fast` is channel pairs, and the
-Pi 4 runs about 10 % above its best at DSD64
-([results](../benchmarks/dsp/results.md)).
+Channel pairs were fastest on x86-64 in 29 of 33 rows, and within 5 % in the
+rest. They were fastest on the A76 in every row, by 3–16 %. On the Pi 4's A72,
+nibble lookups were fastest below DSD256, by up to 9 % on medians, and the
+only kernel steady between runs, within 2 %. The byte-table kernels moved by
+5–38 %, most likely because the A72's L1 data cache is 32 KB and two-way.
+Channel pairs led there at DSD256 with the 30 kHz filter and from DSD512 up,
+by 10–11 %. Review chose one kernel for every machine over a pick per CPU, so
+`DsdKernel::Fast` is channel pairs, and the Pi 4 runs about 8 % above its
+best at DSD64 ([results](../benchmarks/dsp/results.md)).
 
 **Over the Pi 4 budget, accepted.** Section 11's 2 % and 6 % were estimates.
-The Pi 4 measures 3.43 % (2.84–3.87 %) and 11.5 % (10.7–12.9 %). It takes
-3.0–3.2 times as long as the Pi 5 on the same code, 2.2–2.4 times per clock.
+The Pi 4 measures 3.24 % (2.82–3.81 %) and 11.0 % (10.3–12.4 %). It takes
+3.1–3.2 times as long as the Pi 5 on the same code, 2.3–2.4 times per clock.
 The filter lengths are set by the rejection that THD+N needs, and review
 accepted the cost rather than looser filters. A Pi 5 is well inside both
 budgets.
@@ -835,8 +837,8 @@ chain:
 | THD+N, DSD128 to 176.4 kHz, 50 kHz, against the fixture | within 0.1 dB | +0.040 dB of -172.4 dB | +0.073 dB of -172.5 dB |
 | Level at 1 kHz | 0.000 dB within 0.001 dB | 0.0002 dB | 0.0002 dB |
 | Optimised against the scalar reference | null below -150 dBFS | -313 dBFS | exact |
-| DSD64 to 176.4 kHz stereo on a Pi 4 | under 2 % of one core | | 3.43 % |
-| DSD256 to 352.8 kHz stereo on a Pi 4 | under 6 % of one core | | 11.5 % |
+| DSD64 to 176.4 kHz stereo on a Pi 4 | under 2 % of one core | | 3.24 % |
+| DSD256 to 352.8 kHz stereo on a Pi 4 | under 6 % of one core | | 11.0 % |
 
 The Pi 5's test build, run on the Pi 4 as well, gives both boards the same
 figures in every chain. The response columns agree with x86-64's to every
