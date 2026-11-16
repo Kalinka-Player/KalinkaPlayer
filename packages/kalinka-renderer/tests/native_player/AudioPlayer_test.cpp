@@ -9,11 +9,8 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include <cstdlib>
-#include <optional>
-#include <string>
-
 #include "LocalHttpServer.h"
+#include "ScopedEnvironmentVariable.h"
 #include "TestHelpers.h"
 
 class AudioPlayerTest : public ::testing::Test {
@@ -76,22 +73,14 @@ TEST(AudioPlayerVolumeTest, KalinkaLeaveMixerKeepsTheMixerWhereItIs) {
     ASSERT_TRUE(mixer.setVolume(90));
   }
   const int moved = mixer.getVolume();
-  const char *previous = std::getenv("KALINKA_LEAVE_MIXER");
-  const std::optional<std::string> saved =
-      previous ? std::optional<std::string>(previous) : std::nullopt;
-  setenv("KALINKA_LEAVE_MIXER", "1", 1);
   {
+    const ScopedEnvironmentVariable leaveMixer("KALINKA_LEAVE_MIXER", "1");
     AudioPlayer player(Config{{"output.alsa.device", testDevice()}});
     EXPECT_TRUE(player.configureVolume("software", ""));
     EXPECT_TRUE(player.configureVolume("fixed", ""));
   }
   const int after = mixer.getVolume();
-  if (saved) {
-    setenv("KALINKA_LEAVE_MIXER", saved->c_str(), 1);
-  } else {
-    unsetenv("KALINKA_LEAVE_MIXER");
-  }
-  if (moved != before) {
+  if (after != before) {
     mixer.setVolume(before);
   }
   EXPECT_EQ(after, moved);

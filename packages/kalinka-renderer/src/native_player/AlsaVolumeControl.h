@@ -6,6 +6,7 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <string>
 #include <thread>
@@ -22,6 +23,10 @@ enum class VolumeBackend { None = 0, Hardware = 1, Software = 2 };
 enum class VolumeMode { Auto, Hardware, Software, Fixed };
 
 VolumeMode parseVolumeMode(const std::string &mode);
+/// Whether DSD may go out under @p mode with the mixer at @p mixerPercent,
+/// empty when there is none: only fixed output, at unity, where nothing can
+/// scale DoP's markers away.
+bool allowsDsd(VolumeMode mode, std::optional<int> mixerPercent);
 
 /// dB at each percentage, 0..100, of a volume that scales amplitude by the
 /// cube of the percentage, as software volume and PipeWire do. 0 is -200 dB.

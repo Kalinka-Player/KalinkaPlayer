@@ -38,3 +38,15 @@ TEST(AlsaVolumeControlTest, AnElementIsMatchedToTheControlsItsVolumeComesFrom) {
   EXPECT_FALSE(playbackVolumeAmong("PC", softvol));
   EXPECT_FALSE(playbackVolumeAmong("PCM", {}));
 }
+
+TEST(AlsaVolumeControlTest, OnlyFixedOutputAtUnityLetsDsdOut) {
+  EXPECT_TRUE(allowsDsd(VolumeMode::Fixed, std::nullopt)) << "no mixer";
+  EXPECT_TRUE(allowsDsd(VolumeMode::Fixed, 100));
+  EXPECT_FALSE(allowsDsd(VolumeMode::Fixed, 34))
+      << "a mixer left below unity can scale DoP's markers away";
+  EXPECT_FALSE(allowsDsd(VolumeMode::Fixed, -1)) << "a level it cannot read";
+  for (auto mode :
+       {VolumeMode::Software, VolumeMode::Hardware, VolumeMode::Auto}) {
+    EXPECT_FALSE(allowsDsd(mode, 100));
+  }
+}

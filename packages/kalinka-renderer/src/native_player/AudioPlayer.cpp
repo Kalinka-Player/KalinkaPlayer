@@ -56,7 +56,7 @@ std::unique_ptr<DspProcessor> dspProcessorFor(const Config &config) {
 // On a desktop's own device, raising the mixer raises everything it plays.
 bool mixerLeftAlone() {
   const char *value = std::getenv("KALINKA_LEAVE_MIXER");
-  return value != nullptr && *value != '\0' && std::string_view(value) != "0";
+  return value != nullptr && std::string_view(value) == "1";
 }
 
 bool isInvalidState(AudioGraphNodeState state) {
@@ -347,11 +347,11 @@ bool AudioPlayer::configureVolume(const std::string &mode,
   // bit-perfect output when an ALSA mixer was previously left below 100%.
   const bool needsUnity =
       requested == VolumeMode::Software || requested == VolumeMode::Fixed;
-  if (needsUnity && mixer->available() && mixerLeftAlone()) {
-    spdlog::info("KALINKA_LEAVE_MIXER is set: the ALSA mixer stays at {}%",
-                 mixer->getVolume());
-  } else if (needsUnity && mixer->available()) {
-    if (!mixer->setVolume(100) || mixer->getVolume() != 100) {
+  if (needsUnity && mixer->available()) {
+    if (mixerLeftAlone()) {
+      spdlog::info("KALINKA_LEAVE_MIXER is set: the ALSA mixer stays at {}%",
+                   mixer->getVolume());
+    } else if (!mixer->setVolume(100) || mixer->getVolume() != 100) {
       if (error != nullptr) {
         *error = "ALSA mixer could not be set to 100%";
       }
@@ -359,8 +359,15 @@ bool AudioPlayer::configureVolume(const std::string &mode,
     }
   }
 
+  const auto mixerPercent = mixer->available()
+                                ? std::optional<int>(mixer->getVolume())
+                                : std::nullopt;
+  if (requested == VolumeMode::Fixed && !allowsDsd(requested, mixerPercent)) {
+    spdlog::warn("Fixed output with the ALSA mixer at {}%: DSD stays off",
+                 mixerPercent.value_or(-1));
+  }
   volumeMode = requested;
-  audioEmitter->setDsdAllowed(requested == VolumeMode::Fixed);
+  audioEmitter->setDsdAllowed(allowsDsd(requested, mixerPercent));
   // Only an active hardware backend needs to stay open and report external
   // changes. Software/fixed used the mixer above solely to establish unity.
   volumeControl =

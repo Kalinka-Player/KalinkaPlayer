@@ -82,9 +82,9 @@ public:
   // control, bit-perfect) mode.
   /// Select a volume mode and put every inactive gain stage at unity. Returns
   /// false when a detected ALSA mixer cannot be set as the mode requires.
-  /// @note With KALINKA_LEAVE_MIXER set to anything but 0, software and fixed
-  /// modes leave the mixer where it is: fixed output is then bit-perfect only
-  /// if the mixer already stands at 100 %.
+  /// @note With KALINKA_LEAVE_MIXER=1, software and fixed modes leave the
+  /// mixer where it is: fixed output is then bit-perfect, and lets DSD out,
+  /// only if the mixer already stands at 100 %.
   bool configureVolume(const std::string &mode, const std::string &mixerControl,
                        std::string *error = nullptr);
 

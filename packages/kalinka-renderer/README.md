@@ -311,7 +311,8 @@ KALINKA_TEST_ALSA_DEVICE=default ctest --output-on-failure
 Software and fixed volume raise the device's ALSA mixer to 100 % first, so that
 fixed output is bit-perfect. On a desktop's own device that turns up everything
 else it plays, and leaves it there. Set `KALINKA_LEAVE_MIXER=1` and the renderer
-leaves the mixer alone, in the tests or anywhere else:
+leaves the mixer alone, in the tests or anywhere else. Fixed output is then
+bit-perfect, and plays DSD, only if the mixer already stands at 100 %:
 
 ```sh
 KALINKA_LEAVE_MIXER=1 KALINKA_TEST_ALSA_DEVICE=pipewire ctest --output-on-failure

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ScopedEnvironmentVariable.h"
+
 #include <alsa/asoundlib.h>
 
 #include <cstdlib>
@@ -14,8 +16,6 @@
 class ScopedAlsaConfig {
 public:
   explicit ScopedAlsaConfig(std::string_view configuration) {
-    if (const char *value = std::getenv("ALSA_CONFIG_PATH"))
-      previous_ = value;
     char pattern[] = "/tmp/kalinka-alsa-config-XXXXXX";
     const char *directory = mkdtemp(pattern);
     if (!directory)
@@ -23,15 +23,12 @@ public:
     directory_ = directory;
     const auto file = directory_ / "alsa.conf";
     std::ofstream(file) << configuration;
-    setenv("ALSA_CONFIG_PATH", file.c_str(), 1);
+    path_.emplace("ALSA_CONFIG_PATH", file.string());
     snd_config_update_free_global();
   }
 
   ~ScopedAlsaConfig() {
-    if (previous_)
-      setenv("ALSA_CONFIG_PATH", previous_->c_str(), 1);
-    else
-      unsetenv("ALSA_CONFIG_PATH");
+    path_.reset();
     snd_config_update_free_global();
     std::error_code error;
     std::filesystem::remove_all(directory_, error);
@@ -42,7 +39,7 @@ public:
 
 private:
   std::filesystem::path directory_;
-  std::optional<std::string> previous_;
+  std::optional<ScopedEnvironmentVariable> path_;
 };
 
 inline constexpr std::string_view kHdmiTestConfig = R"(
