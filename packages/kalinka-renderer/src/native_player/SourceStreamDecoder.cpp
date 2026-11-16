@@ -36,6 +36,9 @@ size_t SourceStreamDecoder::take(void *dest, size_t bytes, size_t wanted) {
   if (state.state == AudioGraphNodeState::ERROR)
     throw SourceFailed{state.error.value_or(
         StreamError{StreamErrorSource::DECODER, name() + " input failed"})};
+  // Kept while it is known: a later range request can hide it for a while.
+  if (!length && state.streamInfo)
+    length = state.streamInfo->streamSize;
   const auto count =
       available ? input->read(dest, std::min(bytes, available)) : 0;
   // Counted as it arrives, so an interrupted read leaves it exact.

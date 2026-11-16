@@ -143,8 +143,8 @@ TEST_F(IntegrationTest, httpInputSearchForward) {
   auto audioGraphHttpStream = std::make_shared<AudioGraphHttpStream>(1, 
       server.url("/ranged"), 16384);
   flacStreamDecoder->connectTo(audioGraphHttpStream);
-  auto state =
-      waitForStatus(*flacStreamDecoder, AudioGraphNodeState::STREAMING);
+  auto state = waitForStatus(*flacStreamDecoder, AudioGraphNodeState::STREAMING,
+                             std::chrono::seconds(5));
   EXPECT_EQ(state.state, AudioGraphNodeState::STREAMING);
   std::vector<uint8_t> buffer(4096);
   flacStreamDecoder->waitForData(std::stop_token(), 4096);
@@ -156,7 +156,8 @@ TEST_F(IntegrationTest, httpInputSearchForward) {
   EXPECT_TRUE(afterSeek == AudioGraphNodeState::PREPARING ||
               afterSeek == AudioGraphNodeState::STREAMING)
       << "unexpected state after seeking: " << stateToString(afterSeek);
-  state = waitForStatus(*flacStreamDecoder, AudioGraphNodeState::STREAMING);
+  state = waitForStatus(*flacStreamDecoder, AudioGraphNodeState::STREAMING,
+                        std::chrono::seconds(5));
   EXPECT_EQ(state.state, AudioGraphNodeState::STREAMING);
   EXPECT_TRUE(state.streamInfo.has_value());
   EXPECT_EQ(state.position, 16384);

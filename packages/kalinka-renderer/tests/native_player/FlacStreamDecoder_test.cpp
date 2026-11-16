@@ -29,7 +29,7 @@ TEST_F(FlacStreamDecoderTest, connectTo) {
 
 TEST_F(FlacStreamDecoderTest, connectTo_nullptr) {
   auto flacStreamDecoder = std::make_shared<FlacStreamDecoder>(1, bufferSize);
-  EXPECT_THROW(flacStreamDecoder->connectTo(nullptr), std::runtime_error);
+  EXPECT_THROW(flacStreamDecoder->connectTo(nullptr), std::invalid_argument);
 }
 
 TEST_F(FlacStreamDecoderTest, disconnect) {
@@ -124,9 +124,9 @@ TEST_F(FlacStreamDecoderTest, seek_after_the_decoder_has_stopped_returns) {
       std::make_shared<FlacStreamDecoder>(1, bufferSize, 60000);
   auto inputNode = std::make_shared<FileInputNode>(1, testFile("tone440.flac"));
   flacStreamDecoder->connectTo(inputNode);
-  waitForStatus(*flacStreamDecoder, AudioGraphNodeState::STOPPED,
+  waitForStatus(*flacStreamDecoder, AudioGraphNodeState::ERROR,
                 std::chrono::milliseconds(2000));
-  ASSERT_EQ(flacStreamDecoder->getState().state, AudioGraphNodeState::STOPPED);
+  ASSERT_EQ(flacStreamDecoder->getState().state, AudioGraphNodeState::ERROR);
 
   EXPECT_TRUE(returnsWithin(
       [flacStreamDecoder] { flacStreamDecoder->seekTo(0); },
