@@ -4,6 +4,7 @@
 #include "AudioGraphNode.h"
 
 #include <limits>
+#include <vector>
 
 /**
  * @brief A stereo S32 source whose every frame says which one it is.
@@ -89,6 +90,15 @@ public:
   }
 
   int32_t value(size_t frame) const { return base + int32_t(frame) + 1; }
+
+  /// The left samples of frames [@p from, @p to).
+  std::vector<int32_t> values(size_t from, size_t to) const {
+    std::vector<int32_t> left;
+    for (size_t frame = from; frame < to; ++frame) {
+      left.push_back(value(frame));
+    }
+    return left;
+  }
 
 private:
   const int32_t base;

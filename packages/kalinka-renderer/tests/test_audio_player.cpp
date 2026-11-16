@@ -38,9 +38,9 @@ bool deviceOpens() {
 
 class Playing {
 public:
-  Playing()
+  explicit Playing(const std::string &latencyMs = "100")
       : config_(withTestDsp({{"output.alsa.device", testDevice()},
-                             {"output.alsa.latency_ms", "100"},
+                             {"output.alsa.latency_ms", latencyMs},
                              {"output.alsa.period_ms", "25"}})),
         player_(config_) {
     player_.configureVolume("software", "");
@@ -74,13 +74,15 @@ public:
 
   std::optional<StreamState>
   nextOf(size_t from, AudioGraphNodeState wanted,
-         std::chrono::milliseconds timeout = std::chrono::milliseconds(5000)) {
+         std::chrono::milliseconds timeout = std::chrono::milliseconds(5000),
+         std::optional<StreamId> stream = std::nullopt) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     do {
       {
         std::lock_guard<std::mutex> lock(mutex_);
         for (size_t i = from; i < seen_.size(); ++i) {
-          if (seen_[i].state == wanted) {
+          if (seen_[i].state == wanted &&
+              (!stream || seen_[i].streamId == stream)) {
             return seen_[i];
           }
         }
@@ -232,6 +234,39 @@ TEST_F(PlaybackPositionTest, AQueuedTrackTakesOverAtItsOwnStart) {
   auto streaming = playing.nextOf(mark + 1, AudioGraphNodeState::STREAMING);
   ASSERT_TRUE(streaming.has_value());
   EXPECT_NEAR(streaming->position, 4000, 200);
+}
+
+TEST_F(PlaybackPositionTest, ASeekInAGaplessTailStaysInTheTrackHeard) {
+  SKIP_UNLESS_PLAYED_IN_REAL_TIME();
+  // The device holds more than is left of the first, so upstream moves on to
+  // the second while the first is still heard.
+  Playing playing("500");
+  playing.player().append(1, fixture("ladder.flac"));
+  playing.player().append(2, fixture("ladder.flac"));
+  ASSERT_TRUE(playing.nextOf(0, AudioGraphNodeState::STREAMING).has_value());
+  ASSERT_NEAR(playing.player().seek(kTrackMs - 300), kTrackMs - 300, 25);
+  playFor(std::chrono::milliseconds(100));
+  playing.player().append(3, fixture("ladder.flac"));
+
+  const auto mark = playing.mark();
+  EXPECT_NEAR(playing.player().seek(1000), 1000, 25);
+  const auto streaming = playing.nextOf(mark, AudioGraphNodeState::STREAMING);
+  ASSERT_TRUE(streaming.has_value()) << "never resumed";
+  EXPECT_EQ(streaming->streamId, std::optional<StreamId>(1));
+  EXPECT_NEAR(streaming->position, 1000, 100);
+  playFor(std::chrono::milliseconds(500));
+  EXPECT_FALSE(playing
+                   .nextOf(mark, AudioGraphNodeState::SOURCE_CHANGED,
+                           std::chrono::milliseconds(0))
+                   .has_value())
+      << "announced a track that was never heard";
+
+  const auto tail = playing.mark();
+  playing.player().seek(kTrackMs - 200);
+  const auto next = playing.nextOf(tail, AudioGraphNodeState::STREAMING,
+                                   std::chrono::milliseconds(3000), 2);
+  ASSERT_TRUE(next.has_value()) << "the second never played";
+  EXPECT_LT(next->position, 200) << "the second did not start over";
 }
 
 } // namespace

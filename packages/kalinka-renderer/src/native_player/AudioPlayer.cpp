@@ -543,8 +543,14 @@ void AudioPlayer::disconnectAllStreams() {
 }
 
 void AudioPlayer::cleanUpFinishedStreams() {
+  // A finished stream may still be heard, and seeking it must work until then.
+  const auto heard = audioEmitter->getState().streamId;
+  bool reachedHeard = false;
   for (auto it = streamNodesList.begin(); it != streamNodesList.end();) {
-    if (isInvalidState(it->nodeChain.back()->getState().state)) {
+    reachedHeard = reachedHeard || it->id == heard;
+    const auto state = it->nodeChain.back()->getState().state;
+    if (isInvalidState(state) &&
+        !(reachedHeard && state == AudioGraphNodeState::FINISHED)) {
       // Keep switcher state in sync: removing the stream from our bookkeeping
       // alone is not enough, it must be disconnected from the switcher too.
       streamSwitcher->disconnect(it->nodeChain.back());

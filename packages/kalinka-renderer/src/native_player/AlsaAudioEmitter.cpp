@@ -277,11 +277,19 @@ bool AlsaAudioEmitter::handleSeekSignal() {
 
   spdlog::info("Request seek to {}ms ({} frames), quantized to {}ms",
                positionMs, seekValue, quantizedPositionMs);
-  auto retVal = inputNode->seekTo(seekValue);
+  // The seek means the stream being heard, which upstream may have left.
+  auto retVal = state.streamId
+                    ? inputNode->seekStream(*state.streamId, seekValue)
+                    : inputNode->seekTo(seekValue);
   if (retVal == -1U) {
     spdlog::warn("Seek request failed: requested={}", seekValue);
     seekRequestSignal.respond(-1);
     return false;
+  }
+  // What it announced will not be heard now: the queue holding it is dropped.
+  if (pendingSourceReport) {
+    playedFramesCounter.cancel(*pendingSourceReport);
+    pendingSourceReport.reset();
   }
   seekRequestSignal.respond(framesToTimeMs(retVal).count());
   seekHappened = true;
@@ -353,6 +361,7 @@ void AlsaAudioEmitter::openDevice() {
 
   currentSourceTotalFramesWritten = 0;
   playedFramesCounter.reset();
+  pendingSourceReport.reset();
 }
 
 void AlsaAudioEmitter::closeDevice() {
@@ -431,10 +440,11 @@ bool AlsaAudioEmitter::handleInputNodeStateChange() {
       spdlog::debug("Reporting source change in {}ms, frames={}",
                     framesToTimeMs(framesDelay).count(), framesDelay);
 
-      playedFramesCounter.callOnOrAfterFrame(
+      pendingSourceReport = playedFramesCounter.callOnOrAfterFrame(
           framesDelay,
           [this, streamInfo = newStreamInfo, incomingStreamId,
            start = currentSourceStartFrames](snd_pcm_sframes_t frames) {
+            pendingSourceReport.reset();
             setStreamId(incomingStreamId);
             setState(StreamState(AudioGraphNodeState::SOURCE_CHANGED));
             setState(StreamState{AudioGraphNodeState::STREAMING,
@@ -830,9 +840,11 @@ void PlayedFramesCounter::update(snd_pcm_sframes_t frames) {
   lastPlayedFrames += frames;
   for (auto it = onFramesPlayedCallbacks.begin();
        it != onFramesPlayedCallbacks.end();) {
-    if (lastPlayedFrames >= it->first) {
-      it->second(lastPlayedFrames - it->first);
+    if (lastPlayedFrames >= it->frame) {
+      const auto onFramesPlayed = std::move(it->onFramesPlayed);
+      const auto late = lastPlayedFrames - it->frame;
       it = onFramesPlayedCallbacks.erase(it);
+      onFramesPlayed(late);
     } else {
       ++it;
     }
@@ -842,17 +854,25 @@ void PlayedFramesCounter::update(snd_pcm_sframes_t frames) {
 std::vector<snd_pcm_sframes_t> PlayedFramesCounter::drainSequence() {
   std::vector<snd_pcm_sframes_t> sequence;
   for (auto &callback : onFramesPlayedCallbacks) {
-    sequence.push_back(callback.first - lastPlayedFrames);
+    sequence.push_back(callback.frame - lastPlayedFrames);
   }
 
   std::sort(sequence.begin(), sequence.end());
   return sequence;
 }
 
-void PlayedFramesCounter::callOnOrAfterFrame(
+int PlayedFramesCounter::callOnOrAfterFrame(
     snd_pcm_sframes_t frame,
     std::function<void(snd_pcm_sframes_t)> onFramesPlayed) {
-  onFramesPlayedCallbacks.push_back({frame + lastPlayedFrames, onFramesPlayed});
+  const int id = nextId++;
+  onFramesPlayedCallbacks.push_back(
+      {id, frame + lastPlayedFrames, std::move(onFramesPlayed)});
+  return id;
+}
+
+void PlayedFramesCounter::cancel(int id) {
+  onFramesPlayedCallbacks.remove_if(
+      [id](const Pending &pending) { return pending.id == id; });
 }
 
 void PlayedFramesCounter::reset() {

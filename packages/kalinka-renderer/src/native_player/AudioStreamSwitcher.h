@@ -27,16 +27,43 @@ public:
                                 size_t size) override;
   virtual size_t seekTo(size_t absolutePosition) override;
 
+  /**
+   * @brief Seeks @p stream, which may have finished here while it is still
+   * heard downstream.
+   *
+   * A finished stream becomes current again, and every stream that followed it
+   * goes back to the front of the queue, wound back to where it began.
+   * @return the frame reached, or size_t(-1) for a stream this switcher does
+   * not hold.
+   * @note A finished stream is held until it is disconnected.
+   */
+  size_t seekStream(StreamId stream, size_t position) override;
+
   virtual std::optional<long> streamReadPosition() const override;
   std::optional<uint64_t> liveSourceFrame() const override;
 
   virtual void acceptSourceChange() override;
 
 private:
+  /// A source that has played here.
+  struct Played {
+    std::shared_ptr<AudioGraphOutputNode> node;
+    std::optional<StreamId> id;
+    /// Where the first frame read from it was, if any has been.
+    std::optional<long> beganAt;
+    /// Its state callback, or -1 once that has unhooked itself.
+    int callbackId = -1;
+  };
+
   std::optional<StreamId> nextStreamId();
 
   std::list<std::shared_ptr<AudioGraphOutputNode>> inputNodes;
   std::shared_ptr<AudioGraphOutputNode> currentInputNode = nullptr;
+  /// The current source's stream, kept so no seek has to ask it under the lock.
+  std::optional<StreamId> currentId;
+  std::optional<long> currentBeganAt;
+  /// Sources that finished here, oldest first.
+  std::list<Played> finished;
 
   mutable std::mutex mutex;
   std::stop_source stopSource;
@@ -44,6 +71,10 @@ private:
   int stateCallbackId = -1;
 
   void switchToNextSource();
+  /// Takes @p node's states as this switcher's, once it is current.
+  void follow(const std::shared_ptr<AudioGraphOutputNode> &node);
+  /// Moves the current source to the finished ones; the lock must be held.
+  void retireCurrent(bool callbackUnhooked);
 };
 
 #endif

@@ -507,9 +507,21 @@ size_t DspStage::seekTo(size_t absolutePosition) {
   if (boundary || (!segments.empty() && segments.front().left)) {
     return size_t(-1);
   }
+  restart();
+  return upstream ? upstream->seekTo(absolutePosition) : size_t(-1);
+}
+
+size_t DspStage::seekStream(StreamId stream, size_t position) {
+  if (processor) {
+    sync();
+    restart();
+  }
+  return upstream ? upstream->seekStream(stream, position) : size_t(-1);
+}
+
+void DspStage::restart() {
   dropEverything();
   publish();
-  return upstream ? upstream->seekTo(absolutePosition) : size_t(-1);
 }
 
 std::optional<long> DspStage::streamReadPosition() const {
