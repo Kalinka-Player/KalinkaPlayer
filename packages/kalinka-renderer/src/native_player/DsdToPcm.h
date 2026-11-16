@@ -1,8 +1,12 @@
 #pragma once
 
+#include "DsdKernels.h"
+#include "FirFilters.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 /// What a DSD-to-PCM conversion keeps above 20 kHz.
@@ -18,6 +22,13 @@ enum class DsdFilter {
 
 /// Which bit of a DSD byte holds its earliest sample.
 enum class DsdBitOrder { MsbFirst, LsbFirst };
+
+/**
+ * @brief Which loops a DsdToPcm runs. Reference is the plain code the others
+ * are checked against; the stage 1 variants are kept to be measured against
+ * each other; Fast is the one measured fastest on this architecture.
+ */
+enum class DsdKernel { Reference, Sums, ChannelPair, Nibbles, Fast };
 
 /**
  * @brief Converts one-bit DSD into float64 PCM at 2, 4 or 8 times 44.1 or
@@ -37,12 +48,14 @@ enum class DsdBitOrder { MsbFirst, LsbFirst };
  */
 class DsdToPcm {
 public:
+  /// What to convert from and to; the kernel matters only to measurements.
   struct Spec {
     unsigned dsdRate;
     unsigned pcmRate;
     unsigned channels;
     DsdFilter filter;
     DsdBitOrder order;
+    DsdKernel kernel = DsdKernel::Fast;
   };
 
   /// @throws std::invalid_argument for rates or channels it has no chain for.
@@ -68,33 +81,37 @@ public:
   void reset();
 
 private:
-  struct Fir {
-    const double *taps;
-    size_t size;
-  };
   struct Channel {
     std::vector<uint8_t> bytes;
-    std::vector<std::vector<double>> stages;
-    std::vector<double> band;
+    /// The same bytes with their bits reversed, for the mirrored groups.
+    std::vector<uint8_t> reversed;
+    std::vector<HalfBandDecimator> halfBands;
+    std::optional<SymmetricFir> band;
   };
 
   unsigned ratio_;
   size_t latency_ = 0;
   double passbandHz_;
+  DsdKernel kernel;
   bool lsbFirst;
   uint8_t idle;
   unsigned channels;
   size_t groups;
-  /// Stage 1's first groups, MSB first, whole numbers in units of 2^-36.
+  /// Stage 1's groups for the byte kernels, whole numbers in units of 2^-36:
+  /// all of them in the stream's bit order, or past the budget the first
+  /// half, MSB first.
   std::vector<std::array<double, 256>> tables;
-  std::vector<Fir> halfBands;
-  Fir band{nullptr, 0};
-  /// Per half-band, whether one input already waits for its pair.
-  std::vector<unsigned> pending;
-  std::vector<size_t> blockInputs;
+  bool whole;
+  /// Every group's taps by nibble, for the nibble kernel.
+  std::vector<dsd_kernels::NibbleTables> nibbles;
   std::vector<Channel> state;
+  /// Where each channel's output for the current block goes.
+  std::vector<double *> blockTargets;
 
-  size_t stage1(const uint8_t *in, size_t bytes, Channel &channel) const;
-  size_t halfBand(size_t stage, size_t count, Channel &channel) const;
-  void bandFilter(size_t count, Channel &channel, double *out) const;
+  void stage1(const uint8_t *in, size_t bytes, double *const *out);
+  void stage1Reference(size_t bytes, const Channel &channel,
+                       double *target) const;
+  /// Where half-band @p stage takes its input or, past the last, the band
+  /// filter, or @p out when there is neither.
+  static double *feed(Channel &channel, size_t stage, double *out);
 };

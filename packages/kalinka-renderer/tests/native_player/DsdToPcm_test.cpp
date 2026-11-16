@@ -108,6 +108,23 @@ TEST(DsdToPcm, SilenceAfterMusicSettlesToExactZero) {
                           [](double v) { return v == 0.0; }));
 }
 
+TEST(DsdToPcm, AnImpulseComesOutItsLatencyLater) {
+  constexpr size_t kBytes = 1 << 14, kAt = 1 << 12;
+  for (const auto &s : everyChain()) {
+    std::vector<uint8_t> in(kBytes, kIdle);
+    in[kAt] ^= 0x80;
+    const auto out = convert(s, in);
+    double moment = 0, energy = 0;
+    for (size_t n = 0; n < out.size(); ++n) {
+      moment += double(n) * out[n] * out[n];
+      energy += out[n] * out[n];
+    }
+    const DsdToPcm probe(s);
+    const double lag = moment / energy - 8.0 * kAt / probe.ratio();
+    EXPECT_LE(std::abs(lag - double(probe.latency())), 0.5) << name(s);
+  }
+}
+
 TEST(DsdToPcm, EveryChainMeetsItsResponse) {
   for (const auto &s : everyChain()) {
     const DsdToPcm converter(s);
@@ -117,20 +134,57 @@ TEST(DsdToPcm, EveryChainMeetsItsResponse) {
       size *= 2;
     const auto response = harness::response(h, s.dsdRate, size);
     const double fout = s.pcmRate;
-    double reference = 0, ripple = 0, fold = -400;
+    double reference = 0, ripple = 0, passband = 0, fold = -400;
     for (size_t k = 0; k < response.frequency.size(); ++k) {
       const double f = response.frequency[k], db = response.magnitudeDb[k];
       if (std::abs(f - 1000) < s.dsdRate / double(size))
         reference = db;
       if (f <= 20000)
         ripple = std::max(ripple, std::abs(db));
+      if (f <= converter.passbandHz())
+        passband = std::max(passband, std::abs(db));
       const double folded = std::fmod(f, fout);
       if (f > fout / 2 && (folded <= 20000 || folded >= fout - 20000))
         fold = std::max(fold, db);
     }
     EXPECT_LT(std::abs(reference), 0.001) << name(s) << ": level at 1 kHz";
     EXPECT_LT(ripple, 0.005) << name(s) << ": ripple to 20 kHz";
+    EXPECT_LT(passband, 0.01) << name(s) << ": ripple over the passband";
     EXPECT_LT(fold, -130.0) << name(s) << ": what folds below 20 kHz";
+  }
+}
+
+namespace {
+/// Both channels of @p bytes, interleaved stereo, through @p kernel.
+std::vector<double> convertStereo(DsdToPcm::Spec s, DsdKernel kernel,
+                                  const std::vector<uint8_t> &bytes) {
+  s.channels = 2;
+  s.kernel = kernel;
+  DsdToPcm converter(s);
+  std::vector<double> left(converter.maxFrames(bytes.size() / 2));
+  std::vector<double> right(left.size());
+  double *out[] = {left.data(), right.data()};
+  const size_t frames = converter.process(bytes.data(), bytes.size() / 2, out);
+  left.resize(frames);
+  left.insert(left.end(), right.begin(), right.begin() + frames);
+  return left;
+}
+} // namespace
+
+TEST(DsdToPcm, EveryKernelNullsAgainstTheReference) {
+  const auto in = randomBytes(2 * 8192, 7);
+  for (const auto &s : everyChain()) {
+    const auto reference = convertStereo(s, DsdKernel::Reference, in);
+    const auto fast = convertStereo(s, DsdKernel::Fast, in);
+    ASSERT_EQ(fast.size(), reference.size()) << name(s);
+    double worst = 0;
+    for (size_t n = 0; n < fast.size(); ++n)
+      worst = std::max(worst, std::abs(fast[n] - reference[n]));
+    EXPECT_LT(20 * std::log10(std::max(worst, 1e-300)), -150.0) << name(s);
+    // Stage 1's sums are whole numbers, so its variants agree exactly.
+    for (const auto kernel :
+         {DsdKernel::Sums, DsdKernel::ChannelPair, DsdKernel::Nibbles})
+      EXPECT_EQ(convertStereo(s, kernel, in), fast) << name(s);
   }
 }
 
@@ -138,8 +192,12 @@ TEST(DsdToPcm, BothBitOrdersGiveTheSameOutput) {
   const auto msb = randomBytes(20000, 2);
   std::vector<uint8_t> lsb(msb.size());
   std::ranges::transform(msb, lsb.begin(), reversed);
-  for (const auto filter : {DsdFilter::Cut30k, DsdFilter::Wide}) {
-    auto s = spec(44100, 64, 4, filter);
+  // Wide straight out of stage 1 is past the table budget, so it keeps half
+  // the tables and reads them through reversed bytes.
+  for (const auto &[pcm, filter] :
+       {std::pair{4u, DsdFilter::Cut30k}, std::pair{4u, DsdFilter::Wide},
+        std::pair{8u, DsdFilter::Wide}}) {
+    auto s = spec(44100, 64, pcm, filter);
     const auto a = convert(s, msb);
     s.order = DsdBitOrder::LsbFirst;
     EXPECT_EQ(convert(s, lsb), a);
