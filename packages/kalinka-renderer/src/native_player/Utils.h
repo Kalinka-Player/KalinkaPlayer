@@ -2,8 +2,12 @@
 #define UTILS_H
 
 #include <array>
+#include <condition_variable>
+#include <cstddef>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <stop_token>
 #include <tuple>
 #include <type_traits>

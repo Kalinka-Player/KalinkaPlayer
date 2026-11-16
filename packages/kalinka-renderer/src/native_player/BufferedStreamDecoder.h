@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AudioGraphNode.h"
+#include "ByteRing.h"
 #include "Utils.h"
 
 #include <atomic>
@@ -72,7 +73,7 @@ protected:
   virtual std::string name() const = 0;
 
 private:
-  Buffer<uint8_t> buffer;
+  ByteRing buffer;
   const size_t startOffsetMs;
   Signal<size_t> seekSignal;
   Signal<bool> ready;

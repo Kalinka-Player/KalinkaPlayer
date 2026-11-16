@@ -24,9 +24,7 @@ AudioGraphHttpStream::AudioGraphHttpStream(std::optional<StreamId> streamId,
                                            std::chrono::seconds stallTimeout,
                                            long maxRedirects)
     : AudioGraphNode(streamId), url(url),
-      buffer(std::max(bufferSize, static_cast<size_t>(CURL_MAX_WRITE_SIZE)),
-             std::bind(&AudioGraphHttpStream::emptyBufferCallback, this,
-                       std::placeholders::_1)),
+      buffer(std::max(bufferSize, static_cast<size_t>(CURL_MAX_WRITE_SIZE))),
       chunkSize(chunkSize),
       stallTimeout(std::max(stallTimeout, std::chrono::seconds::zero())),
       maxRedirects(std::max(maxRedirects, 0L)) {
@@ -116,8 +114,9 @@ std::string AudioGraphHttpStream::requestError(CURLcode code) const {
   return message;
 }
 
-void AudioGraphHttpStream::emptyBufferCallback(Buffer<uint8_t> &buffer) {
-  if (buffer.isEof() && getState().state != AudioGraphNodeState::ERROR) {
+void AudioGraphHttpStream::finishIfDrained() {
+  if (buffer.isEof() && buffer.empty() &&
+      getState().state != AudioGraphNodeState::ERROR) {
     setState(StreamState(AudioGraphNodeState::FINISHED));
   }
 }
@@ -201,9 +200,10 @@ bool AudioGraphHttpStream::handleSeekSignal(size_t position) {
     return false;
   }
 
-  buffer.clear();
+  buffer.discard();
   if (lengthKnown && position >= contentLength) {
     offset = contentLength;
+    finishIfDrained();
   } else {
     buffer.resetEof();
     offset = position;
@@ -222,6 +222,7 @@ void AudioGraphHttpStream::reader(std::stop_token stopToken) {
     while (!stopToken.stop_requested()) {
       readContentChunks(stopToken);
       buffer.setEof();
+      finishIfDrained();
       spdlog::debug("Finished reading content");
       std::optional<size_t> seekValue;
       // Reading after a refused seek would fetch the whole stream to skip it.
@@ -244,6 +245,7 @@ void AudioGraphHttpStream::reader(std::stop_token stopToken) {
   }
   seekRequestSignal.close(static_cast<size_t>(-1));
   buffer.setEof();
+  finishIfDrained();
   spdlog::debug("Reader thread is finished");
 }
 
@@ -261,7 +263,7 @@ void AudioGraphHttpStream::readContentChunks(std::stop_token stopToken) {
     auto combinedStopToken =
         combineStopTokens(stopToken, seekRequestSignal.getStopToken());
 
-    buffer.waitForSpace(combinedStopToken.get_token(), buffer.max_size() / 2);
+    buffer.waitForSpace(combinedStopToken.get_token(), buffer.capacity() / 2);
     long responseCode = 0;
     if (stopToken.stop_requested()) {
       break;
@@ -459,14 +461,20 @@ void AudioGraphHttpStream::performRequest(std::stop_token stopToken) {
 }
 
 size_t AudioGraphHttpStream::read(void *data, size_t size) {
-  return buffer.read(static_cast<uint8_t *>(data), size);
+  const auto count = buffer.read(data, size);
+  finishIfDrained();
+  return count;
 }
 
+// Finished here as well as by the transfer, so whoever finds the end also
+// finds the stream FINISHED.
 size_t AudioGraphHttpStream::waitForData(std::stop_token stopToken,
                                          size_t size) {
   auto combinedToken =
       combineStopTokens(stopToken, readerThread.get_stop_token());
-  return buffer.waitForData(combinedToken.get_token(), size);
+  const auto count = buffer.waitForData(combinedToken.get_token(), size);
+  finishIfDrained();
+  return count;
 }
 
 size_t AudioGraphHttpStream::waitForDataFor(std::stop_token stopToken,
@@ -474,7 +482,10 @@ size_t AudioGraphHttpStream::waitForDataFor(std::stop_token stopToken,
                                             size_t size) {
   auto combinedToken =
       combineStopTokens(stopToken, readerThread.get_stop_token());
-  return buffer.waitForDataFor(combinedToken.get_token(), timeout, size);
+  const auto count =
+      buffer.waitForDataFor(combinedToken.get_token(), timeout, size);
+  finishIfDrained();
+  return count;
 }
 
 size_t AudioGraphHttpStream::seekTo(size_t absolutePosition) {

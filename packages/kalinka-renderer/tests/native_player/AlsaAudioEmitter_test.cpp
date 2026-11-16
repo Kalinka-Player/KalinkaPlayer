@@ -1,4 +1,5 @@
 #include "AlsaAudioEmitter.h"
+#include "ByteRing.h"
 #include "SineWaveNode.h"
 
 #include <cmath>
@@ -79,7 +80,7 @@ public:
   std::atomic<size_t> soughtTo{0};
 
 private:
-  Buffer<uint8_t> buffer{16384};
+  ByteRing buffer{16384};
   std::atomic<bool> waiting{false};
 };
 
@@ -114,7 +115,7 @@ private:
                                    .channels = 2,
                                    .bitsPerSample = 16},
                         .streamType = StreamType::FRAMES};
-  Buffer<uint8_t> buffer{kFrames * 4};
+  ByteRing buffer{kFrames * 4};
 
   void provideAudio() {
     std::array<uint8_t, kFrames * 4> silence{};
