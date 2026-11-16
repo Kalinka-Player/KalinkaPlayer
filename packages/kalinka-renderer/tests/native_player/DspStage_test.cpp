@@ -5,7 +5,9 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstring>
+#include <functional>
 #include <thread>
 
 #include "CountingNode.h"
@@ -79,6 +81,11 @@ Played pull(AudioGraphOutputNode &node, size_t chunkFrames = 1024,
       node.acceptSourceChange();
       played.events.push_back({played.left.size(), state.state, state.streamId,
                                node.streamReadPosition()});
+      // A change the node will not clear must fail the test, not hang it.
+      const auto after = node.getState();
+      if (after.state == state.state && after.streamId == state.streamId) {
+        ++idle;
+      }
       continue;
     }
     if (state.state == AudioGraphNodeState::FINISHED ||
@@ -332,6 +339,70 @@ TEST_P(DspStageTest, ARemovalWhileNothingReadsStillLetsTheNextSourceIn) {
 
   const auto played = pull(*stage);
   EXPECT_EQ(played.left, counting(*next, 0, 4800));
+}
+
+TEST_P(DspStageTest, ARemovalDuringUpstreamsSwitchStillAnnouncesTheNext) {
+  // Lands the discard inside the stage's own accept, the narrowest window.
+  class RemovingOnAccept : public AudioStreamSwitcher {
+  public:
+    std::function<void()> removal;
+    void acceptSourceChange() override {
+      AudioStreamSwitcher::acceptSourceChange();
+      if (auto remove = std::exchange(removal, nullptr)) {
+        remove();
+      }
+    }
+  };
+  auto removing = std::make_shared<RemovingOnAccept>();
+  switcher = removing;
+  stage = std::make_shared<DspStage>(processorFor(GetParam()));
+  stage->connectTo(switcher);
+  auto first = queue(1, 96000);
+  auto second = queue(2, 4800);
+  pull(*stage, 1000, 8000);
+
+  switcher->disconnect(first);
+  removing->removal = [this] { stage->discard(1); };
+  const auto played = pull(*stage);
+
+  EXPECT_EQ(played.left, counting(*second, 0, 4800));
+  ASSERT_EQ(played.changesAt().size(), 1u);
+  EXPECT_EQ(played.events[0].id, std::optional<StreamId>(2));
+}
+
+TEST_P(DspStageTest, ARemovalFromAnotherThreadCutsTheRemovedSourceCleanly) {
+  constexpr size_t kSecondFrames = 480000;
+  for (int round = 0; round < 20; ++round) {
+    stage = std::make_shared<DspStage>(processorFor(GetParam()));
+    switcher = std::make_shared<AudioStreamSwitcher>();
+    stage->connectTo(switcher);
+    auto first = queue(1, 6000);
+    auto second = queue(2, kSecondFrames);
+    auto third = queue(3, 2400);
+    pull(*stage, 500, 5500);
+
+    std::thread remover([&] {
+      switcher->disconnect(second);
+      stage->discard(2);
+    });
+    const auto left = pull(*stage, 500).left;
+    remover.join();
+
+    // Wherever the removal lands, the removed source can only have been cut.
+    const auto before = counting(*first, 5500, 6000);
+    ASSERT_GE(left.size(), before.size()) << "round " << round;
+    ASSERT_TRUE(std::equal(before.begin(), before.end(), left.begin()))
+        << "round " << round;
+    size_t kept = 0;
+    while (before.size() + kept < left.size() &&
+           left[before.size() + kept] == second->value(kept)) {
+      ++kept;
+    }
+    EXPECT_EQ(std::vector(left.begin() + long(before.size() + kept),
+                          left.end()),
+              counting(*third, 0, 2400))
+        << "round " << round << ", after " << kept << " frames of the second";
+  }
 }
 
 TEST_P(DspStageTest, AWaitReturnsWhenTheCurrentSourceIsRemoved) {
