@@ -2,10 +2,7 @@
 
 #include <algorithm>
 
-// SVE stays off until it measures faster on hardware we have (dsp-design.md).
-#ifndef HWY_DISABLED_TARGETS
-#define HWY_DISABLED_TARGETS (HWY_SVE | HWY_SVE2 | HWY_SVE_256 | HWY_SVE2_128)
-#endif
+#include "dsp/HighwayTargets.h"
 
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "dsp/dsd/DsdKernels.cpp"
