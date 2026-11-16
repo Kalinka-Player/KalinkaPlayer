@@ -41,7 +41,6 @@ SimdKernels experimentalAvx2Kernels();
 SimdKernels neonKernels();
 SimdKernels experimentalNeonKernels();
 #endif
-#ifdef KALINKA_BENCH_HIGHWAY
 SimdKernels highwayKernels();
 /**
  * @brief The biquad cascade with each section a frame behind the one before
@@ -51,7 +50,6 @@ SimdKernels highwayKernels();
  * in an array.
  */
 SimdKernels highwayPipelinedKernels();
-#endif
 
 } // namespace bench
 

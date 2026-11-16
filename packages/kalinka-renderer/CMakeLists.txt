@@ -55,6 +55,8 @@ pkg_check_modules(VORBISFILE REQUIRED IMPORTED_TARGET vorbisfile)
 pkg_check_modules(XML2 REQUIRED IMPORTED_TARGET libxml-2.0)
 find_path(SOXR_INCLUDE_DIR soxr.h REQUIRED)
 find_library(SOXR_LIBRARY NAMES soxr REQUIRED)
+# Debian 13's 1.2.0 is the floor the DSP kernels are written against.
+find_package(hwy 1.2 CONFIG REQUIRED)
 # faad2 ships a pkg-config file only from 2.11; Debian bookworm has 2.10.
 find_path(FAAD2_INCLUDE_DIR neaacdec.h)
 find_library(FAAD2_LIBRARY faad)
@@ -120,6 +122,8 @@ add_library(kalinka_native_player STATIC
   src/native_player/DsdContainer.cpp
   src/native_player/DsdFormat.cpp
   src/native_player/DsdToPcm.cpp
+  src/native_player/FirFilters.cpp
+  src/native_player/FirKernels.cpp
   src/native_player/DashStreamDecoder.cpp
   src/native_player/DashManifest.cpp
   src/native_player/DspStage.cpp
@@ -144,7 +148,12 @@ add_library(kalinka_native_player STATIC
   src/native_player/VorbisStreamDecoder.cpp
   src/native_player/WavContainer.cpp
 )
-target_include_directories(kalinka_native_player PRIVATE ${FAAD2_INCLUDE_DIR})
+# The source directory too: Highway's dispatch includes each kernel source
+# again by name, once per instruction set.
+target_include_directories(kalinka_native_player PRIVATE
+  ${FAAD2_INCLUDE_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/native_player
+)
 target_include_directories(kalinka_native_player PUBLIC ${SOXR_INCLUDE_DIR})
 target_link_libraries(kalinka_native_player PUBLIC
   ALSA::ALSA
@@ -158,6 +167,7 @@ target_link_libraries(kalinka_native_player PUBLIC
   Boost::headers
   spdlog::spdlog
   Threads::Threads
+  hwy::hwy
 )
 
 # --- kalinka_renderer_core: everything that decides --------------------------
@@ -297,12 +307,7 @@ if(KALINKA_BUILD_BENCHMARKS)
     target_sources(kalinka-dsp-bench PRIVATE bench/SimdNeon.cpp)
     kalinka_bench_experimental(Neon "NEON")
   endif()
-  find_package(hwy CONFIG QUIET)
-  if(hwy_FOUND)
-    target_sources(kalinka-dsp-bench PRIVATE bench/SimdHighway.cpp)
-    target_compile_definitions(kalinka-dsp-bench PRIVATE KALINKA_BENCH_HIGHWAY)
-    target_link_libraries(kalinka-dsp-bench PRIVATE hwy::hwy)
-  endif()
+  target_sources(kalinka-dsp-bench PRIVATE bench/SimdHighway.cpp)
 endif()
 
 # --- unit tests (optional: built only when GoogleTest is installed) ----------
@@ -354,6 +359,7 @@ if(GTest_FOUND)
     tests/native_player/ContainerStreamDecoder_test.cpp
     tests/native_player/DsdContainer_test.cpp
     tests/native_player/DsdToPcm_test.cpp
+    tests/native_player/FirFilters_test.cpp
     tests/native_player/DashStreamDecoder_test.cpp
     tests/native_player/DashFormat_test.cpp
     tests/native_player/DspStage_test.cpp
