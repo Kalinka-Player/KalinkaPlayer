@@ -20,7 +20,11 @@ from kalinka_plugin_sdk import ModuleHealthState, ModuleIcon, ModuleIcons, Modul
 from kalinka_plugin_sdk import __version__ as SDK_VERSION
 from kalinka_plugin_sdk.datamodel import EntityId
 from kalinka_plugin_sdk.events import ModulesSnapshot, PlayQueueEventType
-from kalinka_plugin_sdk.inputmodule import InputModule, SourceUnavailableError
+from kalinka_plugin_sdk.inputmodule import (
+    InputModule,
+    ModuleCapability,
+    SourceUnavailableError,
+)
 from kalinka_plugin_sdk.module_config import ModuleConfig
 from kalinka_plugin_sdk.plugin import InputModulePlugin, PluginBase
 
@@ -453,6 +457,74 @@ async def test_a_device_change_found_between_refreshes_is_told_at_the_next():
     assert told == [ModuleHealthState.READY, ModuleHealthState.ERROR]
 
 
+async def _until(condition) -> None:
+    async with asyncio.timeout(2):
+        while not condition():
+            await asyncio.sleep(0)
+
+
+async def test_reports_made_together_are_answered_by_one_refresh():
+    jamendo = _Plugin()
+    collection = _collection(jamendo=jamendo)
+    await collection.refresh_health()
+    told = _told(collection, "jamendo")
+
+    collection.report_state_changed()
+    collection.report_state_changed()
+    await _until(lambda: len(told) == 2)
+    await asyncio.sleep(0.05)
+
+    assert len(told) == 2
+    assert jamendo.asked == 2
+
+
+async def test_a_report_made_during_its_refresh_is_answered_by_another():
+    """The refresh under way may have asked the plugin before it moved."""
+    held = _HeldPlugin()
+    collection = _collection(held=held)
+    told = _told(collection, "held")
+
+    collection.report_state_changed()
+    await _until(lambda: held.asked == 1)
+    collection.report_state_changed()
+    held.release.set()
+    await _until(lambda: len(told) == 3)
+
+    assert held.asked == 2
+
+
+async def test_a_failed_republish_is_logged_and_the_next_report_still_told(caplog):
+    collection = _collection(qobuz=_Plugin())
+    told = []
+
+    def publish():
+        told.append(None)
+        if len(told) == 2:
+            raise RuntimeError("bus closed")
+
+    collection.set_on_changed(publish)
+    collection.report_state_changed()
+    await _until(lambda: len(told) == 2)
+    collection.report_state_changed()
+    await _until(lambda: len(told) == 3)
+
+    assert "RuntimeError" in caplog.text
+
+
+async def test_a_refresh_a_report_asked_for_is_dropped_at_shutdown():
+    held = _HeldPlugin()
+    collection = _collection(held=held)
+    told = _told(collection, "held")
+    collection.report_state_changed()
+    await _until(lambda: held.asked == 1)
+
+    await collection.stop_republishing()
+    held.release.set()
+    await asyncio.sleep(0.05)
+
+    assert len(told) == 1
+
+
 class _FakeConfig(ModuleConfig):
     name: str = Field(default="fake", title="Fake", frozen=True, exclude=True)
 
@@ -646,6 +718,34 @@ async def test_a_saved_module_setting_is_listed_and_told_at_once(client):
         "enabled"
     ] is False
     assert _fake_entry(listed)["enabled"] is False
+
+
+async def test_a_capability_a_plugin_reports_is_listed_and_told_at_once(
+    client, monkeypatch
+):
+    """The regular check tells a changed state only, so a capability that
+    moves alone reaches clients through the plugin's own report."""
+    context = modules.prepared_input_modules["fake"].plugin_context
+    bus = modules.player_context.playqueue_eventbus
+    monkeypatch.setattr(
+        _Module, "capabilities", lambda module: frozenset({ModuleCapability.AI_SEARCH})
+    )
+    async with bus.stream([PlayQueueEventType.ModulesChanged]) as events:
+        await asyncio.wait_for(anext(events), 2)
+        await modules.refresh_health()
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(anext(events), 0.2)
+
+        context.report_state_changed()
+        context.report_state_changed()
+        changed = await asyncio.wait_for(anext(events), 2)
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(anext(events), 0.2)
+    listed = (await client.get("/server/modules")).json()["input_modules"]
+
+    told = _fake_entry(changed.model_dump(mode="json")["input_modules"])
+    assert told["capabilities"] == ["ai_search"]
+    assert _fake_entry(listed)["capabilities"] == ["ai_search"]
 
 
 async def test_a_queue_client_is_sent_the_modules_on_connecting(client):
