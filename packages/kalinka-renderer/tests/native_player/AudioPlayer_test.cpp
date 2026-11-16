@@ -1,3 +1,4 @@
+#include "AlsaVolumeControl.h"
 #include "AudioGraphNode.h"
 #include "AudioPlayer.h"
 #include "Config.h"
@@ -9,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include "LocalHttpServer.h"
+#include "ScopedEnvironmentVariable.h"
 #include "TestHelpers.h"
 
 class AudioPlayerTest : public ::testing::Test {
@@ -58,6 +60,31 @@ protected:
 };
 
 TEST_F(AudioPlayerTest, constructor_destructor) {}
+
+TEST(AudioPlayerVolumeTest, KalinkaLeaveMixerKeepsTheMixerWhereItIs) {
+  SKIP_UNLESS_PLAYED_IN_REAL_TIME();
+  AlsaVolumeControl mixer(testDevice(), "", [](int) {});
+  if (!mixer.available()) {
+    GTEST_SKIP() << testDevice() << " has no mixer";
+  }
+  const int before = mixer.getVolume();
+  // Below 100 a raise would show; getting there by lowering keeps it quiet.
+  if (before == 100) {
+    ASSERT_TRUE(mixer.setVolume(90));
+  }
+  const int moved = mixer.getVolume();
+  {
+    const ScopedEnvironmentVariable leaveMixer("KALINKA_LEAVE_MIXER", "1");
+    AudioPlayer player(Config{{"output.alsa.device", testDevice()}});
+    EXPECT_TRUE(player.configureVolume("software", ""));
+    EXPECT_TRUE(player.configureVolume("fixed", ""));
+  }
+  const int after = mixer.getVolume();
+  if (after != before) {
+    mixer.setVolume(before);
+  }
+  EXPECT_EQ(after, moved);
+}
 
 TEST_F(AudioPlayerTest, software_volume_reports_its_cubic_db_scale) {
   auto volume = audioPlayer.getVolume();

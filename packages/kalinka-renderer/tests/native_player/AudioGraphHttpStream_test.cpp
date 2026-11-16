@@ -449,6 +449,16 @@ TEST_F(AudioGraphHttpStreamTest, seekTo_backward_after_finished) {
   EXPECT_EQ(totalBytesRead, contentLength);
 }
 
+// The end and the state are set on different threads; a reader sees both.
+TEST_F(AudioGraphHttpStreamTest, AReaderThatFindsTheEndFindsTheStreamFinished) {
+  for (int attempt = 0; attempt < 200; ++attempt) {
+    AudioGraphHttpStream stream(1, urlNoRanges, bufferSize);
+    readToEnd(stream);
+    ASSERT_EQ(stream.getState().state, AudioGraphNodeState::FINISHED)
+        << "attempt " << attempt;
+  }
+}
+
 TEST_F(AudioGraphHttpStreamTest, seekToEnd) {
   auto audioGraphHttpStream =
       std::make_shared<AudioGraphHttpStream>(1, url, bufferSize);

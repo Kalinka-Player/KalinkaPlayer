@@ -2,7 +2,7 @@
 #define AUDIO_GRAPH_HTTP_H
 
 #include "AudioGraphNode.h"
-#include "Buffer.h"
+#include "ByteRing.h"
 
 #include "Utils.h"
 #include <atomic>
@@ -57,8 +57,11 @@ public:
 
 private:
   std::jthread readerThread;
+  /// The reader's own stop token, which its callbacks read: the thread object
+  /// may still be being assigned when they first run.
+  std::stop_token readerToken;
   std::string url;
-  Buffer<uint8_t> buffer;
+  ByteRing buffer;
   size_t contentLength = 0;
   bool lengthKnown = false;
   bool live = false;
@@ -83,7 +86,8 @@ private:
                                   curl_off_t, curl_off_t);
   bool stalled() const;
   std::string requestError(CURLcode code) const;
-  void emptyBufferCallback(Buffer<uint8_t> &buffer);
+  /// FINISHED once the end is marked and every byte read; an error stays.
+  void finishIfDrained();
   size_t headerCallback(char *buffer, size_t size, size_t nitems);
 
   bool refusesSeekTo(size_t position) const;

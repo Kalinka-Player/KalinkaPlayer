@@ -2,11 +2,14 @@
 #define AUDIO_GRAPH_NODE_H
 
 #include "AudioInfo.h"
-#include "Buffer.h"
 #include "StreamState.h"
 
+#include <chrono>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
+#include <stop_token>
 #include <thread>
 #include <unordered_map>
 

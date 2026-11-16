@@ -270,6 +270,9 @@ class PreparedModuleCollection:
     overrides_file: str | None = None
     _on_changed: Callable[[], None] | None = field(default=None, repr=False)
     _published: ModuleReports | None = field(default=None, repr=False)
+    _reported: bool = field(default=False, repr=False)
+    _republishing: "asyncio.Task[None] | None" = field(default=None, repr=False)
+    _republishing_stopped: bool = field(default=False, repr=False)
 
     def enabled_input_module(self, name: str) -> InputModule | None:
         """The input module ``name`` while it is enabled and set up, else None."""
@@ -373,6 +376,33 @@ class PreparedModuleCollection:
             self._on_changed()
             self._published = reports
 
+    def report_state_changed(self) -> None:
+        """A plugin says its state or its capabilities moved: ask every plugin
+        and publish now, rather than at the next check, which publishes only a
+        changed state. Reports made before that refresh begins share it."""
+        if self._republishing_stopped:
+            return
+        self._reported = True
+        if self._republishing is None or self._republishing.done():
+            self._republishing = asyncio.get_running_loop().create_task(
+                self._republish_reported()
+            )
+
+    async def _republish_reported(self) -> None:
+        while self._reported:
+            self._reported = False
+            await self._refresh_logging_failure(publish=True)
+
+    async def stop_republishing(self) -> None:
+        """Drop a refresh a report asked for, and ignore any report after it,
+        made while the plugins shut down: they are going away."""
+        self._republishing_stopped = True
+        task, self._republishing = self._republishing, None
+        self._reported = False
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
     async def watch_health(
         self, interval_s: float = HEALTH_REFRESH_INTERVAL_S
     ) -> None:
@@ -381,11 +411,14 @@ class PreparedModuleCollection:
         restart."""
         while True:
             await asyncio.sleep(interval_s)
-            try:
-                await self.refresh_health()
-            except Exception as e:
-                # The type only: a plugin's exception text may carry a credential.
-                logger.error("Module health check failed (%s)", type(e).__name__)
+            await self._refresh_logging_failure()
+
+    async def _refresh_logging_failure(self, *, publish: bool = False) -> None:
+        try:
+            await self.refresh_health(publish=publish)
+        except Exception as e:
+            # The type only: a plugin's exception text may carry a credential.
+            logger.error("Module health check failed (%s)", type(e).__name__)
 
     def _scan_entry_points(self) -> Generator[tuple[str, type], None, None]:
         """Scan for installed plugins using entry points and yield classes derived from PluginBase."""
@@ -914,6 +947,7 @@ class PreparedModuleCollection:
                     sdk_version=SDK_VERSION,
                     config=config,
                     embedder=self.player_context.embedder,
+                    report_state_changed=self.report_state_changed,
                     server_name=self.player_context.server_name,
                     receiver_changed=lambda: (
                         self.player_context.receiver_changed(name)
@@ -947,6 +981,7 @@ class PreparedModuleCollection:
                     sdk_version=SDK_VERSION,
                     config=config,
                     embedder=self.player_context.embedder,
+                    report_state_changed=self.report_state_changed,
                 )
             case _:
                 raise ValueError(
@@ -1187,5 +1222,6 @@ async def shutdown():
     """Shutdown all plugin modules."""
     global modules
 
+    await modules.stop_republishing()
     await shutdown_modules(modules.prepared_input_modules)
     await shutdown_modules(modules.prepared_devices)

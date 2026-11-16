@@ -101,8 +101,8 @@ block churn add 2–3 % more.
 element through deque iterators, and every block it frees or allocates goes
 through malloc. Measured on its own it costs 2.2 ns per stereo S32 frame for a
 write and a read, about 3.6 GB/s. The same machine copies flat memory tens of
-times faster. That makes `Buffer` the largest cost in today's output path
-outside the decoder. Phase 1 replaces it with a ring (section 13).
+times faster. That made `Buffer` the largest cost in the output path outside
+the decoder. Phase 1 replaced it with a ring (section 13, decision 4).
 
 On a Raspberry Pi 5 (Cortex-A76, Debian 13's GCC 14.2 and libraries) the
 same files cost 0.14–0.15 % and 0.50 % of a core. There the decoder's thread
@@ -240,14 +240,14 @@ latency, and the reported `dsp_latency_ms` (section 9) names it.
   1024 frames, so each chunk's working set fits in L1/L2 on the A72. The
   convolver keeps its own partition buffer and is fed and drained through it.
 - **Copies from decoder to ALSA, processing on:**
-  1. The decoder writes into its `Buffer`, as today.
+  1. The decoder writes into its ring, as today.
   2. The stage reads that into its input scratch.
   3. One conversion pass to planar float64.
   4. The stages run in place.
   5. The quantiser packs straight into the ALSA mmap area. `read(dest)` already
      receives that pointer when formats match.
 
-  Today there are two copies (decoder to `Buffer`, `Buffer` to mmap). Processing
+  Today there are two copies (decoder to ring, ring to mmap). Processing
   adds one copy and two conversion passes, and nothing else.
 
 ## 5. The end of the stage: gain, dither, packing
@@ -659,6 +659,39 @@ The modulator's own quality, a 1 kHz tone at half modulation over 0.5 s:
    when the ring goes from empty to holding data, or from full to having
    room. The `kernels` benchmark gets a row for it beside `std::deque`, and
    it replaces the deque only once it is faster on the Pi.
+
+   **Landed in Phase 1** as `ByteRing`, which both the decoders and the HTTP
+   stream use. It differs from the plan in two ways:
+   - **Wake-ups.** A waiter says how much it waits for, and is woken once that
+     much is there. Waking on every empty-to-data change would wake a reader
+     waiting for 4 KB once per smaller write. Neither side takes a lock
+     unless the other is waiting.
+   - **Seeks.** A seek discards from the writer's side while the reader may
+     be copying. The discard waits for that copy, one `memcpy` at most, so
+     the room is free at once, as `Buffer::clear()` freed it. Had the reader
+     dropped the data on its next read instead, a decoder writing during a
+     seek would wait for room behind a reader that waits for the seek.
+
+   The HTTP stream no longer gets a callback when the buffer empties.
+   Whichever thread finds it empty at the end marks the stream FINISHED, so
+   a reader that finds the end also finds the state.
+
+   It is faster on both machines (benchmarks/dsp/results.md). Per frame, one
+   thread writing and reading:
+   - laptop: 0.21 ns against the deque's 2.2 ns;
+   - Pi 5: 0.53 ns against 1.3 ns.
+
+   Read from another thread while a writer refills it:
+   - laptop: 0.26–0.30 ns against 4.1 ns;
+   - Pi 5: 0.64 ns against 5.3–5.5 ns.
+
+   Playing 24/192 FLAC:
+   - laptop: from 0.31 % of a core to 0.26–0.27 %, and the ALSA thread from
+     84 ms to 8 ms over three plays;
+   - Pi 5: from 0.50–0.51 % to 0.45–0.46 %, the ALSA thread from 67 ms to
+     47 ms.
+
+   16/44.1 is unchanged at the bench's resolution.
 5. **Highway: the system package**, on Debian 13's 1.2.0 floor.
 6. **Targets** are the ones at the top of this note, not Debian 12. The
    runbook and the FFT project now say so.

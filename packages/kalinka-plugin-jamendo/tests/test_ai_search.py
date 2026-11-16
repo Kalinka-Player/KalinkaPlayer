@@ -14,9 +14,10 @@ from kalinka_plugin_jamendo import jamendo as jm
 class FakeMoodIndex:
     """Returns a fixed ranked list, truncated to the requested limit."""
 
-    def __init__(self, ranked_ids):
+    def __init__(self, ranked_ids, failure=None):
         # ranked best-first; distance just increases so order is unambiguous.
         self._hits = [(int(t), 0.1 * i) for i, t in enumerate(ranked_ids)]
+        self.failure = failure
 
     async def search(self, query, limit):
         return self._hits[:limit]
@@ -114,6 +115,15 @@ def test_ai_search_reported_only_with_an_index():
     assert jm.JamendoInputModule(
         cfg, MetadataClient(), mood_index=None
     ).capabilities() == {ModuleCapability.CATALOGS}
+
+
+def test_ai_search_not_reported_once_the_index_failed():
+    failed = FakeMoodIndex(RANKED, failure="the mood index cannot be read.")
+    module = jm.JamendoInputModule(
+        JamendoConfig(client_id="x"), MetadataClient(), failed
+    )
+
+    assert module.capabilities() == {ModuleCapability.CATALOGS}
 
 
 @pytest.mark.asyncio

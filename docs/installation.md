@@ -57,7 +57,7 @@ The file is about 450 MB. Do not unpack it.
 5. When Imager offers to customise the card, fill in your Wi-Fi, a host name, a login and your time zone here, and turn on **SSH** if you want to log in to the streamer. Kalinka applies them at the first start, as [Settings on the card](#settings-on-the-card) describes. You can also leave them out.
 6. Write, and wait until Imager has finished verifying.
 
-[balenaEtcher](https://etcher.balena.io/) works too: **Flash from file**, **Select target**, **Flash!** It offers none of these settings.
+[balenaEtcher](https://etcher.balena.io/) works too: **Flash from file**, **Select target**, **Flash!** It offers none of these settings, but you can still give the streamer your Wi-Fi, a login and SSH with Raspberry Pi OS's own files, as [Settings on the card](#settings-on-the-card) describes.
 
 There is nothing else to change on the card. A DAC HAT without an ID chip is set up after the first start, and so is Wi-Fi if you did not give it to Imager.
 
@@ -348,9 +348,25 @@ Then the files Imager wrote are overwritten and removed: they hold your Wi-Fi an
 
 A `custom.toml` you write onto the card yourself, in the format Raspberry Pi OS reads (`config_version = 1`, with `[system]`, `[user]`, `[ssh]`, `[wlan]` and `[locale]` tables), is applied the same way at the next start. A login given only SSH keys can log in, but cannot use `sudo`, which asks for a password.
 
+The files Raspberry Pi OS guides tell you to put on the card work too, so a card written with balenaEtcher, or with Imager but without its settings, can still have them. Once the card is written, take it out and put it back in, and save them onto the partition your computer opens:
+
+- `userconf.txt`: one line, your user name, a colon and your password's hash, which `echo 'your password' | openssl passwd -6 -stdin` prints. That gives a login with administrator rights, as above.
+- `wpa_supplicant.conf`: your Wi-Fi, as below, with your country's two-letter code in place of `GB`. Add `scan_ssid=1` inside the braces for a hidden network. The password can also be its 64-digit key, without the quotes. Only the first network in the file is used.
+- an empty file called `ssh` or `ssh.txt`, which switches SSH on.
+
+```text
+country=GB
+network={
+    ssid="Your network"
+    psk="Your Wi-Fi password"
+}
+```
+
+They are applied, overwritten and removed at the next start, as Imager's files are. A file that cannot be read is named in the journal and the others still apply. Where Imager's settings and these files give the same setting, Imager's is used.
+
 Images from the `kalinka-image-v4.2.0` release and older read none of these settings, and a card Imager customised may not finish their first start: write those without Imager's settings, or take a newer image.
 
-Without Imager's settings, and always on the PC image, which does not support them, the streamer starts with no login and no Wi-Fi, and everything is set up after the first start:
+Without any of these settings, and always on the PC image, which does not support them, the streamer starts with no login and no Wi-Fi, and everything is set up after the first start:
 
 - Wi-Fi, over the [setup network or Bluetooth](#connect-your-streamer-to-the-network);
 - a login, with **SSH access** on [the control page](#the-control-page);

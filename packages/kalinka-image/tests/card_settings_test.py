@@ -1,8 +1,9 @@
 """card-settings.py on fake roots: what it reads, what it applies, what it leaves.
 
-The fixtures follow the custom.toml format raspberrypi-sys-mods documents and
-the firstrun.sh Imager 1.8 writes. They were written from those formats, not
-copied from a card that Imager wrote.
+The fixtures follow the custom.toml format raspberrypi-sys-mods documents, the
+firstrun.sh Imager 1.8 writes, and the userconf.txt and wpa_supplicant.conf
+Raspberry Pi OS's guides have people write. They were written from those
+formats, not copied from a card that Imager wrote.
 """
 
 import contextlib
@@ -16,6 +17,7 @@ import stat
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -23,6 +25,8 @@ TESTS = Path(__file__).resolve().parent
 OVERLAY = TESTS.parent / "overlays/debootstrap"
 PROGRAM = OVERLAY / "usr/lib/kalinka-image/card-settings.py"
 FIXTURES = TESTS / "fixtures/imager"
+CLASSIC_FIXTURES = TESTS / "fixtures/raspberry-pi-os"
+UNIT = OVERLAY / "usr/lib/systemd/system/kalinka-card-settings.service"
 
 # A __pycache__ beside the program would go into the PC image with the overlay.
 sys.dont_write_bytecode = True
@@ -48,11 +52,13 @@ DESK_KEY = (
 PASSPHRASE = " a back\\slash, it's; ok"
 TOML_PASSPHRASE = PASSPHRASE.replace("\\", "\\\\")
 PLAIN_PASSWORD = "correct horse battery staple"
+GUIDE_PASSPHRASE = "listening room 42"
 SECRETS = (
     PSK,
     HASH,
     PASSPHRASE.strip(),
     PLAIN_PASSWORD,
+    GUIDE_PASSPHRASE,
     *(key.split()[1] for key in (LAPTOP_KEY, PHONE_KEY, DESK_KEY)),
 )
 
@@ -80,10 +86,28 @@ FIXTURE_SETTINGS = Settings(
     ssh=True,
     timezone="Europe/London",
 )
+CLASSIC_SETTINGS = Settings(
+    country="GB",
+    wifi=Wifi("Home Network", GUIDE_PASSPHRASE, False),
+    login=Login("listener", HASH, True),
+    ssh=True,
+)
+CLASSIC_COMMANDS = [
+    "iw reg set GB",
+    "useradd --create-home --shell /bin/bash listener",
+    "usermod --append --groups sudo listener",
+    "chpasswd -e",
+    "systemctl enable ssh.service",
+    "systemctl --no-block start ssh.service",
+]
 
 
 def fixture(name: str) -> str:
     return (FIXTURES / name).read_text()
+
+
+def classic_fixture(name: str) -> str:
+    return (CLASSIC_FIXTURES / name).read_text()
 
 
 def firstrun_line(*words: str) -> str:
@@ -232,6 +256,17 @@ class CardTest(unittest.TestCase):
 
     def wlan(self, extra: str = "", ssid: str = "Home", key: str = PSK) -> Path:
         return self.toml(f'[wlan]\nssid = "{ssid}"\npassword = "{key}"\n{extra}')
+
+    def wpa(self, network: str) -> Path:
+        """A wpa_supplicant.conf for GB with one network block of these lines."""
+        text = f"country=GB\nnetwork={{\n{network}}}\n"
+        return self.root.card("wpa_supplicant.conf", text)
+
+    def classic_card(self) -> None:
+        """userconf.txt, wpa_supplicant.conf and an empty ssh, as the guides say."""
+        for name in ("userconf.txt", "wpa_supplicant.conf"):
+            self.root.card(name, classic_fixture(name))
+        self.root.card("ssh", "")
 
 
 class ReadingTest(CardTest):
@@ -687,12 +722,300 @@ class ApplyingTest(CardTest):
         self.assertEqual(self.root.left_on_card(), ["cmdline.txt"])
 
 
+class ClassicFilesTest(CardTest):
+    """userconf.txt, wpa_supplicant.conf and ssh, alone or with Imager's files."""
+
+    def test_the_fixtures_give_a_login_a_network_and_ssh(self):
+        self.classic_card()
+        self.assertEqual(self.settings(), CLASSIC_SETTINGS)
+        self.assertEqual(self.warnings(), [])
+        self.assertJournal("wpa_supplicant.conf: ctrl_interface is not applied")
+
+    def test_they_are_applied_and_removed(self):
+        self.classic_card()
+        self.assertEqual(self.run_program(), 0, "\n".join(self.journal))
+        self.assertEqual(self.recorder.commands(), CLASSIC_COMMANDS)
+        chpasswd = self.recorder.stdin[("chpasswd", "-e")]
+        self.assertEqual(chpasswd, f"listener:{HASH}\n".encode())
+        text = (self.root.path / card_settings.PROFILE).read_text()
+        self.assertIn("[connection]\nid=Home\\sNetwork\n", text)
+        self.assertIn("key-mgmt=wpa-psk\npsk=listening\\sroom\\s42\n", text)
+        self.assertNotIn("hidden", text)
+        self.assertTrue((self.root.path / card_settings.NETWORK_MARKER).exists())
+        dropins = list((self.root.path / "etc/ssh/sshd_config.d").iterdir())
+        self.assertEqual(dropins, [], "a userconf.txt login keeps password SSH")
+        self.assertEqual(self.root.left_on_card(), ["cmdline.txt"])
+
+    def test_ssh_txt_turns_ssh_on_whatever_it_holds(self):
+        (self.root.boot / "ssh.txt").write_bytes(b"\xff\xfe yes please\r\n")
+        self.assertEqual(self.run_program(), 0, "\n".join(self.journal))
+        self.assertEqual(self.recorder.commands(), CLASSIC_COMMANDS[-2:])
+        self.assertEqual(self.root.left_on_card(), ["cmdline.txt"])
+
+    def test_ssh_and_ssh_txt_together_turn_it_on_once(self):
+        self.root.card("ssh", "")
+        self.root.card("ssh.txt", "")
+        self.assertEqual(self.run_program(), 0, "\n".join(self.journal))
+        self.assertEqual(self.recorder.commands(), CLASSIC_COMMANDS[-2:])
+        self.assertEqual(self.root.left_on_card(), ["cmdline.txt"])
+
+    def test_files_from_windows_are_read(self):
+        for name in ("userconf.txt", "wpa_supplicant.conf"):
+            text = classic_fixture(name).replace("\n", "\r\n")
+            (self.root.boot / name).write_bytes(b"\xef\xbb\xbf" + text.encode())
+        self.assertEqual(self.settings(), replace(CLASSIC_SETTINGS, ssh=None))
+        self.assertEqual(self.warnings(), [])
+
+    def test_a_userconf_txt_password_must_be_a_hash(self):
+        too_long = "$6$" + "a" * card_settings.MAX_HASH
+        passwords = (PLAIN_PASSWORD, "hunter2hunter2", "$6$salt$a hash", too_long, "")
+        for password in passwords:
+            with self.subTest(password=password):
+                self.root.card("userconf.txt", f"listener:{password}\n")
+                self.assertIsNone(self.settings().login)
+                self.assertJournal("userconf.txt: the password for listener is not")
+
+    def test_a_userconf_txt_that_is_not_one_name_hash_line_is_refused(self):
+        for text in (f"listener {HASH}\n", f"listener:{HASH}\nlodger:{HASH}\n", "\n"):
+            with self.subTest(text=text):
+                self.root.card("userconf.txt", text)
+                self.assertIsNone(self.settings())
+                self.assertJournal("userconf.txt is not a single line of name:hash")
+
+    def test_a_userconf_txt_for_root_is_refused(self):
+        self.root.card("userconf.txt", f"root:{HASH}\n")
+        self.assertIsNone(self.settings().login)
+        self.assertJournal("userconf.txt: the user name cannot have a login")
+
+    def test_scan_ssid_marks_a_hidden_network(self):
+        for value, hidden in (("1", True), ("0", False)):
+            with self.subTest(scan_ssid=value):
+                self.wpa(f'\tssid="Attic"\n\tpsk="passphrase1"\n\tscan_ssid={value}\n')
+                wifi = Wifi("Attic", "passphrase1", hidden)
+                self.assertEqual(self.settings().wifi, wifi)
+
+    def test_a_hidden_network_is_saved_as_one(self):
+        self.wpa('\tssid="Attic"\n\tpsk="passphrase1"\n\tscan_ssid=1\n')
+        self.assertEqual(self.run_program(), 0, "\n".join(self.journal))
+        text = (self.root.path / card_settings.PROFILE).read_text()
+        self.assertIn("hidden=true\n", text)
+        self.assertJournal("Wi-Fi network Attic saved, as a hidden one")
+
+    def test_a_scan_ssid_neither_0_nor_1_is_refused(self):
+        self.wpa('\tssid="Attic"\n\tpsk="passphrase1"\n\tscan_ssid=yes\n')
+        self.assertIsNone(self.settings().wifi)
+        self.assertJournal("whether Wi-Fi Attic is hidden is not valid")
+
+    def test_an_unquoted_psk_is_the_64_digit_key(self):
+        self.wpa(f'\tssid="Home"\n\tpsk={PSK}\n')
+        self.assertEqual(self.settings().wifi, Wifi("Home", PSK, False))
+        self.assertEqual(self.run_program(), 0, "\n".join(self.journal))
+        text = (self.root.path / card_settings.PROFILE).read_text()
+        self.assertIn(f"key-mgmt=wpa-psk\npsk={PSK}\n", text)
+
+    def test_a_psk_is_64_digits_bare_or_a_passphrase_of_8_to_63_in_quotes(self):
+        for psk in (PSK[:63], f"{PSK[:63]}g", f'"{PSK}"', "passphrase1", '"seven77"'):
+            with self.subTest(psk=psk):
+                self.wpa(f'\tssid="Home"\n\tpsk={psk}\n')
+                self.assertIsNone(self.settings().wifi)
+                self.assertJournal("the password for Wi-Fi Home is not valid")
+
+    def test_an_ssid_in_hex_digits_is_its_utf8_text(self):
+        self.wpa(f"\tssid={'Café'.encode().hex()}\n\tpsk={PSK}\n")
+        self.assertEqual(self.settings().wifi, Wifi("Café", PSK, False))
+        for ssid in ("486f6d6", "c328", 'P"Home"', "Home", '""'):
+            with self.subTest(ssid=ssid):
+                self.wpa(f"\tssid={ssid}\n\tpsk={PSK}\n")
+                self.assertIsNone(self.settings().wifi)
+                self.assertJournal("wpa_supplicant.conf: the Wi-Fi network name is not")
+
+    def test_key_mgmt_none_is_an_open_network(self):
+        self.wpa('\tssid="Cafe"\n\tkey_mgmt=NONE\n')
+        self.assertEqual(self.settings().wifi, Wifi("Cafe", "", False))
+
+    def test_wpa_psk_among_other_key_managements_is_taken(self):
+        self.wpa('\tssid="Home"\n\tpsk="passphrase1"\n\tkey_mgmt=WPA-PSK SAE\n')
+        self.assertEqual(self.settings().wifi, Wifi("Home", "passphrase1", False))
+
+    def test_a_network_neither_wpa_psk_nor_open_is_refused(self):
+        networks = (
+            '\tssid="Office"\n\tkey_mgmt=WPA-EAP\n\teap=PEAP\n\tidentity="me"\n'
+            '\tpassword="passphrase1"\n',
+            '\tssid="Office"\n\tkey_mgmt=SAE\n\tpsk="passphrase1"\n',
+            '\tssid="Office"\n\tkey_mgmt=NONE\n\tpsk="passphrase1"\n',
+            '\tssid="Office"\n\tpsk=""\n',
+            '\tssid="Office"\n',
+        )
+        for network in networks:
+            with self.subTest(network=network):
+                self.wpa(network)
+                settings = self.settings()
+                self.assertIsNone(settings.wifi)
+                self.assertEqual(settings.country, "GB")
+                self.assertJournal(
+                    "wpa_supplicant.conf line 2: the network is neither WPA-PSK"
+                )
+
+    def test_a_network_without_an_ssid_is_refused(self):
+        self.wpa('\tpsk="passphrase1"\n')
+        self.assertIsNone(self.settings().wifi)
+        self.assertJournal("wpa_supplicant.conf line 2: the network has no ssid")
+
+    def test_comments_start_after_the_last_quote_as_for_wpa_supplicant(self):
+        self.root.card(
+            "wpa_supplicant.conf",
+            "# by hand\ncountry=GB # the UK\nnetwork={\n"
+            '\tssid="Flat #2" # upstairs\n\tpsk="pass#word1"\n}\n',
+        )
+        settings = self.settings()
+        self.assertEqual(settings.wifi, Wifi("Flat #2", "pass#word1", False))
+        self.assertEqual(settings.country, "GB")
+        self.assertEqual(self.warnings(), [])
+
+    def test_a_line_starting_with_a_comment_is_skipped_whatever_its_quotes(self):
+        self.root.card(
+            "wpa_supplicant.conf",
+            'country=GB\n# your "network" below\nnetwork={\n\tssid="Home"\n'
+            '\t#psk="old password"\n\tpsk="passphrase1"\n}\n',
+        )
+        self.assertEqual(self.settings().wifi, Wifi("Home", "passphrase1", False))
+        self.assertEqual(self.warnings(), [])
+        self.assertNotIn("an unnamed entry", "\n".join(self.journal))
+
+    def test_only_the_first_network_is_applied(self):
+        self.root.card(
+            "wpa_supplicant.conf",
+            'network={\n\tssid="Home"\n\tpsk="passphrase1"\n\tpriority=2\n}\n'
+            'network={\n\tssid="Phone"\n\tpsk="passphrase2"\n}\n',
+        )
+        self.assertEqual(self.settings().wifi, Wifi("Home", "passphrase1", False))
+        self.assertJournal("wpa_supplicant.conf: network.priority is not applied")
+        self.assertEqual(
+            self.warnings(),
+            [
+                "WARNING wpa_supplicant.conf: only the first network is applied, "
+                "not the 1 after it"
+            ],
+        )
+
+    def test_a_line_that_cannot_be_read_is_named_and_the_rest_applied(self):
+        self.root.card(
+            "wpa_supplicant.conf",
+            'country=GB\nap_scan 1\nnetwork={\n\tssid="Home"\n\tpsk="passphrase1"\n}\n',
+        )
+        settings = self.settings()
+        self.assertEqual(settings.wifi, Wifi("Home", "passphrase1", False))
+        self.assertEqual(
+            self.warnings(),
+            [
+                "WARNING wpa_supplicant.conf line 2 cannot be read, "
+                "so what it sets is not applied"
+            ],
+        )
+
+    def test_a_network_left_open_is_refused_and_the_country_kept(self):
+        self.root.card(
+            "wpa_supplicant.conf",
+            'country=GB\nnetwork={\n\tssid="Home"\n\tpsk="pass1234"\n',
+        )
+        settings = self.settings()
+        self.assertIsNone(settings.wifi)
+        self.assertEqual(settings.country, "GB")
+        self.assertJournal("wpa_supplicant.conf ends inside a network block")
+
+    def test_a_file_without_a_network_is_named(self):
+        self.root.card("wpa_supplicant.conf", "country=GB\nupdate_config=1\n")
+        self.assertEqual(self.settings(), Settings(country="GB"))
+        self.assertJournal("wpa_supplicant.conf holds no network")
+
+    def test_a_malformed_file_is_named_and_removed_and_the_others_apply(self):
+        cases = {
+            "userconf.txt": (
+                f"listener {HASH}\n".encode(),
+                "userconf.txt is not a single line of name:hash",
+            ),
+            "wpa_supplicant.conf": (
+                b'country=GB\nnetwork={\n\tssid="Caf\xe9"\n\tpsk="pass1234"\n}\n',
+                "wpa_supplicant.conf is not UTF-8 text",
+            ),
+            "custom.toml": (
+                b"config_version = 1\n[system\n",
+                "custom.toml is not valid TOML",
+            ),
+        }
+        for name, (data, warning) in cases.items():
+            with self.subTest(name=name):
+                self.setUp()
+                self.classic_card()
+                (self.root.boot / name).write_bytes(data)
+                self.assertEqual(self.run_program(), 1, "\n".join(self.journal))
+                self.assertEqual(len(self.warnings()), 1, "\n".join(self.journal))
+                self.assertIn(warning, self.warnings()[0])
+                commands = self.recorder.commands()
+                useradd = CLASSIC_COMMANDS[1] in commands
+                self.assertEqual(useradd, name != "userconf.txt")
+                profile = (self.root.path / card_settings.PROFILE).exists()
+                self.assertEqual(profile, name != "wpa_supplicant.conf")
+                self.assertEqual(commands[-2:], CLASSIC_COMMANDS[-2:])
+                self.assertEqual(self.root.left_on_card(), ["cmdline.txt"])
+
+    def test_imagers_settings_win_and_the_classic_files_fill_in_the_rest(self):
+        self.toml(
+            '[system]\nhostname = "attic"\n[ssh]\nenabled = false\n'
+            '[wlan]\nssid = "Upstairs"\npassword = "passphrase1"\ncountry = "DE"\n'
+        )
+        self.classic_card()
+        self.assertEqual(
+            self.settings(),
+            Settings(
+                hostname="attic",
+                country="DE",
+                wifi=Wifi("Upstairs", "passphrase1", False),
+                login=Login("listener", HASH, True),
+                ssh=False,
+            ),
+        )
+        for source, what in (
+            ("wpa_supplicant.conf", "the Wi-Fi country"),
+            ("wpa_supplicant.conf", "the Wi-Fi network"),
+            ("ssh", "SSH"),
+        ):
+            self.assertJournal(f"{source}: {what} is not applied, as custom.toml")
+        self.assertEqual(self.warnings(), [])
+
+    def test_with_every_imager_file_there_imagers_login_is_made(self):
+        self.root.card("custom.toml", fixture("custom.toml"))
+        self.root.card("firstrun.sh", fixture("firstrun.sh"))
+        self.classic_card()
+        self.root.card("userconf.txt", f"lodger:{HASH}\n")
+        self.root.card("ssh.txt", "")
+        self.assertEqual(self.run_program(), 0, "\n".join(self.journal))
+        self.assertJournal("userconf.txt: the login is not applied, as custom.toml")
+        useradds = [call for call in self.recorder.calls if call[0] == "useradd"]
+        self.assertEqual(useradds, [CLASSIC_COMMANDS[1].split()])
+        profile = (self.root.path / card_settings.PROFILE).read_text()
+        self.assertIn(f"psk={PSK}\n", profile)
+        self.assertEqual(self.root.left_on_card(), ["cmdline.txt"])
+
+
+class UnitTest(unittest.TestCase):
+    def test_the_unit_starts_for_every_file_the_program_removes(self):
+        unit = UNIT.read_text()
+        for boot in card_settings.BOOT_DIRS:
+            for name in card_settings.INPUTS:
+                with self.subTest(boot=boot, name=name):
+                    self.assertIn(f"\nConditionPathExists=|/{boot}/{name}\n", unit)
+
+
 class CleanupTest(CardTest):
     def test_every_input_is_zeroed_on_disk_before_it_is_unlinked(self):
         self.root.card("custom.toml", fixture("custom.toml"))
         self.root.card("firstrun.sh", fixture("firstrun.sh"))
         self.root.card("user-data", f"#cloud-config\npassword: {PLAIN_PASSWORD}\n")
         self.root.card("network-config", f"wifis:\n  password: {PSK}\n")
+        self.classic_card()
+        self.root.card("ssh", "yes\n")
+        self.root.card("ssh.txt", "yes\n")
         sizes = {path.name: path.stat().st_size for path in self.root.boot.iterdir()}
         seen = {}
         unlink = os.unlink
@@ -705,8 +1028,7 @@ class CleanupTest(CardTest):
 
         with mock.patch.object(card_settings.os, "unlink", wraps=check_then_unlink):
             self.assertEqual(self.run_program(), 1)
-        inputs = ["custom.toml", "firstrun.sh", "network-config", "user-data"]
-        self.assertEqual(sorted(seen), inputs)
+        self.assertEqual(sorted(seen), sorted(card_settings.INPUTS))
         for name, data in seen.items():
             self.assertEqual(data, bytes(sizes[name]), name)
         self.assertEqual(self.root.left_on_card(), ["cmdline.txt"])
@@ -823,6 +1145,32 @@ class SecretTest(CardTest):
             + "\n"
             + firstrun_line("enable_ssh", "-k", f"ssh-dss {DESK_KEY.split()[1]}")
             + "\n",
+            1,
+        ),
+        "the userconf.txt fixture": (
+            "userconf.txt",
+            classic_fixture("userconf.txt"),
+            0,
+        ),
+        "the wpa_supplicant.conf fixture": (
+            "wpa_supplicant.conf",
+            classic_fixture("wpa_supplicant.conf"),
+            0,
+        ),
+        "a plain password in userconf.txt": (
+            "userconf.txt",
+            f"listener:{PLAIN_PASSWORD}\n",
+            1,
+        ),
+        "a password where userconf.txt's name belongs": (
+            "userconf.txt",
+            f"{PLAIN_PASSWORD}:{HASH}\n",
+            1,
+        ),
+        "secrets out of place in wpa_supplicant.conf": (
+            "wpa_supplicant.conf",
+            f'{PSK}=1\n{PLAIN_PASSWORD}\nnetwork={{\n\tssid="Home"\n\tpsk={HASH}\n'
+            f'\tpassword="{PASSPHRASE}"\n\t{PSK}\n\t{GUIDE_PASSPHRASE}=x\n}}\n',
             1,
         ),
     }

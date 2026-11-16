@@ -4,6 +4,7 @@
 
 #include <array>
 #include <atomic>
+#include <future>
 #include <memory>
 #include <optional>
 #include <span>
@@ -33,6 +34,12 @@ public:
   }
   ~FakeDecoder() override { stop(); }
 
+  void halt() { stop(); }
+
+  /// A seek to this frame answers, then reads on until a later seek or
+  /// shutdown cuts it, as a decoder library seeking through its input does.
+  std::atomic<long> stallSeekAt{-1};
+
 private:
   const std::shared_ptr<Calls> calls;
   const bool seekable;
@@ -58,11 +65,55 @@ private:
     return true;
   }
   void seekSource(uint64_t frame) override {
+    if (long(frame) == stallSeekAt)
+      answerSeek();
+    while (long(frame) == stallSeekAt) {
+      checkInterrupted();
+      std::this_thread::sleep_for(1ms);
+    }
     calls->lastSeek = long(frame);
     next = uint16_t(frame);
   }
   bool canSeek() const override { return seekable; }
   void close() override { ++calls->closed; }
+};
+
+/// Stereo 16-bit frames written split: a frame and a half, then the rest
+/// once released.
+class SplitFrameDecoder final : public BufferedStreamDecoder {
+public:
+  SplitFrameDecoder() : AudioGraphNode(1), BufferedStreamDecoder(64, 0) {
+    start();
+  }
+  ~SplitFrameDecoder() override { stop(); }
+
+  std::atomic<bool> released{false};
+
+private:
+  const std::array<uint8_t, 8> frames{1, 2, 3, 4, 5, 6, 7, 8};
+  int blocks = 0;
+
+  std::string name() const override { return "Split"; }
+  StreamInfo open() override {
+    return {{RATE, 2, 16, PCM16_LE}, StreamType::FRAMES, 2};
+  }
+  bool decodeNext() override {
+    switch (blocks++) {
+    case 0:
+      write(std::span(frames).first(6));
+      return true;
+    case 1:
+      while (!released) {
+        checkInterrupted();
+        std::this_thread::sleep_for(1ms);
+      }
+      write(std::span(frames).subspan(6));
+      return true;
+    default:
+      return false;
+    }
+  }
+  void seekSource(uint64_t) override {}
 };
 
 std::vector<uint16_t> drain(BufferedStreamDecoder &node) {
@@ -121,6 +172,22 @@ TEST(BufferedStreamDecoder, ClosesTheSourceOnceTheWorkerStops) {
   EXPECT_EQ(calls->closed, 2);
 }
 
+TEST(BufferedStreamDecoder, AStoppedDecoderSaysSo) {
+  auto calls = std::make_shared<Calls>();
+  FakeDecoder node(calls);
+  waitStreaming(node);
+  node.halt();
+  EXPECT_EQ(node.getState().state, AudioGraphNodeState::STOPPED);
+}
+
+TEST(BufferedStreamDecoder, AStoppedDecoderKeepsItsError) {
+  auto calls = std::make_shared<Calls>();
+  FakeDecoder failing(calls, 0, true, 10);
+  drain(failing);
+  failing.halt();
+  EXPECT_EQ(failing.getState().state, AudioGraphNodeState::ERROR);
+}
+
 TEST(BufferedStreamDecoder, StartOffsetSeeksTheSource) {
   auto calls = std::make_shared<Calls>();
   FakeDecoder node(calls, 50);
@@ -135,6 +202,38 @@ TEST(BufferedStreamDecoder, SeekRestartsFromTheRequestedFrame) {
   ASSERT_EQ(node.seekTo(120), 120u);
   EXPECT_EQ(node.streamReadPosition(), 120);
   EXPECT_EQ(drain(node), countFrom(120));
+}
+
+TEST(BufferedStreamDecoder, ASeekAnsweredBeforeItsSourceMovesCanBeCutShort) {
+  auto calls = std::make_shared<Calls>();
+  FakeDecoder node(calls);
+  waitStreaming(node);
+  node.stallSeekAt = 100;
+
+  auto first =
+      std::async(std::launch::async, [&node] { return node.seekTo(100); });
+  const bool answered = first.wait_for(1s) == std::future_status::ready;
+  if (!answered)
+    node.halt(); // Stopping answers it, so a failure cannot hang the test.
+  ASSERT_TRUE(answered) << "the seek waited for a source that had not moved";
+  EXPECT_EQ(first.get(), 100u);
+  EXPECT_EQ(node.getState().state, AudioGraphNodeState::PREPARING);
+
+  EXPECT_EQ(node.seekTo(200), 200u);
+  EXPECT_EQ(drain(node), countFrom(200));
+}
+
+TEST(BufferedStreamDecoder, ASeekToTheEndFinishesWithNothingRead) {
+  auto calls = std::make_shared<Calls>();
+  FakeDecoder node(calls);
+  waitStreaming(node);
+  ASSERT_EQ(node.seekTo(TOTAL_FRAMES), size_t(TOTAL_FRAMES));
+
+  const auto deadline = std::chrono::steady_clock::now() + 1s;
+  while (node.getState().state != AudioGraphNodeState::FINISHED &&
+         std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(1ms);
+  EXPECT_EQ(node.getState().state, AudioGraphNodeState::FINISHED);
 }
 
 TEST(BufferedStreamDecoder, SeekPastTheEndFinishes) {
@@ -171,4 +270,16 @@ TEST(BufferedStreamDecoder, ASourceFailureCarriesTheSourceError) {
   EXPECT_EQ(state.error->source, StreamErrorSource::HTTP_STREAM);
   EXPECT_EQ(state.error->message, "Source went away");
   EXPECT_EQ(node.seekTo(0), size_t(-1));
+}
+
+TEST(BufferedStreamDecoder, AFrameHalfWrittenIsHeldBackUntilItIsWhole) {
+  SplitFrameDecoder node;
+  ASSERT_EQ(node.waitForDataFor({}, 2s, 6), 6u);
+  std::array<uint8_t, 8> data{};
+  EXPECT_EQ(node.read(data.data(), data.size()), 4u);
+  EXPECT_EQ(node.read(data.data(), data.size()), 0u);
+  node.released = true;
+  ASSERT_EQ(node.waitForDataFor({}, 2s, 4), 4u);
+  EXPECT_EQ(node.read(data.data() + 4, 4), 4u);
+  EXPECT_EQ(data, (std::array<uint8_t, 8>{1, 2, 3, 4, 5, 6, 7, 8}));
 }

@@ -3,6 +3,7 @@
 #include "BufferedStreamDecoder.h"
 
 #include <atomic>
+#include <exception>
 #include <memory>
 
 /**
@@ -26,6 +27,11 @@ protected:
   /// Reads up to `bytes`, fewer only where the source ends. Throws
   /// Interrupted, or SourceFailed when the source fails.
   size_t readSome(void *dest, size_t bytes);
+  /// Reads what the source holds, up to `bytes`, waiting only for the first
+  /// byte; 0 only where it ends. Throws as readSome() does. A producer pacing
+  /// on playback holds its next bytes until these play, so nothing may wait
+  /// for more than it has sent.
+  size_t readAvailable(void *dest, size_t bytes);
   /// Reads exactly `bytes`; throws "Truncated <name> file" at the end.
   void readExact(void *dest, size_t bytes);
   /// Moves the source to `offset`; false where it cannot.
@@ -33,19 +39,32 @@ protected:
   /// Where the next read starts.
   uint64_t sourcePosition() const { return position; }
   /// The source's length in bytes, or 0 while unknown; an HTTP source knows
-  /// it once its first bytes have arrived.
+  /// it once its first bytes have arrived. Kept once known: an HTTP source
+  /// loses it for a while as it fetches a new range.
   uint64_t sourceLength() const;
   /// Reserve requested by a broadcast transport, in milliseconds of audio.
   unsigned sourcePrebufferMs() const;
   /// Whether playback may seek; reported by canSeek().
   void setSeekable(bool value) { seekable = value; }
+  /// Keeps @p failure, the exception being handled unless given, for a
+  /// callback that must not let it through the codec library calling it.
+  void keepCallbackFailure(
+      std::exception_ptr failure = std::current_exception()) noexcept;
+  /// Whether a callback has kept a failure not yet rethrown.
+  bool callbackFailed() const { return bool(callbackFailure); }
+  /// Rethrows what a callback kept, once the library has returned.
+  void rethrowCallbackFailure();
 
 private:
   std::shared_ptr<AudioGraphOutputNode> input;
   std::atomic<bool> seekable{false};
   uint64_t position = 0;
+  mutable uint64_t length = 0;
+  std::exception_ptr callbackFailure;
 
   bool canSeek() const final { return seekable; }
+  /// Reads once what `wanted` bytes have arrived, or fewer at the end.
+  size_t take(void *dest, size_t bytes, size_t wanted);
   /// Forgets the previous source, before the worker starts on a new one.
   virtual void forget() {}
 };

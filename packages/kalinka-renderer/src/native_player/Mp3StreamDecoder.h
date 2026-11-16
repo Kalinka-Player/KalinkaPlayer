@@ -1,65 +1,50 @@
 #ifndef MP3STREAMDECODER_H
 #define MP3STREAMDECODER_H
 
-#include "AudioGraphNode.h"
+#include "SourceStreamDecoder.h"
 
-#include "Utils.h"
-#include <thread>
+#include <memory>
+#include <vector>
 
-class Mp3StreamDecoder : public AudioGraphOutputNode,
-                         public AudioGraphInputNode {
+/**
+ * @brief MPEG audio input, decoded to interleaved signed 16-bit PCM.
+ *
+ * A source of known length is a file: minimp3 indexes it, so it seeks and
+ * trims its gapless padding. One of unknown length is a broadcast, decoded
+ * frame by frame as it arrives; it does not seek, and plays on past the
+ * length a gapless tag gives. minimp3 and everything it reads belong to the
+ * worker.
+ */
+class Mp3StreamDecoder final : public SourceStreamDecoder {
 public:
-  // startOffsetMs begins decoding partway into the stream instead of at 0.
+  /// @param startOffsetMs Where decoding begins, instead of at the start.
   Mp3StreamDecoder(std::optional<StreamId> streamId, size_t bufferSize,
                    size_t startOffsetMs = 0);
-  virtual ~Mp3StreamDecoder();
-
-  size_t read(void *data, size_t size) override;
-
-  size_t waitForData(std::stop_token stopToken = std::stop_token(),
-                     size_t size = 1) override;
-
-  size_t waitForDataFor(std::stop_token stopToken,
-                        std::chrono::milliseconds timeout,
-                        size_t size) override;
-
-  size_t seekTo(size_t absolutePosition) override;
-
-  std::optional<long> streamReadPosition() const override;
-
-  void connectTo(std::shared_ptr<AudioGraphOutputNode> inputNode) override;
-
-  void disconnect(std::shared_ptr<AudioGraphOutputNode> inputNode) override;
+  ~Mp3StreamDecoder() override;
 
 private:
-  std::jthread decodingThread;
-  std::shared_ptr<AudioGraphOutputNode> inputNode;
-  Buffer<uint8_t> buffer;
-  const size_t startOffsetMs;
+  /// How PCM is made: one way for a file, one for a broadcast.
+  class Codec;
+  class FileCodec;
+  class BroadcastCodec;
 
-  Signal<size_t> seekSignal;
-  Signal<bool> initCompleteSignal;
+  std::unique_ptr<Codec> codec;
+  /// Read to learn what the source is, and played back before it.
+  std::vector<uint8_t> prefix;
+  size_t prefixUsed = 0;
 
-  // Bytes, not frames: a read that ends mid-frame would round down, forever.
-  std::atomic<long> runStartFrame = 0;
-  std::atomic<long> bytesReadInRun = 0;
-  std::atomic<unsigned int> frameSizeBytes = 0;
-  std::atomic<bool> seekable = false;
-  uint64_t sourcePosition = 0; // Worker-only cursor for minimp3's buffered input.
+  std::string name() const override { return "MP3"; }
+  StreamInfo open() override;
+  bool decodeNext() override;
+  void seekSource(uint64_t frame) override;
+  void close() override;
+  void forget() override;
 
-  void threadRun(std::stop_token token);
-  void decodeStream(std::stop_token token);
-  void writePcm(const void *data, size_t size, std::stop_token token);
-  long framesRead() const;
-  void restartRunAt(long frame);
-  void finishIfDrained();
-
-  typedef size_t (*MP3D_READ_CB)(void *buf, size_t size, void *user_data);
-  typedef int (*MP3D_SEEK_CB)(uint64_t position, void *user_data);
-
-  size_t readCallback(void *buf, size_t size);
-  int seekCallback(uint64_t position);
-  void handleSeekSignal(void *mp3dec_ex, size_t seekPosFrames);
+  /// Reads as readSome() does, or as readAvailable() when @p partial, taking
+  /// the prefix first.
+  size_t readInput(void *dest, size_t bytes, bool partial);
+  /// Where the next byte read comes from.
+  uint64_t inputPosition() const;
 };
 
 #endif // MP3STREAMDECODER_H

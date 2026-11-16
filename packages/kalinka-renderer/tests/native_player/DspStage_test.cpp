@@ -1,4 +1,5 @@
 #include "AudioStreamSwitcher.h"
+#include "ByteRing.h"
 #include "DelayLine.h"
 #include "DspStage.h"
 #include "SineWaveNode.h"
@@ -551,12 +552,12 @@ public:
       samples[2 * i] = int32_t(++fed);
       samples[2 * i + 1] = -samples[2 * i];
     }
-    buffer.write(reinterpret_cast<uint8_t *>(samples.data()), frames * 8);
+    buffer.write(samples.data(), frames * 8);
     ended = last;
     setState({AudioGraphNodeState::STREAMING, 0, info});
   }
   size_t read(void *data, size_t size) override {
-    const size_t bytes = buffer.read(static_cast<uint8_t *>(data), size);
+    const size_t bytes = buffer.read(data, size);
     if (buffer.size() == 0) {
       setState(ended ? StreamState(AudioGraphNodeState::FINISHED)
                      : StreamState(AudioGraphNodeState::PREPARING));
@@ -575,7 +576,7 @@ private:
                                    .bitsPerSample = 32,
                                    .sampleFormat = PCM32_LE},
                         .streamType = StreamType::FRAMES};
-  Buffer<uint8_t> buffer{1 << 20};
+  ByteRing buffer{1 << 20};
   int32_t fed = 0;
   std::atomic<bool> ended = false;
 };

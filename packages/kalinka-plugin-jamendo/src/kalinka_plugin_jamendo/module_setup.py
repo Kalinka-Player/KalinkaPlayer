@@ -23,8 +23,14 @@ _KEY_BY_IMPORT_NAME = {
 }
 
 
+async def _provision(mood_index: JamendoMoodIndex, context: InputPluginContext) -> None:
+    await mood_index.available()
+    if context.report_state_changed is not None:
+        context.report_state_changed()
+
+
 class KalinkaPluginJamendo(InputModulePlugin):
-    REQUIRES_SDK = ">=3.18,<4"
+    REQUIRES_SDK = ">=3.23,<4"
     PLUGIN_ID = "jamendo"
     CONFIG_MODEL = JamendoConfig
     OPTIONAL_PACKAGES: ClassVar[dict[str, OptionalPackageSpec]] = OPTIONAL_PACKAGES
@@ -34,6 +40,7 @@ class KalinkaPluginJamendo(InputModulePlugin):
         self._client = None
         # Captured at setup so get_state() can read the current config.
         self._context: Optional[InputPluginContext] = None
+        self._mood_index: Optional[JamendoMoodIndex] = None
         self._provision_task: Optional[asyncio.Task] = None
 
     def get_interface(self) -> Optional[InputModule]:
@@ -44,9 +51,9 @@ class KalinkaPluginJamendo(InputModulePlugin):
         config = JamendoConfig(**context.config.model_dump())
         logger.info("Setting up Jamendo input module")
         self._client = await get_client(config)
-        mood_index = None
+        self._mood_index = None
         if config.ai_search_enabled:
-            mood_index = JamendoMoodIndex(
+            self._mood_index = JamendoMoodIndex(
                 config.ai_index_path,
                 config.ai_index_url or None,
                 context.embedder,
@@ -55,12 +62,14 @@ class KalinkaPluginJamendo(InputModulePlugin):
             # embedder) rather than blocking the first search. available() is
             # concurrency-safe, so a search that arrives mid-download just
             # awaits the same provisioning.
-            self._provision_task = asyncio.create_task(mood_index.available())
-        self.interface = JamendoInputModule(config, self._client, mood_index)
+            self._provision_task = asyncio.create_task(
+                _provision(self._mood_index, context)
+            )
+        self.interface = JamendoInputModule(config, self._client, self._mood_index)
 
     async def get_state(self) -> ModuleState:
         """Surface the "no client_id configured" case as an ERROR, and a
-        mood search without its runtime as a WARNING.
+        mood search without its runtime or its index as a WARNING.
 
         Without a client_id every Jamendo request returns empty, which is
         indistinguishable from "no results" in the UI. Reporting it here lets
@@ -68,7 +77,8 @@ class KalinkaPluginJamendo(InputModulePlugin):
         showing an empty catalog. Mood search without its runtime would be
         just as silent, so its packages are reported for the modules page to
         offer, or, where this box cannot install them, the setting is named
-        so the user can turn it off.
+        so the user can turn it off. Once the runtime is there, an index that
+        could not be set up is reported with the reason.
         """
         client_id = ""
         if self._context is not None:
@@ -115,6 +125,12 @@ class KalinkaPluginJamendo(InputModulePlugin):
                 ),
                 missing_packages=to_install,
             )
+        failure = self._mood_index_failure()
+        if failure is not None:
+            return ModuleState(
+                state=ModuleHealthState.WARNING,
+                message=f"Mood search unavailable: {failure}",
+            )
         return ModuleState(state=ModuleHealthState.READY)
 
     async def required_packages(self) -> list[str]:
@@ -157,6 +173,15 @@ class KalinkaPluginJamendo(InputModulePlugin):
             else:
                 no_wheel.append(name)
         return to_install, no_wheel, not_offered
+
+    def _mood_index_failure(self) -> Optional[str]:
+        """Why the index set up for mood search failed, while the current
+        config still asks for mood search."""
+        if self._mood_index is None or not getattr(
+            self._context.config, "ai_search_enabled", False
+        ):
+            return None
+        return self._mood_index.failure
 
     async def shutdown(self) -> None:
         logger.info("Shutting down Jamendo input module")

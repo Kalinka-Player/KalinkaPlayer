@@ -1,4 +1,5 @@
 #include "AlsaAudioEmitter.h"
+#include "ByteRing.h"
 #include "SineWaveNode.h"
 
 #include <cmath>
@@ -53,7 +54,7 @@ public:
                          .live = live}});
   }
   size_t read(void *data, size_t size) override {
-    return buffer.read(static_cast<uint8_t *>(data), size);
+    return buffer.read(data, size);
   }
   size_t waitForData(std::stop_token token, size_t size) override {
     if (!waiting.exchange(true)) {
@@ -79,7 +80,7 @@ public:
   std::atomic<size_t> soughtTo{0};
 
 private:
-  Buffer<uint8_t> buffer{16384};
+  ByteRing buffer{16384};
   std::atomic<bool> waiting{false};
 };
 
@@ -93,7 +94,7 @@ public:
     provideAudio();
   }
   size_t read(void *data, size_t size) override {
-    return buffer.read(static_cast<uint8_t *>(data), size);
+    return buffer.read(data, size);
   }
   size_t waitForData(std::stop_token token, size_t size) override {
     runDryIfEmpty();
@@ -114,7 +115,7 @@ private:
                                    .channels = 2,
                                    .bitsPerSample = 16},
                         .streamType = StreamType::FRAMES};
-  Buffer<uint8_t> buffer{kFrames * 4};
+  ByteRing buffer{kFrames * 4};
 
   void provideAudio() {
     std::array<uint8_t, kFrames * 4> silence{};

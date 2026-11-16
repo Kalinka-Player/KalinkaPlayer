@@ -43,14 +43,14 @@ TEST_F(Mp3StreamDecoderTest, ConstructorInitializesCorrectly) {
 
 TEST_F(Mp3StreamDecoderTest, ConnectToThrowsIfInputNodeIsNull) {
   std::shared_ptr<AudioGraphOutputNode> outputNode = nullptr;
-  ASSERT_THROW(decoder->connectTo(outputNode), std::runtime_error);
+  ASSERT_THROW(decoder->connectTo(outputNode), std::invalid_argument);
 }
 
 TEST_F(Mp3StreamDecoderTest, ConnectToThrowsIfInputNodeAlreadyConnected) {
   std::shared_ptr<AudioGraphOutputNode> outputNode =
       std::make_shared<MockAudioGraphOutputNode>();
   decoder->connectTo(outputNode);
-  ASSERT_THROW(decoder->connectTo(outputNode), std::runtime_error);
+  ASSERT_THROW(decoder->connectTo(outputNode), std::invalid_argument);
 }
 
 TEST_F(Mp3StreamDecoderTest, DisconnectDoesNotThrow) {

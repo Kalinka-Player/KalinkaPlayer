@@ -309,6 +309,13 @@ def get_version() -> str:
 # available. WebRadio uses this for its station lists.
 # Also 0.24: playback state's `audio_info` and its `output` carry
 # `sample_format`, the renderer's name for the decoded and the device format.
+# Also 0.24: a module's `capabilities` can change while the server runs, with
+# nothing saved. A plugin whose state or capabilities move by themselves can
+# have modules_changed sent at once, rather than at the next 10 s check, and
+# that event is sent even when no module's state, error_message or
+# missing_packages moved. Jamendo lists `ai_search` while its mood index is
+# being set up and once it is ready, and drops it if setting the index up
+# fails, when the module turns WARNING with the reason in error_message.
 REST_API_VERSION = "0.24"
 
 

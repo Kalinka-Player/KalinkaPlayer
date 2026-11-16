@@ -37,9 +37,12 @@ public:
     return bytesRead;
   }
 
-  virtual size_t waitForData(std::stop_token stopToken = std::stop_token(),
-                             size_t size = 1) override {
-    return std::min(fileSize - in.tellg(), size);
+  // All of the rest is at hand, whatever minimum is asked for: a reader taking
+  // what has arrived must not be fed a byte at a time.
+  virtual size_t waitForData(std::stop_token = std::stop_token(),
+                             size_t = 1) override {
+    const auto position = in.tellg();
+    return position < 0 ? 0 : fileSize - std::min(fileSize, size_t(position));
   }
 
   virtual size_t waitForDataFor(std::stop_token stopToken,

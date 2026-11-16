@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 BufferedStreamDecoder::BufferedStreamDecoder(size_t bufferSize,
                                              size_t startOffsetMs)
@@ -14,7 +15,7 @@ void BufferedStreamDecoder::start() {
   frameBytes = 0;
   seekSignal.reopen();
   ready.reopen();
-  buffer.clear();
+  buffer.discard();
   buffer.resetEof();
   setState(StreamState{AudioGraphNodeState::PREPARING});
   worker = std::jthread([this](std::stop_token token) { run(token); });
@@ -51,8 +52,7 @@ size_t BufferedStreamDecoder::read(void *dest, size_t size) {
     return 0;
   // A partial frame would misalign the sink's channels or DoP markers.
   size = std::min(size, buffer.size());
-  const auto count =
-      buffer.read(static_cast<uint8_t *>(dest), size - size % width);
+  const auto count = buffer.read(dest, size - size % width);
   bytesRead += count;
   finishIfDrained();
   return count;
@@ -103,11 +103,11 @@ void BufferedStreamDecoder::prepare() {
   frameBytes = info.format.channels * sampleSize(info.format.sampleFormat);
   if (!frameBytes || !info.format.sampleRate)
     throw std::runtime_error(name() + " header describes no audio format");
-  if (frameBytes > buffer.max_size())
+  if (frameBytes > buffer.capacity())
     throw std::runtime_error(name() + " buffer is smaller than one frame");
   // Writers and readers only transfer whole frames. A reserve wait clamped
   // to an unaligned capacity would otherwise ask for bytes we can never fill.
-  buffer.setCapacity(buffer.max_size() - buffer.max_size() % frameBytes);
+  buffer.setCapacity(buffer.capacity() - buffer.capacity() % frameBytes);
   if (!startOffsetMs)
     return;
   if (!canSeek())
@@ -125,13 +125,20 @@ void BufferedStreamDecoder::prepare() {
 void BufferedStreamDecoder::seek(size_t frame) {
   frame = std::min(frame, size_t(info.streamSize));
   setState(StreamState{AudioGraphNodeState::PREPARING});
-  buffer.clear();
+  buffer.discard();
   buffer.resetEof();
-  seekSource(frame);
   startFrame = frame;
   bytesRead = 0;
+  seeking = frame;
+  seekSource(frame);
   setState({AudioGraphNodeState::STREAMING, long(frame), info});
-  seekSignal.respond(frame);
+  answerSeek();
+}
+
+void BufferedStreamDecoder::answerSeek() {
+  if (seeking) {
+    seekSignal.respond(*std::exchange(seeking, std::nullopt));
+  }
 }
 
 void BufferedStreamDecoder::run(std::stop_token token) {
@@ -146,8 +153,11 @@ void BufferedStreamDecoder::run(std::stop_token token) {
           seek(*target);
         if (buffer.isEof())
           seekSignal.waitValue(token);
-        else if (!decodeNext())
+        else if (!decodeNext()) {
           buffer.setEof();
+          // A buffer already drained has no reader left to notice the end.
+          finishIfDrained();
+        }
       } catch (const Interrupted &) {
       }
     }
@@ -164,4 +174,8 @@ void BufferedStreamDecoder::run(std::stop_token token) {
   seekSignal.close(size_t(-1));
   ready.close(false);
   buffer.setEof();
+  // Stopped by its owner, not by the source: an error must stay visible.
+  if (token.stop_requested() &&
+      getState().state != AudioGraphNodeState::ERROR)
+    setState(StreamState(AudioGraphNodeState::STOPPED));
 }

@@ -1,8 +1,10 @@
-"""Apply the settings Raspberry Pi Imager left on the boot partition, then remove them.
+"""Apply the Raspberry Pi settings left on the boot partition, then remove them.
 
-kalinka-card-settings.service runs this at a start that finds Imager's files,
+kalinka-card-settings.service runs this at a start that finds one of the files,
 before NetworkManager, avahi, Bluetooth and sshd start. It reads custom.toml,
-or failing that the calls Imager writes into firstrun.sh, which it never runs.
+or failing that the calls Imager writes into firstrun.sh, which it never runs,
+and Raspberry Pi OS's userconf.txt, wpa_supplicant.conf and ssh or ssh.txt;
+where Imager's file and these give the same setting, Imager's applies.
 Each setting stands alone: one that is not valid is named in the journal and
 left out, and the rest still apply. Every input file is then overwritten and
 removed, and Imager's systemd.run tokens are taken out of cmdline.txt, whatever
@@ -34,7 +36,10 @@ BOOT_DIRS = ("boot/firmware", "boot/efi")
 CUSTOM_TOML = "custom.toml"
 FIRSTRUN = "firstrun.sh"
 CLOUD_INIT = ("user-data", "network-config")
-INPUTS = (CUSTOM_TOML, FIRSTRUN, *CLOUD_INIT)
+USERCONF_TXT = "userconf.txt"
+WPA_SUPPLICANT = "wpa_supplicant.conf"
+SSH_FLAGS = ("ssh", "ssh.txt")
+INPUTS = (CUSTOM_TOML, FIRSTRUN, *CLOUD_INIT, USERCONF_TXT, WPA_SUPPLICANT, *SSH_FLAGS)
 MAX_INPUT_BYTES = 256 * 1024
 
 IMAGER_CUSTOM = "/usr/lib/raspberrypi-sys-mods/imager_custom"
@@ -53,6 +58,7 @@ ZONEINFO = "usr/share/zoneinfo"
 HOSTNAME = re.compile(r"[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 COUNTRY = re.compile(r"[A-Z]{2}")
 HEX_KEY = re.compile(r"[0-9A-Fa-f]{64}")
+HEX_BYTES = re.compile(r"(?:[0-9A-Fa-f]{2})+")
 USER_NAME = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
 PASSWORD_HASH = re.compile(r"\$[0-9a-zA-Z]+\$[A-Za-z0-9./$=,+-]+")
 ZONE = re.compile(r"[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*")
@@ -109,6 +115,7 @@ TOML_NOT_APPLIED = {
     ("ssh", "ssh_import_id"): "importing SSH keys from the network",
 }
 TOML_SECTIONS = frozenset(section for section, _ in [*TOML_SETTINGS, *TOML_NOT_APPLIED])
+WPA_NETWORK_FIELDS = frozenset(("ssid", "psk", "scan_ssid", "key_mgmt"))
 
 
 @dataclass(frozen=True)
@@ -149,8 +156,19 @@ class Settings:
     country: Optional[str] = None
     wifi: Optional[Wifi] = None
     login: Optional[Login] = None
-    ssh: bool = False
+    ssh: Optional[bool] = None
     timezone: Optional[str] = None
+
+
+# Each of Settings' fields, as the journal names it, in the order they are applied.
+SETTING_NAMES = {
+    "hostname": "the host name",
+    "country": "the Wi-Fi country",
+    "wifi": "the Wi-Fi network",
+    "login": "the login",
+    "ssh": "SSH",
+    "timezone": "the time zone",
+}
 
 
 class System:
@@ -219,7 +237,7 @@ def read_text(path: Path) -> Optional[str]:
         return None
     if len(data) > MAX_INPUT_BYTES:
         log.warning(
-            "%s is too large to be Imager's; nothing in it is applied", path.name
+            "%s is too large for a settings file; nothing in it is applied", path.name
         )
         return None
     try:
@@ -339,6 +357,130 @@ def read_imager_custom(
             number,
             loggable(command),
         )
+
+
+def read_userconf_txt(text: str) -> Optional[dict[str, Any]]:
+    """userconf.txt's login, unchecked: one line of a user name, a colon and a hash."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) != 1 or ":" not in lines[0]:
+        log.warning(
+            "userconf.txt is not a single line of name:hash; nothing in it is applied"
+        )
+        return None
+    name, password = lines[0].split(":", 1)
+    return {"user": name, "password": password, "password_encrypted": True}
+
+
+def without_wpa_comment(line: str) -> str:
+    """line without its # comment, as wpa_supplicant finds one: the whole line when
+    it starts with #, else from the first # after the line's last quote."""
+    if line.lstrip().startswith("#"):
+        return ""
+    first, last = line.find('"'), line.rfind('"')
+    end = line.find("#", last if first < last else 0)
+    return line if end < 0 else line[:end]
+
+
+def quoted(value: str) -> Optional[str]:
+    """What is between a wpa_supplicant.conf value's quotes, or None if it has none."""
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        return value[1:-1]
+    return None
+
+
+def wpa_ssid(value: str) -> Optional[str]:
+    """An SSID quoted, or as hex digits of UTF-8 text, as wpa_supplicant takes one."""
+    text = quoted(value)
+    if text is not None or not HEX_BYTES.fullmatch(value):
+        return text
+    try:
+        return bytes.fromhex(value).decode()
+    except UnicodeDecodeError:
+        return None
+
+
+def read_wpa_supplicant(text: str) -> dict[str, Any]:
+    """The country and the first network in wpa_supplicant.conf, unchecked."""
+    values: dict[str, Any] = {}
+    networks: list[tuple[int, dict[str, str]]] = []
+    network: Optional[dict[str, str]] = None
+    for number, line in enumerate(text.splitlines(), 1):
+        line = without_wpa_comment(line).strip()
+        if not line:
+            continue
+        if line == "network={" and network is None:
+            network = {}
+            networks.append((number, network))
+        elif line == "}" and network is not None:
+            network = None
+        elif "=" not in line:
+            log.warning(
+                "wpa_supplicant.conf line %d cannot be read, "
+                "so what it sets is not applied",
+                number,
+            )
+        else:
+            name, value = (part.strip() for part in line.split("=", 1))
+            if network is not None:
+                network[name] = value
+            elif name == "country":
+                values["country"] = value
+            else:
+                log.info("wpa_supplicant.conf: %s is not applied", loggable(name))
+    if network is not None:
+        log.warning(
+            "wpa_supplicant.conf ends inside a network block, "
+            "so that network is not applied"
+        )
+        networks.pop()
+    elif not networks:
+        log.warning("wpa_supplicant.conf holds no network")
+    if networks:
+        (number, fields), *others = networks
+        if others:
+            log.warning(
+                "wpa_supplicant.conf: only the first network is applied, "
+                "not the %d after it",
+                len(others),
+            )
+        values.update(read_wpa_network(fields, number))
+    return values
+
+
+def read_wpa_network(fields: dict[str, str], number: int) -> dict[str, Any]:
+    """A network block's settings, unchecked; none for one neither WPA-PSK nor open."""
+    if "ssid" not in fields:
+        log.warning(
+            "wpa_supplicant.conf line %d: the network has no ssid, "
+            "so it is not applied",
+            number,
+        )
+        return {}
+    values: dict[str, Any] = {"ssid": wpa_ssid(fields["ssid"])}
+    if "psk" in fields:
+        passphrase = quoted(fields["psk"])
+        values["wifi_key"] = fields["psk"] if passphrase is None else passphrase
+        values["wifi_key_encrypted"] = passphrase is None
+    if "scan_ssid" in fields:
+        hidden = fields["scan_ssid"]
+        values["hidden"] = {"0": False, "1": True}.get(hidden, hidden)
+    for name in fields:
+        if name not in WPA_NETWORK_FIELDS:
+            log.info("wpa_supplicant.conf: network.%s is not applied", loggable(name))
+    # As wpa_supplicant has it: a psk for WPA-PSK, and key_mgmt=NONE for an open one.
+    methods = fields.get("key_mgmt", "WPA-PSK").split()
+    if "psk" in fields:
+        joinable = "WPA-PSK" in methods and values["wifi_key"] != ""
+    else:
+        joinable = methods == ["NONE"]
+    if not joinable:
+        log.warning(
+            "wpa_supplicant.conf line %d: the network is neither WPA-PSK with a key "
+            "nor open, so it is not applied",
+            number,
+        )
+        return {}
+    return values
 
 
 def read_accounts(root: Path) -> dict[str, Passwd]:
@@ -594,28 +736,58 @@ def check(values: dict[str, Any], source: str, root: Path) -> Settings:
     return settings
 
 
+def read_inputs(boot: Path) -> list[tuple[str, dict[str, Any]]]:
+    """Each readable file's settings, unchecked, Imager's file first."""
+    readers = {
+        CUSTOM_TOML: read_custom_toml,
+        FIRSTRUN: read_firstrun,
+        USERCONF_TXT: read_userconf_txt,
+        WPA_SUPPLICANT: read_wpa_supplicant,
+    }
+    if (boot / CUSTOM_TOML).exists() and (boot / FIRSTRUN).exists():
+        log.info("firstrun.sh is not read, as custom.toml is there")
+        del readers[FIRSTRUN]
+    inputs = []
+    for name, reader in readers.items():
+        if (boot / name).exists():
+            text = read_text(boot / name)
+            values = None if text is None else reader(text)
+            if values is not None:
+                inputs.append((name, values))
+    # Raspberry Pi OS turns SSH on for either file, whatever it holds.
+    flag = next((name for name in SSH_FLAGS if (boot / name).exists()), None)
+    if flag is not None:
+        inputs.append((flag, {"ssh": True}))
+    return inputs
+
+
 def read_card(boot: Path, root: Path) -> Optional[Settings]:
+    """What the card's files ask for that passes every check; an earlier file's wins."""
     for name in CLOUD_INIT:
         if (boot / name).exists():
             log.warning(
                 "%s is for cloud-init, which this image does not have; it is not read",
                 name,
             )
-    toml, firstrun = boot / CUSTOM_TOML, boot / FIRSTRUN
-    if toml.exists():
-        if firstrun.exists():
-            log.info("firstrun.sh is not read, as custom.toml is there")
-        source, text = CUSTOM_TOML, read_text(toml)
-        values = None if text is None else read_custom_toml(text)
-    elif firstrun.exists():
-        source, text = FIRSTRUN, read_text(firstrun)
-        values = None if text is None else read_firstrun(text)
-    else:
+    inputs = read_inputs(boot)
+    if not inputs:
         return None
-    if values is None:
-        return None
-    log.info("Applying the settings in %s", source)
-    return check(values, source, root)
+    settings, given = Settings(), {}
+    for source, values in inputs:
+        log.info("Applying the settings in %s", source)
+        found = check(values, source, root)
+        for name, what in SETTING_NAMES.items():
+            value = getattr(found, name)
+            if value is None:
+                continue
+            if name in given:
+                log.info(
+                    "%s: %s is not applied, as %s sets it", source, what, given[name]
+                )
+            else:
+                setattr(settings, name, value)
+                given[name] = source
+    return settings
 
 
 def sync_directory(directory: Path) -> None:
@@ -691,26 +863,22 @@ def keyfile_profile(wifi: Wifi, connection: uuid.UUID) -> str:
 
 
 class Applier:
-    """Writes accepted settings into the tree at root, through system for the rest."""
+    """Writes accepted settings into the tree at root, through system for the rest.
+
+    Each of Settings' fields is applied by the method of the same name.
+    """
 
     def __init__(self, root: Path, system: System) -> None:
         self.root = root
         self.system = system
 
     def apply(self, settings: Settings) -> None:
-        steps = (
-            ("the host name", self.hostname, settings.hostname),
-            ("the Wi-Fi country", self.country, settings.country),
-            ("the Wi-Fi network", self.wifi, settings.wifi),
-            ("the login", self.login, settings.login),
-            ("SSH", self.ssh, settings.ssh),
-            ("the time zone", self.timezone, settings.timezone),
-        )
-        for what, step, value in steps:
+        for name, what in SETTING_NAMES.items():
+            value = getattr(settings, name)
             if value is None:
                 continue
             try:
-                step(value)
+                getattr(self, name)(value)
             except Exception as error:
                 # strerror never quotes the input; other exceptions' text may.
                 reason = getattr(error, "strerror", None) or type(error).__name__
@@ -852,7 +1020,7 @@ def overwrite_with_zeros(path: Path) -> None:
 
 
 def remove_inputs(boot: Path) -> None:
-    """Removes every file Imager left, read or not: FAT cannot keep them private."""
+    """Removes every input file, read or not: FAT cannot keep them private."""
     for name in INPUTS:
         path = boot / name
         if not (path.exists() or path.is_symlink()):

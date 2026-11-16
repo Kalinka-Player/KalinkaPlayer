@@ -70,7 +70,8 @@ std::string testFile(const std::string &name) {
 
 // Discards everything written to it, so a run is silent and needs no sound
 // card. Set KALINKA_TEST_ALSA_DEVICE to play the tests somewhere real; the
-// fixtures set the volume to zero, so that is silent as well.
+// fixtures set the volume to zero, so that is silent as well. Software volume
+// first raises the device's mixer to 100 %; KALINKA_LEAVE_MIXER=1 stops that.
 std::string testDevice() {
   const char *configured = std::getenv("KALINKA_TEST_ALSA_DEVICE");
   return configured != nullptr ? configured : "null";

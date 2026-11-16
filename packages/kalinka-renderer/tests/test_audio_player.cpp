@@ -21,6 +21,7 @@
 namespace {
 
 constexpr long kTrackMs = 6000;
+constexpr std::chrono::milliseconds kWait{5000};
 
 std::string fixture(const char *file) {
   return std::string("file://") + KALINKA_TEST_DATA_DIR + "/" + file;
@@ -74,7 +75,7 @@ public:
 
   std::optional<StreamState>
   nextOf(size_t from, AudioGraphNodeState wanted,
-         std::chrono::milliseconds timeout = std::chrono::milliseconds(5000),
+         std::chrono::milliseconds timeout = kWait,
          std::optional<StreamId> stream = std::nullopt) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     do {
@@ -135,7 +136,11 @@ TEST_F(PlaybackPositionTest, PlaysOggVorbis) {
   ASSERT_TRUE(streaming->streamInfo.has_value());
   EXPECT_EQ(streaming->streamInfo->format.sampleRate, 22050u);
   EXPECT_EQ(streaming->streamInfo->format.bitsPerSample, 16u);
-  EXPECT_TRUE(playing.nextOf(0, AudioGraphNodeState::FINISHED).has_value());
+  // On a real-time device it finishes only once all of it has played.
+  EXPECT_TRUE(playing
+                  .nextOf(0, AudioGraphNodeState::FINISHED,
+                          std::chrono::milliseconds(kTrackMs) + kWait)
+                  .has_value());
 }
 
 TEST_F(PlaybackPositionTest, SeekingForwardReportsWhereItLanded) {

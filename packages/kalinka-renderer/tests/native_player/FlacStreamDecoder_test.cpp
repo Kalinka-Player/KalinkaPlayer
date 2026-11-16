@@ -2,14 +2,19 @@
 #include "FileInputNode.h"
 #include "FlacStreamDecoder.h"
 
+#include <filesystem>
 #include <fstream>
+#include <future>
 #include <gtest/gtest.h>
 #include <iterator>
 #include <memory>
+#include <unistd.h>
 
+#include "ContainerTestSupport.h"
 #include "ErrorFakeNode.h"
 #include "LiveInputNode.h"
 #include "LocalHttpServer.h"
+#include "StallingFileInput.h"
 #include "TestHelpers.h"
 
 class FlacStreamDecoderTest : public ::testing::Test {
@@ -29,7 +34,7 @@ TEST_F(FlacStreamDecoderTest, connectTo) {
 
 TEST_F(FlacStreamDecoderTest, connectTo_nullptr) {
   auto flacStreamDecoder = std::make_shared<FlacStreamDecoder>(1, bufferSize);
-  EXPECT_THROW(flacStreamDecoder->connectTo(nullptr), std::runtime_error);
+  EXPECT_THROW(flacStreamDecoder->connectTo(nullptr), std::invalid_argument);
 }
 
 TEST_F(FlacStreamDecoderTest, disconnect) {
@@ -119,14 +124,37 @@ TEST_F(FlacStreamDecoderTest, a_seek_once_decoded_to_the_end_never_finishes) {
       << "a queued track would take over from a seek";
 }
 
+TEST_F(FlacStreamDecoderTest, a_seek_cut_short_by_another_lands_on_the_second) {
+  using namespace std::chrono_literals;
+  auto source = std::make_shared<StallingFileInput>(testFile("tone440.flac"));
+  FlacStreamDecoder decoder(1, bufferSize);
+  decoder.connectTo(source);
+  ASSERT_EQ(waitForStatus(decoder, AudioGraphNodeState::STREAMING, 5s).state,
+            AudioGraphNodeState::STREAMING);
+
+  source->stall();
+  ASSERT_EQ(decoder.seekTo(11025), 11025u) << "answered while its read stalls";
+  ASSERT_TRUE(source->waitUntilStalled());
+  constexpr size_t second = 22050;
+  auto seeking = std::async(std::launch::async,
+                            [&decoder] { return decoder.seekTo(second); });
+  const bool answered = seeking.wait_for(1s) == std::future_status::ready;
+  source->release();
+  ASSERT_TRUE(answered) << "the second seek waited on the first's read";
+  EXPECT_EQ(seeking.get(), second);
+
+  EXPECT_EQ(container_test::drain(decoder).size(), (44100 - second) * 4);
+  EXPECT_EQ(decoder.getState().state, AudioGraphNodeState::FINISHED);
+}
+
 TEST_F(FlacStreamDecoderTest, seek_after_the_decoder_has_stopped_returns) {
   auto flacStreamDecoder =
       std::make_shared<FlacStreamDecoder>(1, bufferSize, 60000);
   auto inputNode = std::make_shared<FileInputNode>(1, testFile("tone440.flac"));
   flacStreamDecoder->connectTo(inputNode);
-  waitForStatus(*flacStreamDecoder, AudioGraphNodeState::STOPPED,
+  waitForStatus(*flacStreamDecoder, AudioGraphNodeState::ERROR,
                 std::chrono::milliseconds(2000));
-  ASSERT_EQ(flacStreamDecoder->getState().state, AudioGraphNodeState::STOPPED);
+  ASSERT_EQ(flacStreamDecoder->getState().state, AudioGraphNodeState::ERROR);
 
   EXPECT_TRUE(returnsWithin(
       [flacStreamDecoder] { flacStreamDecoder->seekTo(0); },
@@ -184,4 +212,29 @@ TEST_F(FlacStreamDecoderTest, UnknownLengthInheritsTheSourceBufferingPolicy) {
     EXPECT_EQ(state.streamInfo->format.sampleRate, 44100u);
     decoder.disconnect(source);
   }
+}
+
+TEST_F(FlacStreamDecoderTest, UnknownLengthRefusesToSeekEvenOnASeekableSource) {
+  std::ifstream file(testFile("tone440.flac"), std::ios::binary);
+  std::vector<uint8_t> flac(std::istreambuf_iterator<char>(file), {});
+  ASSERT_GT(flac.size(), 26u);
+  flac[21] &= 0xf0;
+  std::fill(flac.begin() + 22, flac.begin() + 26, 0);
+  const auto path =
+      std::filesystem::temp_directory_path() /
+      ("kalinka-flac-unknown-length-" + std::to_string(getpid()) + ".flac");
+  std::ofstream(path, std::ios::binary)
+      .write(reinterpret_cast<const char *>(flac.data()), flac.size());
+
+  auto source = std::make_shared<FileInputNode>(1, path.string());
+  FlacStreamDecoder decoder(1, bufferSize);
+  decoder.connectTo(source);
+  ASSERT_EQ(waitForStatus(decoder, AudioGraphNodeState::STREAMING,
+                          std::chrono::seconds(2))
+                .state,
+            AudioGraphNodeState::STREAMING);
+  // Clamped to a length of zero, the seek would replay the track instead.
+  EXPECT_EQ(decoder.seekTo(1000), size_t(-1));
+  decoder.disconnect(source);
+  std::filesystem::remove(path);
 }

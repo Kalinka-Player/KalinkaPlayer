@@ -1,5 +1,6 @@
 #include "AlsaAudioEmitter.h"
 #include "AudioStreamSwitcher.h"
+#include "ByteRing.h"
 #include "Config.h"
 #include "ContainerTestSupport.h"
 #include "LivePcmStreamDecoder.h"
@@ -152,7 +153,7 @@ public:
   }
   void offer(const Bytes &bytes) { buffer.write(bytes.data(), bytes.size()); }
   size_t read(void *out, size_t size) override {
-    return buffer.read(static_cast<uint8_t *>(out), size);
+    return buffer.read(out, size);
   }
   size_t waitForData(std::stop_token token, size_t size) override {
     return buffer.waitForData(token, size);
@@ -164,7 +165,7 @@ public:
   }
 
 private:
-  Buffer<uint8_t> buffer{128 * 1024};
+  ByteRing buffer{128 * 1024};
 };
 } // namespace
 
