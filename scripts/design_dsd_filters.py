@@ -16,15 +16,22 @@ Every decimator keeps whatever would fold below the band filter's stop edge
 the half-bands. FOLD_DB, the acceptance figure, is far looser; what sets these
 is a DSD128 fixture's THD+N, near -173 dB, which the converter must not raise
 by 0.1 dB against DSD's near full-scale ultrasonic noise. All filters are
-linear phase, from Kaiser-windowed sinc.
+linear phase and equiripple, from Lawson's reweighted least squares, which
+needs half the taps a window would for stage 1.
 
 Usage: design_dsd_filters.py OUTPUT_HEADER
 """
 
+import functools
 import math
+import os
 import sys
 
-import numpy as np
+# Small solves: threads cost more than they save.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+
+import numpy as np  # noqa: E402
 
 FAMILIES = (44100, 48000)
 DSD_MULTIPLES = (64, 128, 256, 512, 1024)
@@ -32,10 +39,16 @@ PCM_MULTIPLES = (2, 4, 8)
 FILTERS = ("30k", "50k", "wide")
 
 FOLD_DB = 130.0
-STAGE1_DB = 170.0
-HALFBAND_DB = 162.0
+STAGE1_DB = 176.0
+HALFBAND_DB = 168.0
 DESIGN_MARGIN_DB = 3.0
 BAND_DB = 110.0
+# Passband error, relative, each stage 1 and band filter may have: together
+# far inside RIPPLE_DB.
+STAGE1_PASS = 1e-5
+BAND_PASS = 5e-5
+# How far over 0 dB stage 1 may rise between its stopbands.
+STAGE1_GAP_DB = 1.0
 PASSBAND_HZ = 20000.0
 RIPPLE_DB = 0.005
 # Taps 2^-36 apart keep stage 1's rounding near -200 dB; every sum stays an
@@ -49,14 +62,65 @@ WIDE_FRACTION = 0.45
 BANDS = {"30k": (20000.0, 40000.0), "50k": (40000.0, 60000.0)}
 
 
-def beta(atten_db):
-    return 0.1102 * (atten_db - 8.7)
+def lawson(columns, bands, zeros=(), iterations=150):
+    """Coefficients b of A(f) = columns(f) @ b nearest the minimax over `bands`,
+    each (low, high, desired, tolerance): Lawson's reweighted least squares,
+    which drives every band's error, over its tolerance, to the same level.
+    A is exactly zero at every frequency in `zeros`."""
+    rows, want, weight = [], [], []
+    for low, high, desired, tolerance in bands:
+        f = grid(low, high, 64 + int(4000 * (high - low) / bands[-1][1]))
+        rows.append(columns(f))
+        want.append(np.full(len(f), desired))
+        weight.append(np.full(len(f), 1.0 / tolerance))
+    c, d, w = np.vstack(rows), np.concatenate(want), np.concatenate(weight)
+    # Solved within the null space of the zeros, so they hold exactly.
+    basis = np.eye(c.shape[1])
+    if len(zeros):
+        _, sv, vt = np.linalg.svd(columns(np.asarray(zeros, dtype=float)))
+        basis = vt[np.sum(sv > 1e-12 * sv[0]) :].T
+    cb = c @ basis
+    lw = np.ones(len(d))
+    for _ in range(iterations):
+        root = np.sqrt(w * lw)
+        y, *_ = np.linalg.lstsq(cb * root[:, None], d * root, rcond=None)
+        lw = lw * np.abs(cb @ y - d) * w
+        lw = np.maximum(lw / lw.sum(), 1e-15)
+    return basis @ y
 
 
-def kaiser_lowpass(taps, cutoff, rate, atten_db):
-    t = np.arange(taps) - (taps - 1) / 2
-    h = 2 * cutoff / rate * np.sinc(2 * cutoff / rate * t)
-    return h * np.kaiser(taps, beta(atten_db))
+def estimate(tolerances, transition, rate):
+    """Bellanger's equiripple length for these ripples and transition."""
+    product = math.prod(tolerances)
+    return 2 / 3 * math.log10(1 / (10 * product)) * rate / transition
+
+
+def shortest(sizes, make, start):
+    """The design from the smallest of `sizes` for which `make` returns one,
+    searched from `start` both ways; `make` returns None for a size too small."""
+    i = min(range(len(sizes)), key=lambda j: abs(sizes[j] - start))
+    found = make(sizes[i])
+    if found is None:
+        for j in range(i + 1, len(sizes)):
+            found = make(sizes[j])
+            if found is not None:
+                return found
+        return None
+    for j in range(i - 1, -1, -1):
+        smaller = make(sizes[j])
+        if smaller is None:
+            break
+        found = smaller
+    return found
+
+
+def progress(text):
+    print(text, file=sys.stderr, flush=True)
+
+
+def even_taps(b):
+    """Symmetric taps of even length from A(w) = sum b_k cos((k + 1/2) w)."""
+    return np.concatenate([b[::-1], b]) / 2
 
 
 def response_db(h, freqs, rate):
@@ -85,17 +149,15 @@ def quantise_stage1(h):
     scale = 1 << STAGE1_SHIFT
     target = scale // 8
     h = h / h.sum() * scale
-    # The least change that evens the phases out: its spectrum sits on the
-    # multiples of fs/8, where the zeros are wanted.
-    for phase in range(8):
-        h[phase::8] += (target - h[phase::8].sum()) / len(h[phase::8])
     q = np.round(h).astype(np.int64)
     n = len(q)
     centre = n // 2
     for phase in range(4):
-        # The pair nearest the centre in this phase; its mirror is phase 7-p.
+        # Rounding leaves the phases a few units apart: the pair nearest the
+        # centre takes it up, its mirror being phase 7 - p.
         k = max(i for i in range(centre) if i % 8 == phase)
         d = target - q[phase::8].sum()
+        assert abs(d) < 1 << 8
         q[k] += d
         q[n - 1 - k] += d
     assert all(q[p::8].sum() == target for p in range(8))
@@ -105,56 +167,102 @@ def quantise_stage1(h):
 
 
 def design_stage1(protect, rate, max_groups=STAGE1_MAX_GROUPS):
-    """The shortest stage 1, in whole bytes of taps, that meets FOLD_DB."""
-    bands = stage1_stopbands(protect, rate)
-    freqs = np.concatenate([grid(a, b) for a, b in bands])
+    """The shortest stage 1, in whole bytes of taps, that meets STAGE1_DB.
+
+    Multiband: flat to `protect`, stopped where that folds, and in between
+    held under STAGE1_GAP_DB, which the later stages' margin covers."""
+    stops = stage1_stopbands(protect, rate)
+    gaps = [(protect, stops[0][0])]
+    gaps += [(stops[i][1], stops[i + 1][0]) for i in range(len(stops) - 1)]
     goal = STAGE1_DB + DESIGN_MARGIN_DB
-    for groups in range(4, max_groups + 1):
-        taps = groups * 8
-        h = kaiser_lowpass(taps, rate / 16, rate, goal)
-        q = quantise_stage1(h)
-        worst = response_db(q / float(1 << STAGE1_SHIFT), freqs, rate).max()
-        if worst <= -goal:
-            return q
-    raise RuntimeError(f"no stage 1 for {protect} Hz at {rate} Hz")
+    tolerance = 10 ** (-goal / 20)
+    bands = [(0.0, protect, 1.0, STAGE1_PASS)]
+    bands += [(a, b, 0.0, tolerance) for a, b in stops]
+    # A gap starts where the passband ends, at 1: a tolerance of 1 there would
+    # pin every band's error at its tolerance and never let it fall below.
+    bands += [(a, b, 0.0, 1.5) for a, b in gaps if b > a]
+    bands.sort()
+    stopband = np.concatenate([grid(a, b) for a, b in stops])
+    passband = grid(0.0, protect)
+    # Zeros at the multiples of fs/8 even out the 8 phases' sums.
+    zeros = [rate / 8 * j for j in range(1, 5)]
+
+    def make(taps):
+        k = np.arange(taps // 2) + 0.5
+        b = lawson(lambda f: np.cos(np.outer(2 * np.pi * f / rate, k)), bands,
+                   zeros)
+        q = quantise_stage1(even_taps(b))
+        h = q / float(1 << STAGE1_SHIFT)
+        good = (response_db(h, stopband, rate).max() <= -goal
+                and np.abs(10 ** (response_db(h, passband, rate) / 20) - 1).max() <= 10 * STAGE1_PASS
+                and all(response_db(h, grid(a, c), rate).max() <= STAGE1_GAP_DB
+                        for a, c in gaps if c > a))
+        return q if good else None
+
+    start = estimate([STAGE1_PASS, tolerance], rate / 8 - 2 * protect, rate)
+    found = shortest([8 * g for g in range(4, max_groups + 1)], make, start)
+    if found is None:
+        raise RuntimeError(f"no stage 1 for {protect} Hz at {rate} Hz")
+    return found
 
 
 def design_halfband(protect, rate):
-    """The shortest half-band dividing `rate` by 2 that meets FOLD_DB."""
-    freqs = grid(rate / 2 - protect, rate / 2)
+    """The shortest half-band dividing `rate` by 2 that meets HALFBAND_DB.
+
+    Its passband error mirrors its stopband's, so only the stopband is set:
+    A(w) = 1/2 + sum 2 a_i cos((2i + 1) w)."""
     goal = HALFBAND_DB + DESIGN_MARGIN_DB
-    for k in range(1, 200):
-        taps = 4 * k + 3
-        h = kaiser_lowpass(taps, rate / 4, rate, goal)
-        centre = taps // 2
-        side = h[centre + 1 :: 2]
+    stopband = grid(rate / 2 - protect, rate / 2)
+
+    def make(taps):
+        odd = 2 * np.arange((taps - 3) // 4 + 1) + 1
+        columns = lambda f: 2 * np.cos(np.outer(2 * np.pi * f / rate, odd))
+        side = lawson(columns, [(rate / 2 - protect, rate / 2, -0.5, 1.0)])
         side = side * (0.25 / side.sum())
+        centre = taps // 2
         full = np.zeros(taps)
         full[centre] = 0.5
         full[centre + 1 :: 2] = side
         full[centre - 1 :: -2] = side
-        if response_db(full, freqs, rate).max() <= -goal:
-            return full
-    raise RuntimeError(f"no half-band for {protect} Hz at {rate} Hz")
+        return full if response_db(full, stopband, rate).max() <= -goal else None
+
+    tolerance = 10 ** (-goal / 20)
+    start = estimate([tolerance, tolerance], rate / 2 - 2 * protect, rate)
+    found = shortest([4 * k + 3 for k in range(1, 200)], make, start)
+    if found is None:
+        raise RuntimeError(f"no half-band for {protect} Hz at {rate} Hz")
+    return found
 
 
 def design_band(passband, stopband, rate):
     """The shortest band filter at the output rate that meets BAND_DB."""
-    freqs = grid(stopband, rate / 2)
     goal = BAND_DB + DESIGN_MARGIN_DB
-    for half in range(4, 400):
-        taps = 2 * half + 1
-        h = kaiser_lowpass(taps, (passband + stopband) / 2, rate, goal)
+    tolerance = 10 ** (-goal / 20)
+    stops, passes = grid(stopband, rate / 2), grid(0.0, passband)
+
+    def make(taps):
+        k = np.arange(taps // 2 + 1)
+        b = lawson(lambda f: np.cos(np.outer(2 * np.pi * f / rate, k)),
+                   [(0.0, passband, 1.0, BAND_PASS),
+                    (stopband, rate / 2, 0.0, tolerance)])
+        h = np.concatenate([b[:0:-1] / 2, b[:1], b[1:] / 2])
         h /= h.sum()
-        if response_db(h, freqs, rate).max() <= -goal:
-            return h
-    raise RuntimeError(f"no band filter for {passband} Hz at {rate} Hz")
+        good = (response_db(h, stops, rate).max() <= -goal
+                and np.abs(10 ** (response_db(h, passes, rate) / 20) - 1).max() <= 10 * BAND_PASS)
+        return h if good else None
+
+    start = estimate([BAND_PASS, tolerance], stopband - passband, rate)
+    found = shortest([2 * half + 1 for half in range(4, 400)], make, start)
+    if found is None:
+        raise RuntimeError(f"no band filter for {passband} Hz at {rate} Hz")
+    return found
 
 
+@functools.cache
 def widest_stage1_protect(rate):
-    """The widest band stage 1 protects within STAGE1_MAX_GROUPS."""
+    """The widest band stage 1 protects within STAGE1_MAX_GROUPS, to 100 Hz."""
     low, high = 0.0, rate / 16
-    for _ in range(30):
+    while high - low > 100:
         mid = (low + high) / 2
         try:
             design_stage1(mid, rate)
@@ -176,8 +284,9 @@ class Designs:
         store = getattr(self, kind)
         full = (kind,) + key
         if full not in self.keys:
-            self.keys[full] = len(store)
             store.append(make())
+            self.keys[full] = len(store) - 1
+            progress(f"{kind} {key}: {len(store[-1])} taps")
         return self.keys[full]
 
 
@@ -193,10 +302,18 @@ def chain_for(designs, base, dsd, pcm, name):
         protect = WIDE_FRACTION * rate_out
     if ratio == 8:
         protect = min(protect, widest_stage1_protect(rate_in))
-    norm = protect / rate_in
-    s1 = designs.get(
-        "stage1", (round(norm, 9),), lambda: design_stage1(norm * 1e6, 1e6)
-    )
+    while True:
+        norm = protect / rate_in
+        try:
+            s1 = designs.get(
+                "stage1", (round(norm, 9),), lambda: design_stage1(norm * 1e6, 1e6)
+            )
+            break
+        except RuntimeError:
+            # Success near the widest band is not quite monotonic: back off.
+            if ratio != 8:
+                raise
+            protect = math.floor(protect * 0.99 / 100) * 100
     halves = []
     rate = rate_in / 8
     while rate > rate_out:
@@ -217,7 +334,7 @@ def chain_for(designs, base, dsd, pcm, name):
         )
     return dict(
         base=base, dsd=dsd, pcm=pcm, name=name, protect=protect, stage1=s1,
-        halfbands=halves, band=b, passband=band[0] if band else WIDE_FRACTION * rate_out,
+        halfbands=halves, band=b, passband=band[0] if band else protect,
     )
 
 
@@ -291,6 +408,7 @@ def main(path):
     out.append("")
     out.append("#include <cstddef>")
     out.append("#include <cstdint>")
+    out.append("#include <iterator>")
     out.append("")
     out.append("namespace dsd_filters {")
     out.append("")

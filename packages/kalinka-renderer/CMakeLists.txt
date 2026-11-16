@@ -121,6 +121,7 @@ add_library(kalinka_native_player STATIC
   src/native_player/DelayLine.cpp
   src/native_player/DsdContainer.cpp
   src/native_player/DsdFormat.cpp
+  src/native_player/DsdKernels.cpp
   src/native_player/DsdToPcm.cpp
   src/native_player/FirFilters.cpp
   src/native_player/FirKernels.cpp
