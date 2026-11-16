@@ -155,6 +155,50 @@ CPU time:
 | The deque's copy, inlined into `BufferedStreamDecoder::read` | 73 ms | gone |
 | `memmove` on the ALSA thread | none: the deque copied element by element | 4 ms |
 
+### DSD to PCM (`dsd`, 16 November 2026)
+
+The converter as committed, with its equiripple filters. Each column times one
+stage 1 kernel with the same vectorised FIRs after it, stereo; the reference
+column is the scalar code every kernel nulls against. Pinned to cpu 2, three
+runs, of which this is the first:
+
+| Conversion | Filter | Scalar reference | Four sums | Channel pairs | Nibble lookups |
+|---|---|---|---|---|---|
+| DSD64 to 88.2 kHz | 30 kHz | 98.89 ns (0.872 %) | 40.80 ns (0.360 %) | 39.01 ns (0.344 %) | 42.04 ns (0.371 %) |
+| DSD64 to 176.4 kHz | 30 kHz | 41.33 ns (0.729 %) | 19.04 ns (0.336 %) | 18.01 ns (0.318 %) | 19.29 ns (0.340 %) |
+| DSD64 to 176.4 kHz | 50 kHz | 50.06 ns (0.883 %) | 19.91 ns (0.351 %) | 20.80 ns (0.367 %) | 22.77 ns (0.402 %) |
+| DSD64 to 176.4 kHz | wide | 75.23 ns (1.327 %) | 25.37 ns (0.447 %) | 25.08 ns (0.442 %) | 26.79 ns (0.473 %) |
+| DSD64 to 352.8 kHz | 30 kHz | 42.23 ns (1.490 %) | 15.38 ns (0.543 %) | 14.80 ns (0.522 %) | 15.60 ns (0.550 %) |
+| DSD128 to 176.4 kHz | 50 kHz | 72.70 ns (1.282 %) | 32.04 ns (0.565 %) | 32.50 ns (0.573 %) | 34.38 ns (0.606 %) |
+| DSD128 to 352.8 kHz | 50 kHz | 54.18 ns (1.912 %) | 20.73 ns (0.731 %) | 20.82 ns (0.735 %) | 22.09 ns (0.779 %) |
+| DSD256 to 352.8 kHz | 30 kHz | 68.57 ns (2.419 %) | 33.66 ns (1.188 %) | 29.31 ns (1.034 %) | 32.59 ns (1.150 %) |
+| DSD256 to 352.8 kHz | 50 kHz | 73.87 ns (2.606 %) | 36.35 ns (1.283 %) | 32.31 ns (1.140 %) | 35.99 ns (1.270 %) |
+| DSD512 to 352.8 kHz | 50 kHz | 115.38 ns (4.071 %) | 62.45 ns (2.203 %) | 55.52 ns (1.959 %) | 57.85 ns (2.041 %) |
+| DSD1024 to 352.8 kHz | 50 kHz | 179.51 ns (6.333 %) | 112.54 ns (3.970 %) | 97.10 ns (3.426 %) | 106.80 ns (3.768 %) |
+
+The first two runs agree within 4 % up to DSD256 and within 11 % above. The
+third ran 9–47 % slower in every column at once from DSD64 to 176.4 kHz wide
+to DSD256: that is the clock under `powersave`, so compare columns within a
+run, not runs. Channel pairs were fastest in 24 of the 33 rows and four sums
+in the rest, by at most 5 %.
+
+The Kaiser-window filters of the first commit (stage 1 at 170 dB, half-bands
+at 162 dB) on the same kernels, one run:
+
+| Conversion | Filter | Scalar reference | Four sums | Channel pairs | Nibble lookups |
+|---|---|---|---|---|---|
+| DSD64 to 88.2 kHz | 30 kHz | 106.64 ns (0.941 %) | 62.79 ns (0.554 %) | 55.47 ns (0.489 %) | 55.91 ns (0.493 %) |
+| DSD64 to 176.4 kHz | 30 kHz | 41.51 ns (0.732 %) | 26.59 ns (0.469 %) | 23.24 ns (0.410 %) | 22.90 ns (0.404 %) |
+| DSD64 to 176.4 kHz | 50 kHz | 51.06 ns (0.901 %) | 30.81 ns (0.543 %) | 27.09 ns (0.478 %) | 26.63 ns (0.470 %) |
+| DSD64 to 176.4 kHz | wide | 74.13 ns (1.308 %) | 39.94 ns (0.705 %) | 37.24 ns (0.657 %) | 37.71 ns (0.665 %) |
+| DSD64 to 352.8 kHz | 30 kHz | 42.27 ns (1.491 %) | 25.21 ns (0.889 %) | 23.50 ns (0.829 %) | 23.97 ns (0.846 %) |
+| DSD128 to 176.4 kHz | 50 kHz | 75.60 ns (1.334 %) | 45.21 ns (0.797 %) | 41.85 ns (0.738 %) | 40.86 ns (0.721 %) |
+| DSD128 to 352.8 kHz | 50 kHz | 56.37 ns (1.989 %) | 33.04 ns (1.166 %) | 31.45 ns (1.110 %) | 30.78 ns (1.086 %) |
+| DSD256 to 352.8 kHz | 30 kHz | 73.36 ns (2.588 %) | 48.92 ns (1.726 %) | 44.59 ns (1.573 %) | 42.76 ns (1.508 %) |
+| DSD256 to 352.8 kHz | 50 kHz | 79.55 ns (2.806 %) | 49.09 ns (1.732 %) | 45.29 ns (1.598 %) | 44.97 ns (1.587 %) |
+| DSD512 to 352.8 kHz | 50 kHz | 115.60 ns (4.078 %) | 80.82 ns (2.851 %) | 69.16 ns (2.440 %) | 67.60 ns (2.385 %) |
+| DSD1024 to 352.8 kHz | 50 kHz | 193.70 ns (6.834 %) | 144.88 ns (5.111 %) | 123.29 ns (4.350 %) | 117.82 ns (4.157 %) |
+
 ## arm64: Raspberry Pi 5, 15 November 2026
 
 - CPU: Arm Cortex-A76, 4 cores at up to 2.4 GHz; Raspberry Pi 5 Model B
@@ -278,6 +322,123 @@ unnamed libc addresses in both builds. Debian 13's GCC already turned the
 deque's copy into `memmove`, so a single thread gains least here; the larger
 gain is in the two-thread row, where writer and reader share the deque's lock.
 
-## arm64: Raspberry Pi 4
+### DSD to PCM (`dsd`, 16 November 2026)
 
-Not measured yet; see [RUNBOOK.md](RUNBOOK.md).
+Same board, the converter as committed, pinned to core 3, three runs, of
+which this is the first. Core 3 read 1500 MHz as the first run started and
+2400 MHz at every later sample; the board ran at 58–68 C.
+
+| Conversion | Filter | Scalar reference | Four sums | Channel pairs | Nibble lookups |
+|---|---|---|---|---|---|
+| DSD64 to 88.2 kHz | 30 kHz | 291.75 ns (2.573 %) | 154.79 ns (1.365 %) | 134.66 ns (1.188 %) | 141.80 ns (1.251 %) |
+| DSD64 to 176.4 kHz | 30 kHz | 132.47 ns (2.337 %) | 71.64 ns (1.264 %) | 61.36 ns (1.082 %) | 64.97 ns (1.146 %) |
+| DSD64 to 176.4 kHz | 50 kHz | 156.43 ns (2.759 %) | 77.95 ns (1.375 %) | 69.29 ns (1.222 %) | 74.12 ns (1.307 %) |
+| DSD64 to 176.4 kHz | wide | 191.95 ns (3.386 %) | 96.74 ns (1.706 %) | 83.60 ns (1.475 %) | 88.51 ns (1.561 %) |
+| DSD64 to 352.8 kHz | 30 kHz | 140.21 ns (4.947 %) | 57.42 ns (2.026 %) | 51.90 ns (1.831 %) | 54.16 ns (1.911 %) |
+| DSD128 to 176.4 kHz | 50 kHz | 224.09 ns (3.953 %) | 122.65 ns (2.164 %) | 107.30 ns (1.893 %) | 117.61 ns (2.075 %) |
+| DSD128 to 352.8 kHz | 50 kHz | 177.19 ns (6.251 %) | 79.69 ns (2.812 %) | 72.10 ns (2.544 %) | 77.26 ns (2.726 %) |
+| DSD256 to 352.8 kHz | 30 kHz | 222.87 ns (7.863 %) | 125.71 ns (4.435 %) | 103.18 ns (3.640 %) | 112.18 ns (3.958 %) |
+| DSD256 to 352.8 kHz | 50 kHz | 238.05 ns (8.399 %) | 132.10 ns (4.660 %) | 109.14 ns (3.851 %) | 119.29 ns (4.209 %) |
+| DSD512 to 352.8 kHz | 50 kHz | 331.86 ns (11.708 %) | 207.98 ns (7.337 %) | 168.56 ns (5.947 %) | 189.19 ns (6.675 %) |
+| DSD1024 to 352.8 kHz | 50 kHz | 533.49 ns (18.821 %) | 377.25 ns (13.309 %) | 305.53 ns (10.779 %) | 339.26 ns (11.969 %) |
+
+The three runs agree within 4 % in every cell. Channel pairs were fastest in
+every row of every run, 2–14 % ahead of the next kernel.
+
+The Kaiser-window filters of the first commit, on the same kernels, one run:
+
+| Conversion | Filter | Scalar reference | Four sums | Channel pairs | Nibble lookups |
+|---|---|---|---|---|---|
+| DSD64 to 88.2 kHz | 30 kHz | 268.52 ns (2.368 %) | 217.37 ns (1.917 %) | 184.04 ns (1.623 %) | 189.49 ns (1.671 %) |
+| DSD64 to 176.4 kHz | 30 kHz | 131.96 ns (2.328 %) | 99.84 ns (1.761 %) | 83.48 ns (1.473 %) | 86.25 ns (1.521 %) |
+| DSD64 to 176.4 kHz | 50 kHz | 152.04 ns (2.682 %) | 115.50 ns (2.037 %) | 96.32 ns (1.699 %) | 98.79 ns (1.743 %) |
+| DSD64 to 176.4 kHz | wide | 171.23 ns (3.021 %) | 130.64 ns (2.304 %) | 114.98 ns (2.028 %) | 117.04 ns (2.065 %) |
+| DSD64 to 352.8 kHz | 30 kHz | 141.00 ns (4.974 %) | 85.28 ns (3.009 %) | 77.20 ns (2.723 %) | 78.59 ns (2.773 %) |
+| DSD128 to 176.4 kHz | 50 kHz | 219.84 ns (3.878 %) | 170.13 ns (3.001 %) | 148.00 ns (2.611 %) | 154.89 ns (2.732 %) |
+| DSD128 to 352.8 kHz | 50 kHz | 177.70 ns (6.269 %) | 115.53 ns (4.076 %) | 104.59 ns (3.690 %) | 107.99 ns (3.810 %) |
+| DSD256 to 352.8 kHz | 30 kHz | 228.46 ns (8.060 %) | 172.73 ns (6.094 %) | 146.04 ns (5.152 %) | 153.20 ns (5.405 %) |
+| DSD256 to 352.8 kHz | 50 kHz | 241.90 ns (8.534 %) | 173.35 ns (6.116 %) | 154.12 ns (5.437 %) | 160.69 ns (5.669 %) |
+| DSD512 to 352.8 kHz | 50 kHz | 343.12 ns (12.105 %) | 287.75 ns (10.152 %) | 238.36 ns (8.409 %) | 251.94 ns (8.888 %) |
+| DSD1024 to 352.8 kHz | 50 kHz | 559.60 ns (19.743 %) | 514.71 ns (18.159 %) | 417.13 ns (14.716 %) | 444.43 ns (15.679 %) |
+
+## arm64: Raspberry Pi 4, 16 November 2026
+
+- CPU: Arm Cortex-A72, 4 cores at up to 1.8 GHz, L1 data cache 32 KB and
+  two-way; Raspberry Pi 4 Model B Rev 1.5, 4 GB
+- Kernel: Linux 6.18.50+rpt-rpi-v8 aarch64 (Debian 13)
+- Compiler: Debian 13's GCC 14.2, `-O3 -DNDEBUG`, built on the Pi against
+  Debian 13's own libraries, as the packages are
+- Every run pinned to core 3, with the governor left at `ondemand`, without
+  root. Core 3 read 600–1800 MHz as a run started and 1800 MHz as it ended;
+  the board ran at 67–78 C. `vcgencmd get_throttled` read 0x80000 throughout:
+  the soft temperature limit had been reached since boot, but was not active.
+- The installed server, renderer and supervisor were running, idle.
+
+Only the DSD converter has been measured on this board.
+
+### DSD to PCM (`dsd`, 16 November 2026)
+
+The converter as committed, ten runs: two in the session that chose the
+filters, on the same kernels, three in a row after a build, and five 30 s
+apart after a 90 s rest. The first of those five, as printed:
+
+| Conversion | Filter | Scalar reference | Four sums | Channel pairs | Nibble lookups |
+|---|---|---|---|---|---|
+| DSD64 to 88.2 kHz | 30 kHz | 624.36 ns (5.507 %) | 455.57 ns (4.018 %) | 426.96 ns (3.766 %) | 395.01 ns (3.484 %) |
+| DSD64 to 176.4 kHz | 30 kHz | 275.17 ns (4.854 %) | 204.52 ns (3.608 %) | 192.19 ns (3.390 %) | 177.75 ns (3.135 %) |
+| DSD64 to 176.4 kHz | 50 kHz | 323.10 ns (5.700 %) | 233.47 ns (4.118 %) | 227.28 ns (4.009 %) | 206.54 ns (3.643 %) |
+| DSD64 to 176.4 kHz | wide | 433.36 ns (7.644 %) | 322.79 ns (5.694 %) | 296.48 ns (5.230 %) | 251.11 ns (4.430 %) |
+| DSD64 to 352.8 kHz | 30 kHz | 287.23 ns (10.134 %) | 177.36 ns (6.257 %) | 171.41 ns (6.047 %) | 164.77 ns (5.813 %) |
+| DSD128 to 176.4 kHz | 50 kHz | 471.58 ns (8.319 %) | 367.51 ns (6.483 %) | 343.75 ns (6.064 %) | 313.77 ns (5.535 %) |
+| DSD128 to 352.8 kHz | 50 kHz | 367.81 ns (12.976 %) | 245.29 ns (8.654 %) | 235.87 ns (8.322 %) | 222.08 ns (7.835 %) |
+| DSD256 to 352.8 kHz | 30 kHz | 452.92 ns (15.979 %) | 315.11 ns (11.117 %) | 286.24 ns (10.099 %) | 307.65 ns (10.854 %) |
+| DSD256 to 352.8 kHz | 50 kHz | 500.56 ns (17.660 %) | 371.70 ns (13.114 %) | 340.23 ns (12.003 %) | 327.74 ns (11.563 %) |
+| DSD512 to 352.8 kHz | 50 kHz | 691.84 ns (24.408 %) | 503.78 ns (17.773 %) | 455.72 ns (16.078 %) | 498.95 ns (17.603 %) |
+| DSD1024 to 352.8 kHz | 50 kHz | 1131.35 ns (39.914 %) | 884.87 ns (31.218 %) | 794.86 ns (28.043 %) | 887.46 ns (31.310 %) |
+
+Of one core, the median of the ten runs and their range:
+
+| Conversion | Filter | Scalar reference | Four sums | Channel pairs | Nibble lookups |
+|---|---|---|---|---|---|
+| DSD64 to 88.2 kHz | 30 kHz | 5.51 % (4.97–5.83) | 4.05 % (3.51–4.50) | 3.80 % (3.25–4.30) | 3.49 % (3.42–3.52) |
+| DSD64 to 176.4 kHz | 30 kHz | 4.85 % (4.32–5.14) | 3.66 % (3.16–4.08) | 3.43 % (2.84–3.87) | 3.12 % (3.10–3.15) |
+| DSD64 to 176.4 kHz | 50 kHz | 5.73 % (5.02–6.36) | 4.11 % (3.48–5.00) | 4.08 % (3.35–4.57) | 3.62 % (3.60–3.65) |
+| DSD64 to 176.4 kHz | wide | 7.54 % (6.56–8.28) | 5.45 % (4.50–6.26) | 5.15 % (4.30–5.75) | 4.43 % (4.40–4.45) |
+| DSD64 to 352.8 kHz | 30 kHz | 10.13 % (9.58–10.42) | 6.29 % (5.80–6.75) | 6.09 % (5.49–6.55) | 5.80 % (5.77–5.84) |
+| DSD128 to 176.4 kHz | 50 kHz | 7.96 % (7.36–8.64) | 6.09 % (5.33–6.87) | 5.73 % (5.01–6.51) | 5.54 % (5.44–5.58) |
+| DSD128 to 352.8 kHz | 50 kHz | 12.71 % (12.10–13.38) | 8.33 % (7.69–9.16) | 8.02 % (7.29–8.81) | 7.83 % (7.79–7.92) |
+| DSD256 to 352.8 kHz | 30 kHz | 15.93 % (15.53–17.72) | 11.11 % (10.79–13.54) | 10.00 % (9.73–12.28) | 10.86 % (10.78–10.95) |
+| DSD256 to 352.8 kHz | 50 kHz | 17.09 % (16.37–18.58) | 12.43 % (11.44–14.18) | 11.47 % (10.70–12.86) | 11.56 % (11.41–11.65) |
+| DSD512 to 352.8 kHz | 50 kHz | 24.38 % (23.55–25.42) | 17.62 % (16.98–20.30) | 16.04 % (15.40–18.38) | 17.54 % (17.28–17.70) |
+| DSD1024 to 352.8 kHz | 50 kHz | 40.01 % (38.69–42.00) | 30.50 % (29.21–35.37) | 27.46 % (25.98–31.38) | 30.72 % (29.65–31.31) |
+
+Nibble lookups repeat within 3 %, 6 % at DSD1024. Every kernel that reads
+2 KB byte tables, the reference among them, moves by 8–36 % between runs.
+The likeliest cause is the cache: DSD64's stage 1 alone has 20 KB of
+tables, and in a two-way 32 KB L1 whether they collide with the streams
+depends on where they land, which changes from run to run. The nibble tables
+are 160 bytes a group. The Pi 5's L1 is 64 KB and four-way, and its runs
+agree within 4 %.
+
+Below DSD256 nibble lookups are the fastest on medians as well, by 2–16 %.
+At DSD256 channel pairs lead by 9 % with the 30 kHz filter and draw with the
+50 kHz one, and from DSD512 up they lead by 9–11 %. The converter uses
+channel pairs on every machine
+([docs/dsp-design.md](../../docs/dsp-design.md), section 14).
+
+The Kaiser-window filters of the first commit, on the same kernels, the first
+of two runs alternating with the equiripple ones:
+
+| Conversion | Filter | Scalar reference | Four sums | Channel pairs | Nibble lookups |
+|---|---|---|---|---|---|
+| DSD64 to 88.2 kHz | 30 kHz | 918.37 ns (8.100 %) | 671.89 ns (5.926 %) | 603.97 ns (5.327 %) | 533.58 ns (4.706 %) |
+| DSD64 to 176.4 kHz | 30 kHz | 446.32 ns (7.873 %) | 321.30 ns (5.668 %) | 287.18 ns (5.066 %) | 251.45 ns (4.436 %) |
+| DSD64 to 176.4 kHz | 50 kHz | 504.47 ns (8.899 %) | 362.58 ns (6.396 %) | 323.56 ns (5.708 %) | 288.10 ns (5.082 %) |
+| DSD64 to 176.4 kHz | wide | 549.04 ns (9.685 %) | 385.56 ns (6.801 %) | 358.96 ns (6.332 %) | 308.16 ns (5.436 %) |
+| DSD64 to 352.8 kHz | 30 kHz | 381.34 ns (13.454 %) | 246.36 ns (8.692 %) | 229.45 ns (8.095 %) | 211.96 ns (7.478 %) |
+| DSD128 to 176.4 kHz | 50 kHz | 791.79 ns (13.967 %) | 584.25 ns (10.306 %) | 558.14 ns (9.846 %) | 460.86 ns (8.130 %) |
+| DSD128 to 352.8 kHz | 50 kHz | 525.44 ns (18.538 %) | 362.05 ns (12.773 %) | 351.08 ns (12.386 %) | 304.09 ns (10.728 %) |
+| DSD256 to 352.8 kHz | 30 kHz | 775.40 ns (27.356 %) | 574.04 ns (20.252 %) | 548.57 ns (19.354 %) | 453.14 ns (15.987 %) |
+| DSD256 to 352.8 kHz | 50 kHz | 810.94 ns (28.610 %) | 596.13 ns (21.032 %) | 570.68 ns (20.134 %) | 474.72 ns (16.748 %) |
+| DSD512 to 352.8 kHz | 50 kHz | 1354.18 ns (47.775 %) | 1048.16 ns (36.979 %) | 993.71 ns (35.058 %) | 799.33 ns (28.200 %) |
+| DSD1024 to 352.8 kHz | 50 kHz | 2092.53 ns (73.824 %) | 1721.42 ns (60.732 %) | 1615.41 ns (56.991 %) | 1327.70 ns (46.841 %) |

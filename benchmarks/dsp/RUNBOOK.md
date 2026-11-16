@@ -15,6 +15,7 @@ into [results.md](results.md); the design they support is
 | `playback FILE...` | What playing a file costs today: CPU over audio duration, played to the end into the ALSA `null` device. `--delay-ms N` sends it through the DSP stage holding N ms back |
 | `kernels` | Per-frame cost of each audio kernel at 44.1, 96, 192 and 352.8 kHz, and what that is of one core in real time |
 | `simd` | The SIMD mechanisms side by side on a float64 FIR and a stereo biquad cascade, each null-tested against the scalar reference |
+| `dsd` | What DSD-to-PCM conversion costs, per output frame and of one core, for each stage 1 kernel at the rates the budgets name and beyond |
 | `fixtures` | The quality of the DSD test fixtures the harness writes, at DSD64, 128 and 256 |
 | `join` | How big a discontinuity per-stream processing leaves at a gapless join, for a PEQ, a 65535-tap FIR and a resampler |
 | `make-wav FILE RATE BITS SECONDS` | A dense stereo test signal to encode with `flac` for `playback` |
@@ -72,13 +73,15 @@ for run in 1 2 3; do $B playback pink-16-44k.flac pink-24-192k.flac; done > play
 $B playback --delay-ms 300 pink-16-44k.flac pink-24-192k.flac > playback-delay.md
 $B kernels > kernels.md
 $B simd > simd.md
+for run in 1 2 3; do $B dsd; done > dsd.md
 $B fixtures > fixtures.md
 $B join > join.md
 ```
 
 `fixtures` and `join` measure maths, not the board. They print the same
 numbers everywhere to within rounding, which makes them a check that the build
-is sane, not data. The board's data is `playback`, `kernels` and `simd`.
+is sane, not data. The board's data is `playback`, `kernels`, `simd` and
+`dsd`.
 
 Where the time goes. Raspberry Pi OS kernels may have no matching
 `linux-perf`; if `perf` refuses the running kernel, leave this part out and
@@ -124,6 +127,10 @@ or run anything else meanwhile: two builds at once can exhaust the memory of a
 - **SIMD**: each row's null must be at or below -250 dB. -400 dB means
   bit-identical, which is expected without FMA. Anything above -200 dB is a
   bug in that kernel, not rounding.
+- **DSD**: compare the kernels within one run. On a Pi 4 the kernels that read
+  byte tables move by up to a third between runs while nibble lookups hold
+  within a few percent, so a Pi 4 needs several runs and their medians. No
+  kernel should be slower than the scalar reference.
 - **Fixtures**: THD+N near -128 dB at DSD64, -173 dB at DSD128, -193 dB at
   DSD256. A much worse number means the modulator changed.
 - **Join**: four rows, each with an error around -22 to -26 dBFS. Zero would

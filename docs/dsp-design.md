@@ -4,8 +4,9 @@ Status: Phase 0, for review. Nothing here processes audio yet. What exists is
 a DSP stage that holds the audio back and changes nothing, the test and
 benchmark harness, and the measurements this note rests on. Every number is
 from a run named in [benchmarks/dsp/results.md](../benchmarks/dsp/results.md);
-the arm64 ones are from a Raspberry Pi 5. A Pi 4 has not been measured; the
-[runbook](../benchmarks/dsp/RUNBOOK.md) is how its numbers get made.
+the arm64 ones are from a Raspberry Pi 5. A Pi 4 has been measured for the
+DSD converter only; the [runbook](../benchmarks/dsp/RUNBOOK.md) is how its
+other numbers get made.
 
 The note covers the renderer in `packages/kalinka-renderer`. The rules in
 [`CLAUDE.md`](../CLAUDE.md) and
@@ -452,8 +453,9 @@ uses it.
 
 Recommendation: Highway, as the system package, coded against Debian 13's
 1.2.0 API, with SVE disabled until a measured gain on hardware we have. The
-Pi 5 confirms it. The A72 in a Pi 4 is not measured yet. If Highway's NEON
-trails hand NEON there, the answer changes.
+Pi 5 confirms it. The `simd` comparison has not run on a Pi 4's A72; the
+DSD converter's Highway kernels have (section 14). If Highway's NEON trails
+hand NEON there, the answer changes.
 
 ## 10. FFT: PFFFT, fetched at build time
 
@@ -556,13 +558,16 @@ are measured, scaled where noted.
 
 | Stage | CPU target, Pi 4 | Memory target | Measured so far, x86 | Measured so far, Pi 5 |
 |---|---|---|---|---|
-| DSD to PCM, DSD64 to 176.4 kHz stereo | < 2 % | stage 1 tables ≤ 32 KB | — | — |
-| DSD to PCM, DSD256 to 352.8 kHz stereo | < 6 % | ≤ 32 KB tables, then by benchmark | — | — |
+| DSD to PCM, DSD64 to 176.4 kHz stereo | < 2 % | stage 1 tables ≤ 32 KB | 0.32 %, tables 20 KB | 1.07 % |
+| DSD to PCM, DSD256 to 352.8 kHz stereo | < 6 % | ≤ 32 KB tables, then by benchmark | 1.15 %, tables 14 KB | 3.85 % |
 | PEQ, 20 bands stereo at 192 kHz | < 1 % | coefficients only | 10 biquads 8.7 ns/frame, so 20 bands at 192 kHz would be about 0.33 % | 10 biquads 23.0 ns/frame pipelined, so about 0.9 % (1.2 % unpipelined) |
 | FIR, 65536 taps stereo at 44.1 kHz | < 3 % | spectra of every partition, float64 ≈ 4 MB stereo | FFT table (section 10) | FFT table (section 10) |
 | Upsampling 44.1 to 352.8 kHz | < 5 % | filter tables | libsoxr VHQ 2×: 10 ns per input frame, 0.04 % at 44.1 kHz | libsoxr VHQ 2×: 60 ns per input frame, 0.27 % at 44.1 kHz |
 | Gain, dither, pack | < 0.5 % | none | today's GainFade 2.5 ns/frame | today's GainFade 8.4 ns/frame |
 | Stage overhead (FIFO, segments) | < 0.2 % | one 32768-frame FIFO | DelayLine stage 0.4 ns/frame | DelayLine stage 1.8 ns/frame, 0.07 % at 352.8 kHz |
+
+The DSD rows are measured on a Pi 4 too: 3.43 % and 11.5 %, over both
+budgets. Review accepted that (section 14).
 
 The PEQ is the one budget the Pi 5 already comes close to, so a Pi 4 at
 full load will likely be over it. That load means twenty active bands at 192 kHz. A band at
@@ -713,6 +718,113 @@ The modulator's own quality, a 1 kHz tone at half modulation over 0.5 s:
     unknown values, so a future type cannot break a settings page again. It
     lands with the first decimal setting, the Phase 2 preamp.
 
-## 14. Open questions
+## 14. DSD to PCM, as built
 
-None from review. New ones come with Phase 1.
+`DsdToPcm` is Phase 1's converter. It is built and tested, but not yet in
+playback: `output.dsd_mode` `pcm`, the `dsd.*` settings of section 7, the
+seek pre-roll and the gapless join come with wiring it into the stage.
+
+**Chains.** Every DSD rate from DSD64 to DSD1024, in both families, converts
+to 2, 4 or 8 times 44.1 or 48 kHz with each of the three filters: 90 chains,
+designed by `scripts/design_dsd_filters.py` into `DsdFilterTaps.h`. Stage 1
+divides by 8 a byte at a time from tables, a half-band
+(`HalfBandDecimator`) takes each further factor of 2, and a band filter at the
+output rate (`SymmetricFir`) sets the cut-off:
+- 30 kHz is flat to 20 kHz and 110 dB down from 40 kHz;
+- 50 kHz is flat to 40 kHz and down from 60 kHz;
+- wide is flat to 0.45 of the output rate.
+
+Where wide comes straight out of stage 1, at DSD64 to 8 times the base, stage
+1 alone protects the band, and its 30 groups end it at 123.5 kHz for
+352.8 kHz output and 135.9 kHz for 384 kHz. `passbandHz()` reports that.
+
+**Stage 1.** Its taps are whole numbers in units of 2^-36, so every table
+entry and every sum is an integer below 2^53, exact in a double in any order.
+Zeros at the multiples of fs/8 are part of the design, so the eight phases
+sum alike and the idle pattern converts to exact zero. Up to 16 groups, 32 KB,
+the tables are whole and built in the stream's own bit order, so neither
+DSF's bytes nor DFF's need reversing. Past that only half are stored, MSB
+first, and each mirrored group reads its twin's table through bit-reversed
+bytes.
+
+**Equiripple, not Kaiser.** Kaiser windows are the usual choice for DSD
+decimation: past the edge their stopband keeps falling, so what folds in is
+far below the edge figure. An equiripple stopband sits at its limit
+throughout. The rejection that matters here is not the acceptance's 130 dB.
+It is what keeps THD+N within 0.1 dB of the DSD128 fixture's, near -172 dB,
+against DSD's near full-scale ultrasonic noise. Kaiser filters met that with
+stage 1 at 170 dB and the half-bands at 162 dB. Equiripple ones were 0.21 dB
+over there, and need 176 and 168 dB. They are still much shorter, because a
+multiband design leaves free the gaps between the bands that fold into the
+passband: DSD64's stage 1 has 80 taps against 152. On the same kernels, with
+channel pairs, of one core:
+
+| Conversion | Filters | Laptop | Pi 5 | Pi 4 |
+|---|---|---|---|---|
+| DSD64 to 176.4 kHz, 30 kHz | equiripple | 0.32 % | 1.07 % | 3.43 % |
+| | Kaiser | 0.41 % | 1.47 % | 4.5–5.1 % |
+| DSD256 to 352.8 kHz, 50 kHz | equiripple | 1.15 % | 3.85 % | 11.5 % |
+| | Kaiser | 1.60 % | 5.44 % | 20.1–21.3 % |
+
+The equiripple figures are medians of three runs, ten on the Pi 4. The Kaiser
+ones are one run each, two on the Pi 4.
+
+**Stage 1 kernels.** Beside the scalar reference, the three variants the plan
+asked for. Stage 1 adds whole numbers, so all four agree bit for bit, and the
+FIRs after them are the same vector code:
+- four sums: one channel, four partial sums at a time, from the byte tables;
+- channel pairs: two channels in one vector, from the byte tables;
+- nibble lookups: each 4-bit partial sum split into five byte planes, 16
+  entries each, looked up in registers with `tbl` on NEON and `pshufb` on x86.
+
+Channel pairs were fastest on x86-64 in 24 of 33 rows, and within 5 % in the
+rest. They were fastest on the A76 in every row, by 2–14 %. On the Pi 4's A72,
+nibble lookups were fastest below DSD256, by 2–16 % on medians, and the only
+kernel steady between runs, within 3 %. The byte-table kernels moved by
+8–36 %, most likely because the A72's L1 data cache is 32 KB and two-way.
+Channel pairs led there from DSD512 up. Review chose one kernel for every
+machine over a pick per CPU, so `DsdKernel::Fast` is channel pairs, and the
+Pi 4 runs about 10 % above its best at DSD64
+([results](../benchmarks/dsp/results.md)).
+
+**Over the Pi 4 budget, accepted.** Section 11's 2 % and 6 % were estimates.
+The Pi 4 measures 3.43 % (2.84–3.87 %) and 11.5 % (10.7–12.9 %). It takes
+3.0–3.2 times as long as the Pi 5 on the same code, 2.2–2.4 times per clock.
+The filter lengths are set by the rejection that THD+N needs, and review
+accepted the cost rather than looser filters. A Pi 5 is well inside both
+budgets.
+
+**Acceptance**, measured by the converter tests' own analysis over every
+chain:
+
+| Measure | Target | x86-64 | arm64, Pi 5 and Pi 4 |
+|---|---|---|---|
+| Passband ripple, 0 to 20 kHz | within 0.005 dB | 0.00094 dB | 0.00094 dB |
+| Rejection of what folds into 0 to 20 kHz | at least 130 dB | 172.7 dB | 172.7 dB |
+| Idle pattern 0x69 | exact zero | exact | exact |
+| THD+N, DSD64 to 176.4 kHz, 30 kHz, against the fixture | within 0.1 dB | +0.000 dB of -128.3 dB | +0.000 dB of -127.9 dB |
+| THD+N, DSD128 to 176.4 kHz, 50 kHz, against the fixture | within 0.1 dB | +0.040 dB of -172.4 dB | +0.073 dB of -172.5 dB |
+| Level at 1 kHz | 0.000 dB within 0.001 dB | 0.0002 dB | 0.0002 dB |
+| Optimised against the scalar reference | null below -150 dBFS | -313 dBFS | exact |
+| DSD64 to 176.4 kHz stereo on a Pi 4 | under 2 % of one core | | 3.43 % |
+| DSD256 to 352.8 kHz stereo on a Pi 4 | under 6 % of one core | | 11.5 % |
+
+The Pi 5's test build, run on the Pi 4 as well, gives both boards the same
+figures in every chain. The response columns agree with x86-64's to every
+printed digit. On arm64 the null is exact
+because GCC fuses the reference's multiply-adds there, as the vectors do;
+x86-64's baseline has no FMA. The fixtures themselves differ a little between
+the two, because the modulator's arithmetic does.
+
+DSD256 is outside the acceptance, which names DSD64 and DSD128 (section 13,
+decision 3), and there the conversion does not keep its fixture's THD+N. At
+352.8 kHz with the 50 kHz filter it measures -190.2 dB against -193.9 dB on
+x86-64, 3.7 dB over, and 4.2 dB over on arm64. That is near the floor of
+32-bit output, far below any DAC's. The cause is not established; the likeliest
+is what folds in past the decimators, as at DSD128 before the targets rose.
+
+## 15. Open questions
+
+1. **DSD256's THD+N** comes out 3.7–4.2 dB over its fixture's, near -190 dB
+   (section 14). It is outside the acceptance; whether to chase it, and at
+   what cost on a Pi 4, is open.
