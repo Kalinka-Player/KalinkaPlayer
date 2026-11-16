@@ -112,11 +112,7 @@ Played pull(AudioGraphOutputNode &node, size_t chunkFrames = 1024,
 
 std::vector<int32_t> counting(const CountingNode &node, size_t from,
                               size_t to) {
-  std::vector<int32_t> values;
-  for (size_t frame = from; frame < to; ++frame) {
-    values.push_back(node.value(frame));
-  }
-  return values;
+  return node.values(from, to);
 }
 
 std::vector<int32_t> joined(std::initializer_list<std::vector<int32_t>> parts) {
@@ -482,6 +478,30 @@ TEST(DspStageDelayTest, ASeekIsRefusedOnceUpstreamHasMovedOn) {
 
   EXPECT_EQ(stage.seekTo(0), size_t(-1))
       << "upstream would seek the second while the first still plays";
+}
+
+TEST(DspStageDelayTest, ANamedSeekLandsInTheStreamUpstreamHasLeft) {
+  auto switcher = std::make_shared<AudioStreamSwitcher>();
+  DspStage stage(std::make_unique<DelayLine>(std::chrono::milliseconds(300)));
+  stage.connectTo(switcher);
+  auto first = std::make_shared<CountingNode>(1, 1000000, 4800);
+  auto second = std::make_shared<CountingNode>(2, 2000000, 96000);
+  switcher->connectTo(first);
+  switcher->connectTo(second);
+  stage.acceptSourceChange();
+
+  std::vector<int32_t> buffer(2000);
+  ASSERT_EQ(stage.read(buffer.data(), buffer.size() * 4), buffer.size() * 4);
+  ASSERT_EQ(switcher->streamId(), std::optional<StreamId>(2))
+      << "the second source is already being read behind the first";
+
+  EXPECT_EQ(stage.seekStream(1, 1000), 1000u);
+  const auto played = pull(stage);
+
+  EXPECT_EQ(played.left,
+            joined({first->values(1000, 4800), second->values(0, 96000)}));
+  ASSERT_EQ(played.changesAt().size(), 1u);
+  EXPECT_EQ(played.events[0].id, std::optional<StreamId>(2));
 }
 
 TEST(DspStageDelayTest, ASourceWithoutASwitcherPlaysToItsEnd) {

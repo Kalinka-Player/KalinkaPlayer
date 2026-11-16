@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 #include <memory>
 
+#include "CountingNode.h"
 #include "TestHelpers.h"
 
 class WaitingNode : public AudioGraphOutputNode {
@@ -239,4 +240,101 @@ TEST_F(AudioStreamSwitcherTest, connect_after_finished) {
   }
   EXPECT_EQ(audioStreamSwitcher->getState().state,
             AudioGraphNodeState::FINISHED);
+}
+namespace {
+/// Left samples of up to @p frames frames, read in one call.
+std::vector<int32_t> readLeft(AudioGraphOutputNode &node, size_t frames) {
+  std::vector<int32_t> buffer(frames * 2);
+  const size_t bytes = node.read(buffer.data(), buffer.size() * 4);
+  std::vector<int32_t> left;
+  for (size_t i = 0; i < bytes / 8; ++i) {
+    left.push_back(buffer[2 * i]);
+  }
+  return left;
+}
+
+/// Two queued streams, the first played out and the second begun.
+class AudioStreamSwitcherSeekTest : public ::testing::Test {
+protected:
+  std::shared_ptr<AudioStreamSwitcher> switcher =
+      std::make_shared<AudioStreamSwitcher>();
+  std::shared_ptr<CountingNode> first =
+      std::make_shared<CountingNode>(1, 1000000, 1000);
+
+  std::shared_ptr<CountingNode> playFirstThenBegin(CountingNode::Options next) {
+    auto second = std::make_shared<CountingNode>(2, 2000000, 1000, next);
+    switcher->connectTo(first);
+    switcher->connectTo(second);
+    switcher->acceptSourceChange();
+    EXPECT_EQ(readLeft(*switcher, 1000), first->values(0, 1000));
+    EXPECT_EQ(switcher->getState().state, AudioGraphNodeState::SOURCE_CHANGED);
+    switcher->acceptSourceChange();
+    EXPECT_EQ(readLeft(*switcher, 300),
+              second->values(next.first, next.first + 300));
+    return second;
+  }
+};
+} // namespace
+
+TEST_F(AudioStreamSwitcherSeekTest,
+       AFinishedStreamPlaysAgainAndTheNextStartsOver) {
+  auto second = playFirstThenBegin({});
+
+  EXPECT_EQ(switcher->seekStream(1, 600), 600u);
+  EXPECT_EQ(switcher->getState().state, AudioGraphNodeState::STREAMING);
+  EXPECT_EQ(switcher->getState().streamId, std::optional<StreamId>(1));
+  EXPECT_EQ(switcher->streamReadPosition(), std::optional<long>(600));
+  EXPECT_EQ(readLeft(*switcher, 1000), first->values(600, 1000));
+
+  ASSERT_EQ(switcher->getState().state, AudioGraphNodeState::SOURCE_CHANGED);
+  EXPECT_EQ(switcher->getState().streamId, std::optional<StreamId>(2));
+  switcher->acceptSourceChange();
+  EXPECT_EQ(readLeft(*switcher, 1000), second->values(0, 1000));
+}
+
+TEST_F(AudioStreamSwitcherSeekTest, TheNextStartsOverWhereItFirstBegan) {
+  auto second = playFirstThenBegin({.first = 200});
+
+  ASSERT_EQ(switcher->seekStream(1, 900), 900u);
+  EXPECT_EQ(readLeft(*switcher, 1000), first->values(900, 1000));
+  switcher->acceptSourceChange();
+  EXPECT_EQ(readLeft(*switcher, 1000), second->values(200, 1000));
+}
+
+TEST_F(AudioStreamSwitcherSeekTest, ASeekBeforeTheNextIsTakenKeepsItQueued) {
+  auto second = std::make_shared<CountingNode>(2, 2000000, 1000);
+  switcher->connectTo(first);
+  switcher->connectTo(second);
+  switcher->acceptSourceChange();
+  ASSERT_EQ(readLeft(*switcher, 1000).size(), 1000u);
+  ASSERT_EQ(switcher->getState().state, AudioGraphNodeState::SOURCE_CHANGED);
+
+  EXPECT_EQ(switcher->seekStream(1, 500), 500u);
+  EXPECT_EQ(switcher->getState().state, AudioGraphNodeState::STREAMING);
+  EXPECT_EQ(readLeft(*switcher, 1000), first->values(500, 1000));
+  switcher->acceptSourceChange();
+  EXPECT_EQ(readLeft(*switcher, 1000), second->values(0, 1000));
+}
+
+TEST_F(AudioStreamSwitcherSeekTest, TheCurrentStreamIsSeekedInPlace) {
+  auto second = playFirstThenBegin({});
+
+  EXPECT_EQ(switcher->seekStream(2, 100), 100u);
+  EXPECT_EQ(switcher->getState().streamId, std::optional<StreamId>(2));
+  EXPECT_EQ(readLeft(*switcher, 1000), second->values(100, 1000));
+}
+
+TEST_F(AudioStreamSwitcherSeekTest, AStreamItDoesNotHoldIsRefused) {
+  auto second = playFirstThenBegin({});
+
+  EXPECT_EQ(switcher->seekStream(7, 100), size_t(-1));
+  EXPECT_EQ(switcher->getState().streamId, std::optional<StreamId>(2));
+  EXPECT_EQ(readLeft(*switcher, 100), second->values(300, 400));
+}
+
+TEST_F(AudioStreamSwitcherSeekTest, ADisconnectedStreamIsForgotten) {
+  playFirstThenBegin({});
+
+  switcher->disconnect(first);
+  EXPECT_EQ(switcher->seekStream(1, 100), size_t(-1));
 }

@@ -21,7 +21,7 @@
  * frame has been handed on. At any other join it plays the outgoing tail out
  * first. Formats the processor does not handle pass untouched.
  *
- * @note read(), the waits, seekTo(), acceptSourceChange(),
+ * @note read(), the waits, the seeks, acceptSourceChange(),
  * streamReadPosition() and liveSourceFrame() belong to the one thread that
  * pulls audio, which owns everything the stage holds. discard() and
  * discardAll() may come from any thread; connectTo() and disconnect() only
@@ -46,6 +46,9 @@ public:
 
   /// Refused while what plays belongs to a source upstream has already left.
   size_t seekTo(size_t absolutePosition) override;
+  /// Drops everything held and seeks @p stream upstream, even one upstream has
+  /// already left.
+  size_t seekStream(StreamId stream, size_t position) override;
   std::optional<long> streamReadPosition() const override;
   std::optional<uint64_t> liveSourceFrame() const override;
   void acceptSourceChange() override;
@@ -144,6 +147,8 @@ private:
   void dropEverything();
   /// Shows downstream what the stage now holds.
   void publish();
+  /// Lets go of everything held, as a seek must before upstream moves.
+  void restart();
   static StreamState shown(const Shared &shared);
   void onUpstreamState(const StreamState &state);
 };

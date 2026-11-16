@@ -221,6 +221,25 @@ TEST(AlsaAudioEmitter, AacBroadcastStartsWithAnUnalignedDecoderCapacity) {
   sink.disconnect(decoder);
 }
 
+TEST(PlayedFramesCounter, ACancelledCallbackNeverRunsAndTheOthersStill) {
+  PlayedFramesCounter counter;
+  std::vector<int> ran;
+  counter.callOnOrAfterFrame(100,
+                             [&ran](snd_pcm_sframes_t) { ran.push_back(1); });
+  const int cancelled = counter.callOnOrAfterFrame(
+      200, [&ran](snd_pcm_sframes_t) { ran.push_back(2); });
+  counter.callOnOrAfterFrame(300,
+                             [&ran](snd_pcm_sframes_t) { ran.push_back(3); });
+
+  counter.cancel(cancelled);
+  EXPECT_EQ(counter.drainSequence(),
+            (std::vector<snd_pcm_sframes_t>{100, 300}));
+  counter.update(400);
+  counter.cancel(cancelled);
+
+  EXPECT_EQ(ran, (std::vector<int>{1, 3}));
+}
+
 TEST(AlsaAudioEmitter, ExplicitBufferSizesApplyOnlyToNonLiveAudio) {
   using namespace std::chrono_literals;
   Config config{{"output.alsa.device", "null"},

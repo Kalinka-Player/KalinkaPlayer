@@ -199,7 +199,7 @@ latency. The upstream position stays ahead of what has been handed on, and
 | The sink accepts a change across formats | The old run ends; the next read starts a new run in the new format |
 | Upstream `FINISHED` or `ERROR` | The input closes and the tail is flushed; the state is shown once the last frame has been handed on |
 | Upstream runs dry | The stage holds what it has and shows upstream's `PREPARING`; nothing is flushed, so a short stall leaves no seam |
-| `seekTo` | Everything held is dropped, upstream seeks, a new run starts from the target. While what plays belongs to a source upstream has already left, the seek is refused until Phase 1 makes it land where the listener expects (section 13) |
+| `seekStream`, `seekTo` | Everything held is dropped, upstream seeks, a new run starts from the target. The emitter names the stream it reports, so the seek lands in the track being heard even after upstream has left it (section 13). An unnamed `seekTo` is still refused then |
 | `discard(id)`, from `AudioPlayer::remove` | What plays of that stream ends at once and the next held segment is announced; a later segment of it is skipped |
 | `discardAll()`, from `clearAll` and `stop` | Everything held is dropped |
 | DSD and DoP | The processor declines them; they pass untouched in every phase |
@@ -621,10 +621,27 @@ The modulator's own quality, a 1 kHz tone at half modulation over 0.5 s:
      source-change report instead of sending it;
    - `AudioGraphOutputNode::seekTo` names the stream.
 
-   Until then the stage refuses such a seek. The latency that widens the
-   window is a consequence, not a requirement. Phase 2 reduces it where it
-   can: minimum-phase and intermediate filters, and partitions sized for
-   latency.
+   The latency that widens the window is a consequence, not a requirement.
+   Phase 2 reduces it where it can: minimum-phase and intermediate filters,
+   and partitions sized for latency.
+
+   **Landed in Phase 1, with two differences from the plan:**
+   - The stream is named by a new `seekStream(stream, position)` rather than
+     by changing `seekTo`. `seekTo` is also the byte seek that decoders make
+     on their inputs, and a node holding one stream answers `seekStream` with
+     its own `seekTo`. Only the switcher, the stage and the emitter act on the
+     name.
+   - The switcher holds a finished source until it is disconnected.
+     `AudioPlayer` does that at the next append, once the emitter reports a
+     later stream.
+
+   The emitter cancels its pending source-change report instead of waiting
+   for it, which held a seek near a track's end for as long as the queued
+   audio lasted, and then announced the next track anyway. The same
+   work found the FLAC decoder reporting FINISHED on any seek made after it
+   had decoded to the end of the file: within the last 9 s of a 16/44.1
+   FLAC, a seek jumped to the next track. It now clears the end mark before
+   emptying the buffer.
 2. **DSD level: full scale, with no clipping the source did not have.** The
    SACD specification, as commonly quoted, puts 0 dB at half modulation and
    allows peaks 3.1 dB above it, about 71 % modulation. The default gain,

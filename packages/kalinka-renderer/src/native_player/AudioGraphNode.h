@@ -96,6 +96,18 @@ public:
                                 size_t size) = 0;
   virtual size_t seekTo(size_t absolutePosition) { return -1; }
 
+  /**
+   * @brief Seeks stream @p stream to frame @p position.
+   *
+   * The stream is the one the caller last reported, which a node holding
+   * several, such as the switcher, may already have moved on from.
+   * @return the frame reached, or size_t(-1) when the seek is refused.
+   * @note A node that holds one stream seeks it, whatever @p stream names.
+   */
+  virtual size_t seekStream(StreamId stream, size_t position) {
+    return seekTo(position);
+  }
+
   // How far the data handed out so far reaches, in frames. Live, unlike the
   // position in StreamState, which is only stamped when the state changes.
   // Empty before the format is known, or for a node that deals in bytes.

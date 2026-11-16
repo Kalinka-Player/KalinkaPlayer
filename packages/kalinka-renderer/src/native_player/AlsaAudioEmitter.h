@@ -26,18 +26,25 @@ public:
 
   std::vector<snd_pcm_sframes_t> drainSequence();
 
-  void
-  callOnOrAfterFrame(snd_pcm_sframes_t frame,
-                     std::function<void(snd_pcm_sframes_t)> onFramesPlayed);
+  /// @return an id that cancel() takes, until the callback has run.
+  int callOnOrAfterFrame(snd_pcm_sframes_t frame,
+                         std::function<void(snd_pcm_sframes_t)> onFramesPlayed);
+
+  /// Forgets callback @p id; one that has run or been cancelled is ignored.
+  void cancel(int id);
 
   void reset();
 
 private:
-  snd_pcm_sframes_t lastPlayedFrames = 0;
+  struct Pending {
+    int id;
+    snd_pcm_sframes_t frame;
+    std::function<void(snd_pcm_sframes_t)> onFramesPlayed;
+  };
 
-  std::list<
-      std::pair<snd_pcm_sframes_t, std::function<void(snd_pcm_sframes_t)>>>
-      onFramesPlayedCallbacks;
+  snd_pcm_sframes_t lastPlayedFrames = 0;
+  int nextId = 0;
+  std::list<Pending> onFramesPlayedCallbacks;
 };
 
 /// Frames a drop cannot take back, as they are already past the buffer: a
@@ -113,6 +120,9 @@ private:
   Signal<bool> pauseRequestSignal;
   bool paused = false;
   bool seekHappened = false;
+  /// The report of a gapless source change, waiting for its first frame to
+  /// be heard.
+  std::optional<int> pendingSourceReport;
 
   void workerThread(std::stop_token token);
   bool handleSeekSignal();
