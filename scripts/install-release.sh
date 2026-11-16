@@ -82,8 +82,14 @@ ID="" VERSION_ID="" PRETTY_NAME=""
 PLATFORM="${ID:-unknown}-${VERSION_ID:-unknown}"
 
 # apt refuses the server on an older Python, and its repair then removes what was installed.
-if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
-  die "Kalinka needs Python 3.11 or newer, and ${PRETTY_NAME:-this system} has Python $(python3 -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])').
+# The server depends on the system's python3, whatever else comes first on PATH.
+SYSTEM_PYTHON=/usr/bin/python3
+[ -x "$SYSTEM_PYTHON" ] || SYSTEM_PYTHON=python3
+if ! python_version="$("$SYSTEM_PYTHON" -c 'import sys
+print("%d.%d.%d" % sys.version_info[:3])
+sys.exit(sys.version_info < (3, 11))')"; then
+  [ -n "$python_version" ] || die "$SYSTEM_PYTHON does not run, and the server needs it"
+  die "Kalinka needs Python 3.11 or newer, and ${PRETTY_NAME:-this system} has Python ${python_version}.
   It installs on Debian 13, Raspberry Pi OS (64-bit) or DietPi on Debian 13, or Ubuntu 24.04:
   https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#d-install-with-one-command"
 fi

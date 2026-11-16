@@ -263,7 +263,7 @@ class Service:
             stdin=subprocess.DEVNULL,
             stdout=output,
             stderr=subprocess.STDOUT,
-            process_group=0,
+            start_new_session=True,
             **as_user,
         )
 
