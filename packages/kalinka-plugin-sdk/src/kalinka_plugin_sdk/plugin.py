@@ -60,6 +60,13 @@ class PluginContextBase:
     # kw_only so this defaulted field can live on the base without breaking
     # subclasses that declare required positional fields.
     embedder: Optional[TextEmbedder] = field(default=None, kw_only=True)
+    # SDK 3.23: tells the server that what get_state() or the interface's
+    # capabilities() answer has moved, so clients learn it now rather than at
+    # the next health check. Call it on the event loop; calls made close
+    # together are answered by one check. None on an older server.
+    report_state_changed: Callable[[], None] | None = field(
+        default=None, kw_only=True
+    )
 
 
 CTX_TYPE = TypeVar("CTX_TYPE", bound=PluginContextBase)
