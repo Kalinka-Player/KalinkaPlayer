@@ -50,7 +50,7 @@ std::string dsdRateName(unsigned rate) {
 
 bool isDsdMode(const std::string &mode) {
   return mode == "disabled" || mode == "auto" || mode == "native" ||
-         mode == "dop";
+         mode == "dop" || mode == "pcm";
 }
 
 unsigned dsdBitsPerFrame(AudioSampleFormat format) {
@@ -138,6 +138,9 @@ StreamAudioFormat chooseDsdOutput(const OutputCapabilities &caps,
     throw std::runtime_error(DSD_DISABLED_ERROR);
   if (!isDsdMode(mode))
     throw std::runtime_error("Invalid DSD output mode");
+  // Raw bytes for the DSP stage to convert, on any output.
+  if (mode == "pcm")
+    return {rate / 8, channels, 1, DSD_U8, rate};
   if (caps.access == DeviceAccess::Shared)
     throw std::runtime_error(DSD_SHARED_OUTPUT_ERROR);
   if (caps.access != DeviceAccess::Exclusive)

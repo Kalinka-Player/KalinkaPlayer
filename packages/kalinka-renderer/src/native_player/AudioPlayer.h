@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "AlsaAudioEmitter.h"
 #include "AlsaVolumeControl.h"
@@ -121,6 +122,8 @@ private:
   Config streamConfig;
   std::shared_ptr<AlsaAudioEmitter> audioEmitter;
   std::shared_ptr<AudioStreamSwitcher> streamSwitcher;
+  /// What the device was probed to take when the player started.
+  const std::vector<StreamAudioFormat> deviceFormats;
   std::shared_ptr<DspStage> dspStage;
   /// Where software volume is applied, between the stage and the emitter.
   std::shared_ptr<OutputStage> outputStage;

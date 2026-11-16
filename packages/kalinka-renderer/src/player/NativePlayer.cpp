@@ -293,6 +293,9 @@ const Choice kDsdChoices[] = {
     {"dop", "DoP",
      "Send DSD wrapped in PCM. Choose only if the DAC supports DoP, as other DACs "
      "play it as noise."},
+    {"pcm", "Convert to PCM",
+     "Convert DSD to PCM in the renderer. Plays on any output, with any volume "
+     "control."},
 };
 
 void addChoices(renderer_pb::ConfigField &field,
@@ -956,17 +959,17 @@ void NativePlayer::fillConfig(renderer_pb::ConfigSection &out) const {
   dsd->set_path("output.dsd_mode");
   dsd->set_title("DSD output");
   dsd->set_help_details(
-      "Plays DSF and DSDIFF files without converting them to PCM. The DAC must "
-      "support the selected mode and the track’s DSD rate. Unsupported tracks fail "
-      "to play.");
+      "Plays DSF and DSDIFF files, either as DSD, which the DAC must support in "
+      "the selected mode and at the track’s DSD rate, or converted to PCM. "
+      "Unsupported tracks fail to play.");
   dsd->set_type(renderer_pb::CONFIG_FIELD_TYPE_ENUM);
   dsd->set_value(settings_.at("output.dsd_mode"));
   dsd->set_default_value("disabled");
   dsd->set_importance(renderer_pb::CONFIG_IMPORTANCE_SIMPLE);
   dsd->set_apply(renderer_pb::APPLY_COST_INTERRUPTS_PLAYBACK);
   dsd->set_description(
-      "Requires an output device marked (direct), and either Fixed output volume "
-      "or a connected device.");
+      "Native DSD and DoP require an output device marked (direct), and either "
+      "Fixed output volume or a connected device. Convert to PCM plays anywhere.");
   addChoices(*dsd, kDsdChoices);
 
   for (const Knob &knob : kOutputKnobs) {
