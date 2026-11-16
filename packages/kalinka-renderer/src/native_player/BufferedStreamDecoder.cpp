@@ -164,4 +164,8 @@ void BufferedStreamDecoder::run(std::stop_token token) {
   seekSignal.close(size_t(-1));
   ready.close(false);
   buffer.setEof();
+  // Stopped by its owner, not by the source: an error must stay visible.
+  if (token.stop_requested() &&
+      getState().state != AudioGraphNodeState::ERROR)
+    setState(StreamState(AudioGraphNodeState::STOPPED));
 }

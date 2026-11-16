@@ -16,7 +16,8 @@
  * Owns the buffer, the worker, the start offset and the seek handshake; a
  * subclass supplies the source through open(), decodeNext() and seekSource(),
  * all of which run on the worker. A seek or shutdown interrupts the worker's
- * waits. A hook that throws ends the stream in the ERROR state.
+ * waits. A hook that throws ends the stream in the ERROR state; a stream
+ * stopped by its owner otherwise ends STOPPED.
  * @note A subclass calls start() once it is fully built and stop() in its own
  * destructor, so the worker never calls into a half-built or half-destroyed
  * object.
