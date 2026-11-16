@@ -138,6 +138,8 @@ private:
   void skipDropped();
   /// Takes what other threads left: upstream's state and pending discards.
   void sync();
+  /// Takes upstream's state alone, leaving discards for the next sync().
+  void takeUpstream();
   void drop(StreamId id);
   void dropEverything();
   /// Shows downstream what the stage now holds.

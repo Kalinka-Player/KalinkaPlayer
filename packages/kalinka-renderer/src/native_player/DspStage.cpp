@@ -97,6 +97,14 @@ StreamState DspStage::shown(const Shared &shared) {
   return state;
 }
 
+void DspStage::takeUpstream() {
+  updateState([this](const StreamState &) -> std::optional<StreamState> {
+    upstreamSeen = shared.upstream;
+    upstreamChangesSeen = shared.upstreamChanges;
+    return std::nullopt;
+  });
+}
+
 void DspStage::sync() {
   bool everything = false;
   updateState([this, &everything](const StreamState &)
@@ -107,6 +115,9 @@ void DspStage::sync() {
     everything = std::exchange(shared.discardEverything, false);
     return std::nullopt;
   });
+  if (!everything && discardsTaken.empty()) {
+    return;
+  }
   if (everything) {
     dropEverything();
   }
@@ -114,6 +125,8 @@ void DspStage::sync() {
     drop(id);
   }
   discardsTaken.clear();
+  // What a discard showed was decided without what this thread did since.
+  publish();
 }
 
 void DspStage::publish() {
@@ -353,10 +366,8 @@ bool DspStage::perform(Step step, size_t count) {
   case Step::Accept: {
     upstream->acceptSourceChange();
     const auto position = upstream->streamReadPosition();
-    sync();
-    if (segments.empty() || !segments.back().open) {
-      return true;
-    }
+    // Not sync(): a discard taken here would close the tail unrecorded.
+    takeUpstream();
     Segment &tail = segments.back();
     const StreamState &now = upstreamSeen;
     tail.open = false;
@@ -537,10 +548,6 @@ void DspStage::acceptSourceChange() {
   }
   sync();
   skipDropped();
-  // A discard taken just now may have ended what played with nothing after it.
-  if (headExhausted() && !nextAfterHead() && !boundary) {
-    dropEverything();
-  }
   if (segments.empty()) {
     if (boundary) {
       boundary.reset();
