@@ -84,8 +84,8 @@ FlacStreamDecoder::write_callback(const ::FLAC__Frame *frame,
   convertToFormat(data.data(), buffer, blockSize, format);
 
   size_t bytesWritten = 0;
-  auto combinedStopToken = combineStopTokens(decodingThread.get_stop_token(),
-                                             seekSignal.getStopToken());
+  auto combinedStopToken =
+      combineStopTokens(workerToken, seekSignal.getStopToken());
 
   while (bytesWritten < blockSizeInBytes) {
     auto spaceAvailable =
@@ -95,7 +95,7 @@ FlacStreamDecoder::write_callback(const ::FLAC__Frame *frame,
       break;
     }
 
-    if (decodingThread.get_stop_token().stop_requested()) {
+    if (workerToken.stop_requested()) {
       return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
     }
 
@@ -110,13 +110,13 @@ FlacStreamDecoder::write_callback(const ::FLAC__Frame *frame,
 }
 ::FLAC__StreamDecoderReadStatus
 FlacStreamDecoder::read_callback(FLAC__byte buffer[], size_t *bytes) {
-  auto combinedStopToken = combineStopTokens(seekSignal.getStopToken(),
-                                             decodingThread.get_stop_token());
+  auto combinedStopToken =
+      combineStopTokens(seekSignal.getStopToken(), workerToken);
   // A paced producer holds its next frames until these play.
   inputNode->waitForData(combinedStopToken.get_token());
   *bytes = inputNode->read(buffer, *bytes);
   sourceStreamPosition += *bytes;
-  if (decodingThread.get_stop_token().stop_requested()) {
+  if (workerToken.stop_requested()) {
     return FLAC__STREAM_DECODER_READ_STATUS_ABORT;
   }
   auto inputNodeState = inputNode->getState();
@@ -281,6 +281,7 @@ void FlacStreamDecoder::handleSeekSignal(size_t position) {
 }
 
 void FlacStreamDecoder::thread_run(std::stop_token token) {
+  workerToken = token;
   pthread_setname_np(pthread_self(), "FlacDecoder");
   try {
     if (get_state() == FLAC__STREAM_DECODER_UNINITIALIZED) {

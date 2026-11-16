@@ -33,6 +33,9 @@ public:
 
 private:
   std::jthread decodingThread;
+  /// The worker's own stop token, which its callbacks read: the thread object
+  /// may still be being assigned when they first run.
+  std::stop_token workerToken;
   std::shared_ptr<AudioGraphOutputNode> inputNode;
   Buffer<uint8_t> buffer;
   const size_t startOffsetMs;

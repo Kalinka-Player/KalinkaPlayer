@@ -71,8 +71,8 @@ size_t AudioGraphHttpStream::WriteCallback(void *contents, size_t size,
                    .prebufferMs = !lengthKnown && !live ? 1000u : 0u}));
     setStreamingState = false;
   }
-  auto combinedStopToken = combineStopTokens(seekRequestSignal.getStopToken(),
-                                             readerThread.get_stop_token());
+  auto combinedStopToken =
+      combineStopTokens(seekRequestSignal.getStopToken(), readerToken);
   while (sizeWritten < totalSize) {
     auto spaceAvailable = buffer.waitForSpace(combinedStopToken.get_token());
     if (combinedStopToken.get_token().stop_requested()) {
@@ -94,7 +94,7 @@ int AudioGraphHttpStream::transferInfoCallback(void *stream, curl_off_t,
                                                curl_off_t, curl_off_t,
                                                curl_off_t) {
   const auto &self = *static_cast<AudioGraphHttpStream *>(stream);
-  const bool abort = self.readerThread.get_stop_token().stop_requested() ||
+  const bool abort = self.readerToken.stop_requested() ||
                      self.seekRequestSignal.getStopToken().stop_requested() ||
                      self.stalled();
   return abort ? 1 : 0;
@@ -215,6 +215,7 @@ bool AudioGraphHttpStream::handleSeekSignal(size_t position) {
 }
 
 void AudioGraphHttpStream::reader(std::stop_token stopToken) {
+  readerToken = stopToken;
   pthread_setname_np(pthread_self(), "HttpStream");
   try {
     setState(StreamState(AudioGraphNodeState::PREPARING));

@@ -63,6 +63,9 @@ protected:
 
 private:
   std::jthread decodingThread;
+  /// The worker's own stop token, which its callbacks read: the thread object
+  /// may still be being assigned when they first run.
+  std::stop_token workerToken;
 
   std::optional<FLAC__StreamMetadata_StreamInfo> flacStreamInfo;
   std::optional<size_t> sourceStreamLength;
