@@ -124,6 +124,8 @@ Use this on a computer that already runs one of these 64-bit systems:
 - **DietPi** on Debian 13
 - **Ubuntu 24.04 LTS**. The installer skips the Bluetooth input plugin because Ubuntu's BlueALSA package is too old.
 
+The server needs Python 3.11 or newer, which all of these have: on an older system, such as Ubuntu 22.04, the script stops before it downloads anything.
+
 `cat /etc/os-release` tells you which one you have. Open a terminal on that computer, or log in to it over SSH, and run:
 
 ```bash

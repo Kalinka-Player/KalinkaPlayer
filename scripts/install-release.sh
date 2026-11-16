@@ -77,9 +77,16 @@ have python3 || die "python3 is required (it is also a runtime dependency of the
 
 # Keep platform exclusions independent of the requested Kalinka version: this
 # script is served from main, including when installing older release bundles.
-ID="" VERSION_ID=""
+ID="" VERSION_ID="" PRETTY_NAME=""
 [ -r /etc/os-release ] && . /etc/os-release
 PLATFORM="${ID:-unknown}-${VERSION_ID:-unknown}"
+
+# apt refuses the server on an older Python, and its repair then removes what was installed.
+if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
+  die "Kalinka needs Python 3.11 or newer, and ${PRETTY_NAME:-this system} has Python $(python3 -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])').
+  It installs on Debian 13, Raspberry Pi OS (64-bit) or DietPi on Debian 13, or Ubuntu 24.04:
+  https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#d-install-with-one-command"
+fi
 
 # --- fetch helpers (curl or wget) ---------------------------------------------
 AUTH=()
@@ -353,6 +360,11 @@ if ! $SUDO "${APT_INSTALL[@]}" "${BUNDLE_OPTS[@]}" "$TMPDIR_DL"/*.deb; then
   $SUDO dpkg -i "$TMPDIR_DL"/*.deb || true
   $SUDO "${APT_INSTALL[@]}" -f
 fi
+
+# The repair succeeds by removing what it cannot configure, the server included.
+server_state="$(dpkg-query -W -f='${db:Status-Status}' kalinka-server 2>/dev/null || true)"
+[ "$server_state" = installed ] \
+  || die "$TAG is not installed: dpkg reports kalinka-server as '${server_state:-unknown}', not 'installed'. apt's output above says why."
 
 # --- display driver -----------------------------------------------------------
 # flutter-pi draws through KMS, which DietPi ships commented out beside a 16 MB GPU split.
