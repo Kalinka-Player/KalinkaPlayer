@@ -717,12 +717,41 @@ The modulator's own quality, a 1 kHz tone at half modulation over 0.5 s:
     the renderer validates. The Core's `enum_name()` learns to tolerate
     unknown values, so a future type cannot break a settings page again. It
     lands with the first decimal setting, the Phase 2 preamp.
+11. **A device that takes none of the converter's rates.** The converter
+    divides by powers of two only, so DSD comes out at 2, 4 or 8 times its
+    own family's base: 88.2, 176.4 or 352.8 kHz from the 44.1 kHz family,
+    96, 192 or 384 kHz from the 48 kHz one. `dsd.pcm_rate` `auto` takes 4
+    times when the device does, else the highest of the three it does.
+    Through `default` or `plughw:` a sound server or ALSA's plug layer
+    resamples any of them. Through `hw:` nothing does, and many devices
+    take only 44.1 and 48 kHz, or only the 48 kHz family: HDMI, onboard
+    codecs, simple USB DACs. So:
+    - when the device takes none of the three, the converter goes down to
+      the base rate itself, 44.1 or 48 kHz, with one more half-band;
+    - when it takes no rate of the source's family at all, DSD in `pcm`
+      mode is refused with a message saying so, as DSD is refused today
+      when native output is not available;
+    - crossing into the other family, through a resampler after the
+      converter, waits for Phase 2's.
+
+    The base-rate chains and the refusal land with wiring the converter
+    into playback.
 
 ## 14. DSD to PCM, as built
 
 `DsdToPcm` is Phase 1's converter. It is built and tested, but not yet in
 playback: `output.dsd_mode` `pcm`, the `dsd.*` settings of section 7, the
-seek pre-roll and the gapless join come with wiring it into the stage.
+seek pre-roll and the gapless join come with wiring it into the stage, and
+so do the base-rate chains of section 13, decision 11.
+
+**Where the code is.** All of the DSP is in `native_player/dsp/`:
+- the stage, `DspStage`, and `DspProcessor`, the interface it runs audio
+  through, with `DelayLine` as its first processor;
+- `fir/`, the linear-phase FIR blocks later phases reuse: `SymmetricFir`
+  and `HalfBandDecimator`, with their Highway loops;
+- `dsd/`, the converter. `DsdToPcm` runs the chain. Stage 1 is an
+  interface with a class for each kernel, made by `makeStage1()`, so a
+  kernel is added without touching the chain.
 
 **Chains.** Every DSD rate from DSD64 to DSD1024, in both families, converts
 to 2, 4 or 8 times 44.1 or 48 kHz with each of the three filters: 90 chains,
