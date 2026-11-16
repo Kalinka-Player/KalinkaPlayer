@@ -332,10 +332,6 @@ TEST(DsdPacking, PcmOperationsRejectDsdAndLeaveBitsUntouched) {
   EXPECT_THROW(convertSampleFormat(source.data(), PCM16_LE, 2, dest.data(),
                                    DOP24_LE, dest.size()),
                std::invalid_argument);
-  EXPECT_THROW(applyGainInPlace(source.data(), source.size(), DSD_U8, 0.5f),
-               std::invalid_argument);
-  EXPECT_THROW(applyGainInPlace(source.data(), source.size(), DOP24_LE, 0.0f),
-               std::invalid_argument);
   EXPECT_EQ(source, (Bytes{1, 2, 3, 4}));
 }
 StreamState awaitError(AudioPlayer &player) {

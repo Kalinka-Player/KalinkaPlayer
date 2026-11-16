@@ -5,8 +5,11 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <unistd.h>
 
 #include "ScopedAlsaConfig.h"
@@ -14,8 +17,8 @@
 
 // What AudioPlayer hands to ALSA, captured by its file plugin, against what
 // the decoder makes of the same file. With nothing processing and the volume
-// fixed they are the same bytes, across a gapless join too, whatever latency
-// the DSP stage hides.
+// fixed or at full they are the same bytes, across a gapless join too,
+// whatever latency the DSP stage hides.
 namespace {
 
 std::string ladder() {
@@ -32,6 +35,12 @@ std::vector<uint8_t> decoded(const std::string &path) {
     out.insert(out.end(), chunk.begin(), chunk.begin() + long(bytes));
   }
   decoder->disconnect(input);
+  return out;
+}
+
+std::vector<int16_t> samples(const std::vector<uint8_t> &bytes) {
+  std::vector<int16_t> out(bytes.size() / 2);
+  std::memcpy(out.data(), bytes.data(), out.size() * 2);
   return out;
 }
 
@@ -58,10 +67,16 @@ protected:
     std::filesystem::remove_all(directory, error);
   }
 
-  std::vector<uint8_t> play(const std::vector<std::string> &files) {
+  /// @param softwareVolume A percentage, or fixed volume when absent.
+  std::vector<uint8_t> play(const std::vector<std::string> &files,
+                            std::optional<int> softwareVolume = std::nullopt) {
     {
       AudioPlayer player({{"output.alsa.device", "capture"},
                           {"dsp.delay_ms", std::to_string(GetParam())}});
+      if (softwareVolume) {
+        player.configureVolume("software", "");
+        player.setVolume(*softwareVolume);
+      }
       auto monitor = player.monitor();
       StreamId id = 0;
       for (const auto &file : files) {
@@ -96,6 +111,24 @@ TEST_P(BitPerfectOutputTest, AGaplessJoinReachesAlsaUnchanged) {
   const auto written = play({ladder(), ladder()});
   ASSERT_EQ(written.size(), expected.size());
   EXPECT_TRUE(written == expected);
+}
+
+TEST_P(BitPerfectOutputTest, SoftwareVolumeAtFullReachesAlsaUnchanged) {
+  EXPECT_TRUE(play({ladder()}, 100) == decoded(ladder()));
+}
+
+TEST_P(BitPerfectOutputTest, SoftwareVolumeBelowFullIsScaledAndDithered) {
+  const auto source = samples(decoded(ladder()));
+  const auto written = samples(play({ladder()}, 50));
+  ASSERT_EQ(written.size(), source.size());
+  size_t offPlainRounding = 0;
+  for (size_t i = 0; i < source.size(); ++i) {
+    // 50 % is 0.5 cubed.
+    const double exact = source[i] * 0.125;
+    ASSERT_LE(std::abs(written[i] - exact), 1.5) << "sample " << i;
+    offPlainRounding += written[i] != std::lround(exact);
+  }
+  EXPECT_GT(offPlainRounding, source.size() / 10);
 }
 
 INSTANTIATE_TEST_SUITE_P(, BitPerfectOutputTest, testing::Values(0, 300),

@@ -21,6 +21,7 @@
 #include "WavContainer.h"
 #include "dsp/DelayLine.h"
 #include "dsp/DspStage.h"
+#include "dsp/output/OutputStage.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -67,9 +68,9 @@ bool isInvalidState(AudioGraphNodeState state) {
 
 // Map a 0..100 percent to a linear amplitude gain for software volume. Cubic
 // gives a roughly perceptual taper (~ -18 dB at 50%) and lands exactly on 1.0
-// at 100%, which AlsaAudioEmitter treats as a bit-perfect bypass.
-float percentToGain(int percent) {
-  const float p = std::clamp(percent, 0, 100) / 100.0f;
+// at 100%, which the output stage passes untouched.
+double percentToGain(int percent) {
+  const double p = std::clamp(percent, 0, 100) / 100.0;
   return p * p * p;
 }
 
@@ -315,16 +316,16 @@ AudioPlayer::AudioPlayer(const Config &config)
     : config(config), streamConfig(config),
       audioEmitter(std::make_shared<AlsaAudioEmitter>(config)),
       streamSwitcher(std::make_shared<AudioStreamSwitcher>()),
-      dspStage(std::make_shared<DspStage>(dspProcessorFor(config))) {
+      dspStage(std::make_shared<DspStage>(dspProcessorFor(config))),
+      // Before PCM holds the device; queued DSD tracks choose from the cache.
+      outputStage(std::make_shared<OutputStage>(
+          probeOutput(
+              value_or(config, "output.alsa.device", std::string("default")))
+              .formats)) {
   dspStage->connectTo(streamSwitcher);
+  outputStage->connectTo(dspStage);
   std::erase_if(streamConfig,
                 [](const auto &entry) { return !isStreamKey(entry.first); });
-  if (value_or(config, "output.dsd_mode", std::string("disabled")) !=
-      "disabled") {
-    // Cache before PCM starts holding the device, so a queued DSD track can
-    // choose its packing without interrupting the track already playing.
-    probeOutput(value_or(config, "output.alsa.device", std::string("default")));
-  }
   // Renderer delta: no initLogger() — the renderer owns the spdlog setup.
   perfmon_print_periodically(5);
   // Volume handling stays "fixed" (no processing) until the local output device
@@ -374,13 +375,13 @@ bool AudioPlayer::configureVolume(const std::string &mode,
       (requested == VolumeMode::Hardware || requested == VolumeMode::Auto)
           ? std::move(mixer)
           : nullptr;
-  // Keep the emitter's software gain consistent with the active backend so a
-  // mode switch (or Auto resolving to hardware) can't leave stale attenuation
+  // Keep the output's gain consistent with the active backend so a mode
+  // switch (or Auto resolving to hardware) can't leave stale attenuation
   // behind: only the software backend applies gain; everything else must stay
   // bit-perfect (unity).
-  audioEmitter->setSoftwareVolume(activeBackend() == VolumeBackend::Software
-                                      ? percentToGain(softwarePercent)
-                                      : 1.0f);
+  outputStage->setGain(activeBackend() == VolumeBackend::Software
+                           ? percentToGain(softwarePercent)
+                           : 1.0);
   spdlog::info("AudioPlayer volume configured: mode={}, hardware mixer {}", mode,
                (volumeControl && volumeControl->available()) ? "available"
                                                              : "unavailable");
@@ -400,7 +401,7 @@ void AudioPlayer::append(StreamId id, const std::string &url,
                 startOffsetMs);
   StreamNodes newStream(id, url, currentStreamConfig(), format, startOffsetMs);
   streamSwitcher->connectTo(newStream.nodeChain.back());
-  audioEmitter->connectTo(dspStage);
+  audioEmitter->connectTo(outputStage);
   streamNodesList.emplace_back(std::move(newStream));
 }
 
@@ -422,7 +423,7 @@ void AudioPlayer::clearAll() {
 }
 
 void AudioPlayer::stop() {
-  audioEmitter->disconnect(dspStage);
+  audioEmitter->disconnect(outputStage);
   disconnectAllStreams();
   dspStage->discardAll();
 }
@@ -510,7 +511,7 @@ void AudioPlayer::setVolume(int percent) {
     break;
   case VolumeBackend::Software:
     softwarePercent = percent;
-    audioEmitter->setSoftwareVolume(percentToGain(percent));
+    outputStage->setGain(percentToGain(percent));
     break;
   case VolumeBackend::None:
   default:

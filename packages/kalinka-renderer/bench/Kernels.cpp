@@ -4,12 +4,12 @@
 #include "Analysis.h"
 #include "AudioSampleFormat.h"
 #include "ByteRing.h"
-#include "GainFade.h"
 #include "ReferenceFilters.h"
 #include "SigmaDelta.h"
 #include "Signals.h"
 #include "dsp/DelayLine.h"
 #include "dsp/DspStage.h"
+#include "dsp/output/OutputStage.h"
 
 #include <soxr.h>
 
@@ -163,6 +163,19 @@ template <typename Queue> Factory twoThreads() {
   };
 }
 
+/// Software volume at @p gain on a device that keeps 24 bits of S32.
+Factory outputStage(double gain) {
+  return [gain](unsigned rate) {
+    auto stage = std::make_shared<OutputStage>(
+        std::vector<StreamAudioFormat>{{rate, 2, 24, PCM32_LE, 0}}, 1);
+    stage->setGain(gain);
+    stage->connectTo(std::make_shared<EndlessSource>(rate));
+    auto out = std::make_shared<std::vector<uint8_t>>(kBlock * 8);
+    return
+        [stage, out](size_t frames) { stage->read(out->data(), frames * 8); };
+  };
+}
+
 struct Kernel {
   const char *name;
   Factory make;
@@ -205,16 +218,9 @@ std::vector<Kernel> kernels() {
                                PCM32_LE, out->size() * 4);
          };
        }},
-      {"GainFade at -6 dB, S32 stereo (today's software volume)",
-       [](unsigned rate) {
-         auto fade = std::make_shared<GainFade>(std::chrono::milliseconds(25));
-         fade->settle(0.5f);
-         auto data =
-             std::make_shared<std::vector<int32_t>>(kBlock * 2, 1 << 20);
-         return [fade, data, rate](size_t frames) {
-           fade->apply(data->data(), frames * 8, PCM32_LE, 2, rate, 0.5f);
-         };
-       }},
+      {"OutputStage at unity, S32 stereo", outputStage(1.0)},
+      {"OutputStage at -6 dB, S32 stereo, dithered at 24 bits",
+       outputStage(0.5)},
       {"libsoxr VHQ, float64, 2x up, stereo",
        [](unsigned rate) {
          const auto io = soxr_io_spec(SOXR_FLOAT64_I, SOXR_FLOAT64_I);

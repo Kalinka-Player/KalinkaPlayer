@@ -135,21 +135,6 @@ TEST(AudioSampleFormatTest, True32BitAndFloatHaveNoLossyFallback) {
             (std::vector<AudioSampleFormat>{PCM_FLOAT64_LE}));
 }
 
-TEST(AudioSampleFormatTest, GainRetainsTrue32BitLowBitsAndFloatPrecision) {
-  std::vector<int32_t> integer{3, -3, 2147483647, -2147483647 - 1};
-  const auto original = integer;
-  applyGainInPlace(integer.data(), integer.size() * 4, PCM32_LE, 1.0f);
-  EXPECT_EQ(integer, original);
-  applyGainInPlace(integer.data(), integer.size() * 4, PCM32_LE, 0.5f);
-  EXPECT_EQ(integer, (std::vector<int32_t>{2, -2, 1073741824, -1073741824}));
-  std::vector<float> floating{0.125f, -0.5f, 0x1p-30f, 1.0f};
-  applyGainInPlace(floating.data(), floating.size() * 4, PCM_FLOAT32_LE, 0.5f);
-  EXPECT_EQ(floating, (std::vector<float>{0.0625f, -0.25f, 0x1p-31f, 0.5f}));
-  std::vector<double> wide{0x1.0000000000001p-1, -0x1p-60};
-  applyGainInPlace(wide.data(), wide.size() * 8, PCM_FLOAT64_LE, 0.5f);
-  EXPECT_EQ(wide, (std::vector<double>{0x1.0000000000001p-2, -0x1p-61}));
-}
-
 TEST(AudioSampleFormatTest, ConvertPCM24ToPCM32) {
   std::vector<int32_t> sourceSamples = {1000000, 0x1000000 - 1000000, 8388607,
                                         0x1000000 - 8388608};
@@ -219,82 +204,6 @@ TEST(AudioSampleFormatTest, ConvertPCM24_3ToPCM24) {
   for (size_t i = 0; i < convertedSamples; ++i) {
     EXPECT_EQ(destSamples[i], expectedSamples[i]) << "i = " << i;
   }
-}
-
-TEST(AudioSampleFormatTest, ApplyGainUnityIsBitPerfect) {
-  // gain >= 1.0 must leave every byte untouched so full volume stays bit-perfect.
-  std::vector<int16_t> samples = {1000, -1000, 32767, -32768, 0};
-  const std::vector<int16_t> original = samples;
-
-  applyGainInPlace(samples.data(), samples.size() * sizeof(int16_t),
-                   AudioSampleFormat::PCM16_LE, 1.0f);
-  EXPECT_EQ(samples, original);
-
-  applyGainInPlace(samples.data(), samples.size() * sizeof(int16_t),
-                   AudioSampleFormat::PCM16_LE, 2.0f);
-  EXPECT_EQ(samples, original);
-}
-
-TEST(AudioSampleFormatTest, ApplyGainZeroMutes) {
-  std::vector<int32_t> samples = {2000000, -2000000, 8388607, -8388608};
-  applyGainInPlace(samples.data(), samples.size() * sizeof(int32_t),
-                   AudioSampleFormat::PCM24_LE, 0.0f);
-  for (int32_t v : samples) {
-    EXPECT_EQ(v & 0xFFFFFF, 0);
-  }
-}
-
-TEST(AudioSampleFormatTest, ApplyGainHalfPCM16) {
-  std::vector<int16_t> samples = {1000, -1000, 20000, -20000};
-  applyGainInPlace(samples.data(), samples.size() * sizeof(int16_t),
-                   AudioSampleFormat::PCM16_LE, 0.5f);
-  EXPECT_NEAR(samples[0], 500, 1);
-  EXPECT_NEAR(samples[1], -500, 1);
-  EXPECT_NEAR(samples[2], 10000, 1);
-  EXPECT_NEAR(samples[3], -10000, 1);
-}
-
-TEST(AudioSampleFormatTest, ApplyGainHalfPCM24LE) {
-  std::vector<int32_t> samples = {2000000, -2000000};
-  applyGainInPlace(samples.data(), samples.size() * sizeof(int32_t),
-                   AudioSampleFormat::PCM24_LE, 0.5f);
-  // 24-bit sign-extended comparison.
-  EXPECT_NEAR(samples[0], 1000000, 1);
-  int32_t neg = samples[1] | (samples[1] & 0x800000 ? 0xFF000000 : 0);
-  EXPECT_NEAR(neg, -1000000, 1);
-}
-
-TEST(AudioSampleFormatTest, ApplyGainHalfPCM24_3LE) {
-  // 1000000 == 0x0F4240, little-endian packed 3 bytes; half is 500000 == 0x07A120.
-  std::vector<uint8_t> bytes = {0x40, 0x42, 0x0f};
-  applyGainInPlace(bytes.data(), bytes.size(), AudioSampleFormat::PCM24_3LE,
-                   0.5f);
-  EXPECT_EQ(bytes[0], 0x20);
-  EXPECT_EQ(bytes[1], 0xA1);
-  EXPECT_EQ(bytes[2], 0x07);
-}
-
-TEST(AudioSampleFormatTest, AFadeGivesEveryChannelOfAFrameTheSameGain) {
-  std::vector<int16_t> samples(8, 10000);
-  applyGainFadeInPlace(samples.data(), samples.size() * sizeof(int16_t),
-                       AudioSampleFormat::PCM16_LE, 2, 1.0f, 0.0f);
-  EXPECT_EQ(samples, (std::vector<int16_t>{7500, 7500, 5000, 5000, 2500, 2500,
-                                           0, 0}));
-}
-
-TEST(AudioSampleFormatTest, AFadeThatStaysAtUnityIsBitPerfect) {
-  std::vector<int32_t> samples = {2147483647, -2147483647 - 1, 12345, -1};
-  const auto original = samples;
-  applyGainFadeInPlace(samples.data(), samples.size() * sizeof(int32_t),
-                       AudioSampleFormat::PCM32_LE, 2, 1.0f, 1.0f);
-  EXPECT_EQ(samples, original);
-}
-
-TEST(AudioSampleFormatTest, AFadeCannotAlterDsd) {
-  std::vector<uint8_t> bits(8, 0x69);
-  EXPECT_THROW(applyGainFadeInPlace(bits.data(), bits.size(),
-                                    AudioSampleFormat::DSD_U8, 2, 1.0f, 0.5f),
-               std::invalid_argument);
 }
 
 TEST(AudioSampleFormatTest, DestinationBufferCannoFitAllSamples) {

@@ -126,10 +126,6 @@ size_t AlsaAudioEmitter::seek(size_t positionMs) {
   return -1;
 }
 
-void AlsaAudioEmitter::setSoftwareVolume(float gain) {
-  softwareGain.store(gain, std::memory_order_relaxed);
-}
-
 void AlsaAudioEmitter::start() {
   if (inputNode == nullptr) {
     throw std::runtime_error("AlsaAudioEmitter must be connected to an "
@@ -519,7 +515,6 @@ AlsaAudioEmitter::readIntoAlsaFromStream(std::stop_token stopToken,
   while (framesRead < framesToRead && !stopToken.stop_requested()) {
     snd_pcm_uframes_t frames = framesToRead - framesRead;
     if (paused) {
-      softwareFade.settle(softwareGain.load(std::memory_order_relaxed));
       framesRead += writeToAlsa(
           frames, [this](void *ptr, snd_pcm_uframes_t frames, size_t bytes) {
             memset(ptr, isDsd(currentStreamAudioFormat.sampleFormat) ? 0x69 : 0,
@@ -650,7 +645,6 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
       // Only with nothing queued do the two agree, and there the source is
       // the authority: it is the end that begins partway in, or seeks itself.
       if (queued == 0) {
-        softwareFade.settle(softwareGain.load(std::memory_order_relaxed));
         if (auto position = inputNode->streamReadPosition()) {
           beginSourceAt(position);
         }
@@ -1052,9 +1046,8 @@ void AlsaAudioEmitter::setLatencyBasedBufferSize(snd_pcm_hw_params_t *params) {
 }
 
 size_t AlsaAudioEmitter::readAndConvertFrames(void *dest, size_t bytes) {
-  const float gain = softwareGain.load(std::memory_order_relaxed);
   if (isDsd(currentStreamAudioFormat.sampleFormat)) {
-    if (!dsdAllowed.load() || gain != 1.0f)
+    if (!dsdAllowed.load())
       throw std::runtime_error(
           "DSD requires fixed volume; software gain cannot alter DSD");
     const auto count = inputNode->read(dest, bytes);
@@ -1068,12 +1061,8 @@ size_t AlsaAudioEmitter::readAndConvertFrames(void *dest, size_t bytes) {
   // A mono stream plays each sample in every output channel.
   const unsigned copies =
       currentStreamAudioFormat.channels == 1 ? outputChannels : 1;
-  const unsigned channels = currentStreamAudioFormat.channels * copies;
-  const unsigned rate = currentStreamAudioFormat.sampleRate;
   if (sourceFormat == destFormat && copies == 1) {
     const size_t bytesRead = inputNode->read(dest, bytes);
-    // Unity gain (the common case) is a no-op, so playback stays bit-perfect.
-    softwareFade.apply(dest, bytesRead, sourceFormat, channels, rate, gain);
     return snd_pcm_bytes_to_frames(pcm.handle, bytesRead);
   }
 
@@ -1096,9 +1085,6 @@ size_t AlsaAudioEmitter::readAndConvertFrames(void *dest, size_t bytes) {
         std::memcpy(first + c * width, first, width);
     }
   }
-  // Gain is applied on the samples handed to ALSA, in the on-wire format.
-  softwareFade.apply(out, converted * copies * width, destFormat, channels,
-                     rate, gain);
   return converted * copies / outputChannels;
 }
 
