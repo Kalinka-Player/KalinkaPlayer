@@ -7,9 +7,10 @@ name: Renderer release
 # never marked "latest" — that slot stays pinned to `kalinka-v*` releases.
 #
 # Formats:
-#   * .deb  — Debian 13 (Raspberry Pi OS trixie) and Ubuntu 24.04, each on
+#   * .deb  — Debian 13 (Raspberry Pi OS trixie) and Ubuntu 26.04, each on
 #             arm64 and amd64; a deb links one distro's sonames, so the two
-#             are not interchangeable
+#             are not interchangeable. Ubuntu 24.04's Highway is older than
+#             the DSP needs, so 24.04 gets no deb.
 #   * .rpm  — Fedora 44, amd64 + arm64
 #   * .flatpak — freedesktop 24.08 bundle, x86_64 + aarch64 (best-effort,
 #             never blocks the release)
@@ -50,12 +51,12 @@ jobs:
             container: debian:trixie
           - arch: arm64
             runner: ubuntu-24.04-arm
-            distro: ubuntu-24.04
-            container: ubuntu:24.04
+            distro: ubuntu-26.04
+            container: ubuntu:26.04
           - arch: amd64
             runner: ubuntu-24.04
-            distro: ubuntu-24.04
-            container: ubuntu:24.04
+            distro: ubuntu-26.04
+            container: ubuntu:26.04
     runs-on: ${{ matrix.runner }}
     container:
       image: ${{ matrix.container }}
@@ -65,13 +66,12 @@ jobs:
       - name: Install build dependencies
         run: |
           apt-get update
-          # pkg-config: CMakeLists' FindPkgConfig call needs it, and
-          # ubuntu:24.04 does not pull it in with --no-install-recommends
-          # (debian:trixie does, which is why only amd64 ever noticed).
+          # pkg-config: CMakeLists' FindPkgConfig call needs it, and not every
+          # image pulls it in with --no-install-recommends.
           apt-get install -y --no-install-recommends \
             build-essential make git ca-certificates dpkg-dev cmake pkg-config \
             libboost-dev libcurlpp-dev libcurl4-openssl-dev libflac++-dev libvorbis-dev libxml2-dev libfaad-dev libsoxr-dev \
-            libasound2-dev libspdlog-dev libfmt-dev \
+            libasound2-dev libspdlog-dev libfmt-dev libhwy-dev \
             protobuf-compiler libprotobuf-dev
 
       - name: Checkout (tag)
@@ -118,7 +118,7 @@ jobs:
             protobuf-devel protobuf-lite-devel protobuf-compiler \
             boost-devel spdlog-devel \
             alsa-lib-devel libcurl-devel curlpp-devel flac-devel libvorbis-devel libxml2-devel faad2-devel soxr-devel \
-            pkgconf-pkg-config systemd-rpm-macros
+            highway-devel pkgconf-pkg-config systemd-rpm-macros
 
       - name: Checkout (tag)
         uses: actions/checkout@v4
@@ -221,7 +221,7 @@ jobs:
           on Fedora — and installs it (drop the \`-s -- $VERSION\` to always get
           the latest renderer release instead).
 
-          **Manual install — Debian 13 / Raspberry Pi OS or Ubuntu 24.04, arm64 or amd64:**
+          **Manual install — Debian 13 / Raspberry Pi OS or Ubuntu 26.04, arm64 or amd64:**
           download the \`.deb\` whose name carries your distro and architecture
           (e.g. \`kalinka-renderer-$VERSION.debian-13.arm64.deb\`) and
           \`sudo apt install ./kalinka-renderer-*.deb\`. The debs are not

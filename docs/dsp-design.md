@@ -15,13 +15,13 @@ It builds for:
 
 - Debian 13 debs, arm64 and amd64, which the images and the Raspberry Pi run;
 - Fedora 44 RPMs;
-- the Ubuntu debs, which are to move to 26.04.1 LTS.
+- Ubuntu 26.04.1 LTS debs.
 
 Debian 13 is the floor: GCC 14.2, CMake 3.31 and Highway 1.2.0 are the
 oldest any language or library feature the DSP uses may need. Ubuntu 24.04
-is not a constraint. The release workflow still builds 24.04 debs. If the DSP
-needs anything 24.04 does not have, that build is dropped, and the Ubuntu debs
-move to 26.04.1 LTS; the DSP is never held back to fit 24.04.
+is not a constraint: its Highway 1.0.7 is older than the DSD converter needs,
+so with Phase 1 the Ubuntu debs moved to 26.04.1 LTS, and the renderer's CI
+tests run on Debian 13.
 
 The release workflow also has a flatpak job, on freedesktop 24.08, but no
 flatpak has shipped. Its manifest matches `.gitignore`'s `*.yml` and was

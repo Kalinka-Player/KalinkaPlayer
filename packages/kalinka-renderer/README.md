@@ -136,12 +136,13 @@ explicit **DoP** selection; Automatic only attempts native DSD.
 ## Build
 
 Dependencies (dev headers): protobuf (+ compiler), Boost (headers only — asio
-and beast), spdlog, ALSA, FLAC++, libvorbisfile, libcurl, curlpp, libxml2, faad2, libsoxr. GoogleTest is
+and beast), spdlog, ALSA, FLAC++, libvorbisfile, libcurl, curlpp, libxml2, faad2, libsoxr, and Highway 1.2
+or newer for the DSP's vector kernels (Debian 13 or Ubuntu 26.04; Ubuntu 24.04's is too old). GoogleTest is
 optional and only builds the test binary. mDNS is self-contained (vendored public-domain
 `third_party/mdns`), so no avahi or Bonjour daemon is needed.
 
-- Fedora: `sudo dnf install cmake gcc-c++ protobuf-devel protobuf-compiler protobuf-lite-devel boost-devel spdlog-devel alsa-lib-devel flac-devel libvorbis-devel libcurl-devel curlpp-devel libxml2-devel faad2-devel soxr-devel gtest-devel`
-- Debian/Ubuntu: `sudo apt install cmake g++ libprotobuf-dev protobuf-compiler libboost-dev libspdlog-dev libasound2-dev libflac++-dev libvorbis-dev libcurl4-openssl-dev libcurlpp-dev libxml2-dev libfaad-dev libsoxr-dev libgtest-dev`
+- Fedora: `sudo dnf install cmake gcc-c++ protobuf-devel protobuf-compiler protobuf-lite-devel boost-devel spdlog-devel alsa-lib-devel flac-devel libvorbis-devel libcurl-devel curlpp-devel libxml2-devel faad2-devel soxr-devel highway-devel gtest-devel`
+- Debian/Ubuntu: `sudo apt install cmake g++ libprotobuf-dev protobuf-compiler libboost-dev libspdlog-dev libasound2-dev libflac++-dev libvorbis-dev libcurl4-openssl-dev libcurlpp-dev libxml2-dev libfaad-dev libsoxr-dev libhwy-dev libgtest-dev`
 
 From the repo root:
 

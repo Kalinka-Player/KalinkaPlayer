@@ -21,7 +21,7 @@ The steps:
 | A Raspberry Pi 3, 4, 400, 5 or Zero 2 W | [A. Flash the Raspberry Pi image](#a-raspberry-pi-image) |
 | A spare 64-bit PC, mini-PC or thin client | [B. Flash the PC image](#b-pc-image) |
 | A home server that runs virtual machines | [C. Run the PC image as a virtual machine](#c-virtual-machine) |
-| A computer already running Debian 13, Raspberry Pi OS (64-bit, Trixie), DietPi or Ubuntu 24.04 | [D. Install with one command](#d-install-with-one-command) |
+| A computer already running Debian 13, Raspberry Pi OS (64-bit, Trixie), DietPi or Ubuntu 26.04 | [D. Install with one command](#d-install-with-one-command) |
 
 If you are not sure, use an image. It is a complete system with Kalinka and the [supervisor](#the-supervisor) already installed, and needs no typing.
 
@@ -122,7 +122,7 @@ Use this on a computer that already runs one of these 64-bit systems:
 - **Debian 13** (trixie)
 - **Raspberry Pi OS (64-bit)** based on Debian 13 (trixie). The older Bookworm release gets the server but no sound output.
 - **DietPi** on Debian 13
-- **Ubuntu 24.04 LTS**. The installer skips the Bluetooth input plugin because Ubuntu's BlueALSA package is too old.
+- **Ubuntu 26.04 LTS**. Ubuntu 24.04 has no renderer package: its libraries are older than the renderer needs.
 
 `cat /etc/os-release` tells you which one you have. Open a terminal on that computer, or log in to it over SSH, and run:
 
@@ -271,7 +271,7 @@ The server's own machine already has an output. You can add:
 
 **To set up a renderer on another machine:**
 
-1. Give it 64-bit Debian 13, Raspberry Pi OS (64-bit, Trixie), Ubuntu 24.04 or Fedora 44. For a Pi, follow steps 1–4 of *Starting from a blank Raspberry Pi* under [option D](#d-install-with-one-command). Choose a host name that says where it is, such as `livingroom`: the output is named after it.
+1. Give it 64-bit Debian 13, Raspberry Pi OS (64-bit, Trixie), Ubuntu 26.04 or Fedora 44. For a Pi, follow steps 1–4 of *Starting from a blank Raspberry Pi* under [option D](#d-install-with-one-command). Choose a host name that says where it is, such as `livingroom`: the output is named after it.
 2. On that machine, run:
 
    ```bash
@@ -306,7 +306,7 @@ The images include it. On a streamer you installed with a command, add it as bel
 
 ### Add the supervisor to a streamer
 
-This works on any streamer that runs Debian 13, Raspberry Pi OS (64-bit), DietPi or Ubuntu 24.04, with the server, a renderer, or both. You do not need to flash anything. On that streamer, run:
+This works on any streamer that runs Debian 13, Raspberry Pi OS (64-bit), DietPi or Ubuntu 26.04, with the server, a renderer, or both. You do not need to flash anything. On that streamer, run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Kalinka-Player/KalinkaPlayer/main/scripts/install-supervisor.sh | sudo bash

@@ -32,7 +32,7 @@ Kalinka is not based on MPD. It has its own renderer, which plays directly to AL
 
 ## Installation
 
-1. Install the server. On a Raspberry Pi or a spare PC, [flash a ready-made image](docs/installation.md#install-the-server): Kalinka is already on it and plays as soon as the machine starts. On a machine that already runs Debian 13, Raspberry Pi OS (64-bit, Trixie), DietPi or Ubuntu 24.04, one command installs everything:
+1. Install the server. On a Raspberry Pi or a spare PC, [flash a ready-made image](docs/installation.md#install-the-server): Kalinka is already on it and plays as soon as the machine starts. On a machine that already runs Debian 13, Raspberry Pi OS (64-bit, Trixie), DietPi or Ubuntu 26.04, one command installs everything:
 
    ```bash
    sudo apt install -y ca-certificates curl python3

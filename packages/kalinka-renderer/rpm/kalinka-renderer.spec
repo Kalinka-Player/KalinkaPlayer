@@ -26,6 +26,7 @@ BuildRequires:  libvorbis-devel
 BuildRequires:  libxml2-devel
 BuildRequires:  faad2-devel
 BuildRequires:  soxr-devel
+BuildRequires:  highway-devel
 BuildRequires:  pkgconf-pkg-config
 BuildRequires:  systemd-rpm-macros
 %{?systemd_requires}

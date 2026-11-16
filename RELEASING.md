@@ -107,7 +107,7 @@ The on-device display (`kalinka-kiosk_*_<arch>.deb`, arm64 only for now) comes f
    git push origin kalinka-renderer-v0.1.0
    ```
    The `renderer-release.yml` workflow builds the debs (Debian 13 and
-   Ubuntu 24.04, each on arm64 and amd64), the Fedora 44 RPMs (both
+   Ubuntu 26.04, each on arm64 and amd64), the Fedora 44 RPMs (both
    arches) and the flatpak bundles, and publishes them to the tag's own
    release — never marked "latest" (that slot belongs to `kalinka-v*`).
    Users install with `scripts/install-renderer.sh` (served from `main`,
