@@ -154,8 +154,11 @@ void BufferedStreamDecoder::run(std::stop_token token) {
           seek(*target);
         if (buffer.isEof())
           seekSignal.waitValue(token);
-        else if (!decodeNext())
+        else if (!decodeNext()) {
           buffer.setEof();
+          // A buffer already drained has no reader left to notice the end.
+          finishIfDrained();
+        }
       } catch (const Interrupted &) {
       }
     }
