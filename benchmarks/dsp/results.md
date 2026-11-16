@@ -199,6 +199,11 @@ at 162 dB) on the same kernels, one run:
 | DSD512 to 352.8 kHz | 50 kHz | 115.60 ns (4.078 %) | 80.82 ns (2.851 %) | 69.16 ns (2.440 %) | 67.60 ns (2.385 %) |
 | DSD1024 to 352.8 kHz | 50 kHz | 193.70 ns (6.834 %) | 144.88 ns (5.111 %) | 123.29 ns (4.350 %) | 117.82 ns (4.157 %) |
 
+After stage 1's kernels became classes, three more runs on cpu 2 matched
+these within the `powersave` spread: channel pairs 0.31–0.35 % for DSD64 to
+176.4 kHz and 1.13–1.24 % for DSD256 to 352.8 kHz, fastest in 29 of the 33
+rows and within 5 % in the rest.
+
 ## arm64: Raspberry Pi 5, 15 November 2026
 
 - CPU: Arm Cortex-A76, 4 cores at up to 2.4 GHz; Raspberry Pi 5 Model B
@@ -361,6 +366,25 @@ The Kaiser-window filters of the first commit, on the same kernels, one run:
 | DSD512 to 352.8 kHz | 50 kHz | 343.12 ns (12.105 %) | 287.75 ns (10.152 %) | 238.36 ns (8.409 %) | 251.94 ns (8.888 %) |
 | DSD1024 to 352.8 kHz | 50 kHz | 559.60 ns (19.743 %) | 514.71 ns (18.159 %) | 417.13 ns (14.716 %) | 444.43 ns (15.679 %) |
 
+After stage 1's kernels became classes, three more runs, the first as
+printed. Every cell's median is 1–11 % below the runs above; the loops are
+the same, so the gain is in what surrounds them. Channel pairs lead every row,
+by 3–16 %, and the runs agree within 4 %.
+
+| Conversion | Filter | Scalar reference | Four sums | Channel pairs | Nibble lookups |
+|---|---|---|---|---|---|
+| DSD64 to 88.2 kHz | 30 kHz | 283.66 ns (2.502 %) | 147.78 ns (1.303 %) | 124.79 ns (1.101 %) | 134.16 ns (1.183 %) |
+| DSD64 to 176.4 kHz | 30 kHz | 128.51 ns (2.267 %) | 68.79 ns (1.213 %) | 56.42 ns (0.995 %) | 60.91 ns (1.074 %) |
+| DSD64 to 176.4 kHz | 50 kHz | 152.53 ns (2.691 %) | 74.29 ns (1.310 %) | 66.89 ns (1.180 %) | 70.30 ns (1.240 %) |
+| DSD64 to 176.4 kHz | wide | 188.02 ns (3.317 %) | 92.51 ns (1.632 %) | 79.38 ns (1.400 %) | 84.42 ns (1.489 %) |
+| DSD64 to 352.8 kHz | 30 kHz | 138.29 ns (4.879 %) | 55.67 ns (1.964 %) | 50.44 ns (1.780 %) | 52.29 ns (1.845 %) |
+| DSD128 to 176.4 kHz | 50 kHz | 215.97 ns (3.810 %) | 114.90 ns (2.027 %) | 99.42 ns (1.754 %) | 109.57 ns (1.933 %) |
+| DSD128 to 352.8 kHz | 50 kHz | 173.01 ns (6.104 %) | 75.81 ns (2.675 %) | 68.21 ns (2.407 %) | 73.22 ns (2.583 %) |
+| DSD256 to 352.8 kHz | 30 kHz | 215.08 ns (7.588 %) | 117.32 ns (4.139 %) | 94.62 ns (3.338 %) | 104.24 ns (3.677 %) |
+| DSD256 to 352.8 kHz | 50 kHz | 230.09 ns (8.118 %) | 123.83 ns (4.369 %) | 101.99 ns (3.598 %) | 111.23 ns (3.924 %) |
+| DSD512 to 352.8 kHz | 50 kHz | 315.95 ns (11.147 %) | 190.04 ns (6.704 %) | 152.39 ns (5.376 %) | 173.70 ns (6.128 %) |
+| DSD1024 to 352.8 kHz | 50 kHz | 502.07 ns (17.713 %) | 344.74 ns (12.162 %) | 265.63 ns (9.372 %) | 307.47 ns (10.848 %) |
+
 ## arm64: Raspberry Pi 4, 16 November 2026
 
 - CPU: Arm Cortex-A72, 4 cores at up to 1.8 GHz, L1 data cache 32 KB and
@@ -442,3 +466,27 @@ of two runs alternating with the equiripple ones:
 | DSD256 to 352.8 kHz | 50 kHz | 810.94 ns (28.610 %) | 596.13 ns (21.032 %) | 570.68 ns (20.134 %) | 474.72 ns (16.748 %) |
 | DSD512 to 352.8 kHz | 50 kHz | 1354.18 ns (47.775 %) | 1048.16 ns (36.979 %) | 993.71 ns (35.058 %) | 799.33 ns (28.200 %) |
 | DSD1024 to 352.8 kHz | 50 kHz | 2092.53 ns (73.824 %) | 1721.42 ns (60.732 %) | 1615.41 ns (56.991 %) | 1327.70 ns (46.841 %) |
+
+### After stage 1's kernels became classes (16 November 2026)
+
+Ten runs 30 s apart on core 3, of the bench built on the Pi 5 and copied
+over, the board at 62–65 C. Of one core, the median and the range:
+
+| Conversion | Filter | Scalar reference | Four sums | Channel pairs | Nibble lookups |
+|---|---|---|---|---|---|
+| DSD64 to 88.2 kHz | 30 kHz | 5.38 % (4.85–5.79) | 3.88 % (3.42–4.46) | 3.64 % (3.22–4.20) | 3.37 % (3.35–3.40) |
+| DSD64 to 176.4 kHz | 30 kHz | 4.73 % (4.21–5.14) | 3.48 % (3.04–4.07) | 3.24 % (2.82–3.81) | 3.00 % (2.98–3.03) |
+| DSD64 to 176.4 kHz | 50 kHz | 5.54 % (4.95–6.13) | 3.88 % (3.45–4.76) | 3.79 % (3.32–4.44) | 3.50 % (3.49–3.53) |
+| DSD64 to 176.4 kHz | wide | 7.24 % (6.50–8.33) | 5.04 % (4.36–5.43) | 4.72 % (4.17–5.05) | 4.30 % (4.28–4.33) |
+| DSD64 to 352.8 kHz | 30 kHz | 9.99 % (9.49–10.40) | 6.15 % (5.71–6.72) | 5.91 % (5.50–6.51) | 5.67 % (5.66–5.69) |
+| DSD128 to 176.4 kHz | 50 kHz | 7.69 % (7.25–8.44) | 5.82 % (5.36–6.75) | 5.40 % (4.85–6.43) | 5.34 % (5.30–5.39) |
+| DSD128 to 352.8 kHz | 50 kHz | 12.40 % (11.97–13.21) | 8.09 % (7.67–8.97) | 7.66 % (7.12–8.66) | 7.62 % (7.59–7.66) |
+| DSD256 to 352.8 kHz | 30 kHz | 15.52 % (15.43–16.32) | 10.61 % (10.54–12.15) | 9.47 % (9.44–10.87) | 10.42 % (10.35–10.52) |
+| DSD256 to 352.8 kHz | 50 kHz | 16.80 % (16.30–18.03) | 12.00 % (11.23–13.66) | 11.01 % (10.30–12.41) | 11.09 % (11.01–11.25) |
+| DSD512 to 352.8 kHz | 50 kHz | 23.48 % (23.37–24.65) | 16.80 % (16.63–19.13) | 15.11 % (15.05–17.16) | 16.82 % (16.60–16.98) |
+| DSD1024 to 352.8 kHz | 50 kHz | 38.23 % (38.06–40.49) | 28.72 % (28.29–33.81) | 25.82 % (25.23–30.01) | 29.05 % (28.85–29.24) |
+
+Every median is 1–8 % below the runs before. The ranking stands: nibble
+lookups lead below DSD256, by up to 9 %, and hold within 2 % between runs;
+the byte-table kernels move by 5–38 %; channel pairs lead at DSD256 with the
+30 kHz filter and from DSD512 up, by 10–11 %.
