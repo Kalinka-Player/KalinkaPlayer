@@ -1,3 +1,4 @@
+#include "AlsaVolumeControl.h"
 #include "AudioGraphNode.h"
 #include "AudioPlayer.h"
 #include "Config.h"
@@ -7,6 +8,10 @@
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+
+#include <cstdlib>
+#include <optional>
+#include <string>
 
 #include "LocalHttpServer.h"
 #include "TestHelpers.h"
@@ -58,6 +63,39 @@ protected:
 };
 
 TEST_F(AudioPlayerTest, constructor_destructor) {}
+
+TEST(AudioPlayerVolumeTest, KalinkaLeaveMixerKeepsTheMixerWhereItIs) {
+  SKIP_UNLESS_PLAYED_IN_REAL_TIME();
+  AlsaVolumeControl mixer(testDevice(), "", [](int) {});
+  if (!mixer.available()) {
+    GTEST_SKIP() << testDevice() << " has no mixer";
+  }
+  const int before = mixer.getVolume();
+  // Below 100 a raise would show; getting there by lowering keeps it quiet.
+  if (before == 100) {
+    ASSERT_TRUE(mixer.setVolume(90));
+  }
+  const int moved = mixer.getVolume();
+  const char *previous = std::getenv("KALINKA_LEAVE_MIXER");
+  const std::optional<std::string> saved =
+      previous ? std::optional<std::string>(previous) : std::nullopt;
+  setenv("KALINKA_LEAVE_MIXER", "1", 1);
+  {
+    AudioPlayer player(Config{{"output.alsa.device", testDevice()}});
+    EXPECT_TRUE(player.configureVolume("software", ""));
+    EXPECT_TRUE(player.configureVolume("fixed", ""));
+  }
+  const int after = mixer.getVolume();
+  if (saved) {
+    setenv("KALINKA_LEAVE_MIXER", saved->c_str(), 1);
+  } else {
+    unsetenv("KALINKA_LEAVE_MIXER");
+  }
+  if (moved != before) {
+    mixer.setVolume(before);
+  }
+  EXPECT_EQ(after, moved);
+}
 
 TEST_F(AudioPlayerTest, software_volume_reports_its_cubic_db_scale) {
   auto volume = audioPlayer.getVolume();
