@@ -87,13 +87,28 @@ void DspStage::onUpstreamState(const StreamState &state) {
   });
 }
 
-StreamState DspStage::shown(const Shared &shared) {
+StreamState DspStage::shown(const Shared &shared) const {
   const bool fixed =
       shared.follow == Follow::Fixed ||
       (shared.follow == Follow::UntilInputEnds && endsInput(shared.upstream.state));
-  StreamState state = fixed ? shared.fixed : shared.upstream;
+  StreamState state =
+      presented(fixed ? shared.fixed : shared.upstream, !fixed);
   // Always now: a waiter only takes a state newer than the one it last saw.
   state.timestamp = getTimestampNs();
+  return state;
+}
+
+StreamState DspStage::presented(StreamState state,
+                                bool upstreamPosition) const {
+  if (!state.streamInfo || !processor->handles(state.streamInfo->format)) {
+    return state;
+  }
+  const auto out = processor->output(state.streamInfo->format);
+  state.streamInfo->format = out.format;
+  state.streamInfo->streamSize /= out.ratio;
+  if (upstreamPosition && state.position > 0) {
+    state.position /= long(out.ratio);
+  }
   return state;
 }
 
@@ -213,7 +228,7 @@ const DspStage::Segment *DspStage::nextAfterHead() const {
 void DspStage::dropTo(uint64_t frame) {
   const uint64_t limit = std::min(frame, produced());
   if (limit > handed) {
-    fifoOffset += (limit - handed) * frameBytes;
+    fifoOffset += (limit - handed) * outFrameBytes;
   }
   handed = std::max(handed, frame);
   if (fifoFrames() == 0) {
@@ -244,6 +259,10 @@ void DspStage::drop(StreamId id) {
   if (boundary && *boundary == id) {
     boundary.reset();
   }
+  if (joinPending && *joinPending == id) {
+    joinPending.reset();
+    flushLeft = latency;
+  }
   for (auto it = segments.begin(); it != segments.end(); ++it) {
     if (it->id != id) {
       continue;
@@ -268,6 +287,7 @@ void DspStage::dropEverything() {
 }
 
 void DspStage::endRun() {
+  joinPending.reset();
   fedIn = fedOut = handed = 0;
   flushLeft = 0;
   fifoOffset = 0;
@@ -282,12 +302,18 @@ bool DspStage::startRun(std::optional<long> position) {
     return false;
   }
   endRun();
-  frameBytes = info->format.channels * sampleSize(info->format.sampleFormat);
+  const auto out = processor->output(info->format);
+  ratio = out.ratio;
+  inFrameBytes = info->format.channels * sampleSize(info->format.sampleFormat);
+  outFrameBytes = out.format.channels * sampleSize(out.format.sampleFormat);
   latency = processor->start(info->format);
-  fifo.resize(kFifoFrames * frameBytes);
-  input.resize(kChunkFrames * frameBytes);
-  output.resize(kChunkFrames * frameBytes);
-  segments.push_back({upstreamSeen.streamId, *info, position, 0, 0});
+  fifo.resize(kFifoFrames * outFrameBytes);
+  input.resize(kChunkFrames * inFrameBytes);
+  output.resize((kChunkFrames + 1) * outFrameBytes);
+  segments.push_back({upstreamSeen.streamId, *info,
+                      position ? std::optional(*position / long(ratio))
+                               : std::nullopt,
+                      0, 0});
   return true;
 }
 
@@ -302,26 +328,61 @@ void DspStage::append(const uint8_t *frames, size_t count) {
     fedOut += passed;
     skip += passed;
   }
-  const size_t bytes = (count - skip) * frameBytes;
-  const size_t used = fifoFrames() * frameBytes;
+  const size_t bytes = (count - skip) * outFrameBytes;
+  const size_t used = fifoFrames() * outFrameBytes;
   if (fifoOffset + used + bytes > fifo.size()) {
     std::memmove(fifo.data(), fifo.data() + fifoOffset, used);
     fifoOffset = 0;
   }
-  std::memcpy(fifo.data() + fifoOffset + used, frames + skip * frameBytes,
+  std::memcpy(fifo.data() + fifoOffset + used, frames + skip * outFrameBytes,
               bytes);
   fedOut += count - skip;
 }
 
+void DspStage::join(std::optional<StreamId> id, std::optional<long> position,
+                    bool idle) {
+  const StreamState &now = upstreamSeen;
+  const Segment &tail = segments.back();
+  // A next source still buffering continues the run as a dry one does.
+  const bool playing = now.state == AudioGraphNodeState::STREAMING ||
+                       now.state == AudioGraphNodeState::PREPARING;
+  if (!idle && playing && now.streamInfo.has_value() &&
+      now.streamInfo->format == tail.info.format &&
+      now.streamInfo->live == tail.info.live) {
+    segments.push_back(
+        {id, *now.streamInfo,
+         position ? std::optional(*position / long(ratio)) : std::nullopt,
+         fedIn / ratio, fedIn / ratio});
+    return;
+  }
+  flushLeft = latency;
+  if (!idle) {
+    boundary = id;
+  }
+}
+
 DspStage::Step DspStage::plan(size_t frames, size_t &count) {
   while (true) {
+    if (joinPending) {
+      if (upstreamSeen.state == AudioGraphNodeState::PREPARING &&
+          !upstreamSeen.streamInfo.has_value()) {
+        return Step::Done;
+      }
+      const auto id = *joinPending;
+      joinPending.reset();
+      join(id, upstream->streamReadPosition(), false);
+      publish();
+      continue;
+    }
     if (segments.empty() || readable() >= frames || headExhausted()) {
       return Step::Done;
     }
     Segment &tail = segments.back();
     const size_t room = kFifoFrames - fifoFrames();
     if (!tail.open) {
-      count = std::min({flushLeft, kChunkFrames, room});
+      // Output frames, each a ratio's worth of silence fed in.
+      count = std::min({flushLeft, std::max<size_t>(1, kChunkFrames / ratio),
+                        room});
       return count ? Step::Flush : Step::Done;
     }
     if (upstreamSeen.state == AudioGraphNodeState::SOURCE_CHANGED) {
@@ -335,8 +396,10 @@ DspStage::Step DspStage::plan(size_t frames, size_t &count) {
     }
     const uint64_t priming = fedOut < latency ? latency - fedOut : 0;
     const uint64_t passed = handed > produced() ? handed - produced() : 0;
+    // Input frames: a ratio's worth for each output wanted.
     count = std::min<uint64_t>(
-        {frames - readable() + priming + passed, kChunkFrames, room});
+        {(frames - readable() + priming + passed) * ratio, kChunkFrames,
+         room * ratio});
     return count ? Step::Read : Step::Done;
   }
 }
@@ -344,22 +407,24 @@ DspStage::Step DspStage::plan(size_t frames, size_t &count) {
 bool DspStage::perform(Step step, size_t count) {
   switch (step) {
   case Step::Read: {
-    const size_t frames = upstream->read(input.data(), count * frameBytes) /
-                          frameBytes;
+    const size_t frames =
+        upstream->read(input.data(), count * inFrameBytes) / inFrameBytes;
     if (frames == 0) {
       return false;
     }
-    processor->process(input.data(), output.data(), frames);
-    segments.back().end += frames;
+    const size_t made = processor->process(input.data(), output.data(), frames);
+    const uint64_t before = fedIn / ratio;
     fedIn += frames;
-    append(output.data(), frames);
+    segments.back().end += fedIn / ratio - before;
+    append(output.data(), made);
     publish();
     return true;
   }
   case Step::Flush: {
-    processor->process(nullptr, output.data(), count);
-    flushLeft -= std::min(flushLeft, count);
-    append(output.data(), count);
+    const size_t made =
+        processor->process(nullptr, output.data(), count * ratio);
+    flushLeft -= std::min(flushLeft, made);
+    append(output.data(), made);
     publish();
     return true;
   }
@@ -375,17 +440,12 @@ bool DspStage::perform(Step step, size_t count) {
                        now.state == AudioGraphNodeState::ERROR) &&
                       !now.streamId.has_value();
     tail.left = !idle;
-    if (!idle && now.state == AudioGraphNodeState::STREAMING &&
-        now.streamInfo.has_value() &&
-        now.streamInfo->format == tail.info.format &&
-        now.streamInfo->live == tail.info.live) {
-      segments.push_back(
-          {now.streamId, *now.streamInfo, position, fedIn, fedIn});
+    if (!idle && now.state == AudioGraphNodeState::PREPARING &&
+        !now.streamInfo.has_value()) {
+      // Its format decides whether the run carries on: wait for it.
+      joinPending = now.streamId;
     } else {
-      flushLeft = latency;
-      if (!idle) {
-        boundary = now.streamId;
-      }
+      join(now.streamId, position, idle);
     }
     publish();
     return true;
@@ -416,10 +476,20 @@ size_t DspStage::fill(std::stop_token token, size_t bytes, bool wait,
     }
     // A wait asks for every frame it names; a read takes whole frames only.
     const size_t frames = std::clamp<size_t>(
-        wait ? (bytes + frameBytes - 1) / frameBytes : bytes / frameBytes, 1,
+        wait ? (bytes + outFrameBytes - 1) / outFrameBytes
+             : bytes / outFrameBytes,
+        1,
         kFifoFrames / 2);
     size_t count = 0;
     const Step step = plan(frames, count);
+    if (step == Step::Done && wait && joinPending && readable() == 0 &&
+        !token.stop_requested() &&
+        (!deadline || std::chrono::steady_clock::now() < *deadline)) {
+      // Upstream's next source shows its format once it has data.
+      upstream->waitForDataFor(token, std::chrono::milliseconds(10), 1);
+      sync();
+      continue;
+    }
     if (step == Step::Done) {
       return readable();
     }
@@ -433,7 +503,7 @@ size_t DspStage::fill(std::stop_token token, size_t bytes, bool wait,
         (deadline && std::chrono::steady_clock::now() >= *deadline)) {
       return readable();
     }
-    const size_t needed = count * frameBytes;
+    const size_t needed = count * inFrameBytes;
     const size_t available =
         deadline ? upstream->waitForDataFor(
                        token,
@@ -460,15 +530,15 @@ size_t DspStage::read(void *data, size_t size) {
   if (ready == 0) {
     return 0;
   }
-  const size_t frames = std::min(ready, size / frameBytes);
-  std::memcpy(data, fifo.data() + fifoOffset, frames * frameBytes);
-  fifoOffset += frames * frameBytes;
+  const size_t frames = std::min(ready, size / outFrameBytes);
+  std::memcpy(data, fifo.data() + fifoOffset, frames * outFrameBytes);
+  fifoOffset += frames * outFrameBytes;
   handed += frames;
   if (fifoFrames() == 0) {
     fifoOffset = 0;
   }
   publish();
-  return frames * frameBytes;
+  return frames * outFrameBytes;
 }
 
 size_t DspStage::waitForData(std::stop_token stopToken, size_t size) {
@@ -479,7 +549,7 @@ size_t DspStage::waitForData(std::stop_token stopToken, size_t size) {
   if (ready == kPassThrough) {
     return upstream->waitForData(stopToken, size);
   }
-  return ready * frameBytes;
+  return ready * outFrameBytes;
 }
 
 size_t DspStage::waitForDataFor(std::stop_token stopToken,
@@ -493,7 +563,7 @@ size_t DspStage::waitForDataFor(std::stop_token stopToken,
   if (ready == kPassThrough) {
     return upstream->waitForDataFor(stopToken, timeout, size);
   }
-  return ready * frameBytes;
+  return ready * outFrameBytes;
 }
 
 size_t DspStage::seekTo(size_t absolutePosition) {
@@ -505,14 +575,31 @@ size_t DspStage::seekTo(size_t absolutePosition) {
   if (boundary || (!segments.empty() && segments.front().left)) {
     return size_t(-1);
   }
-  return restartAfter(upstream ? upstream->seekTo(absolutePosition)
-                               : size_t(-1));
+  const unsigned r = runRatio();
+  const size_t reached = restartAfter(
+      upstream ? upstream->seekTo(absolutePosition * r) : size_t(-1));
+  return reached == size_t(-1) ? reached : reached / r;
 }
 
 size_t DspStage::seekStream(StreamId stream, size_t position) {
+  const unsigned r = processor ? runRatio() : 1;
   const size_t reached =
-      upstream ? upstream->seekStream(stream, position) : size_t(-1);
-  return processor ? restartAfter(reached) : reached;
+      upstream ? upstream->seekStream(stream, position * r) : size_t(-1);
+  if (!processor) {
+    return reached;
+  }
+  const size_t restarted = restartAfter(reached);
+  return restarted == size_t(-1) ? restarted : restarted / r;
+}
+
+unsigned DspStage::runRatio() const {
+  if (!segments.empty()) {
+    return ratio;
+  }
+  const auto &info = upstreamSeen.streamInfo;
+  return info && processor->handles(info->format)
+             ? processor->output(info->format).ratio
+             : 1;
 }
 
 size_t DspStage::restartAfter(size_t reached) {
@@ -547,7 +634,7 @@ std::optional<uint64_t> DspStage::liveSourceFrame() const {
   }
   const Segment &tail = segments.back();
   const uint64_t held =
-      tail.end - std::clamp(handed, tail.begin, tail.end);
+      (tail.end - std::clamp(handed, tail.begin, tail.end)) * ratio;
   return *frame > held ? *frame - held : 0;
 }
 

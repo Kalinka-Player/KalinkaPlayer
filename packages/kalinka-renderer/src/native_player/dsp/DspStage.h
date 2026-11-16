@@ -62,9 +62,10 @@ private:
   /// One source's stretch of a run, in run frames.
   struct Segment {
     std::optional<StreamId> id;
-    StreamInfo info;
-    std::optional<long> start; ///< The source frame its first frame is.
-    uint64_t begin = 0;
+    StreamInfo info; ///< Upstream's, in the format the processor takes.
+    /// Its first frame's place in the source, in output frames.
+    std::optional<long> start;
+    uint64_t begin = 0; ///< In run output frames, as is end.
     uint64_t end = 0;
     bool open = true;  ///< Upstream may still add frames to it.
     bool left = false; ///< Upstream has moved on to another source.
@@ -109,10 +110,16 @@ private:
   /// A source upstream was switched to that cannot continue the run: it is
   /// announced once everything held has been handed on.
   std::optional<std::optional<StreamId>> boundary;
+  /// A source upstream was switched to before its format was known: the run
+  /// waits for it, neither continued nor flushed.
+  std::optional<std::optional<StreamId>> joinPending;
 
-  size_t frameBytes = 0;
+  size_t inFrameBytes = 0;
+  size_t outFrameBytes = 0;
+  /// Input frames to one output frame in the run.
+  unsigned ratio = 1;
   size_t latency = 0;
-  uint64_t fedIn = 0;
+  uint64_t fedIn = 0; ///< Input frames read in the run.
   uint64_t fedOut = 0; ///< Outputs so far, the priming ones included.
   uint64_t handed = 0; ///< Run frames handed on, or skipped by a discard.
   size_t flushLeft = 0;
@@ -127,6 +134,10 @@ private:
   size_t fill(std::stop_token token, size_t bytes, bool wait,
               std::optional<std::chrono::steady_clock::time_point> deadline);
   Step plan(size_t frames, size_t &count);
+  /// Carries the run on into source @p id, which upstream now plays, if its
+  /// format matches the run's, or ends the run with a boundary before it.
+  void join(std::optional<StreamId> id, std::optional<long> position,
+            bool idle);
   bool perform(Step step, size_t count);
   bool startRun(std::optional<long> position);
   void endRun();
@@ -150,7 +161,13 @@ private:
   /// Lets go of everything held once upstream has seeked to @p reached, and
   /// keeps it all when upstream refused.
   size_t restartAfter(size_t reached);
-  static StreamState shown(const Shared &shared);
+  StreamState shown(const Shared &shared) const;
+  /// @p state as downstream sees it: in the processor's output format, and
+  /// with upstream's own position in output frames when @p upstreamPosition.
+  StreamState presented(StreamState state, bool upstreamPosition) const;
+  /// Input frames to one output frame: the run's, or with nothing running
+  /// what the processor would make of upstream's format.
+  unsigned runRatio() const;
   void onUpstreamState(const StreamState &state);
 };
 

@@ -19,7 +19,7 @@ public:
 
   bool handles(const StreamAudioFormat &format) const override;
   size_t start(const StreamAudioFormat &format) override;
-  void process(const uint8_t *in, uint8_t *out, size_t frames) override;
+  size_t process(const uint8_t *in, uint8_t *out, size_t frames) override;
 
 private:
   const std::chrono::milliseconds delay;
