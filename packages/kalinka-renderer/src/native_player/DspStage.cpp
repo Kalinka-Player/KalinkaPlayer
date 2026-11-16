@@ -405,7 +405,6 @@ size_t DspStage::fill(std::stop_token token, size_t bytes, bool wait,
   bool waited = false;
   while (true) {
     sync();
-    skipDropped();
     if (segments.empty()) {
       if (boundary) {
         return 0;
@@ -502,7 +501,6 @@ size_t DspStage::seekTo(size_t absolutePosition) {
     return upstream ? upstream->seekTo(absolutePosition) : size_t(-1);
   }
   sync();
-  skipDropped();
   // Upstream has moved on: what it would seek is not what is playing.
   if (boundary || (!segments.empty() && segments.front().left)) {
     return size_t(-1);
@@ -561,7 +559,6 @@ void DspStage::acceptSourceChange() {
     return;
   }
   sync();
-  skipDropped();
   if (segments.empty()) {
     if (boundary) {
       boundary.reset();

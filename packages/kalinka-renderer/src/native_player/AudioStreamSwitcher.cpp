@@ -16,7 +16,7 @@ StreamState about(AudioGraphNodeState state, std::optional<StreamId> id) {
 AudioStreamSwitcher::AudioStreamSwitcher() {}
 
 std::optional<StreamId> AudioStreamSwitcher::nextStreamId() {
-  return inputNodes.empty() ? std::nullopt : inputNodes.front()->streamId();
+  return inputNodes.empty() ? std::nullopt : inputNodes.front().id;
 }
 
 void AudioStreamSwitcher::connectTo(
@@ -25,8 +25,9 @@ void AudioStreamSwitcher::connectTo(
     throw std::runtime_error("Input node cannot be nullptr");
   }
 
+  const auto id = inputNode->streamId();
   std::lock_guard lock(mutex);
-  inputNodes.push_back(inputNode);
+  inputNodes.push_back({inputNode, id});
 
   if (currentInputNode == nullptr ||
       getState().state == AudioGraphNodeState::FINISHED) {
@@ -66,9 +67,11 @@ void AudioStreamSwitcher::disconnect(
     lock.unlock();
     inputNode->removeStateChangeCallback(callbackId);
   } else {
-    inputNodes.remove(inputNode);
+    inputNodes.remove_if([&inputNode](const Source &queued) {
+      return queued.node == inputNode;
+    });
     int callbackId = -1;
-    finished.remove_if([&inputNode, &callbackId](const Played &played) {
+    finished.remove_if([&inputNode, &callbackId](const Source &played) {
       if (played.node != inputNode) {
         return false;
       }
@@ -101,14 +104,14 @@ void AudioStreamSwitcher::switchToNextSource() {
     spdlog::warn("Not in SOURCE_CHANGED state or currentInputNode is not null");
     return;
   }
-  auto inputNode = inputNodes.front();
-  currentInputNode = inputNode;
-  currentId = inputNode->streamId();
+  const auto next = inputNodes.front().node;
+  currentInputNode = next;
+  currentId = inputNodes.front().id;
   currentBeganAt.reset();
   inputNodes.pop_front();
   setStreamId(currentId);
   lock.unlock();
-  follow(inputNode);
+  follow(next);
 }
 
 void AudioStreamSwitcher::follow(
@@ -158,7 +161,7 @@ size_t AudioStreamSwitcher::read(void *data, size_t size) {
     if (currentInputNode == currentInput) {
       currentBeganAt = currentBeganAt.value_or(*begin);
     }
-    for (Played &played : finished) {
+    for (Source &played : finished) {
       if (played.node == currentInput && !played.beganAt) {
         played.beganAt = begin;
       }
@@ -169,43 +172,49 @@ size_t AudioStreamSwitcher::read(void *data, size_t size) {
 
 size_t AudioStreamSwitcher::waitForData(std::stop_token stopToken,
                                         size_t size) {
-  std::unique_lock lock(mutex);
-  auto currentNode = currentInputNode;
-  lock.unlock();
+  const auto [currentNode, replaced] = currentUntilReplaced();
   if (currentNode == nullptr) {
     return 0;
   }
 
-  auto combinedToken = combineStopTokens(stopToken, stopSource.get_token());
+  auto combinedToken = combineStopTokens(stopToken, replaced);
   return currentNode->waitForData(combinedToken.get_token(), size);
 }
 
 size_t AudioStreamSwitcher::waitForDataFor(std::stop_token stopToken,
                                            std::chrono::milliseconds timeout,
                                            size_t size) {
-  std::unique_lock lock(mutex);
-  auto currentNode = currentInputNode;
-  lock.unlock();
+  const auto [currentNode, replaced] = currentUntilReplaced();
   if (currentNode == nullptr) {
     return 0;
   }
 
-  auto combinedToken = combineStopTokens(stopToken, stopSource.get_token());
+  auto combinedToken = combineStopTokens(stopToken, replaced);
   return currentNode->waitForDataFor(combinedToken.get_token(), timeout, size);
 }
 
 void AudioStreamSwitcher::acceptSourceChange() { switchToNextSource(); }
 
-std::optional<uint64_t> AudioStreamSwitcher::liveSourceFrame() const {
+std::shared_ptr<AudioGraphOutputNode> AudioStreamSwitcher::current() const {
   std::lock_guard lock(mutex);
-  return currentInputNode ? currentInputNode->liveSourceFrame() : std::nullopt;
+  return currentInputNode;
+}
+
+std::pair<std::shared_ptr<AudioGraphOutputNode>, std::stop_token>
+AudioStreamSwitcher::currentUntilReplaced() const {
+  std::lock_guard lock(mutex);
+  return {currentInputNode, stopSource.get_token()};
+}
+
+std::optional<uint64_t> AudioStreamSwitcher::liveSourceFrame() const {
+  const auto source = current();
+  return source ? source->liveSourceFrame() : std::nullopt;
 }
 
 std::optional<long> AudioStreamSwitcher::streamReadPosition() const {
   // Passed through, never cached: the source owns its own timeline.
-  std::lock_guard lock(mutex);
-  return currentInputNode == nullptr ? std::nullopt
-                                     : currentInputNode->streamReadPosition();
+  const auto source = current();
+  return source ? source->streamReadPosition() : std::nullopt;
 }
 
 size_t AudioStreamSwitcher::seekStream(StreamId stream, size_t position) {
@@ -218,7 +227,7 @@ size_t AudioStreamSwitcher::seekStream(StreamId stream, size_t position) {
   // The latest of a stream queued twice is the one still heard.
   const auto latest =
       std::find_if(finished.rbegin(), finished.rend(),
-                   [stream](const Played &p) { return p.id == stream; });
+                   [stream](const Source &p) { return p.id == stream; });
   if (latest == finished.rend()) {
     return size_t(-1);
   }
@@ -226,11 +235,11 @@ size_t AudioStreamSwitcher::seekStream(StreamId stream, size_t position) {
   if (currentInputNode != nullptr) {
     retireCurrent(false);
   }
-  const Played again = *found;
-  std::vector<Played> requeued(std::next(found), finished.end());
+  const Source again = *found;
+  std::vector<Source> requeued(std::next(found), finished.end());
   finished.erase(found, finished.end());
   for (auto it = requeued.rbegin(); it != requeued.rend(); ++it) {
-    inputNodes.push_front(it->node);
+    inputNodes.push_front({it->node, it->id});
   }
   currentInputNode = again.node;
   currentId = again.id;
@@ -241,7 +250,7 @@ size_t AudioStreamSwitcher::seekStream(StreamId stream, size_t position) {
   setStreamId(stream);
   lock.unlock();
 
-  for (const Played &played : requeued) {
+  for (const Source &played : requeued) {
     played.node->removeStateChangeCallback(played.callbackId);
     if (played.beganAt) {
       played.node->seekTo(size_t(*played.beganAt));
@@ -255,10 +264,7 @@ size_t AudioStreamSwitcher::seekStream(StreamId stream, size_t position) {
 }
 
 size_t AudioStreamSwitcher::seekTo(size_t absolutePosition) {
-  std::unique_lock lock(mutex);
-  auto currentNode = currentInputNode;
-  lock.unlock();
-
+  const auto currentNode = current();
   if (currentNode == nullptr) {
     return -1;
   }

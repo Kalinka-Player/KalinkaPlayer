@@ -4,9 +4,12 @@
 #include <algorithm>
 #include <atomic>
 #include <gtest/gtest.h>
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <thread>
+#include <vector>
 
 #include "CountingNode.h"
 #include "TestHelpers.h"
@@ -414,4 +417,72 @@ TEST_F(AudioStreamSwitcherSeekTest, AStreamSeekedToItsEndIsLeftUnhooked) {
   EXPECT_EQ(switcher->getState().streamId, std::optional<StreamId>(2));
   switcher->acceptSourceChange();
   EXPECT_EQ(readLeft(*switcher, 1000), second->values(0, 1000));
+}
+
+namespace {
+/// Asks the switcher for its lock from another thread whenever it is queried.
+class LockProbingNode : public CountingNode {
+public:
+  LockProbingNode(StreamId id, int32_t base, size_t frames)
+      : AudioGraphNode(id), CountingNode(id, base, frames) {}
+
+  std::weak_ptr<AudioStreamSwitcher> switcher;
+  mutable std::atomic<bool> queriedUnderLock = false;
+
+  std::optional<uint64_t> liveSourceFrame() const override {
+    probe();
+    return std::nullopt;
+  }
+
+  std::optional<long> streamReadPosition() const override {
+    probe();
+    return CountingNode::streamReadPosition();
+  }
+
+  /// Waits out every probe, as one still blocked outlives the call it probed.
+  void joinProbes() {
+    std::lock_guard lock(probesMutex);
+    for (auto &probe : probes) {
+      probe.join();
+    }
+    probes.clear();
+  }
+
+private:
+  void probe() const {
+    const auto held = switcher.lock();
+    if (!held) {
+      return;
+    }
+    auto taken = std::make_shared<std::promise<void>>();
+    auto done = taken->get_future();
+    // A stream it does not hold: the call only takes and releases the lock.
+    std::lock_guard lock(probesMutex);
+    probes.emplace_back([held, taken] {
+      held->seekStream(99, 0);
+      taken->set_value();
+    });
+    if (done.wait_for(std::chrono::seconds(1)) != std::future_status::ready) {
+      queriedUnderLock = true;
+    }
+  }
+
+  mutable std::mutex probesMutex;
+  mutable std::vector<std::thread> probes;
+};
+} // namespace
+
+TEST(AudioStreamSwitcherLockTest, ItsSourceIsQueriedOutsideItsLock) {
+  auto switcher = std::make_shared<AudioStreamSwitcher>();
+  auto node = std::make_shared<LockProbingNode>(1, 1000000, 1000);
+  node->switcher = switcher;
+  switcher->connectTo(node);
+  switcher->acceptSourceChange();
+
+  switcher->liveSourceFrame();
+  switcher->streamReadPosition();
+  EXPECT_EQ(readLeft(*switcher, 10).size(), 10u);
+
+  node->joinProbes();
+  EXPECT_FALSE(node->queriedUnderLock);
 }

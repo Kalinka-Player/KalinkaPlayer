@@ -4,6 +4,7 @@
 #include "AudioGraphNode.h"
 
 #include <list>
+#include <utility>
 
 class AudioStreamSwitcher : public AudioGraphOutputNode,
                             public AudioGraphInputNode {
@@ -45,25 +46,29 @@ public:
   virtual void acceptSourceChange() override;
 
 private:
-  /// A source that has played here.
-  struct Played {
+  /// A source held here, its stream named once so the lock never asks it.
+  struct Source {
     std::shared_ptr<AudioGraphOutputNode> node;
     std::optional<StreamId> id;
-    /// Where the first frame read from it was, if any has been.
+    /// Where the first frame read from it was, once it has played.
     std::optional<long> beganAt;
-    /// Its state callback, or -1 once that has unhooked itself.
+    /// Its state callback while hooked, else -1.
     int callbackId = -1;
   };
 
   std::optional<StreamId> nextStreamId();
+  /// The current source, taken under the lock so it is called outside it.
+  std::shared_ptr<AudioGraphOutputNode> current() const;
+  /// The current source, and a token that stops once it is replaced.
+  std::pair<std::shared_ptr<AudioGraphOutputNode>, std::stop_token>
+  currentUntilReplaced() const;
 
-  std::list<std::shared_ptr<AudioGraphOutputNode>> inputNodes;
+  std::list<Source> inputNodes;
   std::shared_ptr<AudioGraphOutputNode> currentInputNode = nullptr;
-  /// The current source's stream, kept so no seek has to ask it under the lock.
   std::optional<StreamId> currentId;
   std::optional<long> currentBeganAt;
   /// Sources that finished here, oldest first.
-  std::list<Played> finished;
+  std::list<Source> finished;
 
   mutable std::mutex mutex;
   std::stop_source stopSource;
