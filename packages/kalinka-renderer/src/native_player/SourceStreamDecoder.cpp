@@ -13,6 +13,7 @@ void SourceStreamDecoder::connectTo(
     throw std::invalid_argument("Invalid " + name() + " input connection");
   input = std::move(source);
   position = 0;
+  length = 0;
   seekable = false;
   forget();
   start();
@@ -72,8 +73,11 @@ bool SourceStreamDecoder::reposition(uint64_t offset) {
 }
 
 uint64_t SourceStreamDecoder::sourceLength() const {
-  const auto info = input->getState().streamInfo;
-  return info ? info->streamSize : 0;
+  if (!length) {
+    const auto info = input->getState().streamInfo;
+    length = info ? info->streamSize : 0;
+  }
+  return length;
 }
 
 unsigned SourceStreamDecoder::sourcePrebufferMs() const {

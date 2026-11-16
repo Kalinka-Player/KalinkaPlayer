@@ -130,7 +130,7 @@ private:
   size_t blockedReads = 0;
 };
 
-TEST(VorbisStreamDecoderTest, DecodesExactFrameCountAndTracksPartialReads) {
+TEST(VorbisStreamDecoderTest, DecodesExactFrameCountAndHandsOutWholeFrames) {
   auto source = std::make_shared<FileInputNode>(7, fixture());
   VorbisStreamDecoder decoder(7, 1024);
   decoder.connectTo(source);
@@ -141,11 +141,12 @@ TEST(VorbisStreamDecoderTest, DecodesExactFrameCountAndTracksPartialReads) {
   EXPECT_EQ(state.streamInfo->format.sampleFormat, AudioSampleFormat::PCM16_LE);
   EXPECT_EQ(state.streamId, 7);
 
+  // Seven bytes asked for: one whole frame given, never part of the next.
   std::array<uint8_t, 7> first;
   ASSERT_GE(decoder.waitForDataFor({}, 5s, first.size()), first.size());
-  ASSERT_EQ(decoder.read(first.data(), first.size()), first.size());
+  ASSERT_EQ(decoder.read(first.data(), first.size()), kFrameBytes);
   EXPECT_EQ(decoder.streamReadPosition(), 1);
-  EXPECT_EQ(decode(decoder).size() + first.size(), kFrames * kFrameBytes);
+  EXPECT_EQ(decode(decoder).size() + kFrameBytes, kFrames * kFrameBytes);
   EXPECT_EQ(decoder.getState().state, AudioGraphNodeState::FINISHED);
   EXPECT_EQ(decoder.streamReadPosition(), kFrames);
   EXPECT_EQ(decoder.getState().position, kFrames);
