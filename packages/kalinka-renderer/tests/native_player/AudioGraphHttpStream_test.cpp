@@ -449,8 +449,7 @@ TEST_F(AudioGraphHttpStreamTest, seekTo_backward_after_finished) {
   EXPECT_EQ(totalBytesRead, contentLength);
 }
 
-// The end and the state come from different threads; a reader that finds the
-// one must already find the other.
+// The end and the state are set on different threads; a reader sees both.
 TEST_F(AudioGraphHttpStreamTest, AReaderThatFindsTheEndFindsTheStreamFinished) {
   for (int attempt = 0; attempt < 200; ++attempt) {
     AudioGraphHttpStream stream(1, urlNoRanges, bufferSize);

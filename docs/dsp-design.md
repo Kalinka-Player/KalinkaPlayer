@@ -101,8 +101,8 @@ block churn add 2–3 % more.
 element through deque iterators, and every block it frees or allocates goes
 through malloc. Measured on its own it costs 2.2 ns per stereo S32 frame for a
 write and a read, about 3.6 GB/s. The same machine copies flat memory tens of
-times faster. That makes `Buffer` the largest cost in today's output path
-outside the decoder. Phase 1 replaced it with a ring (section 13, decision 4).
+times faster. That made `Buffer` the largest cost in the output path outside
+the decoder. Phase 1 replaced it with a ring (section 13, decision 4).
 
 On a Raspberry Pi 5 (Cortex-A76, Debian 13's GCC 14.2 and libraries) the
 same files cost 0.14–0.15 % and 0.50 % of a core. There the decoder's thread

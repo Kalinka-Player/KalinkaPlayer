@@ -50,8 +50,8 @@ size_t BufferedStreamDecoder::read(void *dest, size_t size) {
   const auto width = frameBytes.load();
   if (!width)
     return 0;
-  // A partial frame would misalign the sink's channels or DoP markers; the
-  // ring holds whole frames only.
+  // A partial frame would misalign the sink's channels or DoP markers.
+  size = std::min(size, buffer.size());
   const auto count = buffer.read(dest, size - size % width);
   bytesRead += count;
   finishIfDrained();

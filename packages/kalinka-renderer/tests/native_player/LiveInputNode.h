@@ -19,7 +19,7 @@ public:
                          .prebufferMs = prebufferMs}});
   }
   size_t read(void *out, size_t count) override {
-    return bytes.read(static_cast<uint8_t *>(out), count);
+    return bytes.read(out, count);
   }
   size_t waitForData(std::stop_token token, size_t count) override {
     return bytes.waitForData(token, count);

@@ -10,12 +10,10 @@ ByteRing::ByteRing(size_t capacity)
       allocated(capacity), limit(capacity) {}
 
 size_t ByteRing::read(void *dest, size_t bytes) {
-  // While this is set a discard waits, so nothing is written past one until
-  // the copy below is done.
+  // A discard waits on this, so the copy below is never overwritten.
   reading.store(true, std::memory_order_seq_cst);
   const auto end = written.load(std::memory_order_seq_cst);
-  const auto begin = std::max(consumed.load(std::memory_order_relaxed),
-                              dropped.load(std::memory_order_seq_cst));
+  const auto begin = readPosition();
   const auto count = end > begin ? std::min<uint64_t>(bytes, end - begin) : 0;
   if (!count) {
     reading.store(false, std::memory_order_seq_cst);
