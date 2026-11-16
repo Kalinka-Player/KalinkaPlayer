@@ -119,6 +119,7 @@ add_library(kalinka_native_player STATIC
   src/native_player/DelayLine.cpp
   src/native_player/DsdContainer.cpp
   src/native_player/DsdFormat.cpp
+  src/native_player/DsdToPcm.cpp
   src/native_player/DashStreamDecoder.cpp
   src/native_player/DashManifest.cpp
   src/native_player/DspStage.cpp
@@ -351,6 +352,7 @@ if(GTest_FOUND)
     tests/native_player/BufferedStreamDecoder_test.cpp
     tests/native_player/ContainerStreamDecoder_test.cpp
     tests/native_player/DsdContainer_test.cpp
+    tests/native_player/DsdToPcm_test.cpp
     tests/native_player/DashStreamDecoder_test.cpp
     tests/native_player/DashFormat_test.cpp
     tests/native_player/DspStage_test.cpp
