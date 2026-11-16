@@ -34,6 +34,7 @@ class ReleaseInstallerTests(unittest.TestCase):
             FAIL_BUNDLE="0",
             DPKG_LOCKED="0",
             REPAIR_REMOVES="",
+            REPAIR_FAILS="0",
         )
         self.installed = {}
         self.installer = self.root / "install-release.sh"
@@ -93,6 +94,8 @@ packages = [pathlib.Path(a) for a in args if a.endswith(".deb")]
 assert all(p.is_file() for p in packages), packages
 if packages and os.environ["FAIL_BUNDLE"] == "1":
     sys.exit(1)
+if "-f" in args and os.environ["REPAIR_FAILS"] == "1":
+    sys.exit(100)
 status = root / "status.json"
 states = json.loads(status.read_text())
 for package, version, _ in (p.name.split("_") for p in packages):
@@ -310,6 +313,17 @@ else:
         )
         self.assertNotIn(">> Done", result.stdout)
 
+    def test_a_repair_that_fails_fails_the_install_and_says_so(self):
+        self.env.update(FAIL_BUNDLE="1", REPAIR_FAILS="1")
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(
+            "error: kalinka-v5.17.0 is not installed: apt could not repair the failed "
+            "install. apt's output above says why.",
+            result.stderr,
+        )
+        self.assertNotIn(">> Done", result.stdout)
+
     def test_an_upgrade_that_leaves_the_previous_server_fails_the_install(self):
         """dpkg -i waits for no lock, and a repair with nothing unpacked succeeds."""
         self.installed = {
@@ -334,7 +348,9 @@ else:
         result = self.run_installer()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(">> Done. kalinka-v5.17.0 installed.", result.stdout)
-        notes = [line for line in result.stderr.splitlines() if "did not install" in line]
+        notes = [
+            line for line in result.stderr.splitlines() if "did not install" in line
+        ]
         self.assertEqual(
             notes,
             [
