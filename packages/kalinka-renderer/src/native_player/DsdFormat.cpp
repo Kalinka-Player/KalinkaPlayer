@@ -81,8 +81,9 @@ OutputCapabilities probeOutput(const std::string &device) {
                              768000u, 1411200u, 1536000u, 2822400u, 3072000u};
   snd_pcm_hw_params_t *params;
   snd_pcm_hw_params_alloca(&params);
-  for (auto format : {PCM16_LE, PCM24_LE, PCM24_3LE, PCM32_LE, DSD_U8,
-                      DSD_U16_LE, DSD_U32_LE, DSD_U16_BE, DSD_U32_BE}) {
+  for (auto format : {PCM16_LE, PCM24_LE, PCM24_3LE, PCM32_LE, PCM_FLOAT32_LE,
+                      PCM_FLOAT64_LE, DSD_U8, DSD_U16_LE, DSD_U32_LE,
+                      DSD_U16_BE, DSD_U32_BE}) {
     if (isDsd(format) && result.access != DeviceAccess::Exclusive)
       continue;
     for (unsigned channels : {1u, 2u}) {

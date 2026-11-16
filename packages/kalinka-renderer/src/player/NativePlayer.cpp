@@ -891,7 +891,9 @@ void NativePlayer::fillConfig(renderer_pb::ConfigSection &out) const {
   for (const auto &format : probeOutput(settings_.at("output.device")).formats) {
     if (isDsd(format.sampleFormat))
       continue;
-    maxBits = std::max(maxBits, format.bitsPerSample);
+    // A DAC's resolution: float's container says nothing about it.
+    if (!isFloat(format.sampleFormat))
+      maxBits = std::max(maxBits, format.bitsPerSample);
     maxRate = std::max(maxRate, format.sampleRate);
   }
   auto addCapability = [&](const char *path, const char *title,

@@ -15,9 +15,10 @@ struct OutputChoice {
  * @brief What to present for @p source: its own format when the device takes
  * it at the source's rate on @p channels channels, else the first wider
  * container pcmOutputFormats() would try that the device takes. The bits are
- * those the device keeps in that format. With nothing known of the device, it
- * is the source's own format at its container's bits; DSD, DoP and float stay
- * as they are.
+ * those the device keeps in that format. Float stays float where the device
+ * takes it, and goes to the widest integer container it takes otherwise. With
+ * nothing known of the device, it is the source's own format at its
+ * container's bits; DSD and DoP stay as they are.
  * @param device What the device was probed to take.
  */
 OutputChoice chooseOutput(const StreamAudioFormat &source,

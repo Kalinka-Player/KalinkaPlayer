@@ -27,6 +27,9 @@ enum AudioSampleFormat {
 
 inline bool isDsd(AudioSampleFormat format) { return format >= DSD_U8; }
 inline bool isDop(AudioSampleFormat format) { return format >= DOP24_LE; }
+inline bool isFloat(AudioSampleFormat format) {
+  return format == PCM_FLOAT32_LE || format == PCM_FLOAT64_LE;
+}
 
 inline size_t sampleSize(AudioSampleFormat format) {
   switch (format) {
