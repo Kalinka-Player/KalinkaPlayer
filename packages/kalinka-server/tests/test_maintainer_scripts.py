@@ -279,9 +279,9 @@ case "$out" in
 esac
 """,
     # Records what it installed by name, and apart from that the bundle's
-    # packages, the way dpkg-query below reads them; a repair configures what
-    # dpkg -i unpacked. A simulation takes no lock and installs nothing, so it
-    # is not logged.
+    # packages with their versions, the way dpkg-query below reads them; a
+    # repair configures what dpkg -i unpacked. A simulation takes no lock and
+    # installs nothing, so it is not logged.
     "apt-get": """#!/usr/bin/env bash
 if [ "$1" = -s ]; then
   grep -qxF "${!#}" "$STUB_STATE/unknown" && exit 100
@@ -309,7 +309,7 @@ for name in "${names[@]}"; do
 done
 for name in "${names[@]}"; do
   case "$name" in
-    *.deb) deb="${name##*/}"; echo "${deb%%_*}" >> "$STUB_STATE/bundle" ;;
+    *.deb) deb="${name##*/}" version="${deb#*_}"; echo "${deb%%_*} ${version%_*}" >> "$STUB_STATE/bundle" ;;
     *) echo "$name" >> "$STUB_STATE/installed" ;;
   esac
 done
@@ -320,17 +320,25 @@ exit 0
 [ "$1" = --print-architecture ] && { echo arm64; exit 0; }
 echo "$*" >> "$STUB_STATE/dpkg.log"
 for name in "$@"; do
-  case "$name" in *.deb) deb="${name##*/}"; echo "${deb%%_*}" >> "$STUB_STATE/unpacked" ;; esac
+  case "$name" in
+    *.deb) deb="${name##*/}" version="${deb#*_}"; echo "${deb%%_*} ${version%_*}" >> "$STUB_STATE/unpacked" ;;
+  esac
 done
 exit 1
 """,
+    # What was installed by name is at 9.9.9.
     "dpkg-query": """#!/usr/bin/env bash
-pkg="${!#}"
-cat "$STUB_STATE/installed" "$STUB_STATE/bundle" 2>/dev/null | grep -qxF "$pkg" || exit 1
+pkg="${!#}" version=""
+while read -r name v; do [ "$name" = "$pkg" ] && version="$v"; done < "$STUB_STATE/bundle"
+if [ -z "$version" ]; then
+  grep -qxF "$pkg" "$STUB_STATE/installed" || exit 1
+  version=9.9.9
+fi
 case "$2" in
+  *'${db:Status-Status} ${Version}') printf 'installed %s' "$version" ;;
   *db:Status-Status*) printf installed ;;
   *Status*) printf 'install ok installed' ;;
-  *) echo "   $pkg 9.9.9" ;;
+  *) echo "   $pkg $version" ;;
 esac
 """,
     "sudo": '#!/usr/bin/env bash\nexec "$@"\n',
@@ -357,6 +365,7 @@ def _published(tmp_path, tag, *assets, unknown=(), installed=()):
     }
     (state / "release.json").write_text(json.dumps([release]))
     (state / "unknown").write_text("".join(f"{name}\n" for name in unknown))
+    (state / "bundle").write_text("")
     (state / "installed").write_text("".join(f"{name}\n" for name in installed))
     return binv, state
 

@@ -338,6 +338,34 @@ report_missing_extras() {
   fi
 }
 
+deb_package() { local name="${1##*/}"; printf '%s' "${name%%_*}"; }
+
+deb_wanted() {  # deb_wanted <package>_<version>_<arch>.deb -> "installed <version>"
+  local version="${1##*/}"
+  version="${version#*_}"
+  printf 'installed %s' "${version%_*}"
+}
+
+dpkg_state() {  # dpkg_state <package> -> "<status> <version>", or nothing when dpkg has no record
+  local state
+  state="$(dpkg-query -W -f='${db:Status-Status} ${Version}' "$1" 2>/dev/null || true)"
+  printf '%s' "${state% }"
+}
+
+# Only a note: Bookworm's repair, for one, removes the Bluetooth plugin it has no BlueZ for.
+report_missing_debs() {
+  local deb package wanted state missing=0
+  for deb in "$TMPDIR_DL"/*.deb; do
+    package="$(deb_package "$deb")"
+    wanted="$(deb_wanted "$deb")"
+    state="$(dpkg_state "$package")"
+    [ "$state" = "$wanted" ] && continue
+    echo ">> note: $package did not install: dpkg reports it as '${state:-unknown}', not '$wanted'." >&2
+    missing=1
+  done
+  [ "$missing" = 0 ] || echo "   The server runs without what is missing; apt's output above says why." >&2
+}
+
 if [ "${NO_APT_UPDATE:-0}" != "1" ]; then
   echo ">> apt-get update"
   $SUDO apt-get "${APT_OPTS[@]}" update
@@ -367,10 +395,13 @@ if ! $SUDO "${APT_INSTALL[@]}" "${BUNDLE_OPTS[@]}" "$TMPDIR_DL"/*.deb; then
   $SUDO "${APT_INSTALL[@]}" -f
 fi
 
-# The repair succeeds by removing what it cannot configure, the server included.
-server_state="$(dpkg-query -W -f='${db:Status-Status}' kalinka-server 2>/dev/null || true)"
-[ "$server_state" = installed ] \
-  || die "$TAG is not installed: dpkg reports kalinka-server as '${server_state:-unknown}', not 'installed'. apt's output above says why."
+# The repair succeeds by removing what it cannot configure, the server included,
+# and a failed upgrade leaves the previous server in place.
+server_debs=("$TMPDIR_DL"/kalinka-server_*.deb)
+server_wanted="$(deb_wanted "${server_debs[0]}")"
+server_state="$(dpkg_state kalinka-server)"
+[ "$server_state" = "$server_wanted" ] \
+  || die "$TAG is not installed: dpkg reports kalinka-server as '${server_state:-unknown}', not '$server_wanted'. apt's output above says why."
 
 # --- display driver -----------------------------------------------------------
 # flutter-pi draws through KMS, which DietPi ships commented out beside a 16 MB GPU split.
@@ -404,6 +435,7 @@ if have dpkg-query; then
     dpkg-query -W -f='   ${Package} ${Version}\n' "$pkg" 2>/dev/null || true
   done
   report_missing_extras
+  report_missing_debs
 fi
 
 echo
