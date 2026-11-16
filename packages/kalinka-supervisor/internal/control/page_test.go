@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"kalinka/supervisor/internal/protocol"
+	"kalinka/supervisor/internal/sshaccess"
 	"kalinka/supervisor/internal/wifi"
 )
 
@@ -142,6 +143,31 @@ func TestSSHFormErrorsAndAuditNeverExposeCredentials(t *testing.T) {
 		}
 	}
 	if !strings.Contains(logs.String(), "outcome=ssh_setup_failed") {
+		t.Fatal("missing audit outcome")
+	}
+}
+
+func TestSSHFormSaysWhenTheSSHServerRefusesThePassword(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
+	h := newTestHandler(t, &fakeCoordinator{}, true).(*handler)
+	h.cfg.EnableSSH = func(context.Context, protocol.Secret) error { return sshaccess.ErrPasswordsRefused }
+	w := serve(h, http.MethodPost, "/", sshForm().Encode(), dashboardOrigin)
+	page := w.Body.String()
+	if w.Code != http.StatusConflict || w.Header().Get("Location") != "" {
+		t.Fatalf("refused password = %d to %q", w.Code, w.Header().Get("Location"))
+	}
+	for _, want := range []string{`role="alert"`, "SSH is on and kalinka-admin has the new password", "set to refuse passwords", "with an SSH key", "/home/kalinka-admin/.ssh/authorized_keys"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the page lacks %q", want)
+		}
+	}
+	if strings.Contains(page, "SSH is enabled") || callsItABox(page) || strings.Contains(page+logs.String(), sshForm().Get("password")) {
+		t.Fatalf("the page claims success, says box or leaks the password: %s", page)
+	}
+	if !strings.Contains(logs.String(), "outcome=ssh_passwords_refused") {
 		t.Fatal("missing audit outcome")
 	}
 }

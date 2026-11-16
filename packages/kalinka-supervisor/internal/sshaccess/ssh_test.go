@@ -3,6 +3,7 @@ package sshaccess
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os/exec"
 	"strings"
@@ -45,6 +46,16 @@ func TestSetupKeepsPasswordOffCommandLineAndOutOfErrors(t *testing.T) {
 	}
 	if err := s.Enable(context.Background(), password); err != ErrSetup {
 		t.Fatal("helper failure was not replaced by a fixed error")
+	}
+}
+
+func TestSetupTellsARefusedPasswordFromAFailure(t *testing.T) {
+	s := New(false)
+	for status, want := range map[int]error{helperPasswordsRefused: ErrPasswordsRefused, 1: ErrSetup, 255: ErrSetup} {
+		s.run = func(*exec.Cmd) error { return exec.Command("sh", "-c", fmt.Sprintf("exit %d", status)).Run() }
+		if err := s.Enable(context.Background(), protocol.NewSecret("valid-test-password")); err != want {
+			t.Errorf("helper exit %d read as %v", status, err)
+		}
 	}
 }
 

@@ -14,6 +14,13 @@ const Username = "kalinka-admin"
 
 var ErrSetup = errors.New("SSH setup failed")
 
+// ErrPasswordsRefused reports the login made and SSH on, but an OpenSSH policy
+// the helper keeps refusing that login a password.
+var ErrPasswordsRefused = errors.New("the SSH server refuses the login a password")
+
+// helperPasswordsRefused is the helper's exit status for ErrPasswordsRefused; systemd-run passes it through.
+const helperPasswordsRefused = 78
+
 // Setup runs the fixed SSH helper, passing credentials only through standard input.
 type Setup struct {
 	simulated bool
@@ -49,7 +56,11 @@ func (s *Setup) Enable(ctx context.Context, password protocol.Secret) error {
 		"/usr/lib/kalinka-supervisor/ssh-setup.sh")
 	cmd.Stdin = strings.NewReader(password.Reveal() + "\n")
 	// Discard helper output: even a failing account tool must not expose its input.
-	if s.run(cmd) != nil {
+	err := s.run(cmd)
+	if exit := (*exec.ExitError)(nil); errors.As(err, &exit) && exit.ExitCode() == helperPasswordsRefused {
+		return ErrPasswordsRefused
+	}
+	if err != nil {
 		return ErrSetup
 	}
 	return nil
