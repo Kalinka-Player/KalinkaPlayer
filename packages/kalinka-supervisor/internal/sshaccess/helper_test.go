@@ -274,6 +274,7 @@ func TestHelperSaysWhenTheSSHServerTurnsTheLoginAway(t *testing.T) {
 		{name: "another IPv6 network", access: "allowusers kalinka-admin@fd00::/8\n", peer: "fe80::1c2:3ff:fe04:506", outcome: "turned away"},
 		{name: "an IPv4 network to an IPv6 peer", access: "allowusers kalinka-admin@0.0.0.0/0\n", peer: "::1", outcome: "turned away"},
 		{name: "every IPv4 address", access: "allowusers kalinka-admin@0.0.0.0/0\n"},
+		{name: "one IPv6 address as a network", access: "allowusers kalinka-admin@::1/128\n", peer: "::1"},
 		{name: "this login denied", access: "denyusers kalinka-admin\n", outcome: "turned away"},
 		{name: "this login denied elsewhere", access: "denyusers *@10.0.0.0/8\n"},
 		{name: "this login denied after it is allowed", access: "allowusers kalinka-admin\ndenyusers kalinka-*\n", outcome: "turned away"},

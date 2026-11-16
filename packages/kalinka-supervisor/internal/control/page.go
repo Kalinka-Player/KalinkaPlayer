@@ -182,7 +182,8 @@ func (h *handler) enableSSH(w http.ResponseWriter, r *http.Request, reject func(
 		case errors.Is(err, sshaccess.ErrPasswordsRefused):
 			return reject(http.StatusConflict, "ssh_passwords_refused", "SSH is on and "+sshaccess.Username+" has the new password, "+
 				"but this streamer's SSH server is set to refuse passwords, so the login will not work with one. "+
-				"Log in another way, with an SSH key, then allow password logins in /etc/ssh/sshd_config and /etc/ssh/sshd_config.d, "+
+				"Log in another way, with an SSH key, then allow password logins through PasswordAuthentication and AuthenticationMethods "+
+				"in /etc/ssh/sshd_config and /etc/ssh/sshd_config.d, "+
 				"or add your public key to /home/"+sshaccess.Username+"/.ssh/authorized_keys.")
 		}
 		return reject(http.StatusServiceUnavailable, "ssh_setup_failed", "SSH setup failed. Check that an SSH server is installed and try again.")

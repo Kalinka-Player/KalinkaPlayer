@@ -62,15 +62,15 @@ matches() {
 
 # Whether the peer is in an address or CIDR entry, as OpenSSH's addr_match_list reads one.
 in_network() {
-  local addr net len
-  addr="$(bits "$peer")" && net="$(bits "${1%/*}")" || return 1
+  local net len
+  net="$(bits "${1%/*}")" || return 1
   len=${#net}
   if [[ $1 == */* ]]; then
     [[ ${1##*/} =~ ^[0-9]{1,3}$ ]] || return 1
     len=$((10#${1##*/}))
     ((len <= ${#net})) || return 1
   fi
-  [[ ${#addr} == "${#net}" && ${addr:0:len} == "${net:0:len}" ]]
+  [[ ${#peer_bits} == "${#net}" && ${peer_bits:0:len} == "${net:0:len}" ]]
 }
 
 # OpenSSH's match_host_and_ip for the peer, which sshd names by its address unless UseDNS is on.
@@ -140,7 +140,7 @@ takes_passwords() {
 }
 
 # The peer goes into sshd's -C list, so it must be an address and nothing more.
-bits "$peer" >/dev/null
+peer_bits="$(bits "$peer")"
 
 unit=
 running=
