@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strings"
@@ -31,10 +32,13 @@ func dashboardOrigin(r *http.Request) {
 func TestSSHFormEnablesAccessWithoutExtendingTheAPI(t *testing.T) {
 	h := newTestHandler(t, &fakeCoordinator{}, true).(*handler)
 	called := false
-	h.cfg.EnableSSH = func(ctx context.Context, password protocol.Secret) error {
+	h.cfg.EnableSSH = func(ctx context.Context, password protocol.Secret, from netip.Addr) error {
 		called = true
 		if password.Reveal() != sshForm().Get("password") {
 			t.Fatal("password changed in transit")
+		}
+		if from != lanPeer {
+			t.Fatalf("setup was asked for %v, not the browser's address", from)
 		}
 		if _, ok := ctx.Deadline(); !ok || ctx.Err() != nil {
 			t.Fatal("setup does not have its own live deadline")
@@ -98,7 +102,10 @@ func TestSSHFormRejectsInvalidOrCrossOriginRequests(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newTestHandler(t, &fakeCoordinator{}, true).(*handler)
-			h.cfg.EnableSSH = func(context.Context, protocol.Secret) error { t.Fatal("invalid request reached setup"); return nil }
+			h.cfg.EnableSSH = func(context.Context, protocol.Secret, netip.Addr) error {
+				t.Fatal("invalid request reached setup")
+				return nil
+			}
 			f := sshForm()
 			if tc.form != nil {
 				tc.form(f)
@@ -133,7 +140,7 @@ func TestSSHFormErrorsAndAuditNeverExposeCredentials(t *testing.T) {
 		{refuse(CodeBusy), 409, "Another action is in progress"},
 	} {
 		h := newTestHandler(t, &fakeCoordinator{}, true).(*handler)
-		h.cfg.EnableSSH = func(context.Context, protocol.Secret) error { return tc.err }
+		h.cfg.EnableSSH = func(context.Context, protocol.Secret, netip.Addr) error { return tc.err }
 		w := serve(h, http.MethodPost, "/", sshForm().Encode(), dashboardOrigin)
 		if w.Code != tc.want || !strings.Contains(w.Body.String(), tc.message) {
 			t.Fatalf("status %d or message missing", w.Code)
@@ -147,28 +154,54 @@ func TestSSHFormErrorsAndAuditNeverExposeCredentials(t *testing.T) {
 	}
 }
 
-func TestSSHFormSaysWhenTheSSHServerRefusesThePassword(t *testing.T) {
-	var logs bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
-	defer slog.SetDefault(previous)
-	h := newTestHandler(t, &fakeCoordinator{}, true).(*handler)
-	h.cfg.EnableSSH = func(context.Context, protocol.Secret) error { return sshaccess.ErrPasswordsRefused }
-	w := serve(h, http.MethodPost, "/", sshForm().Encode(), dashboardOrigin)
-	page := w.Body.String()
-	if w.Code != http.StatusConflict || w.Header().Get("Location") != "" {
-		t.Fatalf("refused password = %d to %q", w.Code, w.Header().Get("Location"))
-	}
-	for _, want := range []string{`role="alert"`, "SSH is on and kalinka-admin has the new password", "set to refuse passwords", "with an SSH key", "/home/kalinka-admin/.ssh/authorized_keys"} {
-		if !strings.Contains(page, want) {
-			t.Errorf("the page lacks %q", want)
+func TestSSHFormAsksForTheBrowsersAddress(t *testing.T) {
+	for remote, want := range map[string]string{
+		"192.168.1.20:50000":          "192.168.1.20",
+		"[::ffff:192.168.1.20]:50000": "192.168.1.20",
+		"[fe80::1%wlan0]:50000":       "fe80::1%wlan0",
+		"127.0.0.1:50000":             "127.0.0.1",
+	} {
+		h := newTestHandler(t, &fakeCoordinator{}, true).(*handler)
+		var asked netip.Addr
+		h.cfg.EnableSSH = func(_ context.Context, _ protocol.Secret, from netip.Addr) error { asked = from; return nil }
+		w := serve(h, http.MethodPost, "/", sshForm().Encode(), dashboardOrigin, func(r *http.Request) { r.RemoteAddr = remote })
+		if w.Code != http.StatusSeeOther || asked != netip.MustParseAddr(want) {
+			t.Errorf("a form from %s = %d, set up for %v", remote, w.Code, asked)
 		}
 	}
-	if strings.Contains(page, "SSH is enabled") || callsItABox(page) || strings.Contains(page+logs.String(), sshForm().Get("password")) {
-		t.Fatalf("the page claims success, says box or leaks the password: %s", page)
-	}
-	if !strings.Contains(logs.String(), "outcome=ssh_passwords_refused") {
-		t.Fatal("missing audit outcome")
+}
+
+func TestSSHFormSaysWhenTheSSHServerRefusesTheLogin(t *testing.T) {
+	for _, tc := range []struct {
+		err   error
+		code  string
+		wants []string
+	}{
+		{sshaccess.ErrPasswordsRefused, "ssh_passwords_refused", []string{"set to refuse passwords", "with an SSH key", "/home/kalinka-admin/.ssh/authorized_keys"}},
+		{sshaccess.ErrLoginRefused, "ssh_login_refused", []string{"lets in only some logins", "from where you are", "AllowUsers, AllowGroups, DenyUsers and DenyGroups"}},
+	} {
+		var logs bytes.Buffer
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+		h := newTestHandler(t, &fakeCoordinator{}, true).(*handler)
+		h.cfg.EnableSSH = func(context.Context, protocol.Secret, netip.Addr) error { return tc.err }
+		w := serve(h, http.MethodPost, "/", sshForm().Encode(), dashboardOrigin)
+		slog.SetDefault(previous)
+		page := w.Body.String()
+		if w.Code != http.StatusConflict || w.Header().Get("Location") != "" {
+			t.Fatalf("%s = %d to %q", tc.code, w.Code, w.Header().Get("Location"))
+		}
+		for _, want := range append([]string{`role="alert"`, "SSH is on and kalinka-admin has the new password"}, tc.wants...) {
+			if !strings.Contains(page, want) {
+				t.Errorf("the %s page lacks %q", tc.code, want)
+			}
+		}
+		if strings.Contains(page, "SSH is enabled") || callsItABox(page) || strings.Contains(page+logs.String(), sshForm().Get("password")) {
+			t.Fatalf("the %s page claims success, says box or leaks the password: %s", tc.code, page)
+		}
+		if !strings.Contains(logs.String(), "outcome="+tc.code) {
+			t.Fatalf("missing audit outcome %s", tc.code)
+		}
 	}
 }
 
@@ -197,7 +230,10 @@ func powerSavingForm(state string) url.Values {
 func powerSavingHandler(t *testing.T, saving *fakePowerSaving) *handler {
 	t.Helper()
 	h := newTestHandler(t, &fakeCoordinator{}, true).(*handler)
-	h.cfg.EnableSSH = func(context.Context, protocol.Secret) error { t.Fatal("the Wi-Fi form reached SSH setup"); return nil }
+	h.cfg.EnableSSH = func(context.Context, protocol.Secret, netip.Addr) error {
+		t.Fatal("the Wi-Fi form reached SSH setup")
+		return nil
+	}
 	h.cfg.WiFiPowerSaving = saving
 	return h
 }

@@ -84,13 +84,17 @@ drop-in a Raspberry Pi Imager card wrote for `kalinka-admin`
 (`/etc/ssh/sshd_config.d/kalinka-card-kalinka-admin.conf`) and reloads
 OpenSSH if it was already running, since the form's request is the later one.
 Every other SSH authentication policy is kept. With OpenSSH the helper then
-reads the policy in force for `kalinka-admin` (`sshd -T -C
-user=kalinka-admin,host=localhost,addr=127.0.0.1`). A password counts as
-taken through `PasswordAuthentication`, or through
-`KbdInteractiveAuthentication` with `UsePAM`. If those or
-`AuthenticationMethods` keep a password alone from logging in, the page says
-so, and how to fix it, instead of reporting success. The account and SSH are
-still set up. Dropbear has no such check, so its policy is not read.
+reads the policy in force for `kalinka-admin` coming from the address the
+form was sent from (`sshd -T -C user=kalinka-admin,host=<address>,addr=<address>`),
+so `Match Address` blocks answer as they would for that computer. It checks
+`AllowUsers`, `DenyUsers`, `AllowGroups` and `DenyGroups` the way OpenSSH
+matches them, with the address standing for the host name as it does under
+`UseDNS no`. A password counts as taken through `PasswordAuthentication`, or
+through `KbdInteractiveAuthentication` with `UsePAM`. If the server turns
+`kalinka-admin` away, or those or `AuthenticationMethods` keep a password
+alone from logging in, the page says which, and how to fix it, instead of
+reporting success. The account and SSH are still set up. Dropbear has no such
+check, so its policy is not read.
 
 The form posts to `/` and requires the dashboard's exact Origin and the
 streamer's identity. Success redirects back to the page with connection

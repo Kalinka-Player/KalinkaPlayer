@@ -25,6 +25,7 @@ case ${0##*/} in
     [[ -n $SSH_TEST_ACCOUNT ]] || exit 2
     printf '%s\n' "$SSH_TEST_ACCOUNT" ;;
   useradd|usermod) [[ $SSH_TEST_FAIL != account ]] ;;
+  id) echo "${SSH_TEST_GROUPS:-kalinka-admin sudo}" ;;
   chpasswd)
     IFS= read -r credential
     printf '%s' "$credential" > "$SSH_TEST_DIR/credential"
@@ -35,26 +36,24 @@ case ${0##*/} in
     if [[ -e $card_policy ]]; then echo 'passwordauthentication no'; else echo "passwordauthentication ${SSH_TEST_PASSWORDS:-yes}"; fi
     echo "authenticationmethods ${SSH_TEST_METHODS:-any}"
     echo "kbdinteractiveauthentication ${SSH_TEST_PROMPT:-no}"
-    echo "usepam ${SSH_TEST_PAM:-yes}" ;;
+    echo "usepam ${SSH_TEST_PAM:-yes}"
+    printf '%b' "$SSH_TEST_ACCESS" ;;
 esac
 `
 
-const (
-	defaultPassword = "test: with ` $() \\"
-	policyCheck     = "sshd -T -C user=kalinka-admin,host=localhost,addr=127.0.0.1"
-)
+const defaultPassword = "test: with ` $() \\"
 
 // helper is ssh-setup.sh with only fake tools and rm on its PATH, the root it
-// writes under, and, once run, what it did to them.
+// writes under, the address it is asked from, and, once run, what it did to them.
 type helper struct {
-	root, tools, calls, output string
-	status                     int
+	root, tools, peer, calls, output string
+	status                           int
 }
 
 func newHelper(t *testing.T) *helper {
 	t.Helper()
-	h := &helper{root: t.TempDir(), tools: t.TempDir()}
-	for _, name := range []string{"systemctl", "getent", "useradd", "usermod", "chpasswd", "sshd"} {
+	h := &helper{root: t.TempDir(), tools: t.TempDir(), peer: "192.168.1.20"}
+	for _, name := range []string{"systemctl", "getent", "useradd", "usermod", "id", "chpasswd", "sshd"} {
 		put(t, filepath.Join(h.tools, name), fakeAccountTools, 0700)
 	}
 	rm, err := exec.LookPath("rm")
@@ -91,9 +90,14 @@ func (h *helper) putCardPolicy(t *testing.T) {
 	put(t, h.cardPolicy(), "Match User kalinka-admin\n\tPasswordAuthentication no\n", 0644)
 }
 
+// policyCheck is the call that reads OpenSSH's policy for the login from the peer.
+func (h *helper) policyCheck() string {
+	return "sshd -T -C user=kalinka-admin,host=" + h.peer + ",addr=" + h.peer + "\n"
+}
+
 func (h *helper) run(t *testing.T, password string, env ...string) {
 	t.Helper()
-	cmd := exec.Command("/bin/bash", "../../ssh-setup.sh")
+	cmd := exec.Command("/bin/bash", "../../ssh-setup.sh", h.peer)
 	cmd.Env = append([]string{"PATH=" + h.tools, "SSH_TEST_DIR=" + h.tools, "KALINKA_SSH_ROOT=" + h.root}, env...)
 	cmd.Stdin = strings.NewReader(password + "\n")
 	output, err := cmd.CombinedOutput()
@@ -106,9 +110,12 @@ func (h *helper) run(t *testing.T, password string, env ...string) {
 	}
 }
 
-// outcome is "" for a usable password, "refused" for the status the supervisor reports, "failed" for any other.
+// outcome is "" for a usable password, "turned away" and "refused" for the
+// statuses the supervisor reports, and "failed" for any other.
 func (h *helper) outcome() string {
 	switch {
+	case h.status == helperLoginRefused:
+		return "turned away"
 	case h.status == helperPasswordsRefused:
 		return "refused"
 	case h.status != 0:
@@ -119,12 +126,19 @@ func (h *helper) outcome() string {
 
 func TestHelperSetsOnlyItsOwnLoginBeforeStartingSSH(t *testing.T) {
 	for _, tc := range []struct {
-		name, server, active, account, fail, password string
-		ok                                            bool
+		name, server, active, account, fail, password, peer string
+		ok                                                  bool
 	}{
 		{name: "DietPi", server: "dropbear.service", ok: true},
 		{name: "Debian", server: "ssh.service", ok: true},
 		{name: "sshd", server: "sshd.service", ok: true},
+		{name: "asked over IPv6", server: "ssh.service", peer: "fe80::1c2:3ff:fe04:506", ok: true},
+		{name: "asked from loopback", server: "ssh.service", peer: "::1", ok: true},
+		{name: "a peer with more than an address", server: "ssh.service", peer: "192.168.1.20,user=root"},
+		{name: "a peer with a zone", server: "ssh.service", peer: "fe80::1%wlan0"},
+		{name: "a peer out of range", server: "ssh.service", peer: "192.168.1.256"},
+		{name: "a peer of nine groups", server: "ssh.service", peer: "1:2:3:4:5:6:7:8:9"},
+		{name: "no peer", server: "ssh.service", peer: "none"},
 		{name: "prefer running server", server: "dropbear.service", active: "ssh.service", ok: true},
 		{name: "reset managed account", server: "ssh.service", account: "kalinka-admin:x:1001:1001:Kalinka dashboard administrator:/home/kalinka-admin:/bin/bash", ok: true},
 		{name: "unrelated account", server: "ssh.service", account: "kalinka-admin:x:1001:1001:Someone else:/home/kalinka-admin:/bin/bash"},
@@ -141,12 +155,22 @@ func TestHelperSetsOnlyItsOwnLoginBeforeStartingSSH(t *testing.T) {
 				password = defaultPassword
 			}
 			h := newHelper(t)
+			switch tc.peer {
+			case "":
+			case "none":
+				h.peer = ""
+			default:
+				h.peer = tc.peer
+			}
 			h.run(t, password, "SSH_TEST_SERVER="+tc.server, "SSH_TEST_ACTIVE="+tc.active, "SSH_TEST_ACCOUNT="+tc.account, "SSH_TEST_FAIL="+tc.fail)
 			if (h.status == 0) != tc.ok {
 				t.Fatalf("helper success = %v, want %v: %s", h.status == 0, tc.ok, h.output)
 			}
-			if h.status == helperPasswordsRefused {
-				t.Fatal("a failed setup reads as an SSH server refusing passwords")
+			if h.status == helperLoginRefused || h.status == helperPasswordsRefused {
+				t.Fatal("a failed setup reads as an SSH server refusing the login")
+			}
+			if tc.peer != "" && !tc.ok && strings.Contains(h.calls, "useradd") {
+				t.Fatal("set the login up for a request from no address")
 			}
 			started := h.read("started")
 			if tc.ok {
@@ -215,7 +239,7 @@ func TestHelperSaysWhenTheSSHServerRefusesThePassword(t *testing.T) {
 			if reloaded := strings.Contains(h.calls, "systemctl reload-or-restart "+tc.server+"\n"); reloaded != tc.reload {
 				t.Fatalf("reloaded the SSH server = %v, want %v:\n%s", reloaded, tc.reload, h.calls)
 			}
-			if checked := strings.Contains(h.calls, policyCheck+"\n"); checked != tc.checked {
+			if checked := strings.Contains(h.calls, h.policyCheck()); checked != tc.checked {
 				t.Fatalf("read the SSH server's policy = %v, want %v:\n%s", checked, tc.checked, h.calls)
 			}
 			unit := tc.server
@@ -223,6 +247,54 @@ func TestHelperSaysWhenTheSSHServerRefusesThePassword(t *testing.T) {
 				unit = tc.active
 			}
 			if h.read("started") != unit || h.read("credential") != Username+":"+defaultPassword {
+				t.Fatal("the login or SSH was not left set up")
+			}
+		})
+	}
+}
+
+func TestHelperSaysWhenTheSSHServerTurnsTheLoginAway(t *testing.T) {
+	for _, tc := range []struct {
+		// access is sshd -T's lines for AllowUsers, DenyUsers, AllowGroups and DenyGroups.
+		name, access, groups, peer, passwords, outcome string
+	}{
+		{name: "only another login", access: "allowusers pi\n", outcome: "turned away"},
+		{name: "another login and this one", access: "allowusers pi\nallowusers kalinka-admin\n"},
+		{name: "a wildcard", access: "allowusers kalinka-*\n"},
+		{name: "a single-character wildcard", access: "allowusers kalinka-adm?n\n"},
+		{name: "brackets, which OpenSSH reads as themselves", access: "allowusers kalinka-[a]dmin\n", outcome: "turned away"},
+		{name: "a backslash, which OpenSSH reads as itself", access: "allowusers kalinka\\\\-admin\n", outcome: "turned away"},
+		{name: "this login from the home network", access: "allowusers kalinka-admin@192.168.1.0/24\n"},
+		{name: "this login from elsewhere", access: "allowusers kalinka-admin@192.168.1.0/24\n", peer: "10.0.0.5", outcome: "turned away"},
+		{name: "any login from the home network", access: "allowusers *@192.168.*\n"},
+		{name: "this login from its own address", access: "allowusers kalinka-admin@192.168.1.20\n"},
+		{name: "every address but the peer's", access: "allowusers kalinka-admin@*,!192.168.1.20\n", outcome: "turned away"},
+		{name: "every network but the peer's", access: "allowusers kalinka-admin@!192.168.0.0/16,*\n", outcome: "turned away"},
+		{name: "an IPv6 network", access: "allowusers kalinka-admin@fe80::/10\n", peer: "fe80::1c2:3ff:fe04:506"},
+		{name: "another IPv6 network", access: "allowusers kalinka-admin@fd00::/8\n", peer: "fe80::1c2:3ff:fe04:506", outcome: "turned away"},
+		{name: "an IPv4 network to an IPv6 peer", access: "allowusers kalinka-admin@0.0.0.0/0\n", peer: "::1", outcome: "turned away"},
+		{name: "every IPv4 address", access: "allowusers kalinka-admin@0.0.0.0/0\n"},
+		{name: "this login denied", access: "denyusers kalinka-admin\n", outcome: "turned away"},
+		{name: "this login denied elsewhere", access: "denyusers *@10.0.0.0/8\n"},
+		{name: "this login denied after it is allowed", access: "allowusers kalinka-admin\ndenyusers kalinka-*\n", outcome: "turned away"},
+		{name: "a group it is in", access: "allowgroups sudo\n"},
+		{name: "a group it is in by a wildcard", access: "allowgroups su*\n"},
+		{name: "only a group it is not in", access: "allowgroups ssh-users\n", outcome: "turned away"},
+		{name: "a group it is in denied", access: "denygroups sudo\n", outcome: "turned away"},
+		{name: "a group it is in, with a sudo it lacks", access: "allowgroups sudo\n", groups: "kalinka-admin", outcome: "turned away"},
+		{name: "allowed by name but not by group", access: "allowusers kalinka-admin\nallowgroups ssh-users\n", outcome: "turned away"},
+		{name: "turned away before its password is weighed", access: "allowusers pi\n", passwords: "no", outcome: "turned away"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHelper(t)
+			if tc.peer != "" {
+				h.peer = tc.peer
+			}
+			h.run(t, defaultPassword, "SSH_TEST_SERVER=ssh.service", "SSH_TEST_ACCESS="+tc.access, "SSH_TEST_GROUPS="+tc.groups, "SSH_TEST_PASSWORDS="+tc.passwords)
+			if outcome := h.outcome(); outcome != tc.outcome || !strings.Contains(h.calls, h.policyCheck()) {
+				t.Fatalf("helper exited %d, read as %q, want %q: %s\n%s", h.status, outcome, tc.outcome, h.output, h.calls)
+			}
+			if h.read("started") != "ssh.service" || h.read("credential") != Username+":"+defaultPassword {
 				t.Fatal("the login or SSH was not left set up")
 			}
 		})
@@ -243,18 +315,29 @@ func TestHelperReadsOpenSSHsOwnAnswer(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("as root, sshd -T also wants the host's privilege separation directory")
 	}
+	const passwordsAtHome = "PasswordAuthentication no\nMatch Address 192.168.1.0/24\n\tPasswordAuthentication yes\n"
 	for _, tc := range []struct {
-		name, policy, outcome string
-		cardPolicy            bool
+		name, policy, peer, outcome string
+		cardPolicy                  bool
 	}{
 		{name: "the card made the login keys only", cardPolicy: true},
 		{name: "keys only for another login", policy: "Match User pi\n\tPasswordAuthentication no\n"},
 		{name: "keys only for every login", policy: "PasswordAuthentication no\n", outcome: "refused"},
 		{name: "keys only for kalinka-admin by hand", policy: "Match User kalinka-admin\n\tPasswordAuthentication no\n", outcome: "refused"},
 		{name: "a public key required", policy: "AuthenticationMethods publickey\n", outcome: "refused"},
+		{name: "passwords from the home network, asked from it", policy: passwordsAtHome},
+		{name: "passwords from the home network, asked from elsewhere", policy: passwordsAtHome, peer: "10.0.0.5", outcome: "refused"},
+		{name: "only another login", policy: "AllowUsers pi\n", outcome: "turned away"},
+		{name: "this login from the home network", policy: "AllowUsers pi kalinka-admin@192.168.1.0/24\n"},
+		{name: "this login from elsewhere", policy: "AllowUsers pi kalinka-admin@192.168.1.0/24\n", peer: "10.0.0.5", outcome: "turned away"},
+		{name: "a group it is in denied", policy: "DenyGroups sudo\n", outcome: "turned away"},
+		{name: "a group it is in allowed", policy: "AllowGroups sudo\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHelper(t)
+			if tc.peer != "" {
+				h.peer = tc.peer
+			}
 			put(t, filepath.Join(h.tools, "sshd"), realSSHD, 0700)
 			conf := filepath.Join(h.root, "etc/ssh")
 			put(t, filepath.Join(conf, "sshd_config"), "Include "+conf+"/sshd_config.d/*.conf\n", 0644)
@@ -268,7 +351,7 @@ func TestHelperReadsOpenSSHsOwnAnswer(t *testing.T) {
 				t.Fatalf("ssh-keygen: %v: %s", err, out)
 			}
 			h.run(t, defaultPassword, "SSH_TEST_SERVER=ssh.service")
-			if outcome := h.outcome(); outcome != tc.outcome || !strings.Contains(h.calls, policyCheck+"\n") {
+			if outcome := h.outcome(); outcome != tc.outcome || !strings.Contains(h.calls, h.policyCheck()) {
 				t.Fatalf("helper exited %d, read as %q, want %q: %s\n%s", h.status, outcome, tc.outcome, h.output, h.calls)
 			}
 		})

@@ -4,6 +4,7 @@ package sshaccess
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"os/exec"
 	"strings"
 
@@ -18,8 +19,15 @@ var ErrSetup = errors.New("SSH setup failed")
 // the helper keeps refusing that login a password.
 var ErrPasswordsRefused = errors.New("the SSH server refuses the login a password")
 
-// helperPasswordsRefused is the helper's exit status for ErrPasswordsRefused; systemd-run passes it through.
-const helperPasswordsRefused = 78
+// ErrLoginRefused reports the login made and SSH on, but OpenSSH's AllowUsers,
+// AllowGroups, DenyUsers or DenyGroups turning that login away.
+var ErrLoginRefused = errors.New("the SSH server turns the login away")
+
+// The helper's exit statuses for those errors; systemd-run passes them through.
+const (
+	helperLoginRefused     = 77
+	helperPasswordsRefused = 78
+)
 
 // Setup runs the fixed SSH helper, passing credentials only through standard input.
 type Setup struct {
@@ -43,8 +51,10 @@ func ValidPassword(password string) bool {
 	return true
 }
 
-func (s *Setup) Enable(ctx context.Context, password protocol.Secret) error {
-	if !ValidPassword(password.Reveal()) {
+// Enable sets the login's password and starts SSH; from is the address the
+// request came from, which OpenSSH's policy is read for.
+func (s *Setup) Enable(ctx context.Context, password protocol.Secret, from netip.Addr) error {
+	if !ValidPassword(password.Reveal()) || !from.IsValid() {
 		return ErrSetup
 	}
 	if s.simulated {
@@ -53,12 +63,17 @@ func (s *Setup) Enable(ctx context.Context, password protocol.Secret) error {
 	cmd := exec.CommandContext(ctx, "systemd-run", "--quiet", "--wait", "--pipe", "--collect",
 		"--unit=kalinka-ssh-setup", "--service-type=exec", "--property=RuntimeMaxSec=20s",
 		"--property=TimeoutStopSec=2s", "--property=UMask=0077", "--property=LimitCORE=0",
-		"/usr/lib/kalinka-supervisor/ssh-setup.sh")
+		"/usr/lib/kalinka-supervisor/ssh-setup.sh", from.Unmap().WithZone("").String())
 	cmd.Stdin = strings.NewReader(password.Reveal() + "\n")
 	// Discard helper output: even a failing account tool must not expose its input.
 	err := s.run(cmd)
-	if exit := (*exec.ExitError)(nil); errors.As(err, &exit) && exit.ExitCode() == helperPasswordsRefused {
-		return ErrPasswordsRefused
+	if exit := (*exec.ExitError)(nil); errors.As(err, &exit) {
+		switch exit.ExitCode() {
+		case helperLoginRefused:
+			return ErrLoginRefused
+		case helperPasswordsRefused:
+			return ErrPasswordsRefused
+		}
 	}
 	if err != nil {
 		return ErrSetup

@@ -14,14 +14,19 @@ var sharedAddressSpace = netip.MustParsePrefix("100.64.0.0/10")
 // lanSuffixes are names public DNS cannot answer for, so a rebinding attacker cannot point them at this box.
 var lanSuffixes = []string{".local", ".lan", ".home.arpa", ".internal"}
 
-// remoteAllowed keeps the API on the trusted LAN even when someone forwards its port from the internet.
-func remoteAllowed(remoteAddr string) bool {
+// peerAddr is the address a request came from, an IPv4 peer's own even where it reached an IPv6 socket.
+func peerAddr(remoteAddr string) (netip.Addr, bool) {
 	peer, err := netip.ParseAddrPort(remoteAddr)
 	if err != nil {
-		return false
+		return netip.Addr{}, false
 	}
-	ip := peer.Addr().Unmap()
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || sharedAddressSpace.Contains(ip)
+	return peer.Addr().Unmap(), true
+}
+
+// remoteAllowed keeps the API on the trusted LAN even when someone forwards its port from the internet.
+func remoteAllowed(remoteAddr string) bool {
+	ip, ok := peerAddr(remoteAddr)
+	return ok && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || sharedAddressSpace.Contains(ip))
 }
 
 func hostname(hostport string) string {

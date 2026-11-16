@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strings"
@@ -59,7 +60,7 @@ func TestDashboardErrorsCallTheMachineAStreamer(t *testing.T) {
 		"setup failed":   func(url.Values) {},
 	} {
 		h := newTestHandler(t, &fakeCoordinator{}, true).(*handler)
-		h.cfg.EnableSSH = func(context.Context, protocol.Secret) error { return errors.New("no sshd") }
+		h.cfg.EnableSSH = func(context.Context, protocol.Secret, netip.Addr) error { return errors.New("no sshd") }
 		f := sshForm()
 		form(f)
 		w := serve(h, http.MethodPost, "/", f.Encode(), dashboardOrigin)

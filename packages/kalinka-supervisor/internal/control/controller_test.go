@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sync"
@@ -127,11 +128,13 @@ func withPlugin(c *Controller, pkg string) {
 	c.installed = func(name string) bool { return name == pkg }
 }
 
-type sshSetupFunc func(context.Context, protocol.Secret) error
+type sshSetupFunc func(context.Context, protocol.Secret, netip.Addr) error
 
-func (f sshSetupFunc) Enable(ctx context.Context, password protocol.Secret) error {
-	return f(ctx, password)
+func (f sshSetupFunc) Enable(ctx context.Context, password protocol.Secret, from netip.Addr) error {
+	return f(ctx, password, from)
 }
+
+var lanPeer = netip.MustParseAddr("192.168.1.20")
 
 func TestSSHSetupSharesActionPolicy(t *testing.T) {
 	for _, tc := range []struct {
@@ -152,8 +155,14 @@ func TestSSHSetupSharesActionPolicy(t *testing.T) {
 			c, _ := newController(s, tc.network)
 			c.pending = tc.pending
 			called := false
-			c.ssh = sshSetupFunc(func(context.Context, protocol.Secret) error { called = true; return nil })
-			if err := c.EnableSSH(context.Background(), protocol.NewSecret("test-only-password")); code(err) != tc.want {
+			c.ssh = sshSetupFunc(func(_ context.Context, _ protocol.Secret, from netip.Addr) error {
+				called = true
+				if from != lanPeer {
+					t.Errorf("setup was asked for %v", from)
+				}
+				return nil
+			})
+			if err := c.EnableSSH(context.Background(), protocol.NewSecret("test-only-password"), lanPeer); code(err) != tc.want {
 				t.Fatalf("refusal = %s, want %s", code(err), tc.want)
 			}
 			if called != (tc.want == "") {
@@ -168,18 +177,18 @@ func TestSSHSetupSharesActionPolicy(t *testing.T) {
 
 func TestSSHSetupExcludesOtherActionsAndReleasesLockOnFailure(t *testing.T) {
 	c, _ := newController(&fakeSystemd{}, nil)
-	c.ssh = sshSetupFunc(func(context.Context, protocol.Secret) error {
+	c.ssh = sshSetupFunc(func(context.Context, protocol.Secret, netip.Addr) error {
 		for _, action := range Supported {
 			if _, err := c.Begin(context.Background(), request(action)); code(err) != CodeBusy {
 				t.Fatalf("%s was not excluded", action)
 			}
 		}
-		if err := c.EnableSSH(context.Background(), protocol.NewSecret("another-password")); code(err) != CodeBusy {
+		if err := c.EnableSSH(context.Background(), protocol.NewSecret("another-password"), lanPeer); code(err) != CodeBusy {
 			t.Fatal("parallel SSH setup was admitted")
 		}
 		return errors.New("setup failed")
 	})
-	if c.EnableSSH(context.Background(), protocol.NewSecret("test-only-password")) == nil {
+	if c.EnableSSH(context.Background(), protocol.NewSecret("test-only-password"), lanPeer) == nil {
 		t.Fatal("failure was lost")
 	}
 	if err := perform(c, RestartCore); err != nil {

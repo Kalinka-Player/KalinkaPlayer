@@ -166,12 +166,19 @@ func (h *handler) enableSSH(w http.ResponseWriter, r *http.Request, reject func(
 	r.Form = nil
 	ctx, cancel := context.WithTimeout(context.Background(), sshSetupTimeout)
 	defer cancel()
-	if err := h.cfg.EnableSSH(ctx, secret); err != nil {
+	// The login will most likely come from where the form was sent, so its policy is read for that address.
+	from, _ := peerAddr(r.RemoteAddr)
+	if err := h.cfg.EnableSSH(ctx, secret, from); err != nil {
 		var refusal *Refusal
 		switch {
 		case errors.As(err, &refusal):
 			outcome := outcomes[refusal.Code]
 			return reject(outcome.status, refusal.Code, outcome.message)
+		case errors.Is(err, sshaccess.ErrLoginRefused):
+			return reject(http.StatusConflict, "ssh_login_refused", "SSH is on and "+sshaccess.Username+" has the new password, "+
+				"but this streamer's SSH server lets in only some logins, and "+sshaccess.Username+" is not one of them from where you are. "+
+				"Log in another way, then let "+sshaccess.Username+" in through AllowUsers, AllowGroups, DenyUsers and DenyGroups "+
+				"in /etc/ssh/sshd_config and /etc/ssh/sshd_config.d.")
 		case errors.Is(err, sshaccess.ErrPasswordsRefused):
 			return reject(http.StatusConflict, "ssh_passwords_refused", "SSH is on and "+sshaccess.Username+" has the new password, "+
 				"but this streamer's SSH server is set to refuse passwords, so the login will not work with one. "+
