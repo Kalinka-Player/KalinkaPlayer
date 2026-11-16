@@ -38,7 +38,8 @@ protected:
   /// Where the next read starts.
   uint64_t sourcePosition() const { return position; }
   /// The source's length in bytes, or 0 while unknown; an HTTP source knows
-  /// it once its first bytes have arrived.
+  /// it once its first bytes have arrived. Kept once known: an HTTP source
+  /// loses it for a while as it fetches a new range.
   uint64_t sourceLength() const;
   /// Reserve requested by a broadcast transport, in milliseconds of audio.
   unsigned sourcePrebufferMs() const;
@@ -49,6 +50,7 @@ private:
   std::shared_ptr<AudioGraphOutputNode> input;
   std::atomic<bool> seekable{false};
   uint64_t position = 0;
+  mutable uint64_t length = 0;
 
   bool canSeek() const final { return seekable; }
   /// Reads once what `wanted` bytes have arrived, or fewer at the end.
