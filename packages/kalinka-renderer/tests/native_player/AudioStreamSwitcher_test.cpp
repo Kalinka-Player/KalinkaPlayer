@@ -1,8 +1,12 @@
 #include "AudioStreamSwitcher.h"
 #include "SineWaveNode.h"
 
+#include <algorithm>
+#include <atomic>
 #include <gtest/gtest.h>
+#include <map>
 #include <memory>
+#include <mutex>
 
 #include "CountingNode.h"
 #include "TestHelpers.h"
@@ -253,6 +257,51 @@ std::vector<int32_t> readLeft(AudioGraphOutputNode &node, size_t frames) {
   return left;
 }
 
+/// Knows how many state callbacks are still hooked to it.
+class HookCountingNode : public CountingNode {
+public:
+  HookCountingNode(StreamId id, int32_t base, size_t frames)
+      : AudioGraphNode(id), CountingNode(id, base, frames) {}
+
+  int onStateChange(
+      std::function<bool(AudioGraphNode *, StreamState)> callback) override {
+    auto hooked = std::make_shared<std::atomic<bool>>(true);
+    auto registering = std::make_shared<std::atomic<bool>>(true);
+    const int id = CountingNode::onStateChange(
+        [callback, hooked, registering](AudioGraphNode *node,
+                                        StreamState state) {
+          const bool keep = callback(node, state);
+          // The node ignores what the call made on registering returns.
+          if (!keep && !*registering) {
+            *hooked = false;
+          }
+          return keep;
+        });
+    *registering = false;
+    std::lock_guard lock(hooksMutex);
+    hooks[id] = hooked;
+    return id;
+  }
+
+  void removeStateChangeCallback(int id) override {
+    CountingNode::removeStateChangeCallback(id);
+    std::lock_guard lock(hooksMutex);
+    if (auto it = hooks.find(id); it != hooks.end()) {
+      *it->second = false;
+    }
+  }
+
+  size_t hooked() {
+    std::lock_guard lock(hooksMutex);
+    return std::count_if(hooks.begin(), hooks.end(),
+                         [](const auto &hook) { return bool(*hook.second); });
+  }
+
+private:
+  std::mutex hooksMutex;
+  std::map<int, std::shared_ptr<std::atomic<bool>>> hooks;
+};
+
 /// Two queued streams, the first played out and the second begun.
 class AudioStreamSwitcherSeekTest : public ::testing::Test {
 protected:
@@ -337,4 +386,32 @@ TEST_F(AudioStreamSwitcherSeekTest, ADisconnectedStreamIsForgotten) {
 
   switcher->disconnect(first);
   EXPECT_EQ(switcher->seekStream(1, 100), size_t(-1));
+}
+
+TEST_F(AudioStreamSwitcherSeekTest, OfAStreamQueuedTwiceTheLatestIsSeeked) {
+  auto again = std::make_shared<CountingNode>(1, 3000000, 1000);
+  auto last = std::make_shared<CountingNode>(2, 2000000, 1000);
+  switcher->connectTo(first);
+  switcher->connectTo(again);
+  switcher->connectTo(last);
+  for (const size_t frames : {1000u, 1000u, 300u}) {
+    switcher->acceptSourceChange();
+    ASSERT_EQ(readLeft(*switcher, frames).size(), frames);
+  }
+
+  EXPECT_EQ(switcher->seekStream(1, 600), 600u);
+  EXPECT_EQ(readLeft(*switcher, 1000), again->values(600, 1000));
+}
+
+TEST_F(AudioStreamSwitcherSeekTest, AStreamSeekedToItsEndIsLeftUnhooked) {
+  auto hooked = std::make_shared<HookCountingNode>(1, 1000000, 1000);
+  first = hooked;
+  auto second = playFirstThenBegin({});
+
+  EXPECT_EQ(switcher->seekStream(1, 1000), 1000u);
+  EXPECT_EQ(hooked->hooked(), 0u);
+  ASSERT_EQ(switcher->getState().state, AudioGraphNodeState::SOURCE_CHANGED);
+  EXPECT_EQ(switcher->getState().streamId, std::optional<StreamId>(2));
+  switcher->acceptSourceChange();
+  EXPECT_EQ(readLeft(*switcher, 1000), second->values(0, 1000));
 }

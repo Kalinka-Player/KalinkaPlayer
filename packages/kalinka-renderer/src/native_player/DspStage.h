@@ -147,8 +147,9 @@ private:
   void dropEverything();
   /// Shows downstream what the stage now holds.
   void publish();
-  /// Lets go of everything held, as a seek must before upstream moves.
-  void restart();
+  /// Lets go of everything held once upstream has seeked to @p reached, and
+  /// keeps it all when upstream refused.
+  size_t restartAfter(size_t reached);
   static StreamState shown(const Shared &shared);
   void onUpstreamState(const StreamState &state);
 };

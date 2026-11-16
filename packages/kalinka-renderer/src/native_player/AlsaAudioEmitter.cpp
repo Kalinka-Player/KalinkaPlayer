@@ -281,8 +281,13 @@ bool AlsaAudioEmitter::handleSeekSignal() {
   auto retVal = state.streamId
                     ? inputNode->seekStream(*state.streamId, seekValue)
                     : inputNode->seekTo(seekValue);
-  if (retVal == -1U) {
+  if (retVal == size_t(-1)) {
     spdlog::warn("Seek request failed: requested={}", seekValue);
+    // As before the attempt, stamped now so nothing reported goes back in time.
+    StreamState resumed = state;
+    resumed.timestamp = getTimestampNs();
+    resumed.position = state.positionAt(resumed.timestamp);
+    setState(resumed);
     seekRequestSignal.respond(-1);
     return false;
   }
