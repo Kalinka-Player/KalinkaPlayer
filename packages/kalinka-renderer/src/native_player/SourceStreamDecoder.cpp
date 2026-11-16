@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <utility>
 
 SourceStreamDecoder::SourceStreamDecoder(size_t bufferSize,
                                          size_t startOffsetMs)
@@ -11,11 +12,13 @@ void SourceStreamDecoder::connectTo(
     std::shared_ptr<AudioGraphOutputNode> source) {
   if (!source || input)
     throw std::invalid_argument("Invalid " + name() + " input connection");
+  // First, so a forget() that throws leaves the decoder free to connect again.
+  forget();
   input = std::move(source);
   position = 0;
   length = 0;
+  callbackFailure = nullptr;
   seekable = false;
-  forget();
   start();
 }
 
@@ -73,6 +76,16 @@ bool SourceStreamDecoder::reposition(uint64_t offset) {
     return false;
   position = offset;
   return true;
+}
+
+void SourceStreamDecoder::keepCallbackFailure(
+    std::exception_ptr failure) noexcept {
+  callbackFailure = std::move(failure);
+}
+
+void SourceStreamDecoder::rethrowCallbackFailure() {
+  if (callbackFailure)
+    std::rethrow_exception(std::exchange(callbackFailure, nullptr));
 }
 
 uint64_t SourceStreamDecoder::sourceLength() const {

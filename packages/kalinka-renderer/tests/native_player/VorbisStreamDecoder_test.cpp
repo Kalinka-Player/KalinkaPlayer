@@ -5,6 +5,7 @@
 #include "FileInputNode.h"
 #include "LiveInputNode.h"
 #include "LocalHttpServer.h"
+#include "StallingFileInput.h"
 #include "TestHelpers.h"
 
 #include <array>
@@ -76,59 +77,6 @@ private:
   size_t position = 0;
 };
 
-/// @brief Seekable input whose reads can stall until cancelled or released.
-class StallingFileInput : public AudioGraphOutputNode {
-public:
-  StreamState getState() override { return source.getState(); }
-  size_t read(void *data, size_t size) override {
-    return source.read(data, size);
-  }
-  size_t seekTo(size_t position) override { return source.seekTo(position); }
-  size_t waitForData(std::stop_token token, size_t size) override {
-    std::unique_lock lock(mutex);
-    if (stalled) {
-      ++blockedReads;
-      changed.notify_all();
-      changed.wait(lock, token, [this] { return !stalled; });
-    }
-    if (token.stop_requested()) {
-      return 0;
-    }
-    if (failed) {
-      throw std::runtime_error("Test input failed during seek");
-    }
-    lock.unlock();
-    return source.waitForData(token, size);
-  }
-  size_t waitForDataFor(std::stop_token token, std::chrono::milliseconds,
-                        size_t size) override {
-    return waitForData(token, size);
-  }
-
-  void stall() {
-    std::lock_guard lock(mutex);
-    stalled = true;
-  }
-  void release(bool fail = false) {
-    std::lock_guard lock(mutex);
-    stalled = false;
-    failed = fail;
-    changed.notify_all();
-  }
-  bool waitUntilStalled(size_t count = 1) {
-    std::unique_lock lock(mutex);
-    return changed.wait_for(lock, 1s,
-                            [this, count] { return blockedReads >= count; });
-  }
-
-private:
-  FileInputNode source{1, fixture()};
-  std::mutex mutex;
-  std::condition_variable_any changed;
-  bool stalled = false;
-  bool failed = false;
-  size_t blockedReads = 0;
-};
 
 TEST(VorbisStreamDecoderTest, DecodesExactFrameCountAndHandsOutWholeFrames) {
   auto source = std::make_shared<FileInputNode>(7, fixture());
@@ -168,7 +116,7 @@ TEST(VorbisStreamDecoderTest, SeeksWhileBufferIsFullAndAfterEndOfStream) {
 
 TEST(VorbisStreamDecoderTest,
      StalledSeekDoesNotBlockPlaybackControlOrShutdown) {
-  auto source = std::make_shared<StallingFileInput>();
+  auto source = std::make_shared<StallingFileInput>(fixture());
   auto decoder = std::make_shared<VorbisStreamDecoder>(1, 1024);
   decoder->connectTo(source);
   AlsaAudioEmitter emitter(Config{{"output.alsa.device", "null"}});
@@ -196,7 +144,7 @@ TEST(VorbisStreamDecoderTest,
 
 TEST(VorbisStreamDecoderTest,
      LaterSeekInterruptsStalledSeekAndResumesAtItsTarget) {
-  auto source = std::make_shared<StallingFileInput>();
+  auto source = std::make_shared<StallingFileInput>(fixture());
   VorbisStreamDecoder decoder(1, 1024);
   decoder.connectTo(source);
   const auto reference = decode(decoder);
@@ -232,8 +180,30 @@ TEST(VorbisStreamDecoderTest,
   EXPECT_EQ(decoder.streamReadPosition(), kFrames);
 }
 
+TEST(VorbisStreamDecoderTest, ASeekCutShortByAnotherLandsOnTheSecond) {
+  auto source = std::make_shared<StallingFileInput>(fixture());
+  VorbisStreamDecoder decoder(1, 1024);
+  decoder.connectTo(source);
+  ASSERT_EQ(waitForStatus(decoder, AudioGraphNodeState::STREAMING, 5s).state,
+            AudioGraphNodeState::STREAMING);
+
+  source->stall();
+  ASSERT_EQ(decoder.seekTo(22050), 22050u) << "answered while its read stalls";
+  ASSERT_TRUE(source->waitUntilStalled());
+  constexpr size_t second = 22050 * 3;
+  auto seeking = std::async(std::launch::async,
+                            [&decoder] { return decoder.seekTo(second); });
+  const bool answered = seeking.wait_for(1s) == std::future_status::ready;
+  source->release();
+  ASSERT_TRUE(answered) << "the second seek waited on the first's read";
+  EXPECT_EQ(seeking.get(), second);
+
+  EXPECT_EQ(decode(decoder).size(), (kFrames - second) * kFrameBytes);
+  EXPECT_EQ(decoder.getState().state, AudioGraphNodeState::FINISHED);
+}
+
 TEST(VorbisStreamDecoderTest, ReportsSeekFailureAfterAcknowledgement) {
-  auto source = std::make_shared<StallingFileInput>();
+  auto source = std::make_shared<StallingFileInput>(fixture());
   VorbisStreamDecoder decoder(1, 1024);
   decoder.connectTo(source);
   ASSERT_EQ(decode(decoder).size(), kFrames * kFrameBytes);

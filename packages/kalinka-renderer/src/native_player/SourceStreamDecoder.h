@@ -3,6 +3,7 @@
 #include "BufferedStreamDecoder.h"
 
 #include <atomic>
+#include <exception>
 #include <memory>
 
 /**
@@ -45,12 +46,21 @@ protected:
   unsigned sourcePrebufferMs() const;
   /// Whether playback may seek; reported by canSeek().
   void setSeekable(bool value) { seekable = value; }
+  /// Keeps @p failure, the exception being handled unless given, for a
+  /// callback that must not let it through the codec library calling it.
+  void keepCallbackFailure(
+      std::exception_ptr failure = std::current_exception()) noexcept;
+  /// Whether a callback has kept a failure not yet rethrown.
+  bool callbackFailed() const { return bool(callbackFailure); }
+  /// Rethrows what a callback kept, once the library has returned.
+  void rethrowCallbackFailure();
 
 private:
   std::shared_ptr<AudioGraphOutputNode> input;
   std::atomic<bool> seekable{false};
   uint64_t position = 0;
   mutable uint64_t length = 0;
+  std::exception_ptr callbackFailure;
 
   bool canSeek() const final { return seekable; }
   /// Reads once what `wanted` bytes have arrived, or fewer at the end.
