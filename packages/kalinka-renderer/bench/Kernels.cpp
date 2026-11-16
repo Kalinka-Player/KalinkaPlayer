@@ -3,7 +3,7 @@
 
 #include "Analysis.h"
 #include "AudioSampleFormat.h"
-#include "Buffer.h"
+#include "ByteRing.h"
 #include "DelayLine.h"
 #include "DspStage.h"
 #include "GainFade.h"
@@ -15,11 +15,15 @@
 
 #include <algorithm>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <random>
+#include <thread>
 
 namespace bench {
 namespace {
@@ -62,6 +66,103 @@ private:
 
 using Factory = std::function<std::function<void(size_t)>(unsigned rate)>;
 
+/// The decoder's buffer before ByteRing: a deque under one lock, copied by
+/// iterator and notifying the other side on every call.
+class DequeBuffer {
+public:
+  explicit DequeBuffer(size_t capacity) : capacity(capacity) {}
+  size_t write(const void *source, size_t bytes) {
+    size_t count = 0;
+    {
+      std::lock_guard lock(mutex);
+      count = std::min(bytes, capacity - data.size());
+      const auto *from = static_cast<const uint8_t *>(source);
+      data.insert(data.end(), from, from + count);
+    }
+    if (count)
+      hasData.notify_one();
+    return count;
+  }
+  size_t read(void *dest, size_t bytes) {
+    size_t count = 0;
+    {
+      std::lock_guard lock(mutex);
+      count = std::min(data.size(), bytes);
+      std::copy_n(data.begin(), count, static_cast<uint8_t *>(dest));
+      data.erase(data.begin(), data.begin() + count);
+    }
+    if (count)
+      hasSpace.notify_one();
+    return count;
+  }
+  size_t waitForData(std::stop_token token, size_t bytes) {
+    std::unique_lock lock(mutex);
+    hasData.wait(lock, token,
+                 [&] { return data.size() >= std::min(bytes, capacity); });
+    return data.size();
+  }
+  size_t waitForSpace(std::stop_token token, size_t bytes) {
+    std::unique_lock lock(mutex);
+    hasSpace.wait(lock, token, [&] {
+      return capacity - data.size() >= std::min(bytes, capacity);
+    });
+    return capacity - data.size();
+  }
+
+private:
+  std::deque<uint8_t> data;
+  std::mutex mutex;
+  std::condition_variable_any hasData, hasSpace;
+  const size_t capacity;
+};
+
+/// Half a second of stereo S32 at 192 kHz, as a decoder's buffer holds.
+constexpr size_t kQueueBytes = 1536000;
+
+template <typename Queue> Factory oneThread() {
+  return [](unsigned) {
+    auto queue = std::make_shared<Queue>(kQueueBytes);
+    auto bytes = std::make_shared<std::vector<uint8_t>>(kBlock * 8, 1);
+    return [queue, bytes](size_t frames) {
+      queue->write(bytes->data(), frames * 8);
+      queue->read(bytes->data(), frames * 8);
+    };
+  };
+}
+
+/// A writer on a thread of its own keeping @p Queue full, as a decoder does.
+template <typename Queue> class Fed {
+public:
+  Fed() : writer([this](std::stop_token token) { fill(token); }) {}
+  /// Reads @p bytes, waiting for the writer where it must.
+  void take(void *dest, size_t bytes) {
+    for (size_t got = 0; got < bytes;) {
+      queue.waitForData({}, bytes - got);
+      got += queue.read(static_cast<uint8_t *>(dest) + got, bytes - got);
+    }
+  }
+
+private:
+  Queue queue{kQueueBytes};
+  std::jthread writer;
+
+  void fill(std::stop_token token) {
+    const std::vector<uint8_t> block(kBlock * 8, 1);
+    while (!token.stop_requested()) {
+      queue.waitForSpace(token, block.size());
+      queue.write(block.data(), block.size());
+    }
+  }
+};
+
+template <typename Queue> Factory twoThreads() {
+  return [](unsigned) {
+    auto fed = std::make_shared<Fed<Queue>>();
+    auto out = std::make_shared<std::vector<uint8_t>>(kBlock * 8);
+    return [fed, out](size_t frames) { fed->take(out->data(), frames * 8); };
+  };
+}
+
 struct Kernel {
   const char *name;
   Factory make;
@@ -69,15 +170,11 @@ struct Kernel {
 
 std::vector<Kernel> kernels() {
   return {
-      {"Buffer<uint8_t> write + read, S32 stereo",
-       [](unsigned) {
-         auto buffer = std::make_shared<Buffer<uint8_t>>(1536000);
-         auto bytes = std::make_shared<std::vector<uint8_t>>(kBlock * 8, 1);
-         return [buffer, bytes](size_t frames) {
-           buffer->write(bytes->data(), frames * 8);
-           buffer->read(bytes->data(), frames * 8);
-         };
-       }},
+      {"std::deque buffer write + read, S32 stereo", oneThread<DequeBuffer>()},
+      {"ByteRing write + read, S32 stereo", oneThread<ByteRing>()},
+      {"std::deque buffer read, written from another thread",
+       twoThreads<DequeBuffer>()},
+      {"ByteRing read, written from another thread", twoThreads<ByteRing>()},
       {"DspStage without a processor, S32 stereo",
        [](unsigned rate) {
          auto source = std::make_shared<EndlessSource>(rate);
