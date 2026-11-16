@@ -38,9 +38,6 @@ inline int log_on_error_impl(int err, const std::string &message) {
   return err;
 }
 
-// PCM retains its existing stereo route; DSD negotiates the source channels.
-constexpr unsigned int kDeviceChannels = 2;
-
 int xrun_recovery(snd_pcm_t *handle, int err) {
   if (err == -EPIPE) { /* under-run */
     err = snd_pcm_prepare(handle);
@@ -807,7 +804,7 @@ void AlsaAudioEmitter::setupAudioFormat(
   }
   outputChannels = isDsd(streamAudioFormat.sampleFormat)
                        ? streamAudioFormat.channels
-                       : kDeviceChannels;
+                       : kPcmDeviceChannels;
   dopFrame = 0;
   initHwParams(sampleRate, streamAudioFormat.sampleFormat,
                streamAudioFormat.bitsPerSample);
