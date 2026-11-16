@@ -195,17 +195,19 @@ system-test: require-venv
 	@KALINKA_SYSTEM_TEST=1 $(PY) -m pytest tests/system -o log_cli=true --log-cli-level=INFO $(ARGS)
 
 ## Release installer test (tests/install): scripts/install-release.sh on
-## throwaway Debian 13 systems, plain and DietPi-like, one container each,
-## against the latest published release. Opt-in because it is slow and needs
-## podman or docker and the network; each system's log lands in
-## tmp/install-test.
+## throwaway Debian 13 systems, plain and DietPi-like, against the latest
+## published release, and on an Ubuntu 22.04 whose Python it has to refuse, one
+## container each. Opt-in because it is slow and needs podman or docker and the
+## network; each system's log lands in tmp/install-test.
 INSTALL_TEST_BASE ?= $(IMAGE_TEST_BASE)
+INSTALL_TEST_OLD_PYTHON_BASE ?= public.ecr.aws/docker/library/ubuntu:22.04
 
 install-test:
 	@if command -v podman >/dev/null 2>&1 || command -v docker >/dev/null 2>&1; then \
 		engine=$$(command -v podman || command -v docker); \
 		image=$$(bash "$(IMAGE_DIR)/tests/pull-base.sh" "$$engine" "$(INSTALL_TEST_BASE)") || exit $$?; \
-		bash tests/install/run.sh "$$engine" "$$image"; \
+		old_python=$$(bash "$(IMAGE_DIR)/tests/pull-base.sh" "$$engine" "$(INSTALL_TEST_OLD_PYTHON_BASE)") || exit $$?; \
+		bash tests/install/run.sh "$$engine" debian="$$image" dietpi="$$image" old-python="$$old_python"; \
 	else \
 		echo "No podman or docker: install-test runs install-release.sh only in throwaway containers, so nothing ran."; \
 	fi
@@ -323,7 +325,7 @@ help:
 	@echo "  dev-setup         One-shot local setup: venv + editable installs + test tools + ~/kalinka fakeroot"
 	@echo "  dev-run           Run the server in the foreground against the fakeroot (Ctrl-C to stop)"
 	@echo "  system-test       Full-stack indexing test: fakeroot + Samba in podman + real enrichment/AI search"
-	@echo "  install-test      Run install-release.sh on throwaway Debian 13 systems in podman or docker"
+	@echo "  install-test      Run install-release.sh on throwaway Debian 13 and Ubuntu 22.04 systems in podman or docker"
 	@echo "  bench-sdd         Retrieval-quality benchmark on the Song Describer Dataset (benchmarks/sdd)"
 	@echo ""
 	@echo "  renderer-build    Build the renderer (C++), and its tests when GoogleTest is installed"

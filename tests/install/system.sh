@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 #
-# Inside a throwaway Debian 13 container: make it the system named, as its
-# owner has it when following docs/installation.md, then run that system's
-# install cases. run.sh starts one container per system.
+# Inside a throwaway container of the system's image: make it the system
+# named, as its owner has it when following docs/installation.md, then run
+# that system's install cases. run.sh starts one container per system.
 #
-# Usage: system.sh debian|dietpi
+# Usage: system.sh debian|dietpi|old-python
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 system="${1:-}"
 
 case "$system" in
-  debian|dietpi) ;;
-  *) echo 'usage: system.sh debian|dietpi' >&2; exit 2 ;;
+  debian|dietpi|old-python) ;;
+  *) echo 'usage: system.sh debian|dietpi|old-python' >&2; exit 2 ;;
 esac
 
 # No init runs here: maintainer scripts start nothing, and what they ask systemctl is only noted.

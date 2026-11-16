@@ -27,6 +27,7 @@ REPO = Path(__file__).resolve().parents[2]
 INSTALL_TESTS = REPO / "tests" / "install"
 MAKE = shutil.which("make")
 BASE = "example.invalid/debian:trixie"
+OLD_PYTHON_BASE = "example.invalid/ubuntu:22.04"
 
 
 def _load_cases():
@@ -69,7 +70,15 @@ class MakeInstallTestTests(TemporaryDirectoryTest):
 
     def make(self, path):
         return subprocess.run(
-            [MAKE, "-s", "-C", str(REPO), "install-test", f"INSTALL_TEST_BASE={BASE}"],
+            [
+                MAKE,
+                "-s",
+                "-C",
+                str(REPO),
+                "install-test",
+                f"INSTALL_TEST_BASE={BASE}",
+                f"INSTALL_TEST_OLD_PYTHON_BASE={OLD_PYTHON_BASE}",
+            ],
             env=dict(
                 os.environ,
                 PATH=path,
@@ -107,23 +116,27 @@ if sys.argv[1] == "run":
         self.assertEqual(_lines(self.calls), [])
         self.assertFalse(self.logs.exists())
 
-    def test_runs_each_system_in_a_throwaway_container_of_the_base(self):
+    def test_runs_each_system_in_a_throwaway_container_of_its_base(self):
         self.fake_engine()
         result = self.make(f"{self.bin}:{os.environ['PATH']}")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         calls = self.engine_calls()
-        self.assertEqual(calls[0], ["image", "inspect", BASE])
-        runs = calls[1:]
-        self.assertEqual([run[-1] for run in runs], ["debian", "dietpi"])
+        self.assertEqual(
+            calls[:2],
+            [["image", "inspect", BASE], ["image", "inspect", OLD_PYTHON_BASE]],
+        )
+        runs = calls[2:]
+        self.assertEqual(
+            [(run[-1], run[-4]) for run in runs],
+            [("debian", BASE), ("dietpi", BASE), ("old-python", OLD_PYTHON_BASE)],
+        )
         for run in runs:
             self.assertEqual(run[:3], ["run", "--pull=never", "--rm"])
             self.assertIn(f"{REPO}/scripts:/kalinka/scripts:ro,z", run)
             self.assertIn(f"{REPO}/tests/install:/kalinka/tests/install:ro,z", run)
             self.assertIn("GITHUB_TOKEN", run)
-            self.assertEqual(
-                run[-4:-1], [BASE, "bash", "/kalinka/tests/install/system.sh"]
-            )
-        for system in ("debian", "dietpi"):
+            self.assertEqual(run[-3:-1], ["bash", "/kalinka/tests/install/system.sh"])
+        for system in ("debian", "dietpi", "old-python"):
             self.assertIn(
                 f"container output for {system}",
                 (self.logs / f"{system}.log").read_text(),
@@ -139,6 +152,26 @@ if sys.argv[1] == "run":
         )
         self.assertIn("dietpi: passed", result.stdout)
         self.assertIn("install-test failed on: debian", result.stdout)
+
+    def test_a_system_without_its_image_is_refused(self):
+        self.fake_engine()
+        engine = str(self.bin / "podman")
+        for args in ([engine], [engine, "debian"], [engine, "=example.invalid/x"]):
+            with self.subTest(args=args):
+                result = subprocess.run(
+                    ["bash", str(INSTALL_TESTS / "run.sh"), *args],
+                    env=dict(
+                        os.environ,
+                        CALLS=str(self.calls),
+                        INSTALL_TEST_LOGS=str(self.logs),
+                    ),
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("<system>=<image>", result.stderr)
+        self.assertEqual(_lines(self.calls), [])
 
 
 class GuideTests(unittest.TestCase):
@@ -411,6 +444,36 @@ class StepTests(unittest.TestCase):
             ):
                 with cases.step("start it"):
                     Path("/nonexistent/kalinka.service").read_text()
+
+
+class InstallerRunTests(TemporaryDirectoryTest):
+    def run_with(self, script, run, *args, **env):
+        installer = _executable(self.root / "install-release.sh", script)
+        with mock.patch.object(cases, "INSTALLER", installer), mock.patch.object(
+            cases, "SYSTEMCTL_CALLS", self.root / "systemctl.calls"
+        ), contextlib.redirect_stdout(io.StringIO()):
+            return run(*args, **env)
+
+    def test_a_failed_run_gives_its_status_and_all_it_said(self):
+        status, output = self.run_with(
+            'echo ">> Looking up"\necho "error: refused" >&2\nexit 1\n',
+            cases.run_installer,
+        )
+        self.assertEqual(status, 1)
+        self.assertEqual(output, ">> Looking up\nerror: refused\n")
+
+    def test_install_fails_the_step_on_a_failed_run(self):
+        with self.assertRaisesRegex(cases.CheckFailed, "exited with status 3"):
+            self.run_with("exit 3\n", cases.install)
+
+    def test_the_run_gets_its_arguments_and_switches(self):
+        output = self.run_with(
+            'echo "$1 KALINKA_WEB=$KALINKA_WEB"\n',
+            cases.install,
+            "5.18.0",
+            KALINKA_WEB="0",
+        )
+        self.assertEqual(output, "5.18.0 KALINKA_WEB=0\n")
 
 
 class ApiQuotaTests(unittest.TestCase):

@@ -47,6 +47,11 @@ assert_eq 'cached fallback selected' "$(select_base "$mirror")" "$upstream"
 assert_not_contains 'cached fallback needs no pull' "$(cat "$CALL_LOG")" "pull $upstream"
 
 reset_engine
+PULLABLE_IMAGE=docker.io/library/ubuntu:22.04
+assert_eq 'any mirrored image falls back to its own upstream' \
+  "$(select_base public.ecr.aws/docker/library/ubuntu:22.04)" "$PULLABLE_IMAGE"
+
+reset_engine
 if selected="$(select_base "$mirror")"; then
   fail 'both unavailable registries must fail'
 fi
