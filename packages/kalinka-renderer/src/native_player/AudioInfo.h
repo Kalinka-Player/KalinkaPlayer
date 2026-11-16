@@ -29,6 +29,9 @@ inline std::string streamTypeToString(StreamType type) {
   }
 }
 
+/// The channels PCM plays on: a mono source goes to both.
+inline constexpr unsigned kPcmDeviceChannels = 2;
+
 /// @brief Defines the audio format of the frames in the stream.
 struct StreamAudioFormat {
   unsigned int sampleRate = 0;
