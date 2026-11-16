@@ -257,6 +257,7 @@ target_include_directories(kalinka_dsp_harness PUBLIC
 option(KALINKA_BUILD_BENCHMARKS "Build kalinka-dsp-bench" OFF)
 if(KALINKA_BUILD_BENCHMARKS)
   add_executable(kalinka-dsp-bench
+    bench/DsdToPcm.cpp
     bench/JoinError.cpp
     bench/Kernels.cpp
     bench/Playback.cpp

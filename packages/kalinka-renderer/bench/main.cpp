@@ -41,7 +41,7 @@ std::string cpuModel() {
 
 int usage() {
   std::fputs(
-      "usage: kalinka-dsp-bench kernels | simd | fixtures | join\n"
+      "usage: kalinka-dsp-bench kernels | simd | dsd | fixtures | join\n"
       "       kalinka-dsp-bench playback [--delay-ms N] FILE...\n"
       "       kalinka-dsp-bench make-wav FILE RATE BITS SECONDS\n",
       stderr);
@@ -102,6 +102,8 @@ int main(int argc, char **argv) {
     bench::runKernels();
   } else if (command == "simd") {
     bench::runSimd();
+  } else if (command == "dsd") {
+    bench::runDsd();
   } else if (command == "fixtures") {
     bench::runFixtures();
   } else if (command == "join") {
