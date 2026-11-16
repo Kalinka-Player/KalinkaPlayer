@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Raspberry Pi Imager's settings, applied at the first start that finds them on the card. Defines only.
+# The settings Raspberry Pi Imager or a Raspberry Pi OS guide puts on the card, applied at the first start that finds them. Defines only.
 
 CARD_SETTINGS_PROGRAM=/usr/lib/kalinka-image/card-settings.py
 CARD_SETTINGS_UNITS=(kalinka-card-settings.service kalinka-card-network-wait.service)

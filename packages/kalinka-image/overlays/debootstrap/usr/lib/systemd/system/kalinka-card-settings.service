@@ -1,5 +1,5 @@
 [Unit]
-Description=Apply the settings Raspberry Pi Imager left on the boot partition
+Description=Apply the Raspberry Pi settings left on the boot partition
 # Before anything takes the old name, joins a network or lets a login in.
 Wants=network-pre.target
 Before=network-pre.target NetworkManager.service avahi-daemon.service bluetooth.service ssh.service kalinka-supervisor.service kalinka-card-network-wait.service
@@ -9,10 +9,18 @@ ConditionPathExists=|/boot/firmware/custom.toml
 ConditionPathExists=|/boot/firmware/firstrun.sh
 ConditionPathExists=|/boot/firmware/user-data
 ConditionPathExists=|/boot/firmware/network-config
+ConditionPathExists=|/boot/firmware/userconf.txt
+ConditionPathExists=|/boot/firmware/wpa_supplicant.conf
+ConditionPathExists=|/boot/firmware/ssh
+ConditionPathExists=|/boot/firmware/ssh.txt
 ConditionPathExists=|/boot/efi/custom.toml
 ConditionPathExists=|/boot/efi/firstrun.sh
 ConditionPathExists=|/boot/efi/user-data
 ConditionPathExists=|/boot/efi/network-config
+ConditionPathExists=|/boot/efi/userconf.txt
+ConditionPathExists=|/boot/efi/wpa_supplicant.conf
+ConditionPathExists=|/boot/efi/ssh
+ConditionPathExists=|/boot/efi/ssh.txt
 # Imager's cmdline.txt edit still has to come out when its script is gone.
 ConditionKernelCommandLine=|systemd.run
 ConditionKernelCommandLine=|systemd.unit=kernel-command-line.target
