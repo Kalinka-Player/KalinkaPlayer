@@ -386,7 +386,8 @@ void AlsaAudioEmitter::closeDevice() {
   }
 }
 
-snd_pcm_sframes_t AlsaAudioEmitter::waitForAlsaBufferSpace() {
+snd_pcm_sframes_t
+AlsaAudioEmitter::waitForAlsaBufferSpace(std::stop_token token) {
   auto getAvailableFrames = [this]() -> snd_pcm_sframes_t {
     return throw_on_error(snd_pcm_avail_update(pcm.handle));
   };
@@ -397,7 +398,7 @@ snd_pcm_sframes_t AlsaAudioEmitter::waitForAlsaBufferSpace() {
   snd_pcm_sframes_t frames = getAvailableFrames();
   unsigned short revents = 0;
 
-  while (!playbackThread.get_stop_token().stop_requested() &&
+  while (!token.stop_requested() &&
          static_cast<snd_pcm_uframes_t>(frames) < periodSize) {
     int ret = poll(ufds.data(), ufds.size(), pollTimeout.count());
     if (ret == 0) {
@@ -689,7 +690,7 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
           }
           // A pause or seek must still be answered while filling the reserve.
           if (!combinedToken.get_token().stop_requested()) {
-            auto framesToRead = waitForAlsaBufferSpace();
+            auto framesToRead = waitForAlsaBufferSpace(token);
             if (!framesToRead) {
               break;
             }
