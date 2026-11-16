@@ -60,6 +60,7 @@ from ..update_check import (
     request_restart,
     restart_pending,
 )
+from .apt_unmet import candidate, needs, unmet_dependencies
 from .catalog import PublicCatalog
 from .compatibility import CatalogCompatibility
 from .payload import SHA256
@@ -1185,7 +1186,7 @@ def _install(
         )
         os.chmod(package, 0o644)
         record.step("checking")
-        plan = run(APT + ["-s", "install", "-y", "--no-install-recommends", str(package)])
+        plan = _simulate_install(run, request.distribution, package)
         _check_install_plan(plan)
         in_place = live
         wheel = None
@@ -1251,6 +1252,26 @@ def _live_blocker(request, plan: str, wheel: Path, tools: LiveTools) -> Optional
     ):
         return "it carries compiled modules"
     return None
+
+
+def _simulate_install(run, distribution: str, package: Path) -> str:
+    """apt's plan for installing ``package``; a refusal for a dependency the
+    system cannot meet fails naming it."""
+    simulate = APT + ["-s", "install", "-y", "--no-install-recommends", str(package)]
+    try:
+        return run(simulate)
+    except subprocess.CalledProcessError as exc:
+        unmet = unmet_dependencies(exc.output or "", distribution)
+        if not unmet:
+            raise
+        raise Failure(needs(unmet, lambda name: _offered_version(run, name))) from exc
+
+
+def _offered_version(run, name: str) -> Optional[str]:
+    try:
+        return candidate(run(["apt-cache", "policy", name]))
+    except (subprocess.CalledProcessError, OSError):
+        return None
 
 
 def _check_install_plan(plan: str) -> None:
