@@ -10,7 +10,7 @@
 
 After each run that installs, the script has to have succeeded and named the release it installed. The release's packages have to be installed at its version with nothing left half-configured, the browser player and the renderer installed or not as the switches say, and `fpcalc` there for AcoustID: the script asks for it by name, since it takes no recommends. Where a run installed the server, the server is then started as `kalinka.service` starts it and has to answer `/server/version` with the release's version.
 
-It is opt-in because it is slow and needs the outside world: podman or docker, and network access to GitHub's releases, the Debian and Ubuntu mirrors, and PyPI and piwheels for the server's first start. Without podman or docker the target says so and runs nothing. `INSTALL_TEST_BASE` and `INSTALL_TEST_OLD_PYTHON_BASE` name other images for the Debian 13 systems and for `old-python`. Without a token GitHub's API allows an address 60 calls an hour, and a system makes up to seven, so a few runs in a row use the hour up: each system that installs a release first asks how many calls are left and, if too few, says so and waits for the limit to reset. Set `GITHUB_TOKEN` to raise the limit; it is passed into the containers, as are `KALINKA_REPO` and `KALINKA_WEB_REPO` to test against a fork's releases.
+It is opt-in because it is slow and needs the outside world: podman or docker, and network access to GitHub's releases, the Debian and Ubuntu mirrors, and PyPI and piwheels for the server's first start. Without podman or docker the target says so and runs nothing. `INSTALL_TEST_BASE` and `INSTALL_TEST_OLD_PYTHON_BASE` name other images for the Debian 13 systems and for `old-python`. Each image is pulled when its system's turn comes, from the mirror and else Docker Hub, and one that cannot be had fails only its own system. Without a token GitHub's API allows an address 60 calls an hour, and a system makes up to seven, so a few runs in a row use the hour up: each system that installs a release first asks how many calls are left and, if too few, says so and waits for the limit to reset. Set `GITHUB_TOKEN` to raise the limit; it is passed into the containers, as are `KALINKA_REPO` and `KALINKA_WEB_REPO` to test against a fork's releases.
 
 ```
 make install-test
@@ -22,10 +22,10 @@ No systemd runs in the containers. `policy-rc.d` keeps maintainer scripts from s
 
 | File | Runs |
 |---|---|
-| `run.sh` | On the host: one container per system, and the logs |
+| `run.sh` | On the host: each system's image, one container per system, and the logs. It refuses a system it does not know, or one named twice, before it starts any. |
 | `system.sh` | In the container: sets the system up, then hands over to `cases.py` |
 | `cases.py` | In the container: each system's steps and checks |
 | `apt-get-failing-once` | In the container, as `/usr/local/sbin/apt-get` for the step that forces the fallback |
 | `systemctl-recorder` | In the container, as `/usr/bin/systemctl` |
 
-`scripts/tests/test_install_test.py` checks the target, `run.sh`, the stand-ins and the helpers in `cases.py` without a container, with the other installer tests.
+`scripts/tests/test_install_test.py` checks the target, `run.sh`, the stand-ins and the helpers in `cases.py` without a container, with the other installer tests. It also fails when `run.sh`, `system.sh` and `cases.py` do not name the same systems.

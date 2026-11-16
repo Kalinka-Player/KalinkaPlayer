@@ -90,7 +90,7 @@ class MakeInstallTestTests(TemporaryDirectoryTest):
             timeout=60,
         )
 
-    def fake_engine(self, failing=""):
+    def fake_engine(self, failing="", unobtainable=""):
         _executable(
             self.bin / "podman",
             f"""#!{sys.executable}
@@ -100,7 +100,19 @@ with open(os.environ["CALLS"], "a") as calls:
 if sys.argv[1] == "run":
     print("container output for", sys.argv[-1])
     sys.exit(1 if sys.argv[-1] == {failing!r} else 0)
+sys.exit(1 if sys.argv[-1] == {unobtainable!r} else 0)
 """,
+        )
+
+    def run_sh(self, *args):
+        return subprocess.run(
+            ["bash", str(INSTALL_TESTS / "run.sh"), *args],
+            env=dict(
+                os.environ, CALLS=str(self.calls), INSTALL_TEST_LOGS=str(self.logs)
+            ),
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
 
     def engine_calls(self):
@@ -122,10 +134,11 @@ if sys.argv[1] == "run":
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         calls = self.engine_calls()
         self.assertEqual(
-            calls[:2],
-            [["image", "inspect", BASE], ["image", "inspect", OLD_PYTHON_BASE]],
+            [call for call in calls if call[0] == "image"],
+            [["image", "inspect", base] for base in (BASE, BASE, OLD_PYTHON_BASE)],
         )
-        runs = calls[2:]
+        self.assertEqual([call[0] for call in calls], ["image", "run"] * 3)
+        runs = [call for call in calls if call[0] == "run"]
         self.assertEqual(
             [(run[-1], run[-4]) for run in runs],
             [("debian", BASE), ("dietpi", BASE), ("old-python", OLD_PYTHON_BASE)],
@@ -153,25 +166,61 @@ if sys.argv[1] == "run":
         self.assertIn("dietpi: passed", result.stdout)
         self.assertIn("install-test failed on: debian", result.stdout)
 
+    def test_an_image_that_cannot_be_had_fails_only_its_system(self):
+        self.fake_engine(unobtainable=OLD_PYTHON_BASE)
+        self.logs.mkdir()
+        (self.logs / "old-python.log").write_text("PASS old-python\n")
+        result = self.make(f"{self.bin}:{os.environ['PATH']}")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("debian: passed", result.stdout)
+        self.assertIn("dietpi: passed", result.stdout)
+        self.assertIn(
+            f"old-python: FAILED, its log is {self.logs}/old-python.log", result.stdout
+        )
+        self.assertIn("install-test failed on: old-python", result.stdout)
+        self.assertEqual(
+            (self.logs / "old-python.log").read_text(),
+            f"could not obtain {OLD_PYTHON_BASE}\n",
+        )
+        runs = [call[-1] for call in self.engine_calls() if call[0] == "run"]
+        self.assertEqual(runs, ["debian", "dietpi"])
+
     def test_a_system_without_its_image_is_refused(self):
         self.fake_engine()
         engine = str(self.bin / "podman")
         for args in ([engine], [engine, "debian"], [engine, "=example.invalid/x"]):
             with self.subTest(args=args):
-                result = subprocess.run(
-                    ["bash", str(INSTALL_TESTS / "run.sh"), *args],
-                    env=dict(
-                        os.environ,
-                        CALLS=str(self.calls),
-                        INSTALL_TEST_LOGS=str(self.logs),
-                    ),
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                )
+                result = self.run_sh(*args)
                 self.assertEqual(result.returncode, 2)
                 self.assertIn("<system>=<image>", result.stderr)
         self.assertEqual(_lines(self.calls), [])
+
+    def test_an_unknown_or_repeated_system_is_refused_before_any_container(self):
+        self.fake_engine()
+        engine = str(self.bin / "podman")
+        for args, reason in (
+            ([f"debian={BASE}", f"debain={BASE}"], "no system 'debain'"),
+            ([f"debian={BASE}", f"dietpi={BASE}", f"debian={BASE}"], "named twice"),
+        ):
+            with self.subTest(args=args):
+                result = self.run_sh(engine, *args)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(reason, result.stderr)
+        self.assertEqual(_lines(self.calls), [])
+        self.assertFalse(self.logs.exists())
+
+
+class SystemTests(unittest.TestCase):
+    def test_run_sh_system_sh_and_the_cases_know_the_same_systems(self):
+        known = list(cases.SYSTEMS)
+        run_sh = re.search(
+            r"^systems=\((.*)\)$", (INSTALL_TESTS / "run.sh").read_text(), re.M
+        )
+        system_sh = re.search(
+            r"^  ([\w|-]+)\) ;;$", (INSTALL_TESTS / "system.sh").read_text(), re.M
+        )
+        self.assertEqual(run_sh[1].split(), known)
+        self.assertEqual(system_sh[1].split("|"), known)
 
 
 class GuideTests(unittest.TestCase):

@@ -205,9 +205,8 @@ INSTALL_TEST_OLD_PYTHON_BASE ?= public.ecr.aws/docker/library/ubuntu:22.04
 install-test:
 	@if command -v podman >/dev/null 2>&1 || command -v docker >/dev/null 2>&1; then \
 		engine=$$(command -v podman || command -v docker); \
-		image=$$(bash "$(IMAGE_DIR)/tests/pull-base.sh" "$$engine" "$(INSTALL_TEST_BASE)") || exit $$?; \
-		old_python=$$(bash "$(IMAGE_DIR)/tests/pull-base.sh" "$$engine" "$(INSTALL_TEST_OLD_PYTHON_BASE)") || exit $$?; \
-		bash tests/install/run.sh "$$engine" debian="$$image" dietpi="$$image" old-python="$$old_python"; \
+		bash tests/install/run.sh "$$engine" debian="$(INSTALL_TEST_BASE)" dietpi="$(INSTALL_TEST_BASE)" \
+			old-python="$(INSTALL_TEST_OLD_PYTHON_BASE)"; \
 	else \
 		echo "No podman or docker: install-test runs install-release.sh only in throwaway containers, so nothing ran."; \
 	fi
