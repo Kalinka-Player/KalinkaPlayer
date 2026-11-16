@@ -157,21 +157,25 @@ def _track(tmp_path, track_id: str, title: str) -> dict:
     }
 
 
+def _make_module(tmp_path, db, req_q, resp_q):
+    from kalinka_plugin_localfiles.localfiles import LocalFilesInputModule
+
+    config = _make_config(
+        music_folders=[str(tmp_path / "music")],
+        db_path=str(tmp_path / "localfiles.db"),
+        artwork_path=str(tmp_path / "artwork"),
+    )
+    return LocalFilesInputModule(config, db, req_q, resp_q)
+
+
 class TestAiSearchAfterATimeout:
     @pytest.mark.asyncio
     async def test_the_next_search_gets_its_own_tracks(self, tmp_path):
         """A search that timed out leaves the searcher's late answer queued;
         the next search must not show it."""
-        from kalinka_plugin_localfiles.localfiles import LocalFilesInputModule
-
-        config = _make_config(
-            music_folders=[str(tmp_path / "music")],
-            db_path=str(tmp_path / "localfiles.db"),
-            artwork_path=str(tmp_path / "artwork"),
-        )
         req_q, resp_q = multiprocessing.Queue(), multiprocessing.Queue()
-        module = LocalFilesInputModule(
-            config,
+        module = _make_module(
+            tmp_path,
             _TracksDb(
                 _track(tmp_path, "track_first", "First"),
                 _track(tmp_path, "track_second", "Second"),
@@ -198,19 +202,62 @@ class TestAiSearchAfterATimeout:
 
     @pytest.mark.asyncio
     async def test_a_closed_searcher_channel_is_no_result(self, tmp_path):
-        from kalinka_plugin_localfiles.localfiles import LocalFilesInputModule
-
-        config = _make_config(
-            music_folders=[str(tmp_path / "music")],
-            db_path=str(tmp_path / "localfiles.db"),
-            artwork_path=str(tmp_path / "artwork"),
+        module = _make_module(
+            tmp_path, _TracksDb(), multiprocessing.Queue(), multiprocessing.Queue()
         )
-        module = LocalFilesInputModule(
-            config, _TracksDb(), multiprocessing.Queue(), multiprocessing.Queue()
+        module._searcher = Mock(
+            ask=Mock(side_effect=ValueError("Queue is closed")), timeout=5
         )
-        module._searcher = Mock(ask=Mock(side_effect=ValueError("Queue is closed")))
 
         assert (await module.ai_search("piano")).items == []
+
+    @pytest.mark.asyncio
+    async def test_a_search_cancelled_while_waiting_is_never_sent(self, tmp_path):
+        module = _make_module(
+            tmp_path, _TracksDb(), multiprocessing.Queue(), multiprocessing.Queue()
+        )
+        asked = threading.Event()
+        answer = threading.Event()
+
+        def ask(request):
+            asked.set()
+            answer.wait(timeout=5)
+            return {"tracks": []}
+
+        module._searcher = Mock(ask=Mock(side_effect=ask), timeout=5)
+        first = asyncio.create_task(module.ai_search("first"))
+        await asyncio.get_running_loop().run_in_executor(None, asked.wait, 5)
+        waiting = asyncio.create_task(module.ai_search("second"))
+        await asyncio.sleep(0.1)
+        waiting.cancel()
+        answer.set()
+        await first
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+
+        module._searcher.ask.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_every_search_gives_up_in_time_while_the_searcher_is_stuck(
+        self, tmp_path
+    ):
+        module = _make_module(
+            tmp_path, _TracksDb(), multiprocessing.Queue(), multiprocessing.Queue()
+        )
+        unstuck = threading.Event()
+
+        def ask(request):
+            unstuck.wait(timeout=10)
+            return {"tracks": []}
+
+        module._searcher = Mock(ask=Mock(side_effect=ask), timeout=0.2)
+        searches = [module.ai_search(query) for query in ("first", "second", "third")]
+        try:
+            results = await asyncio.wait_for(asyncio.gather(*searches), timeout=5)
+        finally:
+            unstuck.set()
+
+        assert [result.items for result in results] == [[], [], []]
 
 
 class TestSearchWorkerKnnLegAvailability:

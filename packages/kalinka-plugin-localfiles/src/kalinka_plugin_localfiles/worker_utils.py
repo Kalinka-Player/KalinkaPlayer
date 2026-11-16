@@ -155,6 +155,14 @@ def lower_priority() -> None:
         logger.warning("could not lower this worker's priority: %s", e)
 
 
+@functools.cache
+def _libc() -> Optional[ctypes.CDLL]:
+    try:
+        return ctypes.CDLL("libc.so.6", use_errno=True)
+    except OSError:
+        return None
+
+
 # Linux prctl op for setting the kernel-level process name (visible as
 # COMM in `ps -o comm`). Kernel truncates to 15 chars + NUL.
 _PR_SET_NAME = 15
@@ -175,8 +183,10 @@ def set_proc_title(name: str) -> None:
     """
     if not name:
         return
+    libc = _libc()
+    if libc is None:
+        return
     try:
-        libc = ctypes.CDLL("libc.so.6", use_errno=True)
         # Linux truncates to TASK_COMM_LEN-1 = 15 bytes anyway, but
         # being explicit avoids passing the rest into kernel space.
         libc.prctl(_PR_SET_NAME, name.encode("utf-8")[:15], 0, 0, 0)
@@ -184,12 +194,8 @@ def set_proc_title(name: str) -> None:
         pass
 
 
-@functools.cache
 def _malloc_trim():
-    try:
-        return ctypes.CDLL("libc.so.6").malloc_trim
-    except (OSError, AttributeError):
-        return None
+    return getattr(_libc(), "malloc_trim", None)
 
 
 def release_freed_memory() -> None:

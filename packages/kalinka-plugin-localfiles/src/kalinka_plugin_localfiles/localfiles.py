@@ -404,6 +404,8 @@ class LocalFilesInputModule(InputModule):
             if search_request_queue is not None and search_response_queue is not None
             else None
         )
+        # Waiting here holds no executor thread, and a cancelled search is never sent.
+        self._search_lock = asyncio.Lock()
 
         # Ensure artwork directories exist
         os.makedirs(self.artwork_path / "album", exist_ok=True)
@@ -467,11 +469,14 @@ class LocalFilesInputModule(InputModule):
             "ai_search: sending query %r (limit=%d)", query, ai_cfg.max_results
         )
         try:
-            ids = await asyncio.get_running_loop().run_in_executor(
-                None,
-                self._searcher.ask,
-                {"query": query, "limit": ai_cfg.max_results},
-            )
+            async with asyncio.timeout(self._searcher.timeout), self._search_lock:
+                ids = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    self._searcher.ask,
+                    {"query": query, "limit": ai_cfg.max_results},
+                )
+        except TimeoutError:
+            ids = None
         except Exception as e:
             logger.warning("ai_search: searcher IPC failed: %s", e)
             return EmptyList(offset, limit)
