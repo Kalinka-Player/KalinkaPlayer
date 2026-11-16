@@ -185,6 +185,19 @@ TEST(BufferedStreamDecoder, ASeekAnsweredBeforeItsSourceMovesCanBeCutShort) {
   EXPECT_EQ(drain(node), countFrom(200));
 }
 
+TEST(BufferedStreamDecoder, ASeekToTheEndFinishesWithNothingRead) {
+  auto calls = std::make_shared<Calls>();
+  FakeDecoder node(calls);
+  waitStreaming(node);
+  ASSERT_EQ(node.seekTo(TOTAL_FRAMES), size_t(TOTAL_FRAMES));
+
+  const auto deadline = std::chrono::steady_clock::now() + 1s;
+  while (node.getState().state != AudioGraphNodeState::FINISHED &&
+         std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(1ms);
+  EXPECT_EQ(node.getState().state, AudioGraphNodeState::FINISHED);
+}
+
 TEST(BufferedStreamDecoder, SeekPastTheEndFinishes) {
   auto calls = std::make_shared<Calls>();
   FakeDecoder node(calls);
