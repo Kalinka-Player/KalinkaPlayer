@@ -34,7 +34,8 @@ case ${0##*/} in
     printf 'port 22\npermitrootlogin without-password\n'
     if [[ -e $card_policy ]]; then echo 'passwordauthentication no'; else echo "passwordauthentication ${SSH_TEST_PASSWORDS:-yes}"; fi
     echo "authenticationmethods ${SSH_TEST_METHODS:-any}"
-    echo 'kbdinteractiveauthentication no' ;;
+    echo "kbdinteractiveauthentication ${SSH_TEST_PROMPT:-no}"
+    echo "usepam ${SSH_TEST_PAM:-yes}" ;;
 esac
 `
 
@@ -180,12 +181,17 @@ func TestHelperSetsOnlyItsOwnLoginBeforeStartingSSH(t *testing.T) {
 
 func TestHelperSaysWhenTheSSHServerRefusesThePassword(t *testing.T) {
 	for _, tc := range []struct {
-		name, server, active, passwords, methods, fail, outcome string
-		cardPolicy, reload, checked                             bool
+		name, server, active, passwords, methods, prompt, pam, fail, outcome string
+		cardPolicy, reload, checked                                          bool
 	}{
-		{name: "the card made the login keys only", server: "ssh.service", cardPolicy: true, reload: true, checked: true},
+		{name: "the card made the login keys only", server: "ssh.service", cardPolicy: true, checked: true},
 		{name: "the card's policy under a running server", server: "ssh.service", active: "ssh.service", cardPolicy: true, reload: true, checked: true},
-		{name: "keys only beyond the card's policy", server: "ssh.service", cardPolicy: true, passwords: "no", reload: true, checked: true, outcome: "refused"},
+		{name: "keys only beyond the card's policy", server: "ssh.service", active: "ssh.service", cardPolicy: true, passwords: "no", reload: true, checked: true, outcome: "refused"},
+		{name: "a running server without the card's policy", server: "ssh.service", active: "ssh.service", checked: true},
+		{name: "a password through PAM's prompt", server: "ssh.service", passwords: "no", prompt: "yes", checked: true},
+		{name: "a prompt without PAM", server: "ssh.service", passwords: "no", prompt: "yes", pam: "no", checked: true, outcome: "refused"},
+		{name: "PAM's prompt required", server: "ssh.service", passwords: "no", prompt: "yes", methods: "keyboard-interactive:pam", checked: true},
+		{name: "a key and then PAM's prompt", server: "ssh.service", prompt: "yes", methods: "publickey,keyboard-interactive", checked: true, outcome: "refused"},
 		{name: "keys only for every login", server: "ssh.service", passwords: "no", checked: true, outcome: "refused"},
 		{name: "a public key required", server: "sshd.service", methods: "publickey", checked: true, outcome: "refused"},
 		{name: "a key and then a password", server: "ssh.service", methods: "publickey,password", checked: true, outcome: "refused"},
@@ -199,7 +205,7 @@ func TestHelperSaysWhenTheSSHServerRefusesThePassword(t *testing.T) {
 				h.putCardPolicy(t)
 			}
 			h.run(t, defaultPassword, "SSH_TEST_SERVER="+tc.server, "SSH_TEST_ACTIVE="+tc.active,
-				"SSH_TEST_PASSWORDS="+tc.passwords, "SSH_TEST_METHODS="+tc.methods, "SSH_TEST_FAIL="+tc.fail)
+				"SSH_TEST_PASSWORDS="+tc.passwords, "SSH_TEST_METHODS="+tc.methods, "SSH_TEST_PROMPT="+tc.prompt, "SSH_TEST_PAM="+tc.pam, "SSH_TEST_FAIL="+tc.fail)
 			if outcome := h.outcome(); outcome != tc.outcome {
 				t.Fatalf("helper exited %d, read as %q, want %q: %s", h.status, outcome, tc.outcome, h.output)
 			}

@@ -11,25 +11,30 @@ passwords_refused=78
 IFS= read -r password
 [[ ${#password} -ge 12 && ${#password} -le 128 && $password != *[![:print:]]* ]]
 
-# Whether sshd -T's settings let a password alone log in; AuthenticationMethods can forbid that too.
+# Whether sshd -T's settings let a password alone log in; PAM's keyboard-interactive prompt takes one too.
 takes_passwords() {
-  local key value allowed=no methods=any
+  local key value password=no prompt=no pam=no methods=' any '
   while read -r key value; do
     case $key in
-      passwordauthentication) allowed=$value ;;
-      authenticationmethods) methods=$value ;;
+      passwordauthentication) password=$value ;;
+      kbdinteractiveauthentication) prompt=$value ;;
+      usepam) pam=$value ;;
+      authenticationmethods) methods=" $value " ;;
     esac
   done
-  [[ $allowed == yes && ($methods == any || " $methods " == *" password "*) ]]
+  [[ $password == yes && ($methods == ' any ' || $methods == *' password '*) ]] ||
+    [[ $prompt == yes && $pam == yes && ($methods == ' any ' || $methods == *' keyboard-interactive '* || $methods == *' keyboard-interactive:pam '*) ]]
 }
 
 unit=
+running=
 for candidate in dropbear.service ssh.service sshd.service; do
   state="$(systemctl show --property=LoadState --value "$candidate")"
   [[ $state == loaded ]] || continue
   [[ -n $unit ]] || unit=$candidate
   if systemctl is-active --quiet "$candidate"; then
     unit=$candidate
+    running=1
     break
   fi
 done
@@ -54,7 +59,8 @@ systemctl enable --now "$unit"
 systemctl is-active --quiet "$unit"
 # Dropbear reads no sshd_config and has no equivalent of -T.
 if [[ $unit != dropbear.service ]]; then
-  [[ -z $reload ]] || systemctl reload-or-restart "$unit"
+  # A server that was stopped has just started without the card's policy.
+  [[ -z $reload || -z $running ]] || systemctl reload-or-restart "$unit"
   policy="$(sshd -T -C user="$account",host=localhost,addr=127.0.0.1)"
   takes_passwords <<< "$policy" || exit "$passwords_refused"
 fi

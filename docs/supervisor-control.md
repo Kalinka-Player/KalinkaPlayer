@@ -82,13 +82,15 @@ server takes precedence. Existing accounts are kept; a pre-existing
 the form resets that account's password. Setting it removes the keys-only
 drop-in a Raspberry Pi Imager card wrote for `kalinka-admin`
 (`/etc/ssh/sshd_config.d/kalinka-card-kalinka-admin.conf`) and reloads
-OpenSSH, since the form's request is the later one. Every other SSH
-authentication policy is kept. With OpenSSH the helper then reads the policy
-in force for `kalinka-admin` (`sshd -T -C
-user=kalinka-admin,host=localhost,addr=127.0.0.1`). If `PasswordAuthentication`
-or `AuthenticationMethods` keeps a password alone from logging in, the page
-says so, and how to fix it, instead of reporting success. The account and
-SSH are still set up. Dropbear has no such check, so its policy is not read.
+OpenSSH if it was already running, since the form's request is the later one.
+Every other SSH authentication policy is kept. With OpenSSH the helper then
+reads the policy in force for `kalinka-admin` (`sshd -T -C
+user=kalinka-admin,host=localhost,addr=127.0.0.1`). A password counts as
+taken through `PasswordAuthentication`, or through
+`KbdInteractiveAuthentication` with `UsePAM`. If those or
+`AuthenticationMethods` keep a password alone from logging in, the page says
+so, and how to fix it, instead of reporting success. The account and SSH are
+still set up. Dropbear has no such check, so its policy is not read.
 
 The form posts to `/` and requires the dashboard's exact Origin and the
 streamer's identity. Success redirects back to the page with connection
