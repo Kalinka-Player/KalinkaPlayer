@@ -11,8 +11,8 @@ namespace {
 using Bytes = std::vector<uint8_t>;
 
 /// The raw access units of the ADTS fixture, headers stripped.
-std::vector<Bytes> adtsUnits() {
-  const auto file = aacFixture("tones.aac");
+std::vector<Bytes> adtsUnits(const std::string &name = "tones.aac") {
+  const auto file = aacFixture(name);
   std::vector<Bytes> units;
   for (size_t at = 0; at + 7 <= file.size();) {
     const size_t length =
@@ -89,6 +89,49 @@ TEST(AacDecoder, PrimesAgainAfterAReset) {
   decoder.reset();
   EXPECT_TRUE(decoder.decode(units[20]).empty());
   EXPECT_EQ(decoder.decode(units[21]).size(), 1024u * 4);
+}
+
+TEST(AacDecoder, DuplicatesMonoIntoBothOutputChannelsWithoutDroppingFrames) {
+  AacDecoder decoder(Bytes{0x12, 0x08}); // 44.1 kHz AAC-LC mono
+  const auto units = adtsUnits("tones-mono.aac");
+  ASSERT_GT(units.size(), 2u);
+  EXPECT_TRUE(decoder.decode(units[0]).empty());
+  bool audible = false;
+  for (size_t i = 1; i < units.size(); ++i) {
+    const auto pcm = decoder.decode(units[i]);
+    ASSERT_EQ(pcm.size(), 1024u * 4);
+    for (size_t at = 0; at < pcm.size(); at += 4) {
+      EXPECT_EQ(pcm[at], pcm[at + 2]);
+      EXPECT_EQ(pcm[at + 1], pcm[at + 3]);
+      audible |= pcm[at] || pcm[at + 1];
+    }
+  }
+  EXPECT_TRUE(audible);
+  EXPECT_EQ(decoder.format().channels, 2u);
+}
+
+TEST(AacDecoder, KeepsStereoOutputWhileWaitingForParametricStereoHeaders) {
+  AacDecoder decoder(Bytes{0x13, 0x88}); // 22.05 kHz mono core, implicit SBR/PS
+  const auto units = adtsUnits("tones-ps-joined.aac");
+  ASSERT_GT(units.size(), 8u);
+  for (int pass = 0; pass < 2; ++pass) {
+    decoder.reset();
+    EXPECT_TRUE(decoder.decode(units[0]).empty());
+    bool stereo = false;
+    for (size_t i = 1; i < units.size(); ++i) {
+      const auto pcm = decoder.decode(units[i]);
+      ASSERT_EQ(pcm.size(), 2048u * 4) << i;
+      EXPECT_EQ(decoder.format().sampleRate, 44100u);
+      EXPECT_EQ(decoder.format().channels, 2u);
+      for (size_t at = 0; at < pcm.size(); at += 4) {
+        const bool differs = pcm[at] != pcm[at + 2] || pcm[at + 1] != pcm[at + 3];
+        if (i < 7)
+          EXPECT_FALSE(differs) << "Mono before the PS header at unit 7";
+        stereo |= differs;
+      }
+    }
+    EXPECT_TRUE(stereo);
+  }
 }
 
 TEST(AacDecoder, KnowsHowLongAUnitPlaysWithAndWithoutSbr) {

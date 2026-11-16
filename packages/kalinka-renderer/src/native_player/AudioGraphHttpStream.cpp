@@ -64,9 +64,11 @@ size_t AudioGraphHttpStream::WriteCallback(void *contents, size_t size,
   }
 
   if (setStreamingState) {
-    setState(StreamState(AudioGraphNodeState::STREAMING, offset,
-                         StreamInfo{.streamType = StreamType::BYTES,
-                                    .streamSize = contentLength}));
+    setState(StreamState(
+        AudioGraphNodeState::STREAMING, offset,
+        StreamInfo{.streamType = StreamType::BYTES,
+                   .streamSize = contentLength,
+                   .prebufferMs = !lengthKnown && !live ? 1000u : 0u}));
     setStreamingState = false;
   }
   auto combinedStopToken = combineStopTokens(seekRequestSignal.getStopToken(),
@@ -130,14 +132,34 @@ size_t AudioGraphHttpStream::headerCallback(char *buffer, size_t size,
   }
   std::string header(buffer, totalSize);
 
-  size_t separator = header.find(": ");
+  if (header == "\r\n") {
+    if (radio) {
+      // Some radio proxies advertise a fictitious file length and honour
+      // Range by cutting the current broadcast into unrelated byte slices.
+      // Discard the ranged response before delivering any of its audio.
+      contentLength = 0;
+      lengthKnown = false;
+      acceptRange = false;
+      if (responseCode == 206) {
+        restartRadioWithoutRange = true;
+        return 0;
+      }
+    } else if (responseCode == 200 && !lengthKnown) {
+      acceptRange = false;
+    }
+  }
+
+  size_t separator = header.find(':');
   if (separator != std::string::npos) {
     std::string key = header.substr(0, separator);
-    std::string value = header.substr(separator + 2);
+    std::string value = header.substr(separator + 1);
     boost::algorithm::to_lower(key);
     boost::algorithm::to_lower(value);
     boost::algorithm::trim(key);
     boost::algorithm::trim(value);
+    if (key.starts_with("icy-")) {
+      radio = true;
+    }
     if (!value.empty() && value.back() == '\r') {
       value.pop_back();
     }
@@ -227,6 +249,7 @@ void AudioGraphHttpStream::reader(std::stop_token stopToken) {
 void AudioGraphHttpStream::readContentChunks(std::stop_token stopToken) {
   using namespace std::placeholders;
   int numRetries = RETRIES;
+  bool retriedRadio = false;
   while (!lengthKnown || offset < contentLength) {
     auto seekToPos = seekRequestSignal.getValue();
     if (seekToPos) {
@@ -255,6 +278,14 @@ void AudioGraphHttpStream::readContentChunks(std::stop_token stopToken) {
         break;
       }
       if (seekRequestSignal.getStopToken().stop_requested()) {
+        continue;
+      }
+      if (restartRadioWithoutRange) {
+        restartRadioWithoutRange = false;
+        if (retriedRadio || offset != 0)
+          throw std::runtime_error("Radio server refused a continuous stream");
+        retriedRadio = true;
+        spdlog::debug("Reading radio as a continuous stream without ranges");
         continue;
       }
       responseCode = -1;
@@ -322,8 +353,13 @@ int AudioGraphHttpStream::readSingleChunk(std::stop_token stopToken) {
   request.reset();
   curlpp::options::Url myUrl(url);
   request.setOpt(myUrl);
+  // Radio CDNs such as Zeno reject unidentified clients before serving audio.
+  request.setOpt(curlpp::options::UserAgent("KalinkaRenderer"));
   request.setOpt(curlpp::options::FollowLocation(true));
   request.setOpt(curlpp::options::MaxRedirs(maxRedirects));
+  // Legacy SHOUTcast uses this status line for an otherwise HTTP response.
+  // Let curl parse its headers normally and deliver only audio to the decoder.
+  request.setOpt(curlpp::options::Http200Aliases({"ICY 200 OK"}));
   request.setOpt(curlpp::OptionTrait<std::string, CURLOPT_REDIR_PROTOCOLS_STR>(
       "http,https"));
 

@@ -27,6 +27,8 @@ using Response = http::response<http::string_body>;
 
 enum class Delivery {
   Whole,
+  /// A legacy SHOUTcast status line and an unframed radio body.
+  Icy,
   /// Not even the headers, then the connection is held open.
   Silent,
   /// The headers and `sentFirst` body bytes, then the connection is held open.
@@ -178,8 +180,37 @@ Reply answer(const Request &request, const std::string &body, bool first) {
     response.set("X-Kalinka-Live", "1");
     return unsized(std::move(response), target == "/live-held");
   }
+  if (target == "/radio" || target == "/radio-always-ranged") {
+    if (request.count(http::field::range) || target == "/radio-always-ranged") {
+      auto response = respond(request, http::status::partial_content,
+                              "This is a different moment of the broadcast");
+      response.set(http::field::content_range, "bytes 0-383999/1073741823");
+      response.set("icy-name", "Test radio");
+      response.set(http::field::accept_ranges, "bytes");
+      return {std::move(response)};
+    }
+    auto response = respond(request, http::status::ok, body);
+    response.set("icy-name", "Test radio");
+    return unsized(std::move(response), false);
+  }
+  if (target == "/shoutcast") {
+    auto response = respond(request, http::status::ok, body);
+    response.keep_alive(false);
+    return {std::move(response), Delivery::Icy};
+  }
+  if (target == "/close-delimited") {
+    auto response = respond(request, http::status::ok, body);
+    response.erase(http::field::content_length);
+    response.keep_alive(false);
+    return {std::move(response)};
+  }
   if (target == "/ranged" || target == "/strict-ranged") {
     return {ranged(request, body, target == "/strict-ranged")};
+  }
+  if (target == "/requires-user-agent") {
+    return {request[http::field::user_agent].empty()
+                ? respond(request, http::status::unauthorized)
+                : ranged(request, body)};
   }
   if (target == "/refuses-a-resume" && first) {
     return stalled(ranged(request, body), LocalHttpServer::STALL_OFTEN_BYTES);
@@ -338,6 +369,15 @@ void LocalHttpServer::serve(tcp::socket &socket) {
     case Delivery::Whole:
       http::write(socket, response, error);
       break;
+    case Delivery::Icy: {
+      constexpr std::string_view head =
+          "ICY 200 OK\r\nicy-name:Test radio\r\n"
+          "content-type:audio/aacp\r\nicy-br:128\r\n\r\n";
+      asio::write(socket, asio::buffer(head.data(), head.size()), error);
+      if (!error)
+        asio::write(socket, asio::buffer(response.body()), error);
+      break;
+    }
     case Delivery::Silent:
       holdOpen(socket);
       return;

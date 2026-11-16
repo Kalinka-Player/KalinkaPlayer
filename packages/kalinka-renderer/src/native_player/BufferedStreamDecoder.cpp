@@ -105,6 +105,9 @@ void BufferedStreamDecoder::prepare() {
     throw std::runtime_error(name() + " header describes no audio format");
   if (frameBytes > buffer.max_size())
     throw std::runtime_error(name() + " buffer is smaller than one frame");
+  // Writers and readers only transfer whole frames. A reserve wait clamped
+  // to an unaligned capacity would otherwise ask for bytes we can never fill.
+  buffer.setCapacity(buffer.max_size() - buffer.max_size() % frameBytes);
   if (!startOffsetMs)
     return;
   if (!canSeek())

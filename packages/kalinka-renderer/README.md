@@ -45,10 +45,14 @@ with no known length. Raw AAC in ADTS frames (`audio/aac`, `audio/x-aac`,
 `audio/aacp` or `.aac`), as internet radio sends it, plays after any ID3v2 tag;
 its length and seeks are estimated from the average frame size. AAC-LC, HE-AAC
 and HE-AAC v2 decode with faad2 to 16-bit stereo at the stream's output rate:
-mono is upmixed and multichannel audio downmixed. MP4 and DASH play exactly
+mono is upmixed and multichannel audio downmixed. HE-AAC v2 broadcasts can
+start before their next parametric-stereo header: the initial mono frames
+play immediately through both channels, keeping the output format stable.
+MP4 and DASH play exactly
 what the track's edit list, or else iTunes' `iTunSMPB` tag, selects, so the
 encoder's priming and padding are trimmed and AAC albums play gaplessly. ADTS
-records neither, so raw AAC loses only the first 1024 frames of priming and
+records neither, so raw AAC loses only its first unit of priming (1024 frames,
+or 2048 with SBR) and
 plays its padding. ALAC decodes in the renderer itself, keeping the original
 sample rate and bit depth, in mono or stereo at 16, 24 or 32 bits; 20-bit and
 multichannel ALAC are not supported. Neither are xHE-AAC, and ADTS that
@@ -156,6 +160,23 @@ streams support seeking and start offsets; sequential streams play from the
 beginning. Chained Vorbis streams must keep the same sample rate and channel
 count. Other codecs in an Ogg container, such as Opus, are not supported.
 
+Web radio with ICY headers is read as one continuous HTTP response, even when
+the server advertises byte ranges and a placeholder file length. Legacy
+SHOUTcast responses starting with `ICY 200 OK` are accepted too. Endless MP3
+uses minimp3's sequential frame decoder without scanning for duration or
+rewinding. Xing/LAME delay and padding are also honoured for finite MP3
+responses without `Content-Length`, without adding a PCM tail buffer.
+MP3, FLAC and ADTS AAC broadcasts of unknown length accumulate one
+second of decoded audio before playback starts or resumes after starvation,
+bounded by their usable decoder buffer capacity. Decoders that write whole
+frames round their capacity down to a frame boundary so reserve waits can
+complete. This absorbs delivery bursts without increasing the output device's
+latency or changing interactive
+live PCM playback. Sources marked `X-Kalinka-Live: 1`, including live captures,
+do not request that broadcast reserve.
+
+HTTP requests identify the player as `KalinkaRenderer`, including after a
+redirect or range restart, for radio CDNs that refuse unidentified clients.
 HTTP streams follow up to three HTTP or HTTPS redirects per request by default,
 configurable with `network.max_redirects`. Range requests, retries, and seeks
 start from the original URL so a controller such as BubbleUPnP can issue a fresh

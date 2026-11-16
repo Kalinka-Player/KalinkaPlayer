@@ -664,14 +664,25 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
           // Silence written now would play before the audio it waits for.
           waitForCommand(combinedToken.get_token());
         } else {
-          auto framesToRead = waitForAlsaBufferSpace();
-          if (!framesToRead) {
-            break;
+          if (!started && streamInfo->prebufferMs && !streamInfo->live) {
+            const auto bytes =
+                uint64_t(streamInfo->prebufferMs) *
+                currentStreamAudioFormat.sampleRate / 1000 *
+                currentStreamAudioFormat.channels *
+                sampleSize(currentStreamAudioFormat.sampleFormat);
+            inputNode->waitForData(combinedToken.get_token(), bytes);
           }
-          auto framesRead =
-              readIntoAlsaFromStream(combinedToken.get_token(), framesToRead);
-          if (framesRead < 0) {
-            break;
+          // A pause or seek must still be answered while filling the reserve.
+          if (!combinedToken.get_token().stop_requested()) {
+            auto framesToRead = waitForAlsaBufferSpace();
+            if (!framesToRead) {
+              break;
+            }
+            auto framesRead =
+                readIntoAlsaFromStream(combinedToken.get_token(), framesToRead);
+            if (framesRead < 0) {
+              break;
+            }
           }
         }
         if (token.stop_requested()) {

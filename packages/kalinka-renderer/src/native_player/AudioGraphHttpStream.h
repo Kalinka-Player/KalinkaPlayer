@@ -62,6 +62,8 @@ private:
   size_t contentLength = 0;
   bool lengthKnown = false;
   bool live = false;
+  bool radio = false;
+  bool restartRadioWithoutRange = false;
   std::atomic<size_t> offset = 0;
   size_t bytesToSkip = 0;
   Signal<size_t> seekRequestSignal;

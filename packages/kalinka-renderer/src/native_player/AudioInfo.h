@@ -104,6 +104,10 @@ struct StreamInfo {
   // depending on the stream type.
   unsigned long streamSize = 0;
   std::optional<LiveAudioPolicy> live;
+  // Compressed broadcasts need a reserve for network/encoder bursts before
+  // starting or recovering from starvation. Interactive live PCM uses its
+  // own latency policy instead. The source buffer bounds this wait.
+  unsigned prebufferMs = 0;
 
   bool operator==(const StreamInfo &other) const = default;
   bool operator!=(const StreamInfo &other) const = default;

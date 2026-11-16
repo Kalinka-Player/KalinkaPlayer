@@ -6,7 +6,12 @@
 #include <gtest/gtest.h>
 
 #include "Config.h"
+#include "AacTestData.h"
+#include "AdtsStreamDecoder.h"
+#include "AudioGraphHttpStream.h"
 #include "ErrorFakeNode.h"
+#include "LiveInputNode.h"
+#include "LocalHttpServer.h"
 #include "SlowOutputNode.h"
 #include "TestHelpers.h"
 
@@ -147,7 +152,74 @@ protected:
   void stopPlaying() { alsaAudioEmitter->disconnect(playing); }
 };
 
+TEST(AlsaAudioEmitter, BroadcastWaitsForAReserveAndCanPauseWhileBuffering) {
+  using namespace std::chrono_literals;
+  class Broadcast : public LiveInputNode {
+  public:
+    Broadcast() : LiveInputNode(44100 * 4) {
+      setState(StreamState{AudioGraphNodeState::PREPARING});
+      setState({AudioGraphNodeState::STREAMING, 0,
+                StreamInfo{.format = {44100, 2, 16, PCM16_LE},
+                           .streamType = StreamType::FRAMES,
+                           .prebufferMs = 1000}});
+    }
+    size_t waitForData(std::stop_token token, size_t size) override {
+      if (!waiting.exchange(true))
+        firstWait.set_value(size);
+      return LiveInputNode::waitForData(token, size);
+    }
+    std::promise<size_t> firstWait;
+    std::atomic<bool> waiting = false;
+  };
+  auto source = std::make_shared<Broadcast>();
+  std::vector<uint8_t> silence(44100 * 4);
+  // The device could start with this, but a broadcast needs more in reserve.
+  source->bytes.write(silence.data(), 4410 * 4);
+  auto waiting = source->firstWait.get_future();
+  auto sink = std::make_shared<AlsaAudioEmitter>(
+      Config{{"output.alsa.device", "null"}});
+  std::promise<void> started;
+  auto playing = started.get_future();
+  sink->onStateChange([&](AudioGraphNode *, StreamState state) {
+    if (state.state != AudioGraphNodeState::STREAMING)
+      return true;
+    started.set_value();
+    return false;
+  });
+  sink->connectTo(source);
+  ASSERT_EQ(waiting.wait_for(2s), std::future_status::ready);
+  EXPECT_EQ(waiting.get(), 44100u * 4);
+  EXPECT_EQ(source->bytes.size(), 4410u * 4);
+  EXPECT_TRUE(returnsWithin([sink] { sink->pause(true); }, 2s));
+  EXPECT_EQ(sink->getState().state, AudioGraphNodeState::PAUSED);
+  sink->pause(false);
+  source->bytes.write(silence.data(), 39690 * 4);
+  EXPECT_EQ(playing.wait_for(2s), std::future_status::ready);
+  sink->disconnect(source);
+}
+
 TEST_F(AlsaAudioEmitterTest, constructor_destructor) {}
+
+TEST(AlsaAudioEmitter, AacBroadcastStartsWithAnUnalignedDecoderCapacity) {
+  using namespace std::chrono_literals;
+  LocalHttpServer server(aacFixturePath("tones.aac"));
+  auto source = std::make_shared<AudioGraphHttpStream>(
+      1, server.url("/radio"), 32768, 4096);
+  auto decoder = std::make_shared<AdtsStreamDecoder>(1, 65535);
+  decoder->connectTo(source);
+  std::promise<void> started;
+  auto playing = started.get_future();
+  AlsaAudioEmitter sink(Config{{"output.alsa.device", "null"}});
+  sink.onStateChange([&](AudioGraphNode *, StreamState state) {
+    if (state.state != AudioGraphNodeState::STREAMING)
+      return true;
+    started.set_value();
+    return false;
+  });
+  sink.connectTo(decoder);
+  EXPECT_EQ(playing.wait_for(2s), std::future_status::ready);
+  sink.disconnect(decoder);
+}
 
 TEST(AlsaAudioEmitter, ExplicitBufferSizesApplyOnlyToNonLiveAudio) {
   using namespace std::chrono_literals;
