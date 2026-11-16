@@ -5,7 +5,7 @@
 #include <cstdint>
 
 /**
- * @brief DsdToPcm's stage 1 loops: per-byte tables take one-bit DSD to samples
+ * @brief Stage 1's loops: per-byte tables take one-bit DSD to samples
  * at an eighth of its rate. The vector ones are dispatched at run time to the
  * widest instruction set the CPU has.
  */

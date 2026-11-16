@@ -1,35 +1,15 @@
 #pragma once
 
-#include "dsp/dsd/DsdKernels.h"
+#include "dsp/dsd/DsdOptions.h"
+#include "dsp/dsd/Stage1.h"
 #include "dsp/fir/HalfBandDecimator.h"
 #include "dsp/fir/SymmetricFir.h"
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
-
-/// What a DSD-to-PCM conversion keeps above 20 kHz.
-enum class DsdFilter {
-  /// Flat to 20 kHz, 110 dB down from 40 kHz.
-  Cut30k,
-  /// Flat to 40 kHz, 110 dB down from 60 kHz; wide where that is past 0.45 of
-  /// the output rate.
-  Cut50k,
-  /// Flat to 0.45 of the output rate, or less straight out of stage 1.
-  Wide,
-};
-
-/// Which bit of a DSD byte holds its earliest sample.
-enum class DsdBitOrder { MsbFirst, LsbFirst };
-
-/**
- * @brief Which loops a DsdToPcm runs. Reference is the plain code the others
- * are checked against; the stage 1 variants are kept to be measured against
- * each other; Fast is the one measured fastest on this architecture.
- */
-enum class DsdKernel { Reference, Sums, ChannelPair, Nibbles, Fast };
 
 /**
  * @brief Converts one-bit DSD into float64 PCM at 2, 4 or 8 times 44.1 or
@@ -38,7 +18,7 @@ enum class DsdKernel { Reference, Sums, ChannelPair, Nibbles, Fast };
  * Stage 1 divides by 8 one byte at a time from integer tables; half-bands
  * divide by 2 each; a band filter at the output rate sets the ultrasonic
  * cut-off. Whatever would fold below the band filter's stop edge, or into the
- * wide passband, is at least 165 dB down, which keeps a DSD128 fixture's
+ * wide passband, is at least 168 dB down, which keeps a DSD128 fixture's
  * THD+N. The filters come from scripts/design_dsd_filters.py and are linear
  * phase.
  *
@@ -82,10 +62,8 @@ public:
   void reset();
 
 private:
+  /// One channel's filters after stage 1.
   struct Channel {
-    std::vector<uint8_t> bytes;
-    /// The same bytes with their bits reversed, for the mirrored groups.
-    std::vector<uint8_t> reversed;
     std::vector<HalfBandDecimator> halfBands;
     std::optional<SymmetricFir> band;
   };
@@ -93,25 +71,13 @@ private:
   unsigned ratio_;
   size_t latency_ = 0;
   double passbandHz_;
-  DsdKernel kernel;
-  bool lsbFirst;
-  uint8_t idle;
   unsigned channels;
-  size_t groups;
-  /// Stage 1's groups for the byte kernels, whole numbers in units of 2^-36:
-  /// all of them in the stream's bit order, or past the budget the first
-  /// half, MSB first.
-  std::vector<std::array<double, 256>> tables;
-  bool whole;
-  /// Every group's taps by nibble, for the nibble kernel.
-  std::vector<dsd_kernels::NibbleTables> nibbles;
+  std::unique_ptr<Stage1> stage1;
   std::vector<Channel> state;
-  /// Where each channel's output for the current block goes.
-  std::vector<double *> blockTargets;
+  /// Where each channel's output for the current block goes, and where stage
+  /// 1 writes for it.
+  std::vector<double *> blockTargets, stage1Targets;
 
-  void stage1(const uint8_t *in, size_t bytes, double *const *out);
-  void stage1Reference(size_t bytes, const Channel &channel,
-                       double *target) const;
   /// Where half-band @p stage takes its input or, past the last, the band
   /// filter, or @p out when there is neither.
   static double *feed(Channel &channel, size_t stage, double *out);
