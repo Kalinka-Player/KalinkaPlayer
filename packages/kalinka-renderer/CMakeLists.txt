@@ -146,6 +146,7 @@ add_library(kalinka_native_player STATIC
   src/native_player/dsp/dsd/ByteHistory.cpp
   src/native_player/dsp/dsd/DsdKernels.cpp
   src/native_player/dsp/dsd/DsdToPcm.cpp
+  src/native_player/dsp/dsd/DsdToPcmProcessor.cpp
   src/native_player/dsp/dsd/Stage1.cpp
   src/native_player/dsp/fir/FirKernels.cpp
   src/native_player/dsp/fir/HalfBandDecimator.cpp
@@ -368,6 +369,7 @@ if(GTest_FOUND)
     tests/native_player/BufferedStreamDecoder_test.cpp
     tests/native_player/ContainerStreamDecoder_test.cpp
     tests/native_player/DsdContainer_test.cpp
+    tests/native_player/DsdPcmPlayback_test.cpp
     tests/native_player/DashStreamDecoder_test.cpp
     tests/native_player/DashFormat_test.cpp
     tests/native_player/FileInputNode_test.cpp
@@ -390,6 +392,7 @@ if(GTest_FOUND)
     tests/native_player/dsp/DspStage_test.cpp
     tests/native_player/dsp/DspStageConversion_test.cpp
     tests/native_player/dsp/dsd/DsdToPcm_test.cpp
+    tests/native_player/dsp/dsd/DsdToPcmProcessor_test.cpp
     tests/native_player/dsp/dsd/Stage1_test.cpp
     tests/native_player/dsp/fir/FirFilters_test.cpp
     tests/native_player/dsp/output/GainRamp_test.cpp

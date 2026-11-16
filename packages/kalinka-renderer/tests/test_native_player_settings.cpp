@@ -209,14 +209,14 @@ TEST_F(NativePlayerSettingsTest, DsdSettingsExposeCapabilitiesAndPersistMode) {
   const auto *dsd = field(section, "output.dsd_mode");
   ASSERT_NE(dsd, nullptr);
   EXPECT_EQ(dsd->value(), "disabled");
-  EXPECT_EQ(dsd->options_size(), 4);
+  EXPECT_EQ(dsd->options_size(), 5);
   EXPECT_EQ(dsd->apply(), renderer_pb::APPLY_COST_INTERRUPTS_PLAYBACK);
   ASSERT_TRUE(player_->applyConfig("output.dsd_mode", "dop", error_));
   EXPECT_EQ(loadSettingsOverrides().at("output.dsd_mode"), "dop");
   player_.reset();
   player_ = std::make_shared<NativePlayer>(ioc_);
   EXPECT_EQ(field(output(), "output.dsd_mode")->value(), "dop");
-  EXPECT_FALSE(player_->applyConfig("output.dsd_mode", "pcm", error_));
+  EXPECT_FALSE(player_->applyConfig("output.dsd_mode", "bogus", error_));
   ASSERT_TRUE(player_->applyConfig("output.device", "default", error_));
   EXPECT_EQ(field(output(), "output.dsd_mode")->value(), "disabled");
 }
@@ -304,7 +304,8 @@ TEST_F(NativePlayerSettingsTest, ModeChoicesAreDescribedInTheirOwnOrder) {
   EXPECT_THAT(described("output.volume_mode"),
               ::testing::ElementsAre("auto", "hardware", "software", "fixed"));
   EXPECT_THAT(described("output.dsd_mode"),
-              ::testing::ElementsAre("disabled", "auto", "native", "dop"));
+              ::testing::ElementsAre("disabled", "auto", "native", "dop",
+                                     "pcm"));
 }
 
 TEST_F(NativePlayerSettingsTest, DsdIsTakenWhileTheDsdModeIsNotDisabled) {
@@ -346,7 +347,7 @@ TEST_F(NativePlayerSettingsTest, ANewDeviceRestatesTheVolume) {
 
 TEST_F(NativePlayerSettingsTest, InvalidPersistedDsdModeUsesDisabled) {
   saveSettingsOverrides(
-      {{"output.device", "null"}, {"output.dsd_mode", "pcm"}});
+      {{"output.device", "null"}, {"output.dsd_mode", "bogus"}});
   player_.reset();
   player_ = std::make_shared<NativePlayer>(ioc_);
   EXPECT_EQ(field(output(), "output.dsd_mode")->value(), "disabled");

@@ -42,6 +42,9 @@ public:
   /// @throws std::invalid_argument for rates or channels it has no chain for.
   explicit DsdToPcm(const Spec &spec);
 
+  /// Whether a converter can be made for @p spec.
+  static bool converts(const Spec &spec);
+
   /// One-bit samples per output frame, a power of two of at least 8.
   unsigned ratio() const { return ratio_; }
   /// Output frames the PCM lags the DSD by, rounded to the nearest frame.

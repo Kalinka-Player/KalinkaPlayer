@@ -127,6 +127,14 @@ std::string refusal(const OutputCapabilities &caps, const char *mode,
   }
   return "accepted";
 }
+TEST(DsdCapabilities, PcmTakesRawBytesForTheStageOnAnyOutput) {
+  const OutputCapabilities shared{DeviceAccess::Shared, "", {}};
+  const auto format = chooseDsdOutput(shared, "pcm", 2822400, 2);
+  EXPECT_EQ(format.sampleFormat, DSD_U8);
+  EXPECT_EQ(format.sampleRate, 352800u) << "one byte a channel per frame";
+  EXPECT_EQ(format.dsdSampleRate, 2822400u);
+  EXPECT_EQ(format.channels, 2u);
+}
 TEST(DsdCapabilities, ExactCombinationRequiredAndAutomaticNeverAssumesDop) {
   OutputCapabilities caps{
       DeviceAccess::Exclusive,

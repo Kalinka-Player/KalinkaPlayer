@@ -28,6 +28,10 @@ const dsd_filters::Chain *findChain(const DsdToPcm::Spec &spec) {
 
 } // namespace
 
+bool DsdToPcm::converts(const Spec &spec) {
+  return spec.channels > 0 && findChain(spec) != nullptr;
+}
+
 DsdToPcm::DsdToPcm(const Spec &spec) : channels(spec.channels) {
   const auto *chain = findChain(spec);
   if (!chain || !channels)
