@@ -406,6 +406,8 @@ class Root:
         }
         self.downloads = []
         self.fail = None
+        self.refusal = None
+        self.policies = {}
 
     def fetch_catalog(self):
         if self.catalog is None:
@@ -420,7 +422,11 @@ class Root:
 
     def run(self, command):
         self.calls.append(command)
+        if command[:2] == ["apt-cache", "policy"]:
+            return self.policies.get(command[2], "")
         if command[0] == "apt-get" and "-s" in command:
+            if self.refusal is not None and "install" in command:
+                raise subprocess.CalledProcessError(100, command, output=self.refusal)
             return self.plans["remove" if "remove" in command else "install"]
         if command[0] == "apt-get":
             if self.fail == "apt":
@@ -589,6 +595,86 @@ def test_apt_failure_is_recorded_without_its_output(root):
     assert code == 1
     assert result["error"] == "apt-get did not complete; see the helper's log."
     assert result["finished_at"] is not None
+
+
+def unmet(*lines):
+    return "\n".join(
+        [
+            "Reading package lists...",
+            "The following packages have unmet dependencies:",
+            *lines,
+            "E: Unable to correct problems, you have held broken packages.",
+            "",
+        ]
+    )
+
+
+def test_a_dependency_floor_apt_refuses_is_named_before_core_stops(root):
+    root.refusal = unmet(
+        " kalinka-plugin-demo : Depends: bluez-alsa-utils (>= 4.3.1) but 4.1.1-2 is to be installed"
+    )
+    code, result = root.apply(INSTALL)
+    assert code == 1 and result["status"] == "failed"
+    assert result["error"] == (
+        "Needs bluez-alsa-utils 4.3.1 or newer (this system has 4.1.1-2)."
+    )
+    assert [c[0] for c in root.calls] == ["apt-get"]
+
+
+def test_a_dependency_apt_will_not_install_names_the_version_it_offers(root):
+    root.refusal = unmet(
+        " kalinka-plugin-demo : Depends: bluez-alsa-utils (>= 4.3.1) but it is not going to be installed"
+    )
+    root.policies["bluez-alsa-utils"] = (
+        "bluez-alsa-utils:\n"
+        "  Installed: (none)\n"
+        "  Candidate: 4.1.1-2\n"
+        "  Version table:\n"
+        "     4.1.1-2 500\n"
+        "        500 https://kalinka:s3cret@mirror.example.org/ubuntu noble/universe amd64 Packages\n"
+    )
+    code, result = root.apply(INSTALL)
+    assert result["error"] == (
+        "Needs bluez-alsa-utils 4.3.1 or newer "
+        "(this system offers 4.1.1-2, which apt will not install)."
+    )
+    assert "://" not in result["error"] and "s3cret" not in result["error"]
+    assert root.calls[1] == ["apt-cache", "policy", "bluez-alsa-utils"]
+    assert all(c[0] != "systemctl" for c in root.calls)
+
+
+def test_a_failed_lookup_still_names_the_dependency(root):
+    root.refusal = unmet(
+        " kalinka-plugin-demo : Depends: bluez-alsa-utils (>= 4.3.1) but it is not going to be installed"
+    )
+
+    def run(command):
+        if command[0] == "apt-cache":
+            raise subprocess.CalledProcessError(100, command)
+        return Root.run(root, command)
+
+    root.run = run
+    assert root.apply(INSTALL)[1]["error"] == (
+        "Needs bluez-alsa-utils 4.3.1 or newer (apt will not install it)."
+    )
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "E: dpkg was interrupted, you must manually run 'dpkg --configure -a' to correct the problem.\n",
+        unmet(
+            " kalinka-plugin-demo : Depends: pipewire-alsa but it is not going to be installed or",
+            "                                pulseaudio but it is not installable",
+        ),
+        "",
+    ],
+)
+def test_any_other_refusal_keeps_the_generic_message(root, output):
+    root.refusal = output
+    code, result = root.apply(INSTALL)
+    assert result["error"] == "apt-get did not complete; see the helper's log."
+    assert [c[0] for c in root.calls] == ["apt-get"]
 
 
 def test_package_state_is_checked_after_apt(root):
