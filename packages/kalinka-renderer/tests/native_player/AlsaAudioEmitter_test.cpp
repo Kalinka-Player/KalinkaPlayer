@@ -139,14 +139,19 @@ protected:
 
   void SetUp() override {
     alsaAudioEmitter = std::make_shared<AlsaAudioEmitter>(config);
-    alsaAudioEmitter->setSoftwareVolume(0.0f);
   }
 
-  // What the sink reads, through the stage KALINKA_TEST_DSP_DELAY_MS asks for.
+  // What the sink reads: muted, and through the stage
+  // KALINKA_TEST_DSP_DELAY_MS asks for when play()ed.
   std::shared_ptr<AudioGraphOutputNode> playing;
 
   void play(std::shared_ptr<AudioGraphOutputNode> source) {
-    playing = throughTestDsp(std::move(source));
+    connect(throughTestDsp(std::move(source)));
+  }
+
+  // Straight to the sink, as a source that tests the sink itself hands it.
+  void connect(std::shared_ptr<AudioGraphOutputNode> source) {
+    playing = silenced(std::move(source));
     alsaAudioEmitter->connectTo(playing);
   }
 
@@ -271,7 +276,7 @@ TEST_F(AlsaAudioEmitterTest, starved_live_input_buffers_then_resumes_without_pau
   auto source = std::make_shared<StarvedOutputNode>();
   auto waiting = source->firstWait.get_future();
   StateMonitor monitor(alsaAudioEmitter.get());
-  alsaAudioEmitter->connectTo(source);
+  connect(source);
   ASSERT_EQ(waiting.wait_for(std::chrono::seconds(1)), std::future_status::ready);
   EXPECT_EQ(alsaAudioEmitter->getState().state, AudioGraphNodeState::PREPARING);
   source->provideAudio();
@@ -285,13 +290,13 @@ TEST_F(AlsaAudioEmitterTest, starved_live_input_buffers_then_resumes_without_pau
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   EXPECT_TRUE(resumed);
-  alsaAudioEmitter->disconnect(source);
+  stopPlaying();
 }
 
 TEST_F(AlsaAudioEmitterTest, pause_while_live_input_is_starved) {
   auto source = std::make_shared<StarvedOutputNode>();
   auto waiting = source->firstWait.get_future();
-  alsaAudioEmitter->connectTo(source);
+  connect(source);
   ASSERT_EQ(waiting.wait_for(std::chrono::seconds(1)), std::future_status::ready);
   auto pause = std::async(std::launch::async, [emitter = alsaAudioEmitter] {
     emitter->pause(true);
@@ -304,14 +309,14 @@ TEST_F(AlsaAudioEmitterTest, pause_while_live_input_is_starved) {
               AudioGraphNodeState::PAUSED);
   }
   // Also releases a regressed pause so failure does not hang the whole suite.
-  alsaAudioEmitter->disconnect(source);
+  stopPlaying();
   pause.get();
 }
 
 TEST_F(AlsaAudioEmitterTest, seek_while_live_input_is_starved) {
   auto source = std::make_shared<StarvedOutputNode>();
   auto waiting = source->firstWait.get_future();
-  alsaAudioEmitter->connectTo(source);
+  connect(source);
   ASSERT_EQ(waiting.wait_for(std::chrono::seconds(1)), std::future_status::ready);
   auto seek = std::async(std::launch::async, [emitter = alsaAudioEmitter] {
     return emitter->seek(12000);
@@ -319,7 +324,7 @@ TEST_F(AlsaAudioEmitterTest, seek_while_live_input_is_starved) {
   const auto result = seek.wait_for(std::chrono::milliseconds(300));
   EXPECT_EQ(result, std::future_status::ready);
   EXPECT_EQ(source->soughtTo.load(), 12 * 44100);
-  alsaAudioEmitter->disconnect(source);
+  stopPlaying();
   if (result == std::future_status::ready) {
     EXPECT_EQ(seek.get(), 12000);
   }
@@ -328,7 +333,7 @@ TEST_F(AlsaAudioEmitterTest, seek_while_live_input_is_starved) {
 TEST_F(AlsaAudioEmitterTest, a_pause_before_the_device_starts_holds_until_resumed) {
   auto source = std::make_shared<StarvedOutputNode>();
   auto waiting = source->firstWait.get_future();
-  alsaAudioEmitter->connectTo(source);
+  connect(source);
   ASSERT_EQ(waiting.wait_for(std::chrono::seconds(1)), std::future_status::ready);
   StateMonitor monitor(alsaAudioEmitter.get());
   auto emitter = alsaAudioEmitter;
@@ -351,13 +356,13 @@ TEST_F(AlsaAudioEmitterTest, a_pause_before_the_device_starts_holds_until_resume
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   EXPECT_TRUE(resumed);
-  alsaAudioEmitter->disconnect(source);
+  stopPlaying();
 }
 
 TEST_F(AlsaAudioEmitterTest, an_input_that_runs_dry_buffers_where_playback_reached) {
   auto source = std::make_shared<DryingOutputNode>();
   StateMonitor monitor(alsaAudioEmitter.get());
-  alsaAudioEmitter->connectTo(source);
+  connect(source);
   std::optional<StreamState> buffering;
   bool streamed = false;
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
@@ -377,7 +382,7 @@ TEST_F(AlsaAudioEmitterTest, an_input_that_runs_dry_buffers_where_playback_reach
                           std::chrono::seconds(1))
                 .state,
             AudioGraphNodeState::STREAMING);
-  alsaAudioEmitter->disconnect(source);
+  stopPlaying();
 }
 
 TEST_F(AlsaAudioEmitterTest, connectTo) {
@@ -505,7 +510,7 @@ TEST_F(AlsaAudioEmitterTest, a_playing_state_names_what_the_device_opened) {
 
 TEST_F(AlsaAudioEmitterTest, a_failure_in_the_worker_leaves_no_device_behind) {
   auto outputNode = std::make_shared<ThrowingOutputNode>();
-  alsaAudioEmitter->connectTo(outputNode);
+  connect(outputNode);
 
   const auto state =
       waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::ERROR);
@@ -515,23 +520,23 @@ TEST_F(AlsaAudioEmitterTest, a_failure_in_the_worker_leaves_no_device_behind) {
   EXPECT_FALSE(state.deviceInfo.has_value());
   EXPECT_FALSE(alsaAudioEmitter->getState().deviceInfo.has_value());
 
-  alsaAudioEmitter->disconnect(outputNode);
+  stopPlaying();
 }
 
 TEST_F(AlsaAudioEmitterTest, stream_error) {
   auto outputNode = std::make_shared<ErrorFakeNode>();
-  alsaAudioEmitter->connectTo(outputNode);
+  connect(outputNode);
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   auto streamState = alsaAudioEmitter->getState();
   EXPECT_EQ(streamState.state, AudioGraphNodeState::ERROR);
   EXPECT_EQ(streamState.error->message, "Fake error message");
-  alsaAudioEmitter->disconnect(outputNode);
+  stopPlaying();
 }
 
 TEST_F(AlsaAudioEmitterTest, slow_output_node_goes_into_preparing) {
   const size_t duration = 2000;
   auto outputNode = std::make_shared<SlowOutputNode>(duration, 1000);
-  alsaAudioEmitter->connectTo(outputNode);
+  connect(outputNode);
   EXPECT_EQ(
       waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING).state,
       AudioGraphNodeState::STREAMING);
@@ -551,7 +556,7 @@ TEST_F(AlsaAudioEmitterTest, slow_output_node_goes_into_preparing) {
       waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::FINISHED).state,
       AudioGraphNodeState::FINISHED);
 
-  alsaAudioEmitter->disconnect(outputNode);
+  stopPlaying();
 }
 
 TEST_F(AlsaAudioEmitterTest, test_seekToForward) {

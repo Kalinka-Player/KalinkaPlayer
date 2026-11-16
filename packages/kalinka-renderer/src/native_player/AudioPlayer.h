@@ -13,6 +13,7 @@
 struct StreamState;
 class AudioStreamSwitcher;
 class DspStage;
+class OutputStage;
 struct StreamNodes;
 class StateMonitor;
 
@@ -121,6 +122,8 @@ private:
   std::shared_ptr<AlsaAudioEmitter> audioEmitter;
   std::shared_ptr<AudioStreamSwitcher> streamSwitcher;
   std::shared_ptr<DspStage> dspStage;
+  /// Where software volume is applied, between the stage and the emitter.
+  std::shared_ptr<OutputStage> outputStage;
   std::list<StreamNodes> streamNodesList;
 
   // Outlives every mixer handed to it, and is shared with whoever listens: the

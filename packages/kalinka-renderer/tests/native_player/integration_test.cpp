@@ -28,8 +28,14 @@ protected:
 
   IntegrationTest()
       : flacStreamDecoder(std::make_shared<FlacStreamDecoder>(1, 65536)),
-        alsaAudioEmitter(std::make_shared<AlsaAudioEmitter>(config)) {
-    alsaAudioEmitter->setSoftwareVolume(0.0f);
+        alsaAudioEmitter(std::make_shared<AlsaAudioEmitter>(config)) {}
+
+  // What the emitter reads: muted, so a run on a real device plays nothing.
+  std::shared_ptr<AudioGraphOutputNode> heard;
+
+  void connect(std::shared_ptr<AudioGraphOutputNode> source) {
+    heard = silenced(std::move(source));
+    alsaAudioEmitter->connectTo(heard);
   }
 };
 
@@ -41,9 +47,9 @@ TEST_F(IntegrationTest, fileInputIntegration) {
                           std::chrono::milliseconds(1000))
                 .state,
             AudioGraphNodeState::STREAMING);
-  alsaAudioEmitter->connectTo(flacStreamDecoder);
+  connect(flacStreamDecoder);
   std::this_thread::sleep_for(std::chrono::milliseconds(1200));
-  alsaAudioEmitter->disconnect(flacStreamDecoder);
+  alsaAudioEmitter->disconnect(heard);
   flacStreamDecoder->disconnect(fileInputNode);
 }
 
@@ -54,13 +60,13 @@ TEST_F(IntegrationTest, httpInputIntegration) {
   flacStreamDecoder->connectTo(audioGraphHttpStream);
   EXPECT_EQ(flacStreamDecoder->getState().state,
             AudioGraphNodeState::PREPARING);
-  alsaAudioEmitter->connectTo(flacStreamDecoder);
+  connect(flacStreamDecoder);
   EXPECT_EQ(
       waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING).state,
       AudioGraphNodeState::STREAMING);
   waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::FINISHED);
 
-  alsaAudioEmitter->disconnect(flacStreamDecoder);
+  alsaAudioEmitter->disconnect(heard);
   flacStreamDecoder->disconnect(audioGraphHttpStream);
 }
 
@@ -71,7 +77,7 @@ TEST_F(IntegrationTest, streamSwitch) {
   auto sineWaveNode880 = std::make_shared<SineWaveNode>(1, 880, duration2);
   auto streamSwitchNode = std::make_shared<AudioStreamSwitcher>();
   EXPECT_EQ(streamSwitchNode->getState().state, AudioGraphNodeState::STOPPED);
-  alsaAudioEmitter->connectTo(throughTestDsp(streamSwitchNode));
+  connect(throughTestDsp(streamSwitchNode));
   EXPECT_EQ(alsaAudioEmitter->getState().state, AudioGraphNodeState::STOPPED);
   StateMonitor monitor(alsaAudioEmitter.get());
   streamSwitchNode->connectTo(sineWaveNode440);
@@ -236,7 +242,7 @@ TEST_F(IntegrationTest, test_play_after_finished) {
   auto outputNode2 = std::make_shared<SineWaveNode>(1, 880, totalDuration);
   auto switcher = std::make_shared<AudioStreamSwitcher>();
   switcher->connectTo(outputNode1);
-  alsaAudioEmitter->connectTo(throughTestDsp(switcher));
+  connect(throughTestDsp(switcher));
   EXPECT_EQ(
       waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING).state,
       AudioGraphNodeState::STREAMING);
@@ -263,7 +269,7 @@ TEST_F(IntegrationTest, test_switch_different_formats_sine) {
   StateMonitor monitor(alsaAudioEmitter.get());
   switcher->connectTo(outputNode1);
   const auto output = throughTestDsp(switcher);
-  alsaAudioEmitter->connectTo(output);
+  connect(output);
   std::this_thread::sleep_for(std::chrono::milliseconds(1000));
   switcher->connectTo(outputNode2);
   removeStream(*switcher, outputNode1, output);
@@ -303,7 +309,7 @@ TEST_F(IntegrationTest, test_switch_different_formats_files) {
   StateMonitor monitor(alsaAudioEmitter.get());
   switcher->connectTo(codec1);
   switcher->connectTo(codec2);
-  alsaAudioEmitter->connectTo(throughTestDsp(switcher));
+  connect(throughTestDsp(switcher));
   std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
   EXPECT_EQ(
@@ -331,7 +337,7 @@ TEST_F(IntegrationTest, test_play_mp3_file) {
   auto outputNode = std::make_shared<FileInputNode>(1, testFile("tone440.mp3"));
   auto codec = std::make_shared<Mp3StreamDecoder>(1, 65536);
   codec->connectTo(outputNode);
-  alsaAudioEmitter->connectTo(codec);
+  connect(codec);
   EXPECT_EQ(
       waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::FINISHED).state,
       AudioGraphNodeState::FINISHED);
@@ -347,7 +353,7 @@ TEST_F(IntegrationTest, test_next_track_after_pause) {
   switcher->connectTo(outputNode1);
   switcher->connectTo(outputNode2);
   const auto output = throughTestDsp(switcher);
-  alsaAudioEmitter->connectTo(output);
+  connect(output);
   EXPECT_EQ(
       waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::STREAMING).state,
       AudioGraphNodeState::STREAMING);

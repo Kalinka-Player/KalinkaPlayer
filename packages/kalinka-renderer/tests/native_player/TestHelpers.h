@@ -6,6 +6,7 @@
 #include "StreamState.h"
 #include "dsp/DelayLine.h"
 #include "dsp/DspStage.h"
+#include "dsp/output/OutputStage.h"
 
 #include <algorithm>
 #include <chrono>
@@ -102,6 +103,16 @@ throughTestDsp(std::shared_ptr<AudioGraphOutputNode> source) {
   auto stage = std::make_shared<DspStage>(
       *delay > 0 ? std::make_unique<DelayLine>(std::chrono::milliseconds(*delay))
                  : nullptr);
+  stage->connectTo(std::move(source));
+  return stage;
+}
+
+// @p source with software volume at zero, so a run on a real device plays
+// nothing.
+std::shared_ptr<OutputStage>
+silenced(std::shared_ptr<AudioGraphOutputNode> source) {
+  auto stage = std::make_shared<OutputStage>(std::vector<StreamAudioFormat>{});
+  stage->setGain(0.0);
   stage->connectTo(std::move(source));
   return stage;
 }

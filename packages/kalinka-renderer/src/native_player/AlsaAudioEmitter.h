@@ -3,7 +3,6 @@
 
 #include "AudioGraphNode.h"
 #include "Config.h"
-#include "GainFade.h"
 #include "PlaybackPcm.h"
 #include "Utils.h"
 
@@ -65,11 +64,6 @@ public:
   virtual void pause(bool paused) override;
   virtual size_t seek(size_t positionMs) override;
 
-  // Software volume: linear amplitude gain in [0, 1] applied to outgoing PCM
-  // frames. 1.0 (the default) is a bit-perfect bypass. Thread-safe; the value
-  // is read on the playback worker thread for each conversion, and playing
-  // audio fades to it rather than jumping.
-  void setSoftwareVolume(float gain);
   void setDsdAllowed(bool allowed) { dsdAllowed.store(allowed); }
 
   virtual ~AlsaAudioEmitter();
@@ -92,9 +86,6 @@ private:
   std::shared_ptr<AudioGraphOutputNode> inputNode;
   std::jthread playbackThread;
   std::atomic<bool> isWorkerRunning = false;
-  std::atomic<float> softwareGain = 1.0f;
-  // Long enough that a slider step is no click, short enough to follow a drag.
-  GainFade softwareFade{std::chrono::milliseconds(25)};
   std::atomic<bool> dsdAllowed = true; // AudioPlayer starts in fixed mode.
   uint64_t dopFrame = 0;
   unsigned outputChannels = 2;
@@ -177,7 +168,7 @@ private:
   inline std::chrono::milliseconds framesToTimeMs(snd_pcm_sframes_t frames);
 
   void start();
-  /// Returns once the device is silent, so a caller may change the gain next.
+  /// Returns once the device is silent.
   void stop();
 
   /// Stamps the open device onto every state this node reports.
