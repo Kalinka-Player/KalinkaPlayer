@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <utility>
 
 namespace {
 using container::MAX_HEADER_BYTES;
@@ -178,8 +179,9 @@ std::vector<uint8_t> DsdContainer::nextBlock(ByteReader &source) {
       raw[raw.size() - channels + c] =
           (raw[raw.size() - channels + c] & mask) | (0x69 & ~mask);
   }
-  auto packed = packDsd(raw, channels, transport,
+  const size_t bytes = raw.size() / channels;
+  auto packed = packDsd(std::move(raw), channels, transport,
                         nextByte * 8 / dsdBitsPerFrame(transport));
-  nextByte += raw.size() / channels;
+  nextByte += bytes;
   return packed;
 }

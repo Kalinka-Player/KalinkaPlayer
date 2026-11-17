@@ -31,7 +31,8 @@ StreamAudioFormat chooseDsdOutput(const OutputCapabilities &caps,
                                   unsigned channels);
 // Input is interleaved, chronological, MSB-first DSD bytes. A final partial
 // transport frame is filled with the DSD silence pattern, never PCM zeros.
-std::vector<uint8_t> packDsd(std::span<const uint8_t> input, unsigned channels,
+// DSD_U8 hands the input back as it came, without a copy.
+std::vector<uint8_t> packDsd(std::vector<uint8_t> input, unsigned channels,
                              AudioSampleFormat format, uint64_t firstFrame);
 // The emitter owns the marker clock, including silence during a pause and
 // source changes. Updates only marker/padding bytes, never the DSD payload.
