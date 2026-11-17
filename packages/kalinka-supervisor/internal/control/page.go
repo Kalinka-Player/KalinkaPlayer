@@ -166,11 +166,24 @@ func (h *handler) enableSSH(w http.ResponseWriter, r *http.Request, reject func(
 	r.Form = nil
 	ctx, cancel := context.WithTimeout(context.Background(), sshSetupTimeout)
 	defer cancel()
-	if err := h.cfg.EnableSSH(ctx, secret); err != nil {
+	// The login will most likely come from where the form was sent, so its policy is read for that address.
+	from, _ := peerAddr(r.RemoteAddr)
+	if err := h.cfg.EnableSSH(ctx, secret, from); err != nil {
 		var refusal *Refusal
-		if errors.As(err, &refusal) {
+		switch {
+		case errors.As(err, &refusal):
 			outcome := outcomes[refusal.Code]
 			return reject(outcome.status, refusal.Code, outcome.message)
+		case errors.Is(err, sshaccess.ErrPolicyUnknown):
+			return reject(http.StatusConflict, "ssh_policy_unknown", "SSH is on and "+sshaccess.Username+" has the new password, "+
+				"but its authentication settings could not be checked. Try connecting with SSH; "+
+				"if the login is refused, check the SSH server configuration using an existing login.")
+		case errors.Is(err, sshaccess.ErrPasswordsRefused):
+			return reject(http.StatusConflict, "ssh_passwords_refused", "SSH is on and "+sshaccess.Username+" has the new password, "+
+				"but the checked SSH settings do not allow a password on its own. "+
+				"Log in another way, with an SSH key, then allow password logins through PasswordAuthentication and AuthenticationMethods "+
+				"in /etc/ssh/sshd_config and /etc/ssh/sshd_config.d, "+
+				"or add your public key to /home/"+sshaccess.Username+"/.ssh/authorized_keys.")
 		}
 		return reject(http.StatusServiceUnavailable, "ssh_setup_failed", "SSH setup failed. Check that an SSH server is installed and try again.")
 	}

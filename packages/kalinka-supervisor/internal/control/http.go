@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -103,7 +104,7 @@ type HandlerConfig struct {
 	Dashboard     func(context.Context) any
 	Reinstalls    Record
 	Removals      PluginRemovals
-	EnableSSH     func(context.Context, protocol.Secret) error
+	EnableSSH     func(context.Context, protocol.Secret, netip.Addr) error
 	// WiFiPowerSaving is nil where NetworkManager does not run the network.
 	WiFiPowerSaving WiFiPowerSaving
 	Simulated       bool

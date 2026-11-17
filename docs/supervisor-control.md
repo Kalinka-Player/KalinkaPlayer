@@ -79,8 +79,28 @@ a Bash shell and membership in `sudo`, sets its password, and enables and
 starts the installed Dropbear or OpenSSH service. An already running SSH
 server takes precedence. Existing accounts are kept; a pre-existing
 `kalinka-admin` is updated only if it belongs to this setup flow. Repeating
-the form resets that account's password. Custom SSH authentication policies
-are kept, so password authentication must be allowed for this login.
+the form resets that account's password. Setting it removes the keys-only
+drop-in a Raspberry Pi Imager card wrote for `kalinka-admin`
+(`/etc/ssh/sshd_config.d/kalinka-card-kalinka-admin.conf`) and reloads
+every running OpenSSH service, including one running alongside Dropbear.
+Reloads are repeated on each submission so a failed reload can be retried even
+after the drop-in has been removed. Every other SSH policy is kept.
+
+For OpenSSH, the helper reads `sshd -T -C
+user=kalinka-admin,host=<address>,addr=<address>` using the browser's source
+address. It checks `PasswordAuthentication`, `KbdInteractiveAuthentication`,
+`UsePAM` and `AuthenticationMethods` for a password-only authentication path.
+Both lowercase and mixed-case keyword output are accepted. If those settings
+refuse a password on its own, the page explains that the account and password
+were set but the SSH configuration needs attention. If the policy cannot be
+read, it reports that the check could not be completed.
+
+This is an authentication-settings check, not a test login. It does not evaluate
+user/group access lists, PAM account restrictions, reverse DNS, the SSH
+service's custom command-line options, or `Match LocalAddress`/`LocalPort`
+conditions. Dropbear's authentication flags are not checked. Successful setup
+confirms that SSH is enabled and the password was set; other access rules may
+still prevent a login.
 
 The form posts to `/` and requires the dashboard's exact Origin and the
 streamer's identity. Success redirects back to the page with connection

@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"regexp"
 	"sync"
 	"time"
@@ -58,9 +59,10 @@ type SoundcardApplier interface {
 	Apply(ctx context.Context, name string) (bool, error)
 }
 
-// SSHSetup enables the dashboard's fixed administrator account and SSH service.
+// SSHSetup enables the dashboard's fixed administrator account and SSH service;
+// from is the address the request came from.
 type SSHSetup interface {
-	Enable(context.Context, protocol.Secret) error
+	Enable(ctx context.Context, password protocol.Secret, from netip.Addr) error
 }
 
 // TimezoneSetter makes a zone from the box's tzdata its own; timezone.Setter is the production one.
@@ -183,7 +185,7 @@ func NewController(c Config) *Controller {
 }
 
 // EnableSSH shares the action lock and admission policy without adding a protocol action.
-func (c *Controller) EnableSSH(ctx context.Context, password protocol.Secret) error {
+func (c *Controller) EnableSSH(ctx context.Context, password protocol.Secret, from netip.Addr) error {
 	if err := c.reserve(enableSSH); err != nil {
 		return err
 	}
@@ -198,7 +200,7 @@ func (c *Controller) EnableSSH(ctx context.Context, password protocol.Secret) er
 	if c.ssh == nil {
 		return refuse(CodeUnavailable)
 	}
-	return c.ssh.Enable(ctx, password)
+	return c.ssh.Enable(ctx, password, from)
 }
 
 // Begin admits r, or returns a *Refusal saying why it may not run now.
