@@ -45,6 +45,17 @@ std::vector<double> halfBandTaps(const std::vector<double> &side) {
   return taps;
 }
 
+/// What a half-band of @p side keeps of @p x: the whole filter's every second
+/// output.
+std::vector<double> halved(const std::vector<double> &side,
+                           const std::vector<double> &x) {
+  const auto full = convolved(halfBandTaps(side), x);
+  std::vector<double> kept;
+  for (size_t t = 1; t < full.size(); t += 2)
+    kept.push_back(full[t]);
+  return kept;
+}
+
 /// Fed in blocks of the given sizes, cycled, to the end of @p x.
 template <class Filter, class Run>
 std::vector<double> inBlocks(Filter &filter, const std::vector<double> &x,
@@ -99,6 +110,21 @@ TEST(SymmetricFir, WhereABlockEndsDoesNotChangeAVectorOutput) {
             inBlocks(b, x, {3, 500, 17, 64, 1}, filterRun));
 }
 
+TEST(SymmetricFir, EveryLengthFiltersAlikeWhereverABlockEnds) {
+  const auto x = noise(700, 20);
+  for (size_t half = 1; half <= 20; ++half) {
+    const auto taps = noise(half, 20 + unsigned(half));
+    SymmetricFir whole(taps.data(), half, 128, FirPath::Vector);
+    SymmetricFir uneven(taps.data(), half, 128, FirPath::Vector);
+    const auto out = inBlocks(whole, x, {128}, filterRun);
+    ASSERT_EQ(out.size(), x.size());
+    EXPECT_LT(worstDifference(out, convolved(symmetricTaps(taps), x)), 1e-13)
+        << half << " taps to the centre";
+    EXPECT_EQ(inBlocks(uneven, x, {3, 100, 17, 64, 1, 9}, filterRun), out)
+        << half << " taps to the centre";
+  }
+}
+
 TEST(SymmetricFir, ResetForgetsTheHistory) {
   const auto half = noise(9, 5);
   const auto x = noise(400, 6);
@@ -111,16 +137,28 @@ TEST(SymmetricFir, ResetForgetsTheHistory) {
 TEST(HalfBandDecimator, KeepsEverySecondOutputOfTheWholeFilter) {
   const auto side = noise(11, 7);
   const auto x = noise(3001, 8);
-  const auto full = convolved(halfBandTaps(side), x);
-  std::vector<double> expected;
-  for (size_t t = 1; t < full.size(); t += 2)
-    expected.push_back(full[t]);
+  const auto expected = halved(side, x);
   for (const auto path : {FirPath::Reference, FirPath::Vector}) {
     HalfBandDecimator decimator(side.data(), side.size(), 256, path);
     const auto out =
         inBlocks(decimator, x, {256, 1, 37, 100, 7, 2}, decimateRun);
     ASSERT_EQ(out.size(), expected.size());
     EXPECT_LT(worstDifference(out, expected), 1e-13);
+  }
+}
+
+TEST(HalfBandDecimator, EveryLengthDecimatesAlikeWhereverABlockEnds) {
+  const auto x = noise(700, 50);
+  for (size_t sides = 1; sides <= 20; ++sides) {
+    const auto side = noise(sides, 50 + unsigned(sides));
+    const auto expected = halved(side, x);
+    HalfBandDecimator whole(side.data(), sides, 128, FirPath::Vector);
+    HalfBandDecimator uneven(side.data(), sides, 128, FirPath::Vector);
+    const auto out = inBlocks(whole, x, {128}, decimateRun);
+    ASSERT_EQ(out.size(), expected.size());
+    EXPECT_LT(worstDifference(out, expected), 1e-13) << sides << " side taps";
+    EXPECT_EQ(inBlocks(uneven, x, {3, 100, 17, 64, 1, 9}, decimateRun), out)
+        << sides << " side taps";
   }
 }
 
@@ -169,10 +207,7 @@ TEST(HalfBandDecimator, HowTheInputIsSplitDoesNotChangeTheOutput) {
 TEST(HalfBandDecimator, AFilterLongerThanTheBlockStillConvolves) {
   const auto side = noise(58, 15);
   const auto x = noise(1500, 16);
-  const auto full = convolved(halfBandTaps(side), x);
-  std::vector<double> expected;
-  for (size_t t = 1; t < full.size(); t += 2)
-    expected.push_back(full[t]);
+  const auto expected = halved(side, x);
   for (const auto path : {FirPath::Reference, FirPath::Vector}) {
     HalfBandDecimator decimator(side.data(), side.size(), 64, path);
     const auto out = inBlocks(decimator, x, {64, 1, 37, 5, 2}, decimateRun);

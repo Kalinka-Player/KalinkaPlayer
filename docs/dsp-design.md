@@ -819,6 +819,26 @@ by 10–11 %. Review chose one kernel for every machine over a pick per CPU, so
 `DsdKernel::Fast` is channel pairs, and the Pi 4 runs about 8 % above its
 best at DSD64 ([results](../benchmarks/dsp/results.md)).
 
+**FIR loops.** The band filter and the half-bands run one loop: a centre
+tap, then one tap for each pair of samples either side of it, summed for four
+vectors of outputs at a time so that a multiply-add's latency is hidden. On
+NEON, where a vector is 2 doubles and there are 32 registers, the four chains
+also share their loads. At tap j + 2 a chain needs a vector its neighbour read
+at tap j, so a group keeps those in registers and loads 4 vectors for a pair
+of taps instead of 16. Every path adds an output's terms in the same order,
+so the output is the same bit for bit. For filters of 10 taps and more that
+took 13–17 % off the loops on a Pi 5 and 20–34 % on a Pi 4, and 4–12 % and
+6–22 % off a conversion. x86-64 keeps the plain loop: with AVX2's 4 lanes the
+same sharing would take 32 registers of its 16.
+
+`HalfBandDecimator` keeps its input's two phases apart between blocks and
+splits only a block's own samples, in one loop the compiler turns into paired
+loads; before, it split its whole history again every block. Each phase's
+samples start at an even index, and the input two samples into its buffer, so
+that vectors are written where they are aligned. That takes a further 2–9 %
+off a conversion on a Pi 5, most at the high rates. On a Pi 4 it is within the
+spread between launches, and on x86-64 it measures 1–2 % slower than before.
+
 **Over the Pi 4 budget, accepted.** Section 11's 2 % and 6 % were estimates.
 The Pi 4 measures 3.24 % (2.82–3.81 %) and 11.0 % (10.3–12.4 %). It takes
 3.1–3.2 times as long as the Pi 5 on the same code, 2.3–2.4 times per clock.
