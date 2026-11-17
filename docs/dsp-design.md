@@ -802,22 +802,55 @@ kernels became classes, which took up to a further 11 % off on the Pis
 without changing a loop; the figures below are from after.
 
 **Stage 1 kernels.** Beside the scalar reference, the three variants the plan
-asked for. Stage 1 adds whole numbers, so all four agree bit for bit, and the
-FIRs after them are the same vector code:
+asked for, and rows, added after a profile of the Pi 4. Stage 1 adds whole
+numbers, so all five agree bit for bit, and the FIRs after them are the same
+vector code:
 - four sums: one channel, four partial sums at a time, from the byte tables;
 - channel pairs: two channels in one vector, from the byte tables;
 - nibble lookups: each 4-bit partial sum split into five byte planes, 16
-  entries each, looked up in registers with `tbl` on NEON and `pshufb` on x86.
+  entries each, looked up in registers with `tbl` on NEON and `pshufb` on x86;
+- rows: the byte tables turned around, so that a byte looks up one row of all
+  it adds to the outputs it reaches.
 
-Channel pairs were fastest on x86-64 in 29 of 33 rows, and within 5 % in the
-rest. They were fastest on the A76 in every row, by 3–16 %. On the Pi 4's A72,
-nibble lookups were fastest below DSD256, by up to 9 % on medians, and the
-only kernel steady between runs, within 2 %. The byte-table kernels moved by
-5–38 %, most likely because the A72's L1 data cache is 32 KB and two-way.
-Channel pairs led there at DSD256 with the 30 kHz filter and from DSD512 up,
-by 10–11 %. Review chose one kernel for every machine over a pick per CPU, so
-`DsdKernel::Fast` is channel pairs, and the Pi 4 runs about 8 % above its
-best at DSD64 ([results](../benchmarks/dsp/results.md)).
+Of the first three, channel pairs were fastest on x86-64 in 29 of 33 rows,
+and within 5 % in the rest. They were fastest on the A76 in every row, by
+3–16 %. On the Pi 4's A72, nibble lookups were fastest below DSD256, by up to
+9 % on medians, and the only kernel steady between runs, within 2 %. The
+byte-table kernels moved by 5–38 %, most likely because the A72's L1 data
+cache is 32 KB and two-way. Channel pairs led there at DSD256 with the 30 kHz
+filter and from DSD512 up, by 10–11 %. Review chose one kernel for every
+machine over a pick per CPU, so `DsdKernel::Fast` was channel pairs, and the
+Pi 4 ran about 8 % above its best at DSD64
+([results](../benchmarks/dsp/results.md)).
+
+**Rows.** A profile of a Pi 4 playing DSD512 as 176.4 kHz PCM put channel
+pairs at 34 % of the renderer's CPU, nearly all of it on loads. With G groups
+of 8 taps, two outputs of a channel took 2G byte loads and 2G table loads,
+each entry from a different table, and the A72 has one load pipeline. Rows
+turn the tables around: row b holds byte b's entry in every group's table,
+after a zero and padded to an even count. Bytes go a pair at a time. The
+first's row is added to a ring of (G + 2) / 2 pending vectors of two outputs
+as they stand, the second's a lane on. The first pending vector is then
+complete: it goes out and comes back, zeroed, as the last. That is 2 byte
+loads and G + 1 vector loads for the same two outputs, and a row of 5 or 6
+groups is one cache line. The ring's rotation is a template parameter and the
+loop is unrolled by the ring's length, so the pending sums stay in registers
+and none moves. Each call starts from zero and first runs the G − 1 bytes
+carried from the block before.
+
+Two channels share the loop up to 8 groups. At 10 and 12, the sizes DSD64
+uses, their pending sums no longer fit NEON's 32 registers together and the
+compiler kept some on the stack, so there the channels run one after the
+other. That took a further 6–8 % off stage 1 on a Pi 5 and up to 9 % on a
+Pi 4.
+
+The kernel is built for 5, 6, 7, 8, 10 and 12 groups, which is every 30 kHz
+and 50 kHz chain; the wide filter's 15 and 30 groups keep channel pairs.
+`DsdKernel::Fast` is rows wherever they are built. Against channel pairs,
+stage 1 takes 58–63 % less on a Pi 5 and 40–58 % less on a Pi 4, and a
+conversion 18–37 % and 14–32 % less. DSD512 to 176.4 kHz, as far as S32,
+falls from 4.3 % to 3.0 % of a Pi 5 core and from 11.5 % to 9.1 % of a Pi 4
+core. On x86-64 a conversion takes 20–37 % less.
 
 **FIR loops.** The band filter and the half-bands run one loop: a centre
 tap, then one tap for each pair of samples either side of it, summed for four

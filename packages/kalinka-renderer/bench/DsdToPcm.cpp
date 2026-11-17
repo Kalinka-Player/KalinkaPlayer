@@ -52,9 +52,11 @@ void runDsd() {
               "call. Per output frame, and in brackets of one core in real "
               "time at the output rate.\n\n");
   std::printf("The FIRs are vectorised in every column but the reference; "
-              "the columns differ in stage 1.\n\n");
+              "the columns differ in stage 1. Rows run as channel pairs where "
+              "they are not built for the filter, as for some wide ones.\n\n");
   std::printf("| Conversion | Filter | Scalar reference | Four sums | Channel "
-              "pairs | Nibble lookups |\n|---|---|---|---|---|---|\n");
+              "pairs | Nibble lookups | Rows |\n"
+              "|---|---|---|---|---|---|---|\n");
   const Conversion conversions[] = {
       {64, 2, DsdFilter::Cut30k},   {64, 4, DsdFilter::Cut30k},
       {64, 4, DsdFilter::Cut50k},   {64, 4, DsdFilter::Wide},
@@ -67,8 +69,9 @@ void runDsd() {
     const unsigned rate = 44100 * c.pcmMultiple;
     std::printf("| DSD%u to %.1f kHz | %s |", c.dsdMultiple, rate / 1000.0,
                 filterName(c.filter));
-    for (const auto kernel : {DsdKernel::Reference, DsdKernel::Sums,
-                              DsdKernel::ChannelPair, DsdKernel::Nibbles})
+    for (const auto kernel :
+         {DsdKernel::Reference, DsdKernel::Sums, DsdKernel::ChannelPair,
+          DsdKernel::Nibbles, DsdKernel::Rows})
       std::printf(" %s |", cost(nsPerOutputFrame(c, kernel), rate).c_str());
     std::printf("\n");
     std::fflush(stdout);

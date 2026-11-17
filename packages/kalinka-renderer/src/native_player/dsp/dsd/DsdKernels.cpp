@@ -1,6 +1,8 @@
 #include "dsp/dsd/DsdKernels.h"
 
 #include <algorithm>
+#include <iterator>
+#include <utility>
 
 #include "dsp/HighwayTargets.h"
 
@@ -93,6 +95,186 @@ void Stage1Nibbles(const NibbleTables *tables, size_t groups,
   }
 }
 
+using D2 = hn::FixedTag<double, 2>;
+using V2 = hn::Vec<D2>;
+
+/// Vectors of two pending outputs stage1Rows() keeps a channel for G groups.
+template <size_t G> constexpr size_t kPending = (G + 2) / 2;
+/// Vectors of its row the first byte of a pair adds; the second adds
+/// kPending.
+template <size_t G> constexpr size_t kFirstAdds = (G + 1) / 2;
+
+/// Stands for the byte missing beside a lone one at either end of the bytes.
+HWY_ALIGN constexpr double
+    kZeroRow[stage1RowStride(std::ranges::max(kStage1RowGroups))] = {};
+
+template <size_t G>
+HWY_INLINE const double *RowOf(const double *rows, uint8_t byte) {
+  return rows + size_t(byte) * stage1RowStride(G);
+}
+
+/**
+ * @brief One pair of a channel's bytes onto its pending sums: the first's row
+ * as they stand, the second's a lane on. The first pending vector is then
+ * complete: it goes to @p out as two outputs and comes back zeroed as the
+ * last. R is the step modulo kPending, the index of the first.
+ */
+template <size_t G, size_t R>
+HWY_INLINE void Step(D2 d, const double *first, const double *second, V2 factor,
+                     V2 *pending, double *out) {
+  constexpr size_t n = kPending<G>;
+  for (size_t i = 0; i < n; ++i) {
+    // The rows summed first leave each pending chain one add a step.
+    V2 rows = hn::Load(d, second + 2 * i);
+    if (i < kFirstAdds<G>)
+      rows = hn::Add(rows, hn::LoadU(d, first + 1 + 2 * i));
+    pending[(R + i) % n] = hn::Add(pending[(R + i) % n], rows);
+  }
+  hn::StoreU(hn::Mul(pending[R], factor), d, out);
+  pending[R] = hn::Zero(d);
+}
+
+/// Step() for each of C channels on its pair of bytes at @p at, onto
+/// out[c] + at.
+template <size_t G, size_t C, size_t R>
+HWY_INLINE void Pair(D2 d, const double *rows, const uint8_t *const *bytes,
+                     size_t at, V2 factor, V2 (*pending)[kPending<G>],
+                     double *const *out) {
+  for (size_t c = 0; c < C; ++c)
+    Step<G, R>(d, RowOf<G>(rows, bytes[c][at]),
+               RowOf<G>(rows, bytes[c][at + 1]), factor, pending[c],
+               out[c] + at);
+}
+
+/// Pair() on the pairs from @p at on, one for each K, the first at rotation
+/// R0.
+template <size_t G, size_t C, size_t R0, size_t... K>
+HWY_INLINE void Pairs(std::index_sequence<K...>, D2 d, const double *rows,
+                      const uint8_t *const *bytes, size_t at, V2 factor,
+                      V2 (*pending)[kPending<G>], double *const *out) {
+  (Pair<G, C, (R0 + K) % kPending<G>>(d, rows, bytes, at + 2 * K, factor,
+                                      pending, out),
+   ...);
+}
+
+/**
+ * @brief Runs the G - 1 bytes carried from the block before onto zeroed
+ * pending sums, so the block's first pair finds them at rotation 0. What they
+ * complete was the block before's, and is dropped. An odd count leaves the
+ * first carried byte without the one before it, which the zero row stands
+ * for.
+ */
+template <size_t G, size_t C>
+HWY_INLINE void WarmUp(D2 d, const double *rows, const uint8_t *const *carried,
+                       V2 factor, V2 (*pending)[kPending<G>]) {
+  constexpr size_t n = kPending<G>, count = G - 1, lone = count % 2;
+  constexpr size_t steps = (count + 1) / 2, first = (n - steps % n) % n;
+  double dropped[C][count];
+  double *drop[C];
+  for (size_t c = 0; c < C; ++c) {
+    drop[c] = dropped[c];
+    if constexpr (lone)
+      Step<G, first>(d, kZeroRow, RowOf<G>(rows, carried[c][0]), factor,
+                     pending[c], drop[c]);
+  }
+  Pairs<G, C, (first + lone) % n>(std::make_index_sequence<steps - lone>{}, d,
+                                  rows, carried, lone, factor, pending, drop);
+}
+
+/**
+ * @brief Step K of a block's last round, short of kPending pairs: a pair
+ * while @p pairs last, then the block's odd last byte, if @p odd, beside the
+ * zero row, its first output kept.
+ */
+template <size_t G, size_t C, size_t K>
+HWY_INLINE void TailStep(D2 d, const double *rows, const uint8_t *const *bytes,
+                         size_t at, size_t pairs, bool odd, V2 factor,
+                         V2 (*pending)[kPending<G>], double *const *out) {
+  const size_t from = at + 2 * K;
+  if (K < pairs) {
+    Pair<G, C, K>(d, rows, bytes, from, factor, pending, out);
+  } else if (K == pairs && odd) {
+    for (size_t c = 0; c < C; ++c) {
+      double both[2];
+      Step<G, K>(d, RowOf<G>(rows, bytes[c][from]), kZeroRow, factor,
+                 pending[c], both);
+      out[c][from] = both[0];
+    }
+  }
+}
+
+template <size_t G, size_t C, size_t... K>
+HWY_INLINE void Tail(std::index_sequence<K...>, D2 d, const double *rows,
+                     const uint8_t *const *bytes, size_t at, size_t pairs,
+                     bool odd, V2 factor, V2 (*pending)[kPending<G>],
+                     double *const *out) {
+  (TailStep<G, C, K>(d, rows, bytes, at, pairs, odd, factor, pending, out),
+   ...);
+}
+
+/// stage1Rows() for G groups and C channels, kPending steps a round so each
+/// round ends with the pending sums where it began.
+template <size_t G, size_t C>
+HWY_NOINLINE void Rows(const double *rows, const uint8_t *const *direct,
+                       size_t count, double scale, double *const *out) {
+  constexpr size_t n = kPending<G>;
+  const D2 d;
+  const V2 factor = hn::Set(d, scale);
+  V2 pending[C][n];
+  const uint8_t *block[C];
+  // Vector stores may alias the caller's array, which would be read again.
+  double *to[C];
+  for (size_t c = 0; c < C; ++c) {
+    for (V2 &sum : pending[c])
+      sum = hn::Zero(d);
+    block[c] = direct[c] + G - 1;
+    to[c] = out[c];
+  }
+  WarmUp<G, C>(d, rows, direct, factor, pending);
+  size_t at = 0;
+  for (; at + 2 * n <= count; at += 2 * n)
+    Pairs<G, C, 0>(std::make_index_sequence<n>{}, d, rows, block, at, factor,
+                   pending, to);
+  Tail<G, C>(std::make_index_sequence<n>{}, d, rows, block, at,
+             (count - at) / 2, (count - at) % 2 != 0, factor, pending, to);
+}
+
+/// Whether two channels share Rows()'s loop: past 8 groups their pending sums
+/// no longer fit NEON's registers together.
+template <size_t G> constexpr bool kChannelsShare = G <= 8;
+
+/// Rows() for @p channels, if @p groups is G.
+template <size_t G>
+HWY_INLINE void RowsIf(size_t groups, const double *rows,
+                       const uint8_t *const *direct, unsigned channels,
+                       size_t count, double scale, double *const *out) {
+  if (groups != G)
+    return;
+  if (channels == 2 && kChannelsShare<G>) {
+    Rows<G, 2>(rows, direct, count, scale, out);
+    return;
+  }
+  for (unsigned c = 0; c < channels; ++c)
+    Rows<G, 1>(rows, direct + c, count, scale, out + c);
+}
+
+template <size_t... I>
+HWY_INLINE void RowsForAny(std::index_sequence<I...>, size_t groups,
+                           const double *rows, const uint8_t *const *direct,
+                           unsigned channels, size_t count, double scale,
+                           double *const *out) {
+  (RowsIf<kStage1RowGroups[I]>(groups, rows, direct, channels, count, scale,
+                               out),
+   ...);
+}
+
+void Stage1Rows(const double *rows, size_t groups, const uint8_t *const *direct,
+                unsigned channels, size_t count, double scale,
+                double *const *out) {
+  RowsForAny(std::make_index_sequence<std::size(kStage1RowGroups)>{}, groups,
+             rows, direct, channels, count, scale, out);
+}
+
 } // namespace HWY_NAMESPACE
 } // namespace dsd_kernels
 HWY_AFTER_NAMESPACE();
@@ -101,6 +283,7 @@ HWY_AFTER_NAMESPACE();
 namespace dsd_kernels {
 HWY_EXPORT(Stage1Pair);
 HWY_EXPORT(Stage1Nibbles);
+HWY_EXPORT(Stage1Rows);
 
 void stage1Nibbles(const NibbleTables *tables, size_t groups,
                    const uint8_t *direct, size_t count, double scale,
@@ -144,6 +327,13 @@ void stage1Pair(const Stage1Table *tables, size_t stored, size_t groups,
                 size_t count, double scale, double *const out[2]) {
   HWY_DYNAMIC_DISPATCH(Stage1Pair)(tables, stored, groups, direct, mirror,
                                    count, scale, out);
+}
+
+void stage1Rows(const double *rows, size_t groups, const uint8_t *const *direct,
+                unsigned channels, size_t count, double scale,
+                double *const *out) {
+  HWY_DYNAMIC_DISPATCH(Stage1Rows)(rows, groups, direct, channels, count, scale,
+                                   out);
 }
 
 } // namespace dsd_kernels

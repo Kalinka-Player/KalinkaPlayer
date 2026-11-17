@@ -182,8 +182,8 @@ TEST(DsdToPcm, EveryKernelNullsAgainstTheReference) {
       worst = std::max(worst, std::abs(fast[n] - reference[n]));
     EXPECT_LT(20 * std::log10(std::max(worst, 1e-300)), -150.0) << name(s);
     // Stage 1's sums are whole numbers, so its variants agree exactly.
-    for (const auto kernel :
-         {DsdKernel::Sums, DsdKernel::ChannelPair, DsdKernel::Nibbles})
+    for (const auto kernel : {DsdKernel::Sums, DsdKernel::ChannelPair,
+                              DsdKernel::Nibbles, DsdKernel::Rows})
       EXPECT_EQ(convertStereo(s, kernel, in), fast) << name(s);
   }
 }
