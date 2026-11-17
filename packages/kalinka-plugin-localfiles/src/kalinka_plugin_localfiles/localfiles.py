@@ -79,6 +79,7 @@ from .storage import (
     scheme_of,
 )
 from .ipc import RequestChannel
+from .vouched_tracks import VouchedTrack, VouchedTracks
 from .scan_control import ScanControl
 from .input_module_db import (
     FolderSummary,
@@ -399,6 +400,7 @@ class LocalFilesInputModule(InputModule):
         # sources has the server set the plugin up again, on a new instance,
         # and the indexer purges the rows then out of scope.
         self._music_folders = library_roots(config, self._storage)
+        self._vouched = VouchedTracks()
         self._searcher = (
             RequestChannel(search_request_queue, search_response_queue, timeout=30.0)
             if search_request_queue is not None and search_response_queue is not None
@@ -1068,19 +1070,26 @@ class LocalFilesInputModule(InputModule):
         if not storage.readable(track_path):
             raise PermissionError(f"Track file is not readable: {track_path}")
 
-    async def _require_readable_bounded(self, track_path: str) -> None:
-        """`_require_readable` off the event loop, bounded: a hung network
-        mount reads as transiently unavailable instead of pinning the
-        request."""
+    async def _bounded(self, check: Callable[..., Any], *args: Any) -> Any:
+        """``check`` off the event loop, bounded: a hung network mount reads
+        as transiently unavailable instead of pinning the request."""
         try:
-            await asyncio.wait_for(
-                asyncio.to_thread(self._require_readable, track_path),
-                STAT_TIMEOUT_S,
+            return await asyncio.wait_for(
+                asyncio.to_thread(check, *args), STAT_TIMEOUT_S
             )
         except (asyncio.TimeoutError, TimeoutError):
             raise SourceUnavailableError(
                 "Music storage did not respond (hung network mount?)"
             )
+
+    def _cleared_identity(self, track_path: str, local_path: str) -> Tuple[int, int]:
+        """`_require_readable`, then the device and inode of the file cleared.
+
+        @raise OSError As `_require_readable`, or if the file cannot be stat'd.
+        """
+        self._require_readable(track_path)
+        status = os.stat(local_path)
+        return status.st_dev, status.st_ino
 
     async def _await_readable(self, track_path: str) -> None:
         """`_require_readable`, but only once the track's music folder is
@@ -1089,7 +1098,7 @@ class LocalFilesInputModule(InputModule):
         SourceUnavailableError instead of declaring the track gone or
         serving whatever now sits at that path."""
         await self._require_root_available(track_path)
-        await self._require_readable_bounded(track_path)
+        await self._bounded(self._require_readable, track_path)
 
     async def _require_root_available(self, track_path: str) -> None:
         """Clear the track's music folder, or raise SourceUnavailableError.
@@ -1151,10 +1160,33 @@ class LocalFilesInputModule(InputModule):
         storage, and what it kept open closes with it. A share that went
         away meanwhile still earns a 503, because the server reads the
         range's first bytes before it answers.
+
+        A local track cleared in full in the last couple of minutes skips the
+        lookup, the folder probe and the mount identity check too, once the
+        boundary holds and the file at its path is still the one cleared, by
+        device and inode. Any other file there, a stray one behind a lost
+        mount included, goes back to the full checks, so a lost mount still
+        earns a 503.
         """
         if not self.db_manager.is_good():
             logger.warning("Database is not initialized or corrupted")
             return None
+
+        vouched = self._vouched.get(asset_id)
+        if vouched is not None:
+            try:
+                identity = await self._bounded(
+                    self._cleared_identity, vouched.track_path, vouched.local_path
+                )
+            except OSError:
+                identity = None
+            if identity == vouched.identity:
+                return ContentInfo(
+                    mime_type=vouched.mime_type,
+                    local_path=vouched.local_path,
+                    cacheable=True,
+                )
+            self._vouched.forget(asset_id)
 
         track = self.db_manager.get_track_by_id(asset_id)
         track_path = (track or {}).get("file_path")
@@ -1175,10 +1207,15 @@ class LocalFilesInputModule(InputModule):
             # FileResponse has no answer for a file it cannot read, so the
             # readability check stays on the path the server opens itself.
             try:
-                await self._require_readable_bounded(track_path)
+                identity = await self._bounded(
+                    self._cleared_identity, track_path, local_path
+                )
             except OSError as e:
                 logger.warning("Refusing content for track %s: %s", asset_id, e)
                 return None
+            self._vouched.put(
+                asset_id, VouchedTrack(track_path, local_path, mime_type, identity)
+            )
             return ContentInfo(
                 mime_type=mime_type, local_path=local_path, cacheable=True
             )

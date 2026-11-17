@@ -9,6 +9,8 @@ folders, or is no longer readable, must fail both — the source lookup by
 raising, the content lookup by reporting the asset absent.
 """
 
+import os
+
 import pytest
 
 from kalinka_plugin_sdk.inputmodule import ModuleAsset, SourceUnavailableError
@@ -25,17 +27,20 @@ class _FakeDb:
         self._track = track
         self._root_signature = root_signature
         self._good = good
+        self.lookups = 0
 
     def is_good(self):
         return self._good
 
     def get_root_signature(self, root):
+        self.lookups += 1
         return self._root_signature
 
     def get_tracks_by_ids(self, track_ids):
         return [self._track] if self._track["id"] in track_ids else []
 
     def get_track_by_id(self, track_id):
+        self.lookups += 1
         return self._track if self._track["id"] == track_id else None
 
     def get_album_by_id(self, album_id):
@@ -343,3 +348,90 @@ async def test_content_info_refuses_unknown_asset(tmp_path):
 
     module = _module(tmp_path, [music], _track(path))
     assert await module.get_content_info("no_such_track") is None
+
+
+def _counted_probes(monkeypatch):
+    """Probe roots as usual, recording each probe."""
+    probes = []
+    probe = LocalStorage.await_root_available
+
+    async def counted(self, root, deadline_s=6.0):
+        probes.append(root)
+        return await probe(self, root, deadline_s)
+
+    monkeypatch.setattr(LocalStorage, "await_root_available", counted)
+    return probes
+
+
+def _streaming(tmp_path, root_signature=None):
+    music = tmp_path / "music"
+    music.mkdir()
+    path = music / "song.mp3"
+    path.write_bytes(b"x")
+    return path, _module(tmp_path, [music], _track(path), root_signature)
+
+
+@pytest.mark.asyncio
+async def test_the_next_range_of_a_local_track_skips_the_full_checks(
+    tmp_path, monkeypatch
+):
+    probes = _counted_probes(monkeypatch)
+    _, module = _streaming(tmp_path)
+    first = await module.get_content_info("track_1")
+    checked = (module.db_manager.lookups, len(probes))
+
+    assert await module.get_content_info("track_1") == first
+    assert (module.db_manager.lookups, len(probes)) == checked
+
+
+@pytest.mark.asyncio
+async def test_a_file_replaced_mid_track_goes_back_to_the_full_checks(tmp_path):
+    path, module = _streaming(tmp_path)
+    await module.get_content_info("track_1")
+    lookups = module.db_manager.lookups
+    replacement = path.with_name("new.mp3")
+    replacement.write_bytes(b"y")
+    os.replace(replacement, path)
+
+    info = await module.get_content_info("track_1")
+    assert info is not None and info.local_path == str(path)
+    assert module.db_manager.lookups > lookups
+
+
+@pytest.mark.asyncio
+async def test_a_mount_lost_mid_track_still_reads_as_transient(tmp_path, monkeypatch):
+    path, module = _streaming(tmp_path)
+    await module.get_content_info("track_1")
+    path.unlink()
+    _offline(monkeypatch)
+
+    # A 404 would end the renderer's stream; a 503 has it retry.
+    with pytest.raises(SourceUnavailableError):
+        await module.get_content_info("track_1")
+
+
+@pytest.mark.asyncio
+async def test_a_stray_file_behind_a_mount_lost_mid_track_is_not_served(tmp_path):
+    path, module = _streaming(tmp_path)
+    await module.get_content_info("track_1")
+    # The share goes, leaving the mountpoint's own file at the same path.
+    stray = path.with_name("stray.mp3")
+    stray.write_bytes(b"not the indexed file")
+    os.replace(stray, path)
+    module.db_manager._root_signature = "nfs4 host:/export"
+
+    with pytest.raises(SourceUnavailableError, match="nfs4 host:/export"):
+        await module.get_content_info("track_1")
+
+
+@pytest.mark.asyncio
+async def test_a_hung_stat_mid_track_reads_as_transient(tmp_path, monkeypatch):
+    import time as time_mod
+
+    _, module = _streaming(tmp_path)
+    await module.get_content_info("track_1")
+    monkeypatch.setattr(localfiles_mod, "STAT_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(module, "_require_readable", lambda _p: time_mod.sleep(0.5))
+
+    with pytest.raises(SourceUnavailableError, match="did not respond"):
+        await module.get_content_info("track_1")
