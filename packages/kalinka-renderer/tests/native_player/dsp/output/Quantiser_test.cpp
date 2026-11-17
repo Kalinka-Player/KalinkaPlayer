@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -86,6 +87,33 @@ TEST(Quantiser, EachContainerCarriesItsBitsAtTheTop) {
       EXPECT_LE(std::abs(v - c.quarter), c.lsb)
           << sampleFormatToString(c.format) << " at " << c.bits;
       EXPECT_EQ(v % c.lsb, 0) << "bits below the significant ones are zero";
+    }
+  }
+}
+
+TEST(Quantiser, EachChannelLandsInItsOwnSlotOfEveryFrame) {
+  struct Case {
+    AudioSampleFormat format;
+    unsigned bits;
+    int32_t lsb;
+  };
+  const double levels[] = {0.5, -0.25, 0.125};
+  for (const auto &c : {Case{PCM16_LE, 16, 1 << 16}, Case{PCM24_LE, 24, 1 << 8},
+                        Case{PCM24_3LE, 24, 1 << 8}, Case{PCM32_LE, 24, 1 << 8},
+                        Case{PCM32_LE, 32, 1}}) {
+    Quantiser quantiser(kFrames, 3, 10);
+    Planar in(3, kFrames, 0.0);
+    for (unsigned ch = 0; ch < 3; ++ch)
+      std::ranges::fill(in.data[ch], levels[ch]);
+    const auto samples = packed(quantiser, in, hold(1.0), c.format, c.bits);
+    ASSERT_EQ(samples.size(), 3 * kFrames);
+    // Read back at the scale of 32 bits, where a quarter is 1 << 29.
+    const int shift = c.format == PCM16_LE ? 16 : c.format == PCM32_LE ? 0 : 8;
+    for (size_t i = 0; i < samples.size(); ++i) {
+      const double want = levels[i % 3] * 2147483648.0;
+      EXPECT_LE(std::abs(double(int64_t(samples[i]) << shift) - want), c.lsb)
+          << sampleFormatToString(c.format) << " at " << c.bits << ", sample "
+          << i;
     }
   }
 }
