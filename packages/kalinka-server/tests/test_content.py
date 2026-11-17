@@ -16,6 +16,7 @@ import time
 from pathlib import Path, PosixPath
 from types import SimpleNamespace
 
+import anyio
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -329,6 +330,34 @@ def test_a_range_reads_no_more_than_it_serves(start):
     assert r.status_code == 206
     assert r.content == audio[start:start + 384_000]
     assert streams[0].fetched == int(r.headers["content-length"]) == 384_000
+
+
+def test_a_file_range_is_read_in_one_go(file_client, audio_file, monkeypatch):
+    """Each read is a hop to a worker thread that wakes the event loop, so a
+    renderer's range takes one read rather than sixteen of FileResponse's."""
+    audio = bytes(range(256)) * 8 * 1024
+    audio_file.write_bytes(audio)
+    reads = []
+    open_file = anyio.open_file
+
+    async def counting(*args, **kwargs):
+        file = await open_file(*args, **kwargs)
+        read = file.read
+
+        async def counted(size=-1):
+            data = await read(size)
+            reads.append(len(data))
+            return data
+
+        file.read = counted
+        return file
+
+    monkeypatch.setattr(anyio, "open_file", counting)
+    r = file_client.get(_url(), headers={"Range": "bytes=1000-384999"})
+
+    assert r.status_code == 206
+    assert r.content == audio[1000:385_000]
+    assert reads == [384_000]
 
 
 def test_a_stream_the_storage_refuses_is_transient():

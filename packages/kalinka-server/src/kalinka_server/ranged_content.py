@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 #: Read size per hop to a worker thread. Larger than the range a renderer
 #: asks for by default, so each range is one read — one round trip on a
 #: share — and a whole track still goes out in bounded pieces.
-_CHUNK_BYTES = 1024 * 1024
+READ_BYTES = 1024 * 1024
 
 
 class UnsatisfiableRange(Exception):
@@ -125,7 +125,7 @@ async def stream_response(
     length = end - start + 1
     try:
         first = await asyncio.wait_for(
-            asyncio.to_thread(_read_at, reader, start, min(_CHUNK_BYTES, length)),
+            asyncio.to_thread(_read_at, reader, start, min(READ_BYTES, length)),
             read_timeout_s,
         )
     except BaseException:
@@ -195,7 +195,7 @@ async def _chunks(
     if first:
         yield first
     while remaining > 0:
-        chunk = await asyncio.to_thread(reader.read, min(_CHUNK_BYTES, remaining))
+        chunk = await asyncio.to_thread(reader.read, min(READ_BYTES, remaining))
         if not chunk:
             # The asset shrank under us. Stopping short is all that is left;
             # the length already went out in the headers.
