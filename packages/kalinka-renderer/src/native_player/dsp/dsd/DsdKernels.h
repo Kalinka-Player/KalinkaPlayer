@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -61,5 +62,41 @@ void stage1Nibbles(const NibbleTables *tables, size_t groups,
 void stage1Pair(const Stage1Table *tables, size_t stored, size_t groups,
                 const uint8_t *const direct[2], const uint8_t *const mirror[2],
                 size_t count, double scale, double *const out[2]);
+
+/// The group counts stage1Rows() is built for: stage 1 of every 30 kHz and
+/// 50 kHz chain.
+inline constexpr size_t kStage1RowGroups[] = {5, 6, 7, 8, 10, 12};
+
+/// Whether stage1Rows() is built for @p groups groups.
+constexpr bool stage1RowsHandles(size_t groups) {
+  return std::ranges::find(kStage1RowGroups, groups) !=
+         std::ranges::end(kStage1RowGroups);
+}
+
+/// Doubles in each of stage1Rows()'s rows: groups + 2, rounded up to even.
+constexpr size_t stage1RowStride(size_t groups) {
+  return 2 * ((groups + 3) / 2);
+}
+
+/**
+ * @brief Stage 1 for one or two channels by rows: each byte looks up one row
+ * of all it adds to the outputs it reaches and adds the row to them, as
+ * vectors, a pair of bytes at a time. out[c][m] = scale (sum over g < groups
+ * of entry 1 + g of the row of direct[c][k - g]), k = groups - 1 + m.
+ * @param rows 256 rows, one per byte value, of stage1RowStride(@p groups)
+ * doubles, 64-byte aligned: a zero, the byte's entry in each group's
+ * Stage1Table in turn, then zeros.
+ * @param groups One stage1RowsHandles() accepts.
+ * @param direct For each channel, the @p groups - 1 bytes carried from the
+ * block before, then the @p count bytes of the block; nothing past them is
+ * read.
+ * @param channels 1 or 2.
+ * @param out For each channel, @p count outputs; nothing else is written.
+ * @note Rows built from stage1Pair()'s whole tables give its output bit for
+ * bit: the entries are whole numbers under 2^53.
+ */
+void stage1Rows(const double *rows, size_t groups, const uint8_t *const *direct,
+                unsigned channels, size_t count, double scale,
+                double *const *out);
 
 } // namespace dsd_kernels

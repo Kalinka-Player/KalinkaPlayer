@@ -3,6 +3,10 @@
 #include "dsp/dsd/ByteHistory.h"
 #include "dsp/dsd/DsdKernels.h"
 
+#include <hwy/aligned_allocator.h>
+
+#include <algorithm>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -203,6 +207,48 @@ private:
 
   std::vector<dsd_kernels::NibbleTables> tables;
 };
+
+static_assert(std::ranges::max(dsd_kernels::kStage1RowGroups) <= kWholeGroups,
+              "The rows are built from every group's whole table");
+
+/// Each byte value's entries in every group's table, as one row of
+/// dsd_kernels::stage1Rows()'s.
+hwy::AlignedFreeUniquePtr<double[]> byteRows(const ByteTables &tables) {
+  if (!dsd_kernels::stage1RowsHandles(tables.groups()))
+    throw std::invalid_argument("Stage 1 by rows is not built for " +
+                                std::to_string(tables.groups()) + " groups");
+  const size_t stride = dsd_kernels::stage1RowStride(tables.groups());
+  auto rows = hwy::AllocateAligned<double>(256 * stride);
+  if (!rows)
+    throw std::bad_alloc();
+  std::fill_n(rows.get(), 256 * stride, 0.0);
+  for (size_t byte = 0; byte < 256; ++byte)
+    for (size_t g = 0; g < tables.groups(); ++g)
+      rows[byte * stride + 1 + g] = tables.data()[g][byte];
+  return rows;
+}
+
+/// A row per byte value of all a byte adds to the outputs it reaches.
+class RowStage1 final : public HistoryStage1 {
+public:
+  explicit RowStage1(const Stage1Spec &spec)
+      : HistoryStage1(spec, false), groups(spec.size / 8),
+        rows(byteRows(ByteTables(spec))) {}
+
+private:
+  void convert(size_t bytes, double *const *out) override {
+    for (unsigned c = 0; c < channels; c += 2) {
+      const unsigned together = std::min(2u, channels - c);
+      const uint8_t *const direct[] = {history.bytes(c),
+                                       history.bytes(c + together - 1)};
+      dsd_kernels::stage1Rows(rows.get(), groups, direct, together, bytes,
+                              scale, out + c);
+    }
+  }
+
+  size_t groups;
+  hwy::AlignedFreeUniquePtr<double[]> rows;
+};
 } // namespace
 
 std::unique_ptr<Stage1> makeStage1(DsdKernel kernel, const Stage1Spec &spec) {
@@ -213,10 +259,13 @@ std::unique_ptr<Stage1> makeStage1(DsdKernel kernel, const Stage1Spec &spec) {
     return std::make_unique<SumsStage1>(spec);
   case DsdKernel::Nibbles:
     return std::make_unique<NibbleStage1>(spec);
-  // Channel pairs measured fastest on x86-64 and the Cortex-A76; on the A72
-  // nibble lookups lead below DSD256 (benchmarks/dsp/results.md).
   case DsdKernel::ChannelPair:
+    return std::make_unique<ChannelPairStage1>(spec);
+  // Rows run stage 1 in about half the time of channel pairs on both Pis.
+  case DsdKernel::Rows:
   case DsdKernel::Fast:
+    if (dsd_kernels::stage1RowsHandles(spec.size / 8))
+      return std::make_unique<RowStage1>(spec);
     return std::make_unique<ChannelPairStage1>(spec);
   }
   throw std::invalid_argument("No stage 1 kernel " +

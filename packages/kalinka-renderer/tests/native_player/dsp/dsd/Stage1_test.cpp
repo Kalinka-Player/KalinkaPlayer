@@ -1,11 +1,13 @@
 #include "dsp/dsd/Stage1.h"
 
 #include "dsp/dsd/DsdFilterTaps.h"
+#include "dsp/dsd/DsdKernels.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -80,12 +82,13 @@ PerChannel run(Stage1 &stage, const std::vector<uint8_t> &interleaved,
 }
 
 constexpr DsdKernel kKernels[] = {DsdKernel::Reference, DsdKernel::Sums,
-                                  DsdKernel::ChannelPair, DsdKernel::Nibbles};
+                                  DsdKernel::ChannelPair, DsdKernel::Nibbles,
+                                  DsdKernel::Rows};
 
 std::string describe(DsdKernel kernel, bool past16, DsdBitOrder order,
                      unsigned channels) {
-  static const char *names[] = {"reference", "sums", "channel pairs",
-                                "nibbles"};
+  static const char *names[] = {"reference", "sums", "channel pairs", "nibbles",
+                                "rows"};
   return std::string(names[int(kernel)]) + (past16 ? ", half" : ", whole") +
          " tables, " + (order == DsdBitOrder::MsbFirst ? "MSB" : "LSB") +
          " first, " + std::to_string(channels) + " channels";
@@ -108,6 +111,46 @@ TEST(Stage1, EveryKernelIsTheSumOfItsTapsOverTheBits) {
         }
       }
     }
+  }
+}
+
+TEST(Stage1, RowsAreTheSumOfTheTapsForEveryFilterTheyAreBuiltFor) {
+  // A round takes up to 7 pairs, so 1 to 15 bytes end a block at every point.
+  std::vector<size_t> sizes{kCapacity, 37};
+  for (size_t size = 1; size <= 15; ++size)
+    sizes.push_back(size);
+  std::set<size_t> tested;
+  for (const auto &taps : dsd_filters::kStage1) {
+    const size_t groups = taps.size / 8;
+    if (!dsd_kernels::stage1RowsHandles(groups))
+      continue;
+    tested.insert(groups);
+    for (const auto order : {DsdBitOrder::MsbFirst, DsdBitOrder::LsbFirst}) {
+      for (const unsigned channels : {1u, 2u, 3u}) {
+        const auto in =
+            randomBytes(400 * channels, unsigned(groups) * channels);
+        auto stage = makeStage1(DsdKernel::Rows, {taps.taps, taps.size, kScale,
+                                                  channels, order, kCapacity});
+        EXPECT_EQ(run(*stage, in, channels, sizes),
+                  direct(taps, in, channels, order))
+            << describe(DsdKernel::Rows, false, order, channels) << ", "
+            << groups << " groups";
+      }
+    }
+  }
+  EXPECT_EQ(tested, (std::set<size_t>{5, 6, 7, 8, 10, 12}));
+}
+
+TEST(Stage1, RowsAreBuiltForEvery30kAnd50kChain) {
+  for (const auto &chain : dsd_filters::kChains) {
+    if (chain.filter != int(DsdFilter::Cut30k) &&
+        chain.filter != int(DsdFilter::Cut50k))
+      continue;
+    const size_t groups = dsd_filters::kStage1[chain.stage1].size / 8;
+    EXPECT_TRUE(dsd_kernels::stage1RowsHandles(groups))
+        << chain.base * chain.dsdMultiple << " Hz to "
+        << chain.base * chain.pcmMultiple << " Hz, filter " << chain.filter
+        << ": " << groups << " groups";
   }
 }
 

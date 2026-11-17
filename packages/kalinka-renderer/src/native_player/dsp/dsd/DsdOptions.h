@@ -16,7 +16,8 @@ enum class DsdBitOrder { MsbFirst, LsbFirst };
 
 /**
  * @brief Which loops stage 1 runs. Reference is the plain code the others are
- * checked against; the variants are kept to be measured against each other;
- * Fast is the one the converter uses.
+ * checked against; the variants are kept to be measured against each other.
+ * Rows are built for the stage 1 sizes of the 30 kHz and 50 kHz filters and
+ * run as channel pairs at any other. Fast is the one the converter uses.
  */
-enum class DsdKernel { Reference, Sums, ChannelPair, Nibbles, Fast };
+enum class DsdKernel { Reference, Sums, ChannelPair, Nibbles, Rows, Fast };
