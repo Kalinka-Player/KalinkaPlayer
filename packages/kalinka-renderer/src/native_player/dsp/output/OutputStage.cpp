@@ -103,6 +103,11 @@ void OutputStage::fadeIn() { fadeTarget = 1.0; }
 
 void OutputStage::settle(double level) { fadeSettle = fadeTarget = level; }
 
+bool OutputStage::silent() const {
+  return fadeTarget == 0.0 &&
+         (fadeSettle ? *fadeSettle == 0.0 : fade.holding(0.0));
+}
+
 void OutputStage::follow(unsigned rate) {
   const double gain = target.load();
   if (settlePending.exchange(false))

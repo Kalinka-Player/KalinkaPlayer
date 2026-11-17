@@ -126,6 +126,10 @@ private:
   snd_pcm_uframes_t pauseFadeLeft = 0;
   /// The next run starts where a seek landed, mid-waveform.
   bool fadeInNext = false;
+  /// A pause the end of a track cut short, which the next track keeps.
+  bool pauseCarried = false;
+  /// All the device holds is a pause's silence: its fade has been heard.
+  bool holdsSilence = false;
   /// The report of a gapless source change, waiting for its first frame to
   /// be heard.
   std::optional<int> pendingSourceReport;
@@ -137,6 +141,8 @@ private:
   bool reportOnceHeard(AudioGraphNodeState state);
   /// Whether what plays can be faded: PCM, with something to fade it.
   bool fades() const;
+  /// Paused, and its fade out written: nothing more is read.
+  bool pausedOut() const { return paused && pauseFadeLeft == 0; }
   /// Takes back what the device holds unplayed, fades its start out and
   /// silences the rest, and waits until the fade has been heard. Leaves the
   /// queue alone on a device that cannot take it back.

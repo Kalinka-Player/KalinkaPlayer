@@ -46,7 +46,9 @@ public:
 
   /// Refused while what plays belongs to a source upstream has already left.
   /// Upstream seeks the processor's history() early, and the frames before
-  /// the target are run through it and not handed on.
+  /// the target are run through it and not handed on. A format no run has
+  /// started in seeks as asked, and where upstream lands further back than
+  /// asked, play goes on from there.
   size_t seekTo(size_t absolutePosition) override;
   /// Drops everything held and seeks @p stream upstream, even one upstream has
   /// already left, early as seekTo() does.
@@ -122,6 +124,9 @@ private:
     long target;
   };
   std::optional<LeadIn> leadIn;
+  /// The format of the run started last, which the processor's history()
+  /// describes.
+  std::optional<StreamAudioFormat> runFormat;
 
   size_t inFrameBytes = 0;
   size_t outFrameBytes = 0;

@@ -314,13 +314,13 @@ bool DspStage::startRun(std::optional<long> position) {
   inFrameBytes = info->format.channels * sampleSize(info->format.sampleFormat);
   outFrameBytes = out.format.channels * sampleSize(out.format.sampleFormat);
   latency = processor->start(info->format);
+  runFormat = info->format;
   fifo.resize(kFifoFrames * outFrameBytes);
   input.resize(kChunkFrames * inFrameBytes);
   output.resize((kChunkFrames + 1) * outFrameBytes);
   std::optional<long> start =
       position ? std::optional(*position / long(ratio)) : std::nullopt;
-  // The frames before a seek's target are processed for the history alone:
-  // handed counts them as passed, so none is handed on.
+  // Frames before a seek's target only build history: handed passes them.
   uint64_t lead = 0;
   if (leadIn && leadIn->id == upstreamSeen.streamId && start &&
       *start < leadIn->target) {
@@ -362,8 +362,7 @@ void DspStage::join(std::optional<StreamId> id, std::optional<long> position,
   // A next source still buffering continues the run as a dry one does.
   const bool playing = now.state == AudioGraphNodeState::STREAMING ||
                        now.state == AudioGraphNodeState::PREPARING;
-  // A source that ended before a seek's target leaves the next one's first
-  // frames inside the lead-in: they would be passed over, so the run ends.
+  // Ended inside a seek's lead-in: the next source's frames would be passed.
   const bool leadingIn = fedIn / ratio < tail.begin;
   if (!idle && playing && !leadingIn && now.streamInfo.has_value() &&
       now.streamInfo->format == tail.info.format &&
@@ -606,6 +605,7 @@ size_t DspStage::seekStream(StreamId stream, size_t position) {
   if (!processor) {
     return upstream ? upstream->seekStream(stream, position) : size_t(-1);
   }
+  sync();
   const unsigned r = runRatio();
   const size_t early = earlyBy(position);
   const size_t reached =
@@ -615,10 +615,10 @@ size_t DspStage::seekStream(StreamId stream, size_t position) {
 }
 
 size_t DspStage::earlyBy(size_t position) const {
-  const bool processed = !segments.empty() ||
-                         (upstreamSeen.streamInfo &&
-                          processor->handles(upstreamSeen.streamInfo->format));
-  return processed ? std::min(position, processor->history()) : 0;
+  const bool known =
+      !segments.empty() ||
+      (upstreamSeen.streamInfo && upstreamSeen.streamInfo->format == runFormat);
+  return known ? std::min(position, processor->history()) : 0;
 }
 
 unsigned DspStage::runRatio() const {
@@ -639,7 +639,8 @@ size_t DspStage::restartAfter(size_t reached, unsigned r, size_t target,
   sync();
   dropEverything();
   const size_t from = reached / r;
-  if (early > 0 && from < target) {
+  // Short of where it was asked for, upstream plays on from where it landed.
+  if (early > 0 && from < target && target - from <= early) {
     leadIn = LeadIn{id, long(target)};
   }
   publish();

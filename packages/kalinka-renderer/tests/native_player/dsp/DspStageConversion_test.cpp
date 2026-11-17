@@ -306,9 +306,46 @@ TEST_F(Remembering, ASourceEndingBeforeTheTargetHandsTheNextOneOverWhole) {
   auto first = queue(1, 999);
   auto second = queue(2, 400);
   stage->acceptSourceChange();
+  std::vector<double> buffer(2 * 50);
+  stage->read(buffer.data(), buffer.size() * 8);
   // Its last output frame is 498: frame 499 never completes, so the history
   // run up to it ends with the source.
   ASSERT_EQ(stage->seekTo(500), 500u);
   EXPECT_EQ(pullAll(*stage), remembered(*second, 0, 400))
       << "the next source starts a run of its own, nothing passed over";
+}
+
+namespace {
+/// A counting source that seeks to a whole hundred input frames, back from
+/// where it is asked to.
+class CoarseNode : public CountingNode {
+public:
+  using CountingNode::CountingNode;
+  size_t seekTo(size_t frame) override {
+    return CountingNode::seekTo(frame / 100 * 100);
+  }
+};
+} // namespace
+
+TEST_F(Remembering, AnUpstreamLandingFurtherBackPlaysOnFromWhereItLanded) {
+  auto node = std::make_shared<CoarseNode>(1, 1000000, 1000);
+  switcher->connectTo(node);
+  stage->acceptSourceChange();
+  std::vector<double> buffer(2 * 50);
+  stage->read(buffer.data(), buffer.size() * 8);
+  ASSERT_EQ(stage->seekTo(100), 50u) << "input frame 198 asked, 100 reached";
+  EXPECT_EQ(stage->streamReadPosition(), std::optional<long>(50));
+  auto expected = remembered(*node, 100, 1000);
+  expected.front() -= double(node->value(98));
+  EXPECT_EQ(pullAll(*stage), expected) << "nothing before frame 100 run in";
+}
+
+TEST_F(Remembering, ASeekInAFormatNoRunHasStartedInIsNotEarly) {
+  queue(1, 400);
+  pullAll(*stage);
+  auto node = queue(2, 1000, {.rate = kRate * 2});
+  stage->acceptSourceChange();
+  ASSERT_EQ(stage->seekStream(2, 100), 100u);
+  EXPECT_EQ(node->streamReadPosition(), std::optional<long>(200))
+      << "the history known is another format's";
 }

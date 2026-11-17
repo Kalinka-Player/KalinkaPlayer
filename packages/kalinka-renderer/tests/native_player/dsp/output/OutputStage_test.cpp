@@ -316,6 +316,29 @@ TEST(OutputStage, AFadeInMidFadeOutTurnsBackFromTheLevelReached) {
   }
 }
 
+TEST(OutputStage, IsSilentOnlyOnceAFadeOutHasRunItsCourse) {
+  constexpr int16_t kLevel = 1 << 14;
+  Stage s(pcm(PCM16_LE), asBytes(std::vector<int16_t>(2 * 4000, kLevel)));
+  EXPECT_FALSE(s.stage->silent());
+  readSamples<int16_t>(*s.stage, 2 * 10);
+  s.stage->fadeOut();
+  EXPECT_FALSE(s.stage->silent()) << "the fade is still to be read";
+  readSamples<int16_t>(*s.stage, 2 * kFadeFrames / 2);
+  EXPECT_FALSE(s.stage->silent()) << "halfway down";
+  readSamples<int16_t>(*s.stage, 2 * kFadeFrames / 2);
+  EXPECT_TRUE(s.stage->silent());
+  s.stage->fadeIn();
+  EXPECT_FALSE(s.stage->silent());
+  s.stage->fadeOut();
+  EXPECT_TRUE(s.stage->silent()) << "the fade in read nothing";
+  s.stage->settle(1.0);
+  EXPECT_FALSE(s.stage->silent());
+  s.stage->settle(0.0);
+  EXPECT_TRUE(s.stage->silent());
+  s.stage->fadeIn();
+  EXPECT_FALSE(s.stage->silent());
+}
+
 TEST(OutputStage, DsdIsNotFaded) {
   const auto bytes = randomBytes(1000 * 2);
   Stage s({352800, 2, 1, DSD_U8, 2822400}, bytes, k24In32);
