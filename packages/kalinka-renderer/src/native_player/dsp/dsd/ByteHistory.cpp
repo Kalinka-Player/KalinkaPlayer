@@ -19,8 +19,15 @@ void ByteHistory::append(const uint8_t *in, size_t bytes) {
   const size_t channels = direct.size();
   for (size_t c = 0; c < channels; ++c) {
     uint8_t *block = direct[c].data() + carried;
-    for (size_t m = 0; m < bytes; ++m)
-      block[m] = in[m * channels + c];
+    // A stride known at compile time vectorises; stereo is what plays.
+    if (channels == 2) {
+      const uint8_t *from = in + c;
+      for (size_t m = 0; m < bytes; ++m)
+        block[m] = from[2 * m];
+    } else {
+      for (size_t m = 0; m < bytes; ++m)
+        block[m] = in[m * channels + c];
+    }
     if (!mirrored.empty())
       std::transform(block, block + bytes, mirrored[c].data() + carried,
                      [](uint8_t byte) { return kBitReversed[byte]; });
