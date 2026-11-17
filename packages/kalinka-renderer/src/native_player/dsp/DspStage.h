@@ -168,6 +168,8 @@ private:
   /// Input frames to one output frame: the run's, or with nothing running
   /// what the processor would make of upstream's format.
   unsigned runRatio() const;
+  /// Input frames to one output frame of a stream in this format.
+  unsigned ratioOf(const std::optional<StreamInfo> &info) const;
   void onUpstreamState(const StreamState &state);
 };
 
