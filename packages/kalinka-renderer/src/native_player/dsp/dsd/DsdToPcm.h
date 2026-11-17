@@ -75,6 +75,8 @@ private:
   size_t latency_ = 0;
   double passbandHz_;
   unsigned channels;
+  /// Bytes per channel the chain takes at a time.
+  size_t blockBytes = 0;
   std::unique_ptr<Stage1> stage1;
   std::vector<Channel> state;
   /// Where each channel's output for the current block goes, and where stage

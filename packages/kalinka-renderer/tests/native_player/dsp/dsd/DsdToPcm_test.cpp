@@ -205,25 +205,29 @@ TEST(DsdToPcm, BothBitOrdersGiveTheSameOutput) {
 }
 
 TEST(DsdToPcm, HowTheInputIsSplitDoesNotChangeTheOutput) {
-  const auto s = spec(44100, 128, 4, DsdFilter::Cut50k);
-  const auto in = randomBytes(30000, 3);
-  const auto whole = convert(s, in);
+  // The ratios take blocks of 512, 1024 and 2048 bytes; pieces cross them.
+  for (const auto &s : {spec(44100, 128, 4, DsdFilter::Cut50k),
+                        spec(48000, 512, 4, DsdFilter::Cut50k),
+                        spec(44100, 1024, 2, DsdFilter::Cut50k)}) {
+    const auto in = randomBytes(30000, 3);
+    const auto whole = convert(s, in);
 
-  DsdToPcm converter(s);
-  std::vector<double> pieces(converter.maxFrames(in.size()));
-  std::mt19937 random(4);
-  size_t done = 0, frames = 0;
-  while (done < in.size()) {
-    const size_t bytes =
-        std::min<size_t>(1 + random() % 1500, in.size() - done);
-    double *out[] = {pieces.data() + frames};
-    const size_t made = converter.process(in.data() + done, bytes, out);
-    EXPECT_LE(made, converter.maxFrames(bytes));
-    frames += made;
-    done += bytes;
+    DsdToPcm converter(s);
+    std::vector<double> pieces(converter.maxFrames(in.size()));
+    std::mt19937 random(4);
+    size_t done = 0, frames = 0;
+    while (done < in.size()) {
+      const size_t bytes =
+          std::min<size_t>(1 + random() % 5000, in.size() - done);
+      double *out[] = {pieces.data() + frames};
+      const size_t made = converter.process(in.data() + done, bytes, out);
+      EXPECT_LE(made, converter.maxFrames(bytes)) << name(s);
+      frames += made;
+      done += bytes;
+    }
+    pieces.resize(frames);
+    EXPECT_EQ(pieces, whole) << name(s);
   }
-  pieces.resize(frames);
-  EXPECT_EQ(pieces, whole);
 }
 
 TEST(DsdToPcm, ChannelsAreConvertedApart) {
