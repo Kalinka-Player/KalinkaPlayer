@@ -105,11 +105,23 @@ def register_content_route(
         if not present:
             raise HTTPException(status_code=404, detail="Content not found")
 
-        return FileResponse(
+        return _RangeFileResponse(
             info.local_path,
             media_type=info.mime_type,
             headers={"Accept-Ranges": "bytes"},
         )
+
+
+class _RangeFileResponse(FileResponse):
+    """A file served a renderer's range at a read, as the streamed path does.
+
+    FileResponse reads 64 KiB per hop to a worker thread, and each hop wakes
+    the event loop: six for a renderer's 384,000-byte range, fifteen ranges a
+    second for DSD512, which cost a Pi more than the bytes did. No read goes
+    past the range asked for, whatever the size.
+    """
+
+    chunk_size = ranged_content.READ_BYTES
 
 
 async def _serve_stream(
