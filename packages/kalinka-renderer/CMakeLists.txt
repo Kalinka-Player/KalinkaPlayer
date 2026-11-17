@@ -399,6 +399,7 @@ if(GTest_FOUND)
     tests/native_player/dsp/output/OutputFormat_test.cpp
     tests/native_player/dsp/output/OutputKernels_test.cpp
     tests/native_player/dsp/output/OutputStage_test.cpp
+    tests/native_player/dsp/output/PlanarPcm_test.cpp
     tests/native_player/dsp/output/Quantiser_test.cpp
     tests/native_player/dsp/output/TpdfDither_test.cpp
     tests/dsp/Harness_test.cpp

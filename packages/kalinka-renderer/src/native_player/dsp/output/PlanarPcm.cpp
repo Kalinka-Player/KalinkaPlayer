@@ -8,9 +8,12 @@ namespace {
 template <class Value>
 void deinterleave(const uint8_t *in, unsigned channels, size_t frames,
                   size_t width, double scale, Value value, double *const *out) {
-  for (size_t i = 0; i < frames; ++i)
-    for (unsigned c = 0; c < channels; ++c)
-      out[c][i] = double(value(in + (i * channels + c) * width)) * scale;
+  for (unsigned c = 0; c < channels; ++c) {
+    const uint8_t *at = in + c * width;
+    double *to = out[c];
+    for (size_t i = 0; i < frames; ++i, at += channels * width)
+      to[i] = double(value(at)) * scale;
+  }
 }
 
 template <class T> T load(const uint8_t *at) {
