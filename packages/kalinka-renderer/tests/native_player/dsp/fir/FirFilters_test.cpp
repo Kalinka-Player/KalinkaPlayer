@@ -156,3 +156,46 @@ TEST(HalfBandDecimator, ResetForgetsTheHistoryAndThePhase) {
   decimator.reset();
   EXPECT_EQ(inBlocks(decimator, x, {63}, decimateRun), first);
 }
+
+TEST(HalfBandDecimator, HowTheInputIsSplitDoesNotChangeTheOutput) {
+  const auto side = noise(11, 13);
+  const auto x = noise(2000, 14);
+  HalfBandDecimator whole(side.data(), side.size(), 64, FirPath::Vector);
+  HalfBandDecimator uneven(side.data(), side.size(), 64, FirPath::Vector);
+  EXPECT_EQ(inBlocks(whole, x, {64}, decimateRun),
+            inBlocks(uneven, x, {3, 1, 60, 17, 2, 1, 1, 5}, decimateRun));
+}
+
+TEST(HalfBandDecimator, AFilterLongerThanTheBlockStillConvolves) {
+  const auto side = noise(58, 15);
+  const auto x = noise(1500, 16);
+  const auto full = convolved(halfBandTaps(side), x);
+  std::vector<double> expected;
+  for (size_t t = 1; t < full.size(); t += 2)
+    expected.push_back(full[t]);
+  for (const auto path : {FirPath::Reference, FirPath::Vector}) {
+    HalfBandDecimator decimator(side.data(), side.size(), 64, path);
+    const auto out = inBlocks(decimator, x, {64, 1, 37, 5, 2}, decimateRun);
+    ASSERT_EQ(out.size(), expected.size());
+    EXPECT_LT(worstDifference(out, expected), 1e-13);
+  }
+  HalfBandDecimator whole(side.data(), side.size(), 64, FirPath::Vector);
+  HalfBandDecimator uneven(side.data(), side.size(), 64, FirPath::Vector);
+  EXPECT_EQ(inBlocks(whole, x, {64}, decimateRun),
+            inBlocks(uneven, x, {3, 1, 60, 17, 2, 1, 1, 5}, decimateRun));
+}
+
+TEST(HalfBandDecimator, AnEmptyBlockChangesNothing) {
+  const auto side = noise(7, 17);
+  const auto x = noise(500, 18);
+  const auto withEmpty = [](HalfBandDecimator &d, size_t count, double *out) {
+    EXPECT_EQ(d.decimate(0, out), 0u);
+    const size_t made = d.decimate(count, out);
+    EXPECT_EQ(d.decimate(0, out + made), 0u);
+    return made;
+  };
+  HalfBandDecimator plain(side.data(), side.size(), 16, FirPath::Vector);
+  HalfBandDecimator emptied(side.data(), side.size(), 16, FirPath::Vector);
+  EXPECT_EQ(inBlocks(plain, x, {3, 4, 1, 2, 5}, decimateRun),
+            inBlocks(emptied, x, {3, 4, 1, 2, 5}, withEmpty));
+}

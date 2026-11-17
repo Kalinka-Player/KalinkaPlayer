@@ -4,43 +4,58 @@
 
 #include <algorithm>
 
+namespace {
+constexpr size_t roundedUpToEven(size_t count) { return count + count % 2; }
+} // namespace
+
 HalfBandDecimator::HalfBandDecimator(const double *side, size_t sides,
                                      size_t capacity, FirPath path)
-    : side(side, side + sides), history(4 * sides - 2), capacity_(capacity),
-      path(path), buffer(history + capacity + fir_kernels::kSlack),
-      centres(maxOutputs(capacity) + fir_kernels::kSlack),
-      others(maxOutputs(capacity) + 2 * sides + fir_kernels::kSlack) {}
+    : side(side, side + sides), capacity_(capacity), path(path),
+      evenLead(roundedUpToEven(sides - 1)),
+      oddLead(roundedUpToEven(2 * sides - 1)),
+      buffer(kLead + capacity + fir_kernels::kSlack),
+      evens(evenLead + maxOutputs(capacity) + fir_kernels::kSlack),
+      odds(oddLead + maxOutputs(capacity) + fir_kernels::kSlack) {}
 
 size_t HalfBandDecimator::decimate(size_t count, double *out) {
   const size_t sides = side.size();
-  const size_t centre = history / 2;
-  const size_t first = pending ? 0 : 1;
-  const size_t outputs = count > first ? (count - first + 1) / 2 : 0;
-  // Output m's centre sample is x[2m]; its side samples sit at odd offsets.
-  const double *x = input() + first - centre;
+  const double *x = input() - pending;
+  const size_t total = count + pending;
+  const size_t pairs = total / 2;
+  double *newEvens = evens.data() + evenLead;
+  double *newOdds = odds.data() + oddLead;
+  for (size_t i = 0; i < pairs; ++i) {
+    newEvens[i] = x[2 * i];
+    newOdds[i] = x[2 * i + 1];
+  }
+  const double *centre = newEvens - (sides - 1);
+  const double *other = newOdds - sides;
   if (path == FirPath::Vector) {
-    for (size_t m = 0; m < outputs; ++m)
-      centres[m] = x[2 * m];
-    for (size_t j = 0; j < outputs + 2 * sides - 1; ++j)
-      others[j] = x[2 * ptrdiff_t(j) - 2 * ptrdiff_t(sides) + 1];
-    fir_kernels::halfBand(side.data(), sides, centres.data(),
-                          others.data() + sides - 1, outputs, out);
+    fir_kernels::halfBand(side.data(), sides, centre, other, pairs, out);
   } else {
-    for (size_t m = 0; m < outputs; ++m) {
-      const double *at = x + 2 * m;
-      double sum = 0.5 * at[0];
+    for (size_t m = 0; m < pairs; ++m) {
+      double sum = 0.5 * centre[m];
       for (size_t i = 0; i < sides; ++i)
-        sum += side[i] * (at[-ptrdiff_t(2 * i + 1)] + at[2 * i + 1]);
+        sum +=
+            side[i] * (other[ptrdiff_t(m) - ptrdiff_t(i)] + other[m + i + 1]);
       out[m] = sum;
     }
   }
-  std::copy(buffer.begin() + count, buffer.begin() + count + history,
-            buffer.begin());
-  pending = (pending + count) % 2;
-  return outputs;
+  if (pairs > 0) {
+    std::copy(evens.begin() + pairs, evens.begin() + pairs + evenLead,
+              evens.begin());
+    std::copy(odds.begin() + pairs, odds.begin() + pairs + oddLead,
+              odds.begin());
+  }
+  pending = total % 2;
+  if (pending)
+    input()[-1] = x[2 * pairs];
+  return pairs;
 }
 
 void HalfBandDecimator::reset() {
   std::ranges::fill(buffer, 0.0);
+  std::ranges::fill(evens, 0.0);
+  std::ranges::fill(odds, 0.0);
   pending = false;
 }
