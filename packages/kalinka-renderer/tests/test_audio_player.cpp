@@ -77,13 +77,25 @@ public:
   nextOf(size_t from, AudioGraphNodeState wanted,
          std::chrono::milliseconds timeout = kWait,
          std::optional<StreamId> stream = std::nullopt) {
+    return nextWhere(
+        from,
+        [&](const StreamState &state) {
+          return state.state == wanted && (!stream || state.streamId == stream);
+        },
+        timeout);
+  }
+
+  // The first report from `from` on that `matches`, waiting for one.
+  template <class Matches>
+  std::optional<StreamState>
+  nextWhere(size_t from, Matches matches,
+            std::chrono::milliseconds timeout = kWait) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     do {
       {
         std::lock_guard<std::mutex> lock(mutex_);
         for (size_t i = from; i < seen_.size(); ++i) {
-          if (seen_[i].state == wanted &&
-              (!stream || seen_[i].streamId == stream)) {
+          if (matches(seen_[i])) {
             return seen_[i];
           }
         }
@@ -177,14 +189,19 @@ TEST_F(PlaybackPositionTest, SeekAfterSeekLandsOnTheLastOne) {
   playing.player().append(1, fixture("ladder.flac"));
   ASSERT_TRUE(playing.nextOf(0, AudioGraphNodeState::STREAMING).has_value());
 
+  const auto mark = playing.mark();
   playing.player().seek(1000);
   playing.player().seek(3000);
-  const auto mark = playing.mark();
+  const unsigned long long asked = getTimestampNs();
   playing.player().seek(2000);
 
-  auto streaming = playing.nextOf(mark, AudioGraphNodeState::STREAMING);
-  ASSERT_TRUE(streaming.has_value()) << "never resumed";
-  EXPECT_NEAR(streaming->position, 2000, 100);
+  // Late reports are older than the ask; the seek before reports from 3000 up.
+  const auto landed = playing.nextWhere(mark, [&](const StreamState &state) {
+    return state.state == AudioGraphNodeState::STREAMING &&
+           state.timestamp >= asked && state.position < 3000;
+  });
+  ASSERT_TRUE(landed.has_value()) << "never resumed";
+  EXPECT_NEAR(landed->position, 2000, 100);
 }
 
 TEST_F(PlaybackPositionTest, SeekingPastTheEndFinishes) {
