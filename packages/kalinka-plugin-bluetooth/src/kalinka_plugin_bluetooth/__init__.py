@@ -216,6 +216,9 @@ class KalinkaPluginBluetooth(InputModulePlugin):
                 await self._stop_capture()
             if self.backend and self._connected:
                 await self._reconcile(self.backend)
+                # The event loop chooses capture and retries a rename, and
+                # might not look again for a minute.
+                self.backend.changed.set()
         if "enabled" in changed and self.context.config.enabled and not self._connected:
             self._retry_wake.set()
         self._notify()
@@ -243,6 +246,16 @@ class KalinkaPluginBluetooth(InputModulePlugin):
             raise ReceiverError(
                 "backend_unavailable", "Bluetooth adapter is unavailable"
             )
+
+    def _polling(self):
+        """Whether the backend must look again on time: a phone falling silent,
+        the pairing countdown and a retry send no signal."""
+        return bool(
+            self._sessions
+            or (self.pairing and self.pairing.active)
+            or self._cleanup_retry
+            or self._name_pending
+        )
 
     def _sync_sessions(self, endpoints):
         old = {e.identity: token for token, e in self._sessions.items()}
@@ -586,7 +599,7 @@ class KalinkaPluginBluetooth(InputModulePlugin):
                     self.access,
                     Path(paths.prefix()) / "run/lock/kalinka-bluetooth",
                 )
-                async for _ in backend.events():
+                async for _ in backend.events(self._polling):
                     async with self._lock:
                         await self._reconcile(backend)
                         endpoints = [

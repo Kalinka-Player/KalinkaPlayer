@@ -151,3 +151,72 @@ async def test_bluealsa_snapshot_open_and_pcm_fd_ownership(monkeypatch):
         other.close()
         daemon.terminate()
         await daemon.wait()
+
+
+class _CountingBackend(backend.BlueAlsaBackend):
+    def __init__(self):
+        super().__init__()
+        self.bus = SimpleNamespace(
+            connected=True, wait_for_disconnect=lambda: asyncio.Event().wait()
+        )
+        self.refreshes = 0
+
+    async def refresh(self):
+        self.refreshes += 1
+
+
+async def _follow(client, polling):
+    async for _ in client.events(polling):
+        pass
+
+
+async def _until(condition):
+    async with asyncio.timeout(1):
+        while not condition():
+            await asyncio.sleep(0.001)
+
+
+@pytest.fixture
+async def following():
+    tasks = []
+
+    def follow(client, polling):
+        tasks.append(asyncio.create_task(_follow(client, polling)))
+
+    yield follow
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_a_backend_looks_again_on_time_only_while_polling_holds(
+    monkeypatch, following
+):
+    monkeypatch.setattr(backend, "POLL_S", 0.005)
+    client = _CountingBackend()
+    polling = True
+    following(client, lambda: polling)
+    await _until(lambda: client.refreshes >= 3)
+    polling = False
+    # One wait already under way may still end on the poll.
+    settled = client.refreshes + 1
+    await asyncio.sleep(0.1)
+    assert client.refreshes <= settled
+
+
+async def test_an_idle_backend_looks_again_on_a_change(monkeypatch, following):
+    monkeypatch.setattr(backend, "POLL_S", 0.005)
+    client = _CountingBackend()
+    following(client, lambda: False)
+    await _until(lambda: client.refreshes == 1)
+    await asyncio.sleep(0.05)
+    assert client.refreshes == 1
+    client.changed.set()
+    await _until(lambda: client.refreshes == 2)
+
+
+async def test_an_idle_backend_still_looks_again_now_and_then(monkeypatch, following):
+    monkeypatch.setattr(backend, "IDLE_POLL_S", 0.005)
+    client = _CountingBackend()
+    following(client, lambda: False)
+    await _until(lambda: client.refreshes >= 3)
