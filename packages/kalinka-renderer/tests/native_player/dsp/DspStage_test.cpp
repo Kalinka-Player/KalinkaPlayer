@@ -205,6 +205,8 @@ TEST_P(DspStageTest, TheNewSourceShowsItsOwnFormatOnceAccepted) {
   EXPECT_EQ(state.state, AudioGraphNodeState::STREAMING);
   ASSERT_TRUE(state.streamInfo.has_value());
   EXPECT_EQ(state.streamInfo->format.sampleRate, 44100u);
+  EXPECT_FALSE(state.streamInfo->decodedFormat)
+      << "a processor that keeps the format leaves the decoded one alone";
 }
 
 TEST_P(DspStageTest, AStartOffsetIsWhereTheReadPositionBegins) {

@@ -129,6 +129,7 @@ TEST(OutputStage, AtUnityAWiderContainerIsPresentedAndExact) {
   ASSERT_TRUE(shown);
   EXPECT_EQ(shown->format.sampleFormat, PCM32_LE);
   EXPECT_EQ(shown->format.bitsPerSample, 24u) << "the source's bits stay";
+  EXPECT_FALSE(shown->decodedFormat) << "widened exactly, still as decoded";
   std::vector<uint8_t> expected(4000 * 8);
   convertSampleFormat(bytes.data(), PCM24_3LE, 8000, expected.data(), PCM32_LE,
                       expected.size());
@@ -223,9 +224,12 @@ TEST(OutputStage, ClampedSamplesAreCounted) {
 TEST(OutputStage, FloatOntoAnIntegerDeviceIsQuantisedAtUnityToo) {
   Stage s(pcm(PCM_FLOAT64_LE), asBytes(std::vector<double>(2 * 1000, 0.5)),
           k24In32);
-  const auto shown = s.stage->getState().streamInfo->format;
+  const auto info = s.stage->getState().streamInfo;
+  const auto shown = info->format;
   EXPECT_EQ(shown.sampleFormat, PCM32_LE);
   EXPECT_EQ(shown.bitsPerSample, 24u) << "the bits it is dithered at";
+  ASSERT_TRUE(info->decodedFormat);
+  EXPECT_EQ(info->decodedFormat->sampleFormat, PCM_FLOAT64_LE);
   for (const int32_t v : readSamples<int32_t>(*s.stage, 2 * 1000)) {
     EXPECT_LE(std::abs(double(v / 256) - double(1 << 22)), 1.5);
     EXPECT_EQ(v % 256, 0) << "24 bits at the top of the container";

@@ -204,6 +204,42 @@ TEST(StateTranslator, TheDeviceFormatRidesAlongsideTheDecodedOne) {
   EXPECT_EQ(out.device_info().access(), renderer_pb::DEVICE_ACCESS_EXCLUSIVE);
 }
 
+TEST(StateTranslator, DsdConvertedToPcmIsReportedAsTheDsdItWas) {
+  StreamInfo info;
+  info.format = StreamAudioFormat{176400, 2, 24, AudioSampleFormat::PCM24_LE};
+  info.decodedFormat =
+      StreamAudioFormat{352800, 2, 1, AudioSampleFormat::DSD_U8, 2822400};
+  info.streamType = StreamType::FRAMES;
+  StreamState state(AudioGraphNodeState::STREAMING, 0, info);
+  state.deviceInfo = DeviceInfo{info.format, DeviceAccess::Exclusive};
+
+  renderer_pb::PlaybackStateChanged out;
+  fillPlaybackStateChanged(state, "tok-7", 1234, out);
+
+  EXPECT_EQ(out.format().sample_format(), "DSD");
+  EXPECT_EQ(out.format().sample_rate_hz(), 2822400u);
+  EXPECT_EQ(out.format().bits_per_sample(), 1u);
+  EXPECT_EQ(out.device_info().format().sample_rate_hz(), 176400u);
+  EXPECT_EQ(out.device_info().format().sample_format(),
+            sampleFormatToString(AudioSampleFormat::PCM24_LE));
+}
+
+TEST(StateTranslator, FloatQuantisedForTheDeviceIsReportedAsTheFloatItWas) {
+  StreamInfo info;
+  info.format = StreamAudioFormat{96000, 2, 24, AudioSampleFormat::PCM32_LE};
+  info.decodedFormat =
+      StreamAudioFormat{96000, 2, 32, AudioSampleFormat::PCM_FLOAT32_LE};
+  info.streamType = StreamType::FRAMES;
+  StreamState state(AudioGraphNodeState::STREAMING, 0, info);
+
+  renderer_pb::PlaybackStateChanged out;
+  fillPlaybackStateChanged(state, "tok-7", 1234, out);
+
+  EXPECT_EQ(out.format().sample_format(),
+            sampleFormatToString(AudioSampleFormat::PCM_FLOAT32_LE));
+  EXPECT_EQ(out.format().bits_per_sample(), 32u);
+}
+
 TEST(StateTranslator, ADeviceThatIsNotOpenReportsNoFormat) {
   StreamInfo info;
   info.format = StreamAudioFormat{44100, 2, 16, AudioSampleFormat::PCM16_LE};
