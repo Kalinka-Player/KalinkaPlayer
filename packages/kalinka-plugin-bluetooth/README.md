@@ -84,10 +84,13 @@ Metadata from a stopped or failed phone player is ignored: Now Playing shows
 **Bluetooth audio** and the phone's name until that player becomes active again.
 A paused player keeps its track information. If the sender reports paused/stopped
 or its transport is inactive and no PCM arrives for a second, the output pauses
-instead of buffering indefinitely. The normal two-second backend poll bounds
-idle detection; incoming PCM wakes it immediately and resumes at the live edge
+instead of buffering indefinitely. The two-second backend poll bounds idle
+detection; incoming PCM wakes it immediately and resumes at the live edge
 without sending Play back to the phone. Brief gaps do not restart the output,
 and renderer errors or stalls while the sender is still playing remain visible.
+The poll runs only while a phone is connected, pairing is open or a cleanup or
+rename is being retried. Otherwise the plugin follows BlueZ and BlueALSA
+signals, and looks again once a minute in case one was missed.
 
 ## Bluetooth artwork
 

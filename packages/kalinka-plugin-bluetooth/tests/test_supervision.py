@@ -64,7 +64,7 @@ async def test_recovery_clears_status_and_new_outage_warns_again(
     backends, delays = [], []
     now = 0.0
 
-    async def events():
+    async def events(polling):
         nonlocal now
         yield None
         assert plugin.error is None

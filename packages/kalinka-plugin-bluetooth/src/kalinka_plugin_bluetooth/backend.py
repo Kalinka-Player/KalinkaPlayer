@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import dataclass
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable
 
 from dbus_fast import BusType, Message, MessageType, Variant
 from dbus_fast.aio import MessageBus
@@ -32,6 +32,10 @@ AUDIO_UUIDS = frozenset(
     f"0000{value}-0000-1000-8000-00805f9b34fb"
     for value in ("110a", "110b", "110c", "110d", "110e", "110f")
 )
+POLL_S = 2.0
+# With nothing timed under way, signals announce every change; this only
+# bounds how long a missed one goes unnoticed.
+IDLE_POLL_S = 60.0
 
 
 def plain(value):
@@ -371,7 +375,12 @@ class BlueAlsaBackend:
             )
         self.changed.set()
 
-    async def events(self) -> AsyncIterator[None]:
+    async def events(self, polling: Callable[[], bool]) -> AsyncIterator[None]:
+        """Yield after a refresh: at once, then on each change.
+
+        Also every POLL_S while ``polling()`` holds, for what changes with time
+        and so sends no signal; otherwise every IDLE_POLL_S.
+        """
         disconnected = asyncio.create_task(self.bus.wait_for_disconnect())
         try:
             while self.bus and self.bus.connected:
@@ -384,7 +393,7 @@ class BlueAlsaBackend:
                 try:
                     done, _ = await asyncio.wait(
                         (changed, disconnected),
-                        timeout=2,
+                        timeout=POLL_S if polling() else IDLE_POLL_S,
                         return_when=asyncio.FIRST_COMPLETED,
                     )
                     if disconnected in done:

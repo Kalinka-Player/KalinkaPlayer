@@ -617,3 +617,56 @@ async def test_coalesced_reconnect_without_sequence_invalidates_session_handle(p
             DisconnectAudio(command="disconnect_audio", session_id=old)
         )
     assert plugin.backend.audio_devices()
+
+
+async def test_an_idle_receiver_waits_for_signals_rather_than_polling(plugin):
+    await plugin._reconcile(plugin.backend)
+    assert not plugin._polling()
+
+
+async def test_a_connected_phone_is_polled_for_falling_silent(plugin):
+    peer = (await plugin.snapshot()).peers[0]
+    await plugin.execute(GrantAudio(command="grant_audio", peer_id=peer.peer_id))
+    plugin.backend.transport()
+    await plugin._reconcile(plugin.backend)
+    assert plugin._polling()
+
+
+async def test_an_open_pairing_window_is_polled_for_its_countdown(plugin):
+    opened = await plugin.execute(OpenPairing(command="open_pairing"))
+    assert plugin._polling()
+    await plugin.execute(
+        ClosePairing(command="close_pairing", window_id=opened.pairing.window_id)
+    )
+    assert not plugin._polling()
+
+
+async def test_a_cleanup_that_failed_is_retried_on_time(plugin):
+    peer = (await plugin.snapshot()).peers[0]
+    await plugin.execute(GrantAudio(command="grant_audio", peer_id=peer.peer_id))
+    plugin.backend.remove_device = AsyncMock(
+        side_effect=ReceiverError("backend_timeout", "Not removed")
+    )
+    with pytest.raises(ReceiverError, match="Not removed"):
+        await plugin.execute(
+            ForgetDevice(command="forget_device", peer_id=peer.peer_id)
+        )
+    await plugin._reconcile(plugin.backend)
+    assert not plugin._sessions
+    assert plugin._polling()
+
+
+async def test_a_rename_put_off_wakes_the_backend_and_keeps_it_polling(
+    plugin, tmp_path
+):
+    competing = PairingWindow(plugin.backend, plugin.access, tmp_path)
+    await competing.start()
+    try:
+        plugin.backend.changed.clear()
+        plugin.context.server_name = lambda: "Renamed"
+        await plugin.server_name_changed()
+        assert plugin._name_pending and plugin._polling()
+        # The backend might not look again for a minute.
+        assert plugin.backend.changed.is_set()
+    finally:
+        await competing.close()
