@@ -175,10 +175,12 @@ StreamAudioFormat chooseDsdOutput(const OutputCapabilities &caps,
                            (mode == "dop" ? "DoP" : "native DSD"));
 }
 
-std::vector<uint8_t> packDsd(std::span<const uint8_t> input, unsigned channels,
+std::vector<uint8_t> packDsd(std::vector<uint8_t> input, unsigned channels,
                              AudioSampleFormat format, uint64_t firstFrame) {
   if (!channels || input.size() % channels)
     throw std::invalid_argument("Incomplete DSD channel frame");
+  if (format == DSD_U8)
+    return input;
   const unsigned count = dsdBitsPerFrame(format) / 8;
   const size_t frames = (input.size() / channels + count - 1) / count;
   const size_t width = sampleSize(format);

@@ -113,6 +113,16 @@ TEST(DsdPacking, NativeAndDopVectorsPreserveChronologicalBits) {
             (Bytes{0, 2, 1, 0xfa, 0, 0x82, 0x81, 0xfa, 0, 4, 3, 5, 0, 0x84,
                    0x83, 5}));
 }
+TEST(DsdPacking, RawBytesAreHandedOnAsTheyCameForAnyChannelCount) {
+  const Bytes input{0x01, 0x81, 0x02, 0x82, 0x03, 0x83};
+  EXPECT_EQ(packDsd(input, 1, DSD_U8, 7), input);
+  EXPECT_EQ(packDsd(input, 3, DSD_U8, 1), input);
+  EXPECT_THROW(packDsd(input, 4, DSD_U8, 0), std::invalid_argument);
+  Bytes block = input;
+  const auto *bytes = block.data();
+  EXPECT_EQ(packDsd(std::move(block), 2, DSD_U8, 0).data(), bytes)
+      << "handed back, not copied";
+}
 TEST(DsdPacking, FinalFrameUsesDsdSilence) {
   EXPECT_EQ(packDsd(Bytes{1, 0x81}, 2, DOP24_LE, 0),
             (Bytes{0x69, 1, 5, 0, 0x69, 0x81, 5, 0}));
