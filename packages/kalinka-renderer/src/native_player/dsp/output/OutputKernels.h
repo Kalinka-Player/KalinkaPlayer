@@ -12,6 +12,7 @@ namespace output_kernels {
 /**
  * @brief Scales, dithers and rounds one channel's samples to integers:
  * out[i] = clamp(round(x[i] (from + step (i + 1)) scale + dither[i]), lo, hi).
+ * @param lo, hi The integer range, which holds 0.
  * @return How many samples were clamped.
  */
 size_t quantise(const double *x, size_t count, double from, double step,
