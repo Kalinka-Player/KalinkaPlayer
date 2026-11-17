@@ -118,6 +118,7 @@ add_library(kalinka_native_player STATIC
   src/native_player/BufferedStreamDecoder.cpp
   src/native_player/Config.cpp
   src/native_player/ContainerStreamDecoder.cpp
+  src/native_player/DsdBlockKernels.cpp
   src/native_player/DsdContainer.cpp
   src/native_player/DsdFormat.cpp
   src/native_player/DashStreamDecoder.cpp
@@ -368,6 +369,7 @@ if(GTest_FOUND)
     tests/native_player/ByteRing_test.cpp
     tests/native_player/BufferedStreamDecoder_test.cpp
     tests/native_player/ContainerStreamDecoder_test.cpp
+    tests/native_player/DsdBlockKernels_test.cpp
     tests/native_player/DsdContainer_test.cpp
     tests/native_player/DsdPcmPlayback_test.cpp
     tests/native_player/DashStreamDecoder_test.cpp

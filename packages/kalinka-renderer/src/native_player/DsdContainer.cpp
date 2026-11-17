@@ -1,4 +1,5 @@
 #include "DsdContainer.h"
+#include "DsdBlockKernels.h"
 #include "DsdFormat.h"
 
 #include <algorithm>
@@ -11,12 +12,6 @@ using container::number;
 using container::require;
 using container::tagged;
 constexpr auto big = std::endian::big;
-
-uint8_t reverse(uint8_t b) {
-  b = ((b & 0x55) << 1) | ((b >> 1) & 0x55);
-  b = ((b & 0x33) << 2) | ((b >> 2) & 0x33);
-  return (b << 4) | (b >> 4);
-}
 
 std::vector<uint8_t> readBytes(ByteReader &source, size_t bytes) {
   require(bytes <= 1024 * 1024, "DSD metadata chunk too large");
@@ -165,11 +160,8 @@ std::vector<uint8_t> DsdContainer::nextBlock(ByteReader &source) {
     const auto valid =
         std::min<uint64_t>(blockSize - skipBytes, totalBytes - nextByte);
     raw.resize(valid * channels);
-    for (size_t b = 0; b < valid; ++b)
-      for (unsigned c = 0; c < channels; ++c) {
-        const auto v = blocked[c * blockSize + skipBytes + b];
-        raw[b * channels + c] = reverseBits ? reverse(v) : v;
-      }
+    dsd_block_kernels::interleave(blocked.data() + skipBytes, blockSize,
+                                  channels, valid, reverseBits, raw.data());
   } else
     raw = readBytes(source,
                     std::min<uint64_t>(4096, totalBytes - nextByte) * channels);
