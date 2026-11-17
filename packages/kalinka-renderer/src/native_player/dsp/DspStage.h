@@ -45,9 +45,11 @@ public:
                         size_t size) override;
 
   /// Refused while what plays belongs to a source upstream has already left.
+  /// Upstream seeks the processor's history() early, and the frames before
+  /// the target are run through it and not handed on.
   size_t seekTo(size_t absolutePosition) override;
   /// Drops everything held and seeks @p stream upstream, even one upstream has
-  /// already left.
+  /// already left, early as seekTo() does.
   size_t seekStream(StreamId stream, size_t position) override;
   std::optional<long> streamReadPosition() const override;
   std::optional<uint64_t> liveSourceFrame() const override;
@@ -113,6 +115,13 @@ private:
   /// A source upstream was switched to before its format was known: the run
   /// waits for it, neither continued nor flushed.
   std::optional<std::optional<StreamId>> joinPending;
+  /// Where a seek landed, in output frames, for the next run to start at
+  /// after running the history before it through the processor.
+  struct LeadIn {
+    std::optional<StreamId> id;
+    long target;
+  };
+  std::optional<LeadIn> leadIn;
 
   size_t inFrameBytes = 0;
   size_t outFrameBytes = 0;
@@ -158,9 +167,14 @@ private:
   void dropEverything();
   /// Shows downstream what the stage now holds.
   void publish();
-  /// Lets go of everything held once upstream has seeked to @p reached, and
-  /// keeps it all when upstream refused.
-  size_t restartAfter(size_t reached);
+  /// Output frames a seek to @p position starts early by.
+  size_t earlyBy(size_t position) const;
+  /// Lets go of everything held once upstream has seeked to @p reached, in
+  /// input frames, for a seek to @p target asked @p early output frames
+  /// short of it; keeps it all when upstream refused.
+  /// @return Where what is heard next begins, in output frames.
+  size_t restartAfter(size_t reached, unsigned ratio, size_t target,
+                      size_t early, std::optional<StreamId> id);
   StreamState shown(const Shared &shared) const;
   /// @p state as downstream sees it: in the processor's output format, and
   /// with upstream's own position in output frames when @p upstreamPosition.

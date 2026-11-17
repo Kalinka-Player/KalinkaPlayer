@@ -153,9 +153,11 @@ add_library(kalinka_native_player STATIC
   src/native_player/dsp/fir/HalfBandDecimator.cpp
   src/native_player/dsp/fir/SymmetricFir.cpp
   src/native_player/dsp/output/GainRamp.cpp
+  src/native_player/dsp/output/OutputFade.cpp
   src/native_player/dsp/output/OutputFormat.cpp
   src/native_player/dsp/output/OutputKernels.cpp
   src/native_player/dsp/output/OutputStage.cpp
+  src/native_player/dsp/output/PackedFade.cpp
   src/native_player/dsp/output/PlanarPcm.cpp
   src/native_player/dsp/output/Quantiser.cpp
   src/native_player/dsp/output/TpdfDither.cpp
@@ -402,6 +404,7 @@ if(GTest_FOUND)
     tests/native_player/dsp/output/OutputFormat_test.cpp
     tests/native_player/dsp/output/OutputKernels_test.cpp
     tests/native_player/dsp/output/OutputStage_test.cpp
+    tests/native_player/dsp/output/PackedFade_test.cpp
     tests/native_player/dsp/output/PlanarPcm_test.cpp
     tests/native_player/dsp/output/Quantiser_test.cpp
     tests/native_player/dsp/output/TpdfDither_test.cpp

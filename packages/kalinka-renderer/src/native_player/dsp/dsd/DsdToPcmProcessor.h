@@ -28,6 +28,7 @@ public:
   bool handles(const StreamAudioFormat &format) const override;
   Output output(const StreamAudioFormat &format) const override;
   size_t start(const StreamAudioFormat &format) override;
+  size_t history() const override;
   size_t process(const uint8_t *in, uint8_t *out, size_t frames) override;
 
 private:

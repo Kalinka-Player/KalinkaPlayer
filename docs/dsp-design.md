@@ -221,8 +221,8 @@ keeps that format constant across a mixed-rate queue. The stage's output
 `StreamInfo` carries the translated rate, sample format and `streamSize`.
 
 **Pause.** The emitter writes silence while paused and reads nothing, and the
-stage sits idle. Today a pause cuts mid-waveform, and so does a seek. Phase 1
-fades both briefly (section 13, decision 8).
+stage sits idle. A pause, a resume and a seek fade briefly rather than cut
+mid-waveform (section 5).
 
 **Live streams.** `LiveAudioPolicy` targets 60 ms. Stages with no latency
 (PEQ, crossfeed, channel tools, gain, dither) apply to live PCM. A stage with
@@ -299,6 +299,22 @@ they are:
 - `output.session_start_volume_ceiling_percent`;
 - `auto` preferring a hardware mixer;
 - the refusal of software gain for native DSD and DoP (`setDsdAllowed`).
+
+**Pause and seek fade** over 10 ms: no click, and too short to hear as a fade
+(section 13, decision 8). The gain step does it for the emitter, through
+`OutputFade`, multiplying the volume, and between fades what is written is
+untouched.
+- **A pause** fades out over the next 10 ms the emitter writes, after what the
+  device already holds. It is reported once that has been heard, and silence
+  follows. A resume fades in from there, so nothing is lost or repeated.
+- **A seek** takes back what the device holds unplayed with `snd_pcm_rewind`.
+  It leaves 5 ms that may already be on its way to the DAC, fades the first
+  10 ms of the rest out in place (`PackedFade`) and silences the remainder.
+  Once the fade has been heard, the device is dropped as before. The audio
+  after the seek fades in.
+- **A device that cannot take frames back,** a sound server's for one, drops
+  at a seek as it did before.
+- **Native DSD and DoP** are not faded.
 
 ## 6. Profiles reach the renderer by URL and SHA-256
 
@@ -740,10 +756,18 @@ The modulator's own quality, a 1 kHz tone at half modulation over 0.5 s:
 
 ## 14. DSD to PCM, as built
 
-`DsdToPcm` is Phase 1's converter. It is built and tested, but not yet in
-playback: `output.dsd_mode` `pcm`, the `dsd.*` settings of section 7, the
-seek pre-roll and the gapless join come with wiring it into the stage, and
-so do the base-rate chains of section 13, decision 11.
+`DsdToPcm` is Phase 1's converter. It plays `output.dsd_mode` `pcm` through
+`DsdToPcmProcessor` in the stage, which keeps its filters running across a
+gapless join. The `dsd.*` settings of section 7 and the base-rate chains of
+section 13, decision 11, are still to come.
+
+**Seek pre-roll.** A processor states how far back the input its output
+depends on reaches, `history()`. The converter's is its latency and a frame,
+as its filters are linear phase. A seek asks upstream for that much before
+the target and runs it through, and the stage hands on from the target. The
+first frames after a seek are then what a run under way makes, where they
+used to start from the idle pattern: a test holds them to an uninterrupted
+run's within 1e-12.
 
 **Where the code is.** All of the DSP is in `native_player/dsp/`:
 - the stage, `DspStage`, and `DspProcessor`, the interface it runs audio

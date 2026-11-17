@@ -22,6 +22,9 @@ public:
 
   explicit GainRamp(std::chrono::microseconds length);
 
+  /// Frames a ramp of @p length lasts at @p rate: at least one.
+  static size_t framesFor(std::chrono::microseconds length, unsigned rate);
+
   /// Heads for @p target from the level reached, over the ramp's length at
   /// @p rate frames a second; the same target again changes nothing.
   void aim(double target, unsigned rate);
@@ -33,6 +36,8 @@ public:
   Span take(size_t frames);
   /// Whether it holds at exactly @p gain.
   bool holding(double gain) const { return framesLeft == 0 && level == gain; }
+  /// Frames until the ramp reaches its target; 0 while it holds.
+  size_t left() const { return framesLeft; }
 
 private:
   std::chrono::microseconds length;

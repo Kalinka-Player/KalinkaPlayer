@@ -5,12 +5,16 @@
 
 GainRamp::GainRamp(std::chrono::microseconds length) : length(length) {}
 
+size_t GainRamp::framesFor(std::chrono::microseconds length, unsigned rate) {
+  const int64_t frames = int64_t{length.count()} * rate / 1'000'000;
+  return std::max<size_t>(1, size_t(frames));
+}
+
 void GainRamp::aim(double newTarget, unsigned rate) {
   if (newTarget == target)
     return;
   target = newTarget;
-  const int64_t frames = int64_t{length.count()} * rate / 1'000'000;
-  framesLeft = std::max<size_t>(1, size_t(frames));
+  framesLeft = framesFor(length, rate);
 }
 
 void GainRamp::settle(double newTarget) {

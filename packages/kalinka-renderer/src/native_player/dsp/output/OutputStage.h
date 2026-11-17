@@ -3,6 +3,7 @@
 #include "AudioGraphNode.h"
 #include "dsp/output/GainControl.h"
 #include "dsp/output/GainRamp.h"
+#include "dsp/output/OutputFade.h"
 #include "dsp/output/OutputFormat.h"
 #include "dsp/output/Quantiser.h"
 
@@ -15,7 +16,7 @@
 
 /**
  * @brief The end of the DSP, between the stage and the sink: software volume,
- * TPDF dither, and the integer format the device takes.
+ * the sink's fades, TPDF dither, and the integer format the device takes.
  *
  * It presents each PCM source in the format chooseOutput() picks for the
  * device, and passes everything else on as upstream has it: states,
@@ -24,15 +25,17 @@
  * source's own format they are upstream's very bytes. Float going to an
  * integer format is quantised, at unity too. Any other gain ramps
  * over 25 ms and goes through the Quantiser. It settles at once after a seek
- * or once nothing plays, with no audio to click against. DSD and DoP pass
+ * or once nothing plays, with no audio to click against. A fade multiplies
+ * the volume and goes through the Quantiser the same way. DSD and DoP pass
  * untouched, and refuse any gain but unity.
  *
- * @note read(), the waits and the seeks belong to the one thread that pulls
- * audio. setGain() may come from any thread.
+ * @note read(), the waits, the seeks and the fades belong to the one thread
+ * that pulls audio. setGain() may come from any thread.
  */
 class OutputStage : public AudioGraphOutputNode,
                     public AudioGraphInputNode,
-                    public GainControl {
+                    public GainControl,
+                    public OutputFade {
 public:
   /// @param device What the device was probed to take; empty when unknown.
   explicit OutputStage(std::vector<StreamAudioFormat> device,
@@ -56,6 +59,9 @@ public:
 
   /// Heard from the next read on, over the ramp.
   void setGain(double linear) override;
+  void fadeOut() override;
+  void fadeIn() override;
+  void settle(double level) override;
   /// Samples clamped to the output's range so far.
   uint64_t clippedSamples() const { return clipped.load(); }
 
@@ -76,6 +82,10 @@ private:
   std::optional<Presented> presented;
 
   GainRamp ramp;
+  GainRamp fade;
+  /// What the fade heads for, and a level it takes at once first.
+  double fadeTarget = 1.0;
+  std::optional<double> fadeSettle;
   Quantiser quantiser;
   std::vector<uint8_t> input;
   std::vector<std::vector<double>> planar;
@@ -83,8 +93,11 @@ private:
 
   void onUpstreamState(const StreamState &state);
   std::optional<Presented> current() const;
-  /// Moves the ramp toward the target, or settles it first when asked to.
+  /// Moves both ramps toward their targets, settling either first when asked.
   void follow(unsigned rate);
+  /// The next stretch of at most @p frames frames over which neither ramp
+  /// turns, at the two gains multiplied.
+  GainRamp::Span take(size_t frames);
   void produce(const Presented &now, const uint8_t *in, size_t frames,
                uint8_t *out);
   size_t toSource(const Presented &now, size_t bytes) const;

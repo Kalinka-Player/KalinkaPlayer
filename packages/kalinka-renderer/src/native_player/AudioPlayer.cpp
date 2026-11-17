@@ -343,6 +343,7 @@ AudioPlayer::AudioPlayer(const Config &config)
       outputStage(std::make_shared<OutputStage>(deviceFormats)) {
   dspStage->connectTo(streamSwitcher);
   outputStage->connectTo(dspStage);
+  audioEmitter->fadeWith(outputStage);
   std::erase_if(streamConfig,
                 [](const auto &entry) { return !isStreamKey(entry.first); });
   // Renderer delta: no initLogger() — the renderer owns the spdlog setup.

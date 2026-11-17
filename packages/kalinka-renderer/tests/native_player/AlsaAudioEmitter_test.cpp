@@ -3,16 +3,21 @@
 #include "SineWaveNode.h"
 
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <gtest/gtest.h>
+#include <unistd.h>
 
-#include "Config.h"
 #include "AacTestData.h"
 #include "AdtsStreamDecoder.h"
 #include "AudioGraphHttpStream.h"
+#include "Config.h"
+#include "CountingNode.h"
 #include "ErrorFakeNode.h"
 #include "LiveInputNode.h"
 #include "LocalHttpServer.h"
+#include "ScopedAlsaConfig.h"
 #include "SlowOutputNode.h"
 #include "TestHelpers.h"
 
@@ -694,4 +699,177 @@ TEST_F(AlsaAudioEmitterTest, test_play_after_finished) {
                           std::chrono::milliseconds(1500))
                 .state,
             AudioGraphNodeState::FINISHED);
+}
+
+namespace {
+constexpr size_t kFadeFrames = 480; // 10 ms at 48 kHz
+
+/// A counting source slow enough that a command lands before its end: the
+/// null device would otherwise take it all at once.
+class PacedCountingNode : public CountingNode {
+public:
+  using CountingNode::CountingNode;
+  size_t read(void *data, size_t size) override {
+    std::this_thread::sleep_for(std::chrono::microseconds(100));
+    return CountingNode::read(data, std::min<size_t>(size, 1024 * 8));
+  }
+};
+
+/// A counting source played behind an output stage the emitter fades with,
+/// and what reached the device, captured by ALSA's file plugin. The null
+/// device behind it takes everything at once, so a pause or a seek lands
+/// wherever writing has got to, and nothing waits for real time.
+class FadedCapture : public ::testing::Test {
+protected:
+  const std::filesystem::path directory =
+      std::filesystem::temp_directory_path() /
+      ("kalinka-fades-" + std::to_string(getpid()));
+  const std::filesystem::path file = directory / "written.raw";
+  std::optional<ScopedAlsaConfig> alsa;
+  std::shared_ptr<PacedCountingNode> source;
+  std::shared_ptr<OutputStage> stage =
+      std::make_shared<OutputStage>(std::vector<StreamAudioFormat>{});
+  std::shared_ptr<AlsaAudioEmitter> emitter;
+
+  FadedCapture() {
+    std::filesystem::create_directories(directory);
+    alsa.emplace("pcm.capture { type file slave.pcm { type null } file \"" +
+                 file.string() + "\" format raw }\n");
+    emitter = std::make_shared<AlsaAudioEmitter>(
+        Config{{"output.alsa.device", "capture"},
+               {"output.alsa.latency_ms", "80"},
+               {"output.alsa.period_ms", "20"}});
+  }
+
+  ~FadedCapture() override {
+    emitter.reset();
+    alsa.reset();
+    std::error_code error;
+    std::filesystem::remove_all(directory, error);
+  }
+
+  void play(size_t frames) {
+    source = std::make_shared<PacedCountingNode>(1, 1000000, frames);
+    stage->connectTo(source);
+    emitter->fadeWith(stage);
+    emitter->connectTo(stage);
+    ASSERT_EQ(waitForStatus(*emitter, AudioGraphNodeState::STREAMING).state,
+              AudioGraphNodeState::STREAMING);
+  }
+
+  /// The left samples written, once the source has played to its end.
+  std::vector<int32_t> written() {
+    EXPECT_EQ(waitForStatus(*emitter, AudioGraphNodeState::FINISHED,
+                            std::chrono::seconds(30))
+                  .state,
+              AudioGraphNodeState::FINISHED);
+    emitter->disconnect(stage);
+    std::ifstream in(file, std::ios::binary);
+    std::vector<int32_t> frame(2), left;
+    while (in.read(reinterpret_cast<char *>(frame.data()), 8))
+      left.push_back(frame[0]);
+    return left;
+  }
+
+  /// The first frame of @p left that is not the source's own.
+  size_t firstChanged(const std::vector<int32_t> &left) const {
+    size_t at = 0;
+    while (at < left.size() && left[at] == source->value(at))
+      ++at;
+    return at;
+  }
+
+  /// Frames from @p at on fade as the stage's fade does: down from the
+  /// source's frames from @p frame, or up to them.
+  void expectFade(const std::vector<int32_t> &left, size_t at, size_t frame,
+                  bool down) const {
+    for (size_t k = 0; k < kFadeFrames; ++k) {
+      const double rise = double(k + 1) / double(kFadeFrames);
+      const double gain = down ? 1.0 - rise : rise;
+      ASSERT_LE(
+          std::abs(double(left[at + k]) - gain * source->value(frame + k)), 2.0)
+          << (down ? "fading out" : "fading in") << ", frame " << k;
+    }
+  }
+};
+} // namespace
+
+TEST_F(FadedCapture, APauseFadesOutAndItsResumeFadesInLosingNothing) {
+  constexpr size_t kFrames = 1'000'000;
+  play(kFrames);
+  emitter->pause(true);
+  ASSERT_EQ(waitForStatus(*emitter, AudioGraphNodeState::PAUSED,
+                          std::chrono::seconds(10))
+                .state,
+            AudioGraphNodeState::PAUSED)
+      << "paused once the fade has been written";
+  emitter->pause(false);
+  const auto left = written();
+  ASSERT_GE(left.size(), kFrames);
+  const size_t silence = left.size() - kFrames;
+  const size_t paused = firstChanged(left);
+  ASSERT_GT(paused, 0u);
+  ASSERT_LT(paused + 2 * kFadeFrames, kFrames);
+  expectFade(left, paused, paused, true);
+  for (size_t k = 0; k < silence; ++k)
+    ASSERT_EQ(left[paused + kFadeFrames + k], 0) << "silence while paused";
+  expectFade(left, paused + kFadeFrames + silence, paused + kFadeFrames, false);
+  for (size_t frame = paused + 2 * kFadeFrames; frame < kFrames; ++frame)
+    ASSERT_EQ(left[frame + silence], source->value(frame))
+        << "frame " << frame << " after the resume";
+}
+
+TEST_F(FadedCapture, ASeekFadesWhatTheDeviceHeldOutAndWhatItLandedOnIn) {
+  constexpr size_t kFrames = 1'000'000;
+  constexpr size_t kTargetMs = 15'000;
+  constexpr size_t kTarget = kTargetMs * 48;
+  play(kFrames);
+  ASSERT_EQ(emitter->seek(kTargetMs), kTargetMs);
+  const auto left = written();
+  // The file plugin takes back what it has not yet written out, a buffer's
+  // worth here: the device's queue, but for the margin left playing.
+  const size_t taken = firstChanged(left);
+  ASSERT_GT(taken, 0u);
+  ASSERT_LT(taken, kTarget);
+  expectFade(left, taken, taken, true);
+  size_t landed = taken + kFadeFrames;
+  while (landed < left.size() && left[landed] == 0)
+    ++landed;
+  EXPECT_GT(landed - taken, kFadeFrames) << "the rest taken back is silent";
+  ASSERT_EQ(left.size(), landed + (kFrames - kTarget));
+  expectFade(left, landed, kTarget, false);
+  for (size_t frame = kTarget + kFadeFrames; frame < kFrames; ++frame)
+    ASSERT_EQ(left[landed + frame - kTarget], source->value(frame))
+        << "frame " << frame << " after the seek";
+}
+
+TEST_F(FadedCapture, TheNextTrackAfterAPausePlaysAtFullLevel) {
+  auto switcher = std::make_shared<AudioStreamSwitcher>();
+  stage->connectTo(switcher);
+  source = std::make_shared<PacedCountingNode>(1, 1000000, 1'000'000);
+  auto next = std::make_shared<PacedCountingNode>(2, 2000000, 100'000);
+  switcher->connectTo(source);
+  switcher->connectTo(next);
+  emitter->fadeWith(stage);
+  emitter->connectTo(stage);
+  ASSERT_EQ(waitForStatus(*emitter, AudioGraphNodeState::STREAMING).state,
+            AudioGraphNodeState::STREAMING);
+  emitter->pause(true);
+  ASSERT_EQ(waitForStatus(*emitter, AudioGraphNodeState::PAUSED,
+                          std::chrono::seconds(10))
+                .state,
+            AudioGraphNodeState::PAUSED);
+  // Skipping ahead while paused: what played is removed, and the next
+  // track takes over in a run of its own.
+  switcher->disconnect(source);
+  const auto left = written();
+  size_t at = firstChanged(left);
+  ASSERT_GT(at, 0u);
+  expectFade(left, at, at, true);
+  at += kFadeFrames;
+  while (at < left.size() && left[at] == 0)
+    ++at;
+  ASSERT_EQ(left.size() - at, 100'000u);
+  for (size_t frame = 0; frame < 100'000; ++frame)
+    ASSERT_EQ(left[at + frame], next->value(frame)) << "frame " << frame;
 }

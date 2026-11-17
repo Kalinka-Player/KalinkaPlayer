@@ -7,8 +7,10 @@
 #include "StateMonitor.h"
 #include "StreamState.h"
 #include "Utils.h"
+#include "dsp/output/PackedFade.h"
 
 #include <condition_variable>
+#include <cstring>
 #include <iostream>
 #include <mutex>
 #include <pthread.h>
@@ -19,6 +21,10 @@
 #define log_on_error(func) log_on_error_impl(func, #func " failed")
 
 namespace {
+// What ALSA calls safe to take back may already be on its way to the DAC, and
+// the fade has to be written before the device catches up.
+constexpr std::chrono::milliseconds kRewindMargin{5};
+
 /// A setting refuses the stream; reported as is, never as an internal error.
 struct SettingsRefusal : std::runtime_error {
   using std::runtime_error::runtime_error;
@@ -68,8 +74,9 @@ AlsaAudioEmitter::AlsaAudioEmitter(const Config &config)
       requestedPeriodMs(value_or(config, "output.alsa.period_ms", 25)),
       sleepAfterFormatSetupMs(
           value_or(config, "fixups.alsa_sleep_after_format_setup_ms", 0)),
-      reopenDeviceWithNewFormat(value_or(
-          config, "fixups.alsa_reopen_device_with_new_format", false)) {
+      reopenDeviceWithNewFormat(
+          value_or(config, "fixups.alsa_reopen_device_with_new_format", false)),
+      packedFade(std::make_unique<PackedFade>()) {
   auto configBufferSize =
       value<snd_pcm_uframes_t>(config, "output.alsa.buffer_size");
   auto configPeriodSize =
@@ -291,6 +298,7 @@ bool AlsaAudioEmitter::handleSeekSignal() {
   }
   seekRequestSignal.respond(framesToTimeMs(retVal).count());
   seekHappened = true;
+  fadeInNext = true;
   return true;
 }
 
@@ -319,13 +327,25 @@ long AlsaAudioEmitter::reachedPositionMs() {
 }
 
 bool AlsaAudioEmitter::handlePauseSignal(bool paused) {
-  auto state = getState();
-  auto stateToSet =
-      paused ? AudioGraphNodeState::PAUSED : AudioGraphNodeState::STREAMING;
-
   this->paused = paused;
-  StreamState newState(stateToSet, 0, state.streamInfo);
-  newState.position = framesToTimeMs(currentSourceTotalFramesWritten).count();
+  pauseFadeLeft = 0;
+  if (fades()) {
+    if (paused) {
+      // Paused once the fade, still to be written, has been heard.
+      fade->fadeOut();
+      pauseFadeLeft = fadeFrames(currentStreamAudioFormat.sampleRate);
+      return true;
+    }
+    fade->fadeIn();
+  }
+  return reportOnceHeard(paused ? AudioGraphNodeState::PAUSED
+                                : AudioGraphNodeState::STREAMING);
+}
+
+bool AlsaAudioEmitter::reportOnceHeard(AudioGraphNodeState state) {
+  const StreamState heard{
+      state, framesToTimeMs(currentSourceTotalFramesWritten).count(),
+      getState().streamInfo};
   snd_pcm_sframes_t delay = 0;
   int err = snd_pcm_delay(pcm.handle, &delay);
   if (err < 0) {
@@ -333,10 +353,54 @@ bool AlsaAudioEmitter::handlePauseSignal(bool paused) {
     return false;
   }
   playedFramesCounter.callOnOrAfterFrame(
-      delay,
-      [this, newState](snd_pcm_sframes_t frames) { setState(newState); });
-
+      delay, [this, heard](snd_pcm_sframes_t) { setState(heard); });
   return true;
+}
+
+bool AlsaAudioEmitter::fades() const {
+  return fade && !isDsd(currentStreamAudioFormat.sampleFormat);
+}
+
+void AlsaAudioEmitter::fadeQueuedOut() {
+  if (!fades() || snd_pcm_state(pcm.handle) != SND_PCM_STATE_RUNNING)
+    return;
+  const unsigned rate = currentStreamAudioFormat.sampleRate;
+  const auto length = snd_pcm_sframes_t(fadeFrames(rate));
+  const snd_pcm_sframes_t margin = rate * kRewindMargin.count() / 1000;
+  const snd_pcm_sframes_t rewindable = snd_pcm_rewindable(pcm.handle) - margin;
+  if (rewindable < length)
+    return;
+  const snd_pcm_sframes_t rewound = snd_pcm_rewind(pcm.handle, rewindable);
+  if (rewound < length) {
+    if (rewound > 0)
+      snd_pcm_forward(pcm.handle, rewound);
+    return;
+  }
+  const auto format = deviceFormatFor(currentStreamAudioFormat.sampleFormat);
+  const size_t frameBytes = sampleSize(format) * outputChannels;
+  const unsigned bits = currentStreamAudioFormat.bitsPerSample
+                            ? currentStreamAudioFormat.bitsPerSample
+                            : unsigned(sampleBits(format));
+  for (snd_pcm_sframes_t at = 0; at < rewound;) {
+    const auto written = writeToAlsa(
+        rewound - at, [&](void *ptr, snd_pcm_uframes_t frames, size_t bytes) {
+          auto *data = static_cast<uint8_t *>(ptr);
+          const size_t faded =
+              at < length ? std::min<size_t>(frames, length - at) : 0;
+          if (faded > 0)
+            packedFade->out(data, format, outputChannels, bits, at, faded,
+                            length);
+          std::memset(data + faded * frameBytes, 0, bytes - faded * frameBytes);
+          return snd_pcm_sframes_t(frames);
+        });
+    if (written <= 0)
+      return;
+    at += written;
+  }
+  snd_pcm_sframes_t delay = 0;
+  if (snd_pcm_delay(pcm.handle, &delay) == 0 && delay > rewound - length)
+    std::this_thread::sleep_for(std::chrono::microseconds(
+        1'000'000 * (delay - (rewound - length)) / rate));
 }
 
 void AlsaAudioEmitter::openDevice() {
@@ -514,7 +578,7 @@ AlsaAudioEmitter::readIntoAlsaFromStream(std::stop_token stopToken,
 
   while (framesRead < framesToRead && !stopToken.stop_requested()) {
     snd_pcm_uframes_t frames = framesToRead - framesRead;
-    if (paused) {
+    if (paused && pauseFadeLeft == 0) {
       framesRead += writeToAlsa(
           frames, [this](void *ptr, snd_pcm_uframes_t frames, size_t bytes) {
             memset(ptr, isDsd(currentStreamAudioFormat.sampleFormat) ? 0x69 : 0,
@@ -528,6 +592,8 @@ AlsaAudioEmitter::readIntoAlsaFromStream(std::stop_token stopToken,
       }
 
     } else {
+      if (pauseFadeLeft > 0)
+        frames = std::min(frames, pauseFadeLeft);
       auto actualFrames = writeToAlsa(
           frames, [this](void *ptr, snd_pcm_uframes_t frames, size_t bytes) {
             return readAndConvertFrames(ptr, bytes);
@@ -535,6 +601,12 @@ AlsaAudioEmitter::readIntoAlsaFromStream(std::stop_token stopToken,
 
       framesRead += actualFrames;
       currentSourceTotalFramesWritten += actualFrames;
+      if (pauseFadeLeft > 0) {
+        pauseFadeLeft -=
+            std::min<snd_pcm_uframes_t>(pauseFadeLeft, actualFrames);
+        if (pauseFadeLeft == 0)
+          reportOnceHeard(AudioGraphNodeState::PAUSED);
+      }
 
       if (!handleInputNodeStateChange()) {
         return -1;
@@ -637,6 +709,13 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
 
       setupAudioFormat(streamInfo.value().format, streamInfo->live);
       streamInfo.value().format = currentStreamAudioFormat;
+      if (fades()) {
+        // Audio after a seek starts mid-waveform; any other as its source does.
+        fade->settle(fadeInNext ? 0.0 : 1.0);
+        if (fadeInNext)
+          fade->fadeIn();
+      }
+      fadeInNext = false;
 
       bool started = false;
       seekHappened = false;
@@ -660,6 +739,7 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
       prepared.liveReady = streamInfo->live.has_value();
       setState(prepared);
       paused = false;
+      pauseFadeLeft = 0;
       auto lastLiveReport = std::chrono::steady_clock::now();
 
       while (!token.stop_requested()) {
@@ -715,6 +795,7 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
             continue;
           }
 
+          fadeQueuedOut();
           drainPcm();
           break;
         }

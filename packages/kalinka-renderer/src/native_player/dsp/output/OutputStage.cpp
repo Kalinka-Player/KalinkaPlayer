@@ -6,6 +6,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace {
 constexpr size_t kChunkFrames = 1024;
@@ -25,7 +26,7 @@ size_t frameBytes(AudioSampleFormat format, unsigned channels) {
 } // namespace
 
 OutputStage::OutputStage(std::vector<StreamAudioFormat> device, uint64_t seed)
-    : device(std::move(device)), ramp(kRamp),
+    : device(std::move(device)), ramp(kRamp), fade(kFadeLength),
       quantiser(kChunkFrames, kMaxChannels, seed),
       input(kChunkFrames * frameBytes(PCM_FLOAT64_LE, kMaxChannels)),
       planar(kMaxChannels, std::vector<double>(kChunkFrames)) {
@@ -96,12 +97,30 @@ std::optional<OutputStage::Presented> OutputStage::current() const {
 
 void OutputStage::setGain(double linear) { target = linear; }
 
+void OutputStage::fadeOut() { fadeTarget = 0.0; }
+
+void OutputStage::fadeIn() { fadeTarget = 1.0; }
+
+void OutputStage::settle(double level) { fadeSettle = fadeTarget = level; }
+
 void OutputStage::follow(unsigned rate) {
   const double gain = target.load();
   if (settlePending.exchange(false))
     ramp.settle(gain);
   else
     ramp.aim(gain, rate);
+  if (fadeSettle)
+    fade.settle(*std::exchange(fadeSettle, std::nullopt));
+  fade.aim(fadeTarget, rate);
+}
+
+GainRamp::Span OutputStage::take(size_t frames) {
+  for (const GainRamp *turning : {&ramp, &fade})
+    if (turning->left())
+      frames = std::min(frames, turning->left());
+  const auto volume = ramp.take(frames);
+  const auto faded = fade.take(frames);
+  return {volume.from * faded.from, volume.to * faded.to, frames};
 }
 
 size_t OutputStage::read(void *data, size_t size) {
@@ -121,7 +140,8 @@ size_t OutputStage::read(void *data, size_t size) {
     throw std::runtime_error("No output stage for " +
                              std::to_string(source.channels) + " channels");
   follow(source.sampleRate);
-  if (ramp.holding(1.0) && now->output.format == source.sampleFormat)
+  if (ramp.holding(1.0) && fade.holding(1.0) &&
+      now->output.format == source.sampleFormat)
     return upstream->read(data, size);
 
   const size_t inFrame = frameBytes(source.sampleFormat, source.channels);
@@ -152,7 +172,7 @@ void OutputStage::produce(const Presented &now, const uint8_t *in,
   // Integer to a wider container is exact; float to integer is quantised.
   const bool exact = from == to || (!isFloat(from) && !isFloat(to));
   for (size_t at = 0; at < frames;) {
-    const auto span = ramp.take(frames - at);
+    const auto span = take(frames - at);
     const uint8_t *source = in + at * inFrame;
     uint8_t *dest = out + at * outFrame;
     if (span.from == 1.0 && span.to == 1.0 && exact) {
