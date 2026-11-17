@@ -17,10 +17,14 @@ constexpr size_t kLatency = 5;
 /**
  * Stereo S32 in, float64 out at half the rate: each pair of input frames
  * makes one output once complete, the first frame of the pair, kLatency
- * output frames late, so output frame n is input frame 2n.
+ * output frames late, so output frame n is input frame 2n. One that
+ * remembers adds the first frame of the pair before, input frame 2n - 2, so
+ * it reaches back one output frame.
  */
 class HalvingProcessor final : public DspProcessor {
 public:
+  explicit HalvingProcessor(bool remembers = false) : remembers(remembers) {}
+
   bool handles(const StreamAudioFormat &format) const override {
     return format.sampleFormat == PCM32_LE && format.channels == 2;
   }
@@ -33,9 +37,11 @@ public:
   }
   size_t start(const StreamAudioFormat &) override {
     fed = 0;
+    previous = {0, 0};
     held.assign(kLatency, {0, 0});
     return kLatency;
   }
+  size_t history() const override { return remembers ? 1 : 0; }
   size_t process(const uint8_t *in, uint8_t *out, size_t frames) override {
     auto *to = reinterpret_cast<double *>(out);
     size_t made = 0;
@@ -47,7 +53,13 @@ public:
         pairStart = {double(frame[0]), double(frame[1])};
         continue;
       }
-      held.push_back(pairStart);
+      if (remembers) {
+        held.push_back({pairStart.first + previous.first,
+                        pairStart.second + previous.second});
+        previous = pairStart;
+      } else {
+        held.push_back(pairStart);
+      }
       to[2 * made] = held.front().first;
       to[2 * made + 1] = held.front().second;
       held.pop_front();
@@ -57,8 +69,10 @@ public:
   }
 
 private:
+  const bool remembers;
   uint64_t fed = 0;
   std::pair<double, double> pairStart;
+  std::pair<double, double> previous;
   std::deque<std::pair<double, double>> held;
 };
 
@@ -237,4 +251,64 @@ TEST_F(Converting, AJoinWaitsForTheNextSourcesFormatRatherThanEndTheRun) {
   for (size_t frame = 1; frame < 399; frame += 2)
     expected.push_back(double(second->value(frame)));
   EXPECT_EQ(left, expected) << "one run across the join, nothing flushed";
+}
+
+namespace {
+/// What a remembering processor makes of @p node's frames [from, to) in one
+/// run under way, each output adding the even frame before its own.
+std::vector<double> remembered(const CountingNode &node, size_t from,
+                               size_t to) {
+  std::vector<double> out;
+  for (size_t frame = from; frame < to; frame += 2)
+    out.push_back(double(node.value(frame)) +
+                  (frame >= 2 ? double(node.value(frame - 2)) : 0.0));
+  return out;
+}
+
+struct Remembering : Converting {
+  Remembering() {
+    stage =
+        std::make_shared<DspStage>(std::make_unique<HalvingProcessor>(true));
+  }
+};
+} // namespace
+
+TEST_F(Remembering, ASeekStartsEarlySoItsFirstFrameSoundsAsInARunUnderWay) {
+  auto node = queue(1, 1000);
+  stage->acceptSourceChange();
+  std::vector<double> buffer(2 * 50);
+  stage->read(buffer.data(), buffer.size() * 8);
+  ASSERT_EQ(stage->seekTo(100), 100u);
+  EXPECT_EQ(node->streamReadPosition(), std::optional<long>(198))
+      << "one output frame early, in input frames";
+  EXPECT_EQ(stage->streamReadPosition(), std::optional<long>(100));
+  EXPECT_EQ(pullAll(*stage), remembered(*node, 200, 1000));
+}
+
+TEST_F(Remembering, ReadingOnFromAnEarlySeekCountsFromTheTarget) {
+  queue(1, 1000);
+  stage->acceptSourceChange();
+  ASSERT_EQ(stage->seekTo(100), 100u);
+  std::vector<double> buffer(2 * 10);
+  ASSERT_EQ(stage->read(buffer.data(), buffer.size() * 8), buffer.size() * 8);
+  EXPECT_EQ(stage->streamReadPosition(), std::optional<long>(110));
+}
+
+TEST_F(Remembering, ASeekToTheStartHasNoHistoryToRunThrough) {
+  auto node = queue(1, 1000);
+  stage->acceptSourceChange();
+  ASSERT_EQ(stage->seekTo(0), 0u);
+  EXPECT_EQ(node->streamReadPosition(), std::optional<long>(0));
+  EXPECT_EQ(pullAll(*stage), remembered(*node, 0, 1000));
+}
+
+TEST_F(Remembering, ASourceEndingBeforeTheTargetHandsTheNextOneOverWhole) {
+  auto first = queue(1, 999);
+  auto second = queue(2, 400);
+  stage->acceptSourceChange();
+  // Its last output frame is 498: frame 499 never completes, so the history
+  // run up to it ends with the source.
+  ASSERT_EQ(stage->seekTo(500), 500u);
+  EXPECT_EQ(pullAll(*stage), remembered(*second, 0, 400))
+      << "the next source starts a run of its own, nothing passed over";
 }

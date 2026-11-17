@@ -1,7 +1,11 @@
 #include "dsp/dsd/DsdToPcmProcessor.h"
 
+#include "dsp/DspStage.h"
+
 #include <gtest/gtest.h>
 
+#include <cstring>
+#include <mutex>
 #include <random>
 #include <vector>
 
@@ -25,6 +29,69 @@ std::vector<uint8_t> randomBytes(size_t count) {
   for (auto &byte : bytes)
     byte = uint8_t(random());
   return bytes;
+}
+
+/// Raw DSD that can be sought, a byte a channel to a frame.
+class DsdBytes : public AudioGraphOutputNode {
+public:
+  DsdBytes(StreamAudioFormat format, std::vector<uint8_t> bytes)
+      : AudioGraphNode(StreamId(1)), format(format), bytes(std::move(bytes)) {
+    seekTo(0);
+  }
+  size_t read(void *data, size_t size) override {
+    std::lock_guard lock(mutex);
+    const size_t n =
+        std::min(size, bytes.size() - at) / format.channels * format.channels;
+    std::memcpy(data, bytes.data() + at, n);
+    at += n;
+    if (at == bytes.size())
+      setState(StreamState(AudioGraphNodeState::FINISHED));
+    return n;
+  }
+  size_t waitForData(std::stop_token = std::stop_token(),
+                     size_t size = 1) override {
+    std::lock_guard lock(mutex);
+    return std::min(size, bytes.size() - at);
+  }
+  size_t waitForDataFor(std::stop_token token, std::chrono::milliseconds,
+                        size_t size) override {
+    return waitForData(token, size);
+  }
+  size_t seekTo(size_t frame) override {
+    std::lock_guard lock(mutex);
+    at = std::min(frame * format.channels, bytes.size());
+    setState({AudioGraphNodeState::STREAMING, long(at / format.channels),
+              StreamInfo{.format = format,
+                         .streamType = StreamType::FRAMES,
+                         .streamSize = bytes.size() / format.channels}});
+    return at / format.channels;
+  }
+  std::optional<long> streamReadPosition() const override {
+    std::lock_guard lock(mutex);
+    return long(at / format.channels);
+  }
+
+private:
+  const StreamAudioFormat format;
+  const std::vector<uint8_t> bytes;
+  mutable std::mutex mutex;
+  size_t at = 0;
+};
+
+/// The left samples of every frame @p stage hands on from here.
+std::vector<double> pullLeft(DspStage &stage) {
+  std::vector<double> left, buffer(2 * 512);
+  while (true) {
+    if (stage.getState().state == AudioGraphNodeState::SOURCE_CHANGED) {
+      stage.acceptSourceChange();
+      continue;
+    }
+    const size_t bytes = stage.read(buffer.data(), buffer.size() * 8);
+    if (bytes == 0)
+      return left;
+    for (size_t i = 0; i < bytes / 16; ++i)
+      left.push_back(buffer[2 * i]);
+  }
 }
 } // namespace
 
@@ -92,4 +159,38 @@ TEST(DsdToPcmProcessor, FedSilenceSettlesToZero) {
   ASSERT_EQ(made, 1000u);
   for (size_t i = 0; i < 2 * made; ++i)
     EXPECT_EQ(out[i], 0.0);
+}
+
+TEST(DsdToPcmProcessor, ItsHistoryIsTheConvertersReachOnceStarted) {
+  DsdToPcmProcessor processor({}, 1.0);
+  EXPECT_EQ(processor.history(), 0u) << "nothing started";
+  const size_t latency = processor.start(raw(5644800));
+  EXPECT_EQ(processor.history(), latency + 1);
+}
+
+TEST(DsdToPcmProcessor, ASeekThroughTheStageSoundsAsARunUnderWayDoes) {
+  const auto format = raw(2822400);
+  const auto bytes = randomBytes(2 * 40000);
+  const auto play = [&](std::optional<size_t> seek) {
+    auto source = std::make_shared<DsdBytes>(format, bytes);
+    DspStage stage(std::make_unique<DsdToPcmProcessor>(
+        std::vector<StreamAudioFormat>{}, 1.0));
+    stage.connectTo(source);
+    if (seek) {
+      std::vector<double> buffer(2 * 1000);
+      stage.read(buffer.data(), buffer.size() * 8);
+      EXPECT_EQ(stage.seekTo(*seek), *seek);
+    }
+    auto left = pullLeft(stage);
+    stage.disconnect(source);
+    return left;
+  };
+  const auto whole = play(std::nullopt);
+  constexpr size_t kTarget = 12345;
+  const auto sought = play(kTarget);
+  ASSERT_EQ(whole.size(), 20000u);
+  ASSERT_EQ(sought.size(), whole.size() - kTarget);
+  for (size_t i = 0; i < sought.size(); ++i)
+    ASSERT_NEAR(sought[i], whole[kTarget + i], 1e-12)
+        << "output frame " << kTarget + i << " after the seek";
 }

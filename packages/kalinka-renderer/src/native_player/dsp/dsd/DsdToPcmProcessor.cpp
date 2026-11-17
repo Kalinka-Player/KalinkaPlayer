@@ -56,6 +56,11 @@ size_t DsdToPcmProcessor::start(const StreamAudioFormat &format) {
   return converter->latency();
 }
 
+size_t DsdToPcmProcessor::history() const {
+  // Linear phase: a frame reaches back as far as it lags, rounded either way.
+  return converter ? converter->latency() + 1 : 0;
+}
+
 size_t DsdToPcmProcessor::process(const uint8_t *in, uint8_t *out,
                                   size_t frames) {
   auto *samples = reinterpret_cast<double *>(out);

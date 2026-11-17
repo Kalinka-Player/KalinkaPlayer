@@ -5,6 +5,7 @@
 #include "Config.h"
 #include "PlaybackPcm.h"
 #include "Utils.h"
+#include "dsp/output/OutputFade.h"
 
 #include <alsa/asoundlib.h>
 
@@ -12,9 +13,12 @@
 #include <chrono>
 #include <functional>
 #include <list>
+#include <memory>
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+class PackedFade;
 
 class PlayedFramesCounter {
 public:
@@ -65,6 +69,11 @@ public:
   virtual size_t seek(size_t positionMs) override;
 
   void setDsdAllowed(bool allowed) { dsdAllowed.store(allowed); }
+  /// What fades a pause, a resume and the audio after a seek: the node it
+  /// reads from, set before connectTo(). Without one, nothing fades.
+  void fadeWith(std::shared_ptr<OutputFade> fade) {
+    this->fade = std::move(fade);
+  }
 
   virtual ~AlsaAudioEmitter();
 
@@ -111,6 +120,12 @@ private:
   Signal<bool> pauseRequestSignal;
   bool paused = false;
   bool seekHappened = false;
+  std::shared_ptr<OutputFade> fade;
+  const std::unique_ptr<PackedFade> packedFade;
+  /// Frames a pause still reads, fading, before it writes silence.
+  snd_pcm_uframes_t pauseFadeLeft = 0;
+  /// The next run starts where a seek landed, mid-waveform.
+  bool fadeInNext = false;
   /// The report of a gapless source change, waiting for its first frame to
   /// be heard.
   std::optional<int> pendingSourceReport;
@@ -118,6 +133,14 @@ private:
   void workerThread(std::stop_token token);
   bool handleSeekSignal();
   bool handlePauseSignal(bool paused);
+  /// Reports @p state once what the device holds now has been heard.
+  bool reportOnceHeard(AudioGraphNodeState state);
+  /// Whether what plays can be faded: PCM, with something to fade it.
+  bool fades() const;
+  /// Takes back what the device holds unplayed, fades its start out and
+  /// silences the rest, and waits until the fade has been heard. Leaves the
+  /// queue alone on a device that cannot take it back.
+  void fadeQueuedOut();
   /// Applies a pause or resume that lands before the device started: nothing
   /// is playing out, so the new state holds at once.
   void pauseBeforeStart(bool paused, const StreamInfo &streamInfo,

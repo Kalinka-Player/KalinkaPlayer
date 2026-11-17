@@ -243,3 +243,82 @@ TEST(OutputStage, MonoStaysMonoForTheSinkToSpread) {
   EXPECT_EQ(shown->format.channels, 1u);
   EXPECT_EQ(shown->format.sampleFormat, PCM32_LE);
 }
+
+namespace {
+// 10 ms at kRate.
+constexpr size_t kFadeFrames = 480;
+} // namespace
+
+TEST(OutputStage, AFadeOutFallsToSilenceOverTenMillisecondsThenReadsSilence) {
+  constexpr int32_t kHalf = 1 << 30;
+  Stage s(pcm(PCM32_LE), asBytes(std::vector<int32_t>(2 * 4000, kHalf)),
+          k24In32);
+  readSamples<int32_t>(*s.stage, 2 * 100);
+  s.stage->fadeOut();
+  const auto faded = readSamples<int32_t>(*s.stage, 2 * kFadeFrames);
+  ASSERT_EQ(faded.size(), 2 * kFadeFrames);
+  for (size_t i = 0; i < kFadeFrames; ++i) {
+    const double gain = 1.0 - double(i + 1) / double(kFadeFrames);
+    ASSERT_LE(std::abs(double(faded[2 * i] / 256) - gain * double(1 << 22)),
+              1.5)
+        << "frame " << i;
+  }
+  for (const int32_t v : readSamples<int32_t>(*s.stage, 2 * 100))
+    ASSERT_EQ(v, 0) << "digital silence once faded out";
+  EXPECT_EQ(s.source->streamReadPosition(), 100 + long(kFadeFrames) + 100)
+      << "a fade reads the frames it fades, and no others";
+}
+
+TEST(OutputStage, AFadeInRisesFromSilenceThenTheBytesAreUpstreamsAgain) {
+  const auto bytes = randomBytes(4000 * 4);
+  Stage s(pcm(PCM16_LE), bytes);
+  s.stage->settle(0.0);
+  s.stage->fadeIn();
+  const auto faded = readSamples<int16_t>(*s.stage, 2 * kFadeFrames);
+  std::vector<int16_t> source(2 * kFadeFrames);
+  std::memcpy(source.data(), bytes.data(), source.size() * 2);
+  for (size_t i = 0; i < kFadeFrames; ++i) {
+    const double gain = double(i + 1) / double(kFadeFrames);
+    ASSERT_LE(std::abs(double(faded[2 * i]) - gain * source[2 * i]), 1.5)
+        << "frame " << i;
+  }
+  EXPECT_EQ(
+      readAll(*s.stage, 1000),
+      std::vector<uint8_t>(bytes.begin() + long(kFadeFrames * 4), bytes.end()));
+}
+
+TEST(OutputStage, AFadeMultipliesTheVolume) {
+  constexpr int16_t kLevel = 1 << 14;
+  Stage s(pcm(PCM16_LE), asBytes(std::vector<int16_t>(2 * 4000, kLevel)));
+  s.stage->setGain(0.5);
+  readSamples<int16_t>(*s.stage, 2 * 10);
+  s.stage->fadeOut();
+  const auto faded = readSamples<int16_t>(*s.stage, 2 * kFadeFrames);
+  for (size_t i = 0; i < kFadeFrames; ++i) {
+    const double gain = 0.5 * (1.0 - double(i + 1) / double(kFadeFrames));
+    ASSERT_LE(std::abs(double(faded[2 * i]) - gain * kLevel), 1.5)
+        << "frame " << i;
+  }
+}
+
+TEST(OutputStage, AFadeInMidFadeOutTurnsBackFromTheLevelReached) {
+  constexpr int16_t kLevel = 1 << 14;
+  Stage s(pcm(PCM16_LE), asBytes(std::vector<int16_t>(2 * 4000, kLevel)));
+  readSamples<int16_t>(*s.stage, 2 * 10);
+  s.stage->fadeOut();
+  readSamples<int16_t>(*s.stage, 2 * kFadeFrames / 2);
+  s.stage->fadeIn();
+  const auto back = readSamples<int16_t>(*s.stage, 2 * kFadeFrames);
+  for (size_t i = 0; i < kFadeFrames; ++i) {
+    const double gain = 0.5 + 0.5 * double(i + 1) / double(kFadeFrames);
+    ASSERT_LE(std::abs(double(back[2 * i]) - gain * kLevel), 1.5)
+        << "frame " << i;
+  }
+}
+
+TEST(OutputStage, DsdIsNotFaded) {
+  const auto bytes = randomBytes(1000 * 2);
+  Stage s({352800, 2, 1, DSD_U8, 2822400}, bytes, k24In32);
+  s.stage->fadeOut();
+  EXPECT_EQ(readAll(*s.stage, 500), bytes);
+}
