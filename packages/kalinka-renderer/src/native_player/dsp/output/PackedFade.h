@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AudioSampleFormat.h"
+#include "dsp/output/GainRamp.h"
 #include "dsp/output/Quantiser.h"
 
 #include <cstddef>
@@ -12,24 +13,27 @@
  * @brief Fades PCM already packed for the device to silence, in place: what a
  * device holds unplayed at a seek, which no stage upstream can reach any more.
  *
- * The gain falls as the OutputStage's does over the same frames, and the
- * result is dithered at the significant bits given.
+ * The fade is the OutputStage's: the same GainRamp over the same length,
+ * dithered at the significant bits given. Past its end, frames are silenced.
  * @note Not thread-safe. Allocates only when constructed.
  */
 class PackedFade {
 public:
   explicit PackedFade(uint64_t seed = std::random_device{}());
 
+  /// Starts a fade from full level at @p rate.
+  void begin(unsigned rate);
+
   /**
-   * @brief Fades frames [@p at, @p at + @p frames) of a fade @p length frames
-   * long, interleaved in @p data.
+   * @brief Fades the next @p frames frames of it, interleaved in @p data.
    * @param bits The significant bits to dither at.
    * @throws std::invalid_argument for DSD, DoP, or more channels than it holds.
    */
   void out(uint8_t *data, AudioSampleFormat format, unsigned channels,
-           unsigned bits, size_t at, size_t frames, size_t length);
+           unsigned bits, size_t frames);
 
 private:
+  GainRamp ramp;
   Quantiser quantiser;
   std::vector<std::vector<double>> planar;
   std::vector<double *> planes;

@@ -30,4 +30,7 @@ public:
   /// Takes @p level at once: 1 for audio that starts at its own beginning, 0
   /// for audio that starts mid-waveform and fades in.
   virtual void settle(double level) = 0;
+  /// Whether reads are silent until the next fadeIn() or settle(): a fade out
+  /// has run its course, and any fade in since read nothing.
+  virtual bool silent() const = 0;
 };

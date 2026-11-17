@@ -7,6 +7,8 @@
 #include <vector>
 
 namespace {
+constexpr unsigned kRate = 48000;
+// 10 ms at kRate.
 constexpr size_t kLength = 480;
 
 /// The gain the OutputStage's fade gives frame @p frame of a fade to silence.
@@ -30,7 +32,9 @@ template <class T> std::vector<T> asSamples(const std::vector<uint8_t> &bytes) {
 TEST(PackedFade, FallsToSilenceOverTheFadeAsTheStageWould) {
   constexpr int32_t kHalf = 1 << 30;
   auto bytes = asBytes(std::vector<int32_t>(2 * kLength, kHalf));
-  PackedFade(1).out(bytes.data(), PCM32_LE, 2, 24, 0, kLength, kLength);
+  PackedFade fade(1);
+  fade.begin(kRate);
+  fade.out(bytes.data(), PCM32_LE, 2, 24, kLength);
   const auto out = asSamples<int32_t>(bytes);
   for (size_t i = 0; i < kLength; ++i)
     for (unsigned c = 0; c < 2; ++c) {
@@ -46,10 +50,10 @@ TEST(PackedFade, AFadeWrittenInPiecesIsOneFade) {
   constexpr int16_t kLevel = 1 << 14;
   auto bytes = asBytes(std::vector<int16_t>(2 * kLength, kLevel));
   PackedFade fade(1);
+  fade.begin(kRate);
   // Where a device's ring wraps: the rest of the fade comes in a second call.
-  fade.out(bytes.data(), PCM16_LE, 2, 16, 0, 100, kLength);
-  fade.out(bytes.data() + 100 * 4, PCM16_LE, 2, 16, 100, kLength - 100,
-           kLength);
+  fade.out(bytes.data(), PCM16_LE, 2, 16, 100);
+  fade.out(bytes.data() + 100 * 4, PCM16_LE, 2, 16, kLength - 100);
   const auto out = asSamples<int16_t>(bytes);
   for (size_t i = 0; i < kLength; ++i)
     ASSERT_LE(std::abs(double(out[2 * i]) - fallen(i) * kLevel), 1.5)
@@ -64,7 +68,9 @@ TEST(PackedFade, ThreeByteSamplesFadeInPlace) {
     bytes[3 * s + 1] = uint8_t(kLevel >> 8);
     bytes[3 * s + 2] = uint8_t(kLevel >> 16);
   }
-  PackedFade(1).out(bytes.data(), PCM24_3LE, 2, 24, 0, kLength, kLength);
+  PackedFade fade(1);
+  fade.begin(kRate);
+  fade.out(bytes.data(), PCM24_3LE, 2, 24, kLength);
   for (size_t i = 0; i < kLength; ++i) {
     const uint8_t *at = bytes.data() + 6 * i;
     const int32_t v = int32_t(uint32_t(at[0]) << 8 | uint32_t(at[1]) << 16 |
@@ -74,8 +80,19 @@ TEST(PackedFade, ThreeByteSamplesFadeInPlace) {
   }
 }
 
+TEST(PackedFade, PastItsEndItSilences) {
+  auto bytes = asBytes(std::vector<int16_t>(2 * 2 * kLength, 1 << 14));
+  PackedFade fade(1);
+  fade.begin(kRate);
+  fade.out(bytes.data(), PCM16_LE, 2, 16, 2 * kLength);
+  const auto out = asSamples<int16_t>(bytes);
+  for (size_t i = kLength; i < 2 * kLength; ++i)
+    ASSERT_EQ(out[2 * i], 0) << "frame " << i;
+}
+
 TEST(PackedFade, RefusesDsd) {
   std::vector<uint8_t> bytes(64, 0x69);
-  EXPECT_THROW(PackedFade(1).out(bytes.data(), DSD_U8, 2, 1, 0, 32, 32),
-               std::invalid_argument);
+  PackedFade fade(1);
+  fade.begin(kRate);
+  EXPECT_THROW(fade.out(bytes.data(), DSD_U8, 2, 1, 32), std::invalid_argument);
 }

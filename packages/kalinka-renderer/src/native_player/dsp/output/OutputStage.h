@@ -62,6 +62,7 @@ public:
   void fadeOut() override;
   void fadeIn() override;
   void settle(double level) override;
+  bool silent() const override;
   /// Samples clamped to the output's range so far.
   uint64_t clippedSamples() const { return clipped.load(); }
 

@@ -306,8 +306,11 @@ they are:
 untouched.
 - **A pause** fades out over the next 10 ms the emitter writes, after what the
   device already holds. It is reported once that has been heard, and silence
-  follows. A resume fades in from there, so nothing is lost or repeated.
-- **A seek** takes back what the device holds unplayed with `snd_pcm_rewind`.
+  follows. A resume fades in from there, so nothing is lost or repeated. A
+  fade that reaches a gapless join carries on into the next track. A track
+  ending inside it any other way plays out, and the next track starts paused.
+- **A seek** takes back what the device holds unplayed with `snd_pcm_rewind`,
+  unless that is only a pause's silence.
   It leaves 5 ms that may already be on its way to the DAC, fades the first
   10 ms of the rest out in place (`PackedFade`) and silences the remainder.
   Once the fade has been heard, the device is dropped as before. The audio
@@ -767,7 +770,9 @@ as its filters are linear phase. A seek asks upstream for that much before
 the target and runs it through, and the stage hands on from the target. The
 first frames after a seek are then what a run under way makes, where they
 used to start from the idle pattern: a test holds them to an uninterrupted
-run's within 1e-12.
+run's within 1e-12. The history is known only for the format of the run
+started last, so a seek in another before its first run starts on time. An
+upstream that lands further back than asked plays on from where it landed.
 
 **Where the code is.** All of the DSP is in `native_player/dsp/`:
 - the stage, `DspStage`, and `DspProcessor`, the interface it runs audio
