@@ -38,6 +38,8 @@ const size_t MPEG_BUFFER_SIZE = 768000;
 const size_t VORBIS_BUFFER_SIZE = 768000;
 const size_t WAV_BUFFER_SIZE = 1536000;
 const size_t DSD_BUFFER_SIZE = 1536000;
+// 0.7 s of DSD512, 6 s of DSD64.
+const size_t DSD_HTTP_BUFFER_SIZE = 4096000;
 // MP4 may carry hi-res FLAC or ALAC as well as AAC.
 const size_t AAC_BUFFER_SIZE = 1536000;
 // 750KB, 50% of flac buffer size
@@ -195,12 +197,12 @@ struct StreamNodes {
     } else {
       // Use AudioGraphHttpStream for network streams
       spdlog::debug("Creating AudioGraphHttpStream for URL: {}", url);
+      const auto buffering = AudioPlayer::httpBuffering(config, format);
       nodeChain.emplace_back(std::make_shared<AudioGraphHttpStream>(
-          id, url, format == FormatLivePcm ? size_t(16384) : value_or(config, "input.http.buffer_size", HTTP_BUFFER_SIZE),
-          format == FormatLivePcm ? size_t(0) : value_or(config, "input.http.chunk_size", CHUNK_SIZE),
-          std::chrono::seconds(value_or(
-              config, "input.http.stall_timeout",
-              AudioGraphHttpStream::DEFAULT_STALL_TIMEOUT.count())),
+          id, url, buffering.buffer, buffering.request,
+          std::chrono::seconds(
+              value_or(config, "input.http.stall_timeout",
+                       AudioGraphHttpStream::DEFAULT_STALL_TIMEOUT.count())),
           value_or(config, "input.http.max_redirects",
                    AudioGraphHttpStream::DEFAULT_MAX_REDIRECTS)));
     }
@@ -529,6 +531,23 @@ std::unique_ptr<VolumeMonitor> AudioPlayer::volumeMonitor() {
 
 bool AudioPlayer::isStreamKey(const std::string &key) {
   return key.starts_with("input.") || key.starts_with("decoder.");
+}
+
+AudioPlayer::HttpBuffering AudioPlayer::httpBuffering(const Config &config,
+                                                      AudioFormat format) {
+  switch (format) {
+  case FormatLivePcm:
+    // Paced by its producer: one open-ended request, and little held back.
+    return {16384, 0};
+  case FormatDsd: {
+    const size_t buffer =
+        value_or(config, "input.http.dsd_buffer_size", DSD_HTTP_BUFFER_SIZE);
+    return {buffer, buffer / 2};
+  }
+  default:
+    return {value_or(config, "input.http.buffer_size", HTTP_BUFFER_SIZE),
+            value_or(config, "input.http.chunk_size", CHUNK_SIZE)};
+  }
 }
 
 bool AudioPlayer::setStreamConfig(const std::string &key,

@@ -489,6 +489,26 @@ TEST_F(AudioPlayerTest, a_stream_key_set_later_reaches_the_next_stream) {
               ::testing::HasSubstr("Nothing received for 1 s"));
 }
 
+TEST(AudioPlayerBuffering, DsdHasItsOwnNetworkBufferAndAsksForHalfOfIt) {
+  const Config config = {{"input.http.buffer_size", "768000"},
+                         {"input.http.chunk_size", "384000"},
+                         {"input.http.dsd_buffer_size", "8192000"}};
+  const auto dsd = AudioPlayer::httpBuffering(config, FormatDsd);
+  EXPECT_EQ(dsd.buffer, 8192000u);
+  EXPECT_EQ(dsd.request, 4096000u);
+  const auto flac = AudioPlayer::httpBuffering(config, FormatFlac);
+  EXPECT_EQ(flac.buffer, 768000u);
+  EXPECT_EQ(flac.request, 384000u);
+  const auto live = AudioPlayer::httpBuffering(config, FormatLivePcm);
+  EXPECT_EQ(live.request, 0u) << "a live source is one open-ended request";
+}
+
+TEST(AudioPlayerBuffering, DsdAsksForTwoMegabytesUnlessToldOtherwise) {
+  const auto dsd = AudioPlayer::httpBuffering({}, FormatDsd);
+  EXPECT_EQ(dsd.buffer, 4096000u);
+  EXPECT_EQ(dsd.request, 2048000u);
+}
+
 TEST_F(AudioPlayerTest, only_a_stream_key_changes_without_a_new_player) {
   EXPECT_TRUE(AudioPlayer::isStreamKey("input.http.buffer_size"));
   EXPECT_TRUE(AudioPlayer::isStreamKey("decoder.flac.buffer_size"));
