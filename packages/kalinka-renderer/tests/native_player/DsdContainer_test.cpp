@@ -10,9 +10,11 @@
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
+#include <random>
 #include <unistd.h>
 
 namespace {
+using container_test::bitsReversed;
 using container_test::Bytes;
 using container_test::BytesInput;
 using container_test::drain;
@@ -50,7 +52,7 @@ Bytes dsf(unsigned order = 8, unsigned channels = 2, unsigned rate = 2822400,
   return out;
 }
 constexpr size_t DSF_FILE_SIZE_AT = 12, DSF_SAMPLE_COUNT_AT = 64,
-                 DSF_DATA_SIZE_AT = 84;
+                 DSF_DATA_SIZE_AT = 84, DSF_AUDIO_AT = 92;
 void overwrite(Bytes &out, size_t at, uint64_t n) {
   for (unsigned i = 0; i < 8; ++i)
     out[at + i] = n >> (8 * i);
@@ -268,6 +270,30 @@ TEST(DsdDecoder, SeeksInsideDsfChannelBlocksAndRestartsAfterEof) {
   EXPECT_EQ(result[4], 38);
   EXPECT_EQ(result[5], 37);
   EXPECT_EQ(decoder.streamReadPosition(), 2048);
+}
+TEST(DsdDecoder, LsbFirstDsfPlaysEveryByteOfEveryGroupBeforeAndAfterASeek) {
+  constexpr size_t kBlock = 4096, kGroups = 3, kBytes = 2 * kBlock + 1235;
+  constexpr unsigned kTrailingBits = 5;
+  auto file = dsf(1, 2, 2822400, kGroups - 1);
+  overwrite(file, DSF_SAMPLE_COUNT_AT, (kBytes - 1) * 8 + kTrailingBits);
+  std::mt19937 random(2);
+  for (auto at = file.begin() + DSF_AUDIO_AT; at != file.end(); ++at)
+    *at = uint8_t(random());
+  Bytes expected;
+  for (size_t b = 0; b < kBytes; ++b)
+    for (size_t c = 0; c < 2; ++c)
+      expected.push_back(bitsReversed(
+          file[DSF_AUDIO_AT + (b / kBlock * 2 + c) * kBlock + b % kBlock]));
+  const auto played = uint8_t(0xff << (8 - kTrailingBits));
+  for (auto at = expected.end() - 2; at != expected.end(); ++at)
+    *at = (*at & played) | (0x69 & ~played);
+  ContainerStreamDecoder decoder(1, dsd(DSD_U8), BUFFER_SIZE);
+  decoder.connectTo(std::make_shared<BytesInput>(file));
+  EXPECT_EQ(drain(decoder), expected);
+  constexpr size_t kSeek = kBlock + 777;
+  ASSERT_EQ(decoder.seekTo(kSeek), kSeek);
+  EXPECT_EQ(drain(decoder),
+            Bytes(expected.begin() + 2 * kSeek, expected.end()));
 }
 TEST(DsdDecoder, StartOffsetUsesTransportFrames) {
   ContainerStreamDecoder decoder(1, dsd(DSD_U32_LE), BUFFER_SIZE, 1);

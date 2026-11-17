@@ -13,6 +13,14 @@
 namespace container_test {
 using Bytes = std::vector<uint8_t>;
 
+/// The byte with its bits in the opposite order, moved one at a time.
+inline uint8_t bitsReversed(uint8_t byte) {
+  uint8_t out = 0;
+  for (unsigned bit = 0; bit < 8; ++bit)
+    out |= uint8_t(((byte >> bit) & 1) << (7 - bit));
+  return out;
+}
+
 /**
  * @brief A decoder's source served from memory in reads of a few bytes, so
  * every header and block spans several of them. Seekable or sequential, and
