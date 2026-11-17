@@ -170,6 +170,22 @@ TEST_F(Converting, PositionsAreInOutputFrames) {
   EXPECT_EQ(stage->streamReadPosition(), std::optional<long>(110));
 }
 
+TEST_F(Converting, ASourceBeginningPartwayIsThereInOutputFramesBeforeARead) {
+  queue(1, 1000, {.first = 200});
+  stage->acceptSourceChange();
+  EXPECT_EQ(stage->streamReadPosition(), std::optional<long>(100));
+}
+
+TEST_F(Converting, AfterASeekTheReadPositionIsInOutputFramesBeforeARead) {
+  queue(1, 1000);
+  stage->acceptSourceChange();
+  std::vector<double> buffer(2 * 50);
+  stage->read(buffer.data(), buffer.size() * 8);
+  ASSERT_EQ(stage->seekTo(100), 100u);
+  EXPECT_EQ(stage->streamReadPosition(), std::optional<long>(100))
+      << "where the emitter re-bases its clock after a seek";
+}
+
 TEST_F(Converting, ASeekInOutputFramesReachesUpstreamInItsOwn) {
   auto node = queue(1, 1000);
   stage->acceptSourceChange();

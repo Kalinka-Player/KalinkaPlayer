@@ -596,10 +596,10 @@ size_t DspStage::seekStream(StreamId stream, size_t position) {
 }
 
 unsigned DspStage::runRatio() const {
-  if (!segments.empty()) {
-    return ratio;
-  }
-  const auto &info = upstreamSeen.streamInfo;
+  return segments.empty() ? ratioOf(upstreamSeen.streamInfo) : ratio;
+}
+
+unsigned DspStage::ratioOf(const std::optional<StreamInfo> &info) const {
   return info && processor->handles(info->format)
              ? processor->output(info->format).ratio
              : 1;
@@ -627,7 +627,13 @@ std::optional<long> DspStage::streamReadPosition() const {
       }
     }
   }
-  return upstream ? upstream->streamReadPosition() : std::nullopt;
+  const auto position =
+      upstream ? upstream->streamReadPosition() : std::nullopt;
+  // No run yet, as straight after a seek: upstream counts its own frames, in
+  // the format it has now, which an accepted source shows before a sync.
+  if (processor && position)
+    return *position / long(ratioOf(upstream->getState().streamInfo));
+  return position;
 }
 
 std::optional<uint64_t> DspStage::liveSourceFrame() const {
