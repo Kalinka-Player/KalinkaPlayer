@@ -12,27 +12,32 @@ template <class T> void store(uint8_t *at, T value) {
   std::memcpy(at, &value, sizeof(T));
 }
 
-/// Writes one significant-bit integer into its container, MSB-aligned.
-void storeInteger(uint8_t *at, AudioSampleFormat format, int32_t value,
-                  unsigned shift) {
-  const int32_t aligned = int32_t(uint32_t(value) << shift);
-  switch (format) {
-  case PCM16_LE:
-    return store(at, int16_t(aligned));
-  case PCM24_LE:
-    return store(at, aligned);
-  case PCM24_3LE:
-    at[0] = uint8_t(aligned);
-    at[1] = uint8_t(aligned >> 8);
-    at[2] = uint8_t(aligned >> 16);
-    return;
-  case PCM32_LE:
-    return store(at, aligned);
-  default:
-    throw std::invalid_argument(std::string("No integer output in ") +
-                                sampleFormatToString(format));
+/// Interleaves each channel's integers into containers of @p Width bytes,
+/// which @p put writes from the MSB-aligned word.
+template <size_t Width, class Put>
+void interleave(const std::vector<std::vector<int32_t>> &rounded,
+                unsigned channels, size_t frames, unsigned shift, Put put,
+                uint8_t *out) {
+  for (unsigned c = 0; c < channels; ++c) {
+    const int32_t *from = rounded[c].data();
+    uint8_t *at = out + c * Width;
+    for (size_t i = 0; i < frames; ++i, at += channels * Width)
+      put(at, uint32_t(from[i]) << shift);
   }
 }
+
+// Lambdas, not functions: each its own type, so every loop inlines its store.
+constexpr auto put16 = [](uint8_t *at, uint32_t aligned) {
+  store(at, int16_t(aligned));
+};
+constexpr auto put32 = [](uint8_t *at, uint32_t aligned) {
+  store(at, int32_t(aligned));
+};
+constexpr auto put24 = [](uint8_t *at, uint32_t aligned) {
+  at[0] = uint8_t(aligned);
+  at[1] = uint8_t(aligned >> 8);
+  at[2] = uint8_t(aligned >> 16);
+};
 } // namespace
 
 Quantiser::Quantiser(size_t capacity, unsigned channels, uint64_t seed)
@@ -75,8 +80,16 @@ void Quantiser::pack(const double *const *in, unsigned channels, size_t frames,
                                  noise.data(), low, high, rounded[c].data());
   }
   const unsigned shift = container - bits;
-  for (size_t i = 0; i < frames; ++i)
-    for (unsigned c = 0; c < channels; ++c)
-      storeInteger(bytes + (i * channels + c) * width, format, rounded[c][i],
-                   shift);
+  switch (format) {
+  case PCM16_LE:
+    return interleave<2>(rounded, channels, frames, shift, put16, bytes);
+  case PCM24_LE:
+  case PCM32_LE:
+    return interleave<4>(rounded, channels, frames, shift, put32, bytes);
+  case PCM24_3LE:
+    return interleave<3>(rounded, channels, frames, shift, put24, bytes);
+  default:
+    throw std::invalid_argument(std::string("No integer output in ") +
+                                sampleFormatToString(format));
+  }
 }
