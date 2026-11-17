@@ -447,7 +447,7 @@ TEST_F(NativePlayerSettingsTest, BufferingIsItsOwnSection) {
   const renderer_pb::ConfigSection section = buffers();
 
   EXPECT_EQ(section.path(), "buffers");
-  EXPECT_EQ(section.fields_size(), 8);
+  EXPECT_EQ(section.fields_size(), 9);
   for (const renderer_pb::ConfigField &knob : section.fields()) {
     EXPECT_TRUE(knob.path().starts_with("buffers."));
     EXPECT_FALSE(knob.value().empty()) << knob.path();
@@ -847,6 +847,21 @@ TEST_F(NativePlayerSettingsTest, DsdBufferIsPersistedAndReachesTheNextTrack) {
   EXPECT_EQ(knob->value(), "200000");
   EXPECT_EQ(knob->apply(), renderer_pb::APPLY_COST_INSTANT);
   EXPECT_EQ(loadSettingsOverrides().at("buffers.dsd"), "200000");
+}
+
+TEST_F(NativePlayerSettingsTest,
+       DsdNetworkBufferIsPersistedAndReachesTheNextTrack) {
+  EXPECT_EQ(field(buffers(), "buffers.network_dsd")->value(), "4096000");
+  ASSERT_TRUE(player_->bufferSettings()->applyConfig("buffers.network_dsd",
+                                                     "8192000", error_))
+      << error_;
+
+  const renderer_pb::ConfigSection section = buffers();
+  const renderer_pb::ConfigField *knob = field(section, "buffers.network_dsd");
+  ASSERT_NE(knob, nullptr);
+  EXPECT_EQ(knob->value(), "8192000");
+  EXPECT_EQ(knob->apply(), renderer_pb::APPLY_COST_INSTANT);
+  EXPECT_EQ(loadSettingsOverrides().at("buffers.network_dsd"), "8192000");
 }
 
 TEST_F(NativePlayerSettingsTest, SupportedSourcesPlayThroughTheProtocolAdapter) {

@@ -105,6 +105,19 @@ public:
   /// and `decoder.`), rather than once, when the output is built.
   static bool isStreamKey(const std::string &key);
 
+  /// How a track of one format is fetched over HTTP.
+  struct HttpBuffering {
+    /// Bytes held between the network and the decoder.
+    size_t buffer;
+    /// Bytes asked for at a time; 0 asks for the rest of the stream at once.
+    size_t request;
+  };
+
+  /// The buffering @p config gives a track of @p format. DSD has its own
+  /// buffer and asks for half of it at a time: DSD512 carries 5.6 MB a second,
+  /// fifteen requests a second at PCM's 384,000 bytes.
+  static HttpBuffering httpBuffering(const Config &config, AudioFormat format);
+
   /**
    * @brief Change a stream key for every stream appended from now on.
    *
