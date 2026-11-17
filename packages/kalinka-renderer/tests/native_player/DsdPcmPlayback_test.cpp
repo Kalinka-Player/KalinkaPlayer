@@ -65,6 +65,8 @@ protected:
 
   /// What the device opened, the last a playing state named.
   std::optional<StreamAudioFormat> opened;
+  /// What a playing state said was decoded.
+  std::optional<StreamAudioFormat> decoded;
 
   /// The left channel ALSA was handed, full scale ±1.
   std::vector<double> play(const std::vector<std::string> &files) {
@@ -83,6 +85,8 @@ protected:
             << (state.error ? state.error->message : "");
         if (state.deviceInfo)
           opened = state.deviceInfo->format;
+        if (state.state == AudioGraphNodeState::STREAMING && state.streamInfo)
+          decoded = state.streamInfo->decodedFormat;
         if ((state.state == AudioGraphNodeState::FINISHED &&
              state.streamId == id) ||
             state.state == AudioGraphNodeState::ERROR)
@@ -130,6 +134,9 @@ TEST_F(DsdPcmPlaybackTest, ADsfTrackPlaysAsPcmAtFourTimesItsBase) {
   ASSERT_TRUE(opened);
   EXPECT_EQ(opened->sampleRate, kPcmRate);
   EXPECT_EQ(opened->channels, 2u);
+  ASSERT_TRUE(decoded) << "the stream still says it was DSD";
+  EXPECT_EQ(decoded->sampleFormat, DSD_U8);
+  EXPECT_EQ(decoded->dsdSampleRate, kDsd64);
   // Two DSD64 bytes a channel to each 176.4 kHz frame.
   ASSERT_EQ(left.size(), kBytes / 2);
   const size_t edge = left.size() / 10;

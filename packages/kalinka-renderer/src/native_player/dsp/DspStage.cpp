@@ -104,6 +104,9 @@ StreamState DspStage::presented(StreamState state,
     return state;
   }
   const auto out = processor->output(state.streamInfo->format);
+  if (out.format != state.streamInfo->format &&
+      !state.streamInfo->decodedFormat)
+    state.streamInfo->decodedFormat = state.streamInfo->format;
   state.streamInfo->format = out.format;
   state.streamInfo->streamSize /= out.ratio;
   if (upstreamPosition && state.position > 0) {

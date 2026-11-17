@@ -151,6 +151,9 @@ TEST_F(Converting, ThePresentedStreamIsTheProcessorsOutput) {
   EXPECT_EQ(info->format.sampleFormat, PCM_FLOAT64_LE);
   EXPECT_EQ(info->format.sampleRate, kRate / 2);
   EXPECT_EQ(info->streamSize, 500u);
+  ASSERT_TRUE(info->decodedFormat);
+  EXPECT_EQ(info->decodedFormat->sampleFormat, PCM32_LE);
+  EXPECT_EQ(info->decodedFormat->sampleRate, kRate);
 }
 
 TEST_F(Converting, OutputFrameNIsInputFrameTwoNWithTheLatencyHidden) {

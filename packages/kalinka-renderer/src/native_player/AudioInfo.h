@@ -111,6 +111,9 @@ struct StreamInfo {
   // starting or recovering from starvation. Interactive live PCM uses its
   // own latency policy instead. The source buffer bounds this wait.
   unsigned prebufferMs = 0;
+  /// What the source decoded to, once a stage has changed the samples into
+  /// `format`; nullopt while `format` is still that.
+  std::optional<StreamAudioFormat> decodedFormat;
 
   bool operator==(const StreamInfo &other) const = default;
   bool operator!=(const StreamInfo &other) const = default;

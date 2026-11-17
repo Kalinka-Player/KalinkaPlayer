@@ -107,10 +107,13 @@ void fillPlaybackStateChanged(const StreamState &state,
   if (state.liveSourceFrame)
     out.set_live_source_frame(*state.liveSourceFrame);
   if (state.streamInfo) {
-    fillAudioFormat(state.streamInfo->format, *out.mutable_format());
-    if (state.streamInfo->format.dsdSampleRate) {
-      out.mutable_format()->set_sample_rate_hz(
-          state.streamInfo->format.dsdSampleRate);
+    // What was decoded, whatever the DSP made of it: the device format says
+    // what reached the output.
+    const auto decoded =
+        state.streamInfo->decodedFormat.value_or(state.streamInfo->format);
+    fillAudioFormat(decoded, *out.mutable_format());
+    if (decoded.dsdSampleRate) {
+      out.mutable_format()->set_sample_rate_hz(decoded.dsdSampleRate);
       out.mutable_format()->set_bits_per_sample(1);
       out.mutable_format()->set_sample_format("DSD");
     }

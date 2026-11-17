@@ -78,8 +78,11 @@ void OutputStage::onUpstreamState(const StreamState &state) {
     auto &format = shown.streamInfo->format;
     format.sampleFormat = presented->output.format;
     // Quantised, float keeps the bits it is dithered at.
-    if (isFloat(source.sampleFormat) && !isFloat(format.sampleFormat))
+    if (isFloat(source.sampleFormat) && !isFloat(format.sampleFormat)) {
       format.bitsPerSample = presented->output.bits;
+      if (!shown.streamInfo->decodedFormat)
+        shown.streamInfo->decodedFormat = source;
+    }
   }
   if (nothingPlays(state.state))
     settlePending = true;
