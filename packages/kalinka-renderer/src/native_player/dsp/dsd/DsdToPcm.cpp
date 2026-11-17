@@ -8,7 +8,11 @@
 #include <string>
 
 namespace {
-constexpr size_t kBlockBytes = 512;
+/// Bytes per channel converted at a time: 64 output frames' worth, held
+/// between 512 and 2048 bytes, the sizes a Pi 4 ran fastest.
+size_t blockFor(unsigned ratio) {
+  return std::clamp<size_t>(8 * size_t(ratio), 512, 2048);
+}
 constexpr double kStage1Scale = 1.0 / double(1ull << dsd_filters::kStage1Shift);
 
 const dsd_filters::Chain *findChain(const DsdToPcm::Spec &spec) {
@@ -41,10 +45,11 @@ DsdToPcm::DsdToPcm(const Spec &spec) : channels(spec.channels) {
                                 std::to_string(spec.pcmRate) + " Hz");
   ratio_ = chain->dsdMultiple / chain->pcmMultiple;
   passbandHz_ = chain->passbandHz;
+  blockBytes = blockFor(ratio_);
 
   const auto &taps = dsd_filters::kStage1[chain->stage1];
   stage1 = makeStage1(spec.kernel, {taps.taps, taps.size, kStage1Scale,
-                                    channels, spec.order, kBlockBytes});
+                                    channels, spec.order, blockBytes});
 
   const FirPath path = spec.kernel == DsdKernel::Reference ? FirPath::Reference
                                                            : FirPath::Vector;
@@ -56,11 +61,11 @@ DsdToPcm::DsdToPcm(const Spec &spec) : channels(spec.channels) {
       if (index == dsd_filters::kNone)
         break;
       const auto &side = dsd_filters::kHalfBand[index];
-      channel.halfBands.emplace_back(side.taps, side.size, kBlockBytes, path);
+      channel.halfBands.emplace_back(side.taps, side.size, blockBytes, path);
     }
     if (chain->band != dsd_filters::kNone) {
       const auto &half = dsd_filters::kBand[chain->band];
-      channel.band.emplace(half.taps, half.size, kBlockBytes, path);
+      channel.band.emplace(half.taps, half.size, blockBytes, path);
     }
   }
 
@@ -91,7 +96,7 @@ void DsdToPcm::reset() {
 size_t DsdToPcm::process(const uint8_t *in, size_t bytes, double *const *out) {
   size_t written = 0;
   while (bytes) {
-    const size_t block = std::min(bytes, kBlockBytes);
+    const size_t block = std::min(bytes, blockBytes);
     for (unsigned c = 0; c < channels; ++c) {
       blockTargets[c] = out[c] + written;
       stage1Targets[c] = feed(state[c], 0, blockTargets[c]);
