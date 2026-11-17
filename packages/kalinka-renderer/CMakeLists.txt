@@ -397,6 +397,7 @@ if(GTest_FOUND)
     tests/native_player/dsp/fir/FirFilters_test.cpp
     tests/native_player/dsp/output/GainRamp_test.cpp
     tests/native_player/dsp/output/OutputFormat_test.cpp
+    tests/native_player/dsp/output/OutputKernels_test.cpp
     tests/native_player/dsp/output/OutputStage_test.cpp
     tests/native_player/dsp/output/Quantiser_test.cpp
     tests/native_player/dsp/output/TpdfDither_test.cpp

@@ -21,34 +21,46 @@ size_t Quantise(const double *x, size_t count, double from, double step,
                 double scale, const double *dither, int32_t lo, int32_t hi,
                 int32_t *out) {
   const hn::ScalableTag<double> d;
+  const hn::RebindToSigned<decltype(d)> dc;
   const hn::Rebind<int32_t, decltype(d)> di;
   const size_t lanes = hn::Lanes(d);
   const auto low = hn::Set(d, double(lo)), high = hn::Set(d, double(hi));
   const auto steps = hn::Set(d, step), start = hn::Set(d, from);
   const auto scaled = hn::Set(d, scale);
-  size_t clipped = 0;
-  const auto one = [&](const double *xs, const double *ds, size_t at,
-                       size_t valid, int32_t *to) {
-    const auto gain = hn::MulAdd(steps, hn::Iota(d, double(at + 1)), start);
+  const auto advance = hn::Set(d, double(lanes));
+  auto index = hn::Iota(d, 1.0);
+  auto outside = hn::Zero(dc);
+  const auto round = [&](const double *xs, const double *ds,
+                         hn::Vec<decltype(d)> gain, int32_t *to) {
     const auto v = hn::Round(
         hn::MulAdd(hn::Mul(hn::LoadU(d, xs), gain), scaled, hn::LoadU(d, ds)));
-    const auto outside = hn::Or(hn::Lt(v, low), hn::Gt(v, high));
-    const auto firstN = hn::FirstN(d, valid);
-    clipped += hn::CountTrue(d, hn::And(outside, firstN));
+    const auto over = hn::Or(hn::Lt(v, low), hn::Gt(v, high));
+    outside = hn::Sub(outside, hn::BitCast(dc, hn::VecFromMask(d, over)));
     hn::StoreU(hn::DemoteTo(di, hn::Min(hn::Max(v, low), high)), di, to);
   };
+  const auto ramped = [&] {
+    const auto gain = hn::MulAdd(steps, index, start);
+    index = hn::Add(index, advance);
+    return gain;
+  };
   size_t i = 0;
-  for (; i + lanes <= count; i += lanes)
-    one(x + i, dither + i, i, lanes, out + i);
+  if (step == 0.0) {
+    for (; i + lanes <= count; i += lanes)
+      round(x + i, dither + i, start, out + i);
+  } else {
+    for (; i + lanes <= count; i += lanes)
+      round(x + i, dither + i, ramped(), out + i);
+  }
   if (i < count) {
+    // The padding rounds to 0, which lo <= 0 <= hi never counts as clipped.
     HWY_ALIGN double xs[kTail] = {}, ds[kTail] = {};
     HWY_ALIGN int32_t to[kTail];
     std::copy(x + i, x + count, xs);
     std::copy(dither + i, dither + count, ds);
-    one(xs, ds, i, count - i, to);
+    round(xs, ds, ramped(), to);
     std::copy(to, to + (count - i), out + i);
   }
-  return clipped;
+  return size_t(hn::ReduceSum(dc, outside));
 }
 
 } // namespace HWY_NAMESPACE
