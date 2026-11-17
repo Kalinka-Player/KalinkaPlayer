@@ -262,9 +262,10 @@ Each runs once, last, in this order:
    levelling gain later; ReplayGain keeps reaching it as volume changes from
    the Core.
 2. **Dither:** TPDF, 2 LSB peak to peak at the output's significant bits,
-   independent per channel. It comes from a seedable xoshiro256+ generator, two
-   uniforms per sample, which is fast and has a long period. Noise shaping comes
-   in Phase 2, for 16-bit only.
+   independent per channel. It comes from xoshiro256+, which is fast, seedable
+   and has a long period: four generators taken in turn, so no draw waits for
+   the one before, each draw giving a sample its two uniforms. Noise shaping
+   comes in Phase 2, for 16-bit only.
 3. **Clamp and pack:** to S16, S24 in 3 bytes, S24 in 4, or S32. Clipped
    samples are counted.
 
