@@ -10,6 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from .config_model import LocalFilesConfig
+from .kept_connections import KeptConnections
 from .utils.name_utils import fold_diacritics
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -375,6 +376,7 @@ class LocalFilesInputModuleDb:
         self.db_path = Path(config.db_path).expanduser().resolve()
         self.artwork_path = Path(config.artwork_path).expanduser().resolve()
         self.db_state = None
+        self._connections = KeptConnections(self._open)
 
     def purge_all(self):
         """Wipe everything derived from the library so the index is rebuilt
@@ -492,7 +494,9 @@ class LocalFilesInputModuleDb:
                     logger.info(f"Removed {path}")
                 except OSError as e:
                     logger.error(f"Failed to remove {path}: {e}")
-        if not removed:
+        if removed:
+            self._connections.renew()
+        else:
             logger.info("No existing database to purge.")
 
     def _purge_artwork(self):
@@ -506,9 +510,15 @@ class LocalFilesInputModuleDb:
         else:
             logger.info("No existing artwork directory to purge.")
 
-    def _get_connection(self):
-        """Get a database connection with row factory"""
-        conn = sqlite3.connect(self.db_path, timeout=5.0)
+    def _get_connection(self) -> sqlite3.Connection:
+        """This thread's connection, lent until the caller closes it, which
+        leaves it holding nothing (see :class:`KeptConnections`)."""
+        return self._connections.lend()
+
+    def _open(self, factory: type[sqlite3.Connection]) -> sqlite3.Connection:
+        """A connection to the library with the row factory and functions
+        every query here relies on."""
+        conn = sqlite3.connect(self.db_path, timeout=5.0, factory=factory)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
