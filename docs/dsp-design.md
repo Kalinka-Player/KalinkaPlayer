@@ -221,8 +221,8 @@ keeps that format constant across a mixed-rate queue. The stage's output
 `StreamInfo` carries the translated rate, sample format and `streamSize`.
 
 **Pause.** The emitter writes silence while paused and reads nothing, and the
-stage sits idle. A pause, a resume and a seek fade briefly rather than cut
-mid-waveform (section 5).
+stage sits idle. A pause, a resume, a seek, a stop and a skip fade briefly
+rather than cut mid-waveform (section 5).
 
 **Live streams.** `LiveAudioPolicy` targets 60 ms. Stages with no latency
 (PEQ, crossfeed, channel tools, gain, dither) apply to live PCM. A stage with
@@ -300,10 +300,10 @@ they are:
 - `auto` preferring a hardware mixer;
 - the refusal of software gain for native DSD and DoP (`setDsdAllowed`).
 
-**Pause and seek fade** over 10 ms: no click, and too short to hear as a fade
-(section 13, decision 8). The gain step does it for the emitter, through
-`OutputFade`, multiplying the volume, and between fades what is written is
-untouched.
+**Pause, seek, stop and skip fade** over 10 ms: no click, and too short to
+hear as a fade (section 13, decision 8). The gain step does it for the
+emitter, through `OutputFade`, multiplying the volume, and between fades what
+is written is untouched.
 - **A pause** fades out over the next 10 ms the emitter writes, after what the
   device already holds. It is reported once that has been heard, and silence
   follows. A resume fades in from there, so nothing is lost or repeated. A
@@ -315,8 +315,15 @@ untouched.
   10 ms of the rest out in place (`PackedFade`) and silences the remainder.
   Once the fade has been heard, the device is dropped as before. The audio
   after the seek fades in.
+- **A stop** fades out what the device holds the same way before it closes.
+- **A skip,** or any other removal of the stream being played, is named to
+  the emitter first: `AudioPlayer` calls `cut()`. What the device holds then
+  fades out as at a seek and is dropped, rather than played out into the
+  next track, which starts a run of its own. Only the stream being written
+  counts: removing a prepared one, or one already played out, changes
+  nothing that plays.
 - **A device that cannot take frames back,** a sound server's for one, drops
-  at a seek as it did before.
+  at a seek, a stop or a skip without a fade.
 - **Native DSD and DoP** are not faded.
 
 ## 6. Profiles reach the renderer by URL and SHA-256
@@ -724,9 +731,10 @@ The modulator's own quality, a 1 kHz tone at half modulation over 0.5 s:
    `AudioGraphNode`'s, which existed before it.
 8. **Pause and seek fade**, briefly, and stay bit-perfect between. In
    Phase 1 the new gain step gives the emitter a fade of a few milliseconds
-   at a pause and a resume. At a seek, the frames ALSA has queued but not yet
-   played are rewound with `snd_pcm_rewind`, faded in place and committed
-   again before the drop. Everywhere else the stream stays untouched.
+   at a pause and a resume. At a seek, a stop and a skip, the frames ALSA has
+   queued but not yet played are rewound with `snd_pcm_rewind`, faded in
+   place and committed again before the drop. Everywhere else the stream
+   stays untouched.
 9. **PFFFT** is fetched and built with the renderer, pinned by its
    checksum, not committed (section 10).
 10. **Decimal settings get a new field type**, `CONFIG_FIELD_TYPE_DECIMAL`.

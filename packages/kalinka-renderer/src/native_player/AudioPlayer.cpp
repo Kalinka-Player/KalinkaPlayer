@@ -429,6 +429,7 @@ void AudioPlayer::remove(StreamId id) {
   auto stream = std::find_if(streamNodesList.begin(), streamNodesList.end(),
                              [id](const StreamNodes &s) { return s.id == id; });
   if (stream != streamNodesList.end()) {
+    audioEmitter->cut(id);
     streamSwitcher->disconnect(stream->nodeChain.back());
     dspStage->discard(id);
     streamNodesList.erase(stream);
@@ -593,6 +594,7 @@ Config AudioPlayer::currentStreamConfig() {
 
 void AudioPlayer::disconnectAllStreams() {
   for (auto &streamNodes : streamNodesList) {
+    audioEmitter->cut(streamNodes.id);
     streamSwitcher->disconnect(streamNodes.nodeChain.back());
   }
   streamNodesList.clear();
