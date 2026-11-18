@@ -23,7 +23,7 @@ from typing import Sequence
 import numpy as np
 from PIL import Image, ImageColor, ImageDraw, ImageFilter, ImageOps
 
-STYLE_VERSION = 13
+STYLE_VERSION = 14
 
 CANVAS_W = 1200
 CANVAS_H = 400  # 3:1
@@ -67,17 +67,20 @@ BACKGROUND_BASE = "#1B1B1E"
 #: geometry and its fine line.
 BACKGROUND_WEIGHTS = (0.12, 0.34, 0.48, 0.68)
 _PLACEHOLDER_KINDS = ("album", "track", "playlist", "artist")
-#: The solid catalogue icon in a 100-unit square: its cover, then each page and
-#: its entries.
+#: The outlined catalogue icon in a 100-unit square, before its tilt: its
+#: cover, its two outlined pages, then their entries.
 _CATALOGUE_ICON = (
-    ("#414044", ((4, 25), (50, 40), (96, 25), (96, 80), (50, 95), (4, 80))),
-    ("#9D9792", ((8, 15), (47, 28), (47, 86), (8, 73))),
-    ("#716D69", ((17, 31), (38, 38), (38, 50), (17, 43))),
-    ("#716D69", ((17, 51), (38, 58), (38, 70), (17, 63))),
-    ("#716D69", ((53, 28), (92, 15), (92, 73), (53, 86))),
-    ("#9D9792", ((62, 38), (83, 31), (83, 43), (62, 50))),
-    ("#9D9792", ((62, 58), (83, 51), (83, 63), (62, 70))),
+    ("#414044", False, ((4, 25), (50, 40), (96, 25), (96, 80), (50, 95), (4, 80))),
+    ("#242327", True, ((8, 15), (47, 28), (47, 86), (8, 73))),
+    ("#242327", True, ((53, 28), (92, 15), (92, 73), (53, 86))),
+    ("#A83B4E", False, ((17, 31), (38, 38), (38, 50), (17, 43))),
+    ("#817B77", False, ((17, 51), (38, 58), (38, 70), (17, 63))),
+    ("#817B77", False, ((62, 38), (83, 31), (83, 43), (62, 50))),
+    ("#817B77", False, ((62, 58), (83, 51), (83, 63), (62, 70))),
 )
+#: The icon's tilt as an SVG matrix(a b c d e f): a 12.4 degree lean to the
+#: right and a 5.7 degree rise.
+_CATALOGUE_TILT = (0.92, -0.092, -0.2024, 0.92, 14.12, 8.6)
 _GRAIN = 0.5
 
 # Keep the left 42% clear for labels and the far right clear for the chevron.
@@ -233,19 +236,40 @@ def placeholder_object(kind: str) -> Image.Image:
         return image.convert("RGBA")
 
 
+def _outline(points: Sequence[tuple[float, float]], width: float) -> list[np.ndarray]:
+    """A closed polygon's round-joined stroke: a band along each side and a
+    disc at each corner."""
+    corners = np.asarray(points, dtype=np.float64)
+    angles = np.linspace(0, 2 * np.pi, 24, endpoint=False)
+    disc = np.stack([np.cos(angles), np.sin(angles)], axis=1) * width / 2
+    return [
+        *(_stroke(side, width) for side in zip(corners, np.roll(corners, -1, 0))),
+        *(corner + disc for corner in corners),
+    ]
+
+
 def _place_catalogue_icon(base: Image.Image, *, thumbnail: bool = False) -> None:
     """Where and as large as the app draws it: half the shorter side across,
     centred in a thumbnail or 82% across a card."""
     side = min(base.size) * 0.5
-    left = base.width * (0.5 if thumbnail else 0.82) - side / 2
-    # The drawing sits 5 units low in its square.
-    top = base.height / 2 - side * 0.55
+    a, b, c, d, e, f = _CATALOGUE_TILT
+    matrix = np.array([[a, b], [c, d]]) * side / 100
+    offset = np.array(
+        [
+            base.width * (0.5 if thumbnail else 0.82) - side / 2 + e * side / 100,
+            (base.height - side) / 2 + f * side / 100,
+        ]
+    )
+
+    def place(shape) -> list[tuple[float, float]]:
+        return [tuple(point) for point in np.asarray(shape) @ matrix + offset]
+
     draw = ImageDraw.Draw(base)
-    for color, points in _CATALOGUE_ICON:
-        draw.polygon(
-            [(left + x * side / 100, top + y * side / 100) for x, y in points],
-            fill=color,
-        )
+    for color, outlined, points in _CATALOGUE_ICON:
+        draw.polygon(place(points), fill=color)
+        if outlined:
+            for shape in _outline(points, 2.6):
+                draw.polygon(place(shape), fill="#B9B0A8")
 
 
 def _place_placeholder(

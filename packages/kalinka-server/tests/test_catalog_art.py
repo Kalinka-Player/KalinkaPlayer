@@ -1114,27 +1114,37 @@ def test_a_catalog_of_catalogs_without_artwork_shows_the_apps_catalogue_icon(
     monkeypatch.setattr(render, "placeholder_object", unexpected)
     if square:
         image = render.render_catalog_thumbnail(
-            [], "fallback", side=400, placeholder="catalog"
+            [], "fallback", side=800, placeholder="catalog"
         )
-        bare = render.render_catalog_thumbnail([], "fallback", side=400)
-        left = 100
+        bare = render.render_catalog_thumbnail([], "fallback", side=800)
+        left = 200
     else:
-        image = render.render_catalog_art([], [], "fallback", placeholder="catalog")
-        bare = render.render_catalog_art([], [], "fallback")
-        text_column = (0, 0, 700, 400)
+        image = render.render_catalog_art(
+            [], [], "fallback", width=2400, height=800, placeholder="catalog"
+        )
+        bare = render.render_catalog_art([], [], "fallback", width=2400, height=800)
+        text_column = (0, 0, 1400, 800)
         assert image.crop(text_column).tobytes() == bare.crop(text_column).tobytes()
-        left = 884
-    # Half the 400px side across, as the app draws it, in 100-unit coordinates.
+        left = 1768
+    # Half the 800px side across, as the app draws it, in the design's
+    # 100-unit coordinates before its tilt.
+    a, b, c, d, e, f = (0.92, -0.092, -0.2024, 0.92, 14.12, 8.6)
     for (x, y), color in [
-        ((12, 40), "#9D9792"),
-        ((27, 40), "#716D69"),
-        ((70, 30), "#716D69"),
-        ((72, 41), "#9D9792"),
-        ((50, 85), "#414044"),
+        ((42.5, 50), "#242327"),
+        ((8, 44), "#B9B0A8"),
+        ((27.5, 40.5), "#A83B4E"),
+        ((27.5, 60.5), "#817B77"),
+        ((72.5, 40.5), "#817B77"),
+        ((50, 80), "#414044"),
     ]:
-        pixel = image.getpixel((left + 2 * x, 90 + 2 * y))
+        pixel = image.getpixel(
+            (
+                round(left + 4 * (a * x + c * y + e)),
+                round(200 + 4 * (b * x + d * y + f)),
+            )
+        )
         expected = ImageColor.getrgb(color)
-        assert max(abs(a - b) for a, b in zip(pixel, expected)) <= 4, (x, y)
+        assert max(abs(p - q) for p, q in zip(pixel, expected)) <= 4, (x, y)
 
 
 @pytest.mark.parametrize("count", [1, 2, 3])
