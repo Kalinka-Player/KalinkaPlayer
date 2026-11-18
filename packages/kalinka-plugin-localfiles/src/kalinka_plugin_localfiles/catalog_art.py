@@ -7,7 +7,14 @@ from kalinka_plugin_sdk.datamodel import CoverImage
 ART_DIRECTORY = Path(__file__).with_name("catalog_artwork")
 ART_CATEGORIES = ("files", "albums", "artists", "tracks", "recent", "playlists")
 ART_PREFIX = "catalog-art/"
-_VERSIONS = {category: 2 if category == "artists" else 1 for category in ART_CATEGORIES}
+_VERSIONS = {
+    "files": 2,
+    "albums": 2,
+    "artists": 3,
+    "tracks": 2,
+    "recent": 2,
+    "playlists": 2,
+}
 _FILES = {
     f"{category}-v{version}-{size}.jpg"
     for category, current in _VERSIONS.items()
