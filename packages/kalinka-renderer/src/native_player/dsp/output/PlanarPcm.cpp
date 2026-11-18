@@ -4,6 +4,12 @@
 #include <stdexcept>
 #include <string>
 
+PlanarScratch::PlanarScratch()
+    : channels(kPlanarChannels, std::vector<double>(kPlanarFrames)) {
+  for (auto &channel : channels)
+    pointers.push_back(channel.data());
+}
+
 namespace {
 template <class Value>
 void deinterleave(const uint8_t *in, unsigned channels, size_t frames,

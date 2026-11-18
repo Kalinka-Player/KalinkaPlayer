@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <gtest/gtest.h>
 #include <mutex>
@@ -747,14 +749,66 @@ private:
   std::atomic<size_t> end{kNoEnd};
 };
 
-/// The stage's fades, with @p track ending @p tail frames into a pause's.
-class EndingInTheFade : public OutputFade {
+/// A paced counting source whose input runs dry partway, as a network
+/// stream's does, until released.
+class StallingCountingNode : public PacedCountingNode {
 public:
-  EndingInTheFade(std::shared_ptr<OutputStage> stage,
-                  std::shared_ptr<EndingCountingNode> track, size_t tail)
-      : stage(std::move(stage)), track(std::move(track)), tail(tail) {}
+  StallingCountingNode(StreamId id, int32_t base, size_t frames)
+      : AudioGraphNode(id), PacedCountingNode(id, base, frames) {}
+
+  void stallAfter(size_t frames) {
+    stallAt = size_t(*streamReadPosition()) + frames;
+  }
+  void release() {
+    {
+      std::lock_guard lock(mutex);
+      stallAt = kNever;
+    }
+    released.notify_all();
+    setState({AudioGraphNodeState::STREAMING, *streamReadPosition(), info});
+  }
+  size_t read(void *data, size_t size) override {
+    const size_t at = size_t(*streamReadPosition());
+    const size_t last = stallAt.load();
+    if (at >= last)
+      return 0;
+    const size_t got =
+        PacedCountingNode::read(data, std::min(size, (last - at) * 8));
+    if (at + got / 8 == last) {
+      info = getState().streamInfo;
+      setState(StreamState(AudioGraphNodeState::PREPARING));
+    }
+    return got;
+  }
+  size_t waitForData(std::stop_token token, size_t size) override {
+    std::unique_lock lock(mutex);
+    released.wait(lock, token, [this] { return !stalled(); });
+    lock.unlock();
+    return stalled() ? 0 : PacedCountingNode::waitForData(token, size);
+  }
+  size_t waitForDataFor(std::stop_token token, std::chrono::milliseconds,
+                        size_t size) override {
+    return stalled() ? 0 : PacedCountingNode::waitForData(token, size);
+  }
+
+private:
+  static constexpr size_t kNever = size_t(-1);
+  std::atomic<size_t> stallAt{kNever};
+  std::mutex mutex;
+  std::condition_variable_any released;
+  std::optional<StreamInfo> info;
+
+  bool stalled() const { return size_t(*streamReadPosition()) >= stallAt; }
+};
+
+/// The stage's fades, running @p onFadeOut as a pause's fade begins.
+class HookedFade : public OutputFade {
+public:
+  HookedFade(std::shared_ptr<OutputStage> stage,
+             std::function<void()> onFadeOut)
+      : stage(std::move(stage)), onFadeOut(std::move(onFadeOut)) {}
   void fadeOut() override {
-    track->endAfter(tail);
+    onFadeOut();
     stage->fadeOut();
   }
   void fadeIn() override { stage->fadeIn(); }
@@ -763,8 +817,7 @@ public:
 
 private:
   const std::shared_ptr<OutputStage> stage;
-  const std::shared_ptr<EndingCountingNode> track;
-  const size_t tail;
+  const std::function<void()> onFadeOut;
 };
 
 /// A counting source played behind an output stage the emitter fades with,
@@ -982,6 +1035,7 @@ TEST_F(FadedCapture, TheNextTrackAfterAPausePlaysAtFullLevel) {
             AudioGraphNodeState::PAUSED);
   // Skipping ahead while paused: what played is removed, and the next
   // track takes over in a run of its own.
+  emitter->cut(1);
   switcher->disconnect(source);
   const auto left = written();
   size_t at = firstChanged(left);
@@ -1009,15 +1063,19 @@ TEST_F(FadedCapture, APauseFadingAcrossAGaplessJoinFadesIntoTheNextTrack) {
   source = first;
   switcher->connectTo(first);
   switcher->connectTo(next);
-  emitter->fadeWith(std::make_shared<EndingInTheFade>(stage, first, kTail));
+  emitter->fadeWith(
+      std::make_shared<HookedFade>(stage, [first] { first->endAfter(kTail); }));
   emitter->connectTo(stage);
   ASSERT_EQ(waitForStatus(*emitter, AudioGraphNodeState::STREAMING).state,
             AudioGraphNodeState::STREAMING);
   emitter->pause(true);
-  ASSERT_EQ(waitForStatus(*emitter, AudioGraphNodeState::PAUSED,
-                          std::chrono::seconds(10))
-                .state,
-            AudioGraphNodeState::PAUSED);
+  const auto pausedState = waitForStatus(*emitter, AudioGraphNodeState::PAUSED,
+                                         std::chrono::seconds(10));
+  ASSERT_EQ(pausedState.state, AudioGraphNodeState::PAUSED);
+  EXPECT_EQ(pausedState.streamId, 2u);
+  ASSERT_TRUE(pausedState.streamInfo.has_value());
+  EXPECT_EQ(pausedState.streamInfo->streamSize, kNext)
+      << "paused in the track joined, and named as such";
   emitter->pause(false);
   const auto left = written();
   const size_t paused = firstChanged(left);
@@ -1054,7 +1112,8 @@ TEST_F(FadedCapture, ATrackEndingInsideAPausesFadeLeavesTheNextOnePaused) {
   source = first;
   switcher->connectTo(first);
   switcher->connectTo(next);
-  emitter->fadeWith(std::make_shared<EndingInTheFade>(stage, first, kTail));
+  emitter->fadeWith(
+      std::make_shared<HookedFade>(stage, [first] { first->endAfter(kTail); }));
   emitter->connectTo(stage);
   ASSERT_EQ(waitForStatus(*emitter, AudioGraphNodeState::STREAMING).state,
             AudioGraphNodeState::STREAMING);
@@ -1080,13 +1139,6 @@ TEST_F(FadedCapture, ATrackEndingInsideAPausesFadeLeavesTheNextOnePaused) {
 }
 
 namespace {
-std::vector<int32_t> valuesOf(const CountingNode &track, size_t frames) {
-  std::vector<int32_t> values(frames);
-  for (size_t frame = 0; frame < frames; ++frame)
-    values[frame] = track.value(frame);
-  return values;
-}
-
 std::shared_ptr<PacedCountingNode> track(StreamId id, size_t frames) {
   return std::make_shared<PacedCountingNode>(id, int32_t(id) * 1000000, frames);
 }
@@ -1107,7 +1159,7 @@ TEST_F(FadedCapture, ACutTrackFadesOutAndTheNextStartsInARunOfItsOwn) {
   emitter->cut(2);
   switcher->disconnect(prepared);
   switcher->disconnect(source);
-  expectCut(written(), valuesOf(*next, 100'000));
+  expectCut(written(), next->values(0, 100'000));
   EXPECT_TRUE(hasReported(AudioGraphNodeState::PREPARING, 3))
       << "the next track starts a run of its own";
 }
@@ -1127,7 +1179,7 @@ TEST_F(FadedCapture, ACutAfterAGaplessJoinFadesTheTrackJoined) {
     ASSERT_EQ(left[frame], first->value(frame)) << "first track's " << frame;
   source = joined;
   expectCut(std::vector<int32_t>(left.begin() + kFirst, left.end()),
-            valuesOf(*next, 100'000));
+            next->values(0, 100'000));
 }
 
 TEST_F(FadedCapture, CuttingTheLastTrackFadesItOut) {
@@ -1148,8 +1200,8 @@ TEST_F(FadedCapture, ACutOfATrackPlayedOutDoesNotReachTheNext) {
   const auto next = track(2, kFrames);
   switcher->connectTo(next);
   waitFor(AudioGraphNodeState::FINISHED, 2);
-  auto both = valuesOf(*source, kFrames);
-  const auto after = valuesOf(*next, kFrames);
+  auto both = source->values(0, kFrames);
+  const auto after = next->values(0, kFrames);
   both.insert(both.end(), after.begin(), after.end());
   const auto left = written();
   ASSERT_EQ(left.size(), both.size());
@@ -1192,4 +1244,126 @@ TEST_F(FadedCapture, AStopBeforeTheDeviceOpensHasNothingToFade) {
   emitter->connectTo(stage);
   emitter->disconnect(stage);
   EXPECT_EQ(emitter->getState().state, AudioGraphNodeState::STOPPED);
+}
+
+TEST_F(FadedCapture, ATrackEndingAsAPausesFadeEndsLeavesTheNextOnePaused) {
+  constexpr size_t kNext = 100'000;
+  auto switcher = std::make_shared<AudioStreamSwitcher>();
+  const auto first = std::make_shared<EndingCountingNode>(1, 1000000, 1'000'000);
+  const auto next = track(2, kNext);
+  emitter->fadeWith(std::make_shared<HookedFade>(
+      stage, [first] { first->endAfter(kFadeFrames); }));
+  source = first;
+  stage->connectTo(switcher);
+  switcher->connectTo(first);
+  switcher->connectTo(next);
+  emitter->connectTo(stage);
+  ASSERT_EQ(waitForStatus(*emitter, AudioGraphNodeState::STREAMING).state,
+            AudioGraphNodeState::STREAMING);
+  emitter->pause(true);
+  waitFor(AudioGraphNodeState::PAUSED, 2);
+  emitter->pause(false);
+  const auto left = written();
+  const size_t paused = firstChanged(left);
+  ASSERT_EQ(left.size(), paused + kFadeFrames + kNext);
+  expectFade(left, paused, paused, true);
+  for (size_t frame = 0; frame < kNext; ++frame)
+    ASSERT_EQ(left[paused + kFadeFrames + frame], next->value(frame))
+        << "next track's frame " << frame;
+}
+
+TEST_F(FadedCapture, ASkipInsideAPausesFadePlaysTheNextTrack) {
+  constexpr size_t kNext = 100'000, kTail = 100;
+  auto switcher = std::make_shared<AudioStreamSwitcher>();
+  const auto first = std::make_shared<EndingCountingNode>(1, 1000000, 1'000'000);
+  const auto next = track(2, kNext);
+  // The skip's removal, as the switcher sees it: the track ends there.
+  emitter->fadeWith(std::make_shared<HookedFade>(stage, [this, first] {
+    emitter->cut(1);
+    first->endAfter(kTail);
+  }));
+  source = first;
+  stage->connectTo(switcher);
+  switcher->connectTo(first);
+  switcher->connectTo(next);
+  emitter->connectTo(stage);
+  ASSERT_EQ(waitForStatus(*emitter, AudioGraphNodeState::STREAMING).state,
+            AudioGraphNodeState::STREAMING);
+  emitter->pause(true);
+  waitFor(AudioGraphNodeState::STREAMING, 2);
+  const auto left = written();
+  ASSERT_GE(left.size(), kNext);
+  const size_t start = left.size() - kNext;
+  for (size_t frame = 0; frame < kNext; ++frame)
+    ASSERT_EQ(left[start + frame], next->value(frame))
+        << "next track's frame " << frame;
+}
+
+TEST_F(FadedCapture, AnInputRunningDryInAPausesFadeHoldsThePauseLosingNothing) {
+  constexpr size_t kFrames = 1'000'000, kTail = 100;
+  const auto stalling =
+      std::make_shared<StallingCountingNode>(1, 1000000, kFrames);
+  emitter->fadeWith(std::make_shared<HookedFade>(
+      stage, [stalling] { stalling->stallAfter(kTail); }));
+  source = stalling;
+  stage->connectTo(stalling);
+  emitter->connectTo(stage);
+  ASSERT_EQ(waitForStatus(*emitter, AudioGraphNodeState::STREAMING).state,
+            AudioGraphNodeState::STREAMING);
+  emitter->pause(true);
+  ASSERT_EQ(waitForStatus(*emitter, AudioGraphNodeState::PREPARING,
+                          std::chrono::seconds(10))
+                .state,
+            AudioGraphNodeState::PREPARING);
+  stalling->release();
+  ASSERT_EQ(waitForStatus(*emitter, AudioGraphNodeState::PAUSED,
+                          std::chrono::seconds(10))
+                .state,
+            AudioGraphNodeState::PAUSED)
+      << "the pause holds once the input is back";
+  emitter->pause(false);
+  const auto left = written();
+  ASSERT_EQ(left.size(), kFrames) << "nothing lost or repeated";
+  // The queue's last 10 ms fade out, over the stage's fade where it began.
+  const size_t faded = firstChanged(left);
+  const size_t dry = faded + kFadeFrames;
+  const size_t paused = dry - kTail;
+  for (size_t k = 0; k < kFadeFrames; ++k) {
+    const size_t frame = faded + k;
+    const double gain = fallen(k) * (frame < paused ? 1.0 : fallen(frame - paused));
+    ASSERT_LE(std::abs(double(left[frame]) - gain * source->value(frame)), 4.0)
+        << "fading out, frame " << k;
+  }
+  expectFade(left, dry, dry, false);
+  for (size_t frame = dry + kFadeFrames; frame < kFrames; ++frame)
+    ASSERT_EQ(left[frame], source->value(frame)) << "frame " << frame;
+}
+
+TEST_F(FadedCapture, AStopForgetsAPauseHeldForTheInput) {
+  constexpr size_t kFrames = 50'000;
+  const auto stalling =
+      std::make_shared<StallingCountingNode>(1, 1000000, 1'000'000);
+  emitter->fadeWith(std::make_shared<HookedFade>(
+      stage, [stalling] { stalling->stallAfter(100); }));
+  stage->connectTo(stalling);
+  emitter->connectTo(stage);
+  ASSERT_EQ(waitForStatus(*emitter, AudioGraphNodeState::STREAMING).state,
+            AudioGraphNodeState::STREAMING);
+  emitter->pause(true);
+  ASSERT_EQ(waitForStatus(*emitter, AudioGraphNodeState::PREPARING,
+                          std::chrono::seconds(10))
+                .state,
+            AudioGraphNodeState::PREPARING);
+  emitter->disconnect(stage);
+  stage->disconnect(stalling);
+  source = track(2, kFrames);
+  stage->connectTo(source);
+  emitter->fadeWith(stage);
+  emitter->connectTo(stage);
+  const auto left = written();
+  ASSERT_GE(left.size(), kFrames);
+  const size_t start = left.size() - kFrames;
+  for (size_t frame = 0; frame < kFrames; ++frame)
+    ASSERT_EQ(left[start + frame], source->value(frame))
+        << "frame " << frame << ", played at once at full level";
 }

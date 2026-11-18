@@ -291,9 +291,7 @@ bool AlsaAudioEmitter::handleSeekSignal() {
     seekRequestSignal.respond(-1);
     return false;
   }
-  // What they announce will not be heard now: the queue holding it is dropped.
-  playedFramesCounter.reset();
-  pendingSourceReport.reset();
+  forgetQueuedReports();
   seekRequestSignal.respond(framesToTimeMs(retVal).count());
   queueAbandoned = true;
   fadeInNext = true;
@@ -343,19 +341,21 @@ bool AlsaAudioEmitter::handlePauseSignal(bool paused) {
 }
 
 bool AlsaAudioEmitter::reportOnceHeard(AudioGraphNodeState state) {
-  const StreamState heard{
-      state, framesToTimeMs(currentSourceTotalFramesWritten).count(),
-      getState().streamInfo};
+  const long position = framesToTimeMs(currentSourceTotalFramesWritten).count();
   snd_pcm_sframes_t delay = 0;
   int err = snd_pcm_delay(pcm.handle, &delay);
   if (err < 0) {
     spdlog::error("Error when calling snd_pcm_delay: {}", snd_strerror(err));
     return false;
   }
+  const unsigned report = ++pauseReports;
   playedFramesCounter.callOnOrAfterFrame(
-      delay, [this, heard](snd_pcm_sframes_t) {
-        holdsSilence = heard.state == AudioGraphNodeState::PAUSED;
-        setState(heard);
+      delay, [this, state, position, report](snd_pcm_sframes_t) {
+        // A pause a later resume overtook: the device holds what followed.
+        if (report == pauseReports)
+          holdsSilence = state == AudioGraphNodeState::PAUSED;
+        // What the device plays by then, which a gapless join may have changed.
+        setState({state, position, getState().streamInfo});
       });
   return true;
 }
@@ -364,7 +364,7 @@ bool AlsaAudioEmitter::fades() const {
   return fade && !isDsd(currentStreamAudioFormat.sampleFormat);
 }
 
-void AlsaAudioEmitter::fadeQueuedOut() {
+void AlsaAudioEmitter::fadeQueuedOut(bool keepQueue) {
   if (!fades() || holdsSilence || pcm.handle == nullptr ||
       snd_pcm_state(pcm.handle) != SND_PCM_STATE_RUNNING)
     return;
@@ -374,7 +374,8 @@ void AlsaAudioEmitter::fadeQueuedOut() {
   const snd_pcm_sframes_t rewindable = snd_pcm_rewindable(pcm.handle) - margin;
   if (rewindable < length)
     return;
-  const snd_pcm_sframes_t rewound = snd_pcm_rewind(pcm.handle, rewindable);
+  const snd_pcm_sframes_t rewound =
+      snd_pcm_rewind(pcm.handle, keepQueue ? length : rewindable);
   if (rewound < length) {
     if (rewound > 0)
       snd_pcm_forward(pcm.handle, rewound);
@@ -421,12 +422,15 @@ bool AlsaAudioEmitter::abandonIfCut() {
     if (!std::exchange(readingCut, false))
       return false;
   }
-  // What they announce will not be heard: the queue holding it is dropped.
-  playedFramesCounter.reset();
-  pendingSourceReport.reset();
+  forgetQueuedReports();
   fadeQueuedOut();
   queueAbandoned = true;
   return true;
+}
+
+void AlsaAudioEmitter::forgetQueuedReports() {
+  playedFramesCounter.reset();
+  pendingSourceReport.reset();
 }
 
 void AlsaAudioEmitter::openDevice() {
@@ -448,8 +452,7 @@ void AlsaAudioEmitter::openDevice() {
   pcm = *opened;
 
   currentSourceTotalFramesWritten = 0;
-  playedFramesCounter.reset();
-  pendingSourceReport.reset();
+  forgetQueuedReports();
 }
 
 void AlsaAudioEmitter::closeDevice() {
@@ -522,7 +525,7 @@ bool AlsaAudioEmitter::handleInputNodeStateChange() {
         pausedOut()) {
       spdlog::info("Source changed - cut, not streaming, different format or "
                    "paused - ending the run");
-      pauseCarried = paused && !pausedOut();
+      pauseCarried = paused && !cut;
       drainPcm();
       setStreamId(incomingStreamId);
       setState(StreamState(AudioGraphNodeState::SOURCE_CHANGED));
@@ -654,6 +657,13 @@ AlsaAudioEmitter::readIntoAlsaFromStream(std::stop_token stopToken,
           if (stopToken.stop_requested()) {
             break;
           }
+          const bool cut = abandonIfCut();
+          if (paused && !cut) {
+            // Dry inside a pause's fade: the queue's end fades out instead.
+            fadeQueuedOut(true);
+            pauseCarried = true;
+            fadeInNext = true;
+          }
           drainPcm();
           return -1;
         }
@@ -743,7 +753,7 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
       setupAudioFormat(streamInfo.value().format, streamInfo->live);
       streamInfo.value().format = currentStreamAudioFormat;
       if (fades()) {
-        // Audio after a seek starts mid-waveform; any other as its source does.
+        // Mid-waveform after a seek or a stall; else as its source starts.
         fade->settle(fadeInNext ? 0.0 : 1.0);
         if (fadeInNext)
           fade->fadeIn();
@@ -876,6 +886,8 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
 
   closeDevice();
   reading(std::nullopt);
+  pauseCarried = false;
+  fadeInNext = false;
   inputNode = nullptr;
   isWorkerRunning = false;
   seekRequestSignal.close(static_cast<size_t>(-1));

@@ -9,8 +9,6 @@
 #include <utility>
 
 namespace {
-constexpr size_t kChunkFrames = 1024;
-constexpr unsigned kMaxChannels = 8;
 // Long enough that a slider step is no click, short enough to follow a drag.
 constexpr std::chrono::milliseconds kRamp{25};
 
@@ -27,12 +25,8 @@ size_t frameBytes(AudioSampleFormat format, unsigned channels) {
 
 OutputStage::OutputStage(std::vector<StreamAudioFormat> device, uint64_t seed)
     : device(std::move(device)), ramp(kRamp), fade(kFadeLength),
-      quantiser(kChunkFrames, kMaxChannels, seed),
-      input(kChunkFrames * frameBytes(PCM_FLOAT64_LE, kMaxChannels)),
-      planar(kMaxChannels, std::vector<double>(kChunkFrames)) {
-  for (auto &channel : planar)
-    planes.push_back(channel.data());
-}
+      quantiser(kPlanarFrames, kPlanarChannels, seed),
+      input(kPlanarFrames * frameBytes(PCM_FLOAT64_LE, kPlanarChannels)) {}
 
 OutputStage::~OutputStage() {
   if (upstream)
@@ -141,7 +135,7 @@ size_t OutputStage::read(void *data, size_t size) {
           "DSD requires fixed volume; software gain cannot alter DSD");
     return upstream->read(data, size);
   }
-  if (source.channels == 0 || source.channels > kMaxChannels)
+  if (source.channels == 0 || source.channels > kPlanarChannels)
     throw std::runtime_error("No output stage for " +
                              std::to_string(source.channels) + " channels");
   follow(source.sampleRate);
@@ -155,7 +149,7 @@ size_t OutputStage::read(void *data, size_t size) {
   const size_t wanted = size / outFrame;
   size_t done = 0;
   while (done < wanted) {
-    const size_t ask = std::min(wanted - done, kChunkFrames);
+    const size_t ask = std::min(wanted - done, kPlanarFrames);
     const size_t got = upstream->read(input.data(), ask * inFrame) / inFrame;
     if (got == 0)
       break;
@@ -187,8 +181,8 @@ void OutputStage::produce(const Presented &now, const uint8_t *in,
         convertSampleFormat(source, from, span.frames * channels, dest, to,
                             span.frames * outFrame);
     } else {
-      readPlanar(source, from, channels, span.frames, planes.data());
-      quantiser.pack(planes.data(), channels, span.frames, span, to,
+      readPlanar(source, from, channels, span.frames, planar.planes());
+      quantiser.pack(planar.planes(), channels, span.frames, span, to,
                      now.output.bits, dest);
     }
     at += span.frames;

@@ -4,6 +4,28 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
+
+/// The most channels the output side handles in float, and the frames it
+/// takes at a time.
+inline constexpr unsigned kPlanarChannels = 8;
+inline constexpr size_t kPlanarFrames = 1024;
+
+/**
+ * @brief Planar float64 scratch, one array of kPlanarFrames per channel for
+ * up to kPlanarChannels, allocated once.
+ * @note Not thread-safe.
+ */
+class PlanarScratch {
+public:
+  PlanarScratch();
+  /// The arrays, as readPlanar() fills them and the Quantiser packs them.
+  double *const *planes() { return pointers.data(); }
+
+private:
+  std::vector<std::vector<double>> channels;
+  std::vector<double *> pointers;
+};
 
 /**
  * @brief Reads @p frames frames of interleaved PCM in @p format into planar
