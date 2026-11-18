@@ -9,7 +9,9 @@ The chain for a DSD rate M x base and a PCM rate P x base, R = M / P >= 8:
    sums to 2^33, so the idle pattern 0x69 comes out as exact zero.
 2. Each further factor of 2 is a half-band FIR.
 3. At the output rate a band filter applies the ultrasonic cut-off, unless
-   the filter is "wide".
+   the filter is "wide". At the base rate, 44.1 or 48 kHz, there is no room
+   for one: the last half-band's transition, from 20 kHz to its mirror, is
+   the cut-off.
 
 Every decimator keeps whatever would fold below the band filter's stop edge
 (or below the wide passband) far down: STAGE1_DB for stage 1, HALFBAND_DB for
@@ -35,7 +37,8 @@ import numpy as np  # noqa: E402
 
 FAMILIES = (44100, 48000)
 DSD_MULTIPLES = (64, 128, 256, 512, 1024)
-PCM_MULTIPLES = (2, 4, 8)
+# In the order they were added, which keeps every earlier design's index.
+PCM_MULTIPLES = ((2, 4, 8), (1,))
 FILTERS = ("30k", "50k", "wide")
 
 FOLD_DB = 130.0
@@ -299,7 +302,8 @@ def chain_for(designs, base, dsd, pcm, name):
     if band:
         protect = min(band[1], WIDE_FRACTION * rate_out)
     else:
-        protect = WIDE_FRACTION * rate_out
+        # At 44.1 kHz the wide fraction falls short of the audio band.
+        protect = max(WIDE_FRACTION * rate_out, PASSBAND_HZ)
     if ratio == 8:
         protect = min(protect, widest_stage1_protect(rate_in))
     while True:
@@ -380,13 +384,14 @@ def cpp_array(kind, name, values, width=4):
 def main(path):
     designs = Designs()
     chains = []
-    for base in FAMILIES:
-        for dsd in DSD_MULTIPLES:
-            for pcm in PCM_MULTIPLES:
-                if dsd // pcm < 8:
-                    continue
-                for name in FILTERS:
-                    chains.append(chain_for(designs, base, dsd, pcm, name))
+    for added in PCM_MULTIPLES:
+        for base in FAMILIES:
+            for dsd in DSD_MULTIPLES:
+                for pcm in added:
+                    if dsd // pcm < 8:
+                        continue
+                    for name in FILTERS:
+                        chains.append(chain_for(designs, base, dsd, pcm, name))
 
     print("| Chain | Stage 1 taps | Half-band taps | Band taps | Protected | Fold | Ripple 0-20 kHz |")
     print("|---|---|---|---|---|---|---|")

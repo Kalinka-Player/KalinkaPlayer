@@ -147,6 +147,17 @@ TEST(DsdCapabilities, PcmTakesRawBytesForTheStageOnAnyOutput) {
   EXPECT_EQ(format.dsdSampleRate, 2822400u);
   EXPECT_EQ(format.channels, 2u);
 }
+TEST(DsdCapabilities, PcmIsRefusedOnAnOutputTakingNoRateOfTheFamily) {
+  const OutputCapabilities caps{
+      DeviceAccess::Exclusive,
+      "",
+      {{48000, 2, 24, PCM24_LE}, {96000, 2, 24, PCM24_LE}}};
+  EXPECT_EQ(refusal(caps, "pcm", 2822400, 2),
+            "This output cannot play DSD64 as PCM: it takes none of 44.1, "
+            "88.2, 176.4 or 352.8 kHz");
+  EXPECT_EQ(chooseDsdOutput(caps, "pcm", 3072000, 2).sampleFormat, DSD_U8)
+      << "DSD of the family it does take";
+}
 TEST(DsdCapabilities, ExactCombinationRequiredAndAutomaticNeverAssumesDop) {
   OutputCapabilities caps{
       DeviceAccess::Exclusive,

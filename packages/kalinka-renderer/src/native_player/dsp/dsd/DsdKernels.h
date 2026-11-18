@@ -65,7 +65,7 @@ void stage1Pair(const Stage1Table *tables, size_t stored, size_t groups,
 
 /// The group counts stage1Rows() is built for: stage 1 of every 30 kHz and
 /// 50 kHz chain.
-inline constexpr size_t kStage1RowGroups[] = {5, 6, 7, 8, 10, 12};
+inline constexpr size_t kStage1RowGroups[] = {4, 5, 6, 7, 8, 10, 12};
 
 /// Whether stage1Rows() is built for @p groups groups.
 constexpr bool stage1RowsHandles(size_t groups) {

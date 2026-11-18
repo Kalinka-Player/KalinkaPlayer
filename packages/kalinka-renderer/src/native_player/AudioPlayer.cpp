@@ -21,6 +21,7 @@
 #include "WavContainer.h"
 #include "dsp/DelayLine.h"
 #include "dsp/DspStage.h"
+#include "dsp/dsd/DsdPcmRate.h"
 #include "dsp/dsd/DsdToPcmProcessor.h"
 #include "dsp/output/OutputStage.h"
 
@@ -64,7 +65,9 @@ std::unique_ptr<DspProcessor>
 dspProcessorFor(const Config &config,
                 const std::vector<StreamAudioFormat> &device) {
   if (value_or(config, "output.dsd_mode", std::string("disabled")) == "pcm") {
-    return std::make_unique<DsdToPcmProcessor>(device, dsdGain(config));
+    return std::make_unique<DsdToPcmProcessor>(
+        device, dsdGain(config),
+        dsdPcmMultiple(value_or(config, "dsd.pcm_rate", std::string("auto"))));
   }
   const auto delay =
       std::chrono::milliseconds(value_or(config, "dsp.delay_ms", 0));

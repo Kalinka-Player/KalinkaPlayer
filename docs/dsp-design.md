@@ -385,9 +385,16 @@ Phase 1:
 | Path | Type | Values | Default | Apply cost | Importance |
 |---|---|---|---|---|---|
 | `output.dsd_mode` | ENUM | gains `pcm`; `auto` becomes native when verified, else PCM | `disabled` | interrupts playback (as now) | simple |
-| `dsd.pcm_rate` | ENUM | `auto`, `2x`, `4x`, `8x` of 44.1/48 kHz, by source family | `auto` | instant: the next DSD source takes it | expert |
+| `dsd.pcm_rate` | ENUM | `auto`, `1x`, `2x`, `4x`, `8x` of 44.1/48 kHz, by source family | `auto` | interrupts playback: the converter is built with it | simple |
 | `dsd.filter` | ENUM | `auto` (30 kHz for DSD64, 50 kHz above), `30k`, `50k`, `wide` | `auto` | instant, crossfaded | expert |
 | `dsd.gain_db` | ENUM | `0`, `safe`, `6` | `safe` | instant, ramped | expert |
+
+The `dsd.*` settings are a DSD section of their own; `output.dsd_mode`
+stays in Output. `dsd.pcm_rate` is simple, since the app shows a section
+only for the simple settings in it. It was to apply to the next DSD source,
+but the converter presents its rate for queued tracks ahead of time, so a
+change rebuilds the graph as `output.dsd_mode` does. A rate the output does
+not take falls back to `auto`.
 
 Phase 2:
 
@@ -755,7 +762,7 @@ The modulator's own quality, a 1 kHz tone at half modulation over 0.5 s:
     divides by powers of two only, so DSD comes out at 2, 4 or 8 times its
     own family's base: 88.2, 176.4 or 352.8 kHz from the 44.1 kHz family,
     96, 192 or 384 kHz from the 48 kHz one. `dsd.pcm_rate` `auto` takes 4
-    times when the device does, else the highest of the three it does.
+    times when the device does, else the highest it does.
     Through `default` or `plughw:` a sound server or ALSA's plug layer
     resamples any of them. Through `hw:` nothing does, and many devices
     take only 44.1 and 48 kHz, or only the 48 kHz family: HDMI, onboard
@@ -768,8 +775,10 @@ The modulator's own quality, a 1 kHz tone at half modulation over 0.5 s:
     - crossing into the other family, through a resampler after the
       converter, waits for Phase 2's.
 
-    The base-rate chains and the refusal land with wiring the converter
-    into playback.
+    **Landed** with `dsd.pcm_rate`: `dsdPcmRate()` makes the choice for
+    both the converter and `chooseDsdOutput()`, which refuses DSD no rate
+    of its family can play: "This output cannot play DSD64 as PCM: it takes
+    none of 44.1, 88.2, 176.4 or 352.8 kHz".
 
 ## 14. DSD to PCM, as built
 
@@ -798,14 +807,19 @@ upstream that lands further back than asked plays on from where it landed.
   kernel is added without touching the chain.
 
 **Chains.** Every DSD rate from DSD64 to DSD1024, in both families, converts
-to 2, 4 or 8 times 44.1 or 48 kHz with each of the three filters: 90 chains,
-designed by `scripts/design_dsd_filters.py` into `DsdFilterTaps.h`. Stage 1
-divides by 8 a byte at a time from tables, a half-band
+to 1, 2, 4 or 8 times 44.1 or 48 kHz with each of the three filters: 120
+chains, designed by `scripts/design_dsd_filters.py` into `DsdFilterTaps.h`.
+Stage 1 divides by 8 a byte at a time from tables, a half-band
 (`HalfBandDecimator`) takes each further factor of 2, and a band filter at the
 output rate (`SymmetricFir`) sets the cut-off:
 - 30 kHz is flat to 20 kHz and 110 dB down from 40 kHz;
 - 50 kHz is flat to 40 kHz and down from 60 kHz;
 - wide is flat to 0.45 of the output rate.
+
+At the base rate there is no room for a band filter. The last half-band's
+transition, from 20 kHz (21.6 kHz at 48 kHz) to its mirror, is the
+cut-off, with 247 taps at 88.2 kHz and 231 at 96 kHz, and the three filters
+are one chain. What folds below 20 kHz is 171 dB down.
 
 Where wide comes straight out of stage 1, at DSD64 to 8 times the base, stage
 1 alone protects the band, and its 30 groups end it at 123.5 kHz for

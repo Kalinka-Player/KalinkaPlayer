@@ -138,7 +138,7 @@ TEST(Stage1, RowsAreTheSumOfTheTapsForEveryFilterTheyAreBuiltFor) {
       }
     }
   }
-  EXPECT_EQ(tested, (std::set<size_t>{5, 6, 7, 8, 10, 12}));
+  EXPECT_EQ(tested, (std::set<size_t>{4, 5, 6, 7, 8, 10, 12}));
 }
 
 TEST(Stage1, RowsAreBuiltForEvery30kAnd50kChain) {

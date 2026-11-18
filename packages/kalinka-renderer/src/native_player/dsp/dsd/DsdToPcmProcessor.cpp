@@ -1,5 +1,7 @@
 #include "dsp/dsd/DsdToPcmProcessor.h"
 
+#include "dsp/dsd/DsdPcmRate.h"
+
 #include <algorithm>
 
 namespace {
@@ -9,43 +11,39 @@ constexpr uint8_t kIdle = 0x69;
 } // namespace
 
 DsdToPcmProcessor::DsdToPcmProcessor(std::vector<StreamAudioFormat> device,
-                                     double gain)
-    : device(std::move(device)), gain(gain) {}
+                                     double gain,
+                                     std::optional<unsigned> multiple)
+    : device(std::move(device)), gain(gain), multiple(multiple) {}
 
-DsdToPcm::Spec DsdToPcmProcessor::spec(const StreamAudioFormat &format) const {
+std::optional<DsdToPcm::Spec>
+DsdToPcmProcessor::spec(const StreamAudioFormat &format) const {
   const unsigned dsdRate = format.dsdSampleRate;
+  const auto pcmRate = dsdPcmRate(dsdRate, device, multiple);
+  if (!pcmRate)
+    return std::nullopt;
   const unsigned base = dsdRate % 44100 == 0 ? 44100 : 48000;
-  const auto taken = [this](unsigned rate) {
-    return std::ranges::any_of(device, [rate](const StreamAudioFormat &f) {
-      return !isDsd(f.sampleFormat) && f.sampleRate == rate &&
-             f.channels == kPcmDeviceChannels;
-    });
-  };
-  unsigned multiple = 4;
-  for (const unsigned candidate : {4u, 8u, 2u}) {
-    if (taken(base * candidate)) {
-      multiple = candidate;
-      break;
-    }
-  }
-  return {dsdRate, base * multiple, format.channels,
-          dsdRate / base > 64 ? DsdFilter::Cut50k : DsdFilter::Cut30k,
-          DsdBitOrder::MsbFirst};
+  return DsdToPcm::Spec{
+      dsdRate, *pcmRate, format.channels,
+      dsdRate / base > 64 ? DsdFilter::Cut50k : DsdFilter::Cut30k,
+      DsdBitOrder::MsbFirst};
 }
 
 bool DsdToPcmProcessor::handles(const StreamAudioFormat &format) const {
-  return format.sampleFormat == DSD_U8 && DsdToPcm::converts(spec(format));
+  if (format.sampleFormat != DSD_U8)
+    return false;
+  const auto converted = spec(format);
+  return converted && DsdToPcm::converts(*converted);
 }
 
 DspProcessor::Output
 DsdToPcmProcessor::output(const StreamAudioFormat &format) const {
-  const auto converted = spec(format);
+  const auto converted = spec(format).value();
   return {{converted.pcmRate, format.channels, 64, PCM_FLOAT64_LE, 0},
           converted.dsdRate / converted.pcmRate / 8};
 }
 
 size_t DsdToPcmProcessor::start(const StreamAudioFormat &format) {
-  converter.emplace(spec(format));
+  converter.emplace(spec(format).value());
   channels = format.channels;
   planar.assign(channels,
                 std::vector<double>(converter->maxFrames(kChunkBytes)));

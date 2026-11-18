@@ -96,6 +96,9 @@ public:
   /// The network section, which is held and registered as bufferSettings() is.
   std::shared_ptr<ConfigContributor> networkSettings();
 
+  /// The DSD section, which is held and registered as bufferSettings() is.
+  std::shared_ptr<ConfigContributor> dsdSettings();
+
 private:
   /// Contributes one section of knobs; writes land back on the player.
   class KnobSection;
