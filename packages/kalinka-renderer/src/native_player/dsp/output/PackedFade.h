@@ -2,12 +2,12 @@
 
 #include "AudioSampleFormat.h"
 #include "dsp/output/GainRamp.h"
+#include "dsp/output/PlanarPcm.h"
 #include "dsp/output/Quantiser.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <random>
-#include <vector>
 
 /**
  * @brief Fades PCM already packed for the device to silence, in place: what a
@@ -35,6 +35,5 @@ public:
 private:
   GainRamp ramp;
   Quantiser quantiser;
-  std::vector<std::vector<double>> planar;
-  std::vector<double *> planes;
+  PlanarScratch planar;
 };

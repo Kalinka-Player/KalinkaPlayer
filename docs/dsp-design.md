@@ -308,7 +308,10 @@ is written is untouched.
   device already holds. It is reported once that has been heard, and silence
   follows. A resume fades in from there, so nothing is lost or repeated. A
   fade that reaches a gapless join carries on into the next track. A track
-  ending inside it any other way plays out, and the next track starts paused.
+  ending inside it, or with it, any other way plays out, and the next track
+  starts paused. A skip while paused plays the next track, whether the fade
+  had finished or not. An input running dry inside the fade fades out the
+  device's last 10 ms instead, and the pause holds until it is back.
 - **A seek** takes back what the device holds unplayed with `snd_pcm_rewind`,
   unless that is only a pause's silence.
   It leaves 5 ms that may already be on its way to the DAC, fades the first

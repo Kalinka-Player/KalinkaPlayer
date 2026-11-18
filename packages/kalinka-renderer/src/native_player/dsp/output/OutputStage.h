@@ -5,6 +5,7 @@
 #include "dsp/output/GainRamp.h"
 #include "dsp/output/OutputFade.h"
 #include "dsp/output/OutputFormat.h"
+#include "dsp/output/PlanarPcm.h"
 #include "dsp/output/Quantiser.h"
 
 #include <atomic>
@@ -89,8 +90,7 @@ private:
   std::optional<double> fadeSettle;
   Quantiser quantiser;
   std::vector<uint8_t> input;
-  std::vector<std::vector<double>> planar;
-  std::vector<double *> planes;
+  PlanarScratch planar;
 
   void onUpstreamState(const StreamState &state);
   std::optional<Presented> current() const;

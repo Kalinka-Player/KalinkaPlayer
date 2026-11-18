@@ -131,12 +131,16 @@ private:
   const std::unique_ptr<PackedFade> packedFade;
   /// Frames a pause still reads, fading, before it writes silence.
   snd_pcm_uframes_t pauseFadeLeft = 0;
-  /// The next run starts where a seek landed, mid-waveform.
+  /// The next run starts mid-waveform: where a seek landed, or where a
+  /// stalled input resumes.
   bool fadeInNext = false;
-  /// A pause the end of a track cut short, which the next track keeps.
+  /// A pause the run ended under, a track's end or a stall: the next run
+  /// starts paused.
   bool pauseCarried = false;
   /// All the device holds is a pause's silence: its fade has been heard.
   bool holdsSilence = false;
+  /// Pause and resume reports made; only the newest decides holdsSilence.
+  unsigned pauseReports = 0;
   /// The report of a gapless source change, waiting for its first frame to
   /// be heard.
   std::optional<int> pendingSourceReport;
@@ -158,7 +162,11 @@ private:
   /// Takes back what the device holds unplayed, fades its start out and
   /// silences the rest, and waits until the fade has been heard. Leaves the
   /// queue alone on a device that cannot take it back.
-  void fadeQueuedOut();
+  /// @param keepQueue Takes back only the fade's length at the queue's end,
+  /// so that all of it is still heard.
+  void fadeQueuedOut(bool keepQueue = false);
+  /// Forgets the reports waiting on what the device holds, which is dropped.
+  void forgetQueuedReports();
   /// Now writing @p id; a cut of another stream no longer applies.
   void reading(std::optional<StreamId> id);
   /// If the stream being written was cut, fades the device's queue out and
