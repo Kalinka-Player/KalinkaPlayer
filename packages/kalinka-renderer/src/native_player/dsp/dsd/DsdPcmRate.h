@@ -6,8 +6,8 @@
 #include <span>
 #include <string>
 
-/// Whether @p setting is one of `dsd.pcm_rate`'s values.
-bool isDsdPcmRate(const std::string &setting);
+/// The base rate of @p dsdRate's family: 44.1 kHz, else 48 kHz.
+unsigned dsdBaseRate(unsigned dsdRate);
 
 /**
  * @brief The multiple of the DSD family's base rate that `dsd.pcm_rate`

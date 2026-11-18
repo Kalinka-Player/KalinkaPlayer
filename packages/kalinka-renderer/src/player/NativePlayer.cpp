@@ -148,8 +148,7 @@ struct Knob {
   Bounds bounds{};
   const char *helpDetails = "";
   std::span<const Choice> choices = {};
-  // Most are reached for when the card or the link misbehaves, which is not
-  // what a settings page is for.
+  // Most are for a misbehaving card or link, not the settings page proper.
   renderer_pb::ConfigImportance importance =
       renderer_pb::CONFIG_IMPORTANCE_EXPERT;
 };

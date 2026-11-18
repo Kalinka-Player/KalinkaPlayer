@@ -21,10 +21,10 @@ DsdToPcmProcessor::spec(const StreamAudioFormat &format) const {
   const auto pcmRate = dsdPcmRate(dsdRate, device, multiple);
   if (!pcmRate)
     return std::nullopt;
-  const unsigned base = dsdRate % 44100 == 0 ? 44100 : 48000;
   return DsdToPcm::Spec{
       dsdRate, *pcmRate, format.channels,
-      dsdRate / base > 64 ? DsdFilter::Cut50k : DsdFilter::Cut30k,
+      dsdRate / dsdBaseRate(dsdRate) > 64 ? DsdFilter::Cut50k
+                                          : DsdFilter::Cut30k,
       DsdBitOrder::MsbFirst};
 }
 
