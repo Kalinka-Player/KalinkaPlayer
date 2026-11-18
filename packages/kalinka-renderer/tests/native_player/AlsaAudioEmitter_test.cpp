@@ -271,6 +271,21 @@ TEST(PlayedFramesCounter, PlayingOutRunsEveryCallbackOnItsOwnFrame) {
   EXPECT_EQ(counter.getPlayedFrames(), 350);
 }
 
+TEST(PlayedFramesCounter, PlayingOutWaitsOutTheFramesBeforeEachCallback) {
+  PlayedFramesCounter counter;
+  counter.update(50);
+  std::vector<snd_pcm_sframes_t> steps;
+  for (const int frame : {300, 100})
+    counter.callOnOrAfterFrame(frame, [&steps](snd_pcm_sframes_t) {
+      steps.push_back(-1);
+    });
+
+  counter.playOut(
+      [&steps](snd_pcm_sframes_t frames) { steps.push_back(frames); });
+
+  EXPECT_EQ(steps, (std::vector<snd_pcm_sframes_t>{100, -1, 200, -1}));
+}
+
 TEST(AlsaAudioEmitter, ExplicitBufferSizesApplyOnlyToNonLiveAudio) {
   using namespace std::chrono_literals;
   Config config{{"output.alsa.device", "null"},
@@ -1510,4 +1525,21 @@ TEST_F(PacedCapture, ANextTrackLateAtAGaplessJoinStillPlays) {
   ASSERT_FALSE(left.empty());
   EXPECT_LT(left.size(), 2 * kFrames) << "what came while starved is dropped";
   EXPECT_EQ(left.back(), next->value(kFrames - 1)) << "the next track played";
+}
+
+TEST_F(PacedCapture, AJoinRefilledAfterAnUnderrunIsReportedAsTheQueueEnds) {
+  // The underrun's refill takes the rest of the first track and all of the
+  // second: the run ends before the device is started again.
+  const auto last = std::make_shared<PacedCountingNode>(2, 2000000, 1000);
+  recordReports();
+  playThrough(std::make_shared<AudioStreamSwitcher>(),
+              {std::make_shared<BlockingCountingNode>(1, 1000000, 6000, 4800,
+                                                      kStarving),
+               last});
+  const auto left = written();
+
+  EXPECT_FALSE(failed());
+  EXPECT_TRUE(hasReported(AudioGraphNodeState::STREAMING, 2));
+  ASSERT_FALSE(left.empty());
+  EXPECT_EQ(left.back(), last->value(999)) << "the last track played";
 }

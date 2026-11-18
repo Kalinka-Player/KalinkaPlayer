@@ -585,6 +585,11 @@ snd_pcm_sframes_t AlsaAudioEmitter::writeToAlsa(
   const snd_pcm_channel_area_t *my_areas = nullptr;
   snd_pcm_uframes_t offset = 0, frames = framesToWrite;
   int err = snd_pcm_mmap_begin(pcm.handle, &my_areas, &offset, &frames);
+  if (err == -EPIPE) {
+    recoverFromUnderrun();
+    perfmon_end("writeToAlsa");
+    return 0;
+  }
   if (err < 0) {
     if (isDsd(currentStreamAudioFormat.sampleFormat))
       throw std::runtime_error("DSD output underrun; restart playback");
@@ -603,7 +608,9 @@ snd_pcm_sframes_t AlsaAudioEmitter::writeToAlsa(
   frames = func(ptr, frames, snd_pcm_frames_to_bytes(pcm.handle, frames));
 
   err = snd_pcm_mmap_commit(pcm.handle, offset, frames);
-  if (static_cast<snd_pcm_uframes_t>(err) != frames || err < 0) {
+  if (err == -EPIPE) {
+    recoverFromUnderrun();
+  } else if (static_cast<snd_pcm_uframes_t>(err) != frames || err < 0) {
     if (isDsd(currentStreamAudioFormat.sampleFormat))
       throw std::runtime_error("Incomplete DSD output write; restart playback");
     if (xrun_recovery(pcm.handle, err) < 0) {
@@ -730,15 +737,9 @@ void AlsaAudioEmitter::startPcmStream(const StreamInfo &streamInfo,
 void AlsaAudioEmitter::drainPcm() {
   abandonIfCut();
   if (snd_pcm_state(pcm.handle) == SND_PCM_STATE_RUNNING) {
-    auto drainSequence = playedFramesCounter.drainSequence();
-    if (!drainSequence.empty()) {
-      snd_pcm_sframes_t prevFrames = 0;
-      for (auto frames : drainSequence) {
-        std::this_thread::sleep_for(framesToTimeMs(frames - prevFrames));
-        playedFramesCounter.update(frames - prevFrames);
-        prevFrames = frames;
-      }
-    }
+    playedFramesCounter.playOut([this](snd_pcm_sframes_t frames) {
+      std::this_thread::sleep_for(framesToTimeMs(frames));
+    });
     log_on_error(snd_pcm_drop(pcm.handle));
   }
   if (pausedOut() || queueAbandoned) {
@@ -746,6 +747,8 @@ void AlsaAudioEmitter::drainPcm() {
   } else {
     log_on_error(snd_pcm_drain(pcm.handle));
   }
+  // Left when the device was not started: it has now played or dropped it all.
+  playedFramesCounter.playOut();
 }
 
 void AlsaAudioEmitter::workerThread(std::stop_token token) {
@@ -846,7 +849,7 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
               break;
             }
             // Refilled after an underrun: writes alone do not start a device.
-            if (started &&
+            if (started && framesRead > 0 &&
                 snd_pcm_state(pcm.handle) == SND_PCM_STATE_PREPARED) {
               throw_on_error(snd_pcm_start(pcm.handle));
             }
@@ -1024,9 +1027,12 @@ std::vector<snd_pcm_sframes_t> PlayedFramesCounter::drainSequence() {
   return sequence;
 }
 
-void PlayedFramesCounter::playOut() {
+void PlayedFramesCounter::playOut(
+    const std::function<void(snd_pcm_sframes_t)> &untilPlayed) {
   snd_pcm_sframes_t played = 0;
   for (const auto frame : drainSequence()) {
+    if (untilPlayed)
+      untilPlayed(frame - played);
     update(frame - played);
     played = frame;
   }
