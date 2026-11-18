@@ -55,10 +55,10 @@
     "backdrop-lattice-gray-v3": "Deterministic grayscale conversion of backdrop-lattice-v2.jpg using ImageMagick -colorspace Gray -depth 8. Geometry is unchanged. Backend maps charcoal at 0, a title-selected crimson/red at 128, and a title-selected ivory/gold at 255 before adding foreground artwork."
   },
   "renderer": {
-    "style_version": 11,
-    "backgrounds": "Six simple grayscale geometric templates drawn directly by catalog_art_render.py; historical raster designs listed in the prompts are not used or packaged.",
-    "palette": "Sixteen paired colour families with three highlight variations, selected independently of shape from the normalized title hash.",
-    "composition": "A quiet colour field under the first 58% of a card keeps labels readable. Cards without artwork use one transparent cabinet at 62% of card height, placed toward the right. Real artwork takes precedence.",
-    "geometry": "Independent title-hash bytes select rotation up to 30 degrees either way, horizontal offset up to 7% of card width, vertical offset up to 25% of card height, width scale of 82–118%, and height scale of 80–120%. Complete paths are transformed around (82% width, 50% height) before clipping; the caption fade and foreground artwork remain fixed."
+    "style_version": 15,
+    "backgrounds": "The three Kalinka banner geometries (arcs, folds and rings) in a 600x200 viewBox, drawn directly by catalog_art_render.py; historical raster designs listed in the prompts, including placeholder-catalog-v2, are not used or packaged.",
+    "palette": "Fourteen muted tints selected from the normalized title hash, each blended over #1B1B1E at 12% for the left surface (flat to 40% across, then ramping to 34% for the right surface), 48% for the geometry and 68% for its fine line.",
+    "composition": "The flat left surface keeps labels readable. Cards without artwork use one transparent cabinet at 62% of card height, placed toward the right; a catalog of catalogs instead gets the outlined, tilted catalogue icon, 65% of the shorter side across, 82% across a card and centred in a thumbnail, as the app draws its own stand-in. Real artwork takes precedence.",
+    "geometry": "Fixed as designed: a title-hash byte range selects the geometry and another the tint; nothing is rotated, scaled or shifted."
   }
 }
