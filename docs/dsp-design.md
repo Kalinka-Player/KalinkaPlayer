@@ -311,7 +311,10 @@ is written is untouched.
   ending inside it, or with it, any other way plays out, and the next track
   starts paused. A skip while paused plays the next track, whether the fade
   had finished or not. An input running dry inside the fade fades out the
-  device's last 10 ms instead, and the pause holds until it is back.
+  device's last 10 ms instead, and the pause holds until it is back, unless
+  a resume comes first. A seek plays from where it lands, as it does under
+  any pause. A stall outside a pause is not faded, since an input that is
+  merely late would then have its bytes changed.
 - **A seek** takes back what the device holds unplayed with `snd_pcm_rewind`,
   unless that is only a pause's silence.
   It leaves 5 ms that may already be on its way to the DAC, fades the first
