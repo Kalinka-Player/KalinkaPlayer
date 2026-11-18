@@ -319,12 +319,12 @@ def test_each_root_artwork_is_packaged_and_served_without_library_covers(module)
     assert len(large_images) == len(root.items)
 
 
-def test_artist_artwork_refreshes_while_old_links_still_resolve(module):
-    artist = next(
-        item for item in browse(module, "root").items if item.id.id == "artists"
-    )
-    assert "artists-v2-large.jpg" in artist.catalog.image.large
-    assert asyncio.run(module.get_resource_path("catalog-art/artists-v1-large.jpg"))
+def test_artwork_refreshes_while_old_links_still_resolve(module):
+    root = {item.id.id: item for item in browse(module, "root").items}
+    assert "artists-v3-large.jpg" in root["artists"].catalog.image.large
+    assert "albums-v2-large.jpg" in root["albums"].catalog.image.large
+    for old in ("artists-v1", "artists-v2", "albums-v1"):
+        assert asyncio.run(module.get_resource_path(f"catalog-art/{old}-large.jpg"))
 
 
 @pytest.mark.parametrize(

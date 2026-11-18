@@ -16,10 +16,7 @@ as its subtitle. It can be played or queued and lists its tracks by title with
 individual artwork. Its local ID stays `unknown_album`; old album links still
 resolve, and the database sentinel and file tags are unchanged.
 
-Each root category carries bundled generated artwork in three sizes, served
-through the module's existing resource endpoint. The images and generation
-prompts are in `src/kalinka_plugin_localfiles/catalog_artwork/`; they are
-included in the package and need no runtime generation or network access.
+Each root category carries a bundled banner in three sizes, served through the module's existing resource endpoint. The JPEGs are in `src/kalinka_plugin_localfiles/catalog_artwork/`; they are included in the package and need no runtime generation or network access. They are rendered from the SVGs in `artwork/` by `scripts/render_catalog_artwork.py`; Playlists uses the generic catalogue banner. Earlier versions stay in the package so links clients already hold still resolve, and `prompts.json` records how the first photographic versions were generated.
 
 Loose files in a configured library root or a generic container such as
 `Music` or `Downloads` are listed individually in Recently Added. Those
