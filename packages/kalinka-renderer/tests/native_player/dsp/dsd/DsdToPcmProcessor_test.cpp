@@ -10,9 +10,9 @@
 #include <vector>
 
 namespace {
-/// Raw DSD as DsdContainer hands it in `pcm` mode.
+/// DSD as DsdContainer hands it for conversion.
 StreamAudioFormat raw(unsigned dsdRate, unsigned channels = 2) {
-  return {dsdRate / 8, channels, 1, DSD_U8, dsdRate};
+  return {dsdRate / 8, channels, 1, DSD_RAW, dsdRate};
 }
 
 /// A device taking S32 in stereo at each of @p rates.
@@ -100,6 +100,8 @@ TEST(DsdToPcmProcessor, TakesRawDsdAndNothingElse) {
   EXPECT_TRUE(processor.handles(raw(2822400)));
   EXPECT_TRUE(processor.handles(raw(3072000, 1)));
   EXPECT_FALSE(processor.handles({352800, 2, 32, DSD_U32_LE, 2822400}));
+  EXPECT_FALSE(processor.handles({352800, 2, 1, DSD_U8, 2822400}))
+      << "a device's own DSD, which Automatic sends natively";
   EXPECT_FALSE(processor.handles({44100, 2, 16, PCM16_LE, 0}));
   EXPECT_FALSE(processor.handles(raw(2822400 / 2))) << "below DSD64";
 }

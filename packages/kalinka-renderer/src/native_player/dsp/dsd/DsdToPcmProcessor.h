@@ -10,8 +10,9 @@
  * @brief Converts raw DSD to float64 PCM inside DspStage, so the filters'
  * state carries across a gapless DSD album.
  *
- * It takes DSD_U8, one byte per channel per frame with the earliest bit in
- * the MSB, as DsdContainer hands raw DSD. The PCM rate is dsdPcmRate()'s;
+ * It takes DSD_RAW, one byte per channel per frame with the earliest bit in
+ * the MSB, as DsdContainer hands DSD chosen for conversion: DSD_U8 is a
+ * device's, and passes untouched. The PCM rate is dsdPcmRate()'s;
  * DSD at a rate the device takes none of its family's is not handled. The
  * filter is the one asked for, else 30 kHz for DSD64 and 50 kHz above. The
  * output is scaled by the DSD gain.

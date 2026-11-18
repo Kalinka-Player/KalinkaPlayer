@@ -282,7 +282,8 @@ const Choice kDsdPcmRates[] = {
 const Choice kDsdChoices[] = {
     {"disabled", "Disabled", "DSD tracks do not play."},
     {"auto", "Automatic",
-     "Send native DSD when the DAC supports the track’s rate, and never DoP."},
+     "Send native DSD when the DAC supports the track’s rate and the volume is "
+     "Fixed output. Otherwise convert to PCM. Never DoP."},
     {"native", "Native DSD",
      "Send DSD directly to a compatible DAC."},
     {"dop", "DoP",
@@ -311,7 +312,7 @@ const Knob kDsdKnobs[] = {
      {},
      "Plays DSF and DSDIFF files, either as DSD, which the DAC must support in "
      "the selected mode and at the track’s DSD rate, or converted to PCM. "
-     "Unsupported tracks fail to play.",
+     "Automatic chooses for each track. Unsupported tracks fail to play.",
      kDsdChoices,
      renderer_pb::CONFIG_IMPORTANCE_SIMPLE},
     {"output.dsd_pcm_rate",
@@ -320,7 +321,8 @@ const Knob kDsdKnobs[] = {
      renderer_pb::CONFIG_FIELD_TYPE_ENUM,
      "",
      {},
-     "Used only when DSD output is Convert to PCM.\n\n"
+     "Used when DSD is converted to PCM: with Convert to PCM, and with "
+     "Automatic for tracks that do not play as native DSD.\n\n"
      "Each choice names two rates. Almost all DSD, DSD64 at 2.8 MHz and its "
      "multiples, converts to the first. The second is for DSD at 3.072 MHz "
      "and its multiples, which is rare.\n\n"
@@ -346,7 +348,8 @@ const Knob kDsdKnobs[] = {
      renderer_pb::CONFIG_FIELD_TYPE_ENUM,
      "",
      {},
-     "Used only when DSD output is Convert to PCM.\n\n"
+     "Used when DSD is converted to PCM: with Convert to PCM, and with "
+     "Automatic for tracks that do not play as native DSD.\n\n"
      "DSD carries strong ultrasonic noise, rising with frequency above the "
      "audio band. The filter decides how much of it, and of any music above "
      "20 kHz, reaches the DAC.\n\n"
