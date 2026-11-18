@@ -113,7 +113,7 @@ def test_thumbnail_is_the_card_art_square(count):
 def test_root_titles_have_distinct_color_families():
     titles = ["Home", "Explore", "Genres", "Moods", "My Mixes", "My Collection"]
     colors = {
-        render._background_colors(render.background_text_key([title], "tidal"))[0]
+        render.background_tint(render.background_text_key([title], "tidal"))
         for title in titles
     }
     assert len(colors) >= 5
@@ -1385,64 +1385,65 @@ def test_card_text_selects_several_distinct_backgrounds():
     )
 
 
-def test_title_hash_uses_the_full_palette_and_highlight_variations():
-    colors = {
-        render._background_colors(
-            render.background_text_key([f"Music collection {index}"], "same-id")
-        )
+def test_title_hash_uses_every_tint_and_design():
+    keys = [
+        render.background_text_key([f"Music collection {index}"], "same-id")
         for index in range(500)
-    }
-    assert {accent for accent, _ in colors} == {
-        accent for accent, _ in render.BACKGROUND_PALETTES
-    }
-    assert len(colors) >= 44
+    ]
+    assert {render.background_tint(key) for key in keys} == set(render.BACKGROUND_TINTS)
+    assert {render.background_design(key) for key in keys} == set(
+        range(len(render.BACKGROUND_DESIGNS))
+    )
 
 
-def test_titles_with_the_same_shape_and_colors_still_get_distinct_geometry():
-    groups = {}
-    transforms = set()
-    for index in range(500):
-        key = render.background_text_key([f"Music collection {index}"], "id")
-        transform = render.background_transform(key)
-        transforms.add(transform)
-        group = (int(key[:16], 16) % 6, render._background_colors(key))
-        groups.setdefault(group, []).append(key)
-    assert len(transforms) == 500
-    collision = next(keys for keys in groups.values() if len(keys) >= 3)
-    images = [render._background(360, 120, key).tobytes() for key in collision]
-    assert len(set(images)) == len(collision)
-    assert render._background(360, 120, collision[0]).tobytes() == images[0]
+def test_swatches_follow_the_design_weights():
+    assert render.background_swatches("#814354") == (
+        "#272024",
+        "#3E2930",
+        "#4C2E38",
+        "#603643",
+    )
 
 
 @pytest.mark.parametrize("variant", range(len(render.BACKGROUND_DESIGNS)))
-def test_transform_extremes_keep_shapes_visible_and_caption_clear(variant):
-    import numpy as np
-
-    for tail in ("00" * 8, "ff" * 8, "00ff00ff00ffffff", "ff00ff00ff000000"):
-        key = f"{variant:016x}{3:016x}{1:016x}{tail}"
-        transform = render.background_transform(key)
-        source = render._backdrop(variant, transform)
-        assert np.ptp(np.asarray(source)[:, 1400:]) > 40
-        card = np.asarray(render._background(360, 120, key))
-        assert np.ptp(card[:, :209].astype(np.int16), axis=(0, 1)).max() <= 1
-        thumb = np.asarray(render._background(120, 120, key, text_column=False))
-        assert np.ptp(thumb[..., :3].astype(np.int16), axis=(0, 1)).max() > 10
-
-
-def test_tonal_mapping_smoothly_joins_each_palette():
+def test_each_design_keeps_the_left_surface_flat_and_its_geometry_visible(variant):
     import numpy as np
     from PIL import ImageColor
 
-    source = Image.fromarray(np.arange(256, dtype=np.uint8)[None, :])
-    for family in range(len(render.BACKGROUND_PALETTES)):
-        for light in range(3):
-            key = f"{0:016x}{family:016x}{light:016x}{0:016x}"
-            accent, highlight = render._background_colors(key)
-            image = render._tint_background(source, key)
-            assert image.getpixel((160, 0)) == ImageColor.getrgb(accent)
-            assert image.getpixel((255, 0)) == ImageColor.getrgb(highlight)
-            pixels = np.asarray(image, dtype=np.int16)
-            assert np.abs(np.diff(pixels, axis=1)).max() <= 2
+    shares = np.asarray(render._backdrop(variant), dtype=np.int16)
+    assert (np.abs(shares - round(render.BACKGROUND_WEIGHTS[3] * 255)) <= 1).any()
+
+    key = f"{variant:016x}{0:016x}{0:016x}{0:016x}"
+    left, _, shape, _ = (
+        np.array(ImageColor.getrgb(color), dtype=np.int16)
+        for color in render.background_swatches(render.background_tint(key))
+    )
+    card = np.asarray(render._background(360, 120, key).convert("RGB"), np.int16)
+    assert np.abs(card[:, :144] - left).max() <= 1
+    assert (np.abs(card[:, 180:] - shape).max(axis=2) <= 1).mean() > 0.05
+    thumb = np.asarray(render._background(120, 120, key, square=True), np.int16)
+    assert (np.abs(thumb[..., :3] - shape).max(axis=2) <= 1).mean() > 0.05
+
+
+def test_tinting_maps_each_weight_onto_its_swatch():
+    import numpy as np
+    from PIL import ImageColor
+
+    shares = [round(weight * 255) for weight in (0, *render.BACKGROUND_WEIGHTS, 1)]
+    source = Image.fromarray(np.array([shares], dtype=np.uint8))
+    for family, tint in enumerate(render.BACKGROUND_TINTS):
+        key = f"{0:016x}{family:016x}{0:016x}{0:016x}"
+        assert render.background_tint(key) == tint
+        pixels = np.asarray(render._tint_background(source, key), dtype=np.int16)
+        assert (pixels[..., 3] == 255).all()
+        pixels = pixels[..., :3]
+        expected = [
+            render.BACKGROUND_BASE,
+            *render.background_swatches(tint),
+            tint,
+        ]
+        for pixel, color in zip(pixels[0], expected):
+            assert np.abs(pixel - ImageColor.getrgb(color)).max() <= 1
 
 
 @pytest.mark.parametrize("variation", ["color", "geometry"])
@@ -1467,15 +1468,13 @@ def test_background_changes_leave_foreground_art_unchanged(
 
     first = compose()
     if variation == "color":
-        monkeypatch.setattr(
-            render, "_background_colors", lambda key: ("#E16051", "#A87935")
-        )
+        tint = render.background_tint(render.background_text_key(["Albums"], ""))
+        other = next(color for color in render.BACKGROUND_TINTS if color != tint)
+        monkeypatch.setattr(render, "background_tint", lambda key: other)
     else:
-        monkeypatch.setattr(
-            render,
-            "background_transform",
-            lambda key: render.BackgroundTransform(30, -0.07, 0.25, 0.82, 1.2),
-        )
+        design = render.background_design(render.background_text_key(["Albums"], ""))
+        other = (design + 1) % len(render.BACKGROUND_DESIGNS)
+        monkeypatch.setattr(render, "background_design", lambda key: other)
     second = compose()
     center = (250, 50, 270, 70) if foreground == "cover" else (288, 57, 302, 72)
     assert first.crop(center).tobytes() == second.crop(center).tobytes()
@@ -1488,14 +1487,14 @@ def test_card_and_thumbnail_select_the_same_background_by_text(monkeypatch):
     original = render._backdrop
     original_tint = render._tint_background
 
-    def record(variant, transform):
-        variants.append((variant, transform))
-        return original(variant, transform)
+    def record(variant):
+        variants.append(variant)
+        return original(variant)
 
     monkeypatch.setattr(render, "_backdrop", record)
 
     def tint(source, text_key):
-        colors.append(render._background_colors(text_key))
+        colors.append(render.background_tint(text_key))
         return original_tint(source, text_key)
 
     monkeypatch.setattr(render, "_tint_background", tint)
@@ -1514,7 +1513,7 @@ def test_background_assignment_survives_python_hash_randomization():
     import subprocess
     import sys
 
-    script = 'from kalinka_server.catalog_art_render import background_text_key, _background_colors; key = background_text_key(["Jazz", "Albums"], "id"); print(key, _background_colors(key))'
+    script = 'from kalinka_server.catalog_art_render import background_text_key, background_design, background_tint; key = background_text_key(["Jazz", "Albums"], "id"); print(key, background_design(key), background_tint(key))'
     keys = [
         subprocess.check_output(
             [sys.executable, "-c", script], env={**os.environ, "PYTHONHASHSEED": seed}
@@ -1524,12 +1523,9 @@ def test_background_assignment_survives_python_hash_randomization():
     assert keys[0] == keys[1]
 
 
-@pytest.mark.parametrize("variant", range(len(render.BACKGROUND_DESIGNS)))
-def test_every_palette_keeps_titles_and_secondary_text_readable(variant):
+def test_every_tint_keeps_titles_and_secondary_text_readable():
     import numpy as np
-
-    source = render._backdrop(variant)
-    assert source.mode == "L" and source.size == (2400, 800)
+    from PIL import ImageColor
 
     def luminance(rgb):
         values = np.asarray(rgb, dtype=np.float32) / 255
@@ -1540,14 +1536,12 @@ def test_every_palette_keeps_titles_and_secondary_text_readable(variant):
         )
         return linear @ np.array([0.2126, 0.7152, 0.0722])
 
-    for family in range(len(render.BACKGROUND_PALETTES)):
-        text_key = f"{variant:016x}{family:016x}{2:016x}{0:016x}"
-        image = render._background(360, 120, text_key).convert("RGB")
-        column = np.asarray(image.crop((0, 0, 209, 120)))
-        brightest = float(luminance(column).max())
-        assert (luminance([250, 245, 240]) + 0.05) / (brightest + 0.05) >= 7
-        assert (luminance([187, 187, 187]) + 0.05) / (brightest + 0.05) >= 4.5
-        assert np.ptp(column.astype(np.int16), axis=(0, 1)).max() <= 1
+    for tint in render.BACKGROUND_TINTS:
+        # The caption may cross the geometry; only its hairline is brighter.
+        for surface in render.background_swatches(tint)[:3]:
+            brightest = float(luminance(ImageColor.getrgb(surface)))
+            assert (luminance([250, 245, 240]) + 0.05) / (brightest + 0.05) >= 7
+            assert (luminance([187, 187, 187]) + 0.05) / (brightest + 0.05) >= 4.5
 
 
 async def _drain_art_jobs(svc):

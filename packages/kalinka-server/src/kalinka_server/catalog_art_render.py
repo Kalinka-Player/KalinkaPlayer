@@ -1,6 +1,7 @@
-"""Catalog cards tint a grayscale backdrop before adding up to three album covers.
+"""Catalog cards tint one of three Kalinka banner geometries before adding up to
+three album covers.
 
-The app overlays labels on the dark left column; square thumbnails gather the
+The app overlays labels on the dark left surface; square thumbnails gather the
 covers in the middle. Cards without artwork show one transparent cabinet matching
 their contents. Playlist covers retain their album-only mosaic.
 STYLE_VERSION participates in cache fingerprints and must change with the art.
@@ -13,7 +14,6 @@ import io
 import json
 import math
 import unicodedata
-from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
@@ -22,7 +22,7 @@ from typing import Sequence
 import numpy as np
 from PIL import Image, ImageColor, ImageDraw, ImageFilter, ImageOps
 
-STYLE_VERSION = 11
+STYLE_VERSION = 12
 
 CANVAS_W = 1200
 CANVAS_H = 400  # 3:1
@@ -44,25 +44,27 @@ class ArtStyle(Enum):
 
 
 _ART_DIRECTORY = Path(__file__).with_name("assets") / "catalog"
-BACKGROUND_DESIGNS = ("sweep", "arch", "diagonal", "circles", "wave", "block")
-BACKGROUND_PALETTES = (
-    ("#A13B50", "#CE8291"),
-    ("#AF563D", "#DFA080"),
-    ("#94702F", "#CFB66B"),
-    ("#687B38", "#A8BB77"),
-    ("#2F7958", "#82B499"),
-    ("#28836D", "#82C4AE"),
-    ("#277B84", "#81B7C4"),
-    ("#367F9E", "#8BC4D9"),
-    ("#32669B", "#82A9D4"),
-    ("#4E5CA6", "#A1A8DC"),
-    ("#6A4E9B", "#B59FD5"),
-    ("#834D91", "#C59CCB"),
-    ("#A34479", "#D894BA"),
-    ("#A54F67", "#DF9BA8"),
-    ("#896456", "#C3AA90"),
-    ("#526F7D", "#ADC3C9"),
+BACKGROUND_DESIGNS = ("arcs", "folds", "rings")
+BACKGROUND_TINTS = (
+    "#814354",
+    "#7E4D3E",
+    "#7D653B",
+    "#696C3D",
+    "#4F6543",
+    "#3A644C",
+    "#386762",
+    "#44617E",
+    "#566174",
+    "#4F5482",
+    "#60507C",
+    "#6C4A73",
+    "#774668",
+    "#6E5F53",
 )
+BACKGROUND_BASE = "#1B1B1E"
+#: The tint's share of the base in the left surface, the right surface, the
+#: geometry and its fine line.
+BACKGROUND_WEIGHTS = (0.12, 0.34, 0.48, 0.68)
 _PLACEHOLDER_KINDS = ("album", "catalog", "track", "playlist", "artist")
 _GRAIN = 0.5
 
@@ -98,160 +100,116 @@ def background_text_key(names: Sequence[str], seed: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-@dataclass(frozen=True)
-class BackgroundTransform:
-    """Title-selected geometry around the artwork side, before the caption fade."""
-
-    rotation: float = 0
-    offset_x: float = 0
-    offset_y: float = 0
-    scale_x: float = 1
-    scale_y: float = 1
-
-    def affine(self, width: float, height: float) -> tuple[float, ...]:
-        """Forward affine coefficients: a, b, c, d, tx, ty."""
-        angle = math.radians(self.rotation)
-        cosine, sine = math.cos(angle), math.sin(angle)
-        a, b = cosine * self.scale_x, -sine * self.scale_y
-        c, d = sine * self.scale_x, cosine * self.scale_y
-        px, py = 0.82 * width, 0.5 * height
-        return (
-            a,
-            b,
-            c,
-            d,
-            px + self.offset_x * width - a * px - b * py,
-            py + self.offset_y * height - c * px - d * py,
-        )
+def background_design(text_key: str) -> int:
+    return int(text_key[:16], 16) % len(BACKGROUND_DESIGNS)
 
 
-def background_transform(text_key: str) -> BackgroundTransform:
-    """Use independent hash bytes so a shared shape and palette can still vary."""
-    values = bytes.fromhex(text_key)[24:29]
-    return BackgroundTransform(
-        rotation=values[0] % 61 - 30,
-        offset_x=(values[1] / 255 - 0.5) * 0.14,
-        offset_y=(values[2] / 255 - 0.5) * 0.50,
-        scale_x=0.82 + values[3] / 255 * 0.36,
-        scale_y=0.80 + values[4] / 255 * 0.40,
+def background_tint(text_key: str) -> str:
+    return BACKGROUND_TINTS[int(text_key[16:32], 16) % len(BACKGROUND_TINTS)]
+
+
+def _blend(tint: str, weight: float) -> tuple[int, int, int]:
+    base, rgb = ImageColor.getrgb(BACKGROUND_BASE), ImageColor.getrgb(tint)
+    return tuple(round(a * (1 - weight) + b * weight) for a, b in zip(base, rgb))
+
+
+def background_swatches(tint: str) -> tuple[str, ...]:
+    """The design's four flat colours: each weight of *tint* over the base."""
+    return tuple(
+        "#{:02X}{:02X}{:02X}".format(*_blend(tint, weight))
+        for weight in BACKGROUND_WEIGHTS
     )
+
+
+_DESIGN_W = 600
+_LEFT, _RIGHT, _SHAPE, _LINE = BACKGROUND_WEIGHTS
+
+
+def _cubic(*controls: tuple[float, float], steps: int = 64) -> np.ndarray:
+    p0, p1, p2, p3 = (np.asarray(point, dtype=np.float64) for point in controls)
+    t = np.linspace(0, 1, steps)[:, None]
+    return (
+        (1 - t) ** 3 * p0
+        + 3 * (1 - t) ** 2 * t * p1
+        + 3 * (1 - t) * t**2 * p2
+        + t**3 * p3
+    )
+
+
+def _upper_arc(cx: float, cy: float, radius: float, steps: int = 256) -> np.ndarray:
+    t = np.linspace(math.pi, 2 * math.pi, steps)
+    return np.stack([cx + radius * np.cos(t), cy + radius * np.sin(t)], axis=1)
+
+
+def _stroke(
+    path: np.ndarray | Sequence[tuple[float, float]], width: float
+) -> np.ndarray:
+    """The outline of a stroke along *path*. Every stroke in the designs ends
+    off the canvas, so their round caps never show and are left out."""
+    points = np.asarray(path, dtype=np.float64)
+    tangent = np.gradient(points, axis=0)
+    normal = np.stack([-tangent[:, 1], tangent[:, 0]], axis=1)
+    normal *= width / 2 / np.linalg.norm(normal, axis=1, keepdims=True)
+    return np.concatenate([points + normal, (points - normal)[::-1]])
+
+
+# Each design's shapes in its 600x200 viewBox, back to front.
+_GEOMETRY: dict[str, tuple[tuple[float, np.ndarray], ...]] = {
+    "arcs": (
+        (
+            _SHAPE,
+            np.concatenate(
+                [
+                    _cubic((291, 220), (360, 73), (458, -12), (602, -37)),
+                    _cubic((638, -23), (510, -8), (391, 83), (326, 220)),
+                ]
+            ),
+        ),
+        (_LINE, _stroke(_cubic((347, 220), (406, 103), (496, 31), (608, -9)), 1.05)),
+        (_SHAPE, _stroke(_cubic((365, 220), (426, 111), (506, 49), (612, 7)), 1.25)),
+    ),
+    "folds": (
+        (_SHAPE, np.array([(289, 213), (452, -12), (500, -12), (337, 213)])),
+        (_LINE, _stroke([(359, 213), (522, -12)], 1.05)),
+        (_SHAPE, _stroke([(379, 214), (542, -12)], 1.2)),
+        (_SHAPE, np.array([(480, 213), (640, -9), (640, 50), (523, 213)])),
+    ),
+    "rings": (
+        *(
+            (_SHAPE, _stroke(_upper_arc(480, 201, radius), width))
+            for radius, width in ((114, 1.2), (128, 1.2), (143, 1.2), (167, 21))
+        ),
+        (_LINE, _stroke(_upper_arc(480, 201, 190), 1.0)),
+    ),
+}
 
 
 @lru_cache(maxsize=len(BACKGROUND_DESIGNS))
-def _backdrop(
-    variant: int, transform: BackgroundTransform = BackgroundTransform()
-) -> Image.Image:
+def _backdrop(variant: int) -> Image.Image:
+    """A design as the tint's share at each pixel, 0-255, at the card's
+    supersampled size. Every colour in it is the tint over the base, so one
+    weight map serves every tint."""
     width, height = CANVAS_W * _SUPERSAMPLE, CANVAS_H * _SUPERSAMPLE
-    source = Image.new("L", (width, height), 48)
+    # Drawn at twice the size and reduced, to antialias the hairlines.
+    scale = 2 * width / _DESIGN_W
+    across = (np.arange(2 * width) + 0.5) / (2 * width)
+    wash = _LEFT + (_RIGHT - _LEFT) * np.clip((across - 0.40) / 0.60, 0, 1)
+    source = Image.fromarray(
+        np.repeat(np.round(wash * 255).astype("uint8")[None, :], 2 * height, axis=0)
+    )
     draw = ImageDraw.Draw(source)
-    a, b, c, d, tx, ty = transform.affine(width, height)
-
-    def polygon(points: Sequence[tuple[float, float]], fill: int) -> None:
+    for weight, outline in _GEOMETRY[BACKGROUND_DESIGNS[variant]]:
         draw.polygon(
-            [(a * x + b * y + tx, c * x + d * y + ty) for x, y in points],
-            fill=fill,
+            [(x * scale, y * scale) for x, y in outline], fill=round(weight * 255)
         )
-
-    def ellipse(bounds: tuple[float, ...], fill: int) -> None:
-        left, top, right, bottom = bounds
-        rx, ry = (right - left) / 2, (bottom - top) / 2
-        cx, cy = left + rx, top + ry
-        polygon(
-            [
-                (cx + rx * math.cos(t), cy + ry * math.sin(t))
-                for t in np.linspace(0, 2 * math.pi, 192, endpoint=False)
-            ],
-            fill,
-        )
-
-    def rounded_rectangle(
-        bounds: tuple[float, ...], radius: float
-    ) -> list[tuple[float, float]]:
-        left, top, right, bottom = bounds
-        radius = min(radius, (right - left) / 2, (bottom - top) / 2)
-        points = []
-        for cx, cy, start in (
-            (right - radius, top + radius, -math.pi / 2),
-            (right - radius, bottom - radius, 0),
-            (left + radius, bottom - radius, math.pi / 2),
-            (left + radius, top + radius, math.pi),
-        ):
-            points.extend(
-                (cx + radius * math.cos(t), cy + radius * math.sin(t))
-                for t in np.linspace(start, start + math.pi / 2, 49)
-            )
-        return points
-
-    # Transform complete paths before clipping; rotating a cropped bitmap exposes seams.
-    design = BACKGROUND_DESIGNS[variant]
-    if design == "sweep":
-        ellipse((0.54 * width, -0.85 * height, 1.32 * width, 1.3 * height), 176)
-        ellipse((0.64 * width, -0.94 * height, 1.34 * width, 0.97 * height), 92)
-    elif design == "arch":
-        polygon(
-            rounded_rectangle(
-                (0.59 * width, 0.08 * height, 1.04 * width, 1.8 * height),
-                0.225 * width,
-            ),
-            192,
-        )
-        polygon(
-            rounded_rectangle(
-                (0.68 * width, 0.36 * height, 0.95 * width, 1.8 * height),
-                0.135 * width,
-            ),
-            92,
-        )
-    elif design == "diagonal":
-        polygon(
-            [
-                (0.53 * width, height),
-                (0.80 * width, 0),
-                (width, 0),
-                (0.73 * width, height),
-            ],
-            fill=184,
-        )
-    elif design == "circles":
-        radius = 0.62 * height
-        cx, cy = 0.82 * width, 0.36 * height
-        ellipse((cx - radius, cy - radius, cx + radius, cy + radius), 184)
-        radius = 0.24 * height
-        cx, cy = 0.96 * width, 0.92 * height
-        ellipse((cx - radius, cy - radius, cx + radius, cy + radius), 112)
-    elif design == "wave":
-        xs = np.linspace(0.45 * width, width, 240)
-        ys = height * (0.52 + 0.22 * np.sin((xs / width - 0.45) * 3 * np.pi))
-        polygon(list(zip(xs, ys)) + [(width, height), (0.45 * width, height)], fill=184)
-    elif design == "block":
-        # Preserve the original rotated tile's centre and tilt.
-        tile = rounded_rectangle((-480, -580, 479, 579), 0.13 * height)
-        cosine, sine = math.cos(math.radians(24)), math.sin(math.radians(24))
-        polygon(
-            [
-                (cosine * x + sine * y + 2091, -sine * x + cosine * y + 406)
-                for x, y in tile
-            ],
-            176,
-        )
-    return source
-
-
-def _background_colors(text_key: str) -> tuple[str, str]:
-    accent, highlight = BACKGROUND_PALETTES[
-        int(text_key[16:32], 16) % len(BACKGROUND_PALETTES)
-    ]
-    strength = (0.90, 1.0, 1.10)[int(text_key[32:48], 16) % 3]
-    rgb = tuple(min(240, round(c * strength)) for c in ImageColor.getrgb(highlight))
-    return accent, "#{:02X}{:02X}{:02X}".format(*rgb)
+    return source.reduce(2)
 
 
 def _tint_background(source: Image.Image, text_key: str) -> Image.Image:
-    accent, highlight = _background_colors(text_key)
-    shadow = tuple(round(c * 0.35) for c in ImageColor.getrgb(accent))
-    return ImageOps.colorize(
-        source, black=shadow, mid=accent, white=highlight, midpoint=160
-    )
+    """Opaque RGBA: each share in *source* as that much of the tint over the base."""
+    ramp = [_blend(background_tint(text_key), share / 255) for share in range(256)]
+    channels = [source.point([color[c] for color in ramp]) for c in range(3)]
+    return Image.merge("RGBA", (*channels, Image.new("L", source.size, 255)))
 
 
 @lru_cache(maxsize=5)
@@ -287,26 +245,16 @@ def _place_placeholder(
 
 
 def _background(
-    width: int, height: int, text_key: str, *, text_column: bool = True
+    width: int, height: int, text_key: str, *, square: bool = False
 ) -> Image.Image:
-    source = _backdrop(
-        int(text_key[:16], 16) % len(BACKGROUND_DESIGNS),
-        background_transform(text_key),
-    )
-    if text_column:
-        source = source.resize((width, height), Image.Resampling.LANCZOS)
-        fade = np.clip((np.linspace(0, 1, width) - 0.58) / 0.14, 0, 1)
-        alpha = (fade * fade * (3 - 2 * fade) * 255).astype("uint8")
-        source = Image.composite(
-            source,
-            Image.new("L", source.size, 48),
-            Image.fromarray(alpha[None, :]).resize(source.size),
-        )
-    else:
+    source = _backdrop(background_design(text_key))
+    if square:
         source = ImageOps.fit(
             source, (width, height), Image.Resampling.LANCZOS, centering=(0.8, 0.5)
         )
-    return _tint_background(source, text_key).convert("RGBA")
+    else:
+        source = source.resize((width, height), Image.Resampling.LANCZOS)
+    return _tint_background(source, text_key)
 
 
 def _fit_cover(image: Image.Image, width: int, height: int) -> Image.Image:
@@ -405,7 +353,7 @@ def render_catalog_art(
     placeholder: str | None = None,
 ) -> Image.Image:
     """Render a Kalinka card with real covers, or a cabinet when none exist.
-    The first nonempty name selects the shape and both tonal colours."""
+    The first nonempty name selects the geometry and its tint."""
     rng = _rng(seed)
     ss = _SUPERSAMPLE
     base = _background(width * ss, height * ss, background_text_key(names, seed))
@@ -433,12 +381,12 @@ def render_catalog_thumbnail(
     placeholder: str | None = None,
     names: Sequence[str] = (),
 ) -> Image.Image:
-    """The card's art, square: its background without the text column, and up
-    to three covers gathered to the middle."""
+    """The card's art, square: its background cropped around the artwork side,
+    and up to three covers gathered to the middle."""
     rng = _rng(seed)
     ss = _SUPERSAMPLE
     base = _background(
-        side * ss, side * ss, background_text_key(names, seed), text_column=False
+        side * ss, side * ss, background_text_key(names, seed), square=True
     )
     picks = list(covers[:3])
     if picks:
