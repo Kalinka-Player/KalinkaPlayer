@@ -14,6 +14,8 @@
 #include <functional>
 #include <list>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -74,6 +76,10 @@ public:
   void fadeWith(std::shared_ptr<OutputFade> fade) {
     this->fade = std::move(fade);
   }
+  /// Stream @p id is about to leave the graph. If it is the one being
+  /// written, what the device holds of it fades out and is dropped rather
+  /// than played to its end. Thread-safe; call it before the removal.
+  void cut(StreamId id);
 
   virtual ~AlsaAudioEmitter();
 
@@ -119,7 +125,8 @@ private:
   Signal<size_t> seekRequestSignal;
   Signal<bool> pauseRequestSignal;
   bool paused = false;
-  bool seekHappened = false;
+  /// What the device holds is not to be heard out: the next drain drops it.
+  bool queueAbandoned = false;
   std::shared_ptr<OutputFade> fade;
   const std::unique_ptr<PackedFade> packedFade;
   /// Frames a pause still reads, fading, before it writes silence.
@@ -133,6 +140,11 @@ private:
   /// The report of a gapless source change, waiting for its first frame to
   /// be heard.
   std::optional<int> pendingSourceReport;
+  std::mutex readingMutex;
+  /// The stream whose audio is being written, guarded by readingMutex.
+  std::optional<StreamId> readingStream;
+  /// readingStream was cut(), guarded by readingMutex.
+  bool readingCut = false;
 
   void workerThread(std::stop_token token);
   bool handleSeekSignal();
@@ -147,6 +159,11 @@ private:
   /// silences the rest, and waits until the fade has been heard. Leaves the
   /// queue alone on a device that cannot take it back.
   void fadeQueuedOut();
+  /// Now writing @p id; a cut of another stream no longer applies.
+  void reading(std::optional<StreamId> id);
+  /// If the stream being written was cut, fades the device's queue out and
+  /// has the next drain drop it. @return whether it was.
+  bool abandonIfCut();
   /// Applies a pause or resume that lands before the device started: nothing
   /// is playing out, so the new state holds at once.
   void pauseBeforeStart(bool paused, const StreamInfo &streamInfo,

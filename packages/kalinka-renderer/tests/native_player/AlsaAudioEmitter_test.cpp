@@ -2,11 +2,13 @@
 #include "ByteRing.h"
 #include "SineWaveNode.h"
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <future>
 #include <gtest/gtest.h>
+#include <mutex>
 #include <unistd.h>
 
 #include "AacTestData.h"
@@ -708,7 +710,10 @@ constexpr size_t kFadeFrames = 480; // 10 ms at 48 kHz
 /// null device would otherwise take it all at once.
 class PacedCountingNode : public CountingNode {
 public:
-  using CountingNode::CountingNode;
+  // An inherited constructor would leave the virtual base without the id.
+  PacedCountingNode(StreamId id, int32_t base, size_t frames,
+                    Options options = {})
+      : AudioGraphNode(id), CountingNode(id, base, frames, options) {}
   size_t read(void *data, size_t size) override {
     std::this_thread::sleep_for(std::chrono::microseconds(100));
     return CountingNode::read(data, std::min<size_t>(size, 1024 * 8));
@@ -719,7 +724,8 @@ public:
 /// track ends inside a pause's fade.
 class EndingCountingNode : public PacedCountingNode {
 public:
-  using PacedCountingNode::PacedCountingNode;
+  EndingCountingNode(StreamId id, int32_t base, size_t frames)
+      : AudioGraphNode(id), PacedCountingNode(id, base, frames) {}
 
   void endAfter(size_t frames) { end = size_t(*streamReadPosition()) + frames; }
   size_t read(void *data, size_t size) override {
@@ -776,6 +782,8 @@ protected:
   std::shared_ptr<OutputStage> stage =
       std::make_shared<OutputStage>(std::vector<StreamAudioFormat>{});
   std::shared_ptr<AlsaAudioEmitter> emitter;
+  std::mutex reportedMutex;
+  std::vector<StreamState> reported;
 
   FadedCapture() {
     std::filesystem::create_directories(directory);
@@ -809,6 +817,11 @@ protected:
                             std::chrono::seconds(30))
                   .state,
               AudioGraphNodeState::FINISHED);
+    return stopped();
+  }
+
+  /// The left samples written, once the emitter has been stopped.
+  std::vector<int32_t> stopped() {
     emitter->disconnect(stage);
     std::ifstream in(file, std::ios::binary);
     std::vector<int32_t> frame(2), left;
@@ -823,6 +836,68 @@ protected:
     while (at < left.size() && left[at] == source->value(at))
       ++at;
     return at;
+  }
+
+  /// @p left is the source fading out where it was taken back, silence,
+  /// and then @p after.
+  void expectCut(const std::vector<int32_t> &left,
+                 const std::vector<int32_t> &after = {}) const {
+    size_t at = firstChanged(left);
+    ASSERT_GT(at, 0u);
+    ASSERT_GT(left.size(), at + kFadeFrames) << "the rest taken back";
+    expectFade(left, at, at, true);
+    at += kFadeFrames;
+    while (at < left.size() && left[at] == 0)
+      ++at;
+    ASSERT_EQ(left.size() - at, after.size()) << "frames after the silence";
+    for (size_t k = 0; k < after.size(); ++k)
+      ASSERT_EQ(left[at + k], after[k]) << "frame " << k << " after the silence";
+  }
+
+  /// Keeps every state the emitter reports from now on.
+  void recordReports() {
+    emitter->onStateChange([this](AudioGraphNode *, StreamState state) {
+      std::lock_guard lock(reportedMutex);
+      reported.push_back(state);
+      return true;
+    });
+  }
+
+  /// Whether, since recordReports(), the emitter reported @p state for @p id.
+  bool hasReported(AudioGraphNodeState state, StreamId id) {
+    std::lock_guard lock(reportedMutex);
+    return std::any_of(reported.begin(), reported.end(),
+                       [&](const StreamState &seen) {
+                         return seen.state == state && seen.streamId == id;
+                       });
+  }
+
+  /// Waits until the emitter reports @p state for stream @p id, which a
+  /// wait for the state alone would take from the stream before it.
+  void waitFor(AudioGraphNodeState state, StreamId id) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    for (auto now = emitter->getState();
+         !(now.state == state && now.streamId == id);
+         now = emitter->getState()) {
+      ASSERT_LT(std::chrono::steady_clock::now(), deadline);
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  }
+
+  /// Plays @p tracks one after another through @p switcher, the first of
+  /// them as the source.
+  void playThrough(
+      const std::shared_ptr<AudioStreamSwitcher> &switcher,
+      const std::vector<std::shared_ptr<PacedCountingNode>> &tracks) {
+    source = tracks.front();
+    stage->connectTo(switcher);
+    for (const auto &track : tracks)
+      switcher->connectTo(track);
+    emitter->fadeWith(stage);
+    emitter->connectTo(stage);
+    ASSERT_EQ(waitForStatus(*emitter, AudioGraphNodeState::STREAMING).state,
+              AudioGraphNodeState::STREAMING);
   }
 
   /// Frames from @p at on fade as the stage's fade does: down from the
@@ -1002,4 +1077,119 @@ TEST_F(FadedCapture, ATrackEndingInsideAPausesFadeLeavesTheNextOnePaused) {
   for (size_t frame = 0; frame < kNext; ++frame)
     ASSERT_EQ(left[paused + kTail + frame], next->value(frame))
         << "next track's frame " << frame << ", from its start";
+}
+
+namespace {
+std::vector<int32_t> valuesOf(const CountingNode &track, size_t frames) {
+  std::vector<int32_t> values(frames);
+  for (size_t frame = 0; frame < frames; ++frame)
+    values[frame] = track.value(frame);
+  return values;
+}
+
+std::shared_ptr<PacedCountingNode> track(StreamId id, size_t frames) {
+  return std::make_shared<PacedCountingNode>(id, int32_t(id) * 1000000, frames);
+}
+} // namespace
+
+TEST_F(FadedCapture, AStopFadesOutWhatTheDeviceHeld) {
+  play(1'000'000);
+  expectCut(stopped());
+}
+
+TEST_F(FadedCapture, ACutTrackFadesOutAndTheNextStartsInARunOfItsOwn) {
+  auto switcher = std::make_shared<AudioStreamSwitcher>();
+  const auto prepared = track(2, 100'000), next = track(3, 100'000);
+  playThrough(switcher, {track(1, 1'000'000), prepared, next});
+  recordReports();
+  // A skip as the renderer makes one: what plays and what was prepared go.
+  emitter->cut(1);
+  emitter->cut(2);
+  switcher->disconnect(prepared);
+  switcher->disconnect(source);
+  expectCut(written(), valuesOf(*next, 100'000));
+  EXPECT_TRUE(hasReported(AudioGraphNodeState::PREPARING, 3))
+      << "the next track starts a run of its own";
+}
+
+TEST_F(FadedCapture, ACutAfterAGaplessJoinFadesTheTrackJoined) {
+  constexpr size_t kFirst = 50'000;
+  auto switcher = std::make_shared<AudioStreamSwitcher>();
+  const auto first = track(1, kFirst), joined = track(2, 1'000'000),
+             next = track(3, 100'000);
+  playThrough(switcher, {first, joined, next});
+  waitFor(AudioGraphNodeState::STREAMING, 2);
+  emitter->cut(2);
+  switcher->disconnect(joined);
+  const auto left = written();
+  ASSERT_GT(left.size(), kFirst);
+  for (size_t frame = 0; frame < kFirst; ++frame)
+    ASSERT_EQ(left[frame], first->value(frame)) << "first track's " << frame;
+  source = joined;
+  expectCut(std::vector<int32_t>(left.begin() + kFirst, left.end()),
+            valuesOf(*next, 100'000));
+}
+
+TEST_F(FadedCapture, CuttingTheLastTrackFadesItOut) {
+  auto switcher = std::make_shared<AudioStreamSwitcher>();
+  playThrough(switcher, {track(1, 1'000'000)});
+  emitter->cut(1);
+  switcher->disconnect(source);
+  expectCut(written());
+}
+
+TEST_F(FadedCapture, ACutOfATrackPlayedOutDoesNotReachTheNext) {
+  constexpr size_t kFrames = 50'000;
+  auto switcher = std::make_shared<AudioStreamSwitcher>();
+  playThrough(switcher, {track(1, kFrames)});
+  waitFor(AudioGraphNodeState::FINISHED, 1);
+  emitter->cut(1);
+  switcher->disconnect(source);
+  const auto next = track(2, kFrames);
+  switcher->connectTo(next);
+  waitFor(AudioGraphNodeState::FINISHED, 2);
+  auto both = valuesOf(*source, kFrames);
+  const auto after = valuesOf(*next, kFrames);
+  both.insert(both.end(), after.begin(), after.end());
+  const auto left = written();
+  ASSERT_EQ(left.size(), both.size());
+  for (size_t frame = 0; frame < both.size(); ++frame)
+    ASSERT_EQ(left[frame], both[frame]) << "frame " << frame;
+}
+
+TEST_F(FadedCapture, ACutAfterAStopDoesNotReachTheNextPlay) {
+  constexpr size_t kFrames = 50'000;
+  auto switcher = std::make_shared<AudioStreamSwitcher>();
+  playThrough(switcher, {track(1, 1'000'000)});
+  // A stop as the player makes one: the emitter first, then the streams.
+  emitter->disconnect(stage);
+  emitter->cut(1);
+  switcher->disconnect(source);
+  const auto again = track(1, kFrames);
+  switcher->connectTo(again);
+  emitter->connectTo(stage);
+  const auto left = written();
+  ASSERT_GE(left.size(), kFrames);
+  const size_t start = left.size() - kFrames;
+  for (size_t frame = 0; frame < kFrames; ++frame)
+    ASSERT_EQ(left[start + frame], again->value(frame)) << "frame " << frame;
+}
+
+TEST_F(FadedCapture, CuttingAStreamNotYetPlayingLeavesTheOnePlayingAlone) {
+  constexpr size_t kFrames = 200'000;
+  auto switcher = std::make_shared<AudioStreamSwitcher>();
+  const auto prepared = track(2, kFrames);
+  playThrough(switcher, {track(1, kFrames), prepared});
+  emitter->cut(2);
+  switcher->disconnect(prepared);
+  const auto left = written();
+  ASSERT_EQ(left.size(), kFrames);
+  ASSERT_EQ(firstChanged(left), kFrames) << "played to its end untouched";
+}
+
+TEST_F(FadedCapture, AStopBeforeTheDeviceOpensHasNothingToFade) {
+  emitter->fadeWith(stage);
+  emitter->connectTo(stage);
+  emitter->disconnect(stage);
+  EXPECT_EQ(emitter->getState().state, AudioGraphNodeState::STOPPED);
 }
