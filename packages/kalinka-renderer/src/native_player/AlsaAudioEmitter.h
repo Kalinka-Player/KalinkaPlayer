@@ -31,6 +31,10 @@ public:
 
   std::vector<snd_pcm_sframes_t> drainSequence();
 
+  /// Runs every callback waiting, each as its frame plays, as if the device
+  /// had played all it was handed.
+  void playOut();
+
   /// @return an id that cancel() takes, until the callback has run.
   int callOnOrAfterFrame(snd_pcm_sframes_t frame,
                          std::function<void(snd_pcm_sframes_t)> onFramesPlayed);
@@ -204,8 +208,16 @@ private:
   void beginSourceAt(std::optional<long> position);
   StreamState waitForInputToBeReady(std::stop_token token);
   /// Waits for a period of room on the device; @p token is the worker's own,
-  /// as its thread object may still be being assigned.
+  /// as its thread object may still be being assigned. An underrun found
+  /// there is recovered from.
   snd_pcm_sframes_t waitForAlsaBufferSpace(std::stop_token token);
+  /**
+   * @brief Takes the device out of an underrun, all it held played: what
+   * waited on those frames runs, and the device is prepared, for the worker
+   * to start once it is refilled.
+   * @throws std::runtime_error for DSD, which stops on an underrun.
+   */
+  void recoverFromUnderrun();
   bool handleInputNodeStateChange();
   snd_pcm_sframes_t writeToAlsa(
       snd_pcm_uframes_t framesToWrite,
