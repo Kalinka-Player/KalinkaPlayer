@@ -9,7 +9,6 @@
 #include "Utils.h"
 #include "dsp/output/PackedFade.h"
 
-#include <condition_variable>
 #include <cstring>
 #include <iostream>
 #include <mutex>
@@ -249,7 +248,10 @@ StreamState AlsaAudioEmitter::waitForInputToBeReady(std::stop_token token) {
     }
 
     if (pauseRequestSignal.getValue()) {
-      pauseRequestSignal.respond(false);
+      // Between runs a request can only lift a pause held for the next one.
+      if (!*pauseRequestSignal.getValue())
+        pauseCarried = false;
+      pauseRequestSignal.respond(pauseCarried);
     }
 
     auto combinedToken =
@@ -295,6 +297,8 @@ bool AlsaAudioEmitter::handleSeekSignal() {
   seekRequestSignal.respond(framesToTimeMs(retVal).count());
   queueAbandoned = true;
   fadeInNext = true;
+  // Played from where it lands, as a seek under any pause is.
+  pauseCarried = false;
   return true;
 }
 
@@ -307,13 +311,6 @@ void AlsaAudioEmitter::pauseBeforeStart(bool paused,
             framesToTimeMs(position).count(), streamInfo});
 }
 
-void AlsaAudioEmitter::waitForCommand(std::stop_token token) {
-  std::mutex mutex;
-  std::condition_variable_any woken;
-  std::unique_lock lock(mutex);
-  woken.wait(lock, token, [] { return false; });
-}
-
 long AlsaAudioEmitter::reachedPositionMs() {
   const auto current = getState();
   // Only a drain leaves a streaming state here, and it plays out all written.
@@ -322,7 +319,7 @@ long AlsaAudioEmitter::reachedPositionMs() {
              : current.position;
 }
 
-bool AlsaAudioEmitter::handlePauseSignal(bool paused) {
+void AlsaAudioEmitter::handlePauseSignal(bool paused) {
   this->paused = paused;
   pauseFadeLeft = 0;
   holdsSilence = false;
@@ -331,33 +328,33 @@ bool AlsaAudioEmitter::handlePauseSignal(bool paused) {
     // Paused once the fade, still to be written, has been heard.
     if (!fade->silent()) {
       pauseFadeLeft = fadeFrames(currentStreamAudioFormat.sampleRate);
-      return true;
+      return;
     }
   } else if (fades()) {
     fade->fadeIn();
   }
-  return reportOnceHeard(paused ? AudioGraphNodeState::PAUSED
-                                : AudioGraphNodeState::STREAMING);
+  reportOnceHeard(paused ? AudioGraphNodeState::PAUSED
+                         : AudioGraphNodeState::STREAMING);
 }
 
-bool AlsaAudioEmitter::reportOnceHeard(AudioGraphNodeState state) {
+void AlsaAudioEmitter::reportOnceHeard(AudioGraphNodeState state) {
   const long position = framesToTimeMs(currentSourceTotalFramesWritten).count();
-  snd_pcm_sframes_t delay = 0;
-  int err = snd_pcm_delay(pcm.handle, &delay);
-  if (err < 0) {
-    spdlog::error("Error when calling snd_pcm_delay: {}", snd_strerror(err));
-    return false;
-  }
   const unsigned report = ++pauseReports;
-  playedFramesCounter.callOnOrAfterFrame(
-      delay, [this, state, position, report](snd_pcm_sframes_t) {
-        // A pause a later resume overtook: the device holds what followed.
-        if (report == pauseReports)
-          holdsSilence = state == AudioGraphNodeState::PAUSED;
-        // What the device plays by then, which a gapless join may have changed.
-        setState({state, position, getState().streamInfo});
-      });
-  return true;
+  auto heard = [this, state, position, report](snd_pcm_sframes_t) {
+    // A pause a later resume overtook: the device holds what followed.
+    if (report == pauseReports)
+      holdsSilence = state == AudioGraphNodeState::PAUSED;
+    // What the device plays by then, which a gapless join may have changed.
+    setState({state, position, getState().streamInfo});
+  };
+  snd_pcm_sframes_t delay = 0;
+  if (const int err = snd_pcm_delay(pcm.handle, &delay); err < 0) {
+    spdlog::warn("Reporting {} at once: snd_pcm_delay failed: {}",
+                 stateToString(state), snd_strerror(err));
+    heard(0);
+    return;
+  }
+  playedFramesCounter.callOnOrAfterFrame(delay, std::move(heard));
 }
 
 bool AlsaAudioEmitter::fades() const {
@@ -423,7 +420,9 @@ bool AlsaAudioEmitter::abandonIfCut() {
       return false;
   }
   forgetQueuedReports();
-  fadeQueuedOut();
+  // A seek abandoning the queue at the same time has faded it already.
+  if (!queueAbandoned)
+    fadeQueuedOut();
   queueAbandoned = true;
   return true;
 }
@@ -658,8 +657,11 @@ AlsaAudioEmitter::readIntoAlsaFromStream(std::stop_token stopToken,
             break;
           }
           const bool cut = abandonIfCut();
-          if (paused && !cut) {
-            // Dry inside a pause's fade: the queue's end fades out instead.
+          const auto input = inputNode->getState().state;
+          // Dry inside a pause's fade, not ended: the queue's end fades out.
+          if (paused && !cut &&
+              (input == AudioGraphNodeState::STREAMING ||
+               input == AudioGraphNodeState::PREPARING)) {
             fadeQueuedOut(true);
             pauseCarried = true;
             fadeInNext = true;
@@ -753,7 +755,7 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
       setupAudioFormat(streamInfo.value().format, streamInfo->live);
       streamInfo.value().format = currentStreamAudioFormat;
       if (fades()) {
-        // Mid-waveform after a seek or a stall; else as its source starts.
+        // Mid-waveform after a seek or a paused stall; else as its source does.
         fade->settle(fadeInNext ? 0.0 : 1.0);
         if (fadeInNext)
           fade->fadeIn();
@@ -796,8 +798,15 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
                               pauseRequestSignal.getStopToken());
 
         if (paused && !started) {
-          // Silence written now would play before the audio it waits for.
-          waitForCommand(combinedToken.get_token());
+          // Silence written now would play before the audio it waits for,
+          // and a skip in the meantime still ends the run.
+          const auto seen = inputNode->getState().timestamp;
+          if (!handleInputNodeStateChange())
+            break;
+          StateChangeWaitLock changed(combinedToken.get_token(), *inputNode,
+                                      seen);
+          if (!combinedToken.get_token().stop_requested())
+            continue;
         } else {
           if (!started && streamInfo->prebufferMs && !streamInfo->live) {
             const auto bytes =
@@ -832,8 +841,8 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
             pauseBeforeStart(requested, streamInfo.value(), streamStartPosition);
             pauseRequestSignal.respond(requested);
           } else {
-            const bool success = handlePauseSignal(requested);
-            pauseRequestSignal.respond(success ? requested : paused);
+            handlePauseSignal(requested);
+            pauseRequestSignal.respond(requested);
           }
           continue;
         }

@@ -131,8 +131,8 @@ private:
   const std::unique_ptr<PackedFade> packedFade;
   /// Frames a pause still reads, fading, before it writes silence.
   snd_pcm_uframes_t pauseFadeLeft = 0;
-  /// The next run starts mid-waveform: where a seek landed, or where a
-  /// stalled input resumes.
+  /// The next run starts mid-waveform: where a seek landed, or where an input
+  /// that ran dry under a pause resumes.
   bool fadeInNext = false;
   /// A pause the run ended under, a track's end or a stall: the next run
   /// starts paused.
@@ -152,9 +152,10 @@ private:
 
   void workerThread(std::stop_token token);
   bool handleSeekSignal();
-  bool handlePauseSignal(bool paused);
-  /// Reports @p state once what the device holds now has been heard.
-  bool reportOnceHeard(AudioGraphNodeState state);
+  void handlePauseSignal(bool paused);
+  /// Reports @p state once what the device holds now has been heard, or at
+  /// once if the device cannot say how much that is.
+  void reportOnceHeard(AudioGraphNodeState state);
   /// Whether what plays can be faded: PCM, with something to fade it.
   bool fades() const;
   /// Paused, and its fade out written: nothing more is read.
@@ -176,8 +177,6 @@ private:
   /// is playing out, so the new state holds at once.
   void pauseBeforeStart(bool paused, const StreamInfo &streamInfo,
                         snd_pcm_uframes_t position);
-  /// Blocks until `token` stops: a pause, a seek or the worker's end.
-  void waitForCommand(std::stop_token token);
   /// Where playback stands with nothing queued on the device.
   long reachedPositionMs();
 
