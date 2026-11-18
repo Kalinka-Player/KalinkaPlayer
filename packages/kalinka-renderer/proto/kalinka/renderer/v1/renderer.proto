@@ -578,7 +578,7 @@ message ConfigField {
 }
 
 message ConfigSection {
-  string path = 1;  // prefix shared by its fields, e.g. "output"
+  string path = 1;  // names it, e.g. "output"; its fields may keep other paths
   string title = 2;
   string description = 3;
   repeated ConfigField fields = 4;

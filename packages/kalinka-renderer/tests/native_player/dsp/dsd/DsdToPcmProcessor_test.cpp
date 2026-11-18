@@ -117,6 +117,23 @@ TEST(DsdToPcmProcessor, ItConvertsToARateTheDeviceTakes) {
   EXPECT_EQ(rate({}), 176400u) << "nothing known";
 }
 
+TEST(DsdToPcmProcessor, ItConvertsWithTheFilterAskedFor) {
+  const auto latency = [](DsdFilter filter) {
+    return DsdToPcm({2822400, 176400, 2, filter, DsdBitOrder::MsbFirst})
+        .latency();
+  };
+  const auto started = [](std::optional<DsdFilter> filter) {
+    return DsdToPcmProcessor({}, 1.0, std::nullopt, filter).start(raw(2822400));
+  };
+  ASSERT_NE(latency(DsdFilter::Cut30k), latency(DsdFilter::Cut50k));
+  ASSERT_NE(latency(DsdFilter::Cut30k), latency(DsdFilter::Wide));
+  EXPECT_EQ(started(std::nullopt), latency(DsdFilter::Cut30k))
+      << "DSD64 takes 30 kHz";
+  for (const auto filter :
+       {DsdFilter::Cut30k, DsdFilter::Cut50k, DsdFilter::Wide})
+    EXPECT_EQ(started(filter), latency(filter));
+}
+
 TEST(DsdToPcmProcessor, DsdOfAFamilyTheDeviceTakesNoRateOfIsNotHandled) {
   const DsdToPcmProcessor processor(takes({48000, 96000}), 1.0);
   EXPECT_FALSE(processor.handles(raw(2822400)));

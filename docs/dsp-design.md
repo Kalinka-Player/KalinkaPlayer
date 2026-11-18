@@ -386,16 +386,18 @@ Phase 1:
 |---|---|---|---|---|---|
 | `output.dsd_mode` | ENUM | gains `pcm`; `auto` becomes native when verified, else PCM | `disabled` | interrupts playback (as now) | simple |
 | `output.dsd_pcm_rate` | ENUM | `auto`, `1x`, `2x`, `4x`, `8x` of 44.1/48 kHz, by source family | `auto` | interrupts playback: the converter is built with it | simple |
-| `output.dsd_filter` | ENUM | `auto` (30 kHz for DSD64, 50 kHz above), `30k`, `50k`, `wide` | `auto` | instant, crossfaded | expert |
+| `output.dsd_filter` | ENUM | `auto` (30 kHz for DSD64, 50 kHz above), `30k`, `50k`, `wide` | `auto` | interrupts playback: the converter is built with it | simple |
 | `output.dsd_gain_db` | ENUM | `0`, `safe`, `6` | `safe` | instant, ramped | expert |
 
-The DSD settings sit in Output right below `output.dsd_mode`, which they
-qualify, rather than in a section of their own; the graph reads them as
-`dsd.*`. `output.dsd_pcm_rate` is simple, so that it shows beside DSD
-output rather than apart in the expert list. It was to apply to the next
-DSD source, but the converter presents its rate for queued tracks ahead of
-time, so a change rebuilds the graph as `output.dsd_mode` does. A rate the
-output does not take falls back to `auto`.
+The DSD settings, `output.dsd_mode` among them, are a DSD section of
+their own. Their paths keep the `output.` prefix the mode has always had,
+so stored settings carry over, and the graph reads the rate and the filter
+as `dsd.*`. They are simple, so that they show in the section rather than
+apart in the expert list. The rate was to apply to the next DSD source and
+the filter to switch at once with a crossfade, but the converter presents
+its rate for queued tracks ahead of time, so a change to either rebuilds
+the graph as `output.dsd_mode` does. A rate the output does not take falls
+back to `auto`.
 
 Phase 2:
 
@@ -785,8 +787,8 @@ The modulator's own quality, a 1 kHz tone at half modulation over 0.5 s:
 
 `DsdToPcm` is Phase 1's converter. It plays `output.dsd_mode` `pcm` through
 `DsdToPcmProcessor` in the stage, which keeps its filters running across a
-gapless join. Of the DSD settings in section 7, the filter and the gain are
-still to come.
+gapless join. Of the DSD settings in section 7, only the gain is still to
+come.
 
 **Seek pre-roll.** A processor states how far back the input its output
 depends on reaches, `history()`. The converter's is its latency and a frame,
