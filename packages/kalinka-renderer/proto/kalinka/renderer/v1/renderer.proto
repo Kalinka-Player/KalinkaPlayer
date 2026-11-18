@@ -42,6 +42,7 @@ message Envelope {
     ConfigSnapshot config_snapshot = 1015;
     ConfigResult config_result = 1016;
     UpgradeResult upgrade_result = 1017;
+    DspMeters dsp_meters = 1018;
     // core -> renderer: 2000-2999
     Welcome welcome = 2000;
     Command command = 2001;
@@ -147,6 +148,40 @@ message DeviceInfo {
   DeviceAccess access = 2;
 }
 
+// One step the renderer takes the decoded samples through on their way to the
+// device.
+message SignalStep {
+  // Stable, for a client to key on: "dsd_to_pcm", "dsd_gain", "dither".
+  string kind = 1;
+  // For a listener: "DSD to PCM".
+  string name = 2;
+  // How it is set, for a listener: "DSD64 to 176.4 kHz, 30 kHz filter".
+  string summary = 3;
+}
+
+// What the renderer does to the samples between the decoder and the device, in
+// order. The volume is not a step of it: VolumeState reports that.
+message SignalPath {
+  repeated SignalStep steps = 1;
+  // Audio the processing holds back ahead of what is heard, in milliseconds.
+  double latency_ms = 2;
+}
+
+// What the DSP measured of the source it plays. Sent at most twice a second,
+// and only while a signal path processes the source.
+message DspMeters {
+  string source_token = 1;
+  // Samples clamped to the output's range since the source began.
+  uint64 clipped_samples = 2;
+  // The highest true peak since the source began, in dBFS, oversampled to at
+  // least 176.4 kHz; -200 before any sound.
+  double true_peak_dbfs = 3;
+  // Processing time over the length of the audio it processed since the last
+  // report: 0.01 is 1 % of a core.
+  double load = 4;
+  int64 at_unix_ms = 5;
+}
+
 message Source {
   string uri = 1;           // http(s)://, file://
   string mime_type = 2;     // "audio/flac", "audio/mpeg"
@@ -200,6 +235,9 @@ message StateSnapshot {
   // See PlaybackStateChanged.duration_ms.
   optional uint64 duration_ms = 14;
 
+  // See PlaybackStateChanged.signal_path.
+  optional SignalPath signal_path = 15;
+
   reserved 8;   // output_devices; the list is configuration
   reserved 12;  // ownership; superseded by playback sessions (design §3.3)
 }
@@ -238,6 +276,17 @@ message Capabilities {
   bool dsd = 1;
   // Framed PCM, output readiness, bounded queues and live position feedback.
   uint32 live_pcm = 2;
+  // What the DSP is built to do, whatever is set.
+  DspCapabilities dsp = 3;
+}
+
+message DspCapabilities {
+  // DSD can be converted to PCM.
+  bool dsd_to_pcm = 1;
+  // The SignalStep kinds the renderer can report.
+  repeated string steps = 2;
+  // The most channels the DSP puts out.
+  uint32 max_output_channels = 3;
 }
 
 message CapabilitiesChanged {
@@ -443,6 +492,11 @@ message PlaybackStateChanged {
   bool live_ready = 11;
   // Absolute PCM frame audible at report time, after live clock adaptation.
   optional uint64 live_source_frame = 12;
+
+  // What was done to the decoded samples on the way to `device_info`. Absent
+  // when they reach the device as decoded, the volume aside. Restated, as
+  // `format` is, whenever it changes.
+  optional SignalPath signal_path = 13;
 }
 
 // Emitted on AudioGraphNodeState::SOURCE_CHANGED — the gapless crossover.
