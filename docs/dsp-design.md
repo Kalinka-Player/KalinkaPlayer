@@ -385,16 +385,17 @@ Phase 1:
 | Path | Type | Values | Default | Apply cost | Importance |
 |---|---|---|---|---|---|
 | `output.dsd_mode` | ENUM | gains `pcm`; `auto` becomes native when verified, else PCM | `disabled` | interrupts playback (as now) | simple |
-| `dsd.pcm_rate` | ENUM | `auto`, `1x`, `2x`, `4x`, `8x` of 44.1/48 kHz, by source family | `auto` | interrupts playback: the converter is built with it | simple |
-| `dsd.filter` | ENUM | `auto` (30 kHz for DSD64, 50 kHz above), `30k`, `50k`, `wide` | `auto` | instant, crossfaded | expert |
-| `dsd.gain_db` | ENUM | `0`, `safe`, `6` | `safe` | instant, ramped | expert |
+| `output.dsd_pcm_rate` | ENUM | `auto`, `1x`, `2x`, `4x`, `8x` of 44.1/48 kHz, by source family | `auto` | interrupts playback: the converter is built with it | simple |
+| `output.dsd_filter` | ENUM | `auto` (30 kHz for DSD64, 50 kHz above), `30k`, `50k`, `wide` | `auto` | instant, crossfaded | expert |
+| `output.dsd_gain_db` | ENUM | `0`, `safe`, `6` | `safe` | instant, ramped | expert |
 
-The `dsd.*` settings are a DSD section of their own; `output.dsd_mode`
-stays in Output. `dsd.pcm_rate` is simple, since the app shows a section
-only for the simple settings in it. It was to apply to the next DSD source,
-but the converter presents its rate for queued tracks ahead of time, so a
-change rebuilds the graph as `output.dsd_mode` does. A rate the output does
-not take falls back to `auto`.
+The DSD settings sit in Output right below `output.dsd_mode`, which they
+qualify, rather than in a section of their own; the graph reads them as
+`dsd.*`. `output.dsd_pcm_rate` is simple, so that it shows beside DSD
+output rather than apart in the expert list. It was to apply to the next
+DSD source, but the converter presents its rate for queued tracks ahead of
+time, so a change rebuilds the graph as `output.dsd_mode` does. A rate the
+output does not take falls back to `auto`.
 
 Phase 2:
 
@@ -761,8 +762,8 @@ The modulator's own quality, a 1 kHz tone at half modulation over 0.5 s:
 11. **A device that takes none of the converter's rates.** The converter
     divides by powers of two only, so DSD comes out at 2, 4 or 8 times its
     own family's base: 88.2, 176.4 or 352.8 kHz from the 44.1 kHz family,
-    96, 192 or 384 kHz from the 48 kHz one. `dsd.pcm_rate` `auto` takes 4
-    times when the device does, else the highest it does.
+    96, 192 or 384 kHz from the 48 kHz one. `output.dsd_pcm_rate` `auto`
+    takes 4 times when the device does, else the highest it does.
     Through `default` or `plughw:` a sound server or ALSA's plug layer
     resamples any of them. Through `hw:` nothing does, and many devices
     take only 44.1 and 48 kHz, or only the 48 kHz family: HDMI, onboard
@@ -775,17 +776,17 @@ The modulator's own quality, a 1 kHz tone at half modulation over 0.5 s:
     - crossing into the other family, through a resampler after the
       converter, waits for Phase 2's.
 
-    **Landed** with `dsd.pcm_rate`: `dsdPcmRate()` makes the choice for
-    both the converter and `chooseDsdOutput()`, which refuses DSD no rate
-    of its family can play: "This output cannot play DSD64 as PCM: it takes
-    none of 44.1, 88.2, 176.4 or 352.8 kHz".
+    **Landed** with `output.dsd_pcm_rate`: `dsdPcmRate()` makes the choice
+    for both the converter and `chooseDsdOutput()`, which refuses DSD no
+    rate of its family can play: "This output cannot play DSD64 as PCM: it
+    takes none of 44.1, 88.2, 176.4 or 352.8 kHz".
 
 ## 14. DSD to PCM, as built
 
 `DsdToPcm` is Phase 1's converter. It plays `output.dsd_mode` `pcm` through
 `DsdToPcmProcessor` in the stage, which keeps its filters running across a
-gapless join. The `dsd.*` settings of section 7 and the base-rate chains of
-section 13, decision 11, are still to come.
+gapless join. Of the DSD settings in section 7, the filter and the gain are
+still to come.
 
 **Seek pre-roll.** A processor states how far back the input its output
 depends on reaches, `history()`. The converter's is its latency and a frame,
