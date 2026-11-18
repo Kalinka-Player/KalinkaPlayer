@@ -417,9 +417,16 @@ if(GTest_FOUND)
     GTest::gmock
     GTest::gtest_main
   )
+  # A device playing in real time, which ALSA loads for tests that starve one.
+  add_library(kalinka-paced-pcm MODULE tests/native_player/PacedPcmPlugin.cpp)
+  target_link_libraries(kalinka-paced-pcm PRIVATE ALSA::ALSA)
+  # ALSA's headers name a loadable plugin's version symbol only under PIC.
+  target_compile_definitions(kalinka-paced-pcm PRIVATE PIC)
+  add_dependencies(kalinka-renderer-tests kalinka-paced-pcm)
   target_compile_definitions(kalinka-renderer-tests PRIVATE
     KALINKA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
     KALINKA_TEST_FILES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/native_player/files"
+    KALINKA_PACED_PCM="$<TARGET_FILE:kalinka-paced-pcm>"
   )
   target_include_directories(kalinka-renderer-tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/native_player

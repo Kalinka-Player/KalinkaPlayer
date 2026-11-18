@@ -255,6 +255,22 @@ TEST(PlayedFramesCounter, ACancelledCallbackNeverRunsAndTheOthersStill) {
   EXPECT_EQ(ran, (std::vector<int>{1, 3}));
 }
 
+TEST(PlayedFramesCounter, PlayingOutRunsEveryCallbackOnItsOwnFrame) {
+  PlayedFramesCounter counter;
+  counter.update(50);
+  std::vector<std::pair<int, snd_pcm_sframes_t>> ran;
+  for (const int frame : {300, 100})
+    counter.callOnOrAfterFrame(frame, [&ran, frame](snd_pcm_sframes_t late) {
+      ran.emplace_back(frame, late);
+    });
+
+  counter.playOut();
+
+  EXPECT_EQ(ran, (std::vector<std::pair<int, snd_pcm_sframes_t>>{{100, 0},
+                                                                  {300, 0}}));
+  EXPECT_EQ(counter.getPlayedFrames(), 350);
+}
+
 TEST(AlsaAudioEmitter, ExplicitBufferSizesApplyOnlyToNonLiveAudio) {
   using namespace std::chrono_literals;
   Config config{{"output.alsa.device", "null"},
@@ -801,6 +817,26 @@ private:
   std::optional<StreamInfo> info;
 
   bool stalled() const { return size_t(*streamReadPosition()) >= stallAt; }
+};
+
+/// A paced counting source whose read blocks once, @p at frames in, for
+/// @p stall: a decoder held up, which the emitter cannot see coming.
+class BlockingCountingNode : public PacedCountingNode {
+public:
+  BlockingCountingNode(StreamId id, int32_t base, size_t frames, size_t at,
+                       std::chrono::milliseconds stall)
+      : AudioGraphNode(id), PacedCountingNode(id, base, frames), at(at),
+        stall(stall) {}
+  size_t read(void *data, size_t size) override {
+    if (size_t(*streamReadPosition()) >= at && !blocked.exchange(true))
+      std::this_thread::sleep_for(stall);
+    return PacedCountingNode::read(data, size);
+  }
+
+private:
+  const size_t at;
+  const std::chrono::milliseconds stall;
+  std::atomic<bool> blocked{false};
 };
 
 /// The stage's fades, running @p onFadeOut as a pause's fade begins.
@@ -1414,4 +1450,64 @@ TEST_F(FadedCapture, ASkipWhileAPauseHoldsTheNextTrackPlaysTheOneAfter) {
   for (size_t frame = 0; frame < kNext; ++frame)
     ASSERT_EQ(left[paused + kFadeFrames + frame], after->value(frame))
         << "the track after's frame " << frame;
+}
+
+namespace {
+/// FadedCapture's playback to a device that plays in real time, as a card
+/// does, so that a source held up for longer than the buffer starves it.
+class PacedCapture : public FadedCapture {
+protected:
+  PacedCapture() {
+    emitter.reset();
+    alsa.emplace("pcm_type.kalinka_paced { lib \"" KALINKA_PACED_PCM "\" }\n"
+                 "pcm.paced { type kalinka_paced file \"" +
+                 file.string() + "\" }\n");
+    emitter = std::make_shared<AlsaAudioEmitter>(
+        Config{{"output.alsa.device", "paced"},
+               {"output.alsa.latency_ms", "80"},
+               {"output.alsa.period_ms", "20"}});
+  }
+
+  bool failed() {
+    std::lock_guard lock(reportedMutex);
+    return std::ranges::any_of(reported, [](const StreamState &seen) {
+      return seen.state == AudioGraphNodeState::ERROR;
+    });
+  }
+};
+
+// Held up for twice the device's 80 ms.
+constexpr auto kStarving = std::chrono::milliseconds(160);
+} // namespace
+
+TEST_F(PacedCapture, AnUnderrunCostsADropoutAndTheTrackPlaysOn) {
+  constexpr size_t kFrames = 24000;
+  recordReports();
+  playThrough(std::make_shared<AudioStreamSwitcher>(),
+              {std::make_shared<BlockingCountingNode>(1, 1000000, kFrames, 4800,
+                                                      kStarving)});
+  const auto left = written();
+
+  EXPECT_FALSE(failed());
+  ASSERT_FALSE(left.empty());
+  EXPECT_EQ(left.front(), source->value(0));
+  EXPECT_LT(left.size(), kFrames) << "what came while starved is dropped";
+  EXPECT_EQ(left.back(), source->value(kFrames - 1)) << "played to its end";
+}
+
+TEST_F(PacedCapture, ANextTrackLateAtAGaplessJoinStillPlays) {
+  constexpr size_t kFrames = 12000;
+  const auto next = std::make_shared<BlockingCountingNode>(2, 2000000, kFrames,
+                                                           0, kStarving);
+  recordReports();
+  playThrough(std::make_shared<AudioStreamSwitcher>(),
+              {std::make_shared<PacedCountingNode>(1, 1000000, kFrames), next});
+  waitFor(AudioGraphNodeState::FINISHED, 2);
+  const auto left = stopped();
+
+  EXPECT_FALSE(failed());
+  EXPECT_TRUE(hasReported(AudioGraphNodeState::STREAMING, 2));
+  ASSERT_FALSE(left.empty());
+  EXPECT_LT(left.size(), 2 * kFrames) << "what came while starved is dropped";
+  EXPECT_EQ(left.back(), next->value(kFrames - 1)) << "the next track played";
 }

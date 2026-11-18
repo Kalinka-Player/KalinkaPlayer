@@ -471,9 +471,24 @@ void AlsaAudioEmitter::closeDevice() {
   }
 }
 
+void AlsaAudioEmitter::recoverFromUnderrun() {
+  if (isDsd(currentStreamAudioFormat.sampleFormat))
+    throw std::runtime_error("DSD output underrun; restart playback");
+  spdlog::warn("Output underrun; playing on");
+  playedFramesCounter.playOut();
+  throw_on_error(snd_pcm_prepare(pcm.handle));
+}
+
 snd_pcm_sframes_t
 AlsaAudioEmitter::waitForAlsaBufferSpace(std::stop_token token) {
-  auto getAvailableFrames = [this]() -> snd_pcm_sframes_t {
+  // A card's writes go through in an underrun: it shows here first.
+  bool recovered = false;
+  auto getAvailableFrames = [this, &recovered]() -> snd_pcm_sframes_t {
+    const snd_pcm_sframes_t frames = snd_pcm_avail_update(pcm.handle);
+    if (frames != -EPIPE)
+      return throw_on_error(frames);
+    recoverFromUnderrun();
+    recovered = true;
     return throw_on_error(snd_pcm_avail_update(pcm.handle));
   };
 
@@ -490,6 +505,9 @@ AlsaAudioEmitter::waitForAlsaBufferSpace(std::stop_token token) {
       continue;
     }
     frames = getAvailableFrames();
+    // The poll's error was the underrun, which is behind us.
+    if (recovered)
+      break;
     throw_on_error(snd_pcm_poll_descriptors_revents(pcm.handle, ufds.data(),
                                                     ufds.size(), &revents));
     if (revents & POLLERR) {
@@ -827,6 +845,11 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
             if (framesRead < 0) {
               break;
             }
+            // Refilled after an underrun: writes alone do not start a device.
+            if (started &&
+                snd_pcm_state(pcm.handle) == SND_PCM_STATE_PREPARED) {
+              throw_on_error(snd_pcm_start(pcm.handle));
+            }
           }
         }
         if (token.stop_requested()) {
@@ -999,6 +1022,14 @@ std::vector<snd_pcm_sframes_t> PlayedFramesCounter::drainSequence() {
 
   std::sort(sequence.begin(), sequence.end());
   return sequence;
+}
+
+void PlayedFramesCounter::playOut() {
+  snd_pcm_sframes_t played = 0;
+  for (const auto frame : drainSequence()) {
+    update(frame - played);
+    played = frame;
+  }
 }
 
 int PlayedFramesCounter::callOnOrAfterFrame(
