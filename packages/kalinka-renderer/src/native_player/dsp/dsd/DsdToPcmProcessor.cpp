@@ -12,8 +12,10 @@ constexpr uint8_t kIdle = 0x69;
 
 DsdToPcmProcessor::DsdToPcmProcessor(std::vector<StreamAudioFormat> device,
                                      double gain,
-                                     std::optional<unsigned> multiple)
-    : device(std::move(device)), gain(gain), multiple(multiple) {}
+                                     std::optional<unsigned> multiple,
+                                     std::optional<DsdFilter> filter)
+    : device(std::move(device)), gain(gain), multiple(multiple),
+      filter(filter) {}
 
 std::optional<DsdToPcm::Spec>
 DsdToPcmProcessor::spec(const StreamAudioFormat &format) const {
@@ -23,8 +25,8 @@ DsdToPcmProcessor::spec(const StreamAudioFormat &format) const {
     return std::nullopt;
   return DsdToPcm::Spec{
       dsdRate, *pcmRate, format.channels,
-      dsdRate / dsdBaseRate(dsdRate) > 64 ? DsdFilter::Cut50k
-                                          : DsdFilter::Cut30k,
+      filter.value_or(dsdRate / dsdBaseRate(dsdRate) > 64 ? DsdFilter::Cut50k
+                                                          : DsdFilter::Cut30k),
       DsdBitOrder::MsbFirst};
 }
 
