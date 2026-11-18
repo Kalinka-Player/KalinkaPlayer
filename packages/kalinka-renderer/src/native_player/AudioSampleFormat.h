@@ -20,6 +20,8 @@ enum AudioSampleFormat {
   DSD_U32_LE,
   DSD_U16_BE,
   DSD_U32_BE,
+  /// DSD_U8's bytes, held for the DSP stage to convert: no device's format.
+  DSD_RAW,
   DOP24_LE,
   DOP24_3LE,
   DOP32_LE
@@ -34,6 +36,7 @@ inline bool isFloat(AudioSampleFormat format) {
 inline size_t sampleSize(AudioSampleFormat format) {
   switch (format) {
   case DSD_U8:
+  case DSD_RAW:
     return 1;
   case DSD_U16_LE:
   case DSD_U16_BE:
@@ -91,6 +94,8 @@ inline const char *const sampleFormatToString(AudioSampleFormat format) {
     return "DSD_U16_BE";
   case DSD_U32_BE:
     return "DSD_U32_BE";
+  case DSD_RAW:
+    return "DSD_RAW";
   case DOP24_LE:
     return "DoP_S24_LE";
   case DOP24_3LE:

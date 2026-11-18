@@ -31,7 +31,7 @@ DsdToPcmProcessor::spec(const StreamAudioFormat &format) const {
 }
 
 bool DsdToPcmProcessor::handles(const StreamAudioFormat &format) const {
-  if (format.sampleFormat != DSD_U8)
+  if (format.sampleFormat != DSD_RAW)
     return false;
   const auto converted = spec(format);
   return converted && DsdToPcm::converts(*converted);

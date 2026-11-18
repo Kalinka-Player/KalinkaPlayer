@@ -77,6 +77,8 @@ public:
   virtual size_t seek(size_t positionMs) override;
 
   void setDsdAllowed(bool allowed) { dsdAllowed.store(allowed); }
+  /// Whether DSD may leave as itself, as setDsdAllowed() last said.
+  bool dsdIsAllowed() const { return dsdAllowed.load(); }
   /// What fades a pause, a resume and the audio after a seek: the node it
   /// reads from, set before connectTo(). Without one, nothing fades.
   void fadeWith(std::shared_ptr<OutputFade> fade) {

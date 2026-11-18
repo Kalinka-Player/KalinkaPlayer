@@ -143,7 +143,7 @@ std::string refusal(const OutputCapabilities &caps, const char *mode,
 TEST(DsdCapabilities, PcmTakesRawBytesForTheStageOnAnyOutput) {
   const OutputCapabilities shared{DeviceAccess::Shared, "", {}};
   const auto format = chooseDsdOutput(shared, "pcm", 2822400, 2);
-  EXPECT_EQ(format.sampleFormat, DSD_U8);
+  EXPECT_EQ(format.sampleFormat, DSD_RAW);
   EXPECT_EQ(format.sampleRate, 352800u) << "one byte a channel per frame";
   EXPECT_EQ(format.dsdSampleRate, 2822400u);
   EXPECT_EQ(format.channels, 2u);
@@ -156,17 +156,18 @@ TEST(DsdCapabilities, PcmIsRefusedOnAnOutputTakingNoRateOfTheFamily) {
   EXPECT_EQ(refusal(caps, "pcm", 2822400, 2),
             "This output cannot play DSD64 as PCM: it takes none of 44.1, "
             "88.2, 176.4 or 352.8 kHz");
-  EXPECT_EQ(chooseDsdOutput(caps, "pcm", 3072000, 2).sampleFormat, DSD_U8)
+  EXPECT_EQ(chooseDsdOutput(caps, "pcm", 3072000, 2).sampleFormat, DSD_RAW)
       << "DSD of the family it does take";
 }
-TEST(DsdCapabilities, ExactCombinationRequiredAndAutomaticNeverAssumesDop) {
+TEST(DsdCapabilities, ExactCombinationRequired) {
   OutputCapabilities caps{
       DeviceAccess::Exclusive,
       "",
       {{176400, 2, 24, PCM24_LE}, {88200, 2, 1, DSD_U32_LE, 2822400}}};
-  EXPECT_EQ(chooseDsdOutput(caps, "auto", 2822400, 2).sampleFormat, DSD_U32_LE);
+  EXPECT_EQ(chooseDsdOutput(caps, "native", 2822400, 2).sampleFormat,
+            DSD_U32_LE);
   EXPECT_EQ(chooseDsdOutput(caps, "dop", 2822400, 2).sampleFormat, DOP24_LE);
-  EXPECT_EQ(refusal(caps, "auto", 5644800, 2),
+  EXPECT_EQ(refusal(caps, "native", 5644800, 2),
             "This output cannot play DSD128 stereo as native DSD");
   EXPECT_EQ(refusal(caps, "native", 2822400, 1),
             "This output cannot play DSD64 mono as native DSD");
@@ -176,13 +177,47 @@ TEST(DsdCapabilities, ExactCombinationRequiredAndAutomaticNeverAssumesDop) {
             "This output cannot play DSD64 stereo as native DSD");
   EXPECT_EQ(refusal(caps, "disabled", 2822400, 2), DSD_DISABLED_ERROR);
   caps.formats.pop_back();
-  EXPECT_EQ(refusal(caps, "auto", 2822400, 2),
+  EXPECT_EQ(refusal(caps, "native", 2822400, 2),
             "This output cannot play DSD64 stereo as native DSD");
   caps.access = DeviceAccess::Shared;
   EXPECT_EQ(refusal(caps, "dop", 2822400, 2), DSD_SHARED_OUTPUT_ERROR);
   EXPECT_EQ(refusal({DeviceAccess::Unknown, "No such device", {}}, "native",
                     2822400, 2),
             "Output device unavailable: No such device");
+}
+TEST(DsdCapabilities, AutomaticPlaysNativelyWhereItCanAndConvertsElsewhere) {
+  OutputCapabilities caps{
+      DeviceAccess::Exclusive,
+      "",
+      {{176400, 2, 24, PCM24_LE}, {88200, 2, 1, DSD_U32_LE, 2822400}}};
+  const auto automatic = [&caps](bool nativeAllowed, unsigned rate) {
+    return chooseAutomaticDsdOutput(caps, caps.formats, nativeAllowed, rate, 2);
+  };
+  EXPECT_EQ(automatic(true, 2822400).sampleFormat, DSD_U32_LE);
+  const auto dsd128 = automatic(true, 5644800);
+  EXPECT_EQ(dsd128.sampleFormat, DSD_RAW) << "no native DSD128";
+  EXPECT_EQ(dsd128.sampleRate, 705600u);
+  EXPECT_EQ(dsd128.dsdSampleRate, 5644800u);
+  EXPECT_EQ(automatic(false, 2822400).sampleFormat, DSD_RAW)
+      << "a volume control that is not Fixed output";
+  caps.formats.pop_back();
+  EXPECT_EQ(automatic(true, 2822400).sampleFormat, DSD_RAW)
+      << "converted rather than sent as DoP, which the DAC may not decode";
+  caps.access = DeviceAccess::Shared;
+  caps.formats.push_back({88200, 2, 1, DSD_U32_LE, 2822400});
+  EXPECT_EQ(automatic(true, 2822400).sampleFormat, DSD_RAW);
+}
+TEST(DsdCapabilities, AutomaticRefusesWhatItCanNeitherPlayNorConvert) {
+  const OutputCapabilities caps{
+      DeviceAccess::Exclusive, "", {{48000, 2, 24, PCM24_LE}}};
+  try {
+    chooseAutomaticDsdOutput(caps, caps.formats, true, 2822400, 2);
+    ADD_FAILURE() << "accepted";
+  } catch (const std::runtime_error &refused) {
+    EXPECT_STREQ(refused.what(),
+                 "This output cannot play DSD64 as PCM: it takes none of "
+                 "44.1, 88.2, 176.4 or 352.8 kHz");
+  }
 }
 TEST(DsdCapabilities, NullIsNotHardwareDsd) {
   const auto caps = probeOutput("null");
@@ -426,6 +461,14 @@ TEST(DsdPlayback, PcmIsRefusedFromTheRatesTheOutputTakes) {
       "pcm.at48 { type plug slave { pcm { type null } rate 48000 } }\n"};
   EXPECT_EQ(refusalOfAFile(
                 {{"output.alsa.device", "at48"}, {"output.dsd_mode", "pcm"}}),
+            "This output cannot play DSD64 as PCM: it takes none of 44.1, "
+            "88.2, 176.4 or 352.8 kHz");
+}
+TEST(DsdPlayback, AutomaticIsRefusedOnlyWhereItCannotConvertEither) {
+  const ScopedAlsaConfig alsa{
+      "pcm.at48 { type plug slave { pcm { type null } rate 48000 } }\n"};
+  EXPECT_EQ(refusalOfAFile(
+                {{"output.alsa.device", "at48"}, {"output.dsd_mode", "auto"}}),
             "This output cannot play DSD64 as PCM: it takes none of 44.1, "
             "88.2, 176.4 or 352.8 kHz");
 }

@@ -138,7 +138,7 @@ TEST_F(DsdPcmPlaybackTest, ADsfTrackPlaysAsPcmAtFourTimesItsBase) {
   EXPECT_EQ(opened->sampleRate, kPcmRate);
   EXPECT_EQ(opened->channels, 2u);
   ASSERT_TRUE(decoded) << "the stream still says it was DSD";
-  EXPECT_EQ(decoded->sampleFormat, DSD_U8);
+  EXPECT_EQ(decoded->sampleFormat, DSD_RAW);
   EXPECT_EQ(decoded->dsdSampleRate, kDsd64);
   // Two DSD64 bytes a channel to each 176.4 kHz frame.
   ASSERT_EQ(left.size(), kBytes / 2);
@@ -148,6 +148,18 @@ TEST_F(DsdPcmPlaybackTest, ADsfTrackPlaysAsPcmAtFourTimesItsBase) {
   // Half modulation, raised by the safe gain of 2.8 dB.
   EXPECT_NEAR(measured.fundamentalDbfs, -6.0206 + 2.8, 0.01);
   EXPECT_LT(measured.thdnDb, -110.0);
+}
+
+TEST_F(DsdPcmPlaybackTest, AutomaticConvertsATrackTheOutputCannotPlayAsDsd) {
+  const auto left =
+      play({dsf("tone.dsf", toneBits())}, {{"output.dsd_mode", "auto"}});
+  ASSERT_TRUE(opened);
+  EXPECT_EQ(opened->sampleRate, kPcmRate) << "a shared output takes no DSD";
+  ASSERT_EQ(left.size(), kBytes / 2);
+  const size_t edge = left.size() / 10;
+  const auto measured = harness::thdPlusN(
+      std::span(left).subspan(edge, left.size() - 2 * edge), kPcmRate, 1000);
+  EXPECT_NEAR(measured.fundamentalDbfs, -6.0206 + 2.8, 0.01);
 }
 
 TEST_F(DsdPcmPlaybackTest, ATrackAskedForAtTheBaseRatePlaysAtIt) {

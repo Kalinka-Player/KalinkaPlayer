@@ -62,12 +62,14 @@ double dsdGain(const Config &config) {
   return std::pow(10.0, db / 20.0);
 }
 
-// DSD in `pcm` mode is converted in the stage. `dsp.delay_ms` stands in for a
-// filter's latency in tests.
+// DSD in `pcm` mode, and in `auto` where it does not play natively, is
+// converted in the stage. `dsp.delay_ms` stands in for a filter's latency in
+// tests.
 std::unique_ptr<DspProcessor>
 dspProcessorFor(const Config &config,
                 const std::vector<StreamAudioFormat> &device) {
-  if (value_or(config, "output.dsd_mode", std::string("disabled")) == "pcm") {
+  const auto mode = value_or(config, "output.dsd_mode", std::string("disabled"));
+  if (mode == "pcm" || mode == "auto") {
     return std::make_unique<DsdToPcmProcessor>(
         device, dsdGain(config),
         dsdPcmMultiple(value_or(config, "dsd.pcm_rate", std::string("auto"))),
@@ -178,9 +180,12 @@ struct StreamNodes {
   const std::string url;
   const StreamId id;
 
+  /// @param nativeDsdAllowed Whether native DSD may play now, asked once a
+  /// DSD track's header is read.
   StreamNodes(StreamId id, const std::string &url, const Config &config,
               std::span<const StreamAudioFormat> deviceFormats,
-              const AudioFormat format, size_t startOffsetMs = 0)
+              std::function<bool()> nativeDsdAllowed, const AudioFormat format,
+              size_t startOffsetMs = 0)
       : url(url), id(id) {
     if (url.substr(0, 7) == "tone://") {
       // Speaker-test tone, generated in-process — emits PCM frames directly,
@@ -206,8 +211,9 @@ struct StreamNodes {
       return;
     }
 
-    const auto decoder =
-        decoderFor(config, deviceFormats, format, startOffsetMs);
+    const auto decoder = decoderFor(config, deviceFormats,
+                                    std::move(nativeDsdAllowed), format,
+                                    startOffsetMs);
     if (!decoder) {
       nodeChain.emplace_back(
           std::make_shared<UnsupportedStreamNode>(id, decoder.error()));
@@ -243,7 +249,8 @@ struct StreamNodes {
   std::expected<DecoderFactory, std::string>
   decoderFor(const Config &config,
              std::span<const StreamAudioFormat> deviceFormats,
-             const AudioFormat format, size_t startOffsetMs) const {
+             std::function<bool()> nativeDsdAllowed, const AudioFormat format,
+             size_t startOffsetMs) const {
     switch (format) {
     case AudioFormat::FormatLivePcm:
       if (startOffsetMs)
@@ -260,15 +267,19 @@ struct StreamNodes {
       return containing<DsdContainer>(
           value_or(config, "decoder.dsd.buffer_size", DSD_BUFFER_SIZE),
           startOffsetMs,
-          [config, mode,
+          [device = value_or(config, "output.alsa.device",
+                             std::string("default")),
+           mode, nativeDsdAllowed,
            converted = std::vector(deviceFormats.begin(), deviceFormats.end())](
               unsigned rate, unsigned channels) {
-            return chooseDsdOutput(
-                mode == "pcm"
-                    ? OutputCapabilities{.formats = converted}
-                    : probeOutput(value_or(config, "output.alsa.device",
-                                           std::string("default"))),
-                mode, rate, channels);
+            if (mode == "pcm")
+              return chooseDsdOutput({.formats = converted}, mode, rate,
+                                     channels);
+            if (mode == "auto")
+              return chooseAutomaticDsdOutput(probeOutput(device), converted,
+                                              nativeDsdAllowed(), rate,
+                                              channels);
+            return chooseDsdOutput(probeOutput(device), mode, rate, channels);
           });
     }
     case AudioFormat::FormatFlac:
@@ -436,8 +447,13 @@ void AudioPlayer::append(StreamId id, const std::string &url,
   }
   spdlog::debug("Appending stream id={} url={} startOffset={}ms", id, url,
                 startOffsetMs);
-  StreamNodes newStream(id, url, currentStreamConfig(), deviceFormats, format,
-                        startOffsetMs);
+  StreamNodes newStream(
+      id, url, currentStreamConfig(), deviceFormats,
+      [emitter = std::weak_ptr<const AlsaAudioEmitter>(audioEmitter)] {
+        const auto alive = emitter.lock();
+        return alive && alive->dsdIsAllowed();
+      },
+      format, startOffsetMs);
   streamSwitcher->connectTo(newStream.nodeChain.back());
   audioEmitter->connectTo(outputStage);
   streamNodesList.emplace_back(std::move(newStream));

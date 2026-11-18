@@ -36,6 +36,8 @@ snd_pcm_format_t alsaFormat(AudioSampleFormat f) {
     return SND_PCM_FORMAT_DSD_U16_BE;
   case DSD_U32_BE:
     return SND_PCM_FORMAT_DSD_U32_BE;
+  case DSD_RAW:
+    break;
   }
   return SND_PCM_FORMAT_UNKNOWN;
 }
@@ -137,7 +139,7 @@ StreamAudioFormat chooseDsdOutput(const OutputCapabilities &caps,
                                   unsigned channels) {
   if (mode == "disabled")
     throw std::runtime_error(DSD_DISABLED_ERROR);
-  if (!isDsdMode(mode))
+  if (!isDsdMode(mode) || mode == "auto")
     throw std::runtime_error("Invalid DSD output mode");
   // Raw for the DSP stage to convert, which cannot cross into the other family.
   if (mode == "pcm") {
@@ -145,7 +147,7 @@ StreamAudioFormat chooseDsdOutput(const OutputCapabilities &caps,
       throw std::runtime_error("This output cannot play " + dsdRateName(rate) +
                                " as PCM: it takes none of " +
                                dsdPcmRatesText(rate));
-    return {rate / 8, channels, 1, DSD_U8, rate};
+    return {rate / 8, channels, 1, DSD_RAW, rate};
   }
   if (caps.access == DeviceAccess::Shared)
     throw std::runtime_error(DSD_SHARED_OUTPUT_ERROR);
@@ -181,11 +183,27 @@ StreamAudioFormat chooseDsdOutput(const OutputCapabilities &caps,
                            (mode == "dop" ? "DoP" : "native DSD"));
 }
 
+StreamAudioFormat
+chooseAutomaticDsdOutput(const OutputCapabilities &native,
+                         std::span<const StreamAudioFormat> converted,
+                         bool nativeAllowed, unsigned rate, unsigned channels) {
+  if (nativeAllowed) {
+    try {
+      return chooseDsdOutput(native, "native", rate, channels);
+    } catch (const std::runtime_error &) {
+      // Converted, as the listener asked for whatever plays.
+    }
+  }
+  return chooseDsdOutput(
+      {.formats = std::vector(converted.begin(), converted.end())}, "pcm",
+      rate, channels);
+}
+
 std::vector<uint8_t> packDsd(std::vector<uint8_t> input, unsigned channels,
                              AudioSampleFormat format, uint64_t firstFrame) {
   if (!channels || input.size() % channels)
     throw std::invalid_argument("Incomplete DSD channel frame");
-  if (format == DSD_U8)
+  if (format == DSD_U8 || format == DSD_RAW)
     return input;
   const unsigned count = dsdBitsPerFrame(format) / 8;
   const size_t frames = (input.size() / channels + count - 1) / count;
