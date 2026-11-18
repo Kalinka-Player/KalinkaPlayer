@@ -1527,6 +1527,32 @@ TEST_F(PacedCapture, ANextTrackLateAtAGaplessJoinStillPlays) {
   EXPECT_EQ(left.back(), next->value(kFrames - 1)) << "the next track played";
 }
 
+TEST_F(PacedCapture, TheQueuesLastTrackIsHeardToItsEnd) {
+  constexpr size_t kFrames = 12000;
+  playThrough(std::make_shared<AudioStreamSwitcher>(),
+              {std::make_shared<PacedCountingNode>(1, 1000000, kFrames)});
+  const auto left = written();
+
+  ASSERT_EQ(left.size(), kFrames) << "what the device held when it ended";
+  EXPECT_TRUE(left == source->values(0, kFrames));
+}
+
+TEST_F(PacedCapture, ATrackEndingItsRunIsHeardToItsEnd) {
+  // A next track in another format starts a run of its own.
+  constexpr size_t kFrames = 12000;
+  const auto next = std::make_shared<PacedCountingNode>(
+      2, 2000000, kFrames, CountingNode::Options{.rate = 44100});
+  playThrough(std::make_shared<AudioStreamSwitcher>(),
+              {std::make_shared<PacedCountingNode>(1, 1000000, kFrames), next});
+  const auto left = written();
+
+  ASSERT_EQ(left.size(), 2 * kFrames) << "what the device held at each end";
+  EXPECT_TRUE(std::equal(left.begin(), left.begin() + kFrames,
+                         source->values(0, kFrames).begin()));
+  EXPECT_TRUE(std::equal(left.begin() + kFrames, left.end(),
+                         next->values(0, kFrames).begin()));
+}
+
 TEST_F(PacedCapture, AJoinRefilledAfterAnUnderrunIsReportedAsTheQueueEnds) {
   // The underrun's refill takes the rest of the first track and all of the
   // second: the run ends before the device is started again.

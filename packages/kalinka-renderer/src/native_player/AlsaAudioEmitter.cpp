@@ -740,7 +740,6 @@ void AlsaAudioEmitter::drainPcm() {
     playedFramesCounter.playOut([this](snd_pcm_sframes_t frames) {
       std::this_thread::sleep_for(framesToTimeMs(frames));
     });
-    log_on_error(snd_pcm_drop(pcm.handle));
   }
   if (pausedOut() || queueAbandoned) {
     log_on_error(snd_pcm_drop(pcm.handle));

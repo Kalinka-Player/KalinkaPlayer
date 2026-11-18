@@ -230,6 +230,9 @@ private:
                                            snd_pcm_sframes_t framesToRead);
   size_t waitForInputData(std::stop_token stopToken, snd_pcm_uframes_t frames);
   void startPcmStream(const StreamInfo &streamInfo, snd_pcm_uframes_t position);
+  /// Ends the run: what the device holds plays out, or is dropped when a
+  /// pause holds it or it was abandoned. The reports waiting on it run as
+  /// their frames play.
   void drainPcm();
 
   inline std::chrono::milliseconds framesToTimeMs(snd_pcm_sframes_t frames);

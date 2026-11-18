@@ -9,6 +9,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -20,11 +21,13 @@ using Clock = std::chrono::steady_clock;
  * @brief The device: frames play at the rate from start() on. A frame due
  * before it was handed over is an underrun, after which what is handed over
  * is dropped until the next prepare, as a card's is. What plays is appended
- * to the capture file, when one is named.
+ * to the capture file, when one is named: a drop takes back what it threw
+ * away unplayed. It does not follow a rewind.
  */
 struct Paced {
   snd_pcm_ioplug_t io{};
   int timer = -1;
+  std::filesystem::path path;
   std::ofstream capture;
   Clock::time_point startedAt;
   bool running = false;
@@ -45,6 +48,23 @@ struct Paced {
       underrun = true;
     return underrun;
   }
+
+  /// Takes the last @p frames written back out of the capture.
+  void takeBack(snd_pcm_uframes_t frames) {
+    if (!capture.is_open() || frames == 0)
+      return;
+    const auto frameBytes =
+        std::streamoff(snd_pcm_format_physical_width(io.format) / 8 *
+                       io.channels);
+    const std::streamoff end =
+        capture.tellp() - std::streamoff(frames) * frameBytes;
+    if (end < 0)
+      return;
+    // No exception may cross back into ALSA's C.
+    std::error_code failed;
+    std::filesystem::resize_file(path, std::uintmax_t(end), failed);
+    capture.seekp(end);
+  }
 };
 
 Paced &paced(snd_pcm_ioplug_t *io) {
@@ -58,7 +78,13 @@ int start(snd_pcm_ioplug_t *io) {
 }
 
 int stop(snd_pcm_ioplug_t *io) {
-  paced(io).running = false;
+  Paced &device = paced(io);
+  // Frames handed over while starved were never captured.
+  if (!device.underrun)
+    device.takeBack(device.handedOver - device.played());
+  // A second drop, as on closing, has nothing left to take back.
+  device.handedOver = 0;
+  device.running = false;
   return 0;
 }
 
@@ -174,6 +200,7 @@ SND_PCM_PLUGIN_DEFINE_FUNC(kalinka_paced) {
 
   auto device = std::make_unique<Paced>();
   if (!file.empty()) {
+    device->path = file;
     device->capture.open(file, std::ios::binary | std::ios::trunc);
     if (!device->capture)
       return -EIO;
