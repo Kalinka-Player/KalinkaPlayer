@@ -271,9 +271,9 @@ const Knob kNetworkKnobs[] = {
 
 const Choice kDsdPcmRates[] = {
     {"auto", "Automatic",
-     "176.4 or 192 kHz when the output takes it, otherwise the highest rate it "
-     "takes."},
-    {"1x", "44.1 or 48 kHz", "For outputs that take nothing higher."},
+     "176.4 or 192 kHz when the output supports it, otherwise the highest rate "
+     "it supports."},
+    {"1x", "44.1 or 48 kHz", "For outputs that support nothing higher."},
     {"2x", "88.2 or 96 kHz", ""},
     {"4x", "176.4 or 192 kHz", ""},
     {"8x", "352.8 or 384 kHz", ""},
@@ -283,15 +283,28 @@ const Choice kDsdPcmRates[] = {
 const Knob kDsdKnobs[] = {
     {"output.dsd_pcm_rate",
      "DSD to PCM rate",
-     "The rate DSD converts to when DSD output is Convert to PCM. Nearly all "
-     "DSD takes the first rate of each pair; DSD at 3.072 MHz and its "
-     "multiples takes the second.",
+     "Overrides the PCM sample rate DSD is converted to.",
      renderer_pb::CONFIG_FIELD_TYPE_ENUM,
      "",
      {},
-     "A rate the output does not take falls back to Automatic. DSD plays only "
-     "on an output that takes one of its rates: an output with only 48 kHz "
-     "rates cannot play 2.8 MHz DSD.",
+     "Used only when DSD output is Convert to PCM.\n\n"
+     "Each choice names two rates. Almost all DSD, DSD64 at 2.8 MHz and its "
+     "multiples, converts to the first. The second is for DSD at 3.072 MHz "
+     "and its multiples, which is rare.\n\n"
+     "**Automatic** converts to 176.4 kHz. If the output does not support it, "
+     "Automatic tries 352.8, 88.2 and 44.1 kHz, in that order.\n\n"
+     "**176.4 or 192 kHz** and **352.8 or 384 kHz** filter DSD64 at 30 kHz "
+     "and higher DSD rates at 50 kHz, to remove DSD's ultrasonic noise. Both "
+     "filter the same way, so 352.8 kHz holds nothing more than 176.4 kHz."
+     "\n\n"
+     "**88.2 or 96 kHz** filters DSD64 at 30 kHz and higher DSD rates at about "
+     "40 kHz.\n\n"
+     "**44.1 or 48 kHz** keeps the audio band up to 20 kHz. Use it for outputs "
+     "that support nothing higher, such as HDMI or simple USB DACs.\n\n"
+     "If the output does not support the chosen rate, Automatic is used "
+     "instead. If it supports no rate for the track at all, the track does "
+     "not play: an output limited to 48, 96 and 192 kHz cannot play 2.8 MHz "
+     "DSD.",
      kDsdPcmRates,
      renderer_pb::CONFIG_IMPORTANCE_SIMPLE},
 };
@@ -333,8 +346,8 @@ const Choice kDsdChoices[] = {
      "Send DSD wrapped in PCM. Choose only if the DAC supports DoP, as other DACs "
      "play it as noise."},
     {"pcm", "Convert to PCM",
-     "Convert DSD to PCM in the renderer. Plays on any output that takes a rate "
-     "it converts to, with any volume control."},
+     "Convert DSD to PCM in the renderer. Plays on any output that supports a "
+     "rate it converts to, with any volume control."},
 };
 
 void addChoices(renderer_pb::ConfigField &field,
@@ -1013,7 +1026,7 @@ void NativePlayer::fillConfig(renderer_pb::ConfigSection &out) const {
   dsd->set_description(
       "Native DSD and DoP require an output device marked (direct), and either "
       "Fixed output volume or a connected device. Convert to PCM plays on any "
-      "output that takes a rate it converts to.");
+      "output that supports a rate it converts to.");
   addChoices(*dsd, kDsdChoices);
   for (const Knob &knob : kDsdKnobs) {
     declare(out, knob, settings_, defaultSettings());
