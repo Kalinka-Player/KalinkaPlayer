@@ -261,9 +261,9 @@ TEST(DsdToPcm, ResetForgetsWhatCameBefore) {
 }
 
 TEST(DsdToPcm, UnsupportedRatesAndChannelsAreRefused) {
-  EXPECT_THROW(DsdToPcm(spec(44100, 64, 1, DsdFilter::Cut30k)),
+  EXPECT_THROW(DsdToPcm(spec(44100, 64, 3, DsdFilter::Cut30k)),
                std::invalid_argument)
-      << "44.1 kHz is not one of 2, 4 or 8 times the base";
+      << "not a power of two times the base";
   EXPECT_THROW(DsdToPcm(spec(44100, 64, 16, DsdFilter::Cut30k)),
                std::invalid_argument)
       << "a ratio under 8";

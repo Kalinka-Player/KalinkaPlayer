@@ -11,6 +11,7 @@
 #include <iterator>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -18,10 +19,13 @@
 #include "DashTestData.h"
 #include "LocalHttpServer.h"
 #include "ScopedAlsaConfig.h"
+#include "SigmaDelta.h"
 #include "TestHelpers.h"
 #include "WavTestData.h"
 #include "config/ConfigService.h"
 #include "config/SettingsPersistence.h"
+#include "dsp/dsd/DsdFilterSetting.h"
+#include "dsp/dsd/DsdPcmRate.h"
 #include "player/NativePlayer.h"
 
 namespace fs = std::filesystem;
@@ -69,6 +73,12 @@ protected:
   renderer_pb::ConfigSection buffers() const {
     renderer_pb::ConfigSection section;
     player_->bufferSettings()->fillConfig(section);
+    return section;
+  }
+
+  renderer_pb::ConfigSection dsd() const {
+    renderer_pb::ConfigSection section;
+    player_->dsdSettings()->fillConfig(section);
     return section;
   }
 
@@ -194,6 +204,52 @@ protected:
   LocalHttpServer server_{testFile("tone880.flac")};
 };
 
+// A tenth of a second of DSD64 silence, served as the Core serves a DSF.
+class NativePlayerDsdTest : public NativePlayerStreamTest {
+protected:
+  static std::string silence() {
+    const uint8_t idle[] = {0, 1, 1, 0, 1, 0, 0, 1};
+    std::vector<uint8_t> bits;
+    while (bits.size() < 2822400 / 10)
+      bits.insert(bits.end(), std::begin(idle), std::end(idle));
+    const auto file = harness::dsfFile({bits, bits}, 2822400);
+    return {file.begin(), file.end()};
+  }
+
+  /// A fifth of a second of random DSD64, which every filter treats apart.
+  static std::string noise() {
+    std::mt19937 random(1);
+    std::vector<uint8_t> bits(2822400 / 5);
+    for (auto &bit : bits)
+      bit = random() & 1;
+    const auto file = harness::dsfFile({bits, bits}, 2822400);
+    return {file.begin(), file.end()};
+  }
+
+  renderer_pb::Source dsf(const std::string &path = "/silence.dsf") const {
+    renderer_pb::Source source;
+    source.set_source_token(path);
+    source.set_uri(dsdServer_.url(path));
+    source.set_mime_type("audio/dsf");
+    return source;
+  }
+
+  /// The rate the device was opened at while the DSF played as PCM.
+  std::optional<uint32_t> playedAt() {
+    std::optional<uint32_t> rate;
+    for (const auto &state : playToTheEnd(dsf())) {
+      EXPECT_NE(state.state(), renderer_pb::PLAYBACK_STATE_ERROR)
+          << state.error().message();
+      if (state.has_device_info())
+        rate = state.device_info().format().sample_rate_hz();
+    }
+    return rate;
+  }
+
+  LocalHttpServer dsdServer_{std::map<std::string, std::string, std::less<>>{
+      {"/silence.dsf", silence()}, {"/noise.dsf", noise()}}};
+};
+
 TEST_F(NativePlayerSettingsTest, DsdSettingsExposeCapabilitiesAndPersistMode) {
   const auto section = output();
   EXPECT_EQ(field(section, "output.capabilities"), nullptr);
@@ -206,19 +262,22 @@ TEST_F(NativePlayerSettingsTest, DsdSettingsExposeCapabilitiesAndPersistMode) {
   EXPECT_TRUE(sampleRate->read_only());
   EXPECT_THAT(sampleRate->value(),
               ::testing::MatchesRegex("Up to [0-9]+(\\.[0-9]+)? kHz"));
-  const auto *dsd = field(section, "output.dsd_mode");
-  ASSERT_NE(dsd, nullptr);
-  EXPECT_EQ(dsd->value(), "disabled");
-  EXPECT_EQ(dsd->options_size(), 5);
-  EXPECT_EQ(dsd->apply(), renderer_pb::APPLY_COST_INTERRUPTS_PLAYBACK);
-  ASSERT_TRUE(player_->applyConfig("output.dsd_mode", "dop", error_));
+  EXPECT_EQ(field(section, "output.dsd_mode"), nullptr) << "in the DSD section";
+  const auto dsdSection = dsd();
+  const auto *mode = field(dsdSection, "output.dsd_mode");
+  ASSERT_NE(mode, nullptr);
+  EXPECT_EQ(mode->value(), "disabled");
+  EXPECT_EQ(mode->options_size(), 5);
+  EXPECT_EQ(mode->apply(), renderer_pb::APPLY_COST_INTERRUPTS_PLAYBACK);
+  ASSERT_TRUE(player_->dsdSettings()->applyConfig("output.dsd_mode", "dop",
+                                                  error_));
   EXPECT_EQ(loadSettingsOverrides().at("output.dsd_mode"), "dop");
   player_.reset();
   player_ = std::make_shared<NativePlayer>(ioc_);
-  EXPECT_EQ(field(output(), "output.dsd_mode")->value(), "dop");
+  EXPECT_EQ(field(dsd(), "output.dsd_mode")->value(), "dop");
   EXPECT_FALSE(player_->applyConfig("output.dsd_mode", "bogus", error_));
   ASSERT_TRUE(player_->applyConfig("output.device", "default", error_));
-  EXPECT_EQ(field(output(), "output.dsd_mode")->value(), "disabled");
+  EXPECT_EQ(field(dsd(), "output.dsd_mode")->value(), "disabled");
 }
 
 TEST_F(HdmiSettingsTest, SavedHdmiSelectionGetsAutomaticRateStatusWithoutLosingDop) {
@@ -231,7 +290,7 @@ TEST_F(HdmiSettingsTest, SavedHdmiSelectionGetsAutomaticRateStatusWithoutLosingD
             "hdmi:CARD=Missing,DEV=0,AES3=0x01");
   EXPECT_EQ(loadSettingsOverrides().at("output.device"),
             "hdmi:CARD=Missing,DEV=0,AES3=0x01");
-  EXPECT_EQ(field(output(), "output.dsd_mode")->value(), "dop");
+  EXPECT_EQ(field(dsd(), "output.dsd_mode")->value(), "dop");
 }
 
 TEST_F(CustomHdmiSettingsTest, SavedSelectionWithoutAes3StaysPlayableAfterStartup) {
@@ -267,7 +326,8 @@ TEST_F(HdmiSettingsTest, ACardWithoutAMixerTakesCardMixerBackToAutomatic) {
 }
 
 TEST_F(NativePlayerSettingsTest, DetailedHelpTravelsSeparatelyFromDescriptions) {
-  ConfigService service({player_, player_->bufferSettings()});
+  ConfigService service(
+      {player_, player_->dsdSettings(), player_->bufferSettings()});
   renderer_pb::ConfigSnapshot snapshot;
   service.fillSnapshot(snapshot);
   renderer_pb::ConfigSnapshot received;
@@ -277,22 +337,26 @@ TEST_F(NativePlayerSettingsTest, DetailedHelpTravelsSeparatelyFromDescriptions) 
   EXPECT_TRUE(out.description().empty());
   for (const auto *path : {"output.device", "output.volume_mode",
                            "output.session_start_volume_ceiling_percent",
-                           "output.dsd_mode", "output.format_change_delay_ms",
+                           "output.format_change_delay_ms",
                            "output.reopen_on_format_change"}) {
     const auto *setting = field(out, path);
     ASSERT_NE(setting, nullptr) << path;
     EXPECT_FALSE(setting->help_details().empty()) << path;
     EXPECT_NE(setting->help_details(), setting->description()) << path;
   }
+  for (const auto &setting : received.sections(1).fields()) {
+    EXPECT_FALSE(setting.help_details().empty()) << setting.path();
+    EXPECT_NE(setting.help_details(), setting.description()) << setting.path();
+  }
   EXPECT_TRUE(field(out, "output.volume_mode")->description().empty());
   EXPECT_TRUE(field(out, "output.driver")->help_details().empty());
-  EXPECT_FALSE(field(received.sections(1), "buffers.network_stream")
+  EXPECT_FALSE(field(received.sections(2), "buffers.network_stream")
                    ->help_details().empty());
 }
 
 TEST_F(NativePlayerSettingsTest, ModeChoicesAreDescribedInTheirOwnOrder) {
-  const auto section = output();
-  auto described = [&section](const std::string &path) {
+  auto described = [this](const std::string &path) {
+    const auto section = path == "output.volume_mode" ? output() : dsd();
     std::vector<std::string> values;
     for (const renderer_pb::ConfigOption &option :
          field(section, path)->options()) {
@@ -350,7 +414,7 @@ TEST_F(NativePlayerSettingsTest, InvalidPersistedDsdModeUsesDisabled) {
       {{"output.device", "null"}, {"output.dsd_mode", "bogus"}});
   player_.reset();
   player_ = std::make_shared<NativePlayer>(ioc_);
-  EXPECT_EQ(field(output(), "output.dsd_mode")->value(), "disabled");
+  EXPECT_EQ(field(dsd(), "output.dsd_mode")->value(), "disabled");
 }
 
 TEST_F(NativePlayerSettingsTest, TheSinkIsBufferedAsTheServerUsedToBufferIt) {
@@ -555,6 +619,156 @@ TEST_F(NativePlayerSettingsTest, RedirectLimitWritesValidateTheDeclaredRange) {
     EXPECT_EQ(field(network(), "network.max_redirects")->value(), value);
     EXPECT_EQ(loadSettingsOverrides().at("network.max_redirects"), value);
   }
+}
+
+TEST_F(NativePlayerSettingsTest, TheDsdSectionHoldsTheModeThenTheRateThenTheFilter) {
+  const renderer_pb::ConfigSection section = dsd();
+  EXPECT_EQ(section.path(), "dsd");
+  EXPECT_EQ(section.title(), "DSD");
+  std::vector<std::string> paths;
+  for (const renderer_pb::ConfigField &field : section.fields())
+    paths.push_back(field.path());
+  EXPECT_THAT(paths, ::testing::ElementsAre("output.dsd_mode",
+                                            "output.dsd_pcm_rate",
+                                            "output.dsd_filter"))
+      << "the names stored settings are kept under";
+  for (const auto *path : {"output.dsd_pcm_rate", "output.dsd_filter"})
+    EXPECT_EQ(field(output(), path), nullptr) << path;
+}
+
+TEST_F(NativePlayerSettingsTest, ThePcmRateIsASimpleChoiceThePlayerTakes) {
+  const auto section = dsd();
+  const renderer_pb::ConfigField &rate = *field(section, "output.dsd_pcm_rate");
+  EXPECT_EQ(rate.title(), "DSD to PCM rate");
+  EXPECT_EQ(rate.type(), renderer_pb::CONFIG_FIELD_TYPE_ENUM);
+  EXPECT_EQ(rate.value(), "auto");
+  EXPECT_EQ(rate.default_value(), "auto");
+  EXPECT_EQ(rate.importance(), renderer_pb::CONFIG_IMPORTANCE_SIMPLE)
+      << "in the DSD section, not apart in the expert list";
+  EXPECT_EQ(rate.apply(), renderer_pb::APPLY_COST_INTERRUPTS_PLAYBACK)
+      << "the graph's converter is built with it";
+  std::vector<std::string> values;
+  for (const renderer_pb::ConfigOption &option : rate.options()) {
+    values.push_back(option.value());
+    EXPECT_NO_THROW(dsdPcmMultiple(option.value())) << "the player takes it";
+  }
+  EXPECT_EQ(values, (std::vector<std::string>{"auto", "1x", "2x", "4x", "8x"}));
+}
+
+TEST_F(NativePlayerSettingsTest, TheFilterIsASimpleChoiceThePlayerTakes) {
+  const auto section = dsd();
+  const renderer_pb::ConfigField &filter = *field(section, "output.dsd_filter");
+  EXPECT_EQ(filter.title(), "DSD to PCM filter");
+  EXPECT_EQ(filter.type(), renderer_pb::CONFIG_FIELD_TYPE_ENUM);
+  EXPECT_EQ(filter.value(), "auto");
+  EXPECT_EQ(filter.default_value(), "auto");
+  EXPECT_EQ(filter.importance(), renderer_pb::CONFIG_IMPORTANCE_SIMPLE);
+  EXPECT_EQ(filter.apply(), renderer_pb::APPLY_COST_INTERRUPTS_PLAYBACK)
+      << "the graph's converter is built with it";
+  std::vector<std::string> values;
+  for (const renderer_pb::ConfigOption &option : filter.options()) {
+    values.push_back(option.value());
+    EXPECT_NO_THROW(dsdFilterSetting(option.value())) << "the player takes it";
+    EXPECT_FALSE(option.description().empty()) << option.value();
+  }
+  EXPECT_THAT(values, ::testing::ElementsAre("auto", "30k", "50k", "wide"));
+}
+
+TEST_F(NativePlayerSettingsTest, AFilterWriteIsValidatedAndPersisted) {
+  ConfigService service{{player_->dsdSettings()}};
+  renderer_pb::ConfigUpdate update;
+  auto *setting = update.add_settings();
+  setting->set_path("output.dsd_filter");
+  setting->set_value("40k");
+  renderer_pb::ConfigResult refused;
+  service.apply(update, refused);
+  ASSERT_EQ(refused.outcomes_size(), 1);
+  EXPECT_FALSE(refused.outcomes(0).applied());
+
+  setting->set_value("wide");
+  renderer_pb::ConfigResult applied;
+  service.apply(update, applied);
+  ASSERT_EQ(applied.outcomes_size(), 1);
+  EXPECT_TRUE(applied.outcomes(0).applied()) << applied.outcomes(0).error();
+  EXPECT_EQ(loadSettingsOverrides().at("output.dsd_filter"), "wide");
+
+  saveSettingsOverrides({{"output.device", "null"}, {"output.dsd_filter", "40k"}});
+  player_.reset();
+  player_ = std::make_shared<NativePlayer>(ioc_);
+  EXPECT_EQ(field(dsd(), "output.dsd_filter")->value(), "auto");
+}
+
+TEST_F(NativePlayerSettingsTest, APcmRateWriteIsValidatedAndPersisted) {
+  ConfigService service{{player_->dsdSettings()}};
+  renderer_pb::ConfigUpdate update;
+  auto *setting = update.add_settings();
+  setting->set_path("output.dsd_pcm_rate");
+  setting->set_value("3x");
+  renderer_pb::ConfigResult refused;
+  service.apply(update, refused);
+  ASSERT_EQ(refused.outcomes_size(), 1);
+  EXPECT_FALSE(refused.outcomes(0).applied());
+  EXPECT_FALSE(loadSettingsOverrides().contains("output.dsd_pcm_rate"));
+
+  setting->set_value("1x");
+  renderer_pb::ConfigResult applied;
+  service.apply(update, applied);
+  ASSERT_EQ(applied.outcomes_size(), 1);
+  EXPECT_TRUE(applied.outcomes(0).applied()) << applied.outcomes(0).error();
+  EXPECT_EQ(field(dsd(), "output.dsd_pcm_rate")->value(), "1x");
+  EXPECT_EQ(loadSettingsOverrides().at("output.dsd_pcm_rate"), "1x");
+}
+
+TEST_F(NativePlayerDsdTest, ThePcmRateReachesTheConverter) {
+  ASSERT_TRUE(player_->applyConfig("output.dsd_mode", "pcm", error_)) << error_;
+  EXPECT_EQ(playedAt(), 176400u) << "automatic";
+  ASSERT_TRUE(player_->applyConfig("output.dsd_pcm_rate", "1x", error_))
+      << error_;
+  EXPECT_EQ(playedAt(), 44100u);
+}
+
+TEST_F(NativePlayerDsdTest, TheFilterReachesTheConverter) {
+  const fs::path capture = prefix_ / "written.raw";
+  const ScopedAlsaConfig alsa{"pcm.capture { type file slave.pcm { type null } "
+                              "file \"" +
+                              capture.string() + "\" format raw }\n"};
+  player_.reset();
+  saveSettingsOverrides(
+      {{"output.device", "capture"}, {"output.dsd_mode", "pcm"}});
+  player_ = std::make_shared<NativePlayer>(ioc_);
+  // Only the start is compared: how a stop meets the end of a run is not.
+  const auto start = [&](size_t bytes) {
+    for (const auto &state : playToTheEnd(dsf("/noise.dsf")))
+      EXPECT_NE(state.state(), renderer_pb::PLAYBACK_STATE_ERROR)
+          << state.error().message();
+    std::ifstream in(capture, std::ios::binary);
+    std::vector<char> written{std::istreambuf_iterator<char>(in), {}};
+    written.resize(std::min(written.size(), bytes));
+    return written;
+  };
+  const auto automatic = start(SIZE_MAX);
+  ASSERT_GT(automatic.size(), 1000u);
+  const size_t compared = automatic.size() / 2;
+  const std::vector<char> first(automatic.begin(),
+                                automatic.begin() + compared);
+
+  ASSERT_TRUE(player_->applyConfig("output.dsd_filter", "30k", error_))
+      << error_;
+  EXPECT_TRUE(start(compared) == first) << "DSD64's own filter";
+  ASSERT_TRUE(player_->applyConfig("output.dsd_filter", "wide", error_))
+      << error_;
+  const auto wide = start(compared);
+  EXPECT_EQ(wide.size(), compared);
+  EXPECT_FALSE(wide == first);
+  player_.reset();
+}
+
+TEST_F(NativePlayerSettingsTest, InvalidPersistedPcmRateUsesAutomatic) {
+  saveSettingsOverrides(
+      {{"output.device", "null"}, {"output.dsd_pcm_rate", "3x"}});
+  player_.reset();
+  player_ = std::make_shared<NativePlayer>(ioc_);
+  EXPECT_EQ(field(dsd(), "output.dsd_pcm_rate")->value(), "auto");
 }
 
 TEST_F(NativePlayerSettingsTest, StallTimeoutWritesGoThroughTheNetworkSection) {

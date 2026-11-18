@@ -131,6 +131,13 @@ struct Bounds {
   bool declared() const { return max > min; }
 };
 
+// One option of an enum setting; the page lists them in declaration order.
+struct Choice {
+  const char *value;
+  const char *label;
+  const char *description;
+};
+
 // Value and default live in the settings map; the graph key says how it applies.
 struct Knob {
   const char *path;
@@ -140,6 +147,10 @@ struct Knob {
   const char *unit = "";
   Bounds bounds{};
   const char *helpDetails = "";
+  std::span<const Choice> choices = {};
+  // Most are for a misbehaving card or link, not the settings page proper.
+  renderer_pb::ConfigImportance importance =
+      renderer_pb::CONFIG_IMPORTANCE_EXPERT;
 };
 
 constexpr const char *kFormatChangeHelp =
@@ -258,6 +269,100 @@ const Knob kNetworkKnobs[] = {
      {0, 10, 1}},
 };
 
+const Choice kDsdPcmRates[] = {
+    {"auto", "Automatic",
+     "176.4 or 192 kHz when the output supports it, otherwise the highest rate "
+     "it supports."},
+    {"1x", "44.1 or 48 kHz", "For outputs that support nothing higher."},
+    {"2x", "88.2 or 96 kHz", ""},
+    {"4x", "176.4 or 192 kHz", ""},
+    {"8x", "352.8 or 384 kHz", ""},
+};
+
+const Choice kDsdChoices[] = {
+    {"disabled", "Disabled", "DSD tracks do not play."},
+    {"auto", "Automatic",
+     "Send native DSD when the DAC supports the track’s rate, and never DoP."},
+    {"native", "Native DSD",
+     "Send DSD directly to a compatible DAC."},
+    {"dop", "DoP",
+     "Send DSD wrapped in PCM. Choose only if the DAC supports DoP, as other DACs "
+     "play it as noise."},
+    {"pcm", "Convert to PCM",
+     "Convert DSD to PCM in the renderer. Plays on any output that supports a "
+     "rate it converts to, with any volume control."},
+};
+
+const Choice kDsdFilters[] = {
+    {"auto", "Automatic", "30 kHz for DSD64, 50 kHz for DSD128 and higher."},
+    {"30k", "30 kHz", "Flat to 20 kHz. Removes the most ultrasonic noise."},
+    {"50k", "50 kHz", "Flat to 40 kHz."},
+    {"wide", "Wide", "Keeps as much as the PCM rate allows, noise included."},
+};
+
+const Knob kDsdKnobs[] = {
+    {"output.dsd_mode",
+     "DSD output",
+     "Native DSD and DoP require an output device marked (direct), and either "
+     "Fixed output volume or a connected device. Convert to PCM plays on any "
+     "output that supports a rate it converts to.",
+     renderer_pb::CONFIG_FIELD_TYPE_ENUM,
+     "",
+     {},
+     "Plays DSF and DSDIFF files, either as DSD, which the DAC must support in "
+     "the selected mode and at the track’s DSD rate, or converted to PCM. "
+     "Unsupported tracks fail to play.",
+     kDsdChoices,
+     renderer_pb::CONFIG_IMPORTANCE_SIMPLE},
+    {"output.dsd_pcm_rate",
+     "DSD to PCM rate",
+     "Overrides the PCM sample rate DSD is converted to.",
+     renderer_pb::CONFIG_FIELD_TYPE_ENUM,
+     "",
+     {},
+     "Used only when DSD output is Convert to PCM.\n\n"
+     "Each choice names two rates. Almost all DSD, DSD64 at 2.8 MHz and its "
+     "multiples, converts to the first. The second is for DSD at 3.072 MHz "
+     "and its multiples, which is rare.\n\n"
+     "**Automatic** converts to 176.4 kHz. If the output does not support it, "
+     "Automatic tries 352.8, 88.2 and 44.1 kHz, in that order.\n\n"
+     "**176.4 or 192 kHz** and **352.8 or 384 kHz** have room for every DSD "
+     "to PCM filter. With the 30 or 50 kHz filter, 352.8 kHz holds nothing "
+     "more than 176.4 kHz.\n\n"
+     "**88.2 or 96 kHz** has room for the 30 kHz filter. The 50 kHz filter "
+     "works as Wide there, flat to about 40 kHz.\n\n"
+     "**44.1 or 48 kHz** keeps the audio band up to 20 kHz, whatever the "
+     "filter. Use it for outputs that support nothing higher, such as HDMI or "
+     "simple USB DACs.\n\n"
+     "If the output does not support the chosen rate, Automatic is used "
+     "instead. If it supports no rate for the track at all, the track does "
+     "not play: an output limited to 48, 96 and 192 kHz cannot play 2.8 MHz "
+     "DSD.",
+     kDsdPcmRates,
+     renderer_pb::CONFIG_IMPORTANCE_SIMPLE},
+    {"output.dsd_filter",
+     "DSD to PCM filter",
+     "Overrides the low-pass filter DSD is converted with.",
+     renderer_pb::CONFIG_FIELD_TYPE_ENUM,
+     "",
+     {},
+     "Used only when DSD output is Convert to PCM.\n\n"
+     "DSD carries strong ultrasonic noise, rising with frequency above the "
+     "audio band. The filter decides how much of it, and of any music above "
+     "20 kHz, reaches the DAC.\n\n"
+     "**Automatic** uses 30 kHz for DSD64 and 50 kHz for DSD128 and higher, "
+     "whose noise starts higher up.\n\n"
+     "**30 kHz** is flat to 20 kHz and removes everything from 40 kHz.\n\n"
+     "**50 kHz** is flat to 40 kHz and removes everything from 60 kHz.\n\n"
+     "**Wide** keeps everything up to about 79 kHz at 176.4 kHz, and more at "
+     "352.8 kHz, ultrasonic noise included. Use it only when the DAC or "
+     "amplifier filters ultrasonics itself.\n\n"
+     "At 88.2 kHz and below, the PCM rate limits the filter: see DSD to PCM "
+     "rate.",
+     kDsdFilters,
+     renderer_pb::CONFIG_IMPORTANCE_SIMPLE},
+};
+
 // A section of the settings page that holds nothing but knobs.
 struct Section {
   const char *path;
@@ -274,12 +379,9 @@ const Section kNetwork{"network", "Network",
                        "How the renderer downloads tracks.",
                        kNetworkKnobs};
 
-// One option of an enum setting; the page lists them in declaration order.
-struct Choice {
-  const char *value;
-  const char *label;
-  const char *description;
-};
+const Section kDsd{"dsd", "DSD",
+                   "How DSD tracks play, as DSD or converted to PCM.",
+                   kDsdKnobs};
 
 const Choice kVolumeChoices[] = {
     {"auto", "Automatic",
@@ -290,20 +392,6 @@ const Choice kVolumeChoices[] = {
      "Adjust volume in the renderer."},
     {"fixed", "Fixed output",
      "Play at full volume and control volume on your amplifier or receiver."},
-};
-
-const Choice kDsdChoices[] = {
-    {"disabled", "Disabled", "DSD tracks do not play."},
-    {"auto", "Automatic",
-     "Send native DSD when the DAC supports the track’s rate, and never DoP."},
-    {"native", "Native DSD",
-     "Send DSD directly to a compatible DAC."},
-    {"dop", "DoP",
-     "Send DSD wrapped in PCM. Choose only if the DAC supports DoP, as other DACs "
-     "play it as noise."},
-    {"pcm", "Convert to PCM",
-     "Convert DSD to PCM in the renderer. Plays on any output, with any volume "
-     "control."},
 };
 
 void addChoices(renderer_pb::ConfigField &field,
@@ -321,6 +409,8 @@ const std::map<std::string, std::string> &graphKeys() {
   static const std::map<std::string, std::string> keys{
       {"output.device", "output.alsa.device"},
       {"output.dsd_mode", "output.dsd_mode"},
+      {"output.dsd_pcm_rate", "dsd.pcm_rate"},
+      {"output.dsd_filter", "dsd.filter"},
       {"output.latency_ms", "output.alsa.latency_ms"},
       {"output.period_ms", "output.alsa.period_ms"},
       {"output.format_change_delay_ms",
@@ -359,8 +449,9 @@ bool holds(std::span<const Knob> knobs, const std::string &path) {
 }
 
 const Knob *findKnob(const std::string &path) {
-  for (std::span<const Knob> knobs : {std::span<const Knob>(kOutputKnobs),
-                                      kBuffering.knobs, kNetwork.knobs}) {
+  for (std::span<const Knob> knobs :
+       {std::span<const Knob>(kOutputKnobs), kDsd.knobs, kBuffering.knobs,
+        kNetwork.knobs}) {
     const auto knob = std::ranges::find_if(
         knobs, [&path](const Knob &knob) { return knob.path == path; });
     if (knob != knobs.end()) {
@@ -380,10 +471,9 @@ void describe(renderer_pb::ConfigField &field, const Knob &knob) {
   field.set_apply(readPerStream(knob.path)
                       ? renderer_pb::APPLY_COST_INSTANT
                       : renderer_pb::APPLY_COST_INTERRUPTS_PLAYBACK);
-  // Reached for when the card or the link misbehaves, which is not what a
-  // settings page is for.
-  field.set_importance(renderer_pb::CONFIG_IMPORTANCE_EXPERT);
+  field.set_importance(knob.importance);
   field.set_unit(knob.unit);
+  addChoices(field, knob.choices);
   if (!knob.bounds.declared()) {
     return;
   }
@@ -407,12 +497,6 @@ void declare(renderer_pb::ConfigSection &out, const Knob &knob,
 // A hand-edited stall timeout of 0 would switch stall detection off.
 bool knobTakes(const std::string &path, const std::string &value,
                std::string &error) {
-  if (path == "output.dsd_mode") {
-    if (isDsdMode(value))
-      return true;
-    error = "unknown DSD output mode";
-    return false;
-  }
   const Knob *knob = findKnob(path);
   if (knob == nullptr) {
     return true;
@@ -430,6 +514,8 @@ const std::map<std::string, std::string> &NativePlayer::defaultSettings() {
       {"output.device", "default"},
       {"output.volume_mode", "auto"},
       {"output.dsd_mode", "disabled"},
+      {"output.dsd_pcm_rate", "auto"},
+      {"output.dsd_filter", "auto"},
       {"output.session_start_volume_ceiling_percent", "30"},
       // What the server shipped while it did the playing, rather than the
       // sink's own 100/25.
@@ -489,6 +575,10 @@ std::shared_ptr<ConfigContributor> NativePlayer::bufferSettings() {
 
 std::shared_ptr<ConfigContributor> NativePlayer::networkSettings() {
   return std::make_shared<KnobSection>(shared_from_this(), kNetwork);
+}
+
+std::shared_ptr<ConfigContributor> NativePlayer::dsdSettings() {
+  return std::make_shared<KnobSection>(shared_from_this(), kDsd);
 }
 
 void NativePlayer::persistOverrides() const {
@@ -964,23 +1054,6 @@ void NativePlayer::fillConfig(renderer_pb::ConfigSection &out) const {
   startCeiling->mutable_range()->set_max(100);
   startCeiling->mutable_range()->set_step(1);
   startCeiling->set_widget(renderer_pb::CONFIG_WIDGET_SLIDER);
-
-  auto *dsd = out.add_fields();
-  dsd->set_path("output.dsd_mode");
-  dsd->set_title("DSD output");
-  dsd->set_help_details(
-      "Plays DSF and DSDIFF files, either as DSD, which the DAC must support in "
-      "the selected mode and at the track’s DSD rate, or converted to PCM. "
-      "Unsupported tracks fail to play.");
-  dsd->set_type(renderer_pb::CONFIG_FIELD_TYPE_ENUM);
-  dsd->set_value(settings_.at("output.dsd_mode"));
-  dsd->set_default_value("disabled");
-  dsd->set_importance(renderer_pb::CONFIG_IMPORTANCE_SIMPLE);
-  dsd->set_apply(renderer_pb::APPLY_COST_INTERRUPTS_PLAYBACK);
-  dsd->set_description(
-      "Native DSD and DoP require an output device marked (direct), and either "
-      "Fixed output volume or a connected device. Convert to PCM plays anywhere.");
-  addChoices(*dsd, kDsdChoices);
 
   for (const Knob &knob : kOutputKnobs) {
     declare(out, knob, settings_, defaultSettings());

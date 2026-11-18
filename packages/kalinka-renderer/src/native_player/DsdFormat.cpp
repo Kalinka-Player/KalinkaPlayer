@@ -1,5 +1,6 @@
 #include "DsdFormat.h"
 #include "PlaybackPcm.h"
+#include "dsp/dsd/DsdPcmRate.h"
 
 #include <algorithm>
 #include <array>
@@ -138,9 +139,14 @@ StreamAudioFormat chooseDsdOutput(const OutputCapabilities &caps,
     throw std::runtime_error(DSD_DISABLED_ERROR);
   if (!isDsdMode(mode))
     throw std::runtime_error("Invalid DSD output mode");
-  // Raw bytes for the DSP stage to convert, on any output.
-  if (mode == "pcm")
+  // Raw for the DSP stage to convert, which cannot cross into the other family.
+  if (mode == "pcm") {
+    if (!dsdPcmRate(rate, caps.formats))
+      throw std::runtime_error("This output cannot play " + dsdRateName(rate) +
+                               " as PCM: it takes none of " +
+                               dsdPcmRatesText(rate));
     return {rate / 8, channels, 1, DSD_U8, rate};
+  }
   if (caps.access == DeviceAccess::Shared)
     throw std::runtime_error(DSD_SHARED_OUTPUT_ERROR);
   if (caps.access != DeviceAccess::Exclusive)

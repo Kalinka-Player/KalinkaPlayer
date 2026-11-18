@@ -6,6 +6,7 @@
 #include "DsdContainer.h"
 #include "DsdFormat.h"
 #include "LocalHttpServer.h"
+#include "ScopedAlsaConfig.h"
 #include "player/StateTranslator.h"
 #include <filesystem>
 #include <fstream>
@@ -146,6 +147,17 @@ TEST(DsdCapabilities, PcmTakesRawBytesForTheStageOnAnyOutput) {
   EXPECT_EQ(format.sampleRate, 352800u) << "one byte a channel per frame";
   EXPECT_EQ(format.dsdSampleRate, 2822400u);
   EXPECT_EQ(format.channels, 2u);
+}
+TEST(DsdCapabilities, PcmIsRefusedOnAnOutputTakingNoRateOfTheFamily) {
+  const OutputCapabilities caps{
+      DeviceAccess::Exclusive,
+      "",
+      {{48000, 2, 24, PCM24_LE}, {96000, 2, 24, PCM24_LE}}};
+  EXPECT_EQ(refusal(caps, "pcm", 2822400, 2),
+            "This output cannot play DSD64 as PCM: it takes none of 44.1, "
+            "88.2, 176.4 or 352.8 kHz");
+  EXPECT_EQ(chooseDsdOutput(caps, "pcm", 3072000, 2).sampleFormat, DSD_U8)
+      << "DSD of the family it does take";
 }
 TEST(DsdCapabilities, ExactCombinationRequiredAndAutomaticNeverAssumesDop) {
   OutputCapabilities caps{
@@ -388,7 +400,8 @@ StreamState awaitError(AudioPlayer &player) {
   }
   return state;
 }
-TEST(DsdPlayback, OutputModeAndDeviceReachTheContainerReader) {
+/// Why a player with @p settings refuses a DSD64 file.
+std::string refusalOfAFile(const Config &settings) {
   const auto path = std::filesystem::temp_directory_path() /
                     ("kalinka-dsd-" + std::to_string(getpid()) + ".dsf");
   {
@@ -396,14 +409,25 @@ TEST(DsdPlayback, OutputModeAndDeviceReachTheContainerReader) {
     const auto bytes = dsf();
     file.write(reinterpret_cast<const char *>(bytes.data()), bytes.size());
   }
-  AudioPlayer player(
-      {{"output.alsa.device", "null"}, {"output.dsd_mode", "dop"}});
+  AudioPlayer player(settings);
   player.append(1, "file://" + path.string(), FormatDsd);
   const auto state = awaitError(player);
-  ASSERT_EQ(state.state, AudioGraphNodeState::ERROR);
-  ASSERT_TRUE(state.error);
-  EXPECT_EQ(state.error->message, DSD_SHARED_OUTPUT_ERROR);
   std::filesystem::remove(path);
+  EXPECT_EQ(state.state, AudioGraphNodeState::ERROR);
+  return state.error ? state.error->message : "";
+}
+TEST(DsdPlayback, OutputModeAndDeviceReachTheContainerReader) {
+  EXPECT_EQ(refusalOfAFile(
+                {{"output.alsa.device", "null"}, {"output.dsd_mode", "dop"}}),
+            DSD_SHARED_OUTPUT_ERROR);
+}
+TEST(DsdPlayback, PcmIsRefusedFromTheRatesTheOutputTakes) {
+  const ScopedAlsaConfig alsa{
+      "pcm.at48 { type plug slave { pcm { type null } rate 48000 } }\n"};
+  EXPECT_EQ(refusalOfAFile(
+                {{"output.alsa.device", "at48"}, {"output.dsd_mode", "pcm"}}),
+            "This output cannot play DSD64 as PCM: it takes none of 44.1, "
+            "88.2, 176.4 or 352.8 kHz");
 }
 TEST(DsdPlayback, DisabledOutputRefusesBeforeReadingTheFile) {
   AudioPlayer player(
