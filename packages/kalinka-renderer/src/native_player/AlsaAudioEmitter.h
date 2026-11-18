@@ -32,8 +32,10 @@ public:
   std::vector<snd_pcm_sframes_t> drainSequence();
 
   /// Runs every callback waiting, each as its frame plays, as if the device
-  /// had played all it was handed.
-  void playOut();
+  /// had played all it was handed; @p untilPlayed, when given, first waits
+  /// out the frames up to each.
+  void playOut(
+      const std::function<void(snd_pcm_sframes_t)> &untilPlayed = {});
 
   /// @return an id that cancel() takes, until the callback has run.
   int callOnOrAfterFrame(snd_pcm_sframes_t frame,
