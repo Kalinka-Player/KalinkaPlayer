@@ -6,7 +6,7 @@ import io
 import time
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageColor
 
 from kalinka_plugin_sdk.datamodel import (
     Album,
@@ -1063,7 +1063,7 @@ class TestARestartRevalidates:
         assert item.catalog.image is not None
 
 
-@pytest.mark.parametrize("kind", ["album", "catalog", "track", "playlist", "artist"])
+@pytest.mark.parametrize("kind", ["album", "track", "playlist", "artist"])
 @pytest.mark.parametrize("square", [False, True])
 def test_missing_artwork_uses_one_transparent_object_without_a_collage(
     kind, square, monkeypatch
@@ -1102,6 +1102,39 @@ def test_missing_artwork_uses_one_transparent_object_without_a_collage(
     assert calls == [kind]
     assert image.tobytes() != bare.tobytes()
     assert image.getpixel((0, 0)) == bare.getpixel((0, 0))
+
+
+@pytest.mark.parametrize("square", [False, True])
+def test_a_catalog_of_catalogs_without_artwork_shows_the_apps_catalogue_icon(
+    square, monkeypatch
+):
+    def unexpected(kind):
+        pytest.fail("The catalogue icon is drawn, not loaded")
+
+    monkeypatch.setattr(render, "placeholder_object", unexpected)
+    if square:
+        image = render.render_catalog_thumbnail(
+            [], "fallback", side=400, placeholder="catalog"
+        )
+        bare = render.render_catalog_thumbnail([], "fallback", side=400)
+        left = 100
+    else:
+        image = render.render_catalog_art([], [], "fallback", placeholder="catalog")
+        bare = render.render_catalog_art([], [], "fallback")
+        text_column = (0, 0, 700, 400)
+        assert image.crop(text_column).tobytes() == bare.crop(text_column).tobytes()
+        left = 884
+    # Half the 400px side across, as the app draws it, in 100-unit coordinates.
+    for (x, y), color in [
+        ((12, 40), "#9D9792"),
+        ((27, 40), "#716D69"),
+        ((70, 30), "#716D69"),
+        ((72, 41), "#9D9792"),
+        ((50, 85), "#414044"),
+    ]:
+        pixel = image.getpixel((left + 2 * x, 90 + 2 * y))
+        expected = ImageColor.getrgb(color)
+        assert max(abs(a - b) for a, b in zip(pixel, expected)) <= 4, (x, y)
 
 
 @pytest.mark.parametrize("count", [1, 2, 3])
@@ -1447,7 +1480,7 @@ def test_tinting_maps_each_weight_onto_its_swatch():
 
 
 @pytest.mark.parametrize("variation", ["color", "geometry"])
-@pytest.mark.parametrize("foreground", ["cover", "cabinet"])
+@pytest.mark.parametrize("foreground", ["cover", "cabinet", "icon"])
 def test_background_changes_leave_foreground_art_unchanged(
     monkeypatch, foreground, variation
 ):
@@ -1463,7 +1496,7 @@ def test_background_changes_leave_foreground_art_unchanged(
             "same-id",
             width=360,
             height=120,
-            placeholder="catalog",
+            placeholder="album" if foreground == "cabinet" else "catalog",
         )
 
     first = compose()

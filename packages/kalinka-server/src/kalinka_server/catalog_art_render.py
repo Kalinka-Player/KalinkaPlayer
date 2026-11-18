@@ -3,7 +3,8 @@ three album covers.
 
 The app overlays labels on the dark left surface; square thumbnails gather the
 covers in the middle. Cards without artwork show one transparent cabinet matching
-their contents. Playlist covers retain their album-only mosaic.
+their contents, or for a catalog of catalogs the app's own stand-in, the
+catalogue icon. Playlist covers retain their album-only mosaic.
 STYLE_VERSION participates in cache fingerprints and must change with the art.
 """
 
@@ -22,7 +23,7 @@ from typing import Sequence
 import numpy as np
 from PIL import Image, ImageColor, ImageDraw, ImageFilter, ImageOps
 
-STYLE_VERSION = 12
+STYLE_VERSION = 13
 
 CANVAS_W = 1200
 CANVAS_H = 400  # 3:1
@@ -65,7 +66,18 @@ BACKGROUND_BASE = "#1B1B1E"
 #: The tint's share of the base in the left surface, the right surface, the
 #: geometry and its fine line.
 BACKGROUND_WEIGHTS = (0.12, 0.34, 0.48, 0.68)
-_PLACEHOLDER_KINDS = ("album", "catalog", "track", "playlist", "artist")
+_PLACEHOLDER_KINDS = ("album", "track", "playlist", "artist")
+#: The solid catalogue icon in a 100-unit square: its cover, then each page and
+#: its entries.
+_CATALOGUE_ICON = (
+    ("#414044", ((4, 25), (50, 40), (96, 25), (96, 80), (50, 95), (4, 80))),
+    ("#9D9792", ((8, 15), (47, 28), (47, 86), (8, 73))),
+    ("#716D69", ((17, 31), (38, 38), (38, 50), (17, 43))),
+    ("#716D69", ((17, 51), (38, 58), (38, 70), (17, 63))),
+    ("#716D69", ((53, 28), (92, 15), (92, 73), (53, 86))),
+    ("#9D9792", ((62, 38), (83, 31), (83, 43), (62, 50))),
+    ("#9D9792", ((62, 58), (83, 51), (83, 63), (62, 70))),
+)
 _GRAIN = 0.5
 
 # Keep the left 42% clear for labels and the far right clear for the chevron.
@@ -221,9 +233,27 @@ def placeholder_object(kind: str) -> Image.Image:
         return image.convert("RGBA")
 
 
+def _place_catalogue_icon(base: Image.Image, *, thumbnail: bool = False) -> None:
+    """Where and as large as the app draws it: half the shorter side across,
+    centred in a thumbnail or 82% across a card."""
+    side = min(base.size) * 0.5
+    left = base.width * (0.5 if thumbnail else 0.82) - side / 2
+    # The drawing sits 5 units low in its square.
+    top = base.height / 2 - side * 0.55
+    draw = ImageDraw.Draw(base)
+    for color, points in _CATALOGUE_ICON:
+        draw.polygon(
+            [(left + x * side / 100, top + y * side / 100) for x, y in points],
+            fill=color,
+        )
+
+
 def _place_placeholder(
     base: Image.Image, kind: str, *, thumbnail: bool = False
 ) -> None:
+    if kind == "catalog":
+        _place_catalogue_icon(base, thumbnail=thumbnail)
+        return
     artwork = placeholder_object(kind)
     bounds = artwork.getchannel("A").getbbox()
     if bounds is None:
@@ -352,7 +382,7 @@ def render_catalog_art(
     height: int = CANVAS_H,
     placeholder: str | None = None,
 ) -> Image.Image:
-    """Render a Kalinka card with real covers, or a cabinet when none exist.
+    """Render a Kalinka card with real covers, or a placeholder when none exist.
     The first nonempty name selects the geometry and its tint."""
     rng = _rng(seed)
     ss = _SUPERSAMPLE
