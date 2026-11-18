@@ -1117,7 +1117,7 @@ def test_a_catalog_of_catalogs_without_artwork_shows_the_apps_catalogue_icon(
             [], "fallback", side=800, placeholder="catalog"
         )
         bare = render.render_catalog_thumbnail([], "fallback", side=800)
-        left = 200
+        left = 140
     else:
         image = render.render_catalog_art(
             [], [], "fallback", width=2400, height=800, placeholder="catalog"
@@ -1125,8 +1125,8 @@ def test_a_catalog_of_catalogs_without_artwork_shows_the_apps_catalogue_icon(
         bare = render.render_catalog_art([], [], "fallback", width=2400, height=800)
         text_column = (0, 0, 1400, 800)
         assert image.crop(text_column).tobytes() == bare.crop(text_column).tobytes()
-        left = 1768
-    # Half the 800px side across, as the app draws it, in the design's
+        left = 1708
+    # 65% of the 800px side across, as the app draws it, in the design's
     # 100-unit coordinates before its tilt.
     a, b, c, d, e, f = (0.92, -0.092, -0.2024, 0.92, 14.12, 8.6)
     for (x, y), color in [
@@ -1139,8 +1139,8 @@ def test_a_catalog_of_catalogs_without_artwork_shows_the_apps_catalogue_icon(
     ]:
         pixel = image.getpixel(
             (
-                round(left + 4 * (a * x + c * y + e)),
-                round(200 + 4 * (b * x + d * y + f)),
+                round(left + 5.2 * (a * x + c * y + e)),
+                round(140 + 5.2 * (b * x + d * y + f)),
             )
         )
         expected = ImageColor.getrgb(color)

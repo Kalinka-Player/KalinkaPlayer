@@ -23,7 +23,7 @@ from typing import Sequence
 import numpy as np
 from PIL import Image, ImageColor, ImageDraw, ImageFilter, ImageOps
 
-STYLE_VERSION = 14
+STYLE_VERSION = 15
 
 CANVAS_W = 1200
 CANVAS_H = 400  # 3:1
@@ -249,9 +249,9 @@ def _outline(points: Sequence[tuple[float, float]], width: float) -> list[np.nda
 
 
 def _place_catalogue_icon(base: Image.Image, *, thumbnail: bool = False) -> None:
-    """Where and as large as the app draws it: half the shorter side across,
+    """Where and as large as the app draws it: 65% of the shorter side across,
     centred in a thumbnail or 82% across a card."""
-    side = min(base.size) * 0.5
+    side = min(base.size) * 0.65
     a, b, c, d, e, f = _CATALOGUE_TILT
     matrix = np.array([[a, b], [c, d]]) * side / 100
     offset = np.array(
