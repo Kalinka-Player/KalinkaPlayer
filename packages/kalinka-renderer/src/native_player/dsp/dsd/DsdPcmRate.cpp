@@ -11,10 +11,6 @@ constexpr std::array<unsigned, 4> kMultiples{1, 2, 4, 8};
 // Automatic's order: the most common DAC rate first, then the higher one.
 constexpr std::array<unsigned, 4> kAutomatic{4, 8, 2, 1};
 
-unsigned baseOf(unsigned dsdRate) {
-  return dsdRate % 44100 == 0 ? 44100 : 48000;
-}
-
 std::string settingFor(unsigned multiple) {
   return std::to_string(multiple) + "x";
 }
@@ -28,11 +24,8 @@ std::string kiloHertz(unsigned rate) {
 }
 } // namespace
 
-bool isDsdPcmRate(const std::string &setting) {
-  return setting == "auto" ||
-         std::ranges::any_of(kMultiples, [&setting](unsigned multiple) {
-           return setting == settingFor(multiple);
-         });
+unsigned dsdBaseRate(unsigned dsdRate) {
+  return dsdRate % 44100 == 0 ? 44100 : 48000;
 }
 
 std::optional<unsigned> dsdPcmMultiple(const std::string &setting) {
@@ -47,7 +40,7 @@ std::optional<unsigned> dsdPcmMultiple(const std::string &setting) {
 std::optional<unsigned>
 dsdPcmRate(unsigned dsdRate, std::span<const StreamAudioFormat> device,
            std::optional<unsigned> wanted) {
-  const unsigned base = baseOf(dsdRate);
+  const unsigned base = dsdBaseRate(dsdRate);
   if (device.empty())
     return base * wanted.value_or(4);
   const auto taken = [&device, base](unsigned multiple) {
@@ -66,7 +59,7 @@ dsdPcmRate(unsigned dsdRate, std::span<const StreamAudioFormat> device,
 }
 
 std::string dsdPcmRatesText(unsigned dsdRate) {
-  const unsigned base = baseOf(dsdRate);
+  const unsigned base = dsdBaseRate(dsdRate);
   std::string text;
   for (size_t i = 0; i < kMultiples.size(); ++i) {
     if (i)

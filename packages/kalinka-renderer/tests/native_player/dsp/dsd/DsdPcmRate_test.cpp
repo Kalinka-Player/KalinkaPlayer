@@ -56,10 +56,14 @@ TEST(DsdPcmRate, TheSettingNamesAMultipleOrAutomatic) {
   EXPECT_EQ(dsdPcmMultiple("8x"), 8u);
   EXPECT_THROW(dsdPcmMultiple("3x"), std::invalid_argument);
   EXPECT_THROW(dsdPcmMultiple("16x"), std::invalid_argument);
-  for (const char *value : {"auto", "1x", "2x", "4x", "8x"})
-    EXPECT_TRUE(isDsdPcmRate(value)) << value;
-  for (const char *value : {"", "3x", "4", "x4", "AUTO"})
-    EXPECT_FALSE(isDsdPcmRate(value)) << value;
+  for (const char *value : {"", "4", "x4", "AUTO"})
+    EXPECT_THROW(dsdPcmMultiple(value), std::invalid_argument) << value;
+}
+
+TEST(DsdPcmRate, TheFamilyIsTheBaseRateADsdRateIsAMultipleOf) {
+  EXPECT_EQ(dsdBaseRate(kDsd64), 44100u);
+  EXPECT_EQ(dsdBaseRate(16 * kDsd64), 44100u);
+  EXPECT_EQ(dsdBaseRate(kDsd64At48), 48000u);
 }
 
 TEST(DsdPcmRate, TheRatesAreNamedForTheFamily) {

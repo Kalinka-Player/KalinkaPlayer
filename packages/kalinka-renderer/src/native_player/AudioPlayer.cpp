@@ -30,7 +30,9 @@
 #include <cstdlib>
 #include <expected>
 #include <functional>
+#include <span>
 #include <string_view>
+#include <vector>
 
 namespace {
 // These numbers can be reduced depending on audio bitness,
@@ -175,6 +177,7 @@ struct StreamNodes {
   const StreamId id;
 
   StreamNodes(StreamId id, const std::string &url, const Config &config,
+              std::span<const StreamAudioFormat> deviceFormats,
               const AudioFormat format, size_t startOffsetMs = 0)
       : url(url), id(id) {
     if (url.substr(0, 7) == "tone://") {
@@ -201,7 +204,8 @@ struct StreamNodes {
       return;
     }
 
-    const auto decoder = decoderFor(config, format, startOffsetMs);
+    const auto decoder =
+        decoderFor(config, deviceFormats, format, startOffsetMs);
     if (!decoder) {
       nodeChain.emplace_back(
           std::make_shared<UnsupportedStreamNode>(id, decoder.error()));
@@ -235,8 +239,9 @@ struct StreamNodes {
   /// Builds the decoder for `format` onto an input, or says why `config`
   /// cannot play it, decided before any input is opened.
   std::expected<DecoderFactory, std::string>
-  decoderFor(const Config &config, const AudioFormat format,
-             size_t startOffsetMs) const {
+  decoderFor(const Config &config,
+             std::span<const StreamAudioFormat> deviceFormats,
+             const AudioFormat format, size_t startOffsetMs) const {
     switch (format) {
     case AudioFormat::FormatLivePcm:
       if (startOffsetMs)
@@ -244,19 +249,26 @@ struct StreamNodes {
       return [id = id](auto input) {
         return connected(std::make_shared<LivePcmStreamDecoder>(id), input);
       };
-    case AudioFormat::FormatDsd:
-      if (value_or(config, "output.dsd_mode", std::string("disabled")) ==
-          "disabled")
+    case AudioFormat::FormatDsd: {
+      const auto mode =
+          value_or(config, "output.dsd_mode", std::string("disabled"));
+      if (mode == "disabled")
         return std::unexpected(DSD_DISABLED_ERROR);
+      // PCM is refused from the formats the converter picks its rate from.
       return containing<DsdContainer>(
           value_or(config, "decoder.dsd.buffer_size", DSD_BUFFER_SIZE),
-          startOffsetMs, [config](unsigned rate, unsigned channels) {
+          startOffsetMs,
+          [config, mode,
+           converted = std::vector(deviceFormats.begin(), deviceFormats.end())](
+              unsigned rate, unsigned channels) {
             return chooseDsdOutput(
-                probeOutput(value_or(config, "output.alsa.device",
-                                     std::string("default"))),
-                value_or(config, "output.dsd_mode", std::string("disabled")),
-                rate, channels);
+                mode == "pcm"
+                    ? OutputCapabilities{.formats = converted}
+                    : probeOutput(value_or(config, "output.alsa.device",
+                                           std::string("default"))),
+                mode, rate, channels);
           });
+    }
     case AudioFormat::FormatFlac:
       return decoding<FlacStreamDecoder>(
           value_or(config, "decoder.flac.buffer_size", FLAC_BUFFER_SIZE),
@@ -422,7 +434,8 @@ void AudioPlayer::append(StreamId id, const std::string &url,
   }
   spdlog::debug("Appending stream id={} url={} startOffset={}ms", id, url,
                 startOffsetMs);
-  StreamNodes newStream(id, url, currentStreamConfig(), format, startOffsetMs);
+  StreamNodes newStream(id, url, currentStreamConfig(), deviceFormats, format,
+                        startOffsetMs);
   streamSwitcher->connectTo(newStream.nodeChain.back());
   audioEmitter->connectTo(outputStage);
   streamNodesList.emplace_back(std::move(newStream));

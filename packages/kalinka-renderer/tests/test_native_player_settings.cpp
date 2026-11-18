@@ -23,6 +23,7 @@
 #include "WavTestData.h"
 #include "config/ConfigService.h"
 #include "config/SettingsPersistence.h"
+#include "dsp/dsd/DsdPcmRate.h"
 #include "player/NativePlayer.h"
 
 namespace fs = std::filesystem;
@@ -616,8 +617,10 @@ TEST_F(NativePlayerSettingsTest, ThePcmRateIsInTheDsdSection) {
   EXPECT_EQ(rate.apply(), renderer_pb::APPLY_COST_INTERRUPTS_PLAYBACK)
       << "the graph's converter is built with it";
   std::vector<std::string> values;
-  for (const renderer_pb::ConfigOption &option : rate.options())
+  for (const renderer_pb::ConfigOption &option : rate.options()) {
     values.push_back(option.value());
+    EXPECT_NO_THROW(dsdPcmMultiple(option.value())) << "the player takes it";
+  }
   EXPECT_EQ(values, (std::vector<std::string>{"auto", "1x", "2x", "4x", "8x"}));
 }
 

@@ -139,8 +139,7 @@ StreamAudioFormat chooseDsdOutput(const OutputCapabilities &caps,
     throw std::runtime_error(DSD_DISABLED_ERROR);
   if (!isDsdMode(mode))
     throw std::runtime_error("Invalid DSD output mode");
-  // Raw bytes for the DSP stage to convert, on any output that takes a rate
-  // of the DSD's family: crossing into the other waits for a resampler.
+  // Raw for the DSP stage to convert, which cannot cross into the other family.
   if (mode == "pcm") {
     if (!dsdPcmRate(rate, caps.formats))
       throw std::runtime_error("This output cannot play " + dsdRateName(rate) +
