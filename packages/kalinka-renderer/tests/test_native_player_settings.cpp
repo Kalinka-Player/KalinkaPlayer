@@ -18,6 +18,7 @@
 #include "DashTestData.h"
 #include "LocalHttpServer.h"
 #include "ScopedAlsaConfig.h"
+#include "SigmaDelta.h"
 #include "TestHelpers.h"
 #include "WavTestData.h"
 #include "config/ConfigService.h"
@@ -75,6 +76,12 @@ protected:
   renderer_pb::ConfigSection network() const {
     renderer_pb::ConfigSection section;
     player_->networkSettings()->fillConfig(section);
+    return section;
+  }
+
+  renderer_pb::ConfigSection dsd() const {
+    renderer_pb::ConfigSection section;
+    player_->dsdSettings()->fillConfig(section);
     return section;
   }
 
@@ -192,6 +199,42 @@ protected:
 
   std::vector<renderer_pb::PlaybackStateChanged> states_;
   LocalHttpServer server_{testFile("tone880.flac")};
+};
+
+// A tenth of a second of DSD64 silence, served as the Core serves a DSF.
+class NativePlayerDsdTest : public NativePlayerStreamTest {
+protected:
+  static std::string silence() {
+    const uint8_t idle[] = {0, 1, 1, 0, 1, 0, 0, 1};
+    std::vector<uint8_t> bits;
+    while (bits.size() < 2822400 / 10)
+      bits.insert(bits.end(), std::begin(idle), std::end(idle));
+    const auto file = harness::dsfFile({bits, bits}, 2822400);
+    return {file.begin(), file.end()};
+  }
+
+  renderer_pb::Source dsf() const {
+    renderer_pb::Source source;
+    source.set_source_token("/silence.dsf");
+    source.set_uri(dsdServer_.url("/silence.dsf"));
+    source.set_mime_type("audio/dsf");
+    return source;
+  }
+
+  /// The rate the device was opened at while the DSF played as PCM.
+  std::optional<uint32_t> playedAt() {
+    std::optional<uint32_t> rate;
+    for (const auto &state : playToTheEnd(dsf())) {
+      EXPECT_NE(state.state(), renderer_pb::PLAYBACK_STATE_ERROR)
+          << state.error().message();
+      if (state.has_device_info())
+        rate = state.device_info().format().sample_rate_hz();
+    }
+    return rate;
+  }
+
+  LocalHttpServer dsdServer_{
+      std::map<std::string, std::string, std::less<>>{{"/silence.dsf", silence()}}};
 };
 
 TEST_F(NativePlayerSettingsTest, DsdSettingsExposeCapabilitiesAndPersistMode) {
@@ -555,6 +598,63 @@ TEST_F(NativePlayerSettingsTest, RedirectLimitWritesValidateTheDeclaredRange) {
     EXPECT_EQ(field(network(), "network.max_redirects")->value(), value);
     EXPECT_EQ(loadSettingsOverrides().at("network.max_redirects"), value);
   }
+}
+
+TEST_F(NativePlayerSettingsTest, ThePcmRateIsInTheDsdSection) {
+  const renderer_pb::ConfigSection section = dsd();
+
+  EXPECT_EQ(section.path(), "dsd");
+  EXPECT_EQ(section.title(), "DSD");
+  ASSERT_EQ(section.fields_size(), 1);
+  const renderer_pb::ConfigField &rate = section.fields(0);
+  EXPECT_EQ(rate.path(), "dsd.pcm_rate");
+  EXPECT_EQ(rate.type(), renderer_pb::CONFIG_FIELD_TYPE_ENUM);
+  EXPECT_EQ(rate.value(), "auto");
+  EXPECT_EQ(rate.default_value(), "auto");
+  EXPECT_EQ(rate.importance(), renderer_pb::CONFIG_IMPORTANCE_SIMPLE)
+      << "on the page proper, or the app shows no DSD section";
+  EXPECT_EQ(rate.apply(), renderer_pb::APPLY_COST_INTERRUPTS_PLAYBACK)
+      << "the graph's converter is built with it";
+  std::vector<std::string> values;
+  for (const renderer_pb::ConfigOption &option : rate.options())
+    values.push_back(option.value());
+  EXPECT_EQ(values, (std::vector<std::string>{"auto", "1x", "2x", "4x", "8x"}));
+}
+
+TEST_F(NativePlayerSettingsTest, APcmRateWriteIsValidatedAndPersisted) {
+  ConfigService service{{player_->dsdSettings()}};
+  renderer_pb::ConfigUpdate update;
+  auto *setting = update.add_settings();
+  setting->set_path("dsd.pcm_rate");
+  setting->set_value("3x");
+  renderer_pb::ConfigResult refused;
+  service.apply(update, refused);
+  ASSERT_EQ(refused.outcomes_size(), 1);
+  EXPECT_FALSE(refused.outcomes(0).applied());
+  EXPECT_FALSE(loadSettingsOverrides().contains("dsd.pcm_rate"));
+
+  setting->set_value("1x");
+  renderer_pb::ConfigResult applied;
+  service.apply(update, applied);
+  ASSERT_EQ(applied.outcomes_size(), 1);
+  EXPECT_TRUE(applied.outcomes(0).applied()) << applied.outcomes(0).error();
+  EXPECT_EQ(field(dsd(), "dsd.pcm_rate")->value(), "1x");
+  EXPECT_EQ(loadSettingsOverrides().at("dsd.pcm_rate"), "1x");
+}
+
+TEST_F(NativePlayerDsdTest, ThePcmRateReachesTheConverter) {
+  ASSERT_TRUE(player_->applyConfig("output.dsd_mode", "pcm", error_)) << error_;
+  EXPECT_EQ(playedAt(), 176400u) << "automatic";
+  ASSERT_TRUE(player_->dsdSettings()->applyConfig("dsd.pcm_rate", "1x", error_))
+      << error_;
+  EXPECT_EQ(playedAt(), 44100u);
+}
+
+TEST_F(NativePlayerSettingsTest, InvalidPersistedPcmRateUsesAutomatic) {
+  saveSettingsOverrides({{"output.device", "null"}, {"dsd.pcm_rate", "3x"}});
+  player_.reset();
+  player_ = std::make_shared<NativePlayer>(ioc_);
+  EXPECT_EQ(field(dsd(), "dsd.pcm_rate")->value(), "auto");
 }
 
 TEST_F(NativePlayerSettingsTest, StallTimeoutWritesGoThroughTheNetworkSection) {

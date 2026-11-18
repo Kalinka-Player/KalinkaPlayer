@@ -104,17 +104,23 @@ TEST(DsdToPcmProcessor, TakesRawDsdAndNothingElse) {
   EXPECT_FALSE(processor.handles(raw(2822400 / 2))) << "below DSD64";
 }
 
-TEST(DsdToPcmProcessor, FourTimesTheBaseWhereTheDeviceTakesIt) {
-  const auto rate = [](std::vector<StreamAudioFormat> device, unsigned dsd) {
-    return DsdToPcmProcessor(std::move(device), 1.0)
-        .output(raw(dsd))
+TEST(DsdToPcmProcessor, ItConvertsToARateTheDeviceTakes) {
+  const auto rate = [](std::vector<StreamAudioFormat> device,
+                       std::optional<unsigned> multiple = std::nullopt) {
+    return DsdToPcmProcessor(std::move(device), 1.0, multiple)
+        .output(raw(2822400))
         .format.sampleRate;
   };
-  EXPECT_EQ(rate(takes({88200, 176400, 352800}), 2822400), 176400u);
-  EXPECT_EQ(rate(takes({88200, 352800}), 2822400), 352800u);
-  EXPECT_EQ(rate(takes({88200}), 2822400), 88200u);
-  EXPECT_EQ(rate({}, 2822400), 176400u) << "nothing known";
-  EXPECT_EQ(rate(takes({96000, 192000}), 6144000), 192000u);
+  EXPECT_EQ(rate(takes({88200, 176400, 352800})), 176400u);
+  EXPECT_EQ(rate(takes({44100, 48000})), 44100u) << "nothing higher taken";
+  EXPECT_EQ(rate(takes({88200, 176400}), 2), 88200u) << "as asked";
+  EXPECT_EQ(rate({}), 176400u) << "nothing known";
+}
+
+TEST(DsdToPcmProcessor, DsdOfAFamilyTheDeviceTakesNoRateOfIsNotHandled) {
+  const DsdToPcmProcessor processor(takes({48000, 96000}), 1.0);
+  EXPECT_FALSE(processor.handles(raw(2822400)));
+  EXPECT_TRUE(processor.handles(raw(3072000)));
 }
 
 TEST(DsdToPcmProcessor, TheOutputIsFloatAtTheRateWithTheRatioOfFrames) {

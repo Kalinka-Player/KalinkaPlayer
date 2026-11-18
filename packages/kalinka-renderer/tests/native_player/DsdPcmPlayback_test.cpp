@@ -68,11 +68,14 @@ protected:
   /// What a playing state said was decoded.
   std::optional<StreamAudioFormat> decoded;
 
-  /// The left channel ALSA was handed, full scale ±1.
-  std::vector<double> play(const std::vector<std::string> &files) {
+  /// The left channel ALSA was handed, full scale ±1, with @p settings
+  /// besides the capture device and `pcm` mode.
+  std::vector<double> play(const std::vector<std::string> &files,
+                           Config settings = {}) {
     {
-      AudioPlayer player(
-          {{"output.alsa.device", "capture"}, {"output.dsd_mode", "pcm"}});
+      settings.insert({{"output.alsa.device", "capture"},
+                       {"output.dsd_mode", "pcm"}});
+      AudioPlayer player(settings);
       auto monitor = player.monitor();
       StreamId id = 0;
       for (const auto &file : files)
@@ -143,6 +146,20 @@ TEST_F(DsdPcmPlaybackTest, ADsfTrackPlaysAsPcmAtFourTimesItsBase) {
   const auto measured = harness::thdPlusN(
       std::span(left).subspan(edge, left.size() - 2 * edge), kPcmRate, 1000);
   // Half modulation, raised by the safe gain of 2.8 dB.
+  EXPECT_NEAR(measured.fundamentalDbfs, -6.0206 + 2.8, 0.01);
+  EXPECT_LT(measured.thdnDb, -110.0);
+}
+
+TEST_F(DsdPcmPlaybackTest, ATrackAskedForAtTheBaseRatePlaysAtIt) {
+  const auto left =
+      play({dsf("tone.dsf", toneBits())}, {{"dsd.pcm_rate", "1x"}});
+  ASSERT_TRUE(opened);
+  EXPECT_EQ(opened->sampleRate, 44100u);
+  // Eight DSD64 bytes a channel to each 44.1 kHz frame.
+  ASSERT_EQ(left.size(), kBytes / 8);
+  const size_t edge = left.size() / 10;
+  const auto measured = harness::thdPlusN(
+      std::span(left).subspan(edge, left.size() - 2 * edge), 44100, 1000);
   EXPECT_NEAR(measured.fundamentalDbfs, -6.0206 + 2.8, 0.01);
   EXPECT_LT(measured.thdnDb, -110.0);
 }

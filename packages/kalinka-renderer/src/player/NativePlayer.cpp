@@ -131,6 +131,13 @@ struct Bounds {
   bool declared() const { return max > min; }
 };
 
+// One option of an enum setting; the page lists them in declaration order.
+struct Choice {
+  const char *value;
+  const char *label;
+  const char *description;
+};
+
 // Value and default live in the settings map; the graph key says how it applies.
 struct Knob {
   const char *path;
@@ -140,6 +147,11 @@ struct Knob {
   const char *unit = "";
   Bounds bounds{};
   const char *helpDetails = "";
+  std::span<const Choice> choices = {};
+  // Most are reached for when the card or the link misbehaves, which is not
+  // what a settings page is for.
+  renderer_pb::ConfigImportance importance =
+      renderer_pb::CONFIG_IMPORTANCE_EXPERT;
 };
 
 constexpr const char *kFormatChangeHelp =
@@ -258,6 +270,32 @@ const Knob kNetworkKnobs[] = {
      {0, 10, 1}},
 };
 
+const Choice kDsdPcmRates[] = {
+    {"auto", "Automatic",
+     "176.4 or 192 kHz when the output takes it, otherwise the highest rate it "
+     "takes."},
+    {"1x", "44.1 or 48 kHz", "For outputs that take nothing higher."},
+    {"2x", "88.2 or 96 kHz", ""},
+    {"4x", "176.4 or 192 kHz", ""},
+    {"8x", "352.8 or 384 kHz", ""},
+};
+
+const Knob kDsdKnobs[] = {
+    {"dsd.pcm_rate",
+     "PCM rate",
+     "The rate DSD converts to when DSD output is Convert to PCM. Nearly all "
+     "DSD takes the first rate of each pair; DSD at 3.072 MHz and its "
+     "multiples takes the second.",
+     renderer_pb::CONFIG_FIELD_TYPE_ENUM,
+     "",
+     {},
+     "A rate the output does not take falls back to Automatic. DSD plays only "
+     "on an output that takes one of its rates: an output with only 48 kHz "
+     "rates cannot play 2.8 MHz DSD.",
+     kDsdPcmRates,
+     renderer_pb::CONFIG_IMPORTANCE_SIMPLE},
+};
+
 // A section of the settings page that holds nothing but knobs.
 struct Section {
   const char *path;
@@ -274,12 +312,7 @@ const Section kNetwork{"network", "Network",
                        "How the renderer downloads tracks.",
                        kNetworkKnobs};
 
-// One option of an enum setting; the page lists them in declaration order.
-struct Choice {
-  const char *value;
-  const char *label;
-  const char *description;
-};
+const Section kDsd{"dsd", "DSD", "How DSD converts to PCM.", kDsdKnobs};
 
 const Choice kVolumeChoices[] = {
     {"auto", "Automatic",
@@ -302,8 +335,8 @@ const Choice kDsdChoices[] = {
      "Send DSD wrapped in PCM. Choose only if the DAC supports DoP, as other DACs "
      "play it as noise."},
     {"pcm", "Convert to PCM",
-     "Convert DSD to PCM in the renderer. Plays on any output, with any volume "
-     "control."},
+     "Convert DSD to PCM in the renderer. Plays on any output that takes a rate "
+     "it converts to, with any volume control."},
 };
 
 void addChoices(renderer_pb::ConfigField &field,
@@ -321,6 +354,7 @@ const std::map<std::string, std::string> &graphKeys() {
   static const std::map<std::string, std::string> keys{
       {"output.device", "output.alsa.device"},
       {"output.dsd_mode", "output.dsd_mode"},
+      {"dsd.pcm_rate", "dsd.pcm_rate"},
       {"output.latency_ms", "output.alsa.latency_ms"},
       {"output.period_ms", "output.alsa.period_ms"},
       {"output.format_change_delay_ms",
@@ -359,8 +393,9 @@ bool holds(std::span<const Knob> knobs, const std::string &path) {
 }
 
 const Knob *findKnob(const std::string &path) {
-  for (std::span<const Knob> knobs : {std::span<const Knob>(kOutputKnobs),
-                                      kBuffering.knobs, kNetwork.knobs}) {
+  for (std::span<const Knob> knobs :
+       {std::span<const Knob>(kOutputKnobs), kDsd.knobs, kBuffering.knobs,
+        kNetwork.knobs}) {
     const auto knob = std::ranges::find_if(
         knobs, [&path](const Knob &knob) { return knob.path == path; });
     if (knob != knobs.end()) {
@@ -380,10 +415,9 @@ void describe(renderer_pb::ConfigField &field, const Knob &knob) {
   field.set_apply(readPerStream(knob.path)
                       ? renderer_pb::APPLY_COST_INSTANT
                       : renderer_pb::APPLY_COST_INTERRUPTS_PLAYBACK);
-  // Reached for when the card or the link misbehaves, which is not what a
-  // settings page is for.
-  field.set_importance(renderer_pb::CONFIG_IMPORTANCE_EXPERT);
+  field.set_importance(knob.importance);
   field.set_unit(knob.unit);
+  addChoices(field, knob.choices);
   if (!knob.bounds.declared()) {
     return;
   }
@@ -430,6 +464,7 @@ const std::map<std::string, std::string> &NativePlayer::defaultSettings() {
       {"output.device", "default"},
       {"output.volume_mode", "auto"},
       {"output.dsd_mode", "disabled"},
+      {"dsd.pcm_rate", "auto"},
       {"output.session_start_volume_ceiling_percent", "30"},
       // What the server shipped while it did the playing, rather than the
       // sink's own 100/25.
@@ -489,6 +524,10 @@ std::shared_ptr<ConfigContributor> NativePlayer::bufferSettings() {
 
 std::shared_ptr<ConfigContributor> NativePlayer::networkSettings() {
   return std::make_shared<KnobSection>(shared_from_this(), kNetwork);
+}
+
+std::shared_ptr<ConfigContributor> NativePlayer::dsdSettings() {
+  return std::make_shared<KnobSection>(shared_from_this(), kDsd);
 }
 
 void NativePlayer::persistOverrides() const {
@@ -979,7 +1018,8 @@ void NativePlayer::fillConfig(renderer_pb::ConfigSection &out) const {
   dsd->set_apply(renderer_pb::APPLY_COST_INTERRUPTS_PLAYBACK);
   dsd->set_description(
       "Native DSD and DoP require an output device marked (direct), and either "
-      "Fixed output volume or a connected device. Convert to PCM plays anywhere.");
+      "Fixed output volume or a connected device. Convert to PCM plays on any "
+      "output that takes a rate it converts to.");
   addChoices(*dsd, kDsdChoices);
 
   for (const Knob &knob : kOutputKnobs) {
