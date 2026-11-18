@@ -842,6 +842,8 @@ public:
                        std::chrono::milliseconds stall)
       : AudioGraphNode(id), PacedCountingNode(id, base, frames), at(at),
         stall(stall) {}
+  /// Blocks the next read instead.
+  void blockNext() { at = size_t(*streamReadPosition()); }
   size_t read(void *data, size_t size) override {
     if (size_t(*streamReadPosition()) >= at && !blocked.exchange(true))
       std::this_thread::sleep_for(stall);
@@ -849,7 +851,7 @@ public:
   }
 
 private:
-  const size_t at;
+  std::atomic<size_t> at;
   const std::chrono::milliseconds stall;
   std::atomic<bool> blocked{false};
 };
@@ -1489,13 +1491,31 @@ protected:
       return seen.state == AudioGraphNodeState::ERROR;
     });
   }
+
+  /// Whether stream @p id went back to buffering after it had played, and
+  /// then played on.
+  bool bufferedThenPlayed(StreamId id) {
+    std::lock_guard lock(reportedMutex);
+    const auto reports = [id](AudioGraphNodeState state) {
+      return [id, state](const StreamState &seen) {
+        return seen.state == state && seen.streamId == id;
+      };
+    };
+    auto at = std::ranges::find_if(reported,
+                                   reports(AudioGraphNodeState::STREAMING));
+    at = std::find_if(at, reported.end(),
+                      reports(AudioGraphNodeState::PREPARING));
+    return std::find_if(at, reported.end(),
+                        reports(AudioGraphNodeState::STREAMING)) !=
+           reported.end();
+  }
 };
 
 // Held up for twice the device's 80 ms.
 constexpr auto kStarving = std::chrono::milliseconds(160);
 } // namespace
 
-TEST_F(PacedCapture, AnUnderrunCostsADropoutAndTheTrackPlaysOn) {
+TEST_F(PacedCapture, AnUnderrunBuffersAndTheTrackPlaysOn) {
   constexpr size_t kFrames = 24000;
   recordReports();
   playThrough(std::make_shared<AudioStreamSwitcher>(),
@@ -1504,6 +1524,7 @@ TEST_F(PacedCapture, AnUnderrunCostsADropoutAndTheTrackPlaysOn) {
   const auto left = written();
 
   EXPECT_FALSE(failed());
+  EXPECT_TRUE(bufferedThenPlayed(1));
   ASSERT_FALSE(left.empty());
   EXPECT_EQ(left.front(), source->value(0));
   EXPECT_LT(left.size(), kFrames) << "what came while starved is dropped";
@@ -1521,10 +1542,57 @@ TEST_F(PacedCapture, ANextTrackLateAtAGaplessJoinStillPlays) {
   const auto left = stopped();
 
   EXPECT_FALSE(failed());
-  EXPECT_TRUE(hasReported(AudioGraphNodeState::STREAMING, 2));
+  EXPECT_TRUE(bufferedThenPlayed(2));
   ASSERT_FALSE(left.empty());
   EXPECT_LT(left.size(), 2 * kFrames) << "what came while starved is dropped";
   EXPECT_EQ(left.back(), next->value(kFrames - 1)) << "the next track played";
+}
+
+TEST_F(PacedCapture, PlayingOnAfterAnUnderrunFadesIn) {
+  playThrough(std::make_shared<AudioStreamSwitcher>(),
+              {std::make_shared<BlockingCountingNode>(1, 1000000, 24000, 4800,
+                                                      kStarving)});
+  const auto left = written();
+
+  const size_t at = firstChanged(left);
+  ASSERT_GT(left.size(), at + kFadeFrames) << "played on";
+  // Where the source resumed, from the first frame past the fade.
+  const size_t resumed =
+      size_t(left[at + kFadeFrames] - source->value(0)) - kFadeFrames;
+  EXPECT_GT(resumed, at) << "what came while starved is dropped";
+  expectFade(left, at, resumed, false);
+}
+
+TEST_F(PacedCapture, AnUnderrunInAPausesFadeLeavesItPaused) {
+  constexpr size_t kFrames = 48000;
+  const auto blocking = std::make_shared<BlockingCountingNode>(
+      1, 1000000, kFrames, size_t(-1), kStarving);
+  // Only the read inside the pause's fade blocks.
+  emitter->fadeWith(std::make_shared<HookedFade>(
+      stage, [blocking] { blocking->blockNext(); }));
+  const auto switcher = std::make_shared<AudioStreamSwitcher>();
+  source = blocking;
+  stage->connectTo(switcher);
+  switcher->connectTo(blocking);
+  emitter->connectTo(stage);
+  ASSERT_EQ(waitForStatus(*emitter, AudioGraphNodeState::STREAMING).state,
+            AudioGraphNodeState::STREAMING);
+  recordReports();
+  emitter->pause(true);
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!hasReported(AudioGraphNodeState::PREPARING, 1)) {
+    ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "no underrun";
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+  EXPECT_EQ(emitter->getState().state, AudioGraphNodeState::PAUSED);
+  emitter->pause(false);
+  const auto left = written();
+  EXPECT_FALSE(failed());
+  ASSERT_FALSE(left.empty());
+  EXPECT_EQ(left.back(), source->value(kFrames - 1)) << "resumed to its end";
 }
 
 TEST_F(PacedCapture, TheQueuesLastTrackIsHeardToItsEnd) {
@@ -1554,8 +1622,8 @@ TEST_F(PacedCapture, ATrackEndingItsRunIsHeardToItsEnd) {
 }
 
 TEST_F(PacedCapture, AJoinRefilledAfterAnUnderrunIsReportedAsTheQueueEnds) {
-  // The underrun's refill takes the rest of the first track and all of the
-  // second: the run ends before the device is started again.
+  // The run after the underrun takes the rest of the first track and all of
+  // the second: it ends before its device has started.
   const auto last = std::make_shared<PacedCountingNode>(2, 2000000, 1000);
   recordReports();
   playThrough(std::make_shared<AudioStreamSwitcher>(),

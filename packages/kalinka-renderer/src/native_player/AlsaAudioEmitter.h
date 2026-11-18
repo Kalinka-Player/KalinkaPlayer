@@ -210,17 +210,18 @@ private:
   void beginSourceAt(std::optional<long> position);
   StreamState waitForInputToBeReady(std::stop_token token);
   /// Waits for a period of room on the device; @p token is the worker's own,
-  /// as its thread object may still be being assigned. An underrun found
-  /// there is recovered from.
+  /// as its thread object may still be being assigned.
+  /// @return 0 once an underrun found there has ended the run.
   snd_pcm_sframes_t waitForAlsaBufferSpace(std::stop_token token);
   /**
    * @brief Takes the device out of an underrun, all it held played: what
-   * waited on those frames runs, and the device is prepared, for the worker
-   * to start once it is refilled.
-   * @throws std::runtime_error for DSD, which stops on an underrun.
+   * waited on those frames runs, and the device is prepared. The caller ends
+   * the run, and the next one buffers from where the input is, as after a
+   * stall.
    */
   void recoverFromUnderrun();
   bool handleInputNodeStateChange();
+  /// @return the frames written, or -1 once an underrun has ended the run.
   snd_pcm_sframes_t writeToAlsa(
       snd_pcm_uframes_t framesToWrite,
       std::function<snd_pcm_sframes_t(void *ptr, snd_pcm_uframes_t frames,

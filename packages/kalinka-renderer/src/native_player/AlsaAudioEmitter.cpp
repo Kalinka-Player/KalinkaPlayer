@@ -472,24 +472,25 @@ void AlsaAudioEmitter::closeDevice() {
 }
 
 void AlsaAudioEmitter::recoverFromUnderrun() {
-  if (isDsd(currentStreamAudioFormat.sampleFormat))
-    throw std::runtime_error("DSD output underrun; restart playback");
-  spdlog::warn("Output underrun; playing on");
+  spdlog::warn("Output underrun; buffering");
   playedFramesCounter.playOut();
   throw_on_error(snd_pcm_prepare(pcm.handle));
+  // The next run resumes mid-waveform, under the pause this one had.
+  fadeInNext = true;
+  pauseCarried = paused;
 }
 
 snd_pcm_sframes_t
 AlsaAudioEmitter::waitForAlsaBufferSpace(std::stop_token token) {
   // A card's writes go through in an underrun: it shows here first.
-  bool recovered = false;
-  auto getAvailableFrames = [this, &recovered]() -> snd_pcm_sframes_t {
+  bool underran = false;
+  auto getAvailableFrames = [this, &underran]() -> snd_pcm_sframes_t {
     const snd_pcm_sframes_t frames = snd_pcm_avail_update(pcm.handle);
     if (frames != -EPIPE)
       return throw_on_error(frames);
     recoverFromUnderrun();
-    recovered = true;
-    return throw_on_error(snd_pcm_avail_update(pcm.handle));
+    underran = true;
+    return 0;
   };
 
   perfmon_end("fullPeriodProcessingTime");
@@ -498,15 +499,15 @@ AlsaAudioEmitter::waitForAlsaBufferSpace(std::stop_token token) {
   snd_pcm_sframes_t frames = getAvailableFrames();
   unsigned short revents = 0;
 
-  while (!token.stop_requested() &&
+  while (!underran && !token.stop_requested() &&
          static_cast<snd_pcm_uframes_t>(frames) < periodSize) {
     int ret = poll(ufds.data(), ufds.size(), pollTimeout.count());
     if (ret == 0) {
       continue;
     }
     frames = getAvailableFrames();
-    // The poll's error was the underrun, which is behind us.
-    if (recovered)
+    // The poll's error was the underrun, which ends the run.
+    if (underran)
       break;
     throw_on_error(snd_pcm_poll_descriptors_revents(pcm.handle, ufds.data(),
                                                     ufds.size(), &revents));
@@ -588,11 +589,11 @@ snd_pcm_sframes_t AlsaAudioEmitter::writeToAlsa(
   if (err == -EPIPE) {
     recoverFromUnderrun();
     perfmon_end("writeToAlsa");
-    return 0;
+    return -1;
   }
   if (err < 0) {
     if (isDsd(currentStreamAudioFormat.sampleFormat))
-      throw std::runtime_error("DSD output underrun; restart playback");
+      throw std::runtime_error("DSD output interrupted; restart playback");
     if (xrun_recovery(pcm.handle, err) < 0) {
       throw std::runtime_error("Error in mmap begin: " +
                                std::string(snd_strerror(err)));
@@ -610,7 +611,10 @@ snd_pcm_sframes_t AlsaAudioEmitter::writeToAlsa(
   err = snd_pcm_mmap_commit(pcm.handle, offset, frames);
   if (err == -EPIPE) {
     recoverFromUnderrun();
-  } else if (static_cast<snd_pcm_uframes_t>(err) != frames || err < 0) {
+    perfmon_end("writeToAlsa");
+    return -1;
+  }
+  if (static_cast<snd_pcm_uframes_t>(err) != frames || err < 0) {
     if (isDsd(currentStreamAudioFormat.sampleFormat))
       throw std::runtime_error("Incomplete DSD output write; restart playback");
     if (xrun_recovery(pcm.handle, err) < 0) {
@@ -638,13 +642,16 @@ AlsaAudioEmitter::readIntoAlsaFromStream(std::stop_token stopToken,
   while (framesRead < framesToRead && !stopToken.stop_requested()) {
     snd_pcm_uframes_t frames = framesToRead - framesRead;
     if (paused && pauseFadeLeft == 0) {
-      framesRead += writeToAlsa(
+      const auto written = writeToAlsa(
           frames, [this](void *ptr, snd_pcm_uframes_t frames, size_t bytes) {
             memset(ptr, isDsd(currentStreamAudioFormat.sampleFormat) ? 0x69 : 0,
                    bytes);
             stampDop(ptr, frames);
             return frames;
           });
+      if (written < 0)
+        return -1;
+      framesRead += written;
 
       if (!handleInputNodeStateChange()) {
         return -1;
@@ -657,6 +664,8 @@ AlsaAudioEmitter::readIntoAlsaFromStream(std::stop_token stopToken,
           frames, [this](void *ptr, snd_pcm_uframes_t frames, size_t bytes) {
             return readAndConvertFrames(ptr, bytes);
           });
+      if (actualFrames < 0)
+        return -1;
 
       framesRead += actualFrames;
       currentSourceTotalFramesWritten += actualFrames;
@@ -847,7 +856,7 @@ void AlsaAudioEmitter::workerThread(std::stop_token token) {
             if (framesRead < 0) {
               break;
             }
-            // Refilled after an underrun: writes alone do not start a device.
+            // Prepared again after a suspend: writes alone do not start it.
             if (started && framesRead > 0 &&
                 snd_pcm_state(pcm.handle) == SND_PCM_STATE_PREPARED) {
               throw_on_error(snd_pcm_start(pcm.handle));
