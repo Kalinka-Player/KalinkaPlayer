@@ -279,9 +279,10 @@ const Choice kDsdPcmRates[] = {
     {"8x", "352.8 or 384 kHz", ""},
 };
 
+// Below DSD output, which they qualify.
 const Knob kDsdKnobs[] = {
-    {"dsd.pcm_rate",
-     "PCM rate",
+    {"output.dsd_pcm_rate",
+     "DSD to PCM rate",
      "The rate DSD converts to when DSD output is Convert to PCM. Nearly all "
      "DSD takes the first rate of each pair; DSD at 3.072 MHz and its "
      "multiples takes the second.",
@@ -310,8 +311,6 @@ const Section kBuffering{"buffers", "Buffering",
 const Section kNetwork{"network", "Network",
                        "How the renderer downloads tracks.",
                        kNetworkKnobs};
-
-const Section kDsd{"dsd", "DSD", "How DSD converts to PCM.", kDsdKnobs};
 
 const Choice kVolumeChoices[] = {
     {"auto", "Automatic",
@@ -353,7 +352,7 @@ const std::map<std::string, std::string> &graphKeys() {
   static const std::map<std::string, std::string> keys{
       {"output.device", "output.alsa.device"},
       {"output.dsd_mode", "output.dsd_mode"},
-      {"dsd.pcm_rate", "dsd.pcm_rate"},
+      {"output.dsd_pcm_rate", "dsd.pcm_rate"},
       {"output.latency_ms", "output.alsa.latency_ms"},
       {"output.period_ms", "output.alsa.period_ms"},
       {"output.format_change_delay_ms",
@@ -393,8 +392,8 @@ bool holds(std::span<const Knob> knobs, const std::string &path) {
 
 const Knob *findKnob(const std::string &path) {
   for (std::span<const Knob> knobs :
-       {std::span<const Knob>(kOutputKnobs), kDsd.knobs, kBuffering.knobs,
-        kNetwork.knobs}) {
+       {std::span<const Knob>(kOutputKnobs), std::span<const Knob>(kDsdKnobs),
+        kBuffering.knobs, kNetwork.knobs}) {
     const auto knob = std::ranges::find_if(
         knobs, [&path](const Knob &knob) { return knob.path == path; });
     if (knob != knobs.end()) {
@@ -463,7 +462,7 @@ const std::map<std::string, std::string> &NativePlayer::defaultSettings() {
       {"output.device", "default"},
       {"output.volume_mode", "auto"},
       {"output.dsd_mode", "disabled"},
-      {"dsd.pcm_rate", "auto"},
+      {"output.dsd_pcm_rate", "auto"},
       {"output.session_start_volume_ceiling_percent", "30"},
       // What the server shipped while it did the playing, rather than the
       // sink's own 100/25.
@@ -523,10 +522,6 @@ std::shared_ptr<ConfigContributor> NativePlayer::bufferSettings() {
 
 std::shared_ptr<ConfigContributor> NativePlayer::networkSettings() {
   return std::make_shared<KnobSection>(shared_from_this(), kNetwork);
-}
-
-std::shared_ptr<ConfigContributor> NativePlayer::dsdSettings() {
-  return std::make_shared<KnobSection>(shared_from_this(), kDsd);
 }
 
 void NativePlayer::persistOverrides() const {
@@ -1020,6 +1015,9 @@ void NativePlayer::fillConfig(renderer_pb::ConfigSection &out) const {
       "Fixed output volume or a connected device. Convert to PCM plays on any "
       "output that takes a rate it converts to.");
   addChoices(*dsd, kDsdChoices);
+  for (const Knob &knob : kDsdKnobs) {
+    declare(out, knob, settings_, defaultSettings());
+  }
 
   for (const Knob &knob : kOutputKnobs) {
     declare(out, knob, settings_, defaultSettings());
