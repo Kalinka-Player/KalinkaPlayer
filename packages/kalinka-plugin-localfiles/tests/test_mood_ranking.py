@@ -96,8 +96,8 @@ class TestSchemaMigration:
         async with aiosqlite.connect(db_path) as conn:
             await conn.execute(
                 "CREATE TABLE tracks (id TEXT PRIMARY KEY, title TEXT, "
-                "file_path TEXT, format TEXT, embedding_clap_audio BLOB, "
-                "embedding_clap_text BLOB)"
+                "file_path TEXT, format TEXT, album_id TEXT, artist_id TEXT, "
+                "embedding_clap_audio BLOB, embedding_clap_text BLOB)"
             )
             await conn.commit()
         await init_db(db_path)
