@@ -54,7 +54,7 @@ from .module_timeout import PLUGIN_CALL_TIMEOUT_S
 from .output_capabilities import OutputCapabilityTracker
 from .output_device_router import OutputDeviceRouter
 from .playback_arbiter import PlaybackArbiter
-from .playback_view import to_audio_info, to_state_name
+from .playback_view import to_audio_info, to_play_id, to_state_name
 from .renderer_player import RendererPlayer
 from .renderer_registry import RendererRegistry, RendererUnavailable
 from .renderer_sessions import (
@@ -68,6 +68,7 @@ from .stream_state import (
     StateMonitor,
     StreamState,
     StreamErrorSource,
+    new_stream_id,
 )
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -178,7 +179,6 @@ class HolderSession:
         self._timeline_offset_ms = 0
         self._queued: Optional[_QueuedSource] = None
         self._stream_id: Optional[int] = None
-        self._next_stream_id = 0
         self._state = PlaybackState(
             state=PlayerStateEnum.STOPPED, timestamp_ns=time.monotonic_ns()
         )
@@ -348,8 +348,7 @@ class HolderSession:
                 raise ValueError("play a source before setting its successor")
         self._clear_next()
         if source is not None:
-            stream_id = self._next_stream_id
-            self._next_stream_id += 1
+            stream_id = new_stream_id()
             self._queued = _QueuedSource(stream_id, source, track)
             self._player.append(stream_id, source, 0)
 
@@ -527,8 +526,7 @@ class HolderSession:
         return player
 
     def _start(self, source: TrackSource, track: Optional[Track], offset_ms: int) -> None:
-        stream_id = self._next_stream_id
-        self._next_stream_id += 1
+        stream_id = new_stream_id()
         previous = self._stream_id
         self._stream_id, self._source, self._track = stream_id, source, track
         # The queue's replace: the new stream queues behind the old, whose
@@ -687,6 +685,7 @@ class HolderSession:
             mime_type=self._source.format if self._source else None,
             audio_codec=self._source.audio_codec if self._source else None,
             stream_url=self._player.stream_uri(self._stream_id),
+            play_id=to_play_id(state.state, self._stream_id),
             timestamp_ns=time.monotonic_ns(),
         )
         self._arbiter.report(self, self._state)

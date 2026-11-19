@@ -894,6 +894,12 @@ class PlaybackState(BaseModel):
             when known, separately from the source MIME type/container.
         stream_url (Optional[str]): Where the renderer is fetching the current
             stream from, as it was handed over. Absent while nothing is loaded.
+        play_id (Optional[str]): SDK 3.23. Identifies this play of the current
+            track: every play, a replay of the same track included, has its
+            own, kept through a pause, and a ``PlaybackEventReport`` names the
+            play it concerns by it. Opaque, and never the same in another run
+            of the server. None while nothing plays, or where the server does
+            not know.
         timestamp_ns (NonNegativeInt): Timestamp when this state was captured
     """
 
@@ -906,6 +912,7 @@ class PlaybackState(BaseModel):
     mime_type: Optional[str] = None
     audio_codec: Optional[str] = None
     stream_url: Optional[str] = None
+    play_id: Optional[str] = None
     timestamp_ns: NonNegativeInt = 0
 
 

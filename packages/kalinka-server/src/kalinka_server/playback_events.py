@@ -14,6 +14,7 @@ from typing import Callable
 
 from kalinka_plugin_sdk.events import PlaybackEventReport
 
+from .playback_view import token_to_play_id
 from .renderer_registry import RendererRegistry
 from .renderer_sessions import PlaybackSession, SessionPool
 
@@ -46,5 +47,9 @@ class PlaybackEventRelay:
         if token is not None and token != session.snapshot.get("source_token"):
             return
         self._dispatch(
-            PlaybackEventReport(kind=event["kind"], details=event["details"])
+            PlaybackEventReport(
+                play_id=token_to_play_id(token),
+                kind=event["kind"],
+                details=event["details"],
+            )
         )
