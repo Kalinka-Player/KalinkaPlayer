@@ -458,8 +458,9 @@ ways:
 - `dsp_latency_ms` is the path's `latency_ms`.
 - The true peak interpolates to at least 176.4 kHz, as BS.1770 asks: four
   times at 44.1 and 48 kHz, twice at 88.2 and 96 kHz, the samples alone
-  above. It reads what goes through the quantiser, the gain included, so
-  converted DSD always goes through it, at unity onto float too. The load
+  above. It reads what a stage processed or the output stage quantised from
+  float, the gain included, and that goes through the quantiser at unity
+  onto float too. The load
   is the converter's and the output stage's time over the audio they make,
   since the last report. Meters are sent only while a signal path processes
   what plays.

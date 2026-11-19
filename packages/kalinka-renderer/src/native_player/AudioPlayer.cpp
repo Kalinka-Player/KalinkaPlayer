@@ -273,10 +273,12 @@ struct StreamNodes {
             if (mode == "pcm")
               return chooseDsdOutput({.formats = converted}, mode, rate,
                                      channels);
-            if (mode == "auto")
-              return chooseAutomaticDsdOutput(probeOutput(device), converted,
-                                              nativeDsdAllowed(), rate,
-                                              channels);
+            if (mode == "auto") {
+              const bool allowed = nativeDsdAllowed();
+              return chooseAutomaticDsdOutput(
+                  allowed ? probeOutput(device) : OutputCapabilities{},
+                  converted, allowed, rate, channels);
+            }
             return chooseDsdOutput(probeOutput(device), mode, rate, channels);
           });
     }

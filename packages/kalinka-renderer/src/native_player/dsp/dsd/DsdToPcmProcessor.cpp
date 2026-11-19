@@ -49,7 +49,7 @@ SignalPath DsdToPcmProcessor::describe(const StreamAudioFormat &format) const {
       dsdRateName(converted.dsdRate) + " to " + pcmRateText(converted.pcmRate);
   if (converted.pcmRate != dsdBaseRate(converted.dsdRate))
     summary += ", " + dsdFilterText(converted.filter);
-  return {{{"dsd_to_pcm", "DSD to PCM", summary}},
+  return {{{signal_step::kDsdToPcm, "DSD to PCM", summary}},
           1000.0 * double(DsdToPcm::latencyOf(converted)) / converted.pcmRate};
 }
 

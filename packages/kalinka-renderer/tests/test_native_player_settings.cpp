@@ -734,11 +734,28 @@ TEST_F(NativePlayerSettingsTest, ADsdLevelWriteIsValidatedAndPersisted) {
   EXPECT_TRUE(applied.outcomes(0).applied()) << applied.outcomes(0).error();
   EXPECT_EQ(loadSettingsOverrides().at("output.dsd_gain_db"), "6");
 
+  EXPECT_FALSE(player_->dsdSettings()->applyConfig("output.dsd_gain_db", "3",
+                                                   error_))
+      << "refused here too, not thrown";
+  EXPECT_FALSE(error_.empty());
+  EXPECT_EQ(loadSettingsOverrides().at("output.dsd_gain_db"), "6");
+
   saveSettingsOverrides(
       {{"output.device", "null"}, {"output.dsd_gain_db", "3"}});
   player_.reset();
   player_ = std::make_shared<NativePlayer>(ioc_);
   EXPECT_EQ(field(dsd(), "output.dsd_gain_db")->value(), "safe");
+}
+
+TEST_F(NativePlayerSettingsTest, TheDsdToPcmKnobsOpenTheirHelpAlike) {
+  const auto section = dsd();
+  for (const char *path :
+       {"output.dsd_pcm_rate", "output.dsd_filter", "output.dsd_gain_db"})
+    EXPECT_THAT(field(section, path)->help_details(),
+                ::testing::StartsWith("Used when DSD is converted to PCM: "))
+        << path;
+  EXPECT_THAT(field(section, "output.dsd_mode")->help_details(),
+              ::testing::StartsWith("Plays DSF and DSDIFF files"));
 }
 
 TEST_F(NativePlayerSettingsTest, AFilterWriteIsValidatedAndPersisted) {
