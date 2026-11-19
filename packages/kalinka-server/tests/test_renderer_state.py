@@ -1,8 +1,13 @@
+import json
+
+from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
+from kalinka_plugin_sdk.events import PlaybackEventReport
+
 from kalinka_server import renderer_state
 from kalinka_server.renderer_proto import renderer_pb2 as pb
 from kalinka_server.renderer_state import StateChange
 
-from tests.sim_renderer import dsd_conversion
+from tests.sim_renderer import clipping, dsd_conversion, of_a_newer_kind
 
 
 def full_snapshot():
@@ -303,18 +308,199 @@ def test_a_new_source_drops_the_signal_path_of_the_old_one():
     assert state["signal_path"] is None
 
 
-def test_meters_convert_whole():
-    meters = pb.DspMeters()
-    meters.source_token = "7"
-    meters.clipped_samples = 12
-    meters.true_peak_dbfs = -0.4
-    meters.load = 0.012
-    meters.at_unix_ms = 1700000000500
-
-    assert renderer_state.dsp_meters_to_dict(meters) == {
+def test_a_playback_event_converts_with_its_kind_named():
+    assert renderer_state.playback_event_to_dict(clipping(12, "7")) == {
         "source_token": "7",
-        "clipped_samples": 12,
-        "true_peak_dbfs": -0.4,
-        "load": 0.012,
-        "at_unix_ms": 1700000000500,
+        "at_unix_ms": 1700000000000,
+        "kind": "clipping",
+        "details": {"clipped_samples": 12},
     }
+
+
+def test_a_count_too_large_for_a_double_stays_an_exact_int():
+    count = 2**64 - 1
+
+    details = renderer_state.playback_event_to_dict(clipping(count, "7"))["details"]
+
+    assert details == {"clipped_samples": count}
+    assert type(details["clipped_samples"]) is int
+
+
+def test_a_field_left_unset_is_there_as_its_default():
+    event = pb.PlaybackEvent()
+    event.clipping.SetInParent()
+
+    assert renderer_state.playback_event_to_dict(event)["details"] == {
+        "clipped_samples": 0
+    }
+
+
+def test_a_playback_event_about_no_source_names_none():
+    event = renderer_state.playback_event_to_dict(clipping(1, None))
+
+    assert event["source_token"] is None
+
+
+def test_a_kind_unknown_here_converts_to_nothing():
+    assert renderer_state.playback_event_to_dict(of_a_newer_kind("7")) is None
+
+
+def test_every_kind_the_protocol_has_converts_whole():
+    for kind in pb.PlaybackEvent.DESCRIPTOR.oneofs_by_name["kind"].fields:
+        event = pb.PlaybackEvent()
+        getattr(event, kind.name).SetInParent()
+
+        converted = renderer_state.playback_event_to_dict(event)
+
+        assert converted["kind"] == kind.name
+        assert set(converted["details"]) == set(kind.message_type.fields_by_name)
+
+
+def test_any_message_converts_as_the_state_does():
+    snapshot = full_snapshot()
+    snapshot.volume.db_values.extend([-200.0, -12.5, 0.0])
+
+    assert renderer_state.message_to_dict(dsd_conversion()) == CONVERTING_DSD
+    assert renderer_state.message_to_dict(
+        snapshot.volume
+    ) == renderer_state.volume_to_dict(snapshot.volume)
+
+
+def _later_protocol() -> descriptor_pb2.FileDescriptorProto:
+    """PlaybackEvent as a later renderer might have it: a second kind, whose
+    details use every shape a field can take."""
+    field = descriptor_pb2.FieldDescriptorProto
+    file = descriptor_pb2.FileDescriptorProto(
+        name="later.proto", package="later", syntax="proto3"
+    )
+    level = file.enum_type.add(name="BufferLevel")
+    level.value.add(name="BUFFER_LEVEL_UNSPECIFIED", number=0)
+    level.value.add(name="BUFFER_LEVEL_LOW", number=1)
+
+    stage = file.message_type.add(name="Stage")
+    stage.field.add(name="name", number=1, type=field.TYPE_STRING)
+    stage.field.add(name="held_frames", number=2, type=field.TYPE_UINT64)
+
+    clipping = file.message_type.add(name="Clipping")
+    clipping.field.add(name="clipped_samples", number=1, type=field.TYPE_UINT64)
+
+    buffering = file.message_type.add(name="Buffering")
+    entry = buffering.nested_type.add(name="ByChannelEntry")
+    entry.options.map_entry = True
+    entry.field.add(name="key", number=1, type=field.TYPE_STRING)
+    entry.field.add(name="value", number=2, type=field.TYPE_INT64)
+    buffering.oneof_decl.add(name="_target_ms")
+    repeated = field.LABEL_REPEATED
+    buffering.field.add(name="ahead_frames", number=1, type=field.TYPE_UINT64)
+    buffering.field.add(
+        name="stages",
+        number=2,
+        type=field.TYPE_MESSAGE,
+        type_name=".later.Stage",
+        label=repeated,
+    )
+    buffering.field.add(
+        name="slowest", number=3, type=field.TYPE_MESSAGE, type_name=".later.Stage"
+    )
+    buffering.field.add(
+        name="starved", number=4, type=field.TYPE_MESSAGE, type_name=".later.Stage"
+    )
+    buffering.field.add(
+        name="level", number=5, type=field.TYPE_ENUM, type_name=".later.BufferLevel"
+    )
+    buffering.field.add(
+        name="by_channel",
+        number=6,
+        type=field.TYPE_MESSAGE,
+        type_name=".later.Buffering.ByChannelEntry",
+        label=repeated,
+    )
+    buffering.field.add(name="raw", number=7, type=field.TYPE_BYTES)
+    buffering.field.add(name="peaks", number=8, type=field.TYPE_DOUBLE, label=repeated)
+    buffering.field.add(
+        name="target_ms",
+        number=9,
+        type=field.TYPE_DOUBLE,
+        oneof_index=0,
+        proto3_optional=True,
+    )
+    buffering.field.add(
+        name="levels",
+        number=10,
+        type=field.TYPE_ENUM,
+        type_name=".later.BufferLevel",
+        label=repeated,
+    )
+
+    event = file.message_type.add(name="PlaybackEvent")
+    event.oneof_decl.add(name="kind")
+    event.oneof_decl.add(name="_source_token")
+    event.field.add(
+        name="source_token",
+        number=1,
+        type=field.TYPE_STRING,
+        oneof_index=1,
+        proto3_optional=True,
+    )
+    event.field.add(name="at_unix_ms", number=2, type=field.TYPE_INT64)
+    event.field.add(
+        name="clipping",
+        number=10,
+        type=field.TYPE_MESSAGE,
+        type_name=".later.Clipping",
+        oneof_index=0,
+    )
+    event.field.add(
+        name="buffering",
+        number=11,
+        type=field.TYPE_MESSAGE,
+        type_name=".later.Buffering",
+        oneof_index=0,
+    )
+    return file
+
+
+def test_a_kind_added_later_converts_with_no_change_here():
+    pool = descriptor_pool.DescriptorPool()
+    pool.AddSerializedFile(_later_protocol().SerializeToString())
+    event = message_factory.GetMessageClass(
+        pool.FindMessageTypeByName("later.PlaybackEvent")
+    )()
+    event.source_token = "7"
+    event.at_unix_ms = 1700000000500
+    buffering = event.buffering
+    buffering.ahead_frames = 2**53 + 1
+    buffering.stages.add(name="dsd_to_pcm", held_frames=64)
+    buffering.stages.add(name="dither")
+    buffering.slowest.name = "dsd_to_pcm"
+    buffering.level = 1
+    buffering.by_channel["left"] = -3
+    buffering.raw = b"\x00\xff"
+    buffering.peaks.extend([-0.5, -1.0])
+    buffering.levels.extend([1, 7])
+    details = {
+        "ahead_frames": 2**53 + 1,
+        "stages": [
+            {"name": "dsd_to_pcm", "held_frames": 64},
+            {"name": "dither", "held_frames": 0},
+        ],
+        "slowest": {"name": "dsd_to_pcm", "held_frames": 0},
+        "starved": None,
+        "level": "low",
+        "by_channel": {"left": -3},
+        "raw": "AP8=",
+        "peaks": [-0.5, -1.0],
+        "target_ms": None,
+        "levels": ["low", 7],
+    }
+
+    converted = renderer_state.playback_event_to_dict(event)
+
+    assert converted == {
+        "source_token": "7",
+        "at_unix_ms": 1700000000500,
+        "kind": "buffering",
+        "details": details,
+    }
+    report = PlaybackEventReport(kind=converted["kind"], details=converted["details"])
+    assert json.loads(report.model_dump_json())["details"] == details

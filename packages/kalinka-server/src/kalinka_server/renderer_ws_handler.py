@@ -360,11 +360,11 @@ async def handle_renderer_connection(
                 sessions.handle_rejection(
                     registered_id or "", rejection=env.command_rejected
                 )
-            elif payload == "dsp_meters":
-                sessions.handle_meters(
+            elif payload == "playback_event":
+                sessions.handle_playback_event(
                     registered_id or "",
                     session_id=env.session_id,
-                    message=env.dsp_meters,
+                    message=env.playback_event,
                 )
             elif (change := StateChange.for_payload(payload or "")) is not None:
                 sessions.handle_state(

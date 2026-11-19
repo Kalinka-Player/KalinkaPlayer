@@ -1,15 +1,14 @@
-"""The signal path a client is shown and the DSP meters it is sent."""
+"""The signal path a client is shown and the playback events it is sent."""
 
 import json
 
 from kalinka_plugin_sdk import (
-    DspMetersChangedEvent,
+    PlaybackEventReport,
     PlayQueueEventType,
     PlayQueueState,
 )
 from kalinka_plugin_sdk.datamodel import (
     AudioInfo,
-    DspMeters,
     OutputInfo,
     PlaybackMode,
     PlaybackState,
@@ -78,18 +77,29 @@ def test_an_output_from_an_older_server_reads_without_one():
     assert restored.signal_path is None
 
 
-def test_meters_before_any_sound():
-    assert DspMeters() == DspMeters(clipped_samples=0, true_peak_dbfs=-200.0, load=0.0)
+def test_a_playback_event_names_its_type_and_kind():
+    event = PlaybackEventReport(
+        kind="clipping", details={"clipped_samples": 1200}, seq=7
+    )
+
+    assert event.event_type is PlayQueueEventType.PlaybackEvent
+    assert json.loads(event.model_dump_json()) == {
+        "event_type": "playback_event",
+        "seq": 7,
+        "kind": "clipping",
+        "details": {"clipped_samples": 1200},
+    }
 
 
-def test_the_meters_event_names_its_type():
-    event = DspMetersChangedEvent(meters=DspMeters(clipped_samples=1))
+def test_a_playback_event_of_a_kind_without_details():
+    assert PlaybackEventReport(kind="clipping").details == {}
+    assert (
+        PlaybackEventReport(kind="clipping").details
+        is not PlaybackEventReport(kind="clipping").details
+    )
 
-    assert event.event_type is PlayQueueEventType.DspMetersChanged
-    assert json.loads(event.model_dump_json())["event_type"] == "dsp_meters_changed"
 
-
-def test_meters_are_kept_out_of_the_state():
+def test_playback_events_are_kept_out_of_the_state():
     state = _state()
 
-    assert state.apply(DspMetersChangedEvent(meters=DspMeters(), seq=1)) is state
+    assert state.apply(PlaybackEventReport(kind="clipping", seq=1)) is state

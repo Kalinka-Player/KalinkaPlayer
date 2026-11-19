@@ -46,6 +46,26 @@ def dsd_conversion() -> pb.SignalPath:
     return path
 
 
+def clipping(clipped_samples: int, source_token: Optional[str]) -> pb.PlaybackEvent:
+    """The DSP clamped `clipped_samples` of `source_token` since it began; None
+    leaves the event about no source."""
+    event = pb.PlaybackEvent(at_unix_ms=_NOW_UNIX_MS)
+    if source_token is not None:
+        event.source_token = source_token
+    event.clipping.clipped_samples = clipped_samples
+    return event
+
+
+def of_a_newer_kind(source_token: Optional[str]) -> pb.PlaybackEvent:
+    """An event of a kind this protocol lacks, as a newer renderer sends it."""
+    event = pb.PlaybackEvent(at_unix_ms=_NOW_UNIX_MS)
+    if source_token is not None:
+        event.source_token = source_token
+    # Kind field 99, a message holding 5 in its field 1.
+    newer_kind = b"\x9a\x06\x02\x08\x05"
+    return pb.PlaybackEvent.FromString(event.SerializeToString() + newer_kind)
+
+
 class SimRenderer:
     RENDERER_ID = "sim-renderer"
 
@@ -241,27 +261,12 @@ class SimRenderer:
             self.RENDERER_ID, self, self._capabilities()
         )
 
-    def report_meters(
-        self,
-        token: Optional[str] = None,
-        *,
-        clipped_samples: int = 0,
-        true_peak_dbfs: float = -200.0,
-        load: float = 0.0,
-    ) -> None:
-        """Its DSP reports what it measured of `token`, the current source
-        unless named."""
+    def report_event(self, event: pb.PlaybackEvent) -> None:
+        """Something happened during its playback, as `event` says."""
         if self.session_id is None or not self.linked:
             return
-        meters = pb.DspMeters(
-            source_token=token if token is not None else (self.current or ""),
-            clipped_samples=clipped_samples,
-            true_peak_dbfs=true_peak_dbfs,
-            load=load,
-            at_unix_ms=_NOW_UNIX_MS,
-        )
-        self.pool.handle_meters(
-            self.RENDERER_ID, session_id=self.session_id, message=meters
+        self.pool.handle_playback_event(
+            self.RENDERER_ID, session_id=self.session_id, message=event
         )
 
     def report_position(self, position_ms: int) -> None:
