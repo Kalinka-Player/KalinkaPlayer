@@ -29,6 +29,11 @@ def _moved(url: str) -> str:
     return url
 
 
+# A key pasted with spaces would count as set, and Jamendo refuses it.
+def _stripped(value: str) -> str:
+    return value.strip()
+
+
 # Mood-index asset name. The index is fetched only when the local path is
 # absent (see mood_search._provision), so a content change must rename the
 # asset to force existing installs to re-download — overrides store only
@@ -75,7 +80,7 @@ class JamendoConfig(ModuleConfig):
         frozen=True,
         exclude=True,
     )
-    client_id: str = Field(
+    client_id: Annotated[str, AfterValidator(_stripped)] = Field(
         default="",
         title="Client ID",
         description=(

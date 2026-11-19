@@ -9,6 +9,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from kalinka_server.config_overrides import apply_overrides_with_prefix
 
 from kalinka_plugin_jamendo import mood_search
 from kalinka_plugin_jamendo.config_model import JamendoConfig
@@ -234,13 +235,19 @@ async def test_a_server_without_the_hook_still_finds_the_failure(set_up):
     assert (await plugin.get_state()).state == ModuleHealthState.WARNING
 
 
+NO_CLIENT_ID = pytest.mark.parametrize(
+    "client_id", ["", "   "], ids=["empty", "only-spaces"]
+)
+
+
+@NO_CLIENT_ID
 async def test_a_box_without_a_client_id_fetches_nothing_for_mood_search(
-    set_up, downloads
+    set_up, downloads, client_id
 ):
     """Jamendo answers nothing without one, so neither the index nor the
     text model is downloaded on its behalf."""
     embedder = FakeEmbedder()
-    plugin, _ = await set_up(embedder, client_id="")
+    plugin, _ = await set_up(embedder, client_id=client_id)
     # Lets a provisioning task, were one started, reach its downloads.
     await asyncio.wait_for(
         asyncio.gather(*(asyncio.all_tasks() - {asyncio.current_task()})), 5
@@ -252,16 +259,29 @@ async def test_a_box_without_a_client_id_fetches_nothing_for_mood_search(
     assert plugin._mood_index is None
 
 
+@NO_CLIENT_ID
 async def test_a_box_without_a_client_id_is_asked_for_one_not_for_mood_search(
-    set_up,
+    set_up, client_id
 ):
-    plugin, _ = await set_up(FakeEmbedder(), client_id="")
+    plugin, _ = await set_up(FakeEmbedder(), client_id=client_id)
 
     state = await plugin.get_state()
 
     assert state.state == ModuleHealthState.ERROR
     assert "client_id" in state.message
     assert not _offers_mood_search(plugin)
+
+
+def test_a_client_id_saved_with_spaces_loads_without_them():
+    """As the server loads a key pasted with a space around it, which
+    Jamendo would refuse as it stands."""
+    config = JamendoConfig()
+
+    apply_overrides_with_prefix(
+        config, {"input_modules.jamendo.client_id": " abc\n"}, "input_modules.jamendo."
+    )
+
+    assert config.client_id == "abc"
 
 
 async def test_a_saved_client_id_provisions_the_index(set_up, downloads):
