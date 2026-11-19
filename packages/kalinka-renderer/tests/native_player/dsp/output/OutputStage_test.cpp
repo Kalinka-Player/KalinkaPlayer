@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <numbers>
 #include <random>
 #include <string>
 #include <vector>
@@ -291,6 +292,35 @@ TEST(OutputStage, ItDescribesTheDsdGainAndTheDither) {
   EXPECT_EQ(kinds(kRawDsd, converted, s32),
             std::vector<std::string>{"dither: TPDF at 24 bits"})
       << "no gain at 0 dB";
+}
+
+TEST(OutputStage, ConvertedDsdIsMeteredOntoAFloatDeviceAtUnityToo) {
+  std::vector<double> tone(2 * 4800);
+  for (size_t n = 0; n < tone.size() / 2; ++n)
+    tone[2 * n] = tone[2 * n + 1] =
+        0.25 * std::sin(2 * std::numbers::pi * 1000 * double(n) / kRate);
+  const auto bytes = asBytes(tone);
+  Stage s(pcm(PCM_FLOAT64_LE), bytes, {}, kRawDsd);
+  EXPECT_EQ(readAll(*s.stage, 1600), bytes) << "unchanged";
+  EXPECT_NEAR(s.stage->peakSinceSourceBegan(), 0.25, 0.005);
+  EXPECT_GT(s.stage->takeLoad(), 0.0);
+  EXPECT_EQ(s.stage->takeLoad(), 0.0) << "nothing processed since";
+}
+
+TEST(OutputStage, TheMetersStartOverWithEachSource) {
+  Stage s(pcm(PCM_FLOAT64_LE), asBytes(std::vector<double>(2 * 4000, 2.0)),
+          k24In32);
+  readSamples<int32_t>(*s.stage, 2 * 1000);
+  const uint64_t clipped = s.stage->clippedSinceSourceBegan();
+  EXPECT_EQ(clipped, 2000u);
+  EXPECT_GE(s.stage->peakSinceSourceBegan(), 2.0);
+
+  s.stage->acceptSourceChange();
+  EXPECT_EQ(s.stage->clippedSinceSourceBegan(), 0u);
+  EXPECT_EQ(s.stage->peakSinceSourceBegan(), 0.0);
+  readSamples<int32_t>(*s.stage, 2 * 500);
+  EXPECT_EQ(s.stage->clippedSinceSourceBegan(), 1000u);
+  EXPECT_EQ(s.stage->clippedSamples(), clipped + 1000u) << "the total runs on";
 }
 
 TEST(OutputStage, ClampedSamplesAreCounted) {

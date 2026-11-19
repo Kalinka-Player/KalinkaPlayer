@@ -38,6 +38,7 @@ bool convertedFromDsd(const StreamInfo &info) {
 OutputStage::OutputStage(std::vector<StreamAudioFormat> device, uint64_t seed)
     : device(std::move(device)), ramp(kRamp), fade(kFadeLength),
       quantiser(kPlanarFrames, kPlanarChannels, seed),
+      truePeak(kPlanarFrames, kPlanarChannels),
       input(kPlanarFrames * frameBytes(PCM_FLOAT64_LE, kPlanarChannels)) {}
 
 OutputStage::~OutputStage() {
@@ -171,7 +172,7 @@ size_t OutputStage::read(void *data, size_t size) {
     throw std::runtime_error("No output stage for " +
                              std::to_string(source.channels) + " channels");
   follow(*now);
-  if (ramp.holding(1.0) && fade.holding(1.0) &&
+  if (!now->fromDsd && ramp.holding(1.0) && fade.holding(1.0) &&
       now->output.format == source.sampleFormat)
     return upstream->read(data, size);
 
@@ -201,7 +202,10 @@ void OutputStage::produce(const Presented &now, const uint8_t *in,
   const size_t inFrame = frameBytes(from, channels);
   const size_t outFrame = frameBytes(to, channels);
   // Integer to a wider container is exact; float to integer is quantised.
-  const bool exact = from == to || (!isFloat(from) && !isFloat(to));
+  // Converted DSD is metered, so it is quantised even onto float.
+  const bool exact =
+      !now.fromDsd && (from == to || (!isFloat(from) && !isFloat(to)));
+  const unsigned rate = now.source.sampleRate;
   for (size_t at = 0; at < frames;) {
     const auto span = take(frames - at);
     const uint8_t *source = in + at * inFrame;
@@ -213,13 +217,18 @@ void OutputStage::produce(const Presented &now, const uint8_t *in,
         convertSampleFormat(source, from, span.frames * channels, dest, to,
                             span.frames * outFrame);
     } else {
+      const auto began = std::chrono::steady_clock::now();
       readPlanar(source, from, channels, span.frames, planar.planes());
+      truePeak.feed(planar.planes(), channels, span.frames, rate,
+                    std::max(std::abs(span.from), std::abs(span.to)));
       quantiser.pack(planar.planes(), channels, span.frames, span, to,
                      now.output.bits, dest);
+      load.add(std::chrono::steady_clock::now() - began, span.frames, rate);
     }
     at += span.frames;
   }
   clipped = quantiser.clipped();
+  peak = truePeak.peak();
 }
 
 size_t OutputStage::toSource(const Presented &now, size_t bytes) const {
@@ -286,6 +295,9 @@ std::optional<uint64_t> OutputStage::liveSourceFrame() const {
 }
 
 void OutputStage::acceptSourceChange() {
+  clippedBefore = quantiser.clipped();
+  truePeak.resetPeak();
+  peak = 0.0;
   if (upstream)
     upstream->acceptSourceChange();
 }

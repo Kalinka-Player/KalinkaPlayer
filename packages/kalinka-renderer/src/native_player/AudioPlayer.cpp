@@ -591,6 +591,13 @@ SignalPath AudioPlayer::signalPath(const StreamInfo &heard) const {
   return path;
 }
 
+DspMeters AudioPlayer::takeDspMeters() {
+  const double peak = outputStage->peakSinceSourceBegan();
+  return {outputStage->clippedSinceSourceBegan(),
+          peak > 1e-10 ? 20 * std::log10(peak) : -200.0,
+          dspStage->takeLoad() + outputStage->takeLoad()};
+}
+
 void AudioPlayer::setDsdGain(const std::string &setting) {
   outputStage->setDsdGain(dsdGain(setting));
 }

@@ -839,6 +839,65 @@ TEST_F(NativePlayerDsdTest, ALevelChangeRestatesWhatPlays) {
   player_.reset();
 }
 
+TEST_F(NativePlayerDsdTest, MetersAreReportedWhileConvertedDsdPlays) {
+  const ScopedAlsaConfig alsa{
+      "pcm_type.kalinka_paced { lib \"" KALINKA_PACED_PCM
+      "\" }\npcm.paced { type kalinka_paced }\n"};
+  player_.reset();
+  saveSettingsOverrides(
+      {{"output.device", "paced"}, {"output.dsd_mode", "pcm"}});
+  player_ = std::make_shared<NativePlayer>(ioc_);
+  std::vector<renderer_pb::DspMeters> meters;
+  bool finished = false;
+  player_->setStateSink([&](renderer_pb::Envelope &env) {
+    if (env.has_dsp_meters())
+      meters.push_back(env.dsp_meters());
+    finished = finished || (env.has_playback_state_changed() &&
+                            env.playback_state_changed().state() ==
+                                renderer_pb::PLAYBACK_STATE_FINISHED);
+  });
+  const auto began = std::chrono::steady_clock::now();
+  player_->setSource(dsf("/long.dsf"));
+  ASSERT_TRUE(runUntil([&finished] { return finished; }));
+  const auto lasted = std::chrono::steady_clock::now() - began;
+  player_->setStateSink({});
+
+  ASSERT_GE(meters.size(), 1u);
+  EXPECT_LE(double(meters.size()),
+            std::chrono::duration<double>(lasted).count() * 2 + 1)
+      << "at most twice a second";
+  for (const auto &meter : meters) {
+    EXPECT_EQ(meter.source_token(), "/long.dsf");
+    EXPECT_GT(meter.true_peak_dbfs(), -200.0) << "the noise is heard";
+    EXPECT_GT(meter.at_unix_ms(), 0);
+  }
+  EXPECT_TRUE(std::ranges::any_of(
+      meters, [](const auto &meter) { return meter.load() > 0.0; }));
+  player_.reset();
+}
+
+TEST_F(NativePlayerStreamTest, PcmPlayedAsDecodedIsNotMetered) {
+  const ScopedAlsaConfig alsa{
+      "pcm_type.kalinka_paced { lib \"" KALINKA_PACED_PCM
+      "\" }\npcm.paced { type kalinka_paced }\n"};
+  player_.reset();
+  saveSettingsOverrides({{"output.device", "paced"}});
+  player_ = std::make_shared<NativePlayer>(ioc_);
+  size_t meters = 0;
+  bool finished = false;
+  player_->setStateSink([&](renderer_pb::Envelope &env) {
+    meters += env.has_dsp_meters();
+    finished = finished || (env.has_playback_state_changed() &&
+                            env.playback_state_changed().state() ==
+                                renderer_pb::PLAYBACK_STATE_FINISHED);
+  });
+  player_->setSource(sourceAt("/whole"));
+  ASSERT_TRUE(runUntil([&finished] { return finished; }));
+  player_->setStateSink({});
+  EXPECT_EQ(meters, 0u);
+  player_.reset();
+}
+
 TEST_F(NativePlayerStreamTest, PcmPlayedAsDecodedHasNoSignalPath) {
   const auto states = playToTheEnd(sourceAt("/whole"));
   ASSERT_FALSE(states.empty());
