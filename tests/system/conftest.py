@@ -23,7 +23,7 @@ import pytest
 from recordings import ART_OF_FUGUE, GOLDBERG, PlantedTrack, plant
 from samba import SambaShare
 from server_instance import KalinkaInstance
-from waiting import scan_finished, wait_until
+from waiting import describe_stage, scan_finished, stage_settled, wait_until
 
 logger = logging.getLogger("system-test")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -41,9 +41,17 @@ def _opted_in() -> bool:
     return os.environ.get("KALINKA_SYSTEM_TEST") == "1"
 
 
+def _not_collected() -> list[str]:
+    if not _opted_in():
+        return ["test_*.py"]
+    if os.environ.get("KALINKA_SYSTEM_TEST_LARGE") != "1":
+        return ["test_large_library.py"]
+    return []
+
+
 # Not collected rather than collected and skipped: a skip mark lands after
 # the modules have been imported, and importing them costs the whole server.
-collect_ignore_glob = [] if _opted_in() else ["test_*.py"]
+collect_ignore_glob = _not_collected()
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -118,11 +126,25 @@ class PlantedLibrary:
 
 
 @pytest.fixture(scope="session")
-def kalinka(workspace: Path, cache_dir: Path, samba: SambaShare, request) -> KalinkaInstance:
-    instance = KalinkaInstance(
-        REPO_ROOT, workspace / "prefix", _free_port(), Path(sys.prefix),
-        cache_dir / "server.pid",
-    )
+def new_instance(workspace: Path, cache_dir: Path, request):
+    """Makes a server of its own in the fakeroot ``name``, for the caller to
+    install, start and stop. A failing test's report carries the log of the
+    one made last."""
+
+    def make(name: str) -> KalinkaInstance:
+        instance = KalinkaInstance(
+            REPO_ROOT, workspace / name, _free_port(), Path(sys.prefix),
+            cache_dir / f"{name}.pid",
+        )
+        request.config.stash[_INSTANCE] = instance
+        return instance
+
+    return make
+
+
+@pytest.fixture(scope="session")
+def kalinka(new_instance, cache_dir: Path, samba: SambaShare) -> KalinkaInstance:
+    instance = new_instance("prefix")
     instance.install(
         {
             "input_modules.localfiles.music_folders": [str(instance.music_dir)],
@@ -147,7 +169,6 @@ def kalinka(workspace: Path, cache_dir: Path, samba: SambaShare, request) -> Kal
         },
         cache_dir / "models",
     )
-    request.config.stash[_INSTANCE] = instance
     yield instance
     instance.stop()
     logger.info("server log kept at %s", instance.log_path)
@@ -168,19 +189,6 @@ def planted(kalinka: KalinkaInstance, samba: SambaShare, cache_dir: Path) -> Pla
     return library
 
 
-def _stage_settled(stage) -> bool:
-    return stage is not None and stage["pending"] == 0 and stage["in_progress"] == 0
-
-
-def _describe(stage) -> str:
-    if stage is None:
-        return "not reported"
-    return (
-        f"{stage['done']} done, {stage['pending']} pending, "
-        f"{stage['failed']} failed of {stage['total']}"
-    )
-
-
 @pytest.fixture(scope="session")
 def library(kalinka: KalinkaInstance, planted: PlantedLibrary) -> dict:
     """The library once indexing, enrichment and AI embedding have all run to
@@ -199,23 +207,23 @@ def library(kalinka: KalinkaInstance, planted: PlantedLibrary) -> dict:
         progress=lambda: str(kalinka.indexer_status().get("indexing")),
     )
     wait_until(
-        lambda: _stage_settled(kalinka.indexer_status().get("enrichment")),
+        lambda: stage_settled(kalinka.indexer_status().get("enrichment")),
         timeout=ENRICH_TIMEOUT_S,
         what="enrichment to settle",
         interval=5.0,
-        progress=lambda: _describe(kalinka.indexer_status().get("enrichment")),
+        progress=lambda: describe_stage(kalinka.indexer_status().get("enrichment")),
     )
     wait_until(
         lambda: all(
-            _stage_settled(kalinka.indexer_status().get(stage))
+            stage_settled(kalinka.indexer_status().get(stage))
             for stage in ("clap_audio", "clap_text")
         ),
         timeout=EMBED_TIMEOUT_S,
         what="AI embedding to settle",
         interval=5.0,
         progress=lambda: "audio {}; text {}".format(
-            _describe(kalinka.indexer_status().get("clap_audio")),
-            _describe(kalinka.indexer_status().get("clap_text")),
+            describe_stage(kalinka.indexer_status().get("clap_audio")),
+            describe_stage(kalinka.indexer_status().get("clap_text")),
         ),
     )
     return kalinka.tracks()

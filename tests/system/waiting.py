@@ -20,6 +20,20 @@ def scan_finished(stage: Optional[dict]) -> bool:
     )
 
 
+def stage_settled(stage: Optional[dict]) -> bool:
+    """A background stage with nothing left to do and nothing under way."""
+    return stage is not None and stage["pending"] == 0 and stage["in_progress"] == 0
+
+
+def describe_stage(stage: Optional[dict]) -> str:
+    if stage is None:
+        return "not reported"
+    return (
+        f"{stage['done']} done, {stage['pending']} pending, "
+        f"{stage['failed']} failed of {stage['total']}"
+    )
+
+
 def wait_until(
     condition: Callable[[], bool],
     *,

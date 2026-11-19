@@ -62,15 +62,7 @@ class KalinkaInstance:
         because the first attempt died after the symlink and before the
         database.
         """
-        self.config_path.parent.mkdir(parents=True, exist_ok=True)
-        config = {
-            "base_config.server.interface": "lo",
-            "base_config.server.port": self.port,
-            "base_config.server.service_name": "Kalinka system test",
-            "base_config.server.oobe_complete": True,
-            **overrides,
-        }
-        self.config_path.write_text(json.dumps(config, indent=2))
+        self.configure(overrides)
         result = subprocess.run(
             ["make", "dev-setup", f"KALINKA_PREFIX={self.prefix}", f"VENV={self.venv}"],
             cwd=self.repo_root,
@@ -86,13 +78,33 @@ class KalinkaInstance:
             self.models_dir.unlink()
         self.models_dir.symlink_to(models_cache, target_is_directory=True)
 
-    def start(self) -> None:
+    def configure(self, overrides: dict[str, Any]) -> None:
+        """Write the server's config: what every test server needs, then
+        ``overrides``. Takes effect at the next start."""
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        config = {
+            "base_config.server.interface": "lo",
+            "base_config.server.port": self.port,
+            "base_config.server.service_name": "Kalinka system test",
+            "base_config.server.oobe_complete": True,
+            **overrides,
+        }
+        self.config_path.write_text(json.dumps(config, indent=2))
+
+    def start(self, env: Optional[dict[str, str]] = None) -> None:
+        """Launch the server. ``env`` is added to its environment, and so to
+        that of every worker process it starts."""
         self._reap_stale()
         self._launcher_out = open(self.launcher_log, "ab")
         self._proc = subprocess.Popen(
             [str(self.repo_root / "scripts/dev_run.sh")],
             cwd=self.repo_root,
-            env={**os.environ, "KALINKA_PREFIX": str(self.prefix), "VENV": str(self.venv)},
+            env={
+                **os.environ,
+                **(env or {}),
+                "KALINKA_PREFIX": str(self.prefix),
+                "VENV": str(self.venv),
+            },
             stdout=self._launcher_out,
             stderr=subprocess.STDOUT,
             start_new_session=True,
@@ -201,6 +213,22 @@ class KalinkaInstance:
                 "FROM tracks"
             )
         }
+
+    def log_size(self) -> int:
+        try:
+            return self.log_path.stat().st_size
+        except OSError:
+            return 0
+
+    def log_since(self, offset: int) -> str:
+        """What the server has logged past ``offset`` bytes, a
+        :meth:`log_size` taken earlier."""
+        try:
+            with open(self.log_path, "rb") as log:
+                log.seek(offset)
+                return log.read().decode(errors="replace")
+        except OSError:
+            return ""
 
     def log_tail(self, lines: int = 80) -> str:
         try:
