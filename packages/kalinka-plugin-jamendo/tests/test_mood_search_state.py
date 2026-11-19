@@ -30,8 +30,10 @@ class FakeEmbedder:
 
     def __init__(self, available: bool = True):
         self._available = available
+        self.asked = asyncio.Event()
 
     async def available(self) -> bool:
+        self.asked.set()
         return self._available
 
     def missing_runtime(self) -> list[str]:
@@ -41,12 +43,8 @@ class FakeEmbedder:
 class HeldEmbedder(FakeEmbedder):
     """Still fetching its model until the test is done."""
 
-    def __init__(self):
-        super().__init__()
-        self.asked = asyncio.Event()
-
     async def available(self) -> bool:
-        self.asked.set()
+        await super().available()
         await asyncio.Event().wait()
         return True
 
@@ -64,8 +62,16 @@ def _write_index(path) -> None:
 
 
 @pytest.fixture(autouse=True)
-def downloads_fail(monkeypatch):
-    monkeypatch.setattr(mood_search, "download_file", lambda url, dest: False)
+def downloads(monkeypatch):
+    """Every index download fails; the addresses tried are kept in order."""
+    tried: list[str] = []
+
+    def download_file(url, dest):
+        tried.append(url)
+        return False
+
+    monkeypatch.setattr(mood_search, "download_file", download_file)
+    return tried
 
 
 @pytest.fixture
@@ -75,13 +81,13 @@ async def set_up(tmp_path):
     3.23, which hands None."""
     plugins: list[KalinkaPluginJamendo] = []
 
-    async def set_up(embedder, index_url=INDEX_URL, hooked=True):
+    async def set_up(embedder, index_url=INDEX_URL, hooked=True, client_id="x"):
         reported: list[None] = []
         plugin = KalinkaPluginJamendo()
         await plugin.setup(
             SimpleNamespace(
                 config=JamendoConfig(
-                    client_id="x",
+                    client_id=client_id,
                     ai_search_enabled=True,
                     ai_index_path=str(tmp_path / INDEX_NAME),
                     ai_index_url=index_url,
@@ -226,3 +232,44 @@ async def test_a_server_without_the_hook_still_finds_the_failure(set_up):
 
     assert not _offers_mood_search(plugin)
     assert (await plugin.get_state()).state == ModuleHealthState.WARNING
+
+
+async def test_a_box_without_a_client_id_fetches_nothing_for_mood_search(
+    set_up, downloads
+):
+    """Jamendo answers nothing without one, so neither the index nor the
+    text model is downloaded on its behalf."""
+    embedder = HeldEmbedder()
+    plugin, _ = await set_up(embedder, client_id="")
+
+    assert plugin._provision_task is None
+    assert plugin._mood_index is None
+    assert downloads == []
+    assert not embedder.asked.is_set()
+
+
+async def test_a_box_without_a_client_id_is_asked_for_one_not_for_mood_search(
+    set_up,
+):
+    plugin, _ = await set_up(FakeEmbedder(), client_id="")
+
+    state = await plugin.get_state()
+
+    assert state.state == ModuleHealthState.ERROR
+    assert "client_id" in state.message
+    assert not _offers_mood_search(plugin)
+
+
+async def test_a_saved_client_id_provisions_the_index(set_up, downloads):
+    """The plugin takes no setting in place, so the server sets it up again
+    on the saved config, as here."""
+    unset, _ = await set_up(FakeEmbedder(), client_id="")
+    assert await unset.config_changed(frozenset({"client_id"})) is not True
+    await unset.shutdown()
+
+    embedder = FakeEmbedder()
+    plugin, _ = await set_up(embedder, client_id="x")
+    await plugin._provision_task
+
+    assert embedder.asked.is_set()
+    assert downloads == [INDEX_URL]

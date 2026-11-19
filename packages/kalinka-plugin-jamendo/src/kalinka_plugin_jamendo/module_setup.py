@@ -52,7 +52,8 @@ class KalinkaPluginJamendo(InputModulePlugin):
         logger.info("Setting up Jamendo input module")
         self._client = await get_client(config)
         self._mood_index = None
-        if config.ai_search_enabled:
+        # Nothing on Jamendo works without a client_id, so nothing is fetched for it.
+        if config.ai_search_enabled and config.client_id:
             self._mood_index = JamendoMoodIndex(
                 config.ai_index_path,
                 config.ai_index_url or None,
