@@ -79,12 +79,16 @@ void OutputStage::onUpstreamState(const StreamState &state) {
   StreamState shown = state;
   if (state.streamInfo && state.streamInfo->streamType == StreamType::FRAMES) {
     const StreamAudioFormat &source = state.streamInfo->format;
-    const bool fromDsd = convertedFromDsd(*state.streamInfo);
+    const auto &decoded = state.streamInfo->decodedFormat;
     std::lock_guard lock(presentedMutex);
     if (!presented || presented->source != source ||
-        presented->fromDsd != fromDsd)
+        presented->decoded != decoded) {
+      const auto output = chooseOutput(source, device, kPcmDeviceChannels);
       presented = Presented{
-          source, chooseOutput(source, device, kPcmDeviceChannels), fromDsd};
+          source, decoded, output, convertedFromDsd(*state.streamInfo),
+          decoded.has_value() || (isFloat(source.sampleFormat) &&
+                                  !isFloat(output.format))};
+    }
     auto &format = shown.streamInfo->format;
     format.sampleFormat = presented->output.format;
     // Quantised, float keeps the bits it is dithered at.
@@ -115,10 +119,10 @@ OutputStage::describe(const StreamAudioFormat &decoded,
   std::vector<SignalStep> steps;
   const double gain = dsdGain.load();
   if (convertedFromDsd(decoded, source) && gain != 1.0)
-    steps.push_back({"dsd_gain", "DSD gain",
+    steps.push_back({signal_step::kDsdGain, "DSD gain",
                      std::format("{:+.1f} dB", 20 * std::log10(gain))});
   if (isFloat(source.sampleFormat) && !isFloat(output.sampleFormat))
-    steps.push_back({"dither", "Dither",
+    steps.push_back({signal_step::kDither, "Dither",
                      std::format("TPDF at {} bits", output.bitsPerSample)});
   return steps;
 }
@@ -172,7 +176,7 @@ size_t OutputStage::read(void *data, size_t size) {
     throw std::runtime_error("No output stage for " +
                              std::to_string(source.channels) + " channels");
   follow(*now);
-  if (!now->fromDsd && ramp.holding(1.0) && fade.holding(1.0) &&
+  if (!now->processed && ramp.holding(1.0) && fade.holding(1.0) &&
       now->output.format == source.sampleFormat)
     return upstream->read(data, size);
 
@@ -202,9 +206,9 @@ void OutputStage::produce(const Presented &now, const uint8_t *in,
   const size_t inFrame = frameBytes(from, channels);
   const size_t outFrame = frameBytes(to, channels);
   // Integer to a wider container is exact; float to integer is quantised.
-  // Converted DSD is metered, so it is quantised even onto float.
+  // What is metered is quantised even onto float.
   const bool exact =
-      !now.fromDsd && (from == to || (!isFloat(from) && !isFloat(to)));
+      !now.processed && (from == to || (!isFloat(from) && !isFloat(to)));
   const unsigned rate = now.source.sampleRate;
   for (size_t at = 0; at < frames;) {
     const auto span = take(frames - at);
@@ -219,11 +223,13 @@ void OutputStage::produce(const Presented &now, const uint8_t *in,
     } else {
       const auto began = std::chrono::steady_clock::now();
       readPlanar(source, from, channels, span.frames, planar.planes());
-      truePeak.feed(planar.planes(), channels, span.frames, rate,
-                    std::max(std::abs(span.from), std::abs(span.to)));
+      if (now.processed)
+        truePeak.feed(planar.planes(), channels, span.frames, rate,
+                      std::max(std::abs(span.from), std::abs(span.to)));
       quantiser.pack(planar.planes(), channels, span.frames, span, to,
                      now.output.bits, dest);
-      load.add(std::chrono::steady_clock::now() - began, span.frames, rate);
+      if (now.processed)
+        load.add(std::chrono::steady_clock::now() - began, span.frames, rate);
     }
     at += span.frames;
   }

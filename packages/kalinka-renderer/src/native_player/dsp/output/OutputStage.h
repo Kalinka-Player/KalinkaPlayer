@@ -33,9 +33,10 @@
  * upstream converted to PCM is raised by the DSD gain as well, which ramps as
  * the volume does. A fade multiplies the volume and goes through the
  * Quantiser the same way. DSD and DoP pass untouched, and refuse any gain but
- * unity. What goes through the Quantiser is metered, converted DSD always:
- * its clipped samples and true peak since the source began, and the time
- * taken.
+ * unity. Audio a stage upstream changed, or float quantised here, is what a
+ * signal path reports, and it is metered: its clipped samples and true peak
+ * since the source began, and the time taken. It goes through the Quantiser
+ * at unity onto float too.
  *
  * @note read(), the waits, the seeks and the fades belong to the one thread
  * that pulls audio. setGain(), setDsdGain(), the meters and describe() may
@@ -79,7 +80,9 @@ public:
   uint64_t clippedSamples() const { return clipped.load(); }
   /// Samples clamped since the source being read began.
   uint64_t clippedSinceSourceBegan() const {
-    return clipped.load() - clippedBefore.load();
+    // The mark before the count, which never falls below a mark already set.
+    const uint64_t before = clippedBefore.load();
+    return clipped.load() - before;
   }
   /// The highest true peak since the source being read began, linear.
   double peakSinceSourceBegan() const { return peak.load(); }
@@ -99,9 +102,14 @@ private:
   /// What upstream sends, and what is presented for it.
   struct Presented {
     StreamAudioFormat source;
+    /// What upstream says the samples were made from, when a stage changed
+    /// them.
+    std::optional<StreamAudioFormat> decoded;
     OutputChoice output;
     /// DSD converted to PCM upstream, which the DSD gain raises.
     bool fromDsd = false;
+    /// Changed upstream or quantised from float here: metered.
+    bool processed = false;
   };
 
   const std::vector<StreamAudioFormat> device;

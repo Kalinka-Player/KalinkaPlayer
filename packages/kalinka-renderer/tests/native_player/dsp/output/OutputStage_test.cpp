@@ -307,6 +307,15 @@ TEST(OutputStage, ConvertedDsdIsMeteredOntoAFloatDeviceAtUnityToo) {
   EXPECT_EQ(s.stage->takeLoad(), 0.0) << "nothing processed since";
 }
 
+TEST(OutputStage, PcmAtASoftwareVolumeIsNotMetered) {
+  Stage s(pcm(PCM16_LE), asBytes(std::vector<int16_t>(2 * 4000, 1 << 14)));
+  s.stage->setGain(0.5);
+  readAll(*s.stage, 4000);
+  EXPECT_EQ(s.stage->peakSinceSourceBegan(), 0.0)
+      << "no signal path reports it, so nothing is spent on it";
+  EXPECT_EQ(s.stage->takeLoad(), 0.0);
+}
+
 TEST(OutputStage, TheMetersStartOverWithEachSource) {
   Stage s(pcm(PCM_FLOAT64_LE), asBytes(std::vector<double>(2 * 4000, 2.0)),
           k24In32);

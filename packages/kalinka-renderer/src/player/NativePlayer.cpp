@@ -156,7 +156,13 @@ struct Knob {
   // Most are for a misbehaving card or link, not the settings page proper.
   renderer_pb::ConfigImportance importance =
       renderer_pb::CONFIG_IMPORTANCE_EXPERT;
+  // Opens the help, where knobs share it.
+  const char *helpLead = "";
 };
+
+constexpr const char *kConvertedDsdHelp =
+    "Used when DSD is converted to PCM: with Convert to PCM, and with "
+    "Automatic for tracks that do not play as native DSD.\n\n";
 
 constexpr const char *kFormatChangeHelp =
     "Some DACs need extra time or must be reopened after a format change. Adjust "
@@ -335,8 +341,6 @@ const Knob kDsdKnobs[] = {
      renderer_pb::CONFIG_FIELD_TYPE_ENUM,
      "",
      {},
-     "Used when DSD is converted to PCM: with Convert to PCM, and with "
-     "Automatic for tracks that do not play as native DSD.\n\n"
      "Each choice names two rates. Almost all DSD, DSD64 at 2.8 MHz and its "
      "multiples, converts to the first. The second is for DSD at 3.072 MHz "
      "and its multiples, which is rare.\n\n"
@@ -355,15 +359,14 @@ const Knob kDsdKnobs[] = {
      "not play: an output limited to 48, 96 and 192 kHz cannot play 2.8 MHz "
      "DSD.",
      kDsdPcmRates,
-     renderer_pb::CONFIG_IMPORTANCE_SIMPLE},
+     renderer_pb::CONFIG_IMPORTANCE_SIMPLE,
+     kConvertedDsdHelp},
     {"output.dsd_filter",
      "DSD to PCM filter",
      "Overrides the low-pass filter DSD is converted with.",
      renderer_pb::CONFIG_FIELD_TYPE_ENUM,
      "",
      {},
-     "Used when DSD is converted to PCM: with Convert to PCM, and with "
-     "Automatic for tracks that do not play as native DSD.\n\n"
      "DSD carries strong ultrasonic noise, rising with frequency above the "
      "audio band. The filter decides how much of it, and of any music above "
      "20 kHz, reaches the DAC.\n\n"
@@ -377,15 +380,14 @@ const Knob kDsdKnobs[] = {
      "At 88.2 kHz and below, the PCM rate limits the filter: see DSD to PCM "
      "rate.",
      kDsdFilters,
-     renderer_pb::CONFIG_IMPORTANCE_SIMPLE},
+     renderer_pb::CONFIG_IMPORTANCE_SIMPLE,
+     kConvertedDsdHelp},
     {"output.dsd_gain_db",
      "DSD to PCM level",
      "Raises DSD converted to PCM, which is recorded below PCM’s full scale.",
      renderer_pb::CONFIG_FIELD_TYPE_ENUM,
      "",
      {},
-     "Used when DSD is converted to PCM: with Convert to PCM, and with "
-     "Automatic for tracks that do not play as native DSD.\n\n"
      "DSD’s 0 dB is half its full modulation, and the SACD specification "
      "lets peaks reach 3.1 dB above it. Converted as it is, DSD plays about "
      "6 dB quieter than PCM.\n\n"
@@ -395,7 +397,9 @@ const Knob kDsdKnobs[] = {
      "it clip; the track’s stream information counts clipped samples.\n\n"
      "**0 dB** leaves the level as converted.\n\n"
      "A change applies at once, to the track playing too.",
-     kDsdGains},
+     kDsdGains,
+     renderer_pb::CONFIG_IMPORTANCE_EXPERT,
+     kConvertedDsdHelp},
 };
 
 // A section of the settings page that holds nothing but knobs.
@@ -507,7 +511,7 @@ void describe(renderer_pb::ConfigField &field, const Knob &knob) {
   field.set_path(knob.path);
   field.set_title(knob.title);
   field.set_description(knob.description);
-  field.set_help_details(knob.helpDetails);
+  field.set_help_details(std::string(knob.helpLead) + knob.helpDetails);
   field.set_type(knob.type);
   field.set_apply(readPerStream(knob.path) || appliesLive(knob.path)
                       ? renderer_pb::APPLY_COST_INSTANT
@@ -1195,6 +1199,10 @@ bool NativePlayer::applySetting(const std::string &path,
     error = "must not be negative";
     return false;
   }
+  // The playing graph takes a live key at once, and only the values it has.
+  if (appliesLive(path) && !knobTakes(path, value, error)) {
+    return false;
+  }
   if (setting->second == value) {
     return true;  // nothing to do, and nothing to interrupt
   }
@@ -1401,7 +1409,7 @@ void NativePlayer::fillCapabilities(renderer_pb::Capabilities &out) const {
   out.set_live_pcm(1);
   renderer_pb::DspCapabilities *dsp = out.mutable_dsp();
   dsp->set_dsd_to_pcm(true);
-  for (const char *kind : {"dsd_to_pcm", "dsd_gain", "dither"}) {
+  for (const char *kind : signal_step::kAll) {
     dsp->add_steps(kind);
   }
   dsp->set_max_output_channels(kPcmDeviceChannels);
