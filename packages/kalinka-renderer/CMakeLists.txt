@@ -149,6 +149,7 @@ add_library(kalinka_native_player STATIC
   src/native_player/dsp/dsd/DsdToPcm.cpp
   src/native_player/dsp/dsd/DsdToPcmProcessor.cpp
   src/native_player/dsp/dsd/DsdFilterSetting.cpp
+  src/native_player/dsp/dsd/DsdGainSetting.cpp
   src/native_player/dsp/dsd/DsdPcmRate.cpp
   src/native_player/dsp/dsd/Stage1.cpp
   src/native_player/dsp/fir/FirKernels.cpp
@@ -401,6 +402,7 @@ if(GTest_FOUND)
     tests/native_player/dsp/dsd/DsdToPcm_test.cpp
     tests/native_player/dsp/dsd/DsdToPcmProcessor_test.cpp
     tests/native_player/dsp/dsd/DsdFilterSetting_test.cpp
+    tests/native_player/dsp/dsd/DsdGainSetting_test.cpp
     tests/native_player/dsp/dsd/DsdPcmRate_test.cpp
     tests/native_player/dsp/dsd/Stage1_test.cpp
     tests/native_player/dsp/fir/FirFilters_test.cpp

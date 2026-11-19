@@ -301,6 +301,15 @@ const Choice kDsdFilters[] = {
     {"wide", "Wide", "Keeps as much as the PCM rate allows, noise included."},
 };
 
+const Choice kDsdGains[] = {
+    {"safe", "Safe, +2.8 dB",
+     "DSD’s highest specified peak lands just under full scale."},
+    {"0", "0 dB", "The level as converted."},
+    {"6", "+6 dB",
+     "DSD’s 0 dB lands at full scale, as many DACs play it. Loud recordings "
+     "clip."},
+};
+
 const Knob kDsdKnobs[] = {
     {"output.dsd_mode",
      "DSD output",
@@ -364,6 +373,24 @@ const Knob kDsdKnobs[] = {
      "rate.",
      kDsdFilters,
      renderer_pb::CONFIG_IMPORTANCE_SIMPLE},
+    {"output.dsd_gain_db",
+     "DSD to PCM level",
+     "Raises DSD converted to PCM, which is recorded below PCM’s full scale.",
+     renderer_pb::CONFIG_FIELD_TYPE_ENUM,
+     "",
+     {},
+     "Used when DSD is converted to PCM: with Convert to PCM, and with "
+     "Automatic for tracks that do not play as native DSD.\n\n"
+     "DSD’s 0 dB is half its full modulation, and the SACD specification "
+     "lets peaks reach 3.1 dB above it. Converted as it is, DSD plays about "
+     "6 dB quieter than PCM.\n\n"
+     "**Safe** raises it by 2.8 dB, so that the highest specified peak stays "
+     "just under full scale.\n\n"
+     "**+6 dB** brings DSD’s 0 dB to full scale, as many DACs do. Peaks above "
+     "it clip; the track’s stream information counts clipped samples.\n\n"
+     "**0 dB** leaves the level as converted.\n\n"
+     "A change applies at once, to the track playing too.",
+     kDsdGains},
 };
 
 // A section of the settings page that holds nothing but knobs.
@@ -414,6 +441,7 @@ const std::map<std::string, std::string> &graphKeys() {
       {"output.dsd_mode", "output.dsd_mode"},
       {"output.dsd_pcm_rate", "dsd.pcm_rate"},
       {"output.dsd_filter", "dsd.filter"},
+      {"output.dsd_gain_db", "dsd.gain_db"},
       {"output.latency_ms", "output.alsa.latency_ms"},
       {"output.period_ms", "output.alsa.period_ms"},
       {"output.format_change_delay_ms",
@@ -438,6 +466,11 @@ const std::map<std::string, std::string> &graphKeys() {
 bool readPerStream(const std::string &path) {
   const auto key = graphKeys().find(path);
   return key != graphKeys().end() && AudioPlayer::isStreamKey(key->second);
+}
+
+// Graph keys the built graph takes as they change, what plays included.
+bool appliesLive(const std::string &path) {
+  return path == "output.dsd_gain_db";
 }
 
 // Card mixer volume on a card without one leaves nothing to set the level, and
@@ -471,7 +504,7 @@ void describe(renderer_pb::ConfigField &field, const Knob &knob) {
   field.set_description(knob.description);
   field.set_help_details(knob.helpDetails);
   field.set_type(knob.type);
-  field.set_apply(readPerStream(knob.path)
+  field.set_apply(readPerStream(knob.path) || appliesLive(knob.path)
                       ? renderer_pb::APPLY_COST_INSTANT
                       : renderer_pb::APPLY_COST_INTERRUPTS_PLAYBACK);
   field.set_importance(knob.importance);
@@ -519,6 +552,7 @@ const std::map<std::string, std::string> &NativePlayer::defaultSettings() {
       {"output.dsd_mode", "disabled"},
       {"output.dsd_pcm_rate", "auto"},
       {"output.dsd_filter", "auto"},
+      {"output.dsd_gain_db", "safe"},
       {"output.session_start_volume_ceiling_percent", "30"},
       // What the server shipped while it did the playing, rather than the
       // sink's own 100/25.
@@ -1126,6 +1160,10 @@ bool NativePlayer::applySetting(const std::string &path,
   if (readPerStream(path)) {
     if (player_) {
       player_->setStreamConfig(graphKeys().at(path), value);
+    }
+  } else if (appliesLive(path)) {
+    if (player_) {
+      player_->setDsdGain(value);
     }
   } else if (graphKeys().contains(path)) {
     rebuildPlayer();
