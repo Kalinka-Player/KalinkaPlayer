@@ -239,13 +239,17 @@ async def test_a_box_without_a_client_id_fetches_nothing_for_mood_search(
 ):
     """Jamendo answers nothing without one, so neither the index nor the
     text model is downloaded on its behalf."""
-    embedder = HeldEmbedder()
+    embedder = FakeEmbedder()
     plugin, _ = await set_up(embedder, client_id="")
+    # Lets a provisioning task, were one started, reach its downloads.
+    await asyncio.wait_for(
+        asyncio.gather(*(asyncio.all_tasks() - {asyncio.current_task()})), 5
+    )
 
-    assert plugin._provision_task is None
-    assert plugin._mood_index is None
     assert downloads == []
     assert not embedder.asked.is_set()
+    assert plugin._provision_task is None
+    assert plugin._mood_index is None
 
 
 async def test_a_box_without_a_client_id_is_asked_for_one_not_for_mood_search(
