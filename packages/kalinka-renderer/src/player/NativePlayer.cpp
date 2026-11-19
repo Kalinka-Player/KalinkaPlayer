@@ -12,6 +12,7 @@
 #include <sstream>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 
 #include "../config/ConfigContributor.h"
 #include "../config/SettingsPersistence.h"
@@ -969,6 +970,9 @@ void NativePlayer::onStreamState(const StreamState &state) {
     }
     changed->set_at_unix_ms(nowUnixMs());
     emit(env);
+    for (const PlaybackEvent &event : std::exchange(unheardEvents_, {})) {
+      emitEvent(event);
+    }
     return;
   }
 
@@ -1014,6 +1018,13 @@ void NativePlayer::restatePlayback() {
 }
 
 void NativePlayer::emitEvent(const PlaybackEvent &event) {
+  if (event.stream && currentId_ && *event.stream > *currentId_) {
+    std::erase_if(unheardEvents_, [&event](const PlaybackEvent &held) {
+      return held.kind.index() == event.kind.index();
+    });
+    unheardEvents_.push_back(event);
+    return;
+  }
   const std::optional<std::string> token = tokenFor(event.stream);
   if (event.stream && !token) {
     return;  // about a source already let go of

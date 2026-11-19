@@ -36,7 +36,8 @@
  * the source began.
  *
  * @note read(), the waits, the seeks and the fades belong to the one thread
- * that pulls audio. setGain() and setDsdGain() may come from any thread.
+ * that pulls audio. setGain(), setDsdGain() and describe() may come from any
+ * thread.
  */
 class OutputStage : public AudioGraphOutputNode,
                     public AudioGraphInputNode,
