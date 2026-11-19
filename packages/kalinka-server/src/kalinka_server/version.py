@@ -316,6 +316,14 @@ def get_version() -> str:
 # missing_packages moved. Jamendo lists `ai_search` while its mood index is
 # being set up and once it is ready, and drops it if setting the index up
 # fails, when the module turns WARNING with the reason in error_message.
+# Also 0.24: playback state's `audio_info.output` carries `signal_path`, what
+# the renderer did to the decoded samples on the way to the device: `steps`
+# in order, each {kind, name, summary}, and the `latency_ms` they add; null
+# when it did nothing, and always from a renderer that predates it. The queue
+# channels send `dsp_meters_changed` {meters: {clipped_samples,
+# true_peak_dbfs, load}} at most twice a second while a signal path processes
+# what plays, for the current renderer's playing source only; the replayed
+# state carries none.
 REST_API_VERSION = "0.24"
 
 

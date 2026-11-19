@@ -318,7 +318,7 @@ class RendererPlayer:
             or record is None
             or not record.server_addr
             or record.capabilities is None
-            or record.capabilities.live_pcm < 1
+            or record.capabilities.output.live_pcm < 1
         ):
             raise OutputUnavailable(
                 "This renderer needs an upgrade to play live PCM audio"

@@ -153,6 +153,7 @@ class PlaybackSession:
         self._open_future: Optional[asyncio.Future] = None
         self._callbacks: list[Callable] = []
         self._state_callbacks: list[Callable] = []
+        self._meters_callbacks: list[Callable] = []
         self._suspend_callbacks: list[Callable] = []
         self._timeout_s = timeout_s
 
@@ -174,6 +175,12 @@ class PlaybackSession:
     ) -> None:
         """Called as callback(session, change, snapshot) on every change."""
         self._state_callbacks.append(callback)
+
+    def on_meters(self, callback: Callable[["PlaybackSession", dict], Any]) -> None:
+        """Called as callback(session, meters) with each DspMeters report, as
+        :func:`renderer_state.dsp_meters_to_dict` has it. Kept nowhere: a
+        report measures, it does not state."""
+        self._meters_callbacks.append(callback)
 
     def on_suspended(self, callback: Callable[["PlaybackSession"], Any]) -> None:
         """Called when the link carrying this session drops and it is kept for
@@ -317,6 +324,10 @@ class PlaybackSession:
     def _apply_state(self, change: StateChange, message: Any) -> None:
         self.snapshot = renderer_state.apply(self.snapshot, change, message)
         _fanout(list(self._state_callbacks), (self, change, self.snapshot), "state")
+
+    def _report_meters(self, message: Any) -> None:
+        meters = renderer_state.dsp_meters_to_dict(message)
+        _fanout(list(self._meters_callbacks), (self, meters), "meters")
 
     def _suspend(self) -> None:
         self._ws = None
@@ -605,6 +616,13 @@ class SessionPool:
         session = self._session_for(renderer_id, session_id, change.value)
         if session is not None:
             session._apply_state(change, message)
+
+    def handle_meters(
+        self, renderer_id: str, *, session_id: str, message: Any
+    ) -> None:
+        session = self._session_for(renderer_id, session_id, "dsp_meters")
+        if session is not None:
+            session._report_meters(message)
 
     def _session_for(
         self, renderer_id: str, session_id: str, what: str

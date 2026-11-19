@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from .api import BaseEvent, BaseState
 
 from .datamodel import (
+    DspMeters,
     Track,
     PlaybackControl,
     PlaybackState,
@@ -32,6 +33,7 @@ class PlayQueueEventType(Enum):
     ModulesChanged = "modules_changed"
     ReceiversChanged = "receivers_changed"
     VolumesChanged = "volumes_changed"
+    DspMetersChanged = "dsp_meters_changed"
 
 
 class RendererDescriptor(BaseModel):
@@ -269,3 +271,14 @@ class VolumesChangedEvent(PlayQueueEvent):
 
     event_type: PlayQueueEventType = PlayQueueEventType.VolumesChanged
     volumes: List[VolumeDescriptor]
+
+
+class DspMetersChangedEvent(PlayQueueEvent):
+    """SDK 3.23: what the current renderer's DSP measured of the source that
+    is playing, at most twice a second while a signal path processes it.
+
+    A measurement, not state: ``PlayQueueState`` keeps none of it, so a replay
+    carries no meters and a client shows none until the next event."""
+
+    event_type: PlayQueueEventType = PlayQueueEventType.DspMetersChanged
+    meters: DspMeters

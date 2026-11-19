@@ -63,6 +63,23 @@ class DeviceInfo:
 
 
 @dataclass
+class SignalStep:
+    """One step the renderer takes the decoded samples through."""
+
+    kind: str = ""
+    name: str = ""
+    summary: str = ""
+
+
+@dataclass
+class SignalPath:
+    """What the renderer does between the decoder and the device, in order."""
+
+    steps: list[SignalStep] = field(default_factory=list)
+    latency_ms: float = 0.0
+
+
+@dataclass
 class StreamInfo:
     format: AudioFormatInfo = field(default_factory=AudioFormatInfo)
     # The output side; differs from `format` when the device resamples or
@@ -70,6 +87,8 @@ class StreamInfo:
     device: Optional[DeviceInfo] = None
     # None, never 0, when the renderer cannot tell: 0 reads as "already ended".
     duration_ms: Optional[int] = None
+    # None when the samples reach `device` as decoded.
+    signal_path: Optional[SignalPath] = None
 
     @property
     def lossless_path(self) -> bool:
@@ -81,9 +100,12 @@ class StreamInfo:
         renderer whose device took something other than what was decoded.
 
         The volume is deliberately not part of it — it is reported with the
-        device that applies it, where it is current.
+        device that applies it, where it is current. A signal path with steps
+        is: the renderer said it changed the samples, whatever the formats.
         """
         if self.device is None or self.device.access is not DeviceAccess.EXCLUSIVE:
+            return False
+        if self.signal_path is not None and self.signal_path.steps:
             return False
         decoded, device = self.format, self.device.format
         # Zero is "not reported", and two silences are not an agreement.
@@ -181,9 +203,26 @@ def to_device_info(info: Optional[dict]) -> Optional[DeviceInfo]:
     )
 
 
+def to_signal_path(path: Optional[dict]) -> Optional[SignalPath]:
+    if path is None:
+        return None
+    return SignalPath(
+        steps=[
+            SignalStep(
+                kind=step.get("kind", ""),
+                name=step.get("name", ""),
+                summary=step.get("summary", ""),
+            )
+            for step in path.get("steps", [])
+        ],
+        latency_ms=path.get("latency_ms", 0.0),
+    )
+
+
 def to_stream_info(snapshot: dict) -> Optional[StreamInfo]:
     """A renderer may know the decoded format, the device's, or only the
-    length, so any one of the three is enough to report something."""
+    length, so any one of the three is enough to report something. The signal
+    path is not: it describes the way to a device."""
     decoded = to_audio_format(snapshot.get("format"))
     device = to_device_info(snapshot.get("device_info"))
     duration_ms = snapshot.get("duration_ms")
@@ -193,6 +232,7 @@ def to_stream_info(snapshot: dict) -> Optional[StreamInfo]:
         format=decoded or AudioFormatInfo(),
         device=device,
         duration_ms=duration_ms,
+        signal_path=to_signal_path(snapshot.get("signal_path")),
     )
 
 

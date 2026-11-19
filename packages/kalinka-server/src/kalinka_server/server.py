@@ -78,6 +78,7 @@ from .demo_mode import (
     page_banners,
 )
 from .demo_renderer import DemoRenderer
+from .dsp_meters import DspMetersRelay
 from .log_export_route import register_log_export_routes
 from .log_export_service import ExportManager
 from .log_sources import FileCatalog, JournalCatalog
@@ -648,6 +649,11 @@ async def create_app(
                 renderer_id=active, selected_renderer_id=selected
             )
         ),
+    )
+    app.state.dsp_meters = DspMetersRelay(
+        renderer_registry,
+        renderer_sessions,
+        player_context.playqueue_eventbus.dispatch,
     )
 
     # Search-suggestion engine: validated against the user's own library

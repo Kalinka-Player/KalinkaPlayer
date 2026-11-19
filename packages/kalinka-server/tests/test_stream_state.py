@@ -3,12 +3,16 @@
 from kalinka_server import renderer_state
 from kalinka_server.playback_view import to_audio_info
 from kalinka_server.stream_state import (
+    SignalPath,
+    SignalStep,
     StreamState,
     AudioGraphNodeState,
     StreamErrorSource,
     from_snapshot,
     to_stream_id,
 )
+
+from tests.sim_renderer import dsd_conversion
 
 
 def test_a_playing_snapshot_carries_position_and_format():
@@ -229,3 +233,89 @@ def test_client_sees_dsd_source_and_dop_carrier_separately():
     assert audio.sample_format == "DSD"
     assert audio.output.sample_format == "DoP_S24_LE"
     assert audio.output.lossless_path
+
+
+_DSD64 = {"sample_rate_hz": 2822400, "bits_per_sample": 1, "channels": 2,
+          "sample_format": "DSD"}
+_PCM_176 = {"sample_rate_hz": 176400, "bits_per_sample": 24, "channels": 2,
+            "sample_format": "S32_LE"}
+_CONVERTING_DSD = renderer_state.signal_path_to_dict(dsd_conversion())
+
+
+def _converting(signal_path):
+    return from_snapshot(
+        renderer_state.empty_state()
+        | {
+            "playback_state": "playing",
+            "format": _DSD64,
+            "device_info": {"format": _PCM_176, "access": "exclusive"},
+            "signal_path": signal_path,
+        }
+    )
+
+
+def test_the_signal_path_rides_with_the_stream():
+    state = _converting(_CONVERTING_DSD)
+
+    assert state.stream_info.signal_path == SignalPath(
+        steps=[
+            SignalStep("dsd_to_pcm", "DSD to PCM",
+                       "DSD64 to 176.4 kHz, 30 kHz filter"),
+            SignalStep("dsd_gain", "DSD gain", "+2.8 dB"),
+            SignalStep("dither", "Dither", "TPDF at 24 bits"),
+        ],
+        latency_ms=0.3,
+    )
+
+
+def test_a_step_at_the_decoded_format_is_not_lossless():
+    """A step that keeps the format still changes the samples."""
+    snapshot = renderer_state.empty_state() | {
+        "playback_state": "playing",
+        "format": _CD,
+        "device_info": {"format": _CD, "access": "exclusive"},
+        "signal_path": {
+            "steps": [{"kind": "peq", "name": "EQ", "summary": "3 bands"}],
+            "latency_ms": 0.0,
+        },
+    }
+
+    assert not from_snapshot(snapshot).stream_info.lossless_path
+
+
+def test_samples_left_as_decoded_have_no_signal_path():
+    assert _converting(None).stream_info.signal_path is None
+
+
+def test_clients_see_the_signal_path_on_the_output():
+    output = to_audio_info(_converting(_CONVERTING_DSD).stream_info).output
+
+    assert output.model_dump(mode="json")["signal_path"] == _CONVERTING_DSD
+    assert not output.lossless_path
+
+
+def test_clients_see_no_signal_path_where_none_was_reported():
+    output = to_audio_info(_converting(None).stream_info).output
+
+    assert output.signal_path is None
+    assert output.model_dump(mode="json")["signal_path"] is None
+
+
+def test_an_older_renderers_output_reads_as_it_always_has():
+    """What it reported before, with nothing said of a signal path."""
+    snapshot = renderer_state.empty_state() | {
+        "playback_state": "playing",
+        "format": _CD,
+        "device_info": {"format": _CD, "access": "exclusive"},
+    }
+    output = to_audio_info(from_snapshot(snapshot).stream_info).output
+
+    assert output.model_dump(mode="json") == {
+        "sample_format": "",
+        "sample_rate": 44100,
+        "bits_per_sample": 16,
+        "channels": 2,
+        "access": "exclusive",
+        "lossless_path": True,
+        "signal_path": None,
+    }

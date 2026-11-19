@@ -16,9 +16,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Awaitable, Callable, Optional
 
-from kalinka_plugin_sdk.direct_playback import OutputCapabilities
 from kalinka_plugin_sdk.events import RendererDescriptor
 
+from .renderer_capabilities import RendererCapabilities
 from .renderer_link import RendererLink
 from .renderer_prefs import RendererPreferences
 
@@ -64,8 +64,8 @@ class RendererRecord:
     upgrade_supported: bool = False
     # Runs on this server's machine, whose own installer run upgrades it.
     local: bool = False
-    # What it last said it can play; None from a renderer too old to say.
-    capabilities: Optional[OutputCapabilities] = None
+    # What it last said it can do; None from a renderer too old to say.
+    capabilities: Optional[RendererCapabilities] = None
     # The renderer's connection while it has one; compared by identity.
     session: Optional[RendererLink] = field(default=None, repr=False)
 
@@ -166,7 +166,7 @@ class RendererRegistry:
         compatible: bool = True,
         upgrade_supported: bool = False,
         local: bool = False,
-        capabilities: Optional[OutputCapabilities] = None,
+        capabilities: Optional[RendererCapabilities] = None,
     ) -> RegistrationKind:
         self._cancel_reap(renderer_id)
         now = time.time()
@@ -328,9 +328,9 @@ class RendererRegistry:
         self,
         renderer_id: str,
         session: RendererLink,
-        capabilities: OutputCapabilities,
+        capabilities: RendererCapabilities,
     ) -> None:
-        """What the renderer can play changed; a replaced link is not believed."""
+        """What the renderer can do changed; a replaced link is not believed."""
         record = self._renderers.get(renderer_id)
         if record is None or record.session is not session:
             return

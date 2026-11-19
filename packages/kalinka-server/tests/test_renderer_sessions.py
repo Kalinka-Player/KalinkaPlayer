@@ -609,6 +609,65 @@ async def test_state_for_another_session_is_ignored():
     assert session.snapshot["playback_state"] == "unspecified"
 
 
+def meters_message(token="track-1"):
+    return pb.DspMeters(
+        source_token=token,
+        clipped_samples=2,
+        true_peak_dbfs=-1.5,
+        load=0.01,
+        at_unix_ms=1700000000500,
+    )
+
+
+@pytest.mark.asyncio
+async def test_meters_reach_the_session_and_change_none_of_its_state():
+    registry, pool = make_pool()
+    ws = FakeWs(pool)
+    register(registry, ws)
+    session = await pool.open(RENDERER_ID)
+    ws.send_state(session.session_id, StateChange.SNAPSHOT, snapshot_message())
+    before = dict(session.snapshot)
+    seen = []
+    session.on_meters(lambda s, meters: seen.append((s, meters)))
+
+    pool.handle_meters(
+        RENDERER_ID, session_id=session.session_id, message=meters_message()
+    )
+
+    assert seen == [
+        (
+            session,
+            {
+                "source_token": "track-1",
+                "clipped_samples": 2,
+                "true_peak_dbfs": -1.5,
+                "load": 0.01,
+                "at_unix_ms": 1700000000500,
+            },
+        )
+    ]
+    assert session.snapshot == before
+
+
+@pytest.mark.asyncio
+async def test_meters_for_another_session_are_ignored():
+    registry, pool = make_pool()
+    ws = FakeWs(pool)
+    register(registry, ws)
+    session = await pool.open(RENDERER_ID)
+    seen = []
+    session.on_meters(lambda s, meters: seen.append(meters))
+
+    pool.handle_meters(
+        RENDERER_ID, session_id="some-other-session", message=meters_message()
+    )
+    pool.handle_meters(
+        "another-renderer", session_id=session.session_id, message=meters_message()
+    )
+
+    assert seen == []
+
+
 @pytest.mark.asyncio
 async def test_a_resumed_session_takes_commands_again():
     registry, pool = make_pool()
