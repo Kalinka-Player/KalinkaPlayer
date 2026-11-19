@@ -1,6 +1,6 @@
 ## KalinkaPlayer Development Makefile
 
-.PHONY: supervisor-build supervisor-test supervisor-deb clean test test-playqueue test-plugin-template system-test install-test bench-sdd lint help venv-env require-venv kalinka-server-deb kalinka-server-rpm kalinka-plugins-deb build-all-deb copy-debs build-env dev-setup dev-run renderer-build renderer-clean renderer-deb renderer-rpm proto image-rpi234 image-rpi5 image-rpi234-display image-rpi5-display image-amd64 image-test
+.PHONY: supervisor-build supervisor-test supervisor-deb clean test test-playqueue test-plugin-template system-test system-test-large install-test bench-sdd lint help venv-env require-venv kalinka-server-deb kalinka-server-rpm kalinka-plugins-deb build-all-deb copy-debs build-env dev-setup dev-run renderer-build renderer-clean renderer-deb renderer-rpm proto image-rpi234 image-rpi5 image-rpi234-display image-rpi5-display image-amd64 image-test
 
 ## --- Local-from-source dev environment (no root, no systemd) ------------------
 ## Everything lands in a per-user fakeroot under $(KALINKA_PREFIX) instead of the
@@ -194,6 +194,15 @@ bench-sdd: require-venv
 system-test: require-venv
 	@KALINKA_SYSTEM_TEST=1 $(PY) -m pytest tests/system -o log_cli=true --log-cli-level=INFO $(ARGS)
 
+## Large-library system test (tests/system/test_large_library.py): the real
+## indexer builds a library of 19,000 synthetic tracks, then real albums are
+## enriched, embedded and moved beside it while a probe checks that nothing
+## keeps the library's write lock out of reach. Opt-in on its own: it takes
+## minutes more, and longer on a disk (ARGS=--basetemp=<folder>). Needs the
+## network, not podman.
+system-test-large: require-venv
+	@KALINKA_SYSTEM_TEST=1 KALINKA_SYSTEM_TEST_LARGE=1 $(PY) -m pytest tests/system/test_large_library.py -o log_cli=true --log-cli-level=INFO $(ARGS)
+
 ## Release installer test (tests/install): scripts/install-release.sh on
 ## throwaway Debian 13 systems, plain and DietPi-like, against the latest
 ## published release, and on an Ubuntu 22.04 whose Python it has to refuse, one
@@ -324,6 +333,7 @@ help:
 	@echo "  dev-setup         One-shot local setup: venv + editable installs + test tools + ~/kalinka fakeroot"
 	@echo "  dev-run           Run the server in the foreground against the fakeroot (Ctrl-C to stop)"
 	@echo "  system-test       Full-stack indexing test: fakeroot + Samba in podman + real enrichment/AI search"
+	@echo "  system-test-large New albums arriving in a 19,000-track library; nothing may be locked out of it"
 	@echo "  install-test      Run install-release.sh on throwaway Debian 13 and Ubuntu 22.04 systems in podman or docker"
 	@echo "  bench-sdd         Retrieval-quality benchmark on the Song Describer Dataset (benchmarks/sdd)"
 	@echo ""
