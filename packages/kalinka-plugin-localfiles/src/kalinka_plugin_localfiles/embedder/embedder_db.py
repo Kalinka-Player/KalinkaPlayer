@@ -283,21 +283,16 @@ class AsyncEmbedderDb(LibraryDb):
 
         async with self._open() as conn:
             # Every indexed track, however untagged — sentinels are handled
-            # downstream (blanked in text, skipped in aggregates).
+            # downstream (blanked in text, skipped in aggregates). The unique
+            # key skips queued jobs; probing them by entity_id is quadratic.
             cursor = await conn.execute(
                 """
                 INSERT OR IGNORE INTO embedding_jobs
                     (entity_type, entity_id, stage, model_version)
                 SELECT 'track', t.id, 'clap_audio', ?
                 FROM tracks t
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM embedding_jobs j
-                    WHERE j.entity_id = t.id
-                      AND j.stage = 'clap_audio'
-                      AND j.model_version = ?
-                  )
                 """,
-                (clap_version, clap_version),
+                (clap_version,),
             )
             inserted += cursor.rowcount
 
