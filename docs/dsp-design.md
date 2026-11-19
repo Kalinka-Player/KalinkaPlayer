@@ -385,7 +385,7 @@ Phase 1:
 
 | Path | Type | Values | Default | Apply cost | Importance |
 |---|---|---|---|---|---|
-| `output.dsd_mode` | ENUM | gains `pcm`; `auto` becomes native when verified, else PCM | `disabled` | interrupts playback (as now) | simple |
+| `output.dsd_mode` | ENUM | gains `pcm`; `auto` becomes native when verified, else PCM | `auto` | interrupts playback (as now) | simple |
 | `output.dsd_pcm_rate` | ENUM | `auto`, `1x`, `2x`, `4x`, `8x` of 44.1/48 kHz, by source family | `auto` | interrupts playback: the converter is built with it | simple |
 | `output.dsd_filter` | ENUM | `auto` (30 kHz for DSD64, 50 kHz above), `30k`, `50k`, `wide` | `auto` | interrupts playback: the converter is built with it | simple |
 | `output.dsd_gain_db` | ENUM | `0`, `safe`, `6` | `safe` | instant, ramped | expert |

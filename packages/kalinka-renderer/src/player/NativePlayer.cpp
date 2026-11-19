@@ -559,7 +559,7 @@ const std::map<std::string, std::string> &NativePlayer::defaultSettings() {
       {"output.driver", "alsa"},
       {"output.device", "default"},
       {"output.volume_mode", "auto"},
-      {"output.dsd_mode", "disabled"},
+      {"output.dsd_mode", "auto"},
       {"output.dsd_pcm_rate", "auto"},
       {"output.dsd_filter", "auto"},
       {"output.dsd_gain_db", "safe"},
@@ -1073,11 +1073,13 @@ void NativePlayer::fillConfig(renderer_pb::ConfigSection &out) const {
   device->set_help_details(
       "Direct output requires the sound card to support the track’s sample rate "
       "and format. Converted output adapts unsupported formats. Shared output "
-      "allows other apps to play audio too. Changing the device turns DSD output "
-      "off, as the new card may not support it, and switches Card mixer volume to "
-      "Automatic when the new card has no volume control.");
+      "allows other apps to play audio too. Changing the device sets Native DSD "
+      "and DoP back to Automatic, as the new card may not support them, and "
+      "switches Card mixer volume to Automatic when the new card has no volume "
+      "control.");
   device->set_description(
-      "Changing the device interrupts playback and sets DSD output to Disabled.");
+      "Changing the device interrupts playback and sets Native DSD and DoP back "
+      "to Automatic.");
   device->set_type(renderer_pb::CONFIG_FIELD_TYPE_ENUM);
   device->set_value(settings_.at("output.device"));
   device->set_default_value("default");
@@ -1236,7 +1238,11 @@ bool NativePlayer::applySetting(const std::string &path,
 
   setting->second = value;
   if (path == "output.device") {
-    settings_.at("output.dsd_mode") = "disabled";
+    // Native DSD and DoP were chosen for the old card; Automatic probes each.
+    std::string &dsdMode = settings_.at("output.dsd_mode");
+    if (dsdMode == "native" || dsdMode == "dop") {
+      dsdMode = "auto";
+    }
     std::string &volumeMode = settings_.at("output.volume_mode");
     if (volumeMode == "hardware" && !cardHasVolume(value)) {
       volumeMode = "auto";

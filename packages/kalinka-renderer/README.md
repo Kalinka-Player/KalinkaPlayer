@@ -82,30 +82,32 @@ output format reported during playback, not only the device's maximum
 capability summary. Logo qualification also requires JAS licensing and the
 applicant's listening evaluation process.
 
-DSF (`.dsf`) and uncompressed DSDIFF (`.dff`) play as mono/stereo DSD through
-a direct ALSA hardware output. Select **DSD output** in renderer settings:
-Disabled (default), Automatic (verified native DSD only), Native DSD, or DoP.
-Use **Fixed** volume and set the listening level on your amplifier. Software
-volume, PCM conversion and resampling are not available for DSD. The renderer
-does not silently bypass an active volume control. DSDIFF metadata chunks
-before the audio are skipped, as long as the audio starts within the first
-64 MB of the file.
+DSF (`.dsf`) and uncompressed DSDIFF (`.dff`) play as mono/stereo DSD, or
+converted to PCM. **DSD output** in renderer settings chooses how: Automatic
+(default), Native DSD, DoP, Convert to PCM, or Disabled. Automatic sends native
+DSD when the DAC takes the track's rate as DSD and the volume is **Fixed**, and
+converts to PCM otherwise; it never picks DoP. Native DSD and DoP need a direct
+ALSA hardware output and **Fixed** volume, so set the listening level on your
+amplifier: the renderer does not silently bypass an active volume control.
+Converted DSD plays on any output that supports a rate it converts to, with any
+volume control. DSDIFF metadata chunks before the audio are skipped, as long as
+the audio starts within the first 64 MB of the file.
 
 **Bit depth** and **Sample rate** show the selected output's maximum PCM
 capabilities, for example **Up to 24 bit** and **Up to 192 kHz**. These are
 read-only summaries; unavailable capabilities are shown as **Unavailable**.
 A busy device may use its last successful probe; playback checks the actual
-hardware again. Changing the output device resets DSD to Disabled, so a DoP
-selection for one DAC does not carry over to another.
+hardware again. Changing the output device sets Native DSD and DoP back to
+Automatic, so a DoP selection for one DAC does not carry over to another.
 
 DSD64/128/256 describe the source rate, while native DSD and DoP describe its
 transport. Packing preserves the original bits and rate. For example, DSD64
 uses a 176.4 kHz DoP carrier; DSD128 needs 352.8 kHz and DSD256 needs 705.6 kHz.
 DoP needs at least 24 significant carrier bits. A compatible PCM carrier does
 not establish that the DAC understands DoP: select DoP only for a DAC that
-does. Automatic never assumes DoP support. Unsupported rates or layouts
-produce a playback error without a PCM fallback. DST-compressed DFF, SACD
-ISOs and multichannel playback are not supported.
+does. Automatic never assumes DoP support. Under Native DSD or DoP, a rate or
+layout the DAC does not take is a playback error, with no fallback to PCM.
+DST-compressed DFF, SACD ISOs and multichannel playback are not supported.
 
 Source state reports the one-bit DSD rate separately from the output's packed
 frame rate. Duration, seeking and HTTP ranges use the same playback graph as
@@ -131,7 +133,7 @@ Framing carries at most 24 significant PCM bits, including when ALSA accepts
 a 32-bit container. True 32-bit PCM is rejected to avoid silent truncation.
 The framing device reopens on format changes so its channel status carries
 the new rate and word length. HDMI DoP still requires **Fixed** volume and
-explicit **DoP** selection; Automatic only attempts native DSD.
+explicit **DoP** selection; Automatic converts to PCM instead.
 
 ## Build
 
@@ -231,7 +233,10 @@ the default is written to `config_overrides` in the state directory.
 | `output.device` | ALSA PCM to open, chosen from the devices enumerated at request time. |
 | `output.bit_depth` | Read-only maximum significant PCM bit depth for the selected output, such as `Up to 24 bit`. |
 | `output.sample_rate` | Read-only maximum PCM sample rate for the selected output, such as `Up to 192 kHz`. |
-| `output.dsd_mode` | `disabled`, `auto` (native only), `native`, or explicitly selected `dop`. Requires fixed volume and direct hardware. Changing it stops playback, and every connected Core is told whether DSD is now taken. |
+| `output.dsd_mode` | `auto` (default: native DSD where the DAC and Fixed volume allow, otherwise PCM), `native`, `dop`, `pcm` or `disabled`. Native DSD and DoP require fixed volume and direct hardware. Changing it stops playback, and every connected Core is told whether DSD is now taken. |
+| `output.dsd_pcm_rate` | The PCM rate converted DSD plays at: `auto` (default), or `1x`, `2x`, `4x` or `8x` of 44.1 or 48 kHz. |
+| `output.dsd_filter` | The low-pass filter DSD is converted with: `auto` (default: 30 kHz for DSD64, 50 kHz above), `30k`, `50k` or `wide`. |
+| `output.dsd_gain_db` | The level converted DSD plays at: `safe` (default, +2.8 dB), `0` or `6`. Applies at once. |
 | `output.volume_mode` | `auto`, `hardware` (card mixer), `software`, or `fixed` (ignore volume, play at full level — for an amp that sets the level itself). |
 | `output.session_start_volume_ceiling_percent` | Maximum allowed level when a renderer-controlled session starts. It lowers a louder existing level but never raises a quieter one. Fixed output bypasses it. |
 | `output.latency_ms`, `output.period_ms`, `output.format_change_delay_ms`, `output.reopen_on_format_change` | How the ALSA sink is opened and driven. |

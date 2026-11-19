@@ -16,7 +16,7 @@ Sources: [NativePlayer.cpp](../packages/kalinka-renderer/src/player/NativePlayer
 | Name overridden by command line | Set by the `--name` command-line option. |
 | Output section | *(No description.)* |
 | Driver | Audio backend used to reach the sound card. |
-| Output device | Changing the device interrupts playback and sets DSD output to Disabled. |
+| Output device | Changing the device interrupts playback and sets Native DSD and DoP back to Automatic. |
 | Output device unavailable | Device not found. It may be disconnected or renamed. |
 | Volume control | *(No description.)* |
 | Volume: Automatic | Use the sound card’s volume control when available, otherwise software. |
@@ -124,7 +124,7 @@ Show an `(i)` button for these settings. The popup text is separate from the sho
 
 | Setting | Popup text |
 |---|---|
-| Output device | Direct output requires the sound card to support the track’s sample rate and format. Converted output adapts unsupported formats. Shared output allows other apps to play audio too. Changing the device turns DSD output off, as the new card may not support it, and switches Card mixer volume to Automatic when the new card has no volume control. |
+| Output device | Direct output requires the sound card to support the track’s sample rate and format. Converted output adapts unsupported formats. Shared output allows other apps to play audio too. Changing the device sets Native DSD and DoP back to Automatic, as the new card may not support them, and switches Card mixer volume to Automatic when the new card has no volume control. |
 | Volume control | Automatic uses the sound card’s volume control when it has one, otherwise software. Card mixer uses the card’s volume control and leaves the audio samples unchanged. Software adjusts the samples and leaves the card at full volume. It works with any card, but quiet levels lose a little quality. Fixed output leaves volume control to an amplifier or receiver. |
 | Session start volume ceiling | When playback starts, a volume above the ceiling is lowered to it and a lower volume stays as it is. The check runs when playback starts from a stop or a long pause, not between tracks. |
 | DSD output | Plays DSF and DSDIFF files, either as DSD, which the DAC must support in the selected mode and at the track’s DSD rate, or converted to PCM. Automatic chooses for each track. Unsupported tracks fail to play. |
