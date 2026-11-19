@@ -48,7 +48,7 @@ class OutputCapabilityTracker:
         record = self._registry.get(renderer_id) if renderer_id else None
         if record is None or not record.playable or record.capabilities is None:
             return OutputCapabilities()
-        return record.capabilities
+        return record.capabilities.output
 
     def _publish(self) -> None:
         current = self._current()

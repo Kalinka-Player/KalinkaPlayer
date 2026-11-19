@@ -2,6 +2,8 @@ from kalinka_server import renderer_state
 from kalinka_server.renderer_proto import renderer_pb2 as pb
 from kalinka_server.renderer_state import StateChange
 
+from tests.sim_renderer import dsd_conversion
+
 
 def full_snapshot():
     snapshot = pb.StateSnapshot()
@@ -211,3 +213,108 @@ def test_a_closed_device_reports_nothing():
     state = renderer_state.apply(state, StateChange.PLAYBACK, stopped)
 
     assert state["device_info"] is None
+
+
+CONVERTING_DSD = {
+    "steps": [
+        {
+            "kind": "dsd_to_pcm",
+            "name": "DSD to PCM",
+            "summary": "DSD64 to 176.4 kHz, 30 kHz filter",
+        },
+        {"kind": "dsd_gain", "name": "DSD gain", "summary": "+2.8 dB"},
+        {"kind": "dither", "name": "Dither", "summary": "TPDF at 24 bits"},
+    ],
+    "latency_ms": 0.3,
+}
+
+
+def test_a_snapshot_carries_the_signal_path():
+    snapshot = full_snapshot()
+    snapshot.signal_path.CopyFrom(dsd_conversion())
+
+    state = renderer_state.apply(
+        renderer_state.empty_state(), StateChange.SNAPSHOT, snapshot
+    )
+
+    assert state["signal_path"] == CONVERTING_DSD
+
+
+def test_a_playback_state_carries_the_signal_path():
+    playing = pb.PlaybackStateChanged()
+    playing.state = pb.PLAYBACK_STATE_PLAYING
+    playing.signal_path.CopyFrom(dsd_conversion())
+
+    state = renderer_state.apply(
+        renderer_state.empty_state(), StateChange.PLAYBACK, playing
+    )
+
+    assert state["signal_path"] == CONVERTING_DSD
+
+
+def test_samples_left_as_decoded_have_no_signal_path():
+    """What an older renderer always sends, and a newer one doing nothing."""
+    assert renderer_state.empty_state()["signal_path"] is None
+
+    state = renderer_state.apply(
+        renderer_state.empty_state(), StateChange.SNAPSHOT, full_snapshot()
+    )
+    assert state["signal_path"] is None
+
+    playing = pb.PlaybackStateChanged()
+    playing.state = pb.PLAYBACK_STATE_PLAYING
+    state = renderer_state.apply(state, StateChange.PLAYBACK, playing)
+    assert state["signal_path"] is None
+
+
+def test_a_playback_state_replaces_the_signal_path_rather_than_merging_it():
+    converting = pb.PlaybackStateChanged()
+    converting.state = pb.PLAYBACK_STATE_PLAYING
+    converting.signal_path.CopyFrom(dsd_conversion())
+    state = renderer_state.apply(
+        renderer_state.empty_state(), StateChange.PLAYBACK, converting
+    )
+
+    dithering = pb.PlaybackStateChanged()
+    dithering.state = pb.PLAYBACK_STATE_PLAYING
+    step = dithering.signal_path.steps.add()
+    step.kind = "dither"
+    state = renderer_state.apply(state, StateChange.PLAYBACK, dithering)
+    assert [s["kind"] for s in state["signal_path"]["steps"]] == ["dither"]
+    assert state["signal_path"]["latency_ms"] == 0.0
+
+    untouched = pb.PlaybackStateChanged()
+    untouched.state = pb.PLAYBACK_STATE_PLAYING
+    state = renderer_state.apply(state, StateChange.PLAYBACK, untouched)
+    assert state["signal_path"] is None
+
+
+def test_a_new_source_drops_the_signal_path_of_the_old_one():
+    snapshot = full_snapshot()
+    snapshot.signal_path.CopyFrom(dsd_conversion())
+    state = renderer_state.apply(
+        renderer_state.empty_state(), StateChange.SNAPSHOT, snapshot
+    )
+
+    changed = pb.SourceChanged()
+    changed.source_token = "track-2"
+    state = renderer_state.apply(state, StateChange.SOURCE, changed)
+
+    assert state["signal_path"] is None
+
+
+def test_meters_convert_whole():
+    meters = pb.DspMeters()
+    meters.source_token = "7"
+    meters.clipped_samples = 12
+    meters.true_peak_dbfs = -0.4
+    meters.load = 0.012
+    meters.at_unix_ms = 1700000000500
+
+    assert renderer_state.dsp_meters_to_dict(meters) == {
+        "source_token": "7",
+        "clipped_samples": 12,
+        "true_peak_dbfs": -0.4,
+        "load": 0.012,
+        "at_unix_ms": 1700000000500,
+    }

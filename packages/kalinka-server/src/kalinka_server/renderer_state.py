@@ -7,8 +7,12 @@ values become their lowercase names ("stopped", "http_stream") — the ordinals
 are protocol constants and are not meaningful outside the wire.
 
 Playback state is replaced, not merged: PlaybackStateChanged restates the
-format every time. What still accumulates is what no playback state speaks
-for — volume, the selected device, the current source and the queued tokens.
+format, the device and the signal path every time. What still accumulates is
+what no playback state speaks for — volume, the selected device, the current
+source and the queued tokens.
+
+DspMeters converts here too but is never merged: it measures, it states
+nothing.
 """
 
 from __future__ import annotations
@@ -49,6 +53,7 @@ def empty_state() -> dict:
         "current_source": None,
         "format": None,
         "device_info": None,
+        "signal_path": None,
         "duration_ms": None,
         "position_ms": 0,
         "position_valid": False,
@@ -86,6 +91,26 @@ def device_info_to_dict(info) -> dict:
     return {
         "format": audio_format_to_dict(info.format),
         "access": enum_name(pb.DeviceAccess, info.access, "DEVICE_ACCESS_"),
+    }
+
+
+def signal_path_to_dict(path) -> dict:
+    return {
+        "steps": [
+            {"kind": step.kind, "name": step.name, "summary": step.summary}
+            for step in path.steps
+        ],
+        "latency_ms": path.latency_ms,
+    }
+
+
+def dsp_meters_to_dict(meters) -> dict:
+    return {
+        "source_token": meters.source_token,
+        "clipped_samples": meters.clipped_samples,
+        "true_peak_dbfs": meters.true_peak_dbfs,
+        "load": meters.load,
+        "at_unix_ms": meters.at_unix_ms,
     }
 
 
@@ -128,6 +153,11 @@ def snapshot_to_dict(snapshot) -> dict:
         "device_info": (
             device_info_to_dict(snapshot.device_info)
             if snapshot.HasField("device_info")
+            else None
+        ),
+        "signal_path": (
+            signal_path_to_dict(snapshot.signal_path)
+            if snapshot.HasField("signal_path")
             else None
         ),
         "duration_ms": (
@@ -181,6 +211,11 @@ def apply(state: dict, change: StateChange, message) -> dict:
             if message.HasField("device_info")
             else None
         )
+        state["signal_path"] = (
+            signal_path_to_dict(message.signal_path)
+            if message.HasField("signal_path")
+            else None
+        )
         state["duration_ms"] = (
             message.duration_ms if message.HasField("duration_ms") else None
         )
@@ -189,6 +224,7 @@ def apply(state: dict, change: StateChange, message) -> dict:
         _set_source_token(state, message.source_token)
         # Nothing decoded for the new source yet; the old one's is not its.
         state["format"] = None
+        state["signal_path"] = None
         state["duration_ms"] = None
         state["updated_at_unix_ms"] = message.at_unix_ms
     elif change is StateChange.VOLUME:

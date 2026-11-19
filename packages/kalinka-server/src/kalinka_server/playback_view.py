@@ -13,11 +13,14 @@ from kalinka_plugin_sdk.datamodel import (
     DeviceAccess,
     OutputInfo,
     PlayerStateEnum,
+    SignalPath,
+    SignalStep,
 )
 
 from .stream_state import (
     AudioGraphNodeState,
     DeviceAccess as StreamDeviceAccess,
+    SignalPath as StreamSignalPath,
     StreamInfo,
 )
 
@@ -26,6 +29,18 @@ _ACCESS = {
     StreamDeviceAccess.EXCLUSIVE: DeviceAccess.EXCLUSIVE,
     StreamDeviceAccess.SHARED: DeviceAccess.SHARED,
 }
+
+
+def to_signal_path(path: Optional[StreamSignalPath]) -> Optional[SignalPath]:
+    if path is None:
+        return None
+    return SignalPath(
+        steps=[
+            SignalStep(kind=step.kind, name=step.name, summary=step.summary)
+            for step in path.steps
+        ],
+        latency_ms=path.latency_ms,
+    )
 
 
 def to_output_info(stream_info: StreamInfo) -> Optional[OutputInfo]:
@@ -38,6 +53,7 @@ def to_output_info(stream_info: StreamInfo) -> Optional[OutputInfo]:
         bits_per_sample=stream_info.device.format.bits_per_sample,
         access=_ACCESS.get(stream_info.device.access, DeviceAccess.UNKNOWN),
         lossless_path=stream_info.lossless_path,
+        signal_path=to_signal_path(stream_info.signal_path),
     )
 
 

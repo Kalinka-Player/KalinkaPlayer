@@ -758,6 +758,39 @@ class DeviceAccess(str, Enum):
     SHARED = "shared"
 
 
+class SignalStep(BaseModel):
+    """
+    SDK 3.23: one step the renderer takes the decoded samples through on their
+    way to the device.
+
+    Attributes:
+        kind (str): Stable, for a client to key on: ``dsd_to_pcm``,
+            ``dsd_gain``, ``dither``
+        name (str): For a listener: "DSD to PCM"
+        summary (str): How it is set, for a listener: "DSD64 to 176.4 kHz,
+            30 kHz filter"
+    """
+
+    kind: str = ""
+    name: str = ""
+    summary: str = ""
+
+
+class SignalPath(BaseModel):
+    """
+    SDK 3.23: what the renderer does to the samples between the decoder and the
+    device, in order. The volume is not a step of it.
+
+    Attributes:
+        steps (List[SignalStep]): The steps, first applied first
+        latency_ms (float): Audio the processing holds back ahead of what is
+            heard, in milliseconds
+    """
+
+    steps: List[SignalStep] = []
+    latency_ms: float = 0.0
+
+
 class OutputInfo(BaseModel):
     """
     What the output device runs at, against the stream that was decoded for it.
@@ -774,6 +807,9 @@ class OutputInfo(BaseModel):
         lossless_path (bool): Whether the decoded samples reach the device
             unaltered. Says nothing about the volume: that is reported with the
             device it is applied by, because only there is it current.
+        signal_path (Optional[SignalPath]): SDK 3.23. What the renderer did to
+            the decoded samples on the way to this device; None when it
+            reported nothing done, as one that predates signal paths never does
     """
 
     sample_format: str = ""
@@ -782,6 +818,25 @@ class OutputInfo(BaseModel):
     channels: int = 0
     access: DeviceAccess = DeviceAccess.UNKNOWN
     lossless_path: bool = False
+    signal_path: Optional[SignalPath] = None
+
+
+class DspMeters(BaseModel):
+    """
+    SDK 3.23: what the renderer's DSP measured of the source it plays.
+
+    Attributes:
+        clipped_samples (int): Samples clamped to the output's range since the
+            source began
+        true_peak_dbfs (float): The highest true peak since the source began,
+            in dBFS; -200 before any sound
+        load (float): Processing time over the length of the audio it
+            processed since the previous report: 0.01 is 1 % of a core
+    """
+
+    clipped_samples: int = 0
+    true_peak_dbfs: float = -200.0
+    load: float = 0.0
 
 
 class AudioInfo(BaseModel):

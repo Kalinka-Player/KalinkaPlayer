@@ -16,6 +16,7 @@ from google.protobuf.message import DecodeError
 from kalinka_plugin_sdk.direct_playback import OutputCapabilities
 
 from .config_model import KalinkaConfig
+from .renderer_capabilities import DspCapabilities, RendererCapabilities
 from .renderer_proto import renderer_pb2 as pb
 from .renderer_config import RendererConfigService
 from .renderer_link import RendererLink
@@ -80,8 +81,22 @@ def lan_address(host: Optional[str]) -> Optional[str]:
     return str(ip)
 
 
-def _capabilities(capabilities: pb.Capabilities) -> OutputCapabilities:
-    return OutputCapabilities(dsd=capabilities.dsd, live_pcm=capabilities.live_pcm)
+def _capabilities(capabilities: pb.Capabilities) -> RendererCapabilities:
+    dsp = capabilities.dsp
+    return RendererCapabilities(
+        output=OutputCapabilities(
+            dsd=capabilities.dsd, live_pcm=capabilities.live_pcm
+        ),
+        dsp=(
+            DspCapabilities(
+                dsd_to_pcm=dsp.dsd_to_pcm,
+                steps=tuple(dsp.steps),
+                max_output_channels=dsp.max_output_channels,
+            )
+            if capabilities.HasField("dsp")
+            else None
+        ),
+    )
 
 
 class RendererSession(RendererLink):
@@ -344,6 +359,12 @@ async def handle_renderer_connection(
             elif payload == "command_rejected":
                 sessions.handle_rejection(
                     registered_id or "", rejection=env.command_rejected
+                )
+            elif payload == "dsp_meters":
+                sessions.handle_meters(
+                    registered_id or "",
+                    session_id=env.session_id,
+                    message=env.dsp_meters,
                 )
             elif (change := StateChange.for_payload(payload or "")) is not None:
                 sessions.handle_state(

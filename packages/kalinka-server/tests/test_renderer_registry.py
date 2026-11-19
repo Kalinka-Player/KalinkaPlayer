@@ -5,6 +5,7 @@ import asyncio
 import pytest
 from kalinka_plugin_sdk.direct_playback import OutputCapabilities
 
+from kalinka_server.renderer_capabilities import RendererCapabilities
 from kalinka_server.renderer_prefs import RendererPreferences
 from kalinka_server.renderer_registry import (
     RegistrationKind,
@@ -711,13 +712,17 @@ async def test_what_a_renderer_says_it_plays_is_kept_and_observed():
         kind="native",
         platform={},
         session=link,
-        capabilities=OutputCapabilities(dsd=False),
+        capabilities=_plays(dsd=False),
     )
     told = []
     registry.add_observer(lambda: told.append(registry.get("rid-1").capabilities))
 
-    registry.update_capabilities("rid-1", link, OutputCapabilities(dsd=True))
-    registry.update_capabilities("rid-1", object(), OutputCapabilities(dsd=False))
-    registry.update_capabilities("nobody", link, OutputCapabilities(dsd=False))
+    registry.update_capabilities("rid-1", link, _plays(dsd=True))
+    registry.update_capabilities("rid-1", object(), _plays(dsd=False))
+    registry.update_capabilities("nobody", link, _plays(dsd=False))
 
-    assert told == [OutputCapabilities(dsd=True)]
+    assert told == [_plays(dsd=True)]
+
+
+def _plays(dsd: bool) -> RendererCapabilities:
+    return RendererCapabilities(output=OutputCapabilities(dsd=dsd))

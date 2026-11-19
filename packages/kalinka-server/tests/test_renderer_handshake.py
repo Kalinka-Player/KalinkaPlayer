@@ -14,6 +14,10 @@ from fastapi import WebSocketDisconnect
 from kalinka_plugin_sdk.direct_playback import OutputCapabilities
 
 from kalinka_server.config_model import KalinkaConfig
+from kalinka_server.renderer_capabilities import (
+    DspCapabilities,
+    RendererCapabilities,
+)
 from kalinka_server.renderer_config import RendererConfigService
 from kalinka_server.renderer_proto import renderer_pb2 as pb
 from kalinka_server.renderer_registry import RendererRegistry
@@ -224,7 +228,30 @@ async def test_what_hello_says_the_renderer_plays_is_kept():
     hello = _hello(PROTOCOL_VERSION, PROTOCOL_VERSION)
     hello.hello.capabilities.dsd = True
     _, registry = await _run([hello])
-    assert registry.get("old-rid").capabilities == OutputCapabilities(dsd=True)
+    assert registry.get("old-rid").capabilities == RendererCapabilities(
+        output=OutputCapabilities(dsd=True)
+    )
+
+
+async def test_what_hello_says_the_dsp_can_do_is_kept():
+    hello = _hello(PROTOCOL_VERSION, PROTOCOL_VERSION)
+    dsp = hello.hello.capabilities.dsp
+    dsp.dsd_to_pcm = True
+    dsp.steps.extend(["dsd_to_pcm", "dsd_gain", "dither"])
+    dsp.max_output_channels = 2
+    _, registry = await _run([hello])
+    assert registry.get("old-rid").capabilities.dsp == DspCapabilities(
+        dsd_to_pcm=True,
+        steps=("dsd_to_pcm", "dsd_gain", "dither"),
+        max_output_channels=2,
+    )
+
+
+async def test_a_renderer_too_old_to_describe_its_dsp_is_not_guessed_at():
+    hello = _hello(PROTOCOL_VERSION, PROTOCOL_VERSION)
+    hello.hello.capabilities.dsd = True
+    _, registry = await _run([hello])
+    assert registry.get("old-rid").capabilities.dsp is None
 
 
 async def test_a_renderer_too_old_to_say_what_it_plays_is_not_guessed_at():
@@ -236,7 +263,20 @@ async def test_a_change_in_what_the_renderer_plays_is_believed():
     hello = _hello(PROTOCOL_VERSION, PROTOCOL_VERSION)
     hello.hello.capabilities.dsd = False
     _, registry = await _run([hello, _capabilities_changed(True)])
-    assert registry.get("old-rid").capabilities == OutputCapabilities(dsd=True)
+    assert registry.get("old-rid").capabilities == RendererCapabilities(
+        output=OutputCapabilities(dsd=True)
+    )
+
+
+async def test_a_restatement_replaces_what_the_dsp_was_said_to_do():
+    hello = _hello(PROTOCOL_VERSION, PROTOCOL_VERSION)
+    hello.hello.capabilities.dsp.dsd_to_pcm = True
+    changed = pb.Envelope()
+    changed.capabilities_changed.capabilities.dsp.max_output_channels = 2
+    _, registry = await _run([hello, changed])
+    assert registry.get("old-rid").capabilities.dsp == DspCapabilities(
+        max_output_channels=2
+    )
 
 
 async def test_an_incompatible_renderer_is_not_believed_about_what_it_plays():
@@ -244,3 +284,17 @@ async def test_an_incompatible_renderer_is_not_believed_about_what_it_plays():
     hello.hello.capabilities.dsd = True
     _, registry = await _run([hello, _capabilities_changed(True)])
     assert registry.get("old-rid").capabilities is None
+
+
+async def test_dsp_meters_reach_the_session_they_name():
+    pool = create_autospec(SessionPool, instance=True)
+    meters = pb.Envelope()
+    meters.session_id = "session-1"
+    meters.dsp_meters.source_token = "7"
+    meters.dsp_meters.clipped_samples = 3
+
+    await _run([_hello(), meters], pool=pool)
+
+    pool.handle_meters.assert_called_once_with(
+        "old-rid", session_id="session-1", message=meters.dsp_meters
+    )

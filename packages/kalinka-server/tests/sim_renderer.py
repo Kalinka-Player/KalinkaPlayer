@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Optional
 
 from kalinka_plugin_sdk.direct_playback import OutputCapabilities
+from kalinka_server.renderer_capabilities import DspCapabilities, RendererCapabilities
 from kalinka_server.renderer_proto import renderer_pb2 as pb
 from kalinka_server.renderer_registry import RendererRegistry
 from kalinka_server.renderer_sessions import SessionPool
@@ -30,6 +31,19 @@ BITS_PER_SAMPLE = 16
 DURATION_MS = 300000
 
 _NOW_UNIX_MS = 1700000000000
+
+
+def dsd_conversion() -> pb.SignalPath:
+    """The signal path a renderer converting DSD64 to PCM reports."""
+    path = pb.SignalPath(latency_ms=0.3)
+    path.steps.add(
+        kind="dsd_to_pcm",
+        name="DSD to PCM",
+        summary="DSD64 to 176.4 kHz, 30 kHz filter",
+    )
+    path.steps.add(kind="dsd_gain", name="DSD gain", summary="+2.8 dB")
+    path.steps.add(kind="dither", name="Dither", summary="TPDF at 24 bits")
+    return path
 
 
 class SimRenderer:
@@ -75,6 +89,11 @@ class SimRenderer:
         self.capabilities: Optional[OutputCapabilities] = OutputCapabilities(
             dsd=False
         )
+        # What Hello says its DSP can do; None plays a renderer too old to say.
+        self.dsp: Optional[DspCapabilities] = None
+        # Rides on every state that knows the format; None plays a renderer
+        # that leaves the samples as decoded, or predates signal paths.
+        self.signal_path: Optional[pb.SignalPath] = None
         self._message_id = 0
         # The address this renderer reached the server on, as the ws handler
         # records it; content URLs are minted against it.
@@ -91,8 +110,13 @@ class SimRenderer:
             session=self,
             compatible=compatible,
             server_addr=self.server_addr,
-            capabilities=self.capabilities,
+            capabilities=self._capabilities(),
         )
+
+    def _capabilities(self) -> Optional[RendererCapabilities]:
+        if self.capabilities is None:
+            return None
+        return RendererCapabilities(output=self.capabilities, dsp=self.dsp)
 
     # ------------------------------------------------------------------
     # The ws-session surface the pool drives
@@ -213,7 +237,32 @@ class SimRenderer:
     def announce_capabilities(self, capabilities: OutputCapabilities) -> None:
         """What it can play changed, as its CapabilitiesChanged says."""
         self.capabilities = capabilities
-        self.registry.update_capabilities(self.RENDERER_ID, self, capabilities)
+        self.registry.update_capabilities(
+            self.RENDERER_ID, self, self._capabilities()
+        )
+
+    def report_meters(
+        self,
+        token: Optional[str] = None,
+        *,
+        clipped_samples: int = 0,
+        true_peak_dbfs: float = -200.0,
+        load: float = 0.0,
+    ) -> None:
+        """Its DSP reports what it measured of `token`, the current source
+        unless named."""
+        if self.session_id is None or not self.linked:
+            return
+        meters = pb.DspMeters(
+            source_token=token if token is not None else (self.current or ""),
+            clipped_samples=clipped_samples,
+            true_peak_dbfs=true_peak_dbfs,
+            load=load,
+            at_unix_ms=_NOW_UNIX_MS,
+        )
+        self.pool.handle_meters(
+            self.RENDERER_ID, session_id=self.session_id, message=meters
+        )
 
     def report_position(self, position_ms: int) -> None:
         """The current track has reached position_ms."""
@@ -327,12 +376,17 @@ class SimRenderer:
         self._fill_format(out.format)
         out.access = pb.DEVICE_ACCESS_EXCLUSIVE
 
+    def _fill_signal_path(self, out) -> None:
+        if self.signal_path is not None:
+            out.signal_path.CopyFrom(self.signal_path)
+
     def _emit_state(self, state_value, token: Optional[str]) -> None:
         state = pb.PlaybackStateChanged()
         state.state = state_value
         if self.format_known:
             self._fill_format(state.format)
             self._fill_device_info(state.device_info)
+            self._fill_signal_path(state)
             state.duration_ms = DURATION_MS
         state.position_ms = self.position_ms
         state.position_valid = state_value in (
@@ -358,6 +412,7 @@ class SimRenderer:
         if self.format_known:
             self._fill_format(snapshot.format)
             self._fill_device_info(snapshot.device_info)
+            self._fill_signal_path(snapshot)
             snapshot.duration_ms = DURATION_MS
         self._fill_volume(snapshot.volume)
         return snapshot
