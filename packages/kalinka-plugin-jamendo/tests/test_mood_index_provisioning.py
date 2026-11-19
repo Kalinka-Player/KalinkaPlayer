@@ -4,6 +4,10 @@ A box without the embedder's runtime could never query the ~140 MB index,
 so it must not download it.
 """
 
+import asyncio
+import sqlite3
+import threading
+
 import pytest
 from kalinka_server.config_overrides import apply_overrides_with_prefix
 
@@ -95,6 +99,50 @@ async def test_an_embedder_of_another_model_fetches_nothing(tmp_path, downloads)
 
     assert await index.available() is False
     assert downloads == []
+
+
+async def test_an_index_set_up_again_mid_download_waits_for_that_download(
+    tmp_path, monkeypatch
+):
+    """Shutting the plugin down cancels its provisioning, but the thread
+    fetching the index carries on; the next setup must not fetch it again
+    over the same temp file."""
+    fetches: list[str] = []
+    release = threading.Event()
+
+    def urlretrieve(url, filename):
+        fetches.append(url)
+        release.wait(5)
+        con = sqlite3.connect(filename)
+        con.execute("CREATE TABLE meta (key TEXT, value TEXT)")
+        con.commit()
+        con.close()
+        return filename, None
+
+    fetch = mood_search.download_file
+    first_in, second_in = threading.Event(), threading.Event()
+
+    def download_file(url: str, dest: str) -> bool:
+        (second_in if first_in.is_set() else first_in).set()
+        return fetch(url, dest)
+
+    monkeypatch.setattr(mood_search.urllib.request, "urlretrieve", urlretrieve)
+    monkeypatch.setattr(mood_search, "download_file", download_file)
+    path = str(tmp_path / "jamendo_index_v2.sqlite")
+
+    def provisioning() -> asyncio.Task:
+        index = JamendoMoodIndex(path, INDEX_URL, FakeEmbedder(available=True))
+        return asyncio.create_task(index.available())
+
+    shut_down = provisioning()
+    assert await asyncio.to_thread(first_in.wait, 5)
+    shut_down.cancel()
+    set_up_again = provisioning()
+    assert await asyncio.to_thread(second_in.wait, 5)
+    release.set()
+
+    assert await set_up_again is True
+    assert fetches == [INDEX_URL]
 
 
 def test_the_index_downloads_from_the_project_organisation():

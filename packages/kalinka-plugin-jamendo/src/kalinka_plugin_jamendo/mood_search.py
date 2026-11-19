@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 import urllib.request
 from typing import List, Optional, Tuple
 
@@ -30,20 +31,32 @@ _EXPECTED_MODEL_ID = "all-MiniLM-L6-v2"
 _EXPECTED_MODEL_VERSION = 1
 
 
+_download_locks: dict[str, threading.Lock] = {}
+
+
 def download_file(url: str, dest: str) -> bool:
-    """Download url -> dest atomically (via a .part temp). True on success."""
-    tmp = dest + ".part"
-    try:
-        os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
-        logger.info("downloading %s", url)
-        urllib.request.urlretrieve(url, tmp)
-        os.replace(tmp, dest)
-        return True
-    except Exception as e:
-        logger.warning("download failed (%s): %s", url, e)
-        if os.path.exists(tmp):
-            os.remove(tmp)
-        return False
+    """Download url -> dest atomically (via a .part temp). True on success,
+    or when dest is there by the time this caller's turn comes.
+
+    One download per dest at a time: shutting the plugin down cancels its
+    provisioning, not the thread fetching the index, so the next setup waits
+    for that download instead of writing over its temp file.
+    """
+    with _download_locks.setdefault(dest, threading.Lock()):
+        if os.path.exists(dest):
+            return True
+        tmp = dest + ".part"
+        try:
+            os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+            logger.info("downloading %s", url)
+            urllib.request.urlretrieve(url, tmp)
+            os.replace(tmp, dest)
+            return True
+        except Exception as e:
+            logger.warning("download failed (%s): %s", url, e)
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            return False
 
 # Our shipped mood-index naming scheme: jamendo_index.sqlite (v1) and
 # jamendo_index_v<N>.sqlite (v2+). The index is fetched only when the configured
