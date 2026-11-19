@@ -66,6 +66,7 @@ async def test_backfill_from_existing_tracks(tmp_path):
             CREATE TABLE tracks (
                 id TEXT PRIMARY KEY, title TEXT NOT NULL,
                 file_path TEXT NOT NULL, format TEXT NOT NULL,
+                album_id TEXT, artist_id TEXT,
                 file_size BIGINT, modified_time INTEGER, last_updated INTEGER
             )
             """
@@ -106,6 +107,7 @@ async def test_backfill_idempotent(tmp_path):
             CREATE TABLE tracks (
                 id TEXT PRIMARY KEY, title TEXT NOT NULL,
                 file_path TEXT NOT NULL, format TEXT NOT NULL,
+                album_id TEXT, artist_id TEXT,
                 file_size BIGINT, modified_time INTEGER, last_updated INTEGER
             )
             """

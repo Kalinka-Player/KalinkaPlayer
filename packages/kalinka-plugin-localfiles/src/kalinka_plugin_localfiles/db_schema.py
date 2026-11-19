@@ -153,6 +153,14 @@ async def init_db(db_path: str) -> None:
             """
         )
 
+        # Move detection looks every new file up by its (device, inode).
+        await cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_library_file_inode
+                ON library_file(device_id, inode)
+            """
+        )
+
         # Verbatim per-file evidence the display tables don't carry (raw tags
         # incl. albumartist/compilation, stream info, art hash, cue,
         # chromaprint). Current snapshot: upserted, not versioned.
@@ -404,6 +412,14 @@ async def init_db(db_path: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_tracks_file_path
             ON tracks (file_path)
             """
+        )
+
+        # An album's or an artist's tracks are read per album and per artist.
+        await cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tracks_album_id ON tracks (album_id)"
+        )
+        await cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tracks_artist_id ON tracks (artist_id)"
         )
 
         # ---------------------------------------------------------------
