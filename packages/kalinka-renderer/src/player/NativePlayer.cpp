@@ -743,10 +743,8 @@ void NativePlayer::startPumps() {
     std::mutex mutex;
     std::condition_variable_any tick;
     std::unique_lock lock(mutex);
-    while (!tick.wait_for(lock, token, kMeterInterval, [] { return false; })) {
-      if (token.stop_requested()) {
-        break;
-      }
+    while (!tick.wait_for(lock, token, kMeterInterval,
+                          [&token] { return token.stop_requested(); })) {
       asio::post(ioc_, [this, generation] {
         if (generation == graphGeneration_) {
           emitMeters();
