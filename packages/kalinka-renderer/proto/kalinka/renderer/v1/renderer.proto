@@ -42,7 +42,7 @@ message Envelope {
     ConfigSnapshot config_snapshot = 1015;
     ConfigResult config_result = 1016;
     UpgradeResult upgrade_result = 1017;
-    DspMeters dsp_meters = 1018;
+    PlaybackEvent playback_event = 1018;
     // core -> renderer: 2000-2999
     Welcome welcome = 2000;
     Command command = 2001;
@@ -167,19 +167,24 @@ message SignalPath {
   double latency_ms = 2;
 }
 
-// What the DSP measured of the source it plays. Sent at most twice a second,
-// and only while a signal path processes the source.
-message DspMeters {
-  string source_token = 1;
-  // Samples clamped to the output's range since the source began.
-  uint64 clipped_samples = 2;
-  // The highest true peak since the source began, in dBFS, oversampled to at
-  // least 176.4 kHz; -200 before any sound.
-  double true_peak_dbfs = 3;
-  // Processing time over the length of the audio it processed since the last
-  // report: 0.01 is 1 % of a core.
-  double load = 4;
-  int64 at_unix_ms = 5;
+// Something that happened during playback, sent as it happens. Unlike
+// PlaybackStateChanged it states nothing that lasts, so no snapshot repeats it,
+// and unlike PlaybackError it does not stop playback. A run of one kind is sent
+// as one event at most twice a second, carrying the latest of it. A Core
+// ignores a kind it does not know.
+message PlaybackEvent {
+  // The source it happened to, when it concerns one.
+  optional string source_token = 1;
+  int64 at_unix_ms = 2;
+  oneof kind {
+    Clipping clipping = 10;
+  }
+}
+
+// The DSP clamped samples to the output's range.
+message Clipping {
+  // Samples clamped since the source began.
+  uint64 clipped_samples = 1;
 }
 
 message Source {
