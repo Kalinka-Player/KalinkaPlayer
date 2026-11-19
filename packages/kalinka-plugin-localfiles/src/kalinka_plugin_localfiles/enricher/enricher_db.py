@@ -6,6 +6,7 @@ import logging
 import time
 from typing import List, Dict, Optional, Any, Tuple
 
+from ..album_stats_db import AlbumStatsDb
 from ..config_model import LocalFilesConfig
 from ..resolution.provenance_db import ProvenanceDb
 from ..resolution.resolver import FILENAME, GUESSED, OBSERVED, TAG_CONSENSUS
@@ -30,7 +31,7 @@ def _has_local_artist(raw_tags, cue_tracks) -> Optional[bool]:
 
 
 @retry_db_locked
-class AsyncEnricherDb(ProvenanceDb):
+class AsyncEnricherDb(ProvenanceDb, AlbumStatsDb):
     """
     Asynchronous database manager specifically for the metadata enricher.
     Handles operations required for enrichment of music metadata.
@@ -645,21 +646,6 @@ class AsyncEnricherDb(ProvenanceDb):
     async def update_track(self, track_id: str, data: Dict[str, Any]) -> None:
         """Update track information"""
         await self._update("tracks", track_id, data)
-
-    async def update_album_stats(self, album_id: str) -> None:
-        """Count every album member, including known-artist loose tracks."""
-        async with self._open() as conn:
-            cursor = await conn.cursor()
-            await cursor.execute(
-                """
-                UPDATE albums SET
-                track_count = (SELECT COUNT(*) FROM tracks WHERE album_id = ?),
-                duration = (SELECT SUM(duration) FROM tracks WHERE album_id = ?)
-                WHERE id = ?
-            """,
-                (album_id, album_id, album_id),
-            )
-            await conn.commit()
 
     async def insert_artist(self, data: Dict[str, Any]) -> None:
         """Insert a new artist"""

@@ -83,19 +83,41 @@ class AsyncClusterDb(LibraryDb):
         bump_generation: bool = False,
     ) -> None:
         """Create or update a cluster row. ``generation`` is incremented on an
-        update when ``bump_generation`` is set (a re-cluster, for hysteresis)."""
+        update when ``bump_generation`` is set (a re-cluster, for hysteresis).
+
+        @note A cluster already stored as given is left alone without a
+            write, its generation included: re-clustering a library nothing
+            happened to changes nothing, and takes no write lock to find out.
+        """
         gen_clause = (
             "generation = album_cluster.generation + 1"
             if bump_generation
             else "generation = album_cluster.generation"
         )
+        cluster = (
+            primary_folder,
+            grouping_conf,
+            grouping_basis,
+            kind,
+            int(needs_review),
+            review_reason,
+        )
         async with self._open() as conn:
-            await conn.execute(
+            cursor = await conn.cursor()
+            await cursor.execute(
+                "SELECT primary_folder, grouping_conf, grouping_basis, kind, "
+                "needs_review, review_reason FROM album_cluster WHERE album_id = ?",
+                (album_id,),
+            )
+            stored = await cursor.fetchone()
+            if stored is not None and tuple(stored) == cluster:
+                return
+            await cursor.execute(
                 f"""
                 INSERT INTO album_cluster
                     (album_id, primary_folder, grouping_conf, grouping_basis,
-                     kind, generation, needs_review, review_reason)
-                VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+                     kind, needs_review, review_reason, generation)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0)
                 ON CONFLICT(album_id) DO UPDATE SET
                     primary_folder = excluded.primary_folder,
                     grouping_conf  = excluded.grouping_conf,
@@ -105,15 +127,7 @@ class AsyncClusterDb(LibraryDb):
                     review_reason  = excluded.review_reason,
                     {gen_clause}
                 """,
-                (
-                    album_id,
-                    primary_folder,
-                    grouping_conf,
-                    grouping_basis,
-                    kind,
-                    int(needs_review),
-                    review_reason,
-                ),
+                (album_id, *cluster),
             )
             await conn.commit()
 

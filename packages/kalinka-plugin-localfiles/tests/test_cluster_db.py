@@ -97,6 +97,22 @@ async def test_cluster_upsert_and_generation(config):
 
 
 @pytest.mark.asyncio
+async def test_a_cluster_stored_as_given_is_left_alone(config, write_locked):
+    await init_db(config.db_path)
+    db = AsyncClusterDb(config)
+    await db.upsert_cluster("album_1", "/m/A", kind="album", bump_generation=True)
+
+    with write_locked(config.db_path):
+        await db.upsert_cluster("album_1", "/m/A", kind="album", bump_generation=True)
+    assert (await db.get_cluster("album_1"))["generation"] == 0
+
+    await db.upsert_cluster("album_1", "/m/B", kind="album", bump_generation=True)
+    cluster = await db.get_cluster("album_1")
+    assert cluster["primary_folder"] == "/m/B"
+    assert cluster["generation"] == 1
+
+
+@pytest.mark.asyncio
 async def test_constraints_lookup(config):
     await init_db(config.db_path)
     db = AsyncClusterDb(config)
