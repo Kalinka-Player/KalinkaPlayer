@@ -34,6 +34,16 @@ enum AudioFormat {
 
 using StreamId = size_t;
 
+/// @brief What the DSP measured of the source it is reading.
+struct DspMeters {
+  /// Samples clamped to the output's range since the source began.
+  uint64_t clippedSamples = 0;
+  /// The highest true peak since the source began; -200 before any sound.
+  double truePeakDbfs = -200;
+  /// Processing time over the audio processed since the last reading.
+  double load = 0;
+};
+
 class AudioPlayer {
 public:
   AudioPlayer(const Config &config);
@@ -105,6 +115,10 @@ public:
   /// What is done to the samples of a stream @p heard describes, from its
   /// decoded format to what the device was handed; the volume aside.
   SignalPath signalPath(const StreamInfo &heard) const;
+
+  /// What the DSP measured; the load starts over. Safe to call from any
+  /// thread.
+  DspMeters takeDspMeters();
 
   /// Sets what DSD converted to PCM is raised by, as `dsd.gain_db`
   /// @p setting names it: what plays now ramps to it.

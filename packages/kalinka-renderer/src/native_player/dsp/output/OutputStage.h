@@ -2,12 +2,14 @@
 
 #include "AudioGraphNode.h"
 #include "SignalPath.h"
+#include "dsp/LoadMeter.h"
 #include "dsp/output/GainControl.h"
 #include "dsp/output/GainRamp.h"
 #include "dsp/output/OutputFade.h"
 #include "dsp/output/OutputFormat.h"
 #include "dsp/output/PlanarPcm.h"
 #include "dsp/output/Quantiser.h"
+#include "dsp/output/TruePeak.h"
 
 #include <atomic>
 #include <memory>
@@ -31,10 +33,13 @@
  * upstream converted to PCM is raised by the DSD gain as well, which ramps as
  * the volume does. A fade multiplies the volume and goes through the
  * Quantiser the same way. DSD and DoP pass untouched, and refuse any gain but
- * unity.
+ * unity. What goes through the Quantiser is metered, converted DSD always:
+ * its clipped samples and true peak since the source began, and the time
+ * taken.
  *
  * @note read(), the waits, the seeks and the fades belong to the one thread
- * that pulls audio. setGain() and setDsdGain() may come from any thread.
+ * that pulls audio. setGain(), setDsdGain(), the meters and describe() may
+ * come from any thread.
  */
 class OutputStage : public AudioGraphOutputNode,
                     public AudioGraphInputNode,
@@ -72,6 +77,14 @@ public:
   bool silent() const override;
   /// Samples clamped to the output's range so far.
   uint64_t clippedSamples() const { return clipped.load(); }
+  /// Samples clamped since the source being read began.
+  uint64_t clippedSinceSourceBegan() const {
+    return clipped.load() - clippedBefore.load();
+  }
+  /// The highest true peak since the source being read began, linear.
+  double peakSinceSourceBegan() const { return peak.load(); }
+  /// The time taken over the audio metered since the last call.
+  double takeLoad() { return load.take(); }
   /**
    * @brief The steps it takes a source through that was decoded as
    * @p decoded, reaches it as @p source and leaves as @p output: the DSD gain
@@ -98,6 +111,10 @@ private:
   std::atomic<double> dsdGain{1.0};
   std::atomic<bool> settlePending{true};
   std::atomic<uint64_t> clipped{0};
+  /// clipped, when the source being read began.
+  std::atomic<uint64_t> clippedBefore{0};
+  std::atomic<double> peak{0.0};
+  LoadMeter load;
   mutable std::mutex presentedMutex;
   std::optional<Presented> presented;
 
@@ -107,6 +124,7 @@ private:
   double fadeTarget = 1.0;
   std::optional<double> fadeSettle;
   Quantiser quantiser;
+  TruePeakMeter truePeak;
   std::vector<uint8_t> input;
   PlanarScratch planar;
 

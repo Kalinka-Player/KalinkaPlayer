@@ -6,6 +6,8 @@
 #include <charconv>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <span>
 #include <sstream>
 #include <string_view>
@@ -22,6 +24,9 @@ namespace asio = boost::asio;
 namespace renderer_pb = kalinka::renderer::v1;
 
 namespace {
+
+// The protocol's most: twice a second.
+constexpr std::chrono::milliseconds kMeterInterval{500};
 
 int64_t nowUnixMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -734,6 +739,21 @@ void NativePlayer::startPumps() {
       });
     }
   });
+  meterPump_ = std::jthread([this, generation](std::stop_token token) {
+    std::mutex mutex;
+    std::condition_variable_any tick;
+    std::unique_lock lock(mutex);
+    while (!tick.wait_for(lock, token, kMeterInterval, [] { return false; })) {
+      if (token.stop_requested()) {
+        break;
+      }
+      asio::post(ioc_, [this, generation] {
+        if (generation == graphGeneration_) {
+          emitMeters();
+        }
+      });
+    }
+  });
   volumePump_ = std::thread([this, monitor = volumeMonitor_, generation] {
     while (monitor->isRunning()) {
       monitor->wait();
@@ -761,6 +781,10 @@ void NativePlayer::stopPumps() {
   }
   if (volumePump_.joinable()) {
     volumePump_.join();
+  }
+  if (meterPump_.joinable()) {
+    meterPump_.request_stop();
+    meterPump_.join();
   }
   stateMonitor_.reset();
   volumeMonitor_.reset();
@@ -977,6 +1001,28 @@ void NativePlayer::restatePlayback() {
   }
   state.position = state.positionAt(getTimestampNs());
   onStreamState(state);
+}
+
+void NativePlayer::emitMeters() {
+  if (!player_) {
+    return;
+  }
+  const DspMeters meters = player_->takeDspMeters();
+  const StreamState state = player_->getState();
+  const std::optional<std::string> token =
+      tokenFor(state.streamId ? state.streamId : currentId_);
+  if (state.state != AudioGraphNodeState::STREAMING || !token ||
+      !signalPathOf(state)) {
+    return;
+  }
+  renderer_pb::Envelope env;
+  renderer_pb::DspMeters *out = env.mutable_dsp_meters();
+  out->set_source_token(*token);
+  out->set_clipped_samples(meters.clippedSamples);
+  out->set_true_peak_dbfs(meters.truePeakDbfs);
+  out->set_load(meters.load);
+  out->set_at_unix_ms(nowUnixMs());
+  emit(env);
 }
 
 void NativePlayer::emitVolume(const VolumeState &volume, bool external) {

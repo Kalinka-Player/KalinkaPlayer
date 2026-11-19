@@ -163,6 +163,7 @@ add_library(kalinka_native_player STATIC
   src/native_player/dsp/output/PackedFade.cpp
   src/native_player/dsp/output/PlanarPcm.cpp
   src/native_player/dsp/output/Quantiser.cpp
+  src/native_player/dsp/output/TruePeak.cpp
   src/native_player/dsp/output/TpdfDither.cpp
 )
 # The source directory too: Highway's dispatch includes each kernel source
@@ -413,6 +414,8 @@ if(GTest_FOUND)
     tests/native_player/dsp/output/PackedFade_test.cpp
     tests/native_player/dsp/output/PlanarPcm_test.cpp
     tests/native_player/dsp/output/Quantiser_test.cpp
+    tests/native_player/dsp/output/TruePeak_test.cpp
+    tests/native_player/dsp/LoadMeter_test.cpp
     tests/native_player/dsp/output/TpdfDither_test.cpp
     tests/dsp/Harness_test.cpp
   )
