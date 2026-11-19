@@ -85,6 +85,10 @@ class ProvenanceDb(LibraryDb):
             a guess. Artist and album rows are shared by many files, so without
             it a folder with one untagged track among tagged ones would have
             its provenance decided by the order the scan happened to read them.
+        @note An origin that already stands as given, or that ``keep_stronger``
+            keeps, is left alone without a write, ``resolved_at`` included: a
+            rescan records the origin of every album again, and an upsert
+            takes the write lock even when it changes nothing.
         """
         params = [
             entity_type,
@@ -100,7 +104,19 @@ class ProvenanceDb(LibraryDb):
             guard = " WHERE resolved_origin.tier = ?"
             params.append(GUESSED)
         async with self._open() as conn:
-            await conn.execute(
+            cursor = await conn.cursor()
+            await cursor.execute(
+                "SELECT source, tier, evidence_ref FROM resolved_origin "
+                "WHERE entity_type=? AND entity_id=? AND field=?",
+                (entity_type, entity_id, field),
+            )
+            stored = await cursor.fetchone()
+            if stored is not None and (
+                tuple(stored) == (source, tier, evidence_ref)
+                or (keep_stronger and stored[1] != GUESSED)
+            ):
+                return
+            await cursor.execute(
                 f"""
                 INSERT INTO resolved_origin
                     (entity_type, entity_id, field, source, tier, evidence_ref,

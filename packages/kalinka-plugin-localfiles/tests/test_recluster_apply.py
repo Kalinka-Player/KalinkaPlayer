@@ -141,3 +141,23 @@ async def test_recluster_idempotent(indexer):
     assert r2["reassigned"] == 0
     assert r2["aliases"] == 0
     assert await _scalar(config, "SELECT COUNT(*) FROM tracks") == snapshot
+
+
+@pytest.mark.asyncio
+async def test_recluster_of_an_unchanged_library_writes_nothing(indexer, write_locked):
+    fi, music, config = indexer
+    for album in ("Album X", "Album Y"):
+        folder = music / "Band" / album
+        for i in range(1, 4):
+            _flac(folder / f"{i:02d}.flac", title=f"T{i}", artist="Band",
+                  albumartist="Band", album=album, tracknumber=str(i))
+            await fi.process_file(str(folder / f"{i:02d}.flac"))
+    await fi.recluster()
+    generations = "SELECT COALESCE(SUM(generation), 0) FROM album_cluster"
+    before = await _scalar(config, generations)
+
+    with write_locked(config.db_path):
+        again = await fi.recluster()
+
+    assert again["reassigned"] == 0
+    assert await _scalar(config, generations) == before

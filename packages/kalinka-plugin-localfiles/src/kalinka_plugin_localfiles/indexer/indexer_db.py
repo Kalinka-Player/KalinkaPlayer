@@ -6,6 +6,7 @@ import logging
 from typing import List, Dict, Optional, Any, Tuple
 
 
+from ..album_stats_db import AlbumStatsDb
 from ..config_model import LocalFilesConfig
 from ..resolution.provenance_db import ProvenanceDb
 from ..resolution.resolver import OBSERVED
@@ -18,7 +19,7 @@ _COVER_FIELD = "image_url"
 
 
 @retry_db_locked
-class AsyncIndexerDb(ProvenanceDb):
+class AsyncIndexerDb(ProvenanceDb, AlbumStatsDb):
     """
     Asynchronous database manager specifically for the file indexer.
     Handles operations required for scanning and indexing music files.
@@ -304,21 +305,6 @@ class AsyncIndexerDb(ProvenanceDb):
                     evidence.get("import_batch"),
                     int(time.time()),
                 ),
-            )
-            await conn.commit()
-
-    async def update_album_stats(self, album_id: str) -> None:
-        """Count every album member, including known-artist loose tracks."""
-        async with self._open() as conn:
-            cursor = await conn.cursor()
-            await cursor.execute(
-                """
-                UPDATE albums SET
-                track_count = (SELECT COUNT(*) FROM tracks WHERE album_id = ?),
-                duration = (SELECT SUM(duration) FROM tracks WHERE album_id = ?)
-                WHERE id = ?
-            """,
-                (album_id, album_id, album_id),
             )
             await conn.commit()
 

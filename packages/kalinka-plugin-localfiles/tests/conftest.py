@@ -6,6 +6,9 @@ test that exercises a multi-request match). Zero it for the suite — the
 pacing logic itself is covered explicitly in ``test_mb_pacing.py``.
 """
 
+import contextlib
+import sqlite3
+
 import aiosqlite
 import pytest
 
@@ -30,3 +33,22 @@ def opened(monkeypatch):
 
     monkeypatch.setattr(aiosqlite, "connect", counting)
     return connections
+
+
+@pytest.fixture
+def write_locked():
+    """Holds a library database's write lock for a block, as another worker
+    in the middle of a transaction does. A call that only reads goes through
+    meanwhile; one that writes waits, then fails as locked."""
+
+    @contextlib.contextmanager
+    def hold(db_path):
+        connection = sqlite3.connect(db_path, isolation_level=None)
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        finally:
+            connection.execute("ROLLBACK")
+            connection.close()
+
+    return hold
