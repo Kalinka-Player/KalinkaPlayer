@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -40,6 +41,15 @@ std::vector<uint8_t> toneBits() {
   return modulator.modulate(harness::sine(1000, kDsd64, kBytes * 8, 0.5));
 }
 
+/// Half a second of a 1 kHz tone at DSD's specified peak, 3.1 dB over half
+/// modulation, at @p rate.
+std::vector<uint8_t> peakToneBits(unsigned rate) {
+  // A gentler loop than toneBits()'s, which this level would drive unstable.
+  harness::SigmaDelta modulator(7, double(rate / 44100), 1.25);
+  return modulator.modulate(harness::sine(
+      1000, rate, rate / 2, 0.5 * std::pow(10.0, 3.1 / 20.0)));
+}
+
 class DsdPcmPlaybackTest : public testing::Test {
 protected:
   const std::filesystem::path directory = freshDirectory();
@@ -54,10 +64,11 @@ protected:
     std::filesystem::remove_all(directory, error);
   }
 
-  std::string dsf(const std::string &name, std::span<const uint8_t> bits) {
+  std::string dsf(const std::string &name, std::span<const uint8_t> bits,
+                  unsigned rate = kDsd64) {
     const auto path = directory / name;
     const std::vector<uint8_t> channel(bits.begin(), bits.end());
-    const auto bytes = harness::dsfFile({channel, channel}, kDsd64);
+    const auto bytes = harness::dsfFile({channel, channel}, rate);
     std::ofstream(path, std::ios::binary)
         .write(reinterpret_cast<const char *>(bytes.data()),
                std::streamsize(bytes.size()));
@@ -174,6 +185,23 @@ TEST_F(DsdPcmPlaybackTest, TheLevelIsTheOneAskedFor) {
     const auto measured = harness::thdPlusN(
         std::span(left).subspan(edge, left.size() - 2 * edge), kPcmRate, 1000);
     EXPECT_NEAR(measured.fundamentalDbfs, -6.0206 + db, 0.01);
+  }
+}
+
+TEST_F(DsdPcmPlaybackTest, TheSpecifiedPeakConvertsWithoutClippingAtTheSafeGain) {
+  for (const unsigned rate : {kDsd64, 2 * kDsd64}) {
+    SCOPED_TRACE(rate);
+    const auto left = play({dsf("peak.dsf", peakToneBits(rate), rate)});
+    ASSERT_TRUE(opened);
+    ASSERT_EQ(opened->sampleFormat, PCM_FLOAT64_LE)
+        << "unclamped, so that a peak past full scale shows";
+    ASSERT_FALSE(left.empty());
+    double peak = 0;
+    for (const double sample : left)
+      peak = std::max(peak, std::abs(sample));
+    const double peakDb = 20 * std::log10(peak);
+    EXPECT_LT(peakDb, 0.0) << "an integer device would clip";
+    EXPECT_GT(peakDb, -0.3) << "the gain brings it near full scale";
   }
 }
 
