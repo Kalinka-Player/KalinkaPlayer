@@ -10,6 +10,7 @@
 #include "AlsaAudioEmitter.h"
 #include "AlsaVolumeControl.h"
 #include "Config.h"
+#include "PlaybackEvents.h"
 #include "SignalPath.h"
 
 struct StreamState;
@@ -33,16 +34,6 @@ enum AudioFormat {
 };
 
 using StreamId = size_t;
-
-/// @brief What the DSP measured of the source it is reading.
-struct DspMeters {
-  /// Samples clamped to the output's range since the source began.
-  uint64_t clippedSamples = 0;
-  /// The highest true peak since the source began; -200 before any sound.
-  double truePeakDbfs = -200;
-  /// Processing time over the audio processed since the last reading.
-  double load = 0;
-};
 
 class AudioPlayer {
 public:
@@ -116,9 +107,9 @@ public:
   /// decoded format to what the device was handed; the volume aside.
   SignalPath signalPath(const StreamInfo &heard) const;
 
-  /// What the DSP measured; the load starts over. Safe to call from any
-  /// thread.
-  DspMeters takeDspMeters();
+  /// What happens in playback, for one listener to take and report; shared,
+  /// so it outlives the player for a listener still waiting on it.
+  std::shared_ptr<PlaybackEvents> playbackEvents() const { return events; }
 
   /// Sets what DSD converted to PCM is raised by, as `dsd.gain_db`
   /// @p setting names it: what plays now ramps to it.
@@ -164,6 +155,8 @@ private:
   std::shared_ptr<DspStage> dspStage;
   /// Where software volume is applied, between the stage and the emitter.
   std::shared_ptr<OutputStage> outputStage;
+  const std::shared_ptr<PlaybackEvents> events =
+      std::make_shared<PlaybackEvents>();
   std::list<StreamNodes> streamNodesList;
 
   // Outlives every mixer handed to it, and is shared with whoever listens: the

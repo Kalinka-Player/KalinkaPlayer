@@ -9,6 +9,7 @@
 #include <numbers>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -294,42 +295,40 @@ TEST(OutputStage, ItDescribesTheDsdGainAndTheDither) {
       << "no gain at 0 dB";
 }
 
-TEST(OutputStage, ConvertedDsdIsMeteredOntoAFloatDeviceAtUnityToo) {
-  std::vector<double> tone(2 * 4800);
-  for (size_t n = 0; n < tone.size() / 2; ++n)
-    tone[2 * n] = tone[2 * n + 1] =
-        0.25 * std::sin(2 * std::numbers::pi * 1000 * double(n) / kRate);
-  const auto bytes = asBytes(tone);
-  Stage s(pcm(PCM_FLOAT64_LE), bytes, {}, kRawDsd);
-  EXPECT_EQ(readAll(*s.stage, 1600), bytes) << "unchanged";
-  EXPECT_NEAR(s.stage->peakSinceSourceBegan(), 0.25, 0.005);
-  EXPECT_GT(s.stage->takeLoad(), 0.0);
-  EXPECT_EQ(s.stage->takeLoad(), 0.0) << "nothing processed since";
-}
-
-TEST(OutputStage, PcmAtASoftwareVolumeIsNotMetered) {
-  Stage s(pcm(PCM16_LE), asBytes(std::vector<int16_t>(2 * 4000, 1 << 14)));
-  s.stage->setGain(0.5);
-  readAll(*s.stage, 4000);
-  EXPECT_EQ(s.stage->peakSinceSourceBegan(), 0.0)
-      << "no signal path reports it, so nothing is spent on it";
-  EXPECT_EQ(s.stage->takeLoad(), 0.0);
-}
-
-TEST(OutputStage, TheMetersStartOverWithEachSource) {
+TEST(OutputStage, ClippingIsPostedWithTheCountSinceTheSourceBegan) {
   Stage s(pcm(PCM_FLOAT64_LE), asBytes(std::vector<double>(2 * 4000, 2.0)),
           k24In32);
+  const auto events = std::make_shared<PlaybackEvents>();
+  s.stage->reportTo(events);
   readSamples<int32_t>(*s.stage, 2 * 1000);
-  const uint64_t clipped = s.stage->clippedSinceSourceBegan();
-  EXPECT_EQ(clipped, 2000u);
-  EXPECT_GE(s.stage->peakSinceSourceBegan(), 2.0);
+  EXPECT_EQ(events->take({}),
+            (std::vector<PlaybackEvent>{{StreamId(1), Clipping{2000}}}));
+  readSamples<int32_t>(*s.stage, 2 * 500);
+  readSamples<int32_t>(*s.stage, 2 * 500);
+  EXPECT_EQ(events->take({}),
+            (std::vector<PlaybackEvent>{{StreamId(1), Clipping{4000}}}))
+      << "the latest of a run";
 
   s.stage->acceptSourceChange();
-  EXPECT_EQ(s.stage->clippedSinceSourceBegan(), 0u);
-  EXPECT_EQ(s.stage->peakSinceSourceBegan(), 0.0);
   readSamples<int32_t>(*s.stage, 2 * 500);
-  EXPECT_EQ(s.stage->clippedSinceSourceBegan(), 1000u);
-  EXPECT_EQ(s.stage->clippedSamples(), clipped + 1000u) << "the total runs on";
+  EXPECT_EQ(events->take({}),
+            (std::vector<PlaybackEvent>{{StreamId(1), Clipping{1000}}}))
+      << "counted from the next source's start";
+  EXPECT_EQ(s.stage->clippedSamples(), 5000u) << "the total runs on";
+}
+
+TEST(OutputStage, NothingIsPostedWhileNothingClips) {
+  Stage s(pcm(PCM_FLOAT64_LE), asBytes(std::vector<double>(2 * 4000, 0.5)),
+          k24In32);
+  const auto events = std::make_shared<PlaybackEvents>();
+  s.stage->reportTo(events);
+  readAll(*s.stage, 4000);
+  std::stop_source stop;
+  std::jthread stopper([&stop] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    stop.request_stop();
+  });
+  EXPECT_TRUE(events->take(stop.get_token()).empty());
 }
 
 TEST(OutputStage, ClampedSamplesAreCounted) {

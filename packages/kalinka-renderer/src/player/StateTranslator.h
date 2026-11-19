@@ -4,6 +4,7 @@
 #include <string>
 
 #include "../native_player/AlsaVolumeControl.h"
+#include "../native_player/PlaybackEvents.h"
 #include "../native_player/SignalPath.h"
 #include "../native_player/StreamState.h"
 #include "kalinka/renderer/v1/renderer.pb.h"
@@ -40,6 +41,12 @@ void fillVolume(const VolumeState &volume,
 
 void fillSignalPath(const SignalPath &path,
                     kalinka::renderer::v1::SignalPath &out);
+
+/// @param sourceToken The source @p event concerns, when it concerns one.
+void fillPlaybackEvent(const PlaybackEvent &event,
+                       const std::optional<std::string> &sourceToken,
+                       int64_t atUnixMs,
+                       kalinka::renderer::v1::PlaybackEvent &out);
 
 /**
  * @brief One native state change as a PlaybackStateChanged.

@@ -371,6 +371,7 @@ AudioPlayer::AudioPlayer(const Config &config)
       outputStage(std::make_shared<OutputStage>(deviceFormats)) {
   dspStage->connectTo(streamSwitcher);
   outputStage->connectTo(dspStage);
+  outputStage->reportTo(events);
   setDsdGain(value_or(config, "dsd.gain_db", std::string("safe")));
   audioEmitter->fadeWith(outputStage);
   std::erase_if(streamConfig,
@@ -591,13 +592,6 @@ SignalPath AudioPlayer::signalPath(const StreamInfo &heard) const {
       outputStage->describe(decoded, dspStage->handsOn(decoded), heard.format);
   path.steps.insert(path.steps.end(), added.begin(), added.end());
   return path;
-}
-
-DspMeters AudioPlayer::takeDspMeters() {
-  const double peak = outputStage->peakSinceSourceBegan();
-  return {outputStage->clippedSinceSourceBegan(),
-          peak > 1e-10 ? 20 * std::log10(peak) : -200.0,
-          dspStage->takeLoad() + outputStage->takeLoad()};
 }
 
 void AudioPlayer::setDsdGain(const std::string &setting) {

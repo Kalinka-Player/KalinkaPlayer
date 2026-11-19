@@ -1,15 +1,14 @@
 #pragma once
 
 #include "AudioGraphNode.h"
+#include "PlaybackEvents.h"
 #include "SignalPath.h"
-#include "dsp/LoadMeter.h"
 #include "dsp/output/GainControl.h"
 #include "dsp/output/GainRamp.h"
 #include "dsp/output/OutputFade.h"
 #include "dsp/output/OutputFormat.h"
 #include "dsp/output/PlanarPcm.h"
 #include "dsp/output/Quantiser.h"
-#include "dsp/output/TruePeak.h"
 
 #include <atomic>
 #include <memory>
@@ -33,14 +32,11 @@
  * upstream converted to PCM is raised by the DSD gain as well, which ramps as
  * the volume does. A fade multiplies the volume and goes through the
  * Quantiser the same way. DSD and DoP pass untouched, and refuse any gain but
- * unity. Audio a stage upstream changed, or float quantised here, is what a
- * signal path reports, and it is metered: its clipped samples and true peak
- * since the source began, and the time taken. It goes through the Quantiser
- * at unity onto float too.
+ * unity. Whenever it clamps samples it posts Clipping, with the count since
+ * the source began.
  *
  * @note read(), the waits, the seeks and the fades belong to the one thread
- * that pulls audio. setGain(), setDsdGain(), the meters and describe() may
- * come from any thread.
+ * that pulls audio. setGain() and setDsdGain() may come from any thread.
  */
 class OutputStage : public AudioGraphOutputNode,
                     public AudioGraphInputNode,
@@ -78,16 +74,10 @@ public:
   bool silent() const override;
   /// Samples clamped to the output's range so far.
   uint64_t clippedSamples() const { return clipped.load(); }
-  /// Samples clamped since the source being read began.
-  uint64_t clippedSinceSourceBegan() const {
-    // The mark before the count, which never falls below a mark already set.
-    const uint64_t before = clippedBefore.load();
-    return clipped.load() - before;
+  /// Where Clipping is posted; set before anything is read.
+  void reportTo(std::shared_ptr<PlaybackEvents> events) {
+    this->events = std::move(events);
   }
-  /// The highest true peak since the source being read began, linear.
-  double peakSinceSourceBegan() const { return peak.load(); }
-  /// The time taken over the audio metered since the last call.
-  double takeLoad() { return load.take(); }
   /**
    * @brief The steps it takes a source through that was decoded as
    * @p decoded, reaches it as @p source and leaves as @p output: the DSD gain
@@ -102,14 +92,9 @@ private:
   /// What upstream sends, and what is presented for it.
   struct Presented {
     StreamAudioFormat source;
-    /// What upstream says the samples were made from, when a stage changed
-    /// them.
-    std::optional<StreamAudioFormat> decoded;
     OutputChoice output;
     /// DSD converted to PCM upstream, which the DSD gain raises.
     bool fromDsd = false;
-    /// Changed upstream or quantised from float here: metered.
-    bool processed = false;
   };
 
   const std::vector<StreamAudioFormat> device;
@@ -119,10 +104,13 @@ private:
   std::atomic<double> dsdGain{1.0};
   std::atomic<bool> settlePending{true};
   std::atomic<uint64_t> clipped{0};
-  /// clipped, when the source being read began.
-  std::atomic<uint64_t> clippedBefore{0};
-  std::atomic<double> peak{0.0};
-  LoadMeter load;
+  std::shared_ptr<PlaybackEvents> events;
+  /// The clamped count when the source being read began, and when it was
+  /// last posted; both the pulling thread's.
+  uint64_t clippedBefore = 0;
+  uint64_t clippedPosted = 0;
+  /// The stream being read, as upstream last stated it; under presentedMutex.
+  std::optional<StreamId> reading;
   mutable std::mutex presentedMutex;
   std::optional<Presented> presented;
 
@@ -132,7 +120,6 @@ private:
   double fadeTarget = 1.0;
   std::optional<double> fadeSettle;
   Quantiser quantiser;
-  TruePeakMeter truePeak;
   std::vector<uint8_t> input;
   PlanarScratch planar;
 

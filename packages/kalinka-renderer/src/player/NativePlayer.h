@@ -119,8 +119,8 @@ private:
   std::optional<SignalPath> signalPathOf(const StreamState &state) const;
   /// Reports what plays again, as a live setting changed what is done to it.
   void restatePlayback();
-  /// Reports the DSP's meters, while it processes what plays.
-  void emitMeters();
+  /// Reports @p event, unless the source it concerns is no longer tracked.
+  void emitEvent(const PlaybackEvent &event);
   void emit(kalinka::renderer::v1::Envelope &env);
   void emitVolume(const VolumeState &volume, bool external);
   void reportUnavailable(const char *command);
@@ -160,7 +160,7 @@ private:
   std::shared_ptr<VolumeMonitor> volumeMonitor_;
   std::thread statePump_;
   std::thread volumePump_;
-  std::jthread meterPump_;
+  std::jthread eventPump_;
   // A retired graph's queued posts name streams and a device that are gone.
   uint64_t graphGeneration_ = 0;
   // Carried across rebuilds until a STOPPED reports it.

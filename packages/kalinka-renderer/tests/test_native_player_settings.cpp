@@ -6,6 +6,7 @@
 #include <boost/asio.hpp>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -20,6 +21,7 @@
 #include "LocalHttpServer.h"
 #include "ScopedAlsaConfig.h"
 #include "SigmaDelta.h"
+#include "Signals.h"
 #include "TestHelpers.h"
 #include "WavTestData.h"
 #include "config/ConfigService.h"
@@ -217,6 +219,44 @@ protected:
     return {file.begin(), file.end()};
   }
 
+  /// A second of a 1 kHz tone at DSD's specified peak, 71 % modulation,
+  /// which +6 dB takes past full scale.
+  static std::string loud() {
+    harness::SigmaDelta modulator(7, 64, 1.25);
+    const auto bits = modulator.modulate(
+        harness::sine(1000, 2822400, 2822400, 0.5 * std::pow(10.0, 3.1 / 20)));
+    const auto file = harness::dsfFile({bits, bits}, 2822400);
+    return {file.begin(), file.end()};
+  }
+
+  /// The events reported while the DSF at @p path plays to the end in `pcm`
+  /// mode at @p level, on a device that plays in real time.
+  std::vector<renderer_pb::PlaybackEvent>
+  eventsPlaying(const std::string &path, const std::string &level) {
+    const ScopedAlsaConfig alsa{
+        "pcm_type.kalinka_paced { lib \"" KALINKA_PACED_PCM
+        "\" }\npcm.paced { type kalinka_paced }\n"};
+    player_.reset();
+    saveSettingsOverrides({{"output.device", "paced"},
+                           {"output.dsd_mode", "pcm"},
+                           {"output.dsd_gain_db", level}});
+    player_ = std::make_shared<NativePlayer>(ioc_);
+    std::vector<renderer_pb::PlaybackEvent> events;
+    bool finished = false;
+    player_->setStateSink([&](renderer_pb::Envelope &env) {
+      if (env.has_playback_event())
+        events.push_back(env.playback_event());
+      finished = finished || (env.has_playback_state_changed() &&
+                              env.playback_state_changed().state() ==
+                                  renderer_pb::PLAYBACK_STATE_FINISHED);
+    });
+    player_->setSource(dsf(path));
+    EXPECT_TRUE(runUntil([&finished] { return finished; }));
+    player_->setStateSink({});
+    player_.reset();
+    return events;
+  }
+
   /// @p seconds of random DSD64, which every filter treats apart.
   static std::string noise(double seconds = 0.2) {
     std::mt19937 random(1);
@@ -259,7 +299,8 @@ protected:
   LocalHttpServer dsdServer_{std::map<std::string, std::string, std::less<>>{
       {"/silence.dsf", silence()},
       {"/noise.dsf", noise()},
-      {"/long.dsf", noise(1.5)}}};
+      {"/long.dsf", noise(1.5)},
+      {"/loud.dsf", loud()}}};
 };
 
 TEST_F(NativePlayerSettingsTest, DsdSettingsExposeCapabilitiesAndPersistMode) {
@@ -856,54 +897,42 @@ TEST_F(NativePlayerDsdTest, ALevelChangeRestatesWhatPlays) {
   player_.reset();
 }
 
-TEST_F(NativePlayerDsdTest, MetersAreReportedWhileConvertedDsdPlays) {
-  const ScopedAlsaConfig alsa{
-      "pcm_type.kalinka_paced { lib \"" KALINKA_PACED_PCM
-      "\" }\npcm.paced { type kalinka_paced }\n"};
-  player_.reset();
-  saveSettingsOverrides(
-      {{"output.device", "paced"}, {"output.dsd_mode", "pcm"}});
-  player_ = std::make_shared<NativePlayer>(ioc_);
-  std::vector<renderer_pb::DspMeters> meters;
-  bool finished = false;
-  player_->setStateSink([&](renderer_pb::Envelope &env) {
-    if (env.has_dsp_meters())
-      meters.push_back(env.dsp_meters());
-    finished = finished || (env.has_playback_state_changed() &&
-                            env.playback_state_changed().state() ==
-                                renderer_pb::PLAYBACK_STATE_FINISHED);
-  });
+TEST_F(NativePlayerDsdTest, ClippingIsReportedAsItHappens) {
   const auto began = std::chrono::steady_clock::now();
-  player_->setSource(dsf("/long.dsf"));
-  ASSERT_TRUE(runUntil([&finished] { return finished; }));
+  const auto events = eventsPlaying("/loud.dsf", "6");
   const auto lasted = std::chrono::steady_clock::now() - began;
-  player_->setStateSink({});
 
-  ASSERT_GE(meters.size(), 1u);
-  EXPECT_LE(double(meters.size()),
+  ASSERT_GE(events.size(), 1u);
+  EXPECT_LE(double(events.size()),
             std::chrono::duration<double>(lasted).count() * 2 + 1)
-      << "at most twice a second";
-  for (const auto &meter : meters) {
-    EXPECT_EQ(meter.source_token(), "/long.dsf");
-    EXPECT_GT(meter.true_peak_dbfs(), -200.0) << "the noise is heard";
-    EXPECT_GT(meter.at_unix_ms(), 0);
+      << "a run of clipping at most twice a second";
+  uint64_t before = 0;
+  for (const auto &event : events) {
+    EXPECT_EQ(event.source_token(), "/loud.dsf");
+    EXPECT_GT(event.at_unix_ms(), 0);
+    ASSERT_EQ(event.kind_case(), renderer_pb::PlaybackEvent::kClipping);
+    EXPECT_GT(event.clipping().clipped_samples(), before)
+        << "the count since the track began, each time more";
+    before = event.clipping().clipped_samples();
   }
-  EXPECT_TRUE(std::ranges::any_of(
-      meters, [](const auto &meter) { return meter.load() > 0.0; }));
-  player_.reset();
 }
 
-TEST_F(NativePlayerStreamTest, PcmPlayedAsDecodedIsNotMetered) {
+TEST_F(NativePlayerDsdTest, ATrackThatDoesNotClipReportsNothing) {
+  EXPECT_TRUE(eventsPlaying("/loud.dsf", "safe").empty())
+      << "the safe level keeps the specified peak under full scale";
+}
+
+TEST_F(NativePlayerStreamTest, PcmPlayedAsDecodedReportsNoEvent) {
   const ScopedAlsaConfig alsa{
       "pcm_type.kalinka_paced { lib \"" KALINKA_PACED_PCM
       "\" }\npcm.paced { type kalinka_paced }\n"};
   player_.reset();
   saveSettingsOverrides({{"output.device", "paced"}});
   player_ = std::make_shared<NativePlayer>(ioc_);
-  size_t meters = 0;
+  size_t events = 0;
   bool finished = false;
   player_->setStateSink([&](renderer_pb::Envelope &env) {
-    meters += env.has_dsp_meters();
+    events += env.has_playback_event();
     finished = finished || (env.has_playback_state_changed() &&
                             env.playback_state_changed().state() ==
                                 renderer_pb::PLAYBACK_STATE_FINISHED);
@@ -911,7 +940,7 @@ TEST_F(NativePlayerStreamTest, PcmPlayedAsDecodedIsNotMetered) {
   player_->setSource(sourceAt("/whole"));
   ASSERT_TRUE(runUntil([&finished] { return finished; }));
   player_->setStateSink({});
-  EXPECT_EQ(meters, 0u);
+  EXPECT_EQ(events, 0u);
   player_.reset();
 }
 

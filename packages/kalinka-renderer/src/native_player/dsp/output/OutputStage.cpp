@@ -38,7 +38,6 @@ bool convertedFromDsd(const StreamInfo &info) {
 OutputStage::OutputStage(std::vector<StreamAudioFormat> device, uint64_t seed)
     : device(std::move(device)), ramp(kRamp), fade(kFadeLength),
       quantiser(kPlanarFrames, kPlanarChannels, seed),
-      truePeak(kPlanarFrames, kPlanarChannels),
       input(kPlanarFrames * frameBytes(PCM_FLOAT64_LE, kPlanarChannels)) {}
 
 OutputStage::~OutputStage() {
@@ -77,18 +76,19 @@ void OutputStage::disconnect(std::shared_ptr<AudioGraphOutputNode> source) {
 
 void OutputStage::onUpstreamState(const StreamState &state) {
   StreamState shown = state;
+  // A source change names the stream to come, not the one still being read.
+  if (state.streamId && state.state != AudioGraphNodeState::SOURCE_CHANGED) {
+    std::lock_guard lock(presentedMutex);
+    reading = state.streamId;
+  }
   if (state.streamInfo && state.streamInfo->streamType == StreamType::FRAMES) {
     const StreamAudioFormat &source = state.streamInfo->format;
-    const auto &decoded = state.streamInfo->decodedFormat;
+    const bool fromDsd = convertedFromDsd(*state.streamInfo);
     std::lock_guard lock(presentedMutex);
     if (!presented || presented->source != source ||
-        presented->decoded != decoded) {
-      const auto output = chooseOutput(source, device, kPcmDeviceChannels);
+        presented->fromDsd != fromDsd)
       presented = Presented{
-          source, decoded, output, convertedFromDsd(*state.streamInfo),
-          decoded.has_value() || (isFloat(source.sampleFormat) &&
-                                  !isFloat(output.format))};
-    }
+          source, chooseOutput(source, device, kPcmDeviceChannels), fromDsd};
     auto &format = shown.streamInfo->format;
     format.sampleFormat = presented->output.format;
     // Quantised, float keeps the bits it is dithered at.
@@ -176,7 +176,7 @@ size_t OutputStage::read(void *data, size_t size) {
     throw std::runtime_error("No output stage for " +
                              std::to_string(source.channels) + " channels");
   follow(*now);
-  if (!now->processed && ramp.holding(1.0) && fade.holding(1.0) &&
+  if (ramp.holding(1.0) && fade.holding(1.0) &&
       now->output.format == source.sampleFormat)
     return upstream->read(data, size);
 
@@ -206,10 +206,7 @@ void OutputStage::produce(const Presented &now, const uint8_t *in,
   const size_t inFrame = frameBytes(from, channels);
   const size_t outFrame = frameBytes(to, channels);
   // Integer to a wider container is exact; float to integer is quantised.
-  // What is metered is quantised even onto float.
-  const bool exact =
-      !now.processed && (from == to || (!isFloat(from) && !isFloat(to)));
-  const unsigned rate = now.source.sampleRate;
+  const bool exact = from == to || (!isFloat(from) && !isFloat(to));
   for (size_t at = 0; at < frames;) {
     const auto span = take(frames - at);
     const uint8_t *source = in + at * inFrame;
@@ -221,20 +218,23 @@ void OutputStage::produce(const Presented &now, const uint8_t *in,
         convertSampleFormat(source, from, span.frames * channels, dest, to,
                             span.frames * outFrame);
     } else {
-      const auto began = std::chrono::steady_clock::now();
       readPlanar(source, from, channels, span.frames, planar.planes());
-      if (now.processed)
-        truePeak.feed(planar.planes(), channels, span.frames, rate,
-                      std::max(std::abs(span.from), std::abs(span.to)));
       quantiser.pack(planar.planes(), channels, span.frames, span, to,
                      now.output.bits, dest);
-      if (now.processed)
-        load.add(std::chrono::steady_clock::now() - began, span.frames, rate);
     }
     at += span.frames;
   }
-  clipped = quantiser.clipped();
-  peak = truePeak.peak();
+  const uint64_t total = quantiser.clipped();
+  clipped = total;
+  if (events && total > clippedPosted) {
+    clippedPosted = total;
+    std::optional<StreamId> stream;
+    {
+      std::lock_guard lock(presentedMutex);
+      stream = reading;
+    }
+    events->post({stream, Clipping{total - clippedBefore}});
+  }
 }
 
 size_t OutputStage::toSource(const Presented &now, size_t bytes) const {
@@ -301,9 +301,7 @@ std::optional<uint64_t> OutputStage::liveSourceFrame() const {
 }
 
 void OutputStage::acceptSourceChange() {
-  clippedBefore = quantiser.clipped();
-  truePeak.resetPeak();
-  peak = 0.0;
+  clippedBefore = clippedPosted = quantiser.clipped();
   if (upstream)
     upstream->acceptSourceChange();
 }

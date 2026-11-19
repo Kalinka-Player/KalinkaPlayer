@@ -2,7 +2,7 @@
 
 Status: Phase 1 is done: the DSP stage, the output stage's gain, dither,
 packing and fades, DSD to PCM with its settings, and the signal path and
-meters the renderer reports (sections 5, 7, 8 and 14). Phase 2, the
+clipping the renderer reports (sections 5, 7, 8 and 14). Phase 2, the
 processing itself, is next. Every number is
 from a run named in [benchmarks/dsp/results.md](../benchmarks/dsp/results.md);
 the arm64 ones are from a Raspberry Pi 5. A Pi 4 has been measured for the
@@ -456,22 +456,29 @@ ways:
   stream's decoded format and each stage's own description, so a level
   change is restated at once.
 - `dsp_latency_ms` is the path's `latency_ms`.
-- The true peak interpolates to at least 176.4 kHz, as BS.1770 asks: four
-  times at 44.1 and 48 kHz, twice at 88.2 and 96 kHz, the samples alone
-  above. It reads what a stage processed or the output stage quantised from
-  float, the gain included, and that goes through the quantiser at unity
-  onto float too. The load
-  is the converter's and the output stage's time over the audio they make,
-  since the last report. Meters are sent only while a signal path processes
-  what plays.
+- `DspMeters` became `PlaybackEvent`: something that happened, sent as it
+  happens rather than sampled. It states nothing that lasts, so no snapshot
+  repeats it, and it does not stop playback as `PlaybackError` does. Its
+  first kind is `Clipping`, the samples the output stage clamped since the
+  source began. The audio threads post to a mailbox that keeps the latest of
+  each kind and never allocates. One listener sends what it takes and then
+  holds off half a second, so a run of clipping reaches the Core at most
+  twice a second, and a track that never clips sends nothing. A Core ignores
+  a kind it does not know, so others, such as an output underrun or how far
+  ahead a source is buffered, can follow without changing it.
+- The true peak and the DSP load wait for Phase 2. In Phase 1 only the +6 dB
+  DSD level can clip, so there is no setting they would inform yet. The load
+  is for the benchmarks and the log.
 - `Capabilities.dsp` says whether DSD converts to PCM, the step kinds and
   the most output channels. The most FIR taps waits for the convolver.
 
 The Core passes the path on with the output a playback state describes,
-where a path with steps rules out a lossless one, and the meters as
-`dsp_meters_changed` on the queue channels, for the playing source on the
-current renderer alone. The app shows the steps between the decoded stream
-and the output, and the latency and meters beside them.
+where a path with steps rules out a lossless one, and playback events as
+`playback_event` on the queue channels, a `kind` with its `details`, for the
+playing source on the current renderer alone. It relays every kind the same
+way. The app shows the steps between the decoded stream and the output, and
+beside them the latency and, once the track has clipped, its clipped
+samples.
 
 ## 9. SIMD: Highway
 
