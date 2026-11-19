@@ -68,3 +68,12 @@ std::string dsdPcmRatesText(unsigned dsdRate) {
   }
   return text + " kHz";
 }
+
+std::string dsdRateName(unsigned dsdRate) {
+  for (const unsigned base : {44100u, 48000u})
+    if (dsdRate % base == 0)
+      return "DSD" + std::to_string(dsdRate / base);
+  return "DSD at " + std::to_string(dsdRate) + " Hz";
+}
+
+std::string pcmRateText(unsigned rate) { return kiloHertz(rate) + " kHz"; }

@@ -10,6 +10,7 @@
 #include "AlsaAudioEmitter.h"
 #include "AlsaVolumeControl.h"
 #include "Config.h"
+#include "SignalPath.h"
 
 struct StreamState;
 class AudioStreamSwitcher;
@@ -100,6 +101,10 @@ public:
   // / another app. Reports for as long as it is held, whatever the mode does to
   // the mixer behind it. Mirrors monitor() for stream state.
   std::unique_ptr<VolumeMonitor> volumeMonitor();
+
+  /// What is done to the samples of a stream @p heard describes, from its
+  /// decoded format to what the device was handed; the volume aside.
+  SignalPath signalPath(const StreamInfo &heard) const;
 
   /// Sets what DSD converted to PCM is raised by, as `dsd.gain_db`
   /// @p setting names it: what plays now ramps to it.

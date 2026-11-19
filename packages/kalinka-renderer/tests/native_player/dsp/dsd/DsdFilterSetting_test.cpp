@@ -12,3 +12,9 @@ TEST(DsdFilterSetting, TheSettingNamesAFilterOrAutomatic) {
   for (const char *value : {"", "40k", "30", "Wide", "AUTO"})
     EXPECT_THROW(dsdFilterSetting(value), std::invalid_argument) << value;
 }
+
+TEST(DsdFilterSetting, EachFilterIsNamedForAListener) {
+  EXPECT_EQ(dsdFilterText(DsdFilter::Cut30k), "30 kHz filter");
+  EXPECT_EQ(dsdFilterText(DsdFilter::Cut50k), "50 kHz filter");
+  EXPECT_EQ(dsdFilterText(DsdFilter::Wide), "wide filter");
+}

@@ -23,10 +23,11 @@
  *
  * @note read(), the waits, the seeks, acceptSourceChange(),
  * streamReadPosition() and liveSourceFrame() belong to the one thread that
- * pulls audio, which owns everything the stage holds. discard() and
- * discardAll() may come from any thread; connectTo() and disconnect() only
- * while nothing pulls. The stage has no lock of its own: upstream states and
- * discards reach the pulling thread through the node's state lock alone.
+ * pulls audio, which owns everything the stage holds. discard(),
+ * discardAll(), describe() and handsOn() may come from any thread;
+ * connectTo() and disconnect() only while nothing pulls. The stage has no
+ * lock of its own: upstream states and discards reach the pulling thread
+ * through the node's state lock alone.
  */
 class DspStage : public AudioGraphOutputNode, public AudioGraphInputNode {
 public:
@@ -56,6 +57,13 @@ public:
   std::optional<long> streamReadPosition() const override;
   std::optional<uint64_t> liveSourceFrame() const override;
   void acceptSourceChange() override;
+
+  /// What the processor does to a source decoded as @p format; nothing when
+  /// it passes untouched. From any thread.
+  SignalPath describe(const StreamAudioFormat &format) const;
+  /// The format a source decoded as @p format is handed on in. From any
+  /// thread.
+  StreamAudioFormat handsOn(const StreamAudioFormat &format) const;
 
   /// Drops what it holds of stream @p id, which has been removed upstream.
   void discard(StreamId id);

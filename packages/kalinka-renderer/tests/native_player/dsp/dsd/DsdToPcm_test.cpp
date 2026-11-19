@@ -122,6 +122,7 @@ TEST(DsdToPcm, AnImpulseComesOutItsLatencyLater) {
     const DsdToPcm probe(s);
     const double lag = moment / energy - 8.0 * kAt / probe.ratio();
     EXPECT_LE(std::abs(lag - double(probe.latency())), 0.5) << name(s);
+    EXPECT_EQ(DsdToPcm::latencyOf(s), probe.latency()) << name(s);
   }
 }
 
@@ -275,6 +276,8 @@ TEST(DsdToPcm, UnsupportedRatesAndChannelsAreRefused) {
       DsdToPcm({2822401, 176400, 1, DsdFilter::Cut30k, DsdBitOrder::MsbFirst}),
       std::invalid_argument);
   EXPECT_THROW(DsdToPcm(spec(44100, 64, 4, DsdFilter::Cut30k, 0)),
+               std::invalid_argument);
+  EXPECT_THROW(DsdToPcm::latencyOf(spec(44100, 64, 3, DsdFilter::Cut30k)),
                std::invalid_argument);
 }
 

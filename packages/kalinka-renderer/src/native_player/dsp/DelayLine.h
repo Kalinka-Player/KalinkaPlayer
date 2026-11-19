@@ -18,6 +18,8 @@ public:
   explicit DelayLine(std::chrono::milliseconds delay);
 
   bool handles(const StreamAudioFormat &format) const override;
+  /// Nothing: no sample changes.
+  SignalPath describe(const StreamAudioFormat &) const override { return {}; }
   size_t start(const StreamAudioFormat &format) override;
   size_t process(const uint8_t *in, uint8_t *out, size_t frames) override;
 

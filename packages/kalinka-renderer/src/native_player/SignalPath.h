@@ -1,0 +1,27 @@
+#pragma once
+
+#include <string>
+#include <vector>
+
+/// @brief One step the samples are taken through between the decoder and
+/// the device.
+struct SignalStep {
+  /// Stable, for a client to key on: "dsd_to_pcm".
+  std::string kind;
+  /// For a listener: "DSD to PCM".
+  std::string name;
+  /// How it is set, for a listener: "DSD64 to 176.4 kHz, 30 kHz filter".
+  std::string summary;
+
+  bool operator==(const SignalStep &) const = default;
+};
+
+/// @brief What is done to the decoded samples on the way to the device, in
+/// order; the volume is not part of it.
+struct SignalPath {
+  std::vector<SignalStep> steps;
+  /// What the steps hold back ahead of what is heard.
+  double latencyMs = 0;
+
+  bool operator==(const SignalPath &) const = default;
+};

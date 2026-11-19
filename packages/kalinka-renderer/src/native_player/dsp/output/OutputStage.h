@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AudioGraphNode.h"
+#include "SignalPath.h"
 #include "dsp/output/GainControl.h"
 #include "dsp/output/GainRamp.h"
 #include "dsp/output/OutputFade.h"
@@ -71,6 +72,15 @@ public:
   bool silent() const override;
   /// Samples clamped to the output's range so far.
   uint64_t clippedSamples() const { return clipped.load(); }
+  /**
+   * @brief The steps it takes a source through that was decoded as
+   * @p decoded, reaches it as @p source and leaves as @p output: the DSD gain
+   * on DSD converted to PCM, and the dither of float onto integer samples.
+   * The volume is not one. From any thread.
+   */
+  std::vector<SignalStep> describe(const StreamAudioFormat &decoded,
+                                   const StreamAudioFormat &source,
+                                   const StreamAudioFormat &output) const;
 
 private:
   /// What upstream sends, and what is presented for it.

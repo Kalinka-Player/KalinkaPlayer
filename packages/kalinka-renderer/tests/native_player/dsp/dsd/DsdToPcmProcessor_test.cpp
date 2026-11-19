@@ -171,6 +171,32 @@ TEST(DsdToPcmProcessor, ItConvertsAsTheConverterDoes) {
   }
 }
 
+TEST(DsdToPcmProcessor, ItDescribesTheConversionAndItsLatency) {
+  const auto described = [](std::vector<StreamAudioFormat> device,
+                            StreamAudioFormat format,
+                            std::optional<DsdFilter> filter = std::nullopt) {
+    return DsdToPcmProcessor(std::move(device), std::nullopt, filter)
+        .describe(format);
+  };
+  const auto dsd64 = described({}, raw(2822400));
+  ASSERT_EQ(dsd64.steps.size(), 1u);
+  EXPECT_EQ(dsd64.steps[0], (SignalStep{"dsd_to_pcm", "DSD to PCM",
+                                        "DSD64 to 176.4 kHz, 30 kHz filter"}));
+  EXPECT_DOUBLE_EQ(dsd64.latencyMs,
+                   1000.0 *
+                       double(DsdToPcm::latencyOf({2822400, 176400, 2,
+                                                   DsdFilter::Cut30k,
+                                                   DsdBitOrder::MsbFirst})) /
+                       176400);
+  EXPECT_EQ(described({}, raw(5644800)).steps[0].summary,
+            "DSD128 to 176.4 kHz, 50 kHz filter");
+  EXPECT_EQ(described({}, raw(2822400), DsdFilter::Wide).steps[0].summary,
+            "DSD64 to 176.4 kHz, wide filter");
+  EXPECT_EQ(described(takes({44100}), raw(2822400)).steps[0].summary,
+            "DSD64 to 44.1 kHz")
+      << "at the base rate the filters are one";
+}
+
 TEST(DsdToPcmProcessor, FedSilenceSettlesToZero) {
   DsdToPcmProcessor processor({});
   processor.start(raw(2822400));

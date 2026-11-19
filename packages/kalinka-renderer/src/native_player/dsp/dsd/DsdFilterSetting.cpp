@@ -13,3 +13,15 @@ std::optional<DsdFilter> dsdFilterSetting(const std::string &setting) {
     return DsdFilter::Wide;
   throw std::invalid_argument("unknown DSD filter '" + setting + "'");
 }
+
+std::string dsdFilterText(DsdFilter filter) {
+  switch (filter) {
+  case DsdFilter::Cut30k:
+    return "30 kHz filter";
+  case DsdFilter::Cut50k:
+    return "50 kHz filter";
+  case DsdFilter::Wide:
+    break;
+  }
+  return "wide filter";
+}

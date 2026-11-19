@@ -2,6 +2,7 @@
 #define DSP_PROCESSOR_H
 
 #include "AudioInfo.h"
+#include "SignalPath.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -15,10 +16,11 @@
  * DspStage hides that lag, so a processor states it rather than compensating
  * for it itself.
  *
- * @note Not thread-safe, but for output(), which states may be translated
- * with from any thread: every other call comes from the thread that pulls
- * audio. That thread must not allocate while it streams, so start() is where
- * buffers are sized and process() never resizes them.
+ * @note Not thread-safe, but for handles(), output() and describe(), which
+ * states may be translated with from any thread: every other call comes from
+ * the thread that pulls audio. That thread must not allocate while it
+ * streams, so start() is where buffers are sized and process() never resizes
+ * them.
  */
 class DspProcessor {
 public:
@@ -39,6 +41,10 @@ public:
   virtual Output output(const StreamAudioFormat &format) const {
     return {format, 1};
   }
+
+  /// What a run in @p format, which handles() accepts, does to the samples,
+  /// and the latency it adds.
+  virtual SignalPath describe(const StreamAudioFormat &format) const = 0;
 
   /**
    * @brief Begins a run in @p format, which handles() accepts, with no history.

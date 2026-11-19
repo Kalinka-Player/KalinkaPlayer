@@ -7,6 +7,7 @@
 #include <cstring>
 #include <mutex>
 #include <random>
+#include <string>
 #include <vector>
 
 namespace {
@@ -260,6 +261,36 @@ TEST(OutputStage, TheDsdGainMultipliesTheVolume) {
   s.stage->setDsdGain(4.0);
   for (const int32_t v : readSamples<int32_t>(*s.stage, 2 * 1000))
     ASSERT_LE(std::abs(double(v / 256) - double(1 << 22)), 1.5);
+}
+
+TEST(OutputStage, ItDescribesTheDsdGainAndTheDither) {
+  OutputStage stage(k24In32, 1);
+  const StreamAudioFormat converted{176400, 2, 64, PCM_FLOAT64_LE, 0};
+  const StreamAudioFormat s32{176400, 2, 24, PCM32_LE, 0};
+  const auto kinds = [&stage](const StreamAudioFormat &decoded,
+                              const StreamAudioFormat &source,
+                              const StreamAudioFormat &output) {
+    std::vector<std::string> kinds;
+    for (const auto &step : stage.describe(decoded, source, output))
+      kinds.push_back(step.kind + ": " + step.summary);
+    return kinds;
+  };
+  stage.setDsdGain(std::pow(10.0, 2.8 / 20));
+  EXPECT_EQ(kinds(kRawDsd, converted, s32),
+            (std::vector<std::string>{"dsd_gain: +2.8 dB",
+                                      "dither: TPDF at 24 bits"}));
+  EXPECT_EQ(kinds(kRawDsd, converted, converted),
+            std::vector<std::string>{"dsd_gain: +2.8 dB"})
+      << "a device that takes float";
+  EXPECT_EQ(kinds(converted, converted, s32),
+            std::vector<std::string>{"dither: TPDF at 24 bits"})
+      << "float PCM, raised by no DSD gain";
+  EXPECT_TRUE(kinds(pcm(PCM16_LE), pcm(PCM16_LE), pcm(PCM32_LE)).empty())
+      << "a wider container changes no sample";
+  stage.setDsdGain(1.0);
+  EXPECT_EQ(kinds(kRawDsd, converted, s32),
+            std::vector<std::string>{"dither: TPDF at 24 bits"})
+      << "no gain at 0 dB";
 }
 
 TEST(OutputStage, ClampedSamplesAreCounted) {

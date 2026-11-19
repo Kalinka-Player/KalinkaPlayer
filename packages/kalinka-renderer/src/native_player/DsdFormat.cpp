@@ -42,15 +42,6 @@ snd_pcm_format_t alsaFormat(AudioSampleFormat f) {
   return SND_PCM_FORMAT_UNKNOWN;
 }
 
-namespace {
-std::string dsdRateName(unsigned rate) {
-  for (unsigned base : {44100u, 48000u})
-    if (rate % base == 0)
-      return "DSD" + std::to_string(rate / base);
-  return "DSD at " + std::to_string(rate) + " Hz";
-}
-} // namespace
-
 bool isDsdMode(const std::string &mode) {
   return mode == "disabled" || mode == "auto" || mode == "native" ||
          mode == "dop" || mode == "pcm";

@@ -35,6 +35,9 @@ public:
     out.sampleRate /= 2;
     return {out, 2};
   }
+  SignalPath describe(const StreamAudioFormat &) const override {
+    return {{{"halving", "Halving", "every other frame"}}, 0};
+  }
   size_t start(const StreamAudioFormat &) override {
     fed = 0;
     previous = {0, 0};

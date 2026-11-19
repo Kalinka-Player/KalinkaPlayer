@@ -582,6 +582,15 @@ std::unique_ptr<VolumeMonitor> AudioPlayer::volumeMonitor() {
   return std::make_unique<VolumeMonitor>(volumeEvents);
 }
 
+SignalPath AudioPlayer::signalPath(const StreamInfo &heard) const {
+  const auto decoded = heard.decodedFormat.value_or(heard.format);
+  SignalPath path = dspStage->describe(decoded);
+  const auto added =
+      outputStage->describe(decoded, dspStage->handsOn(decoded), heard.format);
+  path.steps.insert(path.steps.end(), added.begin(), added.end());
+  return path;
+}
+
 void AudioPlayer::setDsdGain(const std::string &setting) {
   outputStage->setDsdGain(dsdGain(setting));
 }
