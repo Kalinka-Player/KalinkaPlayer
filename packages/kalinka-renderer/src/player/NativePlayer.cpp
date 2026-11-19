@@ -25,8 +25,8 @@ namespace renderer_pb = kalinka::renderer::v1;
 
 namespace {
 
-// The protocol's most: twice a second.
-constexpr std::chrono::milliseconds kMeterInterval{500};
+// A run of one kind is reported at most twice a second, as the protocol says.
+constexpr std::chrono::milliseconds kEventInterval{500};
 
 int64_t nowUnixMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -743,17 +743,25 @@ void NativePlayer::startPumps() {
       });
     }
   });
-  meterPump_ = std::jthread([this, generation](std::stop_token token) {
+  eventPump_ = std::jthread([this, events = player_->playbackEvents(),
+                             generation](std::stop_token token) {
     std::mutex mutex;
-    std::condition_variable_any tick;
-    std::unique_lock lock(mutex);
-    while (!tick.wait_for(lock, token, kMeterInterval,
-                          [&token] { return token.stop_requested(); })) {
-      asio::post(ioc_, [this, generation] {
+    std::condition_variable_any held;
+    while (!token.stop_requested()) {
+      auto taken = events->take(token);
+      if (taken.empty()) {
+        continue;
+      }
+      asio::post(ioc_, [this, taken = std::move(taken), generation] {
         if (generation == graphGeneration_) {
-          emitMeters();
+          for (const PlaybackEvent &event : taken) {
+            emitEvent(event);
+          }
         }
       });
+      std::unique_lock lock(mutex);
+      held.wait_for(lock, token, kEventInterval,
+                    [&token] { return token.stop_requested(); });
     }
   });
   volumePump_ = std::thread([this, monitor = volumeMonitor_, generation] {
@@ -784,9 +792,9 @@ void NativePlayer::stopPumps() {
   if (volumePump_.joinable()) {
     volumePump_.join();
   }
-  if (meterPump_.joinable()) {
-    meterPump_.request_stop();
-    meterPump_.join();
+  if (eventPump_.joinable()) {
+    eventPump_.request_stop();
+    eventPump_.join();
   }
   stateMonitor_.reset();
   volumeMonitor_.reset();
@@ -1005,25 +1013,14 @@ void NativePlayer::restatePlayback() {
   onStreamState(state);
 }
 
-void NativePlayer::emitMeters() {
-  if (!player_) {
-    return;
-  }
-  const DspMeters meters = player_->takeDspMeters();
-  const StreamState state = player_->getState();
-  const std::optional<std::string> token =
-      tokenFor(state.streamId ? state.streamId : currentId_);
-  if (state.state != AudioGraphNodeState::STREAMING || !token ||
-      !signalPathOf(state)) {
-    return;
+void NativePlayer::emitEvent(const PlaybackEvent &event) {
+  const std::optional<std::string> token = tokenFor(event.stream);
+  if (event.stream && !token) {
+    return;  // about a source already let go of
   }
   renderer_pb::Envelope env;
-  renderer_pb::DspMeters *out = env.mutable_dsp_meters();
-  out->set_source_token(*token);
-  out->set_clipped_samples(meters.clippedSamples);
-  out->set_true_peak_dbfs(meters.truePeakDbfs);
-  out->set_load(meters.load);
-  out->set_at_unix_ms(nowUnixMs());
+  state_translator::fillPlaybackEvent(event, token, nowUnixMs(),
+                                      *env.mutable_playback_event());
   emit(env);
 }
 

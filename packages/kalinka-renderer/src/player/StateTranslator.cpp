@@ -1,6 +1,7 @@
 #include "StateTranslator.h"
 
 #include <algorithm>
+#include <variant>
 
 namespace renderer_pb = kalinka::renderer::v1;
 
@@ -99,6 +100,29 @@ void fillSignalPath(const SignalPath &path, renderer_pb::SignalPath &out) {
     added->set_summary(step.summary);
   }
   out.set_latency_ms(path.latencyMs);
+}
+
+namespace {
+/// Fills the protocol's kind for each native one; a new kind will not compile
+/// until it has its own.
+struct EventKind {
+  renderer_pb::PlaybackEvent &out;
+
+  void operator()(const Clipping &clipping) const {
+    out.mutable_clipping()->set_clipped_samples(clipping.samples);
+  }
+};
+}  // namespace
+
+void fillPlaybackEvent(const PlaybackEvent &event,
+                       const std::optional<std::string> &sourceToken,
+                       int64_t atUnixMs, renderer_pb::PlaybackEvent &out) {
+  out.Clear();
+  if (sourceToken) {
+    out.set_source_token(*sourceToken);
+  }
+  out.set_at_unix_ms(atUnixMs);
+  std::visit(EventKind{out}, event.kind);
 }
 
 void fillPlaybackStateChanged(const StreamState &state,

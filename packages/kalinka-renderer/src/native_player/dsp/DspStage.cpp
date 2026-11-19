@@ -322,7 +322,6 @@ bool DspStage::startRun(std::optional<long> position) {
   endRun();
   const auto out = processor->output(info->format);
   ratio = out.ratio;
-  outRate = out.format.sampleRate;
   inFrameBytes = info->format.channels * sampleSize(info->format.sampleFormat);
   outFrameBytes = out.format.channels * sampleSize(out.format.sampleFormat);
   latency = processor->start(info->format);
@@ -442,9 +441,7 @@ bool DspStage::perform(Step step, size_t count) {
     if (frames == 0) {
       return false;
     }
-    const auto began = std::chrono::steady_clock::now();
     const size_t made = processor->process(input.data(), output.data(), frames);
-    load.add(std::chrono::steady_clock::now() - began, made, outRate);
     fedIn += frames;
     Segment &tail = segments.back();
     tail.end = std::max(tail.end, fedIn / ratio);
@@ -453,10 +450,8 @@ bool DspStage::perform(Step step, size_t count) {
     return true;
   }
   case Step::Flush: {
-    const auto began = std::chrono::steady_clock::now();
     const size_t made =
         processor->process(nullptr, output.data(), count * ratio);
-    load.add(std::chrono::steady_clock::now() - began, made, outRate);
     flushLeft -= std::min(flushLeft, made);
     append(output.data(), made);
     publish();

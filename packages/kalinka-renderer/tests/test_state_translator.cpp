@@ -292,3 +292,18 @@ TEST(StateTranslator, ASignalPathKeepsItsStepsInOrder) {
   EXPECT_EQ(out.steps(1).kind(), "dither");
   EXPECT_DOUBLE_EQ(out.latency_ms(), 0.25);
 }
+
+TEST(StateTranslator, ClippingIsAnEventForTheSourceItHappenedTo) {
+  renderer_pb::PlaybackEvent out;
+  out.set_source_token("stale");
+  state_translator::fillPlaybackEvent({StreamId(3), Clipping{1200}}, "track",
+                                      1234, out);
+  EXPECT_EQ(out.source_token(), "track");
+  EXPECT_EQ(out.at_unix_ms(), 1234);
+  ASSERT_EQ(out.kind_case(), renderer_pb::PlaybackEvent::kClipping);
+  EXPECT_EQ(out.clipping().clipped_samples(), 1200u);
+
+  state_translator::fillPlaybackEvent({std::nullopt, Clipping{1}},
+                                      std::nullopt, 1, out);
+  EXPECT_FALSE(out.has_source_token()) << "replaced, not merged";
+}

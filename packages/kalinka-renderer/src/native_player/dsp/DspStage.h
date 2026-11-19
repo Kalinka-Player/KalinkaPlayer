@@ -3,7 +3,6 @@
 
 #include "AudioGraphNode.h"
 #include "dsp/DspProcessor.h"
-#include "dsp/LoadMeter.h"
 
 #include <deque>
 #include <memory>
@@ -25,10 +24,10 @@
  * @note read(), the waits, the seeks, acceptSourceChange(),
  * streamReadPosition() and liveSourceFrame() belong to the one thread that
  * pulls audio, which owns everything the stage holds. discard(),
- * discardAll(), describe(), handsOn() and takeLoad() may come from any
- * thread; connectTo() and disconnect() only while nothing pulls. The stage
- * has no lock of its own: upstream states and discards reach the pulling
- * thread through the node's state lock alone.
+ * discardAll(), describe() and handsOn() may come from any thread;
+ * connectTo() and disconnect() only while nothing pulls. The stage has no
+ * lock of its own: upstream states and discards reach the pulling thread
+ * through the node's state lock alone.
  */
 class DspStage : public AudioGraphOutputNode, public AudioGraphInputNode {
 public:
@@ -65,9 +64,6 @@ public:
   /// The format a source decoded as @p format is handed on in. From any
   /// thread.
   StreamAudioFormat handsOn(const StreamAudioFormat &format) const;
-  /// The processor's time over the audio it made since the last call. From
-  /// any thread.
-  double takeLoad() { return load.take(); }
 
   /// Drops what it holds of stream @p id, which has been removed upstream.
   void discard(StreamId id);
@@ -144,9 +140,6 @@ private:
   size_t outFrameBytes = 0;
   /// Input frames to one output frame in the run.
   unsigned ratio = 1;
-  /// The run's output rate.
-  unsigned outRate = 0;
-  LoadMeter load;
   size_t latency = 0;
   uint64_t fedIn = 0; ///< Input frames read in the run.
   uint64_t fedOut = 0; ///< Outputs so far, the priming ones included.
