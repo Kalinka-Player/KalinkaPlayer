@@ -23,6 +23,13 @@ _KEY_BY_IMPORT_NAME = {
 }
 
 
+# Nothing on Jamendo works without a client_id, so nothing is fetched for it.
+def _wants_mood_search(config) -> bool:
+    return bool(getattr(config, "client_id", "")) and bool(
+        getattr(config, "ai_search_enabled", False)
+    )
+
+
 async def _provision(mood_index: JamendoMoodIndex, context: InputPluginContext) -> None:
     await mood_index.available()
     if context.report_state_changed is not None:
@@ -52,8 +59,8 @@ class KalinkaPluginJamendo(InputModulePlugin):
         logger.info("Setting up Jamendo input module")
         self._client = await get_client(config)
         self._mood_index = None
-        # Nothing on Jamendo works without a client_id, so nothing is fetched for it.
-        if config.ai_search_enabled and config.client_id:
+        self._provision_task = None
+        if _wants_mood_search(config):
             self._mood_index = JamendoMoodIndex(
                 config.ai_index_path,
                 config.ai_index_url or None,
@@ -152,10 +159,7 @@ class KalinkaPluginJamendo(InputModulePlugin):
         """
         if self._context is None:
             return [], [], []
-        config = self._context.config
-        if not getattr(config, "client_id", "") or not getattr(
-            config, "ai_search_enabled", False
-        ):
+        if not _wants_mood_search(self._context.config):
             return [], [], []
         # A server before SDK 3.12 installed the runtime with itself.
         missing_runtime = getattr(self._context.embedder, "missing_runtime", None)

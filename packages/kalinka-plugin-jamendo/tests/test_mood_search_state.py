@@ -272,6 +272,22 @@ async def test_a_box_without_a_client_id_is_asked_for_one_not_for_mood_search(
     assert not _offers_mood_search(plugin)
 
 
+async def test_a_setup_without_a_client_id_drops_the_last_setups_task(set_up):
+    plugin, _ = await set_up(FakeEmbedder())
+    await plugin._provision_task
+
+    await plugin.setup(
+        SimpleNamespace(
+            config=JamendoConfig(client_id="", ai_search_enabled=True),
+            embedder=FakeEmbedder(),
+            report_state_changed=None,
+        )
+    )
+
+    assert plugin._provision_task is None
+    assert plugin._mood_index is None
+
+
 def test_a_client_id_saved_with_spaces_loads_without_them():
     """As the server loads a key pasted with a space around it, which
     Jamendo would refuse as it stands."""
