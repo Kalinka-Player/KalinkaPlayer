@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <utility>
 #include <unistd.h>
 
 #include "ScopedAlsaConfig.h"
@@ -160,6 +161,20 @@ TEST_F(DsdPcmPlaybackTest, AutomaticConvertsATrackTheOutputCannotPlayAsDsd) {
   const auto measured = harness::thdPlusN(
       std::span(left).subspan(edge, left.size() - 2 * edge), kPcmRate, 1000);
   EXPECT_NEAR(measured.fundamentalDbfs, -6.0206 + 2.8, 0.01);
+}
+
+TEST_F(DsdPcmPlaybackTest, TheLevelIsTheOneAskedFor) {
+  for (const auto &[setting, db] :
+       {std::pair{"0", 0.0}, std::pair{"6", 6.0}}) {
+    SCOPED_TRACE(setting);
+    const auto left =
+        play({dsf("tone.dsf", toneBits())}, {{"dsd.gain_db", setting}});
+    ASSERT_EQ(left.size(), kBytes / 2);
+    const size_t edge = left.size() / 10;
+    const auto measured = harness::thdPlusN(
+        std::span(left).subspan(edge, left.size() - 2 * edge), kPcmRate, 1000);
+    EXPECT_NEAR(measured.fundamentalDbfs, -6.0206 + db, 0.01);
+  }
 }
 
 TEST_F(DsdPcmPlaybackTest, ATrackAskedForAtTheBaseRatePlaysAtIt) {

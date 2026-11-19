@@ -25,6 +25,7 @@
 #include "config/ConfigService.h"
 #include "config/SettingsPersistence.h"
 #include "dsp/dsd/DsdFilterSetting.h"
+#include "dsp/dsd/DsdGainSetting.h"
 #include "dsp/dsd/DsdPcmRate.h"
 #include "player/NativePlayer.h"
 
@@ -628,11 +629,12 @@ TEST_F(NativePlayerSettingsTest, TheDsdSectionHoldsTheModeThenTheRateThenTheFilt
   std::vector<std::string> paths;
   for (const renderer_pb::ConfigField &field : section.fields())
     paths.push_back(field.path());
-  EXPECT_THAT(paths, ::testing::ElementsAre("output.dsd_mode",
-                                            "output.dsd_pcm_rate",
-                                            "output.dsd_filter"))
+  EXPECT_THAT(paths, ::testing::ElementsAre(
+                         "output.dsd_mode", "output.dsd_pcm_rate",
+                         "output.dsd_filter", "output.dsd_gain_db"))
       << "the names stored settings are kept under";
-  for (const auto *path : {"output.dsd_pcm_rate", "output.dsd_filter"})
+  for (const auto *path :
+       {"output.dsd_pcm_rate", "output.dsd_filter", "output.dsd_gain_db"})
     EXPECT_EQ(field(output(), path), nullptr) << path;
 }
 
@@ -672,6 +674,50 @@ TEST_F(NativePlayerSettingsTest, TheFilterIsASimpleChoiceThePlayerTakes) {
     EXPECT_FALSE(option.description().empty()) << option.value();
   }
   EXPECT_THAT(values, ::testing::ElementsAre("auto", "30k", "50k", "wide"));
+}
+
+TEST_F(NativePlayerSettingsTest, TheDsdLevelIsAnExpertChoiceThatAppliesAtOnce) {
+  const auto section = dsd();
+  const renderer_pb::ConfigField &level = *field(section, "output.dsd_gain_db");
+  EXPECT_EQ(level.title(), "DSD to PCM level");
+  EXPECT_EQ(level.type(), renderer_pb::CONFIG_FIELD_TYPE_ENUM);
+  EXPECT_EQ(level.value(), "safe");
+  EXPECT_EQ(level.default_value(), "safe");
+  EXPECT_EQ(level.importance(), renderer_pb::CONFIG_IMPORTANCE_EXPERT);
+  EXPECT_EQ(level.apply(), renderer_pb::APPLY_COST_INSTANT)
+      << "the output stage ramps to it";
+  std::vector<std::string> values;
+  for (const renderer_pb::ConfigOption &option : level.options()) {
+    values.push_back(option.value());
+    EXPECT_NO_THROW(dsdGainDb(option.value())) << "the player takes it";
+    EXPECT_FALSE(option.description().empty()) << option.value();
+  }
+  EXPECT_THAT(values, ::testing::ElementsAre("safe", "0", "6"));
+}
+
+TEST_F(NativePlayerSettingsTest, ADsdLevelWriteIsValidatedAndPersisted) {
+  ConfigService service{{player_->dsdSettings()}};
+  renderer_pb::ConfigUpdate update;
+  auto *setting = update.add_settings();
+  setting->set_path("output.dsd_gain_db");
+  setting->set_value("3");
+  renderer_pb::ConfigResult refused;
+  service.apply(update, refused);
+  ASSERT_EQ(refused.outcomes_size(), 1);
+  EXPECT_FALSE(refused.outcomes(0).applied());
+
+  setting->set_value("6");
+  renderer_pb::ConfigResult applied;
+  service.apply(update, applied);
+  ASSERT_EQ(applied.outcomes_size(), 1);
+  EXPECT_TRUE(applied.outcomes(0).applied()) << applied.outcomes(0).error();
+  EXPECT_EQ(loadSettingsOverrides().at("output.dsd_gain_db"), "6");
+
+  saveSettingsOverrides(
+      {{"output.device", "null"}, {"output.dsd_gain_db", "3"}});
+  player_.reset();
+  player_ = std::make_shared<NativePlayer>(ioc_);
+  EXPECT_EQ(field(dsd(), "output.dsd_gain_db")->value(), "safe");
 }
 
 TEST_F(NativePlayerSettingsTest, AFilterWriteIsValidatedAndPersisted) {
@@ -884,6 +930,22 @@ TEST_F(NativePlayerStreamTest, AStreamKnobLeavesThePlayingTrackAlone) {
   EXPECT_EQ(network().fields(0).value(), "60");
   EXPECT_EQ(field(network(), "network.max_redirects")->value(), "5");
   EXPECT_EQ(field(buffers(), "buffers.flac")->value(), "2000000");
+}
+
+TEST_F(NativePlayerStreamTest, ADsdLevelChangeLeavesThePlayingTrackAlone) {
+  ASSERT_TRUE(playHeld());
+
+  ASSERT_TRUE(player_->dsdSettings()->applyConfig("output.dsd_gain_db", "0",
+                                                  error_))
+      << error_;
+  server_.release();
+
+  EXPECT_TRUE(runUntil([this] {
+    return std::ranges::any_of(states_, [](const auto &state) {
+      return state.state() == renderer_pb::PLAYBACK_STATE_FINISHED;
+    });
+  }));
+  EXPECT_TRUE(stops().empty()) << "no rebuild";
 }
 
 // Only the Core can put the track back, so the stop must say it may.

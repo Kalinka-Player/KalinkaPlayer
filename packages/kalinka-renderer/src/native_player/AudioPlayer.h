@@ -101,6 +101,11 @@ public:
   // the mixer behind it. Mirrors monitor() for stream state.
   std::unique_ptr<VolumeMonitor> volumeMonitor();
 
+  /// Sets what DSD converted to PCM is raised by, as `dsd.gain_db`
+  /// @p setting names it: what plays now ramps to it.
+  /// @throws std::invalid_argument for a value the setting does not have.
+  void setDsdGain(const std::string &setting);
+
   /// Whether @p key is read as each stream is appended (those under `input.`
   /// and `decoder.`), rather than once, when the output is built.
   static bool isStreamKey(const std::string &key);

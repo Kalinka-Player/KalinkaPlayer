@@ -11,11 +11,9 @@ constexpr uint8_t kIdle = 0x69;
 } // namespace
 
 DsdToPcmProcessor::DsdToPcmProcessor(std::vector<StreamAudioFormat> device,
-                                     double gain,
                                      std::optional<unsigned> multiple,
                                      std::optional<DsdFilter> filter)
-    : device(std::move(device)), gain(gain), multiple(multiple),
-      filter(filter) {}
+    : device(std::move(device)), multiple(multiple), filter(filter) {}
 
 std::optional<DsdToPcm::Spec>
 DsdToPcmProcessor::spec(const StreamAudioFormat &format) const {
@@ -71,7 +69,7 @@ size_t DsdToPcmProcessor::process(const uint8_t *in, uint8_t *out,
     const size_t got = converter->process(from, bytes, planes.data());
     for (size_t i = 0; i < got; ++i)
       for (unsigned c = 0; c < channels; ++c)
-        samples[(made + i) * channels + c] = planar[c][i] * gain;
+        samples[(made + i) * channels + c] = planar[c][i];
     made += got;
     at += bytes;
   }

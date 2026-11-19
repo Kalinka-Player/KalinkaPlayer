@@ -26,12 +26,14 @@
  * source's own format they are upstream's very bytes. Float going to an
  * integer format is quantised, at unity too. Any other gain ramps
  * over 25 ms and goes through the Quantiser. It settles at once after a seek
- * or once nothing plays, with no audio to click against. A fade multiplies
- * the volume and goes through the Quantiser the same way. DSD and DoP pass
- * untouched, and refuse any gain but unity.
+ * or once nothing plays, with no audio to click against. DSD the stage
+ * upstream converted to PCM is raised by the DSD gain as well, which ramps as
+ * the volume does. A fade multiplies the volume and goes through the
+ * Quantiser the same way. DSD and DoP pass untouched, and refuse any gain but
+ * unity.
  *
  * @note read(), the waits, the seeks and the fades belong to the one thread
- * that pulls audio. setGain() may come from any thread.
+ * that pulls audio. setGain() and setDsdGain() may come from any thread.
  */
 class OutputStage : public AudioGraphOutputNode,
                     public AudioGraphInputNode,
@@ -60,6 +62,9 @@ public:
 
   /// Heard from the next read on, over the ramp.
   void setGain(double linear) override;
+  /// What DSD converted to PCM is raised by besides the volume, linear; heard
+  /// from the next read on, over the ramp.
+  void setDsdGain(double linear);
   void fadeOut() override;
   void fadeIn() override;
   void settle(double level) override;
@@ -72,12 +77,15 @@ private:
   struct Presented {
     StreamAudioFormat source;
     OutputChoice output;
+    /// DSD converted to PCM upstream, which the DSD gain raises.
+    bool fromDsd = false;
   };
 
   const std::vector<StreamAudioFormat> device;
   std::shared_ptr<AudioGraphOutputNode> upstream;
   int upstreamCallback = -1;
   std::atomic<double> target{1.0};
+  std::atomic<double> dsdGain{1.0};
   std::atomic<bool> settlePending{true};
   std::atomic<uint64_t> clipped{0};
   mutable std::mutex presentedMutex;
@@ -94,8 +102,9 @@ private:
 
   void onUpstreamState(const StreamState &state);
   std::optional<Presented> current() const;
-  /// Moves both ramps toward their targets, settling either first when asked.
-  void follow(unsigned rate);
+  /// Moves both ramps toward their targets for @p now, settling either first
+  /// when asked.
+  void follow(const Presented &now);
   /// The next stretch of at most @p frames frames over which neither ramp
   /// turns, at the two gains multiplied.
   GainRamp::Span take(size_t frames);

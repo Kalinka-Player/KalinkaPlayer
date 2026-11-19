@@ -21,6 +21,11 @@ bool nothingPlays(AudioGraphNodeState state) {
 size_t frameBytes(AudioSampleFormat format, unsigned channels) {
   return sampleSize(format) * channels;
 }
+
+bool convertedFromDsd(const StreamInfo &info) {
+  return info.decodedFormat && isDsd(info.decodedFormat->sampleFormat) &&
+         !isDsd(info.format.sampleFormat);
+}
 } // namespace
 
 OutputStage::OutputStage(std::vector<StreamAudioFormat> device, uint64_t seed)
@@ -66,10 +71,12 @@ void OutputStage::onUpstreamState(const StreamState &state) {
   StreamState shown = state;
   if (state.streamInfo && state.streamInfo->streamType == StreamType::FRAMES) {
     const StreamAudioFormat &source = state.streamInfo->format;
+    const bool fromDsd = convertedFromDsd(*state.streamInfo);
     std::lock_guard lock(presentedMutex);
-    if (!presented || presented->source != source)
-      presented =
-          Presented{source, chooseOutput(source, device, kPcmDeviceChannels)};
+    if (!presented || presented->source != source ||
+        presented->fromDsd != fromDsd)
+      presented = Presented{
+          source, chooseOutput(source, device, kPcmDeviceChannels), fromDsd};
     auto &format = shown.streamInfo->format;
     format.sampleFormat = presented->output.format;
     // Quantised, float keeps the bits it is dithered at.
@@ -91,6 +98,8 @@ std::optional<OutputStage::Presented> OutputStage::current() const {
 
 void OutputStage::setGain(double linear) { target = linear; }
 
+void OutputStage::setDsdGain(double linear) { dsdGain = linear; }
+
 void OutputStage::fadeOut() { fadeTarget = 0.0; }
 
 void OutputStage::fadeIn() { fadeTarget = 1.0; }
@@ -102,8 +111,9 @@ bool OutputStage::silent() const {
          (fadeSettle ? *fadeSettle == 0.0 : fade.holding(0.0));
 }
 
-void OutputStage::follow(unsigned rate) {
-  const double gain = target.load();
+void OutputStage::follow(const Presented &now) {
+  const unsigned rate = now.source.sampleRate;
+  const double gain = target.load() * (now.fromDsd ? dsdGain.load() : 1.0);
   if (settlePending.exchange(false))
     ramp.settle(gain);
   else
@@ -138,7 +148,7 @@ size_t OutputStage::read(void *data, size_t size) {
   if (source.channels == 0 || source.channels > kPlanarChannels)
     throw std::runtime_error("No output stage for " +
                              std::to_string(source.channels) + " channels");
-  follow(source.sampleRate);
+  follow(*now);
   if (ramp.holding(1.0) && fade.holding(1.0) &&
       now->output.format == source.sampleFormat)
     return upstream->read(data, size);

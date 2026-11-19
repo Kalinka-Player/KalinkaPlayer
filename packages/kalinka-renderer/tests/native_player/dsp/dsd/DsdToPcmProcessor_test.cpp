@@ -96,7 +96,7 @@ std::vector<double> pullLeft(DspStage &stage) {
 } // namespace
 
 TEST(DsdToPcmProcessor, TakesRawDsdAndNothingElse) {
-  const DsdToPcmProcessor processor({}, 1.0);
+  const DsdToPcmProcessor processor({});
   EXPECT_TRUE(processor.handles(raw(2822400)));
   EXPECT_TRUE(processor.handles(raw(3072000, 1)));
   EXPECT_FALSE(processor.handles({352800, 2, 32, DSD_U32_LE, 2822400}));
@@ -109,7 +109,7 @@ TEST(DsdToPcmProcessor, TakesRawDsdAndNothingElse) {
 TEST(DsdToPcmProcessor, ItConvertsToARateTheDeviceTakes) {
   const auto rate = [](std::vector<StreamAudioFormat> device,
                        std::optional<unsigned> multiple = std::nullopt) {
-    return DsdToPcmProcessor(std::move(device), 1.0, multiple)
+    return DsdToPcmProcessor(std::move(device), multiple)
         .output(raw(2822400))
         .format.sampleRate;
   };
@@ -125,7 +125,7 @@ TEST(DsdToPcmProcessor, ItConvertsWithTheFilterAskedFor) {
         .latency();
   };
   const auto started = [](std::optional<DsdFilter> filter) {
-    return DsdToPcmProcessor({}, 1.0, std::nullopt, filter).start(raw(2822400));
+    return DsdToPcmProcessor({}, std::nullopt, filter).start(raw(2822400));
   };
   ASSERT_NE(latency(DsdFilter::Cut30k), latency(DsdFilter::Cut50k));
   ASSERT_NE(latency(DsdFilter::Cut30k), latency(DsdFilter::Wide));
@@ -137,25 +137,24 @@ TEST(DsdToPcmProcessor, ItConvertsWithTheFilterAskedFor) {
 }
 
 TEST(DsdToPcmProcessor, DsdOfAFamilyTheDeviceTakesNoRateOfIsNotHandled) {
-  const DsdToPcmProcessor processor(takes({48000, 96000}), 1.0);
+  const DsdToPcmProcessor processor(takes({48000, 96000}));
   EXPECT_FALSE(processor.handles(raw(2822400)));
   EXPECT_TRUE(processor.handles(raw(3072000)));
 }
 
 TEST(DsdToPcmProcessor, TheOutputIsFloatAtTheRateWithTheRatioOfFrames) {
-  const auto out = DsdToPcmProcessor({}, 1.0).output(raw(5644800));
+  const auto out = DsdToPcmProcessor({}).output(raw(5644800));
   EXPECT_EQ(out.format.sampleFormat, PCM_FLOAT64_LE);
   EXPECT_EQ(out.format.channels, 2u);
   EXPECT_EQ(out.format.sampleRate, 176400u);
   EXPECT_EQ(out.ratio, 4u) << "four DSD128 bytes a channel to a frame";
 }
 
-TEST(DsdToPcmProcessor, ItConvertsAsTheConverterDoesTimesTheGain) {
-  constexpr double kGain = 1.25;
+TEST(DsdToPcmProcessor, ItConvertsAsTheConverterDoes) {
   // DSD128 takes the 50 kHz filter, and the latency is the converter's.
   DsdToPcm reference({5644800, 176400, 2, DsdFilter::Cut50k,
                       DsdBitOrder::MsbFirst});
-  DsdToPcmProcessor processor({}, kGain);
+  DsdToPcmProcessor processor({});
   EXPECT_EQ(processor.start(raw(5644800)), reference.latency());
 
   const auto in = randomBytes(2 * 6000);
@@ -167,13 +166,13 @@ TEST(DsdToPcmProcessor, ItConvertsAsTheConverterDoesTimesTheGain) {
                               6000),
             expected);
   for (size_t i = 0; i < expected; ++i) {
-    EXPECT_EQ(out[2 * i], left[i] * kGain);
-    EXPECT_EQ(out[2 * i + 1], right[i] * kGain);
+    EXPECT_EQ(out[2 * i], left[i]);
+    EXPECT_EQ(out[2 * i + 1], right[i]);
   }
 }
 
 TEST(DsdToPcmProcessor, FedSilenceSettlesToZero) {
-  DsdToPcmProcessor processor({}, 1.0);
+  DsdToPcmProcessor processor({});
   processor.start(raw(2822400));
   const auto in = randomBytes(2 * 2000);
   std::vector<double> out(2 * 2000);
@@ -187,7 +186,7 @@ TEST(DsdToPcmProcessor, FedSilenceSettlesToZero) {
 }
 
 TEST(DsdToPcmProcessor, ItsHistoryIsTheConvertersReachOnceStarted) {
-  DsdToPcmProcessor processor({}, 1.0);
+  DsdToPcmProcessor processor({});
   EXPECT_EQ(processor.history(), 0u) << "nothing started";
   const size_t latency = processor.start(raw(5644800));
   EXPECT_EQ(processor.history(), latency + 1);
@@ -199,7 +198,7 @@ TEST(DsdToPcmProcessor, ASeekThroughTheStageSoundsAsARunUnderWayDoes) {
   const auto play = [&](std::optional<size_t> seek) {
     auto source = std::make_shared<DsdBytes>(format, bytes);
     DspStage stage(std::make_unique<DsdToPcmProcessor>(
-        std::vector<StreamAudioFormat>{}, 1.0));
+        std::vector<StreamAudioFormat>{}));
     stage.connectTo(source);
     if (seek) {
       std::vector<double> buffer(2 * 1000);

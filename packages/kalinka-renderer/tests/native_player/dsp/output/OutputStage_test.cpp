@@ -15,9 +15,12 @@ constexpr unsigned kRate = 48000;
 /// Interleaved PCM of one format, read as a stream that can start again.
 class PcmSource : public AudioGraphOutputNode {
 public:
-  PcmSource(StreamAudioFormat format, std::vector<uint8_t> bytes)
+  /// @param decoded What a stage made the samples out of, if any.
+  PcmSource(StreamAudioFormat format, std::vector<uint8_t> bytes,
+            std::optional<StreamAudioFormat> decoded = std::nullopt)
       : AudioGraphNode(StreamId(1)), format(format), bytes(std::move(bytes)),
-        frameBytes(sampleSize(format.sampleFormat) * format.channels) {
+        frameBytes(sampleSize(format.sampleFormat) * format.channels),
+        decoded(decoded) {
     restart();
   }
 
@@ -57,16 +60,21 @@ public:
     setState({AudioGraphNodeState::STREAMING, 0,
               StreamInfo{.format = format,
                          .streamType = StreamType::FRAMES,
-                         .streamSize = bytes.size() / frameBytes}});
+                         .streamSize = bytes.size() / frameBytes,
+                         .decodedFormat = decoded}});
   }
 
 private:
   const StreamAudioFormat format;
   const std::vector<uint8_t> bytes;
   const size_t frameBytes;
+  const std::optional<StreamAudioFormat> decoded;
   mutable std::mutex mutex;
   size_t at = 0;
 };
+
+/// DSD64 as DsdContainer hands it to the stage for conversion.
+const StreamAudioFormat kRawDsd{352800, 2, 1, DSD_RAW, 2822400};
 
 StreamAudioFormat pcm(AudioSampleFormat format, unsigned channels = 2) {
   return {kRate, channels, unsigned(sampleBits(format)), format, 0};
@@ -106,8 +114,9 @@ const std::vector<StreamAudioFormat> k24In32{{kRate, 2, 24, PCM32_LE, 0}};
 
 struct Stage {
   Stage(StreamAudioFormat format, std::vector<uint8_t> bytes,
-        std::vector<StreamAudioFormat> device = {})
-      : source(std::make_shared<PcmSource>(format, std::move(bytes))),
+        std::vector<StreamAudioFormat> device = {},
+        std::optional<StreamAudioFormat> decoded = std::nullopt)
+      : source(std::make_shared<PcmSource>(format, std::move(bytes), decoded)),
         stage(std::make_shared<OutputStage>(std::move(device), 1)) {
     stage->connectTo(source);
   }
@@ -212,6 +221,45 @@ TEST(OutputStage, DsdPassesUntouchedAndRefusesAnyGainButUnity) {
   EXPECT_TRUE(std::equal(half.begin(), half.end(), bytes.begin()));
   s.stage->setGain(0.5);
   EXPECT_THROW(s.stage->read(half.data(), half.size()), std::runtime_error);
+}
+
+TEST(OutputStage, TheDsdGainRaisesOnlyDsdConvertedToPcm) {
+  const auto quarter = asBytes(std::vector<double>(2 * 1000, 0.25));
+  const auto level = [&](bool fromDsd) {
+    Stage s(pcm(PCM_FLOAT64_LE), quarter, k24In32,
+            fromDsd ? std::optional(kRawDsd) : std::nullopt);
+    s.stage->setDsdGain(2.0);
+    return readSamples<int32_t>(*s.stage, 2 * 1000);
+  };
+  for (const int32_t v : level(true))
+    ASSERT_LE(std::abs(double(v / 256) - double(1 << 22)), 1.5);
+  for (const int32_t v : level(false))
+    ASSERT_LE(std::abs(double(v / 256) - double(1 << 21)), 1.5);
+}
+
+TEST(OutputStage, ADsdGainChangeRampsAsTheVolumeDoes) {
+  Stage s(pcm(PCM_FLOAT64_LE), asBytes(std::vector<double>(2 * 4000, 0.5)),
+          k24In32, kRawDsd);
+  readSamples<int32_t>(*s.stage, 2 * 100);
+  s.stage->setDsdGain(0.5);
+  const auto out = readSamples<int32_t>(*s.stage, 2 * 2400);
+  ASSERT_EQ(out.size(), 2u * 2400);
+  for (size_t i = 0; i < 2400; ++i) {
+    const double gain = i < 1200 ? 1.0 - 0.5 * double(i + 1) / 1200.0 : 0.5;
+    const double expected = 0.5 * gain * double(1 << 23);
+    for (unsigned c = 0; c < 2; ++c)
+      ASSERT_LE(std::abs(double(out[2 * i + c] / 256) - expected), 1.5)
+          << "frame " << i;
+  }
+}
+
+TEST(OutputStage, TheDsdGainMultipliesTheVolume) {
+  Stage s(pcm(PCM_FLOAT64_LE), asBytes(std::vector<double>(2 * 1000, 0.25)),
+          k24In32, kRawDsd);
+  s.stage->setGain(0.5);
+  s.stage->setDsdGain(4.0);
+  for (const int32_t v : readSamples<int32_t>(*s.stage, 2 * 1000))
+    ASSERT_LE(std::abs(double(v / 256) - double(1 << 22)), 1.5);
 }
 
 TEST(OutputStage, ClampedSamplesAreCounted) {

@@ -22,6 +22,7 @@
 #include "dsp/DelayLine.h"
 #include "dsp/DspStage.h"
 #include "dsp/dsd/DsdFilterSetting.h"
+#include "dsp/dsd/DsdGainSetting.h"
 #include "dsp/dsd/DsdPcmRate.h"
 #include "dsp/dsd/DsdToPcmProcessor.h"
 #include "dsp/output/OutputStage.h"
@@ -55,11 +56,8 @@ const size_t HTTP_BUFFER_SIZE = 768000;
 
 const size_t CHUNK_SIZE = HTTP_BUFFER_SIZE / 2;
 
-// `safe` lands DSD's specified peak, 71 % modulation, 0.1 dB under full scale.
-double dsdGain(const Config &config) {
-  const auto setting = value_or(config, "dsd.gain_db", std::string("safe"));
-  const double db = setting == "safe" ? 2.8 : std::stod(setting);
-  return std::pow(10.0, db / 20.0);
+double dsdGain(const std::string &setting) {
+  return std::pow(10.0, dsdGainDb(setting) / 20.0);
 }
 
 // DSD in `pcm` mode, and in `auto` where it does not play natively, is
@@ -71,7 +69,7 @@ dspProcessorFor(const Config &config,
   const auto mode = value_or(config, "output.dsd_mode", std::string("disabled"));
   if (mode == "pcm" || mode == "auto") {
     return std::make_unique<DsdToPcmProcessor>(
-        device, dsdGain(config),
+        device,
         dsdPcmMultiple(value_or(config, "dsd.pcm_rate", std::string("auto"))),
         dsdFilterSetting(value_or(config, "dsd.filter", std::string("auto"))));
   }
@@ -371,6 +369,7 @@ AudioPlayer::AudioPlayer(const Config &config)
       outputStage(std::make_shared<OutputStage>(deviceFormats)) {
   dspStage->connectTo(streamSwitcher);
   outputStage->connectTo(dspStage);
+  setDsdGain(value_or(config, "dsd.gain_db", std::string("safe")));
   audioEmitter->fadeWith(outputStage);
   std::erase_if(streamConfig,
                 [](const auto &entry) { return !isStreamKey(entry.first); });
@@ -581,6 +580,10 @@ std::unique_ptr<VolumeMonitor> AudioPlayer::volumeMonitor() {
   // No lock and no backend to ask: the monitor listens to the player, not to
   // whichever mixer happens to be open, so a later mode change reaches it too.
   return std::make_unique<VolumeMonitor>(volumeEvents);
+}
+
+void AudioPlayer::setDsdGain(const std::string &setting) {
+  outputStage->setDsdGain(dsdGain(setting));
 }
 
 bool AudioPlayer::isStreamKey(const std::string &key) {
