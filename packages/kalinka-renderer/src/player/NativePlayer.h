@@ -119,7 +119,9 @@ private:
   std::optional<SignalPath> signalPathOf(const StreamState &state) const;
   /// Reports what plays again, as a live setting changed what is done to it.
   void restatePlayback();
-  /// Reports @p event, unless the source it concerns is no longer tracked.
+  /// Reports @p event, unless the source it concerns is no longer tracked;
+  /// one about a source read ahead of the one heard waits until it is heard,
+  /// as a Core takes events only for the source it was told plays.
   void emitEvent(const PlaybackEvent &event);
   void emit(kalinka::renderer::v1::Envelope &env);
   void emitVolume(const VolumeState &volume, bool external);
@@ -170,4 +172,6 @@ private:
   // Every stream the graph still knows about, in append (= switch) order.
   std::vector<TrackedSource> sources_;
   std::optional<StreamId> currentId_;
+  // The latest of each kind about a stream not yet heard.
+  std::vector<PlaybackEvent> unheardEvents_;
 };

@@ -229,10 +229,17 @@ protected:
     return {file.begin(), file.end()};
   }
 
-  /// The events reported while the DSF at @p path plays to the end in `pcm`
-  /// mode at @p level, on a device that plays in real time.
-  std::vector<renderer_pb::PlaybackEvent>
-  eventsPlaying(const std::string &path, const std::string &level) {
+  struct Reported {
+    renderer_pb::PlaybackEvent event;
+    /// The source last reported as heard when the event was.
+    std::string heard;
+  };
+
+  /// The events reported while the DSFs at @p paths play to the end, one
+  /// after the other, in `pcm` mode at @p level, on a device that plays in
+  /// real time.
+  std::vector<Reported> eventsPlaying(const std::vector<std::string> &paths,
+                                      const std::string &level) {
     const ScopedAlsaConfig alsa{
         "pcm_type.kalinka_paced { lib \"" KALINKA_PACED_PCM
         "\" }\npcm.paced { type kalinka_paced }\n"};
@@ -241,16 +248,21 @@ protected:
                            {"output.dsd_mode", "pcm"},
                            {"output.dsd_gain_db", level}});
     player_ = std::make_shared<NativePlayer>(ioc_);
-    std::vector<renderer_pb::PlaybackEvent> events;
+    std::vector<Reported> events;
+    std::string heard;
     bool finished = false;
     player_->setStateSink([&](renderer_pb::Envelope &env) {
+      if (env.has_source_changed())
+        heard = env.source_changed().source_token();
       if (env.has_playback_event())
-        events.push_back(env.playback_event());
+        events.push_back({env.playback_event(), heard});
       finished = finished || (env.has_playback_state_changed() &&
                               env.playback_state_changed().state() ==
                                   renderer_pb::PLAYBACK_STATE_FINISHED);
     });
-    player_->setSource(dsf(path));
+    player_->setSource(dsf(paths.front()));
+    for (size_t i = 1; i < paths.size(); ++i)
+      player_->enqueueSource(dsf(paths[i]));
     EXPECT_TRUE(runUntil([&finished] { return finished; }));
     player_->setStateSink({});
     player_.reset();
@@ -899,15 +911,15 @@ TEST_F(NativePlayerDsdTest, ALevelChangeRestatesWhatPlays) {
 
 TEST_F(NativePlayerDsdTest, ClippingIsReportedAsItHappens) {
   const auto began = std::chrono::steady_clock::now();
-  const auto events = eventsPlaying("/loud.dsf", "6");
+  const auto reported = eventsPlaying({"/loud.dsf"}, "6");
   const auto lasted = std::chrono::steady_clock::now() - began;
 
-  ASSERT_GE(events.size(), 1u);
-  EXPECT_LE(double(events.size()),
+  ASSERT_GE(reported.size(), 1u);
+  EXPECT_LE(double(reported.size()),
             std::chrono::duration<double>(lasted).count() * 2 + 1)
       << "a run of clipping at most twice a second";
   uint64_t before = 0;
-  for (const auto &event : events) {
+  for (const auto &[event, heard] : reported) {
     EXPECT_EQ(event.source_token(), "/loud.dsf");
     EXPECT_GT(event.at_unix_ms(), 0);
     ASSERT_EQ(event.kind_case(), renderer_pb::PlaybackEvent::kClipping);
@@ -918,8 +930,18 @@ TEST_F(NativePlayerDsdTest, ClippingIsReportedAsItHappens) {
 }
 
 TEST_F(NativePlayerDsdTest, ATrackThatDoesNotClipReportsNothing) {
-  EXPECT_TRUE(eventsPlaying("/loud.dsf", "safe").empty())
+  EXPECT_TRUE(eventsPlaying({"/loud.dsf"}, "safe").empty())
       << "the safe level keeps the specified peak under full scale";
+}
+
+TEST_F(NativePlayerDsdTest, ClippingReadAheadIsReportedOnceItIsHeard) {
+  const auto reported = eventsPlaying({"/silence.dsf", "/loud.dsf"}, "6");
+  ASSERT_GE(reported.size(), 1u);
+  for (const auto &[event, heard] : reported) {
+    EXPECT_EQ(event.source_token(), "/loud.dsf");
+    EXPECT_EQ(heard, "/loud.dsf")
+        << "a Core drops an event about a source other than the one heard";
+  }
 }
 
 TEST_F(NativePlayerStreamTest, PcmPlayedAsDecodedReportsNoEvent) {
