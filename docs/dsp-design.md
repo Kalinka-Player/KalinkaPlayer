@@ -1,8 +1,9 @@
 # Renderer DSP — design
 
-Status: Phase 0, for review. Nothing here processes audio yet. What exists is
-a DSP stage that holds the audio back and changes nothing, the test and
-benchmark harness, and the measurements this note rests on. Every number is
+Status: Phase 1 is done: the DSP stage, the output stage's gain, dither,
+packing and fades, DSD to PCM with its settings, and the signal path and
+meters the renderer reports (sections 5, 7, 8 and 14). Phase 2, the
+processing itself, is next. Every number is
 from a run named in [benchmarks/dsp/results.md](../benchmarks/dsp/results.md);
 the arm64 ones are from a Raspberry Pi 5. A Pi 4 has been measured for the
 DSD converter only; the [runbook](../benchmarks/dsp/RUNBOOK.md) is how its
@@ -399,6 +400,14 @@ its rate for queued tracks ahead of time, so a change to either rebuilds
 the graph as `output.dsd_mode` does. A rate the output does not take falls
 back to `auto`.
 
+The gain is the DSD section's DSD to PCM level. The output stage applies it
+with the volume, on DSD the stage converted and nothing else, so a change
+ramps over 25 ms in the track that plays. `auto` sends a track natively
+where the output takes its rate as DSD and the volume is Fixed output, and
+converts it otherwise; it never sends DoP. DSD chosen for conversion leaves
+the container as `DSD_RAW`, a format no device is opened in, so a DAC's own
+`DSD_U8` passes the converter untouched.
+
 Phase 2:
 
 | Path | Type | Values | Default | Apply cost | Importance |
@@ -435,6 +444,33 @@ What the Core gains, as additions to `renderer.proto` in Phase 1 and 2:
 - `DspMeters`, sent at most twice a second while processing: clipped samples
   since the source began, true peak from 4× oversampling, and DSP load as
   processing time over real time, a moving average.
+
+**Landed in Phase 1,** for DSD to PCM, and differing from the plan in four
+ways:
+- `SignalPath` holds the steps alone, each a stable `kind`, a `name` and a
+  `summary`, with the latency they add. The formats at either end are the
+  state's `format` and `device_info`, and the volume stays in
+  `VolumeState`. The steps so far are `dsd_to_pcm` ("DSD64 to 176.4 kHz,
+  30 kHz filter"), `dsd_gain` and `dither`, the last only where float meets
+  an integer device. The path is put together as a state is sent, from the
+  stream's decoded format and each stage's own description, so a level
+  change is restated at once.
+- `dsp_latency_ms` is the path's `latency_ms`.
+- The true peak interpolates to at least 176.4 kHz, as BS.1770 asks: four
+  times at 44.1 and 48 kHz, twice at 88.2 and 96 kHz, the samples alone
+  above. It reads what goes through the quantiser, the gain included, so
+  converted DSD always goes through it, at unity onto float too. The load
+  is the converter's and the output stage's time over the audio they make,
+  since the last report. Meters are sent only while a signal path processes
+  what plays.
+- `Capabilities.dsp` says whether DSD converts to PCM, the step kinds and
+  the most output channels. The most FIR taps waits for the convolver.
+
+The Core passes the path on with the output a playback state describes,
+where a path with steps rules out a lossless one, and the meters as
+`dsp_meters_changed` on the queue channels, for the playing source on the
+current renderer alone. The app shows the steps between the decoded stream
+and the output, and the latency and meters beside them.
 
 ## 9. SIMD: Highway
 
@@ -697,6 +733,11 @@ The modulator's own quality, a 1 kHz tone at half modulation over 0.5 s:
    a choice for those who accept that loud masters clip; it is counted and
    reported. Phase 1's acceptance adds a fixture at 71 % modulation that must
    convert with no clipped sample.
+
+   **Landed:** a 1 kHz tone at 71 % modulation, in DSD64 and DSD128, peaks at
+   -0.12 dBFS after conversion at the safe gain. Its modulator runs a gentler
+   loop, out-of-band gain 1.25: at 1.4 a seventh-order loop goes unstable at
+   that level.
 3. **THD+N is measured before dither**, against DSD64 and DSD128 fixtures.
    The dither is tested on its own, against the noise statistics it must have.
 4. **`Buffer` becomes a ring in Phase 1.** It will be single producer, single
@@ -785,10 +826,10 @@ The modulator's own quality, a 1 kHz tone at half modulation over 0.5 s:
 
 ## 14. DSD to PCM, as built
 
-`DsdToPcm` is Phase 1's converter. It plays `output.dsd_mode` `pcm` through
-`DsdToPcmProcessor` in the stage, which keeps its filters running across a
-gapless join. Of the DSD settings in section 7, only the gain is still to
-come.
+`DsdToPcm` is Phase 1's converter. It plays `output.dsd_mode` `pcm`, and
+`auto` where a track does not play natively, through `DsdToPcmProcessor` in
+the stage, which keeps its filters running across a gapless join. All of
+section 7's DSD settings have landed.
 
 **Seek pre-roll.** A processor states how far back the input its output
 depends on reaches, `history()`. The converter's is its latency and a frame,
