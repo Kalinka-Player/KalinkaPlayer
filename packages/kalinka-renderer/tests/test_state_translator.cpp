@@ -276,3 +276,19 @@ TEST(StateTranslator, VolumeCarriesEveryField) {
   EXPECT_DOUBLE_EQ(out.db_values(1), -60.0);
   EXPECT_EQ(out.control_mode(), "auto");
 }
+
+TEST(StateTranslator, ASignalPathKeepsItsStepsInOrder) {
+  renderer_pb::SignalPath out;
+  out.add_steps()->set_kind("stale");
+  state_translator::fillSignalPath(
+      {{{"dsd_to_pcm", "DSD to PCM", "DSD64 to 176.4 kHz, 30 kHz filter"},
+        {"dither", "Dither", "TPDF at 24 bits"}},
+       0.25},
+      out);
+  ASSERT_EQ(out.steps_size(), 2) << "replaced, not appended to";
+  EXPECT_EQ(out.steps(0).kind(), "dsd_to_pcm");
+  EXPECT_EQ(out.steps(0).name(), "DSD to PCM");
+  EXPECT_EQ(out.steps(0).summary(), "DSD64 to 176.4 kHz, 30 kHz filter");
+  EXPECT_EQ(out.steps(1).kind(), "dither");
+  EXPECT_DOUBLE_EQ(out.latency_ms(), 0.25);
+}

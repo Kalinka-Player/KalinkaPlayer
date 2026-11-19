@@ -31,3 +31,10 @@ dsdPcmRate(unsigned dsdRate, std::span<const StreamAudioFormat> device,
 /// The rates DSD at @p dsdRate can convert to, for a message: "44.1, 88.2,
 /// 176.4 or 352.8 kHz".
 std::string dsdPcmRatesText(unsigned dsdRate);
+
+/// @p dsdRate for a listener: "DSD64", or "DSD at 3000000 Hz" off both
+/// families.
+std::string dsdRateName(unsigned dsdRate);
+
+/// A PCM @p rate for a listener: "176.4 kHz", "48 kHz".
+std::string pcmRateText(unsigned rate);

@@ -4,6 +4,7 @@
 #include <string>
 
 #include "../native_player/AlsaVolumeControl.h"
+#include "../native_player/SignalPath.h"
 #include "../native_player/StreamState.h"
 #include "kalinka/renderer/v1/renderer.pb.h"
 
@@ -36,6 +37,9 @@ void fillDeviceInfo(const DeviceInfo &device,
 
 void fillVolume(const VolumeState &volume,
                 kalinka::renderer::v1::VolumeState &out);
+
+void fillSignalPath(const SignalPath &path,
+                    kalinka::renderer::v1::SignalPath &out);
 
 /**
  * @brief One native state change as a PlaybackStateChanged.

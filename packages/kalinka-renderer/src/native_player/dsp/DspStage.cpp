@@ -115,6 +115,17 @@ StreamState DspStage::presented(StreamState state,
   return state;
 }
 
+SignalPath DspStage::describe(const StreamAudioFormat &format) const {
+  return processor && processor->handles(format) ? processor->describe(format)
+                                                 : SignalPath{};
+}
+
+StreamAudioFormat DspStage::handsOn(const StreamAudioFormat &format) const {
+  return processor && processor->handles(format)
+             ? processor->output(format).format
+             : format;
+}
+
 void DspStage::takeUpstream() {
   updateState([this](const StreamState &) -> std::optional<StreamState> {
     upstreamSeen = shared.upstream;

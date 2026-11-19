@@ -115,6 +115,10 @@ private:
   void stopPumps();
   StreamId appendSource(const kalinka::renderer::v1::Source &source);
   void onStreamState(const StreamState &state);
+  /// What is done to the audio @p state reports, when anything is.
+  std::optional<SignalPath> signalPathOf(const StreamState &state) const;
+  /// Reports what plays again, as a live setting changed what is done to it.
+  void restatePlayback();
   void emit(kalinka::renderer::v1::Envelope &env);
   void emitVolume(const VolumeState &volume, bool external);
   void reportUnavailable(const char *command);

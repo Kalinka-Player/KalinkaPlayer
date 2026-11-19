@@ -1,5 +1,6 @@
 #include "dsp/dsd/DsdToPcmProcessor.h"
 
+#include "dsp/dsd/DsdFilterSetting.h"
 #include "dsp/dsd/DsdPcmRate.h"
 
 #include <algorithm>
@@ -40,6 +41,16 @@ DsdToPcmProcessor::output(const StreamAudioFormat &format) const {
   const auto converted = spec(format).value();
   return {{converted.pcmRate, format.channels, 64, PCM_FLOAT64_LE, 0},
           converted.dsdRate / converted.pcmRate / 8};
+}
+
+SignalPath DsdToPcmProcessor::describe(const StreamAudioFormat &format) const {
+  const auto converted = spec(format).value();
+  std::string summary =
+      dsdRateName(converted.dsdRate) + " to " + pcmRateText(converted.pcmRate);
+  if (converted.pcmRate != dsdBaseRate(converted.dsdRate))
+    summary += ", " + dsdFilterText(converted.filter);
+  return {{{"dsd_to_pcm", "DSD to PCM", summary}},
+          1000.0 * double(DsdToPcm::latencyOf(converted)) / converted.pcmRate};
 }
 
 size_t DsdToPcmProcessor::start(const StreamAudioFormat &format) {

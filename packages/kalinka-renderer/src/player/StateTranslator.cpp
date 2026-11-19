@@ -90,6 +90,17 @@ void fillVolume(const VolumeState &volume, renderer_pb::VolumeState &out) {
   out.set_control_mode(volume.controlMode);
 }
 
+void fillSignalPath(const SignalPath &path, renderer_pb::SignalPath &out) {
+  out.clear_steps();
+  for (const SignalStep &step : path.steps) {
+    renderer_pb::SignalStep *added = out.add_steps();
+    added->set_kind(step.kind);
+    added->set_name(step.name);
+    added->set_summary(step.summary);
+  }
+  out.set_latency_ms(path.latencyMs);
+}
+
 void fillPlaybackStateChanged(const StreamState &state,
                               const std::optional<std::string> &sourceToken,
                               int64_t atUnixMs,

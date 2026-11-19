@@ -22,7 +22,9 @@ public:
   double *input() { return buffer.data() + history; }
   size_t capacity() const { return capacity_; }
   /// Samples the output lags the input by.
-  size_t delay() const { return history / 2; }
+  size_t delay() const { return delayFor(taps.size()); }
+  /// The delay() of a filter given @p halfSize taps.
+  static size_t delayFor(size_t halfSize) { return halfSize - 1; }
   /// Filters the @p count samples written to input() into @p out.
   void filter(size_t count, double *out);
   /// Zeroes the history.

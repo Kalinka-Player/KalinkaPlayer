@@ -3,7 +3,9 @@
 #include "dsp/output/PlanarPcm.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <format>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -22,9 +24,14 @@ size_t frameBytes(AudioSampleFormat format, unsigned channels) {
   return sampleSize(format) * channels;
 }
 
+bool convertedFromDsd(const StreamAudioFormat &decoded,
+                      const StreamAudioFormat &source) {
+  return isDsd(decoded.sampleFormat) && !isDsd(source.sampleFormat);
+}
+
 bool convertedFromDsd(const StreamInfo &info) {
-  return info.decodedFormat && isDsd(info.decodedFormat->sampleFormat) &&
-         !isDsd(info.format.sampleFormat);
+  return info.decodedFormat &&
+         convertedFromDsd(*info.decodedFormat, info.format);
 }
 } // namespace
 
@@ -99,6 +106,21 @@ std::optional<OutputStage::Presented> OutputStage::current() const {
 void OutputStage::setGain(double linear) { target = linear; }
 
 void OutputStage::setDsdGain(double linear) { dsdGain = linear; }
+
+std::vector<SignalStep>
+OutputStage::describe(const StreamAudioFormat &decoded,
+                      const StreamAudioFormat &source,
+                      const StreamAudioFormat &output) const {
+  std::vector<SignalStep> steps;
+  const double gain = dsdGain.load();
+  if (convertedFromDsd(decoded, source) && gain != 1.0)
+    steps.push_back({"dsd_gain", "DSD gain",
+                     std::format("{:+.1f} dB", 20 * std::log10(gain))});
+  if (isFloat(source.sampleFormat) && !isFloat(output.sampleFormat))
+    steps.push_back({"dither", "Dither",
+                     std::format("TPDF at {} bits", output.bitsPerSample)});
+  return steps;
+}
 
 void OutputStage::fadeOut() { fadeTarget = 0.0; }
 

@@ -49,6 +49,9 @@ public:
   unsigned ratio() const { return ratio_; }
   /// Output frames the PCM lags the DSD by, rounded to the nearest frame.
   size_t latency() const { return latency_; }
+  /// The latency() of a converter for @p spec, without making one.
+  /// @throws std::invalid_argument for a spec it has no chain for.
+  static size_t latencyOf(const Spec &spec);
   /// Where the passband ends, in Hz.
   double passbandHz() const { return passbandHz_; }
   /// The most frames process() writes per channel for @p bytes.

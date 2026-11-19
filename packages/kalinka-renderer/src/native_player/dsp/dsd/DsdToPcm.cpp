@@ -30,19 +30,50 @@ const dsd_filters::Chain *findChain(const DsdToPcm::Spec &spec) {
   return nullptr;
 }
 
+const dsd_filters::Chain &chainFor(const DsdToPcm::Spec &spec) {
+  const auto *chain = findChain(spec);
+  if (!chain || !spec.channels)
+    throw std::invalid_argument("No DSD to PCM conversion of " +
+                                std::to_string(spec.channels) +
+                                " channels from " +
+                                std::to_string(spec.dsdRate) + " Hz to " +
+                                std::to_string(spec.pcmRate) + " Hz");
+  return *chain;
+}
+
+/// Output frames the chain's output lags its input by.
+double delayOf(const dsd_filters::Chain &chain) {
+  const unsigned ratio = chain.dsdMultiple / chain.pcmMultiple;
+  // Stage 1's output m is complete only with bit 8m + 7.
+  double delay =
+      ((dsd_filters::kStage1[chain.stage1].size - 1) / 2.0 - 7) / ratio;
+  unsigned stageRatio = 8;
+  for (const int index : chain.halfBands) {
+    if (index == dsd_filters::kNone)
+      break;
+    delay += double(HalfBandDecimator::delayFor(
+                 dsd_filters::kHalfBand[index].size)) *
+             stageRatio / ratio;
+    stageRatio *= 2;
+  }
+  if (chain.band != dsd_filters::kNone)
+    delay +=
+        double(SymmetricFir::delayFor(dsd_filters::kBand[chain.band].size));
+  return delay;
+}
+
 } // namespace
+
+size_t DsdToPcm::latencyOf(const Spec &spec) {
+  return size_t(std::lround(delayOf(chainFor(spec))));
+}
 
 bool DsdToPcm::converts(const Spec &spec) {
   return spec.channels > 0 && findChain(spec) != nullptr;
 }
 
 DsdToPcm::DsdToPcm(const Spec &spec) : channels(spec.channels) {
-  const auto *chain = findChain(spec);
-  if (!chain || !channels)
-    throw std::invalid_argument("No DSD to PCM conversion of " +
-                                std::to_string(channels) + " channels from " +
-                                std::to_string(spec.dsdRate) + " Hz to " +
-                                std::to_string(spec.pcmRate) + " Hz");
+  const auto *chain = &chainFor(spec);
   ratio_ = chain->dsdMultiple / chain->pcmMultiple;
   passbandHz_ = chain->passbandHz;
   blockBytes = blockFor(ratio_);
@@ -69,17 +100,7 @@ DsdToPcm::DsdToPcm(const Spec &spec) : channels(spec.channels) {
     }
   }
 
-  const auto &first = state.front();
-  // Stage 1's output m is complete only with bit 8m + 7.
-  double delay = ((taps.size - 1) / 2.0 - 7) / ratio_;
-  unsigned stageRatio = 8;
-  for (const auto &halfBand : first.halfBands) {
-    delay += double(halfBand.delay()) * stageRatio / ratio_;
-    stageRatio *= 2;
-  }
-  if (first.band)
-    delay += double(first.band->delay());
-  latency_ = size_t(std::lround(delay));
+  latency_ = size_t(std::lround(delayOf(*chain)));
   reset();
 }
 

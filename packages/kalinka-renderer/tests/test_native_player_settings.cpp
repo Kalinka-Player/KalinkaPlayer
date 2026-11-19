@@ -217,10 +217,10 @@ protected:
     return {file.begin(), file.end()};
   }
 
-  /// A fifth of a second of random DSD64, which every filter treats apart.
-  static std::string noise() {
+  /// @p seconds of random DSD64, which every filter treats apart.
+  static std::string noise(double seconds = 0.2) {
     std::mt19937 random(1);
-    std::vector<uint8_t> bits(2822400 / 5);
+    std::vector<uint8_t> bits(size_t(2822400 * seconds));
     for (auto &bit : bits)
       bit = random() & 1;
     const auto file = harness::dsfFile({bits, bits}, 2822400);
@@ -247,8 +247,19 @@ protected:
     return rate;
   }
 
+  /// The kinds and summaries of @p state's signal path.
+  static std::vector<std::string>
+  stepsOf(const renderer_pb::PlaybackStateChanged &state) {
+    std::vector<std::string> steps;
+    for (const auto &step : state.signal_path().steps())
+      steps.push_back(step.kind() + ": " + step.summary());
+    return steps;
+  }
+
   LocalHttpServer dsdServer_{std::map<std::string, std::string, std::less<>>{
-      {"/silence.dsf", silence()}, {"/noise.dsf", noise()}}};
+      {"/silence.dsf", silence()},
+      {"/noise.dsf", noise()},
+      {"/long.dsf", noise(1.5)}}};
 };
 
 TEST_F(NativePlayerSettingsTest, DsdSettingsExposeCapabilitiesAndPersistMode) {
@@ -385,6 +396,16 @@ TEST_F(NativePlayerSettingsTest, DsdIsTakenWhileTheDsdModeIsNotDisabled) {
   // A new device is never assumed to take DSD.
   ASSERT_TRUE(player_->applyConfig("output.device", "default", error_));
   EXPECT_FALSE(dsd());
+}
+
+TEST_F(NativePlayerSettingsTest, TheDspSaysWhatItIsBuiltToDo) {
+  renderer_pb::Capabilities capabilities;
+  player_->fillCapabilities(capabilities);
+  ASSERT_TRUE(capabilities.has_dsp());
+  EXPECT_TRUE(capabilities.dsp().dsd_to_pcm());
+  EXPECT_THAT(capabilities.dsp().steps(),
+              ::testing::ElementsAre("dsd_to_pcm", "dsd_gain", "dither"));
+  EXPECT_EQ(capabilities.dsp().max_output_channels(), 2u);
 }
 
 // A new card may hold the level differently, through a mixer or in software,
@@ -763,6 +784,67 @@ TEST_F(NativePlayerSettingsTest, APcmRateWriteIsValidatedAndPersisted) {
   EXPECT_TRUE(applied.outcomes(0).applied()) << applied.outcomes(0).error();
   EXPECT_EQ(field(dsd(), "output.dsd_pcm_rate")->value(), "1x");
   EXPECT_EQ(loadSettingsOverrides().at("output.dsd_pcm_rate"), "1x");
+}
+
+TEST_F(NativePlayerDsdTest, ConvertedDsdIsReportedWithItsSignalPath) {
+  ASSERT_TRUE(player_->applyConfig("output.dsd_mode", "pcm", error_)) << error_;
+  std::optional<renderer_pb::PlaybackStateChanged> playing;
+  // Long enough to be reported playing past the format change's pause.
+  for (const auto &state : playToTheEnd(dsf("/long.dsf")))
+    if (!playing && state.state() == renderer_pb::PLAYBACK_STATE_PLAYING)
+      playing = state;
+  ASSERT_TRUE(playing);
+  ASSERT_TRUE(playing->has_signal_path());
+  const auto steps = stepsOf(*playing);
+  ASSERT_GE(steps.size(), 2u);
+  EXPECT_EQ(steps[0], "dsd_to_pcm: DSD64 to 176.4 kHz, 30 kHz filter");
+  EXPECT_EQ(steps[1], "dsd_gain: +2.8 dB");
+  EXPECT_GT(playing->signal_path().latency_ms(), 0.0);
+}
+
+TEST_F(NativePlayerDsdTest, ALevelChangeRestatesWhatPlays) {
+  // A device that plays in real time, so the track is still on when the level
+  // moves.
+  const ScopedAlsaConfig alsa{
+      "pcm_type.kalinka_paced { lib \"" KALINKA_PACED_PCM
+      "\" }\npcm.paced { type kalinka_paced }\n"};
+  player_.reset();
+  saveSettingsOverrides(
+      {{"output.device", "paced"}, {"output.dsd_mode", "pcm"}});
+  player_ = std::make_shared<NativePlayer>(ioc_);
+  recordStates();
+  const auto reportedWith = [this](const std::string &step) {
+    return [this, step] {
+      return std::ranges::any_of(states_, [&step](const auto &state) {
+        return state.state() == renderer_pb::PLAYBACK_STATE_PLAYING &&
+               std::ranges::count(stepsOf(state), step) > 0;
+      });
+    };
+  };
+  player_->setSource(dsf("/long.dsf"));
+  ASSERT_TRUE(runUntil(reportedWith("dsd_gain: +2.8 dB")));
+  renderer_pb::StateSnapshot snapshot;
+  player_->fillSnapshot(snapshot);
+  ASSERT_TRUE(snapshot.has_signal_path());
+  EXPECT_EQ(snapshot.signal_path().steps(0).kind(), "dsd_to_pcm");
+  states_.clear();
+
+  ASSERT_TRUE(player_->dsdSettings()->applyConfig("output.dsd_gain_db", "6",
+                                                  error_))
+      << error_;
+  EXPECT_TRUE(runUntil(reportedWith("dsd_gain: +6.0 dB")));
+  EXPECT_TRUE(stops().empty()) << "no rebuild";
+  player_->stop();
+  ioc_.poll();
+  player_.reset();
+}
+
+TEST_F(NativePlayerStreamTest, PcmPlayedAsDecodedHasNoSignalPath) {
+  const auto states = playToTheEnd(sourceAt("/whole"));
+  ASSERT_FALSE(states.empty());
+  for (const auto &state : states)
+    EXPECT_FALSE(state.has_signal_path())
+        << renderer_pb::PlaybackState_Name(state.state());
 }
 
 TEST_F(NativePlayerDsdTest, ThePcmRateReachesTheConverter) {

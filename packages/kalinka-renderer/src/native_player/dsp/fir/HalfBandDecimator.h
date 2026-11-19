@@ -27,7 +27,9 @@ public:
   double *input() { return buffer.data() + kLead; }
   size_t capacity() const { return capacity_; }
   /// Input samples the output lags the input by, output m standing at input 2m.
-  size_t delay() const { return 2 * side.size() - 2; }
+  size_t delay() const { return delayFor(side.size()); }
+  /// The delay() of a filter given @p sides taps.
+  static size_t delayFor(size_t sides) { return 2 * sides - 2; }
   /// The most outputs decimate() makes from @p count inputs.
   static size_t maxOutputs(size_t count) { return count / 2 + 1; }
   /**

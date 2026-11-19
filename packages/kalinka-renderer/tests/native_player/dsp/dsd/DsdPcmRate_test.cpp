@@ -70,3 +70,17 @@ TEST(DsdPcmRate, TheRatesAreNamedForTheFamily) {
   EXPECT_EQ(dsdPcmRatesText(kDsd64), "44.1, 88.2, 176.4 or 352.8 kHz");
   EXPECT_EQ(dsdPcmRatesText(kDsd64At48), "48, 96, 192 or 384 kHz");
 }
+
+TEST(DsdPcmRate, ADsdRateIsNamedByItsMultiple) {
+  EXPECT_EQ(dsdRateName(kDsd64), "DSD64");
+  EXPECT_EQ(dsdRateName(4 * kDsd64), "DSD256");
+  EXPECT_EQ(dsdRateName(kDsd64At48), "DSD64");
+  EXPECT_EQ(dsdRateName(3000000), "DSD at 3000000 Hz");
+}
+
+TEST(DsdPcmRate, APcmRateIsNamedInKiloHertz) {
+  EXPECT_EQ(pcmRateText(176400), "176.4 kHz");
+  EXPECT_EQ(pcmRateText(44100), "44.1 kHz");
+  EXPECT_EQ(pcmRateText(48000), "48 kHz");
+  EXPECT_EQ(pcmRateText(384000), "384 kHz");
+}

@@ -943,11 +943,40 @@ void NativePlayer::onStreamState(const StreamState &state) {
       env.mutable_playback_state_changed();
   state_translator::fillPlaybackStateChanged(state, tokenFor(state.streamId),
                                              nowUnixMs(), *changed);
+  if (const auto path = signalPathOf(state)) {
+    state_translator::fillSignalPath(*path, *changed->mutable_signal_path());
+  }
   if (state.state == AudioGraphNodeState::STOPPED && interruptPending_) {
     changed->set_interrupted(true);
     interruptPending_ = false;
   }
   emit(env);
+}
+
+std::optional<SignalPath>
+NativePlayer::signalPathOf(const StreamState &state) const {
+  if (!player_ || !state.streamInfo) {
+    return std::nullopt;
+  }
+  SignalPath path = player_->signalPath(*state.streamInfo);
+  if (path.steps.empty()) {
+    return std::nullopt;
+  }
+  return path;
+}
+
+void NativePlayer::restatePlayback() {
+  if (!player_) {
+    return;
+  }
+  StreamState state = player_->getState();
+  if (state.state != AudioGraphNodeState::PREPARING &&
+      state.state != AudioGraphNodeState::STREAMING &&
+      state.state != AudioGraphNodeState::PAUSED) {
+    return;
+  }
+  state.position = state.positionAt(getTimestampNs());
+  onStreamState(state);
 }
 
 void NativePlayer::emitVolume(const VolumeState &volume, bool external) {
@@ -1164,6 +1193,7 @@ bool NativePlayer::applySetting(const std::string &path,
   } else if (appliesLive(path)) {
     if (player_) {
       player_->setDsdGain(value);
+      restatePlayback();
     }
   } else if (graphKeys().contains(path)) {
     rebuildPlayer();
@@ -1311,6 +1341,9 @@ void NativePlayer::fillSnapshot(renderer_pb::StateSnapshot &out) const {
   if (translated.has_duration_ms()) {
     out.set_duration_ms(translated.duration_ms());
   }
+  if (const auto path = signalPathOf(state)) {
+    state_translator::fillSignalPath(*path, *out.mutable_signal_path());
+  }
   state_translator::fillVolume(player_->getVolume(), *out.mutable_volume());
   for (const TrackedSource &tracked : sources_) {
     if (!onAir || tracked.streamId > *onAir) {
@@ -1322,4 +1355,10 @@ void NativePlayer::fillSnapshot(renderer_pb::StateSnapshot &out) const {
 void NativePlayer::fillCapabilities(renderer_pb::Capabilities &out) const {
   out.set_dsd(settings_.at("output.dsd_mode") != "disabled");
   out.set_live_pcm(1);
+  renderer_pb::DspCapabilities *dsp = out.mutable_dsp();
+  dsp->set_dsd_to_pcm(true);
+  for (const char *kind : {"dsd_to_pcm", "dsd_gain", "dither"}) {
+    dsp->add_steps(kind);
+  }
+  dsp->set_max_output_channels(kPcmDeviceChannels);
 }

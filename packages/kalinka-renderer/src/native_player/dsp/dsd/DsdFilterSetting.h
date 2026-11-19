@@ -10,3 +10,6 @@
  * @throws std::invalid_argument for anything that is not one of its values.
  */
 std::optional<DsdFilter> dsdFilterSetting(const std::string &setting);
+
+/// @p filter for a listener: "30 kHz filter".
+std::string dsdFilterText(DsdFilter filter);

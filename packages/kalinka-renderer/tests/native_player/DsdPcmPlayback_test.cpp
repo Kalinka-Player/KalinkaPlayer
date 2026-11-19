@@ -79,6 +79,8 @@ protected:
   std::optional<StreamAudioFormat> opened;
   /// What a playing state said was decoded.
   std::optional<StreamAudioFormat> decoded;
+  /// What the player said was done to the samples a playing state named.
+  std::optional<SignalPath> path;
 
   /// The left channel ALSA was handed, full scale ±1, with @p settings
   /// besides the capture device and `pcm` mode.
@@ -100,8 +102,10 @@ protected:
             << (state.error ? state.error->message : "");
         if (state.deviceInfo)
           opened = state.deviceInfo->format;
-        if (state.state == AudioGraphNodeState::STREAMING && state.streamInfo)
+        if (state.state == AudioGraphNodeState::STREAMING && state.streamInfo) {
           decoded = state.streamInfo->decodedFormat;
+          path = player.signalPath(*state.streamInfo);
+        }
         if ((state.state == AudioGraphNodeState::FINISHED &&
              state.streamId == id) ||
             state.state == AudioGraphNodeState::ERROR)
@@ -160,6 +164,18 @@ TEST_F(DsdPcmPlaybackTest, ADsfTrackPlaysAsPcmAtFourTimesItsBase) {
   // Half modulation, raised by the safe gain of 2.8 dB.
   EXPECT_NEAR(measured.fundamentalDbfs, -6.0206 + 2.8, 0.01);
   EXPECT_LT(measured.thdnDb, -110.0);
+}
+
+TEST_F(DsdPcmPlaybackTest, TheSignalPathNamesTheConversionAndTheGain) {
+  play({dsf("tone.dsf", toneBits())});
+  ASSERT_TRUE(path);
+  EXPECT_EQ(path->steps,
+            (std::vector<SignalStep>{{"dsd_to_pcm", "DSD to PCM",
+                                      "DSD64 to 176.4 kHz, 30 kHz filter"},
+                                     {"dsd_gain", "DSD gain", "+2.8 dB"}}))
+      << "nothing dithered onto a device that takes float";
+  EXPECT_GT(path->latencyMs, 0.0);
+  EXPECT_LT(path->latencyMs, 5.0);
 }
 
 TEST_F(DsdPcmPlaybackTest, AutomaticConvertsATrackTheOutputCannotPlayAsDsd) {

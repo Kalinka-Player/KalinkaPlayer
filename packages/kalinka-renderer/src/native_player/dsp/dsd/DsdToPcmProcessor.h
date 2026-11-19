@@ -33,6 +33,9 @@ public:
 
   bool handles(const StreamAudioFormat &format) const override;
   Output output(const StreamAudioFormat &format) const override;
+  /// One step, "DSD64 to 176.4 kHz, 30 kHz filter", with the converter's
+  /// latency; at the base rate, where the filters are one, no filter is named.
+  SignalPath describe(const StreamAudioFormat &format) const override;
   size_t start(const StreamAudioFormat &format) override;
   size_t history() const override;
   size_t process(const uint8_t *in, uint8_t *out, size_t frames) override;
