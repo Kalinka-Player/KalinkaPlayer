@@ -15,6 +15,8 @@ from kalinka_server.renderer_sessions import (
     SessionState,
 )
 
+from tests.sim_renderer import clipping, of_a_newer_kind
+
 SERVER_ID = "11111111-1111-4111-8111-111111111111"
 OTHER_SERVER_ID = "22222222-2222-4222-8222-222222222222"
 RENDERER_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -609,18 +611,8 @@ async def test_state_for_another_session_is_ignored():
     assert session.snapshot["playback_state"] == "unspecified"
 
 
-def meters_message(token="track-1"):
-    return pb.DspMeters(
-        source_token=token,
-        clipped_samples=2,
-        true_peak_dbfs=-1.5,
-        load=0.01,
-        at_unix_ms=1700000000500,
-    )
-
-
 @pytest.mark.asyncio
-async def test_meters_reach_the_session_and_change_none_of_its_state():
+async def test_playback_events_reach_the_session_and_change_none_of_its_state():
     registry, pool = make_pool()
     ws = FakeWs(pool)
     register(registry, ws)
@@ -628,10 +620,10 @@ async def test_meters_reach_the_session_and_change_none_of_its_state():
     ws.send_state(session.session_id, StateChange.SNAPSHOT, snapshot_message())
     before = dict(session.snapshot)
     seen = []
-    session.on_meters(lambda s, meters: seen.append((s, meters)))
+    session.on_playback_event(lambda s, event: seen.append((s, event)))
 
-    pool.handle_meters(
-        RENDERER_ID, session_id=session.session_id, message=meters_message()
+    pool.handle_playback_event(
+        RENDERER_ID, session_id=session.session_id, message=clipping(2, "track-1")
     )
 
     assert seen == [
@@ -639,10 +631,9 @@ async def test_meters_reach_the_session_and_change_none_of_its_state():
             session,
             {
                 "source_token": "track-1",
-                "clipped_samples": 2,
-                "true_peak_dbfs": -1.5,
-                "load": 0.01,
-                "at_unix_ms": 1700000000500,
+                "at_unix_ms": 1700000000000,
+                "kind": "clipping",
+                "details": {"clipped_samples": 2},
             },
         )
     ]
@@ -650,19 +641,37 @@ async def test_meters_reach_the_session_and_change_none_of_its_state():
 
 
 @pytest.mark.asyncio
-async def test_meters_for_another_session_are_ignored():
+async def test_playback_events_for_another_session_are_ignored():
     registry, pool = make_pool()
     ws = FakeWs(pool)
     register(registry, ws)
     session = await pool.open(RENDERER_ID)
     seen = []
-    session.on_meters(lambda s, meters: seen.append(meters))
+    session.on_playback_event(lambda s, event: seen.append(event))
 
-    pool.handle_meters(
-        RENDERER_ID, session_id="some-other-session", message=meters_message()
+    pool.handle_playback_event(
+        RENDERER_ID, session_id="some-other-session", message=clipping(2, "track-1")
     )
-    pool.handle_meters(
-        "another-renderer", session_id=session.session_id, message=meters_message()
+    pool.handle_playback_event(
+        "another-renderer",
+        session_id=session.session_id,
+        message=clipping(2, "track-1"),
+    )
+
+    assert seen == []
+
+
+@pytest.mark.asyncio
+async def test_a_playback_event_of_a_kind_unknown_here_reaches_no_listener():
+    registry, pool = make_pool()
+    ws = FakeWs(pool)
+    register(registry, ws)
+    session = await pool.open(RENDERER_ID)
+    seen = []
+    session.on_playback_event(lambda s, event: seen.append(event))
+
+    pool.handle_playback_event(
+        RENDERER_ID, session_id=session.session_id, message=of_a_newer_kind("track-1")
     )
 
     assert seen == []

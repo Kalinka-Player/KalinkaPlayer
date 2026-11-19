@@ -11,14 +11,18 @@ format, the device and the signal path every time. What still accumulates is
 what no playback state speaks for — volume, the selected device, the current
 source and the queued tokens.
 
-DspMeters converts here too but is never merged: it measures, it states
+PlaybackEvent converts here too but is never merged: it happened, it states
 nothing.
 """
 
 from __future__ import annotations
 
+import base64
+import re
 from enum import Enum
 from typing import Any, Optional
+
+from google.protobuf.descriptor import EnumDescriptor, FieldDescriptor
 
 from .renderer_proto import renderer_pb2 as pb
 
@@ -104,14 +108,64 @@ def signal_path_to_dict(path) -> dict:
     }
 
 
-def dsp_meters_to_dict(meters) -> dict:
+def playback_event_to_dict(event) -> Optional[dict]:
+    """None for a kind this server does not know, as a newer renderer's is."""
+    kind = event.WhichOneof("kind")
+    if kind is None:
+        return None
     return {
-        "source_token": meters.source_token,
-        "clipped_samples": meters.clipped_samples,
-        "true_peak_dbfs": meters.true_peak_dbfs,
-        "load": meters.load,
-        "at_unix_ms": meters.at_unix_ms,
+        "source_token": (
+            event.source_token if event.HasField("source_token") else None
+        ),
+        "at_unix_ms": event.at_unix_ms,
+        "kind": kind,
+        "details": message_to_dict(getattr(event, kind)),
     }
+
+
+def message_to_dict(message) -> dict:
+    """Every field of any message, in plain Python types.
+
+    An unset field with presence (a message, an ``optional`` or a oneof
+    member) is None; any other unset field is its default. 64-bit integers
+    stay ints, where json_format would make them strings; enums become their
+    lowercase names, as everywhere in this module, but a value this server
+    does not know stays a number. Bytes become base64, as in proto3's JSON.
+    """
+    return {
+        field.name: _field_to_python(message, field)
+        for field in message.DESCRIPTOR.fields
+    }
+
+
+def _field_to_python(message, field: FieldDescriptor) -> Any:
+    value = getattr(message, field.name)
+    if field.message_type is not None and field.message_type.GetOptions().map_entry:
+        value_field = field.message_type.fields_by_name["value"]
+        return {key: _to_python(value_field, item) for key, item in value.items()}
+    if field.is_repeated:
+        return [_to_python(field, item) for item in value]
+    if field.has_presence and not message.HasField(field.name):
+        return None
+    return _to_python(field, value)
+
+
+def _to_python(field: FieldDescriptor, value) -> Any:
+    if field.type == FieldDescriptor.TYPE_MESSAGE:
+        return message_to_dict(value)
+    if field.type == FieldDescriptor.TYPE_ENUM:
+        return _enum_value_name(field.enum_type, value)
+    if field.type == FieldDescriptor.TYPE_BYTES:
+        return base64.b64encode(value).decode("ascii")
+    return value
+
+
+def _enum_value_name(enum_type: EnumDescriptor, number: int) -> Any:
+    value = enum_type.values_by_number.get(number)
+    if value is None:
+        return number
+    prefix = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", enum_type.name).upper() + "_"
+    return value.name.removeprefix(prefix).lower()
 
 
 def volume_to_dict(volume) -> dict:

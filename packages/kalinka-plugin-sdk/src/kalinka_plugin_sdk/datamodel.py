@@ -821,24 +821,6 @@ class OutputInfo(BaseModel):
     signal_path: Optional[SignalPath] = None
 
 
-class DspMeters(BaseModel):
-    """
-    SDK 3.23: what the renderer's DSP measured of the source it plays.
-
-    Attributes:
-        clipped_samples (int): Samples clamped to the output's range since the
-            source began
-        true_peak_dbfs (float): The highest true peak since the source began,
-            in dBFS; -200 before any sound
-        load (float): Processing time over the length of the audio it
-            processed since the previous report: 0.01 is 1 % of a core
-    """
-
-    clipped_samples: int = 0
-    true_peak_dbfs: float = -200.0
-    load: float = 0.0
-
-
 class AudioInfo(BaseModel):
     """
     Technical information about the currently playing audio stream.

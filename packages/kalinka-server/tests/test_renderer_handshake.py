@@ -286,15 +286,15 @@ async def test_an_incompatible_renderer_is_not_believed_about_what_it_plays():
     assert registry.get("old-rid").capabilities is None
 
 
-async def test_dsp_meters_reach_the_session_they_name():
+async def test_playback_events_reach_the_session_they_name():
     pool = create_autospec(SessionPool, instance=True)
-    meters = pb.Envelope()
-    meters.session_id = "session-1"
-    meters.dsp_meters.source_token = "7"
-    meters.dsp_meters.clipped_samples = 3
+    event = pb.Envelope()
+    event.session_id = "session-1"
+    event.playback_event.source_token = "7"
+    event.playback_event.clipping.clipped_samples = 3
 
-    await _run([_hello(), meters], pool=pool)
+    await _run([_hello(), event], pool=pool)
 
-    pool.handle_meters.assert_called_once_with(
-        "old-rid", session_id="session-1", message=meters.dsp_meters
+    pool.handle_playback_event.assert_called_once_with(
+        "old-rid", session_id="session-1", message=event.playback_event
     )

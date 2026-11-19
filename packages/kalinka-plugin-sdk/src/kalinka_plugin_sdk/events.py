@@ -6,7 +6,6 @@ from pydantic import BaseModel, Field
 from .api import BaseEvent, BaseState
 
 from .datamodel import (
-    DspMeters,
     Track,
     PlaybackControl,
     PlaybackState,
@@ -33,7 +32,7 @@ class PlayQueueEventType(Enum):
     ModulesChanged = "modules_changed"
     ReceiversChanged = "receivers_changed"
     VolumesChanged = "volumes_changed"
-    DspMetersChanged = "dsp_meters_changed"
+    PlaybackEvent = "playback_event"
 
 
 class RendererDescriptor(BaseModel):
@@ -273,12 +272,21 @@ class VolumesChangedEvent(PlayQueueEvent):
     volumes: List[VolumeDescriptor]
 
 
-class DspMetersChangedEvent(PlayQueueEvent):
-    """SDK 3.23: what the current renderer's DSP measured of the source that
-    is playing, at most twice a second while a signal path processes it.
+class PlaybackEventReport(PlayQueueEvent):
+    """SDK 3.23: something that happened during the current renderer's
+    playback, sent as it happens. It does not stop playback, and a run of one
+    kind comes as one event at most twice a second, carrying the latest of it.
 
-    A measurement, not state: ``PlayQueueState`` keeps none of it, so a replay
-    carries no meters and a client shows none until the next event."""
+    ``kind`` names what happened and ``details`` holds what the renderer said
+    of it. Later renderers add kinds without a change here, so a client acts
+    on the kinds it knows and ignores the rest. Known so far:
 
-    event_type: PlayQueueEventType = PlayQueueEventType.DspMetersChanged
-    meters: DspMeters
+    - ``clipping``: ``{clipped_samples}``, samples the renderer's DSP clamped
+      since the track began.
+
+    Not state: ``PlayQueueState`` keeps none of it, so a replay carries no
+    playback events."""
+
+    event_type: PlayQueueEventType = PlayQueueEventType.PlaybackEvent
+    kind: str
+    details: Dict[str, Any] = Field(default_factory=dict)

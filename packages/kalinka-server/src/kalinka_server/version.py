@@ -320,10 +320,12 @@ def get_version() -> str:
 # the renderer did to the decoded samples on the way to the device: `steps`
 # in order, each {kind, name, summary}, and the `latency_ms` they add; null
 # when it did nothing, and always from a renderer that predates it. The queue
-# channels send `dsp_meters_changed` {meters: {clipped_samples,
-# true_peak_dbfs, load}} at most twice a second while a signal path processes
-# what plays, for the current renderer's playing source only; the replayed
-# state carries none.
+# channels send `playback_event` {kind, details} when something happens during
+# the current renderer's playback, never for a source other than the playing
+# one; a run of one kind comes at most twice a second, and the replayed state
+# carries none. The kind so far is `clipping` {clipped_samples}, the samples
+# the DSP clamped since the track began; a client ignores kinds it does not
+# know, which later renderers add.
 REST_API_VERSION = "0.24"
 
 
