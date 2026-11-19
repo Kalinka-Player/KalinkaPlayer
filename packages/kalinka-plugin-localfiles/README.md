@@ -118,10 +118,10 @@ DSD before file staging or fingerprint generation. PCM-dependent audio
 embeddings are marked unsupported without retrying; metadata/text embeddings
 remain available. Existing PCM analysis is unchanged.
 
-Playback requires the renderer's DSD output setting and a compatible DAC.
-See the [renderer settings](../kalinka-renderer/README.md#settings). Native DSD
-and DoP preserve the source rate; there is no PCM fallback or DSD rate
-conversion. DST-compressed DFF can have its metadata indexed but is not
+Playback follows the renderer's DSD output setting: native DSD or DoP on a DAC
+that takes it, or converted to PCM in the renderer. See the
+[renderer settings](../kalinka-renderer/README.md#settings). Native DSD and DoP
+preserve the source rate. DST-compressed DFF can have its metadata indexed but is not
 playable by the renderer.
 
 The SMB notification integration tests run against an isolated Samba container,

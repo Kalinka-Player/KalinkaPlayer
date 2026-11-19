@@ -61,7 +61,7 @@ Search accepts a description of the music as well as a name: *"dreamy ambient gu
 
 ### Playback
 
-The renderer is a C++ program with direct ALSA access. It plays FLAC, WAV, MP3 and Ogg Vorbis. FLAC and WAV playback includes 24-bit/96 kHz and 24-bit/192 kHz, and WAV also plays as 32-bit PCM and float on outputs that accept them. Consecutive tracks of the same format play without a gap. Mono and stereo DSD files, in DSF or uncompressed DFF, play as native DSD or DoP through a direct ALSA output that supports it, at fixed volume, once DSD output is selected in the renderer's settings.
+The renderer is a C++ program with direct ALSA access. It plays FLAC, WAV, MP3 and Ogg Vorbis. FLAC and WAV playback includes 24-bit/96 kHz and 24-bit/192 kHz, and WAV also plays as 32-bit PCM and float on outputs that accept them. Consecutive tracks of the same format play without a gap. Mono and stereo DSD files, in DSF or uncompressed DFF, play as native DSD through a direct ALSA output that takes it at fixed volume, and are converted to PCM in the renderer everywhere else; DoP is a choice in the renderer's settings.
 
 The renderer does not alter the samples unless software volume is turned on. Whether they reach the DAC unchanged depends on the ALSA device it plays to: a `hw:` device takes them as they are, `plughw:` resamples and reformats whatever the card does not accept, and `default` or a sound server mixes them with other audio. The app shows whether the current route is 1:1. A resampler configured elsewhere in the ALSA stack is invisible to it: playback should still work, but may no longer be bit-perfect.
 

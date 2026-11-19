@@ -331,7 +331,8 @@ TEST_F(NativePlayerSettingsTest, DsdSettingsExposeCapabilitiesAndPersistMode) {
   const auto dsdSection = dsd();
   const auto *mode = field(dsdSection, "output.dsd_mode");
   ASSERT_NE(mode, nullptr);
-  EXPECT_EQ(mode->value(), "disabled");
+  EXPECT_EQ(mode->value(), "auto");
+  EXPECT_EQ(mode->default_value(), "auto");
   EXPECT_EQ(mode->options_size(), 5);
   EXPECT_EQ(mode->apply(), renderer_pb::APPLY_COST_INTERRUPTS_PLAYBACK);
   ASSERT_TRUE(player_->dsdSettings()->applyConfig("output.dsd_mode", "dop",
@@ -342,7 +343,21 @@ TEST_F(NativePlayerSettingsTest, DsdSettingsExposeCapabilitiesAndPersistMode) {
   EXPECT_EQ(field(dsd(), "output.dsd_mode")->value(), "dop");
   EXPECT_FALSE(player_->applyConfig("output.dsd_mode", "bogus", error_));
   ASSERT_TRUE(player_->applyConfig("output.device", "default", error_));
-  EXPECT_EQ(field(dsd(), "output.dsd_mode")->value(), "disabled");
+  EXPECT_EQ(field(dsd(), "output.dsd_mode")->value(), "auto");
+  EXPECT_FALSE(loadSettingsOverrides().contains("output.dsd_mode"));
+}
+
+TEST_F(NativePlayerSettingsTest, ANewDeviceSendsNativeDsdAndDopBackToAutomatic) {
+  const auto modeAfterADeviceChange = [this](const std::string &mode) {
+    EXPECT_TRUE(player_->applyConfig("output.device", "null", error_));
+    EXPECT_TRUE(player_->applyConfig("output.dsd_mode", mode, error_));
+    EXPECT_TRUE(player_->applyConfig("output.device", "default", error_));
+    return field(dsd(), "output.dsd_mode")->value();
+  };
+  EXPECT_EQ(modeAfterADeviceChange("native"), "auto");
+  EXPECT_EQ(modeAfterADeviceChange("dop"), "auto");
+  EXPECT_EQ(modeAfterADeviceChange("pcm"), "pcm");
+  EXPECT_EQ(modeAfterADeviceChange("disabled"), "disabled");
 }
 
 TEST_F(HdmiSettingsTest, SavedHdmiSelectionGetsAutomaticRateStatusWithoutLosingDop) {
@@ -443,12 +458,14 @@ TEST_F(NativePlayerSettingsTest, DsdIsTakenWhileTheDsdModeIsNotDisabled) {
     player_->fillCapabilities(capabilities);
     return capabilities.dsd();
   };
+  EXPECT_TRUE(dsd());
+  ASSERT_TRUE(player_->applyConfig("output.dsd_mode", "disabled", error_));
   EXPECT_FALSE(dsd());
   ASSERT_TRUE(player_->applyConfig("output.dsd_mode", "native", error_));
   EXPECT_TRUE(dsd());
-  // A new device is never assumed to take DSD.
+  // Automatic converts what the new card does not take as DSD.
   ASSERT_TRUE(player_->applyConfig("output.device", "default", error_));
-  EXPECT_FALSE(dsd());
+  EXPECT_TRUE(dsd());
 }
 
 TEST_F(NativePlayerSettingsTest, TheDspSaysWhatItIsBuiltToDo) {
@@ -484,12 +501,12 @@ TEST_F(NativePlayerSettingsTest, ANewDeviceRestatesTheVolume) {
   EXPECT_FALSE(told.back().external());
 }
 
-TEST_F(NativePlayerSettingsTest, InvalidPersistedDsdModeUsesDisabled) {
+TEST_F(NativePlayerSettingsTest, InvalidPersistedDsdModeUsesTheDefault) {
   saveSettingsOverrides(
       {{"output.device", "null"}, {"output.dsd_mode", "bogus"}});
   player_.reset();
   player_ = std::make_shared<NativePlayer>(ioc_);
-  EXPECT_EQ(field(dsd(), "output.dsd_mode")->value(), "disabled");
+  EXPECT_EQ(field(dsd(), "output.dsd_mode")->value(), "auto");
 }
 
 TEST_F(NativePlayerSettingsTest, TheSinkIsBufferedAsTheServerUsedToBufferIt) {
@@ -1540,6 +1557,7 @@ TEST_F(NativePlayerStreamTest,
 }
 
 TEST_F(NativePlayerStreamTest, UnsupportedSourcesFailBeforeOpeningTheStream) {
+  ASSERT_TRUE(player_->applyConfig("output.dsd_mode", "disabled", error_));
   struct SourceCase {
     const char *mime;
     const char *path;

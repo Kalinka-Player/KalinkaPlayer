@@ -15,11 +15,10 @@ streams the renderer plays. Extensionless URLs need a
 supported MIME type in the matching DIDL `res` element. The URL must be
 reachable from the renderer and support byte ranges for seeking.
 
-DSD playback requires the renderer's DSD output setting, a direct hardware
-output and Fixed volume, and is limited to mono/stereo DSF and uncompressed
-DSDIFF; DST-compressed `.dff` is refused. See the
+DSD playback follows the renderer's DSD output setting, and is limited to
+mono/stereo DSF and uncompressed DSDIFF; DST-compressed `.dff` is refused. See the
 [renderer settings](../kalinka-renderer/README.md#settings).
-While DSD output is Disabled, its default, DSD is neither advertised nor
+While DSD output is Disabled, DSD is neither advertised nor
 accepted: a controller that converts DSD to PCM for such a renderer keeps
 doing so, and one that sends DSD anyway gets fault 714 without interrupting
 playback. The renderer tells Kalinka whenever the setting changes, from any
