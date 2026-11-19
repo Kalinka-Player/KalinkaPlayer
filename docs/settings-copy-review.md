@@ -38,7 +38,7 @@ Sources: [NativePlayer.cpp](../packages/kalinka-renderer/src/player/NativePlayer
 | Stall timeout | Seconds without data before a download is retried. Increase on a very slow connection. |
 | Maximum redirects | Maximum redirects when loading a track. Set to 0 to disable redirects. |
 | DSD output | Requires an output device marked (direct), and either Fixed output volume or a connected device. |
-| DSD: Automatic | Send native DSD when the DAC supports the track’s rate, and never DoP. |
+| DSD: Automatic | Send native DSD when the DAC supports the track’s rate and the volume is Fixed output. Otherwise convert to PCM. Never DoP. |
 | DSD: Native | Send DSD directly to a compatible DAC. |
 | DSD: DoP | Send DSD wrapped in PCM. Choose only if the DAC supports DoP, as other DACs play it as noise. |
 | Connected device: Volume and power | The amplifier or receiver this renderer is connected to. Kalinka then controls its volume and power, and the renderer plays at full level from the next track. |
@@ -127,7 +127,7 @@ Show an `(i)` button for these settings. The popup text is separate from the sho
 | Output device | Direct output requires the sound card to support the track’s sample rate and format. Converted output adapts unsupported formats. Shared output allows other apps to play audio too. Changing the device turns DSD output off, as the new card may not support it, and switches Card mixer volume to Automatic when the new card has no volume control. |
 | Volume control | Automatic uses the sound card’s volume control when it has one, otherwise software. Card mixer uses the card’s volume control and leaves the audio samples unchanged. Software adjusts the samples and leaves the card at full volume. It works with any card, but quiet levels lose a little quality. Fixed output leaves volume control to an amplifier or receiver. |
 | Session start volume ceiling | When playback starts, a volume above the ceiling is lowered to it and a lower volume stays as it is. The check runs when playback starts from a stop or a long pause, not between tracks. |
-| DSD output | Plays DSF and DSDIFF files without converting them to PCM. The DAC must support the selected mode and the track’s DSD rate. Unsupported tracks fail to play. |
+| DSD output | Plays DSF and DSDIFF files, either as DSD, which the DAC must support in the selected mode and at the track’s DSD rate, or converted to PCM. Automatic chooses for each track. Unsupported tracks fail to play. |
 | ReplayGain | The volume adjusts for each track and returns to its previous level when playback stops. Fixed output does not support ReplayGain unless a connected device controls the volume. A card mixer must report its volume in dB. |
 | Pause / reopen after format changes | Some DACs need extra time or must be reopened after a format change. Adjust these settings if tracks fail to start correctly. |
 | Network buffer | A larger buffer can help with an unreliable connection, but uses more memory. |
