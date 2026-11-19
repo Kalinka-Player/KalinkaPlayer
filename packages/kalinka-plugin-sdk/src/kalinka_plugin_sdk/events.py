@@ -282,11 +282,17 @@ class PlaybackEventReport(PlayQueueEvent):
     on the kinds it knows and ignores the rest. Known so far:
 
     - ``clipping``: ``{clipped_samples}``, samples the renderer's DSP clamped
-      since the track began.
+      since the play began.
+
+    ``play_id`` is the play it happened in, as ``PlaybackState.play_id`` names
+    it; None for an event about no play in particular. An event can reach a
+    client before the state that announces its play, so a client matches the
+    two by it rather than by which came last.
 
     Not state: ``PlayQueueState`` keeps none of it, so a replay carries no
     playback events."""
 
     event_type: PlayQueueEventType = PlayQueueEventType.PlaybackEvent
+    play_id: Optional[str] = None
     kind: str
     details: Dict[str, Any] = Field(default_factory=dict)

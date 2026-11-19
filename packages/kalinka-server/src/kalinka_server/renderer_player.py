@@ -55,6 +55,7 @@ from .stream_state import (
     StreamErrorSource,
     StreamState,
     from_snapshot,
+    to_source_token,
     to_stream_id,
 )
 from .tasks import detach
@@ -276,7 +277,7 @@ class RendererPlayer:
                 await session.enqueue_source(
                     uri,
                     mime_type=source.format or "",
-                    source_token=str(stream_id),
+                    source_token=to_source_token(stream_id),
                     start_offset_ms=start_offset_ms,
                 )
             except BaseException:
@@ -295,7 +296,7 @@ class RendererPlayer:
         if op == "remove":
             self._retire_live(args[0])
             self._stream_uris.pop(args[0], None)
-            await session.remove_source(str(args[0]))
+            await session.remove_source(to_source_token(args[0]))
         elif op == "clear_all":
             self._retire_live()
             self._stream_uris.clear()

@@ -32,6 +32,7 @@ from kalinka_plugin_sdk import (
 )
 from kalinka_server import renderer_player
 from kalinka_server.config_model import KalinkaConfig
+from kalinka_server.playback_view import token_to_play_id
 from kalinka_server.playqueue import PlayQueueImpl
 from kalinka_server.stream_state import (
     AudioFormatInfo,
@@ -330,13 +331,14 @@ async def test_add_remove_track(event_emitter, playqueue):
 
 
 @pytest.mark.asyncio
-async def test_play(event_emitter, playqueue):
+async def test_play(event_emitter, playqueue, renderer):
     track = TrackInfo(
         id=to_track_id("1"), metadata=create_track("1"), source_retriever=url1
     )
     await playqueue.add([track])
     await playqueue.play()
     await asyncio.sleep(0.2)
+    plays = [token_to_play_id(s.source_token) for s in _enqueued(renderer)]
     expected_calls = [
         call.dispatch(
             PlaybackStateChangedEvent(
@@ -369,6 +371,7 @@ async def test_play(event_emitter, playqueue):
                     current_track=track.metadata,
                     mime_type="FLAC",
                     stream_url=URL1,
+                    play_id=plays[0],
                     timestamp_ns=1,
                 )
             )
@@ -383,6 +386,7 @@ async def test_play(event_emitter, playqueue):
                     audio_info=AUDIO_INFO,
                     mime_type="FLAC",
                     stream_url=URL1,
+                    play_id=plays[0],
                     timestamp_ns=1,
                 )
             )
@@ -392,7 +396,7 @@ async def test_play(event_emitter, playqueue):
 
 
 @pytest.mark.asyncio
-async def test_switch_track(event_emitter, playqueue, sources):
+async def test_switch_track(event_emitter, playqueue, sources, renderer):
     track1 = TrackInfo(
         id=to_track_id("1"), metadata=create_track("1"), source_retriever=url1
     )
@@ -404,6 +408,7 @@ async def test_switch_track(event_emitter, playqueue, sources):
     await asyncio.sleep(0.2)
     await playqueue.play(1)
     await asyncio.sleep(0.2)
+    plays = [token_to_play_id(s.source_token) for s in _enqueued(renderer)]
     expected_calls = [
         call.dispatch(
             PlaybackStateChangedEvent(
@@ -438,6 +443,7 @@ async def test_switch_track(event_emitter, playqueue, sources):
                     current_track=track1.metadata,
                     mime_type="FLAC",
                     stream_url=URL1,
+                    play_id=plays[0],
                     timestamp_ns=1,
                 )
             )
@@ -452,6 +458,7 @@ async def test_switch_track(event_emitter, playqueue, sources):
                     audio_info=AUDIO_INFO,
                     mime_type="FLAC",
                     stream_url=URL1,
+                    play_id=plays[0],
                     timestamp_ns=1,
                 )
             )
@@ -467,6 +474,7 @@ async def test_switch_track(event_emitter, playqueue, sources):
                     # Nothing decoded for this source yet, so no format.
                     mime_type="FLAC",
                     stream_url=URL2,
+                    play_id=plays[1],
                     timestamp_ns=1,
                 )
             )
@@ -481,6 +489,7 @@ async def test_switch_track(event_emitter, playqueue, sources):
                     audio_info=AUDIO_INFO,
                     mime_type="FLAC",
                     stream_url=URL2,
+                    play_id=plays[1],
                     timestamp_ns=1,
                 )
             )
@@ -490,7 +499,7 @@ async def test_switch_track(event_emitter, playqueue, sources):
 
 
 @pytest.mark.asyncio
-async def test_play_next(event_emitter, playqueue, sources):
+async def test_play_next(event_emitter, playqueue, sources, renderer):
     track1 = TrackInfo(
         id=to_track_id("1"), metadata=create_track("1"), source_retriever=url1
     )
@@ -507,6 +516,7 @@ async def test_play_next(event_emitter, playqueue, sources):
     await asyncio.sleep(0.2)
     await playqueue.play(2)
     await asyncio.sleep(0.2)
+    plays = [token_to_play_id(s.source_token) for s in _enqueued(renderer)]
     expected_calls = [
         call.dispatch(
             PlaybackStateChangedEvent(
@@ -544,6 +554,7 @@ async def test_play_next(event_emitter, playqueue, sources):
                     current_track=track1.metadata,
                     mime_type="FLAC",
                     stream_url=URL1,
+                    play_id=plays[0],
                     timestamp_ns=1,
                 )
             )
@@ -558,6 +569,7 @@ async def test_play_next(event_emitter, playqueue, sources):
                     audio_info=AUDIO_INFO,
                     mime_type="FLAC",
                     stream_url=URL1,
+                    play_id=plays[0],
                     timestamp_ns=1,
                 )
             )
@@ -573,6 +585,7 @@ async def test_play_next(event_emitter, playqueue, sources):
                     # Nothing decoded for this source yet, so no format.
                     mime_type="FLAC",
                     stream_url=URL3,
+                    play_id=plays[2],
                     timestamp_ns=1,
                 )
             )
@@ -587,6 +600,7 @@ async def test_play_next(event_emitter, playqueue, sources):
                     audio_info=AUDIO_INFO,
                     mime_type="FLAC",
                     stream_url=URL3,
+                    play_id=plays[2],
                     timestamp_ns=1,
                 )
             )
@@ -596,7 +610,7 @@ async def test_play_next(event_emitter, playqueue, sources):
 
 
 @pytest.mark.asyncio
-async def test_play_pause_stop_play(event_emitter, playqueue):
+async def test_play_pause_stop_play(event_emitter, playqueue, renderer):
     track = TrackInfo(
         id=to_track_id("1"), metadata=create_track("1"), source_retriever=url1
     )
@@ -610,6 +624,7 @@ async def test_play_pause_stop_play(event_emitter, playqueue):
     await asyncio.sleep(0.2)
     await playqueue.play()
     await asyncio.sleep(0.2)
+    plays = [token_to_play_id(s.source_token) for s in _enqueued(renderer)]
     expected_calls = [
         call.dispatch(
             PlaybackStateChangedEvent(
@@ -643,6 +658,7 @@ async def test_play_pause_stop_play(event_emitter, playqueue):
                     current_track=track.metadata,
                     mime_type="FLAC",
                     stream_url=URL1,
+                    play_id=plays[0],
                     timestamp_ns=1,
                 )
             )
@@ -657,6 +673,7 @@ async def test_play_pause_stop_play(event_emitter, playqueue):
                     audio_info=AUDIO_INFO,
                     mime_type="FLAC",
                     stream_url=URL1,
+                    play_id=plays[0],
                     timestamp_ns=1,
                 )
             )
@@ -671,6 +688,7 @@ async def test_play_pause_stop_play(event_emitter, playqueue):
                     audio_info=AUDIO_INFO,
                     mime_type="FLAC",
                     stream_url=URL1,
+                    play_id=plays[0],
                     timestamp_ns=1,
                 )
             )
@@ -699,6 +717,7 @@ async def test_play_pause_stop_play(event_emitter, playqueue):
                     current_track=track.metadata,
                     mime_type="FLAC",
                     stream_url=URL1,
+                    play_id=plays[1],
                     timestamp_ns=1,
                 )
             )
@@ -713,6 +732,7 @@ async def test_play_pause_stop_play(event_emitter, playqueue):
                     audio_info=AUDIO_INFO,
                     mime_type="FLAC",
                     stream_url=URL1,
+                    play_id=plays[1],
                     timestamp_ns=1,
                 )
             )
@@ -722,7 +742,7 @@ async def test_play_pause_stop_play(event_emitter, playqueue):
 
 
 @pytest.mark.asyncio
-async def test_seek(event_emitter, playqueue):
+async def test_seek(event_emitter, playqueue, renderer):
     track = TrackInfo(
         id=to_track_id("1"), metadata=create_track("1"), source_retriever=url1
     )
@@ -732,6 +752,7 @@ async def test_seek(event_emitter, playqueue):
     await asyncio.sleep(0.2)
     await playqueue.seek(3000)
     await asyncio.sleep(0.2)
+    plays = [token_to_play_id(s.source_token) for s in _enqueued(renderer)]
     expected_calls = [
         call.dispatch(
             PlaybackStateChangedEvent(
@@ -765,6 +786,7 @@ async def test_seek(event_emitter, playqueue):
                     current_track=track.metadata,
                     mime_type="FLAC",
                     stream_url=URL1,
+                    play_id=plays[0],
                     timestamp_ns=1,
                 )
             )
@@ -779,6 +801,7 @@ async def test_seek(event_emitter, playqueue):
                     audio_info=AUDIO_INFO,
                     mime_type="FLAC",
                     stream_url=URL1,
+                    play_id=plays[0],
                     timestamp_ns=1,
                 )
             )
@@ -793,6 +816,7 @@ async def test_seek(event_emitter, playqueue):
                     audio_info=AUDIO_INFO,
                     mime_type="FLAC",
                     stream_url=URL1,
+                    play_id=plays[0],
                     timestamp_ns=1,
                 )
             )
@@ -807,6 +831,7 @@ async def test_seek(event_emitter, playqueue):
                     audio_info=AUDIO_INFO,
                     mime_type="FLAC",
                     stream_url=URL1,
+                    play_id=plays[0],
                     timestamp_ns=1,
                 )
             )

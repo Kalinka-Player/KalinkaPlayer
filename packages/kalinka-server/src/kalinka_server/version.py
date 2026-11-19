@@ -320,12 +320,17 @@ def get_version() -> str:
 # the renderer did to the decoded samples on the way to the device: `steps`
 # in order, each {kind, name, summary}, and the `latency_ms` they add; null
 # when it did nothing, and always from a renderer that predates it. The queue
-# channels send `playback_event` {kind, details} when something happens during
-# the current renderer's playback, never for a source other than the playing
-# one; a run of one kind comes at most twice a second, and the replayed state
-# carries none. The kind so far is `clipping` {clipped_samples}, the samples
-# the DSP clamped since the track began; a client ignores kinds it does not
-# know, which later renderers add.
+# channels send `playback_event` {play_id, kind, details} when something
+# happens during the current renderer's playback, never for a source other
+# than the playing one; a run of one kind comes at most twice a second, and the
+# replayed state carries none. The kind so far is `clipping` {clipped_samples},
+# the samples the DSP clamped since the play began; a client ignores kinds it
+# does not know, which later renderers add. Playback state carries `play_id`,
+# an opaque string new for every play, a replay of the same track included,
+# never repeated by a restarted server, and null while nothing plays; an
+# event's `play_id` names the play it happened in, null for one about no play.
+# An event can reach a client before the state_changed of its play, so a
+# client matches the two by `play_id`.
 REST_API_VERSION = "0.24"
 
 

@@ -29,6 +29,7 @@ from kalinka_plugin_sdk.direct_playback import (
 )
 from kalinka_plugin_sdk.events import (
     PlaybackControlChangedEvent,
+    PlaybackEventReport,
     PlaybackStateChangedEvent,
     PlayQueueEvent,
     PlayQueueEventType,
@@ -47,6 +48,8 @@ from kalinka_server.direct_playback import DirectPlaybackService
 from kalinka_server.external_playback import ExternalPlaybackService
 from kalinka_server.output_capabilities import OutputCapabilityTracker
 from kalinka_server.playback_arbiter import PlaybackArbiter
+from kalinka_server.playback_events import PlaybackEventRelay
+from kalinka_server.playback_view import token_to_play_id
 from kalinka_server.playqueue import PlayQueueImpl
 from kalinka_server.renderer_output_device import RendererVolumeDevice
 from kalinka_server.renderer_registry import RendererRegistry
@@ -56,7 +59,7 @@ from kalinka_plugin_sdk.live_audio import PcmFormat
 from kalinka_server.live_audio import LiveAudioRegistry
 
 from tests.fake_track_sources import FakeTrackSources, example_source, example_track
-from tests.sim_renderer import DURATION_MS, SimRenderer
+from tests.sim_renderer import DURATION_MS, SimRenderer, clipping
 
 SETTLE_S = 0.2
 CONNECT_URL = "https://streaming.qobuz.test/111"
@@ -687,6 +690,56 @@ async def test_a_renderer_setting_that_stops_the_track_replays_it_on_the_session
     assert PlayerStateEnum.STOPPED not in states
     assert states[-1] is PlayerStateEnum.PLAYING
     assert all(s.state is not PlayerStateEnum.STOPPED for s in _states(emitter)[shown:])
+
+
+async def test_each_play_of_a_hold_is_named_as_its_events_name_it(
+    queue, renderer, direct, emitter
+):
+    PlaybackEventRelay(renderer.registry, renderer.pool, emitter.dispatch)
+    listener = Listener()
+    hold = await _hold_and_play(direct, listener)
+    plays = [(_states(emitter)[-1].play_id, renderer.current)]
+    renderer.report_event(clipping(1200, renderer.current))
+
+    renderer.rebuild()
+    await asyncio.sleep(SETTLE_S)
+    plays.append((_states(emitter)[-1].play_id, renderer.current))
+    await hold.play(*_connect_track())
+    await asyncio.sleep(SETTLE_S)
+    plays.append((_states(emitter)[-1].play_id, renderer.current))
+    await hold.set_next(*_connect_track())
+    renderer.finish_current()
+    await asyncio.sleep(SETTLE_S)
+    plays.append((_states(emitter)[-1].play_id, renderer.current))
+    renderer.report_event(clipping(3, renderer.current))
+
+    named = [play_id for play_id, _ in plays]
+    assert all(play_id == token_to_play_id(heard) for play_id, heard in plays)
+    assert len(set(named)) == len(plays)
+    assert listener.states[-1].play_id == named[-1]
+    assert [
+        (r.play_id, r.details)
+        for r in _events(emitter)
+        if isinstance(r, PlaybackEventReport)
+    ] == [(named[0], {"clipped_samples": 1200}), (named[-1], {"clipped_samples": 3})]
+
+    await hold.stop()
+    await asyncio.sleep(SETTLE_S)
+    assert _states(emitter)[-1].play_id is None
+
+
+async def test_a_hold_never_names_a_play_as_the_queue_did(
+    queue, renderer, direct, emitter
+):
+    await _play_queue(queue, renderer, "1")
+    queued = (_states(emitter)[-1].play_id, renderer.current)
+
+    await _hold_and_play(direct, Listener())
+
+    held = (_states(emitter)[-1].play_id, renderer.current)
+    assert held[0] == token_to_play_id(held[1])
+    assert held[0] != queued[0]
+    assert held[1] != queued[1]
 
 
 async def test_without_a_renderer_nothing_is_taken(emitter, arbiter, device_bus):

@@ -49,13 +49,14 @@ from kalinka_plugin_sdk.inputmodule import (
 from kalinka_plugin_sdk.api import PlayQueueController, EventEmitter
 
 from .playback_arbiter import PlaybackArbiter
-from .playback_view import to_audio_info, to_state_name
+from .playback_view import to_audio_info, to_play_id, to_state_name
 from .renderer_player import RendererPlayer
 from .stream_state import (
     AudioGraphNodeState,
     StateMonitor,
     StreamErrorSource,
     StreamState,
+    new_stream_id,
 )
 from .module_timeout import TRACK_SOURCE_TIMEOUT_S
 from .renderer_registry import RendererRegistry, RendererUnavailable
@@ -151,8 +152,6 @@ class PlayQueueImpl(PlayQueueController):
 
         self._prefetch_task = None
         self.prepared_tracks: OrderedDict = OrderedDict()
-        # The queue owns stream-id allocation; the player only tags.
-        self._next_stream_id = 0
         # StreamId of the stream currently being played (popped from prepared_tracks on SOURCE_CHANGED)
         self.current_stream_id: Optional[int] = None
         self._retry_attempted: bool = False
@@ -407,11 +406,6 @@ class PlayQueueImpl(PlayQueueController):
         if playable is not None:
             self._apply_prefetch(*playable)
 
-    def _new_stream_id(self) -> int:
-        sid = self._next_stream_id
-        self._next_stream_id += 1
-        return sid
-
     def _adopt_source(self, stream_id: Optional[int]) -> None:
         """Take up the stream the renderer switched to.
 
@@ -475,7 +469,7 @@ class PlayQueueImpl(PlayQueueController):
 
         # Append new stream — auto-starts. prepared_tracks is non-empty so the
         # FINISHED handler (triggered by the removals above) will not auto-play.
-        stream_id = self._new_stream_id()
+        stream_id = new_stream_id()
         self._track_player.append(stream_id, track_source)
         self.prepared_tracks[index] = (track_source, stream_id)
 
@@ -492,7 +486,7 @@ class PlayQueueImpl(PlayQueueController):
         if self._track_player.get_state().state == AudioGraphNodeState.STOPPED:
             self._apply_play(index, track_source)
             return
-        stream_id = self._new_stream_id()
+        stream_id = new_stream_id()
         self._track_player.append(stream_id, track_source)
         self.prepared_tracks[index] = (track_source, stream_id)
 
@@ -911,6 +905,7 @@ class PlayQueueImpl(PlayQueueController):
             mime_type=self.current_format,
             audio_codec=self.current_audio_codec,
             stream_url=self._track_player.stream_uri(self.current_stream_id),
+            play_id=to_play_id(stream_state.state, self.current_stream_id),
             timestamp_ns=time.monotonic_ns(),
         )
 
@@ -1255,7 +1250,7 @@ class PlayQueueImpl(PlayQueueController):
         self._clear_prepared_streams()
 
         self._retry_pending = True
-        stream_id = self._new_stream_id()
+        stream_id = new_stream_id()
         self._track_player.append(stream_id, track_source, position_ms)
         self.prepared_tracks[index] = (track_source, stream_id)
 

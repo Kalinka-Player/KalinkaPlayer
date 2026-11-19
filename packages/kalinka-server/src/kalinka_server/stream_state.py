@@ -14,6 +14,7 @@ it is testable without a session or a player.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -245,9 +246,23 @@ def to_error(error: Optional[dict]) -> Optional[StreamError]:
     )
 
 
+_stream_ids = itertools.count()
+
+
+def new_stream_id() -> int:
+    """A stream id no stream of this process had, whichever owner of the
+    output plays it: the queue's and a plugin's streams never share one."""
+    return next(_stream_ids)
+
+
+def to_source_token(stream_id: int) -> str:
+    """What the renderer is told to call a stream."""
+    return str(stream_id)
+
+
 def to_stream_id(source_token: Optional[str]) -> Optional[int]:
-    """The stream id a source token names — the inverse of what the renderer
-    player stringifies on the way out. Anything else came from elsewhere."""
+    """The stream id a source token names — the inverse of to_source_token.
+    Anything else came from elsewhere."""
     try:
         return int(source_token)  # type: ignore[arg-type]
     except (TypeError, ValueError):

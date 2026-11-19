@@ -6,6 +6,7 @@ playing outside it — so clients read the same vocabulary whoever plays.
 
 from __future__ import annotations
 
+import secrets
 from typing import Optional
 
 from kalinka_plugin_sdk.datamodel import (
@@ -22,6 +23,17 @@ from .stream_state import (
     DeviceAccess as StreamDeviceAccess,
     SignalPath as StreamSignalPath,
     StreamInfo,
+    to_source_token,
+)
+
+# Picked once per process: a restarted server numbers its streams from 0 again.
+_RUN_ID = secrets.token_hex(4)
+
+# A play lasts from its first buffering until it stops, fails or runs out.
+_IN_PLAY = (
+    AudioGraphNodeState.PREPARING,
+    AudioGraphNodeState.STREAMING,
+    AudioGraphNodeState.PAUSED,
 )
 
 _ACCESS = {
@@ -69,6 +81,21 @@ def to_audio_info(stream_info: StreamInfo):
         duration_ms=stream_info.duration_ms or 0,
         output=to_output_info(stream_info),
     )
+
+
+def token_to_play_id(source_token: Optional[str]) -> Optional[str]:
+    """What clients call the play of the stream a renderer names by
+    ``source_token``: unlike the token, never the same in another run of the
+    server."""
+    return None if source_token is None else f"{_RUN_ID}-{source_token}"
+
+
+def to_play_id(state: AudioGraphNodeState, stream_id: Optional[int]) -> Optional[str]:
+    """The play of a stream in ``state``, as :func:`token_to_play_id` names
+    it; None once it no longer plays."""
+    if stream_id is None or state not in _IN_PLAY:
+        return None
+    return token_to_play_id(to_source_token(stream_id))
 
 
 def to_state_name(state: AudioGraphNodeState) -> Optional[PlayerStateEnum]:
