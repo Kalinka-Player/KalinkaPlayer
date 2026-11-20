@@ -18,7 +18,7 @@ TONE_START = RATIO * SLOT
 NFFT = 262144
 
 
-def measure(path):
+def aligned_capture(path):
     rate, output = wavfile.read(path)
     if rate != PCM or output.ndim != 1 or output.dtype != np.float64:
         raise ValueError(f"{path}: export a mono, 176400 Hz, float64 WAV")
@@ -30,6 +30,10 @@ def measure(path):
     lag = int(np.argmax(abs(first - np.median(first)))) - BIT_AT
     if np.ptp(first) < 0.001 or abs(lag) >= SLOT // 4:
         raise ValueError(f"{path}: alignment marker missing or outside supported range")
+    return output, lag
+
+
+def frequency_response(path, output, lag):
     impulse = np.empty(SLOT * RATIO)
     for phase in range(RATIO):
         start = phase * SLOT + BIT_AT + lag - SLOT // 2
@@ -47,6 +51,12 @@ def measure(path):
     f = np.fft.rfftfreq(NFFT, 1 / (PCM * RATIO))
     gain = abs(np.fft.rfft(impulse, NFFT))
     response = 20 * np.log10(np.maximum(gain / gain[0], 1e-300))
+    return f, response
+
+
+def measure(path):
+    output, lag = aligned_capture(path)
+    f, response = frequency_response(path, output, lag)
     hits = np.flatnonzero((f <= PCM / 2) & (response <= -3))
     crossing = np.nan
     if len(hits) and hits[0] > 0:

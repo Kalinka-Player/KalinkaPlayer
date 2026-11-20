@@ -1,10 +1,11 @@
 {
   "kalinka_revision": "a043989071d8bbe391ba9ae3372dbedf91a8a705",
   "mpd_revision": "72077d76f11ffba21f6705fe912f47b0b5dc1d6e",
-  "binary_sha256": "a9ace325339b9082d9a049470c23d29d5c45f331ccbabbdc90ab0012b03aa37f",
+  "binary_sha256": "3275767050be3ccb72dd2b2dcaa9e081c091eef85da52c576d0b05c9fac9b2bd",
   "cpu_affinity": 2,
-  "compiler_flags": "-O3 -DNDEBUG -std=c++23",
+  "compiler_flags": "GCC 14.2.0, -O3 -DNDEBUG, -std=c++23 (C++), -std=c11 (dsd2pcm.c)",
   "input_dsf_sha256": "e21d0b464515f7a1a3b73ad3051900896e88a783d079cdc4c83e6d43cff1a5f0",
+  "squeezelite_revision": "262994a989dc29ce3be4390c57c6a43373dfdca2",
   "boards": {
     "Raspberry Pi 4": {
       "model": "Raspberry Pi 4 Model B Rev 1.5",
@@ -13,14 +14,14 @@
       "max_khz": "1800000",
       "before_throttled": "throttled=0xe0000",
       "after_throttled": "throttled=0xe0000",
-      "versions": "FFmpeg 7.1.5-0+deb13u1+rpt2, libavcodec 4002661, swr 328548, libsamplerate-0.2.2 (c) 2002-2008 Erik de Castro Lopo, GCC 14.2.0",
-      "min_temperature_c": 70.601,
-      "max_temperature_c": 81.315,
+      "versions": "FFmpeg 7.1.5-0+deb13u1+rpt2, libavcodec 4002661, swr 328548, libsamplerate-0.2.2 (c) 2002-2008 Erik de Castro Lopo, libsoxr-0.1.3, GCC 14.2.0",
+      "min_temperature_c": 65.731,
+      "max_temperature_c": 75.471,
       "frequency_samples_khz": {
-        "1800000": 144
+        "1800000": 137
       },
       "throttle_status_samples": {
-        "throttled=0xe0000": 144
+        "throttled=0xe0000": 137
       },
       "sample_interval_seconds": 0.5
     },
@@ -31,15 +32,15 @@
       "max_khz": "2400000",
       "before_throttled": "Can't open device file: /dev/vcio_gencmd",
       "after_throttled": "Can't open device file: /dev/vcio_gencmd",
-      "versions": "FFmpeg 7.1.5-0+deb13u1+rpt2, libavcodec 4002661, swr 328548, libsamplerate-0.2.2 (c) 2002-2008 Erik de Castro Lopo, GCC 14.2.0",
-      "min_temperature_c": 56.75,
-      "max_temperature_c": 68.85,
+      "versions": "FFmpeg 7.1.5-0+deb13u1+rpt2, libavcodec 4002661, swr 328548, libsamplerate-0.2.2 (c) 2002-2008 Erik de Castro Lopo, libsoxr-0.1.3, GCC 14.2.0",
+      "min_temperature_c": 55.1,
+      "max_temperature_c": 65.55,
       "frequency_samples_khz": {
         "1600000": 1,
-        "2400000": 61
+        "2400000": 60
       },
       "throttle_status_samples": {
-        "Can't open device file: /dev/vcio_gencmd": 62
+        "Can't open device file: /dev/vcio_gencmd": 61
       },
       "sample_interval_seconds": 0.5
     }
