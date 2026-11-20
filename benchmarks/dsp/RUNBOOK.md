@@ -5,6 +5,8 @@ else, what each number means, and what a wrong one looks like. The results go
 into [results.md](results.md); the design they support is
 [docs/dsp-design.md](../../docs/dsp-design.md).
 
+The [DSD-to-PCM article benchmark](decoder-comparison/README.md) rebuilds the release converter, compares it with FFmpeg on a fixed DSD64 file, and regenerates the filter, impulse and music spectra. Its source files, settings and checksums are kept with the script.
+
 ## What it measures
 
 `kalinka-dsp-bench` is built with the renderer, from
