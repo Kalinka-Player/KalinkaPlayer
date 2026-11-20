@@ -17,9 +17,13 @@ BACKGROUND = "#111214"
 INK = "#e3e5e6"
 MUTED = "#b1b5b8"
 GRID = "#35383b"
-COLORS = ("#efa7ab", "#9ed3ce", "#d2bd8e")
-LINES = ("-", (0, (5, 2.4)), (0, (1.3, 1.7)))
-NAMES = ("30 kHz", "50 kHz", "Wide")
+KALINKA_ACCENT = "#c2394b"  # --accent in the Kalinka website's site.css
+KALINKA_PRESETS = {
+    "30 kHz": "-",
+    "50 kHz": (0, (1.3, 2.4)),
+    "Wide": (0, (6, 2.8)),
+}
+FFMPEG = ("#ffffff", (0, (4.5, 2, 1.2, 2)))
 BIT_RATE = 2822400
 PCM_RATE = 176400
 FFT_SIZE = 262144
@@ -125,7 +129,7 @@ def frequency_plot(out, traces, narrow):
     baseband = freq <= PCM_RATE / 2
     ax.axvspan(0, 20, color="#7d9599", alpha=0.09, lw=0)
     response_rows = []
-    for trace, name, color, style in zip(traces, NAMES, COLORS, LINES):
+    for trace, (name, style) in zip(traces, KALINKA_PRESETS.items(), strict=True):
         spectrum = np.abs(np.fft.rfft(trace, FFT_SIZE))
         absolute = 20 * np.log10(np.maximum(spectrum, 1e-25))
         db = absolute - absolute[0]
@@ -141,12 +145,20 @@ def frequency_plot(out, traces, narrow):
         ax.plot(
             freq[baseband] / 1000,
             db[baseband],
-            color=color,
+            color=KALINKA_ACCENT,
             ls=style,
-            lw=1.35,
+            lw=0.945,
             label=name,
         )
-        ax.plot(cutoff / 1000, -3, marker="o", ms=4.5, mec=color, mfc=BACKGROUND, mew=1)
+        ax.plot(
+            cutoff / 1000,
+            -3,
+            marker="o",
+            ms=4.5,
+            mec=KALINKA_ACCENT,
+            mfc=BACKGROUND,
+            mew=0.7,
+        )
     ax.set(
         xlim=(0, 88.2),
         ylim=(-122, 8),
@@ -191,8 +203,8 @@ def impulse_plot(out, traces, narrow):
     top.plot(
         np.arange(len(samples)) * 1000 / PCM_RATE,
         samples,
-        color=COLORS[0],
-        lw=0.9,
+        color=KALINKA_ACCENT,
+        lw=0.63,
         marker=".",
         ms=3.2,
     )
@@ -205,10 +217,12 @@ def impulse_plot(out, traces, narrow):
         ylabel="Amplitude",
     )
     detail.set_title("Peak-normalised filters", loc="left", fontsize=8.7, pad=5.5)
-    for trace, name, color, style in zip(traces, NAMES, COLORS, LINES):
+    for trace, (name, style) in zip(traces, KALINKA_PRESETS.items(), strict=True):
         nonzero = np.flatnonzero(trace)
         t = (np.arange(len(trace)) - (nonzero[0] + nonzero[-1]) / 2) * 1e6 / BIT_RATE
-        detail.plot(t, trace / trace.max(), color=color, ls=style, lw=1.3, label=name)
+        detail.plot(
+            t, trace / trace.max(), color=KALINKA_ACCENT, ls=style, lw=0.91, label=name
+        )
     detail.set(
         xlim=(-45, 45),
         ylim=(-0.28, 1.1),
@@ -234,11 +248,10 @@ def music_plot(out, narrow):
     ax = graph(fig, [left, 0.205, 0.965 - left, 0.52])
     ax.axvspan(0, 20, color="#7d9599", alpha=0.09, lw=0)
     measurements = np.genfromtxt(out / "music-spectrum.csv", delimiter=",", names=True)
-    for field, label, color, style in zip(
-        ("kalinka", "saracon", "ffmpeg"),
-        ("Kalinka 30 kHz", "Saracon", "FFmpeg"),
-        COLORS,
-        LINES,
+    for field, label, (color, style) in (
+        ("kalinka", "Kalinka 30 kHz", (KALINKA_ACCENT, KALINKA_PRESETS["30 kHz"])),
+        ("saracon", "Saracon", ("#a6e548", (0, (2.4, 2.4)))),
+        ("ffmpeg", "FFmpeg", FFMPEG),
     ):
         key = field + "_dbfs_per_hz"
         if key in measurements.dtype.names:
@@ -247,7 +260,7 @@ def music_plot(out, narrow):
                 measurements[key],
                 color=color,
                 ls=style,
-                lw=1.4,
+                lw=0.98,
                 label=label,
             )
     ax.set(
@@ -270,11 +283,11 @@ def music_plot(out, narrow):
 
 def pi_response(out):
     series = (
-        ("kalinka-30k", "Kalinka 30 kHz", COLORS[0], "-"),
-        ("kalinka-wide", "Kalinka Wide", COLORS[2], LINES[2]),
-        ("mpd", "MPD", "#adbff0", (0, (7, 2, 1.5, 2))),
-        ("ffmpeg", "FFmpeg", COLORS[1], LINES[1]),
-        ("squeezelite", "Squeezelite", "#d9d9dc", (0, (2.5, 1.5))),
+        ("kalinka-30k", "Kalinka 30 kHz", (KALINKA_ACCENT, KALINKA_PRESETS["30 kHz"])),
+        ("kalinka-wide", "Kalinka Wide", (KALINKA_ACCENT, KALINKA_PRESETS["Wide"])),
+        ("mpd", "MPD", ("#ffc34d", (0, (2.4, 2.4)))),
+        ("ffmpeg", "FFmpeg", FFMPEG),
+        ("squeezelite", "Squeezelite", ("#37d6ff", (0, (8, 2, 2, 2)))),
     )
     with (out / "comparison.csv").open() as stream:
         cutoffs = {
@@ -283,7 +296,7 @@ def pi_response(out):
         }
     # Include 20 kHz exactly, then keep every measured bin through Nyquist.
     curves = {}
-    for key, _, _, _ in series:
+    for key, _, _ in series:
         path = out / (key + ".wav")
         f, db = frequency_response(path, *aligned_capture(path))
         band = (f > 20000) & (f <= PCM_RATE / 2)
@@ -325,9 +338,9 @@ def pi_response(out):
             (detail, "Upper-band detail"),
         ]:
             ax.set_title(title, loc="left", fontsize=8.7, pad=5)
-            for key, label, color, style in series:
+            for key, label, (color, style) in series:
                 ax.plot(
-                    hz / 1000, curves[key], label=label, color=color, ls=style, lw=1.3
+                    hz / 1000, curves[key], label=label, color=color, ls=style, lw=0.91
                 )
                 ax.plot(
                     cutoffs[key] / 1000,
@@ -336,7 +349,7 @@ def pi_response(out):
                     ms=4,
                     mec=color,
                     mfc=BACKGROUND,
-                    mew=0.9,
+                    mew=0.63,
                 )
         fig.legend(
             *overview.get_legend_handles_labels(),
