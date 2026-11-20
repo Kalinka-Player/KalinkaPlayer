@@ -35,5 +35,11 @@ def test_receiver_offers_only_the_a2dp_sink_profile():
     assert '"$receiver" --profile=a2dp-sink\n' in script
 
 
+def test_bluetoothd_exposes_the_cover_art_properties():
+    service = settings(PACKAGING / "bluetooth-dropin.conf", "Service")
+    starts = [value for key, value in service if key == "ExecStart"]
+    assert starts == ["", "/usr/libexec/bluetooth/bluetoothd --experimental"]
+
+
 def test_plugin_ships_no_unit_of_its_own_for_org_bluealsa():
     assert not list(PACKAGING.glob("*.service"))

@@ -87,14 +87,7 @@ Now Playing without restarting the audio stream. A new track clears the old
 cover immediately; late downloads cannot overwrite the new track. Paused
 players keep their cover, while stopped players and disconnects clear it.
 
-On the Core host, install **BlueZ and bluez-obexd 5.79 or newer**, plus
-`dbus-daemon`. The Debian plugin package includes the OBEX dependency; Fedora
-users need to install `bluez-obexd` alongside their optional Bluetooth backend.
-Enable `Experimental = true` in the existing `[General]` section of
-`/etc/bluetooth/main.conf`, restart `bluetooth.service` when no input is playing,
-then reconnect the phone. BlueZ currently marks the player's `ObexPort` and
-`Track.ImgHandle` properties as experimental. Both the phone and its media app
-must support sending cover art; text metadata alone does not imply support.
+On the Core host, install **BlueZ and bluez-obexd 5.79 or newer**, plus `dbus-daemon`; the plugin package depends on all three. BlueZ marks the player's `ObexPort` and `Track.ImgHandle` properties as experimental, so the package starts `bluetoothd` with `--experimental` through a `bluetooth.service` drop-in and restarts it once if the running daemon lacks the flag. Reconnect the phone after that restart. Both the phone and its media app must support sending cover art; text metadata alone does not imply support.
 
 Kalinka starts its own private D-Bus session and `obexd` as the Core user when
 a connected, authorized sender advertises a cover-art port. No desktop login

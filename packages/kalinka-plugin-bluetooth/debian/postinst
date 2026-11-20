@@ -8,6 +8,10 @@ if [ "$1" = configure ]; then
     systemctl disable bluealsa.service bluealsa-aplay.service >/dev/null 2>&1 || true
     if [ -d /run/systemd/system ]; then
         systemctl daemon-reload
+        # A running bluetoothd keeps the flags it started with.
+        bluetoothd=$(systemctl show -p MainPID --value bluetooth.service)
+        grep -qzx -- --experimental "/proc/$bluetoothd/cmdline" 2>/dev/null \
+            || systemctl try-restart bluetooth.service || true
         systemctl stop bluealsa-aplay.service || true
         if systemctl is-active --quiet kalinka.service; then
             systemctl restart bluealsa.service || true
