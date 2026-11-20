@@ -34,7 +34,21 @@ FFmpeg first decodes to float PCM at 352.8 kHz. Its standard swr filter then pro
 
 The per-platform release test uses a separate, locally generated quarter-second tone. [release_probe.cpp](release_probe.cpp) calls the test’s own impulse and tone helpers. [figures.py](figures.py) computes passband deviation and folded-band rejection from the captured samples and draws the article figures directly from the CSVs. Replot without rebuilding using `python3 benchmarks/dsp/decoder-comparison/figures.py ./dsd-results` and add `--music` for an existing music capture.
 
-## CPU timings on Pi 4, Pi 5 or Intel
+## Matched CPU and tone comparison on Raspberry Pi
+
+Run this on the target Pi. Install the dependencies above plus Debian’s `pkg-config libavcodec-dev libavutil-dev libswresample-dev libsamplerate0-dev`. The driver fetches MPD v0.24.4 from its upstream Git repository and builds the two pinned source trees. To use an existing MPD clone, pass `--mpd-repo /path/to/MPD`. No playback service or DAC is required.
+
+```sh
+python3 benchmarks/dsp/decoder-comparison/compare_pi.py --output ./pi-results
+```
+
+The [timing harness](decoder_cpu.cpp) reads the fixed DSF, duplicates the channel to stereo, and pre-packs identical MSB-first input for the four paths. Each call consumes 2,048 DSD bytes per channel and delivers 1,024 frames of 176.4 kHz interleaved float64 PCM once primed. Kalinka renders in float64, FFmpeg decodes to planar float32 and uses swr to reach the requested rate and format. MPD uses its upstream floating-point Dsd2Pcm engine, then libsamplerate at ratio 0.5 with SRC_SINC_FASTEST, the default type 2 when MPD is built with libsamplerate. Its float32 output is widened to the common format. CPU figures include this packing. The measurements exclude file parsing, disk I/O, playback scheduling, the DAC and FLAC encoding. [MPD converter](https://github.com/MusicPlayerDaemon/MPD/blob/72077d76f11ffba21f6705fe912f47b0b5dc1d6e/src/pcm/Dsd2Pcm.cxx) · [MPD resampler selection](https://github.com/MusicPlayerDaemon/MPD/blob/72077d76f11ffba21f6705fe912f47b0b5dc1d6e/src/pcm/ConfiguredResampler.cxx) · [MPD libsamplerate settings](https://github.com/MusicPlayerDaemon/MPD/blob/72077d76f11ffba21f6705fe912f47b0b5dc1d6e/src/pcm/LibsamplerateResampler.cxx)
+
+The process is pinned to logical core 2 (change with `--cpu`), with one FFmpeg decoder thread. Before each timed pass, 512 blocks prime the converter. Each pass measures process CPU time for 4,096 further blocks, exactly 4,194,304 PCM frames or 23.777 seconds of stereo audio. Twelve rounds rotate all four paths through a balanced order. The reported percentage is 100 × process CPU seconds / audio seconds. [Individual trials](pi-results/cpu-runs.csv) · [Medians, ranges and tone measurements](pi-results/comparison.csv) · [Board models, clocks, thermal readings and library versions](pi-results/environment.json)
+
+For the fidelity check, the driver renders the original fixture with each path, verifies that both copies of the channel agree and runs the same [bit-marker and 1 kHz analyser](measure.py) on the left channel. The analysis window is well inside the recording, away from unflushed end transients. The resulting WAVs preserve the precision each implementation delivered. `--analyse-only` reruns the analysis on a directory containing the saved `cpu-runs.csv` and four stereo `.f64` captures.
+
+## Historical Kalinka CPU timings on Pi 4, Pi 5 or Intel
 
 Add `--timing-runs 10` on Pi 4 or `--timing-runs 3` on Pi 5 and Intel. Run on the target machine with playback stopped and a stable clock. The runner builds the channel-pair benchmark from the revision that recorded the original table, runs all its kernels and reports the median of the channel-pair column across launches. A run on a different machine or at another clock gives a new timing. [Original measurements](https://github.com/Kalinka-Player/KalinkaPlayer/blob/57f1ae92ce45c0e5da90ca5a5ece9b26ae1b4447/benchmarks/dsp/results.md) · [Clock, thermal and run conditions](../RUNBOOK.md)
 
