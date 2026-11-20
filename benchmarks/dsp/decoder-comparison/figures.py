@@ -4,6 +4,7 @@ import argparse
 import csv
 import subprocess
 from pathlib import Path
+from xml.dom import minidom
 
 import matplotlib
 
@@ -77,13 +78,24 @@ def legend(fig, ax, y):
 def save(fig, out, name, title, narrow):
     if narrow:
         name += "-mobile"
+    svg = out / (name + ".svg")
     fig.savefig(
-        out / (name + ".svg"),
+        svg,
         metadata={"Title": title, "Date": None, "Creator": "Kalinka Player"},
     )
+    # Matplotlib sets the SVG viewport in print points. Size the standalone
+    # drawing in CSS pixels while preserving its viewBox and plot geometry.
+    width = 1024 if narrow else 1800
+    height = round(width * fig.get_figheight() / fig.get_figwidth())
+    with minidom.parse(str(svg)) as document:
+        document.documentElement.setAttribute("width", str(width))
+        document.documentElement.setAttribute("height", str(height))
+        svg.write_bytes(document.toxml(encoding="utf-8"))
     if not narrow:
         fig.savefig(
-            out / (name + ".png"), dpi=210, metadata={"Software": "Kalinka Player"}
+            out / (name + ".png"),
+            dpi=width / fig.get_figwidth(),
+            metadata={"Software": "Kalinka Player"},
         )
     plt.close(fig)
 
@@ -99,7 +111,7 @@ def pipeline(out):
     svg = out / "stages.svg"
     svg.write_text(template.format_map(counts))
     subprocess.run(
-        ["rsvg-convert", "--zoom", "3", "--output", out / "stages.png", svg],
+        ["rsvg-convert", "--output", out / "stages.png", svg],
         check=True,
     )
 
