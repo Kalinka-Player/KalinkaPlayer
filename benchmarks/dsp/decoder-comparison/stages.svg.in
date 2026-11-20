@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 345" width="448" height="345" role="img" aria-labelledby="t d">
+  <title id="t">DSD64 to PCM</title>
+  <desc id="d">The default filter uses three FIR stages and decimates by sixteen.</desc>
+  <rect x="0.5" y="0.5" width="447" height="344" rx="12" fill="#121315" stroke="#353439"/>
+  <text x="25" y="39" fill="#f3efea" font-family="Liberation Sans, Arial, sans-serif" font-size="26" font-weight="700" text-anchor="start">DSD64 to PCM</text>
+  <text x="25" y="65" fill="#c2bcbb" font-family="Liberation Sans, Arial, sans-serif" font-size="16" font-weight="400" text-anchor="start">30 kHz filter</text>
+  <text x="423" y="42" fill="#99dccc" font-family="Liberation Mono, monospace" font-size="20" font-weight="400" text-anchor="end">16:1</text>
+  <text x="423" y="64" fill="#aaa4a5" font-family="Liberation Sans, Arial, sans-serif" font-size="13" font-weight="400" text-anchor="end">decimation</text>
+  <path d="M25 82 L423 82" fill="none" stroke="#353439"/>
+  <path d="M45 137 L45 166" fill="none" stroke="#696567"/>
+  <path d="M42 161 l3 4 3 -4" fill="none" stroke="#aaa4a5" stroke-linecap="round" stroke-linejoin="round" stroke-width="1"/>
+  <rect x="28" y="103" width="34" height="34" rx="6" fill="#202023" stroke="#4a4549"/>
+  <g transform="translate(45 120)">
+    <path d="M-11 4 h4 v-8 h5 v8 h6 v-8 h6" fill="none" stroke="#99dccc" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.4"/>
+  </g>
+  <text x="78" y="119" fill="#f3efea" font-family="Liberation Sans, Arial, sans-serif" font-size="18" font-weight="700" text-anchor="start">One-bit input</text>
+  <text x="78" y="139" fill="#c2bcbb" font-family="Liberation Sans, Arial, sans-serif" font-size="14" font-weight="400" text-anchor="start">1 bit per sample</text>
+  <text x="423" y="122" fill="#99dccc" font-family="Liberation Mono, monospace" font-size="16" font-weight="400" text-anchor="end">2.8224 MHz</text>
+  <path d="M45 200 L45 229" fill="none" stroke="#696567"/>
+  <path d="M42 224 l3 4 3 -4" fill="none" stroke="#aaa4a5" stroke-linecap="round" stroke-linejoin="round" stroke-width="1"/>
+  <rect x="28" y="166" width="34" height="34" rx="6" fill="#202023" stroke="#4a4549"/>
+  <g transform="translate(45 183)">
+    <path d="M-10 -7 h20 v14 h-20 z M-10 0 h20 M-4 -7 v14 M3 -7 v14" fill="none" stroke="#99dccc" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.4"/>
+  </g>
+  <text x="78" y="182" fill="#f3efea" font-family="Liberation Sans, Arial, sans-serif" font-size="18" font-weight="700" text-anchor="start">Byte-table FIR</text>
+  <text x="78" y="202" fill="#c2bcbb" font-family="Liberation Sans, Arial, sans-serif" font-size="14" font-weight="400" text-anchor="start">{stage1_taps} taps  ·  divide by 8</text>
+  <text x="423" y="185" fill="#99dccc" font-family="Liberation Mono, monospace" font-size="16" font-weight="400" text-anchor="end">352.8 kHz</text>
+  <path d="M45 263 L45 292" fill="none" stroke="#696567"/>
+  <path d="M42 287 l3 4 3 -4" fill="none" stroke="#aaa4a5" stroke-linecap="round" stroke-linejoin="round" stroke-width="1"/>
+  <rect x="28" y="229" width="34" height="34" rx="6" fill="#202023" stroke="#4a4549"/>
+  <g transform="translate(45 246)">
+    <path d="M-11 6 h22 M-8 6 v-4 M-2 6 v-13 M4 6 v-7 M10 6 v-2" fill="none" stroke="#99dccc" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.4"/>
+  </g>
+  <text x="78" y="245" fill="#f3efea" font-family="Liberation Sans, Arial, sans-serif" font-size="18" font-weight="700" text-anchor="start">Half-band FIR</text>
+  <text x="78" y="265" fill="#c2bcbb" font-family="Liberation Sans, Arial, sans-serif" font-size="14" font-weight="400" text-anchor="start">{halfband_taps} taps  ·  divide by 2</text>
+  <text x="423" y="248" fill="#99dccc" font-family="Liberation Mono, monospace" font-size="16" font-weight="400" text-anchor="end">176.4 kHz</text>
+  <rect x="28" y="292" width="34" height="34" rx="6" fill="#202023" stroke="#4a4549"/>
+  <g transform="translate(45 309)">
+    <path d="M-11 0 C-7 -11 -3 -11 0 0 S7 11 11 0" fill="none" stroke="#f49aa2" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.4"/>
+  </g>
+  <text x="78" y="308" fill="#f3efea" font-family="Liberation Sans, Arial, sans-serif" font-size="18" font-weight="700" text-anchor="start">Output low-pass FIR</text>
+  <text x="78" y="328" fill="#c2bcbb" font-family="Liberation Sans, Arial, sans-serif" font-size="14" font-weight="400" text-anchor="start">{output_taps} taps  ·  float64 PCM</text>
+  <text x="423" y="311" fill="#f49aa2" font-family="Liberation Mono, monospace" font-size="16" font-weight="400" text-anchor="end">176.4 kHz</text>
+</svg>

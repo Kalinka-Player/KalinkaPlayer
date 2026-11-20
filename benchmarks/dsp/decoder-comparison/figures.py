@@ -2,6 +2,7 @@
 
 import argparse
 import csv
+import subprocess
 from pathlib import Path
 
 import matplotlib
@@ -89,60 +90,16 @@ def save(fig, out, name, title, narrow):
 def pipeline(out):
     with (out / "chains.csv").open() as stream:
         chain = next(row for row in csv.DictReader(stream) if row["preset"] == "30 kHz")
-    fig = plt.figure(figsize=(5.65, 1.84))
-    heading(fig, "DSD64 to PCM", "30 kHz preset  /  16:1")
-    ax = fig.add_axes([0.035, 0.075, 0.93, 0.75])
-    ax.set(xlim=(0, 1), ylim=(0, 1))
-    ax.axis("off")
-    ax.text(0.005, 0.835, "Input   2.8224 MHz · 1 bit", color=MUTED, fontsize=9)
-    starts = (0.013, 0.357, 0.701)
-    for i, (x, stage, field, operation, rate) in enumerate(
-        zip(
-            starts,
-            ("Byte-table FIR", "Half-band FIR", "Low-pass FIR"),
-            ("stage1_taps", "halfband_taps", "output_taps"),
-            ("÷8", "÷2", "1:1"),
-            ("352.8 kHz", "176.4 kHz", "176.4 kHz · float64"),
-        )
-    ):
-        ax.add_patch(
-            plt.Rectangle(
-                (x, 0.255), 0.279, 0.435, fill=False, edgecolor="#7f8587", lw=0.6
-            )
-        )
-        ax.text(x + 0.1395, 0.52, stage, ha="center", va="center", color=INK, size=9.8)
-        ax.text(
-            x + 0.1395,
-            0.365,
-            f"{chain[field]} taps  ·  {operation}",
-            ha="center",
-            va="center",
-            color=MUTED,
-            size=8.8,
-        )
-        ax.text(
-            x + 0.1395, 0.08, rate, ha="center", va="center", color=COLORS[1], size=8.8
-        )
-        if i < 2:
-            ax.annotate(
-                "",
-                xy=(starts[i + 1] - 0.004, 0.474),
-                xytext=(x + 0.282, 0.474),
-                arrowprops={
-                    "arrowstyle": "->",
-                    "mutation_scale": 7,
-                    "lw": 0.7,
-                    "color": MUTED,
-                    "shrinkA": 0,
-                    "shrinkB": 0,
-                },
-            )
-    save(
-        fig,
-        out,
-        "stages",
-        "Default DSD64 conversion stages, tap counts and rates",
-        False,
+    template = Path(__file__).with_name("stages.svg.in").read_text()
+    counts = {
+        name: int(chain[name])
+        for name in ("stage1_taps", "halfband_taps", "output_taps")
+    }
+    svg = out / "stages.svg"
+    svg.write_text(template.format_map(counts))
+    subprocess.run(
+        ["rsvg-convert", "--zoom", "3", "--output", out / "stages.png", svg],
+        check=True,
     )
 
 
