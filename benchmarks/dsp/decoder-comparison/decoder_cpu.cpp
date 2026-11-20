@@ -3,11 +3,16 @@
 // stereo interleaved float64, little-endian at 176400 Hz, on stdout.
 #include "dsp/dsd/DsdToPcm.h"
 #include "pcm/Dsd2Pcm.hxx"
+
+// MPD retained the original dsd2pcm.h include guard when it ported the API.
+#undef DSD2PCM_H_INCLUDED
+#include "dsd2pcm.h"
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/avutil.h>
 #include <libswresample/swresample.h>
 #include <samplerate.h>
+#include <soxr.h>
 }
 #include <algorithm>
 #include <array>
@@ -128,7 +133,7 @@ public:
     av_frame_free(&frame);
     avcodec_free_context(&decoder);
   }
-  int process(const AVPacket &p, Output &out) override {
+  const AVFrame &decode(const AVPacket &p) {
     require(avcodec_send_packet(decoder, &p) >= 0 &&
                 avcodec_receive_frame(decoder, frame) >= 0,
             "DSD packet decode failed");
@@ -136,6 +141,10 @@ public:
                 frame->nb_samples == p.size / channels &&
                 frame->sample_rate == 352800,
             "unexpected FFmpeg intermediate format");
+    return *frame;
+  }
+  int process(const AVPacket &p, Output &out) override {
+    decode(p);
     const uint8_t *in[]{frame->extended_data[0], frame->extended_data[1]};
     auto *dst = reinterpret_cast<uint8_t *>(out.data());
     int n = swr_convert(swr, &dst, capacity, in, frame->nb_samples);
@@ -174,6 +183,85 @@ public:
   }
 };
 
+class SqueezeDsd {
+  using Context = std::unique_ptr<dsd2pcm_ctx, decltype(&dsd2pcm_destroy)>;
+  std::array<Context, channels> context{
+      Context(dsd2pcm_init(), dsd2pcm_destroy),
+      Context(dsd2pcm_init(), dsd2pcm_destroy)};
+
+public:
+  std::array<std::array<float, block>, channels> plane{};
+  SqueezeDsd() { require(context[0] && context[1], "cannot start dsd2pcm"); }
+  void decode(const AVPacket &p) {
+    for (int c = 0; c < channels; ++c)
+      dsd2pcm_translate(context[c].get(), p.size / channels, p.data + c,
+                        channels, 0, plane[c].data(), 1);
+  }
+};
+
+class Squeezelite final : public Converter {
+  SqueezeDsd decoder;
+  soxr_t soxr = nullptr;
+  std::array<int32_t, channels * block> packed{};
+  std::array<int32_t, channels * capacity> converted{};
+
+public:
+  Squeezelite() {
+    auto io = soxr_io_spec(SOXR_INT32_I, SOXR_INT32_I);
+    io.scale = 1; // Squeezelite -u hL:0:0, 0 dB attenuation.
+    auto quality = soxr_quality_spec(SOXR_HQ | SOXR_LINEAR_PHASE, 0);
+    soxr_error_t error = nullptr;
+    soxr = soxr_create(352800, pcm, channels, &error, &io, &quality, nullptr);
+    require(soxr && !error, "cannot start libsoxr");
+  }
+  ~Squeezelite() override { soxr_delete(soxr); }
+  int process(const AVPacket &p, Output &out) override {
+    decoder.decode(p);
+    int n = p.size / channels;
+    for (int i = 0; i < n; ++i)
+      for (int c = 0; c < channels; ++c) {
+        // Squeezelite dsd.c multiplies in float, clips in double, then
+        // truncates.
+        double sample = decoder.plane[c][i] * 0x7fffffff;
+        packed[i * channels + c] =
+            static_cast<int32_t>(std::clamp(sample, -2147483648., 2147483647.));
+      }
+    size_t used = 0, made = 0;
+    auto error = soxr_process(soxr, packed.data(), n, &used, converted.data(),
+                              capacity, &made);
+    require(!error && used == size_t(n), "libsoxr failed to consume packet");
+    for (size_t i = 0; i < channels * made; ++i)
+      out[i] = converted[i] * 0x1p-31;
+    return made;
+  }
+};
+
+// Export the first channel of each 352.8 kHz decoder, before gain, integer
+// packing or rate conversion, so the shared filter can be compared directly.
+void native(const std::vector<Packet> &packets) {
+  SqueezeDsd squeeze;
+  FFmpeg ffmpeg;
+  MultiDsd2Pcm mpd;
+  std::array<float, block * channels> mpdPcm{};
+  std::array<float, block * 3> samples{};
+  for (auto &p : packets) {
+    int n = p->size / channels;
+    squeeze.decode(*p);
+    const auto &frame = ffmpeg.decode(*p);
+    auto ffPcm = reinterpret_cast<const float *>(frame.extended_data[0]);
+    mpd.Translate(channels, n, reinterpret_cast<const std::byte *>(p->data),
+                  mpdPcm.data());
+    for (int i = 0; i < n; ++i) {
+      samples[3 * i] = squeeze.plane[0][i];
+      samples[3 * i + 1] = ffPcm[i];
+      samples[3 * i + 2] = mpdPcm[channels * i];
+    }
+    std::cout.write(reinterpret_cast<char *>(samples.data()),
+                    n * 3 * sizeof(float));
+  }
+  require(bool(std::cout), "failed to write native PCM");
+}
+
 std::unique_ptr<Converter> create(const std::string &name) {
   if (name == "kalinka-30k")
     return std::make_unique<Kalinka>(DsdFilter::Cut30k);
@@ -183,6 +271,8 @@ std::unique_ptr<Converter> create(const std::string &name) {
     return std::make_unique<FFmpeg>();
   if (name == "mpd")
     return std::make_unique<Mpd>();
+  if (name == "squeezelite")
+    return std::make_unique<Squeezelite>();
   throw std::runtime_error("unknown converter");
 }
 
@@ -195,10 +285,14 @@ double seconds(clockid_t clock) {
 
 int main(int argc, char **argv) try {
   require(argc == 2 || argc == 3,
-          "usage: decoder-cpu time | render NAME < dsd64.dsf");
+          "usage: decoder-cpu time | native | render NAME < dsd64.dsf");
   auto packets = source();
   Output out{};
   std::string command = argv[1];
+  if (command == "native" && argc == 2) {
+    native(packets);
+    return 0;
+  }
   if (command == "render" && argc == 3) {
     auto decoder = create(argv[2]);
     for (auto &packet : packets) {
@@ -210,25 +304,24 @@ int main(int argc, char **argv) try {
     return 0;
   }
   require(command == "time" && argc == 2, "expected time or render NAME");
-  // Full blocks exclusively: deterministic input and exactly 1024 output
-  // frames per measured call after priming each converter.
+  // Full blocks exclusively. FFT resamplers may deliver frames in bursts.
   if (packets.back()->size != channels * block)
     packets.pop_back();
   require(!packets.empty(), "fixture too short");
-  const std::array<std::string, 4> names{"kalinka-30k", "ffmpeg", "mpd",
-                                         "kalinka-wide"};
-  // Balanced order, each path follows every other path once per four rounds.
-  constexpr int order[4][4] = {
-      {0, 1, 3, 2}, {1, 2, 0, 3}, {2, 3, 1, 0}, {3, 0, 2, 1}};
+  const std::array<std::string, 5> names{"kalinka-30k", "ffmpeg", "mpd",
+                                         "kalinka-wide", "squeezelite"};
+  // Five rotations and their reverses balance position and preceding path.
+  constexpr int order[] = {0, 1, 4, 2, 3};
   constexpr int warm = 512, measured = 4096;
   std::cerr << "FFmpeg " << av_version_info() << ", libavcodec "
             << avcodec_version() << ", swr " << swresample_version() << ", "
-            << src_get_version() << ", GCC " << __VERSION__ << "\n";
+            << src_get_version() << ", " << soxr_version() << ", GCC "
+            << __VERSION__ << "\n";
   std::cout << "round,position,converter,frames,cpu_seconds,wall_seconds,"
                "percent_one_core\n";
-  for (int round = 0; round < 12; ++round) {
-    for (int pos = 0; pos < 4; ++pos) {
-      auto &name = names[order[round % 4][pos]];
+  for (int round = 0; round < 10; ++round) {
+    for (int pos = 0; pos < 5; ++pos) {
+      auto &name = names[(order[round < 5 ? pos : 4 - pos] + round) % 5];
       auto decoder = create(name);
       for (int i = 0; i < warm; ++i)
         decoder->process(*packets[i % packets.size()], out);
@@ -239,7 +332,10 @@ int main(int argc, char **argv) try {
         frames += decoder->process(*packets[(warm + i) % packets.size()], out);
       cpu = seconds(CLOCK_PROCESS_CPUTIME_ID) - cpu;
       wall = seconds(CLOCK_MONOTONIC) - wall;
-      require(frames == size_t(measured) * block / 2 && std::isfinite(out[0]),
+      constexpr int expected = measured * block / 2;
+      require(std::abs(static_cast<int64_t>(frames) - expected) <=
+                      (name == "squeezelite" ? capacity : 0) &&
+                  std::isfinite(out[0]),
               "unexpected output frame count or level");
       std::cout << round + 1 << ',' << pos + 1 << ',' << name << ',' << frames
                 << ',' << std::fixed << std::setprecision(9) << cpu << ','

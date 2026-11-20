@@ -1,0 +1,5 @@
+board,reference,converter,rate_hz,frames,different_float32_words,max_abs_sample_difference
+Raspberry Pi 4,squeezelite,ffmpeg,352800,246032,63827,5.960464477539063e-08
+Raspberry Pi 4,squeezelite,mpd,352800,246032,0,0.0
+Raspberry Pi 5,squeezelite,ffmpeg,352800,246032,63827,5.960464477539063e-08
+Raspberry Pi 5,squeezelite,mpd,352800,246032,0,0.0
