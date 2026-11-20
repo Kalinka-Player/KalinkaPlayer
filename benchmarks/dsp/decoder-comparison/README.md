@@ -6,7 +6,7 @@ From a full KalinkaPlayer Git clone, run the following command on Linux. It buil
 python3 benchmarks/dsp/decoder-comparison/reproduce.py --output ./dsd-results
 ```
 
-Install Git, a C++23-capable g++ (GCC 14 or later), the Highway and GoogleTest development packages, FFmpeg, and Python 3.12+ with NumPy, SciPy and Matplotlib. On Debian 13 the packages include `g++ libhwy-dev libgtest-dev ffmpeg python3-numpy python3-scipy python3-matplotlib`. If the measurement scripts came from the article ZIP, pass `--repo /path/to/KalinkaPlayer`. Set `CPPFLAGS` and `LDFLAGS` if Highway is installed in a nonstandard location.
+Install Git, a C++23-capable g++ (GCC 14 or later), the Highway and GoogleTest development packages, FFmpeg, rsvg-convert for the pipeline PNG, and Python 3.12+ with NumPy, SciPy and Matplotlib. On Debian 13 the packages include `g++ libhwy-dev libgtest-dev ffmpeg librsvg2-bin python3-numpy python3-scipy python3-matplotlib`. If the measurement scripts came from the article ZIP, pass `--repo /path/to/KalinkaPlayer`. Set `CPPFLAGS` and `LDFLAGS` if Highway is installed in a nonstandard location.
 
 ## Sources and outputs
 
