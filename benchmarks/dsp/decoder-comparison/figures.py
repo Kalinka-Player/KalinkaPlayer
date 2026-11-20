@@ -257,59 +257,91 @@ def music_plot(out, narrow):
 
 
 def pi_response(out):
-    names = ("MPD", "FFmpeg", "Squeezelite")
-    curves = []
-    for name in names:
-        path = out / (name.lower() + ".wav")
-        f, db = frequency_response(path, *aligned_capture(path))
-        # Keep one FFT bin in eight (~86 Hz spacing) in the plotted range.
-        bins = np.flatnonzero((f >= 58000) & (f <= PCM_RATE / 2))[::8]
-        curves.append(db[bins])
-    hz = f[bins]
-    np.savetxt(
-        out / "resampler-response.csv",
-        np.column_stack((hz, *curves)),
-        delimiter=",",
-        fmt="%.8f",
-        comments="",
-        header="input_hz,mpd_db,ffmpeg_db,squeezelite_db",
+    series = (
+        ("kalinka-30k", "Kalinka 30 kHz", COLORS[0], "-"),
+        ("kalinka-wide", "Kalinka Wide", COLORS[2], LINES[2]),
+        ("mpd", "MPD", "#adbff0", (0, (7, 2, 1.5, 2))),
+        ("ffmpeg", "FFmpeg", COLORS[1], LINES[1]),
+        ("squeezelite", "Squeezelite", "#d9d9dc", (0, (2.5, 1.5))),
     )
     with (out / "comparison.csv").open() as stream:
         cutoffs = {
             row["converter"]: float(row["minus3db_hz"])
             for row in csv.DictReader(stream)
         }
+    # Include 20 kHz exactly, then keep every measured bin through Nyquist.
+    curves = {}
+    for key, _, _, _ in series:
+        path = out / (key + ".wav")
+        f, db = frequency_response(path, *aligned_capture(path))
+        band = (f > 20000) & (f <= PCM_RATE / 2)
+        hz = np.r_[20000, f[band]]
+        curves[key] = np.r_[np.interp(20000, f, db), db[band]]
+    np.savetxt(
+        out / "resampler-response.csv",
+        np.column_stack((hz, *curves.values())),
+        delimiter=",",
+        fmt="%.8f",
+        comments="",
+        header="input_hz," + ",".join(key.replace("-", "_") + "_db" for key in curves),
+    )
     for narrow in (False, True):
-        fig = plt.figure(figsize=(4.05 if narrow else 6.1, 2.72))
+        fig = plt.figure(figsize=(4.05, 4.65) if narrow else (6.5, 3.0))
         heading(fig, "Ultrasonic response", "DSD64  /  176.4 kHz")
-        left = 0.157 if narrow else 0.11
-        ax = graph(fig, [left, 0.205, 0.965 - left, 0.51])
-        ax.axhline(-3, color=MUTED, linewidth=0.6, linestyle=":")
-        for name, db, color, style in zip(names, curves, COLORS, LINES):
-            ax.plot(hz / 1000, db, label=name, color=color, ls=style, lw=1.45)
-            ax.plot(
-                cutoffs[name.lower()] / 1000,
-                -3,
-                marker="o",
-                ms=4.6,
-                mec=color,
-                mfc=BACKGROUND,
-                mew=1,
-            )
-        ax.set(
-            xlim=(58, 88.2),
-            ylim=(-18, 1),
-            xticks=[60, 65, 70, 75, 80, 85],
-            yticks=[0, -3, -6, -9, -12, -15, -18],
-            xlabel="Input frequency (kHz)",
+        if narrow:
+            overview = graph(fig, [0.17, 0.50, 0.79, 0.21])
+            detail = graph(fig, [0.17, 0.12, 0.79, 0.21])
+        else:
+            overview = graph(fig, [0.108, 0.19, 0.42, 0.48])
+            detail = graph(fig, [0.64, 0.19, 0.325, 0.48])
+        overview.set(
+            xlim=(20, 88.2),
+            ylim=(-100, 6),
+            xticks=[20, 40, 60, 80],
+            yticks=[0, -25, -50, -75, -100],
             ylabel="Gain relative to DC (dB)",
         )
-        legend(fig, ax, 0.81)
+        detail.set(
+            xlim=(67, 88.2),
+            ylim=(-12, 1),
+            xticks=[70, 75, 80, 85],
+            yticks=[0, -3, -6, -9, -12],
+        )
+        detail.axhline(-3, color=MUTED, linewidth=0.6, linestyle=":")
+        for ax, title in [
+            (overview, "Full ultrasonic band"),
+            (detail, "Upper-band detail"),
+        ]:
+            ax.set_title(title, loc="left", fontsize=8.7, pad=5)
+            for key, label, color, style in series:
+                ax.plot(
+                    hz / 1000, curves[key], label=label, color=color, ls=style, lw=1.3
+                )
+                ax.plot(
+                    cutoffs[key] / 1000,
+                    -3,
+                    marker="o",
+                    ms=4,
+                    mec=color,
+                    mfc=BACKGROUND,
+                    mew=0.9,
+                )
+        fig.legend(
+            *overview.get_legend_handles_labels(),
+            loc="center left",
+            bbox_to_anchor=(0.025, 0.834),
+            ncol=3 if narrow else 5,
+            fontsize=8.2,
+            handlelength=1.65,
+            handletextpad=0.42,
+            columnspacing=0.9,
+        )
+        fig.text(0.54, 0.035, "Input frequency (kHz)", ha="center")
         save(
             fig,
             out,
             "resampler-response",
-            "Measured ultrasonic response of the MPD, FFmpeg and Squeezelite conversion paths",
+            "Measured ultrasonic response of Kalinka 30 kHz, Kalinka Wide, MPD, FFmpeg and Squeezelite",
             narrow,
         )
 
@@ -321,7 +353,7 @@ def main():
     cli.add_argument(
         "--pi",
         action="store_true",
-        help="Plot the Pi resampler comparison from three WAVs and comparison.csv",
+        help="Plot all five Pi conversion paths from the captured WAVs and comparison.csv",
     )
     args = cli.parse_args()
     if args.pi:
