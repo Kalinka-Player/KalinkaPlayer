@@ -5,8 +5,8 @@ After=bluetooth.service
 Conflicts=bluealsa.service
 
 [Service]
-Type=dbus
-BusName=org.bluealsa
+# No BusName: systemd refuses two units watching one bus name, and bluealsa.service already claims org.bluealsa.
+Type=exec
 ExecStart=/usr/lib/kalinka-plugin-bluetooth/start-bluealsa
 Restart=on-failure
 RestartSec=2
