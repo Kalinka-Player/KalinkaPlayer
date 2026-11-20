@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 345" width="448" height="345" role="img" aria-labelledby="t d">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 345" width="1344" height="1035" role="img" aria-labelledby="t d">
   <title id="t">DSD64 to PCM</title>
   <desc id="d">The default filter uses three FIR stages and decimates by sixteen.</desc>
   <rect x="0.5" y="0.5" width="447" height="344" rx="12" fill="#121315" stroke="#353439"/>
