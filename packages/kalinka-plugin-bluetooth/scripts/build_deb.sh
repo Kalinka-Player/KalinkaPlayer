@@ -11,9 +11,12 @@ install -d pkgroot/opt/kalinka/wheels pkgroot/DEBIAN
 install -m 644 "$wheel" pkgroot/opt/kalinka/wheels/
 sed "s/@VERSION@/$version/g" debian/control.in > pkgroot/DEBIAN/control
 install -m 644 debian/triggers pkgroot/DEBIAN/triggers
-install -m 755 debian/postinst debian/prerm debian/postrm pkgroot/DEBIAN/
+install -m 755 debian/preinst debian/postinst debian/prerm debian/postrm pkgroot/DEBIAN/
 install -D -m 755 packaging/start-bluealsa pkgroot/usr/lib/kalinka-plugin-bluetooth/start-bluealsa
-install -D -m 644 packaging/kalinka-bluealsa.service pkgroot/usr/lib/systemd/system/kalinka-bluealsa.service
+install -D -m 644 packaging/bluealsa-dropin.conf \
+  pkgroot/usr/lib/systemd/system/bluealsa.service.d/kalinka-plugin-bluetooth.conf
+install -D -m 644 packaging/kalinka-dropin.conf \
+  pkgroot/usr/lib/systemd/system/kalinka.service.d/kalinka-plugin-bluetooth.conf
 install -D -m 644 packaging/kalinka-bluetooth-dbus.conf pkgroot/usr/share/dbus-1/system.d/kalinka-bluetooth.conf
 install -D -m 644 packaging/bluetooth.conf pkgroot/usr/lib/tmpfiles.d/kalinka-bluetooth.conf
 dpkg-deb --root-owner-group --build pkgroot "kalinka-plugin-bluetooth_${version}_all.deb"

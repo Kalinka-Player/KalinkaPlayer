@@ -56,7 +56,6 @@ install -D -m 755 scripts/media-mount %{buildroot}%{_prefix}/lib/kalinka/media-m
 install -D -m 644 rpm/kalinka-server.sysusers %{buildroot}%{_sysusersdir}/kalinka-server.conf
 
 install -D -m 755 ../kalinka-plugin-bluetooth/packaging/start-bluealsa %{buildroot}%{_prefix}/lib/kalinka-plugin-bluetooth/start-bluealsa
-install -D -m 644 ../kalinka-plugin-bluetooth/packaging/kalinka-bluealsa.service %{buildroot}%{_unitdir}/kalinka-bluealsa.service
 install -D -m 644 ../kalinka-plugin-bluetooth/packaging/kalinka-bluetooth-dbus.conf %{buildroot}%{_datadir}/dbus-1/system.d/kalinka-bluetooth.conf
 install -D -m 644 ../kalinka-plugin-bluetooth/packaging/bluetooth.conf %{buildroot}%{_tmpfilesdir}/kalinka-bluetooth.conf
 
@@ -67,7 +66,6 @@ install -D -m 644 ../kalinka-plugin-bluetooth/packaging/bluetooth.conf %{buildro
 %systemd_post kalinka.service
 %tmpfiles_create kalinka.conf
 %tmpfiles_create kalinka-bluetooth.conf
-%systemd_post kalinka-bluealsa.service
 systemctl reload dbus.service >/dev/null 2>&1 || :
 # Mirror the deb postinst: config dir locked to the service user, a world-
 # writable music drop-off (sticky, setgid — single-admin appliance), units
@@ -102,7 +100,6 @@ systemctl enable kalinka.service >/dev/null 2>&1 || :
 systemctl restart kalinka.service >/dev/null 2>&1 || :
 
 %preun
-%systemd_preun kalinka-bluealsa.service
 %systemd_preun kalinka.service kalinka-restart.path kalinka-journal-reader.socket kalinka-mounts.path
 
 %postun
@@ -130,7 +127,6 @@ systemctl restart kalinka.service >/dev/null 2>&1 || :
 
 %dir %{_prefix}/lib/kalinka-plugin-bluetooth
 %{_prefix}/lib/kalinka-plugin-bluetooth/start-bluealsa
-%{_unitdir}/kalinka-bluealsa.service
 %{_datadir}/dbus-1/system.d/kalinka-bluetooth.conf
 %{_tmpfilesdir}/kalinka-bluetooth.conf
 

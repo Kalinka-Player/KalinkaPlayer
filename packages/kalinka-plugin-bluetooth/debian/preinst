@@ -1,0 +1,6 @@
+#!/bin/sh
+set -e
+# Earlier releases ran the receiver from this unit, which would keep org.bluealsa from bluealsa.service.
+if [ "$1" = upgrade ] && [ -e /usr/lib/systemd/system/kalinka-bluealsa.service ]; then
+    systemctl disable --now kalinka-bluealsa.service >/dev/null 2>&1 || true
+fi
