@@ -1,0 +1,47 @@
+{
+  "kalinka_revision": "a043989071d8bbe391ba9ae3372dbedf91a8a705",
+  "mpd_revision": "72077d76f11ffba21f6705fe912f47b0b5dc1d6e",
+  "binary_sha256": "a9ace325339b9082d9a049470c23d29d5c45f331ccbabbdc90ab0012b03aa37f",
+  "cpu_affinity": 2,
+  "compiler_flags": "-O3 -DNDEBUG -std=c++23",
+  "input_dsf_sha256": "e21d0b464515f7a1a3b73ad3051900896e88a783d079cdc4c83e6d43cff1a5f0",
+  "boards": {
+    "Raspberry Pi 4": {
+      "model": "Raspberry Pi 4 Model B Rev 1.5",
+      "governor": "ondemand",
+      "kernel": "6.18.60+rpt-rpi-v8",
+      "max_khz": "1800000",
+      "before_throttled": "throttled=0xe0000",
+      "after_throttled": "throttled=0xe0000",
+      "versions": "FFmpeg 7.1.5-0+deb13u1+rpt2, libavcodec 4002661, swr 328548, libsamplerate-0.2.2 (c) 2002-2008 Erik de Castro Lopo, GCC 14.2.0",
+      "min_temperature_c": 70.601,
+      "max_temperature_c": 81.315,
+      "frequency_samples_khz": {
+        "1800000": 144
+      },
+      "throttle_status_samples": {
+        "throttled=0xe0000": 144
+      },
+      "sample_interval_seconds": 0.5
+    },
+    "Raspberry Pi 5": {
+      "model": "Raspberry Pi 5 Model B Rev 1.1",
+      "governor": "ondemand",
+      "kernel": "6.18.50+rpt-rpi-2712",
+      "max_khz": "2400000",
+      "before_throttled": "Can't open device file: /dev/vcio_gencmd",
+      "after_throttled": "Can't open device file: /dev/vcio_gencmd",
+      "versions": "FFmpeg 7.1.5-0+deb13u1+rpt2, libavcodec 4002661, swr 328548, libsamplerate-0.2.2 (c) 2002-2008 Erik de Castro Lopo, GCC 14.2.0",
+      "min_temperature_c": 56.75,
+      "max_temperature_c": 68.85,
+      "frequency_samples_khz": {
+        "1600000": 1,
+        "2400000": 61
+      },
+      "throttle_status_samples": {
+        "Can't open device file: /dev/vcio_gencmd": 62
+      },
+      "sample_interval_seconds": 0.5
+    }
+  }
+}
