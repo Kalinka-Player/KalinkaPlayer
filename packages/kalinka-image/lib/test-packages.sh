@@ -68,8 +68,6 @@ install_test_packages() {
   install -D -m 644 "$source/packages.tsv" "$ROOTFS/usr/share/kalinka/test-packages.tsv"
   configure_test_inputs "$ROOTFS" "$source/packages.tsv"
   in_chroot chown kalusr:kalusr /etc/kalinka/kalinka_conf.cfg
-  in_chroot systemctl disable bluealsa.service bluealsa-aplay.service 2>/dev/null || true
-  in_chroot systemctl enable kalinka-bluealsa.service
   rm -rf "$ROOTFS/tmp/kalinka-test-debs"
 }
 
@@ -89,7 +87,9 @@ verify_test_packages() {
   fi
   in_chroot /usr/bin/kalinka-renderer --help >/dev/null
   in_chroot /opt/kalinka/venv/bin/pip check
-  require_enabled multi-user.target kalinka-bluealsa.service
+  require_disabled bluetooth.target bluealsa.service bluealsa-aplay.service
+  [ -f "$ROOTFS/usr/lib/systemd/system/kalinka.service.d/kalinka-plugin-bluetooth.conf" ] \
+    || die 'the Bluetooth receiver does not start with Kalinka'
   [ -f "$ROOTFS/usr/share/kalinka-web/index.html" ] || die 'the test image has no browser UI'
   [ "$(in_chroot stat -c '%U %a' /etc/kalinka/kalinka_conf.cfg)" = 'kalusr 600' ] \
     || die 'the server cannot read its test settings'

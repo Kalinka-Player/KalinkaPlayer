@@ -18,25 +18,11 @@ remote renderers too; an older renderer reports an upgrade requirement.
 
 ## Setup
 
-Install `kalinka-plugin-bluetooth`, BlueZ and BlueALSA (Python 3.11+).
-Build the Debian package with `./scripts/build_deb.sh` from this package
-directory. The Fedora server RPM bundles the plugin and service files;
-install its optional BlueALSA backend before enabling the input. On Debian the plugin
-package depends on `bluez-alsa-utils` and installs a dedicated
-`kalinka-bluealsa.service`, configured for **A2DP sink** with SBC as the
-baseline codec. Disable any
-other BlueALSA instance on the same adapter. Do not run `bluealsa-aplay`:
-Kalinka's renderer owns playback. Desktop PipeWire/WirePlumber Bluetooth audio
-management must also be disabled for this adapter before using BlueALSA.
+Install `kalinka-plugin-bluetooth` on Debian (Python 3.11+); build it with `./scripts/build_deb.sh` from this package directory. Fedora has no BlueALSA package, so the input is Debian-only.
 
-After selecting this backend, run `sudo systemctl enable --now kalinka-bluealsa`.
-Package installation leaves that choice to the administrator so it does not
-stop a Bluetooth manager already in use.
+The package depends on `bluez-alsa-utils` and runs its `bluealsa.service` as the receiver, for **A2DP sink** only with SBC as the baseline codec. The receiver starts with `kalinka.service` and is bound to it, so it never accepts audio while Kalinka cannot admit or refuse a phone. The package turns off BlueALSA's own start at boot and `bluealsa-aplay.service`, which would play phones straight to the sound card; Kalinka's renderer owns playback. Desktop PipeWire/WirePlumber Bluetooth audio management must also be disabled for this adapter.
 
-If BlueZ or BlueALSA is unavailable, the plugin keeps the error in receiver
-status and logs it once while it persists. Reconnection backs off from two
-seconds to at most 30 seconds; starting the backend allows automatic recovery.
-Leave the plugin disabled on hosts that do not receive Bluetooth audio.
+If BlueZ or BlueALSA is unavailable, the plugin keeps the error in receiver status and logs it once while it persists. Reconnection backs off from two seconds to at most 30 seconds; starting the backend allows automatic recovery. The receiver runs whenever Kalinka does, even with the input disabled, so remove the package from hosts that do not receive Bluetooth audio.
 
 Enable Bluetooth in Configuration. Open **Connect** in the mobile source strip,
 or **Bluetooth** under Connect in the wide sidebar. Choose **Pair**, then select
@@ -101,14 +87,7 @@ Now Playing without restarting the audio stream. A new track clears the old
 cover immediately; late downloads cannot overwrite the new track. Paused
 players keep their cover, while stopped players and disconnects clear it.
 
-On the Core host, install **BlueZ and bluez-obexd 5.79 or newer**, plus
-`dbus-daemon`. The Debian plugin package includes the OBEX dependency; Fedora
-users need to install `bluez-obexd` alongside their optional Bluetooth backend.
-Enable `Experimental = true` in the existing `[General]` section of
-`/etc/bluetooth/main.conf`, restart `bluetooth.service` when no input is playing,
-then reconnect the phone. BlueZ currently marks the player's `ObexPort` and
-`Track.ImgHandle` properties as experimental. Both the phone and its media app
-must support sending cover art; text metadata alone does not imply support.
+On the Core host, install **BlueZ and bluez-obexd 5.79 or newer**, plus `dbus-daemon`; the plugin package depends on all three. BlueZ marks the player's `ObexPort` and `Track.ImgHandle` properties as experimental, so the package starts `bluetoothd` with `--experimental` through a `bluetooth.service` drop-in and restarts it once if the running daemon lacks the flag. Reconnect the phone after that restart. Both the phone and its media app must support sending cover art; text metadata alone does not imply support.
 
 Kalinka starts its own private D-Bus session and `obexd` as the Core user when
 a connected, authorized sender advertises a cover-art port. No desktop login

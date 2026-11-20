@@ -26,7 +26,7 @@ Sources are limited to four per plugin and 32 per Core, at most 16 MiB each. The
 
 ### Upgrade and verification limits
 
-Upgrade SDK/Core, all selected renderers, and the supervisor before enabling the new Bluetooth plugin or migrated AirPlay plugin. Native builds now require libsoxr headers and library. Debian Bluetooth packaging installs BlueALSA dependencies, service and D-Bus policy; the Fedora server bundle includes the optional plugin and service assets. Administrators explicitly enable `kalinka-bluealsa.service` after choosing the adapter's audio manager; package installation does not replace a running desktop Bluetooth manager.
+Upgrade SDK/Core, all selected renderers, and the supervisor before enabling the new Bluetooth plugin or migrated AirPlay plugin. Native builds now require libsoxr headers and library. Debian Bluetooth packaging installs BlueALSA dependencies, D-Bus policy and drop-ins that run Debian's `bluealsa.service` as an A2DP-sink-only receiver bound to `kalinka.service`. It turns off BlueALSA's own start at boot and `bluealsa-aplay.service`, so the receiver listens only while Kalinka runs. Fedora has no BlueALSA package, so the Bluetooth input is Debian-only.
 
 Automated coverage includes source retention/readiness/HTTP semantics, output moves between identical-capability renderers, legacy-renderer rejection, pause/reset/takeover, PCM layouts, malformed records, simulated two-hour clock drift, real private-bus D-Bus FD passing, pairing lease exclusion, and AirPlay subprocess/metadata/control tests. These are software checks; the ALSA null device and fake receivers cannot establish Pi CPU cost, audible quality, Bluetooth codec interoperability or actual end-to-end latency.
 

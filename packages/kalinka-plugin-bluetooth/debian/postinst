@@ -4,10 +4,20 @@ if [ "$1" = configure ]; then
     if command -v systemd-tmpfiles >/dev/null; then
         systemd-tmpfiles --create /usr/lib/tmpfiles.d/kalinka-bluetooth.conf
     fi
+    # Only kalinka.service may start the receiver; bluealsa-aplay would bypass Kalinka entirely.
+    systemctl disable bluealsa.service bluealsa-aplay.service >/dev/null 2>&1 || true
     if [ -d /run/systemd/system ]; then
         systemctl daemon-reload
-        # Do not replace an administrator's running Bluetooth audio manager.
-        # Enable/start this unit explicitly after choosing the BlueALSA backend.
+        # A running bluetoothd keeps the flags it started with.
+        bluetoothd=$(systemctl show -p MainPID --value bluetooth.service)
+        grep -qzx -- --experimental "/proc/$bluetoothd/cmdline" 2>/dev/null \
+            || systemctl try-restart bluetooth.service || true
+        systemctl stop bluealsa-aplay.service || true
+        if systemctl is-active --quiet kalinka.service; then
+            systemctl restart bluealsa.service || true
+        else
+            systemctl stop bluealsa.service || true
+        fi
         systemctl reload dbus.service || true
     fi
 fi
