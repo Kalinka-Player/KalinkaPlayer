@@ -6,11 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"kalinka/supervisor/internal/control"
+	"kalinka/supervisor/internal/machine"
 	"kalinka/supervisor/internal/protocol"
 	"kalinka/supervisor/internal/wifi"
 )
@@ -33,14 +33,12 @@ func TestSnapshotReportsTheWiFiCountry(t *testing.T) {
 		err       error
 		want      string
 	}{
-		{"set by setup", regulatory("DE"), nil, "DE"},
+		{"set before the supervisor started", regulatory("DE"), nil, "DE"},
 		{"the world domain", regulatory("00"), nil, ""},
-		{"iw failing keeps the last one read", "", protocol.Unavailable, "DE"},
+		{"iw failing", "", protocol.Unavailable, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := New(Options{}, nil)
-			s.run = answering(regulatory("DE"), nil)
-			s.readCountry(context.Background())
 			s.run = answering(tc.reg, tc.err)
 			s.readCountry(context.Background())
 			if got := s.Snapshot()["wifi_country"]; got != tc.want {
@@ -50,51 +48,12 @@ func TestSnapshotReportsTheWiFiCountry(t *testing.T) {
 	}
 }
 
-// radioless hides the backend's radio switch.
-type radioless struct{ wifi.Backend }
-
-func TestCountryWatchReadsAfterEachScanOrJoin(t *testing.T) {
-	ctx := context.Background()
-	b := &radioBackend{}
-	reads := 0
-	w := countryWatch{b, func(context.Context) { reads++ }}
-	_, _ = w.Scan(ctx, "GB")
-	_, _ = w.Scan(ctx, "")
-	_, _ = w.Join(ctx, protocol.Command{}, func(byte) {})
-	_, _ = w.Address(ctx)
-	if reads != 2 {
-		t.Fatalf("read the country %d times, want once after the scan under GB and once after the join", reads)
-	}
-	// A scan that ran out of time or a cancelled join may already have set the country.
-	ended, cancel := context.WithCancel(ctx)
-	cancel()
-	live := 0
-	w.read = func(c context.Context) {
-		if c.Err() == nil {
-			live++
-		}
-	}
-	_, _ = w.Scan(ended, "GB")
-	_, _ = w.Join(ended, protocol.Command{}, func(byte) {})
-	if live != 2 {
-		t.Fatalf("read the country with a live context %d times after an ended scan and join, want 2", live)
-	}
-	if err := w.EnableRadio(ctx); err != nil || b.enables.Load() != 1 {
-		t.Fatalf("the radio switch did not reach the backend: %v", err)
-	}
-	if err := (countryWatch{radioless{b}, w.read}).EnableRadio(ctx); err != protocol.Unavailable {
-		t.Fatalf("a backend without a radio switch answered %v", err)
-	}
-}
-
-func TestRunReadsTheWiFiCountryAtStartAndAfterAScan(t *testing.T) {
+func TestRunReadsTheWiFiCountryOnceThenTakesTheBackendsReports(t *testing.T) {
 	reads := make(chan string, 8)
-	var reg atomic.Value
-	reg.Store(regulatory("DE"))
 	s := New(Options{Test: true, TestAddress: "192.0.2.1", DisableBLE: true}, nil)
 	s.run = func(_ context.Context, _ time.Duration, name string, args ...string) (string, error) {
 		reads <- strings.Join(append([]string{name}, args...), " ")
-		return reg.Load().(string), nil
+		return regulatory("DE"), nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -105,18 +64,14 @@ func TestRunReadsTheWiFiCountryAtStartAndAfterAScan(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	read := func(when string) {
-		t.Helper()
-		select {
-		case command := <-reads:
-			if command != "iw reg get" {
-				t.Fatalf("ran %q %s", command, when)
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatalf("the country was not read %s", when)
+	select {
+	case command := <-reads:
+		if command != "iw reg get" {
+			t.Fatalf("ran %q at start", command)
 		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the country was not read at start")
 	}
-	read("at start")
 	waitFor(t, "setup did not start", func() bool { return s.Snapshot()["available"] == true })
 	for range 3 {
 		if got := s.Snapshot()["wifi_country"]; got != "DE" {
@@ -126,17 +81,20 @@ func TestRunReadsTheWiFiCountryAtStartAndAfterAScan(t *testing.T) {
 	if len(reads) != 0 {
 		t.Fatal("a status read ran iw")
 	}
-	reg.Store(regulatory("GB"))
 	if err := s.Open(); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Command("http:0123456789abcdef", []byte(`{"v":1,"op":"scan","country":"GB"}`)); err != nil {
 		t.Fatal(err)
 	}
-	read("after the scan")
 	waitFor(t, "the scan's country was not reported", func() bool { return s.Snapshot()["wifi_country"] == "GB" })
+	for deadline := time.Now().Add(5 * time.Second); s.Snapshot()["setup"].(machine.Snapshot).ScanState != "ready"; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the scan did not finish")
+		}
+	}
 	if len(reads) != 0 {
-		t.Fatalf("iw ran %d more times than the scan needed", len(reads))
+		t.Fatalf("iw ran %d times after start", len(reads))
 	}
 }
 

@@ -37,6 +37,17 @@ func Country(ctx context.Context, run Runner) (string, error) {
 	return "", nil
 }
 
+// countryHook holds what a backend's OnCountrySet was given.
+type countryHook struct{ set func(string) }
+
+func (h *countryHook) OnCountrySet(set func(string)) { h.set = set }
+
+func (h *countryHook) countrySet(country string) {
+	if h.set != nil {
+		h.set(country)
+	}
+}
+
 func globalCountry(reg string) string {
 	for _, line := range strings.Split(reg, "\n") {
 		if code, ok := strings.CutPrefix(line, "country "); ok {

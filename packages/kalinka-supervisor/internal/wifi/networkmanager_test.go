@@ -383,6 +383,42 @@ func TestNMKeepsHostCountry(t *testing.T) {
 		t.Fatalf("host country changed: %v", commands)
 	}
 }
+func TestNMReportsEachCountryTheRadioAccepts(t *testing.T) {
+	n := NewNetworkManager("wlan0", t.TempDir())
+	n.Poll = time.Millisecond
+	n.Timeout = time.Second
+	n.RegulatoryConf = filepath.Join(t.TempDir(), "kalinka-regdom.conf")
+	var commands [][]string
+	n.Run = recordCommands(&commands, nil)
+	var reported []string
+	n.OnCountrySet(func(country string) { reported = append(reported, country) })
+	n.Bus = &nmFake{t: t, state: 100, active: "/activePrevious", profiles: map[dbus.ObjectPath]settings{"/previous": {"connection": {"uuid": v("previous")}}}, states: []uint32{100}}
+	if err := n.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, country := range []string{"", "GB"} {
+		if _, err := n.Scan(ctx, country); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := protocol.Command{SSID: "home", Country: "DE", Password: protocol.NewSecret("dummy-passphrase")}
+	defer cmd.Password.Clear()
+	if _, err := n.Join(ctx, cmd, func(byte) {}); err != nil {
+		t.Fatal(err)
+	}
+	n.Run = recordCommands(&commands, protocol.Unavailable)
+	if _, err := n.Scan(ctx, "FR"); err != nil {
+		t.Fatal(err)
+	}
+	n.Run, n.RegulatoryConf = recordCommands(&commands, nil), ""
+	if _, err := n.Scan(ctx, "IE"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(reported, []string{"GB", "DE"}) {
+		t.Fatalf("reported %q, want the scan's GB and the join's DE, not the refused FR or a kept host's IE", reported)
+	}
+}
 func TestNMRecoveryJournalHasNoCredentials(t *testing.T) {
 	n := NewNetworkManager("wlan0", t.TempDir())
 	b := &nmFake{t: t, state: 100, active: "/activeCandidate", profiles: map[dbus.ObjectPath]settings{"/previous": {"connection": {"uuid": v("previous")}}, "/candidate": {"connection": {"uuid": v("candidate")}}}}

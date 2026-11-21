@@ -163,9 +163,15 @@ func TestDietPiJoinAndRollback(t *testing.T) {
 			}
 			d.AddressFor = func(context.Context, string) (string, error) { return "192.0.2.5", nil }
 			d.Poll = time.Millisecond
+			var reported []string
+			d.OnCountrySet(func(country string) { reported = append(reported, country) })
 			cmd := protocol.Command{SSID: "candidate", Country: "GB", Password: protocol.NewSecret("dummy-passphrase")}
 			defer cmd.Password.Clear()
 			ip, err := d.Join(ctx, cmd, func(byte) {})
+			// The radio keeps a country set before the join failed; a rollback restores files, not the radio.
+			if !slices.Equal(reported, []string{"GB"}) {
+				t.Fatalf("reported %q, want GB", reported)
+			}
 			mu.Lock()
 			all := strings.Join(calls, "\n")
 			mu.Unlock()
@@ -290,6 +296,56 @@ func TestRunnerRedactsErrorsAndBoundsCancellation(t *testing.T) {
 	_, err = Run(context.Background(), 20*time.Millisecond, "sh", "-c", "sleep 30 & wait")
 	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 2*time.Second {
 		t.Fatal("child process not cancelled")
+	}
+}
+
+func TestDietPiScanReportsEachCountryTheRadioAccepts(t *testing.T) {
+	d, err := NewDietPi("wlan0", t.TempDir(), t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var commands [][]string
+	refuse := ""
+	d.Run = func(_ context.Context, _ time.Duration, name string, args ...string) (string, error) {
+		commands = append(commands, append([]string{name}, args...))
+		if name == "iw" && args[0] == "reg" && args[2] == refuse {
+			return "", protocol.Unavailable
+		}
+		return "", nil
+	}
+	var reported []string
+	d.OnCountrySet(func(country string) { reported = append(reported, country) })
+	for _, country := range []string{"", "GB"} {
+		if _, err := d.Scan(context.Background(), country); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if want := [][]string{{"iw", "reg", "set", "GB"}, {"ip", "link", "set", "dev", "wlan0", "up"}, {"iw", "dev", "wlan0", "scan"}}; !slices.EqualFunc(commands[2:], want, slices.Equal) {
+		t.Fatalf("scan under GB ran %v, want %v", commands[2:], want)
+	}
+	refuse = "FR"
+	if _, err := d.Scan(context.Background(), "FR"); err == nil {
+		t.Fatal("a scan under a refused country succeeded")
+	}
+	if !slices.Equal(reported, []string{"GB"}) {
+		t.Fatalf("reported %q, want only GB", reported)
+	}
+}
+
+func TestDryRunReportsEachCountryItIsGiven(t *testing.T) {
+	d := &DryRun{IP: "192.0.2.10"}
+	var reported []string
+	d.OnCountrySet(func(country string) { reported = append(reported, country) })
+	for _, country := range []string{"", "GB"} {
+		if _, err := d.Scan(context.Background(), country); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := d.Join(context.Background(), protocol.Command{SSID: "home", Country: "DE"}, func(byte) {}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(reported, []string{"GB", "DE"}) {
+		t.Fatalf("reported %q, want GB then DE", reported)
 	}
 }
 
