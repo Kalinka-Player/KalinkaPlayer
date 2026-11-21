@@ -170,10 +170,11 @@ int main(int argc, char **argv) {
       std::make_shared<ConfigService>(
           std::vector<std::shared_ptr<ConfigContributor>>{
               name, player, player->dsdSettings(), player->bufferSettings(),
-              player->networkSettings()},
+              player->networkSettings(), player->dspSettings()},
           [capabilities] { capabilities->refresh(); }),
       std::make_shared<TriggerFileUpgradeService>(),
       capabilities,
+      std::make_shared<ProfileDownloads>(ioc),
   };
   ConnectionManager manager(ioc, identity, name->value(), services);
 

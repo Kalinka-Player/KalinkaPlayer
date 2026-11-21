@@ -71,7 +71,10 @@ def empty_state() -> dict:
 
 
 def enum_name(enum_type, value: int, prefix: str) -> str:
-    return enum_type.Name(value).removeprefix(prefix).lower()
+    try:
+        return enum_type.Name(value).removeprefix(prefix).lower()
+    except ValueError:
+        return "unknown"
 
 
 def source_to_dict(source) -> dict:

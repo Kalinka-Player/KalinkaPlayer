@@ -163,12 +163,36 @@ template <typename Queue> Factory twoThreads() {
   };
 }
 
+std::shared_ptr<peq::Profile> twentyBands() {
+  auto profile = std::make_shared<peq::Profile>();
+  for (unsigned i = 0; i < 20; ++i)
+    profile->shared.push_back(
+        {peq::Type::Peak, 30.0 * std::pow(1.35, i), i % 2 ? -3.0 : 2.0, 1.4});
+  return profile;
+}
+
+Factory peqCascade() {
+  return [](unsigned rate) {
+    auto cascade = peq::prepare({twentyBands(), 0}, rate, 2).pairs.front();
+    const auto input = harness::sine(997, rate, kBlock, 0.5);
+    return
+        [cascade, input, left = input, right = input,
+         state = std::array<peq::State, peq::kBands>{}](size_t frames) mutable {
+          std::copy_n(input.begin(), frames, left.begin());
+          std::copy_n(input.begin(), frames, right.begin());
+          peq::filter(cascade, state.data(), left.data(), right.data(), frames);
+        };
+  };
+}
+
 /// Software volume at @p gain on a device that keeps 24 bits of S32.
-Factory outputStage(double gain) {
-  return [gain](unsigned rate) {
+Factory outputStage(double gain, bool withPeq = false) {
+  return [gain, withPeq](unsigned rate) {
     auto stage = std::make_shared<OutputStage>(
         std::vector<StreamAudioFormat>{{rate, 2, 24, PCM32_LE, 0}}, 1);
     stage->setGain(gain);
+    if (withPeq)
+      stage->setRoomEq({twentyBands(), -6.0});
     stage->connectTo(std::make_shared<EndlessSource>(rate));
     auto out = std::make_shared<std::vector<uint8_t>>(kBlock * 8);
     return
@@ -221,6 +245,9 @@ std::vector<Kernel> kernels() {
       {"OutputStage at unity, S32 stereo", outputStage(1.0)},
       {"OutputStage at -6 dB, S32 stereo, dithered at 24 bits",
        outputStage(0.5)},
+      {"20 PEQ bands, planar float64 stereo", peqCascade()},
+      {"OutputStage with 20 PEQ bands, S32 stereo, dithered at 24 bits",
+       outputStage(1.0, true)},
       {"libsoxr VHQ, float64, 2x up, stereo",
        [](unsigned rate) {
          const auto io = soxr_io_spec(SOXR_FLOAT64_I, SOXR_FLOAT64_I);
@@ -266,19 +293,21 @@ double worstDb(const std::vector<double> &a, const std::vector<double> &b) {
 }
 } // namespace
 
-void runKernels() {
+void runKernels(std::string_view filter, std::span<const unsigned> rates) {
   std::printf("| Kernel |");
-  for (unsigned rate : kRates) {
+  for (unsigned rate : rates) {
     std::printf(" %.1f kHz |", rate / 1000.0);
   }
   std::printf("\n|---|");
-  for (size_t i = 0; i < std::size(kRates); ++i) {
+  for (size_t i = 0; i < rates.size(); ++i) {
     std::printf("---|");
   }
   std::printf("\n");
   for (const auto &kernel : kernels()) {
+    if (!std::string_view(kernel.name).contains(filter))
+      continue;
     std::printf("| %s |", kernel.name);
-    for (unsigned rate : kRates) {
+    for (unsigned rate : rates) {
       auto process = kernel.make(rate);
       const double ns = nsPerFrame(process, kBlock, std::max(rate, 200000u));
       std::printf(" %s |", cost(ns, rate).c_str());

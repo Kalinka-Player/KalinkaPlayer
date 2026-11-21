@@ -4,6 +4,7 @@
 
 #include "capabilities/CapabilityService.h"
 #include "config/ConfigService.h"
+#include "config/ProfileDownloads.h"
 #include "session/SessionManager.h"
 #include "upgrade/UpgradeService.h"
 
@@ -25,4 +26,5 @@ struct RendererServices {
   /// May be null; Hello then says nothing of capabilities, as an older
   /// renderer's does.
   std::shared_ptr<CapabilityService> capabilities;
+  std::shared_ptr<ProfileDownloads> profiles{};
 };

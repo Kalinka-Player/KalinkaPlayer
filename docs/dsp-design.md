@@ -2,12 +2,12 @@
 
 Status: Phase 1 is done: the DSP stage, the output stage's gain, dither,
 packing and fades, DSD to PCM with its settings, and the signal path and
-clipping the renderer reports (sections 5, 7, 8 and 14). Phase 2, the
-processing itself, is next. Every number is
-from a run named in [benchmarks/dsp/results.md](../benchmarks/dsp/results.md);
-the arm64 ones are from a Raspberry Pi 5. A Pi 4 has been measured for the
-DSD converter only; the [runbook](../benchmarks/dsp/RUNBOOK.md) is how its
-other numbers get made.
+clipping the renderer reports (sections 5, 7, 8 and 14). Phase 2 has begun.
+REW profiles, parametric EQ, preamp and bypass are implemented. FIR room
+correction and upsampling are still ahead. Measurements cover x86-64, the
+Raspberry Pi 5, and the DSD converter and production PEQ on the Raspberry Pi 4.
+See the [results](../benchmarks/dsp/results.md) and the
+[benchmark runbook](../benchmarks/dsp/RUNBOOK.md).
 
 The note covers the renderer in `packages/kalinka-renderer`. The rules in
 [`CLAUDE.md`](../CLAUDE.md) and
@@ -376,10 +376,21 @@ listed per rate. The renderer still validates everything:
 
 It gets a libFuzzer target like the existing ones.
 
+**Implemented for PEQ.** The Core imports REW Generic text into a version 1
+`DspProfile` with a shared curve or independent left and right curves. The
+profile digest identifies the immutable document. Import and selection are
+described in the [renderer guide](../packages/kalinka-renderer/README.md#rew-room-correction).
+The renderer checks each band, builds the coefficients for the PCM rate and
+verifies stability. It keeps filter history across compatible gapless joins.
+A profile change blends the old and new responses over 10 ms, or 25 ms when
+the preamp also changes. Each branch has its own headroom during the fade.
+The v1 PEQ document is limited to 16 KiB. CamillaDSP imports and FIR assets
+are future work.
+
 ## 7. Settings
 
-The protocol has no decimal field type, and preamp and filter frequencies
-need one. Review chose a new DECIMAL field type (section 13).
+Protocol v3 adds DECIMAL for the manual preamp. A v2 Core receives the field
+as STRING and the renderer validates the same bounds (section 13).
 
 Phase 1:
 
@@ -408,7 +419,7 @@ converts it otherwise; it never sends DoP. DSD chosen for conversion leaves
 the container as `DSD_RAW`, a format no device is opened in, so a DAC's own
 `DSD_U8` passes the converter untouched.
 
-Phase 2:
+Phase 2. The first five settings are implemented.
 
 | Path | Type | Values | Default | Apply cost | Importance |
 |---|---|---|---|---|---|
@@ -416,7 +427,7 @@ Phase 2:
 | `dsp.profile` | ENUM | profiles the Core has published to this renderer, and `none` | `none` | instant, crossfaded | simple |
 | `dsp.bypass` | BOOL | A/B | false | instant, crossfaded | simple |
 | `dsp.preamp` | ENUM | `auto`, `manual` | `auto` | instant, ramped | expert |
-| `dsp.preamp_db` | INT, hundredths | -3000 to 0 | 0 | instant, ramped | expert |
+| `dsp.preamp_db` | DECIMAL, dB | -30 to 0 | 0 | instant, ramped | expert |
 | `dsp.crossfeed` | ENUM | `off`, bs2b presets | `off` | instant, crossfaded | simple |
 | `dsp.upsampling` | ENUM | `off`, `power_of_two`, `fixed` | `off` | interrupts playback: the output format changes | expert |
 | `dsp.upsampling_rate` | ENUM | rates `probeOutput()` reports | highest | interrupts playback | expert |
@@ -535,13 +546,14 @@ the one before it. Pipelined, each section works a frame behind the one
 before it, so the ten are independent within a step. Each call fills and
 drains the pipeline, so the output lines up with the input, there is no
 added latency, and the state carries between calls as before. That takes
-26 % off on the A76 and 20 % on x86, written once in Highway. Phase 2's PEQ
-uses it.
+26 % off on the A76 and 20 % on x86, written once in Highway. Production
+PEQ uses this cascade on x86 and as the fallback for the AArch64 parallel
+kernel (section 11).
 
 Recommendation: Highway, as the system package, coded against Debian 13's
 1.2.0 API, with SVE disabled until a measured gain on hardware we have. The
-Pi 5 confirms it. The `simd` comparison has not run on a Pi 4's A72; the
-DSD converter's Highway kernels have (section 14). If Highway's NEON trails
+Pi 5 confirms it. The `simd` comparison has not run on a Pi 4's A72.
+The production PEQ and DSD Highway kernels have run there (sections 11 and 14). If Highway's NEON trails
 hand NEON there, the answer changes.
 
 ## 10. FFT: PFFFT, fetched at build time
@@ -647,7 +659,7 @@ are measured, scaled where noted.
 |---|---|---|---|---|
 | DSD to PCM, DSD64 to 176.4 kHz stereo | < 2 % | stage 1 tables ≤ 32 KB | 0.32 %, tables 20 KB | 1.00 % |
 | DSD to PCM, DSD256 to 352.8 kHz stereo | < 6 % | ≤ 32 KB tables, then by benchmark | 1.17 %, tables 14 KB | 3.60 % |
-| PEQ, 20 bands stereo at 192 kHz | < 1 % | coefficients only | 10 biquads 8.7 ns/frame, so 20 bands at 192 kHz would be about 0.33 % | 10 biquads 23.0 ns/frame pipelined, so about 0.9 % (1.2 % unpipelined) |
+| PEQ, 20 bands stereo at 192 kHz | < 1 % | coefficients only | 0.282 %, or 0.322 % including the output stage | 0.698 %, or 0.885 % including the output stage |
 | FIR, 65536 taps stereo at 44.1 kHz | < 3 % | spectra of every partition, float64 ≈ 4 MB stereo | FFT table (section 10) | FFT table (section 10) |
 | Upsampling 44.1 to 352.8 kHz | < 5 % | filter tables | libsoxr VHQ 2×: 10 ns per input frame, 0.04 % at 44.1 kHz | libsoxr VHQ 2×: 60 ns per input frame, 0.27 % at 44.1 kHz |
 | Gain, dither, pack | < 0.5 % | none | today's GainFade 2.5 ns/frame | today's GainFade 8.4 ns/frame |
@@ -656,11 +668,14 @@ are measured, scaled where noted.
 The DSD rows are measured on a Pi 4 too: 3.24 % and 11.0 %, over both
 budgets. Review accepted that (section 14).
 
-The PEQ is the one budget the Pi 5 already comes close to, so a Pi 4 at
-full load will likely be over it. That load means twenty active bands at 192 kHz. A band at
-0 dB passes audio unchanged, so the PEQ can leave it out of the cascade. The
-Phase 2 kernel starts from the pipelined cascade and is measured on a Pi 4
-before its budget is settled.
+On a Pi 4, twenty active stereo PEQ bands at 192 kHz take 49.72 ns per
+frame, or 0.955 % of one core, within the 1 % budget. Conversion, preamp,
+dither and packing bring the full output stage to 72.34 ns per frame
+(1.389 %). On the Pi 5 the same binary takes 36.33 ns for EQ alone and
+46.10 ns for the full stage. These are medians of three runs. The AArch64 renderer processes
+well-conditioned profiles as parallel pole pairs and uses the original
+cascade for repeated poles and other unsuitable profiles. Disabled and
+zero-gain bands are omitted. [Three-platform measurements](../benchmarks/dsp/results.md#production-peq-after-review-21-november-2026)
 
 ## 12. Harness
 

@@ -2,6 +2,8 @@
 
 #include "dsp/output/PlanarPcm.h"
 
+#include <spdlog/spdlog.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -24,6 +26,12 @@ size_t frameBytes(AudioSampleFormat format, unsigned channels) {
   return sampleSize(format) * channels;
 }
 
+unsigned outputChannels(const StreamAudioFormat &source) {
+  return source.channels == 1 && !isDsd(source.sampleFormat)
+             ? kPcmDeviceChannels
+             : source.channels;
+}
+
 bool convertedFromDsd(const StreamAudioFormat &decoded,
                       const StreamAudioFormat &source) {
   return isDsd(decoded.sampleFormat) && !isDsd(source.sampleFormat);
@@ -32,6 +40,18 @@ bool convertedFromDsd(const StreamAudioFormat &decoded,
 bool convertedFromDsd(const StreamInfo &info) {
   return info.decodedFormat &&
          convertedFromDsd(*info.decodedFormat, info.format);
+}
+
+peq::Plan prepareEq(const peq::Settings &settings,
+                    const StreamAudioFormat &source) {
+  auto plan =
+      isDsd(source.sampleFormat)
+          ? peq::Plan{}
+          : peq::prepare(settings, source.sampleRate, outputChannels(source));
+  if (!plan.applicable)
+    spdlog::warn("Skipping room profile '{}' at {} Hz", settings.profile->name,
+                 source.sampleRate);
+  return plan;
 }
 } // namespace
 
@@ -67,6 +87,7 @@ void OutputStage::disconnect(std::shared_ptr<AudioGraphOutputNode> source) {
   upstreamCallback = -1;
   upstream = nullptr;
   {
+    std::lock_guard prepareLock(eqPreparationMutex);
     std::lock_guard lock(presentedMutex);
     presented.reset();
   }
@@ -84,19 +105,18 @@ void OutputStage::onUpstreamState(const StreamState &state) {
   if (state.streamInfo && state.streamInfo->streamType == StreamType::FRAMES) {
     const StreamAudioFormat &source = state.streamInfo->format;
     const bool fromDsd = convertedFromDsd(*state.streamInfo);
-    std::lock_guard lock(presentedMutex);
-    if (!presented || presented->source != source ||
-        presented->fromDsd != fromDsd)
-      presented = Presented{
-          source, chooseOutput(source, device, kPcmDeviceChannels), fromDsd};
+    const auto now = present(source, fromDsd);
     auto &format = shown.streamInfo->format;
-    format.sampleFormat = presented->output.format;
+    format.sampleFormat = now.output.format;
+    format.channels = now.channels;
     // Quantised, float keeps the bits it is dithered at.
-    if (isFloat(source.sampleFormat) && !isFloat(format.sampleFormat)) {
-      format.bitsPerSample = presented->output.bits;
-      if (!shown.streamInfo->decodedFormat)
-        shown.streamInfo->decodedFormat = source;
-    }
+    const bool quantised =
+        isFloat(source.sampleFormat) && !isFloat(format.sampleFormat);
+    if (quantised)
+      format.bitsPerSample = now.output.bits;
+    if ((quantised || format.channels != source.channels) &&
+        !shown.streamInfo->decodedFormat)
+      shown.streamInfo->decodedFormat = source;
   }
   if (nothingPlays(state.state))
     settlePending = true;
@@ -112,18 +132,92 @@ void OutputStage::setGain(double linear) { target = linear; }
 
 void OutputStage::setDsdGain(double linear) { dsdGain = linear; }
 
+void OutputStage::discardRoomEq(std::optional<StreamId> id) {
+  std::lock_guard lock(presentedMutex);
+  if (!id || reading == id)
+    resetEq = true;
+}
+
+OutputStage::Presented OutputStage::present(const StreamAudioFormat &source,
+                                            bool fromDsd) {
+  const auto matches = [&](const std::optional<Presented> &p) {
+    return p && p->source == source && p->fromDsd == fromDsd;
+  };
+  if (const auto existing = current(); matches(existing))
+    return *existing;
+  std::lock_guard prepareLock(eqPreparationMutex);
+  const auto before = current();
+  if (matches(before))
+    return *before;
+  Presented next{source, chooseOutput(source, device, kPcmDeviceChannels),
+                 outputChannels(source), fromDsd};
+  const bool changed = !before || before->source != source;
+  const auto plan = changed ? prepareEq(eqSettings, source) : peq::Plan{};
+  std::lock_guard lock(presentedMutex);
+  if (changed) {
+    eqPlan = plan;
+    ++eqRevision;
+    resetEq = true;
+  }
+  presented = next;
+  return next;
+}
+
+void OutputStage::setRoomEq(peq::Settings settings) {
+  std::lock_guard prepareLock(eqPreparationMutex);
+  const auto now = current();
+  const auto plan = now ? prepareEq(settings, now->source) : peq::Plan{};
+  std::lock_guard lock(presentedMutex);
+  eqSettings = std::move(settings);
+  eqPlan = plan;
+  ++eqRevision;
+}
+
 std::vector<SignalStep>
 OutputStage::describe(const StreamAudioFormat &decoded,
                       const StreamAudioFormat &source,
                       const StreamAudioFormat &output) const {
   std::vector<SignalStep> steps;
+  if (isDsd(source.sampleFormat))
+    return steps;
+  peq::Settings settings;
+  bool active;
+  double preampDb;
+  bool prepared;
+  {
+    std::lock_guard lock(presentedMutex);
+    settings = eqSettings;
+    prepared = presented && presented->source.sampleRate == source.sampleRate &&
+               presented->channels == outputChannels(source) &&
+               !isDsd(presented->source.sampleFormat);
+    active = eqPlan.active;
+    preampDb = eqPlan.preampDb;
+  }
+  if (!prepared) {
+    const auto plan =
+        peq::prepare(settings, source.sampleRate, outputChannels(source));
+    active = plan.active;
+    preampDb = plan.preampDb;
+  }
+  if (active)
+    steps.push_back(
+        {signal_step::kPeq, "Parametric EQ", settings.profile->name});
+  if (preampDb != 0)
+    steps.push_back(
+        {signal_step::kPreamp, "Preamp", std::format("{:+.2f} dB", preampDb)});
   const double gain = dsdGain.load();
   if (convertedFromDsd(decoded, source) && gain != 1.0)
     steps.push_back({signal_step::kDsdGain, "DSD gain",
                      std::format("{:+.1f} dB", 20 * std::log10(gain))});
-  if (isFloat(source.sampleFormat) && !isFloat(output.sampleFormat))
-    steps.push_back({signal_step::kDither, "Dither",
-                     std::format("TPDF at {} bits", output.bitsPerSample)});
+  if ((isFloat(source.sampleFormat) || active || preampDb != 0) &&
+      !isFloat(output.sampleFormat)) {
+    const auto choice = chooseOutput(source, device, kPcmDeviceChannels);
+    const auto bits = choice.format == output.sampleFormat
+                          ? choice.bits
+                          : output.bitsPerSample;
+    steps.push_back(
+        {signal_step::kDither, "Dither", std::format("TPDF at {} bits", bits)});
+  }
   return steps;
 }
 
@@ -140,8 +234,14 @@ bool OutputStage::silent() const {
 
 void OutputStage::follow(const Presented &now) {
   const unsigned rate = now.source.sampleRate;
+  const bool reset = settlePending.exchange(false);
+  const bool clearHistory = std::exchange(resetEq, false) || reset;
+  if (clearHistory || (eqRevision != appliedRevision && !eq.transitioning())) {
+    eq.follow(eqPlan, rate, clearHistory);
+    appliedRevision = eqRevision;
+  }
   const double gain = target.load() * (now.fromDsd ? dsdGain.load() : 1.0);
-  if (settlePending.exchange(false))
+  if (reset)
     ramp.settle(gain);
   else
     ramp.aim(gain, rate);
@@ -150,19 +250,16 @@ void OutputStage::follow(const Presented &now) {
   fade.aim(fadeTarget, rate);
 }
 
-GainRamp::Span OutputStage::take(size_t frames) {
-  for (const GainRamp *turning : {&ramp, &fade})
-    if (turning->left())
-      frames = std::min(frames, turning->left());
-  const auto volume = ramp.take(frames);
-  const auto faded = fade.take(frames);
-  return {volume.from * faded.from, volume.to * faded.to, frames};
-}
-
 size_t OutputStage::read(void *data, size_t size) {
   if (!upstream)
     return 0;
-  const auto now = current();
+  std::optional<Presented> now;
+  {
+    std::lock_guard lock(presentedMutex);
+    now = presented;
+    if (now && !isDsd(now->source.sampleFormat))
+      follow(*now);
+  }
   if (!now)
     return upstream->read(data, size);
   const StreamAudioFormat &source = now->source;
@@ -175,13 +272,19 @@ size_t OutputStage::read(void *data, size_t size) {
   if (source.channels == 0 || source.channels > kPlanarChannels)
     throw std::runtime_error("No output stage for " +
                              std::to_string(source.channels) + " channels");
-  follow(*now);
-  if (ramp.holding(1.0) && fade.holding(1.0) &&
-      now->output.format == source.sampleFormat)
-    return upstream->read(data, size);
+  if (eq.bypassed() && ramp.holding(1.0) && fade.holding(1.0) &&
+      now->output.format == source.sampleFormat) {
+    if (source.channels == now->channels)
+      return upstream->read(data, size);
+    const auto width = sampleSize(source.sampleFormat);
+    const auto frames =
+        upstream->read(data, size / (now->channels * width) * width) / width;
+    expandMono(static_cast<uint8_t *>(data), frames, now->channels, width);
+    return frames * now->channels * width;
+  }
 
   const size_t inFrame = frameBytes(source.sampleFormat, source.channels);
-  const size_t outFrame = frameBytes(now->output.format, source.channels);
+  const size_t outFrame = frameBytes(now->output.format, now->channels);
   auto *out = static_cast<uint8_t *>(data);
   const size_t wanted = size / outFrame;
   size_t done = 0;
@@ -190,6 +293,9 @@ size_t OutputStage::read(void *data, size_t size) {
     const size_t got = upstream->read(input.data(), ask * inFrame) / inFrame;
     if (got == 0)
       break;
+    if (source.channels != now->channels)
+      expandMono(input.data(), got, now->channels,
+                 sampleSize(source.sampleFormat));
     produce(*now, input.data(), got, out + done * outFrame);
     done += got;
     if (got < ask)
@@ -202,16 +308,28 @@ void OutputStage::produce(const Presented &now, const uint8_t *in,
                           size_t frames, uint8_t *out) {
   const AudioSampleFormat from = now.source.sampleFormat;
   const AudioSampleFormat to = now.output.format;
-  const unsigned channels = now.source.channels;
+  const unsigned channels = now.channels;
   const size_t inFrame = frameBytes(from, channels);
   const size_t outFrame = frameBytes(to, channels);
   // Integer to a wider container is exact; float to integer is quantised.
   const bool exact = from == to || (!isFloat(from) && !isFloat(to));
   for (size_t at = 0; at < frames;) {
-    const auto span = take(frames - at);
+    size_t n = eq.span(frames - at);
+    for (const auto *r : {&ramp, &fade})
+      if (r->left())
+        n = std::min(n, r->left());
+    const auto volume = ramp.take(n), faded = fade.take(n),
+               preamp = eq.takePreamp(n);
+    const int movingRamps = (volume.from != volume.to) +
+                            (faded.from != faded.to) +
+                            (preamp.from != preamp.to);
+    const bool overlapping = movingRamps > 1;
+    GainRamp::Span span{volume.from * faded.from * preamp.from,
+                        volume.to * faded.to * preamp.to, n};
     const uint8_t *source = in + at * inFrame;
     uint8_t *dest = out + at * outFrame;
-    if (span.from == 1.0 && span.to == 1.0 && exact) {
+    if (!overlapping && !eq.filtering() && span.from == 1.0 && span.to == 1.0 &&
+        exact) {
       if (from == to)
         std::memcpy(dest, source, span.frames * inFrame);
       else
@@ -219,6 +337,20 @@ void OutputStage::produce(const Presented &now, const uint8_t *in,
                             span.frames * outFrame);
     } else {
       readPlanar(source, from, channels, span.frames, planar.planes());
+      if (eq.filtering())
+        eq.process(planar.planes(), channels, span.frames);
+      // The product of simultaneous linear ramps is curved between the
+      // endpoints.
+      if (overlapping) {
+        for (size_t i = 0; i < n; ++i) {
+          const double t = double(i + 1) / double(n);
+          const double gain = std::lerp(faded.from, faded.to, t) *
+                              std::lerp(preamp.from, preamp.to, t);
+          for (unsigned ch = 0; ch < channels; ++ch)
+            planar.planes()[ch][i] *= gain;
+        }
+        span = volume;
+      }
       quantiser.pack(planar.planes(), channels, span.frames, span, to,
                      now.output.bits, dest);
     }
@@ -240,7 +372,7 @@ void OutputStage::produce(const Presented &now, const uint8_t *in,
 size_t OutputStage::toSource(const Presented &now, size_t bytes) const {
   const unsigned channels = now.source.channels;
   const size_t inFrame = frameBytes(now.source.sampleFormat, channels);
-  const size_t outFrame = frameBytes(now.output.format, channels);
+  const size_t outFrame = frameBytes(now.output.format, now.channels);
   if (inFrame == outFrame)
     return bytes;
   return (bytes + outFrame - 1) / outFrame * inFrame;
@@ -249,7 +381,7 @@ size_t OutputStage::toSource(const Presented &now, size_t bytes) const {
 size_t OutputStage::toOutput(const Presented &now, size_t bytes) const {
   const unsigned channels = now.source.channels;
   const size_t inFrame = frameBytes(now.source.sampleFormat, channels);
-  const size_t outFrame = frameBytes(now.output.format, channels);
+  const size_t outFrame = frameBytes(now.output.format, now.channels);
   if (inFrame == outFrame)
     return bytes;
   return bytes / inFrame * outFrame;

@@ -16,6 +16,9 @@
 struct StreamState;
 class AudioStreamSwitcher;
 class DspStage;
+namespace peq {
+struct Settings;
+}
 class OutputStage;
 struct StreamNodes;
 class StateMonitor;
@@ -115,6 +118,8 @@ public:
   /// @p setting names it: what plays now ramps to it.
   /// @throws std::invalid_argument for a value the setting does not have.
   void setDsdGain(const std::string &setting);
+  /// Applies room correction on the running graph.
+  void setRoomEq(peq::Settings settings);
 
   /// Whether @p key is read as each stream is appended (those under `input.`
   /// and `decoder.`), rather than once, when the output is built.

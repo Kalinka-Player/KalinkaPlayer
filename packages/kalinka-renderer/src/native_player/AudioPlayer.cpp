@@ -466,6 +466,7 @@ void AudioPlayer::remove(StreamId id) {
                              [id](const StreamNodes &s) { return s.id == id; });
   if (stream != streamNodesList.end()) {
     audioEmitter->cut(id);
+    outputStage->discardRoomEq(id);
     streamSwitcher->disconnect(stream->nodeChain.back());
     dspStage->discard(id);
     streamNodesList.erase(stream);
@@ -477,12 +478,14 @@ void AudioPlayer::remove(StreamId id) {
 void AudioPlayer::clearAll() {
   disconnectAllStreams();
   dspStage->discardAll();
+  outputStage->discardRoomEq();
 }
 
 void AudioPlayer::stop() {
   audioEmitter->disconnect(outputStage);
   disconnectAllStreams();
   dspStage->discardAll();
+  outputStage->discardRoomEq();
 }
 
 void AudioPlayer::pause() { audioEmitter->pause(true); }
@@ -592,6 +595,10 @@ SignalPath AudioPlayer::signalPath(const StreamInfo &heard) const {
       outputStage->describe(decoded, dspStage->handsOn(decoded), heard.format);
   path.steps.insert(path.steps.end(), added.begin(), added.end());
   return path;
+}
+
+void AudioPlayer::setRoomEq(peq::Settings settings) {
+  outputStage->setRoomEq(std::move(settings));
 }
 
 void AudioPlayer::setDsdGain(const std::string &setting) {

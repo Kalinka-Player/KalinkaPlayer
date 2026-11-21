@@ -139,15 +139,32 @@ void ProtocolSession::onMessage(const std::string &data) {
     handleCommand(env);
     break;
   case renderer_pb::Envelope::kConfigRequest: {
+    if (!welcomed_)
+      break;
     renderer_pb::Envelope out;
-    services_.config->fillSnapshot(*out.mutable_config_snapshot());
+    services_.config->fillSnapshot(*out.mutable_config_snapshot(),
+                                   version_ >= 3);
     sendReply(out, env.message_id());
     break;
   }
   case renderer_pb::Envelope::kConfigUpdate: {
-    renderer_pb::Envelope out;
-    services_.config->apply(env.config_update(), *out.mutable_config_result());
-    sendReply(out, env.message_id());
+    if (!welcomed_)
+      break;
+    auto reply = [weak = weak_from_this(), generation = connectionGeneration_,
+                  message = env.message_id(), update = env.config_update()](
+                     const std::string &id, const std::string &error) {
+      auto self = weak.lock();
+      if (!self || self->connectionGeneration_ != generation)
+        return;
+      renderer_pb::Envelope out;
+      self->services_.config->apply(update, *out.mutable_config_result(), id,
+                                    error, self->version_ >= 3);
+      self->sendReply(out, message);
+    };
+    if (services_.profiles)
+      services_.profiles->prepare(env.config_update(), std::move(reply));
+    else
+      reply("", "");
     break;
   }
   case renderer_pb::Envelope::kUpgrade:
@@ -169,6 +186,7 @@ void ProtocolSession::handleWelcome(const renderer_pb::Welcome &welcome) {
     return;
   }
   welcomed_ = true;
+  version_ = welcome.protocol_version();
   serverId_ = welcome.server_id();
   coreSpeaksOurProtocol_ =
       rendererProtocolSupported(static_cast<int>(welcome.protocol_version()));
@@ -343,6 +361,7 @@ void ProtocolSession::detachSession() {
 }
 
 void ProtocolSession::onDown() {
+  ++connectionGeneration_;
   detachSession();
   welcomed_ = false;
   serverId_.clear();

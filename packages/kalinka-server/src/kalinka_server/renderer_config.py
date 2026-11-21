@@ -49,6 +49,12 @@ def _widget(field) -> str:
 
 
 def _range(field) -> Optional[dict]:
+    if field.HasField("decimal_range"):
+        return {
+            "min": field.decimal_range.min,
+            "max": field.decimal_range.max,
+            "step": field.decimal_range.step,
+        }
     if not field.HasField("range"):
         return None
     return {

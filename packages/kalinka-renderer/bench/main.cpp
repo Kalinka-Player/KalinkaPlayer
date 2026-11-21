@@ -41,7 +41,7 @@ std::string cpuModel() {
 
 int usage() {
   std::fputs(
-      "usage: kalinka-dsp-bench kernels | simd | dsd | fixtures | join\n"
+      "usage: kalinka-dsp-bench kernels [NAME [RATE]] | simd | dsd | fixtures | join\n"
       "       kalinka-dsp-bench playback [--delay-ms N] FILE...\n"
       "       kalinka-dsp-bench make-wav FILE RATE BITS SECONDS\n",
       stderr);
@@ -99,7 +99,18 @@ int main(int argc, char **argv) {
   }
   std::printf("%s\n", bench::machine().c_str());
   if (command == "kernels") {
-    bench::runKernels();
+    if (argc > 4)
+      return bench::usage();
+    std::span<const unsigned> rates = bench::kRates;
+    if (argc == 4) {
+      const auto rate = std::ranges::find_if(rates, [&](unsigned hz) {
+        return std::to_string(hz) == argv[3];
+      });
+      if (rate == rates.end())
+        return bench::usage();
+      rates = rates.subspan(rate - rates.begin(), 1);
+    }
+    bench::runKernels(argc >= 3 ? argv[2] : "", rates);
   } else if (command == "simd") {
     bench::runSimd();
   } else if (command == "dsd") {

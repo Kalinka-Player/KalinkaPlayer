@@ -4,7 +4,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace bench {
@@ -14,21 +16,22 @@ inline constexpr unsigned kRates[] = {44100, 96000, 192000, 352800};
 
 /**
  * @brief Median nanoseconds per frame of calling @p process on @p block
- * frames at a time, @p frames frames per repeat, after one warm-up repeat.
+ * frames at a time, at least @p frames per repeat, after one warm-up repeat.
  */
 template <typename Process>
 double nsPerFrame(Process &&process, size_t block, size_t frames,
                   int repeats = 7) {
   std::vector<double> samples;
+  const size_t blocks = frames / block + (frames % block != 0);
   for (int r = 0; r <= repeats; ++r) {
     const auto start = std::chrono::steady_clock::now();
-    for (size_t done = 0; done < frames; done += block) {
+    for (size_t i = 0; i < blocks; ++i) {
       process(block);
     }
     const std::chrono::duration<double, std::nano> elapsed =
         std::chrono::steady_clock::now() - start;
     if (r > 0) {
-      samples.push_back(elapsed.count() / double(frames));
+      samples.push_back(elapsed.count() / double(blocks * block));
     }
   }
   std::ranges::sort(samples);
@@ -46,8 +49,8 @@ std::string machine();
 /// "12.3 ns (0.54 %)": per frame, and of one core in real time at @p rate.
 std::string cost(double ns, unsigned rate);
 
-/// Each audio kernel's cost at every rate in kRates, as a Markdown table.
-void runKernels();
+/// Cost at the selected rates for kernels whose names contain the filter.
+void runKernels(std::string_view filter, std::span<const unsigned> rates);
 /// The SIMD mechanisms side by side, each null-tested against scalar.
 void runSimd();
 /// DSD-to-PCM conversion's cost, per conversion and kernel.

@@ -265,7 +265,7 @@ TEST(OutputStage, TheDsdGainMultipliesTheVolume) {
     ASSERT_LE(std::abs(double(v / 256) - double(1 << 22)), 1.5);
 }
 
-TEST(OutputStage, ItDescribesTheDsdGainAndTheDither) {
+TEST(OutputStage, ItDescribesTheAppliedFiltersGainsAndDither) {
   OutputStage stage(k24In32, 1);
   const StreamAudioFormat converted{176400, 2, 64, PCM_FLOAT64_LE, 0};
   const StreamAudioFormat s32{176400, 2, 24, PCM32_LE, 0};
@@ -293,6 +293,17 @@ TEST(OutputStage, ItDescribesTheDsdGainAndTheDither) {
   EXPECT_EQ(kinds(kRawDsd, converted, s32),
             std::vector<std::string>{"dither: TPDF at 24 bits"})
       << "no gain at 0 dB";
+  auto profile = std::make_shared<peq::Profile>();
+  profile->name = "Room";
+  profile->right.push_back({peq::Type::Peak, 500, 3.5, 1});
+  stage.setRoomEq({profile, std::nullopt});
+  const auto mono = pcm(PCM16_LE, 1);
+  EXPECT_EQ(kinds(mono, mono, pcm(PCM32_LE)),
+            (std::vector<std::string>{"peq: Room", "preamp: -3.50 dB",
+                                      "dither: TPDF at 24 bits"}));
+  EXPECT_TRUE(kinds(kRawDsd, kRawDsd, kRawDsd).empty());
+  stage.setRoomEq({});
+  EXPECT_TRUE(kinds(mono, mono, pcm(PCM32_LE)).empty());
 }
 
 TEST(OutputStage, ClippingIsPostedWithTheCountSinceTheSourceBegan) {
@@ -353,12 +364,51 @@ TEST(OutputStage, FloatOntoAnIntegerDeviceIsQuantisedAtUnityToo) {
   }
 }
 
-TEST(OutputStage, MonoStaysMonoForTheSinkToSpread) {
-  Stage s(pcm(PCM16_LE, 1), randomBytes(100 * 2), k24In32);
-  const auto shown = s.stage->getState().streamInfo;
-  ASSERT_TRUE(shown);
-  EXPECT_EQ(shown->format.channels, 1u);
-  EXPECT_EQ(shown->format.sampleFormat, PCM32_LE);
+TEST(OutputStage, MonoReachesBothSpeakersExactlyAndKeepsItsDecodedFormat) {
+  const auto bytes = randomBytes(203 * 2);
+  for (const auto out : {PCM16_LE, PCM32_LE}) {
+    const auto width = sampleSize(out);
+    Stage s(pcm(PCM16_LE, 1), bytes, {pcm(out)});
+    const auto shown = s.stage->getState().streamInfo;
+    ASSERT_TRUE(shown);
+    EXPECT_EQ(shown->format.channels, 2u);
+    EXPECT_EQ(shown->format.sampleFormat, out);
+    ASSERT_TRUE(shown->decodedFormat);
+    EXPECT_EQ(shown->decodedFormat->channels, 1u);
+    EXPECT_EQ(s.stage->waitForData({}, 204 * width * 2), 203 * width * 2);
+    std::vector<uint8_t> mono(203 * width), stereo;
+    convertSampleFormat(bytes.data(), PCM16_LE, 203, mono.data(), out,
+                        mono.size());
+    for (size_t i = 0; i < mono.size(); i += width)
+      for (unsigned c = 0; c < 2; ++c)
+        stereo.insert(stereo.end(), mono.begin() + i, mono.begin() + i + width);
+    EXPECT_EQ(readAll(*s.stage, 17 * width * 2 + 1), stereo);
+  }
+}
+
+TEST(OutputStage, IndependentSpeakerCorrectionAppliesToMonoDuringPlayback) {
+  std::vector<double> mono(2000), stereo;
+  for (size_t i = 0; i < mono.size(); ++i) {
+    mono[i] = 0.25 * std::sin(2 * std::numbers::pi * 500 * i / kRate);
+    stereo.insert(stereo.end(), 2, mono[i]);
+  }
+  Stage a(pcm(PCM_FLOAT64_LE, 1), asBytes(mono));
+  Stage b(pcm(PCM_FLOAT64_LE), asBytes(stereo));
+  EXPECT_EQ(readSamples<double>(*a.stage, 200),
+            readSamples<double>(*b.stage, 200));
+  auto profile = std::make_shared<peq::Profile>();
+  profile->right.push_back({peq::Type::Peak, 500, -12, 1});
+  a.stage->setRoomEq({profile, 0});
+  b.stage->setRoomEq({profile, 0});
+  auto corrected = readSamples<double>(*a.stage, 2000);
+  ASSERT_EQ(corrected, readSamples<double>(*b.stage, 2000));
+  EXPECT_GT(std::abs(corrected[1998] - corrected[1999]), 0.05);
+  a.stage->setRoomEq({});
+  readSamples<double>(*a.stage, 2 * (480 - 1));
+  const auto firstDry = 2 * (100 + 1000 + 480 - 1);
+  EXPECT_EQ(
+      readAll(*a.stage, 400),
+      asBytes(std::vector<double>(stereo.begin() + firstDry, stereo.end())));
 }
 
 namespace {
@@ -461,4 +511,84 @@ TEST(OutputStage, DsdIsNotFaded) {
   Stage s({352800, 2, 1, DSD_U8, 2822400}, bytes, k24In32);
   s.stage->fadeOut();
   EXPECT_EQ(readAll(*s.stage, 500), bytes);
+}
+
+TEST(OutputStage, RoomEqCrossfadesToDryAndThenPassesEveryByte) {
+  const auto bytes = randomBytes(4096 * 4);
+  Stage s(pcm(PCM16_LE), bytes);
+  auto profile = std::make_shared<peq::Profile>();
+  profile->shared.push_back({peq::Type::Peak, 110, -9, 3});
+  s.stage->setRoomEq({profile, 0});
+  auto wet = readSamples<int16_t>(*s.stage, 2 * 500);
+  EXPECT_NE(asBytes(wet),
+            std::vector<uint8_t>(bytes.begin(), bytes.begin() + 2000));
+  s.stage->setRoomEq({});
+  readSamples<int16_t>(*s.stage, 2 * (480 - 1));
+  auto rest = readAll(*s.stage, 732);
+  EXPECT_EQ(rest, std::vector<uint8_t>(bytes.begin() + 4 * (500 + 480 - 1),
+                                       bytes.end()));
+}
+
+TEST(OutputStage, ProfileSwitchBlendsIndependentChannelResponses) {
+  std::vector<double> tone(2 * 3000);
+  for (size_t i = 0; i < tone.size(); ++i)
+    tone[i] = 0.5 * std::sin(2 * std::numbers::pi * 1000 * (i / 2) / kRate);
+  const auto make = [](double left, double right) {
+    auto p = std::make_shared<peq::Profile>();
+    p->left.push_back({peq::Type::Peak, 1000, left, 1});
+    p->right.push_back({peq::Type::Peak, 1000, right, 1});
+    return peq::Settings{p, 0};
+  };
+  Stage switching(pcm(PCM_FLOAT64_LE), asBytes(tone));
+  Stage old(pcm(PCM_FLOAT64_LE), asBytes(tone));
+  Stage fresh(pcm(PCM_FLOAT64_LE), asBytes(tone));
+  for (auto *s : {&switching, &old}) {
+    s->stage->setRoomEq(make(6, -6));
+    readSamples<double>(*s->stage, 2000);
+  }
+  fresh.stage->seekTo(1000);
+  fresh.stage->setRoomEq(make(-3, 4));
+  switching.stage->setRoomEq(make(-3, 4));
+  const auto a = readSamples<double>(*old.stage, 1000);
+  const auto b = readSamples<double>(*fresh.stage, 1000);
+  const auto mixed = readSamples<double>(*switching.stage, 1000);
+  ASSERT_EQ(mixed.size(), 1000u);
+  for (size_t i = 0; i < mixed.size(); ++i)
+    EXPECT_NEAR(mixed[i],
+                std::lerp(a[i], b[i], std::min(1.0, double(i / 2 + 1) / 480)),
+                1e-13);
+}
+
+TEST(OutputStage, FractionalPreampRampsThroughTheExistingGainStage) {
+  Stage s(pcm(PCM_FLOAT64_LE), asBytes(std::vector<double>(4000, 0.5)));
+  readSamples<double>(*s.stage, 200);
+  s.stage->setRoomEq({nullptr, -3.5});
+  const auto out = readSamples<double>(*s.stage, 2600);
+  const double target = std::pow(10.0, -3.5 / 20);
+  for (size_t i = 0; i < out.size(); ++i)
+    EXPECT_NEAR(
+        out[i],
+        0.5 * std::lerp(1.0, target, std::min(1.0, double(i / 2 + 1) / 1200)),
+        1e-14);
+}
+
+TEST(OutputStage, SimultaneousVolumeAndPreampRampsMultiplyAtEachFrame) {
+  constexpr size_t frames = kRate / 40;
+  const auto signal = asBytes(std::vector<double>(2 * (frames + 1), 1.0));
+  for (const size_t chunk : {size_t(37), frames}) {
+    Stage s(pcm(PCM_FLOAT64_LE), signal);
+    readSamples<double>(*s.stage, 2);
+    s.stage->setGain(0.25);
+    s.stage->setRoomEq({nullptr, 20 * std::log10(0.5)});
+    const auto result = readAll(*s.stage, chunk * 2 * sizeof(double));
+    ASSERT_EQ(result.size(), frames * 2 * sizeof(double));
+    for (size_t i = 0; i < frames; ++i) {
+      double sample;
+      std::memcpy(&sample, result.data() + 2 * i * sizeof(double),
+                  sizeof(sample));
+      const double progress = double(i + 1) / frames;
+      ASSERT_NEAR(sample, (1 - 0.75 * progress) * (1 - 0.5 * progress), 1e-13)
+          << i;
+    }
+  }
 }

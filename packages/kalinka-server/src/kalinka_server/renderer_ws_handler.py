@@ -7,6 +7,7 @@ drains it, so message handling never stalls the socket read.
 import asyncio
 import ipaddress
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -16,6 +17,7 @@ from google.protobuf.message import DecodeError
 from kalinka_plugin_sdk.direct_playback import OutputCapabilities
 
 from .config_model import KalinkaConfig
+from .netutils import server_base_url
 from .renderer_capabilities import DspCapabilities, RendererCapabilities
 from .renderer_proto import renderer_pb2 as pb
 from .renderer_config import RendererConfigService
@@ -30,7 +32,8 @@ from .version import get_rest_api_version, get_version
 logger = logging.getLogger(__name__.split(".")[-1])
 
 # Renderer protocol version this Core speaks; independent of REST_API_VERSION.
-PROTOCOL_VERSION = 2
+MIN_PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 
 INBOX_SIZE = 256
 
@@ -125,10 +128,10 @@ class RendererSession(RendererLink):
         async with self._send_lock:
             await self._websocket.send_bytes(env.SerializeToString())
 
-    async def send_welcome(self, config: KalinkaConfig) -> None:
+    async def send_welcome(self, config: KalinkaConfig, version: int) -> None:
         env = self._envelope()
         welcome = env.welcome
-        welcome.protocol_version = PROTOCOL_VERSION
+        welcome.protocol_version = version
         welcome.server_id = get_server_id()
         welcome.server_name = config.server.service_name
         welcome.server_version = get_version()
@@ -168,6 +171,12 @@ class RendererSession(RendererLink):
             setting = env.config_update.settings.add()
             setting.path = path
             setting.value = str(value)
+        digest = changes.get("dsp.profile", "")
+        addr = self._websocket.scope.get("server")
+        if addr and re.fullmatch("[0-9a-f]{64}", str(digest)):
+            env.config_update.dsp_profile_url = (
+                f"{server_base_url(addr)}/dsp/profiles/{digest}"
+            )
         await self._send(env)
 
     async def send_upgrade(self, message_id: int, target_version: str) -> None:
@@ -267,7 +276,8 @@ async def handle_renderer_connection(
                     f"'{hello.friendly_name}' (id={hello.renderer_id})"
                 )
                 versions = hello.protocol_versions
-                compatible = versions.min <= PROTOCOL_VERSION <= versions.max
+                version = min(versions.max, PROTOCOL_VERSION)
+                compatible = max(versions.min, MIN_PROTOCOL_VERSION) <= version
                 if not compatible:
                     # Hanging up would hide it from every client, leaving a
                     # shell on its own machine as the only way to upgrade it.
@@ -311,7 +321,9 @@ async def handle_renderer_connection(
                 registered_compatible = compatible
                 # Sent either way: the version it names is what tells an
                 # incompatible renderer what it has to become.
-                await session.send_welcome(config)
+                await session.send_welcome(
+                    config, version if compatible else PROTOCOL_VERSION
+                )
                 if not compatible:
                     continue
                 await sessions.reconcile(

@@ -204,6 +204,31 @@ these within the `powersave` spread: channel pairs 0.31–0.35 % for DSD64 to
 176.4 kHz and 1.13–1.24 % for DSD256 to 352.8 kHz, fastest in 29 of the 33
 rows and within 5 % in the rest.
 
+## x86_64: production PEQ, 20 November 2026
+
+Three Release `kalinka-dsp-bench kernels PEQ` runs pinned to logical CPU 1
+after a warm-up. The 20-band row includes copying the input block to the two
+working planes. The output-stage row reads stereo S32, applies the same
+filters and a −6 dB preamp, dithers at 24 bits and packs S32.
+
+At 192 kHz, the cascade took 13.89–14.35 ns per stereo frame, or
+0.267–0.276% of one core. The output stage took 16.73–19.04 ns, or
+0.321–0.366%. Three earlier runs of the full kernel table on the same laptop
+gave 0.309–0.318% and 0.364–0.391%, respectively. The governor was
+`powersave` for both sets.
+
+The first isolated run produced these figures.
+
+- CPU: Intel(R) Core(TM) Ultra 9 185H
+- Kernel: Linux 7.3.4-300.fc45.x86_64 x86_64
+- Compiler: 16.2.1 20261029 (Red Hat 16.2.1-3), flags: -O3 -DNDEBUG
+- cpu0 governor: powersave, clock now: 1892964 kHz, zone0: 26.8 C
+
+| Kernel | 44.1 kHz | 96.0 kHz | 192.0 kHz | 352.8 kHz |
+|---|---|---|---|---|
+| 20 PEQ bands, planar float64 stereo | 13.81 ns (0.061 %) | 14.13 ns (0.136 %) | 14.35 ns (0.276 %) | 14.56 ns (0.514 %) |
+| OutputStage with 20 PEQ bands, S32 stereo, dithered at 24 bits | 16.45 ns (0.073 %) | 16.47 ns (0.158 %) | 16.73 ns (0.321 %) | 16.72 ns (0.590 %) |
+
 ## arm64: Raspberry Pi 5, 15 November 2026
 
 - CPU: Arm Cortex-A76, 4 cores at up to 2.4 GHz; Raspberry Pi 5 Model B
@@ -385,6 +410,87 @@ by 3–16 %, and the runs agree within 4 %.
 | DSD512 to 352.8 kHz | 50 kHz | 315.95 ns (11.147 %) | 190.04 ns (6.704 %) | 152.39 ns (5.376 %) | 173.70 ns (6.128 %) |
 | DSD1024 to 352.8 kHz | 50 kHz | 502.07 ns (17.713 %) | 344.74 ns (12.162 %) | 265.63 ns (9.372 %) | 307.47 ns (10.848 %) |
 
+## arm64: Raspberry Pi 4 production PEQ, 20 November 2026
+
+Three Release runs of `taskset -c 3 kalinka-dsp-bench kernels PEQ 192000`
+after a warm-up. The Core was paused for the runs and resumed afterward.
+The CPU reached 1.8 GHz under load, with the governor at `ondemand`.
+The temperature sampled from warm-up through the last run was 76.4–80.3 °C.
+The firmware reported `0xe0000` throughout, with all current throttling flags
+clear. Earlier runs with the Core busy reached the thermal limit and are
+excluded from this table.
+
+| 20 active bands per channel, 192 kHz stereo | Run 1 | Run 2 | Run 3 |
+|---|---:|---:|---:|
+| Planar float64 cascade, ns/frame (% of one core) | 142.04 (2.727%) | 142.37 (2.733%) | 141.00 (2.707%) |
+| Output stage with −6 dB preamp, S32 input and 24-bit dithered S32 output | 163.57 (3.141%) | 163.49 (3.139%) | 163.62 (3.142%) |
+
+The median cascade time was 142.04 ns per stereo frame. The 1% stage
+budget allows 52.08 ns at this rate. This measures the DSP output path and
+excludes decoding and ALSA.
+
+- CPU: Arm Cortex-A72
+- Board: Raspberry Pi 4 Model B Rev 1.5
+- Kernel: Linux 6.18.60+rpt-rpi-v8 aarch64
+- Compiler: 14.2.0, flags: -O3 -DNDEBUG
+- cpu0 governor: ondemand, clock now: 1800000 kHz, zone0: 77.906 C
+
+### Optimized float64 PEQ
+
+The same production benchmark ran on the Pi 4 after a warm-up, pinned to
+core 3. The executable was cross-compiled on x86 with Debian 13's AArch64
+GCC 14.2 and `-O3 -DNDEBUG`. The Core was running. The three runs started at
+1.8 GHz and 63.8–64.3 °C. The firmware reported `0xe0000` after the runs,
+with all current throttle flags clear.
+
+| 20 active bands per channel, 192 kHz stereo | Run 1 | Run 2 | Run 3 | Median |
+|---|---:|---:|---:|---:|
+| Planar float64 PEQ, ns/frame | 50.96 | 49.92 | 49.47 | 49.92 (0.958% of one core) |
+| Output stage with −6 dB preamp, S32 input and 24-bit dithered S32 output, ns/frame | 71.58 | 71.55 | 71.38 | 71.55 (1.374%) |
+
+The AArch64 kernel prepares a partial-fraction expansion per channel and
+processes five independent pole pairs at a time. Profiles with repeated or
+poorly conditioned poles use the original cascade. The benchmark curve
+uses the parallel kernel. Its median dropped from 142.04 to 49.92 ns per
+stereo frame (2.85× faster).
+
+On the same Pi, a separate 17,003-frame regression with independent 20-band
+left and 17-band right curves had maximum absolute differences of
+3.96 × 10⁻¹² (−228.0 dBFS) and 1.90 × 10⁻¹² (−234.4 dBFS) against the
+scalar cascade. Splitting the input across short and long reads produced
+bit-identical samples to processing it continuously.
+
+## Production PEQ after review, 21 November 2026
+
+At 192 kHz, the 1% EQ budget is 52.08 ns per stereo frame. These are three
+warmed runs of `kalinka-dsp-bench kernels PEQ 192000` with 20 active bands
+per channel. Each timing is the median of seven repeats of 196 blocks of
+1,024 frames. This version divides elapsed time by all 200,704 frames
+processed. The earlier PEQ results used 200,000 as the divisor.
+
+| Machine | Processing | Run 1 (ns/frame) | Run 2 | Run 3 | Median (ns/frame) | One core |
+|---|---|---:|---:|---:|---:|---:|
+| Intel Core Ultra 9 185H | Planar float64 EQ | 14.57 | 14.70 | 14.86 | 14.70 | 0.282% |
+| Intel Core Ultra 9 185H | Full output stage | 16.42 | 16.76 | 16.79 | 16.76 | 0.322% |
+| Raspberry Pi 4, Cortex-A72 | Planar float64 EQ | 49.72 | 49.31 | 50.03 | 49.72 | 0.955% |
+| Raspberry Pi 4, Cortex-A72 | Full output stage | 71.81 | 72.94 | 72.34 | 72.34 | 1.389% |
+| Raspberry Pi 5, Cortex-A76 | Planar float64 EQ | 36.32 | 36.33 | 36.33 | 36.33 | 0.698% |
+| Raspberry Pi 5, Cortex-A76 | Full output stage | 46.10 | 46.11 | 46.09 | 46.10 | 0.885% |
+
+The full stage reads S32 stereo, applies EQ and −6 dB preamp, and dithers
+to 24 bits in S32. Both timings exclude the decoder and ALSA. This curve
+qualifies for the AArch64 parallel kernel. Repeated or poorly conditioned
+poles use the cascade fallback.
+
+Both Pis ran the same Release binary cross-compiled with Debian 13 GCC
+14.2 and `-O3 -DNDEBUG`, pinned to core 3. The installed Core and renderer
+services stayed active. At each run the Pi 4 reported 1.8 GHz and
+63.8–64.8 °C with all current throttling flags clear. The Pi 5 reported
+2.4 GHz and 54.6–55.1 °C. Its firmware throttling flags were unavailable
+to the benchmark user. The laptop used GCC 16.2.1 and logical CPU 1.
+Both boards passed all 39 EQ, output-stage, profile and config tests
+selected for the hardware run.
+
 ## arm64: Raspberry Pi 4, 16 November 2026
 
 - CPU: Arm Cortex-A72, 4 cores at up to 1.8 GHz, L1 data cache 32 KB and
@@ -398,7 +504,7 @@ by 3–16 %, and the runs agree within 4 %.
   the soft temperature limit had been reached since boot, but was not active.
 - The installed server, renderer and supervisor were running, idle.
 
-Only the DSD converter has been measured on this board.
+The November 16 runs measured the DSD converter.
 
 ### DSD to PCM (`dsd`, 16 November 2026)
 

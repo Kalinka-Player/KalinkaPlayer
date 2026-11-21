@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from .config_model import KalinkaConfig
 from .netutils import get_interface_ip_mappings
-from .renderer_ws_handler import PROTOCOL_VERSION as RENDERER_PROTOCOL_VERSION
+from .renderer_ws_handler import MIN_PROTOCOL_VERSION as RENDERER_PROTOCOL_VERSION
 from .server_identity import get_server_id
 from .version import get_version, get_rest_api_version
 

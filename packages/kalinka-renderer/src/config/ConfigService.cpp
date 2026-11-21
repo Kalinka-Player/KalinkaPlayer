@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <functional>
 
 namespace renderer_pb = kalinka::renderer::v1;
@@ -26,7 +27,8 @@ std::string versionOf(const renderer_pb::ConfigSnapshot &snapshot) {
               std::to_string(field.widget()) + '\x1f' +
               std::to_string(field.range().min()) + '\x1f' +
               std::to_string(field.range().max()) + '\x1f' +
-              std::to_string(field.range().step());
+              std::to_string(field.range().step()) +
+              field.decimal_range().SerializeAsString();
       for (const renderer_pb::ConfigOption &option : field.options()) {
         blob += '\x1f' + option.value();
       }
@@ -76,6 +78,18 @@ bool fieldAccepts(const renderer_pb::ConfigField &field,
                                     : "not one of the offered options";
     return false;
   }
+  case renderer_pb::CONFIG_FIELD_TYPE_DECIMAL: {
+    double parsed;
+    const char *end = value.data() + value.size();
+    auto [stop, ec] = std::from_chars(value.data(), end, parsed);
+    if (ec != std::errc{} || stop != end || !std::isfinite(parsed) ||
+        (field.has_decimal_range() && (parsed < field.decimal_range().min() ||
+                                       parsed > field.decimal_range().max()))) {
+      error = "Expected a finite decimal within the declared range";
+      return false;
+    }
+    return true;
+  }
   case renderer_pb::CONFIG_FIELD_TYPE_INT: {
     int64_t parsed = 0;
     const char *end = value.data() + value.size();
@@ -109,15 +123,26 @@ ConfigService::ConfigService(
     : contributors_(std::move(contributors)),
       onApplied_(std::move(onApplied)) {}
 
-void ConfigService::fillSnapshot(renderer_pb::ConfigSnapshot &out) const {
+void ConfigService::fillSnapshot(renderer_pb::ConfigSnapshot &out,
+                                 bool decimal) const {
   for (const auto &contributor : contributors_) {
-    contributor->fillConfig(*out.add_sections());
+    auto &section = *out.add_sections();
+    contributor->fillConfig(section);
+    if (!decimal)
+      for (auto &field : *section.mutable_fields())
+        if (field.type() == renderer_pb::CONFIG_FIELD_TYPE_DECIMAL) {
+          field.set_type(renderer_pb::CONFIG_FIELD_TYPE_STRING);
+          field.clear_decimal_range();
+          field.clear_widget();
+        }
   }
   out.set_config_version(versionOf(out));
 }
 
 void ConfigService::apply(const renderer_pb::ConfigUpdate &update,
-                          renderer_pb::ConfigResult &out) {
+                          renderer_pb::ConfigResult &out,
+                          const std::string &profileId,
+                          const std::string &profileError, bool decimal) {
   renderer_pb::ConfigSnapshot before;
   fillSnapshot(before);
 
@@ -137,9 +162,16 @@ void ConfigService::apply(const renderer_pb::ConfigUpdate &update,
     outcome->set_value(field->value());
 
     std::string error;
-    if (!fieldAccepts(*field, setting.value(), error) ||
-        !contributors_[declaredBy]->applyConfig(setting.path(),
-                                                setting.value(), error)) {
+    const bool selected = setting.path() == "dsp.profile";
+    if (selected && !profileError.empty()) {
+      outcome->set_error(profileError);
+      continue;
+    }
+    const bool prepared =
+        selected && !profileId.empty() && setting.value() == profileId;
+    if ((!prepared && !fieldAccepts(*field, setting.value(), error)) ||
+        !contributors_[declaredBy]->applyConfig(setting.path(), setting.value(),
+                                                error)) {
       outcome->set_error(error);
       spdlog::warn("Refusing config write {} = '{}': {}", setting.path(),
                    setting.value(), error);
@@ -154,7 +186,7 @@ void ConfigService::apply(const renderer_pb::ConfigUpdate &update,
   // Re-read: a player may normalise what it was given, and the options may
   // look different once it has been applied.
   renderer_pb::ConfigSnapshot after;
-  fillSnapshot(after);
+  fillSnapshot(after, decimal);
   for (renderer_pb::ConfigResult::Outcome &outcome : *out.mutable_outcomes()) {
     if (const renderer_pb::ConfigField *field =
             findField(after, outcome.path())) {

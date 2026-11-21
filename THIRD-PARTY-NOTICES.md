@@ -34,6 +34,7 @@ These are system libraries resolved at build time; the Debian, RPM and Flatpak p
 | [libxml2](https://gitlab.gnome.org/GNOME/libxml2) (DASH manifests) | MIT |
 | [ALSA (libasound)](https://www.alsa-project.org/) | LGPL-2.1-or-later |
 | [libcurl](https://curl.se/) | curl license (MIT-style) |
+| [OpenSSL 3 libcrypto](https://openssl-library.org/) (profile SHA-256) | Apache-2.0 |
 | [Protocol Buffers](https://protobuf.dev/) | BSD-3-Clause |
 | [Boost](https://www.boost.org/) | BSL-1.0 |
 | [spdlog](https://github.com/gabime/spdlog) | MIT |
