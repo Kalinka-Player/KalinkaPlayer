@@ -50,7 +50,7 @@ type Service struct {
 	openRadio func(context.Context, *machine.Machine, string) (peripheral, string, error)
 	// pause is wifi.Pause between Bluetooth sessions, which tests replace to step through retries.
 	pause func(context.Context, time.Duration) error
-	// run is wifi.Run for reading the Wi-Fi country, which tests replace.
+	// run is wifi.Run for reading the Wi-Fi country at start, which tests replace.
 	run      wifi.Runner
 	country  atomic.Value
 	mu       sync.Mutex
@@ -160,16 +160,16 @@ func (s *Service) Run(ctx context.Context) error {
 		return err
 	}
 	s.readCountry(ctx)
-	ap, isAP := backend.(wifi.AccessPoint)
-	// Under the hotspot, so its own scans under a nearby country are watched too.
-	backend = countryWatch{backend, s.readCountry}
-	if isAP && !o.DisableAP && !o.Test {
-		identity, _ := os.ReadFile("/etc/machine-id")
-		sum := sha256.Sum256(identity)
-		h := wifi.NewHotspot(backend, ap, fmt.Sprintf("Kalinka-Setup-%X", sum[:2]))
-		backend = h
-		s.hotspot.Store(h)
-		defer s.hotspot.Store(nil)
+	backend.OnCountrySet(func(country string) { s.country.Store(country) })
+	if !o.DisableAP && !o.Test {
+		if ap, ok := backend.(wifi.AccessPoint); ok {
+			identity, _ := os.ReadFile("/etc/machine-id")
+			sum := sha256.Sum256(identity)
+			h := wifi.NewHotspot(backend, ap, fmt.Sprintf("Kalinka-Setup-%X", sum[:2]))
+			backend = h
+			s.hotspot.Store(h)
+			defer s.hotspot.Store(nil)
+		}
 	}
 	marker := filepath.Join(o.State, "networked")
 	if o.Test || o.AlwaysAdvertise {
@@ -342,6 +342,13 @@ func (s *Service) EnableWiFi(ctx context.Context) error {
 
 // APActive reports whether the setup-only HTTP listener should be available.
 func (s *Service) APActive() bool { h := s.hotspot.Load(); return h != nil && h.Active() }
+
+// readCountry takes the radio's country from iw; the backend reports each one it sets after that.
+func (s *Service) readCountry(ctx context.Context) {
+	if code, err := wifi.Country(ctx, s.run); err == nil {
+		s.country.Store(code)
+	}
+}
 
 // Snapshot exposes setup status even when a radio is absent or recovering.
 func (s *Service) Snapshot() map[string]any {
