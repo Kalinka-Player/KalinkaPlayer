@@ -175,7 +175,13 @@ progress, rollback and cancellation. AP daemons remain in the supervisor's cgrou
 interface, and `ssid` when the active Wi-Fi name can be read), `setup` (active,
 state, reason, stage, address, port, scan_state, networks, and `target_ssid`
 while joining), `hotspot`, `hotspot_name`, `networks_cached`, `server_id` where
-available, and `radio_problems`, above. `POST /v1/setup` accepts the existing
+available, `wifi_country`, and `radio_problems`, above. `wifi_country` is the
+country the Wi-Fi radio is set to, the global one `iw reg get` reports, or empty
+when that is the world domain `00` or iw cannot say. The supervisor reads it at
+start and again after each scan or join, which is when setup sets it, so a status
+read never runs iw. With `--keep-country` it is the host's own. The app opens Wi-Fi
+setup under it unless the user has chosen a country for that streamer.
+`POST /v1/setup` accepts the existing
 unframed v1 JSON commands and an extra `{"v":1,"op":"open"}` to explicitly open a setup window on an online
 streamer. `{"v":1,"op":"enable_wifi"}` explicitly enables Wi-Fi, including before
 opening setup. It completes within ten seconds and returns 202 on success,

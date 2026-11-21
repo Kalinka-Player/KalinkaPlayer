@@ -37,6 +37,33 @@ func TestGlobalCountry(t *testing.T) {
 	}
 }
 
+func TestCountry(t *testing.T) {
+	for _, c := range []struct {
+		name, reg, want string
+	}{
+		{"set", "global\ncountry DE: DFS-ETSI\n\t(2400 - 2483 @ 40), (N/A, 20), (N/A)\n", "DE"},
+		{"the world domain", worldReg, ""},
+		{"only a self-managed phy has one", worldReg + "\nphy#0 (self-managed)\ncountry US: DFS-FCC\n", ""},
+		{"no country line", "global\n", ""},
+		{"a malformed code", "global\ncountry d3: DFS-ETSI\n", ""},
+	} {
+		var command string
+		run := func(_ context.Context, _ time.Duration, name string, args ...string) (string, error) {
+			command = strings.Join(append([]string{name}, args...), " ")
+			return c.reg, nil
+		}
+		if got, err := Country(context.Background(), run); got != c.want || err != nil || command != "iw reg get" {
+			t.Errorf("%s: %q, %v after %q; want %q", c.name, got, err, command, c.want)
+		}
+	}
+	failed := func(context.Context, time.Duration, string, ...string) (string, error) {
+		return "", context.DeadlineExceeded
+	}
+	if got, err := Country(context.Background(), failed); got != "" || err != context.DeadlineExceeded {
+		t.Errorf("iw failing gave %q, %v", got, err)
+	}
+}
+
 func TestAnnouncedCountry(t *testing.T) {
 	for _, c := range []struct {
 		name, dump, want string
