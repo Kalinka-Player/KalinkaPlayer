@@ -59,10 +59,25 @@ func TestCountryWatchReadsAfterEachScanOrJoin(t *testing.T) {
 	reads := 0
 	w := countryWatch{b, func(context.Context) { reads++ }}
 	_, _ = w.Scan(ctx, "GB")
+	_, _ = w.Scan(ctx, "")
 	_, _ = w.Join(ctx, protocol.Command{}, func(byte) {})
 	_, _ = w.Address(ctx)
 	if reads != 2 {
-		t.Fatalf("read the country %d times, want once after the scan and once after the join", reads)
+		t.Fatalf("read the country %d times, want once after the scan under GB and once after the join", reads)
+	}
+	// A scan that ran out of time or a cancelled join may already have set the country.
+	ended, cancel := context.WithCancel(ctx)
+	cancel()
+	live := 0
+	w.read = func(c context.Context) {
+		if c.Err() == nil {
+			live++
+		}
+	}
+	_, _ = w.Scan(ended, "GB")
+	_, _ = w.Join(ended, protocol.Command{}, func(byte) {})
+	if live != 2 {
+		t.Fatalf("read the country with a live context %d times after an ended scan and join, want 2", live)
 	}
 	if err := w.EnableRadio(ctx); err != nil || b.enables.Load() != 1 {
 		t.Fatalf("the radio switch did not reach the backend: %v", err)

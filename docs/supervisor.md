@@ -177,8 +177,9 @@ state, reason, stage, address, port, scan_state, networks, and `target_ssid`
 while joining), `hotspot`, `hotspot_name`, `networks_cached`, `server_id` where
 available, `wifi_country`, and `radio_problems`, above. `wifi_country` is the
 country the Wi-Fi radio is set to, the global one `iw reg get` reports, or empty
-when that is the world domain `00` or iw cannot say. The supervisor reads it at
-start and again after each scan or join, which is when setup sets it, so a status
+when that is the world domain `00` or iw has never answered; a failed read
+keeps the country last read. The supervisor reads it at start and again after
+each join or scan under a country, which is when setup sets it, so a status
 read never runs iw. With `--keep-country` it is the host's own. The app opens Wi-Fi
 setup under it unless the user has chosen a country for that streamer.
 `POST /v1/setup` accepts the existing
