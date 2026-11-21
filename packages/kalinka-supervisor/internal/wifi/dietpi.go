@@ -28,6 +28,7 @@ type DietPi struct {
 	StartAPProcess                                              func(context.Context, string, ...string) (APProcess, error)
 	apProcesses                                                 []APProcess
 	radioRestartNeeded                                          bool
+	countryHook
 }
 
 func NewDietPi(iface, root, state, runtime string) (*DietPi, error) {
@@ -82,20 +83,26 @@ func (d *DietPi) Scan(ctx context.Context, country string) ([]protocol.Network, 
 	if country != "" && !protocol.CountryPattern.MatchString(country) {
 		return nil, protocol.Invalid
 	}
-	commands := [][]string{{"ip", "link", "set", "dev", d.Interface, "up"}}
 	if country != "" {
-		commands = append([][]string{{"iw", "reg", "set", country}}, commands...)
-	}
-	for _, args := range commands {
-		if _, err := d.Run(ctx, 15*time.Second, args[0], args[1:]...); err != nil {
+		if err := d.setCountry(ctx, country); err != nil {
 			return nil, err
 		}
+	}
+	if _, err := d.Run(ctx, 15*time.Second, "ip", "link", "set", "dev", d.Interface, "up"); err != nil {
+		return nil, err
 	}
 	out, err := d.Run(ctx, 15*time.Second, "iw", "dev", d.Interface, "scan")
 	if err != nil {
 		return nil, err
 	}
 	return ParseScan(out), nil
+}
+func (d *DietPi) setCountry(ctx context.Context, country string) error {
+	if _, err := d.Run(ctx, 15*time.Second, "iw", "reg", "set", country); err != nil {
+		return err
+	}
+	d.countrySet(country)
+	return nil
 }
 func (d *DietPi) Recover(ctx context.Context) error {
 	if err := d.StopAP(ctx); err != nil {
@@ -139,11 +146,20 @@ func (d *DietPi) rollback() error {
 	if err := d.Transaction.Restore(); err != nil {
 		return err
 	}
-	_, err := d.Run(ctx, 15*time.Second, "systemctl", "--no-block", "restart", "kalinka-wifi@"+d.Interface+".service")
-	return err
+	if _, err := d.Run(ctx, 15*time.Second, "systemctl", "--no-block", "restart", "kalinka-wifi@"+d.Interface+".service"); err != nil {
+		return err
+	}
+	// The restarted wpa_supplicant puts the radio back on the restored configuration's country.
+	conf, _ := readOptional(d.Conf)
+	if m := confCountry.FindSubmatch(conf); m != nil {
+		d.countrySet(string(m[1]))
+	}
+	clear(conf)
+	return nil
 }
 
 var numeric = regexp.MustCompile(`^[0-9]+$`)
+var confCountry = regexp.MustCompile(`(?m)^[ \t]*country=([A-Z]{2})[ \t]*$`)
 
 func (d *DietPi) Join(parent context.Context, c protocol.Command, progress func(byte)) (address string, result error) {
 	ctx, cancel := context.WithTimeout(parent, 100*time.Second)
@@ -190,7 +206,7 @@ func (d *DietPi) Join(parent context.Context, c protocol.Command, progress func(
 		}
 	}()
 	run := func(name string, args ...string) error { _, e := d.Run(ctx, 15*time.Second, name, args...); return e }
-	if err = run("iw", "reg", "set", c.Country); err != nil {
+	if err = d.setCountry(ctx, c.Country); err != nil {
 		return "", err
 	}
 	contents, err := readOptional(d.Conf)

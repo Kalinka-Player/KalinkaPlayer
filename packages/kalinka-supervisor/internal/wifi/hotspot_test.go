@@ -52,6 +52,7 @@ func (*hotspotFake) Close() error                            { return nil }
 func (f *hotspotFake) StartAP(context.Context, string) error { f.active = true; f.starts++; return nil }
 func (f *hotspotFake) StopAP(context.Context) error          { f.active = false; f.stops++; return nil }
 func (*hotspotFake) APInterface() string                     { return "wlan0" }
+func (*hotspotFake) OnCountrySet(func(string))               {}
 func TestHotspotDoesNotReplaceWorkingWiredOrWiFi(t *testing.T) {
 	f := &hotspotFake{address: "192.168.1.8"}
 	h := NewHotspot(f, f, "Kalinka-Setup-ABCD")

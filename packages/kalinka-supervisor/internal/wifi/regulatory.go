@@ -25,6 +25,29 @@ func nearbyCountry(ctx context.Context, run Runner, iface string) string {
 	return announcedCountry(dump)
 }
 
+// Country is the host's global Wi-Fi country as iw reports it, or "" for the world domain 00 or an answer without one.
+func Country(ctx context.Context, run Runner) (string, error) {
+	reg, err := run(ctx, 5*time.Second, "iw", "reg", "get")
+	if err != nil {
+		return "", err
+	}
+	if code := globalCountry(reg); protocol.CountryPattern.MatchString(code) {
+		return code, nil
+	}
+	return "", nil
+}
+
+// countryHook holds what a backend's OnCountrySet was given.
+type countryHook struct{ set func(string) }
+
+func (h *countryHook) OnCountrySet(set func(string)) { h.set = set }
+
+func (h *countryHook) countrySet(country string) {
+	if h.set != nil {
+		h.set(country)
+	}
+}
+
 func globalCountry(reg string) string {
 	for _, line := range strings.Split(reg, "\n") {
 		if code, ok := strings.CutPrefix(line, "country "); ok {

@@ -30,6 +30,8 @@ type Backend interface {
 	Join(context.Context, protocol.Command, func(byte)) (string, error)
 	Recover(context.Context) error
 	Close() error
+	// OnCountrySet has the backend call set with each Wi-Fi country the radio accepts from it; call it before any scan or join.
+	OnCountrySet(set func(country string))
 }
 
 var interfacePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,15}$`)
@@ -204,9 +206,11 @@ func Run(parent context.Context, timeout time.Duration, name string, args ...str
 }
 
 // DryRun exercises the same BLE service without changing host networking.
+// Its radio accepts every country a scan or join names.
 type DryRun struct {
 	Result, IP string
 	Delay      time.Duration
+	countryHook
 }
 
 func (d *DryRun) Address(ctx context.Context) (string, error) {
@@ -217,7 +221,10 @@ func (d *DryRun) Address(ctx context.Context) (string, error) {
 }
 func (d *DryRun) Recover(context.Context) error { return nil }
 func (d *DryRun) Close() error                  { return nil }
-func (d *DryRun) Scan(ctx context.Context, _ string) ([]protocol.Network, error) {
+func (d *DryRun) Scan(ctx context.Context, country string) ([]protocol.Network, error) {
+	if country != "" {
+		d.countrySet(country)
+	}
 	if err := Pause(ctx, d.Delay); err != nil {
 		return nil, err
 	}
@@ -225,6 +232,7 @@ func (d *DryRun) Scan(ctx context.Context, _ string) ([]protocol.Network, error)
 }
 func (d *DryRun) Join(ctx context.Context, c protocol.Command, progress func(byte)) (string, error) {
 	slog.Info("Simulated Wi-Fi join", "ssid", c.SSID, "country", c.Country)
+	d.countrySet(c.Country)
 	for _, s := range []byte{protocol.Authenticating, protocol.GettingAddress, protocol.Saving} {
 		progress(s)
 		if err := Pause(ctx, d.Delay); err != nil {

@@ -49,6 +49,7 @@ type NetworkManager struct {
 	RegulatoryConf string
 	// Root prefixes /sys, so tests can stage the kernel's radio switches.
 	Root string
+	countryHook
 }
 
 func NewNetworkManager(iface, state string) *NetworkManager {
@@ -102,7 +103,9 @@ func (n *NetworkManager) applyCountry(ctx context.Context, country string) {
 	}
 	if _, err := n.Run(ctx, 15*time.Second, "iw", "reg", "set", country); err != nil {
 		slog.Warn("Could not apply the Wi-Fi country now", "country", country, "error", err)
+		return
 	}
+	n.countrySet(country)
 }
 func (n *NetworkManager) call(ctx context.Context, path dbus.ObjectPath, method string, args ...any) ([]any, error) {
 	body, err := n.Bus.Call(ctx, path, method, args...)

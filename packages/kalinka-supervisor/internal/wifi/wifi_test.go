@@ -125,7 +125,7 @@ func TestDietPiJoinAndRollback(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			files := map[string]string{d.Tool: "tool", d.Conf: "update_config=1\nnetwork={\n ssid=\"saved\"\n}\n", d.Database: "aWIFI_SSID[0]='saved'\n", d.CountryFile: "AUTO_SETUP_NET_WIFI_COUNTRY_CODE=US\n", d.Transaction.Paths[3]: "old interfaces\n"}
+			files := map[string]string{d.Tool: "tool", d.Conf: "update_config=1\ncountry=DE\nnetwork={\n ssid=\"saved\"\n}\n", d.Database: "aWIFI_SSID[0]='saved'\n", d.CountryFile: "AUTO_SETUP_NET_WIFI_COUNTRY_CODE=US\n", d.Transaction.Paths[3]: "old interfaces\n"}
 			for p, s := range files {
 				if err := AtomicWrite(p, []byte(s), 0600); err != nil {
 					t.Fatal(err)
@@ -163,9 +163,18 @@ func TestDietPiJoinAndRollback(t *testing.T) {
 			}
 			d.AddressFor = func(context.Context, string) (string, error) { return "192.0.2.5", nil }
 			d.Poll = time.Millisecond
+			var reported []string
+			d.OnCountrySet(func(country string) { reported = append(reported, country) })
 			cmd := protocol.Command{SSID: "candidate", Country: "GB", Password: protocol.NewSecret("dummy-passphrase")}
 			defer cmd.Password.Clear()
 			ip, err := d.Join(ctx, cmd, func(byte) {})
+			want := []string{"GB", "DE"}
+			if scenario == "success" {
+				want = want[:1]
+			}
+			if !slices.Equal(reported, want) {
+				t.Fatalf("reported %q, want %q", reported, want)
+			}
 			mu.Lock()
 			all := strings.Join(calls, "\n")
 			mu.Unlock()
@@ -209,6 +218,48 @@ func TestDietPiJoinAndRollback(t *testing.T) {
 			}
 			if d.Transaction.Pending() {
 				t.Fatal("transaction remained")
+			}
+		})
+	}
+}
+func TestDietPiRollbackReportsOnlyARestoredCountry(t *testing.T) {
+	for _, tc := range []struct {
+		name, saved string
+		restart     error
+		want        []string
+	}{
+		{"saved with one", "update_config=1\n\tcountry=DE \n", nil, []string{"DE"}},
+		{"saved without one", "update_config=1\n", nil, nil},
+		{"restart failing", "update_config=1\ncountry=DE\n", protocol.Unavailable, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			d, err := NewDietPi("wlan0", root, filepath.Join(root, "state"), filepath.Join(root, "run"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = AtomicWrite(d.Conf, []byte(tc.saved), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err = d.Transaction.Begin(); err != nil {
+				t.Fatal(err)
+			}
+			if err = AtomicWrite(d.Conf, []byte("update_config=1\ncountry=GB\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			d.Run = func(_ context.Context, _ time.Duration, name string, args ...string) (string, error) {
+				if name == "systemctl" && args[0] == "--no-block" {
+					return "", tc.restart
+				}
+				return "", nil
+			}
+			var reported []string
+			d.OnCountrySet(func(country string) { reported = append(reported, country) })
+			if err := d.rollback(); err != tc.restart {
+				t.Fatalf("rollback gave %v, want %v", err, tc.restart)
+			}
+			if !slices.Equal(reported, tc.want) {
+				t.Fatalf("reported %q, want %q", reported, tc.want)
 			}
 		})
 	}
@@ -290,6 +341,56 @@ func TestRunnerRedactsErrorsAndBoundsCancellation(t *testing.T) {
 	_, err = Run(context.Background(), 20*time.Millisecond, "sh", "-c", "sleep 30 & wait")
 	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 2*time.Second {
 		t.Fatal("child process not cancelled")
+	}
+}
+
+func TestDietPiScanReportsEachCountryTheRadioAccepts(t *testing.T) {
+	d, err := NewDietPi("wlan0", t.TempDir(), t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var commands [][]string
+	refuse := ""
+	d.Run = func(_ context.Context, _ time.Duration, name string, args ...string) (string, error) {
+		commands = append(commands, append([]string{name}, args...))
+		if name == "iw" && args[0] == "reg" && args[2] == refuse {
+			return "", protocol.Unavailable
+		}
+		return "", nil
+	}
+	var reported []string
+	d.OnCountrySet(func(country string) { reported = append(reported, country) })
+	for _, country := range []string{"", "GB"} {
+		if _, err := d.Scan(context.Background(), country); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if want := [][]string{{"iw", "reg", "set", "GB"}, {"ip", "link", "set", "dev", "wlan0", "up"}, {"iw", "dev", "wlan0", "scan"}}; !slices.EqualFunc(commands[2:], want, slices.Equal) {
+		t.Fatalf("scan under GB ran %v, want %v", commands[2:], want)
+	}
+	refuse = "FR"
+	if _, err := d.Scan(context.Background(), "FR"); err == nil {
+		t.Fatal("a scan under a refused country succeeded")
+	}
+	if !slices.Equal(reported, []string{"GB"}) {
+		t.Fatalf("reported %q, want only GB", reported)
+	}
+}
+
+func TestDryRunReportsEachCountryItIsGiven(t *testing.T) {
+	d := &DryRun{IP: "192.0.2.10"}
+	var reported []string
+	d.OnCountrySet(func(country string) { reported = append(reported, country) })
+	for _, country := range []string{"", "GB"} {
+		if _, err := d.Scan(context.Background(), country); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := d.Join(context.Background(), protocol.Command{SSID: "home", Country: "DE"}, func(byte) {}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(reported, []string{"GB", "DE"}) {
+		t.Fatalf("reported %q, want GB then DE", reported)
 	}
 }
 

@@ -49,7 +49,10 @@ type Service struct {
 	// openRadio is gatt.New, which tests replace so no session needs BlueZ.
 	openRadio func(context.Context, *machine.Machine, string) (peripheral, string, error)
 	// pause is wifi.Pause between Bluetooth sessions, which tests replace to step through retries.
-	pause    func(context.Context, time.Duration) error
+	pause func(context.Context, time.Duration) error
+	// run is wifi.Run for reading the Wi-Fi country at start, which tests replace.
+	run      wifi.Runner
+	country  atomic.Value
 	mu       sync.Mutex
 	problems map[string]string
 }
@@ -78,7 +81,7 @@ func New(o Options, port func() uint16) *Service {
 	if o.Adapter == "" {
 		o.Adapter = "hci0"
 	}
-	return &Service{opts: o, port: port, root: "/", openRadio: openBluez, pause: wifi.Pause, problems: map[string]string{}}
+	return &Service{opts: o, port: port, root: "/", openRadio: openBluez, pause: wifi.Pause, run: wifi.Run, problems: map[string]string{}}
 }
 
 // Blocked returns why setup cannot run on this host now, or "" when it can.
@@ -156,6 +159,8 @@ func (s *Service) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	s.readCountry(ctx)
+	backend.OnCountrySet(func(country string) { s.country.Store(country) })
 	if !o.DisableAP && !o.Test {
 		if ap, ok := backend.(wifi.AccessPoint); ok {
 			identity, _ := os.ReadFile("/etc/machine-id")
@@ -338,9 +343,20 @@ func (s *Service) EnableWiFi(ctx context.Context) error {
 // APActive reports whether the setup-only HTTP listener should be available.
 func (s *Service) APActive() bool { h := s.hotspot.Load(); return h != nil && h.Active() }
 
+// readCountry takes the radio's country from iw; the backend reports each one it sets after that.
+func (s *Service) readCountry(ctx context.Context) {
+	code, err := wifi.Country(ctx, s.run)
+	if err != nil {
+		slog.Warn("Could not read the Wi-Fi country", "error", err)
+		return
+	}
+	s.country.Store(code)
+}
+
 // Snapshot exposes setup status even when a radio is absent or recovering.
 func (s *Service) Snapshot() map[string]any {
-	result := map[string]any{"available": false, "hotspot": s.APActive(), "server_id": coreconf.ReadID(s.opts.IdentityFile), "radio_problems": s.Problems()}
+	country, _ := s.country.Load().(string)
+	result := map[string]any{"available": false, "hotspot": s.APActive(), "server_id": coreconf.ReadID(s.opts.IdentityFile), "radio_problems": s.Problems(), "wifi_country": country}
 	if m := s.machine.Load(); m != nil {
 		result["available"] = true
 		result["setup"] = m.Snapshot()

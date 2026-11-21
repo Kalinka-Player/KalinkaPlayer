@@ -175,7 +175,17 @@ progress, rollback and cancellation. AP daemons remain in the supervisor's cgrou
 interface, and `ssid` when the active Wi-Fi name can be read), `setup` (active,
 state, reason, stage, address, port, scan_state, networks, and `target_ssid`
 while joining), `hotspot`, `hotspot_name`, `networks_cached`, `server_id` where
-available, and `radio_problems`, above. `POST /v1/setup` accepts the existing
+available, `wifi_country`, and `radio_problems`, above. `wifi_country` is the
+country the Wi-Fi radio is set to. At start it is the global one `iw reg get`
+reports, empty for the world domain `00` or when iw cannot say. After that it is
+each country the radio accepts when setup scans or joins under one, which the
+networking backend reports as it sets it, so a status read never runs iw. A
+country the radio refuses leaves it as it was. On DietPi a failed join's
+rollback restarts wpa_supplicant, which goes back to the `country=` in the
+restored `wpa_supplicant.conf`, so that is reported. With `--keep-country` the
+NetworkManager backend sets none, so it stays the host's own. The app opens
+Wi-Fi setup under it unless the user has chosen a country for that streamer.
+`POST /v1/setup` accepts the existing
 unframed v1 JSON commands and an extra `{"v":1,"op":"open"}` to explicitly open a setup window on an online
 streamer. `{"v":1,"op":"enable_wifi"}` explicitly enables Wi-Fi, including before
 opening setup. It completes within ten seconds and returns 202 on success,

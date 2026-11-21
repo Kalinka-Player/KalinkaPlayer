@@ -36,6 +36,7 @@ func (b *radioBackend) EnableRadio(context.Context) error     { b.enables.Add(1)
 func (b *radioBackend) StartAP(context.Context, string) error { return nil }
 func (b *radioBackend) StopAP(context.Context) error          { return nil }
 func (b *radioBackend) APInterface() string                   { return "wlan0" }
+func (b *radioBackend) OnCountrySet(func(string))             {}
 
 func waitRecovery(t *testing.T, r *radioRecovery) {
 	t.Helper()
