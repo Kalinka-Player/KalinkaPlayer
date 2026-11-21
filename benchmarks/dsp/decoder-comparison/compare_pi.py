@@ -4,6 +4,7 @@ import argparse
 import csv
 import io
 import json
+import math
 import os
 import platform
 import shlex
@@ -136,11 +137,35 @@ def build(output, repo, mpd_repo, squeezelite_repo):
     return binary
 
 
-def analyse(output):
-    with (output / "cpu-runs.csv").open() as f:
+def read_timings(csv_path):
+    with csv_path.open() as f:
         rows = list(csv.DictReader(f))
     if len(rows) != 50:
         raise ValueError("expected 10 rounds of five conversion paths")
+    timings = {}
+    for path in PATHS:
+        selected = [row for row in rows if row["converter"] == path]
+        if {int(row["round"]) for row in selected} != set(range(1, 11)):
+            raise ValueError(f"incomplete rounds for {path}")
+        values = [float(row["percent_one_core"]) for row in selected]
+        for row, value in zip(selected, values):
+            frames = int(row["frames"])
+            cpu = float(row["cpu_seconds"])
+            wall = float(row["wall_seconds"])
+            if (
+                abs(frames - 4194304) > (2304 if path == "squeezelite" else 0)
+                or not all(math.isfinite(x) and x > 0 for x in (cpu, wall, value))
+                or not math.isclose(
+                    value, 100 * cpu * 176400 / frames, rel_tol=0, abs_tol=1e-7
+                )
+            ):
+                raise ValueError(f"{path} round {row['round']}: invalid CPU timing")
+        timings[path] = values
+    return timings
+
+
+def analyse(output):
+    timings = read_timings(output / "cpu-runs.csv")
     # At the native rate, compare every first-channel float before packing.
     native = np.fromfile(output / "native.f32", dtype="<f4").reshape(-1, 3)
     bits = int.from_bytes((HERE / "dsd64.dsf").read_bytes()[64:72], "little")
@@ -174,18 +199,7 @@ def analyse(output):
                 ]
             )
     results = []
-    for path in PATHS:
-        selected = [row for row in rows if row["converter"] == path]
-        if {int(row["round"]) for row in selected} != set(range(1, 11)):
-            raise ValueError(f"incomplete rounds for {path}")
-        values = [float(row["percent_one_core"]) for row in selected]
-        for row, value in zip(selected, values):
-            frames = int(row["frames"])
-            if (
-                abs(frames - 4194304) > (2304 if path == "squeezelite" else 0)
-                or abs(value - 100 * float(row["cpu_seconds"]) * 176400 / frames) > 1e-7
-            ):
-                raise ValueError("unexpected frame count or CPU calculation")
+    for path, values in timings.items():
         stereo = np.fromfile(output / (path + ".f64"), dtype="<f8").reshape(-1, 2)
         if not np.array_equal(stereo[:, 0], stereo[:, 1]):
             raise ValueError(f"{path}: the two copies of the input channel differ")
