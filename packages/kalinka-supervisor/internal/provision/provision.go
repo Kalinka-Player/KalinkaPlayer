@@ -345,9 +345,12 @@ func (s *Service) APActive() bool { h := s.hotspot.Load(); return h != nil && h.
 
 // readCountry takes the radio's country from iw; the backend reports each one it sets after that.
 func (s *Service) readCountry(ctx context.Context) {
-	if code, err := wifi.Country(ctx, s.run); err == nil {
-		s.country.Store(code)
+	code, err := wifi.Country(ctx, s.run)
+	if err != nil {
+		slog.Warn("Could not read the Wi-Fi country", "error", err)
+		return
 	}
+	s.country.Store(code)
 }
 
 // Snapshot exposes setup status even when a radio is absent or recovering.
