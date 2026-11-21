@@ -119,7 +119,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build pkg-config libboost-dev libcurlpp-dev libcurl4-openssl-dev \
+            build-essential cmake ninja-build pkg-config libboost-dev libcurlpp-dev libssl-dev libcurl4-openssl-dev \
             libflac++-dev libvorbis-dev libxml2-dev libfaad-dev libsoxr-dev libasound2-dev libspdlog-dev libfmt-dev protobuf-compiler libprotobuf-dev \
             libhwy-dev libgtest-dev libgmock-dev
       - name: Build the tests

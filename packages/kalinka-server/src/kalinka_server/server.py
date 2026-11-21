@@ -123,6 +123,7 @@ from .device_ws_handler import (
 )
 from .renderer_link import RendererLink
 from .renderer_ws_handler import handle_renderer_connection
+from .dsp_profiles import DspProfiles
 from .renderer_config import RendererConfigService
 from .output_capabilities import OutputCapabilityTracker
 from .stream_state import to_stream_id
@@ -591,6 +592,8 @@ async def create_app(
     )
     renderer_sessions = SessionPool(renderer_registry, get_server_id())
     renderer_registry.set_on_removed(renderer_sessions.handle_renderer_removed)
+    profiles = DspProfiles(Path(paths.state_dir()))
+    app.include_router(profiles.router())
     renderer_configs = RendererConfigService(renderer_registry)
     output_capabilities = OutputCapabilityTracker(renderer_registry)
 
@@ -1741,6 +1744,7 @@ async def create_app(
         is wired into — is answered alongside, so one page shows both.
         """
         snapshot = await _renderer_config_call(renderer_configs.get(renderer_id))
+        await asyncio.to_thread(profiles.offer, snapshot)
         return core_renderer_settings.merge_into(snapshot, renderer_id)
 
     @app.put("/renderer/{renderer_id}/config")

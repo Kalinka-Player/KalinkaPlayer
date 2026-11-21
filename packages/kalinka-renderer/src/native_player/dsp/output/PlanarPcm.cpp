@@ -4,10 +4,9 @@
 #include <stdexcept>
 #include <string>
 
-PlanarScratch::PlanarScratch()
-    : channels(kPlanarChannels, std::vector<double>(kPlanarFrames)) {
-  for (auto &channel : channels)
-    pointers.push_back(channel.data());
+PlanarScratch::PlanarScratch() : channels(kPlanarChannels) {
+  for (size_t c = 0; c < channels.size(); ++c)
+    pointers[c] = channels[c].samples.data();
 }
 
 namespace {

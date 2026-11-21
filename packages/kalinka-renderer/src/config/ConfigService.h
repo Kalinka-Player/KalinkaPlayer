@@ -40,7 +40,8 @@ public:
    *            request that asked for it. config_version covers the shape and
    *            the options, never the values.
    */
-  void fillSnapshot(kalinka::renderer::v1::ConfigSnapshot &out) const;
+  void fillSnapshot(kalinka::renderer::v1::ConfigSnapshot &out,
+                    bool decimal = true) const;
 
   /**
    * @brief Apply what is valid and report every path either way.
@@ -55,7 +56,9 @@ public:
    *            just happened, not what might.
    */
   void apply(const kalinka::renderer::v1::ConfigUpdate &update,
-             kalinka::renderer::v1::ConfigResult &out);
+             kalinka::renderer::v1::ConfigResult &out,
+             const std::string &profileId = {},
+             const std::string &profileError = {}, bool decimal = true);
 
 private:
   std::vector<std::shared_ptr<ConfigContributor>> contributors_;

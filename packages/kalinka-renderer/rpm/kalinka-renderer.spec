@@ -19,6 +19,7 @@ BuildRequires:  protobuf-compiler
 BuildRequires:  boost-devel
 BuildRequires:  spdlog-devel
 BuildRequires:  alsa-lib-devel
+BuildRequires:  openssl-devel
 BuildRequires:  libcurl-devel
 BuildRequires:  curlpp-devel
 BuildRequires:  flac-devel

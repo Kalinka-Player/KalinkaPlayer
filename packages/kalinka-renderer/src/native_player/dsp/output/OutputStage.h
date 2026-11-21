@@ -9,6 +9,7 @@
 #include "dsp/output/OutputFormat.h"
 #include "dsp/output/PlanarPcm.h"
 #include "dsp/output/Quantiser.h"
+#include "dsp/peq/RoomEq.h"
 
 #include <atomic>
 #include <memory>
@@ -69,6 +70,10 @@ public:
   /// What DSD converted to PCM is raised by besides the volume, linear; heard
   /// from the next read on, over the ramp.
   void setDsdGain(double linear);
+  /// Switches the PCM correction and final preamp on the next read.
+  void setRoomEq(peq::Settings settings);
+  /// Discards filter history when the audible stream is explicitly removed.
+  void discardRoomEq(std::optional<StreamId> id = std::nullopt);
   void fadeOut() override;
   void fadeIn() override;
   void settle(double level) override;
@@ -94,6 +99,7 @@ private:
   struct Presented {
     StreamAudioFormat source;
     OutputChoice output;
+    unsigned channels;
     /// DSD converted to PCM upstream, which the DSD gain raises.
     bool fromDsd = false;
   };
@@ -112,9 +118,19 @@ private:
   uint64_t clippedPosted = 0;
   /// The stream being read, as upstream last stated it; under presentedMutex.
   std::optional<StreamId> reading;
+  // Plan writers serialize with one another while the pulling thread uses the
+  // last published plan.
+  std::mutex eqPreparationMutex;
   mutable std::mutex presentedMutex;
   std::optional<Presented> presented;
 
+  peq::Settings eqSettings;
+  peq::Plan eqPlan;
+  uint64_t eqRevision = 0;
+  uint64_t appliedRevision = 0;
+  bool resetEq = true;
+  peq::RoomEq eq;
+  Presented present(const StreamAudioFormat &source, bool fromDsd);
   GainRamp ramp;
   GainRamp fade;
   /// What the fade heads for, and a level it takes at once first.
@@ -129,9 +145,6 @@ private:
   /// Moves both ramps toward their targets for @p now, settling either first
   /// when asked.
   void follow(const Presented &now);
-  /// The next stretch of at most @p frames frames over which neither ramp
-  /// turns, at the two gains multiplied.
-  GainRamp::Span take(size_t frames);
   void produce(const Presented &now, const uint8_t *in, size_t frames,
                uint8_t *out);
   size_t toSource(const Presented &now, size_t bytes) const;

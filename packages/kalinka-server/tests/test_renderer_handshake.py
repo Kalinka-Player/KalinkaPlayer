@@ -25,6 +25,7 @@ from kalinka_server.renderer_sessions import SessionPool
 from kalinka_server.renderer_upgrade import RendererUpgradeService
 from kalinka_server.renderer_ws_handler import (
     PROTOCOL_VERSION,
+    RendererSession,
     handle_renderer_connection,
     runs_here,
 )
@@ -298,3 +299,24 @@ async def test_playback_events_reach_the_session_they_name():
     pool.handle_playback_event.assert_called_once_with(
         "old-rid", session_id="session-1", message=event.playback_event
     )
+
+
+async def test_older_renderer_negotiates_v2():
+    ws, registry = await _run([_hello(2, 2)])
+    assert registry.get("old-rid").compatible
+    assert [e.welcome.protocol_version for e in ws.sent if e.HasField("welcome")] == [2]
+
+
+async def test_profile_selection_uses_the_core_address_of_the_connection():
+    ws = FakeWebSocket([])
+    ws.scope["server"] = ("2001:db8::4", 8000)
+    session = RendererSession(ws)
+    digest = "ef" * 32
+    await session.send_config_update(7, {"dsp.profile": digest})
+    await session.send_config_update(8, {"dsp.profile": "none"})
+    selection, clear = ws.sent
+    assert selection.message_id == 7
+    assert selection.config_update.dsp_profile_url == (
+        f"http://[2001:db8::4]:8000/dsp/profiles/{digest}"
+    )
+    assert clear.config_update.dsp_profile_url == ""

@@ -628,6 +628,10 @@ std::shared_ptr<ConfigContributor> NativePlayer::dsdSettings() {
   return std::make_shared<KnobSection>(shared_from_this(), kDsd);
 }
 
+std::shared_ptr<ConfigContributor> NativePlayer::dspSettings() {
+  return {shared_from_this(), dsp_.get()};
+}
+
 void NativePlayer::persistOverrides() const {
   updateSettingsOverrides(settings_, defaultSettings());
 }
@@ -641,6 +645,12 @@ Config NativePlayer::graphConfig() const {
 }
 
 NativePlayer::NativePlayer(asio::io_context &ioc) : ioc_(ioc) {
+  dsp_ = std::make_unique<DspSettings>([this] {
+    if (player_) {
+      player_->setRoomEq(dsp_->current());
+      restatePlayback();
+    }
+  });
   for (const auto &[key, value] : loadSettingsOverrides()) {
     const auto setting = settings_.find(key);
     if (setting == settings_.end()) {
@@ -674,6 +684,7 @@ bool NativePlayer::ensurePlayer() {
   }
   try {
     player_ = std::make_unique<AudioPlayer>(graphConfig());
+    player_->setRoomEq(dsp_->current());
     std::string volumeError;
     if (!player_->configureVolume(effectiveVolumeMode(), "", &volumeError)) {
       spdlog::error("Cannot configure volume mode '{}': {}",

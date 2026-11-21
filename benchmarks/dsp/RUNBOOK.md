@@ -41,7 +41,7 @@ build set from its README. With 2 GB of RAM or less, use
 ```
 sudo apt install cmake ninja-build g++ libprotobuf-dev protobuf-compiler \
   libboost-dev libspdlog-dev libasound2-dev libflac++-dev libvorbis-dev \
-  libcurl4-openssl-dev libcurlpp-dev libxml2-dev libfaad-dev libsoxr-dev \
+  libssl-dev libcurl4-openssl-dev libcurlpp-dev libxml2-dev libfaad-dev libsoxr-dev \
   libgtest-dev libhwy-dev flac linux-perf
 cd KalinkaPlayer/packages/kalinka-renderer
 cmake -G Ninja -B build-bench -DCMAKE_BUILD_TYPE=Release -DKALINKA_BUILD_BENCHMARKS=ON
@@ -59,9 +59,10 @@ echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governo
 vcgencmd measure_temp; vcgencmd get_throttled
 ```
 
-`get_throttled` must say `throttled=0x0` before and after; anything else
-means the board slowed itself down and the run measured the heatsink. Let a
-hot board cool before starting.
+Record `get_throttled` before, during and after the measurements. The low
+four bits report current conditions and should be clear. Bits 16–19 retain
+past events until reboot. Record those separately and let a hot board cool
+before starting.
 
 Run, keeping the outputs:
 
@@ -124,6 +125,9 @@ or run anything else meanwhile: two builds at once can exhaust the memory of a
 - **Kernel costs** per frame should not depend on the rate, except the
   `DelayLine` row, whose ring grows with it. A kernel ten times slower at one
   rate than at the others was disturbed: rerun it.
+- Run `taskset -c 3 $B kernels PEQ 192000` to measure the production 20-band cascade
+  and the dithered output stage in isolation. Compare the 192 kHz cascade row
+  with the Pi 4 target of 1% of one core. Record at least three Release runs.
 - **SIMD**: each row's null must be at or below -250 dB. -400 dB means
   bit-identical, which is expected without FMA. Anything above -200 dB is a
   bug in that kernel, not rounding.

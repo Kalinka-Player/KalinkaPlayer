@@ -1,7 +1,9 @@
 #include "AudioPlayer.h"
 #include "FileInputNode.h"
 #include "FlacStreamDecoder.h"
+#include "ReferenceFilters.h"
 #include "StateMonitor.h"
+#include "dsp/peq/Profile.h"
 
 #include <gtest/gtest.h>
 
@@ -69,10 +71,12 @@ protected:
 
   /// @param softwareVolume A percentage, or fixed volume when absent.
   std::vector<uint8_t> play(const std::vector<std::string> &files,
-                            std::optional<int> softwareVolume = std::nullopt) {
+                            std::optional<int> softwareVolume = std::nullopt,
+                            peq::Settings correction = {}) {
     {
       AudioPlayer player({{"output.alsa.device", "capture"},
                           {"dsp.delay_ms", std::to_string(GetParam())}});
+      player.setRoomEq(correction);
       if (softwareVolume) {
         player.configureVolume("software", "");
         player.setVolume(*softwareVolume);
@@ -129,6 +133,26 @@ TEST_P(BitPerfectOutputTest, SoftwareVolumeBelowFullIsScaledAndDithered) {
     offPlainRounding += written[i] != std::lround(exact);
   }
   EXPECT_GT(offPlainRounding, source.size() / 10);
+}
+
+TEST_P(BitPerfectOutputTest, RoomEqMatchesOneContinuousFilterAcrossTheJoin) {
+  const auto source = samples(decoded(ladder()));
+  auto profile = std::make_shared<peq::Profile>();
+  profile->shared.push_back({peq::Type::Peak, 150, -12, 3});
+  const auto out =
+      samples(play({ladder(), ladder()}, std::nullopt, {profile, 0}));
+  ASSERT_EQ(out.size(), source.size() * 2);
+  for (unsigned channel = 0; channel < 2; ++channel) {
+    std::vector<double> input(out.size() / 2), filtered(input.size());
+    for (size_t i = 0; i < input.size(); ++i)
+      input[i] = source[(2 * i + channel) % source.size()];
+    harness::BiquadCascade reference({harness::peaking(150, -12, 3, 22050)});
+    reference.process(input, filtered);
+    for (size_t i = 0; i < filtered.size(); ++i)
+      ASSERT_NEAR(out[2 * i + channel],
+                  std::clamp(filtered[i], -32768.0, 32767.0), 1.51)
+          << i;
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(, BitPerfectOutputTest, testing::Values(0, 300),

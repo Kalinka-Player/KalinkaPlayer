@@ -138,13 +138,13 @@ explicit **DoP** selection; Automatic converts to PCM instead.
 ## Build
 
 Dependencies (dev headers): protobuf (+ compiler), Boost (headers only — asio
-and beast), spdlog, ALSA, FLAC++, libvorbisfile, libcurl, curlpp, libxml2, faad2, libsoxr, and Highway 1.2
+and beast), spdlog, ALSA, FLAC++, libvorbisfile, libcurl, curlpp, OpenSSL libcrypto, libxml2, faad2, libsoxr, and Highway 1.2
 or newer for the DSP's vector kernels (Debian 13 or Ubuntu 26.04; Ubuntu 24.04's is too old). GoogleTest is
 optional and only builds the test binary. mDNS is self-contained (vendored public-domain
 `third_party/mdns`), so no avahi or Bonjour daemon is needed.
 
-- Fedora: `sudo dnf install cmake gcc-c++ protobuf-devel protobuf-compiler protobuf-lite-devel boost-devel spdlog-devel alsa-lib-devel flac-devel libvorbis-devel libcurl-devel curlpp-devel libxml2-devel faad2-devel soxr-devel highway-devel gtest-devel`
-- Debian/Ubuntu: `sudo apt install cmake g++ libprotobuf-dev protobuf-compiler libboost-dev libspdlog-dev libasound2-dev libflac++-dev libvorbis-dev libcurl4-openssl-dev libcurlpp-dev libxml2-dev libfaad-dev libsoxr-dev libhwy-dev libgtest-dev`
+- Fedora: `sudo dnf install cmake gcc-c++ protobuf-devel protobuf-compiler protobuf-lite-devel boost-devel spdlog-devel alsa-lib-devel flac-devel libvorbis-devel openssl-devel libcurl-devel curlpp-devel libxml2-devel faad2-devel soxr-devel highway-devel gtest-devel`
+- Debian/Ubuntu: `sudo apt install cmake g++ libprotobuf-dev protobuf-compiler libboost-dev libspdlog-dev libasound2-dev libflac++-dev libvorbis-dev libssl-dev libcurl4-openssl-dev libcurlpp-dev libxml2-dev libfaad-dev libsoxr-dev libhwy-dev libgtest-dev`
 
 From the repo root:
 
@@ -286,6 +286,44 @@ Under `$KALINKA_PREFIX/var/lib/kalinka-renderer` (`KALINKA_PREFIX` defaults to
 
 If the directory is not writable the renderer still runs, with an ephemeral id
 and settings that last only for the run.
+
+## REW room correction
+
+In Room EQ Wizard, choose the **Generic** equaliser and **Export filter settings as text**.
+Import one curve for all channels, or export each speaker's correction separately.
+Mono PCM is duplicated before EQ so each speaker still receives its own correction.
+The Core accepts up to 20 active bands per channel from decimal-point text exports.
+It supports PK and Modal peaks, LS and HS shelves, and LSQ and HSQ shelves with
+adjustable Q. An unsupported active filter produces an error with its line number.
+Disabled and zero-gain bands take no processing time.
+See the [REW EQ window guide](https://www.roomeqwizard.com/help/help_en-GB/html/eqwindow.html)
+for the export controls.
+
+With `CORE` set to the Core's base URL, import a shared curve with the following command.
+
+```sh
+jq -n --arg name "Listening room" --rawfile shared room.txt '{ $name, $shared }' |
+  curl --fail-with-body --json @- "$CORE/dsp/profiles/rew"
+```
+
+For separate left and right curves, send `left` and `right` in place of `shared`.
+
+```sh
+jq -n --arg name "Listening room" --rawfile left left.txt --rawfile right right.txt '{ $name, $left, $right }' |
+  curl --fail-with-body --json @- "$CORE/dsp/profiles/rew"
+```
+
+Select the imported name under **Room correction → Room profile** in the renderer's
+settings and enable **Room correction**. **Bypass** lets you compare the result during
+playback. The import returns the profile's SHA-256 as `id`, which also works as
+`dsp.profile` in `PUT /renderer/{renderer_id}/config`. The renderer verifies and
+caches the selected profile and restores it on restart.
+
+Automatic preamp reserves the sum of the individual bands' maximum boosts on the
+channel that needs the most headroom. Manual preamp accepts −30 to 0 dB and ramps
+over 25 ms. Room correction runs on PCM, including DSD converted to PCM. Native
+DSD and DoP pass through. If a band's frequency is at or above Nyquist, the
+renderer skips the curve for that sample rate and logs the reason.
 
 ## Upgrading
 

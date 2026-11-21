@@ -163,4 +163,8 @@ size_t convertSampleFormat(const void *source, AudioSampleFormat sourceFormat,
                            size_t sourceSamples, void *dest,
                            AudioSampleFormat destFormat, size_t destSizeBytes);
 
+/// Duplicate each packed mono sample into every output channel, in place.
+/// The buffer must hold frames * channels * width bytes.
+void expandMono(uint8_t *data, size_t frames, unsigned channels, size_t width);
+
 #endif // AUDIO_SAMPLE_FORMAT_H

@@ -48,7 +48,8 @@ find_package(Boost CONFIG REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(Threads REQUIRED)
 find_package(ALSA REQUIRED)
-find_package(CURL 7.68 REQUIRED) # curl_multi_wakeup for prompt stream cancellation
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+find_package(CURL 7.85 REQUIRED) # CURLOPT_PROTOCOLS_STR for profile downloads
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FLACPP REQUIRED IMPORTED_TARGET flac++)
 pkg_check_modules(VORBISFILE REQUIRED IMPORTED_TARGET vorbisfile)
@@ -143,6 +144,9 @@ add_library(kalinka_native_player STATIC
   src/native_player/TrackDecoder.cpp
   src/native_player/VorbisStreamDecoder.cpp
   src/native_player/WavContainer.cpp
+  src/native_player/dsp/peq/RoomEq.cpp
+  src/native_player/dsp/peq/ParallelPeq.cpp
+  src/native_player/dsp/peq/PeqKernels.cpp
   src/native_player/dsp/DelayLine.cpp
   src/native_player/dsp/DspStage.cpp
   src/native_player/dsp/dsd/ByteHistory.cpp
@@ -166,6 +170,11 @@ add_library(kalinka_native_player STATIC
   src/native_player/dsp/output/Quantiser.cpp
   src/native_player/dsp/output/TpdfDither.cpp
 )
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+  enable_language(ASM)
+  target_sources(kalinka_native_player PRIVATE
+    src/native_player/dsp/peq/ParallelPeqAarch64.S)
+endif()
 # The source directory too: Highway's dispatch includes each kernel source
 # again by its path from there, once per instruction set.
 target_include_directories(kalinka_native_player PRIVATE
@@ -194,6 +203,11 @@ target_link_libraries(kalinka_native_player PUBLIC
 # exercise.
 add_library(kalinka_renderer_core STATIC
   src/capabilities/CapabilityService.cpp
+  src/config/DspProfile.cpp
+  src/config/DspProfileCache.cpp
+  src/config/ProfileDownloads.cpp
+  src/config/DspSettings.cpp
+  src/config/SettingsPersistence.cpp
   src/config/ConfigService.cpp
   src/net/ProtocolSession.cpp
   src/session/Session.cpp
@@ -205,6 +219,8 @@ target_include_directories(kalinka_renderer_core PUBLIC
 )
 target_link_libraries(kalinka_renderer_core PUBLIC
   kalinka_renderer_proto
+  OpenSSL::Crypto
+  CURL::libcurl
   Boost::headers
   spdlog::spdlog
   Threads::Threads
@@ -216,7 +232,6 @@ add_executable(kalinka-renderer
   src/Daemon.cpp
   src/Identity.cpp
   src/config/RendererName.cpp
-  src/config/SettingsPersistence.cpp
   src/discovery/CoreGrouper.cpp
   src/discovery/DiscoveryCache.cpp
   src/discovery/MdnsDiscovery.cpp
@@ -245,6 +260,9 @@ if(KALINKA_BUILD_FUZZERS)
   if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     message(FATAL_ERROR "KALINKA_BUILD_FUZZERS needs Clang for libFuzzer")
   endif()
+  add_executable(DspProfile_fuzz tests/fuzz/DspProfile_fuzz.cpp src/config/DspProfile.cpp)
+  target_include_directories(DspProfile_fuzz PRIVATE src)
+  target_link_libraries(DspProfile_fuzz PRIVATE kalinka_renderer_proto)
   foreach(name AlacFrames FragmentedMp4Init FragmentedMp4Segments Mp4Movie)
     add_executable(${name}_fuzz
       tests/fuzz/${name}_fuzz.cpp
@@ -260,6 +278,8 @@ if(KALINKA_BUILD_FUZZERS)
     target_compile_definitions(${name}_fuzz PRIVATE
       KALINKA_DASH_INIT_SEGMENT="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/dash/16/init-stream0.m4s"
     )
+  endforeach()
+  foreach(name AlacFrames FragmentedMp4Init FragmentedMp4Segments Mp4Movie DspProfile)
     target_compile_options(${name}_fuzz PRIVATE
       -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined
     )
@@ -334,7 +354,6 @@ if(GTest_FOUND)
   enable_testing()
   add_executable(kalinka-renderer-tests
     src/config/RendererName.cpp
-    src/config/SettingsPersistence.cpp
     src/discovery/CoreGrouper.cpp
     src/discovery/DiscoveryCache.cpp
     src/discovery/SocketPlan.cpp
@@ -397,6 +416,7 @@ if(GTest_FOUND)
     tests/native_player/VorbisStreamDecoder_test.cpp
     tests/native_player/WavContainer_test.cpp
     tests/native_player/integration_test.cpp
+    tests/native_player/dsp/RoomEq_test.cpp
     tests/native_player/dsp/DspStage_test.cpp
     tests/native_player/dsp/DspStageConversion_test.cpp
     tests/native_player/dsp/dsd/ByteHistory_test.cpp

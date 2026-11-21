@@ -1264,15 +1264,8 @@ size_t AlsaAudioEmitter::readAndConvertFrames(void *dest, size_t bytes) {
   auto *out = static_cast<uint8_t *>(dest);
   const auto converted = convertSampleFormat(source.data(), sourceFormat, count,
                                              out, destFormat, count * width);
-  if (copies > 1) {
-    // Work backwards so expansion cannot overwrite unexpanded samples.
-    for (size_t i = converted; i > 0; --i) {
-      auto *first = out + (i - 1) * copies * width;
-      std::memmove(first, out + (i - 1) * width, width);
-      for (unsigned c = 1; c < copies; ++c)
-        std::memcpy(first + c * width, first, width);
-    }
-  }
+  if (copies > 1)
+    expandMono(out, converted, copies, width);
   return converted * copies / outputChannels;
 }
 

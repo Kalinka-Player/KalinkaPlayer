@@ -25,6 +25,7 @@
 #include "TestHelpers.h"
 #include "WavTestData.h"
 #include "config/ConfigService.h"
+#include "config/ProfileDownloads.h"
 #include "config/SettingsPersistence.h"
 #include "dsp/dsd/DsdFilterSetting.h"
 #include "dsp/dsd/DsdGainSetting.h"
@@ -474,7 +475,8 @@ TEST_F(NativePlayerSettingsTest, TheDspSaysWhatItIsBuiltToDo) {
   ASSERT_TRUE(capabilities.has_dsp());
   EXPECT_TRUE(capabilities.dsp().dsd_to_pcm());
   EXPECT_THAT(capabilities.dsp().steps(),
-              ::testing::ElementsAre("dsd_to_pcm", "dsd_gain", "dither"));
+              ::testing::ElementsAre("dsd_to_pcm", "peq", "preamp", "dsd_gain",
+                                     "dither"));
   EXPECT_EQ(capabilities.dsp().max_output_channels(), 2u);
 }
 
@@ -1839,4 +1841,93 @@ TEST_F(NativePlayerSettingsTest, AnUndeclaredPathIsRefused) {
   EXPECT_EQ(error_, "unknown setting");
 }
 
-}  // namespace
+TEST_F(NativePlayerSettingsTest,
+       VerifiedRewProfileSurvivesRestartAndFailedReplacement) {
+  const std::string id =
+      "02e63d4683c20e8abb80f837820945dd75c0f5063778841e759cdee4c5005d14";
+  renderer_pb::DspProfile profile;
+  profile.set_version(1);
+  profile.set_name("Stereo room");
+  auto &band = *profile.add_shared();
+  band.set_type(renderer_pb::DspProfile::Band::PEAK);
+  band.set_frequency_hz(1000);
+  band.set_gain_db(-6);
+  band.set_q(2);
+  LocalHttpServer server(std::map<std::string, std::string, std::less<>>{
+      {"/room", profile.SerializeAsString()}});
+  auto downloads = std::make_shared<ProfileDownloads>(ioc_);
+  auto apply = [&](std::string hash, std::string url) {
+    ConfigService config({player_->dspSettings()});
+    renderer_pb::ConfigUpdate update;
+    update.set_dsp_profile_url(url);
+    auto setting = update.add_settings();
+    setting->set_path("dsp.profile");
+    setting->set_value(hash);
+    auto guard = boost::asio::make_work_guard(ioc_);
+    renderer_pb::ConfigResult result;
+    downloads->prepare(update, [&](const auto &verified, const auto &error) {
+      config.apply(update, result, verified, error);
+      guard.reset();
+    });
+    ioc_.restart();
+    while (!result.outcomes_size())
+      ioc_.run_one();
+    return result.outcomes(0);
+  };
+  EXPECT_TRUE(apply(id, server.url("/room")).applied());
+  EXPECT_FALSE(apply(std::string(64, 'a'), server.url("/room")).applied());
+  EXPECT_EQ(loadSettingsOverrides().at("dsp.profile"), id);
+  player_ = std::make_shared<NativePlayer>(ioc_);
+  renderer_pb::ConfigSection out;
+  player_->dspSettings()->fillConfig(out);
+  EXPECT_EQ(field(out, "dsp.profile")->options(1).label(), "Stereo room");
+  EXPECT_TRUE(apply(id, "").applied());
+  ConfigService config({player_->dspSettings()});
+  renderer_pb::ConfigSnapshot old;
+  config.fillSnapshot(old, false);
+  EXPECT_EQ(field(old.sections(0), "dsp.preamp_db")->type(),
+            renderer_pb::CONFIG_FIELD_TYPE_STRING);
+  EXPECT_TRUE(
+      player_->dspSettings()->applyConfig("dsp.preamp_db", "-3.5", error_));
+  for (const std::string invalid : {"nan", "-inf", "-31", "0.1", "-3.5x"})
+    EXPECT_FALSE(
+        player_->dspSettings()->applyConfig("dsp.preamp_db", invalid, error_));
+}
+
+TEST(ProfileDownloadsTest, AnInvalidSelectionWaitsForEarlierWrites) {
+  boost::asio::io_context io;
+  auto downloads = std::make_shared<ProfileDownloads>(io);
+  renderer_pb::ConfigUpdate update;
+  auto *setting = update.add_settings();
+  setting->set_path("dsp.profile");
+  setting->set_value("invalid-hash");
+  std::vector<std::string> errors;
+  downloads->prepare(update, [&](const auto &, const auto &error) {
+    errors.push_back(error);
+  });
+  update.add_settings()->set_path("dsp.profile");
+  downloads->prepare(update, [&](const auto &, const auto &error) {
+    errors.push_back(error);
+  });
+  EXPECT_TRUE(errors.empty());
+  io.run();
+  EXPECT_THAT(errors,
+              ::testing::ElementsAre("Invalid profile SHA-256",
+                                     "Select one DSP profile per update"));
+}
+
+TEST(ProfileDownloadsTest, ShutdownDropsOutstandingReplies) {
+  boost::asio::io_context io;
+  auto downloads = std::make_shared<ProfileDownloads>(io);
+  renderer_pb::ConfigUpdate update;
+  auto *setting = update.add_settings();
+  setting->set_path("dsp.profile");
+  setting->set_value("invalid-hash");
+  bool replied = false;
+  downloads->prepare(update, [&](const auto &, const auto &) { replied = true; });
+  downloads.reset();
+  io.run();
+  EXPECT_FALSE(replied);
+}
+
+} // namespace

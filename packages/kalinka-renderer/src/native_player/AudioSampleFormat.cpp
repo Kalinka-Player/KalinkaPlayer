@@ -6,6 +6,16 @@
 #include <cstring>
 #include <stdexcept>
 
+void expandMono(uint8_t *data, size_t frames, unsigned channels, size_t width) {
+  // Expand backwards so the next unread sample stays intact.
+  for (size_t i = frames; i > 0; --i) {
+    auto *first = data + (i - 1) * channels * width;
+    std::memmove(first, data + (i - 1) * width, width);
+    for (unsigned c = 1; c < channels; ++c)
+      std::memcpy(first + c * width, first, width);
+  }
+}
+
 void interleave(const StreamAudioFormat &format,
                 const int32_t *const channels[], size_t frames,
                 std::vector<uint8_t> &pcm) {

@@ -392,6 +392,19 @@ TEST_F(ProtocolSessionTest, ReconnectingOwnerGetsTheSessionBack) {
   EXPECT_TRUE(wire.sent[1].has_state_snapshot());
 }
 
+TEST_F(ProtocolSessionTest, ConfigWaitsForVersionNegotiation) {
+  FakeWire wire;
+  auto protocol = makeProtocol(wire);
+  renderer_pb::Envelope request, update;
+  request.mutable_config_request();
+  auto *setting = update.mutable_config_update()->add_settings();
+  setting->set_path("output.buffer_ms");
+  setting->set_value("250");
+  feed(*protocol, request);
+  feed(*protocol, update);
+  EXPECT_TRUE(wire.sent.empty());
+}
+
 TEST_F(ProtocolSessionTest, ConfigIsAnsweredInReplyWithoutASession) {
   FakeWire wire;
   auto protocol = makeProtocol(wire);

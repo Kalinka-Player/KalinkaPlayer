@@ -2,6 +2,7 @@
 
 #include "AudioSampleFormat.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -23,8 +24,13 @@ public:
   double *const *planes() { return pointers.data(); }
 
 private:
-  std::vector<std::vector<double>> channels;
-  std::vector<double *> pointers;
+  struct alignas(64) Plane {
+    std::array<double, kPlanarFrames> samples;
+  };
+  std::vector<Plane> channels;
+  std::array<double *, kPlanarChannels> pointers;
+  PlanarScratch(const PlanarScratch &) = delete;
+  PlanarScratch &operator=(const PlanarScratch &) = delete;
 };
 
 /**

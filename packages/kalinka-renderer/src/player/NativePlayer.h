@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "../capabilities/CapabilityService.h"
+#include "../config/DspSettings.h"
 #include "../native_player/AudioPlayer.h"
 #include "../native_player/StateMonitor.h"
 #include "Player.h"
@@ -97,6 +98,8 @@ public:
   std::shared_ptr<ConfigContributor> networkSettings();
   /// The DSD section, which is held and registered as bufferSettings() is.
   std::shared_ptr<ConfigContributor> dsdSettings();
+  /// Room profiles and their preamp controls.
+  std::shared_ptr<ConfigContributor> dspSettings();
 
 private:
   /// Contributes one section of knobs; writes land back on the player.
@@ -148,6 +151,7 @@ private:
 
   boost::asio::io_context &ioc_;
   StateSink sink_;
+  std::unique_ptr<DspSettings> dsp_;
   std::map<std::string, std::string> settings_ = defaultSettings();
   // Never merged into settings_: that is the configured value, which the
   // config plane reports and persistOverrides() writes.

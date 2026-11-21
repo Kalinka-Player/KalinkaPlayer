@@ -112,6 +112,8 @@ private:
   // route without a lookup; the gate is sessionId().
   std::shared_ptr<SessionEventSink> session_;
   bool welcomed_ = false;
+  uint32_t version_ = 0;
+  uint64_t connectionGeneration_ = 0;
   // Changed after Hello stated them and before Welcome let anything follow it.
   bool capabilitiesMoved_ = false;
   // Whether the Core's protocol version is one this binary speaks. A Core that

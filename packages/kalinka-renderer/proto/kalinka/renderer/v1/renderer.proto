@@ -537,6 +537,27 @@ message PlaybackError { ErrorInfo error = 1; }
 // `type` says how to read it.
 // ============================================================================
 
+// Version 1 carries either a shared correction or independent left/right EQ.
+message DspProfile {
+  message Band {
+    enum Type {
+      UNSPECIFIED = 0;
+      PEAK = 1;
+      LOW_SHELF = 2;
+      HIGH_SHELF = 3;
+    }
+    Type type = 1;
+    double frequency_hz = 2;
+    double gain_db = 3;
+    double q = 4;
+  }
+  uint32 version = 1;
+  string name = 2;
+  repeated Band shared = 3;
+  repeated Band left = 4;
+  repeated Band right = 5;
+}
+
 message ConfigRequest {}
 
 message ConfigUpdate {
@@ -545,6 +566,8 @@ message ConfigUpdate {
     string value = 2;
   }
   repeated Setting settings = 1;
+  // Where to fetch the SHA-256 selected by dsp.profile on a cache miss.
+  string dsp_profile_url = 2;
 }
 
 // Core -> renderer: install a published renderer release and restart into it.
@@ -573,6 +596,7 @@ enum ConfigFieldType {
   CONFIG_FIELD_TYPE_BOOL = 3;
   CONFIG_FIELD_TYPE_ENUM = 4;     // choose from `options`
   CONFIG_FIELD_TYPE_TRIGGER = 5;  // no value; writing anything runs it once
+  CONFIG_FIELD_TYPE_DECIMAL = 6;
 }
 
 // What it costs to apply a field, so the UI can warn before the user commits.
@@ -602,8 +626,13 @@ enum ConfigWidget {
   CONFIG_WIDGET_NUMBER = 2;
 }
 
-// What an INT field will accept. The renderer enforces it too — a write
-// outside the range is refused, not clamped.
+message ConfigDecimalRange {
+  double min = 1;
+  double max = 2;
+  double step = 3;
+}
+
+// What an INT field will accept.
 message ConfigRange {
   int64 min = 1;
   int64 max = 2;
@@ -634,6 +663,7 @@ message ConfigField {
   string unit = 12;                 // shown beside the value, e.g. "ms"
   ConfigWidget widget = 13;
   string help_details = 14;
+  ConfigDecimalRange decimal_range = 15;
 }
 
 message ConfigSection {
