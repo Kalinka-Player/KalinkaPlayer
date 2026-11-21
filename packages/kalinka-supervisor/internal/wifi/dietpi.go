@@ -146,11 +146,20 @@ func (d *DietPi) rollback() error {
 	if err := d.Transaction.Restore(); err != nil {
 		return err
 	}
-	_, err := d.Run(ctx, 15*time.Second, "systemctl", "--no-block", "restart", "kalinka-wifi@"+d.Interface+".service")
-	return err
+	if _, err := d.Run(ctx, 15*time.Second, "systemctl", "--no-block", "restart", "kalinka-wifi@"+d.Interface+".service"); err != nil {
+		return err
+	}
+	// The restarted wpa_supplicant puts the radio back on the restored configuration's country.
+	conf, _ := readOptional(d.Conf)
+	if m := confCountry.FindSubmatch(conf); m != nil {
+		d.countrySet(string(m[1]))
+	}
+	clear(conf)
+	return nil
 }
 
 var numeric = regexp.MustCompile(`^[0-9]+$`)
+var confCountry = regexp.MustCompile(`(?m)^[ \t]*country=([A-Z]{2})[ \t]*$`)
 
 func (d *DietPi) Join(parent context.Context, c protocol.Command, progress func(byte)) (address string, result error) {
 	ctx, cancel := context.WithTimeout(parent, 100*time.Second)

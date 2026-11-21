@@ -125,7 +125,7 @@ func TestDietPiJoinAndRollback(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			files := map[string]string{d.Tool: "tool", d.Conf: "update_config=1\nnetwork={\n ssid=\"saved\"\n}\n", d.Database: "aWIFI_SSID[0]='saved'\n", d.CountryFile: "AUTO_SETUP_NET_WIFI_COUNTRY_CODE=US\n", d.Transaction.Paths[3]: "old interfaces\n"}
+			files := map[string]string{d.Tool: "tool", d.Conf: "update_config=1\ncountry=DE\nnetwork={\n ssid=\"saved\"\n}\n", d.Database: "aWIFI_SSID[0]='saved'\n", d.CountryFile: "AUTO_SETUP_NET_WIFI_COUNTRY_CODE=US\n", d.Transaction.Paths[3]: "old interfaces\n"}
 			for p, s := range files {
 				if err := AtomicWrite(p, []byte(s), 0600); err != nil {
 					t.Fatal(err)
@@ -168,9 +168,12 @@ func TestDietPiJoinAndRollback(t *testing.T) {
 			cmd := protocol.Command{SSID: "candidate", Country: "GB", Password: protocol.NewSecret("dummy-passphrase")}
 			defer cmd.Password.Clear()
 			ip, err := d.Join(ctx, cmd, func(byte) {})
-			// The radio keeps a country set before the join failed; a rollback restores files, not the radio.
-			if !slices.Equal(reported, []string{"GB"}) {
-				t.Fatalf("reported %q, want GB", reported)
+			want := []string{"GB", "DE"}
+			if scenario == "success" {
+				want = want[:1]
+			}
+			if !slices.Equal(reported, want) {
+				t.Fatalf("reported %q, want %q", reported, want)
 			}
 			mu.Lock()
 			all := strings.Join(calls, "\n")
@@ -215,6 +218,48 @@ func TestDietPiJoinAndRollback(t *testing.T) {
 			}
 			if d.Transaction.Pending() {
 				t.Fatal("transaction remained")
+			}
+		})
+	}
+}
+func TestDietPiRollbackReportsOnlyARestoredCountry(t *testing.T) {
+	for _, tc := range []struct {
+		name, saved string
+		restart     error
+		want        []string
+	}{
+		{"saved with one", "update_config=1\n\tcountry=DE \n", nil, []string{"DE"}},
+		{"saved without one", "update_config=1\n", nil, nil},
+		{"restart failing", "update_config=1\ncountry=DE\n", protocol.Unavailable, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			d, err := NewDietPi("wlan0", root, filepath.Join(root, "state"), filepath.Join(root, "run"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = AtomicWrite(d.Conf, []byte(tc.saved), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err = d.Transaction.Begin(); err != nil {
+				t.Fatal(err)
+			}
+			if err = AtomicWrite(d.Conf, []byte("update_config=1\ncountry=GB\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			d.Run = func(_ context.Context, _ time.Duration, name string, args ...string) (string, error) {
+				if name == "systemctl" && args[0] == "--no-block" {
+					return "", tc.restart
+				}
+				return "", nil
+			}
+			var reported []string
+			d.OnCountrySet(func(country string) { reported = append(reported, country) })
+			if err := d.rollback(); err != tc.restart {
+				t.Fatalf("rollback gave %v, want %v", err, tc.restart)
+			}
+			if !slices.Equal(reported, tc.want) {
+				t.Fatalf("reported %q, want %q", reported, tc.want)
 			}
 		})
 	}

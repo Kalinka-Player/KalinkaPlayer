@@ -30,7 +30,7 @@ type Backend interface {
 	Join(context.Context, protocol.Command, func(byte)) (string, error)
 	Recover(context.Context) error
 	Close() error
-	// OnCountrySet has the backend call set with each Wi-Fi country the radio accepts from it.
+	// OnCountrySet has the backend call set with each Wi-Fi country the radio accepts from it; call it before any scan or join.
 	OnCountrySet(set func(country string))
 }
 
