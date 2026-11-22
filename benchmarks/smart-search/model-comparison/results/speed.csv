@@ -1,0 +1,4 @@
+model,threads,tracks_timed,seconds_per_track_median,seconds_per_track_min,seconds_per_track_max,ms_per_query_median,load_seconds,peak_rss_mb,cpu
+LAION-CLAP music (ONNX),4,20,0.415,0.374,0.611,40.1,1.2,1135,Intel(R) Core(TM) Ultra 9 185H
+CLAP2-S (PyTorch),4,20,0.512,0.496,0.574,66.6,3.3,1292,Intel(R) Core(TM) Ultra 9 185H
+TinyMU + MiniLM (PyTorch),4,8,3.695,2.360,4.071,5.2,4.5,3235,Intel(R) Core(TM) Ultra 9 185H

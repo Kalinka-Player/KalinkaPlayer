@@ -1,0 +1,26 @@
+# caption_tinymu.py only. TinyMU needs PyTorch and the authors' code, so it gets
+# its own Python 3.11 environment (TinyMU's pins have no wheels for newer Pythons):
+#
+#   python3.11 -m venv .venv-tinymu
+#   .venv-tinymu/bin/pip install --index-url https://download.pytorch.org/whl/cpu \
+#       torch==2.4.1 torchaudio==2.4.1 torchvision==0.19.1
+#   .venv-tinymu/bin/pip install -r requirements-tinymu.txt
+#   git clone https://github.com/xiquan-li/TinyMU models/tinymu/TinyMU   # tested at 385133d
+#   # tinymu.pt, tinymu.yaml, matpac_plus_as_48_1_map_enconly.pt from
+#   # https://huggingface.co/AndreasXi/TinyMU into models/tinymu/
+#
+# Install torch first: peft otherwise pulls a newer CUDA torch.
+
+numpy<2
+transformers==4.46.3       # TinyMU's pin; SmolLM2-135M decoder
+peft==0.15.2               # imported by TinyMU's decoder module
+timm==0.4.12               # MATPAC++ transformer blocks
+einops
+torchlibrosa==0.1.0        # imported by TinyMU's (unused) HTSAT encoder module
+pyyaml
+requests
+onnxruntime>=1.17          # CLAP + MiniLM, same ONNX graphs as production
+tokenizers
+soundfile>=0.12
+soxr>=0.3
+scipy                      # Spearman, Wilcoxon

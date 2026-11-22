@@ -1,0 +1,12 @@
+# embed_clap.py, embed_clap2.py, evaluate.py, figures.py (tested on Python 3.11).
+# Install PyTorch from the CPU index first:
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch==2.15.0 torchvision torchaudio
+open_clip_torch[audio]==4.2.2   # CLAP2 (laion/clap2-small-audioxl-s1B)
+onnxruntime==1.32.0             # production CLAP and MiniLM graphs
+tokenizers
+numpy
+scipy                           # Wilcoxon signed-rank test
+scikit-learn                    # ridge baseline for the V/A head
+soundfile>=0.12
+soxr>=0.3
+matplotlib==3.11.2
