@@ -755,3 +755,123 @@ TEST(OutputStage, SimultaneousVolumeAndPreampRampsMultiplyAtEachFrame) {
     }
   }
 }
+
+TEST(OutputStage,
+     StereoExpansionPreservesTheCentreAndReachesTheOppositeSpeaker) {
+  const auto format = pcm(PCM_FLOAT64_LE);
+  std::vector<double> mono(4096, 0.125);
+  Stage centre(format, asBytes(mono));
+  centre.stage->setStereoExpansion(ExpansionLevel::Strong);
+  EXPECT_EQ(readSamples<double>(*centre.stage, mono.size()), mono);
+
+  const auto impulse = [&](ExpansionLevel level, bool onLeft, size_t chunk) {
+    std::vector<double> signal(4096, 0);
+    signal[onLeft ? 0 : 1] = 0.5;
+    Stage s(format, asBytes(signal));
+    s.stage->setStereoExpansion(level);
+    return readAll(*s.stage, chunk * 2 * sizeof(double));
+  };
+  const auto whole = impulse(ExpansionLevel::Normal, true, 1024);
+  ASSERT_EQ(whole, impulse(ExpansionLevel::Normal, true, 7));
+  const auto other = impulse(ExpansionLevel::Strong, false, 23);
+  ASSERT_EQ(whole.size(), other.size());
+  std::vector<double> normal(4096), strong(4096);
+  std::memcpy(normal.data(), whole.data(), whole.size());
+  std::memcpy(strong.data(), other.data(), other.size());
+  EXPECT_LT(normal[1], 0);
+  for (size_t i = 0; i < normal.size(); i += 2) {
+    const double dry = i == 0 ? 0.5 : 0;
+    EXPECT_NEAR(normal[i] + normal[i + 1], dry, 1e-14);
+    EXPECT_NEAR(strong[i], 2 * normal[i + 1], 1e-14);
+    EXPECT_NEAR(strong[i + 1], dry - strong[i], 1e-14);
+  }
+}
+
+TEST(OutputStage, StereoExpansionMatchesThePlacementFilterMagnitudeAndPhase) {
+  // Independently evaluated complex responses of the three published sections,
+  // DC normalized and mapped from 22.05 kHz to the stream rate.
+  struct Point {
+    unsigned rate, hz;
+    double real, imag;
+  };
+  for (const Point p : {Point{22050, 1000, 1.063102400010, -0.899620677814},
+                        Point{44100, 1000, 1.069945350577, -0.891925451615},
+                        Point{48000, 5000, -0.336724305695, 0.199149831016},
+                        Point{192000, 5000, -0.461365618769, 0.142386081780}}) {
+    auto format = pcm(PCM_FLOAT64_LE);
+    format.sampleRate = p.rate;
+    std::vector<double> samples(8192, 0);
+    samples[0] = 1;
+    Stage s(format, asBytes(samples));
+    s.stage->setStereoExpansion(ExpansionLevel::Normal);
+    const auto out = readSamples<double>(*s.stage, samples.size());
+    ASSERT_EQ(out.size(), samples.size());
+    double real = 0, imag = 0;
+    for (size_t i = 0; i < out.size() / 2; ++i) {
+      const double angle = 2 * std::numbers::pi * p.hz * i / p.rate;
+      const double wet = out[i * 2 + 1] / -0.15;
+      real += wet * std::cos(angle);
+      imag -= wet * std::sin(angle);
+    }
+    EXPECT_NEAR(real, p.real, 1e-8);
+    EXPECT_NEAR(imag, p.imag, 1e-8);
+  }
+}
+
+TEST(OutputStage, StereoExpansionRampsLiveAndRestoresExactPcmAtBypass) {
+  const auto fmt = pcm(PCM_FLOAT64_LE);
+  std::vector<double> samples(kRate, 0);
+  for (size_t i = 0; i < samples.size(); i += 2)
+    samples[i] = 0.25;
+  Stage s(fmt, asBytes(samples));
+  ASSERT_EQ(readSamples<double>(*s.stage, 2), (std::vector<double>{0.25, 0}));
+  s.stage->setStereoExpansion(ExpansionLevel::Strong);
+  auto wet = readSamples<double>(*s.stage, 4800);
+  ASSERT_EQ(wet.size(), 4800u);
+  EXPECT_LT(std::abs(wet[1]), 1e-4);
+  EXPECT_NEAR(wet.back(), -0.075, 1e-10);
+  s.stage->setStereoExpansion(ExpansionLevel::Off);
+  auto dry = readSamples<double>(*s.stage, 4800);
+  ASSERT_EQ(dry.size(), 4800u);
+  EXPECT_NEAR(dry[1], -0.075, 1e-4);
+  EXPECT_EQ(dry.back(), 0);
+  EXPECT_EQ(readSamples<double>(*s.stage, 2), (std::vector<double>{0.25, 0}));
+  const auto data = randomBytes(16000);
+  Stage integer(pcm(PCM16_LE), data);
+  integer.stage->setStereoExpansion(ExpansionLevel::Strong);
+  readSamples<int16_t>(*integer.stage, 100);
+  integer.stage->setStereoExpansion(ExpansionLevel::Off);
+  readSamples<int16_t>(*integer.stage, 2400);
+  EXPECT_EQ(readAll(*integer.stage, 256),
+            std::vector<uint8_t>(data.begin() + 5000, data.end()));
+}
+
+TEST(OutputStage, StereoExpansionDescribesOnlyProcessedTwoChannelPcm) {
+  const auto fmt = pcm(PCM16_LE);
+  const auto out = pcm(PCM32_LE);
+  Stage s(fmt, randomBytes(8000), k24In32);
+  s.stage->setStereoExpansion(ExpansionLevel::Normal);
+  const auto steps = s.stage->describe(fmt, fmt, out);
+  ASSERT_EQ(steps.size(), 2u);
+  EXPECT_EQ(steps[0],
+            (SignalStep{"stereo_expansion", "Stereo expansion", "Normal"}));
+  EXPECT_EQ(steps[1].summary, "TPDF at 24 bits");
+  EXPECT_TRUE(s.stage->describe(kRawDsd, kRawDsd, kRawDsd).empty());
+  for (unsigned count : {1u, 6u}) {
+    const auto other = pcm(PCM16_LE, count);
+    EXPECT_TRUE(s.stage->describe(other, other, out).empty());
+  }
+  s.stage->setStereoExpansion(ExpansionLevel::Off);
+  EXPECT_TRUE(s.stage->describe(fmt, fmt, out).empty());
+}
+
+TEST(OutputStage, StereoExpansionDropsItsTailWhenPlaybackSeeks) {
+  const auto fmt = pcm(PCM_FLOAT64_LE);
+  std::vector<double> samples(500, 0);
+  samples.front() = 0.5;
+  Stage s(fmt, asBytes(samples));
+  s.stage->setStereoExpansion(ExpansionLevel::Strong);
+  readSamples<double>(*s.stage, 2);
+  EXPECT_EQ(s.stage->seekTo(20), 20u);
+  EXPECT_EQ(readSamples<double>(*s.stage, 100), std::vector<double>(100));
+}

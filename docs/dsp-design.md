@@ -3,9 +3,9 @@
 Status: Phase 1 is done: the DSP stage, the output stage's gain, dither,
 packing and fades, DSD to PCM with its settings, and the signal path and
 clipping the renderer reports (sections 5, 7, 8 and 14). Phase 2 has begun.
-REW profiles, parametric EQ, preamp and bypass are implemented. FIR room
-correction and upsampling are still ahead. Measurements cover x86-64, the
-Raspberry Pi 5, and the DSD converter and production PEQ on the Raspberry Pi 4.
+REW profiles, parametric EQ, preamp, bypass and stereo expansion are
+implemented. FIR room correction and upsampling are still ahead. Measurements
+cover x86-64, Raspberry Pi 4 and Raspberry Pi 5.
 See the [results](../benchmarks/dsp/results.md) and the
 [benchmark runbook](../benchmarks/dsp/RUNBOOK.md).
 
@@ -332,6 +332,42 @@ is written is untouched.
 - **A device that cannot take frames back,** a sound server's for one, drops
   at a seek, a stop or a skip without a fade.
 - **Native DSD and DoP** are not faded.
+
+### Stereo expansion for two speakers
+
+The renderer advertises `spatial.expansion` under **Spatial audio**. It defaults
+to Off. Normal and Strong widen stereo PCM, including stereo DSD decoded to PCM.
+Changing the setting during playback crossfades the filtered contribution over
+25 ms. The signal path shows **Stereo expansion** and the selected level ahead
+of room EQ. The stage has zero frames of lookahead. Mono, multichannel, native
+DSD and DoP bypass it.
+
+QSound describes the QX2020 as a two-speaker stereo enhancer with two levels
+and bypass. Three of the original patents describe positioning individual
+sources. The other two place sounds using game data. [QX2020 product page](https://www.qsound.com/products/qxpander-qx2020.htm),
+[analog processor brochure](https://www.qsound.com/library/QSound-AnalogProcessors_ver1-2.pdf),
+[US5046097](https://patents.google.com/patent/US5046097A/en),
+[US5105462](https://patents.google.com/patent/US5105462A/en),
+[US5208860](https://patents.google.com/patent/US5208860A/en),
+[US5026051](https://patents.google.com/patent/US5026051A/en),
+[US5052685](https://patents.google.com/patent/US5052685A/en).
+
+Two later QSound patents describe widening a stereo mix directly. We use the
+symmetric circuit in figure 3 of US5774556 and the three digital filter
+sections in figures 5–7. For a placement filter `H` and return gain `g`, the
+output is `L + g × H(L − R)` and `R − g × H(L − R)`. A centered signal
+therefore drives neither return, and summing the outputs recovers the original
+mono mix. The direct signal has no added delay. Hard-panned sounds can raise
+output peaks, which the renderer's clipping counter reports.
+[Stereo enhancement circuit](https://patents.google.com/patent/US5440638A/en),
+[placement filter and coefficients](https://patents.google.com/patent/US5774556A/en).
+
+We normalized the filter to unity at DC, chose a 22.05 kHz reference rate
+from the published response plot, and retuned the sections for each PCM
+sample rate with a bilinear transform. The return gains of 0.15 and 0.30 are
+Kalinka's tuning choices. Tests check the complex response at four sample
+rates, center preservation, channel symmetry, live switching and bypass.
+Matching the analog QX2020 would require measurements of the chip.
 
 ## 6. Profiles reach the renderer by URL and SHA-256
 

@@ -208,11 +208,14 @@ Factory peqCascade(std::shared_ptr<const peq::Profile> profile,
 }
 
 /// Software volume at @p gain on a device that keeps 24 bits of S32.
-Factory outputStage(double gain, std::shared_ptr<const peq::Profile> profile = {}) {
-  return [gain, profile = std::move(profile)](unsigned rate) {
+Factory outputStage(double gain,
+                    std::shared_ptr<const peq::Profile> profile = {},
+                    ExpansionLevel expansion = ExpansionLevel::Off) {
+  return [gain, profile = std::move(profile), expansion](unsigned rate) {
     auto stage = std::make_shared<OutputStage>(
         std::vector<StreamAudioFormat>{{rate, 2, 24, PCM32_LE, 0}}, 1);
     stage->setGain(gain);
+    stage->setStereoExpansion(expansion);
     if (profile)
       stage->setRoomEq({profile, -6.0});
     stage->connectTo(std::make_shared<EndlessSource>(rate));
@@ -267,13 +270,16 @@ std::vector<Kernel> kernels() {
       {"OutputStage at unity, S32 stereo", outputStage(1.0)},
       {"OutputStage at -6 dB, S32 stereo, dithered at 24 bits",
        outputStage(0.5)},
+      {"OutputStage with stereo expansion, S32 stereo, dithered at 24 bits",
+       outputStage(1.0, {}, ExpansionLevel::Strong)},
       {"5 PEQ bands, planar float64 stereo", peqCascade(peakBands(5))},
       {"9 PEQ bands, original KEF R3", peqCascade(originalKefR3())},
       {"19 PEQ bands, planar float64 stereo", peqCascade(peakBands(19))},
       {"20 PEQ bands, planar float64 stereo", peqCascade(peakBands(20))},
       {"20 PEQ bands, silence after an impulse",
        peqCascade(peakBands(20), true)},
-      {"OutputStage with 9 PEQ bands (original KEF R3), S32 stereo, dithered at 24 bits",
+      {"OutputStage with 9 PEQ bands (original KEF R3), S32 stereo, dithered "
+       "at 24 bits",
        outputStage(1.0, originalKefR3())},
       {"OutputStage with 20 PEQ bands, S32 stereo, dithered at 24 bits",
        outputStage(1.0, peakBands(20))},
