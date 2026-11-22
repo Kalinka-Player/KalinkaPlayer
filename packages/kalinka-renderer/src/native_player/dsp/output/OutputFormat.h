@@ -17,8 +17,8 @@ struct OutputChoice {
  * container pcmOutputFormats() would try that the device takes. The bits are
  * those the device keeps in that format. Float stays float where the device
  * takes it, and goes to the widest integer container it takes otherwise. With
- * nothing known of the device, it is the source's own format at its
- * container's bits; DSD and DoP stay as they are.
+ * no matching device format, integer PCM keeps its declared precision, or
+ * its container width if unspecified. DSD and DoP stay as they are.
  * @param device What the device was probed to take.
  */
 OutputChoice chooseOutput(const StreamAudioFormat &source,

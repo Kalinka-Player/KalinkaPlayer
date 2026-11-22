@@ -42,9 +42,10 @@ TEST(OutputFormat, ASourceThatDoesNotSayItsBitsLosesNone) {
   expectChoice(chooseOutput(pcm(PCM24_3LE, 0), device, 2), PCM32_LE, 24);
 }
 
-TEST(OutputFormat, NothingKnownKeepsTheSourcesFormatAtItsContainersBits) {
+TEST(OutputFormat, WithoutADeviceMatchIntegerPcmKeepsItsDeclaredPrecision) {
   expectChoice(chooseOutput(pcm(PCM24_3LE, 24), {}, 2), PCM24_3LE, 24);
-  expectChoice(chooseOutput(pcm(PCM32_LE, 24), {}, 2), PCM32_LE, 32);
+  expectChoice(chooseOutput(pcm(PCM32_LE, 24), {}, 2), PCM32_LE, 24);
+  expectChoice(chooseOutput(pcm(PCM32_LE, 0), {}, 2), PCM32_LE, 32);
 }
 
 TEST(OutputFormat, FloatStaysFloatWhereTheDeviceTakesIt) {

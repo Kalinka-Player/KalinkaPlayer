@@ -40,11 +40,11 @@ std::string cpuModel() {
 }
 
 int usage() {
-  std::fputs(
-      "usage: kalinka-dsp-bench kernels [NAME [RATE]] | simd | dsd | fixtures | join\n"
-      "       kalinka-dsp-bench playback [--delay-ms N] FILE...\n"
-      "       kalinka-dsp-bench make-wav FILE RATE BITS SECONDS\n",
-      stderr);
+  std::fputs("usage: kalinka-dsp-bench kernels [NAME [RATE]] | peq-settings | "
+             "simd | dsd | fixtures | join\n"
+             "       kalinka-dsp-bench playback [--delay-ms N] FILE...\n"
+             "       kalinka-dsp-bench make-wav FILE RATE BITS SECONDS\n",
+             stderr);
   return 2;
 }
 } // namespace
@@ -111,6 +111,8 @@ int main(int argc, char **argv) {
       rates = rates.subspan(rate - rates.begin(), 1);
     }
     bench::runKernels(argc >= 3 ? argv[2] : "", rates);
+  } else if (command == "peq-settings" && argc == 2) {
+    bench::runPeqSettings();
   } else if (command == "simd") {
     bench::runSimd();
   } else if (command == "dsd") {

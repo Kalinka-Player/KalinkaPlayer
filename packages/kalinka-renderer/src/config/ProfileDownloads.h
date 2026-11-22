@@ -3,24 +3,20 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/thread_pool.hpp>
 
-#include <deque>
 #include <functional>
 #include <memory>
 
-/// Serialises config writes across Core connections while a profile is fetched.
+/// Admits one profile fetch across Core connections. Called on the I/O thread.
 class ProfileDownloads : public std::enable_shared_from_this<ProfileDownloads> {
 public:
   explicit ProfileDownloads(boost::asio::io_context &io) : io(io) {}
   using Done = std::function<void(const std::string &, const std::string &)>;
-  void prepare(const kalinka::renderer::v1::ConfigUpdate &update, Done done);
+  /// False while another write is fetching a profile. Refuse this whole update.
+  [[nodiscard]] bool prepare(const kalinka::renderer::v1::ConfigUpdate &update,
+                             Done done);
 
 private:
-  struct Request {
-    std::string id, url, error;
-    Done done;
-  };
-  void next();
   boost::asio::io_context &io;
-  std::deque<Request> queue;
+  bool downloading = false;
   boost::asio::thread_pool worker{1};
 };

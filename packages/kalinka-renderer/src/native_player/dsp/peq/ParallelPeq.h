@@ -21,7 +21,8 @@ struct ParallelPlan {
 
 /// An inline plan keeps allocation and reclamation off the playback thread.
 /// An empty result selects the original second-order sections.
-std::optional<ParallelPlan> prepareParallel(const Cascade &cascade);
+std::optional<ParallelPlan> prepareParallel(const Cascade &cascade,
+                                            bool sharedStereo);
 void filterParallel(const ParallelPlan &plan, State *history, double *left,
                     double *right, size_t frames);
 } // namespace peq

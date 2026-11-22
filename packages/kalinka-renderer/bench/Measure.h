@@ -51,6 +51,8 @@ std::string cost(double ns, unsigned rate);
 
 /// Cost at the selected rates for kernels whose names contain the filter.
 void runKernels(std::string_view filter, std::span<const unsigned> rates);
+/// Time renderer profile and preamp edits at a fixed playback rate.
+void runPeqSettings();
 /// The SIMD mechanisms side by side, each null-tested against scalar.
 void runSimd();
 /// DSD-to-PCM conversion's cost, per conversion and kernel.

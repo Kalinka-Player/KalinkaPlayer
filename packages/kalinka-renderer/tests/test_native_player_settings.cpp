@@ -1863,16 +1863,20 @@ TEST_F(NativePlayerSettingsTest,
     auto setting = update.add_settings();
     setting->set_path("dsp.profile");
     setting->set_value(hash);
-    auto guard = boost::asio::make_work_guard(ioc_);
     renderer_pb::ConfigResult result;
-    downloads->prepare(update, [&](const auto &verified, const auto &error) {
-      config.apply(update, result, verified, error);
-      guard.reset();
-    });
-    ioc_.restart();
-    while (!result.outcomes_size())
-      ioc_.run_one();
-    return result.outcomes(0);
+    const bool accepted = downloads->prepare(
+        update, [&](const auto &verified, const auto &error) {
+          config.apply(update, result, verified, error);
+        });
+    EXPECT_TRUE(accepted);
+    if (accepted) {
+      ioc_.restart();
+      while (result.outcomes().empty() && ioc_.run_one()) {
+      }
+    }
+    EXPECT_EQ(result.outcomes_size(), 1);
+    return result.outcomes().empty() ? renderer_pb::ConfigResult::Outcome{}
+                                     : result.outcomes(0);
   };
   EXPECT_TRUE(apply(id, server.url("/room")).applied());
   EXPECT_FALSE(apply(std::string(64, 'a'), server.url("/room")).applied());
@@ -1894,26 +1898,19 @@ TEST_F(NativePlayerSettingsTest,
         player_->dspSettings()->applyConfig("dsp.preamp_db", invalid, error_));
 }
 
-TEST(ProfileDownloadsTest, AnInvalidSelectionWaitsForEarlierWrites) {
+TEST(ProfileDownloadsTest, DuplicateSelectionsAreRefusedBeforeFetch) {
   boost::asio::io_context io;
   auto downloads = std::make_shared<ProfileDownloads>(io);
   renderer_pb::ConfigUpdate update;
-  auto *setting = update.add_settings();
-  setting->set_path("dsp.profile");
-  setting->set_value("invalid-hash");
-  std::vector<std::string> errors;
-  downloads->prepare(update, [&](const auto &, const auto &error) {
-    errors.push_back(error);
-  });
-  update.add_settings()->set_path("dsp.profile");
-  downloads->prepare(update, [&](const auto &, const auto &error) {
-    errors.push_back(error);
-  });
-  EXPECT_TRUE(errors.empty());
-  io.run();
-  EXPECT_THAT(errors,
-              ::testing::ElementsAre("Invalid profile SHA-256",
-                                     "Select one DSP profile per update"));
+  for (const auto *value : {"first", "second"}) {
+    auto *setting = update.add_settings();
+    setting->set_path("dsp.profile");
+    setting->set_value(value);
+  }
+  std::string refusal;
+  EXPECT_TRUE(downloads->prepare(
+      update, [&](const auto &, const auto &error) { refusal = error; }));
+  EXPECT_EQ(refusal, "Select one DSP profile per update");
 }
 
 TEST(ProfileDownloadsTest, ShutdownDropsOutstandingReplies) {
@@ -1924,7 +1921,8 @@ TEST(ProfileDownloadsTest, ShutdownDropsOutstandingReplies) {
   setting->set_path("dsp.profile");
   setting->set_value("invalid-hash");
   bool replied = false;
-  downloads->prepare(update, [&](const auto &, const auto &) { replied = true; });
+  EXPECT_TRUE(downloads->prepare(
+      update, [&](const auto &, const auto &) { replied = true; }));
   downloads.reset();
   io.run();
   EXPECT_FALSE(replied);

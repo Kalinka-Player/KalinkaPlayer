@@ -60,6 +60,11 @@ public:
              const std::string &profileId = {},
              const std::string &profileError = {}, bool decimal = true);
 
+  /// Report every requested path refused at its current value.
+  void refuse(const kalinka::renderer::v1::ConfigUpdate &update,
+              kalinka::renderer::v1::ConfigResult &out,
+              const std::string &reason, bool decimal) const;
+
 private:
   std::vector<std::shared_ptr<ConfigContributor>> contributors_;
   std::function<void()> onApplied_;

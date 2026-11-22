@@ -30,12 +30,13 @@ struct Cascade {
 /// them.
 struct Plan {
   std::array<Cascade, kPlanarChannels / 2> pairs{};
-  double preampDb = 0;
+  double automaticPreampDb = 0;
   bool active = false;
   bool applicable = true;
 };
 
-Plan prepare(const Settings &settings, unsigned rate, unsigned channels);
+/// A null profile produces a dry plan with unity automatic gain.
+Plan prepare(const Profile *profile, unsigned rate, unsigned channels);
 
 struct State {
   Stereo z1{}, z2{};
@@ -47,7 +48,7 @@ void filter(const Cascade &cascade, State *state, double *left, double *right,
 /// thread.
 class RoomEq {
 public:
-  void follow(const Plan &plan, unsigned rate, bool reset);
+  void follow(const Plan &plan, double preampDb, unsigned rate, bool reset);
   bool filtering() const { return current.active || transitioning(); }
   bool bypassed() const { return !filtering() && preamp.holding(1); }
   GainRamp::Span takePreamp(size_t frames);

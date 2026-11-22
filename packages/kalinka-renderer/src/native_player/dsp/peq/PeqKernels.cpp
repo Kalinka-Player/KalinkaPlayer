@@ -1,6 +1,8 @@
 #include "dsp/HighwayTargets.h"
 #include "dsp/peq/RoomEq.h"
 
+#include <limits>
+
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "dsp/peq/PeqKernels.cpp"
 #include <hwy/foreach_target.h>
@@ -39,6 +41,12 @@ void group(const Section *sections, State *state, double *left, double *right,
                             hn::MulAdd(hn::LoadU(d, c.b1.data()), x, z2[s]));
       z2[s] = hn::NegMulAdd(hn::LoadU(d, c.a2.data()), y,
                             hn::Mul(hn::LoadU(d, c.b2.data()), x));
+#if !defined(__SSE2__) && !defined(__aarch64__)
+      // Without a hardware flush mode, keep subnormals out of the feedback.
+      const auto minimum = hn::Set(d, std::numeric_limits<double>::min());
+      z1[s] = hn::IfThenZeroElse(hn::Lt(hn::Abs(z1[s]), minimum), z1[s]);
+      z2[s] = hn::IfThenZeroElse(hn::Lt(hn::Abs(z2[s]), minimum), z2[s]);
+#endif
       if (s + 1 < S) {
         delay[s + 1] = y;
       } else {
@@ -75,10 +83,36 @@ void Filter(const Cascade &cascade, State *state, double *left, double *right,
 HWY_AFTER_NAMESPACE();
 
 #if HWY_ONCE
+#if defined(__SSE2__)
+#include <xmmintrin.h>
+#endif
+
 namespace peq {
+namespace {
+// Confine flush-to-zero to the filter; callers keep their floating-point mode.
+class FlushFilterTails {
+#if defined(__SSE2__)
+  unsigned saved = _mm_getcsr();
+  static constexpr unsigned flush = (1u << 15) | (1u << 6); // FTZ and DAZ
+public:
+  FlushFilterTails() { _mm_setcsr(saved | flush); }
+  ~FlushFilterTails() { _mm_setcsr(saved); }
+#elif defined(__aarch64__)
+  uint64_t saved;
+
+public:
+  FlushFilterTails() {
+    asm volatile("mrs %0, fpcr" : "=r"(saved));
+    asm volatile("msr fpcr, %0" ::"r"(saved | (1ull << 24)) : "memory");
+  }
+  ~FlushFilterTails() { asm volatile("msr fpcr, %0" ::"r"(saved) : "memory"); }
+#endif
+};
+} // namespace
 HWY_EXPORT(Filter);
 void filter(const Cascade &cascade, State *state, double *left, double *right,
             size_t frames) {
+  [[maybe_unused]] FlushFilterTails flush;
 #if defined(__aarch64__)
   if (cascade.parallel) {
     filterParallel(*cascade.parallel, state, left, right, frames);

@@ -3,6 +3,7 @@
 #include <cmath>
 #include <complex>
 #include <gtest/gtest.h>
+#include <limits>
 #include <numbers>
 
 TEST(RoomEq, TwentySectionsMatchTheScalarReferenceAcrossShortReads) {
@@ -13,7 +14,7 @@ TEST(RoomEq, TwentySectionsMatchTheScalarReferenceAcrossShortReads) {
     profile->left.push_back({peq::Type::Peak, hz, gain, 1.4});
     reference.push_back(harness::peaking(hz, gain, 1.4, 192000));
   }
-  auto plan = peq::prepare({profile, 0}, 192000, 2);
+  auto plan = peq::prepare(profile.get(), 192000, 2);
   ASSERT_EQ(plan.pairs[0].count, 20u);
   std::vector<double> left(1027), right(1027), expected(1027);
   for (size_t i = 0; i < left.size(); ++i)
@@ -43,7 +44,7 @@ TEST(RoomEq, AutoHeadroomIncludesResonantShelvesAndOnlyTheLouderChannel) {
       auto p = std::make_shared<peq::Profile>();
       p->left.push_back({type, 2000, db, 3});
       p->right.push_back({peq::Type::Peak, 700, 1, 1});
-      auto plan = peq::prepare({p, {}}, 48000, 2);
+      auto plan = peq::prepare(p.get(), 48000, 2);
       const auto &s = plan.pairs[0].sections[0];
       double peak = 0;
       for (unsigned k = 0; k <= 8192; ++k) {
@@ -51,7 +52,7 @@ TEST(RoomEq, AutoHeadroomIncludesResonantShelvesAndOnlyTheLouderChannel) {
         peak = std::max(peak, std::abs((s.b0[0] + z * (s.b1[0] + z * s.b2[0])) /
                                        (1.0 + z * (s.a1[0] + z * s.a2[0]))));
       }
-      EXPECT_NEAR(-plan.preampDb, 20 * std::log10(peak), 0.001);
+      EXPECT_NEAR(-plan.automaticPreampDb, 20 * std::log10(peak), 0.001);
     }
   }
 }
@@ -60,8 +61,8 @@ TEST(RoomEq, AboveNyquistSkipsTheWholeProfileAtThatRate) {
   auto p = std::make_shared<peq::Profile>();
   p->shared = {{peq::Type::Peak, 300, 2, 1},
                {peq::Type::HighShelf, 23000, -6, 0.7}};
-  EXPECT_FALSE(peq::prepare({p, {}}, 44100, 2).applicable);
-  EXPECT_TRUE(peq::prepare({p, {}}, 48000, 2).active);
+  EXPECT_FALSE(peq::prepare(p.get(), 44100, 2).applicable);
+  EXPECT_TRUE(peq::prepare(p.get(), 48000, 2).active);
 }
 
 TEST(RoomEq, IndependentDenseCurvesMatchAcrossBlockAndSampleBoundaries) {
@@ -73,7 +74,7 @@ TEST(RoomEq, IndependentDenseCurvesMatchAcrossBlockAndSampleBoundaries) {
       profile->right.push_back({i == 0 ? peq::Type::LowShelf : peq::Type::Peak,
                                 1.2 * hz, i % 2 ? 2.0 : -3.0, 1.1});
   }
-  auto plan = peq::prepare({profile, 0}, 192000, 2);
+  auto plan = peq::prepare(profile.get(), 192000, 2);
   const auto &pair = plan.pairs[0];
 #if defined(__aarch64__)
   ASSERT_TRUE(pair.parallel);
@@ -118,12 +119,64 @@ TEST(RoomEq, IndependentDenseCurvesMatchAcrossBlockAndSampleBoundaries) {
   }
 }
 
+TEST(RoomEq, SharedCurvesMatchTheReferenceForEveryBandCount) {
+  constexpr unsigned rate = 192000;
+  peq::Profile profile;
+  std::vector<harness::BiquadCoefficients> reference;
+  std::vector<double> input(2057);
+  for (size_t i = 0; i < input.size(); ++i)
+    input[i] = std::sin(double(i) / 11.0);
+  for (size_t count = 1; count <= peq::kBands; ++count) {
+    SCOPED_TRACE(count);
+    const double hz = 110 * std::pow(1.25, count), db = count % 2 ? -3 : 2;
+    profile.shared.push_back({peq::Type::Peak, hz, db, 1.4});
+    reference.push_back(harness::peaking(hz, db, 1.4, rate));
+    const auto plan = peq::prepare(&profile, rate, 5);
+    const auto &front = plan.pairs.front();
+    ASSERT_EQ(front.count, count);
+    EXPECT_EQ(plan.pairs[2], front);
+    EXPECT_EQ(plan.pairs[3].count, 0u);
+#if defined(__aarch64__)
+    EXPECT_EQ(front.parallel.has_value(), count >= 3 && count != 6);
+    EXPECT_EQ(plan.pairs[2].parallel.has_value(), front.parallel.has_value());
+#endif
+    std::vector<double> expected(input.size());
+    harness::BiquadCascade(reference).process(input, expected);
+    auto left = input, right = input;
+    std::array<peq::State, peq::kBands> history{};
+    size_t at = 0;
+    for (size_t frames : {1, 9, 10, 11, 1024, 1002}) {
+      peq::filter(front, history.data(), left.data() + at, right.data() + at,
+                  frames);
+      at += frames;
+    }
+    EXPECT_EQ(left, right);
+    for (size_t i = 0; i < left.size(); ++i)
+      ASSERT_NEAR(left[i], expected[i], 1e-10) << i;
+  }
+}
+
 TEST(RoomEq, RepeatedPolesUseTheOriginalCascade) {
   auto profile = std::make_shared<peq::Profile>();
   profile->shared.assign(12, {peq::Type::Peak, 80, -2, 1.4});
-  const auto plan = peq::prepare({profile, 0}, 192000, 2);
+  const auto plan = peq::prepare(profile.get(), 192000, 2);
   EXPECT_TRUE(plan.active);
 #if defined(__aarch64__)
   EXPECT_FALSE(plan.pairs[0].parallel);
 #endif
+}
+
+TEST(RoomEq, ADecayingNormalHistoryFallsStraightToSilenceAtUnderflow) {
+  peq::Cascade cascade;
+  cascade.count = 1;
+  cascade.sections[0].a1 = {-0.5, -0.5};
+  peq::State state;
+  state.z1.fill(std::numeric_limits<double>::min());
+  std::array<double, 64> left{}, right{};
+  peq::filter(cascade, &state, left.data(), right.data(), left.size());
+  EXPECT_EQ(left.front(), std::numeric_limits<double>::min());
+  EXPECT_EQ(left, right);
+  EXPECT_TRUE(std::all_of(left.begin() + 1, left.end(),
+                          [](double x) { return x == 0; }));
+  EXPECT_EQ(state.z1, peq::Stereo{});
 }
