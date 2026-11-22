@@ -23,6 +23,10 @@ The Kalinka logo, icon and related artwork under `docs/images/` are **not** unde
 
 minimp3 is vendored verbatim, with its upstream notice retained in the headers.
 
+## PFFFT
+
+The native renderer builds the partitioned FIR filter with PFFFT v1.3.0. The renderer packages include its FFTPACK licence. [PFFFT](https://github.com/marton78/pffft), [licence text](packages/kalinka-renderer/third_party/PFFFT-LICENSE.txt).
+
 ## Linked by the renderer (C++)
 
 These are system libraries resolved at build time; the Debian, RPM and Flatpak packages depend on the distribution's own builds rather than shipping copies.

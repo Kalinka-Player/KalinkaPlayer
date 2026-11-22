@@ -3,9 +3,10 @@
 Status: Phase 1 is done: the DSP stage, the output stage's gain, dither,
 packing and fades, DSD to PCM with its settings, and the signal path and
 clipping the renderer reports (sections 5, 7, 8 and 14). Phase 2 has begun.
-REW profiles, parametric EQ, preamp and bypass are implemented. FIR room
-correction and upsampling are still ahead. Measurements cover x86-64, the
-Raspberry Pi 5, and the DSD converter and production PEQ on the Raspberry Pi 4.
+REW profiles, parametric EQ, preamp and bypass are implemented. The FIR
+convolution backend is implemented and benchmarked. Loading a room impulse
+from a Core profile and upsampling are still ahead. Measurements cover
+x86-64, Raspberry Pi 4 and Raspberry Pi 5.
 See the [results](../benchmarks/dsp/results.md) and the
 [benchmark runbook](../benchmarks/dsp/RUNBOOK.md).
 
@@ -175,10 +176,10 @@ smooth enough to pass that test and still plainly audible.
 thread. Today that thread spends 18–22 % of 0.1–0.4 % of a core on x86, and
 6–8 % of 0.14–0.5 % on the Pi 5. The kernels measured so far cost fractions
 of a percent per stage on x86, and about 1 % at most on the Pi 5
-(section 11). Whether a 65536-tap stereo
-convolver fits beside the ALSA thread on a Pi 4 is a Phase 2 measurement. If it doesn't, the stage gets its own
-thread between switcher and emitter, as the prompt allows. Moving it into each
-stream would bring back every error in the table above.
+(section 11). The 65,536-tap stereo convolver uses 2.88 % of a Pi 4 core in the
+processor benchmark, including PCM conversion. The longest measured
+256-frame callback took 1.83 ms at 44.1 kHz. An end-to-end ALSA playback
+measurement follows profile integration.
 
 ### What the stage does
 
@@ -384,8 +385,8 @@ The renderer checks each band, builds the coefficients for the PCM rate and
 verifies stability. It keeps filter history across compatible gapless joins.
 A profile change blends the old and new responses over 10 ms, or 25 ms when
 the preamp also changes. Each branch has its own headroom during the fade.
-The v1 PEQ document is limited to 16 KiB. CamillaDSP imports and FIR assets
-are future work.
+The v1 PEQ document is limited to 16 KiB. CamillaDSP import and FIR asset
+delivery are future work.
 
 ## 7. Settings
 
@@ -622,15 +623,15 @@ afterwards agreed within 7 %.
 
 Recommendation: **PFFFT**, fetched at configure time rather than committed:
 `FetchContent` from the v1.3.0 release archive, pinned by its SHA-256. The
-renderer's CMake builds its own static library from PFFFT's three C files
+renderer's CMake builds its own static library from PFFFT's C sources
 rather than PFFFT's build, which carries tests, benchmarks and extra libraries.
 The deb and RPM builds run with network access, as they do today.
 `FETCHCONTENT_SOURCE_DIR_PFFFT` points an offline build at an unpacked copy,
 and a flatpak manifest would list the archive as a source.
 `THIRD-PARTY-NOTICES.md` and the packages' documentation still carry its
-notice, as its licence asks. The fetch lands with the convolver in Phase 2;
-nothing before it uses an FFT. Its spectra stay in its unordered layout,
-and `pffft_zconvolve_accumulate` does the partitioned multiply-accumulate.
+notice, as its licence asks. The FIR backend builds the double-precision
+implementation and the common allocator. Its spectra stay in PFFFT's unordered layout. The first spectral
+product initializes the sum and the remaining partitions accumulate into it.
 Reasons:
 
 1. It never allocates on execute, by construction: the caller supplies the
@@ -648,6 +649,26 @@ alternative on x86, but on the Pi 5 it took 8.5–9.9× PFFFT's time in float
 and 3.3–4.8× in double. The Pi 5
 run confirms the choice.
 
+### FIR convolution backend
+
+`FirRoomCorrection` is a `DspProcessor` for stereo PCM at the impulse
+response's sample rate. It accepts up to 262,144 finite taps per channel and
+returns float64 PCM. Preparation builds the filter spectra off the playback
+thread. A restart clears the history and reuses the plans and storage.
+
+The default overlap-save filter uses hops of 640 and 6,400 frames. The longer
+bank starts at tap 5,760, so its first sample lines up with the shorter bank.
+Its right-channel FFT runs half a long hop away from the left channel's. Both
+channels share the transform plan and scratch for each size. The processor
+reports 640 frames of buffering at every rate. Any delay encoded in the
+impulse remains part of its frequency and phase response.
+
+The stage carries the filter across same-rate stereo PCM joins, including
+changes of sample width or encoding. A seek can use up to one impulse length
+minus one frame of source history, including before the first read. Users will be able to
+select the stage once the Core can import FIR assets and the renderer can
+load them from a profile. [Pi measurements](../benchmarks/dsp/results.md#partitioned-fir-room-correction)
+
 ## 11. Budgets
 
 These are per-stage budgets on a Pi 4 core in real time, under the 5 % rule:
@@ -660,7 +681,7 @@ are measured, scaled where noted.
 | DSD to PCM, DSD64 to 176.4 kHz stereo | < 2 % | stage 1 tables ≤ 32 KB | 0.32 %, tables 20 KB | 1.00 % |
 | DSD to PCM, DSD256 to 352.8 kHz stereo | < 6 % | ≤ 32 KB tables, then by benchmark | 1.17 %, tables 14 KB | 3.60 % |
 | PEQ, 20 bands stereo at 192 kHz | < 1 % | coefficients only | 0.282 %, or 0.322 % including the output stage | 0.698 %, or 0.885 % including the output stage |
-| FIR, 65536 taps stereo at 44.1 kHz | < 3 % | spectra of every partition, float64 ≈ 4 MB stereo | FFT table (section 10) | FFT table (section 10) |
+| FIR, 65536 taps stereo at 44.1 kHz | < 3 % (2.88 % measured) | 5.04 MiB retained on x86-64 | FFT table (section 10) | 0.670 % including PCM conversion |
 | Upsampling 44.1 to 352.8 kHz | < 5 % | filter tables | libsoxr VHQ 2×: 10 ns per input frame, 0.04 % at 44.1 kHz | libsoxr VHQ 2×: 60 ns per input frame, 0.27 % at 44.1 kHz |
 | Gain, dither, pack | < 0.5 % | none | today's GainFade 2.5 ns/frame | today's GainFade 8.4 ns/frame |
 | Stage overhead (FIFO, segments) | < 0.2 % | one 32768-frame FIFO | DelayLine stage 0.4 ns/frame | DelayLine stage 1.8 ns/frame, 0.07 % at 352.8 kHz |

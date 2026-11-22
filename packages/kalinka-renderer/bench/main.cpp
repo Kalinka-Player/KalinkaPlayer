@@ -41,7 +41,7 @@ std::string cpuModel() {
 
 int usage() {
   std::fputs("usage: kalinka-dsp-bench kernels [NAME [RATE]] | peq-settings | "
-             "simd | dsd | fixtures | join\n"
+             "simd | dsd | fixtures | fir | join\n"
              "       kalinka-dsp-bench playback [--delay-ms N] FILE...\n"
              "       kalinka-dsp-bench make-wav FILE RATE BITS SECONDS\n",
              stderr);
@@ -111,6 +111,8 @@ int main(int argc, char **argv) {
       rates = rates.subspan(rate - rates.begin(), 1);
     }
     bench::runKernels(argc >= 3 ? argv[2] : "", rates);
+  } else if (command == "fir" && argc == 2) {
+    bench::runFir();
   } else if (command == "peq-settings" && argc == 2) {
     bench::runPeqSettings();
   } else if (command == "simd") {

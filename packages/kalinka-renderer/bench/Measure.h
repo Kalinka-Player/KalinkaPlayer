@@ -53,6 +53,8 @@ std::string cost(double ns, unsigned rate);
 void runKernels(std::string_view filter, std::span<const unsigned> rates);
 /// Time renderer profile and preamp edits at a fixed playback rate.
 void runPeqSettings();
+/// CPU and callback times for stereo partitioned convolution.
+void runFir();
 /// The SIMD mechanisms side by side, each null-tested against scalar.
 void runSimd();
 /// DSD-to-PCM conversion's cost, per conversion and kernel.

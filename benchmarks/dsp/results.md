@@ -671,3 +671,36 @@ Every median is 1–8 % below the runs before. The ranking stands: nibble
 lookups lead below DSD256, by up to 9 %, and hold within 2 % between runs;
 the byte-table kernels move by 5–38 %; channel pairs lead at DSD256 with the
 30 kHz filter and from DSD512 up, by 10–11 %.
+
+## Partitioned FIR room correction
+
+Three runs on each Raspberry Pi used the same Debian 13 arm64 GCC 14.2
+Release binary, pinned to core 3 under the ondemand governor. Each run warmed
+up a full 65,536-tap history per channel, then measured five rounds of 1,024
+callbacks of 256 stereo frames. The processor reads interleaved float64 PCM,
+filters independent dense left and right responses and writes interleaved
+float64 PCM. The callback interval at 44.1 kHz is 5.80 ms. ALSA and the rest
+of the output chain are outside the measurement.
+
+CPU is the median percentage of one core in real time. The p99 column is the
+median of the three run p99s, and the maximum is the largest wall time in all
+three runs. End temperatures reached 73 °C on the Pi 4 and 62 °C on the Pi 5.
+
+| Head / tail hop | Buffer at 44.1 kHz | Pi 4 CPU | Pi 4 p99 / max callback | Pi 5 CPU | Pi 5 p99 / max callback |
+|---|---:|---:|---:|---:|---:|
+| Uniform 640 | 14.51 ms | 9.437 % | 1.493 / 2.292 ms | 1.551 % | 0.275 / 0.446 ms |
+| Uniform 4,096 | 92.88 ms | 2.280 % | 2.062 / 2.601 ms | 0.532 % | 0.482 / 0.673 ms |
+| 256 / 8,192 | 5.80 ms | 3.464 % | 1.933 / 2.414 ms | 0.970 % | 0.497 / 0.613 ms |
+| 512 / 5,120 | 11.61 ms | 2.934 % | 1.390 / 1.743 ms | 0.686 % | 0.306 / 0.404 ms |
+| **640 / 6,400 (default)** | 14.51 ms | 2.879 % | 1.636 / 1.829 ms | 0.670 % | 0.354 / 0.472 ms |
+| 1,024 / 8,192 | 23.22 ms | 2.875 % | 2.070 / 2.757 ms | 0.720 % | 0.504 / 2.725 ms |
+
+The default measured 2.793–2.926 % on the Pi 4. A further run after the
+seek and gapless integration fixes measured 2.826 % on the Pi 4 and
+0.671 % on the Pi 5, with maximum callbacks of 1.803 and 0.509 ms.
+
+A glibc heap probe on x86-64
+measured 5.04 MiB retained after preparing the default stereo case, including
+input history spectra, transformed taps, plans and scratch. Starting the
+processor twice and processing 257-frame reads and a silence drain made zero
+heap allocations. Reproduce the timings with `taskset -c 3 kalinka-dsp-bench fir`.

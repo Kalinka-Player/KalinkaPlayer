@@ -143,6 +143,10 @@ or newer for the DSP's vector kernels (Debian 13 or Ubuntu 26.04; Ubuntu 24.04's
 optional and only builds the test binary. mDNS is self-contained (vendored public-domain
 `third_party/mdns`), so no avahi or Bonjour daemon is needed.
 
+CMake fetches the SHA-256-pinned PFFFT v1.3.0 archive for FIR convolution.
+For an offline build, add `-DFETCHCONTENT_SOURCE_DIR_PFFFT=/path/to/pffft-1.3.0`
+to the configure command and point it at the unpacked archive.
+
 - Fedora: `sudo dnf install cmake gcc-c++ protobuf-devel protobuf-compiler protobuf-lite-devel boost-devel spdlog-devel alsa-lib-devel flac-devel libvorbis-devel openssl-devel libcurl-devel curlpp-devel libxml2-devel faad2-devel soxr-devel highway-devel gtest-devel`
 - Debian/Ubuntu: `sudo apt install cmake g++ libprotobuf-dev protobuf-compiler libboost-dev libspdlog-dev libasound2-dev libflac++-dev libvorbis-dev libssl-dev libcurl4-openssl-dev libcurlpp-dev libxml2-dev libfaad-dev libsoxr-dev libhwy-dev libgtest-dev`
 

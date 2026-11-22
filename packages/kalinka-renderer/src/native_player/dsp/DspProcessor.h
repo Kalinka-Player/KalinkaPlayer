@@ -52,10 +52,18 @@ public:
    */
   virtual size_t start(const StreamAudioFormat &format) = 0;
 
+  /// Accept a new input encoding without changing the output, latency, ratio
+  /// or filter history. Returning false leaves the current run untouched.
+  virtual bool changeInputFormat(const StreamAudioFormat &) { return false; }
+
+  /// Seek preroll in output frames already known for every handled format
+  /// before start(). Processors with run-specific history default to zero.
+  virtual size_t preparedHistory() const { return 0; }
+
   /// How far back, in output frames, the input an output frame depends on
   /// reaches in the run started last, the lag hidden: a seek starts that far
   /// early, so its first frames are what a run under way would make.
-  virtual size_t history() const { return 0; }
+  virtual size_t history() const { return preparedHistory(); }
 
   /**
    * @brief Runs @p frames whole input frames of the started format from @p in

@@ -1,5 +1,5 @@
-cmake_minimum_required(VERSION 3.16)
-project(kalinka-renderer LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.18)
+project(kalinka-renderer LANGUAGES C CXX)
 
 # Packaging passes -DKALINKA_VERSION on each configure; cached, it would
 # outlive the commit it named, so a plain build asks git instead.
@@ -99,6 +99,21 @@ add_library(kalinka_renderer_proto STATIC
 target_include_directories(kalinka_renderer_proto SYSTEM PUBLIC ${PROTO_GEN_DIR})
 target_link_libraries(kalinka_renderer_proto PUBLIC protobuf::libprotobuf-lite)
 
+# Point FETCHCONTENT_SOURCE_DIR_PFFFT at the extracted archive for offline builds.
+include(FetchContent)
+if(POLICY CMP0135)
+  cmake_policy(SET CMP0135 NEW)
+endif()
+FetchContent_Declare(pffft
+  URL https://codeload.github.com/marton78/pffft/tar.gz/refs/tags/v1.3.0
+  URL_HASH SHA256=055058d886e72b45e797179681b0d8b658688a37c1dc6fdbff2094074d9515ac
+  SOURCE_SUBDIR unused-upstream-build)
+FetchContent_MakeAvailable(pffft)
+add_library(kalinka_pffft STATIC
+  ${pffft_SOURCE_DIR}/src/pffft_double.c
+  ${pffft_SOURCE_DIR}/src/pffft_common.c)
+target_include_directories(kalinka_pffft SYSTEM PUBLIC ${pffft_SOURCE_DIR}/include/pffft)
+
 # --- kalinka_native_player: the audio graph ----------------------------------
 # The only copy: the server's src/native_player (which this started from) was
 # removed when playback moved to renderers. Deltas from the original Python-
@@ -157,6 +172,7 @@ add_library(kalinka_native_player STATIC
   src/native_player/dsp/dsd/DsdGainSetting.cpp
   src/native_player/dsp/dsd/DsdPcmRate.cpp
   src/native_player/dsp/dsd/Stage1.cpp
+  src/native_player/dsp/fir/FirRoomCorrection.cpp
   src/native_player/dsp/fir/FirKernels.cpp
   src/native_player/dsp/fir/HalfBandDecimator.cpp
   src/native_player/dsp/fir/SymmetricFir.cpp
@@ -182,7 +198,7 @@ target_include_directories(kalinka_native_player PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/native_player
 )
 target_include_directories(kalinka_native_player PUBLIC ${SOXR_INCLUDE_DIR})
-target_link_libraries(kalinka_native_player PUBLIC
+target_link_libraries(kalinka_native_player PRIVATE kalinka_pffft PUBLIC
   ALSA::ALSA
   CURL::libcurl
   PkgConfig::CURLPP
@@ -253,6 +269,7 @@ target_link_libraries(kalinka-renderer PRIVATE
 
 include(GNUInstallDirs)
 install(TARGETS kalinka-renderer RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES third_party/PFFFT-LICENSE.txt DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
 # --- fuzzers (optional: Clang's libFuzzer, for parsers fed from the network) -
 option(KALINKA_BUILD_FUZZERS "Build libFuzzer targets with ASan and UBSan" OFF)
@@ -306,6 +323,7 @@ option(KALINKA_BUILD_BENCHMARKS "Build kalinka-dsp-bench" OFF)
 if(KALINKA_BUILD_BENCHMARKS)
   add_executable(kalinka-dsp-bench
     bench/DsdToPcm.cpp
+    bench/Fir.cpp
     bench/JoinError.cpp
     bench/Kernels.cpp
     bench/Playback.cpp
@@ -427,6 +445,7 @@ if(GTest_FOUND)
     tests/native_player/dsp/dsd/DsdPcmRate_test.cpp
     tests/native_player/dsp/dsd/Stage1_test.cpp
     tests/native_player/dsp/fir/FirFilters_test.cpp
+    tests/native_player/dsp/fir/FirRoomCorrection_test.cpp
     tests/native_player/dsp/output/GainRamp_test.cpp
     tests/native_player/dsp/output/OutputFormat_test.cpp
     tests/native_player/dsp/output/OutputKernels_test.cpp
