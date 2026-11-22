@@ -1,9 +1,11 @@
+#include "dsp/output/OutputKernels.h"
 #include "dsp/output/TpdfDither.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -72,4 +74,39 @@ TEST(TpdfDither, ASeedGivesTheSameValuesEveryTime) {
   EXPECT_EQ(draw(7, 1000), draw(7, 1000));
   EXPECT_NE(draw(7, 1000), draw(8, 1000));
   EXPECT_EQ(drawInPieces(7, 1000), drawInPieces(7, 1000));
+}
+
+TEST(TpdfDither,
+     QuantiseKeepsSeededSamplesAndClippingAcrossHoldsRampsAndTails) {
+  for (unsigned bits : {16u, 24u, 32u}) {
+    TpdfDither actual(42), reference(42);
+    const double scale = double(1u << (bits - 1));
+    const int32_t low = int32_t(-scale), high = int32_t(scale - 1);
+    // Include ties on either side of zero and both clipping thresholds.
+    const double levels[] = {0.5,        1.5,       -0.5,       -1.5,
+                             high + 0.5, low - 0.5, high + 1.5, low - 1.5};
+    for (size_t count : {1, 2, 3, 4, 5, 9, 16, 1023, 1024}) {
+      for (double step : {0.0, -0x1p-12, 0.0}) {
+        std::vector<double> noise(count), in(count), scratch(count);
+        std::vector<int32_t> got(count), expected(count);
+        reference.fill(noise.data(), count);
+        for (size_t i = 0; i < count; ++i)
+          in[i] = (levels[i % std::size(levels)] - noise[i]) / scale;
+        if (count >= 16) {
+          in[12] = std::numeric_limits<double>::max();
+          in[13] = -in[12];
+          in[14] = std::numeric_limits<double>::quiet_NaN();
+        }
+        const auto clipped =
+            output_kernels::quantise(in.data(), count, 1.0, step, scale,
+                                     noise.data(), low, high, expected.data());
+        SCOPED_TRACE(::testing::Message() << bits << " bits, " << count
+                                          << " samples, step " << step);
+        EXPECT_EQ(actual.quantise(in.data(), count, 1.0, step, scale, low, high,
+                                  scratch.data(), got.data()),
+                  clipped);
+        EXPECT_EQ(got, expected);
+      }
+    }
+  }
 }

@@ -14,9 +14,9 @@ using Channel = ParallelPlan::Channel;
 
 static_assert(sizeof(Mode) == 32 && sizeof(State) == 32);
 static_assert(offsetof(State, z2) == 16);
-extern "C" void kalinka_peq_five_modes(const Mode *, double *, const double *,
-                                       const double *, double *, size_t,
-                                       double);
+using FilterGroup = void(const Mode *, double *, const double *, const double *,
+                         double *, size_t, double);
+extern "C" FilterGroup kalinka_peq_five_modes, kalinka_peq_four_modes;
 
 // Evaluating about z = 1 retains precision for bass filters at high rates.
 Complex polynomial(long double a, long double b, long double c, Complex t) {
@@ -102,9 +102,10 @@ void runChannel(const Channel &channel, State *state, size_t lane, double *out,
     if (bulk)
       for (size_t m = 0; m < channel.count; m += 5) {
         double *dest = m + 5 >= channel.count ? out : partial;
-        kalinka_peq_five_modes(
-            &channel.modes[m], coordinates(state[m], lane).data(), out,
-            m ? partial : nullptr, dest, bulk, channel.direct);
+        auto filter = channel.count - m == 4 ? kalinka_peq_four_modes
+                                             : kalinka_peq_five_modes;
+        filter(&channel.modes[m], coordinates(state[m], lane).data(), out,
+               m ? partial : nullptr, dest, bulk, channel.direct);
       }
     for (size_t i = bulk; i < n; ++i) {
       const double x = out[i];

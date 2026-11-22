@@ -1,33 +1,12 @@
-// Five parallel pole pairs. Each mode works one sample behind the previous
+// Groups of four or five parallel pole pairs. Each mode works one sample behind the previous
 // mode, so the five independent output sums hide the FMA latency on Cortex-A72.
-// Each input sample is loaded once and passed through all five modes.
+// Each input sample is loaded once and passed through every active mode.
 //
 // x0: five [b,a,c,d] records, x1: five histories at sizeof(State) stride,
 // x2: input, x3: prior sum (null starts from d0 * input), x4: output,
 // x5: positive sample count divisible by 10. The final sum can overwrite input.
 // For each mode y += c*w1 + d*w2 and w = x + a*w1 + b*w2.
 .text
-.p2align 5
-.global kalinka_peq_five_modes
-.hidden kalinka_peq_five_modes
-.type kalinka_peq_five_modes, %function
-kalinka_peq_five_modes:
-    stp d8, d9, [sp, #-64]!
-    stp d10, d11, [sp, #16]
-    stp d12, d13, [sp, #32]
-    stp d14, d15, [sp, #48]
-    fmov d30, d0
-    ldp q0, q1, [x0]
-    ldp q2, q3, [x0, #32]
-    ldp q4, q5, [x0, #64]
-    ldp q6, q7, [x0, #96]
-    ldp q8, q9, [x0, #128]
-    ldp d10, d11, [x1]
-    ldp d12, d13, [x1, #32]
-    ldp d14, d15, [x1, #64]
-    ldp d16, d17, [x1, #96]
-    ldp d18, d19, [x1, #128]
-
 // v0--v9 pack two coefficients per register. d10--d19 rotate the two
 // histories, d20--d24 hold the partial sums, d25--d29 hold the inputs.
 // All register and offset calculations below are resolved by the assembler.
@@ -59,7 +38,7 @@ kalinka_peq_five_modes:
     .endif
     .irp operation,0,1,2,3
       .irp stage,0,1,2,3,4
-        .if ((\mask >> \stage) % 2)
+        .if (\stage < mode_count) && ((\mask >> \stage) % 2)
           .set sample, \t-\stage
           .set w1, 10+2*\stage+(sample%2)
           .set w2, 10+2*\stage+(1-sample%2)
@@ -118,21 +97,57 @@ kalinka_peq_five_modes:
     tick 12, 24, \initial
     tick 13, 16, \initial
 .endm
-    cbz x3, .Lfirst
+
+// Both group sizes use the same input, sum and store schedule. In the
+// four-mode finish the fifth slot consumes no coefficients or instructions.
+.macro filter name, modes
+    .set mode_count, \modes
+.p2align 5
+.global \name
+.hidden \name
+.type \name, %function
+\name:
+    stp d8, d9, [sp, #-64]!
+    stp d10, d11, [sp, #16]
+    stp d12, d13, [sp, #32]
+    stp d14, d15, [sp, #48]
+    fmov d30, d0
+    ldp q0, q1, [x0]
+    ldp q2, q3, [x0, #32]
+    ldp q4, q5, [x0, #64]
+    ldp q6, q7, [x0, #96]
+    .if \modes == 5
+        ldp q8, q9, [x0, #128]
+    .endif
+    ldp d10, d11, [x1]
+    ldp d12, d13, [x1, #32]
+    ldp d14, d15, [x1, #64]
+    ldp d16, d17, [x1, #96]
+    .if \modes == 5
+        ldp d18, d19, [x1, #128]
+    .endif
+
+    cbz x3, .Lfirst\@
     bank 0
-    b .Lsave
-.Lfirst:
+    b .Lsave\@
+.Lfirst\@:
     bank 1
-.Lsave:
+.Lsave\@:
     stp d10, d11, [x1]
     stp d12, d13, [x1, #32]
     stp d14, d15, [x1, #64]
     stp d16, d17, [x1, #96]
-    stp d18, d19, [x1, #128]
+    .if \modes == 5
+        stp d18, d19, [x1, #128]
+    .endif
     ldp d14, d15, [sp, #48]
     ldp d12, d13, [sp, #32]
     ldp d10, d11, [sp, #16]
     ldp d8, d9, [sp], #64
     ret
-.size kalinka_peq_five_modes, .-kalinka_peq_five_modes
+.size \name, .-\name
+.endm
+
+filter kalinka_peq_five_modes, 5
+filter kalinka_peq_four_modes, 4
 .section .note.GNU-stack,"",%progbits

@@ -410,6 +410,26 @@ by 3–16 %, and the runs agree within 4 %.
 | DSD512 to 352.8 kHz | 50 kHz | 315.95 ns (11.147 %) | 190.04 ns (6.704 %) | 152.39 ns (5.376 %) | 173.70 ns (6.128 %) |
 | DSD1024 to 352.8 kHz | 50 kHz | 502.07 ns (17.713 %) | 344.74 ns (12.162 %) | 265.63 ns (9.372 %) | 307.47 ns (10.848 %) |
 
+## Integrated ARM64 output optimization, 22 November 2026
+
+Median ns per stereo frame over five interleaved Release runs on core 3.
+The same benchmark driver was linked with the native player before and after
+the change. Both Pis used the laptop cross-build with GCC 14.2. The full
+output stage reads S32 stereo, applies the profile with a −6 dB preamp, and
+dithers to 24 significant bits in S32. Each repeat processed 200,704 frames.
+
+| Rate and profile | Pi 4 before | Pi 4 after | Pi 5 before | Pi 5 after |
+|---|---:|---:|---:|---:|
+| 44.1 kHz, original KEF R3 | 47.87 | 43.40 | 28.19 | 24.09 |
+| 192 kHz, original KEF R3 | 47.63 | 43.40 | 28.22 | 24.08 |
+| 192 kHz, 20 bands | 71.24 | 68.15 | 45.77 | 43.37 |
+| 192 kHz, unity passthrough | 1.63 | 1.78 | 0.25 | 0.26 |
+
+Reproduce with `kalinka-dsp-bench kernels OutputStage 192000` or substitute
+`44100`. On each board, 100 focused tests passed. The float64 filter output
+and the packed PCM traces matched the baseline byte for byte, including
+gain ramps, fades, clipping counts, short reads and bypass.
+
 ## arm64: Raspberry Pi 4 production PEQ, 20 November 2026
 
 Three Release runs of `taskset -c 3 kalinka-dsp-bench kernels PEQ 192000`

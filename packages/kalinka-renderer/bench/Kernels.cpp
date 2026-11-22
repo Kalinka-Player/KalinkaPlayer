@@ -208,13 +208,13 @@ Factory peqCascade(std::shared_ptr<const peq::Profile> profile,
 }
 
 /// Software volume at @p gain on a device that keeps 24 bits of S32.
-Factory outputStage(double gain, bool withPeq = false) {
-  return [gain, withPeq](unsigned rate) {
+Factory outputStage(double gain, std::shared_ptr<const peq::Profile> profile = {}) {
+  return [gain, profile = std::move(profile)](unsigned rate) {
     auto stage = std::make_shared<OutputStage>(
         std::vector<StreamAudioFormat>{{rate, 2, 24, PCM32_LE, 0}}, 1);
     stage->setGain(gain);
-    if (withPeq)
-      stage->setRoomEq({peakBands(20), -6.0});
+    if (profile)
+      stage->setRoomEq({profile, -6.0});
     stage->connectTo(std::make_shared<EndlessSource>(rate));
     auto out = std::make_shared<std::vector<uint8_t>>(kBlock * 8);
     return
@@ -273,8 +273,10 @@ std::vector<Kernel> kernels() {
       {"20 PEQ bands, planar float64 stereo", peqCascade(peakBands(20))},
       {"20 PEQ bands, silence after an impulse",
        peqCascade(peakBands(20), true)},
+      {"OutputStage with 9 PEQ bands (original KEF R3), S32 stereo, dithered at 24 bits",
+       outputStage(1.0, originalKefR3())},
       {"OutputStage with 20 PEQ bands, S32 stereo, dithered at 24 bits",
-       outputStage(1.0, true)},
+       outputStage(1.0, peakBands(20))},
       {"libsoxr VHQ, float64, 2x up, stereo",
        [](unsigned rate) {
          const auto io = soxr_io_spec(SOXR_FLOAT64_I, SOXR_FLOAT64_I);

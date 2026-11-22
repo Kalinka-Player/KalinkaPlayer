@@ -21,6 +21,12 @@ public:
   /// Fills @p out with @p count values, in LSBs.
   void fill(double *out, size_t count);
 
+  /// Applies gain and dither to one channel and counts clamped samples.
+  /// Uses the same sequence as fill(). Scratch holds count doubles.
+  size_t quantise(const double *in, size_t count, double from, double step,
+                  double scale, int32_t low, int32_t high, double *scratch,
+                  int32_t *out);
+
 private:
   using Generator = std::array<uint64_t, 4>;
   std::array<Generator, 4> generators;
