@@ -11,7 +11,7 @@ Summary:        Kalinka Music Player network audio renderer
 License:        GPL-3.0-or-later
 URL:            https://github.com/Kalinka-Player/KalinkaPlayer
 
-BuildRequires:  cmake >= 3.16
+BuildRequires:  cmake >= 3.18
 BuildRequires:  gcc-c++
 BuildRequires:  protobuf-devel
 BuildRequires:  protobuf-lite-devel
@@ -78,6 +78,7 @@ fi
 %systemd_postun_with_restart kalinka-renderer.service
 
 %files
+%license %{_docdir}/%{name}/PFFFT-LICENSE.txt
 %{_bindir}/kalinka-renderer
 /opt/kalinka/upgrade-renderer.sh
 %{_unitdir}/kalinka-renderer.service

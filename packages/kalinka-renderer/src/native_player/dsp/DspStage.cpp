@@ -327,7 +327,8 @@ bool DspStage::startRun(std::optional<long> position) {
   latency = processor->start(info->format);
   runFormat = info->format;
   fifo.resize(kFifoFrames * outFrameBytes);
-  input.resize(kChunkFrames * inFrameBytes);
+  inputChunkFrames = kChunkFrames;
+  input.resize(inputChunkFrames * inFrameBytes);
   output.resize((kChunkFrames + 1) * outFrameBytes);
   std::optional<long> start =
       position ? std::optional(*position / long(ratio)) : std::nullopt;
@@ -366,6 +367,18 @@ void DspStage::append(const uint8_t *frames, size_t count) {
   fedOut += count - skip;
 }
 
+bool DspStage::continueIn(const StreamAudioFormat &format) {
+  if (format == runFormat)
+    return true;
+  const size_t width = format.channels * sampleSize(format.sampleFormat);
+  if (!width || width > input.size() || !processor->changeInputFormat(format))
+    return false;
+  inFrameBytes = width;
+  inputChunkFrames = std::min(kChunkFrames, input.size() / width);
+  runFormat = format;
+  return true;
+}
+
 void DspStage::join(std::optional<StreamId> id, std::optional<long> position,
                     bool idle) {
   const StreamState &now = upstreamSeen;
@@ -376,8 +389,7 @@ void DspStage::join(std::optional<StreamId> id, std::optional<long> position,
   // Ended inside a seek's lead-in: the next source's frames would be passed.
   const bool leadingIn = fedIn / ratio < tail.begin;
   if (!idle && playing && !leadingIn && now.streamInfo.has_value() &&
-      now.streamInfo->format == tail.info.format &&
-      now.streamInfo->live == tail.info.live) {
+      now.streamInfo->live == tail.info.live && continueIn(now.streamInfo->format)) {
     segments.push_back(
         {id, *now.streamInfo,
          position ? std::optional(*position / long(ratio)) : std::nullopt,
@@ -427,7 +439,7 @@ DspStage::Step DspStage::plan(size_t frames, size_t &count) {
     const uint64_t passed = handed > produced() ? handed - produced() : 0;
     // Input frames: a ratio's worth for each output wanted.
     count = std::min<uint64_t>(
-        {(frames - readable() + priming + passed) * ratio, kChunkFrames,
+        {(frames - readable() + priming + passed) * ratio, inputChunkFrames,
          room * ratio});
     return count ? Step::Read : Step::Done;
   }
@@ -618,18 +630,23 @@ size_t DspStage::seekStream(StreamId stream, size_t position) {
   }
   sync();
   const unsigned r = runRatio();
-  const size_t early = earlyBy(position);
+  const size_t early = earlyBy(position, stream);
   const size_t reached =
       upstream ? upstream->seekStream(stream, (position - early) * r)
                : size_t(-1);
   return restartAfter(reached, r, position, early, stream);
 }
 
-size_t DspStage::earlyBy(size_t position) const {
+size_t DspStage::earlyBy(size_t position, std::optional<StreamId> stream) const {
   const bool known =
       !segments.empty() ||
       (upstreamSeen.streamInfo && upstreamSeen.streamInfo->format == runFormat);
-  return known ? std::min(position, processor->history()) : 0;
+  if (known)
+    return std::min(position, processor->history());
+  if ((!stream || stream == upstreamSeen.streamId) && upstreamSeen.streamInfo &&
+      processor->handles(upstreamSeen.streamInfo->format))
+    return std::min(position, processor->preparedHistory());
+  return 0;
 }
 
 unsigned DspStage::runRatio() const {

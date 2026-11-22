@@ -16,8 +16,7 @@
  * and adds no delay. With one, it hides the processor's latency: output frame
  * n of a source is that source's input frame n, so positions need no
  * correction downstream. It reads that latency ahead of the sink, and at a
- * join between two sources of the same format keeps the processor running
- * across it, announcing the incoming source only once the outgoing one's last
+ * join between compatible input formats keeps the processor running across it, announcing the incoming source only once the outgoing one's last
  * frame has been handed on. At any other join it plays the outgoing tail out
  * first. Formats the processor does not handle pass untouched.
  *
@@ -47,9 +46,8 @@ public:
 
   /// Refused while what plays belongs to a source upstream has already left.
   /// Upstream seeks the processor's history() early, and the frames before
-  /// the target are run through it and not handed on. A format no run has
-  /// started in seeks as asked, and where upstream lands further back than
-  /// asked, play goes on from there.
+  /// the target build its history. It can supply the preroll before its first read. Where upstream lands further back than asked, play goes on
+  /// from there.
   size_t seekTo(size_t absolutePosition) override;
   /// Drops everything held and seeks @p stream upstream, even one upstream has
   /// already left, early as seekTo() does.
@@ -134,6 +132,7 @@ private:
   std::optional<LeadIn> leadIn;
   /// The format of the run started last, which the processor's history()
   /// describes.
+  size_t inputChunkFrames = 0;
   std::optional<StreamAudioFormat> runFormat;
 
   size_t inFrameBytes = 0;
@@ -156,8 +155,9 @@ private:
   size_t fill(std::stop_token token, size_t bytes, bool wait,
               std::optional<std::chrono::steady_clock::time_point> deadline);
   Step plan(size_t frames, size_t &count);
-  /// Carries the run on into source @p id, which upstream now plays, if its
-  /// format matches the run's, or ends the run with a boundary before it.
+  /// Adopt a compatible source encoding while the outgoing samples drain.
+  bool continueIn(const StreamAudioFormat &format);
+  /// Carry the run into source @p id when its format is compatible.
   void join(std::optional<StreamId> id, std::optional<long> position,
             bool idle);
   bool perform(Step step, size_t count);
@@ -181,7 +181,7 @@ private:
   /// Shows downstream what the stage now holds.
   void publish();
   /// Output frames a seek to @p position starts early by.
-  size_t earlyBy(size_t position) const;
+  size_t earlyBy(size_t position, std::optional<StreamId> stream = {}) const;
   /// Lets go of everything held once upstream has seeked to @p reached, in
   /// input frames, for a seek to @p target asked @p early output frames
   /// short of it; keeps it all when upstream refused.

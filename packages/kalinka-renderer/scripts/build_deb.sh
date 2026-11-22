@@ -41,6 +41,7 @@ mkdir -p "$TARGET_DIR/usr/bin" "$TARGET_DIR/usr/lib/systemd/system" \
     "$TARGET_DIR/opt/kalinka" "$TARGET_DIR/DEBIAN"
 install -m 755 "$BUILD_DIR/kalinka-renderer" "$TARGET_DIR/usr/bin/kalinka-renderer"
 strip --strip-unneeded "$TARGET_DIR/usr/bin/kalinka-renderer"
+install -D -m 644 third_party/PFFFT-LICENSE.txt "$TARGET_DIR/usr/share/doc/kalinka-renderer/PFFFT-LICENSE.txt"
 install -m 644 scripts/kalinka-renderer.service "$TARGET_DIR/usr/lib/systemd/system/"
 # The upgrade plane: the renderer asks by touching a file, root does the work.
 install -m 644 scripts/kalinka-renderer-upgrade.path "$TARGET_DIR/usr/lib/systemd/system/"
