@@ -144,7 +144,6 @@ add_library(kalinka_native_player STATIC
   src/native_player/TrackDecoder.cpp
   src/native_player/VorbisStreamDecoder.cpp
   src/native_player/WavContainer.cpp
-  src/native_player/dsp/spatial/StereoExpansion.cpp
   src/native_player/dsp/peq/RoomEq.cpp
   src/native_player/dsp/peq/ParallelPeq.cpp
   src/native_player/dsp/peq/PeqKernels.cpp

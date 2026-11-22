@@ -100,7 +100,6 @@ public:
   std::shared_ptr<ConfigContributor> dsdSettings();
   /// Room profiles and their preamp controls.
   std::shared_ptr<ConfigContributor> dspSettings();
-  std::shared_ptr<ConfigContributor> spatialSettings();
 
 private:
   /// Contributes one section of knobs; writes land back on the player.

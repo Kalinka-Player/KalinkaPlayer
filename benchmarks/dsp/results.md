@@ -430,25 +430,6 @@ Reproduce with `kalinka-dsp-bench kernels OutputStage 192000` or substitute
 and the packed PCM traces matched the baseline byte for byte, including
 gain ramps, fades, clipping counts, short reads and bypass.
 
-## Stereo expansion on Raspberry Pi 4 and 5, 22 November 2026
-
-Median of five Release runs pinned to core 3, using the same GCC 14.2 arm64
-cross-build on both boards. The full output stage reads S32 stereo, applies
-Strong stereo expansion with room EQ off, then dithers to 24 significant bits
-in S32. The percentages express the time used on one core at the given rate.
-
-| Sample rate | Pi 4, ns/frame | Pi 4, one core | Pi 5, ns/frame | Pi 5, one core |
-|---|---:|---:|---:|---:|
-| 44.1 kHz | 41.86 | 0.185% | 19.03 | 0.084% |
-| 192 kHz | 41.47 | 0.796% | 19.02 | 0.365% |
-
-Run `kalinka-dsp-bench kernels OutputStage 192000` or substitute `44100`.
-The same 108 focused renderer tests passed on each board. The spatial tests
-cover transfer magnitude and phase, channel routing, changes during playback,
-integer bypass and the reported processing steps. The live playback test
-switched to Strong while playing stereo DSD as PCM and checked both the
-playback event and the renderer's state snapshot.
-
 ## arm64: Raspberry Pi 4 production PEQ, 20 November 2026
 
 Three Release runs of `taskset -c 3 kalinka-dsp-bench kernels PEQ 192000`
