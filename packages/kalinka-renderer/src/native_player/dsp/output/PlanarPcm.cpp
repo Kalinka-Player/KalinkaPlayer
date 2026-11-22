@@ -14,6 +14,14 @@ namespace {
 template <class Value>
 void deinterleave(const uint8_t *in, unsigned channels, size_t frames,
                   size_t width, double scale, Value value, double *const *out) {
+  if (channels == 2) {
+    double *left = out[0], *right = out[1];
+    for (size_t i = 0; i < frames; ++i, in += 2 * width) {
+      left[i] = double(value(in)) * scale;
+      right[i] = double(value(in + width)) * scale;
+    }
+    return;
+  }
   for (unsigned c = 0; c < channels; ++c) {
     const uint8_t *at = in + c * width;
     double *to = out[c];

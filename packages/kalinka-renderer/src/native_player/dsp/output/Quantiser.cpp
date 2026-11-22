@@ -1,7 +1,5 @@
 #include "dsp/output/Quantiser.h"
 
-#include "dsp/output/OutputKernels.h"
-
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
@@ -18,6 +16,14 @@ template <size_t Width, class Put>
 void interleave(const std::vector<std::vector<int32_t>> &rounded,
                 unsigned channels, size_t frames, unsigned shift, Put put,
                 uint8_t *out) {
+  if (channels == 2) {
+    const int32_t *left = rounded[0].data(), *right = rounded[1].data();
+    for (size_t i = 0; i < frames; ++i, out += 2 * Width) {
+      put(out, uint32_t(left[i]) << shift);
+      put(out + Width, uint32_t(right[i]) << shift);
+    }
+    return;
+  }
   for (unsigned c = 0; c < channels; ++c) {
     const int32_t *from = rounded[c].data();
     uint8_t *at = out + c * Width;
@@ -73,12 +79,9 @@ void Quantiser::pack(const double *const *in, unsigned channels, size_t frames,
   bits = std::min(bits, container);
   const double scale = double(1ull << (bits - 1));
   const auto high = int32_t((1ll << (bits - 1)) - 1), low = -high - 1;
-  for (unsigned c = 0; c < channels; ++c) {
-    dither.fill(noise.data(), frames);
-    clipped_ +=
-        output_kernels::quantise(in[c], frames, gain.from, step, scale,
-                                 noise.data(), low, high, rounded[c].data());
-  }
+  for (unsigned c = 0; c < channels; ++c)
+    clipped_ += dither.quantise(in[c], frames, gain.from, step, scale, low,
+                                high, noise.data(), rounded[c].data());
   const unsigned shift = container - bits;
   switch (format) {
   case PCM16_LE:
