@@ -45,59 +45,56 @@ double maxGainDb(const Band &band) {
 }
 } // namespace
 
-Plan prepare(const Settings &settings, unsigned rate, unsigned channels) {
+Plan prepare(const Profile *profile, unsigned rate, unsigned channels) {
   Plan plan;
-  if (!rate || !channels || channels > kPlanarChannels)
+  if (!profile || !rate || !channels || channels > kPlanarChannels)
     return plan;
-  if (settings.profile) {
-    const Profile &profile = *settings.profile;
-    for (unsigned ch = 0; ch < channels; ++ch) {
-      if (profile.shared.empty() && ch > 1)
-        break;
-      const auto &bands = !profile.shared.empty() ? profile.shared
-                          : ch == 0               ? profile.left
-                                                  : profile.right;
-      auto &cascade = plan.pairs[ch / 2];
-      const size_t lane = ch % 2;
-      size_t count = 0;
-      double headroom = 0;
-      for (const Band &band : bands) {
-        if (band.db == 0)
-          continue;
-        if (band.hz >= rate * 0.5 || count == kBands) {
-          return {.preampDb = settings.preampDb.value_or(0),
-                  .applicable = false};
-        }
-        const auto [b0, b1, b2, a1, a2] = coefficients(band, rate);
-        if (!(std::abs(a2) < 1 && 1 + a1 + a2 > 0 && 1 - a1 + a2 > 0)) {
-          return {.preampDb = settings.preampDb.value_or(0),
-                  .applicable = false};
-        }
-        Section &s = cascade.sections[count++];
+  const bool shared = !profile->shared.empty();
+  auto &front = plan.pairs.front();
+  const unsigned frontChannels = std::min(channels, 2u);
+  for (unsigned ch = 0; ch < (shared ? 1u : frontChannels); ++ch) {
+    const auto &bands = shared    ? profile->shared
+                        : ch == 0 ? profile->left
+                                  : profile->right;
+    size_t count = 0;
+    double headroom = 0;
+    for (const Band &band : bands) {
+      if (band.db == 0)
+        continue;
+      if (band.hz >= rate * 0.5 || count == kBands)
+        return {.applicable = false};
+      const auto [b0, b1, b2, a1, a2] = coefficients(band, rate);
+      if (!(std::abs(a2) < 1 && 1 + a1 + a2 > 0 && 1 - a1 + a2 > 0))
+        return {.applicable = false};
+      Section &s = front.sections[count++];
+      for (unsigned lane = ch; lane < (shared ? frontChannels : ch + 1);
+           ++lane) {
         s.b0[lane] = b0;
         s.b1[lane] = b1;
         s.b2[lane] = b2;
         s.a1[lane] = a1;
         s.a2[lane] = a2;
-        headroom += maxGainDb(band);
       }
-      cascade.count = std::max(cascade.count, count);
-      plan.active |= count != 0;
-      plan.preampDb = std::min(plan.preampDb, -headroom);
+      headroom += maxGainDb(band);
     }
+    front.count = std::max(front.count, count);
+    plan.automaticPreampDb = std::min(plan.automaticPreampDb, -headroom);
   }
+  plan.active = front.count != 0;
 #if defined(__aarch64__)
-  for (auto &cascade : plan.pairs)
-    if (cascade.count >= 8)
-      cascade.parallel = prepareParallel(cascade);
+  // Three to five and seven or more bands benefit on both the Pi 4 and Pi 5.
+  if (front.count >= 3 && front.count != 6)
+    front.parallel = prepareParallel(front, shared && frontChannels == 2);
 #endif
-  if (settings.preampDb)
-    plan.preampDb = *settings.preampDb;
+  if (shared)
+    for (unsigned ch = 2; ch < channels; ch += 2)
+      plan.pairs[ch / 2] = front;
   return plan;
 }
 
-void RoomEq::follow(const Plan &plan, unsigned rate, bool reset) {
-  const double gain = std::pow(10.0, plan.preampDb / 20);
+void RoomEq::follow(const Plan &plan, double preampDb, unsigned rate,
+                    bool reset) {
+  const double gain = std::pow(10.0, preampDb / 20);
   if (reset) {
     preamp.settle(gain);
     current = plan;

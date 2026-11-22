@@ -72,11 +72,15 @@ bool prepareChannel(Channel &channel, const Cascade &cascade, size_t lane) {
 
 } // namespace
 
-std::optional<ParallelPlan> prepareParallel(const Cascade &cascade) {
+std::optional<ParallelPlan> prepareParallel(const Cascade &cascade,
+                                            bool sharedStereo) {
   ParallelPlan plan;
-  for (size_t lane = 0; lane < 2; ++lane)
-    if (!prepareChannel(plan.channels[lane], cascade, lane))
-      return std::nullopt;
+  if (!prepareChannel(plan.channels[0], cascade, 0))
+    return std::nullopt;
+  if (sharedStereo)
+    plan.channels[1] = plan.channels[0];
+  else if (!prepareChannel(plan.channels[1], cascade, 1))
+    return std::nullopt;
   return plan;
 }
 
@@ -93,34 +97,26 @@ void runChannel(const Channel &channel, State *state, size_t lane, double *out,
   while (frames) {
     const size_t n = std::min(frames, kPlanarFrames);
     const size_t bulk = n - n % 10;
-    const size_t grouped = bulk ? channel.count - channel.count % 5 : 0;
-    for (size_t m = 0; m < grouped; m += 5) {
-      double *dest = m + 5 == channel.count ? out : partial;
-      kalinka_peq_five_modes(&channel.modes[m],
-                             coordinates(state[m], lane).data(), out,
-                             m ? partial : nullptr, dest, bulk, channel.direct);
-    }
-    // The scalar path shares the assembly's histories and accumulation order.
-    // Finish leftover modes on the bulk and every mode on the short tail.
-    auto finish = [&](size_t first, size_t begin, size_t end) {
-      if (begin == end || first == channel.count)
-        return;
-      if (!first)
-        for (size_t i = begin; i < end; ++i)
-          partial[i] = channel.direct * out[i];
-      for (size_t m = first; m < channel.count; ++m) {
+    // Unused modes have zero residues, including the end of the final group.
+    static_assert(kBands % 5 == 0);
+    if (bulk)
+      for (size_t m = 0; m < channel.count; m += 5) {
+        double *dest = m + 5 >= channel.count ? out : partial;
+        kalinka_peq_five_modes(
+            &channel.modes[m], coordinates(state[m], lane).data(), out,
+            m ? partial : nullptr, dest, bulk, channel.direct);
+      }
+    for (size_t i = bulk; i < n; ++i) {
+      const double x = out[i];
+      double sum = channel.direct * x;
+      for (size_t m = 0; m < channel.count; ++m) {
         const auto &c = channel.modes[m];
         auto &h = coordinates(state[m], lane);
-        double *dest = m + 1 == channel.count ? out : partial;
-        for (size_t i = begin; i < end; ++i) {
-          const double x = out[i];
-          dest[i] = std::fma(c.c, h[0], std::fma(c.d, h[1], partial[i]));
-          h = {std::fma(c.a, h[0], std::fma(c.b, h[1], x)), h[0]};
-        }
+        sum = std::fma(c.c, h[0], std::fma(c.d, h[1], sum));
+        h = {std::fma(c.a, h[0], std::fma(c.b, h[1], x)), h[0]};
       }
-    };
-    finish(grouped, 0, bulk);
-    finish(0, bulk, n);
+      out[i] = sum;
+    }
     frames -= n;
     out += n;
   }

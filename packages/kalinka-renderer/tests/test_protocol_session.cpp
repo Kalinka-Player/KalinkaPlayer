@@ -432,6 +432,44 @@ TEST_F(ProtocolSessionTest, ConfigIsAnsweredInReplyWithoutASession) {
   EXPECT_TRUE(wire.sent[1].config_result().outcomes(0).applied());
 }
 
+TEST_F(ProtocolSessionTest,
+       ConcurrentConfigUpdatesAreRefusedWithoutDeferredWrites) {
+  services.profiles = std::make_shared<ProfileDownloads>(ioc);
+  FakeWire first, second;
+  auto a = makeProtocol(first), b = makeProtocol(second);
+  welcome(*a, "server-a");
+  welcome(*b, "server-b");
+  renderer_pb::Envelope select;
+  select.set_message_id(7);
+  auto *profile = select.mutable_config_update()->add_settings();
+  profile->set_path("dsp.profile");
+  profile->set_value("invalid-hash");
+  feed(*a, select);
+  ASSERT_TRUE(first.sent.empty());
+  renderer_pb::Envelope mixed = select;
+  mixed.set_message_id(8);
+  auto *setting = mixed.mutable_config_update()->add_settings();
+  setting->set_path("output.buffer_ms");
+  setting->set_value("250");
+  feed(*b, mixed);
+  ASSERT_EQ(second.sent.size(), 1u);
+  EXPECT_EQ(second.sent.front().in_reply_to(), 8u);
+  const auto &result = second.sent.front().config_result();
+  ASSERT_EQ(result.outcomes_size(), 2);
+  for (const auto &outcome : result.outcomes()) {
+    EXPECT_FALSE(outcome.applied());
+    EXPECT_FALSE(outcome.error().empty());
+  }
+  EXPECT_EQ(result.outcomes(1).value(), "100");
+  ioc.run();
+  EXPECT_EQ(first.sent.size(), 1u);
+  EXPECT_EQ(second.sent.size(), 1u);
+  EXPECT_EQ(player->values.at("output.buffer_ms"), "100");
+  mixed.mutable_config_update()->mutable_settings()->DeleteSubrange(0, 1);
+  feed(*b, mixed);
+  EXPECT_TRUE(second.sent.back().config_result().outcomes(0).applied());
+}
+
 TEST_F(ProtocolSessionTest, FatalGoodbyesGiveUpTheLink) {
   for (const auto reason : {renderer_pb::Goodbye::REASON_VERSION_UNSUPPORTED,
                             renderer_pb::Goodbye::REASON_REPLACED}) {

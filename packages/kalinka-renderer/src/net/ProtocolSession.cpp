@@ -161,10 +161,16 @@ void ProtocolSession::onMessage(const std::string &data) {
                                     error, self->version_ >= 3);
       self->sendReply(out, message);
     };
-    if (services_.profiles)
-      services_.profiles->prepare(env.config_update(), std::move(reply));
-    else
+    if (!services_.profiles) {
       reply("", "");
+    } else if (!services_.profiles->prepare(env.config_update(),
+                                            std::move(reply))) {
+      renderer_pb::Envelope out;
+      services_.config->refuse(
+          env.config_update(), *out.mutable_config_result(),
+          "A room profile is loading. Retry this update.", version_ >= 3);
+      sendReply(out, env.message_id());
+    }
     break;
   }
   case renderer_pb::Envelope::kUpgrade:

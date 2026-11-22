@@ -16,6 +16,7 @@ The [DSD-to-PCM article benchmark](decoder-comparison/README.md) rebuilds the re
 |---|---|
 | `playback FILE...` | What playing a file costs today: CPU over audio duration, played to the end into the ALSA `null` device. `--delay-ms N` sends it through the DSP stage holding N ms back |
 | `kernels` | Per-frame cost of each audio kernel at 44.1, 96, 192 and 352.8 kHz, and what that is of one core in real time |
+| `peq-settings` | Renderer time per profile or preamp edit for the original KEF R3 and a 20-band shared profile at 192 kHz |
 | `simd` | The SIMD mechanisms side by side on a float64 FIR and a stereo biquad cascade, each null-tested against the scalar reference |
 | `dsd` | What DSD-to-PCM conversion costs, per output frame and of one core, for each stage 1 kernel at the rates the budgets name and beyond |
 | `fixtures` | The quality of the DSD test fixtures the harness writes, at DSD64, 128 and 256 |

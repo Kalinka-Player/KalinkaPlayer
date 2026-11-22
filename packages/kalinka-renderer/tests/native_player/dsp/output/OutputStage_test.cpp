@@ -1,3 +1,4 @@
+#include "AudioStreamSwitcher.h"
 #include "dsp/output/OutputStage.h"
 
 #include <gtest/gtest.h>
@@ -5,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <numbers>
 #include <random>
@@ -20,8 +22,9 @@ class PcmSource : public AudioGraphOutputNode {
 public:
   /// @param decoded What a stage made the samples out of, if any.
   PcmSource(StreamAudioFormat format, std::vector<uint8_t> bytes,
-            std::optional<StreamAudioFormat> decoded = std::nullopt)
-      : AudioGraphNode(StreamId(1)), format(format), bytes(std::move(bytes)),
+            std::optional<StreamAudioFormat> decoded = std::nullopt,
+            StreamId id = 1)
+      : AudioGraphNode(id), format(format), bytes(std::move(bytes)),
         frameBytes(sampleSize(format.sampleFormat) * format.channels),
         decoded(decoded) {
     restart();
@@ -513,6 +516,98 @@ TEST(OutputStage, DsdIsNotFaded) {
   EXPECT_EQ(readAll(*s.stage, 500), bytes);
 }
 
+namespace {
+peq::Settings peakEq() {
+  auto profile = std::make_shared<peq::Profile>();
+  profile->shared.push_back({peq::Type::Peak, 500, 6, 1});
+  return {profile, 0};
+}
+
+std::vector<double> joinedTail(unsigned firstChannels,
+                               std::optional<StreamId> cut,
+                               StreamId nextId = 2) {
+  auto switcher = std::make_shared<AudioStreamSwitcher>();
+  auto first = std::make_shared<PcmSource>(
+      pcm(PCM_FLOAT64_LE, firstChannels),
+      asBytes(std::vector<double>(2 * firstChannels, 0.5)));
+  auto second = std::make_shared<PcmSource>(pcm(PCM_FLOAT64_LE),
+                                            asBytes(std::vector<double>(128)),
+                                            std::nullopt, nextId);
+  OutputStage stage({}, 1);
+  stage.setRoomEq(peakEq());
+  stage.connectTo(switcher);
+  switcher->connectTo(first);
+  switcher->connectTo(second);
+  stage.acceptSourceChange();
+  EXPECT_EQ(readSamples<double>(stage, 2).size(), 2u);
+  if (cut)
+    stage.discardRoomEq(*cut);
+  // The puller may still read the outgoing track between cut and disconnect.
+  EXPECT_EQ(readSamples<double>(stage, 2).size(), 2u);
+  if (cut == 1)
+    switcher->disconnect(first);
+  else
+    first->finish();
+  stage.acceptSourceChange();
+  return readSamples<double>(stage, 128);
+}
+} // namespace
+
+TEST(OutputStage, GaplessMonoToStereoKeepsBothExpandedChannelHistories) {
+  const auto natural = joinedTail(2, std::nullopt);
+  ASSERT_EQ(natural.size(), 128u);
+  EXPECT_GT(std::abs(natural.front()), 0.01);
+  EXPECT_EQ(joinedTail(1, std::nullopt), natural);
+  EXPECT_EQ(joinedTail(2, 3), natural);
+}
+
+TEST(OutputStage, ExplicitCutClearsHistoryAfterTheFinalOutgoingRead) {
+  EXPECT_EQ(joinedTail(2, 1), std::vector<double>(128));
+  EXPECT_EQ(joinedTail(2, 1, 1), std::vector<double>(128));
+}
+
+TEST(OutputStage, BadFloatSamplesAreSilentAtTheFilterInput) {
+  const auto check = []<class T>(AudioSampleFormat format) {
+    std::vector<T> samples(256, T(0.125)), clean = samples;
+    samples[4] = std::numeric_limits<T>::quiet_NaN();
+    samples[6] = std::numeric_limits<T>::infinity();
+    samples[8] = -std::numeric_limits<T>::infinity();
+    clean[4] = clean[6] = clean[8] = 0;
+    Stage actual(pcm(format), asBytes(samples)),
+        expected(pcm(format), asBytes(clean));
+    actual.stage->setRoomEq(peakEq());
+    expected.stage->setRoomEq(peakEq());
+    EXPECT_EQ(readAll(*actual.stage, 16 * sizeof(T)),
+              readAll(*expected.stage, 16 * sizeof(T)));
+  };
+  check.operator()<float>(PCM_FLOAT32_LE);
+  check.operator()<double>(PCM_FLOAT64_LE);
+}
+
+TEST(OutputStage, DevicePrecisionStaysAtTheQuantiserWidthAcrossLiveEqChanges) {
+  Stage s(pcm(PCM16_LE), asBytes(std::vector<int16_t>(4096, 8192)), k24In32);
+  const auto check = [&] {
+    auto info = s.stage->getState().streamInfo;
+    ASSERT_TRUE(info && info->decodedFormat);
+    EXPECT_EQ(info->decodedFormat->bitsPerSample, 16u);
+    EXPECT_EQ(info->format.bitsPerSample, 24u);
+    EXPECT_EQ(info->format.sampleFormat, PCM32_LE);
+  };
+  check();
+  auto dry = readSamples<int32_t>(*s.stage, 64);
+  EXPECT_TRUE(
+      std::ranges::all_of(dry, [](auto v) { return (v & 0xffff) == 0; }));
+  s.stage->setRoomEq(peakEq());
+  auto wet = readSamples<int32_t>(*s.stage, 1024);
+  EXPECT_TRUE(std::ranges::all_of(wet, [](auto v) { return (v & 0xff) == 0; }));
+  EXPECT_TRUE(
+      std::ranges::any_of(wet, [](auto v) { return (v & 0xffff) != 0; }));
+  check();
+  s.stage->setRoomEq({});
+  readSamples<int32_t>(*s.stage, 1024);
+  check();
+}
+
 TEST(OutputStage, RoomEqCrossfadesToDryAndThenPassesEveryByte) {
   const auto bytes = randomBytes(4096 * 4);
   Stage s(pcm(PCM16_LE), bytes);
@@ -557,6 +652,74 @@ TEST(OutputStage, ProfileSwitchBlendsIndependentChannelResponses) {
     EXPECT_NEAR(mixed[i],
                 std::lerp(a[i], b[i], std::min(1.0, double(i / 2 + 1) / 480)),
                 1e-13);
+}
+
+TEST(OutputStage, LivePreampKeepsFilterHistoryAndRestoresAutomaticHeadroom) {
+  constexpr size_t rampFrames = kRate / 40;
+  std::vector<double> input(6 * rampFrames);
+  for (size_t i = 0; i < input.size(); ++i)
+    input[i] = 0.3 * std::sin(0.03 * double(i / 2));
+  const auto source = pcm(PCM_FLOAT64_LE);
+  Stage adjusted(source, asBytes(input)), reference(source, asBytes(input));
+  const auto settings = peakEq();
+  for (auto *s : {&adjusted, &reference}) {
+    s->stage->setRoomEq(settings);
+    readSamples<double>(*s->stage, 2 * rampFrames);
+  }
+  double previous = 1;
+  for (const auto db : {std::optional<double>{-3.5}, std::optional<double>{}}) {
+    adjusted.stage->setRoomEq({settings.profile, db});
+    const auto wet = readSamples<double>(*adjusted.stage, 2 * rampFrames);
+    const auto unity = readSamples<double>(*reference.stage, 2 * rampFrames);
+    ASSERT_EQ(wet.size(), 2 * rampFrames);
+    ASSERT_EQ(unity.size(), wet.size());
+    const double target = std::pow(10.0, db.value_or(-6) / 20);
+    for (size_t i = 0; i < wet.size(); ++i) {
+      const double progress = double(i / 2 + 1) / rampFrames;
+      ASSERT_NEAR(wet[i], unity[i] * std::lerp(previous, target, progress),
+                  1e-13);
+    }
+    previous = target;
+  }
+  const auto steps = adjusted.stage->describe(source, source, source);
+  auto preamp =
+      std::ranges::find(steps, signal_step::kPreamp, &SignalStep::kind);
+  ASSERT_NE(preamp, steps.end());
+  EXPECT_EQ(preamp->summary, "-6.00 dB");
+}
+
+TEST(OutputStage,
+     KeepingAProfileAcrossRateChangesRechecksItsFiltersAndHeadroom) {
+  auto profile = std::make_shared<peq::Profile>();
+  profile->shared.push_back({peq::Type::Peak, 20000, 6, 1});
+  auto switcher = std::make_shared<AudioStreamSwitcher>();
+  OutputStage stage({}, 1);
+  stage.connectTo(switcher);
+  stage.setRoomEq({profile, std::nullopt});
+  auto format = pcm(PCM_FLOAT64_LE);
+  const auto bytes = asBytes(std::vector<double>(2, 0.25));
+  auto first = std::make_shared<PcmSource>(format, bytes);
+  auto lowRate = format;
+  lowRate.sampleRate = 32000;
+  auto second = std::make_shared<PcmSource>(lowRate, bytes, std::nullopt, 2);
+  auto third = std::make_shared<PcmSource>(format, bytes, std::nullopt, 3);
+  for (const auto &source : {first, second, third})
+    switcher->connectTo(source);
+  stage.acceptSourceChange();
+  const auto filtered = stage.describe(format, format, format);
+  ASSERT_EQ(filtered.size(), 2u);
+  EXPECT_EQ(filtered[1].summary, "-6.00 dB");
+  first->finish();
+  stage.acceptSourceChange();
+  EXPECT_TRUE(stage.describe(lowRate, lowRate, lowRate).empty());
+  stage.setRoomEq({profile, -2});
+  const auto gainOnly = stage.describe(lowRate, lowRate, lowRate);
+  ASSERT_EQ(gainOnly.size(), 1u);
+  EXPECT_EQ(gainOnly.front().summary, "-2.00 dB");
+  stage.setRoomEq({profile, std::nullopt});
+  second->finish();
+  stage.acceptSourceChange();
+  EXPECT_EQ(stage.describe(format, format, format), filtered);
 }
 
 TEST(OutputStage, FractionalPreampRampsThroughTheExistingGainStage) {

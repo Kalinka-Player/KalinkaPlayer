@@ -163,25 +163,47 @@ template <typename Queue> Factory twoThreads() {
   };
 }
 
-std::shared_ptr<peq::Profile> twentyBands() {
+std::shared_ptr<peq::Profile> peakBands(unsigned count) {
   auto profile = std::make_shared<peq::Profile>();
-  for (unsigned i = 0; i < 20; ++i)
+  for (unsigned i = 0; i < count; ++i)
     profile->shared.push_back(
         {peq::Type::Peak, 30.0 * std::pow(1.35, i), i % 2 ? -3.0 : 2.0, 1.4});
   return profile;
 }
 
-Factory peqCascade() {
-  return [](unsigned rate) {
-    auto cascade = peq::prepare({twentyBands(), 0}, rate, 2).pairs.front();
-    const auto input = harness::sine(997, rate, kBlock, 0.5);
-    return
-        [cascade, input, left = input, right = input,
-         state = std::array<peq::State, peq::kBands>{}](size_t frames) mutable {
-          std::copy_n(input.begin(), frames, left.begin());
-          std::copy_n(input.begin(), frames, right.begin());
-          peq::filter(cascade, state.data(), left.data(), right.data(), frames);
-        };
+std::shared_ptr<peq::Profile> originalKefR3() {
+  auto profile = std::make_shared<peq::Profile>();
+  using enum peq::Type;
+  profile->shared = {{LowShelf, 69, 2.87, 0.66}, {Peak, 245, -0.46, 2.42},
+                     {Peak, 391, -0.85, 2.98},   {Peak, 646, -1.08, 2.96},
+                     {Peak, 1261, 1.26, 0.49},   {Peak, 2545, 0.34, 2.79},
+                     {Peak, 4966, -1.7, 2.04},   {Peak, 10361, -0.75, 1.42},
+                     {Peak, 12662, 1.29, 0.72}};
+  return profile;
+}
+
+Factory peqCascade(std::shared_ptr<const peq::Profile> profile,
+                   bool impulseTail = false) {
+  return [profile = std::move(profile), impulseTail](unsigned rate) {
+    auto cascade = peq::prepare(profile.get(), rate, 2).pairs.front();
+    auto input = impulseTail ? std::vector<double>(kBlock, 0.0)
+                             : harness::sine(997, rate, kBlock, 0.5);
+    std::array<peq::State, peq::kBands> state{};
+    auto left = input, right = input;
+    if (impulseTail) {
+      left.front() = right.front() = 1.0;
+      // Let even the 30 Hz section decay into the subnormal range before
+      // timing.
+      for (size_t at = 0; at < 16u * rate; at += kBlock) {
+        peq::filter(cascade, state.data(), left.data(), right.data(), kBlock);
+        left = right = input;
+      }
+    }
+    return [cascade, input, left, right, state](size_t frames) mutable {
+      std::copy_n(input.begin(), frames, left.begin());
+      std::copy_n(input.begin(), frames, right.begin());
+      peq::filter(cascade, state.data(), left.data(), right.data(), frames);
+    };
   };
 }
 
@@ -192,7 +214,7 @@ Factory outputStage(double gain, bool withPeq = false) {
         std::vector<StreamAudioFormat>{{rate, 2, 24, PCM32_LE, 0}}, 1);
     stage->setGain(gain);
     if (withPeq)
-      stage->setRoomEq({twentyBands(), -6.0});
+      stage->setRoomEq({peakBands(20), -6.0});
     stage->connectTo(std::make_shared<EndlessSource>(rate));
     auto out = std::make_shared<std::vector<uint8_t>>(kBlock * 8);
     return
@@ -245,7 +267,12 @@ std::vector<Kernel> kernels() {
       {"OutputStage at unity, S32 stereo", outputStage(1.0)},
       {"OutputStage at -6 dB, S32 stereo, dithered at 24 bits",
        outputStage(0.5)},
-      {"20 PEQ bands, planar float64 stereo", peqCascade()},
+      {"5 PEQ bands, planar float64 stereo", peqCascade(peakBands(5))},
+      {"9 PEQ bands, original KEF R3", peqCascade(originalKefR3())},
+      {"19 PEQ bands, planar float64 stereo", peqCascade(peakBands(19))},
+      {"20 PEQ bands, planar float64 stereo", peqCascade(peakBands(20))},
+      {"20 PEQ bands, silence after an impulse",
+       peqCascade(peakBands(20), true)},
       {"OutputStage with 20 PEQ bands, S32 stereo, dithered at 24 bits",
        outputStage(1.0, true)},
       {"libsoxr VHQ, float64, 2x up, stereo",
@@ -314,6 +341,34 @@ void runKernels(std::string_view filter, std::span<const unsigned> rates) {
     }
     std::printf("\n");
     std::fflush(stdout);
+  }
+}
+
+void runPeqSettings() {
+  constexpr unsigned rate = 192000;
+  std::printf("| Active PEQ bands at 192 kHz | Change profile (us/edit) | "
+              "Change preamp (us/edit) |\n|---:|---:|---:|\n");
+  for (const auto &profile : {originalKefR3(), peakBands(20)}) {
+    OutputStage stage({}, 1);
+    stage.connectTo(std::make_shared<EndlessSource>(rate));
+    auto alternate = std::make_shared<peq::Profile>(*profile);
+    alternate->shared.back().db += 0.25;
+    bool toggle = false;
+    const double select = nsPerFrame(
+        [&](size_t) {
+          toggle = !toggle;
+          stage.setRoomEq({toggle ? profile : alternate, -6.0});
+        },
+        1, 32);
+    stage.setRoomEq({profile, -6.0});
+    const double preamp = nsPerFrame(
+        [&](size_t) {
+          toggle = !toggle;
+          stage.setRoomEq({profile, toggle ? -5.5 : -6.0});
+        },
+        1, 128);
+    std::printf("| %zu | %.3f | %.3f |\n", profile->shared.size(),
+                select / 1000, preamp / 1000);
   }
 }
 

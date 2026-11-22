@@ -44,10 +44,10 @@ bool convertedFromDsd(const StreamInfo &info) {
 
 peq::Plan prepareEq(const peq::Settings &settings,
                     const StreamAudioFormat &source) {
-  auto plan =
-      isDsd(source.sampleFormat)
-          ? peq::Plan{}
-          : peq::prepare(settings, source.sampleRate, outputChannels(source));
+  auto plan = isDsd(source.sampleFormat)
+                  ? peq::Plan{}
+                  : peq::prepare(settings.profile.get(), source.sampleRate,
+                                 outputChannels(source));
   if (!plan.applicable)
     spdlog::warn("Skipping room profile '{}' at {} Hz", settings.profile->name,
                  source.sampleRate);
@@ -90,6 +90,8 @@ void OutputStage::disconnect(std::shared_ptr<AudioGraphOutputNode> source) {
     std::lock_guard prepareLock(eqPreparationMutex);
     std::lock_guard lock(presentedMutex);
     presented.reset();
+    reading.reset();
+    discardAtBoundary = false;
   }
   settlePending = true;
   setState(StreamState(AudioGraphNodeState::STOPPED));
@@ -100,6 +102,10 @@ void OutputStage::onUpstreamState(const StreamState &state) {
   // A source change names the stream to come, not the one still being read.
   if (state.streamId && state.state != AudioGraphNodeState::SOURCE_CHANGED) {
     std::lock_guard lock(presentedMutex);
+    if (reading != state.streamId && discardAtBoundary) {
+      resetEq = true;
+      discardAtBoundary = false;
+    }
     reading = state.streamId;
   }
   if (state.streamInfo && state.streamInfo->streamType == StreamType::FRAMES) {
@@ -109,12 +115,16 @@ void OutputStage::onUpstreamState(const StreamState &state) {
     auto &format = shown.streamInfo->format;
     format.sampleFormat = now.output.format;
     format.channels = now.channels;
-    // Quantised, float keeps the bits it is dithered at.
-    const bool quantised =
-        isFloat(source.sampleFormat) && !isFloat(format.sampleFormat);
-    if (quantised)
-      format.bitsPerSample = now.output.bits;
-    if ((quantised || format.channels != source.channels) &&
+    // EQ and fades can start during a run, so its device precision stays fixed.
+    if (!isDsd(source.sampleFormat) && !isFloat(format.sampleFormat)) {
+      format.bitsPerSample =
+          isFloat(source.sampleFormat)
+              ? now.output.bits
+              : std::max(now.output.bits, source.bitsPerSample);
+    }
+    if ((format.bitsPerSample != source.bitsPerSample ||
+         isFloat(source.sampleFormat) != isFloat(format.sampleFormat) ||
+         format.channels != source.channels) &&
         !shown.streamInfo->decodedFormat)
       shown.streamInfo->decodedFormat = source;
   }
@@ -134,8 +144,10 @@ void OutputStage::setDsdGain(double linear) { dsdGain = linear; }
 
 void OutputStage::discardRoomEq(std::optional<StreamId> id) {
   std::lock_guard lock(presentedMutex);
-  if (!id || reading == id)
+  if (!id)
     resetEq = true;
+  if (reading && (!id || reading == id))
+    discardAtBoundary = true;
 }
 
 OutputStage::Presented OutputStage::present(const StreamAudioFormat &source,
@@ -151,7 +163,10 @@ OutputStage::Presented OutputStage::present(const StreamAudioFormat &source,
     return *before;
   Presented next{source, chooseOutput(source, device, kPcmDeviceChannels),
                  outputChannels(source), fromDsd};
-  const bool changed = !before || before->source != source;
+  const bool changed =
+      !before || before->source.sampleRate != source.sampleRate ||
+      before->channels != next.channels ||
+      isDsd(before->source.sampleFormat) != isDsd(source.sampleFormat);
   const auto plan = changed ? prepareEq(eqSettings, source) : peq::Plan{};
   std::lock_guard lock(presentedMutex);
   if (changed) {
@@ -165,6 +180,14 @@ OutputStage::Presented OutputStage::present(const StreamAudioFormat &source,
 
 void OutputStage::setRoomEq(peq::Settings settings) {
   std::lock_guard prepareLock(eqPreparationMutex);
+  if (settings.profile == eqSettings.profile) {
+    std::lock_guard lock(presentedMutex);
+    if (settings.preampDb != eqSettings.preampDb) {
+      eqSettings.preampDb = settings.preampDb;
+      ++eqRevision;
+    }
+    return;
+  }
   const auto now = current();
   const auto plan = now ? prepareEq(settings, now->source) : peq::Plan{};
   std::lock_guard lock(presentedMutex);
@@ -191,13 +214,13 @@ OutputStage::describe(const StreamAudioFormat &decoded,
                presented->channels == outputChannels(source) &&
                !isDsd(presented->source.sampleFormat);
     active = eqPlan.active;
-    preampDb = eqPlan.preampDb;
+    preampDb = settings.preampDb.value_or(eqPlan.automaticPreampDb);
   }
   if (!prepared) {
-    const auto plan =
-        peq::prepare(settings, source.sampleRate, outputChannels(source));
+    const auto plan = peq::prepare(settings.profile.get(), source.sampleRate,
+                                   outputChannels(source));
     active = plan.active;
-    preampDb = plan.preampDb;
+    preampDb = settings.preampDb.value_or(plan.automaticPreampDb);
   }
   if (active)
     steps.push_back(
@@ -237,7 +260,8 @@ void OutputStage::follow(const Presented &now) {
   const bool reset = settlePending.exchange(false);
   const bool clearHistory = std::exchange(resetEq, false) || reset;
   if (clearHistory || (eqRevision != appliedRevision && !eq.transitioning())) {
-    eq.follow(eqPlan, rate, clearHistory);
+    eq.follow(eqPlan, eqSettings.preampDb.value_or(eqPlan.automaticPreampDb),
+              rate, clearHistory);
     appliedRevision = eqRevision;
   }
   const double gain = target.load() * (now.fromDsd ? dsdGain.load() : 1.0);
@@ -434,6 +458,12 @@ std::optional<uint64_t> OutputStage::liveSourceFrame() const {
 
 void OutputStage::acceptSourceChange() {
   clippedBefore = clippedPosted = quantiser.clipped();
+  {
+    // The successor can even reuse the discarded stream ID.
+    std::lock_guard lock(presentedMutex);
+    if (std::exchange(discardAtBoundary, false))
+      resetEq = true;
+  }
   if (upstream)
     upstream->acceptSourceChange();
 }

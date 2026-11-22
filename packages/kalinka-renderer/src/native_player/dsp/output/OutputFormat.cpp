@@ -38,5 +38,5 @@ OutputChoice chooseOutput(const StreamAudioFormat &source,
   for (const auto candidate : pcmOutputFormats(format, bits))
     if (const auto offered = taken(candidate); offered != device.end())
       return kept(offered, candidate);
-  return own;
+  return {format, std::min(bits, own.bits)};
 }

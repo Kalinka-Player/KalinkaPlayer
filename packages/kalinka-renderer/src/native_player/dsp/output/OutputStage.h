@@ -129,6 +129,7 @@ private:
   uint64_t eqRevision = 0;
   uint64_t appliedRevision = 0;
   bool resetEq = true;
+  bool discardAtBoundary = false;
   peq::RoomEq eq;
   Presented present(const StreamAudioFormat &source, bool fromDsd);
   GainRamp ramp;

@@ -491,6 +491,61 @@ to the benchmark user. The laptop used GCC 16.2.1 and logical CPU 1.
 Both boards passed all 39 EQ, output-stage, profile and config tests
 selected for the hardware run.
 
+## Production PEQ on digital silence, 22 November 2026
+
+The 20-band stereo benchmark now measures an impulse followed by 16 seconds
+of digital silence before timing the silent tail. This lets the 30 Hz section
+decay into the subnormal range. The tone run uses the same filters and block
+copies. Run both with `kalinka-dsp-bench kernels '20 PEQ bands' 192000`.
+
+Median nanoseconds per stereo frame across three alternating Release runs
+with the previous and updated kernels, pinned to logical CPU 1 on the laptop
+and core 3 on each Pi. The Pis ran the same cross-compiled binary, with their
+installed services running.
+
+| Machine | Tone before | Tone after | Silent tail before | Silent tail after | Silent tail after, % of one core |
+|---|---:|---:|---:|---:|---:|
+| Intel Core Ultra 9 185H | 14.58 | 14.58 | 2,590.86 | 14.80 | 0.284% |
+| Raspberry Pi 4, Cortex-A72 | 50.54 | 49.79 | 50.52 | 49.78 | 0.956% |
+| Raspberry Pi 5, Cortex-A76 | 36.33 | 36.34 | 36.32 | 36.34 | 0.698% |
+
+Flushing subnormal values during EQ reduced x86-64 CPU use on the silent tail
+from 49.74% of one core to 0.284%. The full output stage on the tone, including
+preamp and 24-bit dither, took 16.67 ns/frame on x86-64, 71.49 ns/frame on
+the Pi 4, and 46.06 ns/frame on the Pi 5.
+
+## Raspberry Pi PEQ across preset sizes and live edits, 22 November 2026
+
+Three alternating runs on core 3 of each Pi used the same Release benchmark
+driver linked against each renderer revision. The tables give medians. The
+kernel run used 1,024-frame blocks of stereo PCM at 192 kHz. The nine-band
+fixture is the original KEF R3 Spinorama AutoEQ preset.
+
+| EQ alone, ns/stereo frame | Pi 4 before | Pi 4 after | Pi 5 before | Pi 5 after |
+|---|---:|---:|---:|---:|
+| 5 bands | 41.64 | 13.89 | 16.65 | 9.68 |
+| 9 bands, KEF R3 | 94.75 | 25.87 | 50.34 | 18.46 |
+| 19 bands | 119.70 | 49.58 | 67.97 | 36.09 |
+| 20 bands | 50.89 | 49.61 | 36.33 | 36.10 |
+| 20 bands, silent tail | 50.88 | 49.58 | 36.33 | 36.09 |
+
+The original R3 now uses 0.50% of a Pi 4 core and 0.35% of a Pi 5 core at
+192 kHz. The full 20-band S32 output stage, including preamp and 24-bit dither,
+took 71.65 ns/frame on the Pi 4 and 45.85 ns/frame on the Pi 5.
+
+| Renderer update, µs/edit | Pi 4 before | Pi 4 after | Pi 5 before | Pi 5 after |
+|---|---:|---:|---:|---:|
+| Select a different 9-band profile | 720.864 | 363.012 | 380.686 | 191.692 |
+| Adjust preamp with the 9-band profile active | 717.910 | 0.059 | 376.294 | 0.030 |
+| Select a different 20-band profile | 3392.265 | 1701.073 | 1891.646 | 947.239 |
+| Adjust preamp with the 20-band profile active | 3386.773 | 0.059 | 1889.980 | 0.030 |
+
+Reproduce with `kalinka-dsp-bench kernels PEQ 192000` and
+`kalinka-dsp-bench peq-settings`. The settings benchmark alternates two
+in-memory profiles or two preamp values through `OutputStage::setRoomEq`. It
+times renderer preparation and publication. Audio rendering, the gain ramp,
+network requests and settings persistence are outside that timer.
+
 ## arm64: Raspberry Pi 4, 16 November 2026
 
 - CPU: Arm Cortex-A72, 4 cores at up to 1.8 GHz, L1 data cache 32 KB and

@@ -1,5 +1,6 @@
 #include "dsp/output/PlanarPcm.h"
 
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -25,6 +26,10 @@ template <class T> T load(const uint8_t *at) {
   T value;
   std::memcpy(&value, at, sizeof(T));
   return value;
+}
+template <class T> T finiteSample(const uint8_t *at) {
+  const T sample = load<T>(at);
+  return std::isfinite(sample) ? sample : T{0};
 }
 } // namespace
 
@@ -56,9 +61,11 @@ void readPlanar(const uint8_t *in, AudioSampleFormat format, unsigned channels,
     return deinterleave(in, channels, frames, width, 1.0 / 2147483648.0,
                         load<int32_t>, out);
   case PCM_FLOAT32_LE:
-    return deinterleave(in, channels, frames, width, 1.0, load<float>, out);
+    return deinterleave(in, channels, frames, width, 1.0, finiteSample<float>,
+                        out);
   case PCM_FLOAT64_LE:
-    return deinterleave(in, channels, frames, width, 1.0, load<double>, out);
+    return deinterleave(in, channels, frames, width, 1.0, finiteSample<double>,
+                        out);
   default:
     throw std::invalid_argument(std::string("No planar PCM from ") +
                                 sampleFormatToString(format));

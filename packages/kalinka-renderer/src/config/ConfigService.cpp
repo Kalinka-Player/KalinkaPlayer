@@ -139,6 +139,21 @@ void ConfigService::fillSnapshot(renderer_pb::ConfigSnapshot &out,
   out.set_config_version(versionOf(out));
 }
 
+void ConfigService::refuse(const renderer_pb::ConfigUpdate &update,
+                           renderer_pb::ConfigResult &out,
+                           const std::string &reason, bool decimal) const {
+  renderer_pb::ConfigSnapshot snapshot;
+  fillSnapshot(snapshot, decimal);
+  out.set_config_version(snapshot.config_version());
+  for (const auto &setting : update.settings()) {
+    auto &outcome = *out.add_outcomes();
+    outcome.set_path(setting.path());
+    outcome.set_error(reason);
+    if (const auto *field = findField(snapshot, setting.path()))
+      outcome.set_value(field->value());
+  }
+}
+
 void ConfigService::apply(const renderer_pb::ConfigUpdate &update,
                           renderer_pb::ConfigResult &out,
                           const std::string &profileId,

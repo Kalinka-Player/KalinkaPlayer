@@ -677,6 +677,13 @@ well-conditioned profiles as parallel pole pairs and uses the original
 cascade for repeated poles and other unsuitable profiles. Disabled and
 zero-gain bands are omitted. [Three-platform measurements](../benchmarks/dsp/results.md#production-peq-after-review-21-november-2026)
 
+The AArch64 parallel path now covers eligible profiles with 3–5 or 7–20 active
+bands. It fills the final group of five with zero-residue modes. Shared profiles
+reuse the same coefficients on both channels, and a preamp edit reuses the plan
+for the active profile and PCM format. The original nine-band KEF R3 preset
+takes 25.87 ns per stereo frame on the Pi 4 and 18.46 ns on the Pi 5 at 192 kHz.
+[Preset and settings benchmarks](../benchmarks/dsp/results.md#raspberry-pi-peq-across-preset-sizes-and-live-edits-22-november-2026)
+
 ## 12. Harness
 
 All of it is in `tests/dsp/` (library `kalinka_dsp_harness`), and its own

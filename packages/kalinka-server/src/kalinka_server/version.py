@@ -331,7 +331,11 @@ def get_version() -> str:
 # event's `play_id` names the play it happened in, null for one about no play.
 # An event can reach a client before the state_changed of its play, so a
 # client matches the two by `play_id`.
-REST_API_VERSION = "0.24"
+# 0.25: POST /dsp/profiles/rew imports shared or left/right REW filters.
+# GET /dsp/profiles lists presets and GET /dsp/profiles/{id} serves their
+# protobuf. Renderer config offers them on dsp.profile and supports decimal
+# settings with fractional range bounds and steps.
+REST_API_VERSION = "0.25"
 
 
 def get_rest_api_version() -> str:
