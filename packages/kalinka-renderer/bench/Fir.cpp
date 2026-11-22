@@ -5,7 +5,9 @@
 #include <chrono>
 #include <cstdio>
 #include <random>
+#include <span>
 #include <time.h>
+#include <vector>
 
 namespace bench {
 namespace {
@@ -20,18 +22,25 @@ double cpuTime() {
   return double(time.tv_sec) + double(time.tv_nsec) * 1e-9;
 }
 
-void measure(FirRoomCorrection::Partitions sizes, std::span<const double> left,
-             std::span<const double> right, std::span<const double> pcm) {
+void measure(const char *signal, FirRoomCorrection::Partitions sizes,
+             std::span<const double> left, std::span<const double> right,
+             std::span<const double> pcm, bool measureSilence = false) {
   FirRoomCorrection fir(rate, left, right, sizes);
   fir.start({rate, 2, 64, PCM_FLOAT64_LE});
   std::array<double, callback * 2> out;
-  auto process = [&](size_t i) {
-    const auto *input = pcm.data() + 2 * ((i * callback) % taps);
+  const std::array<double, callback * 2> silence{};
+  auto process = [&](const double *input) {
     fir.process(reinterpret_cast<const uint8_t *>(input),
                 reinterpret_cast<uint8_t *>(out.data()), callback);
   };
+  auto input = [&](size_t i) {
+    return pcm.data() + 2 * ((i * callback) % taps);
+  };
   for (size_t i = 0; i < taps / callback; ++i)
-    process(i);
+    process(input(i));
+  if (measureSilence)
+    for (size_t at = 0; at < taps + sizes.head; at += callback)
+      process(silence.data());
 
   std::array<double, runs> cpu;
   std::vector<double> calls(runs * callbacksPerRun);
@@ -40,7 +49,7 @@ void measure(FirRoomCorrection::Partitions sizes, std::span<const double> left,
     const auto start = cpuTime();
     for (size_t i = 0; i < callbacksPerRun; ++i) {
       const auto begin = std::chrono::steady_clock::now();
-      process(i);
+      process(measureSilence ? silence.data() : input(i));
       calls[at++] = std::chrono::duration<double, std::micro>(
                         std::chrono::steady_clock::now() - begin)
                         .count();
@@ -49,8 +58,8 @@ void measure(FirRoomCorrection::Partitions sizes, std::span<const double> left,
   }
   std::ranges::sort(cpu);
   std::ranges::sort(calls);
-  std::printf("| %zu/%zu | %.2f | %.3f | %.0f | %.0f |\n", sizes.head,
-              sizes.tail, 1000.0 * sizes.head / rate, cpu[runs / 2],
+  std::printf("| %s | %zu/%zu | %.2f | %.3f | %.0f | %.0f |\n", signal,
+              sizes.head, sizes.tail, 1000.0 * sizes.head / rate, cpu[runs / 2],
               calls[calls.size() * 99 / 100], calls.back());
   std::fflush(stdout);
 }
@@ -66,8 +75,9 @@ void runFir() {
   for (auto &sample : input)
     sample = 0.5 * noise(random);
   std::puts(
-      "| FIR partitions (frames) | Buffer (ms) | CPU (% of one core) | "
-      "p99 callback (us) | Max callback (us) |\n|---|---:|---:|---:|---:|");
+      "| Signal / impulse | FIR partitions (frames) | Buffer (ms) | CPU (% of "
+      "one core) | "
+      "p99 callback (us) | Max callback (us) |\n|---|---|---:|---:|---:|---:|");
   for (FirRoomCorrection::Partitions sizes :
        {FirRoomCorrection::Partitions{640, 640},
         {4096, 4096},
@@ -75,6 +85,12 @@ void runFir() {
         {512, 5120},
         FirRoomCorrection::kPartitions,
         {1024, 8192}})
-    measure(sizes, left, right, input);
+    measure("Audio / dense", sizes, left, right, input);
+  measure("Silence after tail / dense", FirRoomCorrection::kPartitions, left,
+          right, input, true);
+  std::fill(left.begin() + 4096, left.end(), 0.0);
+  std::fill(right.begin() + 4096, right.end(), 0.0);
+  measure("Audio / 4096 taps padded to 65536", FirRoomCorrection::kPartitions,
+          left, right, input);
 }
 } // namespace bench

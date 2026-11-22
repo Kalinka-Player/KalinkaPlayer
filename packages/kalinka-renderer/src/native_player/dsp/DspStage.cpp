@@ -608,49 +608,61 @@ size_t DspStage::waitForDataFor(std::stop_token stopToken,
 }
 
 size_t DspStage::seekTo(size_t absolutePosition) {
-  if (!processor) {
-    return upstream ? upstream->seekTo(absolutePosition) : size_t(-1);
-  }
-  sync();
-  // Upstream has moved on: what it would seek is not what is playing.
-  if (boundary || (!segments.empty() && segments.front().left)) {
-    return size_t(-1);
-  }
-  const unsigned r = runRatio();
-  const size_t early = earlyBy(absolutePosition);
-  const size_t reached =
-      upstream ? upstream->seekTo((absolutePosition - early) * r) : size_t(-1);
-  return restartAfter(reached, r, absolutePosition, early,
-                      upstreamSeen.streamId);
+  return seek(std::nullopt, absolutePosition);
 }
 
 size_t DspStage::seekStream(StreamId stream, size_t position) {
-  if (!processor) {
-    return upstream ? upstream->seekStream(stream, position) : size_t(-1);
-  }
+  return seek(stream, position);
+}
+
+size_t DspStage::seek(std::optional<StreamId> stream, size_t position) {
+  if (!upstream)
+    return size_t(-1);
+  const auto upstreamSeek = [&](size_t frame) {
+    return stream ? upstream->seekStream(*stream, frame)
+                  : upstream->seekTo(frame);
+  };
+  if (!processor)
+    return upstreamSeek(position);
   sync();
-  const unsigned r = runRatio();
-  const size_t early = earlyBy(position, stream);
-  const size_t reached =
-      upstream ? upstream->seekStream(stream, (position - early) * r)
-               : size_t(-1);
-  return restartAfter(reached, r, position, early, stream);
-}
+  if (!stream && (boundary || (!segments.empty() && segments.front().left)))
+    return size_t(-1);
 
-size_t DspStage::earlyBy(size_t position, std::optional<StreamId> stream) const {
-  const bool known =
-      !segments.empty() ||
-      (upstreamSeen.streamInfo && upstreamSeen.streamInfo->format == runFormat);
-  if (known)
-    return std::min(position, processor->history());
-  if ((!stream || stream == upstreamSeen.streamId) && upstreamSeen.streamInfo &&
-      processor->handles(upstreamSeen.streamInfo->format))
-    return std::min(position, processor->preparedHistory());
-  return 0;
-}
+  const auto id = stream ? stream : upstreamSeen.streamId;
+  auto info =
+      id == upstreamSeen.streamId ? upstreamSeen.streamInfo : std::nullopt;
+  if (!info) {
+    const auto segment =
+        std::find_if(segments.rbegin(), segments.rend(),
+                     [&](const Segment &s) { return s.id == id; });
+    if (segment != segments.rend())
+      info = segment->info;
+  }
 
-unsigned DspStage::runRatio() const {
-  return segments.empty() ? ratioOf(upstreamSeen.streamInfo) : ratio;
+  // Restoring a retired stream can be the first time its format is available.
+  std::optional<size_t> restored;
+  if (!info && stream) {
+    restored = upstreamSeek(position);
+    if (*restored == size_t(-1))
+      return *restored;
+    takeUpstream();
+    info = upstreamSeen.streamInfo;
+  }
+  const unsigned r = ratioOf(info);
+  size_t early = 0;
+  if (info && processor->handles(info->format)) {
+    const size_t history = info->format == runFormat
+                               ? processor->history()
+                               : processor->preparedHistory();
+    early = std::min(position, history);
+  }
+  const size_t target = (position - early) * r;
+  if (restored && target == position)
+    return restartAfter(*restored, r, position, early, id);
+  const size_t reached = upstreamSeek(target);
+  if (restored && reached == size_t(-1))
+    return restartAfter(*restored, r, position, 0, id);
+  return restartAfter(reached, r, position, early, id);
 }
 
 unsigned DspStage::ratioOf(const std::optional<StreamInfo> &info) const {
