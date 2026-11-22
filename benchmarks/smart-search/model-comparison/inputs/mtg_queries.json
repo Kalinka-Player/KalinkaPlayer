@@ -1,0 +1,230 @@
+{
+  "categories": {
+    "genre": [
+      {
+        "q": "electronic music",
+        "tag": "genre---electronic"
+      },
+      {
+        "q": "soundtrack music",
+        "tag": "genre---soundtrack"
+      },
+      {
+        "q": "pop music",
+        "tag": "genre---pop"
+      },
+      {
+        "q": "ambient music",
+        "tag": "genre---ambient"
+      },
+      {
+        "q": "rock music",
+        "tag": "genre---rock"
+      },
+      {
+        "q": "classical music",
+        "tag": "genre---classical"
+      },
+      {
+        "q": "easy listening music",
+        "tag": "genre---easylistening"
+      },
+      {
+        "q": "experimental music",
+        "tag": "genre---experimental"
+      },
+      {
+        "q": "alternative music",
+        "tag": "genre---alternative"
+      },
+      {
+        "q": "chillout music",
+        "tag": "genre---chillout"
+      },
+      {
+        "q": "dance music",
+        "tag": "genre---dance"
+      },
+      {
+        "q": "hip hop music",
+        "tag": "genre---hiphop"
+      },
+      {
+        "q": "indie music",
+        "tag": "genre---indie"
+      },
+      {
+        "q": "folk music",
+        "tag": "genre---folk"
+      },
+      {
+        "q": "orchestral music",
+        "tag": "genre---orchestral"
+      },
+      {
+        "q": "jazz music",
+        "tag": "genre---jazz"
+      },
+      {
+        "q": "lounge music",
+        "tag": "genre---lounge"
+      },
+      {
+        "q": "new age music",
+        "tag": "genre---newage"
+      },
+      {
+        "q": "techno music",
+        "tag": "genre---techno"
+      },
+      {
+        "q": "poprock music",
+        "tag": "genre---poprock"
+      },
+      {
+        "q": "house music",
+        "tag": "genre---house"
+      },
+      {
+        "q": "world music",
+        "tag": "genre---world"
+      },
+      {
+        "q": "folk pop music",
+        "tag": "genre---popfolk"
+      },
+      {
+        "q": "trance music",
+        "tag": "genre---trance"
+      },
+      {
+        "q": "instrumentalpop music",
+        "tag": "genre---instrumentalpop"
+      }
+    ],
+    "instrument": [
+      {
+        "q": "music with piano",
+        "tag": "instrument---piano"
+      },
+      {
+        "q": "music with synthesizer",
+        "tag": "instrument---synthesizer"
+      },
+      {
+        "q": "music with drums",
+        "tag": "instrument---drums"
+      },
+      {
+        "q": "music with bass",
+        "tag": "instrument---bass"
+      },
+      {
+        "q": "music with guitar",
+        "tag": "instrument---guitar"
+      },
+      {
+        "q": "music with electric guitar",
+        "tag": "instrument---electricguitar"
+      },
+      {
+        "q": "music with computer / electronic production",
+        "tag": "instrument---computer"
+      },
+      {
+        "q": "music with keyboard",
+        "tag": "instrument---keyboard"
+      },
+      {
+        "q": "music with acoustic guitar",
+        "tag": "instrument---acousticguitar"
+      },
+      {
+        "q": "music with violin",
+        "tag": "instrument---violin"
+      },
+      {
+        "q": "music with drum machine",
+        "tag": "instrument---drummachine"
+      },
+      {
+        "q": "music with voice",
+        "tag": "instrument---voice"
+      },
+      {
+        "q": "music with electric piano",
+        "tag": "instrument---electricpiano"
+      },
+      {
+        "q": "music with strings",
+        "tag": "instrument---strings"
+      },
+      {
+        "q": "music with cello",
+        "tag": "instrument---cello"
+      }
+    ],
+    "moodtheme": [
+      {
+        "q": "happy music",
+        "tag": "mood/theme---happy"
+      },
+      {
+        "q": "film music",
+        "tag": "mood/theme---film"
+      },
+      {
+        "q": "energetic music",
+        "tag": "mood/theme---energetic"
+      },
+      {
+        "q": "relaxing music",
+        "tag": "mood/theme---relaxing"
+      },
+      {
+        "q": "emotional music",
+        "tag": "mood/theme---emotional"
+      },
+      {
+        "q": "melodic music",
+        "tag": "mood/theme---melodic"
+      },
+      {
+        "q": "dark music",
+        "tag": "mood/theme---dark"
+      },
+      {
+        "q": "epic music",
+        "tag": "mood/theme---epic"
+      },
+      {
+        "q": "dream music",
+        "tag": "mood/theme---dream"
+      },
+      {
+        "q": "love music",
+        "tag": "mood/theme---love"
+      },
+      {
+        "q": "inspiring music",
+        "tag": "mood/theme---inspiring"
+      },
+      {
+        "q": "sad music",
+        "tag": "mood/theme---sad"
+      },
+      {
+        "q": "meditative music",
+        "tag": "mood/theme---meditative"
+      },
+      {
+        "q": "uplifting music",
+        "tag": "mood/theme---uplifting"
+      },
+      {
+        "q": "advertising music",
+        "tag": "mood/theme---advertising"
+      }
+    ]
+  }
+}
