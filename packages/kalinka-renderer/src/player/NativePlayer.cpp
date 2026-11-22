@@ -19,7 +19,6 @@
 #include "../native_player/AlsaDeviceEnumeration.h"
 #include "../native_player/AudioGraphHttpStream.h"
 #include "../native_player/DsdFormat.h"
-#include "../native_player/dsp/spatial/StereoExpansion.h"
 #include "StateTranslator.h"
 
 namespace asio = boost::asio;
@@ -412,34 +411,6 @@ struct Section {
   std::span<const Knob> knobs;
 };
 
-const Choice kExpansionLevels[] = {
-    {"off", "Off", "Original stereo."},
-    {"normal", "Normal", "Moderate widening for two speakers."},
-    {"strong", "Strong", "Increase the contribution of the stereo difference."},
-};
-const Knob kSpatialKnobs[] = {
-    {"spatial.expansion",
-     "Stereo expansion",
-     "Widen the stereo image while keeping centered sounds in place.",
-     renderer_pb::CONFIG_FIELD_TYPE_ENUM,
-     "",
-     {},
-     "Applies immediately to two-channel PCM. Expansion can raise peaks. "
-     "Reduce the preamp if the output reports clipping.",
-     kExpansionLevels,
-     renderer_pb::CONFIG_IMPORTANCE_SIMPLE},
-};
-const Section kSpatial{"spatial", "Spatial audio", "Stereo speaker processing.",
-                       kSpatialKnobs};
-
-ExpansionLevel expansionLevel(const std::string &value) {
-  if (value == "strong")
-    return ExpansionLevel::Strong;
-  if (value == "normal")
-    return ExpansionLevel::Normal;
-  return ExpansionLevel::Off;
-}
-
 const Section kBuffering{"buffers", "Buffering",
                          "Audio held in memory during playback.",
                          kBufferKnobs};
@@ -509,7 +480,7 @@ bool readPerStream(const std::string &path) {
 
 // Graph keys the built graph takes as they change, what plays included.
 bool appliesLive(const std::string &path) {
-  return path == "output.dsd_gain_db" || path == "spatial.expansion";
+  return path == "output.dsd_gain_db";
 }
 
 // Card mixer volume on a card without one leaves nothing to set the level, and
@@ -526,7 +497,7 @@ bool holds(std::span<const Knob> knobs, const std::string &path) {
 const Knob *findKnob(const std::string &path) {
   for (std::span<const Knob> knobs :
        {std::span<const Knob>(kOutputKnobs), kDsd.knobs, kBuffering.knobs,
-        kNetwork.knobs, kSpatial.knobs}) {
+        kNetwork.knobs}) {
     const auto knob = std::ranges::find_if(
         knobs, [&path](const Knob &knob) { return knob.path == path; });
     if (knob != knobs.end()) {
@@ -592,7 +563,6 @@ const std::map<std::string, std::string> &NativePlayer::defaultSettings() {
       {"output.dsd_pcm_rate", "auto"},
       {"output.dsd_filter", "auto"},
       {"output.dsd_gain_db", "safe"},
-      {"spatial.expansion", "off"},
       {"output.session_start_volume_ceiling_percent", "30"},
       // What the server shipped while it did the playing, rather than the
       // sink's own 100/25.
@@ -658,10 +628,6 @@ std::shared_ptr<ConfigContributor> NativePlayer::dsdSettings() {
   return std::make_shared<KnobSection>(shared_from_this(), kDsd);
 }
 
-std::shared_ptr<ConfigContributor> NativePlayer::spatialSettings() {
-  return std::make_shared<KnobSection>(shared_from_this(), kSpatial);
-}
-
 std::shared_ptr<ConfigContributor> NativePlayer::dspSettings() {
   return {shared_from_this(), dsp_.get()};
 }
@@ -718,8 +684,6 @@ bool NativePlayer::ensurePlayer() {
   }
   try {
     player_ = std::make_unique<AudioPlayer>(graphConfig());
-    player_->setStereoExpansion(
-        expansionLevel(settings_.at("spatial.expansion")));
     player_->setRoomEq(dsp_->current());
     std::string volumeError;
     if (!player_->configureVolume(effectiveVolumeMode(), "", &volumeError)) {
@@ -1305,10 +1269,7 @@ bool NativePlayer::applySetting(const std::string &path,
     }
   } else if (appliesLive(path)) {
     if (player_) {
-      if (path == "spatial.expansion")
-        player_->setStereoExpansion(expansionLevel(value));
-      else
-        player_->setDsdGain(value);
+      player_->setDsdGain(value);
       restatePlayback();
     }
   } else if (graphKeys().contains(path)) {

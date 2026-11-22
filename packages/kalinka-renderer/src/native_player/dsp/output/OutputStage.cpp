@@ -222,11 +222,6 @@ OutputStage::describe(const StreamAudioFormat &decoded,
     active = plan.active;
     preampDb = settings.preampDb.value_or(plan.automaticPreampDb);
   }
-  const auto level = expansionTarget.load();
-  const bool expanded = source.channels == 2 && level != ExpansionLevel::Off;
-  if (expanded)
-    steps.push_back({signal_step::kStereoExpansion, "Stereo expansion",
-                     level == ExpansionLevel::Strong ? "Strong" : "Normal"});
   if (active)
     steps.push_back(
         {signal_step::kPeq, "Parametric EQ", settings.profile->name});
@@ -237,7 +232,7 @@ OutputStage::describe(const StreamAudioFormat &decoded,
   if (convertedFromDsd(decoded, source) && gain != 1.0)
     steps.push_back({signal_step::kDsdGain, "DSD gain",
                      std::format("{:+.1f} dB", 20 * std::log10(gain))});
-  if ((isFloat(source.sampleFormat) || expanded || active || preampDb != 0) &&
+  if ((isFloat(source.sampleFormat) || active || preampDb != 0) &&
       !isFloat(output.sampleFormat)) {
     const auto choice = chooseOutput(source, device, kPcmDeviceChannels);
     const auto bits = choice.format == output.sampleFormat
@@ -264,8 +259,6 @@ void OutputStage::follow(const Presented &now) {
   const unsigned rate = now.source.sampleRate;
   const bool reset = settlePending.exchange(false);
   const bool clearHistory = std::exchange(resetEq, false) || reset;
-  expansion.follow(now.source.channels == 2 ? rate : 0, expansionTarget.load(),
-                   clearHistory);
   if (clearHistory || (eqRevision != appliedRevision && !eq.transitioning())) {
     eq.follow(eqPlan, eqSettings.preampDb.value_or(eqPlan.automaticPreampDb),
               rate, clearHistory);
@@ -303,8 +296,8 @@ size_t OutputStage::read(void *data, size_t size) {
   if (source.channels == 0 || source.channels > kPlanarChannels)
     throw std::runtime_error("No output stage for " +
                              std::to_string(source.channels) + " channels");
-  if (!expansion.active() && eq.bypassed() && ramp.holding(1.0) &&
-      fade.holding(1.0) && now->output.format == source.sampleFormat) {
+  if (eq.bypassed() && ramp.holding(1.0) && fade.holding(1.0) &&
+      now->output.format == source.sampleFormat) {
     if (source.channels == now->channels)
       return upstream->read(data, size);
     const auto width = sampleSize(source.sampleFormat);
@@ -345,7 +338,7 @@ void OutputStage::produce(const Presented &now, const uint8_t *in,
   // Integer to a wider container is exact; float to integer is quantised.
   const bool exact = from == to || (!isFloat(from) && !isFloat(to));
   for (size_t at = 0; at < frames;) {
-    size_t n = expansion.span(eq.span(frames - at));
+    size_t n = eq.span(frames - at);
     for (const auto *r : {&ramp, &fade})
       if (r->left())
         n = std::min(n, r->left());
@@ -359,8 +352,8 @@ void OutputStage::produce(const Presented &now, const uint8_t *in,
                         volume.to * faded.to * preamp.to, n};
     const uint8_t *source = in + at * inFrame;
     uint8_t *dest = out + at * outFrame;
-    if (!overlapping && !expansion.active() && !eq.filtering() &&
-        span.from == 1.0 && span.to == 1.0 && exact) {
+    if (!overlapping && !eq.filtering() && span.from == 1.0 && span.to == 1.0 &&
+        exact) {
       if (from == to)
         std::memcpy(dest, source, span.frames * inFrame);
       else
@@ -368,8 +361,6 @@ void OutputStage::produce(const Presented &now, const uint8_t *in,
                             span.frames * outFrame);
     } else {
       readPlanar(source, from, channels, span.frames, planar.planes());
-      if (expansion.active())
-        expansion.process(planar.planes()[0], planar.planes()[1], n);
       if (eq.filtering())
         eq.process(planar.planes(), channels, span.frames);
       // The product of simultaneous linear ramps is curved between the

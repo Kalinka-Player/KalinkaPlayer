@@ -170,8 +170,7 @@ int main(int argc, char **argv) {
       std::make_shared<ConfigService>(
           std::vector<std::shared_ptr<ConfigContributor>>{
               name, player, player->dsdSettings(), player->bufferSettings(),
-              player->networkSettings(), player->dspSettings(),
-              player->spatialSettings()},
+              player->networkSettings(), player->dspSettings()},
           [capabilities] { capabilities->refresh(); }),
       std::make_shared<TriggerFileUpgradeService>(),
       capabilities,

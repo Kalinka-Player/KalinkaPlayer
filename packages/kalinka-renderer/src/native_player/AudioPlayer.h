@@ -20,7 +20,6 @@ namespace peq {
 struct Settings;
 }
 class OutputStage;
-enum class ExpansionLevel;
 struct StreamNodes;
 class StateMonitor;
 
@@ -119,7 +118,6 @@ public:
   /// @p setting names it: what plays now ramps to it.
   /// @throws std::invalid_argument for a value the setting does not have.
   void setDsdGain(const std::string &setting);
-  void setStereoExpansion(ExpansionLevel level);
   /// Applies room correction on the running graph.
   void setRoomEq(peq::Settings settings);
 

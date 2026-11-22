@@ -10,7 +10,6 @@
 #include "dsp/output/PlanarPcm.h"
 #include "dsp/output/Quantiser.h"
 #include "dsp/peq/RoomEq.h"
-#include "dsp/spatial/StereoExpansion.h"
 
 #include <atomic>
 #include <memory>
@@ -73,7 +72,6 @@ public:
   void setDsdGain(double linear);
   /// Switches the PCM correction and final preamp on the next read.
   void setRoomEq(peq::Settings settings);
-  void setStereoExpansion(ExpansionLevel level) { expansionTarget = level; }
   /// Discards filter history when the audible stream is explicitly removed.
   void discardRoomEq(std::optional<StreamId> id = std::nullopt);
   void fadeOut() override;
@@ -133,8 +131,6 @@ private:
   bool resetEq = true;
   bool discardAtBoundary = false;
   peq::RoomEq eq;
-  std::atomic<ExpansionLevel> expansionTarget{ExpansionLevel::Off};
-  StereoExpansion expansion;
   Presented present(const StreamAudioFormat &source, bool fromDsd);
   GainRamp ramp;
   GainRamp fade;

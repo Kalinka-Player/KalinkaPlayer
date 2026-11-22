@@ -597,10 +597,6 @@ SignalPath AudioPlayer::signalPath(const StreamInfo &heard) const {
   return path;
 }
 
-void AudioPlayer::setStereoExpansion(ExpansionLevel level) {
-  outputStage->setStereoExpansion(level);
-}
-
 void AudioPlayer::setRoomEq(peq::Settings settings) {
   outputStage->setRoomEq(std::move(settings));
 }
