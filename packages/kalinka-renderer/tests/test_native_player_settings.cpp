@@ -475,8 +475,8 @@ TEST_F(NativePlayerSettingsTest, TheDspSaysWhatItIsBuiltToDo) {
   ASSERT_TRUE(capabilities.has_dsp());
   EXPECT_TRUE(capabilities.dsp().dsd_to_pcm());
   EXPECT_THAT(capabilities.dsp().steps(),
-              ::testing::ElementsAre("dsd_to_pcm", "peq", "preamp", "dsd_gain",
-                                     "dither"));
+              ::testing::ElementsAre("dsd_to_pcm", "stereo_expansion", "peq",
+                                     "preamp", "dsd_gain", "dither"));
   EXPECT_EQ(capabilities.dsp().max_output_channels(), 2u);
 }
 
@@ -922,6 +922,15 @@ TEST_F(NativePlayerDsdTest, ALevelChangeRestatesWhatPlays) {
                                                   error_))
       << error_;
   EXPECT_TRUE(runUntil(reportedWith("dsd_gain: +6.0 dB")));
+  states_.clear();
+  ASSERT_TRUE(player_->spatialSettings()->applyConfig("spatial.expansion",
+                                                      "strong", error_))
+      << error_;
+  ASSERT_TRUE(runUntil(reportedWith("stereo_expansion: Strong")));
+  player_->fillSnapshot(snapshot);
+  ASSERT_GE(snapshot.signal_path().steps_size(), 3);
+  EXPECT_EQ(snapshot.signal_path().steps(1).kind(), "stereo_expansion");
+  EXPECT_EQ(snapshot.signal_path().steps(1).summary(), "Strong");
   EXPECT_TRUE(stops().empty()) << "no rebuild";
   player_->stop();
   ioc_.poll();
@@ -1929,3 +1938,22 @@ TEST(ProfileDownloadsTest, ShutdownDropsOutstandingReplies) {
 }
 
 } // namespace
+
+TEST_F(NativePlayerSettingsTest, StereoExpansionIsAdvertisedLiveAndRestored) {
+  auto section = player_->spatialSettings();
+  renderer_pb::ConfigSection info;
+  section->fillConfig(info);
+  ASSERT_EQ(info.fields_size(), 1);
+  EXPECT_EQ(info.path(), "spatial");
+  EXPECT_EQ(info.fields(0).path(), "spatial.expansion");
+  EXPECT_EQ(info.fields(0).value(), "off");
+  EXPECT_EQ(info.fields(0).apply(), renderer_pb::APPLY_COST_INSTANT);
+  EXPECT_FALSE(section->applyConfig("spatial.expansion", "unknown", error_));
+  ASSERT_TRUE(section->applyConfig("spatial.expansion", "strong", error_));
+  section.reset();
+  player_.reset();
+  player_ = std::make_shared<NativePlayer>(ioc_);
+  info.Clear();
+  player_->spatialSettings()->fillConfig(info);
+  EXPECT_EQ(info.fields(0).value(), "strong");
+}
