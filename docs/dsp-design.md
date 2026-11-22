@@ -659,15 +659,19 @@ thread. A restart clears the history and reuses the plans and storage.
 The default overlap-save filter uses hops of 640 and 6,400 frames. The longer
 bank starts at tap 5,760, so its first sample lines up with the shorter bank.
 Its right-channel FFT runs half a long hop away from the left channel's. Both
-channels share the transform plan and scratch for each size. The processor
-reports 640 frames of buffering at every rate. Any delay encoded in the
-impulse remains part of its frequency and phase response.
+channels share the transform plan and scratch for each size. Channels with
+identical coefficients in a bank also share its prepared filter spectra. Each
+channel has its own input history. The processor reports 640 frames of
+buffering at every rate. Any delay encoded in the impulse remains part of
+its frequency and phase response.
 
 The stage carries the filter across same-rate stereo PCM joins, including
-changes of sample width or encoding. A seek can use up to one impulse length
-minus one frame of source history, including before the first read. Users will be able to
-select the stage once the Core can import FIR assets and the renderer can
-load them from a profile. [Pi measurements](../benchmarks/dsp/results.md#partitioned-fir-room-correction)
+changes of sample width or encoding. Trailing zero taps require no partitions
+or seek history. A seek uses the target stream's format and reads enough
+source history to cover its last nonzero tap, even before the first read. During digital silence the filter
+plays its buffered output and full impulse tail before suspending both FFT banks.
+Profile selection follows when the Core can import FIR assets and the
+renderer can load them. [Pi measurements](../benchmarks/dsp/results.md#partitioned-fir-room-correction)
 
 ## 11. Budgets
 

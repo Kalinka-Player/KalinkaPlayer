@@ -87,6 +87,57 @@ TEST(FirRoomCorrectionTest, LongImpulseAndRestartCoverEveryPartition) {
     ASSERT_EQ(pair, Stereo{});
 }
 
+TEST(FirRoomCorrectionTest,
+     ExactTrailingZerosReducePrerollWithoutMovingTheImpulse) {
+  std::vector<double> left(65536), right(32768);
+  right[23] = -0.25;
+  left[4095] = 1e-15;
+  FirRoomCorrection fir(format.sampleRate, left, right);
+  EXPECT_EQ(fir.preparedHistory(), 4095u);
+  const auto lag = fir.start(format);
+  std::vector<Stereo> out(lag + left.size());
+  const Stereo impulse{1, 1};
+  process(fir, &impulse, std::span(out).first(1));
+  process(fir, nullptr, std::span(out).subspan(1));
+  EXPECT_NEAR(out[lag + 4095][0], 1e-15, 1e-28);
+  EXPECT_NEAR(out[lag + 23][1], -0.25, 1e-14);
+  EXPECT_EQ(out.back(), Stereo{});
+
+  std::fill(left.begin(), left.end(), 0.0);
+  FirRoomCorrection muted(format.sampleRate, left, left);
+  EXPECT_EQ(muted.preparedHistory(), 0u);
+  muted.start(format);
+  process(muted, &impulse, std::span(out).first(1));
+  process(muted, nullptr, std::span(out).subspan(1));
+  for (const auto &pair : out)
+    ASSERT_EQ(pair, Stereo{});
+}
+
+TEST(FirRoomCorrectionTest,
+     SilencePreservesTheLastTapAndAudioResumesAtTheSameDelay) {
+  std::vector<double> ir(713);
+  ir.front() = 0.5;
+  ir.back() = -0.25;
+  FirRoomCorrection fir(format.sampleRate, ir, ir, {32, 192});
+  const auto lag = fir.start(format);
+  const size_t next = 2873;
+  std::vector<Stereo> input(next + ir.size() + lag + 31), actual(input.size());
+  input[0][0] = 1;
+  input[next][1] = -0.5;
+  process(fir, input.data(), std::span(actual).first(1));
+  // Resume inside an unaligned PCM block after draining part of the tail.
+  process(fir, nullptr, std::span(actual).subspan(1, 417));
+  process(fir, input.data() + 418, std::span(actual).subspan(418));
+  for (size_t i = 0; i < actual.size(); ++i) {
+    const double l = i < lag || i - lag >= ir.size() ? 0 : ir[i - lag];
+    const double r = i < next + lag || i - next - lag >= ir.size()
+                         ? 0
+                         : -0.5 * ir[i - next - lag];
+    ASSERT_NEAR(actual[i][0], l, 1e-13) << i;
+    ASSERT_NEAR(actual[i][1], r, 1e-13) << i;
+  }
+}
+
 TEST(FirRoomCorrectionTest, NonFiniteFloatSamplesLeaveTheNextSamplesPlayable) {
   const std::array<double, 2> ir{1, 0.5};
   FirRoomCorrection fir(48000, ir, ir, {32, 64});
@@ -246,6 +297,31 @@ TEST_F(FirGraph, SeekBeforeFirstReadUsesThePreparedImpulse) {
   ASSERT_EQ(out.size(), 97u);
   for (size_t i = 0; i < out.size(); ++i)
     ASSERT_NEAR(out[i], expected(input, 1200 + i), 1e-12) << i;
+}
+
+TEST_F(FirGraph, SeekingTheBypassedSuccessorDoesNotUseTheOutgoingImpulse) {
+  queue(1, 700000000, 1000);
+  auto bypassed = std::make_shared<CountingNode>(
+      2, 1000000, 2000, CountingNode::Options{.rate = 44100});
+  switcher->connectTo(bypassed);
+  ASSERT_EQ(read(980).size(), 980u);
+  ASSERT_EQ(switcher->streamId(), 2);
+  ASSERT_EQ(stage->seekStream(2, 850), 850u);
+  EXPECT_EQ(bypassed->streamReadPosition(), 850);
+  std::array<int32_t, 2> frame{};
+  ASSERT_EQ(stage->read(frame.data(), sizeof(frame)), sizeof(frame));
+  EXPECT_EQ(frame[0], bypassed->value(850));
+}
+
+TEST_F(FirGraph, SeekingARetiredStreamReconstructsItsOwnHistory) {
+  const auto first = queue(1, 700000000, 2100);
+  queue(2, -600000000, 1700);
+  ASSERT_EQ(read(3801).size(), 3800u);
+  ASSERT_EQ(stage->seekStream(1, 1100), 1100u);
+  const auto out = read(91);
+  ASSERT_EQ(out.size(), 91u);
+  for (size_t i = 0; i < out.size(); ++i)
+    ASSERT_NEAR(out[i], expected(first, 1100 + i), 1e-12) << i;
 }
 
 TEST_F(FirGraph, SeekPrerollReconstructsTheTargetSample) {

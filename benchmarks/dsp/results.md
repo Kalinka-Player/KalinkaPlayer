@@ -704,3 +704,21 @@ measured 5.04 MiB retained after preparing the default stereo case, including
 input history spectra, transformed taps, plans and scratch. Starting the
 processor twice and processing 257-frame reads and a silence drain made zero
 heap allocations. Reproduce the timings with `taskset -c 3 kalinka-dsp-bench fir`.
+
+### FIR review measurements
+
+Three runs per binary and board compared the original PR with the revised
+backend, using the default 640 / 6,400 hops and the same release toolchain
+and callback size as above. The silence case plays dense audio, then feeds
+zero-valued stereo PCM until the full tail and buffering delay have elapsed.
+The padded case has 4,096 nonzero taps per channel in a 65,536-tap file.
+
+| Signal and impulse | Pi 4 CPU before → after | Pi 5 CPU before → after | Pi 4 p99 / max after | Pi 5 p99 / max after |
+|---|---:|---:|---:|---:|
+| Audio, dense independent filters | 2.832 → 2.909 % | 0.667 → 0.670 % | 1.644 / 1.919 ms | 0.355 / 0.511 ms |
+| Silence after the dense filter tail | 2.798 → 0.037 % | 0.664 → 0.018 % | 0.003 / 0.031 ms | 0.001 / 0.024 ms |
+| Audio, zero-padded filters | 2.819 → 0.601 % | 0.667 → 0.205 % | 0.093 / 0.178 ms | 0.028 / 0.048 ms |
+
+For 65,536 taps per channel the x86-64 heap probe measured 5.04 MiB with
+independent responses and 3.97 MiB when both channels used identical
+coefficients. Both cases made zero allocations during start, processing and drain.

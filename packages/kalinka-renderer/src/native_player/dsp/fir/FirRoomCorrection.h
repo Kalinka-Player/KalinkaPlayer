@@ -38,6 +38,9 @@ private:
   class Channel;
   const unsigned rate;
   const size_t taps, latency;
+  size_t historyFrames;
+  size_t pending = 0;
   std::array<std::unique_ptr<Channel>, 2> channels;
   AudioSampleFormat inputFormat = PCM_FLOAT64_LE;
+  void reset();
 };

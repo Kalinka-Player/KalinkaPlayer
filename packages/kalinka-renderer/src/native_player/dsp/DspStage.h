@@ -16,9 +16,10 @@
  * and adds no delay. With one, it hides the processor's latency: output frame
  * n of a source is that source's input frame n, so positions need no
  * correction downstream. It reads that latency ahead of the sink, and at a
- * join between compatible input formats keeps the processor running across it, announcing the incoming source only once the outgoing one's last
- * frame has been handed on. At any other join it plays the outgoing tail out
- * first. Formats the processor does not handle pass untouched.
+ * join between compatible input formats keeps the processor running. It
+ * announces the incoming source after handing on the outgoing source's last
+ * frame. At any other join it plays the outgoing tail out first. Formats the
+ * processor does not handle pass untouched.
  *
  * @note read(), the waits, the seeks, acceptSourceChange(),
  * streamReadPosition() and liveSourceFrame() belong to the one thread that
@@ -46,8 +47,8 @@ public:
 
   /// Refused while what plays belongs to a source upstream has already left.
   /// Upstream seeks the processor's history() early, and the frames before
-  /// the target build its history. It can supply the preroll before its first read. Where upstream lands further back than asked, play goes on
-  /// from there.
+  /// the target build its history. It can supply the preroll before its first
+  /// read. Where upstream lands further back than asked, play goes on from there.
   size_t seekTo(size_t absolutePosition) override;
   /// Drops everything held and seeks @p stream upstream, even one upstream has
   /// already left, early as seekTo() does.
@@ -130,9 +131,8 @@ private:
     long target;
   };
   std::optional<LeadIn> leadIn;
-  /// The format of the run started last, which the processor's history()
-  /// describes.
   size_t inputChunkFrames = 0;
+  /// The format of the run started last, which the processor's history() describes.
   std::optional<StreamAudioFormat> runFormat;
 
   size_t inFrameBytes = 0;
@@ -180,8 +180,8 @@ private:
   void dropEverything();
   /// Shows downstream what the stage now holds.
   void publish();
-  /// Output frames a seek to @p position starts early by.
-  size_t earlyBy(size_t position, std::optional<StreamId> stream = {}) const;
+  /// Seeks in the format of the target stream, including a retired source.
+  size_t seek(std::optional<StreamId> stream, size_t position);
   /// Lets go of everything held once upstream has seeked to @p reached, in
   /// input frames, for a seek to @p target asked @p early output frames
   /// short of it; keeps it all when upstream refused.
@@ -192,9 +192,6 @@ private:
   /// @p state as downstream sees it: in the processor's output format, and
   /// with upstream's own position in output frames when @p upstreamPosition.
   StreamState presented(StreamState state, bool upstreamPosition) const;
-  /// Input frames to one output frame: the run's, or with nothing running
-  /// what the processor would make of upstream's format.
-  unsigned runRatio() const;
   /// Input frames to one output frame of a stream in this format.
   unsigned ratioOf(const std::optional<StreamInfo> &info) const;
   void onUpstreamState(const StreamState &state);

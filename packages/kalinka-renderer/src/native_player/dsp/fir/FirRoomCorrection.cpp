@@ -39,21 +39,45 @@ struct Transform {
 };
 using Plan = std::shared_ptr<Transform>;
 
-/// One overlap-save bank. Its output slice remains valid until the hop fills.
-class PartitionBank {
-public:
-  PartitionBank(size_t hop, std::span<const double> impulse, Plan plan,
-                size_t phase)
-      : hop(hop), n(2 * hop), parts((impulse.size() + hop - 1) / hop),
-        phase(phase), fft(std::move(plan)), filters(buffer(parts * n)),
-        spectra(buffer(parts * n)), time(buffer(n)), result(buffer(n)) {
+struct Filter {
+  Filter(size_t hop, std::span<const double> impulse, Plan plan)
+      : hop(hop), parts((impulse.size() + hop - 1) / hop), fft(std::move(plan)),
+        bins(buffer(parts * 2 * hop)) {
+    const size_t n = 2 * hop;
+    auto *time = fft->sum.get();
     for (size_t p = 0; p < parts; ++p) {
-      std::fill_n(time.get(), n, 0);
       const auto count = std::min(hop, impulse.size() - p * hop);
       for (size_t i = 0; i < count; ++i)
         time[i] = impulse[p * hop + i] / n;
-      fft->run(time.get(), filters.get() + p * n, PFFFT_FORWARD);
+      std::fill(time + count, time + n, 0);
+      fft->run(time, bins.get() + p * n, PFFFT_FORWARD);
     }
+  }
+  size_t hop, parts;
+  Plan fft;
+  Buffer bins;
+};
+using PreparedFilter = std::shared_ptr<const Filter>;
+
+std::array<PreparedFilter, 2> prepare(size_t hop, std::span<const double> left,
+                                      std::span<const double> right) {
+  if (left.empty() && right.empty())
+    return {};
+  const auto fft = std::make_shared<Transform>(2 * hop);
+  const auto channel = [&](std::span<const double> impulse) -> PreparedFilter {
+    return impulse.empty() ? nullptr
+                           : std::make_shared<Filter>(hop, impulse, fft);
+  };
+  const auto first = channel(left);
+  return {first, std::ranges::equal(left, right) ? first : channel(right)};
+}
+
+/// One overlap-save bank. Its output slice remains valid until the hop fills.
+class PartitionBank {
+public:
+  PartitionBank(PreparedFilter prepared, size_t phase)
+      : filter(std::move(prepared)), hop(filter->hop), n(2 * hop), phase(phase),
+        spectra(buffer(filter->parts * n)), time(buffer(n)), result(buffer(n)) {
     reset();
   }
 
@@ -77,41 +101,39 @@ public:
     if (filled != hop)
       return;
     filled = 0;
+    auto &fft = filter->fft;
+    const auto *filters = filter->bins.get();
+    const auto parts = filter->parts;
     fft->run(time.get(), spectra.get() + slot * n, PFFFT_FORWARD);
     std::copy_n(time.get() + hop, hop, time.get());
     valid = std::min(valid + 1, parts);
     size_t block = slot;
-    pffftd_zconvolve(fft->setup.get(), spectra.get() + block * n, filters.get(),
+    pffftd_zconvolve(fft->setup.get(), spectra.get() + block * n, filters,
                      fft->sum.get());
     for (size_t p = 1; p < valid; ++p) {
       if (++block == parts)
         block = 0;
       pffftd_zconvolve_accumulate(fft->setup.get(), spectra.get() + block * n,
-                                  filters.get() + p * n, fft->sum.get(), 1);
+                                  filters + p * n, fft->sum.get(), 1);
     }
     fft->run(fft->sum.get(), result.get(), PFFFT_BACKWARD);
     slot = (slot == 0 ? parts : slot) - 1;
   }
 
 private:
-  size_t hop, n, parts, phase, filled = 0, slot = 0, valid = 0;
-  Plan fft;
-  Buffer filters, spectra, time, result;
+  PreparedFilter filter;
+  const size_t hop, n, phase;
+  size_t filled = 0, slot = 0, valid = 0;
+  Buffer spectra, time, result;
 };
 } // namespace
 
 class FirRoomCorrection::Channel {
 public:
-  Channel(std::span<const double> impulse, size_t split, Partitions sizes,
-          const Plan &early, const Plan &late, bool right)
-      : head(sizes.head, impulse.first(std::min(split, impulse.size())), early,
-             0) {
-    if (split < impulse.size()) {
-      // Keep the two long FFTs out of the same short playback callback.
-      const size_t phase =
-          right ? (sizes.tail / sizes.head / 2) * sizes.head : 0;
-      tail.emplace(sizes.tail, impulse.subspan(split), late, phase);
-    }
+  Channel(PreparedFilter early, PreparedFilter late, size_t phase)
+      : head(std::move(early), 0) {
+    if (late)
+      tail.emplace(std::move(late), phase);
   }
 
   void reset() {
@@ -169,18 +191,28 @@ FirRoomCorrection::FirRoomCorrection(unsigned rate,
                              [](double tap) { return std::isfinite(tap); }))
       throw std::invalid_argument("Non-finite room impulse");
 
-  const auto early = std::make_shared<Transform>(2 * sizes.head);
-  // Each bank's hop already delays its samples. Their difference aligns the
-  // tail.
+  auto trimPadding = [](std::span<const double> impulse) {
+    while (impulse.size() > 1 && impulse.back() == 0)
+      impulse = impulse.first(impulse.size() - 1);
+    return impulse;
+  };
+  left = trimPadding(left);
+  right = trimPadding(right);
+  const size_t activeTaps = std::max(left.size(), right.size());
+  historyFrames = activeTaps - 1;
+  // The difference between bank delays aligns their output at the split.
   const size_t split =
-      sizes.head == sizes.tail ? taps : sizes.tail - sizes.head;
-  Plan late;
-  if (split < taps)
-    late = std::make_shared<Transform>(2 * sizes.tail);
-  channels[0] =
-      std::make_unique<Channel>(left, split, sizes, early, late, false);
-  channels[1] =
-      std::make_unique<Channel>(right, split, sizes, early, late, true);
+      sizes.head == sizes.tail ? activeTaps : sizes.tail - sizes.head;
+  const size_t leftSplit = std::min(split, left.size());
+  const size_t rightSplit = std::min(split, right.size());
+  const auto early =
+      prepare(sizes.head, left.first(leftSplit), right.first(rightSplit));
+  const auto late =
+      prepare(sizes.tail, left.subspan(leftSplit), right.subspan(rightSplit));
+  // Keep the two long FFTs out of the same short playback callback.
+  const size_t phase = (sizes.tail / sizes.head / 2) * sizes.head;
+  channels[0] = std::make_unique<Channel>(early[0], late[0], 0);
+  channels[1] = std::make_unique<Channel>(early[1], late[1], phase);
 }
 
 FirRoomCorrection::~FirRoomCorrection() = default;
@@ -209,8 +241,7 @@ size_t FirRoomCorrection::start(const StreamAudioFormat &f) {
     throw std::invalid_argument(
         "Room impulse does not match the stream format");
   inputFormat = f.sampleFormat;
-  for (auto &ch : channels)
-    ch->reset();
+  reset();
   return latency;
 }
 
@@ -221,7 +252,13 @@ bool FirRoomCorrection::changeInputFormat(const StreamAudioFormat &format) {
   return true;
 }
 
-size_t FirRoomCorrection::preparedHistory() const { return taps - 1; }
+size_t FirRoomCorrection::preparedHistory() const { return historyFrames; }
+
+void FirRoomCorrection::reset() {
+  for (auto &ch : channels)
+    ch->reset();
+  pending = 0;
+}
 
 size_t FirRoomCorrection::process(const uint8_t *in, uint8_t *out,
                                   size_t frames) {
@@ -232,15 +269,29 @@ size_t FirRoomCorrection::process(const uint8_t *in, uint8_t *out,
     if (in)
       readPlanar(in + at * 2 * sampleSize(inputFormat), inputFormat, 2, count,
                  planes);
-    else
+    const auto silentPlane = [count](const double *plane) {
+      return std::all_of(plane, plane + count, [](double x) { return x == 0; });
+    };
+    const bool silent =
+        !in || (silentPlane(planes[0]) && silentPlane(planes[1]));
+    if (silent && !pending) {
+      std::memset(out + at * 2 * sizeof(double), 0, count * 2 * sizeof(double));
+      at += count;
+      continue;
+    }
+    const auto active = silent ? std::min(count, pending) : count;
+    if (!in)
       for (auto *plane : planes)
         std::fill_n(plane, count, 0);
     for (auto &ch : channels)
-      ch->process(count);
+      ch->process(active);
     for (size_t i = 0; i < count; ++i) {
       const double pair[]{planes[0][i], planes[1][i]};
       std::memcpy(out + (at + i) * sizeof(pair), pair, sizeof(pair));
     }
+    pending = silent ? pending - active : historyFrames + latency;
+    if (!pending)
+      reset();
     at += count;
   }
   return frames;

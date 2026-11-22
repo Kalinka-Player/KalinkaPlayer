@@ -148,7 +148,7 @@ For an offline build, add `-DFETCHCONTENT_SOURCE_DIR_PFFFT=/path/to/pffft-1.3.0`
 to the configure command and point it at the unpacked archive.
 
 - Fedora: `sudo dnf install cmake gcc-c++ protobuf-devel protobuf-compiler protobuf-lite-devel boost-devel spdlog-devel alsa-lib-devel flac-devel libvorbis-devel openssl-devel libcurl-devel curlpp-devel libxml2-devel faad2-devel soxr-devel highway-devel gtest-devel`
-- Debian/Ubuntu: `sudo apt install cmake g++ libprotobuf-dev protobuf-compiler libboost-dev libspdlog-dev libasound2-dev libflac++-dev libvorbis-dev libssl-dev libcurl4-openssl-dev libcurlpp-dev libxml2-dev libfaad-dev libsoxr-dev libhwy-dev libgtest-dev`
+- Debian/Ubuntu: `sudo apt install ca-certificates cmake g++ libprotobuf-dev protobuf-compiler libboost-dev libspdlog-dev libasound2-dev libflac++-dev libvorbis-dev libssl-dev libcurl4-openssl-dev libcurlpp-dev libxml2-dev libfaad-dev libsoxr-dev libhwy-dev libgtest-dev`
 
 From the repo root:
 
