@@ -15,7 +15,8 @@ import os
 import queue
 import random
 import sqlite3
-from typing import Optional
+from contextvars import ContextVar
+from typing import Iterator, Optional
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
@@ -58,9 +59,25 @@ _DB_LOCK_BASE_DELAY = 0.05
 # Upper bound on any single backoff wait.
 _DB_LOCK_MAX_DELAY = 1.0
 
+_single_attempts: ContextVar[bool] = ContextVar(
+    "db_lock_single_attempts", default=False
+)
+
 
 def _is_locked_error(exc: BaseException) -> bool:
     return isinstance(exc, sqlite3.OperationalError) and "locked" in str(exc).lower()
+
+
+@contextlib.contextmanager
+def single_attempts() -> Iterator[None]:
+    """Have every ``retry_on_locked`` function the current task calls inside
+    this block try once, leaving a lock to the caller: the calls are one
+    transaction, which retrying one of them could not restart."""
+    token = _single_attempts.set(True)
+    try:
+        yield
+    finally:
+        _single_attempts.reset(token)
 
 
 def retry_on_locked(fn):
@@ -69,11 +86,14 @@ def retry_on_locked(fn):
     Tries at most ``_DB_LOCK_ATTEMPTS`` times. Backoff is exponential with
     *full jitter* (``random.uniform(0, cap)``) so the contending workers don't
     resynchronise and collide again on the same retry tick. Any non-lock error
-    — or exhausting the attempts — re-raises immediately.
+    — or exhausting the attempts — re-raises immediately. Inside
+    :func:`single_attempts` it tries once.
     """
 
     @functools.wraps(fn)
     async def wrapper(*args, **kwargs):
+        if _single_attempts.get():
+            return await fn(*args, **kwargs)
         for attempt in range(1, _DB_LOCK_ATTEMPTS + 1):
             try:
                 return await fn(*args, **kwargs)
@@ -100,8 +120,10 @@ def retry_db_locked(cls):
     Only public (non ``_``-prefixed) coroutine methods are wrapped — these hold
     a connection for their own call only, via ``_open()``, which discards what
     a failed attempt left uncommitted, so a retry starts clean even on a
-    connection a scan shares. Internal helpers (including the ``_open`` context
-    manager and any method handed an existing connection) are left untouched.
+    connection a scan shares. Inside ``db_connection.in_one_transaction`` it
+    would not, so there the transaction is retried whole instead. Internal
+    helpers (including the ``_open`` context manager and any method handed an
+    existing connection) are left untouched.
     """
     for name, member in list(vars(cls).items()):
         if name.startswith("_"):
