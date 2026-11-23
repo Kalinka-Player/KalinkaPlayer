@@ -3,7 +3,8 @@
 onnxruntime and tokenizers come from a plugin's optional packages, so a box
 may not have them. The embedder must then say it is unavailable before it
 downloads a model it could never run. With them, it fetches the model it
-lacks, and gives up on a download that stops coming.
+lacks, gives up on a download that stops coming, and tries a failed one
+again only once it is due.
 """
 
 import importlib.util
@@ -92,6 +93,19 @@ def _installed(monkeypatch, names: set[str], loading: set[str] | None = None):
 
     monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
     monkeypatch.setattr(text_embedder, "_loads", lambda name: name in loading)
+
+
+def _probes(monkeypatch, loads: bool) -> list[str]:
+    """The runtime packages whose import is tried, in order, each answering
+    ``loads``."""
+    probed: list[str] = []
+
+    def probe(name: str) -> bool:
+        probed.append(name)
+        return loads
+
+    monkeypatch.setattr(text_embedder, "_loads", probe)
+    return probed
 
 
 def _module(monkeypatch, tmp_path, name: str, body: str) -> None:
@@ -205,6 +219,57 @@ async def test_a_model_download_that_stops_coming_is_given_up_leaving_nothing(
     assert time.monotonic() - started < WITHIN_S
     assert served.asked == ["/minilm/model.onnx"]
     assert list(model_dir.iterdir()) == []
+
+
+async def test_a_failed_model_download_is_not_tried_again_before_it_is_due(
+    monkeypatch, tmp_path, downloads
+):
+    """Every search during an outage would otherwise wait out a stall."""
+    _installed(monkeypatch, set(RUNTIME))
+    embedder = SharedTextEmbedder(str(tmp_path / "minilm"), MODEL_URL)
+
+    assert await embedder.available() is False
+    assert await embedder.available() is False
+    assert downloads == [f"{MODEL_URL}/model.onnx"]
+
+
+async def test_a_failed_model_download_is_tried_again_once_due(
+    monkeypatch, tmp_path, served
+):
+    """Text search would otherwise stay off until the server restarts, the
+    network long back; the runtime's import is not tried again."""
+    _installed(monkeypatch, set(RUNTIME))
+    probed = _probes(monkeypatch, loads=True)
+    monkeypatch.setattr(text_embedder, "_RETRY_AFTER_S", 0.0)
+    monkeypatch.setitem(download_file.__kwdefaults__, "timeout_s", STALL_S)
+    served.stall = True
+    embedder = SharedTextEmbedder(str(tmp_path / "minilm"), served.url)
+    assert await embedder.available() is False
+
+    served.stall = False
+
+    assert await embedder.available() is True
+    assert served.asked == [
+        "/minilm/model.onnx",
+        "/minilm/model.onnx",
+        "/minilm/tokenizer.json",
+    ]
+    assert probed == list(RUNTIME)
+
+
+async def test_a_runtime_that_does_not_load_is_not_tried_again(
+    monkeypatch, tmp_path, downloads
+):
+    """Installing it restarts the server, so only a download is retried."""
+    _installed(monkeypatch, set(RUNTIME))
+    probed = _probes(monkeypatch, loads=False)
+    monkeypatch.setattr(text_embedder, "_RETRY_AFTER_S", 0.0)
+    embedder = SharedTextEmbedder(str(tmp_path / "minilm"), MODEL_URL)
+
+    assert await embedder.available() is False
+    assert await embedder.available() is False
+    assert probed == list(RUNTIME)
+    assert downloads == []
 
 
 async def test_a_model_over_its_ceiling_is_refused_leaving_nothing(
