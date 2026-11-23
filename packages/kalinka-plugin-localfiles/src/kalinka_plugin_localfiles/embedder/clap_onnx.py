@@ -31,10 +31,10 @@ from __future__ import annotations
 import gc
 import logging
 import os
-import urllib.request
 from typing import TYPE_CHECKING, BinaryIO, Optional
 
 import numpy as np
+from kalinka_plugin_sdk.downloads import download_file
 
 if TYPE_CHECKING:  # imported lazily at the call site; heavy to load
     import soundfile
@@ -91,13 +91,11 @@ _THREE_FRAGMENT_MIN_S = 30.0
 def _ensure_model_file(name: str, model_dir: str) -> Optional[str]:
     """Return path to a model file, downloading if necessary.
 
-    Writes to ``<dest>.part`` first and atomic-renames on success.
-    Without that, an interrupted ``urlretrieve`` leaves a truncated
-    file at ``dest``; on the next call ``os.path.isfile(dest)`` short-
+    The download lands at ``dest`` only once whole. A truncated file
+    there would stay: on the next call ``os.path.isfile(dest)`` short-
     circuits and onnxruntime fails to parse the partial ONNX — and
     the download never retries because the loader's failure is not
-    interpreted as "redownload". Stale ``.part`` from a previous
-    interrupted run is removed before the new attempt starts.
+    interpreted as "redownload".
     """
     filename = _MODEL_FILENAMES.get(name)
     if not filename:
@@ -133,25 +131,8 @@ def _ensure_model_file(name: str, model_dir: str) -> Optional[str]:
         )
         return None
 
-    tmp = dest + ".part"
-    # Clear stale .part from a previous interrupted run (e.g. SIGKILL
-    # mid-download). Cannot be a partial-but-resumable file because
-    # urllib.request.urlretrieve doesn't support range requests.
-    try:
-        os.unlink(tmp)
-    except FileNotFoundError:
-        pass
-
-    logger.info("Downloading '%s' from %s ...", name, url)
-    try:
-        urllib.request.urlretrieve(url, tmp)
-        os.replace(tmp, dest)
-    except Exception as e:
-        logger.error("Failed to download '%s': %s", name, e)
-        try:
-            os.unlink(tmp)
-        except FileNotFoundError:
-            pass
+    if not download_file(url, dest):
+        logger.error("Failed to download '%s'", name)
         return None
 
     logger.info("Saved '%s' to %s", name, dest)
