@@ -27,8 +27,9 @@ import logging
 import os
 import subprocess
 import sys
-import urllib.request
 from typing import List, Optional, Sequence
+
+from kalinka_plugin_sdk.downloads import download_file
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
@@ -73,22 +74,6 @@ def _loads(name: str) -> bool:
                        lines[-1] if lines else f"exit {result.returncode}")
         return False
     return True
-
-
-def download_file(url: str, dest: str) -> bool:
-    """Download url -> dest atomically (via a .part temp). True on success."""
-    tmp = dest + ".part"
-    try:
-        os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
-        logger.info("downloading %s", url)
-        urllib.request.urlretrieve(url, tmp)
-        os.replace(tmp, dest)
-        return True
-    except Exception as e:
-        logger.warning("download failed (%s): %s", url, e)
-        if os.path.exists(tmp):
-            os.remove(tmp)
-        return False
 
 
 def _migrate_legacy_files(model_dir: str, legacy_dirs: Sequence[str]) -> None:

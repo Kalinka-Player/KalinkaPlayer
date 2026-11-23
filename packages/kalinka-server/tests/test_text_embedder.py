@@ -2,14 +2,20 @@
 
 onnxruntime and tokenizers come from a plugin's optional packages, so a box
 may not have them. The embedder must then say it is unavailable before it
-downloads a model it could never run.
+downloads a model it could never run. With them, it fetches the model it
+lacks, and gives up on a download that stops coming.
 """
 
 import importlib.util
 import os
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 
 import pytest
 
+from kalinka_plugin_sdk.downloads import download_file
 from kalinka_server import text_embedder
 from kalinka_server.config_model import EmbeddingConfig, KalinkaConfig
 from kalinka_server.config_overrides import apply_overrides_with_prefix
@@ -17,6 +23,47 @@ from kalinka_server.text_embedder import SharedTextEmbedder
 
 RUNTIME = ("onnxruntime", "tokenizers")
 MODEL_URL = "https://models.test/minilm"
+MODEL_BODY = b"onnx" * 4096
+# Stands in for the download's default timeout, which ensure_model keeps.
+STALL_S = 0.5
+# How long a stalled connection stays open: a download that waits for it
+# has no timeout.
+HOLD_S = 30
+WITHIN_S = 10
+
+
+@pytest.fixture
+def served():
+    """Serves MODEL_BODY at every path, keeping the paths asked for; with
+    ``stall``, sends its first bytes and then nothing, the connection open."""
+    answer = SimpleNamespace(stall=False, asked=[], url="")
+    released = threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            answer.asked.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(MODEL_BODY)))
+            self.end_headers()
+            if answer.stall:
+                self.wfile.write(MODEL_BODY[:100])
+                released.wait(HOLD_S)
+            else:
+                self.wfile.write(MODEL_BODY)
+
+        def log_message(self, format, *args):
+            pass
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        threading.Thread(
+            target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+        ).start()
+        answer.url = f"http://127.0.0.1:{server.server_port}/minilm"
+        try:
+            yield answer
+        finally:
+            released.set()
+            server.shutdown()
 
 
 @pytest.fixture
@@ -123,6 +170,41 @@ async def test_with_its_runtime_it_fetches_the_model_it_lacks(
 
     assert await embedder.available() is False
     assert downloads == [f"{MODEL_URL}/model.onnx"]
+
+
+async def test_with_its_runtime_the_model_lands_whole_from_its_url(
+    monkeypatch, tmp_path, served
+):
+    _installed(monkeypatch, set(RUNTIME))
+    model_dir = tmp_path / "minilm"
+    embedder = SharedTextEmbedder(str(model_dir), served.url)
+
+    assert await embedder.available() is True
+    assert served.asked == ["/minilm/model.onnx", "/minilm/tokenizer.json"]
+    assert sorted(p.name for p in model_dir.iterdir()) == [
+        "model.onnx",
+        "tokenizer.json",
+    ]
+    assert (model_dir / "model.onnx").read_bytes() == MODEL_BODY
+
+
+async def test_a_model_download_that_stops_coming_is_given_up_leaving_nothing(
+    monkeypatch, tmp_path, served
+):
+    """A connection that stalls without a reset, as on a Wi-Fi drop, would
+    otherwise keep mood search being set up until the server restarts."""
+    _installed(monkeypatch, set(RUNTIME))
+    monkeypatch.setitem(download_file.__kwdefaults__, "timeout_s", STALL_S)
+    served.stall = True
+    model_dir = tmp_path / "minilm"
+    embedder = SharedTextEmbedder(str(model_dir), served.url)
+
+    started = time.monotonic()
+    assert await embedder.available() is False
+
+    assert time.monotonic() - started < WITHIN_S
+    assert served.asked == ["/minilm/model.onnx"]
+    assert list(model_dir.iterdir()) == []
 
 
 @pytest.mark.parametrize("broken", RUNTIME)
