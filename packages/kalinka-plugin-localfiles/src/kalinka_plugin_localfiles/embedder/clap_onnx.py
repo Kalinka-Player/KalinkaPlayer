@@ -72,6 +72,10 @@ _MODEL_FILENAMES: dict[str, str] = {
     "mood_index": f"mood_index_v{VA_HEAD_VERSION}.npz",
 }
 
+# About twice the largest file, the 501.5 MB text encoder: a body without end
+# stops here rather than filling the card.
+_MODEL_MAX_BYTES = 1 << 30
+
 # Audio constants matching laion_clap (non-fusion, HTSAT-base)
 _SAMPLE_RATE = 48_000
 _FRAGMENT_SECONDS = 10
@@ -131,7 +135,7 @@ def _ensure_model_file(name: str, model_dir: str) -> Optional[str]:
         )
         return None
 
-    if not download_file(url, dest):
+    if not download_file(url, dest, max_bytes=_MODEL_MAX_BYTES):
         logger.error("Failed to download '%s'", name)
         return None
 

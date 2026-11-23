@@ -96,6 +96,19 @@ def test_a_download_that_stops_coming_is_given_up_and_tried_again(
     assert len(served.asked) == 2
 
 
+def test_a_model_file_over_its_ceiling_is_refused_leaving_nothing(
+    tmp_path, served, monkeypatch
+):
+    """A body without end would otherwise fill the card."""
+    monkeypatch.setattr(clap_onnx, "_MODEL_MAX_BYTES", len(PAYLOAD) - 1)
+
+    result = clap_onnx._ensure_model_file("clap_tokenizer", str(tmp_path))
+
+    assert result is None
+    assert served.asked == ["/clap_tokenizer.json"]
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_existing_dest_short_circuits(tmp_path, served):
     """A complete file already on disk skips the download entirely."""
     dest = tmp_path / "clap_tokenizer.json"
