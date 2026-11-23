@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 #
 # Boot a copy of a PC image in QEMU and pass once the server answers on its
-# default port. The supervisor's control API then sets the guest's time zone
-# and powers it off, so the disk left behind is one a clean shutdown wrote;
-# the power button is only the fallback when that fails.
+# default port. The supervisor's control API then downloads the guest's logs,
+# sets its time zone and powers it off, so the disk left behind is one a clean
+# shutdown wrote; the power button is only the fallback when that fails.
 #
 # Usage: boot.sh <image> <uefi|uefi-secure-boot|bios> <dir>
 #
-# <dir> receives disk.img, the copy that booted, with serial.log and qemu.log.
+# <dir> receives disk.img, the copy that booted, with serial.log, qemu.log
+# and logs.zip, the supervisor's log download.
 # When the server never answers it also gets screen.png: past the firmware and
 # GRUB, the kernel writes only to the screen.
 #
@@ -128,6 +129,26 @@ power_off_through_supervisor() {
   wait_for_exit
 }
 
+# The supervisor reads the journal itself, as it must on a streamer whose server or network failed.
+download_logs_through_supervisor() {
+  local control="http://127.0.0.1:$HOST_CONTROL_PORT"
+  curl -fsS --max-time 180 -o "$DIR/logs.zip" "$control/v1/logs" \
+    || { echo "boot: the supervisor gave no logs" >&2; return 1; }
+  python3 - "$DIR/logs.zip" <<'PY'
+import sys, zipfile
+
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    names = archive.namelist()
+    if names != ["core.log", "renderer.log", "supervisor.log", "network.log", "kernel.log"]:
+        sys.exit(f"boot: the log download holds {names}")
+    # The renderer may log nothing; the server, the supervisor, NetworkManager and the kernel all log as they start.
+    for name in ("core.log", "supervisor.log", "network.log", "kernel.log"):
+        lines = archive.read(name).decode(errors="replace").splitlines()
+        if not any(line and not line.startswith("-- ") for line in lines):
+            sys.exit(f"boot: {name} in the log download has no entries: {lines[:3]}")
+PY
+}
+
 # timedated, which D-Bus starts on demand, writes the zone; the status reads it back from the system.
 set_timezone_through_supervisor() {
   local control="http://127.0.0.1:$HOST_CONTROL_PORT" info server_id status zone
@@ -178,7 +199,9 @@ if [ -z "$version" ]; then
 fi
 echo "boot: the server answered after $((SECONDS - started))s: $version"
 
-# A failed change still powers off through the supervisor, so its journal is on the disk.
+# A failed download or change still powers off through the supervisor, so its journal is on the disk.
+logs_read=1
+download_logs_through_supervisor || logs_read=0
 timezone_set=1
 set_timezone_through_supervisor || timezone_set=0
 if ! power_off_through_supervisor; then
@@ -188,4 +211,5 @@ fi
 wait "$QEMU_PID" || die "QEMU exited with status $?"
 QEMU_PID=""
 echo "boot: powered off"
+[ "$logs_read" = 1 ] || die "the supervisor's log download failed or lacked entries"
 [ "$timezone_set" = 1 ] || die "the supervisor did not set the time zone to $TIMEZONE"

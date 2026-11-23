@@ -771,12 +771,14 @@ belongs in that change's threat model.
   `run-live.sh` turns the page and API off, since as root they would act on the
   laptop.
 - **VM.** The PC image's VM boot test:
-  1. loads the page and reads `/info`;
+  1. downloads `GET /v1/logs` and finds entries in `core.log`,
+     `supervisor.log`, `network.log` and `kernel.log`;
   2. sets the guest's time zone through `POST /v1/actions/set_timezone` and
      reads it back from `/v1/status`;
-  3. powers the guest off through `POST /v1/actions/poweroff`.
+  3. loads the page and reads `/info`;
+  4. powers the guest off through `POST /v1/actions/poweroff`.
 
-  This proves the supervisor can read Core's identity, drive systemd and
-  have timedated write `/etc/localtime` on a real image. The inspection step
-  then finds both audit lines in the guest's journal, and the zone in
-  `/etc/localtime` on its disk.
+  This proves the supervisor can read the journal, read Core's identity,
+  drive systemd and have timedated write `/etc/localtime` on a real image.
+  The inspection step then finds both audit lines in the guest's journal,
+  and the zone in `/etc/localtime` on its disk.
