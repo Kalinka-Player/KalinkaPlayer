@@ -64,12 +64,14 @@ func unitMatches(units ...string) []string {
 // logSources name the network units of DietPi's ifupdown and of NetworkManager
 // alike: journalctl passes over a unit it holds no entries for.
 var logSources = []logSource{
-	{"core.log", unitMatches(CoreUnit, "kalinka-upgrade.service", "kalinka-restart.service", "kalinka-plugins.service")},
+	{"core.log", unitMatches(CoreUnit, "kalinka-server-id.service", "kalinka-upgrade.service", "kalinka-restart.service",
+		"kalinka-plugins.service", "kalinka-mounts.service", "kalinka-media-mount@*.service")},
 	{"renderer.log", unitMatches("kalinka-renderer.service", "kalinka-renderer-upgrade.service")},
 	{"supervisor.log", unitMatches("kalinka-supervisor.service", soundcard.BootUnit, soundcard.ApplyUnit,
 		"kalinka-ssh-setup.service", ReinstallUnit, PluginRemovalUnit)},
 	{"network.log", unitMatches("NetworkManager.service", "wpa_supplicant.service", "wpa_supplicant@*.service",
-		"dhcpcd.service", "systemd-networkd.service", "networking.service", "ifup@*.service", "kalinka-wifi@*.service")},
+		"dhcpcd.service", "systemd-networkd.service", "networking.service", "ifup@*.service", "kalinka-wifi@*.service",
+		"kalinka-card-settings.service", "kalinka-card-network-wait.service")},
 	// Not -k, which reads only the current boot.
 	{"kernel.log", []string{"_TRANSPORT=kernel"}},
 }
@@ -88,7 +90,8 @@ func (h *handler) logs(w http.ResponseWriter, r *http.Request) string {
 		if err != nil {
 			return fail(w, "invalid_since")
 		}
-		since = parsed
+		// journalctl refuses a negative @seconds, and the journal holds nothing older anyway.
+		since = time.Unix(max(parsed.Unix(), 0), 0)
 	}
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", `attachment; filename="kalinka-streamer-logs-`+now.Format("20060102T150405Z")+`.zip"`)
@@ -132,13 +135,16 @@ func (h *handler) writeLog(ctx context.Context, archive *zip.Writer, s logSource
 	text, note := out.b, ""
 	switch {
 	case out.cut:
-		text, note = whole(text), fmt.Sprintf("Older entries left out: this file keeps the newest %d MiB", logCap>>20)
+		note = fmt.Sprintf("Older entries left out: this file keeps the newest %d MiB", logCap>>20)
 	case errors.Is(err, context.DeadlineExceeded):
-		text, note = whole(text), fmt.Sprintf("journalctl was stopped after %s; older entries left out", logSourceTimeout)
+		note = fmt.Sprintf("journalctl was stopped after %s; older entries left out", logSourceTimeout)
 	case err != nil:
-		text, note = whole(text), "journalctl failed: "+err.Error()
+		note = "journalctl failed: " + err.Error()
 	case len(text) == 0:
 		note = "No entries"
+	}
+	if out.cut || err != nil {
+		text = whole(text)
 	}
 	header := "-- " + s.describe() + " since " + since.UTC().Format(time.RFC3339) + " --\n"
 	if note != "" {

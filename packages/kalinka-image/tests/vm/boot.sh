@@ -163,7 +163,7 @@ set_timezone_through_supervisor() {
 }
 
 mkdir -p "$DIR"
-rm -f "$DIR/serial.log" "$DIR/qemu.log" "$DIR/screen.png"
+rm -f "$DIR/serial.log" "$DIR/qemu.log" "$DIR/screen.png" "$DIR/logs.zip"
 cp --sparse=always "$IMAGE" "$DIR/disk.img"
 
 echo "boot: starting $FIRMWARE"

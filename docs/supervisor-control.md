@@ -544,10 +544,10 @@ as root, and answers with a ZIP of plain-text extracts, one file per source:
 
 | File | What it holds |
 |---|---|
-| `core.log` | `kalinka.service`, `kalinka-upgrade.service`, `kalinka-restart.service` and `kalinka-plugins.service` |
+| `core.log` | `kalinka.service`, `kalinka-server-id.service`, `kalinka-upgrade.service`, `kalinka-restart.service`, `kalinka-plugins.service`, and the units that mount network shares and USB drives: `kalinka-mounts.service` and `kalinka-media-mount@*.service` |
 | `renderer.log` | `kalinka-renderer.service` and `kalinka-renderer-upgrade.service` |
 | `supervisor.log` | `kalinka-supervisor.service`, `kalinka-soundcard.service`, and the units it starts: `kalinka-soundcard-apply.service`, `kalinka-ssh-setup.service`, `kalinka-reinstall.service` and `kalinka-plugin-removal.service` |
-| `network.log` | `NetworkManager.service`, `wpa_supplicant.service`, `wpa_supplicant@*.service`, `dhcpcd.service`, `systemd-networkd.service`, `networking.service`, `ifup@*.service` and `kalinka-wifi@*.service` |
+| `network.log` | `NetworkManager.service`, `wpa_supplicant.service`, `wpa_supplicant@*.service`, `dhcpcd.service`, `systemd-networkd.service`, `networking.service`, `ifup@*.service`, `kalinka-wifi@*.service`, and the image's `kalinka-card-settings.service` and `kalinka-card-network-wait.service`, which apply the settings Raspberry Pi Imager left on the card, Wi-Fi among them |
 | `kernel.log` | the kernel's messages (`_TRANSPORT=kernel`), across reboots, among them a driver losing the Wi-Fi link or the out-of-memory killer |
 
 The network file names the units of every network stack the streamer may

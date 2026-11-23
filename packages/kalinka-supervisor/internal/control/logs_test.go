@@ -133,7 +133,8 @@ func TestLogsDownloadEachSourceOldestFirstWithoutCore(t *testing.T) {
 	}
 	window := " since 2026-11-22T10:00:00Z --\n"
 	for name, want := range map[string]string{
-		"core.log": "-- kalinka.service kalinka-upgrade.service kalinka-restart.service kalinka-plugins.service" + window +
+		"core.log": "-- kalinka.service kalinka-server-id.service kalinka-upgrade.service kalinka-restart.service " +
+			"kalinka-plugins.service kalinka-mounts.service kalinka-media-mount@*.service" + window +
 			"2026-11-23T09:50:00+0000 kalinka systemd[1]: kalinka.service: Failed with result 'exit-code'.\n" +
 			"2026-11-23T09:59:40+0000 kalinka kalinka[812]: Traceback (most recent call last):\n" +
 			"                                                 File \"/opt/kalinka/server.py\", line 1\n" +
@@ -148,7 +149,7 @@ func TestLogsDownloadEachSourceOldestFirstWithoutCore(t *testing.T) {
 			t.Errorf("%s =\n%s\nwant\n%s", name, files[name], want)
 		}
 	}
-	if !strings.HasSuffix(files["network.log"], window+
+	if !strings.HasSuffix(files["network.log"], " kalinka-card-settings.service kalinka-card-network-wait.service"+window+
 		"2026-11-23T09:57:59+0000 kalinka wpa_supplicant[650]: wlan0: CTRL-EVENT-CONNECTED - Connection to 00:11:22:33:44:55 completed\n"+
 		"2026-11-23T09:58:00+0000 kalinka dhclient[700]: DHCPACK of 192.168.1.50 from 192.168.1.1\n") {
 		t.Errorf("network.log =\n%s", files["network.log"])
@@ -189,6 +190,19 @@ func TestLogsReachBackADayByDefault(t *testing.T) {
 		since, err := strconv.ParseInt(strings.TrimPrefix(args[0], "--since=@"), 10, 64)
 		if err != nil || since < before || since > after {
 			t.Fatalf("since %q, want between %d and %d", args[0], before, after)
+		}
+	}
+}
+
+func TestLogsReachNoFurtherBackThan1970(t *testing.T) {
+	journal := &fakeJournal{}
+	serve(logsHandler(t, journal), http.MethodGet, "/v1/logs?since=0001-01-01T00:00:00Z", "")
+	if len(journal.runs()) != len(logSources) {
+		t.Fatalf("journalctl ran %d times", len(journal.runs()))
+	}
+	for _, args := range journal.runs() {
+		if args[0] != "--since=@0" {
+			t.Fatalf("since %q, want --since=@0", args[0])
 		}
 	}
 }
