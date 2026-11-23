@@ -176,9 +176,9 @@ smooth enough to pass that test and still plainly audible.
 thread. Today that thread spends 18–22 % of 0.1–0.4 % of a core on x86, and
 6–8 % of 0.14–0.5 % on the Pi 5. The kernels measured so far cost fractions
 of a percent per stage on x86, and about 1 % at most on the Pi 5
-(section 11). The 65,536-tap stereo convolver uses 2.88 % of a Pi 4 core in the
+(section 11). The 65,536-tap stereo convolver uses 2.92 % of a Pi 4 core in the
 processor benchmark, including PCM conversion. The longest measured
-256-frame callback took 1.83 ms at 44.1 kHz. An end-to-end ALSA playback
+256-frame callback took 1.96 ms at 44.1 kHz. An end-to-end ALSA playback
 measurement follows profile integration.
 
 ### What the stage does
@@ -656,9 +656,13 @@ response's sample rate. It accepts up to 262,144 finite taps per channel and
 returns float64 PCM. Preparation builds the filter spectra off the playback
 thread. A restart clears the history and reuses the plans and storage.
 
-The default overlap-save filter uses hops of 640 and 6,400 frames. The longer
-bank starts at tap 5,760, so its first sample lines up with the shorter bank.
-Its right-channel FFT runs half a long hop away from the left channel's. Both
+The default overlap-save filter uses a 640-frame head. Responses up to 5,760
+active taps fit in the head bank. Up to 65,536 taps the tail hop is 5,120
+frames, and longer responses use 6,400. The tail starts at the difference
+between the hops so its first output lines up with the head. At rates above
+48 kHz the renderer spreads the products for older tail partitions across the
+incoming hop. Only the current spectrum needs the completed input block.
+The right-channel tail FFT runs half a long hop after the left channel's. Both
 channels share the transform plan and scratch for each size. Channels with
 identical coefficients in a bank also share its prepared filter spectra. Each
 channel has its own input history. The processor reports 640 frames of
@@ -685,7 +689,7 @@ are measured, scaled where noted.
 | DSD to PCM, DSD64 to 176.4 kHz stereo | < 2 % | stage 1 tables ≤ 32 KB | 0.32 %, tables 20 KB | 1.00 % |
 | DSD to PCM, DSD256 to 352.8 kHz stereo | < 6 % | ≤ 32 KB tables, then by benchmark | 1.17 %, tables 14 KB | 3.60 % |
 | PEQ, 20 bands stereo at 192 kHz | < 1 % | coefficients only | 0.282 %, or 0.322 % including the output stage | 0.698 %, or 0.885 % including the output stage |
-| FIR, 65536 taps stereo at 44.1 kHz | < 3 % (2.88 % measured) | 5.04 MiB retained on x86-64 | FFT table (section 10) | 0.670 % including PCM conversion |
+| FIR, 65536 taps stereo at 44.1 kHz | < 3 % (2.92 % measured) | 4.67 MiB retained on x86-64 | FFT table (section 10) | 0.680 % including PCM conversion |
 | Upsampling 44.1 to 352.8 kHz | < 5 % | filter tables | libsoxr VHQ 2×: 10 ns per input frame, 0.04 % at 44.1 kHz | libsoxr VHQ 2×: 60 ns per input frame, 0.27 % at 44.1 kHz |
 | Gain, dither, pack | < 0.5 % | none | today's GainFade 2.5 ns/frame | today's GainFade 8.4 ns/frame |
 | Stage overhead (FIFO, segments) | < 0.2 % | one 32768-frame FIFO | DelayLine stage 0.4 ns/frame | DelayLine stage 1.8 ns/frame, 0.07 % at 352.8 kHz |

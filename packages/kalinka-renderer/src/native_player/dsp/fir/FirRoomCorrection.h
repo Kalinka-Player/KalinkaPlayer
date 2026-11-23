@@ -4,6 +4,7 @@
 
 #include <array>
 #include <memory>
+#include <optional>
 #include <span>
 
 /**
@@ -18,12 +19,17 @@ public:
   struct Partitions {
     size_t head, tail;
   };
+  /// Fixed hops used for the longest responses.
   static constexpr Partitions kPartitions{640, 6400};
   static constexpr size_t kMaxTaps = 262144;
 
+  /// Default FFT hops for the longer channel after trimming exact trailing
+  /// zeros.
+  static Partitions partitionsFor(size_t activeTaps);
   FirRoomCorrection(unsigned rate, std::span<const double> left,
-                    std::span<const double> right,
-                    Partitions partitions = kPartitions);
+                    std::span<const double> right);
+  FirRoomCorrection(unsigned rate, std::span<const double> left,
+                    std::span<const double> right, Partitions partitions);
   ~FirRoomCorrection() override;
 
   bool handles(const StreamAudioFormat &format) const override;
@@ -35,6 +41,9 @@ public:
   size_t process(const uint8_t *in, uint8_t *out, size_t frames) override;
 
 private:
+  FirRoomCorrection(unsigned rate, std::span<const double> left,
+                    std::span<const double> right,
+                    std::optional<Partitions> requested);
   class Channel;
   const unsigned rate;
   const size_t taps, latency;

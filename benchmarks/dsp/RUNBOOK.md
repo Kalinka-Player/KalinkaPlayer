@@ -20,7 +20,7 @@ The [DSD-to-PCM article benchmark](decoder-comparison/README.md) rebuilds the re
 | `simd` | The SIMD mechanisms side by side on a float64 FIR and a stereo biquad cascade, each null-tested against the scalar reference |
 | `dsd` | What DSD-to-PCM conversion costs, per output frame and of one core, for each stage 1 kernel at the rates the budgets name and beyond |
 | `fixtures` | The quality of the DSD test fixtures the harness writes, at DSD64, 128 and 256 |
-| `fir` | CPU, buffering delay, p99 and maximum wall time for 256-frame stereo callbacks at 44.1 kHz, including dense filters, zero-padded filters and sustained digital silence |
+| `fir` | CPU, buffering delay, p99 and maximum wall time for 256-frame stereo callbacks at 44.1 and 192 kHz, including dense filters up to 262,144 taps per channel, zero-padded filters and sustained digital silence |
 | `join` | How big a discontinuity per-stream processing leaves at a gapless join, for a PEQ, a 65535-tap FIR and a resampler |
 | `make-wav FILE RATE BITS SECONDS` | A dense stereo test signal to encode with `flac` for `playback` |
 

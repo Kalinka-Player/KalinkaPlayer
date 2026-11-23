@@ -692,7 +692,7 @@ three runs. End temperatures reached 73 °C on the Pi 4 and 62 °C on the Pi 5.
 | Uniform 4,096 | 92.88 ms | 2.280 % | 2.062 / 2.601 ms | 0.532 % | 0.482 / 0.673 ms |
 | 256 / 8,192 | 5.80 ms | 3.464 % | 1.933 / 2.414 ms | 0.970 % | 0.497 / 0.613 ms |
 | 512 / 5,120 | 11.61 ms | 2.934 % | 1.390 / 1.743 ms | 0.686 % | 0.306 / 0.404 ms |
-| **640 / 6,400 (default)** | 14.51 ms | 2.879 % | 1.636 / 1.829 ms | 0.670 % | 0.354 / 0.472 ms |
+| **640 / 6,400 (original default)** | 14.51 ms | 2.879 % | 1.636 / 1.829 ms | 0.670 % | 0.354 / 0.472 ms |
 | 1,024 / 8,192 | 23.22 ms | 2.875 % | 2.070 / 2.757 ms | 0.720 % | 0.504 / 2.725 ms |
 
 The default measured 2.793–2.926 % on the Pi 4. A further run after the
@@ -722,6 +722,139 @@ The padded case has 4,096 nonzero taps per channel in a 65,536-tap file.
 For 65,536 taps per channel the x86-64 heap probe measured 5.04 MiB with
 independent responses and 3.97 MiB when both channels used identical
 coefficients. Both cases made zero allocations during start, processing and drain.
+
+### FIR callback scheduling
+
+The comparison used the same GCC 14.2 arm64 Release flags, dense independent
+stereo responses, 256-frame reads and core 3 on each Pi. Three runs per build
+used the order old, new, new, old, old, new. Each run warmed up a full impulse
+and the buffering delay, then recorded 5,120 callbacks. CPU and p99 are the
+medians of the three runs. Max is the longest wall time observed. The baseline
+is commit `3cab047b`. All timings cover the convolver including PCM conversion.
+
+| Board | Rate | Taps/channel | CPU before → after (% of one core) | p99 before → after (ms) | Max before → after (ms) |
+|---|---:|---:|---:|---:|---:|
+| Pi 4 | 44.1 kHz | 65,536 | 2.899 → 2.916 | 1.639 → 1.401 | 3.391 → 1.960 |
+| Pi 4 | 192 kHz | 65,536 | 12.609 → 15.268 | 1.643 → 0.797 | 1.962 → 0.997 |
+| Pi 4 | 192 kHz | 262,144 | 24.367 → 33.811 | 3.622 → 1.225 | 4.926 → 1.450 |
+| Pi 5 | 44.1 kHz | 65,536 | 0.675 → 0.680 | 0.357 → 0.328 | 0.638 → 0.465 |
+| Pi 5 | 192 kHz | 65,536 | 2.878 → 3.012 | 0.353 → 0.168 | 0.563 → 0.201 |
+| Pi 5 | 192 kHz | 262,144 | 6.240 → 6.761 | 0.951 → 0.255 | 1.359 → 2.943 |
+
+The callback period is 5.80 ms at 44.1 kHz and 1.33 ms at 192 kHz. Every
+measured 65,536-tap callback completed within its period on the revised build.
+At maximum length both boards recorded a callback over 1.33 ms. Buffering
+remains 640 frames, or 14.51 ms at 44.1 kHz and 3.33 ms at 192 kHz.
+
+The shorter tail hop reduced retained heap for independent 65,536-tap filters
+from 5.04 to 4.67 MiB at 44.1 kHz on x86-64. At 192 kHz each tail bank keeps
+its own in-progress sum, bringing that case to 4.83 MiB. The heap probe measured
+zero allocations in start, processing and drain at both rates, including the
+262,144-tap case. For the 44.1 kHz padded-filter and silence controls, revised
+Pi 4 CPU was 0.618 % and 0.043 %, and Pi 5 CPU was 0.203 % and 0.018 %.
+
+### CamillaDSP comparison on Raspberry Pi, 23 November 2026
+
+The stereo test fed identical float64 audio and independent dense impulses to the
+Kalinka renderer FIR and the unmodified CamillaDSP 4.1.3 convolver. Both ran on a
+single thread pinned to core 3. Each run warmed the complete impulse history and
+timed 4,096 calls of 256 frames, including conversion between interleaved and
+planar samples. CPU is the percentage of one core needed for real-time playback.
+P99 is the wall time of the 99th-percentile call. The table shows the median CPU
+and median p99 across runs. These timings exclude decoders and ALSA.
+[CamillaDSP 4.1.3 convolver](https://github.com/HEnquist/camilladsp/blob/v4.1.3/src/filters/fftconv.rs)
+
+At 192 kHz with 262,144 taps per channel, a uniform 16,384-frame hop gives
+both engines 85.33 ms of buffering. Eight Pi 4 runs and four Pi 5 runs per
+variant rotated the execution order. The Pi 4 used the performance governor.
+
+| Stereo convolver, uniform 16,384 | Pi 4 CPU | Pi 4 p99 | Pi 5 CPU | Pi 5 p99 |
+|---|---:|---:|---:|---:|
+| CamillaDSP 4.1.3 | 12.77% | 10.60 ms | 4.74% | 3.93 ms |
+| Kalinka before | 13.12% | 10.64 ms | 3.57% | 2.91 ms |
+| Kalinka after | 11.88% | 4.90 ms | 2.95% | 1.28 ms |
+| Kalinka after, scalar partition sum | 12.19% | 5.06 ms | 2.99% | 1.28 ms |
+
+At that hop, the ARM64 renderer groups frequency bins so the partition sums fit
+in L1 cache. GCC 14.2 emitted two-lane float64 NEON multiply and fused
+multiply-add/subtract instructions in the inner loop. The scalar control
+disabled vectorization only for this sum. The FFTs used the same SIMD library
+in both builds. Offsetting the right-channel FFT by half a hop spreads the
+work across callbacks while preserving stereo timing. On an x86-64 Core Ultra
+9 185H, retaining PFFFT's native layout and offsetting the FFTs measured
+0.950% CPU and a 0.399 ms p99, compared with 0.951% and 0.749 ms before.
+The repository benchmark includes this workload in `kalinka-dsp-bench fir`.
+
+The default renderer uses a 640-frame first hop and larger tail partitions.
+CamillaDSP used a uniform 640-frame hop for the equal-buffer comparison.
+Each entry is CPU / p99 from four runs. The CamillaDSP column is from the
+initial comparison. The two Kalinka columns were measured in alternating
+order with the final binary and its pre-optimization baseline.
+
+| Pi 4 stereo workload | FIR buffer | CamillaDSP 4.1.3 | Kalinka default before | Kalinka default after |
+|---|---:|---:|---:|---:|
+| 44.1 kHz, 65,536 taps/channel | 14.51 ms | 9.96% / 1.55 ms | 2.92% / 1.40 ms | 2.93% / 1.40 ms |
+| 192 kHz, 65,536 taps/channel | 3.33 ms | 43.50% / 1.57 ms | 15.41% / 0.83 ms | 15.05% / 0.81 ms |
+| 192 kHz, 262,144 taps/channel | 3.33 ms | 155.90% / 5.90 ms | 31.88% / 1.15 ms | 31.98% / 1.15 ms |
+
+At maximum length the slowest default callback in the final Pi 4 runs took
+1.50 ms against a 1.33 ms callback period. The same case on Pi 5 used 6.61% of
+one core, with 0.254 ms p99 and 0.297 ms maximum. Sampled stereo output for
+both engines matched direct time-domain convolution within 2 × 10⁻¹⁵.
+
+#### Eight-output application benchmark
+
+The published CamillaDSP 0.5.0 ARM64 executable ran on the Pi 4 with two
+192 kHz ALSA loopback inputs, eight loopback outputs, 262,144 independent dense
+taps per output and resampling disabled. The original coefficients were
+unavailable, so this run used generated filters. Each of three runs per chunk
+size measured the CamillaDSP process for eight seconds after four seconds of
+warmup. The board used its normal ondemand governor. The input feeder and
+output reader ran as separate processes. The reader checked nonzero output
+and the ALSA logs were checked for underruns.
+[Henrik Enquist's original measurements](https://www.diyaudio.com/community/threads/camilladsp-cross-platform-iir-and-fir-engine-for-crossovers-room-correction-etc.349818/page-99)
+
+| Chunk size | Published Pi 4 CPU | This Pi 4 CPU | Clean runs |
+|---:|---:|---:|---:|
+| 4,096 | Unable to sustain playback | Underruns | 0/3 |
+| 8,192 | 71% | 86.73% | 3/3 |
+| 16,384 | 58% | 68.25% | 3/3 |
+| 32,768 | 55% | 64.24% | 3/3 |
+
+### Uniform 8,192-frame FIR scheduling, 23 November 2026
+
+The renderer starts the right channel's FFT 4,096 frames out of phase with
+the left channel's FFT. Both channels present the same 8,192-frame audio
+delay, or 42.67 ms at 192 kHz. Both still use the native PFFFT kernel, which
+uses float64 NEON on ARM64.
+
+The before and after binaries and KFR 7.2.0 processed identical dense,
+independent 262,144-tap stereo responses at 192 kHz. The KFR comparison
+used its staggered-channel adapter with 16,384-frame internal partitions
+and the same 8,192-frame input-to-output delay. Eight runs per engine on
+each board rotated execution order on core 3. Each run warmed the entire
+filter history and measured 4,096 callbacks of 256 frames. CPU and p99 are
+medians of the per-run measurements. Max is the longest observed callback.
+[KFR release](https://github.com/kfrlib/kfr/releases/tag/7.2.0)
+
+| Engine | Pi 4 CPU | Pi 4 p99 / max | Pi 5 CPU | Pi 5 p99 / max |
+|---|---:|---:|---:|---:|
+| Kalinka before | 16.76% | 6.99 / 8.04 ms | 5.16% | 2.16 / 2.43 ms |
+| Kalinka after | 16.71% | 3.51 / 4.88 ms | 5.16% | 1.21 / 1.48 ms |
+| KFR | 18.18% | 5.53 / 7.26 ms | 5.77% | 1.75 / 6.38 ms |
+
+At 192 kHz each callback supplies 1.33 ms of audio. The Pi 4 p99 still
+exceeds that period. With 65,536 taps per channel, Pi 4 p99 fell from
+3.18 to 1.61 ms at 192 kHz and from 3.15 to 1.64 ms at 44.1 kHz. The
+640-frame default and 16,384-frame uniform controls stayed within 0.04 ms
+of their baseline p99 on both boards. Sampled stereo output for each run
+matched direct convolution within 2 × 10⁻¹⁵.
+
+A separate prototype also spread the older partitions' frequency bins
+across callbacks. It reached 0.96 ms p99 at 17.77% CPU on Pi 4 and
+0.23 ms at 4.37% CPU on Pi 5. The renderer uses the half-hop stagger
+alone to preserve Pi 4 CPU usage and avoid an extra per-channel buffer.
+The 8,192-frame case is included in `kalinka-dsp-bench fir`.
 
 ### Pi 4 and Pi 5 stereo FIR comparison, 23 November 2026
 

@@ -33,10 +33,18 @@ TEST(FirRoomCorrectionTest,
   std::vector<Stereo> input(2401);
   for (auto &pair : input)
     pair = {noise(gen), noise(gen)};
-  for (FirRoomCorrection::Partitions sizes :
-       {FirRoomCorrection::Partitions{32, 192}, {64, 64}, {64, 320}}) {
-    FirRoomCorrection fir(format.sampleRate, ir[0], ir[1], sizes);
-    const size_t lag = fir.start(format);
+  struct Case {
+    unsigned rate;
+    FirRoomCorrection::Partitions sizes;
+  };
+  for (const auto &[rate, sizes] : std::array<Case, 4>{{{48000, {32, 192}},
+                                                        {48000, {64, 64}},
+                                                        {96000, {64, 320}},
+                                                        {192000, {32, 192}}}}) {
+    auto stream = format;
+    stream.sampleRate = rate;
+    FirRoomCorrection fir(rate, ir[0], ir[1], sizes);
+    const size_t lag = fir.start(stream);
     EXPECT_EQ(lag, sizes.head);
     std::vector<Stereo> actual(input.size() + fir.history() + lag + 41);
     const std::vector<size_t> reads{1, 93, 2, 17, 511, 317, 1053};
@@ -61,6 +69,117 @@ TEST(FirRoomCorrectionTest,
       }
     }
     EXPECT_LT(maxError, 1e-12);
+  }
+}
+
+class WideUniformFirTest : public ::testing::TestWithParam<size_t> {};
+
+TEST_P(WideUniformFirTest, PreservesStereoHistoryAcrossWrapAndRestart) {
+  const size_t hop = GetParam();
+  std::vector<double> left(4 * hop + 3);
+  left[0] = 0.5;
+  left[hop - 1] = -0.25;
+  left.back() = 0.125;
+  for (size_t length : {hop + 3, 3 * hop + 1}) {
+    std::vector<double> right(length);
+    right[1] = -0.25;
+    right[hop + 1] = 0.5;
+    right.back() = -0.125;
+    FirRoomCorrection fir(format.sampleRate, left, right, {hop, hop});
+    ASSERT_EQ(fir.start(format), hop);
+    std::vector<Stereo> input(7 * hop + 13),
+        out(input.size() + left.size() + hop);
+    std::mt19937 gen(3349);
+    std::uniform_real_distribution<double> noise(-0.25, 0.25);
+    for (size_t i = 0; i < input.size(); ++i)
+      input[i] = {0.25 + noise(gen), (i % 2 ? -0.5 : 0.5) + noise(gen)};
+    process(fir, input.data(), std::span(out).first(2 * hop + 7));
+    ASSERT_EQ(fir.start(format), hop);
+    process(fir, input.data(), std::span(out).first(input.size()));
+    process(fir, nullptr, std::span(out).subspan(input.size()));
+    for (size_t i = 0; i < out.size(); ++i) {
+      const auto sample = [&](size_t ch, size_t tap) {
+        return i >= hop + tap && i - hop - tap < input.size()
+                   ? input[i - hop - tap][ch]
+                   : 0.0;
+      };
+      ASSERT_NEAR(out[i][0],
+                  0.5 * sample(0, 0) - 0.25 * sample(0, hop - 1) +
+                      0.125 * sample(0, left.size() - 1),
+                  1e-12)
+          << i;
+      ASSERT_NEAR(out[i][1],
+                  -0.25 * sample(1, 1) + 0.5 * sample(1, hop + 1) -
+                      0.125 * sample(1, right.size() - 1),
+                  1e-12)
+          << i;
+    }
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(HopSize, WideUniformFirTest,
+                         ::testing::Values(4096, 8192, 16384));
+
+TEST(FirRoomCorrectionTest, PairedHopsMatchBothResponsesAcrossRestartAndDrain) {
+  constexpr size_t hop = 4096;
+  const StreamAudioFormat stream{192000, 2, 64, PCM_FLOAT64_LE};
+  std::mt19937 gen(173);
+  std::uniform_real_distribution<double> noise(-0.25, 0.25);
+  std::vector<double> left(32 * hop + 7), right(32 * hop - 11);
+  for (auto *response : {&left, &right})
+    std::ranges::generate(*response, [&] { return noise(gen); });
+  FirRoomCorrection fir(stream.sampleRate, left, right, {hop, hop});
+
+  const std::array<size_t, 6> positions{0, hop - 257, hop, 2 * hop + 1,
+                                        31 * hop + 17, 62 * hop - 1};
+  std::vector<Stereo> input(positions.back() + 733);
+  for (auto pos : positions)
+    input[pos] = {noise(gen), noise(gen)};
+  std::vector<Stereo> out(input.size() + left.size() + hop);
+  ASSERT_EQ(fir.start(stream), hop);
+  for (size_t stop : {8 * hop + 1500, 9 * hop + 1500}) {
+    process(fir, input.data(), std::span(out).first(stop));
+    ASSERT_EQ(fir.start(stream), hop);
+  }
+  constexpr std::array<size_t, 5> reads{257, 31, 1023, 510, 4101};
+  for (size_t at = 0, i = 0; at < input.size(); ++i) {
+    const size_t n = std::min(reads[i % reads.size()], input.size() - at);
+    process(fir, input.data() + at, std::span(out).subspan(at, n));
+    at += n;
+  }
+  process(fir, nullptr, std::span(out).subspan(input.size()));
+  for (size_t i = 0; i < out.size(); ++i) {
+    Stereo expected{};
+    for (auto pos : positions) {
+      if (i < pos + hop)
+        break;
+      const size_t tap = i - pos - hop;
+      if (tap < left.size())
+        expected[0] += left[tap] * input[pos][0];
+      if (tap < right.size())
+        expected[1] += right[tap] * input[pos][1];
+    }
+    ASSERT_NEAR(out[i][0], expected[0], 1e-12) << i;
+    ASSERT_NEAR(out[i][1], expected[1], 1e-12) << i;
+  }
+}
+
+TEST(FirRoomCorrectionTest, RestartClearsPartiallyAccumulatedHighRateTails) {
+  auto stream = format;
+  stream.sampleRate = 192000;
+  std::vector<double> ir(1501, 0.001);
+  FirRoomCorrection fir(stream.sampleRate, ir, ir, {32, 192});
+  const size_t lag = fir.start(stream);
+  std::vector<Stereo> music(2003, Stereo{0.25, -0.5}), out(music.size());
+  process(fir, music.data(), out);
+  fir.start(stream);
+  const Stereo pulse{1, -1};
+  process(fir, &pulse, std::span(out).first(1));
+  process(fir, nullptr, std::span(out).subspan(1));
+  for (size_t i = 0; i < out.size(); ++i) {
+    const double expected = i >= lag && i - lag < ir.size() ? ir[i - lag] : 0;
+    ASSERT_NEAR(out[i][0], expected, 1e-12) << i;
+    ASSERT_NEAR(out[i][1], -expected, 1e-12) << i;
   }
 }
 
