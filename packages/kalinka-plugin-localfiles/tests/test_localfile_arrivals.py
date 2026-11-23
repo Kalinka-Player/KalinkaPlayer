@@ -1,10 +1,12 @@
-"""Loose numbered rips: copying, naming, fingerprint rescue and recency."""
+"""Loose numbered rips: copying, naming, fingerprint rescue and recency, and
+how an arriving file's rows are written."""
 
 import asyncio
 import json
 import os
 import sqlite3
 import time
+from contextlib import asynccontextmanager, closing, nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -12,9 +14,13 @@ import numpy as np
 import pytest
 import pytest_asyncio
 import soundfile as sf
-from mutagen.flac import FLAC
+from mutagen.flac import FLAC, Picture
+from mutagen.id3 import PictureType
 
+from art_images import patterned_png
+from kalinka_plugin_localfiles import db_connection
 from kalinka_plugin_localfiles.config_model import LocalFilesConfig
+from kalinka_plugin_localfiles.db_connection import shared_connection
 from kalinka_plugin_localfiles.db_schema import init_db
 from kalinka_plugin_localfiles.enricher.acoustid_plugin import AcoustIdPlugin
 from kalinka_plugin_localfiles.enricher.enricher import MetadataEnricher
@@ -229,6 +235,145 @@ async def test_quiescence_window_counts_from_the_exact_mtime(library, monkeypatc
         await fi.handle_incremental_changes({("file_closed", path)})
     assert waits == [pytest.approx(0.8, abs=1e-3)]
     assert await fi.db_manager.get_track_by_path(path) is not None
+
+
+_FILE_ROWS = (
+    "tracks",
+    "library_file",
+    "track_evidence",
+    "resolved_origin",
+    "artists",
+    "albums",
+)
+_STORAGE_ACCESS = (
+    "listdir",
+    "stat",
+    "readable",
+    "open",
+    "exists",
+    "is_gone",
+    "is_dir",
+    "is_file",
+)
+
+
+def _new_album_track(music):
+    """A file of an album and artist the library does not have yet, with a
+    year and a cover: every row a file can bring is written for it."""
+    path = _write(
+        music / "Artist" / "Album" / "01.flac",
+        artist="Artist",
+        album="Album",
+        title="One",
+        date="2001",
+    )
+    audio = FLAC(path)
+    picture = Picture()
+    picture.type = PictureType.COVER_FRONT
+    picture.mime = "image/png"
+    picture.data = patterned_png(7)
+    audio.add_picture(picture)
+    audio.save()
+    return path
+
+
+def _trace(monkeypatch, events):
+    """Record in ``events`` every statement a library connection runs."""
+    connected = db_connection._connected
+
+    @asynccontextmanager
+    async def traced(db_path):
+        async with connected(db_path) as conn:
+            await conn.set_trace_callback(events.append)
+            yield conn
+
+    monkeypatch.setattr(db_connection, "_connected", traced)
+
+
+def _row_counts(config):
+    with closing(sqlite3.connect(config.db_path)) as conn:
+        return {
+            table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in _FILE_ROWS
+        }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("inside_a_scan", [True, False])
+async def test_a_new_file_is_written_in_one_commit(
+    library, monkeypatch, inside_a_scan
+):
+    """Each commit is a sync to disk, and this file once took twelve."""
+    fi, music, config = library
+    path = _new_album_track(music)
+    statements = []
+    _trace(monkeypatch, statements)
+    async with shared_connection(config.db_path) if inside_a_scan else nullcontext():
+        changes = await fi.process_file(path)
+    assert all(changes.values())
+    assert statements.count("COMMIT") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_new_file_is_read_and_its_cover_stored_before_its_rows_are_written(
+    library, monkeypatch
+):
+    """The transaction keeps every other writer of the library waiting, so
+    no slow share or large cover may keep it open."""
+    fi, music, config = library
+    path = _new_album_track(music)
+    events = []
+    _trace(monkeypatch, events)
+
+    def recorded(name, fn):
+        def call(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                events.append(name)
+
+        return call
+
+    storage = fi.storage.for_path(path)
+    for name in _STORAGE_ACCESS:
+        monkeypatch.setattr(storage, name, recorded(name, getattr(storage, name)))
+    monkeypatch.setattr(fi, "_extract_metadata", recorded("tags", fi._extract_metadata))
+    monkeypatch.setattr(fi, "_save_images", recorded("cover", fi._save_images))
+
+    await fi.process_file(path)
+
+    begin, commit = events.index("BEGIN IMMEDIATE"), events.index("COMMIT")
+    assert {"stat", "open", "tags", "cover"} <= set(events[:begin])
+    assert not {*_STORAGE_ACCESS, "tags", "cover"} & set(events[begin:commit])
+
+
+@pytest.mark.asyncio
+async def test_a_file_that_fails_half_way_through_its_rows_leaves_none(
+    library, monkeypatch
+):
+    """A crash between two of a track's commits once left a tracks row
+    without its library_file or track_evidence, which no scan repaired."""
+    fi, music, config = library
+    path = _new_album_track(music)
+    before = _row_counts(config)
+    insert_track = fi.db_manager.insert_track
+
+    async def insert_then_fail(data):
+        await insert_track(data)
+        raise RuntimeError("the power went")
+
+    monkeypatch.setattr(fi.db_manager, "insert_track", insert_then_fail)
+    with pytest.raises(RuntimeError, match="power"):
+        await fi.process_file(path)
+    assert _row_counts(config) == before
+
+    monkeypatch.undo()
+    track_id = (await fi.process_file(path))["tracks"]
+    with closing(sqlite3.connect(config.db_path)) as conn:
+        for table, key in (("library_file", "file_id"), ("track_evidence", "track_id")):
+            assert conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {key} = ?", (track_id,)
+            ).fetchone() == (1,)
 
 
 DAY = 24 * 60 * 60

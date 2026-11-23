@@ -40,7 +40,7 @@ from kalinka_plugin_sdk.media.mp4 import Mp4Audio
 from kalinka_plugin_sdk.media.tags import TAG_READERS, EmbeddedCover, TagReader
 from kalinka_plugin_sdk.media.unplayable import READERS_VERSION, UnplayableFile
 from ..config_model import LocalFilesConfig
-from ..db_connection import shared_connection
+from ..db_connection import in_one_transaction, shared_connection
 from ..scan_control import ScanControl
 from ..filename_model import get_parser, names_a_vinyl_side, parse_music_path
 from ..filename_model.assembler import ASSEMBLER_VERSION
@@ -263,6 +263,16 @@ def _indexed_as(track: Optional[Dict[str, Any]], size: int, mtime: int) -> bool:
         and track["file_size"] == size
         and track["modified_time"] == mtime
     )
+
+
+@dataclass(frozen=True)
+class _ParentRow:
+    """The artist or album row a file belongs to, as found before any of the
+    file's rows are written."""
+
+    id: str
+    #: The row to insert, when the library has none yet.
+    new_row: Optional[Dict[str, Any]] = None
 
 
 class FileIndexer:
@@ -882,6 +892,11 @@ class FileIndexer:
     ) -> Optional[Dict[str, Optional[str]]]:
         """Process a music file and update the database. Returns changed items IDs.
 
+        Everything the file's rows need is read first, and a new album's
+        cover stored. The rows are then written in one transaction, which
+        holds the write lock for the writes alone and leaves all of them or
+        none after a crash.
+
         @param listed What a directory listing reported about the file. When
             it already shows the size and mtime the library holds, the file
             is not measured again: on a share, a scan of an unchanged
@@ -1046,12 +1061,6 @@ class FileIndexer:
             )
             return None
 
-        changes: Dict[str, Optional[str]] = {
-            "artists": None,
-            "albums": None,
-            "tracks": None,
-        }
-
         metadata["file_path"] = file_path
         metadata["file_size"] = file_size
         metadata["modified_time"] = modified_time
@@ -1067,14 +1076,8 @@ class FileIndexer:
             else None
         )
 
-        artist_id, created = await self._artist_for(metadata, from_path)
-        if created:
-            changes["artists"] = artist_id
-        album_id, created = await self._album_for(
-            metadata, from_path, file_path, artist_id
-        )
-        if created:
-            changes["albums"] = album_id
+        artist = await self._artist_for(metadata, from_path)
+        album = await self._album_for(metadata, from_path, file_path, artist.id)
 
         track_number = _tag_else_path(metadata, from_path, "track_number")
         disc_number = _tag_else_path(metadata, from_path, "disc_number")
@@ -1093,8 +1096,8 @@ class FileIndexer:
         track_data: Dict[str, Any] = {
             "id": track_id,
             "title": title,
-            "album_id": album_id,
-            "artist_id": artist_id,
+            "album_id": album.id,
+            "artist_id": artist.id,
             "duration": metadata.get("duration", 0),
             "track_number": track_number,
             "disc_number": disc_number,
@@ -1109,53 +1112,56 @@ class FileIndexer:
             "enriched": 0,
             "last_updated": int(time.time()),
         }
-        if existing_track is None:
-            await self.db_manager.insert_track(track_data)
-        else:
-            # Surgical update, not INSERT OR REPLACE: track_data carries only
-            # indexer-owned columns, so mbid/embeddings/mood survive. enriched
-            # resets to 0, so a changed file re-enriches but reuses embeddings.
-            await self.db_manager.update_track(track_id, track_data)
-        changes["tracks"] = track_id
-        await self._record_origin(
-            "track", track_id, "title",
-            from_tag=bool(tagged_title), path_source=FILENAME,
-        )
-        await self._record_origin(
-            "track", track_id, "artist_id",
-            from_tag=bool(metadata.get("artist")), path_source=FILENAME,
-        )
-
-        await self.db_manager.upsert_library_file(
-            track_id, file_path, file_size, modified_time, device_id, inode
-        )
-
         art_phash = metadata.get("album_art_phash")
-        await self.db_manager.upsert_track_evidence(
-            track_id,
-            {
-                "raw_tags": metadata.get("raw_tags"),
-                "stream_info": metadata.get("stream_info"),
-                "art_phash": art_phash,
-                "art_type": (
-                    metadata.get("album_art_type") if art_phash else None
-                ),
-                "cue_sheet": metadata.get("cue_sheet"),
-                "cue_tracks": metadata.get("cue_tracks"),
-            },
-        )
+        evidence = {
+            "raw_tags": metadata.get("raw_tags"),
+            "stream_info": metadata.get("stream_info"),
+            "art_phash": art_phash,
+            "art_type": metadata.get("album_art_type") if art_phash else None,
+            "cue_sheet": metadata.get("cue_sheet"),
+            "cue_tracks": metadata.get("cue_tracks"),
+        }
 
-        await self.db_manager.update_album_stats(album_id)
-        # Successfully indexed — drop any stale failure record (e.g. an
-        # earlier partial upload that has since completed).
-        await self.db_manager.clear_failure(file_path)
+        # Database calls only: the transaction keeps every other writer of
+        # the library waiting until it ends.
+        async def write_rows() -> None:
+            await self._write_artist(artist, metadata)
+            await self._write_album(album, metadata, file_path)
+            if existing_track is None:
+                await self.db_manager.insert_track(track_data)
+            else:
+                # Surgical update, not INSERT OR REPLACE: track_data carries only
+                # indexer-owned columns, so mbid/embeddings/mood survive. enriched
+                # resets to 0, so a changed file re-enriches but reuses embeddings.
+                await self.db_manager.update_track(track_id, track_data)
+            await self._record_origin(
+                "track", track_id, "title",
+                from_tag=bool(tagged_title), path_source=FILENAME,
+            )
+            await self._record_origin(
+                "track", track_id, "artist_id",
+                from_tag=bool(metadata.get("artist")), path_source=FILENAME,
+            )
+            await self.db_manager.upsert_library_file(
+                track_id, file_path, file_size, modified_time, device_id, inode
+            )
+            await self.db_manager.upsert_track_evidence(track_id, evidence)
+            await self.db_manager.update_album_stats(album.id)
+            # Successfully indexed — drop any stale failure record (e.g. an
+            # earlier partial upload that has since completed).
+            await self.db_manager.clear_failure(file_path)
+
+        async with shared_connection(self.config.db_path):
+            await in_one_transaction(self.config.db_path, write_rows)
         logger.debug(f"Processed file: {file_path}")
-        return changes
+        return {
+            "artists": artist.id if artist.new_row is not None else None,
+            "albums": album.id if album.new_row is not None else None,
+            "tracks": track_id,
+        }
 
-    async def _artist_for(
-        self, metadata: Dict, from_path
-    ) -> Tuple[str, bool]:
-        """The artist row this file belongs to, and whether it was created.
+    async def _artist_for(self, metadata: Dict, from_path) -> _ParentRow:
+        """The artist row this file belongs to.
 
         A tag names the artist; failing that, a directory in the path does;
         failing both, the file joins the ``unknown_artist`` sentinel. The
@@ -1169,26 +1175,31 @@ class FileIndexer:
         name = clean_display_name(raw) or "Unknown Artist"
         artist_id = generate_artist_id(name)
 
-        created = await self.db_manager.get_artist_by_id(artist_id) is None
-        if created:
-            await self.db_manager.insert_artist(
-                {
-                    "id": artist_id,
-                    "name": name,
-                    "enriched": 0,
-                    "last_updated": int(time.time()),
-                }
-            )
-        await self._record_origin(
-            "artist", artist_id, "name",
-            from_tag=bool(tagged), path_source=FOLDER_NAME,
+        if await self.db_manager.get_artist_by_id(artist_id) is not None:
+            return _ParentRow(artist_id)
+        return _ParentRow(
+            artist_id,
+            {
+                "id": artist_id,
+                "name": name,
+                "enriched": 0,
+                "last_updated": int(time.time()),
+            },
         )
-        return artist_id, created
+
+    async def _write_artist(self, artist: _ParentRow, metadata: Dict) -> None:
+        if artist.new_row is not None:
+            await self.db_manager.insert_artist(artist.new_row)
+        await self._record_origin(
+            "artist", artist.id, "name",
+            from_tag=bool(metadata.get("artist")), path_source=FOLDER_NAME,
+        )
 
     async def _album_for(
         self, metadata: Dict, from_path, file_path: str, artist_id: str
-    ) -> Tuple[str, bool]:
-        """The album row this file belongs to, and whether it was created.
+    ) -> _ParentRow:
+        """The album row this file belongs to, its cover already stored when
+        the row is new.
 
         Only a tag titles an album here. A folder name is one folder's worth
         of evidence and the clustering pass at the end of the scan is what
@@ -1201,7 +1212,7 @@ class FileIndexer:
         album_id = generate_album_id(title, album_folder_for_path(file_path))
 
         if await self.db_manager.get_album_by_id(album_id) is not None:
-            return album_id, False
+            return _ParentRow(album_id)
 
         album_data: Dict[str, Any] = {
             "id": album_id,
@@ -1219,16 +1230,22 @@ class FileIndexer:
             self._save_images, metadata["album_art"], album_id, "album", file_path
         ):
             album_data["image_url"] = f"{album_id}.jpg"
-        await self.db_manager.insert_album(album_data)
-        if album_data.get("image_url") and album_id != "unknown_album":
-            await self._record_first_cover(album_id, metadata, file_path)
-        if year is not None:
+        return _ParentRow(album_id, album_data)
+
+    async def _write_album(
+        self, album: _ParentRow, metadata: Dict, file_path: str
+    ) -> None:
+        if album.new_row is None:
+            return
+        await self.db_manager.insert_album(album.new_row)
+        if album.new_row.get("image_url") and album.id != "unknown_album":
+            await self._record_first_cover(album.id, metadata, file_path)
+        if "year" in album.new_row:
             await self._record_origin(
-                "album", album_id, "year",
+                "album", album.id, "year",
                 from_tag=metadata.get("year") is not None,
                 path_source=FOLDER_NAME,
             )
-        return album_id, True
 
     async def _sweep_artwork(self) -> None:
         """Delete the cover files no album or track points at any more."""
