@@ -725,51 +725,157 @@ coefficients. Both cases made zero allocations during start, processing and drai
 
 ### Pi 4 and Pi 5 stereo FIR comparison, 23 November 2026
 
-Each engine filtered the same interleaved 192 kHz float64 stream with independent,
-dense 262,144-tap left and right responses. The buffer is the measured input-to-output
-delay on both channels. At this rate a 256-frame callback supplies 1.333 ms of audio.
+#### Single-threaded stereo FIR with 256-frame callbacks
 
-Each engine cell gives **CPU % of one core / p99 callback ms / worst callback ms**.
-CPU and p99 are medians across eight runs. Worst is the longest of the 32,768
-timed callbacks in that cell. The final column subtracts 4.1.3 from 5.0.0-beta.2
-at full precision and reports **CPU percentage points / p99 ms**. A negative value
-means the beta used less CPU or returned sooner. [Per-run measurements and KFR partition screen](fir-comparison-runs.csv)
+Each engine processed the same interleaved 192 kHz float64 audio on one core, with independent,
+dense 262,144-tap left and right filters. The Kalinka results use the working-tree builds
+identified under **Builds and inputs**. **Frames** is the measured input-to-output FIR delay
+on both channels. Each 256-frame callback supplies 1.333 ms of audio. Calls ran back to back
+with the playback device closed. The timings cover PCM layout conversion, buffering and convolution.
 
-| Board | Frames | Kalinka | CamillaDSP 4.1.3 | CamillaDSP 5.0.0-beta.2 | KFR 7.2.0 | CamillaDSP Δ CPU / p99 |
-|:--|--:|--:|--:|--:|--:|--:|
-| Pi 4 | 640 | 32.15 / 1.155 / 1.522 | 154.95 / 5.497 / 8.179 | 154.72 / 5.472 / 8.223 | 54.86 / 3.919 / 5.725 | -0.23 / -0.025 |
-| Pi 4 | 4,096 | 27.92 / 5.952 / 8.138 | 28.80 / 6.173 / 7.826 | 28.07 / 6.015 / 7.273 | 23.96 / 4.149 / 5.120 | -0.74 / -0.158 |
-| Pi 4 | 8,192 | 16.95 / 3.574 / 4.967 | 17.57 / 7.466 / 9.356 | 17.25 / 7.308 / 8.538 | 18.28 / 5.537 / 7.336 | -0.32 / -0.158 |
-| Pi 4 | 16,384 | 11.90 / 4.916 / 6.238 | 13.35 / 11.043 / 13.386 | 13.00 / 10.743 / 13.495 | 13.15 / 5.454 / 6.990 | -0.35 / -0.301 |
-| Pi 5 | 640 | 6.84 / 0.262 / 0.682 | 47.56 / 1.647 / 6.412 | 48.48 / 1.682 / 4.269 | 15.78 / 1.164 / 1.542 | +0.92 / +0.035 |
-| Pi 5 | 4,096 | 7.42 / 1.587 / 1.814 | 7.98 / 1.710 / 7.308 | 8.05 / 1.735 / 3.536 | 7.07 / 1.255 / 1.729 | +0.07 / +0.025 |
-| Pi 5 | 8,192 | 5.29 / 1.244 / 1.703 | 5.64 / 2.438 / 7.180 | 5.22 / 2.214 / 2.780 | 5.88 / 1.779 / 2.562 | -0.42 / -0.224 |
-| Pi 5 | 16,384 | 3.04 / 1.315 / 1.550 | 4.80 / 3.972 / 4.579 | 4.38 / 3.640 / 3.974 | 4.28 / 1.779 / 2.153 | -0.43 / -0.332 |
+The two schedule columns for each CamillaDSP version use the same adapter. **Sync** runs the left
+and right FFTs in the same callback. **Staggered** offsets the right channel by half a hop
+while preserving stereo alignment. Kalinka used a 640-frame head and 6,400-frame tail at 640,
+paired uniform partitions with a 256-frame channel offset at 4,096, and half-hop channel offsets
+at 8,192 and 16,384. KFR used one convolver per channel with a half-hop offset in every row.
 
-#### Channel scheduling
+Each cell gives **CPU % of one core / p99 callback ms / worst callback ms**. CPU and p99 are
+medians of eight runs. Worst is the longest of 32,768 timed callbacks. **Bold** marks the
+lowest value for each metric among the configurations measured in that row. A dash marks a
+schedule omitted from that run set.
 
-In the table above, both CamillaDSP versions used the same C++ adapter and
-processed the left and right FFTs in the same callback. Kalinka used its
-640-frame head and 6,400-frame tail at the shortest delay. At 4,096 frames
-it used synchronous uniform partitions. At 8,192 and 16,384 frames it used
-uniform partitions with the right channel offset by half a hop. KFR used
-one convolver per channel with a half-hop offset at all four delays.
+- **Comparison** preserves the previously reported results. The CSV labels these runs
+  `comparison` at 640 and `4096 follow-up` at 4,096.
+- **Control** shows separate eight-round runs with both CamillaDSP schedules and contemporaneous
+  Kalinka and KFR measurements. The CSV labels are `640 schedule control` and `4096 schedule control`.
+- **Comparison + controls** uses the original `comparison` rounds at 8,192 and 16,384. Both
+  staggered CamillaDSP controls ran alongside the main configurations.
 
-The control below offsets CamillaDSP's right FFT by half a hop, keeping the
-audio delay identical on both channels. Units and aggregation match the main
-table.
+[Per-run measurements and KFR partition screen](fir-comparison-runs.csv)
 
-| Board | Frames | Staggered 4.1.3 | Staggered 5.0.0-beta.2 | CamillaDSP Δ CPU / p99 |
-|:--|--:|--:|--:|--:|
-| Pi 4 | 8,192 | 17.68 / 3.848 / 5.620 | 17.36 / 3.751 / 5.181 | -0.32 / -0.097 |
-| Pi 4 | 16,384 | 13.26 / 5.579 / 7.881 | 13.05 / 5.607 / 6.715 | -0.21 / +0.028 |
-| Pi 5 | 8,192 | 5.64 / 1.254 / 2.020 | 5.20 / 1.125 / 1.395 | -0.44 / -0.129 |
-| Pi 5 | 16,384 | 4.79 / 2.053 / 2.455 | 4.35 / 1.840 / 2.485 | -0.44 / -0.213 |
+| Board | Frames | Runs | Kalinka | 4.1.3 sync | 4.1.3 staggered | 5.0.0-beta.2 sync | 5.0.0-beta.2 staggered | KFR 7.2.0 |
+|:--|--:|:--|--:|--:|--:|--:|--:|--:|
+| Pi 4 | 640 | Comparison | **32.15%** / **1.155** / **1.522** | 154.95% / 5.497 / 8.179 | — | 154.72% / 5.472 / 8.223 | — | 54.86% / 3.919 / 5.725 |
+| Pi 4 | 640 | Control | **31.57%** / **1.142** / **1.680** | 154.97% / 5.497 / 7.739 | 155.21% / 2.941 / 4.161 | 154.54% / 5.492 / 8.191 | 154.99% / 2.948 / 4.358 | 55.06% / 3.967 / 5.022 |
+| Pi 4 | 4,096 | Comparison | **22.88%** / **1.085** / **1.510** | 28.84% / 6.181 / 8.211 | — | 28.10% / 6.018 / 8.838 | — | 23.75% / 4.080 / 5.188 |
+| Pi 4 | 4,096 | Control | **23.05%** / **1.082** / **1.636** | 28.69% / 6.156 / 8.834 | 28.89% / 3.146 / 4.136 | 28.05% / 6.017 / 6.881 | 28.08% / 3.053 / 3.939 | 23.95% / 4.111 / 4.972 |
+| Pi 4 | 8,192 | Comparison + controls | **16.95%** / **3.574** / **4.967** | 17.57% / 7.466 / 9.356 | 17.68% / 3.848 / 5.620 | 17.25% / 7.308 / 8.538 | 17.36% / 3.751 / 5.181 | 18.28% / 5.537 / 7.336 |
+| Pi 4 | 16,384 | Comparison + controls | **11.90%** / **4.916** / **6.238** | 13.35% / 11.043 / 13.386 | 13.26% / 5.579 / 7.881 | 13.00% / 10.743 / 13.495 | 13.05% / 5.607 / 6.715 | 13.15% / 5.454 / 6.990 |
+| Pi 5 | 640 | Comparison | **6.84%** / **0.262** / **0.682** | 47.56% / 1.647 / 6.412 | — | 48.48% / 1.682 / 4.269 | — | 15.78% / 1.164 / 1.542 |
+| Pi 5 | 640 | Control | **6.81%** / **0.261** / **2.623** | 47.58% / 1.649 / 4.455 | 47.53% / 0.846 / 4.711 | 48.40% / 1.687 / 9.886 | 48.46% / 0.898 / 4.048 | 15.76% / 1.164 / 3.081 |
+| Pi 5 | 4,096 | Comparison | **6.72%** / **0.245** / **0.935** | 7.75% / 1.664 / 1.968 | — | 7.76% / 1.673 / 2.202 | — | 6.90% / 1.223 / 1.539 |
+| Pi 5 | 4,096 | Control | **6.71%** / **0.243** / **0.340** | 7.77% / 1.665 / 2.309 | 7.77% / 0.876 / 1.308 | 7.79% / 1.675 / 2.026 | 7.80% / 0.859 / 5.591 | 6.94% / 1.230 / 1.540 |
+| Pi 5 | 8,192 | Comparison + controls | 5.29% / 1.244 / 1.703 | 5.64% / 2.438 / 7.180 | 5.64% / 1.254 / 2.020 | 5.22% / 2.214 / 2.780 | **5.20%** / **1.125** / **1.395** | 5.88% / 1.779 / 2.562 |
+| Pi 5 | 16,384 | Comparison + controls | **3.04%** / **1.315** / **1.550** | 4.80% / 3.972 / 4.579 | 4.79% / 2.053 / 2.455 | 4.38% / 3.640 / 3.974 | 4.35% / 1.840 / 2.485 | 4.28% / 1.779 / 2.153 |
 
-Staggering reduced CamillaDSP p99 by 48–49% across both boards, both versions and
-both long buffers. With synchronous channels on Pi 5, upgrading to the beta reduced
-p99 by 9% at 8,192 frames and 8% at 16,384 frames. At 640 frames on Pi 4, both
-CamillaDSP versions needed about 1.55 seconds of CPU for each second of audio.
+At 4,096 frames, Kalinka had the lowest measured CPU and p99 on both boards with either CamillaDSP
+schedule. On Pi 5 at 8,192, staggered CamillaDSP 5.0.0-beta.2 had the lowest CPU, p99 and worst
+callback. The FIR delay is fixed by the test. An application using its own chunk size, buffering
+or worker threads has a different playback budget.
+
+#### What enabling FIR costs during playback
+
+Each engine reproduced both impulse responses at the verified alignment. Sampled audio
+outputs matched direct convolution to float64 precision. The filters are synthetic loads.
+A listener's room correction comes from the coefficients chosen for their room and speakers.
+
+This control switched convolution on and off in the same playback path. **Added CPU** is the
+median of eight paired differences in thread CPU time, in **milliseconds of one core per second
+of music**. At 4,096 frames, bold marks the lowest added CPU on each board. A cost of
+230 ms/s occupies 23% of one core and leaves about 770 ms/s for other work on average. The CPU work occurs as the audio plays. At the 640-frame
+setting the Pi 4 CamillaDSP runs used about 1,550 ms of CPU per second of audio, exceeding
+the capacity of the single processing thread. Timings begin after filter setup and warmup.
+Each run used the stereo 192 kHz, 262,144-tap workload above. The timings exclude decoding,
+the sound server, ALSA and DAC I/O.
+
+| Configuration | FIR buffer (frames) | Pi 4 added CPU (ms/s) | Pi 5 added CPU (ms/s) | Path delay off → on (ms) | Added delay (ms) |
+|:--|--:|--:|--:|--:|--:|
+| Kalinka default | 640 | 323.0 | 66.9 | 0.00 → 3.33 | 3.33 |
+| Kalinka | 4,096 | **229.3** | **67.8** | 0.00 → 21.33 | 21.33 |
+| CamillaDSP 4.1.3 sync | 4,096 | 287.1 | 77.4 | 21.33 → 21.33 | 0.00 |
+| CamillaDSP 4.1.3 staggered | 4,096 | 288.3 | 77.6 | 21.33 → 21.33 | 0.00 |
+| CamillaDSP 5.0.0-beta.2 sync | 4,096 | 280.1 | 78.7 | 21.33 → 21.33 | 0.00 |
+| CamillaDSP 5.0.0-beta.2 staggered | 4,096 | 280.1 | 77.8 | 21.33 → 21.33 | 0.00 |
+| KFR 7.2.0 | 4,096 | 235.5 | 69.8 | 21.33 → 21.33 | 0.00 |
+
+**The bypass point determines the added delay.** Kalinka bypass passed the 256-frame callback
+straight through. Enabling its FIR processor introduced the selected delay. The CamillaDSP
+adapter already collected a full channel chunk in bypass and left those samples untouched.
+The KFR adapter kept its input/output buffers in bypass and copied the completed block to
+output. Enabling convolution inside either buffered path added CPU and preserved its existing
+sample delay. A timing spike can still exhaust a playback queue if too little audio is ready.
+At 4,096 frames all enabled paths delivered the filter response 21.33 ms after
+input. At 192 kHz the four tested buffers correspond to 3.33, 21.33, 42.67 and 85.33 ms.
+At 48 kHz the same frame counts give four times those delays. CPU figures here apply to 192 kHz.
+Both fixture responses start and peak at tap zero. An imported filter with
+its impulse peak 1,920 samples later would move that peak another 10 ms at 192 kHz in every engine.
+For a symmetric linear-phase FIR, group delay is half the filter order in samples. A 4,097-tap
+linear-phase correction at 48 kHz contributes 42.67 ms of group delay with any engine.
+[Group delay of a linear-phase FIR](https://www.mathworks.com/help/comm/ug/group-delay.html)
+
+**For a Linux player**, one CamillaDSP setup sends the player's output to an ALSA loopback,
+then CamillaDSP captures it, filters it and writes to the playback device. Its capture,
+processing queues and playback buffer contribute to total latency, including when the FIR
+is bypassed. Adding CamillaDSP to a previously direct path can therefore add delay even when the
+“added delay” column reads zero. KFR supplies a convolution library, so the application using
+it chooses the buffering. The Kalinka rows exercise the renderer's FIR processor through its
+native API. Its default for this filter is 640 frames. The 4,096-frame result uses an explicit
+partition setting in the benchmark. FIR profile loading is still pending in this branch.
+End-to-end player-to-speaker latency and whole-process CPU depend on the installed
+routing and device settings. These control runs kept ALSA closed.
+[CamillaDSP audio routing and buffer settings](https://github.com/HEnquist/camilladsp/blob/v5.0.0-beta.2/README.md) · [KFR convolution API](https://kfr.dev/docs/latest/dft/convolution/)
+
+For each configuration the enabled state ran first in four pairs and second in four pairs. Both states used the same callback
+timer and audio data. An impulse verified both channel delays in each state, and each timed run
+checked output samples against the unfiltered input or direct convolution as appropriate.
+[Paired FIR on/off measurements](fir-bypass-runs.csv)
+
+#### Change relative to KFR 7.2.0
+
+KFR is 0% for every metric. Each percentage is `100 × (engine − KFR) / KFR` from the unrounded
+measurements in the **same row**. The order is **CPU use / p99 callback time / worst callback time**.
+Negative values mean less CPU use or shorter callbacks.
+
+| Board | Frames | Runs | Kalinka | 4.1.3 sync | 4.1.3 staggered | 5.0.0-beta.2 sync | 5.0.0-beta.2 staggered |
+|:--|--:|:--|--:|--:|--:|--:|--:|
+| Pi 4 | 640 | Comparison | **−41.4%** / **−70.5%** / **−73.4%** | +182.4% / +40.3% / +42.9% | — | +182.0% / +39.6% / +43.6% | — |
+| Pi 4 | 640 | Control | **−42.7%** / **−71.2%** / **−66.5%** | +181.5% / +38.6% / +54.1% | +181.9% / −25.9% / −17.1% | +180.7% / +38.4% / +63.1% | +181.5% / −25.7% / −13.2% |
+| Pi 4 | 4,096 | Comparison | **−3.7%** / **−73.4%** / **−70.9%** | +21.4% / +51.5% / +58.3% | — | +18.3% / +47.5% / +70.4% | — |
+| Pi 4 | 4,096 | Control | **−3.8%** / **−73.7%** / **−67.1%** | +19.8% / +49.7% / +77.7% | +20.6% / −23.5% / −16.8% | +17.1% / +46.4% / +38.4% | +17.2% / −25.7% / −20.8% |
+| Pi 4 | 8,192 | Comparison + controls | **−7.3%** / **−35.4%** / **−32.3%** | −3.9% / +34.8% / +27.5% | −3.3% / −30.5% / −23.4% | −5.7% / +32.0% / +16.4% | −5.0% / −32.3% / −29.4% |
+| Pi 4 | 16,384 | Comparison + controls | **−9.5%** / **−9.9%** / **−10.8%** | +1.5% / +102.5% / +91.5% | +0.8% / +2.3% / +12.8% | −1.1% / +97.0% / +93.1% | −0.8% / +2.8% / −3.9% |
+| Pi 5 | 640 | Comparison | **−56.7%** / **−77.5%** / **−55.8%** | +201.5% / +41.5% / +315.9% | — | +207.3% / +44.6% / +176.9% | — |
+| Pi 5 | 640 | Control | **−56.8%** / **−77.6%** / **−14.9%** | +201.8% / +41.7% / +44.6% | +201.5% / −27.3% / +52.9% | +207.0% / +44.9% / +220.9% | +207.4% / −22.8% / +31.4% |
+| Pi 5 | 4,096 | Comparison | **−2.6%** / **−79.9%** / **−39.2%** | +12.3% / +36.1% / +27.9% | — | +12.5% / +36.8% / +43.1% | — |
+| Pi 5 | 4,096 | Control | **−3.4%** / **−80.3%** / **−77.9%** | +12.0% / +35.4% / +49.9% | +12.0% / −28.8% / −15.1% | +12.3% / +36.2% / +31.6% | +12.3% / −30.2% / +263.0% |
+| Pi 5 | 8,192 | Comparison + controls | −10.1% / −30.1% / −33.5% | −4.1% / +37.1% / +180.3% | −4.2% / −29.5% / −21.1% | −11.2% / +24.5% / +8.5% | **−11.7%** / **−36.7%** / **−45.6%** |
+| Pi 5 | 16,384 | Comparison + controls | **−29.0%** / **−26.1%** / **−28.0%** | +12.4% / +123.2% / +112.7% | +12.1% / +15.4% / +14.0% | +2.4% / +104.6% / +84.6% | +1.7% / +3.4% / +15.4% |
+
+#### Paired 4,096-frame hops
+
+The original 4,096-frame comparison used a follow-up run of all four engines.
+The original Kalinka binary ran as a fifth control, alternating between first
+and last across eight rounds on each board. The other four engines rotated as
+in the original comparison. The CSV labels these 80 measurements
+`4096 follow-up`.
+
+| Board | Kalinka CPU before → after | p99 before → after (ms) | Worst before → after (ms) |
+|:--|--:|--:|--:|
+| Pi 4 | 27.91% → **22.88%** | 5.961 → **1.085** | 7.768 → **1.510** |
+| Pi 5 | 7.22% → **6.72%** | 1.545 → **0.245** | 1.762 → **0.935** |
+
+A long channel uses each older partition's coefficients to accumulate two
+consecutive output blocks while the coefficients are hot in cache. The two
+channels alternate which hop does this work. Each channel still produces
+samples with a 4,096-frame delay (21.33 ms at 192 kHz). With at least 32
+uniform 4,096-frame partitions in each channel, the two extra sums per
+channel use 256 KiB total for stereo. Shorter channels keep a single-hop
+schedule. The measured working tree includes this workload in `kalinka-dsp-bench fir`.
+
+In that run set the updated Pi 4 p99 fit within the 1.333 ms callback period, though the
+longest call took 1.510 ms. All 32,768 timed Kalinka callbacks on Pi 5 fit
+within the period. At 131,072 taps per channel, a separate three-run check
+on Pi 5 reduced p99 from 0.804 to 0.171 ms while CPU rose from 3.81% to 3.91%.
 
 #### KFR partition selection
 
@@ -781,11 +887,21 @@ partitions from the previous comparison.
 
 | Internal partition frames | 512 | 1,024 | 2,048 | 4,096 | 8,192 | 16,384 | 32,768 | 65,536 |
 |:--|--:|--:|--:|--:|--:|--:|--:|--:|
-| Pi 4 | 242.20 | 117.10 | 60.17 | 32.78 | 24.06 | 27.93 | 52.53 | 125.29 |
-| Pi 5 | 85.83 | 38.59 | 19.08 | 9.66 | 6.88 | 8.17 | 18.49 | 39.98 |
+| Pi 4 | 242.20% | 117.10% | 60.17% | 32.78% | **24.06%** | 27.93% | 52.53% | 125.29% |
+| Pi 5 | 85.83% | 38.59% | 19.08% | 9.66% | **6.88%** | 8.17% | 18.49% | 39.98% |
 
 The screen reports CPU % of one core. The timed matrix used KFR partitions of
 4,096, 8,192, 16,384 and 16,384 frames in order of increasing buffer size.
+
+The 4,096-frame scheduling control also ran the lower-p99 4,096-frame internal partition
+from the screen. Reducing the partition shortened p99 on both boards and increased CPU.
+These are contemporaneous measurements at the same 4,096-frame output delay. Each cell
+uses the CPU / p99 / worst convention above.
+
+| Board | KFR, 8,192-frame partition (summary baseline) | KFR, 4,096-frame partition |
+|:--|--:|--:|
+| Pi 4 | **23.95%** / 4.111 / 4.972 | 32.69% / **3.563** / **4.319** |
+| Pi 5 | **6.94%** / 1.230 / **1.540** | 9.70% / **1.061** / 5.852 |
 
 #### Timing and correctness
 
@@ -795,32 +911,44 @@ The screen reports CPU % of one core. The timed matrix used KFR partitions of
   CPU is 100 times thread CPU seconds divided by the 5.4613 seconds of audio.
   The per-run p99 is the 4,056th smallest callback wall time. Timings include PCM layout
   conversion, buffering and convolution.
-- Each main engine occupied each of the four run positions twice per buffer. Buffer
+- In the original comparison each main engine occupied each of the four run positions twice per buffer. Buffer
   order rotated across rounds. The staggered controls alternated between preceding and
   following the four main engines, with each version running first four times. Each run
   started with closed ALSA playback handles and a sampled CPU temperature at or below
   77.5 °C.
+- The 4,096-frame scheduling control rotated eight configurations through all eight run positions.
+  The 640-frame control rotated six configurations, each occupying every position once or twice
+  across eight rounds. Both controls used the same fixtures, core, playback checks and temperature
+  limit as the original comparison.
 - Before timing each configuration on each board, a unit impulse reproduced both
   coefficient arrays at exactly the requested delay. The check covered leading silence,
   every tap and trailing silence. The largest absolute error was 1.45 × 10⁻¹⁷. Each timed
   run also checked 16 warmed samples per channel against direct time-domain convolution
   at the declared delay. The largest absolute error was 1.71 × 10⁻¹⁵.
 - Pi 4 Model B rev 1.5 used kernel `6.18.60+rpt-rpi-v8` and the performance governor at
-  1.8 GHz. Run-start temperatures were 74.0–77.4 °C. Firmware reported `0xe0000` before
-  and after the run and at every sampled start, with all current flags clear. The
-  original ondemand governor was restored.
+  1.8 GHz. Run-start temperatures were 74.0–77.4 °C in the original comparison and
+  69.1–76.4 °C in the follow-up. Run-start temperatures in the scheduling controls ranged from
+  70.1–77.4 °C at 640 and 66.2–76.9 °C at 4,096. Firmware reported `0xe0000` before and after the run
+  and at every sampled start, with all current flags clear. The original ondemand
+  governor was restored.
 - Pi 5 Model B rev 1.1 used kernel `6.18.50+rpt-rpi-2712` and its ondemand governor with
-  a 2.4 GHz ceiling. Run-start temperatures were 62.2–77.1 °C. The kernel undervoltage
-  alarm read zero throughout the sampled starts. The firmware throttle word was
-  unavailable to the benchmark account.
+  a 2.4 GHz ceiling. Run-start temperatures were 62.2–77.1 °C in the original
+  comparison and 57.8–71.0 °C in the follow-up. Run-start temperatures in the scheduling controls ranged from
+  60.0–77.1 °C at 640 and 56.8–73.2 °C at 4,096. The kernel undervoltage alarm read
+  zero throughout the sampled starts. The firmware throttle word was unavailable to
+  the benchmark account.
 
 #### Builds and inputs
 
 - **Kalinka** used the working tree based on `3cab047bdcb06ae1847d1604e7233636e0dae402`.
   The SHA-256 of the measured `FirRoomCorrection.cpp` was
-  `ce4995a17204065bd063526b77869f133e80581dc9cb9c0a8ba2d0742529f0f0`. The driver and
-  Kalinka used Debian AArch64 GCC 14.2.0-19, `-O3 -DNDEBUG -std=gnu++23`, with PFFFT
-  1.3.0 in double precision.
+  `ce4995a17204065bd063526b77869f133e80581dc9cb9c0a8ba2d0742529f0f0` for the original build and
+  `1efce57115b32c8f74f01cfdcbe0a6d2f07c35c13b045bde9b5531c78afc1ca2` for the
+  4,096-frame update. The driver and Kalinka used Debian AArch64 GCC 14.2.0-19,
+  `-O3 -DNDEBUG -std=gnu++23`, with PFFFT 1.3.0 in double precision.
+  Kalinka uses PFFFT for the forward and inverse FFTs at all four buffer sizes.
+  The 4,096-frame path also uses PFFFT to multiply and sum the filter partitions.
+  At 16,384 frames on these boards, Kalinka performs that sum in its own tiled loop.
 - **CamillaDSP** used the upstream `FftConv` from 4.1.3 (`05e9cfcdf43c`) and
   5.0.0-beta.2 (`1ea8b9c5518b`), with one independent coefficient array per channel.
   Both used rustc 1.100.0 (`0ef1bc386`), LLVM 23.1.5, the `aarch64-unknown-linux-gnu`
