@@ -376,6 +376,47 @@ async def test_a_file_that_fails_half_way_through_its_rows_leaves_none(
             ).fetchone() == (1,)
 
 
+@pytest.mark.asyncio
+async def test_rows_another_writer_adds_before_the_transaction_are_kept(
+    library, monkeypatch
+):
+    """The artist and album are looked up before the cover is stored, and
+    the enricher can add the artist meanwhile; INSERT OR REPLACE would
+    wipe what it wrote."""
+    fi, music, config = library
+    path = _new_album_track(music)
+    album_for = fi._album_for
+    added = {}
+
+    async def then_another_writer(*args):
+        album = await album_for(*args)
+        assert album.new_row is not None
+        added.update(artist=args[3], album=album.id)
+        with closing(sqlite3.connect(config.db_path)) as conn:
+            conn.execute(
+                "INSERT INTO artists (id, name, mbid) VALUES (?, 'Artist', 'mb-1')",
+                (args[3],),
+            )
+            conn.execute(
+                "INSERT INTO albums (id, title, artist_id) VALUES (?, 'Kept', ?)",
+                (album.id, args[3]),
+            )
+            conn.commit()
+        return album
+
+    monkeypatch.setattr(fi, "_album_for", then_another_writer)
+    changes = await fi.process_file(path)
+
+    assert changes["artists"] is None and changes["albums"] is None
+    with closing(sqlite3.connect(config.db_path)) as conn:
+        assert conn.execute(
+            "SELECT mbid FROM artists WHERE id = ?", (added["artist"],)
+        ).fetchone() == ("mb-1",)
+        assert conn.execute(
+            "SELECT title FROM albums WHERE id = ?", (added["album"],)
+        ).fetchone() == ("Kept",)
+
+
 DAY = 24 * 60 * 60
 NEW_FILE = {"incremental_changes": {("file_closed", "/music/new.flac")}}
 

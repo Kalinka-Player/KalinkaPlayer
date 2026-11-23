@@ -76,8 +76,7 @@ class _Shared:
                 "holds the shared connection"
             )
         async with self._lock, _calling(self._conn) as call:
-            # Taking the write lock now waits for it as long as busy_timeout
-            # allows; a read turned into a write later would be refused at once.
+            # Waits out busy_timeout; a read upgraded to a write later fails at once.
             await call.execute("BEGIN IMMEDIATE")
             self._writer = task
             try:
