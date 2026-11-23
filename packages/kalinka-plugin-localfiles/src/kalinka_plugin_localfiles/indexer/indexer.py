@@ -271,7 +271,8 @@ class _ParentRow:
     file's rows are written."""
 
     id: str
-    #: The row to insert, when the library has none yet.
+    #: The row to insert if the library still has none once the file's
+    #: transaction begins; None for an album found already.
     new_row: Optional[Dict[str, Any]] = None
 
 
@@ -1076,7 +1077,7 @@ class FileIndexer:
             else None
         )
 
-        artist = await self._artist_for(metadata, from_path)
+        artist = self._artist_for(metadata, from_path)
         album = await self._album_for(metadata, from_path, file_path, artist.id)
 
         track_number = _tag_else_path(metadata, from_path, "track_number")
@@ -1122,11 +1123,10 @@ class FileIndexer:
             "cue_tracks": metadata.get("cue_tracks"),
         }
 
-        # Database calls only: the transaction keeps every other writer of
-        # the library waiting until it ends.
-        async def write_rows() -> None:
-            await self._write_artist(artist, metadata)
-            await self._write_album(album, metadata, file_path)
+        # Database calls only: every other writer waits for the transaction.
+        async def write_rows() -> Dict[str, Optional[str]]:
+            artist_created = await self._write_artist(artist, metadata)
+            album_created = await self._write_album(album, metadata, file_path)
             if existing_track is None:
                 await self.db_manager.insert_track(track_data)
             else:
@@ -1150,17 +1150,18 @@ class FileIndexer:
             # Successfully indexed — drop any stale failure record (e.g. an
             # earlier partial upload that has since completed).
             await self.db_manager.clear_failure(file_path)
+            return {
+                "artists": artist.id if artist_created else None,
+                "albums": album.id if album_created else None,
+                "tracks": track_id,
+            }
 
         async with shared_connection(self.config.db_path):
-            await in_one_transaction(self.config.db_path, write_rows)
+            changes = await in_one_transaction(self.config.db_path, write_rows)
         logger.debug(f"Processed file: {file_path}")
-        return {
-            "artists": artist.id if artist.new_row is not None else None,
-            "albums": album.id if album.new_row is not None else None,
-            "tracks": track_id,
-        }
+        return changes
 
-    async def _artist_for(self, metadata: Dict, from_path) -> _ParentRow:
+    def _artist_for(self, metadata: Dict, from_path) -> _ParentRow:
         """The artist row this file belongs to.
 
         A tag names the artist; failing that, a directory in the path does;
@@ -1175,8 +1176,6 @@ class FileIndexer:
         name = clean_display_name(raw) or "Unknown Artist"
         artist_id = generate_artist_id(name)
 
-        if await self.db_manager.get_artist_by_id(artist_id) is not None:
-            return _ParentRow(artist_id)
         return _ParentRow(
             artist_id,
             {
@@ -1187,13 +1186,17 @@ class FileIndexer:
             },
         )
 
-    async def _write_artist(self, artist: _ParentRow, metadata: Dict) -> None:
-        if artist.new_row is not None:
+    async def _write_artist(self, artist: _ParentRow, metadata: Dict) -> bool:
+        """Whether the artist row was created."""
+        # Checked in the transaction, or INSERT OR REPLACE wipes a newer row.
+        created = await self.db_manager.get_artist_by_id(artist.id) is None
+        if created:
             await self.db_manager.insert_artist(artist.new_row)
         await self._record_origin(
             "artist", artist.id, "name",
             from_tag=bool(metadata.get("artist")), path_source=FOLDER_NAME,
         )
+        return created
 
     async def _album_for(
         self, metadata: Dict, from_path, file_path: str, artist_id: str
@@ -1234,9 +1237,14 @@ class FileIndexer:
 
     async def _write_album(
         self, album: _ParentRow, metadata: Dict, file_path: str
-    ) -> None:
-        if album.new_row is None:
-            return
+    ) -> bool:
+        """Whether the album row was created."""
+        # Looked up again inside the transaction, as for the artist.
+        if (
+            album.new_row is None
+            or await self.db_manager.get_album_by_id(album.id) is not None
+        ):
+            return False
         await self.db_manager.insert_album(album.new_row)
         if album.new_row.get("image_url") and album.id != "unknown_album":
             await self._record_first_cover(album.id, metadata, file_path)
@@ -1246,6 +1254,7 @@ class FileIndexer:
                 from_tag=metadata.get("year") is not None,
                 path_source=FOLDER_NAME,
             )
+        return True
 
     async def _sweep_artwork(self) -> None:
         """Delete the cover files no album or track points at any more."""
