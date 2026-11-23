@@ -183,3 +183,25 @@ def test_the_log_names_the_address_without_its_secrets(served, dest, caplog):
     assert "download failed" in caplog.text
     assert "s3cret" not in caplog.text
     assert "hunter2" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["index.test/model.onnx?key=s3cret", "{url}?key=s3cret\nx"],
+    ids=["no-scheme", "control-character"],
+)
+def test_an_error_quoting_the_address_logs_none_of_its_secrets(
+    served, dest, caplog, address
+):
+    with caplog.at_level("INFO"):
+        assert download_file(address.format(url=served.url), str(dest)) is False
+
+    assert "download failed" in caplog.text
+    assert "s3cret" not in caplog.text
+
+
+def test_an_unparsable_address_is_a_failure(dest, caplog):
+    with caplog.at_level("INFO"):
+        assert download_file("http://[::1/model.onnx?key=s3cret", str(dest)) is False
+
+    assert "s3cret" not in caplog.text

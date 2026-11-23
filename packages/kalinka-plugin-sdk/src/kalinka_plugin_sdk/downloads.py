@@ -53,15 +53,20 @@ def download_file(
                     if received > limit:
                         raise ValueError(f"the body runs over {max_bytes} bytes")
                     out.write(chunk)
-            if expected is not None and received < expected:
-                raise ValueError(f"the body ended at {received} of {expected} bytes")
+                if expected is not None and received < expected:
+                    raise ValueError(
+                        f"the body ended at {received} of {expected} bytes"
+                    )
+                # A power cut after the rename must not leave a short dest.
+                out.flush()
+                os.fsync(out.fileno())
         os.replace(tmp, dest)
         return True
     except Exception as e:
-        logger.warning("download failed (%s): %s", shown, e)
+        logger.warning("download failed (%s): %s", shown, _scrubbed(str(e), url))
         try:
             os.remove(tmp)
-        except FileNotFoundError:
+        except OSError:
             pass
         return False
 
@@ -69,6 +74,22 @@ def download_file(
 def _without_secrets(url: str) -> str:
     """The address as a log may show it: a key rides in its query or before
     its host."""
-    parts = urllib.parse.urlsplit(url)
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return "<unparsable address>"
     host = parts.netloc.rpartition("@")[2]
     return urllib.parse.urlunsplit((parts.scheme, host, parts.path, "", ""))
+
+
+def _scrubbed(text: str, url: str) -> str:
+    """``text`` with the address's secrets taken out, as an error quoting the
+    address, raw or as its repr, would carry them. Split by hand: urlsplit
+    drops the control characters such an error quotes."""
+    authority = url.partition("://")[2].partition("/")[0]
+    secrets = [url.partition("?")[2], url.partition("#")[2]]
+    secrets.append(authority.rpartition("@")[0])
+    for secret in filter(None, secrets):
+        for form in (secret, repr(secret)[1:-1]):
+            text = text.replace(form, "<secret>")
+    return text
