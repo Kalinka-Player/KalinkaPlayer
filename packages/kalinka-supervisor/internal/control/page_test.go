@@ -3,6 +3,7 @@ package control
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -73,6 +74,28 @@ func TestSSHFormEnablesAccessWithoutExtendingTheAPI(t *testing.T) {
 	h.cfg.Simulated = true
 	if result := serve(h, http.MethodGet, "/?ssh=enabled", "").Body.String(); !strings.Contains(result, "SSH setup simulated successfully") || strings.Contains(result, "SSH is enabled") {
 		t.Fatal("simulation claims to have changed the box")
+	}
+}
+
+func TestPageOffersTheLogDownloadOnlyWhereInfoDoes(t *testing.T) {
+	for _, offered := range []bool{false, true} {
+		h := newTestHandler(t, &fakeCoordinator{}, true).(*handler)
+		if offered {
+			h.cfg.Journal = (&fakeJournal{}).run
+		}
+		var info map[string]any
+		if err := json.Unmarshal(serve(h, http.MethodGet, "/info", "").Body.Bytes(), &info); err != nil || info["logs"] != offered {
+			t.Fatalf("with a journal %v, /info says logs %v", offered, info["logs"])
+		}
+		page := serve(h, http.MethodGet, "/", "").Body.String()
+		for _, part := range []string{
+			`<a class="button neutral" href="/v1/logs" download>Download logs</a>`,
+			"The archive may contain file and track names, listening times, device names, Wi-Fi network names and network addresses.",
+		} {
+			if strings.Contains(page, part) != offered {
+				t.Errorf("with a journal %v, the page shows %q: %v", offered, part, !offered)
+			}
+		}
 	}
 }
 

@@ -331,6 +331,7 @@ Open `http://<address>:8001` in a browser. It shows:
 - the installed plugins, each with a **Remove** button, so a plugin that stops Kalinka from starting can be taken away;
 - on a Raspberry Pi, the DAC HAT it found and the one it is set up for;
 - the time zone;
+- **Download logs**: the last day's logs of Kalinka, the renderer, the supervisor, the network and the kernel, as a ZIP, also while Kalinka is stopped;
 - **SSH access**: enter a password of 12 characters or more to create the login `kalinka-admin`, with administrator rights. Connect with `ssh kalinka-admin@<address>` and use `sudo` for administrator commands. The page also checks OpenSSH's password authentication settings and reports a refusal or an incomplete check. Other SSH access rules still apply.
 
 The page answers anyone on your home network, over plain HTTP, and nobody outside it. Anyone who can open it can set the administrator password, so use it on a network you trust. To turn it off, add `KALINKA_CONTROL_API=0` to `/etc/default/kalinka-supervisor` and run `sudo systemctl restart kalinka-supervisor`. [The supervisor's control page and API](supervisor-control.md) describes it in full.
@@ -422,7 +423,7 @@ ExecStart=/usr/bin/kalinka-renderer --server 192.168.1.50:8000
 
 **Kalinka does not start.** Open [the control page](#the-control-page): it shows what failed, can remove a broken plugin, and can reinstall Kalinka.
 
-**Logs.** While the server runs, the app can download its logs as a ZIP. Passwords and keys are removed, but file names and network addresses remain, so look through it before posting it. When the server does not start, save the logs on the streamer:
+**Logs.** While the server runs, the app can download its logs as a ZIP. Passwords and keys are removed, but file names and network addresses remain, so look through it before posting it. When the server does not start, or the streamer drops off Wi-Fi, use **Download logs** on [the control page](#the-control-page) instead: it needs neither the server nor SSH, and adds the network's and the kernel's logs, among them a lost Wi-Fi connection or address. Without the supervisor, save the logs on the streamer:
 
 ```bash
 sudo journalctl -u kalinka -u kalinka-upgrade -u kalinka-restart --since "1 day ago" > kalinka.log

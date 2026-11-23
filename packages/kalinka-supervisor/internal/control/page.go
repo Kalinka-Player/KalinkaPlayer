@@ -41,8 +41,8 @@ type WiFiPowerSaving interface {
 
 // pageData renders the control page: the forms it has, what they report and what the last one did.
 type pageData struct {
-	SSH, Simulated, SSHEnabled bool
-	ServerID, Username         string
+	SSH, Simulated, SSHEnabled, Logs bool
+	ServerID, Username               string
 	// Failed names the form Error came from; "" is an error before any form was recognised.
 	Failed Action
 	Error  string
@@ -65,7 +65,7 @@ func (h *handler) wifiPowerSaving() WiFiPowerSaving {
 }
 
 func (h *handler) page(w http.ResponseWriter, r *http.Request, status int, failed Action, message string) string {
-	data := pageData{SSH: h.cfg.EnableSSH != nil, Simulated: h.cfg.Simulated, SSHEnabled: r.URL.Query().Get("ssh") == "enabled",
+	data := pageData{SSH: h.cfg.EnableSSH != nil, Simulated: h.cfg.Simulated, SSHEnabled: r.URL.Query().Get("ssh") == "enabled", Logs: h.cfg.Journal != nil,
 		ServerID: coreconf.ReadID(h.cfg.ServerIDFile), Username: sshaccess.Username, Failed: failed, Error: message}
 	if saving := h.wifiPowerSaving(); saving != nil {
 		data.WiFi = &wifiPowerSavingData{State: "off", Next: "on"}

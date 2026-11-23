@@ -190,6 +190,7 @@ func TestInfo(t *testing.T) {
 			"poweroff_timer":    true,
 			"poweroff_schedule": false,
 			"network_setup":     false,
+			"logs":              false,
 		}
 		if box.server {
 			want["server_id"] = testID

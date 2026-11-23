@@ -60,6 +60,7 @@ var outcomes = map[string]struct {
 	CodeInvalidPackage:       {http.StatusBadRequest, "The package is not a Kalinka plugin this supervisor may remove"},
 	CodeNotInstalled:         {http.StatusConflict, "No such plugin package is installed"},
 	"log_unreadable":         {http.StatusInternalServerError, "The log could not be read"},
+	"invalid_since":          {http.StatusBadRequest, "since must be a time such as 2026-11-23T08:00:00Z"},
 }
 
 // pagePolicy keeps the page to its own files and out of other sites' frames, where a click could be hijacked.
@@ -110,11 +111,15 @@ type HandlerConfig struct {
 	Simulated       bool
 	NetworkSetup    NetworkSetup
 	PowerOffTimer   *PowerOffTimer
+	// Journal is nil where the supervisor offers no log download.
+	Journal JournalRunner
 }
 
 type handler struct {
 	coord Coordinator
 	cfg   HandlerConfig
+	// journal is held by the one log download reading the journal.
+	journal chan struct{}
 }
 
 type route struct {
@@ -124,7 +129,7 @@ type route struct {
 
 // NewHandler serves the control page and its API to the trusted LAN. Safe for concurrent use.
 func NewHandler(c Coordinator, cfg HandlerConfig) http.Handler {
-	return &handler{c, cfg}
+	return &handler{coord: c, cfg: cfg, journal: make(chan struct{}, 1)}
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -225,6 +230,8 @@ func (h *handler) route(path string) (route, bool) {
 		return route{http.MethodGet, func(w http.ResponseWriter, _ *http.Request) string { return serveLog(w, h.cfg.Reinstalls) }}, true
 	case path == "/v1/plugin-removal/log":
 		return route{http.MethodGet, func(w http.ResponseWriter, _ *http.Request) string { return serveLog(w, h.cfg.Removals.Record) }}, true
+	case path == "/v1/logs" && h.cfg.Journal != nil:
+		return route{http.MethodGet, h.logs}, true
 	case path == "/v1/soundcard" && h.cfg.Soundcards != nil:
 		return route{http.MethodGet, h.soundcard}, true
 	case path == "/v1/timezones" && slices.Contains(h.actions(), SetTimezone):
@@ -267,6 +274,7 @@ func (h *handler) info(w http.ResponseWriter, _ *http.Request) string {
 		"poweroff_timer":    true,
 		"poweroff_schedule": h.cfg.PowerOffTimer != nil,
 		"network_setup":     h.cfg.NetworkSetup != nil,
+		"logs":              h.cfg.Journal != nil,
 	}, false)
 	return ""
 }

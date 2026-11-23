@@ -1,12 +1,15 @@
 package control
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -47,6 +50,39 @@ func TestPagesCallTheMachineAStreamer(t *testing.T) {
 	activation := serve(h, http.MethodGet, "/activate", "", func(r *http.Request) { r.Host = "192.168.4.1" })
 	if activation.Code != http.StatusOK || !strings.Contains(activation.Body.String(), "streamer") || callsItABox(activation.Body.String()) {
 		t.Errorf("the activation page = %d: %s", activation.Code, activation.Body.String())
+	}
+}
+
+func TestLogNotesCallTheMachineAStreamer(t *testing.T) {
+	h := logsHandler(t, &fakeJournal{})
+	h.cfg.Journal = func(_ context.Context, stdout io.Writer, args ...string) error {
+		switch {
+		case slices.Contains(args, "--unit=kalinka.service"):
+			_, err := pipe(stdout, bytes.Repeat([]byte("2026-11-23T09:00:00+0000 kalinka kernel: entry\n"), logCap/40))
+			return err
+		case slices.Contains(args, "--unit=kalinka-supervisor.service"):
+			return context.DeadlineExceeded
+		case slices.Contains(args, "_TRANSPORT=kernel"):
+			return errors.New("exit status 1")
+		}
+		return nil
+	}
+	_, files := unzip(t, serve(h, http.MethodGet, "/v1/logs", "").Body.Bytes())
+	notes := 0
+	for name, text := range files {
+		for _, line := range strings.Split(text, "\n") {
+			if !strings.HasPrefix(line, "-- ") {
+				continue
+			}
+			notes++
+			if callsItABox(line) {
+				t.Errorf("%s says box: %s", name, line)
+			}
+		}
+	}
+	// A line naming each file's units, then: cut, stopped, failed, and no entries twice.
+	if notes != len(logSources)+5 {
+		t.Fatalf("%d notes, want %d", notes, len(logSources)+5)
 	}
 }
 

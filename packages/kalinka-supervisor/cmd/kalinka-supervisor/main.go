@@ -248,6 +248,7 @@ func run(ctx context.Context, o options, setupOn, apiOn bool) error {
 			EnableSSH:       controller.EnableSSH,
 			WiFiPowerSaving: powerSaving,
 			Simulated:       simulated,
+			Journal:         control.RunJournal,
 		}))
 		defer binding.Close()
 	}
