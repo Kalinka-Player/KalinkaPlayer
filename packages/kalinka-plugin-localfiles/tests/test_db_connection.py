@@ -4,7 +4,8 @@ Opening a connection costs about a millisecond, and indexing a new file
 makes more than a dozen calls, so a scan shares one. What sharing must not
 change is what a call could rely on with a connection of its own: its own
 transaction, rows as plain tuples, and no hold on the database between
-calls, which other processes write too.
+calls, which other processes write too. Several calls can also be made one
+transaction there, since every commit is a sync to disk.
 """
 
 import asyncio
@@ -14,7 +15,12 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from kalinka_plugin_localfiles.db_connection import LibraryDb, shared_connection
+from kalinka_plugin_localfiles.db_connection import (
+    LibraryDb,
+    in_one_transaction,
+    shared_connection,
+)
+from kalinka_plugin_localfiles.worker_utils import retry_on_locked
 
 
 class _Notes(LibraryDb):
@@ -50,11 +56,37 @@ class _Notes(LibraryDb):
             return await cursor.fetchone()
 
 
+class _Contended(_Notes):
+    """Notes whose writes find the database locked the first ``times`` they
+    are tried, after writing."""
+
+    def __init__(self, db_path, times):
+        super().__init__(db_path)
+        self.times = times
+        self.attempts = 0
+
+    @retry_on_locked
+    async def add_when_free(self, text):
+        self.attempts += 1
+        async with self._open() as conn:
+            await conn.execute("INSERT INTO notes (text) VALUES (?)", (text,))
+            if self.attempts <= self.times:
+                raise sqlite3.OperationalError("database is locked")
+            await conn.commit()
+
+
 def _create(path) -> str:
     with sqlite3.connect(path) as conn:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, text TEXT)")
     return str(path)
+
+
+async def _traced(connection) -> list:
+    """Every statement ``connection`` runs from now on."""
+    statements = []
+    await connection.set_trace_callback(statements.append)
+    return statements
 
 
 @pytest.fixture
@@ -206,4 +238,122 @@ class TestWhatACallCanStillRelyOn:
                 with pytest.raises(sqlite3.ProgrammingError):
                     await notes.add("lost", commit=False)
             await notes.add("kept")
+        assert await notes.texts() == ["kept"]
+
+
+class TestOneTransaction:
+    @pytest.mark.asyncio
+    async def test_the_calls_are_committed_once(self, db_path, opened):
+        notes = _Notes(db_path)
+
+        async def work():
+            await notes.add("a")
+            await notes.add("b")
+
+        async with shared_connection(db_path):
+            statements = await _traced(opened[0])
+            await in_one_transaction(db_path, work)
+        assert statements.count("COMMIT") == 1
+        assert await notes.texts() == ["a", "b"]
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_held_once_it_ends(self, db_path):
+        notes = _Notes(db_path)
+        async with shared_connection(db_path):
+            await in_one_transaction(db_path, lambda: notes.add("a"))
+
+            with sqlite3.connect(db_path) as elsewhere:
+                elsewhere.execute("INSERT INTO notes (text) VALUES ('b')")
+            with sqlite3.connect(db_path) as elsewhere:
+                busy, _, _ = elsewhere.execute(
+                    "PRAGMA wal_checkpoint(TRUNCATE)"
+                ).fetchone()
+
+            assert busy == 0
+            assert await notes.texts() == ["a", "b"]
+
+    @pytest.mark.asyncio
+    async def test_a_failure_rolls_back_what_every_call_committed(self, db_path):
+        notes = _Notes(db_path)
+
+        async def work():
+            await notes.add("a")
+            await notes.add("b")
+            raise RuntimeError("failed half-way")
+
+        async with shared_connection(db_path):
+            with pytest.raises(RuntimeError, match="half-way"):
+                await in_one_transaction(db_path, work)
+            await notes.add("c")
+        assert await notes.texts() == ["c"]
+
+    @pytest.mark.asyncio
+    async def test_it_is_refused_outside_a_block_for_its_database(
+        self, db_path, tmp_path
+    ):
+        """Its calls would each open a connection of their own, and commit
+        on it."""
+        notes = _Notes(db_path)
+        with pytest.raises(RuntimeError):
+            await in_one_transaction(db_path, lambda: notes.add("a"))
+        async with shared_connection(_create(tmp_path / "other.db")):
+            with pytest.raises(RuntimeError):
+                await in_one_transaction(db_path, lambda: notes.add("a"))
+        assert await notes.texts() == []
+
+    @pytest.mark.asyncio
+    async def test_one_inside_another_is_refused(self, db_path):
+        notes = _Notes(db_path)
+
+        async def work():
+            await notes.add("a")
+            await in_one_transaction(db_path, lambda: notes.add("b"))
+
+        async with shared_connection(db_path):
+            with pytest.raises(RuntimeError):
+                await in_one_transaction(db_path, work)
+        assert await notes.texts() == []
+
+    @pytest.mark.asyncio
+    async def test_a_locked_database_runs_it_again_from_the_start(self, db_path):
+        """A call retried on its own would find its failed attempt's insert
+        still in the transaction, and make it twice."""
+        notes = _Contended(db_path, times=1)
+        runs = []
+
+        async def work():
+            runs.append(len(runs) + 1)
+            await notes.add("a")
+            await notes.add_when_free("b")
+
+        async with shared_connection(db_path):
+            await in_one_transaction(db_path, work)
+        assert runs == [1, 2]
+        assert notes.attempts == 2
+        assert await notes.texts() == ["a", "b"]
+
+    @pytest.mark.asyncio
+    async def test_another_tasks_call_waits_for_it_to_end(self, db_path):
+        """Rather than land inside it, and commit it half-way or be rolled
+        back with it."""
+        notes = _Notes(db_path)
+        begun = asyncio.Event()
+
+        async def work():
+            await notes.add("lost")
+            begun.set()
+            await asyncio.sleep(0.05)
+            raise RuntimeError("failed half-way")
+
+        async def meanwhile():
+            await begun.wait()
+            await notes.add("kept")
+
+        async with shared_connection(db_path):
+            outcomes = await asyncio.gather(
+                in_one_transaction(db_path, work),
+                meanwhile(),
+                return_exceptions=True,
+            )
+        assert isinstance(outcomes[0], RuntimeError)
         assert await notes.texts() == ["kept"]

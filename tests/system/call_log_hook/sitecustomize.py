@@ -6,7 +6,9 @@ It does nothing unless KALINKA_CALL_LOG names a file. With it set, each call
 a worker makes through ``LibraryDb._open`` that changed rows, failed, or
 took half a second is appended there as one tab-separated line: start
 (epoch seconds), duration, process name, the method, rows changed, and the
-error it ended with. See ``call_log.py`` for the reader.
+error it ended with. A transaction that groups calls is recorded once more
+as a whole, under the method that made it. See ``call_log.py`` for the
+reader.
 """
 
 import importlib.abc
@@ -45,13 +47,13 @@ def _time_calls(module) -> None:
     calling = module._calling
 
     @asynccontextmanager
-    async def timed(conn):
+    async def timed(conn, *args):
         method = _calling_method()
         started, clock = time.time(), time.monotonic()
         changes_before = conn.total_changes
         error = ""
         try:
-            async with calling(conn) as call:
+            async with calling(conn, *args) as call:
                 yield call
         except BaseException as e:
             error = f"{type(e).__name__}: {e}"[:160].replace("\t", " ").replace("\n", " ")
