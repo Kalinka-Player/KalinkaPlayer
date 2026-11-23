@@ -30,7 +30,8 @@ dependencies = [
     # which leaves AI search out while its setting is off. >=3.14:
     # ModuleCapability.CATALOGS, which offers Jamendo as a home source.
     # >=3.23: report_state_changed, so a failed mood index is listed at once.
-    "kalinka-plugin-sdk>=3.23,<4",
+    # >=3.24: downloads.download_file, which gives up on a stalled index.
+    "kalinka-plugin-sdk>=3.24,<4",
     "httpx>=0.24",
     # ai_search (mood/semantic): sqlite-vec KNN over the shipped index.
     # Imported lazily; ai_search disables itself if these are unavailable.
