@@ -103,9 +103,12 @@ def _scrubbed(text: str, url: str) -> str:
     address, raw or as its repr, would carry them. Split by hand: urlsplit
     drops the control characters such an error quotes."""
     authority = url.partition("://")[2].partition("/")[0]
-    secrets = [url.partition("?")[2], url.partition("#")[2]]
-    secrets.append(authority.rpartition("@")[0])
-    for secret in filter(None, secrets):
+    userinfo = authority.rpartition("@")[0]
+    secrets = [url.partition("?")[2], url.partition("#")[2], userinfo]
+    # http.client quotes a portless address's password alone, decoded.
+    secrets += userinfo.split(":")
+    secrets += [urllib.parse.unquote(secret) for secret in secrets]
+    for secret in sorted(set(filter(None, secrets)), key=len, reverse=True):
         for form in (secret, repr(secret)[1:-1]):
             text = text.replace(form, "<secret>")
     return text

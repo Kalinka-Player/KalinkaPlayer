@@ -247,6 +247,25 @@ def test_an_error_quoting_the_address_logs_none_of_its_secrets(
     assert "s3cret" not in caplog.text
 
 
+@pytest.mark.parametrize(
+    "address, password",
+    [
+        ("http://user:hunter2@index.test/model.onnx", "hunter2"),
+        ("http://user:p%40ss@index.test/model.onnx", "p@ss"),
+    ],
+    ids=["plain", "percent-encoded"],
+)
+def test_a_password_quoted_alone_as_a_port_is_not_logged(
+    dest, caplog, address, password
+):
+    """Without a port, http.client reads ``password@host`` as one."""
+    with caplog.at_level("INFO"):
+        assert download_file(address, str(dest)) is False
+
+    assert "nonnumeric port" in caplog.text
+    assert password not in caplog.text
+
+
 def test_an_unparsable_address_is_a_failure(dest, caplog):
     with caplog.at_level("INFO"):
         assert download_file("http://[::1/model.onnx?key=s3cret", str(dest)) is False
