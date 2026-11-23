@@ -1,5 +1,6 @@
 #include "AudioGraphNode.h"
 #include "Log.h"
+#include "StateMonitor.h"
 
 StreamState AudioGraphNode::getState() {
   std::lock_guard lock(mutex);
@@ -61,5 +62,29 @@ void AudioGraphNode::apply(const StreamState &newState) {
     } else {
       ++it;
     }
+  }
+}
+
+std::optional<StreamInfo>
+AudioGraphOutputNode::seekStreamInfo(std::optional<StreamId> stream,
+                                     bool waitForHeader) {
+  const auto now = getState();
+  if (stream && now.streamId && now.streamId != stream)
+    return std::nullopt;
+  if (waitForHeader && !now.streamInfo &&
+      now.state == AudioGraphNodeState::PREPARING)
+    return waitForSeekHeader(now.streamId);
+  return now.streamInfo;
+}
+
+std::optional<StreamInfo>
+AudioGraphOutputNode::waitForSeekHeader(std::optional<StreamId> id) {
+  StateMonitor changes(this);
+  for (;;) {
+    const auto state = changes.waitState();
+    if (state.streamId != id)
+      return std::nullopt;
+    if (state.streamInfo || state.state != AudioGraphNodeState::PREPARING)
+      return state.streamInfo;
   }
 }

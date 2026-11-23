@@ -272,7 +272,7 @@ TEST_F(IntegrationTest, test_switch_different_formats_sine) {
   connect(output);
   std::this_thread::sleep_for(std::chrono::milliseconds(1000));
   switcher->connectTo(outputNode2);
-  removeStream(*switcher, outputNode1, output);
+  removeStream(*alsaAudioEmitter, *switcher, outputNode1, output);
 
   EXPECT_EQ(
       waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::FINISHED).state,
@@ -366,7 +366,7 @@ TEST_F(IntegrationTest, test_next_track_after_pause) {
                 .state,
             AudioGraphNodeState::PAUSED);
 
-  removeStream(*switcher, outputNode1, output);
+  removeStream(*alsaAudioEmitter, *switcher, outputNode1, output);
   EXPECT_EQ(waitForStatus(*alsaAudioEmitter, AudioGraphNodeState::FINISHED,
                           std::chrono::seconds(3))
                 .state,

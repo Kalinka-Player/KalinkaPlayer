@@ -81,6 +81,9 @@ private:
     bool open = true;  ///< Upstream may still add frames to it.
     bool left = false; ///< Upstream has moved on to another source.
     bool dropped = false;
+    bool partialEnd = false; ///< Ends between two output frames.
+    bool cut = false;       ///< Unplayed input must be cleared at the join.
+    size_t prefixBytes = 0; ///< Raw bytes read ahead from this source.
   };
 
   /// The next thing the pulling thread has to do to get audio out.
@@ -128,7 +131,9 @@ private:
   /// after running the history before it through the processor.
   struct LeadIn {
     std::optional<StreamId> id;
+    StreamInfo info;
     long target;
+    size_t frames; ///< Preroll from the frame acknowledged by the decoder.
   };
   std::optional<LeadIn> leadIn;
   size_t inputChunkFrames = 0;
@@ -146,6 +151,8 @@ private:
   size_t flushLeft = 0;
   std::vector<uint8_t> fifo; ///< Run frames [handed, produced()).
   size_t fifoOffset = 0;
+  bool keepSuccessorInput = false;
+  std::vector<uint8_t> readAhead; ///< Successor prefixes in segment order.
   std::vector<uint8_t> input;
   std::vector<uint8_t> output;
 
@@ -162,16 +169,19 @@ private:
             bool idle);
   bool perform(Step step, size_t count);
   bool startRun(std::optional<long> position);
+  void prepareProcessor(const StreamAudioFormat &format);
+  /// Start the successor with clean history and replay its buffered input.
+  void rebuildAfterCut(size_t offset);
+  void feed(Segment &segment, const uint8_t *data, size_t frames);
   void endRun();
   void append(const uint8_t *frames, size_t count);
   void dropTo(uint64_t frame);
-  void popHead();
+  void popHead(uint64_t nextBegin);
   uint64_t produced() const;
   size_t fifoFrames() const;
   size_t readable() const;
   bool headExhausted() const;
   const Segment *nextAfterHead() const;
-  void skipDropped();
   /// Takes what other threads left: upstream's state and pending discards.
   void sync();
   /// Takes upstream's state alone, leaving discards for the next sync().
@@ -182,12 +192,6 @@ private:
   void publish();
   /// Seeks in the format of the target stream, including a retired source.
   size_t seek(std::optional<StreamId> stream, size_t position);
-  /// Lets go of everything held once upstream has seeked to @p reached, in
-  /// input frames, for a seek to @p target asked @p early output frames
-  /// short of it; keeps it all when upstream refused.
-  /// @return Where what is heard next begins, in output frames.
-  size_t restartAfter(size_t reached, unsigned ratio, size_t target,
-                      size_t early, std::optional<StreamId> id);
   StreamState shown(const Shared &shared) const;
   /// @p state as downstream sees it: in the processor's output format, and
   /// with upstream's own position in output frames when @p upstreamPosition.

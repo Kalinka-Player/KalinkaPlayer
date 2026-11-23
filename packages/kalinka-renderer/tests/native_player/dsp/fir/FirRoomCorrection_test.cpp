@@ -329,8 +329,12 @@ struct FirGraph : testing::Test {
   std::vector<double> queue(StreamId id, int32_t base, size_t frames) {
     auto node = std::make_shared<CountingNode>(id, base, frames);
     switcher->connectTo(node);
+    return samples(*node, frames);
+  }
+
+  static std::vector<double> samples(const CountingNode &node, size_t frames) {
     std::vector<double> input;
-    for (int32_t x : node->values(0, frames))
+    for (int32_t x : node.values(0, frames))
       input.push_back(x / 2147483648.);
     return input;
   }
@@ -375,9 +379,9 @@ TEST_F(FirGraph, CompatibleJoinPreservesTailAndSourceBoundary) {
     ASSERT_NEAR(out[i], expected(input, i), 1e-12) << i;
 }
 
-class FloatCountingNode final : public CountingNode {
+class UnseekableFloatNode final : public CountingNode {
 public:
-  FloatCountingNode(StreamId id, int32_t base, size_t frames)
+  UnseekableFloatNode(StreamId id, int32_t base, size_t frames)
       : AudioGraphNode(id),
         CountingNode(id, base, frames, {.format = PCM_FLOAT64_LE}) {}
 
@@ -393,11 +397,17 @@ public:
     }
     return count * sizeof(double);
   }
+
+  size_t seekTo(size_t) override {
+    ADD_FAILURE()
+        << "A gapless join or discard must work on a nonseekable source";
+    return size_t(-1);
+  }
 };
 
 TEST_F(FirGraph, AChangeFromIntegerToFloatKeepsTheTailAndReadsTheNewWidth) {
   auto input = queue(1, 500000000, 997);
-  auto second = std::make_shared<FloatCountingNode>(2, -900000000, 5303);
+  auto second = std::make_shared<UnseekableFloatNode>(2, -900000000, 5303);
   switcher->connectTo(second);
   for (const auto sample : second->values(0, 5303))
     input.push_back(sample / 2147483648.);
@@ -406,6 +416,195 @@ TEST_F(FirGraph, AChangeFromIntegerToFloatKeepsTheTailAndReadsTheNewWidth) {
   EXPECT_EQ(joins, (std::vector<size_t>{0, 997}));
   for (size_t i = 0; i < out.size(); ++i)
     ASSERT_NEAR(out[i], expected(input, i), 1e-12) << i;
+}
+
+TEST_F(FirGraph, CuttingTheOutgoingTrackRebuildsAllReadAheadFromItsSuccessors) {
+  queue(1, 700000000, 1000);
+  auto second = std::make_shared<UnseekableFloatNode>(2, -900000000, 7);
+  switcher->connectTo(second);
+  auto third = queue(3, 500000000, 1253);
+  ASSERT_EQ(read(980).size(), 980u);
+  ASSERT_EQ(switcher->streamId(), 3);
+  stage->discard(1);
+
+  std::vector<double> input;
+  for (const auto x : second->values(0, 7))
+    input.push_back(x / 2147483648.);
+  input.insert(input.end(), third.begin(), third.end());
+  const auto out = read(input.size() + 1);
+  ASSERT_EQ(out.size(), input.size());
+  EXPECT_EQ(joins, (std::vector<size_t>{0, 0, 7}));
+  for (size_t i = 0; i < out.size(); ++i)
+    ASSERT_NEAR(out[i], expected(input, i), 1e-12) << i;
+}
+
+TEST_F(FirGraph,
+       CuttingABufferedMiddleTrackFinishesTheHeadAndRestartsTheThird) {
+  const auto first = queue(1, 700000000, 1000);
+  auto second = std::make_shared<UnseekableFloatNode>(2, -900000000, 7);
+  switcher->connectTo(second);
+  const auto third = queue(3, 500000000, 1253);
+  ASSERT_EQ(read(980).size(), 980u);
+  ASSERT_EQ(switcher->streamId(), 3);
+  switcher->disconnect(second);
+  stage->discard(2);
+
+  const auto out = read(20 + third.size() + 1);
+  ASSERT_EQ(out.size(), 20 + third.size());
+  EXPECT_EQ(joins, (std::vector<size_t>{0, 20}));
+  for (size_t i = 0; i < out.size(); ++i)
+    ASSERT_NEAR(out[i],
+                i < 20 ? expected(first, 980 + i) : expected(third, i - 20),
+                1e-12)
+        << i;
+}
+
+TEST_F(FirGraph, RemovingAFullyPlayedTrackKeepsItsNaturalTail) {
+  auto input = queue(1, 700000000, 1000);
+  const auto second = queue(2, -900000000, 850);
+  input.insert(input.end(), second.begin(), second.end());
+  ASSERT_EQ(read(1000).size(), 1000u);
+  ASSERT_EQ(stage->getState().state, AudioGraphNodeState::SOURCE_CHANGED);
+  stage->discard(1);
+  const auto out = read(second.size() + 1);
+  ASSERT_EQ(out.size(), second.size());
+  for (size_t i = 0; i < out.size(); ++i)
+    ASSERT_NEAR(out[i], expected(input, 1000 + i), 1e-12) << i;
+}
+
+class RestoredDecoder : public CountingNode {
+public:
+  RestoredDecoder(std::optional<StreamId> id, int32_t base, size_t frames)
+      : AudioGraphNode(id), CountingNode(id, base, frames) {}
+  std::vector<size_t> seeks;
+  bool preparing = false;
+  std::optional<size_t> refused;
+  std::optional<StreamState> ready;
+
+  size_t seekTo(size_t frame) override {
+    seeks.push_back(frame);
+    if (refused == frame) {
+      setState({AudioGraphNodeState::ERROR,
+                StreamError{StreamErrorSource::DECODER, "seek failed"}});
+      return size_t(-1);
+    }
+    const size_t reached = CountingNode::seekTo(frame);
+    if (preparing) {
+      ready = getState();
+      setState(StreamState(AudioGraphNodeState::PREPARING));
+    }
+    return reached;
+  }
+  std::optional<long> streamReadPosition() const override {
+    return ready ? std::nullopt : CountingNode::streamReadPosition();
+  }
+  std::optional<StreamInfo> seekStreamInfo(std::optional<StreamId> id,
+                                           bool waitForHeader) override {
+    if (ready && waitForHeader) {
+      ADD_FAILURE() << "The decoder is still filling its buffer after a seek "
+                       "in a format the stage already knows";
+      return std::nullopt;
+    }
+    return CountingNode::seekStreamInfo(id, waitForHeader);
+  }
+
+  void finishPreparing() {
+    setState(ready.value());
+    ready.reset();
+  }
+};
+
+TEST_F(FirGraph, RetiredDecoderCanAcknowledgeThePrerollWhileStillPreparing) {
+  auto first = std::make_shared<RestoredDecoder>(1, 700000000, 2100);
+  switcher->connectTo(first);
+  queue(2, -600000000, 1700);
+  ASSERT_EQ(read(3801).size(), 3800u);
+  first->preparing = true;
+  ASSERT_EQ(stage->seekStream(1, 1100), 1100u);
+  EXPECT_EQ(first->seeks, (std::vector<size_t>{400}));
+  EXPECT_EQ(stage->streamReadPosition(), 1100);
+  ASSERT_FALSE(first->streamReadPosition());
+  const auto buffered = read(7);
+  ASSERT_EQ(buffered.size(), 7u);
+  EXPECT_EQ(stage->streamReadPosition(), 1107);
+  first->finishPreparing();
+  std::vector<double> input;
+  for (auto x : first->values(0, 2100))
+    input.push_back(x / 2147483648.);
+  auto out = buffered;
+  const auto rest = read(84);
+  out.insert(out.end(), rest.begin(), rest.end());
+  ASSERT_EQ(out.size(), 91u);
+  for (size_t i = 0; i < out.size(); ++i)
+    ASSERT_NEAR(out[i], expected(input, 1100 + i), 1e-12) << i;
+}
+
+TEST_F(FirGraph, FailedRetiredPrerollReturnsFailureAndExposesTheDecoderError) {
+  auto first = std::make_shared<RestoredDecoder>(1, 700000000, 2100);
+  switcher->connectTo(first);
+  queue(2, -600000000, 1700);
+  ASSERT_EQ(read(3801).size(), 3800u);
+  first->refused = 400;
+  EXPECT_EQ(stage->seekStream(1, 1100), size_t(-1));
+  EXPECT_EQ(first->seeks, (std::vector<size_t>{400}));
+  EXPECT_EQ(stage->getState().state, AudioGraphNodeState::ERROR);
+}
+
+TEST_F(FirGraph, SeekingBeyondKnownEndReportsTheLastReachablePosition) {
+  queue(1, 700000000, 1000);
+  stage->acceptSourceChange();
+  EXPECT_EQ(stage->seekTo(1100), 1000u);
+  EXPECT_EQ(stage->streamReadPosition(), 1000);
+  EXPECT_TRUE(read(1).empty());
+  EXPECT_EQ(stage->getState().state, AudioGraphNodeState::FINISHED);
+}
+
+TEST_F(FirGraph, DirectDecoderKeepsItsFIRFormatAfterAnEarlyAcknowledgement) {
+  auto node = std::make_shared<RestoredDecoder>(1, 700000000, 2000);
+  stage->disconnect(switcher);
+  stage->connectTo(node);
+  node->preparing = true;
+  ASSERT_EQ(stage->seekStream(1, 1000), 1000u);
+  const auto out = read(1);
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_NEAR(out[0], expected(samples(*node, 2000), 1000), 1e-12);
+  EXPECT_EQ(stage->streamReadPosition(), 1001);
+}
+
+TEST_F(FirGraph, NamedSeekOnAnUnboundSourceDiscardsThePreroll) {
+  auto node = std::make_shared<RestoredDecoder>(std::nullopt, 500000000, 1500);
+  stage->disconnect(switcher);
+  stage->connectTo(node);
+  node->preparing = true;
+  const auto input = samples(*node, 1500);
+  for (size_t frame : {400, 900}) {
+    ASSERT_EQ(stage->seekStream(42, frame), frame);
+    const auto out = read(1);
+    ASSERT_EQ(out.size(), 1u);
+    EXPECT_NEAR(out[0], expected(input, frame), 1e-12);
+    EXPECT_EQ(stage->streamReadPosition(), frame + 1);
+  }
+}
+
+TEST_F(FirGraph, RefusedSeekOnAlreadyFailedDecoderPreservesPlayableTail) {
+  struct FailedDecoder final : CountingNode {
+    FailedDecoder()
+        : AudioGraphNode(1),
+          CountingNode(1, 500000000, 2000, {.errorAt = 1000}) {}
+    size_t seekTo(size_t) override { return size_t(-1); }
+  };
+  auto node = std::make_shared<FailedDecoder>();
+  switcher->connectTo(node);
+  ASSERT_EQ(read(990).size(), 990u);
+  ASSERT_EQ(node->getState().state, AudioGraphNodeState::ERROR);
+  EXPECT_EQ(stage->seekStream(1, 400), size_t(-1));
+  ASSERT_EQ(stage->streamReadPosition(), 990);
+  const auto rest = read(10);
+  ASSERT_EQ(rest.size(), 10u);
+  const auto input = samples(*node, 1000);
+  for (size_t i = 0; i < rest.size(); ++i)
+    EXPECT_NEAR(rest[i], expected(input, 990 + i), 1e-12);
+  EXPECT_EQ(stage->getState().state, AudioGraphNodeState::ERROR);
 }
 
 TEST_F(FirGraph, SeekBeforeFirstReadUsesThePreparedImpulse) {

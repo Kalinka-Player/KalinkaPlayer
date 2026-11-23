@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -159,7 +160,6 @@ void DspStage::sync() {
 }
 
 void DspStage::publish() {
-  skipDropped();
   Follow follow = Follow::Upstream;
   StreamState fixed{AudioGraphNodeState::STOPPED};
   std::optional<StreamId> playing;
@@ -250,23 +250,41 @@ void DspStage::dropTo(uint64_t frame) {
   }
 }
 
-void DspStage::popHead() {
-  const Segment *next = nextAfterHead();
-  const uint64_t to = next ? next->begin : segments.front().end;
-  segments.pop_front();
-  dropTo(to);
-  skipDropped();
+void DspStage::popHead(uint64_t nextBegin) {
+  dropTo(nextBegin);
+  size_t offset = 0;
+  bool cut = false;
+  do {
+    const Segment &head = segments.front();
+    cut |= head.cut;
+    offset += head.prefixBytes;
+    segments.pop_front();
+  } while (segments.front().dropped);
+  if (cut && keepSuccessorInput)
+    rebuildAfterCut(offset);
+  offset += std::exchange(segments.front().prefixBytes, 0);
+  readAhead.erase(readAhead.begin(), readAhead.begin() + offset);
 }
 
-void DspStage::skipDropped() {
-  while (!segments.empty() && segments.front().dropped) {
-    const uint64_t to = segments.front().end;
-    segments.pop_front();
-    dropTo(to);
+void DspStage::rebuildAfterCut(size_t offset) {
+  fedIn = fedOut = handed = fifoOffset = 0;
+  prepareProcessor(segments.front().info.format);
+  for (auto &segment : segments) {
+    if (!continueIn(segment.info.format))
+      throw std::logic_error("Cannot replay previously compatible DSP input");
+    segment.begin = segment.end = fedIn / ratio;
+    segment.partialEnd = false;
+    const size_t end = offset + segment.prefixBytes;
+    while (offset < end) {
+      const size_t frames =
+          std::min(inputChunkFrames, (end - offset) / inFrameBytes);
+      std::memcpy(input.data(), readAhead.data() + offset,
+                  frames * inFrameBytes);
+      feed(segment, input.data(), frames);
+      offset += frames * inFrameBytes;
+    }
   }
-  if (segments.empty()) {
-    endRun();
-  }
+  flushLeft = segments.back().open ? 0 : latency;
 }
 
 void DspStage::drop(StreamId id) {
@@ -284,6 +302,8 @@ void DspStage::drop(StreamId id) {
     if (it->id != id) {
       continue;
     }
+    if (it->open || it->partialEnd || it->end > std::max(handed, it->begin))
+      it->cut = true;
     if (it->open) {
       it->open = false;
       flushLeft = latency;
@@ -306,13 +326,20 @@ void DspStage::dropEverything() {
 
 void DspStage::endRun() {
   joinPending.reset();
+  readAhead.clear();
   fedIn = fedOut = handed = 0;
   flushLeft = 0;
   fifoOffset = 0;
 }
 
 bool DspStage::startRun(std::optional<long> position) {
-  const auto &info = upstreamSeen.streamInfo;
+  const bool afterSeek = leadIn && leadIn->id == upstreamSeen.streamId;
+  auto info = upstreamSeen.streamInfo;
+  if (!info && afterSeek)
+    info = leadIn->info;
+  if (!info && upstreamSeen.state == AudioGraphNodeState::PREPARING &&
+      upstreamSeen.streamId)
+    info = upstream->seekStreamInfo(*upstreamSeen.streamId);
   // A source still buffering may already hold frames, and they are processed.
   const bool live = upstreamSeen.state == AudioGraphNodeState::STREAMING ||
                     upstreamSeen.state == AudioGraphNodeState::PREPARING;
@@ -320,29 +347,44 @@ bool DspStage::startRun(std::optional<long> position) {
     return false;
   }
   endRun();
-  const auto out = processor->output(info->format);
-  ratio = out.ratio;
-  inFrameBytes = info->format.channels * sampleSize(info->format.sampleFormat);
-  outFrameBytes = out.format.channels * sampleSize(out.format.sampleFormat);
-  latency = processor->start(info->format);
-  runFormat = info->format;
-  fifo.resize(kFifoFrames * outFrameBytes);
-  inputChunkFrames = kChunkFrames;
-  input.resize(inputChunkFrames * inFrameBytes);
-  output.resize((kChunkFrames + 1) * outFrameBytes);
+  prepareProcessor(info->format);
   std::optional<long> start =
       position ? std::optional(*position / long(ratio)) : std::nullopt;
   // Frames before a seek's target only build history: handed passes them.
   uint64_t lead = 0;
-  if (leadIn && leadIn->id == upstreamSeen.streamId && start &&
-      *start < leadIn->target) {
-    lead = uint64_t(leadIn->target - *start);
+  if (afterSeek) {
+    lead = leadIn->frames;
     start = leadIn->target;
   }
   leadIn.reset();
   segments.push_back({upstreamSeen.streamId, *info, start, lead, lead});
   handed = lead;
   return true;
+}
+
+void DspStage::prepareProcessor(const StreamAudioFormat &format) {
+  const auto out = processor->output(format);
+  ratio = out.ratio;
+  inFrameBytes = format.channels * sampleSize(format.sampleFormat);
+  outFrameBytes = out.format.channels * sampleSize(out.format.sampleFormat);
+  latency = processor->start(format);
+  runFormat = format;
+  fifo.resize(kFifoFrames * outFrameBytes);
+  inputChunkFrames = kChunkFrames;
+  input.resize(inputChunkFrames * inFrameBytes);
+  output.resize((kChunkFrames + 1) * outFrameBytes);
+  keepSuccessorInput = ratio > 1 || processor->history() != 0;
+  if (keepSuccessorInput)
+    readAhead.reserve((latency + 1) * ratio *
+                      std::max(inFrameBytes, outFrameBytes));
+}
+
+void DspStage::feed(Segment &segment, const uint8_t *data, size_t frames) {
+  const size_t made = processor->process(data, output.data(), frames);
+  fedIn += frames;
+  segment.end = std::max(segment.end, fedIn / ratio);
+  segment.partialEnd = fedIn % ratio != 0;
+  append(output.data(), made);
 }
 
 void DspStage::append(const uint8_t *frames, size_t count) {
@@ -388,8 +430,9 @@ void DspStage::join(std::optional<StreamId> id, std::optional<long> position,
                        now.state == AudioGraphNodeState::PREPARING;
   // Ended inside a seek's lead-in: the next source's frames would be passed.
   const bool leadingIn = fedIn / ratio < tail.begin;
-  if (!idle && playing && !leadingIn && now.streamInfo.has_value() &&
-      now.streamInfo->live == tail.info.live && continueIn(now.streamInfo->format)) {
+  if (!idle && playing && !leadingIn && !tail.cut &&
+      now.streamInfo.has_value() && now.streamInfo->live == tail.info.live &&
+      continueIn(now.streamInfo->format)) {
     segments.push_back(
         {id, *now.streamInfo,
          position ? std::optional(*position / long(ratio)) : std::nullopt,
@@ -415,9 +458,13 @@ DspStage::Step DspStage::plan(size_t frames, size_t &count) {
       publish();
       continue;
     }
-    if (segments.empty() || readable() >= frames || headExhausted()) {
+    if (segments.empty() || headExhausted())
       return Step::Done;
-    }
+    // Only read ahead far enough to finish the outgoing segment.
+    if (!segments.front().open)
+      frames = std::min<uint64_t>(frames, segments.front().end - handed);
+    if (readable() >= frames)
+      return Step::Done;
     Segment &tail = segments.back();
     const size_t room = kFifoFrames - fifoFrames();
     if (!tail.open) {
@@ -453,11 +500,13 @@ bool DspStage::perform(Step step, size_t count) {
     if (frames == 0) {
       return false;
     }
-    const size_t made = processor->process(input.data(), output.data(), frames);
-    fedIn += frames;
     Segment &tail = segments.back();
-    tail.end = std::max(tail.end, fedIn / ratio);
-    append(output.data(), made);
+    if (segments.size() > 1 && keepSuccessorInput) {
+      const size_t bytes = frames * inFrameBytes;
+      readAhead.insert(readAhead.end(), input.begin(), input.begin() + bytes);
+      tail.prefixBytes += bytes;
+    }
+    feed(tail, input.data(), frames);
     publish();
     return true;
   }
@@ -628,63 +677,82 @@ size_t DspStage::seek(std::optional<StreamId> stream, size_t position) {
   if (!stream && (boundary || (!segments.empty() && segments.front().left)))
     return size_t(-1);
 
-  const auto id = stream ? stream : upstreamSeen.streamId;
-  auto info =
-      id == upstreamSeen.streamId ? upstreamSeen.streamInfo : std::nullopt;
-  if (!info) {
+  const auto knownInfo =
+      [&](std::optional<StreamId> id) -> std::optional<StreamInfo> {
+    if (id == upstreamSeen.streamId && upstreamSeen.streamInfo)
+      return upstreamSeen.streamInfo;
+    if (leadIn && leadIn->id == id)
+      return leadIn->info;
     const auto segment =
         std::find_if(segments.rbegin(), segments.rend(),
                      [&](const Segment &s) { return s.id == id; });
     if (segment != segments.rend())
-      info = segment->info;
-  }
+      return segment->info;
+    return std::nullopt;
+  };
 
-  // Restoring a retired stream can be the first time its format is available.
-  std::optional<size_t> restored;
-  if (!info && stream) {
-    restored = upstreamSeek(position);
-    if (*restored == size_t(-1))
-      return *restored;
+  const auto id = stream ? stream : upstreamSeen.streamId;
+  auto info = knownInfo(id);
+  if (!info) {
+    // A named seek on an unbound decoder uses its current format, unless
+    // the switcher has a retained source with that name.
+    const auto unbound = stream && !upstreamSeen.streamId
+                             ? knownInfo(std::nullopt)
+                             : std::nullopt;
+    info = upstream->seekStreamInfo(id, !unbound);
+    if (!info)
+      info = unbound;
     takeUpstream();
-    info = upstreamSeen.streamInfo;
   }
+  if (!info && position &&
+      (stream || upstreamSeen.state == AudioGraphNodeState::PREPARING))
+    return size_t(-1);
+
   const unsigned r = ratioOf(info);
+  const bool atEnd = info && info->streamType == StreamType::FRAMES &&
+                     info->streamSize && position >= info->streamSize / r;
+  if (atEnd)
+    position = info->streamSize / r;
   size_t early = 0;
-  if (info && processor->handles(info->format)) {
+  const bool filtered = info && processor->handles(info->format);
+  if (filtered && !atEnd) {
     const size_t history = info->format == runFormat
                                ? processor->history()
                                : processor->preparedHistory();
     early = std::min(position, history);
   }
-  const size_t target = (position - early) * r;
-  if (restored && target == position)
-    return restartAfter(*restored, r, position, early, id);
-  const size_t reached = upstreamSeek(target);
-  if (restored && reached == size_t(-1))
-    return restartAfter(*restored, r, position, 0, id);
-  return restartAfter(reached, r, position, early, id);
+  if (position - early > std::numeric_limits<size_t>::max() / r)
+    return size_t(-1);
+  const auto changes = upstreamChangesSeen;
+  // At EOF even a trailing partial output frame belongs to the old source.
+  const size_t reached =
+      upstreamSeek(atEnd ? info->streamSize : (position - early) * r);
+  sync();
+  if (upstreamSeen.state == AudioGraphNodeState::ERROR &&
+      (!upstreamSeen.streamId || upstreamSeen.streamId == id) &&
+      upstreamChangesSeen != changes) {
+    dropEverything();
+    publish();
+    return size_t(-1);
+  }
+  if (reached == size_t(-1))
+    return reached;
+
+  dropEverything();
+  const size_t from = reached / r;
+  // A decoder that lands short of the requested preroll plays from there.
+  const size_t target =
+      from <= position && position - from <= early ? position : from;
+  if (filtered && upstreamSeen.state != AudioGraphNodeState::SOURCE_CHANGED)
+    leadIn = LeadIn{upstreamSeen.streamId, *info, long(target), target - from};
+  publish();
+  return target;
 }
 
 unsigned DspStage::ratioOf(const std::optional<StreamInfo> &info) const {
   return info && processor->handles(info->format)
              ? processor->output(info->format).ratio
              : 1;
-}
-
-size_t DspStage::restartAfter(size_t reached, unsigned r, size_t target,
-                              size_t early, std::optional<StreamId> id) {
-  if (reached == size_t(-1)) {
-    return reached;
-  }
-  sync();
-  dropEverything();
-  const size_t from = reached / r;
-  // Short of where it was asked for, upstream plays on from where it landed.
-  if (early > 0 && from < target && target - from <= early) {
-    leadIn = LeadIn{id, long(target)};
-  }
-  publish();
-  return leadIn ? target : from;
 }
 
 std::optional<long> DspStage::streamReadPosition() const {
@@ -745,8 +813,8 @@ void DspStage::acceptSourceChange() {
   if (!headExhausted()) {
     return;
   }
-  if (nextAfterHead()) {
-    popHead();
+  if (const auto *next = nextAfterHead()) {
+    popHead(next->begin);
   } else if (boundary) {
     boundary.reset();
     dropEverything();
