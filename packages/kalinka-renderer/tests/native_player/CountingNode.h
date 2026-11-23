@@ -20,6 +20,7 @@ public:
     size_t first = 0;
     size_t errorAt = std::numeric_limits<size_t>::max();
     AudioSampleFormat format = PCM32_LE;
+    bool knownLength = true;
   };
 
   CountingNode(std::optional<StreamId> id, int32_t base, size_t frames)
@@ -34,7 +35,7 @@ public:
                                  .bitsPerSample = 32,
                                  .sampleFormat = options.format},
                       .streamType = StreamType::FRAMES,
-                      .streamSize = frames};
+                      .streamSize = options.knownLength ? frames : 0};
     setState({AudioGraphNodeState::STREAMING, long(at), info});
   }
 

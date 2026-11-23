@@ -3,9 +3,11 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <atomic>
 #include <cstring>
 #include <deque>
+#include <future>
 #include <thread>
 
 #include "CountingNode.h"
@@ -124,7 +126,7 @@ std::vector<double> evenFrames(const CountingNode &node, size_t from,
 class LateNode : public CountingNode {
 public:
   LateNode(StreamId id, int32_t base, size_t frames)
-      : CountingNode(id, base, frames) {
+      : AudioGraphNode(id), CountingNode(id, base, frames) {
     setState(StreamState(AudioGraphNodeState::PREPARING));
   }
   void ready() {
@@ -213,6 +215,46 @@ TEST_F(Converting, ASeekInOutputFramesReachesUpstreamInItsOwn) {
   EXPECT_EQ(pullAll(*stage), evenFrames(*node, 200, 1000));
 }
 
+TEST_F(Converting, NamedSeekBeforeHeaderTranslatesTheTargetInOutputFrames) {
+  auto node = std::make_shared<LateNode>(1, 1000000, 1000);
+  switcher->connectTo(node);
+  stage->acceptSourceChange();
+  ASSERT_EQ(stage->getState().state, AudioGraphNodeState::PREPARING);
+  std::jthread header([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    node->ready();
+  });
+  ASSERT_EQ(stage->seekStream(1, 100), 100u);
+  EXPECT_EQ(node->streamReadPosition(), 200);
+  EXPECT_EQ(pullAll(*stage), evenFrames(*node, 200, 1000));
+}
+
+TEST_F(Converting, AMissingStreamDoesNotWaitForTheCurrentHeader) {
+  auto node = std::make_shared<LateNode>(1, 1000000, 1000);
+  switcher->connectTo(node);
+  stage->acceptSourceChange();
+  auto seek = std::async(std::launch::async,
+                         [&] { return stage->seekStream(2, 100); });
+  EXPECT_EQ(seek.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+  node->ready();
+  EXPECT_EQ(seek.get(), size_t(-1));
+  EXPECT_EQ(node->streamReadPosition(), 0);
+}
+
+TEST_F(Converting, RemovingTheSourceReleasesASeekWaitingForItsHeader) {
+  auto node = std::make_shared<LateNode>(1, 1000000, 1000);
+  switcher->connectTo(node);
+  stage->acceptSourceChange();
+  auto seek = std::async(std::launch::async,
+                         [&] { return stage->seekStream(1, 100); });
+  EXPECT_EQ(seek.wait_for(std::chrono::milliseconds(20)),
+            std::future_status::timeout);
+  switcher->disconnect(node);
+  EXPECT_EQ(seek.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+  node->ready();
+  EXPECT_EQ(seek.get(), size_t(-1));
+}
+
 TEST_F(Converting, AGaplessJoinOfOneFormatCarriesTheRunOn) {
   auto first = queue(1, 400);
   auto second = queue(2, 400);
@@ -238,6 +280,17 @@ TEST_F(Converting, AJoinBetweenTwoOutputFramesLosesAndRepeatsNothing) {
     expected.push_back(double(second->value(frame)));
   EXPECT_EQ(left.size(), (401u + 400u) / 2);
   EXPECT_EQ(left, expected);
+}
+
+TEST_F(Converting, CuttingAfterTheLastWholePairDiscardsTheUnplayedHalfPair) {
+  queue(1, 401);
+  const auto second = queue(2, 400);
+  stage->acceptSourceChange();
+  std::array<double, 2 * 200> first{};
+  ASSERT_EQ(stage->read(first.data(), sizeof(first)), sizeof(first));
+  ASSERT_EQ(switcher->streamId(), 2);
+  stage->discard(1);
+  EXPECT_EQ(pullAll(*stage), evenFrames(*second, 0, 400));
 }
 
 TEST_F(Converting, AJoinWaitsForTheNextSourcesFormatRatherThanEndTheRun) {
@@ -306,7 +359,7 @@ TEST_F(Remembering, ASeekToTheStartHasNoHistoryToRunThrough) {
 }
 
 TEST_F(Remembering, ASourceEndingBeforeTheTargetHandsTheNextOneOverWhole) {
-  auto first = queue(1, 999);
+  queue(1, 999, {.knownLength = false});
   auto second = queue(2, 400);
   stage->acceptSourceChange();
   std::vector<double> buffer(2 * 50);
@@ -316,6 +369,15 @@ TEST_F(Remembering, ASourceEndingBeforeTheTargetHandsTheNextOneOverWhole) {
   ASSERT_EQ(stage->seekTo(500), 500u);
   EXPECT_EQ(pullAll(*stage), remembered(*second, 0, 400))
       << "the next source starts a run of its own, nothing passed over";
+}
+
+TEST_F(Remembering, SeekingPastAKnownPartialPairStartsTheSuccessorCleanly) {
+  const auto first = queue(1, 999);
+  const auto second = queue(2, 400);
+  stage->acceptSourceChange();
+  ASSERT_EQ(stage->seekStream(1, 500), 499u);
+  EXPECT_EQ(first->streamReadPosition(), 999);
+  EXPECT_EQ(pullAll(*stage), remembered(*second, 0, 400));
 }
 
 namespace {

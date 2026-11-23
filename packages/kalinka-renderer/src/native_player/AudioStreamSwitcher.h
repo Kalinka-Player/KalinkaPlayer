@@ -39,6 +39,8 @@ public:
    * @note A finished stream is held until it is disconnected.
    */
   size_t seekStream(StreamId stream, size_t position) override;
+  std::optional<StreamInfo> seekStreamInfo(std::optional<StreamId> stream,
+                                           bool waitForHeader = false) override;
 
   virtual std::optional<long> streamReadPosition() const override;
   std::optional<uint64_t> liveSourceFrame() const override;
@@ -54,9 +56,11 @@ private:
     std::optional<long> beganAt;
     /// Its state callback while hooked, else -1.
     int callbackId = -1;
+    std::optional<StreamInfo> info;
   };
 
   std::optional<StreamId> nextStreamId();
+  std::list<Source>::iterator latestFinished(StreamId stream);
   /// The current source, taken under the lock so it is called outside it.
   std::shared_ptr<AudioGraphOutputNode> current() const;
   /// The current source, and a token that stops once it is replaced.
@@ -67,6 +71,7 @@ private:
   std::shared_ptr<AudioGraphOutputNode> currentInputNode = nullptr;
   std::optional<StreamId> currentId;
   std::optional<long> currentBeganAt;
+  std::optional<StreamInfo> currentInfo;
   /// Sources that finished here, oldest first.
   std::list<Source> finished;
 

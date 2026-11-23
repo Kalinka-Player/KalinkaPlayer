@@ -52,6 +52,7 @@ void AudioStreamSwitcher::disconnect(
     currentInputNode = nullptr;
     currentId.reset();
     currentBeganAt.reset();
+    currentInfo.reset();
     stopSource.request_stop();
     stopSource = std::stop_source();
     if (inputNodes.empty()) {
@@ -90,10 +91,11 @@ void AudioStreamSwitcher::disconnect(
 
 void AudioStreamSwitcher::retireCurrent(bool callbackUnhooked) {
   finished.push_back({currentInputNode, currentId, currentBeganAt,
-                      callbackUnhooked ? -1 : stateCallbackId});
+                      callbackUnhooked ? -1 : stateCallbackId, currentInfo});
   currentInputNode = nullptr;
   currentId.reset();
   currentBeganAt.reset();
+  currentInfo.reset();
   stateCallbackId = -1;
 }
 
@@ -107,6 +109,7 @@ void AudioStreamSwitcher::switchToNextSource() {
   const auto next = inputNodes.front().node;
   currentInputNode = next;
   currentId = inputNodes.front().id;
+  currentInfo = inputNodes.front().info;
   currentBeganAt.reset();
   inputNodes.pop_front();
   setStreamId(currentId);
@@ -122,6 +125,8 @@ void AudioStreamSwitcher::follow(
     if (node != currentInputNode.get()) {
       return false;
     }
+    if (state.streamInfo)
+      currentInfo = state.streamInfo;
     if (state.state == AudioGraphNodeState::FINISHED && !inputNodes.empty()) {
       retireCurrent(true);
       setState(about(AudioGraphNodeState::SOURCE_CHANGED, nextStreamId()));
@@ -217,6 +222,30 @@ std::optional<long> AudioStreamSwitcher::streamReadPosition() const {
   return source ? source->streamReadPosition() : std::nullopt;
 }
 
+std::list<AudioStreamSwitcher::Source>::iterator
+AudioStreamSwitcher::latestFinished(StreamId stream) {
+  // The latest of a stream queued twice is the one still heard.
+  const auto latest = std::find_if(
+      finished.rbegin(), finished.rend(),
+      [stream](const Source &source) { return source.id == stream; });
+  return latest == finished.rend() ? finished.end() : std::prev(latest.base());
+}
+
+std::optional<StreamInfo>
+AudioStreamSwitcher::seekStreamInfo(std::optional<StreamId> stream,
+                                    bool waitForHeader) {
+  std::unique_lock lock(mutex);
+  if (stream && currentId != stream) {
+    const auto found = latestFinished(*stream);
+    return found == finished.end() ? std::nullopt : found->info;
+  }
+  if (currentInfo || !waitForHeader || !currentInputNode)
+    return currentInfo;
+  const auto id = currentId;
+  lock.unlock();
+  return waitForSeekHeader(id);
+}
+
 size_t AudioStreamSwitcher::seekStream(StreamId stream, size_t position) {
   std::unique_lock lock(mutex);
   if (currentInputNode != nullptr && currentId == stream) {
@@ -224,14 +253,9 @@ size_t AudioStreamSwitcher::seekStream(StreamId stream, size_t position) {
     lock.unlock();
     return current->seekTo(position);
   }
-  // The latest of a stream queued twice is the one still heard.
-  const auto latest =
-      std::find_if(finished.rbegin(), finished.rend(),
-                   [stream](const Source &p) { return p.id == stream; });
-  if (latest == finished.rend()) {
+  const auto found = latestFinished(stream);
+  if (found == finished.end())
     return size_t(-1);
-  }
-  const auto found = std::prev(latest.base());
   if (currentInputNode != nullptr) {
     retireCurrent(false);
   }
@@ -239,11 +263,12 @@ size_t AudioStreamSwitcher::seekStream(StreamId stream, size_t position) {
   std::vector<Source> requeued(std::next(found), finished.end());
   finished.erase(found, finished.end());
   for (auto it = requeued.rbegin(); it != requeued.rend(); ++it) {
-    inputNodes.push_front({it->node, it->id});
+    inputNodes.push_front({it->node, it->id, std::nullopt, -1, it->info});
   }
   currentInputNode = again.node;
   currentId = again.id;
   currentBeganAt = again.beganAt;
+  currentInfo = again.info;
   stateCallbackId = -1;
   stopSource.request_stop();
   stopSource = std::stop_source();

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "AlsaAudioEmitter.h"
 #include "AudioStreamSwitcher.h"
 #include "Config.h"
 #include "StateMonitor.h"
@@ -119,13 +120,15 @@ silenced(std::shared_ptr<AudioGraphOutputNode> source) {
 
 // Removes @p node from @p switcher as AudioPlayer does, dropping whatever the
 // stage in front of the sink still holds of it.
-void removeStream(AudioStreamSwitcher &switcher,
+void removeStream(AlsaAudioEmitter &emitter, AudioStreamSwitcher &switcher,
                   const std::shared_ptr<AudioGraphOutputNode> &node,
                   const std::shared_ptr<AudioGraphOutputNode> &output) {
+  const auto id = node->streamId();
+  if (id)
+    emitter.cut(*id);
   switcher.disconnect(node);
-  if (auto stage = std::dynamic_pointer_cast<DspStage>(output);
-      stage && node->streamId()) {
-    stage->discard(*node->streamId());
+  if (auto stage = std::dynamic_pointer_cast<DspStage>(output); stage && id) {
+    stage->discard(*id);
   }
 }
 

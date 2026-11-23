@@ -111,6 +111,12 @@ public:
     return seekTo(position);
   }
 
+  /// Metadata for a seek to the named stream, or the current one if unnamed.
+  /// A seek may wait for the current decoder's header. Reads only use metadata
+  /// already available.
+  virtual std::optional<StreamInfo>
+  seekStreamInfo(std::optional<StreamId> stream, bool waitForHeader = false);
+
   // How far the data handed out so far reaches, in frames. Live, unlike the
   // position in StreamState, which is only stamped when the state changes.
   // Empty before the format is known, or for a node that deals in bytes.
@@ -120,6 +126,10 @@ public:
   virtual std::optional<uint64_t> liveSourceFrame() const { return std::nullopt; }
 
   virtual ~AudioGraphOutputNode() = default;
+
+protected:
+  /// Wait until this preparing stream publishes its format, ends or is replaced.
+  std::optional<StreamInfo> waitForSeekHeader(std::optional<StreamId> id);
 };
 
 class AudioGraphInputNode : public virtual AudioGraphNode {
