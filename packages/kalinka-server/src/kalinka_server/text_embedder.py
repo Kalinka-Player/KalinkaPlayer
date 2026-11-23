@@ -232,6 +232,9 @@ class SharedTextEmbedder:
                     loop = asyncio.get_running_loop()
                     self._available = await loop.run_in_executor(
                         None, self._provision)
+                    if self._available:
+                        # Cleared only now, so no caller reads the old False.
+                        self._retry_at = None
         return self._available
 
     def _answered(self) -> bool:
@@ -260,7 +263,6 @@ class SharedTextEmbedder:
                            "tried again in %.0f s", self._model_dir,
                            _RETRY_AFTER_S)
             return False
-        self._retry_at = None
         return True
 
     async def embed(self, texts: Sequence[str]) -> List:

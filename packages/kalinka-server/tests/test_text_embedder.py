@@ -257,6 +257,33 @@ async def test_a_failed_model_download_is_tried_again_once_due(
     assert probed == list(RUNTIME)
 
 
+async def test_a_retry_that_succeeds_never_shows_its_old_answer_as_final(
+    monkeypatch, tmp_path
+):
+    """Between the retry's end and its answer being kept, a caller would
+    otherwise take the earlier False as standing."""
+    _installed(monkeypatch, set(RUNTIME))
+    monkeypatch.setattr(text_embedder, "_RETRY_AFTER_S", 0.0)
+    fetched = [False]
+    monkeypatch.setattr(text_embedder, "ensure_model", lambda *_: fetched[0])
+    embedder = SharedTextEmbedder(str(tmp_path / "minilm"), MODEL_URL)
+    assert await embedder.available() is False
+
+    fetched[0] = True
+    provision = embedder._provision
+    answered_before_kept: list[bool] = []
+
+    def provision_then_look():
+        result = provision()
+        answered_before_kept.append(embedder._answered())
+        return result
+
+    monkeypatch.setattr(embedder, "_provision", provision_then_look)
+
+    assert await embedder.available() is True
+    assert answered_before_kept == [False]
+
+
 async def test_a_runtime_that_does_not_load_is_not_tried_again(
     monkeypatch, tmp_path, downloads
 ):
