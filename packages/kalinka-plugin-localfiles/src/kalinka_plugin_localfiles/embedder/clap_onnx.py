@@ -72,8 +72,7 @@ _MODEL_FILENAMES: dict[str, str] = {
     "mood_index": f"mood_index_v{VA_HEAD_VERSION}.npz",
 }
 
-# About twice the largest file, the 501.5 MB text encoder: a body without end
-# stops here rather than filling the card.
+# About twice the 501.5 MB text encoder, so a body without end cannot fill the card.
 _MODEL_MAX_BYTES = 1 << 30
 
 # Audio constants matching laion_clap (non-fusion, HTSAT-base)

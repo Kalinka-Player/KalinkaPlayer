@@ -17,9 +17,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _CHUNK = 1 << 20
-# Under this for a whole timeout_s, the link has all but stopped: a server
-# sending a byte now and then would otherwise hold the download for ever.
-# Low enough that no link worth waiting for falls under it.
+# A byte now and then would otherwise hold the download for ever.
 _MIN_BYTES_PER_S = 1024
 
 

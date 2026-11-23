@@ -32,8 +32,7 @@ _EXPECTED_MODEL_VERSION = 1
 
 
 _download_locks: dict[str, threading.Lock] = {}
-# About seven times the shipped index: a body without end stops here rather
-# than filling the card.
+# About seven times the shipped index, so a body without end cannot fill the card.
 _INDEX_MAX_BYTES = 1 << 30
 
 

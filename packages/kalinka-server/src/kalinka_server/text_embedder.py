@@ -44,13 +44,11 @@ MODEL_VERSION = 1
 DIM = 384
 MAX_TOKENS = 256
 _FILES = ("model.onnx", "tokenizer.json")
-# About three times the ~90 MB model: a body without end stops here rather
-# than filling the card.
+# About three times the ~90 MB model, so a body without end cannot fill the card.
 _MODEL_MAX_BYTES = 256 << 20
 _RUNTIME_PACKAGES = ("onnxruntime", "tokenizers")
 _LOAD_TIMEOUT = 120.0
-# A model that could not be fetched is tried again after this long, so an
-# outage costs one caller a stalled download per period, not every caller.
+# An outage costs one stalled download per period, not one per caller.
 _RETRY_AFTER_S = 300.0
 
 
