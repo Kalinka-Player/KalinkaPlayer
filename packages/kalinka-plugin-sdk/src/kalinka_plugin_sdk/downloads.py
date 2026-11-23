@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import urllib.parse
 import urllib.request
 from typing import Optional
@@ -16,6 +17,10 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _CHUNK = 1 << 20
+# Under this for a whole timeout_s, the link has all but stopped: a server
+# sending a byte now and then would otherwise hold the download for ever.
+# Low enough that no link worth waiting for falls under it.
+_MIN_BYTES_PER_S = 1024
 
 
 def download_file(
@@ -31,9 +36,10 @@ def download_file(
     and replaces ``dest`` only once complete, so ``dest`` never holds a
     truncated file. Gives up, returning False with the reason logged and no
     ``.part`` left, when the address does not answer or answers with an
-    error, when the network sends nothing for ``timeout_s``, when the body
-    ends short of its Content-Length, or when it is longer than
-    ``max_bytes``. ``timeout_s`` bounds each wait, not the whole download.
+    error, when the network sends nothing for ``timeout_s`` or under 1 KiB a
+    second over ``timeout_s``, when the body ends short of its
+    Content-Length, or when it is longer than ``max_bytes``. A download that
+    keeps above that rate takes as long as it needs.
     """
     tmp = dest + ".part"
     shown = _without_secrets(url)
@@ -48,11 +54,21 @@ def download_file(
                 raise ValueError(f"{expected} bytes announced, over {max_bytes}")
             received = 0
             with open(tmp, "wb") as out:
-                while chunk := response.read(_CHUNK):
+                window_start, window_bytes = time.monotonic(), 0
+                # read1 returns what has come, so a trickle is seen as one.
+                while chunk := response.read1(_CHUNK):
                     received += len(chunk)
                     if received > limit:
                         raise ValueError(f"the body runs over {max_bytes} bytes")
                     out.write(chunk)
+                    window_bytes += len(chunk)
+                    elapsed = time.monotonic() - window_start
+                    if elapsed >= timeout_s:
+                        if window_bytes < _MIN_BYTES_PER_S * elapsed:
+                            raise ValueError(
+                                f"{window_bytes} bytes came in {elapsed:.1f} s"
+                            )
+                        window_start, window_bytes = time.monotonic(), 0
                 if expected is not None and received < expected:
                     raise ValueError(
                         f"the body ended at {received} of {expected} bytes"

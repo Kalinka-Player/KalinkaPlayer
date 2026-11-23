@@ -43,8 +43,8 @@ def download_file(url: str, dest: str) -> bool:
 
     One download per dest at a time: shutting the plugin down cancels its
     provisioning, not the thread fetching the index, so the next setup waits
-    for that download, which gives up once nothing comes for 30 s, instead of
-    writing over its temp file.
+    for that download, which gives up once under 1 KiB a second comes for
+    30 s, instead of writing over its temp file.
     """
     with _download_locks.setdefault(dest, threading.Lock()):
         if os.path.exists(dest):

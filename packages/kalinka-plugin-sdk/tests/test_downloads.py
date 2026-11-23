@@ -1,6 +1,6 @@
-"""A download gives up on a connection that stops sending, and on a body
-that is cut short or runs on, rather than hold its thread for ever or keep a
-file that is not whole."""
+"""A download gives up on a connection that stops sending or only trickles,
+and on a body that is cut short or runs on, rather than hold its thread for
+ever or keep a file that is not whole."""
 
 import threading
 import time
@@ -24,9 +24,16 @@ WITHIN_S = 10
 def served():
     """Answers every request with ``status`` and ``body``, under a
     Content-Length of ``length`` (none when None), then, with ``hold``, keeps
-    the connection open sending nothing more."""
+    the connection open sending nothing more. With ``gap``, sends the body
+    ``piece`` bytes at a time, ``gap`` seconds apart."""
     answer = SimpleNamespace(
-        status=200, body=PAYLOAD, length=len(PAYLOAD), hold=False, url=""
+        status=200,
+        body=PAYLOAD,
+        length=len(PAYLOAD),
+        hold=False,
+        piece=1,
+        gap=0.0,
+        url="",
     )
     released = threading.Event()
 
@@ -36,7 +43,13 @@ def served():
             if answer.length is not None:
                 self.send_header("Content-Length", str(answer.length))
             self.end_headers()
-            self.wfile.write(answer.body)
+            if answer.gap:
+                for start in range(0, len(answer.body), answer.piece):
+                    self.wfile.write(answer.body[start : start + answer.piece])
+                    if released.wait(answer.gap):
+                        return
+            else:
+                self.wfile.write(answer.body)
             if answer.hold:
                 released.wait(HOLD_S)
 
@@ -98,6 +111,40 @@ def test_a_body_that_stops_coming_is_given_up_within_the_timeout(served, dest, s
     assert elapsed < WITHIN_S
     assert not dest.exists()
     assert not _part(dest).exists()
+
+
+def test_a_body_that_only_trickles_is_given_up(served, dest):
+    """A byte now and then never lets a single wait time out."""
+    served.body = PAYLOAD[:200]
+    served.gap = 0.1
+
+    result, elapsed = _timed(served.url, str(dest), timeout_s=STALL_S)
+
+    assert result is False
+    assert elapsed < WITHIN_S
+    assert not dest.exists()
+    assert not _part(dest).exists()
+
+
+def test_a_slow_body_above_the_floor_lands_whole(served, dest):
+    """Over more than one timeout, so the rate is judged on the way."""
+    served.body = PAYLOAD[: 64 << 10]
+    served.length = len(served.body)
+    served.piece, served.gap = 4096, 0.05
+
+    assert download_file(served.url, str(dest), timeout_s=STALL_S) is True
+
+    assert dest.read_bytes() == served.body
+
+
+def test_a_local_file_address_is_copied_whole(tmp_path, dest):
+    """As urlretrieve did, for an index kept on the streamer itself."""
+    published = tmp_path / "published.onnx"
+    published.write_bytes(PAYLOAD)
+
+    assert download_file(published.as_uri(), str(dest)) is True
+
+    assert dest.read_bytes() == PAYLOAD
 
 
 def test_a_body_shorter_than_its_content_length_is_refused(served, dest):
