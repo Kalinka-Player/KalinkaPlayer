@@ -70,7 +70,7 @@ def served():
 def downloads(monkeypatch) -> list[str]:
     fetched: list[str] = []
 
-    def download_file(url: str, dest: str) -> bool:
+    def download_file(url: str, dest: str, *, max_bytes=None) -> bool:
         fetched.append(url)
         return False
 
@@ -203,6 +203,21 @@ async def test_a_model_download_that_stops_coming_is_given_up_leaving_nothing(
     assert await embedder.available() is False
 
     assert time.monotonic() - started < WITHIN_S
+    assert served.asked == ["/minilm/model.onnx"]
+    assert list(model_dir.iterdir()) == []
+
+
+async def test_a_model_over_its_ceiling_is_refused_leaving_nothing(
+    monkeypatch, tmp_path, served
+):
+    """A body without end would otherwise fill the card."""
+    _installed(monkeypatch, set(RUNTIME))
+    monkeypatch.setattr(text_embedder, "_MODEL_MAX_BYTES", len(MODEL_BODY) - 1)
+    model_dir = tmp_path / "minilm"
+    embedder = SharedTextEmbedder(str(model_dir), served.url)
+
+    assert await embedder.available() is False
+
     assert served.asked == ["/minilm/model.onnx"]
     assert list(model_dir.iterdir()) == []
 

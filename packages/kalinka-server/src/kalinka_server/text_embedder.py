@@ -43,6 +43,9 @@ MODEL_VERSION = 1
 DIM = 384
 MAX_TOKENS = 256
 _FILES = ("model.onnx", "tokenizer.json")
+# About three times the ~90 MB model: a body without end stops here rather
+# than filling the card.
+_MODEL_MAX_BYTES = 256 << 20
 _RUNTIME_PACKAGES = ("onnxruntime", "tokenizers")
 _LOAD_TIMEOUT = 120.0
 
@@ -106,7 +109,10 @@ def ensure_model(model_dir: str, base_url: Optional[str]) -> bool:
         dest = os.path.join(model_dir, name)
         if os.path.exists(dest) and os.path.getsize(dest) > 0:
             continue
-        if not base_url or not download_file(f"{base_url.rstrip('/')}/{name}", dest):
+        if not base_url:
+            return False
+        url = f"{base_url.rstrip('/')}/{name}"
+        if not download_file(url, dest, max_bytes=_MODEL_MAX_BYTES):
             return False
     return True
 
