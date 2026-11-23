@@ -722,3 +722,123 @@ The padded case has 4,096 nonzero taps per channel in a 65,536-tap file.
 For 65,536 taps per channel the x86-64 heap probe measured 5.04 MiB with
 independent responses and 3.97 MiB when both channels used identical
 coefficients. Both cases made zero allocations during start, processing and drain.
+
+### Pi 4 and Pi 5 stereo FIR comparison, 23 November 2026
+
+Each engine filtered the same interleaved 192 kHz float64 stream with independent,
+dense 262,144-tap left and right responses. The buffer is the measured input-to-output
+delay on both channels. At this rate a 256-frame callback supplies 1.333 ms of audio.
+
+Each engine cell gives **CPU % of one core / p99 callback ms / worst callback ms**.
+CPU and p99 are medians across eight runs. Worst is the longest of the 32,768
+timed callbacks in that cell. The final column subtracts 4.1.3 from 5.0.0-beta.2
+at full precision and reports **CPU percentage points / p99 ms**. A negative value
+means the beta used less CPU or returned sooner. [Per-run measurements and KFR partition screen](fir-comparison-runs.csv)
+
+| Board | Frames | Kalinka | CamillaDSP 4.1.3 | CamillaDSP 5.0.0-beta.2 | KFR 7.2.0 | CamillaDSP Δ CPU / p99 |
+|:--|--:|--:|--:|--:|--:|--:|
+| Pi 4 | 640 | 32.15 / 1.155 / 1.522 | 154.95 / 5.497 / 8.179 | 154.72 / 5.472 / 8.223 | 54.86 / 3.919 / 5.725 | -0.23 / -0.025 |
+| Pi 4 | 4,096 | 27.92 / 5.952 / 8.138 | 28.80 / 6.173 / 7.826 | 28.07 / 6.015 / 7.273 | 23.96 / 4.149 / 5.120 | -0.74 / -0.158 |
+| Pi 4 | 8,192 | 16.95 / 3.574 / 4.967 | 17.57 / 7.466 / 9.356 | 17.25 / 7.308 / 8.538 | 18.28 / 5.537 / 7.336 | -0.32 / -0.158 |
+| Pi 4 | 16,384 | 11.90 / 4.916 / 6.238 | 13.35 / 11.043 / 13.386 | 13.00 / 10.743 / 13.495 | 13.15 / 5.454 / 6.990 | -0.35 / -0.301 |
+| Pi 5 | 640 | 6.84 / 0.262 / 0.682 | 47.56 / 1.647 / 6.412 | 48.48 / 1.682 / 4.269 | 15.78 / 1.164 / 1.542 | +0.92 / +0.035 |
+| Pi 5 | 4,096 | 7.42 / 1.587 / 1.814 | 7.98 / 1.710 / 7.308 | 8.05 / 1.735 / 3.536 | 7.07 / 1.255 / 1.729 | +0.07 / +0.025 |
+| Pi 5 | 8,192 | 5.29 / 1.244 / 1.703 | 5.64 / 2.438 / 7.180 | 5.22 / 2.214 / 2.780 | 5.88 / 1.779 / 2.562 | -0.42 / -0.224 |
+| Pi 5 | 16,384 | 3.04 / 1.315 / 1.550 | 4.80 / 3.972 / 4.579 | 4.38 / 3.640 / 3.974 | 4.28 / 1.779 / 2.153 | -0.43 / -0.332 |
+
+#### Channel scheduling
+
+In the table above, both CamillaDSP versions used the same C++ adapter and
+processed the left and right FFTs in the same callback. Kalinka used its
+640-frame head and 6,400-frame tail at the shortest delay. At 4,096 frames
+it used synchronous uniform partitions. At 8,192 and 16,384 frames it used
+uniform partitions with the right channel offset by half a hop. KFR used
+one convolver per channel with a half-hop offset at all four delays.
+
+The control below offsets CamillaDSP's right FFT by half a hop, keeping the
+audio delay identical on both channels. Units and aggregation match the main
+table.
+
+| Board | Frames | Staggered 4.1.3 | Staggered 5.0.0-beta.2 | CamillaDSP Δ CPU / p99 |
+|:--|--:|--:|--:|--:|
+| Pi 4 | 8,192 | 17.68 / 3.848 / 5.620 | 17.36 / 3.751 / 5.181 | -0.32 / -0.097 |
+| Pi 4 | 16,384 | 13.26 / 5.579 / 7.881 | 13.05 / 5.607 / 6.715 | -0.21 / +0.028 |
+| Pi 5 | 8,192 | 5.64 / 1.254 / 2.020 | 5.20 / 1.125 / 1.395 | -0.44 / -0.129 |
+| Pi 5 | 16,384 | 4.79 / 2.053 / 2.455 | 4.35 / 1.840 / 2.485 | -0.44 / -0.213 |
+
+Staggering reduced CamillaDSP p99 by 48–49% across both boards, both versions and
+both long buffers. With synchronous channels on Pi 5, upgrading to the beta reduced
+p99 by 9% at 8,192 frames and 8% at 16,384 frames. At 640 frames on Pi 4, both
+CamillaDSP versions needed about 1.55 seconds of CPU for each second of audio.
+
+#### KFR partition selection
+
+At a 4,096-frame buffer, the earlier KFR driver screened each power of two
+from 512 through 65,536 internal partition frames in three passes per board.
+The timed matrix used the same KFR adapter and library. Selecting the lowest median
+CPU gave **8,192 frames on both boards**. The other buffer sizes retain the
+partitions from the previous comparison.
+
+| Internal partition frames | 512 | 1,024 | 2,048 | 4,096 | 8,192 | 16,384 | 32,768 | 65,536 |
+|:--|--:|--:|--:|--:|--:|--:|--:|--:|
+| Pi 4 | 242.20 | 117.10 | 60.17 | 32.78 | 24.06 | 27.93 | 52.53 | 125.29 |
+| Pi 5 | 85.83 | 38.59 | 19.08 | 9.66 | 6.88 | 8.17 | 18.49 | 39.98 |
+
+The screen reports CPU % of one core. The timed matrix used KFR partitions of
+4,096, 8,192, 16,384 and 16,384 frames in order of increasing buffer size.
+
+#### Timing and correctness
+
+- One thread ran on core 3 with normal scheduling. The driver repeated the original
+  65,536-frame stereo PCM fixture, warmed at least the full impulse length plus 8,192
+  frames and the requested delay, then measured 4,096 consecutive 256-frame callbacks.
+  CPU is 100 times thread CPU seconds divided by the 5.4613 seconds of audio.
+  The per-run p99 is the 4,056th smallest callback wall time. Timings include PCM layout
+  conversion, buffering and convolution.
+- Each main engine occupied each of the four run positions twice per buffer. Buffer
+  order rotated across rounds. The staggered controls alternated between preceding and
+  following the four main engines, with each version running first four times. Each run
+  started with closed ALSA playback handles and a sampled CPU temperature at or below
+  77.5 °C.
+- Before timing each configuration on each board, a unit impulse reproduced both
+  coefficient arrays at exactly the requested delay. The check covered leading silence,
+  every tap and trailing silence. The largest absolute error was 1.45 × 10⁻¹⁷. Each timed
+  run also checked 16 warmed samples per channel against direct time-domain convolution
+  at the declared delay. The largest absolute error was 1.71 × 10⁻¹⁵.
+- Pi 4 Model B rev 1.5 used kernel `6.18.60+rpt-rpi-v8` and the performance governor at
+  1.8 GHz. Run-start temperatures were 74.0–77.4 °C. Firmware reported `0xe0000` before
+  and after the run and at every sampled start, with all current flags clear. The
+  original ondemand governor was restored.
+- Pi 5 Model B rev 1.1 used kernel `6.18.50+rpt-rpi-2712` and its ondemand governor with
+  a 2.4 GHz ceiling. Run-start temperatures were 62.2–77.1 °C. The kernel undervoltage
+  alarm read zero throughout the sampled starts. The firmware throttle word was
+  unavailable to the benchmark account.
+
+#### Builds and inputs
+
+- **Kalinka** used the working tree based on `3cab047bdcb06ae1847d1604e7233636e0dae402`.
+  The SHA-256 of the measured `FirRoomCorrection.cpp` was
+  `ce4995a17204065bd063526b77869f133e80581dc9cb9c0a8ba2d0742529f0f0`. The driver and
+  Kalinka used Debian AArch64 GCC 14.2.0-19, `-O3 -DNDEBUG -std=gnu++23`, with PFFFT
+  1.3.0 in double precision.
+- **CamillaDSP** used the upstream `FftConv` from 4.1.3 (`05e9cfcdf43c`) and
+  5.0.0-beta.2 (`1ea8b9c5518b`), with one independent coefficient array per channel.
+  Both used rustc 1.100.0 (`0ef1bc386`), LLVM 23.1.5, the `aarch64-unknown-linux-gnu`
+  target, Cargo release optimization level 3, one codegen unit, LTO disabled and
+  float64. The Cargo build graphs reported identical release profiles. Both resolved
+  realfft 3.5.1 and rustfft 6.4.1. Disassembly of each linked
+  `FftConv::process_waveform` showed two-lane float64 NEON multiply and fused
+  multiply-add instructions.
+  [4.1.3 source](https://github.com/HEnquist/camilladsp/blob/v4.1.3/src/filters/fftconv.rs) · [5.0.0-beta.2 source](https://github.com/HEnquist/camilladsp/blob/v5.0.0-beta.2/src/filters/fftconv.rs)
+- **KFR** used the published 7.2.0 Linux ARM64 optimized library, built with Clang
+  23.1.2. Its `libkfr_capi.so` SHA-256 was
+  `43b72077c4ab9ac05a524452593ec57fbf359774840c0370283d0f048864d4c9`.
+  [KFR 7.2.0 release](https://github.com/kfrlib/kfr/releases/tag/7.2.0)
+
+Both boards verified these SHA-256 digests for the original little-endian float64 fixtures.
+
+| Fixture | SHA-256 |
+|:--|:--|
+| Left FIR | `862b4d1bd62150f9a63b193a626f166ee6e77b65dd774b56bbcd8bf93ab4191e` |
+| Right FIR | `a79391c16d21cd381fa037c319554b25f749818f6867964d8316591af137b4f4` |
+| Interleaved PCM | `9939988ed78800cbc33cd30aeff543005c7697e7865fceb58c01794b17e8f12b` |
