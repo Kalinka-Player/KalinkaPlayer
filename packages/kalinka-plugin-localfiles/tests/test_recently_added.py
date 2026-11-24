@@ -101,9 +101,9 @@ def test_recent_card_declares_three_sections_and_filters_in_wire_format(module):
     assert [
         s["catalog"]["preview_config"]["content_type"] for s in wire["sections"]
     ] == ["album", "track", "artist"]
-    assert {f["id"] for f in wire["catalog"]["filters"]} == {"q", "genre", "type"}
+    assert {f["id"] for f in wire["catalog"]["filters"]} == {"q", "genre", "type", "decade"}
     for section in wire["sections"]:
-        assert {f["id"] for f in section["catalog"]["filters"]} == {"q", "genre"}
+        assert {f["id"] for f in section["catalog"]["filters"]} == {"q", "genre", "decade"}
 
 
 def test_newest_arrival_first_including_album_tracks_and_artists(module):

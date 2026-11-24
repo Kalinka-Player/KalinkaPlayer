@@ -212,11 +212,38 @@ class ModuleCapability(str, Enum):
             hits best first, by the source's own relevance, so the server keeps
             that order. Without it the server orders hits by how their names
             answer the query, which suits a source listing them alphabetically.
+        CONTINUATION: SDK 3.24. :meth:`InputModule.continue_queue` proposes
+            tracks that carry on from the module's queued ones, for the
+            server's autoplay and for a listener's "more like this".
     """
 
     AI_SEARCH = "ai_search"
     CATALOGS = "catalogs"
     RANKED_SEARCH = "ranked_search"
+    CONTINUATION = "continuation"
+
+
+class ContinuationRequest(BaseModel):
+    """
+    SDK 3.24. What :meth:`InputModule.continue_queue` is asked to carry on
+    from. Every id is one of the asked module's own track ids
+    (``EntityId.id``); the server never passes another source's tracks.
+
+    Attributes:
+        seeds: The module's tracks the listener heard last, oldest first and
+            the one playing now last. What to continue from.
+        avoid: Tracks the listener turned down this session. Never propose
+            them, and prefer tracks that do not sound like them.
+        exclude: Tracks already in the queue. Never propose them.
+        count: The most tracks to propose.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    seeds: List[str]
+    avoid: List[str] = []
+    exclude: List[str] = []
+    count: PositiveInt = 1
 
 
 @runtime_checkable
@@ -287,6 +314,30 @@ class InputModule(Protocol):
         class docstring's latency contract).
         """
         return EmptyList(offset, limit)
+
+    async def continue_queue(self, request: ContinuationRequest) -> List[str]:
+        """
+        SDK 3.24. Propose tracks that carry playback on from ``request.seeds``.
+
+        The server asks when the queue reaches its last track while its
+        autoplay setting is on, and when a listener asks for more like the
+        current track. It resolves the ids, drops any already queued, and
+        appends the rest itself: the module never adds to the queue. Asked
+        only of a module that reports :attr:`ModuleCapability.CONTINUATION`.
+        Default proposes nothing.
+
+        Args:
+            request (ContinuationRequest): The module's own queued tracks to
+                continue from, those to steer away from, and how many to give.
+
+        Returns:
+            List[str]: Track ids of this module, best first, at most
+            ``request.count``; empty when nothing fits.
+
+        Must complete within the server's per-call timeout (see the
+        class docstring's latency contract).
+        """
+        return []
 
     def capabilities(self) -> FrozenSet[ModuleCapability]:
         """

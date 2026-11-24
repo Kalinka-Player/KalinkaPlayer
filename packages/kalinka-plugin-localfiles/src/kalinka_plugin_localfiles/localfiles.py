@@ -13,6 +13,7 @@ from .config_model import DISPLAY_NAME, LocalFilesConfig
 from .catalog_art import ART_PREFIX, catalog_art_path, catalog_image
 from kalinka_plugin_sdk.inputmodule import (
     ContentInfo,
+    ContinuationRequest,
     InputModule,
     ModuleAsset,
     ModuleCapability,
@@ -65,7 +66,7 @@ from .utils.cover_collage import compose_cover
 from .utils.folder_collage import FOLDER_ART, FolderCovers
 from .utils.id_generator import generate_playlist_id
 from .utils.mount_status import covering_mount, is_network_fs, share_protocol
-from .utils.years import plausible_year
+from .utils.years import decade_label, plausible_year
 from .storage import (
     SMB_SCHEME,
     FileStat,
@@ -115,6 +116,14 @@ TYPE_FILTER = FilterSpec(
     ops=[FilterOp.ANY],
 )
 
+#: The decade an album first came out in; values are first years, "1970".
+DECADE_FILTER = FilterSpec(
+    id="decade",
+    kind=FilterKind.VALUES,
+    label="Decade",
+    ops=[FilterOp.ANY],
+)
+
 
 def _text_filter(what: str) -> FilterSpec:
     """The label is where this source says what its text matches — each shelf
@@ -122,12 +131,12 @@ def _text_filter(what: str) -> FilterSpec:
     return FilterSpec(id=TEXT_FIELD, kind=FilterKind.TEXT, label=f"Search {what}")
 
 
-ALBUM_SHELF_FILTERS = [_text_filter("albums and artists"), GENRE_FILTER]
-ARTIST_SHELF_FILTERS = [_text_filter("artists"), GENRE_FILTER]
-TRACK_SHELF_FILTERS = [_text_filter("titles, artists and albums"), GENRE_FILTER]
+ALBUM_SHELF_FILTERS = [_text_filter("albums and artists"), GENRE_FILTER, DECADE_FILTER]
+ARTIST_SHELF_FILTERS = [_text_filter("artists"), GENRE_FILTER, DECADE_FILTER]
+TRACK_SHELF_FILTERS = [_text_filter("titles, artists and albums"), GENRE_FILTER, DECADE_FILTER]
 PLAYLIST_SHELF_FILTERS = [_text_filter("names and descriptions"), GENRE_FILTER]
-LIBRARY_FILTERS = [_text_filter("your library"), TYPE_FILTER, GENRE_FILTER]
-RECENT_FILTERS = [_text_filter("recent additions"), TYPE_FILTER, GENRE_FILTER]
+LIBRARY_FILTERS = [_text_filter("your library"), TYPE_FILTER, GENRE_FILTER, DECADE_FILTER]
+RECENT_FILTERS = [_text_filter("recent additions"), TYPE_FILTER, GENRE_FILTER, DECADE_FILTER]
 #: Every folder of the library offers the same, and narrows to what holds a
 #: track they keep.
 FOLDER_FILTERS = [_text_filter("folders and tracks"), GENRE_FILTER]
@@ -135,6 +144,11 @@ FOLDER_FILTERS = [_text_filter("folders and tracks"), GENRE_FILTER]
 LIBRARY_ENDPOINT = "library"
 FILES_ENDPOINT = "files"
 RECENT_ENDPOINT = "recent"
+FOR_YOU_ENDPOINT = "for-you"
+FOR_YOU_TITLE = "Albums you may like"
+FOR_YOU_DESCRIPTION = "Picked from what you play to the end"
+#: Albums the recommendation lists.
+FOR_YOU_ALBUMS = 24
 LOOSE_TRACKS_ID = "unknown_album"
 FOLDER_ENDPOINT_PREFIX = "folder."
 
@@ -251,7 +265,24 @@ def _listing_filter(filter: FilterQuery, declared: List[FilterSpec]) -> ListingF
         genre_any=tuple(genres.any) if genres else (),
         genre_all=tuple(genres.all) if genres else (),
         genre_none=tuple(genres.none) if genres else (),
+        decades=_decades(filter) if DECADE_FILTER.id in declared_ids else (),
     )
+
+
+def _decades(filter: FilterQuery) -> Tuple[int, ...]:
+    """The decades a filter asks for, as first years; anything else is refused
+    rather than matched by nothing."""
+    selector = filter.values(DECADE_FILTER.id)
+    if selector is None:
+        return ()
+    if selector.all or selector.none:
+        raise UnsupportedFilter(DECADE_FILTER.id, "only `any` is supported")
+    decades = []
+    for value in selector.any:
+        if not value.isdigit() or int(value) % 10:
+            raise UnsupportedFilter(DECADE_FILTER.id, f"not a decade: {value}")
+        decades.append(int(value))
+    return tuple(dict.fromkeys(decades))
 
 
 def artist_id(id: str) -> EntityId:
@@ -436,14 +467,48 @@ class LocalFilesInputModule(InputModule):
         return DISPLAY_NAME
 
     def capabilities(self) -> FrozenSet[ModuleCapability]:
-        """Catalogs always; AI search only while the setting gave this module
-        a searcher."""
+        """Catalogs always; AI search and continuation only while the setting
+        gave this module a searcher."""
         if self._has_searcher():
-            return frozenset({ModuleCapability.CATALOGS, ModuleCapability.AI_SEARCH})
+            return frozenset(
+                {ModuleCapability.CATALOGS, ModuleCapability.AI_SEARCH, ModuleCapability.CONTINUATION}
+            )
         return frozenset({ModuleCapability.CATALOGS})
 
     def _has_searcher(self) -> bool:
         return self._searcher is not None
+
+    async def _ask_searcher(self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """The searcher's answer to ``request``; None without a searcher, or
+        when it failed or did not answer in time."""
+        if not self._has_searcher():
+            return None
+        try:
+            async with asyncio.timeout(self._searcher.timeout), self._search_lock:
+                answer = await asyncio.get_running_loop().run_in_executor(
+                    None, self._searcher.ask, request
+                )
+        except TimeoutError:
+            answer = None
+        except Exception as e:
+            logger.warning("Searcher IPC failed (%s): %s", request.get("op", "search"), e)
+            return None
+        if answer is None:
+            logger.warning("Searcher did not answer (%s)", request.get("op", "search"))
+        return answer
+
+    async def continue_queue(self, request: ContinuationRequest) -> List[str]:
+        """Library tracks that sound like the seeds, unlike those turned down."""
+        answer = await self._ask_searcher(
+            {
+                "op": "continue",
+                "seeds": list(request.seeds),
+                "avoid": list(request.avoid),
+                "exclude": list(request.exclude),
+                "count": request.count,
+            }
+        )
+        return list(answer.get("tracks", [])) if answer else []
 
     def root_preview(self) -> Optional[Preview]:
         """The root opens as cards: its catalogs each have their own art."""
@@ -470,20 +535,8 @@ class LocalFilesInputModule(InputModule):
         logger.info(
             "ai_search: sending query %r (limit=%d)", query, ai_cfg.max_results
         )
-        try:
-            async with asyncio.timeout(self._searcher.timeout), self._search_lock:
-                ids = await asyncio.get_running_loop().run_in_executor(
-                    None,
-                    self._searcher.ask,
-                    {"query": query, "limit": ai_cfg.max_results},
-                )
-        except TimeoutError:
-            ids = None
-        except Exception as e:
-            logger.warning("ai_search: searcher IPC failed: %s", e)
-            return EmptyList(offset, limit)
+        ids = await self._ask_searcher({"query": query, "limit": ai_cfg.max_results})
         if ids is None:
-            logger.warning("ai_search: timed out waiting for searcher response")
             return EmptyList(offset, limit)
 
         track_ids = ids.get("tracks", [])
@@ -491,7 +544,6 @@ class LocalFilesInputModule(InputModule):
         if not track_ids:
             return EmptyList(offset, limit)
 
-        # Preserve the searcher's rank order (get_tracks_by_ids does not).
         by_id = {t["id"]: t for t in self.db_manager.get_tracks_by_ids(track_ids)}
         tracks = [
             self._create_track_browse_item(by_id[tid])
@@ -648,6 +700,8 @@ class LocalFilesInputModule(InputModule):
             )
         if endpoint == "albums":
             return self._browse_albums(offset, limit, listing)
+        if endpoint == FOR_YOU_ENDPOINT:
+            return await self._browse_for_you(offset, limit)
         section = SECTION_BY_ENDPOINT.get(endpoint)
         if section is not None:
             if section.recent:
@@ -757,8 +811,47 @@ class LocalFilesInputModule(InputModule):
             sections=[section for section in sections if section is not None],
         )
 
+    def _for_you_card(self) -> BrowseItem:
+        id = catalog_id(FOR_YOU_ENDPOINT)
+        return BrowseItem(
+            id=id,
+            name=FOR_YOU_TITLE,
+            can_browse=True,
+            can_add=False,
+            subname=FOR_YOU_DESCRIPTION,
+            catalog=Catalog(
+                id=id,
+                title=FOR_YOU_TITLE,
+                description=FOR_YOU_DESCRIPTION,
+                image=catalog_image("albums"),
+                preview_config=Preview(
+                    type=PreviewType.IMAGE_TEXT,
+                    content_type=PreviewContentType.ALBUM,
+                    icon="ai_suggestions",
+                    items_count=10,
+                    rows_count=1,
+                    card_size=CardSize.SMALL,
+                ),
+                role=CatalogRole.DISCOVERY,
+            ),
+        )
+
+    async def _browse_for_you(self, offset: int, limit: int) -> BrowseItemList:
+        """Albums the listener may like, best first, as the searcher ranks them
+        from the play history."""
+        answer = await self._ask_searcher({"op": "albums", "count": FOR_YOU_ALBUMS})
+        album_ids = answer.get("albums", []) if answer else []
+        items = [
+            self._create_album_browse_item(row)
+            for row in self.db_manager.get_albums_by_ids(album_ids)
+        ]
+        return BrowseItemList(
+            offset=offset, limit=limit, total=len(items), items=items[offset : offset + limit]
+        )
+
     def _browse_root(self, offset: int, limit: int) -> BrowseItemList:
-        """Folders, alphabetical library browsers, arrivals, and any playlists."""
+        """Folders, alphabetical library browsers, arrivals, any playlists, and
+        album recommendations while there is a searcher to rank them."""
         if not self.db_manager.is_good():
             logger.warning("Database is not initialized or corrupted")
             return EmptyList(0, 0)
@@ -769,6 +862,8 @@ class LocalFilesInputModule(InputModule):
                 if card is not None:
                     items.append(card)
             items.append(self._recent_card())
+            if self._has_searcher():
+                items.append(self._for_you_card())
         playlists = self._section_card(SECTION_BY_ENDPOINT["playlists"], root=True)
         if playlists is not None:
             items.append(playlists)
@@ -1327,7 +1422,20 @@ class LocalFilesInputModule(InputModule):
                         offset=offset, limit=limit, total=0, items=[]
                     )
             return self._genre_values(offset, limit, q, folder)
+        if field == DECADE_FILTER.id:
+            return self._decade_values(offset, limit, q)
         raise UnsupportedFilter(field, "has no vocabulary")
+
+    def _decade_values(self, offset: int, limit: int, q: str) -> FilterValueList:
+        wanted = q.strip().casefold()
+        values = [
+            FilterValue(id=str(decade), name=decade_label(decade), count=albums)
+            for decade, albums in self.db_manager.list_album_decades()
+            if wanted in decade_label(decade).casefold()
+        ]
+        return FilterValueList(
+            offset=offset, limit=limit, total=len(values), items=values[offset : offset + limit]
+        )
 
     def _genre_values(
         self, offset: int, limit: int, q: str, folder: Optional[str] = None

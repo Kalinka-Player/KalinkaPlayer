@@ -11,7 +11,12 @@ from pathlib import Path
 
 from .config_model import LocalFilesConfig
 from .kept_connections import KeptConnections
+from .play_history import PlayRecord
 from .utils.name_utils import fold_diacritics
+from .utils.years import album_year_sql
+
+#: Plays kept in the history; the oldest beyond go.
+PLAY_HISTORY_KEPT = 5000
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
@@ -78,7 +83,8 @@ class _KindQuery:
 
     ``genre_predicate`` holds exactly one ``?`` testing a single genre against
     the row; a kind that carries no genre still consumes the parameter and
-    matches nothing.
+    matches nothing. ``decade_predicate`` likewise tests one decade, given as
+    its first year, against the year the row's album first came out.
     """
 
     columns: str
@@ -87,6 +93,12 @@ class _KindQuery:
     ts_expr: str
     text_fields: Tuple[str, ...]
     genre_predicate: str
+    decade_predicate: str
+
+
+def _decade_of(alias: str) -> str:
+    """SQL for the first year of the decade the album ``alias`` came out in."""
+    return f"({album_year_sql(alias)} / 10 * 10)"
 
 
 SINGLES_TITLE = "Singles & loose tracks"
@@ -133,6 +145,7 @@ KINDS: Dict[str, _KindQuery] = {
         ts_expr="t.last_updated",
         text_fields=("fold(t.title)", f"fold({ALBUM_TITLE})", "fold(ar.name)"),
         genre_predicate="has_genre(a.genre, ?)",
+        decade_predicate=f"{_decade_of('a')} = ?",
     ),
     "album": _KindQuery(
         columns="a.*, ar.name as artist_name",
@@ -146,6 +159,7 @@ KINDS: Dict[str, _KindQuery] = {
             "fold(CASE WHEN a.id = 'unknown_album' THEN NULL ELSE ar.name END)",
         ),
         genre_predicate="has_genre(a.genre, ?)",
+        decade_predicate=f"{_decade_of('a')} = ?",
     ),
     "artist": _KindQuery(
         columns=ARTIST_COLUMNS,
@@ -158,6 +172,10 @@ KINDS: Dict[str, _KindQuery] = {
             "EXISTS (SELECT 1 FROM albums alg"
             " WHERE alg.artist_id = ar.id AND has_genre(alg.genre, ?))"
         ),
+        decade_predicate=(
+            "EXISTS (SELECT 1 FROM albums ald"
+            f" WHERE ald.artist_id = ar.id AND {_decade_of('ald')} = ?)"
+        ),
     ),
     "playlist": _KindQuery(
         columns="p.*",
@@ -166,6 +184,7 @@ KINDS: Dict[str, _KindQuery] = {
         ts_expr="p.last_updated",
         text_fields=("fold(p.name)", "fold(p.description)"),
         genre_predicate="has_genre(NULL, ?)",
+        decade_predicate="NULL = ?",
     ),
 }
 
@@ -353,13 +372,15 @@ class ListingFilter:
 
     Stated in this layer's own terms rather than the SDK's, so the query layer
     stays a query layer and the module translates once. Genre values are match
-    forms (see :func:`split_genres`).
+    forms (see :func:`split_genres`); decades are their first years, any of
+    which a row's album may have come out in.
     """
 
     text: str = ""
     genre_any: Tuple[str, ...] = ()
     genre_all: Tuple[str, ...] = ()
     genre_none: Tuple[str, ...] = ()
+    decades: Tuple[int, ...] = ()
 
     @property
     def narrows(self) -> bool:
@@ -862,13 +883,22 @@ class LocalFilesInputModuleDb:
         filter: ListingFilter,
         text_fields: Tuple[str, ...],
         genre_predicate: str,
-    ) -> Tuple[str, List[str]]:
+        decade_predicate: str,
+    ) -> Tuple[str, List[Any]]:
         """WHERE clause narrowing a listing to ``filter``: every constraint
         must hold, which is what makes a filtered listing's COUNT the same
         query as its page."""
         text_clause, params = cls._token_where(filter.text, text_fields)
         genre_clause, genre_params = cls._genre_where(filter, genre_predicate)
-        return f"({text_clause}) AND ({genre_clause})", params + genre_params
+        decade_clause = (
+            "(" + " OR ".join(decade_predicate for _ in filter.decades) + ")"
+            if filter.decades
+            else "1=1"
+        )
+        return (
+            f"({text_clause}) AND ({genre_clause}) AND ({decade_clause})",
+            params + genre_params + list(filter.decades),
+        )
 
     @classmethod
     def _folder_match(
@@ -880,7 +910,10 @@ class LocalFilesInputModuleDb:
         if filter is None or not filter.narrows:
             return None, {}
         where, params = cls._listing_where(
-            filter, _FOLDER_TEXT_FIELDS, KINDS["track"].genre_predicate
+            filter,
+            _FOLDER_TEXT_FIELDS,
+            KINDS["track"].genre_predicate,
+            KINDS["track"].decade_predicate,
         )
         match, named = _named(where, params)
         return match, {**named, "root_start": len(folder_prefix(root)) + 1}
@@ -937,6 +970,21 @@ class LocalFilesInputModuleDb:
         ]
         values.sort(key=lambda value: (-value[2], value[0]))
         return values[offset : offset + limit], len(values)
+
+    def list_album_decades(self) -> List[Tuple[int, int]]:
+        """The decades the library's albums first came out in, as (first year,
+        album count), oldest first; albums without a plausible year are left out."""
+        decade = _decade_of("a")
+        conn = self._get_connection()
+        try:
+            rows = conn.execute(
+                f"SELECT {decade} AS decade, COUNT(*) AS albums FROM albums a"
+                f" WHERE {LISTED_ALBUM} AND {decade} IS NOT NULL"
+                " GROUP BY decade ORDER BY decade"
+            ).fetchall()
+        finally:
+            conn.close()
+        return [(row["decade"], row["albums"]) for row in rows]
 
     def search_tracks(
         self, query: str, offset: int = 0, limit: int = 50
@@ -1087,7 +1135,10 @@ class LocalFilesInputModuleDb:
     ) -> Tuple[List[Dict], int]:
         """Count and page the same selection, with stable ordering across pages."""
         where, params = self._listing_where(
-            filter or ListingFilter(), query.text_fields, query.genre_predicate
+            filter or ListingFilter(),
+            query.text_fields,
+            query.genre_predicate,
+            query.decade_predicate,
         )
         where = f"({where}) AND ({predicate})"
         conn = self._get_connection()
@@ -1140,7 +1191,7 @@ class LocalFilesInputModuleDb:
         for kind in wanted:
             query = KINDS[kind]
             where, where_params = self._listing_where(
-                filter, query.text_fields, query.genre_predicate
+                filter, query.text_fields, query.genre_predicate, query.decade_predicate
             )
             branches.append(
                 f"SELECT ? AS kind, {query.id_expr} AS id,"
@@ -1185,14 +1236,19 @@ class LocalFilesInputModuleDb:
             entity_id = entity_ids[kind]
             query = KINDS[kind]
             genre_predicate = query.genre_predicate
+            decade_predicate = query.decade_predicate
             if kind == "artist":
                 # A compilation's performers need not be its album artist.
                 genre_predicate = (
                     "EXISTS (SELECT 1 FROM tracks tg JOIN albums ag ON ag.id=tg.album_id "
                     "WHERE tg.artist_id=ar.id AND has_genre(ag.genre, ?))"
                 )
+                decade_predicate = (
+                    "EXISTS (SELECT 1 FROM tracks td JOIN albums ad ON ad.id=td.album_id "
+                    f"WHERE td.artist_id=ar.id AND {_decade_of('ad')} = ?)"
+                )
             where, where_params = self._listing_where(
-                filter or ListingFilter(), query.text_fields, genre_predicate
+                filter or ListingFilter(), query.text_fields, genre_predicate, decade_predicate
             )
             branches.append(
                 f"SELECT ? AS kind, {query.id_expr} AS id, arrivals.added "
@@ -1735,6 +1791,29 @@ class LocalFilesInputModuleDb:
             )
 
             return [dict(row) for row in cursor.fetchall()], total
+        finally:
+            conn.close()
+
+    def record_play(self, play: PlayRecord) -> None:
+        """Keep one finished play, dropping the oldest beyond
+        :data:`PLAY_HISTORY_KEPT`."""
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                "INSERT INTO play_history"
+                " (track_id, played_at, listened_s, completed, skipped)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (play.track_id, play.played_at, play.listened_s, int(play.completed), int(play.skipped)),
+            )
+            conn.execute(
+                "DELETE FROM play_history"
+                " WHERE id <= (SELECT MAX(id) FROM play_history) - ?",
+                (PLAY_HISTORY_KEPT,),
+            )
+            conn.commit()
+        except Exception as e:
+            logger.error("Error recording a play: %s", e)
+            conn.rollback()
         finally:
             conn.close()
 

@@ -87,6 +87,7 @@ from .filters import (
 from .inputmodule import (
     InputModule,
     ContentInfo,
+    ContinuationRequest,
     DirectUrl,
     ModuleAsset,
     ModuleCapability,
@@ -251,6 +252,7 @@ __all__ = [
     "UnsupportedFilter",
     "ValuesSelector",
     "ContentInfo",
+    "ContinuationRequest",
     "DirectUrl",
     "ModuleAsset",
     "ModuleCapability",

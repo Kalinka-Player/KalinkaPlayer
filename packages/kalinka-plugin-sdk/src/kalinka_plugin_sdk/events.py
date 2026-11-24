@@ -180,6 +180,16 @@ class PlaybackStateChangedEvent(PlayQueueEvent):
 
 
 class RequestMoreTracksEvent(PlayQueueEvent):
+    """
+    The queue started its last track and no repeat mode will carry it on.
+
+    From SDK 3.24 the server sends it only while its autoplay setting is on,
+    and answers it itself by asking every module that reports
+    ``ModuleCapability.CONTINUATION`` through ``InputModule.continue_queue``.
+    A module reporting that capability must not also add tracks on this
+    event, or the queue would grow twice.
+    """
+
     event_type: PlayQueueEventType = PlayQueueEventType.RequestMoreTracks
 
 

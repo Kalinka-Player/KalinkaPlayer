@@ -58,6 +58,7 @@ from .suggest import (
 from .input_module_db import LocalFilesInputModuleDb
 from .scan_control import ScanControl
 from .localfiles import LocalFilesInputModule
+from .play_history import PlayHistoryRecorder
 from .optional_packages import OPTIONAL_PACKAGES
 from . import librarian
 from . import embedder
@@ -453,7 +454,7 @@ class _ResolverCache:
 
 
 class KalinkaPluginLocalFiles(InputModulePlugin):
-    REQUIRES_SDK = ">=3.20,<4"
+    REQUIRES_SDK = ">=3.24,<4"
     PLUGIN_ID = "localfiles"
     CONFIG_MODEL = LocalFilesConfig
     OPTIONAL_PACKAGES: ClassVar[dict[str, OptionalPackageSpec]] = OPTIONAL_PACKAGES
@@ -513,6 +514,7 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
         # renewing it; see _known_folder_statuses().
         self._folder_check: Optional[_FolderCheck] = None
         self._folder_probe: Optional[asyncio.Task] = None
+        self._play_history: Optional[asyncio.Task] = None
 
         # Context captured at setup() so methods called by the server
         # later (get_state, required_packages, resolve_dynamic_field)
@@ -621,6 +623,10 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
         # Centralised schema init — runs once in the main process before
         # any subprocess starts, so there is no lock contention.
         await init_db(config.db_path)
+
+        self._play_history = asyncio.create_task(
+            PlayHistoryRecorder(context.listener, input_module_db.record_play).run()
+        )
 
         # Indexer + enricher run in one process, wired by an in-process queue.
         # It nudges the searcher and the embedder as work lands; the enricher
@@ -1218,6 +1224,8 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
 
         if self._folder_probe is not None:
             self._folder_probe.cancel()
+        if self._play_history is not None:
+            self._play_history.cancel()
 
         await asyncio.to_thread(self._discovery.stop)
         for resolvers in (self._live_resolvers, self._staged_resolvers):

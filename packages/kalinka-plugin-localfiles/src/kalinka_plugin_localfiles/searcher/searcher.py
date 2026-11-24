@@ -31,6 +31,8 @@ from ..embedding_utils import decode_embedding
 from ..ipc import RequestChannel, reply
 from ..pip_utils import ensure_package
 from ..worker_utils import configure_worker_logging, set_proc_title
+from .query_terms import decades_in, year_spans
+from .recommender import Recommender
 from .searcher_db import AsyncSearcherDb
 
 logger = logging.getLogger(__name__.split(".")[-1])
@@ -97,6 +99,7 @@ class SearchWorker:
     ):
         self.config = config
         self.db = db
+        self._recommender = Recommender(db)
         self._embedder = (
             RequestChannel(
                 text_encode_request_queue, text_encode_response_queue, timeout=30.0
@@ -241,6 +244,10 @@ class SearchWorker:
         (literal/navigational name lookup) and the navigational suppression
         that hides these suggestions for a name query now live in the server,
         which assembles them across all sources from ``search()``.
+
+        A decade the query names ("70s rock") keeps both legs to tracks whose
+        album first came out then; a query naming a decade the library has
+        nothing from finds nothing.
         """
         cfg = self.config.ai_search
 
@@ -248,7 +255,13 @@ class SearchWorker:
         # KNN leg and the mood NN fallback so we don't double the IPC round-trip.
         query_blob = await self._encode_query_blob(query)
 
-        knn_hits = await self._knn_leg(query, cfg.knn_candidate_limit, query_blob)
+        decades = decades_in(query)
+        within = set(await self.db.tracks_from_years(year_spans(decades))) if decades else None
+        if within is not None and not within:
+            logger.info("_do_search: no tracks from %s", decades)
+            return {"tracks": []}
+
+        knn_hits = await self._knn_leg(query, cfg.knn_candidate_limit, query_blob, within)
         logger.info("_do_search: query=%r KNN=%d hits", query, len(knn_hits))
 
         has_knn = bool(knn_hits)
@@ -278,9 +291,7 @@ class SearchWorker:
             target_va, mood_conf = self._query_to_va(query, query_blob)
             if target_va is not None and mood_conf > 0.0:
                 mood_weight = cfg.mood.weight * mood_conf
-                mood_hits = await self.db.knn_search_mood(
-                    target_va[0], target_va[1], cfg.mood.candidates
-                )
+                mood_hits = await self._mood_leg(target_va, cfg.mood.candidates, within)
                 all_track_ids.extend(h["track_id"] for h in mood_hits)
                 all_track_ids = list(dict.fromkeys(all_track_ids))
                 va_bulk = await self.db.get_tracks_va_bulk(all_track_ids)
@@ -308,17 +319,25 @@ class SearchWorker:
         return {"tracks": [tid for _, tid in scored[:limit]]}
 
     async def _knn_leg(
-        self, query: str, candidate_limit: int, blob: Optional[bytes] = None
+        self,
+        query: str,
+        candidate_limit: int,
+        blob: Optional[bytes] = None,
+        within: Optional[set[str]] = None,
     ) -> list[dict]:
         """CLAP KNN search leg — returns [{track_id, distance}].
 
         KNN-searches the audio index with the precomputed query ``blob`` (CLAP's
         text→audio is the canonical retrieval direction). ``blob`` is encoded
         once by the caller and shared with the mood fallback; None → empty leg.
+        With ``within``, only those tracks are ranked, exactly rather than
+        through the index, so a narrow selection still fills the leg.
         """
-        if not self.db._vec_available:
-            return []
         if blob is None:
+            return []
+        if within is not None:
+            return await self._ranked_within(blob, candidate_limit, within)
+        if not self.db._vec_available:
             return []
         t0 = time.monotonic()
         results = await self.db.knn_search_audio(blob, candidate_limit)
@@ -326,6 +345,46 @@ class SearchWorker:
             "KNN audio search: %d results in %.3fs", len(results), time.monotonic() - t0
         )
         return results
+
+    async def _ranked_within(self, blob: bytes, limit: int, within: set[str]) -> list[dict]:
+        if not _ensure_numpy():
+            return []
+        query = decode_embedding(blob)
+        found = await self.db.get_track_vectors(list(within))
+        ranked = sorted(
+            (float(np.linalg.norm(decode_embedding(v) - query)), t) for t, v in found.items()
+        )
+        return [{"track_id": t, "distance": d} for d, t in ranked[:limit]]
+
+    async def _mood_leg(
+        self, target_va: tuple[float, float], limit: int, within: Optional[set[str]]
+    ) -> list[dict]:
+        """The tracks nearest ``target_va``, from ``within`` when given."""
+        if within is None:
+            return await self.db.knn_search_mood(target_va[0], target_va[1], limit)
+        va = await self.db.get_tracks_va_bulk(list(within))
+        nearest = sorted(va, key=lambda t: math.dist(target_va, va[t]))[:limit]
+        return [{"track_id": t, "distance": math.dist(target_va, va[t])} for t in nearest]
+
+    async def _handle(self, req: dict) -> dict:
+        """Serve one IPC request: a search unless its ``op`` says otherwise.
+
+        ``continue`` takes ``seeds``, ``avoid``, ``exclude`` and ``count`` and
+        answers ``tracks``; ``albums`` takes ``count`` and answers ``albums``.
+        """
+        op = req.get("op", "search")
+        if op == "continue":
+            if not _ensure_numpy():
+                return {"tracks": []}
+            tracks = await self._recommender.next_tracks(
+                req.get("seeds", []), req.get("avoid", []), req.get("exclude", []), int(req.get("count", 1))
+            )
+            return {"tracks": tracks}
+        if op == "albums":
+            if not _ensure_numpy():
+                return {"albums": []}
+            return {"albums": await self._recommender.albums_for_you(int(req.get("count", 20)))}
+        return await self._do_search(req["query"], req.get("limit", 20))
 
     async def _encode_query_blob(self, query: str) -> Optional[bytes]:
         """Encode the query once (CLAP text via IPC), with the ASCII/queue
@@ -364,16 +423,17 @@ class SearchWorker:
 
             try:
                 t0 = time.monotonic()
-                result = await self._do_search(req["query"], req.get("limit", 20))
+                result = await self._handle(req)
                 logger.info(
-                    "Search '%s': %d tracks in %.3fs",
-                    req["query"],
-                    len(result.get("tracks", [])),
+                    "%s %r: %d result(s) in %.3fs",
+                    req.get("op", "search"),
+                    req.get("query", ""),
+                    len(result.get("tracks", result.get("albums", []))),
                     time.monotonic() - t0,
                 )
             except Exception as e:
                 logger.error("Search handler error: %s", e, exc_info=True)
-                result = {"tracks": []}
+                result = {"tracks": [], "albums": []}
 
             reply(search_response_queue, req, result)
 
