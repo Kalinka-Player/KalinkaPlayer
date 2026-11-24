@@ -9,9 +9,11 @@ namespace signal_step {
 inline constexpr const char *kDsdToPcm = "dsd_to_pcm";
 inline constexpr const char *kDsdGain = "dsd_gain";
 inline constexpr const char *kDither = "dither";
+inline constexpr const char *kFir = "fir";
 inline constexpr const char *kPeq = "peq";
 inline constexpr const char *kPreamp = "preamp";
-inline constexpr std::array kAll{kDsdToPcm, kPeq, kPreamp, kDsdGain, kDither};
+inline constexpr std::array kAll{kDsdToPcm, kFir,     kPeq,
+                                 kPreamp,   kDsdGain, kDither};
 } // namespace signal_step
 
 /// @brief One step the samples are taken through between the decoder and

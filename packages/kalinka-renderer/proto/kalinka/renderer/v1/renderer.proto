@@ -183,7 +183,8 @@ message PlaybackEvent {
 
 // The DSP clamped samples to the output's range.
 message Clipping {
-  // Samples clamped since the source began.
+  // Samples clamped with the current room correction settings in this play.
+  // Zero clears a previous clipping report after a settings change.
   uint64 clipped_samples = 1;
 }
 
@@ -566,6 +567,13 @@ message DspProfile {
   repeated Band right = 5;
 }
 
+// A named convolution preset. Each WAV contains filter coefficients for one
+// distinct sample rate. Mono applies to both speakers, stereo is independent.
+message FirProfile {
+  string name = 1;
+  repeated bytes impulse_wav = 2;
+}
+
 message ConfigRequest {}
 
 message ConfigUpdate {
@@ -576,6 +584,7 @@ message ConfigUpdate {
   repeated Setting settings = 1;
   // Where to fetch the SHA-256 selected by dsp.profile on a cache miss.
   string dsp_profile_url = 2;
+  string fir_profile_url = 3;
 }
 
 // Core -> renderer: install a published renderer release and restart into it.
@@ -672,6 +681,7 @@ message ConfigField {
   ConfigWidget widget = 13;
   string help_details = 14;
   ConfigDecimalRange decimal_range = 15;
+  bool supports_fir_import = 16;
 }
 
 message ConfigSection {

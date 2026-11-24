@@ -12,6 +12,7 @@
 #include "dsp/peq/RoomEq.h"
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -34,7 +35,7 @@
  * the volume does. A fade multiplies the volume and goes through the
  * Quantiser the same way. DSD and DoP pass untouched, and refuse any gain but
  * unity. Whenever it clamps samples it posts Clipping, with the count since
- * the source began.
+ * the source began or room correction last changed.
  *
  * @note read(), the waits, the seeks and the fades belong to the one thread
  * that pulls audio. setGain(), setDsdGain() and describe() may come from any
@@ -47,7 +48,8 @@ class OutputStage : public AudioGraphOutputNode,
 public:
   /// @param device What the device was probed to take; empty when unknown.
   explicit OutputStage(std::vector<StreamAudioFormat> device,
-                       uint64_t seed = std::random_device{}());
+                       uint64_t seed = std::random_device{}(),
+                       std::vector<unsigned> firRates = {});
   ~OutputStage() override;
 
   void connectTo(std::shared_ptr<AudioGraphOutputNode> source) override;
@@ -84,7 +86,9 @@ public:
   /// Samples clamped to the output's range so far.
   uint64_t clippedSamples() const { return clipped.load(); }
   /// Where Clipping is posted; set before anything is read.
-  void reportTo(std::shared_ptr<PlaybackEvents> events) {
+  void reportTo(std::shared_ptr<PlaybackEvents> events,
+                std::function<size_t()> unsettledFrames = {}) {
+    this->unsettledFrames = std::move(unsettledFrames);
     this->events = std::move(events);
   }
   /**
@@ -95,7 +99,8 @@ public:
    */
   std::vector<SignalStep> describe(const StreamAudioFormat &decoded,
                                    const StreamAudioFormat &source,
-                                   const StreamAudioFormat &output) const;
+                                   const StreamAudioFormat &output,
+                                   bool firDry = false) const;
 
 private:
   /// What upstream sends, and what is presented for it.
@@ -105,9 +110,12 @@ private:
     unsigned channels;
     /// DSD converted to PCM upstream, which the DSD gain raises.
     bool fromDsd = false;
+    bool fromInteger = false;
+    StreamAudioFormat preferred;
   };
 
   const std::vector<StreamAudioFormat> device;
+  const std::vector<unsigned> firRates;
   std::shared_ptr<AudioGraphOutputNode> upstream;
   int upstreamCallback = -1;
   std::atomic<double> target{1.0};
@@ -115,10 +123,12 @@ private:
   std::atomic<bool> settlePending{true};
   std::atomic<uint64_t> clipped{0};
   std::shared_ptr<PlaybackEvents> events;
-  /// The clamped count when the source being read began, and when it was
-  /// last posted; both the pulling thread's.
-  uint64_t clippedBefore = 0;
-  uint64_t clippedPosted = 0;
+  std::function<size_t()> unsettledFrames;
+  /// Under presentedMutex. A read using an older revision cannot relatch the
+  /// warning after a setting change, even if its quantiser finishes later.
+  uint64_t clippingRevision = 0;
+  uint64_t windowClips = 0;
+  void resetClipping();
   /// The stream being read, as upstream last stated it; under presentedMutex.
   std::optional<StreamId> reading;
   // Plan writers serialize with one another while the pulling thread uses the
@@ -134,7 +144,8 @@ private:
   bool resetEq = true;
   bool discardAtBoundary = false;
   peq::RoomEq eq;
-  Presented present(const StreamAudioFormat &source, bool fromDsd);
+  Presented present(const StreamAudioFormat &source, bool fromDsd,
+                    bool fromInteger, const StreamAudioFormat &preferred);
   GainRamp ramp;
   GainRamp fade;
   /// What the fade heads for, and a level it takes at once first.
@@ -149,8 +160,8 @@ private:
   /// Moves both ramps toward their targets for @p now, settling either first
   /// when asked.
   void follow(const Presented &now);
-  void produce(const Presented &now, const uint8_t *in, size_t frames,
-               uint8_t *out);
+  uint64_t produce(const Presented &now, const uint8_t *in, size_t frames,
+                   uint8_t *out, size_t unsettled);
   size_t toSource(const Presented &now, size_t bytes) const;
   size_t toOutput(const Presented &now, size_t bytes) const;
 };

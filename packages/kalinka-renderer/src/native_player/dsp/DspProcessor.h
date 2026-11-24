@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 /**
  * @brief A transformation DspStage runs audio through.
@@ -60,10 +61,23 @@ public:
   /// before start(). Processors with run-specific history default to zero.
   virtual size_t preparedHistory() const { return 0; }
 
+  virtual size_t historyFor(const StreamAudioFormat &) const {
+    return preparedHistory();
+  }
+
   /// How far back, in output frames, the input an output frame depends on
   /// reaches in the run started last, the lag hidden: a seek starts that far
   /// early, so its first frames are what a run under way would make.
   virtual size_t history() const { return preparedHistory(); }
+
+  /// Consecutive latest output frames made entirely with the selected filter.
+  /// A fixed processor has no live transitions to exclude from metering.
+  virtual size_t settledOutputFrames() const {
+    return std::numeric_limits<size_t>::max();
+  }
+
+  /// A live filter may acquire history later in the same run.
+  virtual bool needsSuccessorInput() const { return history() != 0; }
 
   /**
    * @brief Runs @p frames whole input frames of the started format from @p in

@@ -291,7 +291,43 @@ Under `$KALINKA_PREFIX/var/lib/kalinka-renderer` (`KALINKA_PREFIX` defaults to
 If the directory is not writable the renderer still runs, with an ephemeral id
 and settings that last only for the run.
 
-## REW room correction
+## Room correction
+
+### Filter impulse WAV
+
+Use filter coefficients from any application that exports a compatible WAV.
+
+In REW, choose **File → Export → Export filters impulse response as WAV**.
+Choose the playback sample rate and **32-bit Float**. Turn off peak normalization
+to preserve the gain designed in REW. A mono export applies the same filter to
+both speakers. A stereo export holds the left and right filters in that order.
+
+In **Room EQ → FIR Convolution**, choose **Import impulse WAV**. Select one
+or more filter WAVs and name the preset. Supply one WAV per playback sample
+rate. Kalinka selects the matching impulse automatically. Other sample rates
+play dry. The Core stores presets and the renderer caches the selected preset
+for offline playback. Existing WAVs in `/var/lib/kalinka-renderer/dsp/fir/`
+remain selectable by filename.
+
+The renderer accepts up to 262,144 taps per channel. A preset can hold up to
+eight rates and 32 MiB. Stereo PCM crossfades when the selected filter changes.
+The live path buffers 640 frames to align filtered and dry audio. The signal
+path shows **FIR room correction** while a matching filter is selected.
+
+The [176.4 kHz test impulse](../../examples/fir/1kHz-cut-176.4kHz.wav) and
+[192 kHz test impulse](../../examples/fir/1kHz-cut-192kHz.wav) reduce a 1 kHz
+tone by 9 dB. Import both WAVs in one preset and play a track at either rate.
+Each file has 4,096 taps per channel. Trimming trailing zeros leaves 463 taps
+at 176.4 kHz and 502 at 192 kHz.
+
+For sustained CPU testing at 176.4 kHz, import the
+[65,536-tap performance impulse](../../examples/fir/performance-65536-176.4kHz.wav)
+as its own preset. Both channels have distinct, fully populated filter tails.
+Compare that preset with FIR set to **Off** on the same track.
+
+Now Playing shows a red **!** beside the format when the renderer clamps output samples. Open **Signal path** for the count. Each track and each room correction change starts a fresh count after the filters settle.
+
+### Parametric EQ text export
 
 In Room EQ Wizard, choose the **Generic** equaliser and **Export filter settings as text**.
 Import one curve for all channels, or export each speaker's correction separately.
@@ -327,6 +363,8 @@ settings and enable **Room correction**. **Bypass** lets you compare the result 
 playback. The import returns the profile's SHA-256 as `id`, which also works as
 `dsp.profile` in `PUT /renderer/{renderer_id}/config`. The renderer verifies and
 caches the selected profile and restores it on restart.
+
+Room EQ’s **Bypass** switch bypasses FIR convolution, parametric EQ and preamp gain during playback. Switching it off restores the configured filters and gain. Output volume and the format required by the playback device still apply.
 
 Automatic preamp reserves the sum of the individual bands' maximum boosts on the
 channel that needs the most headroom. A pass band with a Q above 0.707 peaks at

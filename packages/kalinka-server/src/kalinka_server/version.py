@@ -335,7 +335,8 @@ def get_version() -> str:
 # GET /dsp/profiles lists presets and GET /dsp/profiles/{id} serves their
 # protobuf. Renderer config offers them on dsp.profile and supports decimal
 # settings with fractional range bounds and steps.
-REST_API_VERSION = "0.25"
+# 0.26: Edit a renderer's active parametric EQ without publishing a preset.
+REST_API_VERSION = "0.26"
 
 
 def get_rest_api_version() -> str:

@@ -58,7 +58,8 @@ public:
   void apply(const kalinka::renderer::v1::ConfigUpdate &update,
              kalinka::renderer::v1::ConfigResult &out,
              const std::string &profileId = {},
-             const std::string &profileError = {}, bool decimal = true);
+             const std::string &profileError = {}, bool decimal = true,
+             const std::string &firId = {}, const std::string &firError = {});
 
   /// Report every requested path refused at its current value.
   void refuse(const kalinka::renderer::v1::ConfigUpdate &update,

@@ -1,3 +1,4 @@
+#include "dsp/fir/FirImpulse.h"
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <stdlib.h>
@@ -469,14 +470,60 @@ TEST_F(NativePlayerSettingsTest, DsdIsTakenWhileTheDsdModeIsNotDisabled) {
   EXPECT_TRUE(dsd());
 }
 
+TEST_F(NativePlayerSettingsTest,
+       RewImpulseSelectionValidatesBeforeChangingPlayback) {
+  const auto dir = prefix_ / "var/lib/kalinka-renderer/dsp/fir";
+  fs::create_directories(dir);
+  wav_test::write(dir / "Room.WAV",
+                  wav_test::file(32, 48000, 1, 131072, false, 32, true));
+  wav_test::write(dir / "Bad.wav", {0});
+  constexpr auto key = "output.rew_fir_profile";
+  const auto section = output();
+  const auto *profile = field(section, key);
+  ASSERT_NE(profile, nullptr);
+  ASSERT_EQ(profile->options_size(), 3);
+  EXPECT_EQ(profile->options(2).value(), "Room.WAV");
+  ASSERT_TRUE(player_->applyConfig(key, "Room.WAV", error_)) << error_;
+  EXPECT_FALSE(player_->applyConfig(key, "Bad.wav", error_));
+  EXPECT_FALSE(player_->applyConfig(key, "../Room.WAV", error_));
+  EXPECT_EQ(loadSettingsOverrides().at(key), "Room.WAV");
+  player_.reset();
+  player_ = std::make_shared<NativePlayer>(ioc_);
+  EXPECT_EQ(field(output(), key)->value(), "Room.WAV");
+  ASSERT_TRUE(player_->applyConfig(key, "off", error_)) << error_;
+  EXPECT_FALSE(loadSettingsOverrides().contains(key));
+}
+
+TEST_F(NativePlayerSettingsTest,
+       RewImpulseKeepsStereoFloatGainAndChannelOrder) {
+  const auto file = prefix_ / "Room.wav";
+  wav_test::write(file, wav_test::file(32, 44100, 2, 4, true, 32, true));
+  const auto impulse = FirImpulse::load(file);
+  EXPECT_EQ(impulse.rate, 44100u);
+  EXPECT_THAT(impulse.channels[0],
+              ::testing::ElementsAre(0., .125, 1., 0x1p-60));
+  EXPECT_THAT(impulse.channels[1], ::testing::ElementsAre(0., -.5, -1., .5));
+}
+
+TEST_F(NativePlayerDsdTest, PcmFirProfilePreservesDsdConversion) {
+  const auto dir = prefix_ / "var/lib/kalinka-renderer/dsp/fir";
+  fs::create_directories(dir);
+  wav_test::write(dir / "Room.wav", wav_test::file(24, 48000, 2, 8));
+  ASSERT_TRUE(
+      player_->applyConfig("output.rew_fir_profile", "Room.wav", error_))
+      << error_;
+  ASSERT_TRUE(player_->applyConfig("output.dsd_mode", "pcm", error_)) << error_;
+  EXPECT_EQ(playedAt(), 176400u);
+}
+
 TEST_F(NativePlayerSettingsTest, TheDspSaysWhatItIsBuiltToDo) {
   renderer_pb::Capabilities capabilities;
   player_->fillCapabilities(capabilities);
   ASSERT_TRUE(capabilities.has_dsp());
   EXPECT_TRUE(capabilities.dsp().dsd_to_pcm());
   EXPECT_THAT(capabilities.dsp().steps(),
-              ::testing::ElementsAre("dsd_to_pcm", "peq", "preamp", "dsd_gain",
-                                     "dither"));
+              ::testing::ElementsAre("dsd_to_pcm", "fir", "peq", "preamp",
+                                     "dsd_gain", "dither"));
   EXPECT_EQ(capabilities.dsp().max_output_channels(), 2u);
 }
 
@@ -983,6 +1030,61 @@ TEST_F(NativePlayerStreamTest, PcmPlayedAsDecodedReportsNoEvent) {
   player_->setStateSink({});
   EXPECT_EQ(events, 0u);
   player_.reset();
+}
+
+TEST_F(NativePlayerStreamTest,
+       DspBypassPreservesSelectionsAcrossPlaybackAndRestart) {
+  const auto dir = prefix_ / "var/lib/kalinka-renderer/dsp/fir";
+  fs::create_directories(dir);
+  for (const auto *name : {"First.wav", "Second.wav"})
+    wav_test::write(dir / name, wav_test::file(24, 96000, 2, 8));
+  constexpr auto fir = "output.rew_fir_profile";
+  ASSERT_TRUE(player_->applyConfig(fir, "First.wav", error_)) << error_;
+  ASSERT_TRUE(
+      player_->dspSettings()->applyConfig("dsp.enabled", "true", error_));
+  ASSERT_TRUE(
+      player_->dspSettings()->applyConfig("dsp.preamp", "manual", error_));
+  ASSERT_TRUE(
+      player_->dspSettings()->applyConfig("dsp.preamp_db", "-4", error_));
+
+  auto expectCorrection = [&](bool firActive, bool preampActive) {
+    renderer_pb::StateSnapshot snapshot;
+    player_->fillSnapshot(snapshot);
+    auto has = [&](std::string_view kind) {
+      return std::ranges::any_of(
+          snapshot.signal_path().steps(),
+          [&](const auto &step) { return step.kind() == kind; });
+    };
+    EXPECT_EQ(has("fir"), firActive);
+    EXPECT_EQ(has("preamp"), preampActive);
+    EXPECT_FALSE(anyInterrupted());
+  };
+  ASSERT_TRUE(playHeld());
+  expectCorrection(true, true);
+  ASSERT_TRUE(
+      player_->dspSettings()->applyConfig("dsp.bypass", "true", error_));
+  expectCorrection(false, false);
+  ASSERT_TRUE(player_->applyConfig(fir, "Second.wav", error_)) << error_;
+  expectCorrection(false, false);
+  player_->stop();
+  player_.reset();
+  player_ = std::make_shared<NativePlayer>(ioc_);
+  ASSERT_TRUE(playHeld());
+  expectCorrection(false, false);
+  ASSERT_TRUE(
+      player_->dspSettings()->applyConfig("dsp.bypass", "false", error_));
+  expectCorrection(true, true);
+  ASSERT_TRUE(
+      player_->dspSettings()->applyConfig("dsp.enabled", "false", error_));
+  expectCorrection(true, false);
+  ASSERT_TRUE(
+      player_->dspSettings()->applyConfig("dsp.bypass", "true", error_));
+  expectCorrection(false, false);
+  ASSERT_TRUE(
+      player_->dspSettings()->applyConfig("dsp.bypass", "false", error_));
+  expectCorrection(true, false);
+  EXPECT_EQ(field(output(), fir)->value(), "Second.wav");
+  player_->setStateSink({});
 }
 
 TEST_F(NativePlayerStreamTest, PcmPlayedAsDecodedHasNoSignalPath) {

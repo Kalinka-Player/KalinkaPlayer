@@ -156,10 +156,21 @@ void ProtocolSession::onMessage(const std::string &data) {
       auto self = weak.lock();
       if (!self || self->connectionGeneration_ != generation)
         return;
-      renderer_pb::Envelope out;
-      self->services_.config->apply(update, *out.mutable_config_result(), id,
-                                    error, self->version_ >= 3);
-      self->sendReply(out, message);
+      auto finish = [weak, generation, message, update, id, error](
+                        const std::string &firId, const std::string &firError) {
+        auto session = weak.lock();
+        if (!session || session->connectionGeneration_ != generation)
+          return;
+        renderer_pb::Envelope out;
+        session->services_.config->apply(update, *out.mutable_config_result(),
+                                         id, error, session->version_ >= 3,
+                                         firId, firError);
+        session->sendReply(out, message);
+      };
+      if (!self->services_.profiles)
+        finish("", "");
+      else if (!self->services_.profiles->prepare(update, finish, true))
+        finish("", "A room profile is loading. Retry this update.");
     };
     if (!services_.profiles) {
       reply("", "");

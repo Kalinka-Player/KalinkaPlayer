@@ -34,7 +34,7 @@ public:
    */
   void pack(const double *const *in, unsigned channels, size_t frames,
             GainRamp::Span gain, AudioSampleFormat format, unsigned bits,
-            void *out);
+            void *out, bool preserveExact = false);
 
   /// Samples clamped to the output's range so far.
   uint64_t clipped() const { return clipped_; }

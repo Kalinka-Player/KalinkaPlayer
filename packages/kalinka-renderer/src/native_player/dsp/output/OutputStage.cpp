@@ -55,9 +55,10 @@ peq::Plan prepareEq(const peq::Settings &settings,
 }
 } // namespace
 
-OutputStage::OutputStage(std::vector<StreamAudioFormat> device, uint64_t seed)
-    : device(std::move(device)), ramp(kRamp), fade(kFadeLength),
-      quantiser(kPlanarFrames, kPlanarChannels, seed),
+OutputStage::OutputStage(std::vector<StreamAudioFormat> device, uint64_t seed,
+                         std::vector<unsigned> firRates)
+    : device(std::move(device)), firRates(std::move(firRates)), ramp(kRamp),
+      fade(kFadeLength), quantiser(kPlanarFrames, kPlanarChannels, seed),
       input(kPlanarFrames * frameBytes(PCM_FLOAT64_LE, kPlanarChannels)) {}
 
 OutputStage::~OutputStage() {
@@ -111,7 +112,19 @@ void OutputStage::onUpstreamState(const StreamState &state) {
   if (state.streamInfo && state.streamInfo->streamType == StreamType::FRAMES) {
     const StreamAudioFormat &source = state.streamInfo->format;
     const bool fromDsd = convertedFromDsd(*state.streamInfo);
-    const auto now = present(source, fromDsd);
+    const bool fromInteger =
+        state.streamInfo->decodedFormat && !fromDsd &&
+        !isFloat(state.streamInfo->decodedFormat->sampleFormat) &&
+        isFloat(source.sampleFormat);
+    // Keep the stream's hardware format fixed across live FIR changes.
+    // For installed profiles, reserve the DAC's processing precision. Other
+    // rates keep their decoded precision, including a first WAV added mid-song.
+    const bool useDecoded =
+        !fromDsd && state.streamInfo->decodedFormat &&
+        std::ranges::find(firRates, source.sampleRate) == firRates.end();
+    const auto &preferred =
+        useDecoded ? *state.streamInfo->decodedFormat : source;
+    const auto now = present(source, fromDsd, fromInteger, preferred);
     auto &format = shown.streamInfo->format;
     format.sampleFormat = now.output.format;
     format.channels = now.channels;
@@ -122,6 +135,8 @@ void OutputStage::onUpstreamState(const StreamState &state) {
               ? now.output.bits
               : std::max(now.output.bits, source.bitsPerSample);
     }
+    if (isFloat(format.sampleFormat))
+      format.bitsPerSample = sampleBits(format.sampleFormat);
     if ((format.bitsPerSample != source.bitsPerSample ||
          isFloat(source.sampleFormat) != isFloat(format.sampleFormat) ||
          format.channels != source.channels) &&
@@ -150,10 +165,12 @@ void OutputStage::discardRoomEq(std::optional<StreamId> id) {
     discardAtBoundary = true;
 }
 
-OutputStage::Presented OutputStage::present(const StreamAudioFormat &source,
-                                            bool fromDsd) {
+OutputStage::Presented
+OutputStage::present(const StreamAudioFormat &source, bool fromDsd,
+                     bool fromInteger, const StreamAudioFormat &preferred) {
   const auto matches = [&](const std::optional<Presented> &p) {
-    return p && p->source == source && p->fromDsd == fromDsd;
+    return p && p->source == source && p->fromDsd == fromDsd &&
+           p->fromInteger == fromInteger && p->preferred == preferred;
   };
   if (const auto existing = current(); matches(existing))
     return *existing;
@@ -161,8 +178,12 @@ OutputStage::Presented OutputStage::present(const StreamAudioFormat &source,
   const auto before = current();
   if (matches(before))
     return *before;
-  Presented next{source, chooseOutput(source, device, kPcmDeviceChannels),
-                 outputChannels(source), fromDsd};
+  Presented next{source,
+                 chooseOutput(preferred, device, kPcmDeviceChannels),
+                 outputChannels(source),
+                 fromDsd,
+                 fromInteger,
+                 preferred};
   const bool changed =
       !before || before->source.sampleRate != source.sampleRate ||
       before->channels != next.channels ||
@@ -178,10 +199,18 @@ OutputStage::Presented OutputStage::present(const StreamAudioFormat &source,
   return next;
 }
 
+void OutputStage::resetClipping() {
+  ++clippingRevision;
+  if (std::exchange(windowClips, 0) && events)
+    events->post({reading, Clipping{0}});
+}
+
 void OutputStage::setRoomEq(peq::Settings settings) {
   std::lock_guard prepareLock(eqPreparationMutex);
   if (settings.profile == eqSettings.profile) {
     std::lock_guard lock(presentedMutex);
+    // The same effective PEQ plan can accompany a FIR or bypass change.
+    resetClipping();
     if (settings.preampDb != eqSettings.preampDb) {
       eqSettings.preampDb = settings.preampDb;
       ++eqRevision;
@@ -191,15 +220,16 @@ void OutputStage::setRoomEq(peq::Settings settings) {
   const auto now = current();
   const auto plan = now ? prepareEq(settings, now->source) : peq::Plan{};
   std::lock_guard lock(presentedMutex);
+  resetClipping();
   eqSettings = std::move(settings);
   eqPlan = plan;
   ++eqRevision;
 }
 
-std::vector<SignalStep>
-OutputStage::describe(const StreamAudioFormat &decoded,
-                      const StreamAudioFormat &source,
-                      const StreamAudioFormat &output) const {
+std::vector<SignalStep> OutputStage::describe(const StreamAudioFormat &decoded,
+                                              const StreamAudioFormat &source,
+                                              const StreamAudioFormat &output,
+                                              bool firDry) const {
   std::vector<SignalStep> steps;
   if (isDsd(source.sampleFormat))
     return steps;
@@ -232,7 +262,10 @@ OutputStage::describe(const StreamAudioFormat &decoded,
   if (convertedFromDsd(decoded, source) && gain != 1.0)
     steps.push_back({signal_step::kDsdGain, "DSD gain",
                      std::format("{:+.1f} dB", 20 * std::log10(gain))});
-  if ((isFloat(source.sampleFormat) || active || preampDb != 0) &&
+  if (((isFloat(source.sampleFormat) &&
+        !(firDry && !isFloat(decoded.sampleFormat) &&
+          output.bitsPerSample >= decoded.bitsPerSample)) ||
+       active || preampDb != 0) &&
       !isFloat(output.sampleFormat)) {
     const auto choice = chooseOutput(source, device, kPcmDeviceChannels);
     const auto bits = choice.format == output.sampleFormat
@@ -278,11 +311,15 @@ size_t OutputStage::read(void *data, size_t size) {
   if (!upstream)
     return 0;
   std::optional<Presented> now;
+  std::optional<uint64_t> meteringRevision;
   {
     std::lock_guard lock(presentedMutex);
     now = presented;
-    if (now && !isDsd(now->source.sampleFormat))
+    if (now && !isDsd(now->source.sampleFormat)) {
       follow(*now);
+      if (appliedRevision == eqRevision)
+        meteringRevision = clippingRevision;
+    }
   }
   if (!now)
     return upstream->read(data, size);
@@ -312,6 +349,7 @@ size_t OutputStage::read(void *data, size_t size) {
   auto *out = static_cast<uint8_t *>(data);
   const size_t wanted = size / outFrame;
   size_t done = 0;
+  uint64_t newClips = 0;
   while (done < wanted) {
     const size_t ask = std::min(wanted - done, kPlanarFrames);
     const size_t got = upstream->read(input.data(), ask * inFrame) / inFrame;
@@ -320,16 +358,27 @@ size_t OutputStage::read(void *data, size_t size) {
     if (source.channels != now->channels)
       expandMono(input.data(), got, now->channels,
                  sampleSize(source.sampleFormat));
-    produce(*now, input.data(), got, out + done * outFrame);
+    const size_t unsettled = unsettledFrames ? unsettledFrames() : 0;
+    newClips +=
+        produce(*now, input.data(), got, out + done * outFrame, unsettled);
     done += got;
     if (got < ask)
       break;
   }
+  clipped = quantiser.clipped();
+  if (newClips && events) {
+    std::lock_guard lock(presentedMutex);
+    if (meteringRevision == clippingRevision) {
+      windowClips += newClips;
+      events->post({reading, Clipping{windowClips}});
+    }
+  }
   return done * outFrame;
 }
 
-void OutputStage::produce(const Presented &now, const uint8_t *in,
-                          size_t frames, uint8_t *out) {
+uint64_t OutputStage::produce(const Presented &now, const uint8_t *in,
+                              size_t frames, uint8_t *out, size_t unsettled) {
+  uint64_t newClips = 0;
   const AudioSampleFormat from = now.source.sampleFormat;
   const AudioSampleFormat to = now.output.format;
   const unsigned channels = now.channels;
@@ -339,11 +388,15 @@ void OutputStage::produce(const Presented &now, const uint8_t *in,
   const bool exact = from == to || (!isFloat(from) && !isFloat(to));
   for (size_t at = 0; at < frames;) {
     size_t n = eq.span(frames - at);
+    if (at < unsettled)
+      n = std::min(n, unsettled - at);
     for (const auto *r : {&ramp, &fade})
       if (r->left())
         n = std::min(n, r->left());
     const auto volume = ramp.take(n), faded = fade.take(n),
                preamp = eq.takePreamp(n);
+    const bool countClips =
+        at >= unsettled && !eq.transitioning() && preamp.from == preamp.to;
     const int movingRamps = (volume.from != volume.to) +
                             (faded.from != faded.to) +
                             (preamp.from != preamp.to);
@@ -375,22 +428,16 @@ void OutputStage::produce(const Presented &now, const uint8_t *in,
         }
         span = volume;
       }
+      const uint64_t before = quantiser.clipped();
       quantiser.pack(planar.planes(), channels, span.frames, span, to,
-                     now.output.bits, dest);
+                     now.output.bits, dest,
+                     now.fromInteger && !eq.filtering() && !overlapping);
+      if (countClips)
+        newClips += quantiser.clipped() - before;
     }
     at += span.frames;
   }
-  const uint64_t total = quantiser.clipped();
-  clipped = total;
-  if (events && total > clippedPosted) {
-    clippedPosted = total;
-    std::optional<StreamId> stream;
-    {
-      std::lock_guard lock(presentedMutex);
-      stream = reading;
-    }
-    events->post({stream, Clipping{total - clippedBefore}});
-  }
+  return newClips;
 }
 
 size_t OutputStage::toSource(const Presented &now, size_t bytes) const {
@@ -457,10 +504,11 @@ std::optional<uint64_t> OutputStage::liveSourceFrame() const {
 }
 
 void OutputStage::acceptSourceChange() {
-  clippedBefore = clippedPosted = quantiser.clipped();
   {
     // The successor can even reuse the discarded stream ID.
     std::lock_guard lock(presentedMutex);
+    ++clippingRevision;
+    windowClips = 0;
     if (std::exchange(discardAtBoundary, false))
       resetEq = true;
   }

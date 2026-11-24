@@ -16,11 +16,27 @@
 namespace fs = std::filesystem;
 namespace dsp_profiles {
 namespace {
+constexpr size_t kMaxFirSize = 32u << 20;
+struct Download {
+  std::string bytes;
+  size_t limit;
+};
+
+kalinka::renderer::v1::FirProfile parseFir(const std::string &bytes) {
+  kalinka::renderer::v1::FirProfile profile;
+  if (!profile.ParseFromString(bytes) || profile.name().empty() ||
+      profile.name().size() > 120 ||
+      profile.name().find_first_of("\r\n") != std::string::npos ||
+      profile.impulse_wav_size() < 1 || profile.impulse_wav_size() > 8)
+    throw std::runtime_error("Invalid FIR filter profile");
+  return profile;
+}
+
 constexpr uintmax_t kMaxCacheBytes = 256ull << 20;
 
 size_t append(char *src, size_t size, size_t count, void *dest) {
-  auto &bytes = *static_cast<std::string *>(dest);
-  if (size && count > (kMaxSize - bytes.size()) / size)
+  auto &[bytes, limit] = *static_cast<Download *>(dest);
+  if (size && count > (limit - bytes.size()) / size)
     return 0;
   bytes.append(src, size * count);
   return size * count;
@@ -36,9 +52,10 @@ std::string digest(std::string_view bytes) {
   return result;
 }
 
-void trimCache(const fs::path &dir, const std::string &incoming) {
+void trimCache(const fs::path &dir, const std::string &incoming, bool fir) {
   const auto saved = loadSettingsOverrides();
-  const auto selected = saved.find("dsp.profile");
+  const auto selected =
+      saved.find(fir ? "output.rew_fir_profile" : "dsp.profile");
   std::vector<std::pair<fs::file_time_type, fs::path>> candidates;
   uintmax_t total = 0;
   for (const auto &file : fs::directory_iterator(dir)) {
@@ -72,27 +89,39 @@ bool validId(std::string_view id) {
   return id.size() == 64 && id.find_first_not_of("0123456789abcdef") == id.npos;
 }
 
-std::shared_ptr<const peq::Profile> load(const std::string &id) {
+static std::string cached(const std::string &id, bool fir) {
   if (!validId(id))
     throw std::runtime_error("Invalid profile SHA-256");
-  std::ifstream file(directory() / id, std::ios::binary | std::ios::ate);
+  const auto path = (fir ? directory() / "fir-profiles" : directory()) / id;
+  std::ifstream file(path, std::ios::binary | std::ios::ate);
   const auto size = file.tellg();
-  if (size <= 0 || size > std::streamoff(kMaxSize))
+  if (size <= 0 || size > std::streamoff(fir ? kMaxFirSize : kMaxSize))
     throw std::runtime_error("Profile is unavailable in the cache");
   std::string bytes(size_t(size), '\0');
   file.seekg(0);
   if (!file.read(bytes.data(), size) || digest(bytes) != id)
     throw std::runtime_error("Cached profile SHA-256 mismatch");
-  return std::make_shared<const peq::Profile>(parse(bytes));
+  return bytes;
 }
 
-void fetch(const std::string &id, const std::string &url) {
+std::shared_ptr<const peq::Profile> load(const std::string &id) {
+  return std::make_shared<const peq::Profile>(parse(cached(id, false)));
+}
+
+kalinka::renderer::v1::FirProfile loadFir(const std::string &id) {
+  return parseFir(cached(id, true));
+}
+
+void fetch(const std::string &id, const std::string &url, bool fir) {
   if (!validId(id))
     throw std::runtime_error("Invalid profile SHA-256");
-  const auto path = directory() / id;
+  const auto path = (fir ? directory() / "fir-profiles" : directory()) / id;
   if (fs::exists(path)) {
     try {
-      load(id);
+      if (fir)
+        loadFir(id);
+      else
+        load(id);
       fs::last_write_time(path, fs::file_time_type::clock::now());
       return;
     } catch (const std::exception &) {
@@ -106,20 +135,23 @@ void fetch(const std::string &id, const std::string &url) {
                                                            curl_easy_cleanup);
   if (!curl)
     throw std::runtime_error("Could not initialise profile download");
-  std::string bytes;
-  bytes.reserve(kMaxSize);
+  Download download{{}, fir ? kMaxFirSize : kMaxSize};
+  auto &bytes = download.bytes;
   curl_easy_setopt(curl.get(), CURLOPT_URL, url.c_str());
   curl_easy_setopt(curl.get(), CURLOPT_PROTOCOLS_STR, "http,https");
   curl_easy_setopt(curl.get(), CURLOPT_FAILONERROR, 1L);
   curl_easy_setopt(curl.get(), CURLOPT_NOSIGNAL, 1L);
-  curl_easy_setopt(curl.get(), CURLOPT_TIMEOUT_MS, 2000L);
+  curl_easy_setopt(curl.get(), CURLOPT_TIMEOUT_MS, fir ? 30000L : 2000L);
   curl_easy_setopt(curl.get(), CURLOPT_WRITEFUNCTION, append);
-  curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, &bytes);
+  curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, &download);
   if (curl_easy_perform(curl.get()) != CURLE_OK)
     throw std::runtime_error("Could not download DSP profile");
   if (digest(bytes) != id)
     throw std::runtime_error("Downloaded profile SHA-256 mismatch");
-  parse(bytes);
+  if (fir)
+    parseFir(bytes);
+  else
+    parse(bytes);
   fs::create_directories(path.parent_path());
   auto temp = path;
   temp += ".tmp";
@@ -129,6 +161,6 @@ void fetch(const std::string &id, const std::string &url) {
   if (!file)
     throw std::runtime_error("Could not cache DSP profile");
   fs::rename(temp, path);
-  trimCache(path.parent_path(), id);
+  trimCache(path.parent_path(), id, fir);
 }
 } // namespace dsp_profiles

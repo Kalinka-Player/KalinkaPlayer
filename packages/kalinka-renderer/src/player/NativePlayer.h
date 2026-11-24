@@ -16,6 +16,8 @@
 #include "../native_player/StateMonitor.h"
 #include "Player.h"
 
+struct FirFilterBank;
+
 /**
  * @brief The real Player: the native audio graph behind the protocol seam.
  *
@@ -112,6 +114,7 @@ private:
 
   bool ensurePlayer();
   void rebuildPlayer();
+  void updateRoomCorrection();
   /// Whether the graph holds a source it is playing, preparing or paused on.
   bool onAir() const;
   void startPumps();
@@ -152,6 +155,8 @@ private:
   boost::asio::io_context &ioc_;
   StateSink sink_;
   std::unique_ptr<DspSettings> dsp_;
+  std::shared_ptr<FirFilterBank> firFilter_;
+  std::shared_ptr<LiveFir> liveFir_;
   std::map<std::string, std::string> settings_ = defaultSettings();
   // Never merged into settings_: that is the configured value, which the
   // config plane reports and persistOverrides() writes.

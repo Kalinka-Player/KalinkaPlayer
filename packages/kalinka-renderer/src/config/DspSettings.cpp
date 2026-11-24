@@ -58,7 +58,7 @@ void DspSettings::fillConfig(renderer_pb::ConfigSection &out) const {
   if (profile)
     option(selected, values.at("dsp.profile"), profile->name);
   field("dsp.bypass", "Bypass", renderer_pb::CONFIG_FIELD_TYPE_BOOL,
-        "Compare playback with the correction and preamp bypassed.");
+        "Bypass the FIR filter, parametric EQ and preamp together.");
   auto &mode =
       field("dsp.preamp", "Preamp", renderer_pb::CONFIG_FIELD_TYPE_ENUM,
             "Automatic reserves headroom for the filters on each channel.");
@@ -103,6 +103,9 @@ bool DspSettings::set(const std::string &path, const std::string &value,
 
 bool DspSettings::applyConfig(const std::string &path, const std::string &value,
                               std::string &error) {
+  if (const auto current = values.find(path);
+      current != values.end() && current->second == value)
+    return true;
   if (!set(path, value, error))
     return false;
   updateSettingsOverrides(values, defaults);
@@ -110,8 +113,10 @@ bool DspSettings::applyConfig(const std::string &path, const std::string &value,
   return true;
 }
 
+bool DspSettings::bypassed() const { return values.at("dsp.bypass") == "true"; }
+
 peq::Settings DspSettings::current() const {
-  if (values.at("dsp.enabled") != "true" || values.at("dsp.bypass") == "true")
+  if (values.at("dsp.enabled") != "true" || bypassed())
     return {};
   peq::Settings settings{profile, std::nullopt};
   if (values.at("dsp.preamp") == "manual") {
