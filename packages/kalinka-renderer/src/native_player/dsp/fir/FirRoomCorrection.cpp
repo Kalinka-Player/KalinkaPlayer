@@ -409,7 +409,8 @@ FirRoomCorrection::output(const StreamAudioFormat &format) const {
 SignalPath FirRoomCorrection::describe(const StreamAudioFormat &f) const {
   if (!handles(f))
     return {};
-  return {{{"fir", "FIR room correction", std::format("{} taps", taps)}},
+  return {{{signal_step::kFir, "FIR room correction",
+            std::format("{} taps", taps)}},
           1000.0 * latency / rate};
 }
 

@@ -172,6 +172,8 @@ add_library(kalinka_native_player STATIC
   src/native_player/dsp/dsd/DsdGainSetting.cpp
   src/native_player/dsp/dsd/DsdPcmRate.cpp
   src/native_player/dsp/dsd/Stage1.cpp
+  src/native_player/dsp/fir/LiveFir.cpp
+  src/native_player/dsp/fir/FirImpulse.cpp
   src/native_player/dsp/fir/FirRoomCorrection.cpp
   src/native_player/dsp/fir/FirKernels.cpp
   src/native_player/dsp/fir/HalfBandDecimator.cpp
@@ -259,6 +261,7 @@ add_executable(kalinka-renderer
   src/player/StateTranslator.cpp
   src/player/StubPlayer.cpp
 )
+target_include_directories(kalinka-renderer PRIVATE src/native_player)
 target_include_directories(kalinka-renderer SYSTEM PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/mdns
 )

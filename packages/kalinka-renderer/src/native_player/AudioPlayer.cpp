@@ -10,8 +10,8 @@
 #include "DsdFormat.h"
 #include "FileInputNode.h"
 #include "FlacStreamDecoder.h"
-#include "Log.h"
 #include "LivePcmStreamDecoder.h"
+#include "Log.h"
 #include "Mp3StreamDecoder.h"
 #include "Mp4StreamDecoder.h"
 #include "PerfMon.h"
@@ -25,6 +25,7 @@
 #include "dsp/dsd/DsdGainSetting.h"
 #include "dsp/dsd/DsdPcmRate.h"
 #include "dsp/dsd/DsdToPcmProcessor.h"
+#include "dsp/fir/LiveFir.h"
 #include "dsp/output/OutputStage.h"
 
 #include <algorithm>
@@ -65,13 +66,15 @@ double dsdGain(const std::string &setting) {
 // tests.
 std::unique_ptr<DspProcessor>
 dspProcessorFor(const Config &config,
-                const std::vector<StreamAudioFormat> &device) {
+                const std::vector<StreamAudioFormat> &device,
+                const std::shared_ptr<LiveFir> &fir) {
   const auto mode = value_or(config, "output.dsd_mode", std::string("disabled"));
   if (mode == "pcm" || mode == "auto") {
     return std::make_unique<DsdToPcmProcessor>(
         device,
         dsdPcmMultiple(value_or(config, "dsd.pcm_rate", std::string("auto"))),
-        dsdFilterSetting(value_or(config, "dsd.filter", std::string("auto"))));
+        dsdFilterSetting(value_or(config, "dsd.filter", std::string("auto"))),
+        fir);
   }
   const auto delay =
       std::chrono::milliseconds(value_or(config, "dsp.delay_ms", 0));
@@ -357,21 +360,25 @@ struct StreamNodes {
   }
 };
 
-AudioPlayer::AudioPlayer(const Config &config)
+AudioPlayer::AudioPlayer(const Config &config, std::shared_ptr<LiveFir> fir,
+                         std::vector<unsigned> firRates)
     : config(config), streamConfig(config),
       audioEmitter(std::make_shared<AlsaAudioEmitter>(config)),
       streamSwitcher(std::make_shared<AudioStreamSwitcher>()),
       // Before PCM holds the device; queued DSD tracks choose from the cache.
-      deviceFormats(
-          probeOutput(
-              value_or(config, "output.alsa.device", std::string("default")))
-              .formats),
+      deviceFormats(probeOutput(value_or(config, "output.alsa.device",
+                                         std::string("default")))
+                        .formats),
+      liveFir(std::move(fir)),
       dspStage(std::make_shared<DspStage>(
-          dspProcessorFor(config, deviceFormats))),
-      outputStage(std::make_shared<OutputStage>(deviceFormats)) {
+          liveFir, dspProcessorFor(config, deviceFormats, liveFir))),
+      outputStage(std::make_shared<OutputStage>(
+          deviceFormats, std::random_device{}(), std::move(firRates))) {
   dspStage->connectTo(streamSwitcher);
   outputStage->connectTo(dspStage);
-  outputStage->reportTo(events);
+  outputStage->reportTo(events, [stage = dspStage]() {
+    return stage->unsettledFramesInLastRead();
+  });
   setDsdGain(value_or(config, "dsd.gain_db", std::string("safe")));
   audioEmitter->fadeWith(outputStage);
   std::erase_if(streamConfig,
@@ -591,8 +598,9 @@ std::unique_ptr<VolumeMonitor> AudioPlayer::volumeMonitor() {
 SignalPath AudioPlayer::signalPath(const StreamInfo &heard) const {
   const auto decoded = heard.decodedFormat.value_or(heard.format);
   SignalPath path = dspStage->describe(decoded);
-  const auto added =
-      outputStage->describe(decoded, dspStage->handsOn(decoded), heard.format);
+  const auto added = outputStage->describe(
+      decoded, dspStage->handsOn(decoded), heard.format,
+      liveFir && liveFir->handles(decoded) && path.steps.empty());
   path.steps.insert(path.steps.end(), added.begin(), added.end());
   return path;
 }

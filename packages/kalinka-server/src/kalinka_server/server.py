@@ -123,7 +123,7 @@ from .device_ws_handler import (
 )
 from .renderer_link import RendererLink
 from .renderer_ws_handler import handle_renderer_connection
-from .dsp_profiles import DspProfiles
+from .dsp_profiles import DspProfiles, RewImport
 from .renderer_config import RendererConfigService
 from .output_capabilities import OutputCapabilityTracker
 from .stream_state import to_stream_id
@@ -1746,6 +1746,18 @@ async def create_app(
         snapshot = await _renderer_config_call(renderer_configs.get(renderer_id))
         await asyncio.to_thread(profiles.offer, snapshot)
         return core_renderer_settings.merge_into(snapshot, renderer_id)
+
+    @app.put("/renderer/{renderer_id}/eq")
+    async def renderer_eq_edit(renderer_id: str, payload: RewImport):
+        """Apply the current EQ curve without publishing a named preset."""
+        if renderer_registry.get(renderer_id) is None:
+            raise HTTPException(404, "Unknown renderer")
+        try:
+            return await _renderer_config_call(
+                profiles.edit(renderer_id, payload, renderer_configs)
+            )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     @app.put("/renderer/{renderer_id}/config")
     async def renderer_config_put(renderer_id: str, payload: Dict[str, Any]):

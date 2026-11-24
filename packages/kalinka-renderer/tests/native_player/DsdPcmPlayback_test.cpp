@@ -1,5 +1,6 @@
 #include "AudioPlayer.h"
 #include "StateMonitor.h"
+#include "dsp/fir/LiveFir.h"
 
 #include "Analysis.h"
 #include "SigmaDelta.h"
@@ -85,11 +86,12 @@ protected:
   /// The left channel ALSA was handed, full scale ±1, with @p settings
   /// besides the capture device and `pcm` mode.
   std::vector<double> play(const std::vector<std::string> &files,
-                           Config settings = {}) {
+                           Config settings = {},
+                           std::shared_ptr<LiveFir> fir = {}) {
     {
       settings.insert({{"output.alsa.device", "capture"},
                        {"output.dsd_mode", "pcm"}});
-      AudioPlayer player(settings);
+      AudioPlayer player(settings, std::move(fir));
       auto monitor = player.monitor();
       StreamId id = 0;
       for (const auto &file : files)
@@ -166,6 +168,43 @@ TEST_F(DsdPcmPlaybackTest, ADsfTrackPlaysAsPcmAtFourTimesItsBase) {
   EXPECT_LT(measured.thdnDb, -110.0);
 }
 
+TEST_F(DsdPcmPlaybackTest,
+       StereoFirUsesTheConvertedRateAndPreservesFramePositions) {
+  const auto file = dsf("tone.dsf", toneBits());
+  const auto dry = play({file});
+  ASSERT_TRUE(path);
+  const auto dryPath = *path;
+  const auto fir = std::make_shared<LiveFir>();
+  std::vector<double> taps(69);
+  taps.back() = .25;
+  for (const unsigned rate : {48000u, kPcmRate}) {
+    SCOPED_TRACE(rate);
+    auto bank = std::make_shared<FirFilterBank>();
+    bank->filters.emplace(
+        rate, std::make_shared<FirRoomCorrection>(rate, taps, taps));
+    fir->select(bank);
+    const auto result = play({file}, {}, fir);
+    ASSERT_EQ(result.size(), dry.size());
+    ASSERT_TRUE(path);
+    double worst = 0;
+    const auto delay = rate == kPcmRate ? taps.size() - 1 : 0;
+    const double gain = rate == kPcmRate ? .25 : 1.;
+    for (size_t i = delay; i < dry.size(); ++i)
+      worst = std::max(worst, std::abs(result[i] - gain * dry[i - delay]));
+    EXPECT_LT(worst, 1e-10);
+    if (rate == kPcmRate) {
+      ASSERT_EQ(path->steps.size(), 3u);
+      EXPECT_EQ(path->steps[0].kind, signal_step::kDsdToPcm);
+      EXPECT_EQ(path->steps[1].kind, signal_step::kFir);
+      EXPECT_EQ(path->steps[2].kind, signal_step::kDsdGain);
+      EXPECT_NEAR(path->latencyMs - dryPath.latencyMs,
+                  1000.0 * FirRoomCorrection::kPartitions.head / kPcmRate, 1e-8);
+    } else {
+      EXPECT_EQ(*path, dryPath);
+    }
+  }
+}
+
 TEST_F(DsdPcmPlaybackTest, TheSignalPathNamesTheConversionAndTheGain) {
   play({dsf("tone.dsf", toneBits())});
   ASSERT_TRUE(path);
@@ -207,6 +246,7 @@ TEST_F(DsdPcmPlaybackTest, TheLevelIsTheOneAskedFor) {
 TEST_F(DsdPcmPlaybackTest, TheSpecifiedPeakConvertsWithoutClippingAtTheSafeGain) {
   for (const unsigned rate : {kDsd64, 2 * kDsd64}) {
     SCOPED_TRACE(rate);
+    auto bank = std::make_shared<FirFilterBank>();
     const auto left = play({dsf("peak.dsf", peakToneBits(rate), rate)});
     ASSERT_TRUE(opened);
     ASSERT_EQ(opened->sampleFormat, PCM_FLOAT64_LE)

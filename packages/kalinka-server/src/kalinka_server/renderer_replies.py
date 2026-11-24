@@ -38,6 +38,7 @@ class PendingReplies:
         renderer_id: str,
         link: RendererLink,
         send: Callable[[int], Awaitable[None]],
+        timeout_s: float | None = None,
     ) -> Any:
         """Reserve a message id, hand it to ``send``, and await the reply."""
         # Reserved before the write: the answer must never be able to arrive
@@ -48,7 +49,9 @@ class PendingReplies:
         self._pending[key] = future
         try:
             await send(message_id)
-            return await asyncio.wait_for(future, self._timeout_s)
+            return await asyncio.wait_for(
+                future, self._timeout_s if timeout_s is None else timeout_s
+            )
         except asyncio.TimeoutError:
             logger.warning(
                 "Renderer %s did not answer the %s request",

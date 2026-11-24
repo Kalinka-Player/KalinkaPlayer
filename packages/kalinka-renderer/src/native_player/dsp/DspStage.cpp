@@ -26,8 +26,10 @@ StreamState about(AudioGraphNodeState state, std::optional<StreamId> id) {
 }
 } // namespace
 
-DspStage::DspStage(std::unique_ptr<DspProcessor> processor)
-    : processor(std::move(processor)) {
+DspStage::DspStage(std::shared_ptr<DspProcessor> processor,
+                   std::unique_ptr<DspProcessor> fallback)
+    : processor(processor ? std::move(processor) : std::move(fallback)),
+      fallback(std::move(fallback)) {
   shared.discards.reserve(kDiscardRoom);
   discardsTaken.reserve(kDiscardRoom);
 }
@@ -101,10 +103,12 @@ StreamState DspStage::shown(const Shared &shared) const {
 
 StreamState DspStage::presented(StreamState state,
                                 bool upstreamPosition) const {
-  if (!state.streamInfo || !processor->handles(state.streamInfo->format)) {
+  const auto *selected =
+      state.streamInfo ? processorFor(state.streamInfo->format) : nullptr;
+  if (!selected) {
     return state;
   }
-  const auto out = processor->output(state.streamInfo->format);
+  const auto out = selected->output(state.streamInfo->format);
   if (out.format != state.streamInfo->format &&
       !state.streamInfo->decodedFormat)
     state.streamInfo->decodedFormat = state.streamInfo->format;
@@ -116,15 +120,20 @@ StreamState DspStage::presented(StreamState state,
   return state;
 }
 
+DspProcessor *DspStage::processorFor(const StreamAudioFormat &format) const {
+  if (processor && processor->handles(format))
+    return processor.get();
+  return fallback && fallback->handles(format) ? fallback.get() : nullptr;
+}
+
 SignalPath DspStage::describe(const StreamAudioFormat &format) const {
-  return processor && processor->handles(format) ? processor->describe(format)
-                                                 : SignalPath{};
+  const auto *selected = processorFor(format);
+  return selected ? selected->describe(format) : SignalPath{};
 }
 
 StreamAudioFormat DspStage::handsOn(const StreamAudioFormat &format) const {
-  return processor && processor->handles(format)
-             ? processor->output(format).format
-             : format;
+  const auto *selected = processorFor(format);
+  return selected ? selected->output(format).format : format;
 }
 
 void DspStage::takeUpstream() {
@@ -343,7 +352,7 @@ bool DspStage::startRun(std::optional<long> position) {
   // A source still buffering may already hold frames, and they are processed.
   const bool live = upstreamSeen.state == AudioGraphNodeState::STREAMING ||
                     upstreamSeen.state == AudioGraphNodeState::PREPARING;
-  if (!live || !info.has_value() || !processor->handles(info->format)) {
+  if (!live || !info || !processorFor(info->format)) {
     return false;
   }
   endRun();
@@ -363,24 +372,25 @@ bool DspStage::startRun(std::optional<long> position) {
 }
 
 void DspStage::prepareProcessor(const StreamAudioFormat &format) {
-  const auto out = processor->output(format);
+  runProcessor = processorFor(format);
+  const auto out = runProcessor->output(format);
   ratio = out.ratio;
   inFrameBytes = format.channels * sampleSize(format.sampleFormat);
   outFrameBytes = out.format.channels * sampleSize(out.format.sampleFormat);
-  latency = processor->start(format);
+  latency = runProcessor->start(format);
   runFormat = format;
   fifo.resize(kFifoFrames * outFrameBytes);
   inputChunkFrames = kChunkFrames;
   input.resize(inputChunkFrames * inFrameBytes);
   output.resize((kChunkFrames + 1) * outFrameBytes);
-  keepSuccessorInput = ratio > 1 || processor->history() != 0;
+  keepSuccessorInput = ratio > 1 || runProcessor->needsSuccessorInput();
   if (keepSuccessorInput)
     readAhead.reserve((latency + 1) * ratio *
                       std::max(inFrameBytes, outFrameBytes));
 }
 
 void DspStage::feed(Segment &segment, const uint8_t *data, size_t frames) {
-  const size_t made = processor->process(data, output.data(), frames);
+  const size_t made = runProcessor->process(data, output.data(), frames);
   fedIn += frames;
   segment.end = std::max(segment.end, fedIn / ratio);
   segment.partialEnd = fedIn % ratio != 0;
@@ -413,7 +423,8 @@ bool DspStage::continueIn(const StreamAudioFormat &format) {
   if (format == runFormat)
     return true;
   const size_t width = format.channels * sampleSize(format.sampleFormat);
-  if (!width || width > input.size() || !processor->changeInputFormat(format))
+  if (!width || width > input.size() || processorFor(format) != runProcessor ||
+      !runProcessor->changeInputFormat(format))
     return false;
   inFrameBytes = width;
   inputChunkFrames = std::min(kChunkFrames, input.size() / width);
@@ -512,7 +523,7 @@ bool DspStage::perform(Step step, size_t count) {
   }
   case Step::Flush: {
     const size_t made =
-        processor->process(nullptr, output.data(), count * ratio);
+        runProcessor->process(nullptr, output.data(), count * ratio);
     flushLeft -= std::min(flushLeft, made);
     append(output.data(), made);
     publish();
@@ -610,6 +621,7 @@ size_t DspStage::fill(std::stop_token token, size_t bytes, bool wait,
 }
 
 size_t DspStage::read(void *data, size_t size) {
+  lastUnsettled = 0;
   if (!processor) {
     return passRead(data, size);
   }
@@ -624,6 +636,10 @@ size_t DspStage::read(void *data, size_t size) {
   std::memcpy(data, fifo.data() + fifoOffset, frames * outFrameBytes);
   fifoOffset += frames * outFrameBytes;
   handed += frames;
+  const auto settled = runProcessor->settledOutputFrames();
+  const auto buffered = fifoFrames();
+  lastUnsettled =
+      frames - (settled > buffered ? std::min(frames, settled - buffered) : 0);
   if (fifoFrames() == 0) {
     fifoOffset = 0;
   }
@@ -707,11 +723,11 @@ size_t DspStage::seek(std::optional<StreamId> stream, size_t position) {
   if (atEnd)
     position = info->streamSize / r;
   size_t early = 0;
-  const bool filtered = info && processor->handles(info->format);
+  const auto *filtered = info ? processorFor(info->format) : nullptr;
   if (filtered && !atEnd) {
     const size_t history = info->format == runFormat
-                               ? processor->history()
-                               : processor->preparedHistory();
+                               ? filtered->history()
+                               : filtered->historyFor(info->format);
     early = std::min(position, history);
   }
   if (position - early > std::numeric_limits<size_t>::max() / r)
@@ -743,9 +759,8 @@ size_t DspStage::seek(std::optional<StreamId> stream, size_t position) {
 }
 
 unsigned DspStage::ratioOf(const std::optional<StreamInfo> &info) const {
-  return info && processor->handles(info->format)
-             ? processor->output(info->format).ratio
-             : 1;
+  const auto *selected = info ? processorFor(info->format) : nullptr;
+  return selected ? selected->output(info->format).ratio : 1;
 }
 
 std::optional<long> DspStage::streamReadPosition() const {

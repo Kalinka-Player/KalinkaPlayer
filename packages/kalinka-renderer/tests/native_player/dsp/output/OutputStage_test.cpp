@@ -331,6 +331,31 @@ TEST(OutputStage, ClippingIsPostedWithTheCountSinceTheSourceBegan) {
   EXPECT_EQ(s.stage->clippedSamples(), 5000u) << "the total runs on";
 }
 
+TEST(OutputStage, RoomCorrectionChangesClearClippingWithoutAnotherRead) {
+  Stage s(pcm(PCM_FLOAT64_LE), asBytes(std::vector<double>(18000, 1.5)),
+          k24In32);
+  const auto events = std::make_shared<PlaybackEvents>();
+  s.stage->reportTo(events);
+  auto expectCount = [&](uint64_t count) {
+    EXPECT_EQ(events->take({}),
+              (std::vector<PlaybackEvent>{{1, Clipping{count}}}));
+  };
+  readSamples<int32_t>(*s.stage, 1000);
+  expectCount(1000);
+  // May be a bypass or FIR change that leaves the effective PEQ plan dry.
+  s.stage->setRoomEq({});
+  expectCount(0);
+  readSamples<int32_t>(*s.stage, 48);
+  expectCount(48);
+  s.stage->setRoomEq({nullptr, -12.});
+  expectCount(0);
+  readSamples<int32_t>(*s.stage, 3000); // Old gain still clips during the ramp.
+  EXPECT_GT(s.stage->clippedSamples(), 1048u);
+  s.stage->setRoomEq({});
+  readSamples<int32_t>(*s.stage, 2 * (1200 + 17));
+  expectCount(34); // Only samples at the new gain.
+}
+
 TEST(OutputStage, NothingIsPostedWhileNothingClips) {
   Stage s(pcm(PCM_FLOAT64_LE), asBytes(std::vector<double>(2 * 4000, 0.5)),
           k24In32);

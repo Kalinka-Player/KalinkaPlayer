@@ -2,6 +2,7 @@
 #include "CountingNode.h"
 #include "dsp/DspStage.h"
 #include "dsp/fir/FirRoomCorrection.h"
+#include "dsp/fir/LiveFir.h"
 
 #include <gtest/gtest.h>
 
@@ -19,6 +20,62 @@ void process(FirRoomCorrection &fir, const Stereo *in, std::span<Stereo> out) {
   ASSERT_EQ(fir.process(reinterpret_cast<const uint8_t *>(in),
                         reinterpret_cast<uint8_t *>(out.data()), out.size()),
             out.size());
+}
+
+TEST(LiveFirTest,
+     NewlyInstalledLongImpulseCrossfadesWithoutRestartOrMissingHistory) {
+  LiveFir live;
+  const auto lag = live.start(format);
+  // The entire correction is delayed. Mixing it before its history is ready
+  // would briefly mute a steady signal when enabled during playback.
+  std::vector<double> taps(10001, 0);
+  taps.back() = 0.25;
+  auto filter = std::make_shared<FirRoomCorrection>(48000, taps, taps);
+  const auto pull = [&](size_t frames) {
+    std::vector<Stereo> in(frames, {1, -1}), out(frames);
+    live.process(reinterpret_cast<const uint8_t *>(in.data()),
+                 reinterpret_cast<uint8_t *>(out.data()), frames);
+    return out;
+  };
+  pull(lag);
+  auto bank = std::make_shared<FirFilterBank>();
+  bank->filters.emplace(48000, filter);
+  bank->filters.emplace(
+      192000, std::make_shared<FirRoomCorrection>(192000, std::vector{0.5},
+                                                  std::vector{0.5}));
+  live.select(bank);
+  EXPECT_EQ(live.settledOutputFrames(), 0u);
+  const auto expected = [&](size_t frames, double from, double to) {
+    const auto out = pull(frames);
+    for (size_t i = 0; i < frames; ++i) {
+      const double sample = std::lerp(from, to, double(i + 1) / frames);
+      ASSERT_NEAR(out[i][0], sample, 1e-10);
+      ASSERT_NEAR(out[i][1], -sample, 1e-10);
+    }
+  };
+  expected(lag + taps.size() - 1, 1., 1.);
+  expected(1200, 1., .25);
+  EXPECT_EQ(live.settledOutputFrames(), 0u);
+  pull(200);
+  EXPECT_EQ(live.settledOutputFrames(), 200u);
+  live.select(nullptr);
+  EXPECT_EQ(live.settledOutputFrames(), 0u);
+  expected(1200, .25, 1.);
+  expected(500, 1., 1.);
+  EXPECT_EQ(live.settledOutputFrames(), 500u);
+  live.select(bank);
+  auto stream = format;
+  for (unsigned rate : {192000u, 96000u, 48000u}) {
+    stream.sampleRate = rate;
+    live.start(stream);
+    const auto out = pull(lag + taps.size() + 1);
+    EXPECT_NEAR(out.back()[0],
+                rate == 192000  ? 0.5
+                : rate == 48000 ? 0.25
+                                : 1.0,
+                1e-10);
+    EXPECT_EQ(live.describe(stream).steps.empty(), rate == 96000);
+  }
 }
 
 TEST(FirRoomCorrectionTest,

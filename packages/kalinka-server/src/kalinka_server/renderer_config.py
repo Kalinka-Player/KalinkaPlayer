@@ -15,6 +15,7 @@ request.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Optional
 
 from . import renderer_state
@@ -67,6 +68,7 @@ def _range(field) -> Optional[dict]:
 def _field_to_dict(field) -> dict:
     return {
         "path": field.path,
+        **({"supports_fir_import": True} if field.supports_fir_import else {}),
         "title": field.title,
         "description": field.description,
         "help_details": field.help_details,
@@ -158,7 +160,10 @@ class RendererConfigService:
             else:
                 await ws.send_config_update(message_id, changes)
 
-        return await self._pending.request(renderer_id, ws, send)
+        # Importing several full-length WAVs includes the transfer and FFT preparation.
+        fir = (changes or {}).get("output.rew_fir_profile", "")
+        timeout = 55.0 if re.fullmatch("[0-9a-f]{64}", str(fir)) else None
+        return await self._pending.request(renderer_id, ws, send, timeout)
 
     def _connection(self, renderer_id: str) -> RendererLink:
         return self._registry.require_session(renderer_id)

@@ -177,6 +177,11 @@ class RendererSession(RendererLink):
             env.config_update.dsp_profile_url = (
                 f"{server_base_url(addr)}/dsp/profiles/{digest}"
             )
+        fir = changes.get("output.rew_fir_profile", "")
+        if addr and re.fullmatch("[0-9a-f]{64}", str(fir)):
+            env.config_update.fir_profile_url = (
+                f"{server_base_url(addr)}/dsp/profiles/{fir}"
+            )
         await self._send(env)
 
     async def send_upgrade(self, message_id: int, target_version: str) -> None:

@@ -1,6 +1,7 @@
 #include "dsp/output/Quantiser.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -52,7 +53,7 @@ Quantiser::Quantiser(size_t capacity, unsigned channels, uint64_t seed)
 
 void Quantiser::pack(const double *const *in, unsigned channels, size_t frames,
                      GainRamp::Span gain, AudioSampleFormat format,
-                     unsigned bits, void *out) {
+                     unsigned bits, void *out, bool preserveExact) {
   if (frames > capacity || channels > rounded.size())
     throw std::invalid_argument("Quantiser asked for more than it holds");
   auto *bytes = static_cast<uint8_t *>(out);
@@ -79,9 +80,23 @@ void Quantiser::pack(const double *const *in, unsigned channels, size_t frames,
   bits = std::min(bits, container);
   const double scale = double(1ull << (bits - 1));
   const auto high = int32_t((1ll << (bits - 1)) - 1), low = -high - 1;
-  for (unsigned c = 0; c < channels; ++c)
+  for (unsigned c = 0; c < channels; ++c) {
+    // Bypassed integer PCM is exact in float64. Restore it without adding
+    // noise when its original samples fit the output precision.
+    if (preserveExact && gain.from == 1 && gain.to == 1) {
+      size_t i = 0;
+      for (; i < frames; ++i) {
+        const double value = in[c][i] * scale;
+        if (!(value >= low && value <= high && value == std::trunc(value)))
+          break;
+        rounded[c][i] = static_cast<int32_t>(value);
+      }
+      if (i == frames)
+        continue;
+    }
     clipped_ += dither.quantise(in[c], frames, gain.from, step, scale, low,
                                 high, noise.data(), rounded[c].data());
+  }
   const unsigned shift = container - bits;
   switch (format) {
   case PCM16_LE:

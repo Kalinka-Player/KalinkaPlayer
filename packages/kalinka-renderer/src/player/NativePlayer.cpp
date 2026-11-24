@@ -15,10 +15,13 @@
 #include <utility>
 
 #include "../config/ConfigContributor.h"
+#include "../config/DspProfileCache.h"
 #include "../config/SettingsPersistence.h"
 #include "../native_player/AlsaDeviceEnumeration.h"
 #include "../native_player/AudioGraphHttpStream.h"
 #include "../native_player/DsdFormat.h"
+#include "../native_player/dsp/fir/FirImpulse.h"
+#include "../native_player/dsp/fir/LiveFir.h"
 #include "StateTranslator.h"
 
 namespace asio = boost::asio;
@@ -168,6 +171,72 @@ constexpr const char *kConvertedDsdHelp =
 constexpr const char *kFormatChangeHelp =
     "Some DACs need extra time or must be reopened after a format change. Adjust "
     "these settings if tracks fail to start correctly.";
+
+const char *const kFirProfile = "output.rew_fir_profile";
+const char *const kFirOff = "off";
+
+std::vector<std::string> firProfiles() {
+  const auto dir = dsp_profiles::directory() / "fir";
+  std::vector<std::string> names;
+  std::error_code error;
+  for (std::filesystem::directory_iterator it(dir, error), end;
+       !error && it != end; it.increment(error)) {
+    const auto name = it->path().filename();
+    auto extension = name.extension().string();
+    std::ranges::transform(extension, extension.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+    if (extension == ".wav" &&
+        name.string().find_first_of("\r\n") == std::string::npos &&
+        std::filesystem::is_regular_file(it->symlink_status(error)))
+      names.push_back(name.string());
+  }
+  std::ranges::sort(names);
+  return names;
+}
+
+std::shared_ptr<FirFilterBank> loadFirProfile(const std::string &name) {
+  if (name == kFirOff)
+    return {};
+  auto bank = std::make_shared<FirFilterBank>();
+  auto add = [&](const FirImpulse &impulse) {
+    if (bank->filters.contains(impulse.rate))
+      throw std::runtime_error("FIR profile contains duplicate sample rates");
+    const auto &left = impulse.channels[0], &right = impulse.channels[1];
+    bank->filters.emplace(
+        impulse.rate, std::make_shared<FirRoomCorrection>(
+                          impulse.rate, left, right.empty() ? left : right));
+  };
+  if (dsp_profiles::validId(name)) {
+    const auto profile = dsp_profiles::loadFir(name);
+    bank->name = profile.name();
+    for (const auto &wav : profile.impulse_wav())
+      add(FirImpulse::decode(wav));
+  } else {
+    if (!std::ranges::binary_search(firProfiles(), name))
+      throw std::runtime_error("Unknown filter impulse WAV");
+    bank->name = name;
+    add(FirImpulse::load(dsp_profiles::directory() / "fir" / name));
+  }
+  return bank;
+}
+
+std::vector<unsigned>
+installedFirRates(const std::shared_ptr<FirFilterBank> &selected) {
+  std::vector<unsigned> rates;
+  if (selected)
+    for (const auto &[rate, filter] : selected->filters) rates.push_back(rate);
+  for (const auto &file : firProfiles()) {
+    try {
+      const auto rate =
+          FirImpulse::sampleRate(dsp_profiles::directory() / "fir" / file);
+      if (std::ranges::find(rates, rate) == rates.end())
+        rates.push_back(rate);
+    } catch (const std::exception &e) {
+      spdlog::warn("Ignoring FIR header {}: {}", file, e.what());
+    }
+  }
+  return rates;
+}
 
 const Knob kOutputKnobs[] = {
     {"output.latency_ms",
@@ -557,6 +626,7 @@ bool knobTakes(const std::string &path, const std::string &value,
 const std::map<std::string, std::string> &NativePlayer::defaultSettings() {
   static const std::map<std::string, std::string> defaults{
       {"output.driver", "alsa"},
+      {kFirProfile, kFirOff},
       {"output.device", "default"},
       {"output.volume_mode", "auto"},
       {"output.dsd_mode", "auto"},
@@ -628,8 +698,67 @@ std::shared_ptr<ConfigContributor> NativePlayer::dsdSettings() {
   return std::make_shared<KnobSection>(shared_from_this(), kDsd);
 }
 
+// The schema section controls placement in released clients. Keep the FIR key
+// stable for saved settings, profile imports and clients that edit it by path.
+class NativePlayer::RoomCorrectionSection final : public ConfigContributor {
+public:
+  explicit RoomCorrectionSection(std::shared_ptr<NativePlayer> player)
+      : player_(std::move(player)) {}
+
+  void fillConfig(renderer_pb::ConfigSection &out) const override;
+
+  bool applyConfig(const std::string &path, const std::string &value,
+                   std::string &error) override {
+    if (path == kFirProfile)
+      return player_->applySetting(path, value, error);
+    return player_->dsp_->applyConfig(path, value, error);
+  }
+
+private:
+  const std::shared_ptr<NativePlayer> player_;
+};
+
+void NativePlayer::RoomCorrectionSection::fillConfig(
+    renderer_pb::ConfigSection &out) const {
+  player_->dsp_->fillConfig(out);
+  auto *fir = out.add_fields();
+  fir->set_path(kFirProfile);
+  fir->set_title("FIR Convolution");
+  fir->set_supports_fir_import(true);
+  fir->set_description(
+      "Applies the impulse matching the stereo PCM playback rate, including PCM "
+      "converted from DSD. "
+      "Switch between this filter and Off during playback.");
+  fir->set_type(renderer_pb::CONFIG_FIELD_TYPE_ENUM);
+  fir->set_importance(renderer_pb::CONFIG_IMPORTANCE_SIMPLE);
+  fir->set_apply(renderer_pb::APPLY_COST_INSTANT);
+  fir->set_default_value(kFirOff);
+  fir->set_value(player_->settings_.at(kFirProfile));
+  auto *off = fir->add_options();
+  off->set_value(kFirOff);
+  off->set_label("Off");
+  if (player_->firFilter_ &&
+      dsp_profiles::validId(player_->settings_.at(kFirProfile))) {
+    auto *option = fir->add_options();
+    option->set_value(player_->settings_.at(kFirProfile));
+    option->set_label(player_->firFilter_->name);
+    std::string rates;
+    for (const auto &[rate, filter] : player_->firFilter_->filters) {
+      if (!rates.empty())
+        rates += ", ";
+      rates += std::format("{:g}", rate / 1000.0);
+    }
+    option->set_description(rates + " kHz");
+  }
+  for (const auto &name : firProfiles()) {
+    auto *option = fir->add_options();
+    option->set_value(name);
+    option->set_label(name);
+  }
+}
+
 std::shared_ptr<ConfigContributor> NativePlayer::dspSettings() {
-  return {shared_from_this(), dsp_.get()};
+  return std::make_shared<RoomCorrectionSection>(shared_from_this());
 }
 
 void NativePlayer::persistOverrides() const {
@@ -647,7 +776,7 @@ Config NativePlayer::graphConfig() const {
 NativePlayer::NativePlayer(asio::io_context &ioc) : ioc_(ioc) {
   dsp_ = std::make_unique<DspSettings>([this] {
     if (player_) {
-      player_->setRoomEq(dsp_->current());
+      updateRoomCorrection();
       restatePlayback();
     }
   });
@@ -661,6 +790,14 @@ NativePlayer::NativePlayer(asio::io_context &ioc) : ioc_(ioc) {
       spdlog::warn("Ignoring config override {} = '{}': {}; using '{}'", key,
                    value, error, setting->second);
       continue;
+    }
+    if (key == kFirProfile) {
+      try {
+        firFilter_ = loadFirProfile(value);
+      } catch (const std::exception &e) {
+        spdlog::warn("Cannot restore REW FIR profile {}: {}", value, e.what());
+        continue;
+      }
     }
     setting->second = value;
     spdlog::info("Config override {} = '{}'", key, value);
@@ -678,13 +815,21 @@ NativePlayer::~NativePlayer() { stopPumps(); }
 
 void NativePlayer::setStateSink(StateSink sink) { sink_ = std::move(sink); }
 
+void NativePlayer::updateRoomCorrection() {
+  liveFir_->select(dsp_->bypassed() ? nullptr : firFilter_);
+  player_->setRoomEq(dsp_->current());
+}
+
 bool NativePlayer::ensurePlayer() {
   if (player_) {
     return true;
   }
   try {
-    player_ = std::make_unique<AudioPlayer>(graphConfig());
-    player_->setRoomEq(dsp_->current());
+    auto rates = installedFirRates(firFilter_);
+    liveFir_ = std::make_shared<LiveFir>();
+    player_ = std::make_unique<AudioPlayer>(graphConfig(), liveFir_,
+                                            std::move(rates));
+    updateRoomCorrection();
     std::string volumeError;
     if (!player_->configureVolume(effectiveVolumeMode(), "", &volumeError)) {
       spdlog::error("Cannot configure volume mode '{}': {}",
@@ -1126,7 +1271,11 @@ void NativePlayer::fillConfig(renderer_pb::ConfigSection &out) const {
 
   unsigned maxBits = 0;
   unsigned maxRate = 0;
-  for (const auto &format : probeOutput(settings_.at("output.device")).formats) {
+  // The graph has already probed this device. Opening it again to draw the
+  // settings page can compete with playback for an exclusive PCM handle.
+  const std::span<const StreamAudioFormat> formats =
+      player_ ? player_->outputFormats() : std::span<const StreamAudioFormat>{};
+  for (const auto &format : formats) {
     if (isDsd(format.sampleFormat))
       continue;
     // A DAC's resolution: float's container says nothing about it.
@@ -1247,6 +1396,14 @@ bool NativePlayer::applySetting(const std::string &path,
     }
   }
 
+  if (path == kFirProfile) {
+    try {
+      firFilter_ = loadFirProfile(value);
+    } catch (const std::exception &e) {
+      error = e.what();
+      return false;
+    }
+  }
   setting->second = value;
   if (path == "output.device") {
     // Native DSD and DoP were chosen for the old card; Automatic probes each.
@@ -1270,6 +1427,11 @@ bool NativePlayer::applySetting(const std::string &path,
   } else if (appliesLive(path)) {
     if (player_) {
       player_->setDsdGain(value);
+      restatePlayback();
+    }
+  } else if (path == kFirProfile) {
+    if (player_) {
+      updateRoomCorrection();
       restatePlayback();
     }
   } else if (graphKeys().contains(path)) {

@@ -282,7 +282,7 @@ class PlaybackEventReport(PlayQueueEvent):
     on the kinds it knows and ignores the rest. Known so far:
 
     - ``clipping``: ``{clipped_samples}``, samples the renderer's DSP clamped
-      since the play began.
+      in this play since room correction last changed. A zero clears the warning.
 
     ``play_id`` is the play it happened in, as ``PlaybackState.play_id`` names
     it; None for an event about no play in particular. An event can reach a

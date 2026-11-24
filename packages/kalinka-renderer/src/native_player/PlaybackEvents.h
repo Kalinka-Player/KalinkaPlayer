@@ -13,7 +13,8 @@
 
 /// @brief The DSP clamped samples to the output's range.
 struct Clipping {
-  /// Samples clamped since the source began.
+  /// Samples clamped with the current room correction settings in this play.
+  /// Zero clears a previous clipping report after a settings change.
   uint64_t samples = 0;
 
   bool operator==(const Clipping &) const = default;

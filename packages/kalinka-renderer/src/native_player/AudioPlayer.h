@@ -15,6 +15,7 @@
 
 struct StreamState;
 class AudioStreamSwitcher;
+class LiveFir;
 class DspStage;
 namespace peq {
 struct Settings;
@@ -40,7 +41,8 @@ using StreamId = size_t;
 
 class AudioPlayer {
 public:
-  AudioPlayer(const Config &config);
+  AudioPlayer(const Config &config, std::shared_ptr<LiveFir> fir = nullptr,
+              std::vector<unsigned> firRates = {});
   ~AudioPlayer();
 
   // Append a stream under a caller-assigned id (the play queue owns id
@@ -121,6 +123,10 @@ public:
   /// Applies room correction on the running graph.
   void setRoomEq(peq::Settings settings);
 
+  const std::vector<StreamAudioFormat> &outputFormats() const {
+    return deviceFormats;
+  }
+
   /// Whether @p key is read as each stream is appended (those under `input.`
   /// and `decoder.`), rather than once, when the output is built.
   static bool isStreamKey(const std::string &key);
@@ -157,6 +163,7 @@ private:
   std::shared_ptr<AudioStreamSwitcher> streamSwitcher;
   /// What the device was probed to take when the player started.
   const std::vector<StreamAudioFormat> deviceFormats;
+  const std::shared_ptr<LiveFir> liveFir;
   std::shared_ptr<DspStage> dspStage;
   /// Where software volume is applied, between the stage and the emitter.
   std::shared_ptr<OutputStage> outputStage;

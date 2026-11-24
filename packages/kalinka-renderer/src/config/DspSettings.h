@@ -11,6 +11,7 @@ public:
   void fillConfig(kalinka::renderer::v1::ConfigSection &out) const override;
   bool applyConfig(const std::string &path, const std::string &value,
                    std::string &error) override;
+  bool bypassed() const;
   peq::Settings current() const;
 
 private:

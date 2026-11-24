@@ -13,7 +13,7 @@ public:
   using Done = std::function<void(const std::string &, const std::string &)>;
   /// False while another write is fetching a profile. Refuse this whole update.
   [[nodiscard]] bool prepare(const kalinka::renderer::v1::ConfigUpdate &update,
-                             Done done);
+                             Done done, bool fir = false);
 
 private:
   boost::asio::io_context &io;

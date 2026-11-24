@@ -1,6 +1,7 @@
 #include "dsp/dsd/DsdToPcmProcessor.h"
 
 #include "dsp/DspStage.h"
+#include "dsp/fir/LiveFir.h"
 
 #include <gtest/gtest.h>
 
@@ -221,26 +222,41 @@ TEST(DsdToPcmProcessor, ItsHistoryIsTheConvertersReachOnceStarted) {
 TEST(DsdToPcmProcessor, ASeekThroughTheStageSoundsAsARunUnderWayDoes) {
   const auto format = raw(2822400);
   const auto bytes = randomBytes(2 * 40000);
-  const auto play = [&](std::optional<size_t> seek) {
+  const auto play = [&](std::shared_ptr<LiveFir> fir,
+                        std::optional<size_t> seek, bool readFirst = false) {
     auto source = std::make_shared<DsdBytes>(format, bytes);
     DspStage stage(std::make_unique<DsdToPcmProcessor>(
-        std::vector<StreamAudioFormat>{}));
+        std::vector<StreamAudioFormat>{}, std::nullopt, std::nullopt, fir));
     stage.connectTo(source);
-    if (seek) {
+    if (readFirst) {
       std::vector<double> buffer(2 * 1000);
       stage.read(buffer.data(), buffer.size() * 8);
-      EXPECT_EQ(stage.seekTo(*seek), *seek);
     }
+    if (seek)
+      EXPECT_EQ(stage.seekTo(*seek), *seek);
     auto left = pullLeft(stage);
     stage.disconnect(source);
     return left;
   };
-  const auto whole = play(std::nullopt);
-  constexpr size_t kTarget = 12345;
-  const auto sought = play(kTarget);
-  ASSERT_EQ(whole.size(), 20000u);
-  ASSERT_EQ(sought.size(), whole.size() - kTarget);
-  for (size_t i = 0; i < sought.size(); ++i)
-    ASSERT_NEAR(sought[i], whole[kTarget + i], 1e-12)
-        << "output frame " << kTarget + i << " after the seek";
+  // A delayed tap makes a seek that primes only the DSD converter audible.
+  auto fir = std::make_shared<LiveFir>();
+  auto bank = std::make_shared<FirFilterBank>();
+  std::vector<double> taps(2049);
+  taps.back() = .5;
+  bank->filters.emplace(176400,
+                        std::make_shared<FirRoomCorrection>(176400, taps, taps));
+  fir->select(bank);
+  for (const auto &selected : {std::shared_ptr<LiveFir>{}, fir}) {
+    SCOPED_TRACE(bool(selected));
+    const auto whole = play(selected, std::nullopt);
+    ASSERT_EQ(whole.size(), 20000u);
+    constexpr size_t kTarget = 12345;
+    for (const bool readFirst : {false, true}) {
+      SCOPED_TRACE(readFirst);
+      const auto sought = play(selected, kTarget, readFirst);
+      ASSERT_EQ(sought.size(), whole.size() - kTarget);
+      for (size_t i = 0; i < sought.size(); ++i)
+        ASSERT_NEAR(sought[i], whole[kTarget + i], 1e-12) << i;
+    }
+  }
 }

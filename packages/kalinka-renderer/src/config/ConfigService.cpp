@@ -157,7 +157,9 @@ void ConfigService::refuse(const renderer_pb::ConfigUpdate &update,
 void ConfigService::apply(const renderer_pb::ConfigUpdate &update,
                           renderer_pb::ConfigResult &out,
                           const std::string &profileId,
-                          const std::string &profileError, bool decimal) {
+                          const std::string &profileError, bool decimal,
+                          const std::string &firId,
+                          const std::string &firError) {
   renderer_pb::ConfigSnapshot before;
   fillSnapshot(before);
 
@@ -177,13 +179,19 @@ void ConfigService::apply(const renderer_pb::ConfigUpdate &update,
     outcome->set_value(field->value());
 
     std::string error;
+    const bool fir = setting.path() == "output.rew_fir_profile";
+    if (fir && !firError.empty()) {
+      outcome->set_error(firError);
+      continue;
+    }
     const bool selected = setting.path() == "dsp.profile";
     if (selected && !profileError.empty()) {
       outcome->set_error(profileError);
       continue;
     }
     const bool prepared =
-        selected && !profileId.empty() && setting.value() == profileId;
+        (selected && !profileId.empty() && setting.value() == profileId) ||
+        (fir && !firId.empty() && setting.value() == firId);
     if ((!prepared && !fieldAccepts(*field, setting.value(), error)) ||
         !contributors_[declaredBy]->applyConfig(setting.path(), setting.value(),
                                                 error)) {

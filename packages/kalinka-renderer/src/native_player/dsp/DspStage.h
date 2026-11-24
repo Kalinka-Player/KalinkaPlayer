@@ -32,12 +32,16 @@
 class DspStage : public AudioGraphOutputNode, public AudioGraphInputNode {
 public:
   /// @param processor What audio runs through, or null for nothing at all.
-  explicit DspStage(std::unique_ptr<DspProcessor> processor = nullptr);
+  explicit DspStage(std::shared_ptr<DspProcessor> processor = nullptr,
+                    std::unique_ptr<DspProcessor> fallback = nullptr);
   ~DspStage() override;
 
   void connectTo(std::shared_ptr<AudioGraphOutputNode> source) override;
   void disconnect(std::shared_ptr<AudioGraphOutputNode> source) override;
 
+  /// Prefix of the last read that includes a previous filter or its transition.
+  /// Called by the pulling thread before it pulls any further frames.
+  size_t unsettledFramesInLastRead() const { return lastUnsettled; }
   size_t read(void *data, size_t size) override;
   size_t waitForData(std::stop_token stopToken = std::stop_token(),
                      size_t size = 1) override;
@@ -115,7 +119,10 @@ private:
     bool discardEverything = false;
   };
 
-  const std::unique_ptr<DspProcessor> processor;
+  const std::shared_ptr<DspProcessor> processor;
+  const std::unique_ptr<DspProcessor> fallback;
+  DspProcessor *processorFor(const StreamAudioFormat &format) const;
+  DspProcessor *runProcessor = nullptr;
   std::shared_ptr<AudioGraphOutputNode> upstream;
   int upstreamCallback = -1;
   Shared shared;
@@ -154,6 +161,7 @@ private:
   size_t flushLeft = 0;
   std::vector<uint8_t> fifo; ///< Run frames [handed, produced()).
   size_t fifoOffset = 0;
+  size_t lastUnsettled = 0;
   bool keepSuccessorInput = false;
   std::vector<uint8_t> readAhead; ///< Successor prefixes in segment order.
   std::vector<uint8_t> input;
