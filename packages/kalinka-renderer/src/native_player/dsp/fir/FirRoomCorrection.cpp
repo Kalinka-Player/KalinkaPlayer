@@ -327,6 +327,15 @@ FirRoomCorrection::partitionsFor(size_t activeTaps) {
   return activeTaps <= 65536 ? Partitions{kPartitions.head, 5120} : kPartitions;
 }
 
+std::shared_ptr<FirRoomCorrection>
+FirRoomCorrection::converted(unsigned rate, std::span<const double> left,
+                             std::span<const double> right) {
+  auto sizes = partitionsFor(std::max(left.size(), right.size()));
+  sizes.head = kPartitions.head - kConversionLookahead;
+  return std::shared_ptr<FirRoomCorrection>(
+      new FirRoomCorrection(rate, left, right, sizes, kMaxConvertedTaps));
+}
+
 FirRoomCorrection::FirRoomCorrection(unsigned rate,
                                      std::span<const double> left,
                                      std::span<const double> right)
@@ -341,10 +350,11 @@ FirRoomCorrection::FirRoomCorrection(unsigned rate,
 FirRoomCorrection::FirRoomCorrection(unsigned rate,
                                      std::span<const double> left,
                                      std::span<const double> right,
-                                     std::optional<Partitions> requested)
+                                     std::optional<Partitions> requested,
+                                     size_t limit)
     : rate(rate), taps(std::max(left.size(), right.size())),
       latency(requested ? requested->head : kPartitions.head) {
-  if (!rate || left.empty() || right.empty() || taps > kMaxTaps)
+  if (!rate || left.empty() || right.empty() || taps > limit)
     throw std::invalid_argument("Invalid room impulse size or sample rate");
   auto validHop = [](size_t hop) {
     return hop >= 32 && hop <= kMaxHop &&

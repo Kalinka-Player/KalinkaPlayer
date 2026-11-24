@@ -665,6 +665,15 @@ message ConfigOption {
   string description = 3;
 }
 
+// Magnitude preview of the selected impulse at sample_rate, independent of PEQ.
+message FirResponse {
+  uint32 sample_rate = 1;
+  uint32 source_rate = 2; // Supplied WAV used to build this variant.
+  // Uniform in log frequency, from 20 Hz to min(20 kHz, Nyquist), inclusive.
+  repeated float left_db = 3;
+  repeated float right_db = 4; // Empty when both channels share a curve.
+}
+
 message ConfigField {
   string path = 1;  // dotted and renderer-local, e.g. "output.alsa.device"
   string title = 2;
@@ -682,6 +691,8 @@ message ConfigField {
   string help_details = 14;
   ConfigDecimalRange decimal_range = 15;
   bool supports_fir_import = 16;
+  bool matches_fir_rates = 17;
+  FirResponse fir_response = 18;
 }
 
 message ConfigSection {

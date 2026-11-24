@@ -23,6 +23,14 @@ public:
   static constexpr Partitions kPartitions{640, 6400};
   static constexpr size_t kMaxTaps = 262144;
 
+  // Imported WAVs retain the original limit. Allow their duration to grow
+  // when converted across the standard PCM rates, plus SRC filter support.
+  static constexpr size_t kConversionLookahead = kPartitions.head / 2;
+  static constexpr size_t kMaxConvertedTaps = 16 * kMaxTaps + kPartitions.head;
+  static std::shared_ptr<FirRoomCorrection>
+  converted(unsigned rate, std::span<const double> left,
+            std::span<const double> right);
+
   /// Default FFT hops for the longer channel after trimming exact trailing
   /// zeros.
   static Partitions partitionsFor(size_t activeTaps);
@@ -43,7 +51,8 @@ public:
 private:
   FirRoomCorrection(unsigned rate, std::span<const double> left,
                     std::span<const double> right,
-                    std::optional<Partitions> requested);
+                    std::optional<Partitions> requested,
+                    size_t limit = kMaxTaps);
   class Channel;
   const unsigned rate;
   const size_t taps, latency;

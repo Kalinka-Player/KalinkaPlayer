@@ -303,19 +303,27 @@ to preserve the gain designed in REW. A mono export applies the same filter to
 both speakers. A stereo export holds the left and right filters in that order.
 
 In **Room EQ → FIR Convolution**, choose **Import impulse WAV**. Select one
-or more filter WAVs and name the preset. Supply one WAV per playback sample
-rate. Kalinka selects the matching impulse automatically. For stereo DSD
-converted to PCM, it uses the conversion output rate and applies FIR before
-PEQ and preamp. With no matching impulse, playback skips FIR. Native DSD and
+or more filter WAVs and name the preset. A single WAV covers multiple playback rates. To use a
+particular design at a given rate, include that WAV in the same import. An exact
+match always wins. For a missing rate the renderer converts the nearest original
+by octave distance, preferring the higher rate in a tie. It caches the last
+three prepared rates in memory for the selected profile. For stereo DSD
+converted to PCM, it matches the conversion output rate and applies FIR before
+PEQ and preamp. Native DSD and
 DoP pass through unchanged. The Core stores presets and the renderer caches
 the selected preset for offline playback. In the released app’s schema-based
 settings, the same selector appears under **Room correction → FIR Convolution**.
 Existing WAVs in `/var/lib/kalinka-renderer/dsp/fir/` remain selectable by filename.
 
 The renderer accepts up to 262,144 taps per channel. A preset can hold up to
-eight rates and 32 MiB. Stereo PCM crossfades when the selected filter changes.
+eight rates and 32 MiB. Converted filters can contain up to 4,194,944 taps
+per channel. If conversion exceeds that limit, the signal path asks for a WAV
+at the playback rate. Stereo PCM crossfades when the selected filter changes.
 The live path buffers 640 frames to align filtered and dry audio. The signal
-path shows **FIR room correction** while a matching filter is selected.
+path shows **FIR room correction** and identifies the source rate of a converted filter.
+Room EQ shows the configured FIR magnitude as a dashed line, with separate
+left and right traces for different stereo responses. The graph labels its
+preview rate. Before first PCM playback it uses 48 kHz.
 
 The [176.4 kHz test impulse](../../examples/fir/1kHz-cut-176.4kHz.wav) and
 [192 kHz test impulse](../../examples/fir/1kHz-cut-192kHz.wav) reduce a 1 kHz

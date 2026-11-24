@@ -491,6 +491,8 @@ TEST_F(NativePlayerSettingsTest,
   const auto *profile = field(section, key);
   ASSERT_NE(profile, nullptr);
   EXPECT_TRUE(profile->supports_fir_import());
+  EXPECT_TRUE(profile->matches_fir_rates());
+  EXPECT_FALSE(profile->has_fir_response());
   EXPECT_EQ(profile->importance(), renderer_pb::CONFIG_IMPORTANCE_SIMPLE);
   ASSERT_EQ(profile->options_size(), 3);
   EXPECT_EQ(profile->options(2).value(), "Room.WAV");
@@ -500,9 +502,18 @@ TEST_F(NativePlayerSettingsTest,
   EXPECT_EQ(loadSettingsOverrides().at(key), "Room.WAV");
   player_.reset();
   player_ = std::make_shared<NativePlayer>(ioc_);
-  EXPECT_EQ(field(roomCorrection(), key)->value(), "Room.WAV");
+  const auto selected = roomCorrection();
+  const auto *wav = field(selected, key);
+  ASSERT_NE(wav, nullptr);
+  EXPECT_EQ(wav->value(), "Room.WAV");
+  ASSERT_TRUE(wav->has_fir_response());
+  EXPECT_EQ(wav->fir_response().sample_rate(), 48000u);
+  EXPECT_EQ(wav->fir_response().source_rate(), 48000u);
+  EXPECT_EQ(wav->fir_response().left_db_size(), 257);
+  EXPECT_EQ(wav->fir_response().right_db_size(), 0);
   ASSERT_TRUE(player_->dspSettings()->applyConfig(key, "off", error_)) << error_;
   EXPECT_FALSE(loadSettingsOverrides().contains(key));
+  EXPECT_FALSE(field(roomCorrection(), key)->has_fir_response());
 }
 
 TEST_F(NativePlayerSettingsTest,
