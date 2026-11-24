@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from typing import Sequence
 
 from ..config_model import LocalFilesConfig
@@ -20,6 +21,20 @@ logger = logging.getLogger(__name__.split(".")[-1])
 
 #: Ids bound per statement, well inside SQLite's variable limit.
 _BATCH = 500
+
+
+@dataclass(frozen=True)
+class _VectorHome:
+    """Where one kind's CLAP vectors are kept: its KNN index and its row's mirror column."""
+
+    vec_table: str
+    vec_key: str
+    table: str
+    column: str
+
+
+_TRACK_VECTORS = _VectorHome("vec_tracks_clap", "track_id", "tracks", "embedding_clap_audio")
+_ALBUM_VECTORS = _VectorHome("vec_albums_clap", "album_id", "albums", "embedding_clap")
 
 
 @retry_db_locked
@@ -173,29 +188,41 @@ class AsyncSearcherDb(LibraryDb):
             return []
 
     async def get_track_vectors(self, track_ids: Sequence[str]) -> dict[str, bytes]:
-        """{track_id: int8 CLAP audio blob} for the tracks that have one."""
-        return await self._blobs("tracks", "id", "embedding_clap_audio", track_ids)
+        """{track_id: int8 CLAP audio vector} for the tracks that have one."""
+        return await self._vectors(_TRACK_VECTORS, track_ids)
 
     async def get_album_vectors(self, album_ids: Sequence[str]) -> dict[str, bytes]:
-        """{album_id: int8 mean CLAP audio blob} for the albums that have one."""
-        return await self._blobs("albums", "id", "embedding_clap", album_ids)
+        """{album_id: int8 mean CLAP audio vector} for the albums that have one."""
+        return await self._vectors(_ALBUM_VECTORS, album_ids)
 
-    async def _blobs(self, table: str, key: str, column: str, ids: Sequence[str]) -> dict[str, bytes]:
+    async def _vectors(self, where: _VectorHome, ids: Sequence[str]) -> dict[str, bytes]:
+        """Each id's vector from the KNN index search ranks with, else from the
+        row's mirror column: a library can hold either without the other."""
         found: dict[str, bytes] = {}
         wanted = list(dict.fromkeys(ids))
         try:
             async with self._open() as conn:
-                for start in range(0, len(wanted), _BATCH):
-                    chunk = wanted[start : start + _BATCH]
-                    cursor = await conn.execute(
-                        f"SELECT {key}, {column} FROM {table}"
-                        f" WHERE {key} IN ({','.join('?' * len(chunk))}) AND {column} IS NOT NULL",
-                        chunk,
-                    )
-                    found.update({row[0]: row[1] for row in await cursor.fetchall()})
+                if self._vec_available:
+                    await self._load_vec(conn)
+                    found.update(await self._select_in(conn, where.vec_table, where.vec_key, "embedding", wanted))
+                missing = [i for i in wanted if i not in found]
+                found.update(await self._select_in(conn, where.table, "id", where.column, missing))
         except Exception as e:
-            logger.warning("Fetching %s vectors failed: %s", table, e)
+            logger.warning("Fetching %s vectors failed: %s", where.table, e)
         return found
+
+    @staticmethod
+    async def _select_in(conn, table: str, key: str, column: str, ids: list[str]) -> dict[str, bytes]:
+        rows: dict[str, bytes] = {}
+        for start in range(0, len(ids), _BATCH):
+            chunk = ids[start : start + _BATCH]
+            cursor = await conn.execute(
+                f"SELECT {key}, {column} FROM {table}"
+                f" WHERE {key} IN ({','.join('?' * len(chunk))}) AND {column} IS NOT NULL",
+                chunk,
+            )
+            rows.update({row[0]: row[1] for row in await cursor.fetchall()})
+        return rows
 
     async def recent_plays(self, limit: int) -> list[tuple[str, bool, bool]]:
         """The latest plays, newest first, as (track_id, completed, skipped)."""
@@ -246,8 +273,8 @@ class AsyncSearcherDb(LibraryDb):
             return []
 
     async def tracks_from_years(self, spans: Sequence[tuple[int, int]]) -> list[str]:
-        """Tracks with a CLAP vector whose album first came out within any of
-        ``spans`` (first and last year, both included)."""
+        """Tracks whose album first came out within any of ``spans`` (first
+        and last year, both included)."""
         if not spans:
             return []
         year = album_year_sql("a")
@@ -257,7 +284,7 @@ class AsyncSearcherDb(LibraryDb):
             async with self._open() as conn:
                 cursor = await conn.execute(
                     "SELECT t.id FROM tracks t JOIN albums a ON a.id = t.album_id"
-                    f" WHERE t.embedding_clap_audio IS NOT NULL AND ({clause})",
+                    f" WHERE {clause}",
                     params,
                 )
                 rows = await cursor.fetchall()

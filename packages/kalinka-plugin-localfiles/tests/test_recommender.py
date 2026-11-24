@@ -139,6 +139,30 @@ async def test_next_tracks_follow_the_seeds_and_skip_queued_and_turned_down(db_p
     assert picked == ["rock_close", "rock_far"]
 
 
+async def _keep_vectors_only_in_the_index(path):
+    async with aiosqlite.connect(path) as conn:
+        await conn.execute("UPDATE tracks SET embedding_clap_audio = NULL")
+        await conn.execute("UPDATE albums SET embedding_clap = NULL")
+        await conn.commit()
+
+
+@pytest.mark.asyncio
+async def test_vectors_kept_only_in_the_knn_index_still_recommend(db_path):
+    rock, jazz = _direction(10), _direction(30)
+    tracks = {
+        "seed": ("rock_album", rock),
+        "rock_close": ("rock_album", _near(rock, 2, 0.3)),
+        **{f"j{i}": ("heard_jazz", _near(jazz, i, 0.2)) for i in range(5)},
+    }
+    albums = {"rock_album": rock, "heard_jazz": jazz, "more_jazz": _near(jazz, 50, 0.3)}
+    plays = [(f"j{i}", True, False) for i in range(5)]
+    recommender = await _library(db_path, tracks, albums, plays=plays)
+    await _keep_vectors_only_in_the_index(db_path)
+
+    assert (await recommender.next_tracks(["seed"], [], ["seed"], 1)) == ["rock_close"]
+    assert (await recommender.albums_for_you(1)) == ["more_jazz"]
+
+
 @pytest.mark.asyncio
 async def test_next_tracks_without_a_known_seed_propose_nothing(db_path):
     recommender = await _library(db_path, {"t": ("al", _direction(1))}, {"al": _direction(1)})
