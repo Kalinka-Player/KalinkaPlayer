@@ -28,6 +28,8 @@ public:
   size_t history() const override { return historyFor(input); }
   size_t settledOutputFrames() const override;
   bool needsSuccessorInput() const override { return true; }
+  /// Interleaved float64 PCM may be filtered in place: readPlanar and the
+  /// convolver consume each whole block before its output overwrites it.
   size_t process(const uint8_t *in, uint8_t *out, size_t frames) override;
 
 private:

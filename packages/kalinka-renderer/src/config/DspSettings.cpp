@@ -49,8 +49,8 @@ void DspSettings::fillConfig(renderer_pb::ConfigSection &out) const {
     f.set_apply(renderer_pb::APPLY_COST_INSTANT);
     return f;
   };
-  field("dsp.enabled", "Room correction", renderer_pb::CONFIG_FIELD_TYPE_BOOL,
-        "Apply room correction to PCM playback.");
+  field("dsp.enabled", "Parametric EQ", renderer_pb::CONFIG_FIELD_TYPE_BOOL,
+        "Apply the parametric EQ and its preamp to PCM playback.");
   auto &selected =
       field("dsp.profile", "Room profile", renderer_pb::CONFIG_FIELD_TYPE_ENUM,
             "Select a room correction profile imported by the Core.");

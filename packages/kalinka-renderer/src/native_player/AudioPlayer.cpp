@@ -66,13 +66,15 @@ double dsdGain(const std::string &setting) {
 // tests.
 std::unique_ptr<DspProcessor>
 dspProcessorFor(const Config &config,
-                const std::vector<StreamAudioFormat> &device) {
+                const std::vector<StreamAudioFormat> &device,
+                const std::shared_ptr<LiveFir> &fir) {
   const auto mode = value_or(config, "output.dsd_mode", std::string("disabled"));
   if (mode == "pcm" || mode == "auto") {
     return std::make_unique<DsdToPcmProcessor>(
         device,
         dsdPcmMultiple(value_or(config, "dsd.pcm_rate", std::string("auto"))),
-        dsdFilterSetting(value_or(config, "dsd.filter", std::string("auto"))));
+        dsdFilterSetting(value_or(config, "dsd.filter", std::string("auto"))),
+        fir);
   }
   const auto delay =
       std::chrono::milliseconds(value_or(config, "dsp.delay_ms", 0));
@@ -369,7 +371,7 @@ AudioPlayer::AudioPlayer(const Config &config, std::shared_ptr<LiveFir> fir,
                         .formats),
       liveFir(std::move(fir)),
       dspStage(std::make_shared<DspStage>(
-          liveFir, dspProcessorFor(config, deviceFormats))),
+          liveFir, dspProcessorFor(config, deviceFormats, liveFir))),
       outputStage(std::make_shared<OutputStage>(
           deviceFormats, std::random_device{}(), std::move(firRates))) {
   dspStage->connectTo(streamSwitcher);

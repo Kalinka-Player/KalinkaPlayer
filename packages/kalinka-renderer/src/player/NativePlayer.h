@@ -100,12 +100,13 @@ public:
   std::shared_ptr<ConfigContributor> networkSettings();
   /// The DSD section, which is held and registered as bufferSettings() is.
   std::shared_ptr<ConfigContributor> dsdSettings();
-  /// Room profiles and their preamp controls.
+  /// FIR convolution, parametric EQ and preamp controls.
   std::shared_ptr<ConfigContributor> dspSettings();
 
 private:
   /// Contributes one section of knobs; writes land back on the player.
   class KnobSection;
+  class RoomCorrectionSection;
 
   struct TrackedSource {
     kalinka::renderer::v1::Source source;

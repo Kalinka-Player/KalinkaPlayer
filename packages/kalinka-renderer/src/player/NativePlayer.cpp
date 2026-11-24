@@ -698,8 +698,67 @@ std::shared_ptr<ConfigContributor> NativePlayer::dsdSettings() {
   return std::make_shared<KnobSection>(shared_from_this(), kDsd);
 }
 
+// The schema section controls placement in released clients. Keep the FIR key
+// stable for saved settings, profile imports and clients that edit it by path.
+class NativePlayer::RoomCorrectionSection final : public ConfigContributor {
+public:
+  explicit RoomCorrectionSection(std::shared_ptr<NativePlayer> player)
+      : player_(std::move(player)) {}
+
+  void fillConfig(renderer_pb::ConfigSection &out) const override;
+
+  bool applyConfig(const std::string &path, const std::string &value,
+                   std::string &error) override {
+    if (path == kFirProfile)
+      return player_->applySetting(path, value, error);
+    return player_->dsp_->applyConfig(path, value, error);
+  }
+
+private:
+  const std::shared_ptr<NativePlayer> player_;
+};
+
+void NativePlayer::RoomCorrectionSection::fillConfig(
+    renderer_pb::ConfigSection &out) const {
+  player_->dsp_->fillConfig(out);
+  auto *fir = out.add_fields();
+  fir->set_path(kFirProfile);
+  fir->set_title("FIR Convolution");
+  fir->set_supports_fir_import(true);
+  fir->set_description(
+      "Applies the impulse matching the stereo PCM playback rate, including PCM "
+      "converted from DSD. "
+      "Switch between this filter and Off during playback.");
+  fir->set_type(renderer_pb::CONFIG_FIELD_TYPE_ENUM);
+  fir->set_importance(renderer_pb::CONFIG_IMPORTANCE_SIMPLE);
+  fir->set_apply(renderer_pb::APPLY_COST_INSTANT);
+  fir->set_default_value(kFirOff);
+  fir->set_value(player_->settings_.at(kFirProfile));
+  auto *off = fir->add_options();
+  off->set_value(kFirOff);
+  off->set_label("Off");
+  if (player_->firFilter_ &&
+      dsp_profiles::validId(player_->settings_.at(kFirProfile))) {
+    auto *option = fir->add_options();
+    option->set_value(player_->settings_.at(kFirProfile));
+    option->set_label(player_->firFilter_->name);
+    std::string rates;
+    for (const auto &[rate, filter] : player_->firFilter_->filters) {
+      if (!rates.empty())
+        rates += ", ";
+      rates += std::format("{:g}", rate / 1000.0);
+    }
+    option->set_description(rates + " kHz");
+  }
+  for (const auto &name : firProfiles()) {
+    auto *option = fir->add_options();
+    option->set_value(name);
+    option->set_label(name);
+  }
+}
+
 std::shared_ptr<ConfigContributor> NativePlayer::dspSettings() {
-  return {shared_from_this(), dsp_.get()};
+  return std::make_shared<RoomCorrectionSection>(shared_from_this());
 }
 
 void NativePlayer::persistOverrides() const {
@@ -1280,38 +1339,6 @@ void NativePlayer::fillConfig(renderer_pb::ConfigSection &out) const {
   startCeiling->mutable_range()->set_step(1);
   startCeiling->set_widget(renderer_pb::CONFIG_WIDGET_SLIDER);
 
-  auto *fir = out.add_fields();
-  fir->set_path(kFirProfile);
-  fir->set_title("FIR Convolution");
-  fir->set_supports_fir_import(true);
-  fir->set_description(
-      "Applies the matching filter impulse to stereo PCM at each supplied sample rate. "
-      "Switch between this filter and Off during playback.");
-  fir->set_type(renderer_pb::CONFIG_FIELD_TYPE_ENUM);
-  fir->set_importance(renderer_pb::CONFIG_IMPORTANCE_SIMPLE);
-  fir->set_apply(renderer_pb::APPLY_COST_INSTANT);
-  fir->set_default_value(kFirOff);
-  fir->set_value(settings_.at(kFirProfile));
-  auto *off = fir->add_options();
-  off->set_value(kFirOff);
-  off->set_label("Off");
-  if (firFilter_ && dsp_profiles::validId(settings_.at(kFirProfile))) {
-    auto *option = fir->add_options();
-    option->set_value(settings_.at(kFirProfile));
-    option->set_label(firFilter_->name);
-    std::string rates;
-    for (const auto &[rate, filter] : firFilter_->filters) {
-      if (!rates.empty())
-        rates += ", ";
-      rates += std::format("{:g}", rate / 1000.0);
-    }
-    option->set_description(rates + " kHz");
-  }
-  for (const auto &name : firProfiles()) {
-    auto *option = fir->add_options();
-    option->set_value(name);
-    option->set_label(name);
-  }
   for (const Knob &knob : kOutputKnobs) {
     declare(out, knob, settings_, defaultSettings());
   }

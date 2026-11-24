@@ -335,7 +335,9 @@ def get_version() -> str:
 # GET /dsp/profiles lists presets and GET /dsp/profiles/{id} serves their
 # protobuf. Renderer config offers them on dsp.profile and supports decimal
 # settings with fractional range bounds and steps.
-# 0.26: Edit a renderer's active parametric EQ without publishing a preset.
+# 0.26: PUT /renderer/{renderer_id}/eq edits the active parametric EQ.
+# POST /dsp/profiles/fir imports multi-rate filter impulse WAVs for renderers
+# advertising supports_fir_import on the FIR profile selector.
 REST_API_VERSION = "0.26"
 
 

@@ -304,10 +304,13 @@ both speakers. A stereo export holds the left and right filters in that order.
 
 In **Room EQ → FIR Convolution**, choose **Import impulse WAV**. Select one
 or more filter WAVs and name the preset. Supply one WAV per playback sample
-rate. Kalinka selects the matching impulse automatically. Other sample rates
-play dry. The Core stores presets and the renderer caches the selected preset
-for offline playback. Existing WAVs in `/var/lib/kalinka-renderer/dsp/fir/`
-remain selectable by filename.
+rate. Kalinka selects the matching impulse automatically. For stereo DSD
+converted to PCM, it uses the conversion output rate and applies FIR before
+PEQ and preamp. With no matching impulse, playback skips FIR. Native DSD and
+DoP pass through unchanged. The Core stores presets and the renderer caches
+the selected preset for offline playback. In the released app’s schema-based
+settings, the same selector appears under **Room correction → FIR Convolution**.
+Existing WAVs in `/var/lib/kalinka-renderer/dsp/fir/` remain selectable by filename.
 
 The renderer accepts up to 262,144 taps per channel. A preset can hold up to
 eight rates and 32 MiB. Stereo PCM crossfades when the selected filter changes.
@@ -359,12 +362,11 @@ jq -n --arg name "Listening room" --rawfile left left.txt --rawfile right right.
 ```
 
 Select the imported name under **Room correction → Room profile** in the renderer's
-settings and enable **Room correction**. **Bypass** lets you compare the result during
-playback. The import returns the profile's SHA-256 as `id`, which also works as
+settings and enable **Parametric EQ**. The import returns the profile's SHA-256 as `id`, which also works as
 `dsp.profile` in `PUT /renderer/{renderer_id}/config`. The renderer verifies and
 caches the selected profile and restores it on restart.
 
-Room EQ’s **Bypass** switch bypasses FIR convolution, parametric EQ and preamp gain during playback. Switching it off restores the configured filters and gain. Output volume and the format required by the playback device still apply.
+Room EQ’s **Bypass DSP** switch bypasses FIR convolution, parametric EQ and preamp gain during playback. Switching it off restores the configured filters and gain. Output volume and the format required by the playback device still apply.
 
 Automatic preamp reserves the sum of the individual bands' maximum boosts on the
 channel that needs the most headroom. A pass band with a Q above 0.707 peaks at

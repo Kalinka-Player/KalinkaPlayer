@@ -75,6 +75,12 @@ protected:
     return section;
   }
 
+  renderer_pb::ConfigSection roomCorrection() const {
+    renderer_pb::ConfigSection section;
+    player_->dspSettings()->fillConfig(section);
+    return section;
+  }
+
   renderer_pb::ConfigSection buffers() const {
     renderer_pb::ConfigSection section;
     player_->bufferSettings()->fillConfig(section);
@@ -478,19 +484,24 @@ TEST_F(NativePlayerSettingsTest,
                   wav_test::file(32, 48000, 1, 131072, false, 32, true));
   wav_test::write(dir / "Bad.wav", {0});
   constexpr auto key = "output.rew_fir_profile";
-  const auto section = output();
+  EXPECT_EQ(field(output(), key), nullptr);
+  const auto section = roomCorrection();
+  EXPECT_EQ(section.path(), "dsp");
+  EXPECT_EQ(section.title(), "Room correction");
   const auto *profile = field(section, key);
   ASSERT_NE(profile, nullptr);
+  EXPECT_TRUE(profile->supports_fir_import());
+  EXPECT_EQ(profile->importance(), renderer_pb::CONFIG_IMPORTANCE_SIMPLE);
   ASSERT_EQ(profile->options_size(), 3);
   EXPECT_EQ(profile->options(2).value(), "Room.WAV");
-  ASSERT_TRUE(player_->applyConfig(key, "Room.WAV", error_)) << error_;
-  EXPECT_FALSE(player_->applyConfig(key, "Bad.wav", error_));
-  EXPECT_FALSE(player_->applyConfig(key, "../Room.WAV", error_));
+  ASSERT_TRUE(player_->dspSettings()->applyConfig(key, "Room.WAV", error_)) << error_;
+  EXPECT_FALSE(player_->dspSettings()->applyConfig(key, "Bad.wav", error_));
+  EXPECT_FALSE(player_->dspSettings()->applyConfig(key, "../Room.WAV", error_));
   EXPECT_EQ(loadSettingsOverrides().at(key), "Room.WAV");
   player_.reset();
   player_ = std::make_shared<NativePlayer>(ioc_);
-  EXPECT_EQ(field(output(), key)->value(), "Room.WAV");
-  ASSERT_TRUE(player_->applyConfig(key, "off", error_)) << error_;
+  EXPECT_EQ(field(roomCorrection(), key)->value(), "Room.WAV");
+  ASSERT_TRUE(player_->dspSettings()->applyConfig(key, "off", error_)) << error_;
   EXPECT_FALSE(loadSettingsOverrides().contains(key));
 }
 
@@ -1083,7 +1094,7 @@ TEST_F(NativePlayerStreamTest,
   ASSERT_TRUE(
       player_->dspSettings()->applyConfig("dsp.bypass", "false", error_));
   expectCorrection(true, false);
-  EXPECT_EQ(field(output(), fir)->value(), "Second.wav");
+  EXPECT_EQ(field(roomCorrection(), fir)->value(), "Second.wav");
   player_->setStateSink({});
 }
 
