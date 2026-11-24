@@ -226,6 +226,7 @@ def module(tmp_path, db):
     module = LocalFilesInputModule.__new__(LocalFilesInputModule)
     module.db_manager = db
     module._music_folders = []
+    module._searcher = None
     return module
 
 

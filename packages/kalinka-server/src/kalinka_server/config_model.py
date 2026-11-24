@@ -276,6 +276,34 @@ class DeviceAutomationConfig(BaseModel):
     )
 
 
+class QueueConfig(BaseModel):
+    """How the play queue carries on past its last track (``kalinka_server.autoplay``)."""
+
+    autoplay: bool = Field(
+        default=True,
+        title="Autoplay",
+        json_schema_extra={
+            "help": (
+                "When the queue reaches its last track, add tracks like the "
+                "ones queued, from each source that can suggest them"
+            ),
+            **_SIMPLE,
+        },
+    )
+    autoplay_tracks_per_source: int = Field(
+        default=2,
+        ge=1,
+        le=10,
+        title="Autoplay tracks per source",
+        json_schema_extra={
+            "help": (
+                "How many tracks each source adds at a time when the queue "
+                "runs out or more like the current track is asked for"
+            ),
+        },
+    )
+
+
 class SearchConfig(BaseModel):
     """Cross-source search tuning: the name matches ranked by
     ``kalinka_server.name_matches`` and the suggestion cards assembled by
@@ -429,6 +457,7 @@ class KalinkaConfig(BaseModel):
     device_automation: DeviceAutomationConfig = Field(
         default_factory=DeviceAutomationConfig, title="Device automation"
     )
+    queue: QueueConfig = Field(default_factory=QueueConfig, title="Queue")
     storage: StorageConfig = Field(default_factory=StorageConfig, title="Storage")
     display: DisplayConfig = Field(
         default_factory=DisplayConfig,

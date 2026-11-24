@@ -9,13 +9,17 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Sequence
 
 from ..config_model import LocalFilesConfig
 from ..db_connection import LibraryConnection, LibraryDb
+from ..utils.years import album_year_sql
 from ..worker_utils import retry_db_locked
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
+#: Ids bound per statement, well inside SQLite's variable limit.
+_BATCH = 500
 
 
 @retry_db_locked
@@ -147,19 +151,117 @@ class AsyncSearcherDb(LibraryDb):
             logger.warning("Bulk V-A fetch failed: %s", e)
             return {}
 
-    async def get_track_clap_embedding(self, track_id: str) -> bytes | None:
-        """Fetch the CLAP audio embedding for a single track."""
+    async def knn_search_albums(self, query_blob: bytes, limit: int = 50) -> list[dict]:
+        """KNN search on vec_albums_clap, the mean audio vector of each album.
+
+        Returns [{"album_id": str, "distance": float}] sorted by distance (ascending).
+        """
         if not self._vec_available:
-            return None
+            return []
         try:
             async with self._open() as conn:
                 await self._load_vec(conn)
                 cursor = await conn.execute(
-                    "SELECT embedding FROM vec_tracks_clap WHERE track_id = ?",
-                    (track_id,),
+                    "SELECT album_id, distance FROM vec_albums_clap"
+                    " WHERE embedding MATCH vec_int8(?) ORDER BY distance LIMIT ?",
+                    (query_blob, limit),
                 )
-                row = await cursor.fetchone()
-            return row[0] if row else None
+                rows = await cursor.fetchall()
+            return [{"album_id": row[0], "distance": row[1]} for row in rows]
         except Exception as e:
-            logger.warning("Failed to fetch CLAP embedding for %s: %s", track_id, e)
-            return None
+            logger.warning("KNN album search failed: %s", e)
+            return []
+
+    async def get_track_vectors(self, track_ids: Sequence[str]) -> dict[str, bytes]:
+        """{track_id: int8 CLAP audio blob} for the tracks that have one."""
+        return await self._blobs("tracks", "id", "embedding_clap_audio", track_ids)
+
+    async def get_album_vectors(self, album_ids: Sequence[str]) -> dict[str, bytes]:
+        """{album_id: int8 mean CLAP audio blob} for the albums that have one."""
+        return await self._blobs("albums", "id", "embedding_clap", album_ids)
+
+    async def _blobs(self, table: str, key: str, column: str, ids: Sequence[str]) -> dict[str, bytes]:
+        found: dict[str, bytes] = {}
+        wanted = list(dict.fromkeys(ids))
+        try:
+            async with self._open() as conn:
+                for start in range(0, len(wanted), _BATCH):
+                    chunk = wanted[start : start + _BATCH]
+                    cursor = await conn.execute(
+                        f"SELECT {key}, {column} FROM {table}"
+                        f" WHERE {key} IN ({','.join('?' * len(chunk))}) AND {column} IS NOT NULL",
+                        chunk,
+                    )
+                    found.update({row[0]: row[1] for row in await cursor.fetchall()})
+        except Exception as e:
+            logger.warning("Fetching %s vectors failed: %s", table, e)
+        return found
+
+    async def recent_plays(self, limit: int) -> list[tuple[str, bool, bool]]:
+        """The latest plays, newest first, as (track_id, completed, skipped)."""
+        try:
+            async with self._open() as conn:
+                cursor = await conn.execute(
+                    "SELECT track_id, completed, skipped FROM play_history"
+                    " ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                )
+                rows = await cursor.fetchall()
+            return [(row[0], bool(row[1]), bool(row[2])) for row in rows]
+        except Exception as e:
+            logger.warning("Reading the play history failed: %s", e)
+            return []
+
+    async def albums_of_tracks(self, track_ids: Sequence[str]) -> set[str]:
+        """The albums ``track_ids`` belong to."""
+        albums: set[str] = set()
+        wanted = list(dict.fromkeys(track_ids))
+        try:
+            async with self._open() as conn:
+                for start in range(0, len(wanted), _BATCH):
+                    chunk = wanted[start : start + _BATCH]
+                    cursor = await conn.execute(
+                        f"SELECT DISTINCT album_id FROM tracks WHERE id IN ({','.join('?' * len(chunk))})",
+                        chunk,
+                    )
+                    albums.update(row[0] for row in await cursor.fetchall())
+        except Exception as e:
+            logger.warning("Looking up albums of tracks failed: %s", e)
+        return albums
+
+    async def recently_added_albums(self, limit: int) -> list[str]:
+        """The albums whose files arrived last, newest first."""
+        try:
+            async with self._open() as conn:
+                cursor = await conn.execute(
+                    "SELECT t.album_id FROM tracks t JOIN library_file lf ON lf.file_id = t.id"
+                    " WHERE t.album_id != 'unknown_album'"
+                    " GROUP BY t.album_id ORDER BY MAX(lf.first_indexed) DESC LIMIT ?",
+                    (limit,),
+                )
+                rows = await cursor.fetchall()
+            return [row[0] for row in rows]
+        except Exception as e:
+            logger.warning("Listing recently added albums failed: %s", e)
+            return []
+
+    async def tracks_from_years(self, spans: Sequence[tuple[int, int]]) -> list[str]:
+        """Tracks with a CLAP vector whose album first came out within any of
+        ``spans`` (first and last year, both included)."""
+        if not spans:
+            return []
+        year = album_year_sql("a")
+        clause = " OR ".join(f"{year} BETWEEN ? AND ?" for _ in spans)
+        params = [y for span in spans for y in span]
+        try:
+            async with self._open() as conn:
+                cursor = await conn.execute(
+                    "SELECT t.id FROM tracks t JOIN albums a ON a.id = t.album_id"
+                    f" WHERE t.embedding_clap_audio IS NOT NULL AND ({clause})",
+                    params,
+                )
+                rows = await cursor.fetchall()
+            return [row[0] for row in rows]
+        except Exception as e:
+            logger.warning("Listing tracks by year failed: %s", e)
+            return []

@@ -525,6 +525,26 @@ async def init_db(db_path: str) -> None:
             """
         )
 
+        # What the listener heard of the library's tracks, one row per play:
+        # how long it ran, and whether it played out or was skipped early.
+        # The searcher reads it to recommend albums.
+        await cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS play_history (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                track_id   TEXT NOT NULL,
+                played_at  INTEGER NOT NULL,
+                listened_s INTEGER NOT NULL,
+                completed  INTEGER NOT NULL,
+                skipped    INTEGER NOT NULL
+            )
+            """
+        )
+        await cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_play_history_played_at"
+            " ON play_history (played_at)"
+        )
+
         # The fts_tracks FTS5 index is retired — BEST MATCH moved to the server
         # (it now uses the input modules' search()). Drop the orphaned table from
         # existing DBs (idempotent; the search_indexed_at column, if present on an

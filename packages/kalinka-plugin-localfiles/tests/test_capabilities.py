@@ -1,5 +1,5 @@
-"""My Library always has catalogs; AI search is reported only while the
-setting gave the module a searcher."""
+"""My Library always has catalogs; AI search and continuation are reported
+only while the setting gave the module a searcher."""
 
 from kalinka_plugin_sdk.inputmodule import ModuleCapability
 
@@ -21,6 +21,7 @@ def test_reported_with_a_searcher(tmp_path):
     assert module.capabilities() == {
         ModuleCapability.CATALOGS,
         ModuleCapability.AI_SEARCH,
+        ModuleCapability.CONTINUATION,
     }
 
 

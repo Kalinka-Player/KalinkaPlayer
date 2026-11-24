@@ -18,6 +18,8 @@ CATALOG_FLAG = "base_config.server.plugin_catalog_enabled"
 LET_THROUGH = {
     ("POST", "/queue/add"),
     ("POST", "/queue/replace"),
+    ("POST", "/queue/similar"),
+    ("POST", "/queue/dislike"),
     ("PUT", "/queue/play"),
     ("PUT", "/queue/pause"),
     ("PUT", "/queue/next"),

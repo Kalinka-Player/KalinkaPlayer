@@ -166,6 +166,7 @@ def test_general_page_sections_follow_declaration_order():
     assert [s.id for s in _general_page(schema).sections] == [
         "base_config.server",
         "base_config.device_automation",
+        "base_config.queue",
         "base_config.storage",
     ]
 

@@ -107,6 +107,7 @@ from .player_setup import (
     ModuleHealthState,
     volume_control_modules,
 )
+from .autoplay import AutoplayController
 from .internal_modules import internal_modules
 from .module_capabilities import capabilities_of
 from .module_artwork import forget_assets, module_icons, register_module_icon_routes
@@ -179,6 +180,9 @@ async def lifespan(app: FastAPI):
             app.state.config,
             app.state.player_context,
             app.state.device_router,
+            module_for=modules.enabled_input_module,
+            queue_limit=lambda: DEMO_QUEUE if app.state.config.server.demo_mode else QUEUE,
+            queue_adding=app.state.queue_adding,
         )
         app.state.device_router_task = asyncio.create_task(
             app.state.device_router.monitor()
@@ -900,7 +904,7 @@ async def create_app(
     async def read_queue_list(offset: int = 0, limit: int = 10):
         return await player_context.playqueue.list(offset=offset, limit=limit)
 
-    queue_adding = asyncio.Lock()
+    queue_adding = app.state.queue_adding = asyncio.Lock()
 
     @app.post("/queue/add")
     async def add_entity_to_queue(ids: list[str], index: Optional[int] = None):
@@ -932,6 +936,28 @@ async def create_app(
         async with queue_adding:
             await playqueue.replace(items)
         return {"message": "Queue replaced", "count": len(items)}
+
+    def _autoplay() -> AutoplayController:
+        if internal_modules.autoplay is None:
+            raise HTTPException(status_code=503, detail="The queue is starting")
+        return internal_modules.autoplay
+
+    @app.post("/queue/similar")
+    async def queue_similar(count: Optional[int] = Query(None, ge=1, le=50)):
+        """Queue tracks like the playing one right after it, from the playing
+        track's own source. ``count`` defaults to the queue setting's
+        per-source amount; the answer says how many came, 0 when the source
+        has none to offer."""
+        added = await _autoplay().more_like_current(count)
+        return {"message": "Similar tracks added", "count": added}
+
+    @app.post("/queue/dislike")
+    async def queue_dislike():
+        """Turn the playing track down until the queue is cleared or replaced,
+        and skip it. Autoplay and /queue/similar steer away from it."""
+        if not await _autoplay().dislike_current():
+            raise HTTPException(status_code=409, detail="Nothing is playing")
+        return {"message": "Ok"}
 
     @app.put("/queue/play")
     async def queue_play(index: Union[int, None] = None):
@@ -1322,6 +1348,11 @@ async def create_app(
                 "enabled": app.state.config.server.plugin_catalog_enabled,
             },
             "storage": {"volumes": True, "mounts": True, "adopt": True, "folders": True, "devices": True},
+            "queue": {
+                "autoplay": app.state.config.queue.autoplay,
+                "similar": True,
+                "dislike": True,
+            },
         }
 
     register_upgrade_routes(
