@@ -53,6 +53,9 @@ public:
   /// Drops everything held and seeks @p stream upstream, even one upstream has
   /// already left, early as seekTo() does.
   size_t seekStream(StreamId stream, size_t position) override;
+  std::optional<StreamId> seekTargetId(StreamId requested) override {
+    return upstream ? upstream->seekTargetId(requested) : std::nullopt;
+  }
   std::optional<long> streamReadPosition() const override;
   std::optional<uint64_t> liveSourceFrame() const override;
   void acceptSourceChange() override;

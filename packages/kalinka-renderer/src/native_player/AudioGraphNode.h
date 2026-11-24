@@ -44,6 +44,10 @@ public:
   std::optional<StreamId> streamId();
 
 protected:
+  /// The state a seek reads: a finished source keeps the header its terminal
+  /// state omits. Observers still see the published state.
+  StreamState stateForSeek();
+
   // To be used by the derived classes to set the state. Virtual so a node can
   // stamp on what only it knows — the sink, the device it opened.
   virtual void setState(const StreamState &newState);
@@ -74,6 +78,7 @@ private:
 
   std::mutex mutex;
   StreamState state;
+  std::optional<StreamInfo> lastStreamInfo;
   std::optional<StreamId> boundStreamId;
 
   std::unordered_map<int, std::function<bool(AudioGraphNode *, StreamState)>>
@@ -110,6 +115,9 @@ public:
   virtual size_t seekStream(StreamId stream, size_t position) {
     return seekTo(position);
   }
+
+  /// Which stream a named seek addresses, including an unbound single source.
+  virtual std::optional<StreamId> seekTargetId(StreamId) { return streamId(); }
 
   /// Metadata for a seek to the named stream, or the current one if unnamed.
   /// A seek may wait for the current decoder's header. Reads only use metadata

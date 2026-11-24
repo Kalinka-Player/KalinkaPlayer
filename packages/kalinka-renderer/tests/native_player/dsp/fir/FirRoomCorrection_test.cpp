@@ -586,6 +586,18 @@ TEST_F(FirGraph, NamedSeekOnAnUnboundSourceDiscardsThePreroll) {
   }
 }
 
+TEST_F(FirGraph, FailedNamedSeekOnADirectSourceDropsItsBufferedTail) {
+  auto node = std::make_shared<RestoredDecoder>(1, 500000000, 2000);
+  stage->disconnect(switcher);
+  stage->connectTo(node);
+  ASSERT_EQ(read(32).size(), 32u);
+  node->refused = 400;
+  EXPECT_EQ(stage->seekStream(42, 1100), size_t(-1));
+  EXPECT_EQ(node->seeks, (std::vector<size_t>{400}));
+  EXPECT_EQ(stage->getState().state, AudioGraphNodeState::ERROR);
+  EXPECT_EQ(stage->streamReadPosition(), node->streamReadPosition());
+}
+
 TEST_F(FirGraph, RefusedSeekOnAlreadyFailedDecoderPreservesPlayableTail) {
   struct FailedDecoder final : CountingNode {
     FailedDecoder()
