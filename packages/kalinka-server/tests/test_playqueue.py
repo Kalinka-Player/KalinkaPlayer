@@ -1957,6 +1957,41 @@ async def _in_a_tracks_last_seconds(playqueue, renderer) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("single", [True, False], ids=["repeat-track", "repeat-queue"])
+async def test_enabling_repeat_at_the_last_track_prequeues_the_successor(playqueue, renderer, single):
+    await playqueue.add(make_tracks(2))
+    await playqueue.play(1)
+    await asyncio.sleep(0.15)
+    renderer.report_position(DURATION_MS - 2000)
+    await asyncio.sleep(0.15)
+    assert not renderer.queued
+
+    await playqueue.set_playback_mode(None, single, not single)
+    await asyncio.sleep(0.15)
+    assert list(playqueue.prepared_tracks) == [1 if single else 0]
+    assert len(renderer.queued) == 1
+    renderer.finish_current()
+    await asyncio.sleep(0.1)
+    assert playqueue.current_track_id == (1 if single else 0)
+    assert not renderer.finished
+
+
+@pytest.mark.asyncio
+async def test_turning_off_repeat_drops_the_prepared_copy_of_the_current_track(playqueue, renderer):
+    await playqueue.add(make_tracks(2))
+    await playqueue.set_playback_mode(None, True, False)
+    await playqueue.play(0)
+    await asyncio.sleep(0.15)
+    renderer.report_position(DURATION_MS - 2000)
+    await asyncio.sleep(0.15)
+    assert list(playqueue.prepared_tracks) == [0]
+    await playqueue.set_playback_mode(None, False, False)
+    await asyncio.sleep(0.15)
+    assert list(playqueue.prepared_tracks) == [1]
+    assert len(renderer.queued) == 1
+
+
+@pytest.mark.asyncio
 async def test_a_pause_that_idles_out_near_the_end_stays_stopped(
     playqueue, renderer, monkeypatch
 ):
