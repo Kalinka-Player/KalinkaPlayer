@@ -8,12 +8,36 @@
 
 namespace peq {
 inline constexpr size_t kBands = 20;
-enum class Type { Peak, LowShelf, HighShelf };
+enum class Type {
+  Peak,
+  LowShelf,
+  HighShelf,
+  HighPass,
+  LowPass,
+  FirstOrderHighPass,
+  FirstOrderLowPass
+};
 
 struct Band {
   Type type;
   double hz, db, q;
 };
+
+/// A first-order band falls 6 dB per octave from `hz`: its `q` is unused.
+constexpr bool isFirstOrder(Type type) {
+  return type == Type::FirstOrderHighPass || type == Type::FirstOrderLowPass;
+}
+
+/// A pass band is shaped by `hz`, and by `q` when second order: its `db` is
+/// unused.
+constexpr bool isPass(Type type) {
+  return type == Type::HighPass || type == Type::LowPass || isFirstOrder(type);
+}
+
+/// A peak or shelf at 0 dB leaves the signal as it is and costs nothing.
+constexpr bool isFlat(const Band &band) {
+  return !isPass(band.type) && band.db == 0;
+}
 
 /// A shared curve applies to every channel. A stereo pair corrects the front
 /// pair.

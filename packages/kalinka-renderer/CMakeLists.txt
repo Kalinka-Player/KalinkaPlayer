@@ -384,6 +384,7 @@ if(GTest_FOUND)
     tests/test_core_grouper.cpp
     tests/test_decoder_start_offset.cpp
     tests/test_discovery_cache.cpp
+    tests/test_dsp_profile.cpp
     tests/test_native_player_settings.cpp
     tests/test_protocol_session.cpp
     tests/test_upgrade_service.cpp

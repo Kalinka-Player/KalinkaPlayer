@@ -57,7 +57,15 @@ def test_publish_select_and_download(tmp_path):
 @pytest.mark.parametrize(
     "text",
     [
-        EXPORT + "Filter 6: ON LP Fc 150 Hz",
+        EXPORT + "Filter 6: ON AP Fc 150 Hz Q 0.7",
+        EXPORT + "Filter 6: ON NO Fc 150 Hz",
+        EXPORT + "Filter 6: ON LP1 Fc 150 Hz Q 0.7",
+        EXPORT + "Filter 6: ON HP1 Fc 150 Hz Gain 3 dB",
+        EXPORT + "Filter 6: ON LP Fc 150 Hz Q 2",
+        EXPORT + "Filter 6: ON HPQ Fc 150 Hz",
+        EXPORT + "Filter 6: ON HPQ Fc 150 Hz Q 0",
+        EXPORT + "Filter 6: ON HP Fc 150 Hz Gain 3 dB",
+        EXPORT + "Filter 6: ON PK Fc 150 Hz Q 2",
         EXPORT + "Filter ?: ON PK Fc 150 Hz Gain 3 dB Q 1",
         EXPORT.replace("Generic", "DSP1124P"),
         EXPORT.replace("4.000", "nan"),
@@ -102,3 +110,46 @@ def test_modal_filter_uses_rews_exported_q():
     )
     assert profile.shared[0].type == pb.DspProfile.Band.PEAK
     assert profile.shared[0].q == 5.41
+
+
+def test_pass_filters_are_butterworth_unless_the_row_gives_a_q():
+    profile = pb.DspProfile.FromString(
+        import_rew(
+            RewImport(
+                name="Subsonic",
+                shared="""Filter  1: ON  HP       Fc     30 Hz
+Filter  2: ON  LPQ      Fc   10000 Hz  Q  0.400
+Filter  3: ON  HPQ      Fc    20.0 Hz  Q  0.500
+Filter  4: ON  LP       Fc    8000 Hz
+""",
+            )
+        )
+    )
+    assert [(b.type, b.frequency_hz, b.gain_db) for b in profile.shared] == [
+        (pb.DspProfile.Band.HIGH_PASS, 30, 0),
+        (pb.DspProfile.Band.LOW_PASS, 10000, 0),
+        (pb.DspProfile.Band.HIGH_PASS, 20, 0),
+        (pb.DspProfile.Band.LOW_PASS, 8000, 0),
+    ]
+    assert [b.q for b in profile.shared] == pytest.approx(
+        [0.5**0.5, 0.4, 0.5, 0.5**0.5], abs=1e-15
+    )
+
+
+def test_first_order_passes_carry_a_frequency_and_nothing_else():
+    profile = pb.DspProfile.FromString(
+        import_rew(
+            RewImport(
+                name="Third order",
+                shared="""Filter  1: ON  HP1      Fc     80 Hz
+Filter  2: ON  HPQ      Fc     80 Hz  Q  1.000
+Filter  3: ON  LP1      Fc  12000 Hz
+""",
+            )
+        )
+    )
+    assert [(b.type, b.frequency_hz, b.gain_db, b.q) for b in profile.shared] == [
+        (pb.DspProfile.Band.FIRST_ORDER_HIGH_PASS, 80, 0, 0),
+        (pb.DspProfile.Band.HIGH_PASS, 80, 0, 1),
+        (pb.DspProfile.Band.FIRST_ORDER_LOW_PASS, 12000, 0, 0),
+    ]

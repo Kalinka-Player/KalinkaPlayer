@@ -371,15 +371,16 @@ WAV for them. The Core converts WAV and resamples or not; per-rate files are
 listed per rate. The renderer still validates everything:
 
 - frequency below Nyquist and Q positive;
-- gain within ±30 dB;
+- gain within ±30 dB, and zero for a high or low pass;
 - finite coefficients, and stable poles for raw biquads;
 - file sizes and counts capped.
 
 It gets a libFuzzer target like the existing ones.
 
 **Implemented for PEQ.** The Core imports REW Generic text into a version 1
-`DspProfile` with a shared curve or independent left and right curves. The
-profile digest identifies the immutable document. Import and selection are
+`DspProfile` with a shared curve or independent left and right curves. A band
+is a peak, a low or high shelf, or a first- or second-order low or high pass.
+The profile digest identifies the immutable document. Import and selection are
 described in the [renderer guide](../packages/kalinka-renderer/README.md#rew-room-correction).
 The renderer checks each band, builds the coefficients for the PCM rate and
 verifies stability. It keeps filter history across compatible gapless joins.
@@ -702,16 +703,28 @@ frame, or 0.955 % of one core, within the 1 % budget. Conversion, preamp,
 dither and packing bring the full output stage to 72.34 ns per frame
 (1.389 %). On the Pi 5 the same binary takes 36.33 ns for EQ alone and
 46.10 ns for the full stage. These are medians of three runs. The AArch64 renderer processes
-well-conditioned profiles as parallel pole pairs and uses the original
-cascade for repeated poles and other unsuitable profiles. Disabled and
+a profile as banks of parallel modes, one per section. Sections that cannot
+expand accurately together, because their poles repeat or crowd one another,
+fill a second bank where three or more of them agree, and otherwise stay
+second-order sections in series behind the modes. Disabled and
 zero-gain bands are omitted. [Three-platform measurements](../benchmarks/dsp/results.md#production-peq-after-review-21-november-2026)
 
-The AArch64 parallel path now covers eligible profiles with 3–5 or 7–20 active
-bands. It fills the final group of five with zero-residue modes. Shared profiles
+The parallel path covers profiles with three or more sections it can expand.
+A bank runs in groups of five modes and fills its last group with zero-residue
+modes, and one mode over whole groups runs in series, so 6, 11 and 16 bands
+keep 5, 10 and 15 modes. Shared profiles
 reuse the same coefficients on both channels, and a preamp edit reuses the plan
 for the active profile and PCM format. The original nine-band KEF R3 preset
 takes 25.87 ns per stereo frame on the Pi 4 and 18.46 ns on the Pi 5 at 192 kHz.
 [Preset and settings benchmarks](../benchmarks/dsp/results.md#raspberry-pi-peq-across-preset-sizes-and-live-edits-22-november-2026)
+
+A high or low pass of either order costs what a peak costs, real poles
+included, and two first-order bands in a channel share one section. A 24 dB/octave Linkwitz-Riley edge is one section twice, and the
+repeat cannot share a bank with its twin. Between two such edges the KEF R3
+preset runs as banks of ten and three modes in 38.65 ns on the Pi 4 and
+27.77 ns on the Pi 5. Behind one such high pass the lone repeat runs in
+series, 37.39 ns and 24.04 ns.
+[Pass-band benchmarks](../benchmarks/dsp/results.md#peq-pass-bands-and-the-sections-the-parallel-kernel-could-not-take-24-november-2026)
 
 ## 12. Harness
 

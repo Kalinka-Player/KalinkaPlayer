@@ -566,6 +566,133 @@ in-memory profiles or two preamp values through `OutputStage::setRoomEq`. It
 times renderer preparation and publication. Audio rendering, the gain ramp,
 network requests and settings persistence are outside that timer.
 
+## PEQ pass bands and the sections the parallel kernel could not take, 24 November 2026
+
+A high or low pass is one more section, so on x86-64 it costs what any band
+costs. On AArch64 a second-order pass band joins the parallel pole pairs like
+a peak. Three kinds of section could not, and until now any one of them sent
+the whole profile to the cascade:
+
+- a repeated pole pair, as in a 24 dB/octave Linkwitz-Riley edge, which is
+  one Butterworth section twice;
+- real poles, as in a 12 dB/octave Linkwitz-Riley edge (Q 0.5), a first-order
+  pass or a wide cut;
+- poles too close to others for the expansion to stay accurate, as in an
+  eighth-order Butterworth edge.
+
+The renderer now does two things about them, measured one after the other.
+All timings are `kalinka-dsp-bench kernels PEQ 192000` on core 3, in ns per
+stereo frame at 192 kHz. The nine-band fixture is the original KEF R3 preset.
+
+### Sections in series behind the modes
+
+Only the sections that cannot be expanded stay second-order sections, behind
+the parallel modes, where before the whole profile did. Medians of six runs of
+each binary, three in each order. "Before" has the pass bands with the earlier
+all-or-nothing rule.
+
+| EQ alone | Pi 4 before | Pi 4 after | Pi 5 before | Pi 5 after |
+|---|---:|---:|---:|---:|
+| 5 bands | 13.93 | 13.90 | 9.67 | 9.68 |
+| 6 bands | 44.36 | 25.46 | 17.41 | 15.29 |
+| 9 bands, KEF R3 | 24.41 | 24.40 | 16.80 | 16.81 |
+| 10 bands, KEF R3 behind a 20 Hz high pass | 25.90 | 25.93 | 18.48 | 18.49 |
+| 11 bands, KEF R3 behind a 24 dB Linkwitz-Riley high pass | 82.96 | 37.40 | 32.36 | 24.09 |
+| 13 bands, KEF R3 between 24 dB Butterworth edges | 37.77 | 37.67 | 27.26 | 27.28 |
+| 13 bands, KEF R3 between 24 dB Linkwitz-Riley edges | 97.27 | 51.83 | 38.68 | 33.61 |
+| 19 bands | 48.25 | 48.01 | 34.42 | 34.43 |
+| 20 bands | 49.72 | 49.50 | 36.09 | 36.11 |
+| 20 bands, silent tail | 49.69 | 49.48 | 36.09 | 36.10 |
+
+### Real poles as modes, and a second bank
+
+A section with real poles, or a first-order one, now expands like any other:
+the expansion works on each section's whole denominator and no longer on a
+conjugate pole pair. Sections that still cannot share a bank fill a second
+bank of modes, run after the first, when three or more of them agree. To make
+that possible the first bank keeps whole groups of five and passes its
+stragglers on. A lone straggler runs in series, as the sixth band already did,
+so 11 and 16 bands now do what 6 did. "Before" is the step above with the
+first-order bands added.
+
+| EQ alone | Pi 4 before | Pi 4 after | Pi 5 before | Pi 5 after |
+|---|---:|---:|---:|---:|
+| 5 bands | 13.99 | 14.19 | 9.69 | 9.70 |
+| 6 bands | 25.56 | 25.70 | 15.29 | 15.23 |
+| 9 bands, KEF R3 | 24.75 | 24.41 | 16.82 | 16.83 |
+| 10 bands, KEF R3 behind a 20 Hz high pass | 26.20 | 25.85 | 18.49 | 18.50 |
+| 10 bands, KEF R3 behind a first-order high pass | 36.04 | 25.87 | 22.41 | 18.51 |
+| 10 bands, KEF R3 behind a 12 dB Linkwitz-Riley high pass | 36.05 | 25.86 | 22.41 | 18.50 |
+| 11 bands | 37.75 | 37.33 | 27.26 | 24.06 |
+| 11 bands, KEF R3 behind a third-order Butterworth high pass | 37.59 | 37.38 | 24.09 | 24.05 |
+| 11 bands, KEF R3 behind a 24 dB Linkwitz-Riley high pass | 37.57 | 37.39 | 24.09 | 24.04 |
+| 13 bands, KEF R3 between 24 dB Butterworth edges | 37.88 | 37.68 | 27.29 | 27.32 |
+| 13 bands, KEF R3 between 24 dB Linkwitz-Riley edges | 51.90 | 38.65 | 33.61 | 27.77 |
+| 13 bands, KEF R3 behind a 48 dB Linkwitz-Riley high pass | 51.94 | 38.73 | 33.61 | 27.77 |
+| 16 bands | 49.66 | 49.18 | 36.07 | 32.81 |
+| 19 bands | 48.22 | 48.07 | 34.44 | 34.45 |
+| 20 bands | 49.67 | 49.45 | 36.11 | 36.12 |
+| 20 bands, silent tail | 49.72 | 49.46 | 36.11 | 36.13 |
+
+The Pi 5 column is the median of six runs of each binary, three in each
+order. The Pi 4 column is the median of the three with its Core paused. Three
+more ran beside a DSD512 track and are left out. They agreed within 0.3 ns.
+
+The KEF R3 between Linkwitz-Riley edges takes 0.742% of a Pi 4 core at
+192 kHz, where the all-or-nothing rule took 1.868%. A lone repeat, as behind
+one Linkwitz-Riley high pass, still runs in series and costs about what a
+group of five modes costs on a Pi 4. The full S32 output stage with preamp
+and 24-bit dither took 43.47 ns on the Pi 4 and 24.13 ns on the Pi 5 with the
+nine-band preset, and 69.21 ns and 43.42 ns with twenty bands, unchanged by
+either step.
+
+| Renderer update, µs/edit | All or nothing | Sections in series | Second bank |
+|---|---:|---:|---:|
+| Pi 4, select a different 9-band profile | 363.167 | 228.176 | 203.013 |
+| Pi 4, select a different 20-band profile | 1702.179 | 960.110 | 869.436 |
+| Pi 5, select a different 9-band profile | 191.743 | 121.648 | 110.732 |
+| Pi 5, select a different 20-band profile | 947.966 | 545.689 | 500.665 |
+
+A preamp edit with a profile active stayed at 0.060 µs on the Pi 4 and
+0.030 µs on the Pi 5. Preparing a profile got faster in the first step because
+the division no longer takes a quad-precision magnitude for every pair of
+sections to detect near repeats. The bound finds those now, and with that test
+put back the Pi 5 took 195.8 and 955.7 µs again. The second step computes in
+real arithmetic.
+
+### Two first-order bands as one section
+
+Two first-order bands in a channel are together exactly one second-order
+section, so the second one now shares the section of the first. The KEF R3
+between a first-order high pass and a first-order low pass has eleven bands
+and ten sections. Medians of three runs of one binary, against the eleven
+sections of the same preset behind a third-order Butterworth high pass:
+
+| EQ alone, ns/stereo frame at 192 kHz | Pi 4 | Pi 5 | Core Ultra 9 185H |
+|---|---:|---:|---:|
+| 11 bands, KEF R3 behind a third-order Butterworth high pass | 37.73 | 24.08 | 9.12 |
+| 11 bands, KEF R3 between first-order edges | 26.11 | 18.51 | 7.50 |
+| 10 bands, KEF R3 behind a 20 Hz high pass | 26.11 | 18.51 | 7.36 |
+
+The Pi 4 was playing a track during these three runs. A first-order band
+entered twice is one section with a real double pole and no longer a repeat.
+
+On the Intel Core Ultra 9 185H every section runs in the cascade. Ten bands
+took 8.11 ns behind a 20 Hz high pass, a first-order one or a 12 dB
+Linkwitz-Riley one, and thirteen took 12.46 ns between Linkwitz-Riley edges,
+against 9.14 ns for the nine-band preset and 15.73 ns for twenty bands. These
+are medians of three runs on logical CPU 1 with GCC 16.2.1.
+
+Both Pis ran the same Release binaries, built on the Pi 5 with Debian 13
+GCC 14.2 and `-O3 -DNDEBUG`, with the installed Core and renderer services
+active. The Pi 4 reported 1.8 GHz, 63.3–73.5 °C and `get_throttled` 0xe0000
+before and after every run, so no current flag was set. The Pi 5 was idle at
+2.0–2.4 GHz and 58.4–72.2 °C, and its firmware flags were unavailable to the
+benchmark user. On the Pi 5 the whole renderer suite passed apart from
+`AacDecoder.RefusesConfigurationsItCannotDecode`, which fails on arm64 without
+this change. On the Pi 4 the 98 EQ, profile, output-stage and config tests
+that need no fixture files passed.
+
 ## arm64: Raspberry Pi 4, 16 November 2026
 
 - CPU: Arm Cortex-A72, 4 cores at up to 1.8 GHz, L1 data cache 32 KB and
@@ -921,7 +1048,14 @@ the capacity of the single processing thread. Timings begin after filter setup a
 Each run used the stereo 192 kHz, 262,144-tap workload above. The timings exclude decoding,
 the sound server, ALSA and DAC I/O.
 
-| Configuration | FIR buffer (frames) | Pi 4 added CPU (ms/s) | Pi 5 added CPU (ms/s) | Path delay off → on (ms) | Added delay (ms) |
+At 4,096 frames and 192 kHz, **all three engines delayed the test impulse by 21.33 ms with FIR on**.
+The CamillaDSP and KFR benchmark adapters already collected a full block with FIR off. Filtering
+that block used more CPU and added **0.00 ms of extra buffering**. Kalinka's benchmark bypass
+passed each 256-frame callback straight through, so enabling its 4,096-frame FIR added 21.33 ms.
+The last column measures the change from each path's own bypass. The end-to-end delay of
+inserting CamillaDSP between a player and its DAC was outside this test.
+
+| Configuration | FIR buffer (frames) | Pi 4 added CPU (ms/s) | Pi 5 added CPU (ms/s) | Path delay off → on (ms) | Extra delay vs. bypass (ms) |
 |:--|--:|--:|--:|--:|--:|
 | Kalinka default | 640 | 323.0 | 66.9 | 0.00 → 3.33 | 3.33 |
 | Kalinka | 4,096 | **229.3** | **67.8** | 0.00 → 21.33 | 21.33 |
@@ -931,14 +1065,8 @@ the sound server, ALSA and DAC I/O.
 | CamillaDSP 5.0.0-beta.2 staggered | 4,096 | 280.1 | 77.8 | 21.33 → 21.33 | 0.00 |
 | KFR 7.2.0 | 4,096 | 235.5 | 69.8 | 21.33 → 21.33 | 0.00 |
 
-**The bypass point determines the added delay.** Kalinka bypass passed the 256-frame callback
-straight through. Enabling its FIR processor introduced the selected delay. The CamillaDSP
-adapter already collected a full channel chunk in bypass and left those samples untouched.
-The KFR adapter kept its input/output buffers in bypass and copied the completed block to
-output. Enabling convolution inside either buffered path added CPU and preserved its existing
-sample delay. A timing spike can still exhaust a playback queue if too little audio is ready.
-At 4,096 frames all enabled paths delivered the filter response 21.33 ms after
-input. At 192 kHz the four tested buffers correspond to 3.33, 21.33, 42.67 and 85.33 ms.
+A timing spike can still exhaust a playback queue if too little audio is ready.
+At 192 kHz the four tested buffers correspond to 3.33, 21.33, 42.67 and 85.33 ms.
 At 48 kHz the same frame counts give four times those delays. CPU figures here apply to 192 kHz.
 Both fixture responses start and peak at tap zero. An imported filter with
 its impulse peak 1,920 samples later would move that peak another 10 ms at 192 kHz in every engine.
@@ -950,7 +1078,7 @@ linear-phase correction at 48 kHz contributes 42.67 ms of group delay with any e
 then CamillaDSP captures it, filters it and writes to the playback device. Its capture,
 processing queues and playback buffer contribute to total latency, including when the FIR
 is bypassed. Adding CamillaDSP to a previously direct path can therefore add delay even when the
-“added delay” column reads zero. KFR supplies a convolution library, so the application using
+“Extra delay vs. bypass” column reads zero. KFR supplies a convolution library, so the application using
 it chooses the buffering. The Kalinka rows exercise the renderer's FIR processor through its
 native API. Its default for this filter is 640 frames. The 4,096-frame result uses an explicit
 partition setting in the benchmark. FIR profile loading is still pending in this branch.

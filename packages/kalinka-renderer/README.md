@@ -298,7 +298,12 @@ Import one curve for all channels, or export each speaker's correction separatel
 Mono PCM is duplicated before EQ so each speaker still receives its own correction.
 The Core accepts up to 20 active bands per channel from decimal-point text exports.
 It supports PK and Modal peaks, LS and HS shelves, and LSQ and HSQ shelves with
-adjustable Q. An unsupported active filter produces an error with its line number.
+adjustable Q. LP and HP are 12 dB/octave Butterworth low and high passes, LPQ
+and HPQ take their own Q, and LP1 and HP1 are first-order, 6 dB/octave. Two
+identical LP or HP rows make a 24 dB/octave Linkwitz-Riley edge, and an LP1 or
+HP1 row with an LPQ or HPQ row of Q 1 makes a third-order Butterworth one. An
+unsupported active filter, such as a notch or an all-pass, produces an error
+with its line number.
 Disabled and zero-gain bands take no processing time.
 See the [REW EQ window guide](https://www.roomeqwizard.com/help/help_en-GB/html/eqwindow.html)
 for the export controls.
@@ -324,7 +329,8 @@ playback. The import returns the profile's SHA-256 as `id`, which also works as
 caches the selected profile and restores it on restart.
 
 Automatic preamp reserves the sum of the individual bands' maximum boosts on the
-channel that needs the most headroom. Manual preamp accepts −30 to 0 dB and ramps
+channel that needs the most headroom. A pass band with a Q above 0.707 peaks at
+its corner, and that peak counts as a boost. Manual preamp accepts −30 to 0 dB and ramps
 over 25 ms. Room correction runs on PCM, including DSD converted to PCM. Native
 DSD and DoP pass through. If a band's frequency is at or above Nyquist, the
 renderer skips the curve for that sample rate and logs the reason.
