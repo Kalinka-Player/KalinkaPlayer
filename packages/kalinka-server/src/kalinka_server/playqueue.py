@@ -151,6 +151,7 @@ class PlayQueueImpl(PlayQueueController):
         self.repeat_all = False
 
         self._prefetch_task = None
+        self._prefetch_generation = None
         self.prepared_tracks: OrderedDict = OrderedDict()
         # StreamId of the stream currently being played (popped from prepared_tracks on SOURCE_CHANGED)
         self.current_stream_id: Optional[int] = None
@@ -249,11 +250,11 @@ class PlayQueueImpl(PlayQueueController):
             # freshly-added queue), so require a live current stream.
             if (
                 self.current_stream_id is not None
-                and self._prefetch_task is None
+                and (new_state.stream_id is None or new_state.stream_id == self.current_stream_id)
                 and not self.prepared_tracks
                 and not self._resolution.active
             ):
-                target = self.current_track_id + 1
+                target = self._next_index()
                 self._begin_resolution(
                     target,
                     resolve=lambda: self._resolve_playable(target, 1),
@@ -315,7 +316,7 @@ class PlayQueueImpl(PlayQueueController):
         if index not in range(0, len(self.track_list)) or index in self.prepared_tracks:
             return
         logger.info(f"Prefetching next track index={index}")
-        self._begin_resolution(
+        self._prefetch_generation = self._begin_resolution(
             index,
             resolve=lambda: self._resolve_playable(index, 1),
             next_step=self._prefetch_resolved,
@@ -341,7 +342,7 @@ class PlayQueueImpl(PlayQueueController):
         resolve: Callable[[], Awaitable],
         next_step: Callable[[int, object], Awaitable[None]],
         cancel_prefetch: bool = True,
-    ) -> None:
+    ) -> int:
         """Cancel any in-flight resolution and start a new one. Returns at once.
 
         ``resolve`` runs the source fetch off the serial lane; ``next_step`` is a
@@ -351,7 +352,7 @@ class PlayQueueImpl(PlayQueueController):
         """
         if cancel_prefetch:
             self._cancel_prefetch_timer()
-        self._resolution.start(
+        return self._resolution.start(
             lambda gen: self._drive_resolution(gen, resolve, next_step),
             target=target,
         )
@@ -1255,7 +1256,7 @@ class PlayQueueImpl(PlayQueueController):
         self.prepared_tracks[index] = (track_source, stream_id)
 
     def _request_more_tracks(self):
-        if not self.repeat_all and self.current_track_id == len(self.track_list) - 1:
+        if not (self.repeat_single or self.repeat_all) and self.current_track_id == len(self.track_list) - 1:
             self.event_emitter.dispatch(RequestMoreTracksEvent())
 
     def _setup_prefetch_timer(self, state: StreamState):
@@ -1267,7 +1268,7 @@ class PlayQueueImpl(PlayQueueController):
             return
 
         time_to_prefetch_s = (
-            stream_info.duration_ms - state.position - PREFETCH_TIME_MS
+            stream_info.duration_ms - state.position_at(time.monotonic_ns()) - PREFETCH_TIME_MS
         ) / 1000
 
         if time_to_prefetch_s <= 0:
@@ -1319,6 +1320,22 @@ class PlayQueueImpl(PlayQueueController):
             self._prefetch_task.cancel()
             self._prefetch_task = None
 
+    def _update_repeat_successor(self) -> None:
+        # Only automatic prefetch belongs to the repeat mode. A manual play
+        # that is already resolving will schedule its own successor.
+        if self._resolution.active:
+            if not self._resolution.is_current(self._prefetch_generation):
+                return
+            self._resolution.supersede()
+        expected = self._next_index()
+        for index, (_, stream_id) in list(self.prepared_tracks.items()):
+            if index != expected:
+                self._track_player.remove(stream_id)
+                del self.prepared_tracks[index]
+        state = self._track_player.get_state()
+        if state.state == AudioGraphNodeState.STREAMING and expected not in self.prepared_tracks:
+            self._setup_prefetch_timer(state)
+
     def _notify_track_change(self):
         self._arbiter.report(
             self,
@@ -1338,9 +1355,7 @@ class PlayQueueImpl(PlayQueueController):
         repeat_single: Optional[bool],
         repeat_all: Optional[bool],
     ) -> PlaybackMode:
-        repeat_single_updated = (
-            self.repeat_single != repeat_single if repeat_single is not None else False
-        )
+        before = self._next_index()
         self.shuffle = shuffle if shuffle is not None else self.shuffle
         self.repeat_single = (
             repeat_single if repeat_single is not None else self.repeat_single
@@ -1360,16 +1375,8 @@ class PlayQueueImpl(PlayQueueController):
                     )
                 ),
             )
-            if repeat_single_updated:
-                for idx in list(self.prepared_tracks.keys()):
-                    if idx != self.current_track_id:
-                        _, stream_id = self.prepared_tracks.pop(idx)
-                        self._track_player.remove(stream_id)
-                        self._cancel_prefetch_timer()
-                        self._prefetch_task = asyncio.create_task(
-                            self._play_next_track_async()
-                        )
-                        break
+            if before != self._next_index() and self.current_stream_id is not None:
+                self._update_repeat_successor()
         return PlaybackMode(
             shuffle=self.shuffle,
             repeat_single=self.repeat_single,
