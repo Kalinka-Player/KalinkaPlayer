@@ -182,6 +182,13 @@ std::shared_ptr<peq::Profile> originalKefR3() {
   return profile;
 }
 
+/// The KEF R3 preset with @p edges ahead of it.
+std::shared_ptr<peq::Profile> kefR3Behind(std::vector<peq::Band> edges) {
+  auto profile = originalKefR3();
+  profile->shared.insert(profile->shared.begin(), edges.begin(), edges.end());
+  return profile;
+}
+
 Factory peqCascade(std::shared_ptr<const peq::Profile> profile,
                    bool impulseTail = false) {
   return [profile = std::move(profile), impulseTail](unsigned rate) {
@@ -228,6 +235,7 @@ struct Kernel {
 };
 
 std::vector<Kernel> kernels() {
+  using enum peq::Type;
   return {
       {"std::deque buffer write + read, S32 stereo", oneThread<DequeBuffer>()},
       {"ByteRing write + read, S32 stereo", oneThread<ByteRing>()},
@@ -268,7 +276,40 @@ std::vector<Kernel> kernels() {
       {"OutputStage at -6 dB, S32 stereo, dithered at 24 bits",
        outputStage(0.5)},
       {"5 PEQ bands, planar float64 stereo", peqCascade(peakBands(5))},
+      {"6 PEQ bands, planar float64 stereo", peqCascade(peakBands(6))},
       {"9 PEQ bands, original KEF R3", peqCascade(originalKefR3())},
+      {"10 PEQ bands, KEF R3 behind a 20 Hz high pass",
+       peqCascade(kefR3Behind({{HighPass, 20, 0, 0.7071}}))},
+      {"10 PEQ bands, KEF R3 behind a first-order high pass",
+       peqCascade(kefR3Behind({{FirstOrderHighPass, 20, 0, 0}}))},
+      {"10 PEQ bands, KEF R3 behind a 12 dB Linkwitz-Riley high pass",
+       peqCascade(kefR3Behind({{HighPass, 20, 0, 0.5}}))},
+      {"11 PEQ bands, planar float64 stereo", peqCascade(peakBands(11))},
+      {"11 PEQ bands, KEF R3 behind a third-order Butterworth high pass",
+       peqCascade(kefR3Behind(
+           {{FirstOrderHighPass, 20, 0, 0}, {HighPass, 20, 0, 1}}))},
+      {"11 PEQ bands, KEF R3 between first-order edges",
+       peqCascade(kefR3Behind({{FirstOrderHighPass, 20, 0, 0},
+                               {FirstOrderLowPass, 20000, 0, 0}}))},
+      {"11 PEQ bands, KEF R3 behind a 24 dB Linkwitz-Riley high pass",
+       peqCascade(kefR3Behind(
+           {{HighPass, 20, 0, 0.7071}, {HighPass, 20, 0, 0.7071}}))},
+      {"13 PEQ bands, KEF R3 between 24 dB Butterworth edges",
+       peqCascade(kefR3Behind({{HighPass, 30, 0, 0.5412},
+                               {HighPass, 30, 0, 1.3066},
+                               {LowPass, 18000, 0, 0.5412},
+                               {LowPass, 18000, 0, 1.3066}}))},
+      {"13 PEQ bands, KEF R3 between 24 dB Linkwitz-Riley edges",
+       peqCascade(kefR3Behind({{HighPass, 30, 0, 0.7071},
+                               {HighPass, 30, 0, 0.7071},
+                               {LowPass, 18000, 0, 0.7071},
+                               {LowPass, 18000, 0, 0.7071}}))},
+      {"13 PEQ bands, KEF R3 behind a 48 dB Linkwitz-Riley high pass",
+       peqCascade(kefR3Behind({{HighPass, 30, 0, 0.5412},
+                               {HighPass, 30, 0, 1.3066},
+                               {HighPass, 30, 0, 0.5412},
+                               {HighPass, 30, 0, 1.3066}}))},
+      {"16 PEQ bands, planar float64 stereo", peqCascade(peakBands(16))},
       {"19 PEQ bands, planar float64 stereo", peqCascade(peakBands(19))},
       {"20 PEQ bands, planar float64 stereo", peqCascade(peakBands(20))},
       {"20 PEQ bands, silence after an impulse",

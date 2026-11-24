@@ -19,6 +19,8 @@ public:
   ~StateMonitor();
 
   StreamState waitState();
+  std::optional<StreamState>
+  waitStateUntil(std::chrono::steady_clock::time_point deadline);
 
   bool hasData();
   bool isRunning() const;
@@ -32,6 +34,9 @@ protected:
   int subscriptionId;
 
   std::atomic<bool> stopped = false;
+
+private:
+  StreamState popState();
 };
 
 class StateChangeWaitLock {

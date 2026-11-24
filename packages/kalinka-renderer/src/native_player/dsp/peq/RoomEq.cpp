@@ -10,7 +10,17 @@ using Coefficients = std::array<double, 5>;
 
 Coefficients coefficients(const Band &band, unsigned rate) {
   const double w = 2 * std::numbers::pi * band.hz / rate;
+  if (isFirstOrder(band.type)) {
+    const bool low = band.type == Type::FirstOrderLowPass;
+    const double k = std::tan(w / 2), b0 = (low ? k : 1) / (1 + k);
+    return {b0, low ? b0 : -b0, 0, (k - 1) / (1 + k), 0};
+  }
   const double c = std::cos(w), alpha = std::sin(w) / (2 * band.q);
+  if (isPass(band.type)) {
+    const double sign = band.type == Type::LowPass ? 1 : -1;
+    const double a0 = 1 + alpha, b0 = (1 - sign * c) / (2 * a0);
+    return {b0, sign * 2 * b0, b0, -2 * c / a0, (1 - alpha) / a0};
+  }
   const double a = std::pow(10.0, band.db / 40);
   if (band.type == Type::Peak) {
     const double a0 = 1 + alpha / a;
@@ -24,11 +34,25 @@ Coefficients coefficients(const Band &band, unsigned rate) {
           a * (num - b) / a0, -2 * (sign * m + p * c) / a0, (den - b) / a0};
 }
 
-// A bilinear shelf's extrema are those of its analog prototype, including
-// resonant shelves whose gain exceeds both endpoints.
+/// Two first-order sections as the one second-order section they make.
+Coefficients paired(const Coefficients &p, const Coefficients &q) {
+  return {p[0] * q[0], p[0] * q[1] + p[1] * q[0], p[1] * q[1], p[3] + q[3],
+          p[3] * q[3]};
+}
+
+// A bilinear section's extrema are those of its analog prototype, including
+// resonant shelves and pass filters whose gain exceeds both endpoints.
 double maxGainDb(const Band &band) {
+  if (isFirstOrder(band.type))
+    return 0;
+  const bool resonant =
+      band.type != Type::Peak && band.q > std::numbers::sqrt2 / 2;
+  if (isPass(band.type)) {
+    const double q2 = band.q * band.q;
+    return resonant ? 10 * std::log10(4 * q2 * q2 / (4 * q2 - 1)) : 0;
+  }
   double peak = std::max(0.0, band.db);
-  if (band.type == Type::Peak || band.q <= std::numbers::sqrt2 / 2)
+  if (!resonant)
     return peak;
   const double a = std::pow(10.0, band.db / 40);
   const double k = a * (1 / (band.q * band.q) - 2);
@@ -57,16 +81,28 @@ Plan prepare(const Profile *profile, unsigned rate, unsigned channels) {
                         : ch == 0 ? profile->left
                                   : profile->right;
     size_t count = 0;
+    std::optional<size_t> unpaired;
     double headroom = 0;
     for (const Band &band : bands) {
-      if (band.db == 0)
+      if (isFlat(band))
         continue;
-      if (band.hz >= rate * 0.5 || count == kBands)
+      // A second first-order band shares the section of the one before it.
+      const bool pairs = isFirstOrder(band.type) && unpaired;
+      if (band.hz >= rate * 0.5 || (!pairs && count == kBands))
         return {.applicable = false};
-      const auto [b0, b1, b2, a1, a2] = coefficients(band, rate);
+      Section &s = front.sections[pairs ? *unpaired : count];
+      Coefficients section = coefficients(band, rate);
+      if (pairs) {
+        section = paired({s.b0[ch], s.b1[ch], 0, s.a1[ch], 0}, section);
+        unpaired.reset();
+      } else {
+        if (isFirstOrder(band.type))
+          unpaired = count;
+        ++count;
+      }
+      const auto [b0, b1, b2, a1, a2] = section;
       if (!(std::abs(a2) < 1 && 1 + a1 + a2 > 0 && 1 - a1 + a2 > 0))
         return {.applicable = false};
-      Section &s = front.sections[count++];
       for (unsigned lane = ch; lane < (shared ? frontChannels : ch + 1);
            ++lane) {
         s.b0[lane] = b0;
@@ -82,9 +118,7 @@ Plan prepare(const Profile *profile, unsigned rate, unsigned channels) {
   }
   plan.active = front.count != 0;
 #if defined(__aarch64__)
-  // Three to five and seven or more bands benefit on both the Pi 4 and Pi 5.
-  if (front.count >= 3 && front.count != 6)
-    front.parallel = prepareParallel(front, shared && frontChannels == 2);
+  front.parallel = prepareParallel(front, shared && frontChannels == 2);
 #endif
   if (shared)
     for (unsigned ch = 2; ch < channels; ch += 2)

@@ -1,10 +1,17 @@
 #include "AudioGraphNode.h"
-#include "Log.h"
 #include "StateMonitor.h"
 
 StreamState AudioGraphNode::getState() {
   std::lock_guard lock(mutex);
   return state;
+}
+
+StreamState AudioGraphNode::stateForSeek() {
+  std::lock_guard lock(mutex);
+  auto snapshot = state;
+  if (snapshot.state == AudioGraphNodeState::FINISHED && !snapshot.streamInfo)
+    snapshot.streamInfo = lastStreamInfo;
+  return snapshot;
 }
 
 int AudioGraphNode::onStateChange(
@@ -28,6 +35,8 @@ AudioGraphNode::~AudioGraphNode() {}
 
 void AudioGraphNode::setStreamId(std::optional<StreamId> id) {
   std::lock_guard lock(mutex);
+  if (boundStreamId != id)
+    lastStreamInfo.reset();
   boundStreamId = id;
 }
 
@@ -53,6 +62,12 @@ void AudioGraphNode::apply(const StreamState &newState) {
       state.liveSourceFrame == stamped.liveSourceFrame) {
     return;
   }
+  if (stamped.streamId != state.streamId ||
+      stamped.state == AudioGraphNodeState::SOURCE_CHANGED ||
+      stamped.state == AudioGraphNodeState::STOPPED)
+    lastStreamInfo.reset();
+  if (stamped.streamInfo)
+    lastStreamInfo = stamped.streamInfo;
   state = stamped;
   for (auto it = stateChangeCallbacks.begin();
        it != stateChangeCallbacks.end();) {
@@ -66,11 +81,10 @@ void AudioGraphNode::apply(const StreamState &newState) {
 }
 
 std::optional<StreamInfo>
-AudioGraphOutputNode::seekStreamInfo(std::optional<StreamId> stream,
+AudioGraphOutputNode::seekStreamInfo(std::optional<StreamId>,
                                      bool waitForHeader) {
-  const auto now = getState();
-  if (stream && now.streamId && now.streamId != stream)
-    return std::nullopt;
+  // Like seekStream(), the single-source default always targets this node.
+  const auto now = stateForSeek();
   if (waitForHeader && !now.streamInfo &&
       now.state == AudioGraphNodeState::PREPARING)
     return waitForSeekHeader(now.streamId);
@@ -79,12 +93,15 @@ AudioGraphOutputNode::seekStreamInfo(std::optional<StreamId> stream,
 
 std::optional<StreamInfo>
 AudioGraphOutputNode::waitForSeekHeader(std::optional<StreamId> id) {
+  // Shutdown joins the pulling thread before it disconnects the source.
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(1);
   StateMonitor changes(this);
-  for (;;) {
-    const auto state = changes.waitState();
-    if (state.streamId != id)
-      return std::nullopt;
-    if (state.streamInfo || state.state != AudioGraphNodeState::PREPARING)
-      return state.streamInfo;
+  while (const auto state = changes.waitStateUntil(deadline)) {
+    if (state->streamId != id)
+      break;
+    if (state->streamInfo || state->state != AudioGraphNodeState::PREPARING)
+      return state->streamInfo;
   }
+  return std::nullopt;
 }

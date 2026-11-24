@@ -691,21 +691,14 @@ size_t DspStage::seek(std::optional<StreamId> stream, size_t position) {
     return std::nullopt;
   };
 
-  const auto id = stream ? stream : upstreamSeen.streamId;
+  const auto id = stream ? upstream->seekTargetId(*stream) : upstreamSeen.streamId;
   auto info = knownInfo(id);
   if (!info) {
-    // A named seek on an unbound decoder uses its current format, unless
-    // the switcher has a retained source with that name.
-    const auto unbound = stream && !upstreamSeen.streamId
-                             ? knownInfo(std::nullopt)
-                             : std::nullopt;
-    info = upstream->seekStreamInfo(id, !unbound);
-    if (!info)
-      info = unbound;
+    info = upstream->seekStreamInfo(id, true);
     takeUpstream();
   }
-  if (!info && position &&
-      (stream || upstreamSeen.state == AudioGraphNodeState::PREPARING))
+  if (!info && ((stream && position) ||
+                upstreamSeen.state == AudioGraphNodeState::PREPARING))
     return size_t(-1);
 
   const unsigned r = ratioOf(info);
@@ -800,6 +793,8 @@ void DspStage::acceptSourceChange() {
   }
   sync();
   if (segments.empty()) {
+    if (boundary || upstreamSeen.state == AudioGraphNodeState::SOURCE_CHANGED)
+      leadIn.reset();
     if (boundary) {
       boundary.reset();
       publish();

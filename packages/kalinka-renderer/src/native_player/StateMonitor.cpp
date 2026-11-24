@@ -22,16 +22,24 @@ StreamState StateMonitor::waitState() {
 #ifdef __PYTHON__
   pybind11::gil_scoped_release release;
 #endif
-  if (stopped) {
-    return StreamState(AudioGraphNodeState::STOPPED);
-  }
-
   std::unique_lock lock(mutex);
   cv.wait(lock, [this] { return !queue_.empty() || stopped; });
+  return popState();
+}
 
-  if (stopped) {
+std::optional<StreamState>
+StateMonitor::waitStateUntil(std::chrono::steady_clock::time_point deadline) {
+  std::unique_lock lock(mutex);
+  if (!cv.wait_until(lock, deadline,
+                     [this] { return !queue_.empty() || stopped; }))
+    return std::nullopt;
+  return popState();
+}
+
+// The caller holds the lock and has waited for either a state or stop().
+StreamState StateMonitor::popState() {
+  if (stopped)
     return StreamState(AudioGraphNodeState::STOPPED);
-  }
   auto state = queue_.front();
   queue_.pop();
   return state;

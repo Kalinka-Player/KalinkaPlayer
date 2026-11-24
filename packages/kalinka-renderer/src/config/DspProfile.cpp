@@ -24,14 +24,30 @@ auto bands(const auto &wire) {
     case renderer_pb::DspProfile::Band::HIGH_SHELF:
       type = peq::Type::HighShelf;
       break;
+    case renderer_pb::DspProfile::Band::HIGH_PASS:
+      type = peq::Type::HighPass;
+      break;
+    case renderer_pb::DspProfile::Band::LOW_PASS:
+      type = peq::Type::LowPass;
+      break;
+    case renderer_pb::DspProfile::Band::FIRST_ORDER_HIGH_PASS:
+      type = peq::Type::FirstOrderHighPass;
+      break;
+    case renderer_pb::DspProfile::Band::FIRST_ORDER_LOW_PASS:
+      type = peq::Type::FirstOrderLowPass;
+      break;
     default:
       throw std::runtime_error("Unknown EQ band type");
     }
-    if (!(b.frequency_hz() > 0 && b.frequency_hz() <= 384000 && b.q() >= 0.01 &&
-          b.q() <= 1000 && std::abs(b.gain_db()) <= 30))
+    const double gainLimit = peq::isPass(type) ? 0 : 30;
+    const bool validQ =
+        peq::isFirstOrder(type) ? b.q() == 0 : b.q() >= 0.01 && b.q() <= 1000;
+    if (!(b.frequency_hz() > 0 && b.frequency_hz() <= 384000 && validQ &&
+          std::abs(b.gain_db()) <= gainLimit))
       throw std::runtime_error("Invalid EQ frequency, gain or Q");
-    if (b.gain_db() != 0)
-      result.push_back({type, b.frequency_hz(), b.gain_db(), b.q()});
+    const peq::Band band{type, b.frequency_hz(), b.gain_db(), b.q()};
+    if (!peq::isFlat(band))
+      result.push_back(band);
   }
   return result;
 }

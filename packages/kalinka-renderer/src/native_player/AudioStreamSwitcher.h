@@ -39,6 +39,9 @@ public:
    * @note A finished stream is held until it is disconnected.
    */
   size_t seekStream(StreamId stream, size_t position) override;
+  std::optional<StreamId> seekTargetId(StreamId requested) override {
+    return requested;
+  }
   std::optional<StreamInfo> seekStreamInfo(std::optional<StreamId> stream,
                                            bool waitForHeader = false) override;
 

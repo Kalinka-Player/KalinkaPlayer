@@ -545,10 +545,18 @@ message DspProfile {
       PEAK = 1;
       LOW_SHELF = 2;
       HIGH_SHELF = 3;
+      // Second order, 12 dB per octave, shaped by frequency and Q alone.
+      HIGH_PASS = 4;
+      LOW_PASS = 5;
+      // 6 dB per octave, shaped by frequency alone.
+      FIRST_ORDER_HIGH_PASS = 6;
+      FIRST_ORDER_LOW_PASS = 7;
     }
     Type type = 1;
     double frequency_hz = 2;
+    // Zero for a pass band.
     double gain_db = 3;
+    // Zero for a first-order band.
     double q = 4;
   }
   uint32 version = 1;

@@ -255,6 +255,37 @@ TEST_F(Converting, RemovingTheSourceReleasesASeekWaitingForItsHeader) {
   EXPECT_EQ(seek.get(), size_t(-1));
 }
 
+TEST_F(Converting, AStalledHeaderBoundsTheSeekEvenToFrameZero) {
+  auto node = std::make_shared<LateNode>(1, 1000000, 1000);
+  switcher->connectTo(node);
+  stage->acceptSourceChange();
+  auto seek = std::async(std::launch::async,
+                         [&] { return stage->seekStream(1, 0); });
+  EXPECT_EQ(seek.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+  node->ready(); // Release the worker even if the deadline regresses.
+  EXPECT_EQ(seek.get(), size_t(-1));
+}
+
+TEST_F(Converting, DirectSourceAcceptsANamedSeekWithADifferentId) {
+  auto node = std::make_shared<CountingNode>(1, 1000000, 400);
+  stage->disconnect(switcher);
+  stage->connectTo(node);
+  EXPECT_EQ(node->seekStreamInfo(42), node->getState().streamInfo);
+  ASSERT_EQ(stage->seekStream(42, 20), 20u);
+  EXPECT_EQ(node->streamReadPosition(), 40);
+  EXPECT_EQ(pullAll(*stage), evenFrames(*node, 40, 400));
+}
+
+TEST_F(Converting, DirectSourceCanBeSoughtAgainAfterItsLastSegmentDrains) {
+  auto node = std::make_shared<CountingNode>(1, 1000000, 400);
+  stage->disconnect(switcher);
+  stage->connectTo(node);
+  ASSERT_EQ(pullAll(*stage), evenFrames(*node, 0, 400));
+  ASSERT_FALSE(node->getState().streamInfo);
+  ASSERT_EQ(stage->seekStream(1, 20), 20u);
+  EXPECT_EQ(pullAll(*stage), evenFrames(*node, 40, 400));
+}
+
 TEST_F(Converting, AGaplessJoinOfOneFormatCarriesTheRunOn) {
   auto first = queue(1, 400);
   auto second = queue(2, 400);
@@ -378,6 +409,19 @@ TEST_F(Remembering, SeekingPastAKnownPartialPairStartsTheSuccessorCleanly) {
   ASSERT_EQ(stage->seekStream(1, 500), 499u);
   EXPECT_EQ(first->streamReadPosition(), 999);
   EXPECT_EQ(pullAll(*stage), remembered(*second, 0, 400));
+}
+
+TEST_F(Remembering, ATrackAppendedAfterASeekToEndGetsItsOwnClock) {
+  queue(1, 1000);
+  stage->acceptSourceChange();
+  ASSERT_EQ(stage->seekStream(1, 500), 500u);
+  ASSERT_EQ(stage->streamReadPosition(), 500);
+  auto next = queue(2, 400, {.first = 20});
+  stage->acceptSourceChange();
+  EXPECT_EQ(stage->streamReadPosition(), 10);
+  std::array<double, 2> frame;
+  ASSERT_EQ(stage->read(frame.data(), sizeof(frame)), sizeof(frame));
+  EXPECT_EQ(frame[0], next->value(20));
 }
 
 namespace {

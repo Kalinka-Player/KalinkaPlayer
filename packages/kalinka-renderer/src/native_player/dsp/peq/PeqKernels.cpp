@@ -64,9 +64,8 @@ void group(const Section *sections, State *state, double *left, double *right,
   }
 }
 
-void Filter(const Cascade &cascade, State *state, double *left, double *right,
-            size_t frames) {
-  size_t at = 0;
+void Filter(const Cascade &cascade, size_t at, State *state, double *left,
+            double *right, size_t frames) {
   const auto groups = [&]<size_t N>() {
     while (cascade.count - at >= N) {
       group<N>(cascade.sections.data() + at, state + at, left, right, frames);
@@ -90,13 +89,16 @@ HWY_EXPORT(Filter);
 void filter(const Cascade &cascade, State *state, double *left, double *right,
             size_t frames) {
   [[maybe_unused]] dsp::FlushFilterTails flush;
+  size_t serialFrom = 0;
 #if defined(__aarch64__)
   if (cascade.parallel) {
     filterParallel(*cascade.parallel, state, left, right, frames);
-    return;
+    serialFrom = cascade.parallel->replaced;
   }
 #endif
-  HWY_DYNAMIC_DISPATCH(Filter)(cascade, state, left, right, frames);
+  if (serialFrom < cascade.count)
+    HWY_DYNAMIC_DISPATCH(Filter)(cascade, serialFrom, state, left, right,
+                                 frames);
 }
 } // namespace peq
 #endif

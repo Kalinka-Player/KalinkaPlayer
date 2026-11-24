@@ -15,8 +15,8 @@ from .renderer_proto import renderer_pb2 as pb
 _NUMBER = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)"
 _FILTER = re.compile(r"Filter\s+\d+\s*:\s*(ON|OFF)\s+(.+)", re.I)
 _BAND = re.compile(
-    rf"(PK|Modal|LS|HS|LSQ|HSQ)\s+Fc\s*({_NUMBER})\s*Hz\s+"
-    rf"Gain\s*({_NUMBER})\s*dB(?:\s+Q\s*({_NUMBER}))?",
+    rf"(PK|Modal|LS|HS|LSQ|HSQ|LP|HP|LPQ|HPQ|LP1|HP1)\s+Fc\s*({_NUMBER})\s*Hz"
+    rf"(?:\s+Gain\s*({_NUMBER})\s*dB)?(?:\s+Q\s*({_NUMBER}))?",
     re.I,
 )
 _TYPES = {
@@ -24,7 +24,15 @@ _TYPES = {
     "MODAL": pb.DspProfile.Band.PEAK,
     "LS": pb.DspProfile.Band.LOW_SHELF,
     "HS": pb.DspProfile.Band.HIGH_SHELF,
+    "LP": pb.DspProfile.Band.LOW_PASS,
+    "HP": pb.DspProfile.Band.HIGH_PASS,
+    "LP1": pb.DspProfile.Band.FIRST_ORDER_LOW_PASS,
+    "HP1": pb.DspProfile.Band.FIRST_ORDER_HIGH_PASS,
 }
+_FIRST_ORDER = ("LP1", "HP1")
+_PASS = ("LP", "HP", "LPQ", "HPQ") + _FIRST_ORDER
+_FIXED_Q = ("LS", "HS", "LP", "HP")
+_BUTTERWORTH_Q = math.sqrt(0.5)
 
 
 class RewImport(BaseModel):
@@ -62,19 +70,28 @@ def _bands(text: str):
         if not band:
             raise ValueError(f"Unsupported REW filter on line {line_no}")
         kind, frequency, gain, quality = band.groups()
-        kind, frequency, gain = kind.upper(), float(frequency), float(gain)
+        kind, frequency = kind.upper(), float(frequency)
+        passing = kind in _PASS
+        if passing != (gain is None):
+            raise ValueError(f"Unsupported REW filter on line {line_no}")
+        gain = 0.0 if passing else float(gain)
         if not 0 < frequency <= 384000 or not -30 <= gain <= 30:
             raise ValueError(f"Frequency or gain out of range on line {line_no}")
-        if kind in ("LS", "HS"):
+        if kind in _FIRST_ORDER:
             if quality is not None:
-                raise ValueError(
-                    f"Use LSQ or HSQ for an adjustable shelf on line {line_no}"
-                )
-            a = 10 ** (gain / 40)
-            q = 1 / math.sqrt((a + 1 / a) * (1 / 0.9 - 1) + 2)
+                raise ValueError(f"A first-order filter takes no Q on line {line_no}")
+            q = 0.0
+        elif kind in _FIXED_Q:
+            if quality is not None:
+                raise ValueError(f"Use {kind}Q for an adjustable Q on line {line_no}")
+            if passing:
+                q = _BUTTERWORTH_Q
+            else:
+                a = 10 ** (gain / 40)
+                q = 1 / math.sqrt((a + 1 / a) * (1 / 0.9 - 1) + 2)
         elif quality is None or not 0.01 <= (q := float(quality)) <= 1000:
             raise ValueError(f"Invalid or missing Q on line {line_no}")
-        if gain:
+        if gain or passing:
             bands.append(
                 pb.DspProfile.Band(
                     type=_TYPES[kind.rstrip("Q")],
