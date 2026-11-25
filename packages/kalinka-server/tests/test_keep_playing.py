@@ -108,8 +108,8 @@ def _bus():
     )
 
 
-def _controller(queue, modules, *, limit=1000, keep_playing=True, per_source=2, bus=None):
-    config = QueueConfig(keep_playing=keep_playing, tracks_per_source=per_source)
+def _controller(queue, modules, *, limit=1000, keep_playing=True, added=2, bus=None):
+    config = QueueConfig(keep_playing=keep_playing, tracks_added=added)
     return KeepPlayingController(
         config=config,
         playqueue=queue,
@@ -185,6 +185,34 @@ async def test_extend_appends_from_every_source_that_continues_and_survives_one_
     assert added == 2
     assert queue.adds == [(["b", "c"], None)]
     assert modules["drives"].requests == []
+
+
+async def test_extend_adds_the_amount_in_all_taking_the_playing_tracks_source_first():
+    queue = _Queue([_track("qobuz", "q1"), _track("lf", "a")], index=1)
+    modules = {"lf": _Module("lf", ["b", "c"]), "qobuz": _Module("qobuz", ["q2", "q3"])}
+
+    assert await _controller(queue, modules, added=1).extend() == 1
+
+    assert queue.adds == [(["b"], None)]
+    assert all(m.requests[0].count == 1 for m in modules.values())
+
+
+async def test_a_source_with_nothing_to_offer_is_covered_by_the_next():
+    queue = _Queue([_track("qobuz", "q1"), _track("lf", "a")], index=1)
+    modules = {"lf": _Module("lf"), "qobuz": _Module("qobuz", ["q2", "q3"])}
+
+    assert await _controller(queue, modules, added=1).extend() == 1
+
+    assert queue.adds == [(["q2"], None)]
+
+
+async def test_a_queue_that_moved_on_since_asking_is_not_extended():
+    queue = _Queue([_track("lf", "a"), _track("lf", "b")], index=0)
+    modules = {"lf": _Module("lf", ["x"])}
+
+    assert await _controller(queue, modules).extend() == 0
+
+    assert queue.adds == [] and modules["lf"].requests == []
 
 
 async def test_more_like_current_queues_its_sources_tracks_right_after_it():
@@ -279,9 +307,16 @@ def test_the_queue_asks_for_more_only_while_keep_playing_is_on():
     assert [type(e) for e in dispatched] == [RequestMoreTracksEvent]
 
 
-@pytest.mark.parametrize("per_source", [1, 10])
-def test_queue_setting_bounds(per_source):
-    assert QueueConfig(tracks_per_source=per_source).keep_playing
+def test_by_default_the_queue_carries_on_a_track_at_a_time():
+    config = QueueConfig()
+
+    assert config.keep_playing and config.tracks_added == 1
+
+
+@pytest.mark.parametrize("added", [0, 11])
+def test_tracks_added_at_a_time_stays_in_bounds(added):
+    with pytest.raises(ValueError):
+        QueueConfig(tracks_added=added)
 
 
 async def test_starting_tells_queue_clients_whether_it_is_on():

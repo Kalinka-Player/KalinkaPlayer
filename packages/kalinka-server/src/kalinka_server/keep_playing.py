@@ -190,8 +190,6 @@ class KeepPlayingController:
         """
         state = await self._playqueue.get_playback_state()
         total = (await self._playqueue.list(0, 1)).total
-        if not total or state.index is None or state.index < total - 1:
-            return 0
         added = await self.extend()
         if added and state.state not in _UNDER_WAY:
             await self._playqueue.play(total)
@@ -207,7 +205,9 @@ class KeepPlayingController:
             self._listener = None
 
     async def extend(self) -> int:
-        """Append continuation tracks from every source heard in the queue.
+        """Append the configured number of tracks, the best that the sources
+        heard in the queue propose, if the queue stands at its last track; a
+        queue that has moved on since asking is left alone.
 
         @return How many tracks were added.
         """
@@ -216,7 +216,7 @@ class KeepPlayingController:
     async def more_like_current(self, count: Optional[int] = None) -> int:
         """Queue tracks like the playing one right after it, from its source.
 
-        @param count How many to add; the configured per-source amount when None.
+        @param count How many to add; the configured number when None.
         @return How many tracks were added.
         """
         return await self._continue(from_current_only=True, after_current=True, count=count)
@@ -236,21 +236,24 @@ class KeepPlayingController:
         turned_down = self._dislikes.setdefault(track.id.source, [])
         if track.id.id not in turned_down:
             turned_down.append(track.id.id)
-        total = (await self._playqueue.list(0, 1)).total
-        if self._config.keep_playing and state.index is not None and state.index >= total - 1:
+        if self._config.keep_playing:
             await self.extend()
         await self._playqueue.next()
         return True
 
     async def _continue(self, from_current_only: bool, after_current: bool, count: Optional[int]) -> int:
-        per_source = count or self._config.tracks_per_source
+        wanted = count or self._config.tracks_added
         async with self._continuing:
             queue = await self._playqueue.list(0, self._queue_limit().tracks)
             state = await self._playqueue.get_playback_state()
+            if not after_current and (state.index is None or state.index < queue.total - 1):
+                return 0
+            # Every source is asked for the whole amount, so one with nothing
+            # to offer is covered by the next.
             asks = [
                 ask
                 for ask in plan_continuation(
-                    queue.items, state.index, self._dislikes, per_source, from_current_only
+                    queue.items, state.index, self._dislikes, wanted, from_current_only
                 )
                 if self._can_continue(ask.source)
             ]
@@ -259,7 +262,7 @@ class KeepPlayingController:
             proposals = await asyncio.gather(*(self._propose(ask) for ask in asks))
             async with self._adding:
                 total = (await self._playqueue.list(0, 1)).total
-                room = max(0, self._queue_limit().tracks - total)
+                room = min(wanted, max(0, self._queue_limit().tracks - total))
                 queued = {track.id.to_string for track in queue.items}
                 tracks = interleave(proposals, queued, room)
                 if not tracks:
