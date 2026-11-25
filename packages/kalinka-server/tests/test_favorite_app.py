@@ -28,14 +28,19 @@ async def test_a_server_whose_sources_keep_none_answers_no_favourites(client):
 async def test_a_browse_only_source_has_no_favourites_rather_than_being_unknown(client):
     ids = await client.get("/favorite/ids", params={"sources": "collections"})
     assert (ids.status_code, ids.json()) == (200, NOTHING_MARKED)
-    assert (await client.get("/favorite/ids", params={"sources": "nope"})).status_code == 404
+    assert (
+        await client.get("/favorite/ids", params={"sources": "nope"})
+    ).status_code == 404
 
 
-@pytest.mark.parametrize("id,status", [
-    ("track-1", 400),
-    ("kalinka:nope:track:1", 404),
-    ("kalinka:nope:catalog:root", 422),
-])
+@pytest.mark.parametrize(
+    "id,status",
+    [
+        ("track-1", 400),
+        ("kalinka:nope:track:1", 404),
+        ("kalinka:nope:catalog:root", 422),
+    ],
+)
 async def test_a_change_is_refused_by_what_is_wrong_with_its_id(client, id, status):
     assert (await client.put(f"/favorite/add/{id}")).status_code == status
     assert (await client.delete(f"/favorite/remove/{id}")).status_code == status
