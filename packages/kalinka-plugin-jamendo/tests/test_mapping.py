@@ -397,7 +397,5 @@ async def test_get_state_reports_missing_client_id():
 @pytest.mark.asyncio
 async def test_stubs_are_graceful():
     m = make_module([])
-    assert (await m.get_favorite_ids()).tracks == []
-    assert (await m.list_favorite(SearchType.track, "")).total == 0
     assert (await m.playlist_user_list()).total == 0
     assert await m.get_resource_path("x") is None

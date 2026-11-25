@@ -3,7 +3,6 @@ from kalinka_plugin_sdk.datamodel import (
     BrowseItem,
     BrowseItemList,
     EntityId,
-    FavoriteIds,
     Playlist,
 )
 from kalinka_plugin_sdk.filters import FilterQuery, FilterValueList
@@ -42,20 +41,6 @@ class {{ cookiecutter.plugin_class_prefix }}InputModule(InputModule):
         raise NotImplementedError
 
     async def get_track_source(self, track_id: str) -> TrackSource:
-        raise NotImplementedError
-
-    async def list_favorite(
-        self, type: SearchType, filter: str, offset: int = 0, limit: int = 50
-    ) -> BrowseItemList:
-        raise NotImplementedError
-
-    async def get_favorite_ids(self) -> FavoriteIds:
-        raise NotImplementedError
-
-    async def add_to_favorite(self, id: str):
-        raise NotImplementedError
-
-    async def remove_from_favorite(self, id: str):
         raise NotImplementedError
 
     async def list_filter_values(

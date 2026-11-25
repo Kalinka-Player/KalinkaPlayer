@@ -28,7 +28,7 @@ Implemented:
 
 Intentionally **not** implemented:
 
-- **Favourites** (`list_favorite`, `add_to_favorite`, …) and **playlist management** (`playlist_create`, …) — these require an OAuth2 user session, which is out of scope. They degrade to empty results / no-ops.
+- **Favourites** and **playlist management** (`playlist_create`, …) — these require an OAuth2 user session, which is out of scope. The module reports no `favorites` capability, so the server never asks it for any and a client offers none; playlist management degrades to empty results / no-ops.
 - **`list_genre`** — Jamendo has no genre taxonomy (it uses free-form tags), so this returns an empty list and catalogs disable genre filtering.
 
 ## Known limitations

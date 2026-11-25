@@ -130,10 +130,7 @@ Implements the `InputModule` interface with all required methods for music strea
 - `browse()` - Browse music catalogs
 - `get_track_info()` - Get detailed track information
 - `get_track_source()` - Resolve where a track plays from, given its id
-- `list_favorite()` - List user favorites
-- `get_favorite_ids()` - Get all favorite IDs
-- `add_to_favorite()` - Add items to favorites
-- `remove_from_favorite()` - Remove items from favorites
+- Favourites are optional. A source that keeps them reports `ModuleCapability.FAVORITES` from `capabilities()` and overrides `add_to_favorite()`, `remove_from_favorite()`, `get_favorite_ids()` and `list_favorite()`; any other leaves all four alone
 - `list_filter_values()` - List the values of one catalog filter field
 - `get()` - Get specific entity by ID
 - `playlist_user_list()` - List user playlists
