@@ -351,7 +351,15 @@ def get_version() -> str:
 # replaced — Keep playing and /queue/similar steer away from it — and skips
 # it; 409 when nothing plays. GET /server/version carries `queue`
 # {keep_playing, similar, dislike}. /server/modules lists `favorites` for a
-# source that keeps what /favorite/add and /favorite/remove are given.
+# source that keeps what /favorite/add and /favorite/remove are given, and
+# only such a source is asked: /favorite/ids and /favorite/list skip the
+# rest, and a change to another's item answers 409 {source, reason}. A read
+# is whole or it fails, 503 {source, reason}, or 504 where the source ran out
+# of time; one named source is asked for exactly the page wanted, several are
+# merged. A change answers 422 {field, reason} for an item that can never be
+# a favourite, 404 for one the source does not have, and 503 or 504 as a read
+# does, a 504 leaving it unknown whether the change was made. /favorite/ids
+# takes `sources` as /favorite/list does; its earlier `source` still works.
 REST_API_VERSION = "0.27"
 
 

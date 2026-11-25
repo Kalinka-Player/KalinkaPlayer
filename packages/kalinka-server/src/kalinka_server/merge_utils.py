@@ -1,14 +1,8 @@
 import asyncio
 import heapq
-from typing import Awaitable, Callable, Sequence
+from typing import Awaitable, Callable
 
-from kalinka_plugin_sdk.datamodel import (
-    BrowseItem,
-    BrowseItemList,
-    EmptyList,
-    FavoriteIds,
-)
-from kalinka_plugin_sdk.inputmodule import InputModule
+from kalinka_plugin_sdk.datamodel import BrowseItem, BrowseItemList, EmptyList
 
 BrowseItemsSource = Callable[[int, int], Awaitable[BrowseItemList | None]]
 ComparedValue = Callable[[BrowseItem], int]
@@ -184,28 +178,3 @@ async def flat_merge(
         total=total_count,
         items=all_items,
     )
-
-
-async def get_favorite_ids_merged(modules: Sequence[InputModule]) -> FavoriteIds:
-    """
-    Get a list of favorite IDs from multiple input modules in parallel.
-
-    This function retrieves all favorite IDs for a specific type across all modules
-    and combines them into a single list.
-
-    Args:
-        modules: Sequence of InputModule instances to get favorites from
-
-    Returns:
-        List of favorite IDs as strings
-    """
-    ids = FavoriteIds()
-
-    results = await asyncio.gather(*(module.get_favorite_ids() for module in modules))
-    for result in results:
-        if result:
-            ids.albums.extend(result.albums)
-            ids.tracks.extend(result.tracks)
-            ids.playlists.extend(result.playlists)
-            ids.artists.extend(result.artists)
-    return ids
