@@ -247,7 +247,8 @@ class SearchWorker:
 
         A decade the query names ("70s rock") keeps both legs to tracks whose
         album first came out then; a query naming a decade the library has
-        nothing from finds nothing.
+        nothing from finds nothing. A library that knows no album's year
+        cannot tell a decade, so there the decade is not applied.
         """
         cfg = self.config.ai_search
 
@@ -256,6 +257,9 @@ class SearchWorker:
         query_blob = await self._encode_query_blob(query)
 
         decades = decades_in(query)
+        if decades and not await self.db.knows_release_years():
+            logger.info("_do_search: no album years to tell %s by", decades)
+            decades = []
         within = set(await self.db.tracks_from_years(year_spans(decades))) if decades else None
         if within is not None and not within:
             logger.info("_do_search: no tracks from %s", decades)

@@ -525,9 +525,6 @@ async def init_db(db_path: str) -> None:
             """
         )
 
-        # What the listener heard of the library's tracks, one row per play:
-        # how long it ran, and whether it played out or was skipped early.
-        # The searcher reads it to recommend albums.
         await cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS play_history (

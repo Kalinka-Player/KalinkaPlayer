@@ -272,19 +272,24 @@ class AsyncEmbedderDb(LibraryDb):
 
         The indexer removes those rows without sqlite-vec loaded, so it cannot
         reach the index, and a row left behind would keep being found by
-        search and recommendations.
+        search and recommendations. Never raises: what a failed pass leaves,
+        the next one takes.
         """
         if not self._vec_available:
             return 0
         pruned = 0
-        async with self._open() as conn:
-            await self._load_vec(conn)
-            for entity, (table, key) in [*_VEC_TABLES.items(), *_VEC_TEXT_TABLES.items()]:
-                cursor = await conn.execute(
-                    f"DELETE FROM {table} WHERE {key} NOT IN (SELECT id FROM {entity})"
-                )
-                pruned += max(cursor.rowcount, 0)
-            await conn.commit()
+        try:
+            async with self._open() as conn:
+                await self._load_vec(conn)
+                for entity, (table, key) in [*_VEC_TABLES.items(), *_VEC_TEXT_TABLES.items()]:
+                    cursor = await conn.execute(
+                        f"DELETE FROM {table} WHERE {key} NOT IN (SELECT id FROM {entity})"
+                    )
+                    pruned += max(cursor.rowcount, 0)
+                await conn.commit()
+        except Exception as e:  # noqa: BLE001 — a missed prune must not stop embedding
+            logger.warning("Pruning the KNN index failed: %s", e)
+            return 0
         if pruned:
             logger.info("Pruned %d KNN index row(s) of removed entries", pruned)
         return pruned

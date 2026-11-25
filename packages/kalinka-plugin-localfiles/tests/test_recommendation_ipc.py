@@ -140,3 +140,27 @@ async def test_a_search_naming_a_decade_keeps_to_albums_of_that_decade(config, m
 
     assert set(seventies["tracks"]) == {"al-70s-0", "al-70s-1"}
     assert fifties == {"tracks": []}
+
+
+@pytest.mark.asyncio
+async def test_a_library_that_knows_no_years_does_not_filter_by_decade(config, monkeypatch):
+    with sqlite3.connect(config.db_path) as conn:
+        conn.execute("UPDATE albums SET year = NULL, original_year = NULL")
+    worker = _worker(config)
+
+    async def nineties_like(_query):
+        return encode_embedding(_direction(2))
+
+    asked_within = []
+
+    async def knn_leg(_query, _limit, _blob=None, within=None):
+        asked_within.append(within)
+        return [{"track_id": "al-90s-0", "distance": 0.1}]
+
+    monkeypatch.setattr(worker, "_encode_query_blob", nineties_like)
+    monkeypatch.setattr(worker, "_knn_leg", knn_leg)
+
+    found = await worker._do_search("70s rock", 10)
+
+    assert asked_within == [None]
+    assert "al-90s-0" in found["tracks"]
