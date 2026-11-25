@@ -100,6 +100,25 @@ TEST(FirFilterBankTest, PrefersExactOriginalAndCachesTheClosestInOctaves) {
   }
 }
 
+TEST(FirFilterBankTest, HeadroomUsesTheTapsPreparedForThePlaybackRate) {
+  auto bank = std::make_shared<FirFilterBank>();
+  bank->add({48000, {std::vector{1.0}, {}}});
+  EXPECT_EQ(bank->at(48000)->automaticPreampDb, 0.);
+  LiveFir live;
+  live.select(bank);
+  const StreamAudioFormat converted{44100, 2, 64, PCM_FLOAT64_LE};
+  live.start(converted);
+  std::vector<Stereo> delta(4096), output(delta.size());
+  delta[0] = {1., 1.};
+  live.process(reinterpret_cast<uint8_t *>(delta.data()),
+               reinterpret_cast<uint8_t *>(output.data()), delta.size());
+  double sum = 0.;
+  for (const auto &frame : output)
+    sum += std::abs(frame[0]);
+  ASSERT_GT(sum, 1.);
+  EXPECT_NEAR(bank->at(44100)->automaticPreampDb, -20 * std::log10(sum), 1e-10);
+}
+
 TEST(FirFilterBankTest, ConvertedStereoPreservesTheGainAndPhaseOfBothFilters) {
   constexpr unsigned source = 44100;
   const auto bank = std::make_shared<FirFilterBank>();

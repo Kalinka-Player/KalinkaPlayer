@@ -16,6 +16,7 @@
 struct StreamState;
 class AudioStreamSwitcher;
 class LiveFir;
+class FirFilterBank;
 class DspStage;
 namespace peq {
 struct Settings;
@@ -121,7 +122,8 @@ public:
   /// @throws std::invalid_argument for a value the setting does not have.
   void setDsdGain(const std::string &setting);
   /// Applies room correction on the running graph.
-  void setRoomEq(peq::Settings settings);
+  void setRoomEq(peq::Settings settings,
+                 std::shared_ptr<const FirFilterBank> fir = {});
 
   const std::vector<StreamAudioFormat> &outputFormats() const {
     return deviceFormats;

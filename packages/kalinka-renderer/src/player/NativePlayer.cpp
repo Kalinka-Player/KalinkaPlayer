@@ -836,8 +836,9 @@ NativePlayer::~NativePlayer() { stopPumps(); }
 void NativePlayer::setStateSink(StateSink sink) { sink_ = std::move(sink); }
 
 void NativePlayer::updateRoomCorrection() {
-  liveFir_->select(dsp_->bypassed() ? nullptr : firFilter_);
-  player_->setRoomEq(dsp_->current());
+  const auto fir = dsp_->bypassed() ? nullptr : firFilter_;
+  liveFir_->select(fir);
+  player_->setRoomEq(dsp_->current(), fir);
 }
 
 bool NativePlayer::ensurePlayer() {

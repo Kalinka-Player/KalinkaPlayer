@@ -386,12 +386,13 @@ The renderer checks each band, builds the coefficients for the PCM rate and
 verifies stability. It keeps filter history across compatible gapless joins.
 A profile change blends the old and new responses over 10 ms, or 25 ms when
 the preamp also changes. Each branch has its own headroom during the fade.
-The v1 PEQ document is limited to 16 KiB. CamillaDSP import and FIR asset
-delivery are future work.
+The v1 PEQ document is limited to 16 KiB. The Core also delivers FIR presets
+containing one or more impulse WAVs. The renderer matches them to the playback
+rate. CamillaDSP import is future work.
 
 ## 7. Settings
 
-Protocol v3 adds DECIMAL for the manual preamp. A v2 Core receives the field
+Protocol v3 adds DECIMAL for manual Headroom gain. A v2 Core receives the field
 as STRING and the renderer validates the same bounds (section 13).
 
 Phase 1:
@@ -421,15 +422,16 @@ converts it otherwise; it never sends DoP. DSD chosen for conversion leaves
 the container as `DSD_RAW`, a format no device is opened in, so a DAC's own
 `DSD_U8` passes the converter untouched.
 
-Phase 2. The first five settings are implemented.
+Phase 2. The first six settings are implemented.
 
 | Path | Type | Values | Default | Apply cost | Importance |
 |---|---|---|---|---|---|
 | `dsp.enabled` | BOOL | | false | instant, crossfaded | simple |
 | `dsp.profile` | ENUM | profiles the Core has published to this renderer, and `none` | `none` | instant, crossfaded | simple |
 | `dsp.bypass` | BOOL | A/B | false | instant, crossfaded | simple |
+| `dsp.preamp_enabled` | BOOL | | true | instant, ramped | expert |
 | `dsp.preamp` | ENUM | `auto`, `manual` | `auto` | instant, ramped | expert |
-| `dsp.preamp_db` | DECIMAL, dB | -30 to 0 | 0 | instant, ramped | expert |
+| `dsp.preamp_db` | DECIMAL, dB | −30 to +30 | 0 | instant, ramped | expert |
 | `dsp.crossfeed` | ENUM | `off`, bs2b presets | `off` | instant, crossfaded | simple |
 | `dsp.upsampling` | ENUM | `off`, `power_of_two`, `fixed` | `off` | interrupts playback: the output format changes | expert |
 | `dsp.upsampling_rate` | ENUM | rates `probeOutput()` reports | highest | interrupts playback | expert |

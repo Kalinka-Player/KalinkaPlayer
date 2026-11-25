@@ -51,6 +51,14 @@ std::vector<double> convert(std::span<const double> taps, unsigned from,
   return output;
 }
 
+// For bounded input samples, |sum(tap * sample)| <= sum(|tap|).
+// A cut can still increase a transient peak even with unity frequency gain.
+double peakBound(std::span<const double> taps) {
+  return std::accumulate(
+      taps.begin(), taps.end(), 0.,
+      [](double sum, double tap) { return sum + std::abs(tap); });
+}
+
 std::vector<float> magnitude(std::span<const double> taps, unsigned rate) {
   const size_t n = std::bit_ceil(std::max<size_t>(8192, taps.size()));
   std::unique_ptr<PFFFTD_Setup, decltype(&pffftd_destroy_setup)> fft(
@@ -131,8 +139,11 @@ std::shared_ptr<const FirVariant> FirFilterBank::at(unsigned rate) const {
     auto filter = from == rate
                       ? std::make_shared<FirRoomCorrection>(rate, left, right)
                       : FirRoomCorrection::converted(rate, left, right);
-    variant =
-        std::make_shared<FirVariant>(FirVariant{from, std::move(filter), {}});
+    const double leftBound = peakBound(left);
+    const double bound =
+        &right == &left ? leftBound : std::max(leftBound, peakBound(right));
+    variant = std::make_shared<FirVariant>(FirVariant{
+        from, -20 * std::log10(std::max(1., bound)), std::move(filter), {}});
     variant->responseDb[0] = magnitude(left, rate);
     if (&right != &left && right != left)
       variant->responseDb[1] = magnitude(right, rate);

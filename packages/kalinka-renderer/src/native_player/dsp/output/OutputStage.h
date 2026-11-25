@@ -19,6 +19,8 @@
 #include <random>
 #include <vector>
 
+class FirFilterBank;
+
 /**
  * @brief The end of the DSP, between the stage and the sink: software volume,
  * the sink's fades, TPDF dither, and the integer format the device takes.
@@ -76,7 +78,8 @@ public:
   /// from the next read on, over the ramp.
   void setDsdGain(double linear);
   /// Switches the PCM correction and final preamp on the next read.
-  void setRoomEq(peq::Settings settings);
+  void setRoomEq(peq::Settings settings,
+                 std::shared_ptr<const FirFilterBank> fir = {});
   /// Discards filter history when the audible stream is explicitly removed.
   void discardRoomEq(std::optional<StreamId> id = std::nullopt);
   void fadeOut() override;
@@ -138,6 +141,7 @@ private:
   std::optional<Presented> presented;
 
   peq::Settings eqSettings;
+  std::shared_ptr<const FirFilterBank> automaticFir;
   peq::Plan eqPlan;
   uint64_t eqRevision = 0;
   uint64_t appliedRevision = 0;

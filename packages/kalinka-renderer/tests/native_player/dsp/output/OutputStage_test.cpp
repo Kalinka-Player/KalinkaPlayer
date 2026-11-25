@@ -1,4 +1,5 @@
 #include "AudioStreamSwitcher.h"
+#include "dsp/fir/LiveFir.h"
 #include "dsp/output/OutputStage.h"
 
 #include <gtest/gtest.h>
@@ -745,6 +746,51 @@ TEST(OutputStage,
   second->finish();
   stage.acceptSourceChange();
   EXPECT_EQ(stage.describe(format, format, format), filtered);
+}
+
+TEST(OutputStage, AutomaticPreampProtectsFirPeaksWhenPeqIsOff) {
+  // This three-tap filter attenuates every sinusoid, but maps [-.98, .98, .98]
+  // to 1.225 on the right channel. The left channel needs no headroom.
+  auto fir = std::make_shared<FirFilterBank>();
+  fir->add({kRate, {std::vector{.5}, std::vector{.5, .5, -.25}}});
+  const auto format = pcm(PCM_FLOAT64_LE);
+  LiveFir live;
+  live.select(fir);
+  const auto lag = live.start(format);
+  std::vector<std::array<double, 2>> input(lag + 16), filtered(input.size());
+  input[0] = {-.98, -.98};
+  input[1] = input[2] = {.98, .98};
+  live.process(reinterpret_cast<uint8_t *>(input.data()),
+               reinterpret_cast<uint8_t *>(filtered.data()), input.size());
+  ASSERT_NEAR(filtered[lag + 2][1], 1.225, 1e-12);
+  const auto play = [&](std::optional<double> gain) {
+    Stage s(format, asBytes(filtered), k24In32);
+    s.stage->setRoomEq({nullptr, gain}, fir);
+    readAll(*s.stage, 512);
+    return s.stage->clippedSamples();
+  };
+  EXPECT_GT(play(0.), 0u);
+  EXPECT_EQ(play(-6.), 0u);
+  EXPECT_EQ(play(std::nullopt), 0u);
+  Stage s(format, asBytes(filtered));
+  s.stage->setRoomEq({peakEq().profile, std::nullopt}, fir);
+  auto path = s.stage->describe(format, format, format);
+  ASSERT_EQ(path.size(), 2u);
+  EXPECT_EQ(path.back().summary, "-7.94 dB");
+}
+
+TEST(OutputStage, ManualBoostAmplifiesQuietSamplesAndClipsBothPolarities) {
+  const auto format = pcm(PCM_FLOAT64_LE);
+  Stage s(format, asBytes(std::vector<double>{.01, -.01, .5, -.5}), k24In32);
+  s.stage->setRoomEq({nullptr, 30.});
+  const auto samples = readSamples<int32_t>(*s.stage, 4);
+  ASSERT_EQ(samples.size(), 4u);
+  const double expected = .01 * std::pow(10., 30. / 20) * 2147483648.;
+  EXPECT_NEAR(samples[0], expected, 512.);
+  EXPECT_NEAR(samples[1], -expected, 512.);
+  EXPECT_EQ(samples[2], 0x7fffff00);
+  EXPECT_EQ(samples[3], INT32_MIN);
+  EXPECT_EQ(s.stage->clippedSamples(), 2u);
 }
 
 TEST(OutputStage, FractionalPreampRampsThroughTheExistingGainStage) {

@@ -26,6 +26,7 @@
 #include "TestHelpers.h"
 #include "WavTestData.h"
 #include "config/ConfigService.h"
+#include "config/DspSettings.h"
 #include "config/ProfileDownloads.h"
 #include "config/SettingsPersistence.h"
 #include "dsp/dsd/DsdFilterSetting.h"
@@ -1098,6 +1099,9 @@ TEST_F(NativePlayerStreamTest,
   expectCorrection(true, true);
   ASSERT_TRUE(
       player_->dspSettings()->applyConfig("dsp.enabled", "false", error_));
+  expectCorrection(true, true);
+  ASSERT_TRUE(player_->dspSettings()->applyConfig("dsp.preamp_enabled", "false",
+                                                  error_));
   expectCorrection(true, false);
   ASSERT_TRUE(
       player_->dspSettings()->applyConfig("dsp.bypass", "true", error_));
@@ -1965,6 +1969,40 @@ TEST_F(NativePlayerSettingsTest, AnUndeclaredPathIsRefused) {
   EXPECT_EQ(error_, "unknown setting");
 }
 
+TEST_F(NativePlayerSettingsTest,
+       DormantLegacyManualPreampStaysOffUntilEnabled) {
+  player_.reset();
+  saveSettingsOverrides({{"output.device", "null"},
+                         {"dsp.preamp", "manual"},
+                         {"dsp.preamp_db", "-4"}});
+  player_ = std::make_shared<NativePlayer>(ioc_);
+  EXPECT_EQ(field(roomCorrection(), "dsp.preamp_enabled")->value(), "false");
+  ASSERT_TRUE(player_->dspSettings()->applyConfig("dsp.preamp_enabled", "true",
+                                                  error_));
+  player_.reset();
+  player_ = std::make_shared<NativePlayer>(ioc_);
+  const auto restored = roomCorrection();
+  EXPECT_EQ(field(restored, "dsp.enabled")->value(), "false");
+  EXPECT_EQ(field(restored, "dsp.preamp_enabled")->value(), "true");
+  EXPECT_EQ(field(restored, "dsp.preamp_db")->value(), "-4");
+}
+
+TEST_F(NativePlayerSettingsTest, ManualHeadroomAcceptsSignedGainAndRestoresIt) {
+  const auto config = roomCorrection();
+  const auto *gain = field(config, "dsp.preamp_db");
+  ASSERT_NE(gain, nullptr);
+  EXPECT_EQ(gain->decimal_range().min(), -30);
+  EXPECT_EQ(gain->decimal_range().max(), 30);
+  DspSettings settings([] {});
+  ASSERT_TRUE(settings.applyConfig("dsp.preamp", "manual", error_));
+  for (const auto value : {"-30", "0", "0.1", "+30"}) {
+    ASSERT_TRUE(settings.applyConfig("dsp.preamp_db", value, error_)) << error_;
+    EXPECT_EQ(settings.current().preampDb, std::stod(value));
+  }
+  DspSettings restored([] {});
+  EXPECT_EQ(restored.current().preampDb, 30.);
+}
+
 TEST_F(NativePlayerSettingsTest, RetiredExpansionSettingPreservesRoomEqOnUpgrade) {
   player_.reset();
   saveSettingsOverrides({{"output.device", "null"},
@@ -2033,7 +2071,7 @@ TEST_F(NativePlayerSettingsTest,
             renderer_pb::CONFIG_FIELD_TYPE_STRING);
   EXPECT_TRUE(
       player_->dspSettings()->applyConfig("dsp.preamp_db", "-3.5", error_));
-  for (const std::string invalid : {"nan", "-inf", "-31", "0.1", "-3.5x"})
+  for (const std::string invalid : {"nan", "-inf", "-30.1", "30.1", "+-2", "++3", "-3.5x"})
     EXPECT_FALSE(
         player_->dspSettings()->applyConfig("dsp.preamp_db", invalid, error_));
 }

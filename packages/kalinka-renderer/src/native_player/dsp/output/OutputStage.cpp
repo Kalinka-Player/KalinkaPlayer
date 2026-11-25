@@ -1,5 +1,6 @@
 #include "dsp/output/OutputStage.h"
 
+#include "dsp/fir/FirFilterBank.h"
 #include "dsp/output/PlanarPcm.h"
 
 #include <spdlog/spdlog.h>
@@ -43,7 +44,8 @@ bool convertedFromDsd(const StreamInfo &info) {
 }
 
 peq::Plan prepareEq(const peq::Settings &settings,
-                    const StreamAudioFormat &source) {
+                    const StreamAudioFormat &source,
+                    const std::shared_ptr<const FirFilterBank> &fir) {
   auto plan = isDsd(source.sampleFormat)
                   ? peq::Plan{}
                   : peq::prepare(settings.profile.get(), source.sampleRate,
@@ -51,6 +53,10 @@ peq::Plan prepareEq(const peq::Settings &settings,
   if (!plan.applicable)
     spdlog::warn("Skipping room profile '{}' at {} Hz", settings.profile->name,
                  source.sampleRate);
+  if (fir && source.channels == 2 && !isDsd(source.sampleFormat)) {
+    if (const auto variant = fir->at(source.sampleRate))
+      plan.automaticPreampDb += variant->automaticPreampDb;
+  }
   return plan;
 }
 } // namespace
@@ -184,16 +190,22 @@ OutputStage::present(const StreamAudioFormat &source, bool fromDsd,
                  fromDsd,
                  fromInteger,
                  preferred};
-  const bool changed =
+  const bool layoutChanged =
       !before || before->source.sampleRate != source.sampleRate ||
       before->channels != next.channels ||
       isDsd(before->source.sampleFormat) != isDsd(source.sampleFormat);
-  const auto plan = changed ? prepareEq(eqSettings, source) : peq::Plan{};
+  // Mono expands to stereo after FIR. A gapless join can change FIR headroom
+  // while both PEQ channels still carry the preceding stream's history.
+  const bool replan =
+      layoutChanged ||
+      (automaticFir && before->source.channels != source.channels);
+  const auto plan =
+      replan ? prepareEq(eqSettings, source, automaticFir) : peq::Plan{};
   std::lock_guard lock(presentedMutex);
-  if (changed) {
+  if (replan) {
     eqPlan = plan;
     ++eqRevision;
-    resetEq = true;
+    resetEq |= layoutChanged;
   }
   presented = next;
   return next;
@@ -205,9 +217,12 @@ void OutputStage::resetClipping() {
     events->post({reading, Clipping{0}});
 }
 
-void OutputStage::setRoomEq(peq::Settings settings) {
+void OutputStage::setRoomEq(peq::Settings settings,
+                            std::shared_ptr<const FirFilterBank> fir) {
+  if (settings.preampDb)
+    fir.reset();
   std::lock_guard prepareLock(eqPreparationMutex);
-  if (settings.profile == eqSettings.profile) {
+  if (settings.profile == eqSettings.profile && fir == automaticFir) {
     std::lock_guard lock(presentedMutex);
     // The same effective PEQ plan can accompany a FIR or bypass change.
     resetClipping();
@@ -218,10 +233,11 @@ void OutputStage::setRoomEq(peq::Settings settings) {
     return;
   }
   const auto now = current();
-  const auto plan = now ? prepareEq(settings, now->source) : peq::Plan{};
+  const auto plan = now ? prepareEq(settings, now->source, fir) : peq::Plan{};
   std::lock_guard lock(presentedMutex);
   resetClipping();
   eqSettings = std::move(settings);
+  automaticFir = std::move(fir);
   eqPlan = plan;
   ++eqRevision;
 }
@@ -234,21 +250,22 @@ std::vector<SignalStep> OutputStage::describe(const StreamAudioFormat &decoded,
   if (isDsd(source.sampleFormat))
     return steps;
   peq::Settings settings;
+  std::shared_ptr<const FirFilterBank> fir;
   bool active;
   double preampDb;
   bool prepared;
   {
     std::lock_guard lock(presentedMutex);
     settings = eqSettings;
+    fir = automaticFir;
     prepared = presented && presented->source.sampleRate == source.sampleRate &&
-               presented->channels == outputChannels(source) &&
+               presented->source.channels == source.channels &&
                !isDsd(presented->source.sampleFormat);
     active = eqPlan.active;
     preampDb = settings.preampDb.value_or(eqPlan.automaticPreampDb);
   }
   if (!prepared) {
-    const auto plan = peq::prepare(settings.profile.get(), source.sampleRate,
-                                   outputChannels(source));
+    const auto plan = prepareEq(settings, source, fir);
     active = plan.active;
     preampDb = settings.preampDb.value_or(plan.automaticPreampDb);
   }
@@ -257,7 +274,7 @@ std::vector<SignalStep> OutputStage::describe(const StreamAudioFormat &decoded,
         {signal_step::kPeq, "Parametric EQ", settings.profile->name});
   if (preampDb != 0)
     steps.push_back(
-        {signal_step::kPreamp, "Preamp", std::format("{:+.2f} dB", preampDb)});
+        {signal_step::kPreamp, "Headroom", std::format("{:+.2f} dB", preampDb)});
   const double gain = dsdGain.load();
   if (convertedFromDsd(decoded, source) && gain != 1.0)
     steps.push_back({signal_step::kDsdGain, "DSD gain",

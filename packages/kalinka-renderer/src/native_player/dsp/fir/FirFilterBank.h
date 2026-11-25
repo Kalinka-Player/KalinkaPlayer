@@ -9,6 +9,7 @@
 
 struct FirVariant {
   unsigned sourceRate;
+  double automaticPreampDb;
   std::shared_ptr<FirRoomCorrection> filter;
   // 257 log-spaced magnitudes from 20 Hz to min(20 kHz, Nyquist).
   // Mono or identical stereo uses the left response for both channels.
