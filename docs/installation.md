@@ -122,9 +122,9 @@ A VM usually cannot reach your DAC. Let the VM be the server, and [add an output
 Use this on a computer that already runs one of these 64-bit systems:
 
 - **Debian 13** (trixie)
-- **Raspberry Pi OS (64-bit)** based on Debian 13 (trixie). The older Bookworm release gets the server but no sound output.
+- **Raspberry Pi OS (64-bit)** based on Debian 13 (trixie)
 - **DietPi** on Debian 13
-- **Ubuntu 26.04 LTS**. Ubuntu 24.04 has no renderer package: its libraries are older than the renderer needs.
+- **Ubuntu 26.04 LTS**
 
 A Raspberry Pi 1, Pi 2 or original Pi Zero is not among them, but it can be an output for a server on another computer, such as your desktop: see [Add more outputs](#add-more-outputs).
 

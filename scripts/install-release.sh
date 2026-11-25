@@ -6,7 +6,6 @@
 # with apt so system dependencies are pulled in automatically. Every package
 # in the bundle — server, plugins, SDK — is pure Python and arch-independent
 # (_all), so the same artifacts install on any machine.
-# Ubuntu 24.04 skips the Bluetooth plugin: its BlueALSA package is too old.
 #
 # Some pieces ship on their own release trains and are installed alongside,
 # each best-effort so a lookup failure only warns:
@@ -75,11 +74,8 @@ fi
 
 have python3 || die "python3 is required (it is also a runtime dependency of the server)"
 
-# Keep platform exclusions independent of the requested Kalinka version: this
-# script is served from main, including when installing older release bundles.
-ID="" VERSION_ID="" PRETTY_NAME=""
+PRETTY_NAME=""
 [ -r /etc/os-release ] && . /etc/os-release
-PLATFORM="${ID:-unknown}-${VERSION_ID:-unknown}"
 
 # apt refuses the server on an older system python3, whatever comes first on PATH.
 SYSTEM_PYTHON=/usr/bin/python3
@@ -89,7 +85,7 @@ print("%d.%d.%d" % sys.version_info[:3])
 sys.exit(sys.version_info < (3, 11))')"; then
   [ -n "$python_version" ] || die "$SYSTEM_PYTHON does not run, and the server needs it"
   die "Kalinka needs Python 3.11 or newer, and ${PRETTY_NAME:-this system} has Python ${python_version}.
-  It installs on Debian 13, Raspberry Pi OS (64-bit) or DietPi on Debian 13, or Ubuntu 24.04:
+  It installs on Debian 13, Raspberry Pi OS (64-bit) or DietPi on Debian 13, or Ubuntu 26.04:
   https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#d-install-with-one-command"
 fi
 
@@ -159,7 +155,6 @@ for r in (data if isinstance(data, list) else [data]):
 PY
 cat > "$PARSER" <<'PY'
 import sys, json
-platform = sys.argv[1]
 data = json.load(sys.stdin)
 rel = None
 if isinstance(data, list):
@@ -179,11 +174,6 @@ urls = []
 for name, url in assets.items():
     if not name.endswith("_all.deb"):
         continue
-    if platform == "ubuntu-24.04" and name.startswith("kalinka-plugin-bluetooth_"):
-        sys.stderr.write(
-            "note: skipping the Bluetooth plugin on Ubuntu 24.04; "
-            "its BlueALSA package is older than the plugin requires.\n")
-        continue
     urls.append(url)
 if not any(n.startswith("kalinka-server_") and n.endswith("_all.deb")
            for n in assets):
@@ -196,7 +186,7 @@ print(rel["tag_name"])
 for u in urls:
     print(u)
 PY
-parsed="$(printf '%s' "$json" | python3 "$PARSER" "$PLATFORM")" \
+parsed="$(printf '%s' "$json" | python3 "$PARSER")" \
   || die "failed to parse release metadata"
 
 TAG="$(printf '%s\n' "$parsed" | sed -n '1p')"
@@ -351,7 +341,7 @@ dpkg_state() {  # dpkg_state <package> -> "<status> <version>", or nothing when 
   printf '%s' "${state% }"
 }
 
-# Only a note: Bookworm's repair, for one, removes the Bluetooth plugin it has no BlueZ for.
+# Only a note: a repair on a system without the BlueZ it needs removes the Bluetooth plugin.
 report_missing_debs() {
   local deb package wanted state missing=0
   for deb in "$TMPDIR_DL"/*.deb; do

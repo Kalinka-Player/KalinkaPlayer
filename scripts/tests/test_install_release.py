@@ -45,7 +45,7 @@ class ReleaseInstallerTests(unittest.TestCase):
             .replace("/etc/os-release", str(self.root / "os-release"))
             .replace("/usr/bin/python3", str(self.bin / "python3"))
         )
-        self.platform("ubuntu", "24.04")
+        self.platform("debian", "13")
         self.command("id", "#!/bin/sh\necho 0\n")
         self.command(
             "dpkg-query",
@@ -234,28 +234,13 @@ else:
         self.assertEqual(downloaded, set(names))
         self.assertEqual(installed, set(names))
 
-    def test_ubuntu_2404_excludes_bluetooth_before_download_and_install(self):
+    def test_the_whole_bundle_is_downloaded_and_installed(self):
         result = self.run_installer()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assert_packages(self.base_names + [self.web])
-        self.assertIn("skipping the Bluetooth plugin on Ubuntu 24.04", result.stderr)
+        self.assert_packages(self.base_names + [self.bluetooth, self.web])
         self.assertIn("kalinka-v5.17.0 installed", result.stdout)
         self.assertNotIn("did not install", result.stderr)
         self.assertEqual(self.calls("dpkg"), [])
-
-    def test_other_platforms_keep_the_complete_bundle(self):
-        for distro, version in [
-            ("debian", "13"),
-            ("raspbian", "13"),
-            ("ubuntu", "22.04"),
-            ("ubuntu", "26.04"),
-        ]:
-            with self.subTest(distro=distro, version=version):
-                self.platform(distro, version)
-                result = self.run_installer()
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assert_packages(self.base_names + [self.bluetooth, self.web])
-                self.assertNotIn("skipping the Bluetooth plugin", result.stderr)
 
     def test_old_bundles_work_with_latest_and_each_supported_version_spelling(self):
         self.release = self.asset_release("kalinka-v5.17.0", self.base_names)
@@ -265,12 +250,11 @@ else:
                 result = self.run_installer(*args)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assert_packages(self.base_names + [self.web])
-                self.assertNotIn("skipping the Bluetooth plugin", result.stderr)
 
-    def test_explicit_version_also_excludes_bluetooth(self):
+    def test_an_explicit_version_installs_its_whole_bundle(self):
         result = self.run_installer("5.17.0")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assert_packages(self.base_names + [self.web])
+        self.assert_packages(self.base_names + [self.bluetooth, self.web])
 
     def test_piped_installer_supports_current_and_old_bundles(self):
         for names in [self.base_names + [self.bluetooth], self.base_names]:
@@ -279,13 +263,13 @@ else:
                 self.feed()
                 result = self.run_installer("5.17.0", piped=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assert_packages(self.base_names + [self.web])
+                self.assert_packages(names + [self.web])
 
-    def test_repair_fallback_cannot_reintroduce_bluetooth(self):
+    def test_the_repair_fallback_installs_the_bundle_it_downloaded(self):
         self.env["FAIL_BUNDLE"] = "1"
         result = self.run_installer()
         self.assertEqual(result.returncode, 0, result.stderr)
-        names = self.base_names + [self.web]
+        names = self.base_names + [self.bluetooth, self.web]
         self.assert_packages(names)
         self.assertEqual(
             {
@@ -342,8 +326,7 @@ else:
         self.assertNotIn(">> Done", result.stdout)
 
     def test_another_package_the_repair_removes_is_named_and_the_server_runs(self):
-        """Bookworm has the server's Python, but not the BlueZ of the Bluetooth plugin."""
-        self.platform("debian", "12")
+        """A system with the server's Python may lack the BlueZ of the Bluetooth plugin."""
         self.env.update(FAIL_BUNDLE="1", REPAIR_REMOVES="kalinka-plugin-bluetooth")
         result = self.run_installer()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -389,7 +372,7 @@ else:
                     "error: Kalinka needs Python 3.11 or newer, and "
                     f"{name} has Python {'.'.join(map(str, version))}.\n"
                     "  It installs on Debian 13, Raspberry Pi OS (64-bit) or DietPi "
-                    "on Debian 13, or Ubuntu 24.04:\n"
+                    "on Debian 13, or Ubuntu 26.04:\n"
                     "  https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/"
                     "docs/installation.md#d-install-with-one-command\n",
                     result.stderr,
@@ -421,7 +404,6 @@ else:
         self.assertEqual(self.calls("requests"), [])
 
     def test_python_311_installs(self):
-        self.platform("debian", "12")
         self.python(3, 11, 2)
         result = self.run_installer()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -440,11 +422,8 @@ else:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_packages(self.base_names + [self.bluetooth, self.web])
 
-    def test_missing_os_release_preserves_selection_and_ignores_inherited_identity(
-        self,
-    ):
+    def test_a_system_without_os_release_still_installs(self):
         (self.root / "os-release").unlink()
-        self.env.update(ID="ubuntu", VERSION_ID="24.04")
         result = self.run_installer()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_packages(self.base_names + [self.bluetooth, self.web])

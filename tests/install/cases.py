@@ -61,7 +61,7 @@ SAID_DONE = ">> Done."
 OLD_PYTHON = "error: Kalinka needs Python 3.11 or newer, and {system} has Python {python}."
 SUPPORTED = (
     "It installs on Debian 13, Raspberry Pi OS (64-bit) or DietPi on Debian 13, "
-    "or Ubuntu 24.04"
+    "or Ubuntu 26.04"
 )
 SERVER_NOT_INSTALLED = "error: {tag} is not installed: dpkg reports kalinka-server as"
 
