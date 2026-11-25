@@ -39,10 +39,11 @@ def _track(source: str, local: str) -> Track:
 
 
 class _Queue:
-    def __init__(self, tracks, index, state=None):
+    def __init__(self, tracks, index, state=None, repeat_all=False, repeat_single=False):
         self.tracks = list(tracks)
         self.index = index
         self.state = state
+        self.mode = PlaybackMode(shuffle=False, repeat_single=repeat_single, repeat_all=repeat_all)
         self.adds = []
         self.skips = 0
         self.plays = []
@@ -63,6 +64,9 @@ class _Queue:
         else:
             self.tracks[index:index] = tracks
 
+    async def get_playback_mode(self):
+        return self.mode
+
     async def play(self, index=None):
         self.plays.append(index)
 
@@ -73,11 +77,12 @@ class _Queue:
 
 
 class _Module(InputModule):
-    def __init__(self, name, proposals=(), fails=False, continues=True):
+    def __init__(self, name, proposals=(), fails=False, continues=True, meanwhile=None):
         self.name = name
         self.proposals = list(proposals)
         self.fails = fails
         self.continues = continues
+        self.meanwhile = meanwhile
         self.requests: list[ContinuationRequest] = []
 
     def module_name(self):
@@ -88,6 +93,8 @@ class _Module(InputModule):
 
     async def continue_queue(self, request):
         self.requests.append(request)
+        if self.meanwhile is not None:
+            self.meanwhile()
         if self.fails:
             raise RuntimeError("source down")
         return [p for p in self.proposals if p not in request.exclude][: request.count]
@@ -98,11 +105,11 @@ class _Module(InputModule):
         ]
 
 
-def _bus():
+def _bus(tracks=()):
     return EventBus(
         PlayQueueState(
             playback_state=PlaybackState(),
-            track_list=[],
+            track_list=list(tracks),
             playback_mode=PlaybackMode(shuffle=False, repeat_single=False, repeat_all=False),
         )
     )
@@ -270,8 +277,8 @@ async def test_dislike_with_nothing_playing_does_nothing():
 
 
 async def test_turn_downs_last_until_the_whole_queue_goes_at_once():
-    bus = _bus()
     queue = _Queue([_track("lf", "a"), _track("lf", "b")], index=0)
+    bus = _bus(queue.tracks)
     controller = _controller(queue, {"lf": _Module("lf")}, bus=bus)
     await controller.start()
     try:
@@ -368,3 +375,77 @@ async def test_resuming_short_of_the_last_track_adds_nothing():
     assert await _controller(queue, modules).resume() == 0
 
     assert queue.adds == [] and modules["lf"].requests == []
+
+
+@pytest.mark.parametrize("repeat", ["repeat_all", "repeat_single"])
+async def test_a_repeating_queue_is_not_carried_on(repeat):
+    queue = _Queue([_track("lf", "a")], index=0, **{repeat: True})
+    modules = {"lf": _Module("lf", ["x"])}
+    controller = _controller(queue, modules)
+
+    assert await controller.extend() == 0
+    assert await controller.resume() == 0
+    assert await controller.dislike_current()
+
+    assert queue.adds == [] and modules["lf"].requests == []
+    assert queue.skips == 1
+
+
+async def test_a_queue_replaced_while_its_sources_answered_is_left_alone():
+    queue = _Queue([_track("lf", "a")], index=0)
+
+    def replace():
+        queue.tracks = [_track("lf", "other")]
+
+    modules = {"lf": _Module("lf", ["x"], meanwhile=replace)}
+
+    assert await _controller(queue, modules).extend() == 0
+
+    assert queue.adds == []
+
+
+async def test_more_like_this_is_dropped_once_another_track_plays():
+    queue = _Queue([_track("lf", "a"), _track("lf", "b")], index=0)
+
+    def skip():
+        queue.index = 1
+
+    modules = {"lf": _Module("lf", ["x"], meanwhile=skip)}
+
+    assert await _controller(queue, modules).more_like_current() == 0
+
+    assert queue.adds == []
+
+
+async def test_more_like_this_goes_after_the_playing_track_where_it_stands_now():
+    queue = _Queue([_track("lf", "a"), _track("lf", "b")], index=1)
+
+    def add_before():
+        queue.tracks.insert(0, _track("lf", "new"))
+        queue.index = 2
+
+    modules = {"lf": _Module("lf", ["x"], meanwhile=add_before)}
+
+    assert await _controller(queue, modules).more_like_current() == 1
+
+    assert queue.adds == [(["x"], 3)]
+
+
+async def test_the_session_length_comes_from_the_queue_as_the_bus_replays_it():
+    tracks = [_track("lf", "a"), _track("lf", "b"), _track("lf", "c")]
+    # Filled between a read of the queue and the subscription: only the bus knows.
+    queue = _Queue([], index=None)
+    bus = _bus(tracks)
+    controller = _controller(queue, {"lf": _Module("lf")}, bus=bus)
+    await controller.start()
+    queue.tracks, queue.index = list(tracks), 0
+    try:
+        await controller.dislike_current()
+        queue.tracks, queue.index = queue.tracks[2:], 0
+        bus.dispatch(TracksRemovedEvent(indices=[1, 0]))
+        bus.dispatch(RequestMoreTracksEvent())
+        await _until(lambda: len(controller._module_for("lf").requests) == 1)
+        assert controller.dislikes == {"lf": ["a"]}
+    finally:
+        await controller.shutdown()
+        bus.close()
