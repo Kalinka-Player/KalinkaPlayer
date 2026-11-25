@@ -16,10 +16,12 @@ playing track is.
 """
 
 import asyncio
+import json
 import logging
 from typing import Awaitable, Callable, List, Optional, TypeVar
 
 from fastapi import FastAPI, HTTPException, Query
+from pydantic import ValidationError
 
 from kalinka_plugin_sdk.datamodel import (
     BrowseItemList,
@@ -47,6 +49,10 @@ T = TypeVar("T")
 
 FAVOURITE_KINDS = frozenset(EntityType(kind.value) for kind in SearchType)
 
+# A ValueError or LookupError says why an item cannot be marked; these
+# subclasses are a plugin failing to read its source's answer instead.
+ACCIDENTS = (KeyError, IndexError, UnicodeError, json.JSONDecodeError, ValidationError)
+
 
 def register_favorite_routes(
     app: FastAPI,
@@ -69,8 +75,8 @@ def register_favorite_routes(
         type: SearchType,
         filter: str = "",
         sources: Optional[str] = None,
-        offset: int = 0,
-        limit: int = 10,
+        offset: int = Query(0, ge=0),
+        limit: int = Query(10, ge=1),
     ) -> BrowseItemList:
         """One kind of favourite, most recently marked first."""
         keepers = _keepers(resolve_modules(sources))
@@ -152,6 +158,8 @@ def register_favorite_routes(
         change = module.add_to_favorite if favorite else module.remove_from_favorite
         try:
             await change(id)
+        except ACCIDENTS as e:
+            raise _unavailable(SourceFailed(entity_id.source, e))
         except ValueError as e:
             raise HTTPException(
                 status_code=422, detail={"field": "id", "reason": str(e)}

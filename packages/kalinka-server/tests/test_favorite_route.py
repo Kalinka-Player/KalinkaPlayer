@@ -1,6 +1,8 @@
 """The favourites endpoints: only a source that keeps favourites is asked, a
 read is whole or fails by name, and a change answers what went wrong."""
 
+import json
+
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -52,7 +54,9 @@ class _Source(InputModule):
     async def list_favorite(self, type, filter, offset=0, limit=50):
         self._answer(("list", type, filter, offset, limit))
         rows = [
-            BrowseItem(id=_track(self._name, at), name=f"{self._name} {at}", timestamp=at)
+            BrowseItem(
+                id=_track(self._name, at), name=f"{self._name} {at}", timestamp=at
+            )
             for at in self.marked_at
         ]
         return BrowseItemList(
@@ -81,7 +85,9 @@ def _serving(*sources):
     def resolve_modules(named):
         names = list(by_name) if named is None else named.split(",")
         if any(name not in by_name for name in names):
-            raise HTTPException(status_code=404, detail="No matching input modules found")
+            raise HTTPException(
+                status_code=404, detail="No matching input modules found"
+            )
         return [by_name[name] for name in names]
 
     def resolve_module(entity_id):
@@ -93,7 +99,9 @@ def _serving(*sources):
         try:
             return EntityId.from_string(id)
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid entity ID format: {e}")
+            raise HTTPException(
+                status_code=400, detail=f"Invalid entity ID format: {e}"
+            )
 
     app = FastAPI()
     client = TestClient(app)
@@ -128,9 +136,15 @@ def test_naming_a_source_that_keeps_none_is_an_empty_answer():
     answer = client.get("/favorite/ids", params={"sources": "localfiles"}).json()
     assert answer == {"albums": [], "artists": [], "tracks": [], "playlists": []}
     page = client.get(
-        "/favorite/list/track", params={"sources": "localfiles", "offset": 4, "limit": 2}
+        "/favorite/list/track",
+        params={"sources": "localfiles", "offset": 4, "limit": 2},
     ).json()
-    assert (page["items"], page["total"], page["offset"], page["limit"]) == ([], 0, 4, 2)
+    assert (page["items"], page["total"], page["offset"], page["limit"]) == (
+        [],
+        0,
+        4,
+        2,
+    )
     assert library.asked == []
 
 
@@ -169,19 +183,33 @@ def test_one_source_is_asked_for_exactly_the_page_wanted():
     assert page["items"][0]["name"] == "tidal 80"
 
 
+@pytest.mark.parametrize("params", [{"offset": -1}, {"limit": 0}])
+def test_a_page_that_cannot_be_is_the_client_s_mistake(params):
+    tidal = _Source("tidal", [5])
+    response = _serving(tidal).get("/favorite/list/track", params=params)
+    assert response.status_code == 422
+    assert tidal.asked == []
+
+
 def test_several_sources_list_as_one_most_recently_marked_first():
     client = _serving(_Source("tidal", [9, 4]), _Source("qobuz", [7, 1]))
     assert _names(client.get("/favorite/list/track")) == [
-        "tidal 9", "qobuz 7", "tidal 4", "qobuz 1",
+        "tidal 9",
+        "qobuz 7",
+        "tidal 4",
+        "qobuz 1",
     ]
 
 
 @pytest.mark.parametrize("path", ["/favorite/ids", "/favorite/list/track"])
-@pytest.mark.parametrize("failure,status,reason", [
-    (SourceUnavailableError("Sign in to TIDAL."), 503, "Sign in to TIDAL."),
-    (RuntimeError("private upstream detail"), 503, "Source unavailable"),
-    (TimeoutError(), 504, "Did not answer in time"),
-])
+@pytest.mark.parametrize(
+    "failure,status,reason",
+    [
+        (SourceUnavailableError("Sign in to TIDAL."), 503, "Sign in to TIDAL."),
+        (RuntimeError("private upstream detail"), 503, "Source unavailable"),
+        (TimeoutError(), 504, "Did not answer in time"),
+    ],
+)
 def test_a_source_that_cannot_answer_fails_the_read_by_name(
     path, failure, status, reason
 ):
@@ -213,10 +241,13 @@ def test_a_filter_a_source_cannot_apply_is_refused_not_ignored():
         }
 
 
-@pytest.mark.parametrize("call,asked", [
-    (lambda client, id: client.put(f"/favorite/add/{id}"), "add"),
-    (lambda client, id: client.delete(f"/favorite/remove/{id}"), "remove"),
-])
+@pytest.mark.parametrize(
+    "call,asked",
+    [
+        (lambda client, id: client.put(f"/favorite/add/{id}"), "add"),
+        (lambda client, id: client.delete(f"/favorite/remove/{id}"), "remove"),
+    ],
+)
 @pytest.mark.parametrize("kind", ["track", "album", "artist", "playlist"])
 def test_a_change_goes_to_the_source_the_item_belongs_to(call, asked, kind):
     tidal, qobuz = _Source("tidal"), _Source("qobuz")
@@ -230,9 +261,10 @@ def test_a_change_that_was_made_is_announced_with_what_the_item_now_is():
     client = _serving(_Source("tidal"))
     client.put("/favorite/add/kalinka:tidal:album:10")
     client.delete("/favorite/remove/kalinka:tidal:album:10")
-    assert [
-        (event.id.to_string, event.favorite) for event in client.published
-    ] == [("kalinka:tidal:album:10", True), ("kalinka:tidal:album:10", False)]
+    assert [(event.id.to_string, event.favorite) for event in client.published] == [
+        ("kalinka:tidal:album:10", True),
+        ("kalinka:tidal:album:10", False),
+    ]
 
 
 CHANGES = [
@@ -242,13 +274,16 @@ CHANGES = [
 
 
 @pytest.mark.parametrize("change", CHANGES)
-@pytest.mark.parametrize("id,status", [
-    ("not-an-id", 400),
-    ("kalinka:nope:track:1", 404),
-    ("kalinka:tidal:catalog:home", 422),
-    ("kalinka:tidal:genre:1", 422),
-    ("kalinka:localfiles:track:1", 409),
-])
+@pytest.mark.parametrize(
+    "id,status",
+    [
+        ("not-an-id", 400),
+        ("kalinka:nope:track:1", 404),
+        ("kalinka:tidal:catalog:home", 422),
+        ("kalinka:tidal:genre:1", 422),
+        ("kalinka:localfiles:track:1", 409),
+    ],
+)
 def test_a_change_that_cannot_be_made_never_reaches_a_source(change, id, status):
     tidal, library = _Source("tidal"), _Source("localfiles", keeps=False)
     client = _serving(tidal, library)
@@ -266,25 +301,35 @@ def test_a_source_that_keeps_none_is_named_in_the_refusal():
 
 
 @pytest.mark.parametrize("change", CHANGES)
-@pytest.mark.parametrize("failure,status,detail", [
-    (
-        ValueError("Your own playlists cannot be favourites."),
-        422,
-        {"field": "id", "reason": "Your own playlists cannot be favourites."},
-    ),
-    (LookupError("gone"), 404, "No such item"),
-    (
-        SourceUnavailableError("TIDAL sign-in expired."),
-        503,
-        {"source": "tidal", "reason": "TIDAL sign-in expired."},
-    ),
-    (
-        RuntimeError("private upstream detail"),
-        503,
-        {"source": "tidal", "reason": "Source unavailable"},
-    ),
-    (TimeoutError(), 504, {"source": "tidal", "reason": "Did not answer in time"}),
-])
+@pytest.mark.parametrize(
+    "failure,status,detail",
+    [
+        (
+            ValueError("Your own playlists cannot be favourites."),
+            422,
+            {"field": "id", "reason": "Your own playlists cannot be favourites."},
+        ),
+        (LookupError("gone"), 404, "No such item"),
+        (
+            SourceUnavailableError("TIDAL sign-in expired."),
+            503,
+            {"source": "tidal", "reason": "TIDAL sign-in expired."},
+        ),
+        (
+            RuntimeError("private upstream detail"),
+            503,
+            {"source": "tidal", "reason": "Source unavailable"},
+        ),
+        (TimeoutError(), 504, {"source": "tidal", "reason": "Did not answer in time"}),
+        # A plugin that cannot read its source's answer refuses nothing.
+        (
+            json.JSONDecodeError("Expecting value", "<html>", 0),
+            503,
+            {"source": "tidal", "reason": "Source unavailable"},
+        ),
+        (KeyError("status"), 503, {"source": "tidal", "reason": "Source unavailable"}),
+    ],
+)
 def test_a_change_the_source_refuses_answers_why(change, failure, status, detail):
     client = _serving(_Source("tidal", failure=failure))
     response = change(client, "kalinka:tidal:playlist:42")
