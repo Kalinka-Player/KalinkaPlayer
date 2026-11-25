@@ -197,14 +197,17 @@ class AsyncSearcherDb(LibraryDb):
 
     async def _vectors(self, where: _VectorHome, ids: Sequence[str]) -> dict[str, bytes]:
         """Each id's vector from the KNN index search ranks with, else from the
-        row's mirror column: a library can hold either without the other."""
+        row's mirror column: a library can hold either without the other. An
+        index row whose track or album is gone is not one."""
         found: dict[str, bytes] = {}
         wanted = list(dict.fromkeys(ids))
         try:
             async with self._open() as conn:
                 if self._vec_available:
                     await self._load_vec(conn)
-                    found.update(await self._select_in(conn, where.vec_table, where.vec_key, "embedding", wanted))
+                    indexed = await self._select_in(conn, where.vec_table, where.vec_key, "embedding", wanted)
+                    present = await self._select_in(conn, where.table, "id", "id", list(indexed))
+                    found.update({i: v for i, v in indexed.items() if i in present})
                 missing = [i for i in wanted if i not in found]
                 found.update(await self._select_in(conn, where.table, "id", where.column, missing))
         except Exception as e:

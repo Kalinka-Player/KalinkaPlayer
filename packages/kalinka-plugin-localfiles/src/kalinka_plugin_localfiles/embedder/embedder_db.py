@@ -267,6 +267,28 @@ class AsyncEmbedderDb(LibraryDb):
             )
         return len(missing)
 
+    async def prune_orphan_vec_rows(self) -> int:
+        """Delete KNN index rows whose track, album or artist is gone.
+
+        The indexer removes those rows without sqlite-vec loaded, so it cannot
+        reach the index, and a row left behind would keep being found by
+        search and recommendations.
+        """
+        if not self._vec_available:
+            return 0
+        pruned = 0
+        async with self._open() as conn:
+            await self._load_vec(conn)
+            for entity, (table, key) in [*_VEC_TABLES.items(), *_VEC_TEXT_TABLES.items()]:
+                cursor = await conn.execute(
+                    f"DELETE FROM {table} WHERE {key} NOT IN (SELECT id FROM {entity})"
+                )
+                pruned += max(cursor.rowcount, 0)
+            await conn.commit()
+        if pruned:
+            logger.info("Pruned %d KNN index row(s) of removed entries", pruned)
+        return pruned
+
     async def schedule_new_jobs(self, clap_version: int) -> int:
         """
         Queue CLAP jobs.
