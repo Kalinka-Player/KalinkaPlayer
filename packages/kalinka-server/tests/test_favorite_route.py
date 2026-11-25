@@ -74,7 +74,8 @@ class _Source(InputModule):
 
 
 def _serving(*sources):
-    """A server whose input modules are ``sources``, and those modules by name."""
+    """A server whose input modules are ``sources``; what it sends to the
+    queue bus collects in the client's ``published``."""
     by_name = {source.module_name(): source for source in sources}
 
     def resolve_modules(named):
@@ -95,8 +96,12 @@ def _serving(*sources):
             raise HTTPException(status_code=400, detail=f"Invalid entity ID format: {e}")
 
     app = FastAPI()
-    register_favorite_routes(app, resolve_modules, resolve_module, parse_entity_id)
-    return TestClient(app)
+    client = TestClient(app)
+    client.published = []
+    register_favorite_routes(
+        app, resolve_modules, resolve_module, parse_entity_id, client.published.append
+    )
+    return client
 
 
 def _ids(response):
@@ -221,6 +226,15 @@ def test_a_change_goes_to_the_source_the_item_belongs_to(call, asked, kind):
     assert (tidal.asked, qobuz.asked) == ([], [(asked, id)])
 
 
+def test_a_change_that_was_made_is_announced_with_what_the_item_now_is():
+    client = _serving(_Source("tidal"))
+    client.put("/favorite/add/kalinka:tidal:album:10")
+    client.delete("/favorite/remove/kalinka:tidal:album:10")
+    assert [
+        (event.id.to_string, event.favorite) for event in client.published
+    ] == [("kalinka:tidal:album:10", True), ("kalinka:tidal:album:10", False)]
+
+
 CHANGES = [
     lambda client, id: client.put(f"/favorite/add/{id}"),
     lambda client, id: client.delete(f"/favorite/remove/{id}"),
@@ -237,9 +251,9 @@ CHANGES = [
 ])
 def test_a_change_that_cannot_be_made_never_reaches_a_source(change, id, status):
     tidal, library = _Source("tidal"), _Source("localfiles", keeps=False)
-    response = change(_serving(tidal, library), id)
-    assert response.status_code == status
-    assert (tidal.asked, library.asked) == ([], [])
+    client = _serving(tidal, library)
+    assert change(client, id).status_code == status
+    assert (tidal.asked, library.asked, client.published) == ([], [], [])
 
 
 def test_a_source_that_keeps_none_is_named_in_the_refusal():
@@ -276,3 +290,4 @@ def test_a_change_the_source_refuses_answers_why(change, failure, status, detail
     response = change(client, "kalinka:tidal:playlist:42")
     assert response.status_code == status
     assert response.json()["detail"] == detail
+    assert client.published == []

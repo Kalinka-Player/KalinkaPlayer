@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from .api import BaseEvent, BaseState
 
 from .datamodel import (
+    EntityId,
     Track,
     PlaybackControl,
     PlaybackState,
@@ -34,6 +35,7 @@ class PlayQueueEventType(Enum):
     VolumesChanged = "volumes_changed"
     PlaybackEvent = "playback_event"
     KeepPlayingChanged = "keep_playing_changed"
+    FavoriteChanged = "favorite_changed"
 
 
 class RendererDescriptor(BaseModel):
@@ -295,6 +297,17 @@ class KeepPlayingChangedEvent(PlayQueueEvent):
 
     event_type: PlayQueueEventType = PlayQueueEventType.KeepPlayingChanged
     enabled: bool
+
+
+class FavoriteChangedEvent(PlayQueueEvent):
+    """SDK 3.24: an item was marked a favourite through this server, or no
+    longer is one. It tells the other clients showing the item, and is no
+    record of the source's favourites: a change made in the source's own app
+    sends none, and :class:`PlayQueueState` keeps none of it."""
+
+    event_type: PlayQueueEventType = PlayQueueEventType.FavoriteChanged
+    id: EntityId
+    favorite: bool
 
 
 class PlaybackEventReport(PlayQueueEvent):
