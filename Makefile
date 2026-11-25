@@ -168,6 +168,7 @@ test: require-venv
 		(cd $$dir && $(PY) -m pytest tests/ -v $(ARGS)) || exit 1; \
 	done
 	@$(PY) -m pytest benchmarks/sdd/tests -v $(ARGS)
+	@$(PY) -m pytest benchmarks/small-board/tests -v $(ARGS)
 	@$(PY) -m pytest template/cookiecutter-kalinka-plugin/tests -v $(ARGS)
 
 ## The server's play queue suite. Extra pytest args via ARGS, e.g.
