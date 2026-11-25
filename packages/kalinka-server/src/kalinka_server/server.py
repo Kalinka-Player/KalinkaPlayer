@@ -966,8 +966,8 @@ async def create_app(
     async def queue_similar(count: Optional[int] = Query(None, ge=1, le=50)):
         """Queue tracks like the playing one right after it, from the playing
         track's own source. ``count`` defaults to the queue setting's
-        per-source amount; the answer says how many came, 0 when the source
-        has none to offer."""
+        tracks added at a time; the answer says how many came, 0 when the
+        source has none to offer."""
         added = await _keep_playing().more_like_current(count)
         return {"message": "Similar tracks added", "count": added}
 
