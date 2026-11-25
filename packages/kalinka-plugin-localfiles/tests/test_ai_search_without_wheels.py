@@ -8,6 +8,8 @@ which the app sends straight back in that request.
 import asyncio
 from unittest.mock import Mock, patch
 
+import pytest
+
 from kalinka_plugin_localfiles import module_setup
 from kalinka_plugin_localfiles.config_model import LocalFilesConfig
 from kalinka_plugin_sdk.module_health import ModuleHealthState
@@ -21,13 +23,13 @@ async def _empty_roots(*args, **kwargs):
     return []
 
 
-def _evaluated(tmp_path, monkeypatch, *, architecture, importable):
+def _evaluated(tmp_path, monkeypatch, *, architecture, importable, ai_search=True):
     config = LocalFilesConfig(
         music_folders=[str(tmp_path)],
         db_path=str(tmp_path / "localfiles.db"),
         artwork_path=str(tmp_path / "artwork"),
     )
-    config.ai_search.enabled = True
+    config.ai_search.enabled = ai_search
     monkeypatch.setattr(module_setup, "wheel_architecture", lambda: architecture)
     monkeypatch.setattr(module_setup, "_is_importable", lambda name: name in importable)
     plugin = module_setup.KalinkaPluginLocalFiles()
@@ -42,13 +44,25 @@ def _module_state(plugin):
         return asyncio.run(plugin.get_state())
 
 
-def test_32_bit_arm_offers_no_install(tmp_path, monkeypatch):
-    plugin = _evaluated(tmp_path, monkeypatch, architecture="armv7l", importable=set())
+@pytest.mark.parametrize("architecture", ["armv7l", "armv6l"])
+def test_32_bit_arm_offers_no_install(tmp_path, monkeypatch, architecture):
+    plugin = _evaluated(
+        tmp_path, monkeypatch, architecture=architecture, importable=set()
+    )
     ai = plugin._subfeatures["ai_search"]
     assert ai.state is ModuleHealthState.ERROR
     assert ai.missing_packages == ()
-    assert "`onnxruntime`" in ai.message and "armv7l" in ai.message
+    assert "`onnxruntime`" in ai.message and "`sqlite_vec`" in ai.message
+    assert architecture in ai.message
     assert "Missing package" not in ai.message
+    assert _module_state(plugin).missing_packages == []
+
+
+def test_with_ai_search_off_a_pi_1_says_nothing_of_it(tmp_path, monkeypatch):
+    plugin = _evaluated(
+        tmp_path, monkeypatch, architecture="armv6l", importable=set(), ai_search=False
+    )
+    assert plugin._subfeatures["ai_search"].state is ModuleHealthState.DISABLED
     assert _module_state(plugin).missing_packages == []
 
 
@@ -56,7 +70,7 @@ def test_64_bit_arm_still_offers_the_install(tmp_path, monkeypatch):
     plugin = _evaluated(tmp_path, monkeypatch, architecture="aarch64", importable=set())
     assert plugin._subfeatures["ai_search"].message == (
         "AI search unavailable. Missing package(s): "
-        "`numpy`, `onnxruntime`, `soundfile`, `soxr`, `tokenizers`."
+        "`numpy`, `onnxruntime`, `soundfile`, `soxr`, `tokenizers`, `sqlite_vec`."
     )
     assert set(_module_state(plugin).missing_packages) == {
         "numpy",
@@ -64,4 +78,5 @@ def test_64_bit_arm_still_offers_the_install(tmp_path, monkeypatch):
         "soundfile",
         "soxr",
         "tokenizers",
+        "sqlite_vec",
     }

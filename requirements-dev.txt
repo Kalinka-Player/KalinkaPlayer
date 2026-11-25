@@ -8,6 +8,9 @@ httpx>=0.24.0
 # My Library's tests write their audio fixtures with it; the plugin itself
 # installs it only when Smart Search is turned on.
 soundfile>=0.12
+# The vector search My Library's and Jamendo's AI search tests exercise; the
+# plugins install it only when AI search is turned on.
+sqlite-vec>=0.1.6,<0.2
 
 # Code formatting and linting
 black>=22.0.0

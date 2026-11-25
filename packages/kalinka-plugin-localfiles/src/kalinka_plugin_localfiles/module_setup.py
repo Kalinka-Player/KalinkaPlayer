@@ -127,7 +127,14 @@ def _is_importable(import_name: str) -> bool:
 
 
 # CLAP needs these; each key is also its import name.
-_AI_SEARCH_PACKAGES = ("numpy", "onnxruntime", "soundfile", "soxr", "tokenizers")
+_AI_SEARCH_PACKAGES = (
+    "numpy",
+    "onnxruntime",
+    "soundfile",
+    "soxr",
+    "tokenizers",
+    "sqlite_vec",
+)
 
 
 def _without_wheels(keys) -> list[str]:
