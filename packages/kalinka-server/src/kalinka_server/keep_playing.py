@@ -16,8 +16,15 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Mapping, Optional, Sequence
 
 from kalinka_eventbus import EventBus
-from kalinka_plugin_sdk.api import PlayQueueController
-from kalinka_plugin_sdk.datamodel import EntityId, EntityType, PlayerStateEnum, Track
+from kalinka_plugin_sdk.api import PlayQueueController, ReplayEvent
+from kalinka_plugin_sdk.datamodel import (
+    EntityId,
+    EntityType,
+    PlaybackState,
+    PlayerStateEnum,
+    Track,
+    TrackList,
+)
 from kalinka_plugin_sdk.events import (
     KeepPlayingChangedEvent,
     PlayQueueEvent,
@@ -124,6 +131,10 @@ def interleave(proposals: Sequence[Sequence[Track]], queued: set[str], room: int
     return taken
 
 
+def _playing(state: PlaybackState) -> Optional[str]:
+    return state.current_track.id.to_string if state.current_track is not None else None
+
+
 class KeepPlayingController:
     """
     @brief Carries the play queue on with tracks its sources propose, and
@@ -172,7 +183,6 @@ class KeepPlayingController:
         """Begin answering the queue; returns once its events are being heard,
         so none sent after it is missed, and the queue's state says whether
         Keep playing is on."""
-        self._length = (await self._playqueue.list(0, 1)).total
         subscribed = asyncio.Event()
         self._listener = asyncio.create_task(self._listen(subscribed))
         await subscribed.wait()
@@ -207,15 +217,16 @@ class KeepPlayingController:
     async def extend(self) -> int:
         """Append the configured number of tracks from each source heard in
         the queue, each carrying on from its own tracks, if the queue stands
-        at its last track; a queue that has moved on since asking is left
-        alone.
+        at its last track with no repeat to carry it on. A queue that moved on
+        while the sources answered is left alone.
 
         @return How many tracks were added.
         """
         return await self._continue(from_current_only=False, after_current=False, count=None)
 
     async def more_like_current(self, count: Optional[int] = None) -> int:
-        """Queue tracks like the playing one right after it, from its source.
+        """Queue tracks like the playing one right after it, from its source;
+        none if another track is playing by the time the source answers.
 
         @param count How many to add; the configured per-source number when None.
         @return How many tracks were added.
@@ -245,9 +256,8 @@ class KeepPlayingController:
     async def _continue(self, from_current_only: bool, after_current: bool, count: Optional[int]) -> int:
         per_source = count or self._config.tracks_per_source
         async with self._continuing:
-            queue = await self._playqueue.list(0, self._queue_limit().tracks)
-            state = await self._playqueue.get_playback_state()
-            if not after_current and (state.index is None or state.index < queue.total - 1):
+            queue, state = await self._queue_now()
+            if not after_current and not await self._runs_out(queue, state):
                 return 0
             asks = [
                 ask
@@ -260,13 +270,18 @@ class KeepPlayingController:
                 return 0
             proposals = await asyncio.gather(*(self._propose(ask) for ask in asks))
             async with self._adding:
-                total = (await self._playqueue.list(0, 1)).total
-                room = max(0, self._queue_limit().tracks - total)
+                queue, now = await self._queue_now()
+                if _playing(now) != _playing(state) or (
+                    not after_current and not await self._runs_out(queue, now)
+                ):
+                    logger.info("The queue moved on while its sources answered")
+                    return 0
+                room = max(0, self._queue_limit().tracks - queue.total)
                 queued = {track.id.to_string for track in queue.items}
                 tracks = interleave(proposals, queued, room)
                 if not tracks:
                     return 0
-                index = state.index + 1 if after_current and state.index is not None else None
+                index = now.index + 1 if after_current and now.index is not None else None
                 await self._playqueue.add(tracks, index)
         logger.info(
             "Keep playing added %d track(s) from %s",
@@ -274,6 +289,18 @@ class KeepPlayingController:
             ", ".join(sorted({t.id.source for t in tracks})),
         )
         return len(tracks)
+
+    async def _queue_now(self) -> tuple[TrackList, PlaybackState]:
+        queue = await self._playqueue.list(0, self._queue_limit().tracks)
+        return queue, await self._playqueue.get_playback_state()
+
+    async def _runs_out(self, queue: TrackList, state: PlaybackState) -> bool:
+        """Whether the queue stands at its last track with no repeat to carry
+        it on, as the queue's own request for more tracks asks."""
+        if state.index is None or state.index < queue.total - 1:
+            return False
+        mode = await self._playqueue.get_playback_mode()
+        return not (mode.repeat_single or mode.repeat_all)
 
     def _can_continue(self, source: str) -> bool:
         module = self._module_for(source)
@@ -318,7 +345,9 @@ class KeepPlayingController:
                 await asyncio.sleep(1)
 
     async def _on_event(self, event: object) -> None:
-        if isinstance(event, TracksAddedEvent):
+        if isinstance(event, ReplayEvent):
+            self._length = len(event.state.track_list)
+        elif isinstance(event, TracksAddedEvent):
             self._length += len(event.tracks)
         elif isinstance(event, TracksRemovedEvent):
             if len(event.indices) >= self._length:
