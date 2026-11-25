@@ -62,7 +62,7 @@ dependencies = [
     # plugin took a save in.
     # >=3.23: Catalog.play_individually for radio station listings;
     # OutputInfo.signal_path and PlaybackEventReport.
-    # >=3.24: ContinuationRequest and InputModule.continue_queue for autoplay.
+    # >=3.24: ContinuationRequest, InputModule.continue_queue and KeepPlayingChangedEvent for Keep playing.
     "kalinka-plugin-sdk[media]>=3.24,<4",
 ]
 dynamic = ["version"]

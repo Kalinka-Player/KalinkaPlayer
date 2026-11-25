@@ -11,13 +11,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Union
 
 from fastapi import (
+    Body,
     FastAPI,
     HTTPException,
     Query,
     Request,
     WebSocket,
 )
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.staticfiles import StaticFiles
 
 from kalinka_plugin_sdk.datamodel import (
@@ -107,7 +108,7 @@ from .player_setup import (
     ModuleHealthState,
     volume_control_modules,
 )
-from .autoplay import AutoplayController
+from .keep_playing import SETTING as KEEP_PLAYING, KeepPlayingController
 from .internal_modules import internal_modules
 from .module_capabilities import capabilities_of
 from .module_artwork import forget_assets, module_icons, register_module_icon_routes
@@ -937,10 +938,29 @@ async def create_app(
             await playqueue.replace(items)
         return {"message": "Queue replaced", "count": len(items)}
 
-    def _autoplay() -> AutoplayController:
-        if internal_modules.autoplay is None:
+    def _keep_playing() -> KeepPlayingController:
+        if internal_modules.keep_playing is None:
             raise HTTPException(status_code=503, detail="The queue is starting")
-        return internal_modules.autoplay
+        return internal_modules.keep_playing
+
+    def _announce_keep_playing() -> None:
+        if internal_modules.keep_playing is not None:
+            internal_modules.keep_playing.announce()
+
+    app.state.announce_keep_playing = _announce_keep_playing
+
+    @app.put("/queue/keep_playing")
+    async def set_keep_playing(enabled: bool = Body(..., embed=True)):
+        """Turn Keep playing on or off, as saving the setting would. Turned on
+        while the queue stands at its last track, or has played it out, it
+        carries the queue on at once and plays on if playback had ended; the
+        answer's ``count`` says how many tracks came, 0 when no source had any."""
+        controller = _keep_playing()
+        saved = await app.state.apply_config_changes({KEEP_PLAYING: enabled})
+        if isinstance(saved, Response):
+            return saved
+        added = await controller.resume() if enabled else 0
+        return {"enabled": app.state.config.queue.keep_playing, "count": added}
 
     @app.post("/queue/similar")
     async def queue_similar(count: Optional[int] = Query(None, ge=1, le=50)):
@@ -948,14 +968,14 @@ async def create_app(
         track's own source. ``count`` defaults to the queue setting's
         per-source amount; the answer says how many came, 0 when the source
         has none to offer."""
-        added = await _autoplay().more_like_current(count)
+        added = await _keep_playing().more_like_current(count)
         return {"message": "Similar tracks added", "count": added}
 
     @app.post("/queue/dislike")
     async def queue_dislike():
         """Turn the playing track down until the queue is cleared or replaced,
-        and skip it. Autoplay and /queue/similar steer away from it."""
-        if not await _autoplay().dislike_current():
+        and skip it. Keep playing and /queue/similar steer away from it."""
+        if not await _keep_playing().dislike_current():
             raise HTTPException(status_code=409, detail="Nothing is playing")
         return {"message": "Ok"}
 
@@ -1349,7 +1369,7 @@ async def create_app(
             },
             "storage": {"volumes": True, "mounts": True, "adopt": True, "folders": True, "devices": True},
             "queue": {
-                "autoplay": app.state.config.queue.autoplay,
+                "keep_playing": app.state.config.queue.keep_playing,
                 "similar": True,
                 "dislike": True,
             },

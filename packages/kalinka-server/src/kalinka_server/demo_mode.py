@@ -64,19 +64,23 @@ _BANNER = Banner(
 
 _READS = frozenset({"GET", "HEAD", "OPTIONS"})
 _WRITABLE_PATHS = frozenset({"/device/set_volume"})
+#: Queue routes that save a server setting.
+_SAVING_QUEUE_PATHS = frozenset({"/queue/keep_playing"})
 _RENDERER_SOCKET = "/renderer/ws"
 _POLICY_VIOLATION = 1008
 
 
 def is_write_allowed(method: str, path: str) -> bool:
     """Whether a demo server serves an HTTP request: reads, the queue and the
-    volume.
+    volume, but no queue route that saves a setting.
 
     The settings dry run is refused too. It saves nothing, but a plugin's
     check may reach out to whatever a visitor typed, such as a network share.
     """
     if method.upper() in _READS:
         return True
+    if path in _SAVING_QUEUE_PATHS:
+        return False
     return path.startswith("/queue/") or path in _WRITABLE_PATHS
 
 

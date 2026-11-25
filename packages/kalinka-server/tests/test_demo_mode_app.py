@@ -88,6 +88,7 @@ async def test_a_demo_server_refuses_every_change_but_the_queue(isolated):
             await client.put("/renderer/demo-output/config", json={"changes": {}})
         )
         assert _refused(await client.post("/server/logs/export"))
+        assert _refused(await client.put("/queue/keep_playing", json={"enabled": False}))
 
         assert (
             await client.put("/queue/pause", params={"paused": True})

@@ -1,10 +1,10 @@
-"""Autoplay: carrying the play queue on with tracks its sources propose.
+"""Keep playing: carrying the play queue on with tracks its sources propose.
 
 The queue asks for more (``RequestMoreTracksEvent``) when it starts its last
-track while ``QueueConfig.autoplay`` is on. Every source with tracks in the
-queue that reports ``ModuleCapability.CONTINUATION`` is asked at once, each
-with its own recently heard tracks as seeds, so a source that has nothing to
-offer never stalls playback; their proposals are interleaved, deduplicated
+track while ``QueueConfig.keep_playing`` is on. Every source with tracks in
+the queue that reports ``ModuleCapability.CONTINUATION`` is asked at once,
+each with its own recently heard tracks as seeds, so a source that has nothing
+to offer never stalls playback; their proposals are interleaved, deduplicated
 against the queue, and appended here — a module never adds to the queue.
 """
 
@@ -17,8 +17,9 @@ from typing import Callable, Dict, List, Mapping, Optional, Sequence
 
 from kalinka_eventbus import EventBus
 from kalinka_plugin_sdk.api import PlayQueueController
-from kalinka_plugin_sdk.datamodel import EntityId, EntityType, Track
+from kalinka_plugin_sdk.datamodel import EntityId, EntityType, PlayerStateEnum, Track
 from kalinka_plugin_sdk.events import (
+    KeepPlayingChangedEvent,
     PlayQueueEvent,
     PlayQueueEventType,
     PlayQueueState,
@@ -36,6 +37,9 @@ logger = logging.getLogger(__name__.split(".")[-1])
 
 #: How many of a source's last heard tracks seed its continuation.
 SEEDS_PER_SOURCE = 5
+#: The setting, as a configuration save names it.
+SETTING = "base_config.queue.keep_playing"
+_UNDER_WAY = (PlayerStateEnum.PLAYING, PlayerStateEnum.PAUSED, PlayerStateEnum.BUFFERING)
 
 
 @dataclass(frozen=True)
@@ -120,15 +124,16 @@ def interleave(proposals: Sequence[Sequence[Track]], queued: set[str], room: int
     return taken
 
 
-class AutoplayController:
+class KeepPlayingController:
     """
     @brief Carries the play queue on with tracks its sources propose, and
     keeps what the listener turned down for the rest of the queue's session.
 
     Built and started by ``InternalModules``; the server's queue routes call
-    :meth:`more_like_current` and :meth:`dislike_current`. A session ends when
-    the whole queue goes at once — a clear or a replace — and its turn-downs
-    go with it. Not thread-safe: every method runs on the server's event loop.
+    :meth:`more_like_current`, :meth:`dislike_current` and :meth:`resume`, and
+    a save of the setting calls :meth:`announce`. A session ends when the whole
+    queue goes at once — a clear or a replace — and its turn-downs go with it.
+    Not thread-safe: every method runs on the server's event loop.
     """
 
     def __init__(
@@ -145,7 +150,7 @@ class AutoplayController:
         @param module_for The enabled module behind a source name, or None.
         @param queue_limit The limit in force now (demo mode has its own).
         @param adding The lock the queue routes take around an add, shared so
-            that an autoplay add and a listener's add never pass the limit together.
+            that a Keep playing add and a listener's add never pass the limit together.
         """
         self._config = config
         self._playqueue = playqueue
@@ -165,11 +170,32 @@ class AutoplayController:
 
     async def start(self) -> None:
         """Begin answering the queue; returns once its events are being heard,
-        so none sent after it is missed."""
+        so none sent after it is missed, and the queue's state says whether
+        Keep playing is on."""
         self._length = (await self._playqueue.list(0, 1)).total
         subscribed = asyncio.Event()
         self._listener = asyncio.create_task(self._listen(subscribed))
         await subscribed.wait()
+        self.announce()
+
+    def announce(self) -> None:
+        """Tell every queue client whether Keep playing is on now."""
+        self._eventbus.dispatch(KeepPlayingChangedEvent(enabled=self._config.keep_playing))
+
+    async def resume(self) -> int:
+        """Carry on a queue that stands at its last track, as Keep playing
+        would have, and play on from the first new track if it had finished.
+
+        @return How many tracks were added.
+        """
+        state = await self._playqueue.get_playback_state()
+        total = (await self._playqueue.list(0, 1)).total
+        if not total or state.index is None or state.index < total - 1:
+            return 0
+        added = await self.extend()
+        if added and state.state not in _UNDER_WAY:
+            await self._playqueue.play(total)
+        return added
 
     async def shutdown(self) -> None:
         if self._listener is not None:
@@ -198,8 +224,8 @@ class AutoplayController:
     async def dislike_current(self) -> bool:
         """Turn the playing track down for the session and skip it.
 
-        When it was the last track and autoplay is on, the queue is carried on
-        first, steering away from it, so the skip has somewhere to go.
+        When it was the last track and Keep playing is on, the queue is carried
+        on first, steering away from it, so the skip has somewhere to go.
 
         @return False when nothing is playing.
         """
@@ -211,13 +237,13 @@ class AutoplayController:
         if track.id.id not in turned_down:
             turned_down.append(track.id.id)
         total = (await self._playqueue.list(0, 1)).total
-        if self._config.autoplay and state.index is not None and state.index >= total - 1:
+        if self._config.keep_playing and state.index is not None and state.index >= total - 1:
             await self.extend()
         await self._playqueue.next()
         return True
 
     async def _continue(self, from_current_only: bool, after_current: bool, count: Optional[int]) -> int:
-        per_source = count or self._config.autoplay_tracks_per_source
+        per_source = count or self._config.tracks_per_source
         async with self._continuing:
             queue = await self._playqueue.list(0, self._queue_limit().tracks)
             state = await self._playqueue.get_playback_state()
@@ -241,7 +267,7 @@ class AutoplayController:
                 index = state.index + 1 if after_current and state.index is not None else None
                 await self._playqueue.add(tracks, index)
         logger.info(
-            "Autoplay added %d track(s) from %s",
+            "Keep playing added %d track(s) from %s",
             len(tracks),
             ", ".join(sorted({t.id.source for t in tracks})),
         )
@@ -286,7 +312,7 @@ class AutoplayController:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.error("Autoplay event listener failed: %s", e, exc_info=True)
+                logger.error("Keep playing event listener failed: %s", e, exc_info=True)
                 await asyncio.sleep(1)
 
     async def _on_event(self, event: object) -> None:

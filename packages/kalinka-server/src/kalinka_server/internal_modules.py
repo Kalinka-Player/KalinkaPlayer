@@ -11,7 +11,7 @@ from typing import Callable, Optional
 
 from kalinka_plugin_sdk.inputmodule import InputModule
 
-from .autoplay import AutoplayController
+from .keep_playing import KeepPlayingController
 from .device_automation import DeviceAutomation
 from .config_model import KalinkaConfig
 from .output_device_router import OutputDeviceRouter
@@ -26,7 +26,7 @@ class InternalModules:
 
     def __init__(self):
         self.device_automation: Optional[DeviceAutomation] = None
-        self.autoplay: Optional[AutoplayController] = None
+        self.keep_playing: Optional[KeepPlayingController] = None
 
     async def initialize(
         self,
@@ -54,7 +54,7 @@ class InternalModules:
         # Initialize device automation
         await self._setup_device_automation(config, player_context, router)
 
-        self.autoplay = AutoplayController(
+        self.keep_playing = KeepPlayingController(
             config=config.queue,
             playqueue=player_context.playqueue,
             playqueue_eventbus=player_context.playqueue_eventbus,
@@ -62,7 +62,7 @@ class InternalModules:
             queue_limit=queue_limit,
             adding=queue_adding,
         )
-        await self.autoplay.start()
+        await self.keep_playing.start()
 
         logger.info("Internal modules initialization complete")
 
@@ -94,8 +94,8 @@ class InternalModules:
             except Exception as e:
                 logger.error(f"Error shutting down device automation: {e}")
 
-        if self.autoplay:
-            await self.autoplay.shutdown()
+        if self.keep_playing:
+            await self.keep_playing.shutdown()
 
         logger.info("Internal modules shutdown complete")
 

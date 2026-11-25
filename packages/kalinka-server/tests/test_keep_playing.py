@@ -1,4 +1,4 @@
-"""Autoplay carries the queue on with what its sources propose, and steers away
+"""Keep playing carries the queue on with what its sources propose, and steers away
 from what the listener turned down until the queue's session ends."""
 
 import asyncio
@@ -14,6 +14,7 @@ from kalinka_plugin_sdk.datamodel import (
     EntityType,
     PlaybackMode,
     PlaybackState,
+    PlayerStateEnum,
     Track,
     TrackList,
 )
@@ -25,7 +26,7 @@ from kalinka_plugin_sdk.events import (
 )
 from kalinka_plugin_sdk.inputmodule import ContinuationRequest, InputModule, ModuleCapability
 
-from kalinka_server.autoplay import AutoplayController, interleave, plan_continuation
+from kalinka_server.keep_playing import KeepPlayingController, interleave, plan_continuation
 from kalinka_server.config_model import QueueConfig
 from kalinka_server.playqueue import PlayQueueImpl
 from kalinka_server.queue_limit import QueueLimit
@@ -38,11 +39,13 @@ def _track(source: str, local: str) -> Track:
 
 
 class _Queue:
-    def __init__(self, tracks, index):
+    def __init__(self, tracks, index, state=None):
         self.tracks = list(tracks)
         self.index = index
+        self.state = state
         self.adds = []
         self.skips = 0
+        self.plays = []
 
     async def list(self, offset, limit):
         return TrackList(
@@ -51,7 +54,7 @@ class _Queue:
 
     async def get_playback_state(self):
         playing = self.tracks[self.index] if self.index is not None and self.tracks else None
-        return PlaybackState(current_track=playing, index=self.index)
+        return PlaybackState(state=self.state, current_track=playing, index=self.index)
 
     async def add(self, tracks, index=None):
         self.adds.append(([t.id.id for t in tracks], index))
@@ -59,6 +62,9 @@ class _Queue:
             self.tracks.extend(tracks)
         else:
             self.tracks[index:index] = tracks
+
+    async def play(self, index=None):
+        self.plays.append(index)
 
     async def next(self):
         self.skips += 1
@@ -102,9 +108,9 @@ def _bus():
     )
 
 
-def _controller(queue, modules, *, limit=1000, autoplay=True, per_source=2, bus=None):
-    config = QueueConfig(autoplay=autoplay, autoplay_tracks_per_source=per_source)
-    return AutoplayController(
+def _controller(queue, modules, *, limit=1000, keep_playing=True, per_source=2, bus=None):
+    config = QueueConfig(keep_playing=keep_playing, tracks_per_source=per_source)
+    return KeepPlayingController(
         config=config,
         playqueue=queue,
         playqueue_eventbus=bus or _bus(),
@@ -217,11 +223,11 @@ async def test_dislike_turns_the_track_down_extends_a_queue_at_its_end_and_skips
     assert queue.tracks[queue.index].id.id == "x"
 
 
-async def test_dislike_with_autoplay_off_only_skips():
+async def test_dislike_with_keep_playing_off_only_skips():
     queue = _Queue([_track("lf", "a"), _track("lf", "b")], index=1)
     modules = {"lf": _Module("lf", ["x"])}
 
-    assert await _controller(queue, modules, autoplay=False).dislike_current()
+    assert await _controller(queue, modules, keep_playing=False).dislike_current()
 
     assert queue.adds == []
     assert queue.skips == 1
@@ -254,12 +260,12 @@ async def test_turn_downs_last_until_the_whole_queue_goes_at_once():
         bus.close()
 
 
-def test_the_queue_asks_for_more_only_while_autoplay_is_on():
+def test_the_queue_asks_for_more_only_while_keep_playing_is_on():
     dispatched = []
 
-    def queue(autoplay):
+    def queue(keep_playing):
         return SimpleNamespace(
-            _config=SimpleNamespace(queue=QueueConfig(autoplay=autoplay)),
+            _config=SimpleNamespace(queue=QueueConfig(keep_playing=keep_playing)),
             repeat_single=False,
             repeat_all=False,
             current_track_id=1,
@@ -275,4 +281,54 @@ def test_the_queue_asks_for_more_only_while_autoplay_is_on():
 
 @pytest.mark.parametrize("per_source", [1, 10])
 def test_queue_setting_bounds(per_source):
-    assert QueueConfig(autoplay_tracks_per_source=per_source).autoplay
+    assert QueueConfig(tracks_per_source=per_source).keep_playing
+
+
+async def test_starting_tells_queue_clients_whether_it_is_on():
+    bus = _bus()
+    controller = _controller(_Queue([], index=None), {}, keep_playing=False, bus=bus)
+    await controller.start()
+    try:
+        assert bus.get_snapshot().keep_playing is False
+        controller._config.keep_playing = True
+        controller.announce()
+        assert bus.get_snapshot().keep_playing is True
+    finally:
+        await controller.shutdown()
+        bus.close()
+
+
+async def test_resuming_a_finished_queue_carries_it_on_and_plays_the_first_new_track():
+    queue = _Queue([_track("lf", "a"), _track("lf", "b")], index=1, state=PlayerStateEnum.STOPPED)
+    modules = {"lf": _Module("lf", ["x", "y"])}
+
+    assert await _controller(queue, modules).resume() == 2
+
+    assert [t.id.id for t in queue.tracks] == ["a", "b", "x", "y"]
+    assert queue.plays == [2]
+
+
+async def test_resuming_during_the_last_track_only_carries_the_queue_on():
+    queue = _Queue([_track("lf", "a")], index=0, state=PlayerStateEnum.PLAYING)
+    modules = {"lf": _Module("lf", ["x"])}
+
+    assert await _controller(queue, modules).resume() == 1
+
+    assert queue.plays == []
+
+
+async def test_resuming_with_nothing_to_offer_leaves_playback_alone():
+    queue = _Queue([_track("lf", "a")], index=0, state=PlayerStateEnum.STOPPED)
+
+    assert await _controller(queue, {"lf": _Module("lf")}).resume() == 0
+
+    assert queue.plays == []
+
+
+async def test_resuming_short_of_the_last_track_adds_nothing():
+    queue = _Queue([_track("lf", "a"), _track("lf", "b")], index=0, state=PlayerStateEnum.PLAYING)
+    modules = {"lf": _Module("lf", ["x"])}
+
+    assert await _controller(queue, modules).resume() == 0
+
+    assert queue.adds == [] and modules["lf"].requests == []

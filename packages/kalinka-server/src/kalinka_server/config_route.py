@@ -35,6 +35,7 @@ from .config_validation import (
     stored_value,
     validate_changes,
 )
+from .keep_playing import SETTING as KEEP_PLAYING
 from .module_timeout import PLUGIN_CALL_TIMEOUT_S
 from .player_setup import ModuleHealthState, PreparedModuleCollection
 from .tasks import detach
@@ -399,6 +400,9 @@ def register_config_routes(
             await router.resync()
 
         await _tell_owners(applied)
+        announce_keep_playing = getattr(app.state, "announce_keep_playing", None)
+        if announce_keep_playing is not None and KEEP_PLAYING in applied:
+            announce_keep_playing()
         receivers = getattr(app.state, "receivers", None)
         if receivers is not None:
             receivers.changed()

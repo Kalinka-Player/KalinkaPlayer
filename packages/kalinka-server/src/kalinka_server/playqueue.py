@@ -1256,7 +1256,7 @@ class PlayQueueImpl(PlayQueueController):
         self.prepared_tracks[index] = (track_source, stream_id)
 
     def _request_more_tracks(self):
-        if not self._config.queue.autoplay:
+        if not self._config.queue.keep_playing:
             return
         if not (self.repeat_single or self.repeat_all) and self.current_track_id == len(self.track_list) - 1:
             self.event_emitter.dispatch(RequestMoreTracksEvent())

@@ -277,11 +277,11 @@ class DeviceAutomationConfig(BaseModel):
 
 
 class QueueConfig(BaseModel):
-    """How the play queue carries on past its last track (``kalinka_server.autoplay``)."""
+    """How the play queue carries on past its last track (``kalinka_server.keep_playing``)."""
 
-    autoplay: bool = Field(
+    keep_playing: bool = Field(
         default=True,
-        title="Autoplay",
+        title="Keep playing",
         json_schema_extra={
             "help": (
                 "When the queue reaches its last track, add tracks like the "
@@ -290,11 +290,11 @@ class QueueConfig(BaseModel):
             **_SIMPLE,
         },
     )
-    autoplay_tracks_per_source: int = Field(
+    tracks_per_source: int = Field(
         default=2,
         ge=1,
         le=10,
-        title="Autoplay tracks per source",
+        title="Tracks added per source",
         json_schema_extra={
             "help": (
                 "How many tracks each source adds at a time when the queue "
