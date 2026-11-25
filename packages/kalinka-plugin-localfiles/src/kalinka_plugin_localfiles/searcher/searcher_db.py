@@ -150,18 +150,18 @@ class AsyncSearcherDb(LibraryDb):
         self, track_ids: list[str]
     ) -> dict[str, tuple[float, float]]:
         """Return {track_id: (valence, arousal)} for tracks that have mood set."""
-        if not track_ids:
-            return {}
+        found: dict[str, tuple[float, float]] = {}
         try:
             async with self._open() as conn:
-                placeholders = ",".join("?" * len(track_ids))
-                cursor = await conn.execute(
-                    f"SELECT id, mood_valence, mood_arousal FROM tracks "
-                    f"WHERE id IN ({placeholders}) AND mood_valence IS NOT NULL",
-                    track_ids,
-                )
-                rows = await cursor.fetchall()
-            return {row[0]: (row[1], row[2]) for row in rows}
+                for start in range(0, len(track_ids), _BATCH):
+                    chunk = track_ids[start : start + _BATCH]
+                    cursor = await conn.execute(
+                        f"SELECT id, mood_valence, mood_arousal FROM tracks "
+                        f"WHERE id IN ({','.join('?' * len(chunk))}) AND mood_valence IS NOT NULL",
+                        chunk,
+                    )
+                    found.update({row[0]: (row[1], row[2]) for row in await cursor.fetchall()})
+            return found
         except Exception as e:
             logger.warning("Bulk V-A fetch failed: %s", e)
             return {}
@@ -274,6 +274,18 @@ class AsyncSearcherDb(LibraryDb):
         except Exception as e:
             logger.warning("Listing recently added albums failed: %s", e)
             return []
+
+    async def knows_release_years(self) -> bool:
+        """Whether any album carries a plausible year, so a decade can be told."""
+        try:
+            async with self._open() as conn:
+                cursor = await conn.execute(
+                    f"SELECT 1 FROM albums a WHERE {album_year_sql('a')} IS NOT NULL LIMIT 1"
+                )
+                return await cursor.fetchone() is not None
+        except Exception as e:
+            logger.warning("Checking for album years failed: %s", e)
+            return False
 
     async def tracks_from_years(self, spans: Sequence[tuple[int, int]]) -> list[str]:
         """Tracks whose album first came out within any of ``spans`` (first

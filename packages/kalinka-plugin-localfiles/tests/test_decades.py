@@ -28,6 +28,9 @@ from kalinka_plugin_localfiles.searcher.query_terms import decades_in, year_span
         ("sad piano", []),
         ("songs from 1975", []),
         ("top 40 hits", []),
+        ("top 40s hits", []),
+        ("songs from my 20s", []),
+        ("early 80s pop", [1980]),
         ("90s and 90s", [1990]),
     ],
 )

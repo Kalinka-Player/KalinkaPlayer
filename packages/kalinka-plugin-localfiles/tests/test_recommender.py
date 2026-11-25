@@ -1,6 +1,7 @@
 """Recommendations in CLAP space: what carries a queue on, and albums to try."""
 
 import os
+import sqlite3
 import tempfile
 
 import aiosqlite
@@ -211,6 +212,33 @@ async def test_the_embedder_prunes_index_rows_of_removed_entries(db_path):
     await vectors._check_vec_available()
     assert set(await vectors.get_track_vectors(["kept", "gone"])) == {"kept"}
     assert set(await vectors.get_album_vectors(["al", "gone_album"])) == {"al"}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_prune_leaves_the_embedder_running(db_path, monkeypatch):
+    await _library(db_path, {"t": ("al", _direction(1))}, {"al": _direction(1)})
+    embedder_db = AsyncEmbedderDb(LocalFilesConfig(db_path=db_path))
+    await embedder_db._check_vec_available()
+
+    async def broken(_conn):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(embedder_db, "_load_vec", broken)
+
+    assert await embedder_db.prune_orphan_vec_rows() == 0
+
+
+@pytest.mark.asyncio
+async def test_moods_are_read_for_more_tracks_than_one_statement_binds(db_path):
+    await _library(db_path, {"t": ("al", _direction(1))}, {"al": _direction(1)})
+    async with aiosqlite.connect(db_path) as conn:
+        await conn.execute("UPDATE tracks SET mood_valence = 5, mood_arousal = 4")
+        await conn.commit()
+    searcher_db = AsyncSearcherDb(LocalFilesConfig(db_path=db_path))
+
+    asked = [f"absent-{i}" for i in range(40_000)] + ["t"]
+
+    assert await searcher_db.get_tracks_va_bulk(asked) == {"t": (5.0, 4.0)}
 
 
 @pytest.mark.asyncio

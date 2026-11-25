@@ -17,10 +17,8 @@ from kalinka_plugin_sdk.events import PlaybackStateChangedEvent, PlayQueueEventT
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
-#: A play counts as heard out when it ran this share of the track...
+#: A play counts as heard out when it ran this share of the track.
 COMPLETE_SHARE = 0.9
-#: ...or got this close to the track's end.
-COMPLETE_TAIL_S = 10
 #: A play that stopped sooner than this, and before half the track, was a skip.
 SKIP_BEFORE_S = 30
 
@@ -49,9 +47,7 @@ class _Play:
 def judge(track_id: str, played_at: float, duration_s: int, listened_s: float) -> PlayRecord:
     """Whether a play of ``listened_s`` seconds of a ``duration_s`` track was
     heard out, skipped, or neither."""
-    completed = duration_s > 0 and (
-        listened_s >= COMPLETE_SHARE * duration_s or listened_s >= duration_s - COMPLETE_TAIL_S
-    )
+    completed = duration_s > 0 and listened_s >= COMPLETE_SHARE * duration_s
     skip_before = min(SKIP_BEFORE_S, duration_s / 2) if duration_s > 0 else SKIP_BEFORE_S
     return PlayRecord(
         track_id=track_id,

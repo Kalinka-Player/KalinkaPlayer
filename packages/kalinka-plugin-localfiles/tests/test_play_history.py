@@ -55,6 +55,12 @@ def test_a_short_track_is_a_skip_only_before_half_of_it():
     assert not judge("t", 0, 40, 25).skipped
 
 
+def test_a_short_interlude_is_heard_out_only_when_it_mostly_played():
+    skipped = judge("t", 0, 8, 0.5)
+    assert (skipped.completed, skipped.skipped) == (False, True)
+    assert judge("t", 0, 8, 7.5).completed
+
+
 def test_a_track_without_a_length_is_never_heard_out():
     assert not judge("t", 0, 0, 500).completed
 

@@ -24,6 +24,8 @@ _WORDS = {
 # "1970s", "70s", "'70s", "70's"; a lone "70" or a year like "1975" is not a decade.
 _DECADE_RE = re.compile(r"(?<![\w])['’]?((?:19|20)\d0|\d0)['’]?s\b", re.IGNORECASE)
 _WORD_RE = re.compile(r"\b(" + "|".join(_WORDS) + r")\b", re.IGNORECASE)
+# "top 40s" is a chart and "my 20s" an age, not a decade.
+_NOT_A_DECADE_AFTER = re.compile(r"\b(?:top|my|your|his|her|our|their)\s+$", re.IGNORECASE)
 
 
 def _century(two_digits: int) -> int:
@@ -39,6 +41,8 @@ def decades_in(query: str) -> list[int]:
     """
     found: list[tuple[int, int]] = []
     for match in _DECADE_RE.finditer(query):
+        if _NOT_A_DECADE_AFTER.search(query, 0, match.start()):
+            continue
         digits = match.group(1)
         decade = int(digits) if len(digits) == 4 else _century(int(digits))
         found.append((match.start(), decade))
