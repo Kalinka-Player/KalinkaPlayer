@@ -16,7 +16,6 @@ from kalinka_plugin_sdk.datamodel import (
     EmptyList,
     EntityId,
     EntityType,
-    FavoriteIds,
     Playlist,
     Preview,
     PreviewType,
@@ -443,20 +442,6 @@ class DrivesModule(InputModule):
 
     async def get_track_info(self, track_ids: List[str]) -> List[TrackInfo]:
         return []
-
-    async def list_favorite(
-        self, type: SearchType, filter: str, offset: int = 0, limit: int = 50
-    ) -> BrowseItemList:
-        return EmptyList(offset, limit)
-
-    async def get_favorite_ids(self) -> FavoriteIds:
-        return FavoriteIds()
-
-    async def add_to_favorite(self, id: str):
-        raise LookupError("Drives keeps no favourites")
-
-    async def remove_from_favorite(self, id: str):
-        raise LookupError("Drives keeps no favourites")
 
     async def list_filter_values(
         self, catalog_id: EntityId, field: str, offset: int = 0, limit: int = 50, q: str = ""

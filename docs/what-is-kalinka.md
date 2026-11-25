@@ -11,7 +11,7 @@ Kalinka is an open-source music system for people who run their own audio hardwa
 It's two cooperating pieces of software:
 
 - **KalinkaPlayer** — a lightweight backend service for Linux (arm64/amd64). It owns the music library, the play queue and the configuration, and exposes a REST + WebSocket API. The audio itself is played by a **renderer**: a small C++ program that talks to ALSA directly, installed alongside the server by default and equally able to run on a different streamer on the same network.
-- **Kalinka Music App** — a Flutter client for Android, Linux desktop and Web that discovers the server on your network automatically and acts as the remote control: browsing, search, queue, favorites, playlists and live server settings. An optional browser-based player can be installed on the server as well.
+- **Kalinka Music App** — a Flutter client for Android, Linux desktop and Web that discovers the server on your network automatically and acts as the remote control: browsing, search, queue, favourites, playlists and live server settings. An optional browser-based player can be installed on the server as well.
 
 Everything beyond the core ships as **plugins**: the local-files library (the most developed part by far), streaming sources ([Jamendo](https://www.jamendo.com)'s Creative-Commons catalog, and an experimental [Qobuz](https://www.qobuz.com) integration for subscribers), and device integrations such as Yamaha MusicCast volume/power control.
 
@@ -43,7 +43,7 @@ Sources are equal citizens in the play queue: local tracks, Jamendo streams and 
 
 ### Everything else is a plugin
 
-The server core is small; sources and devices arrive through a plugin SDK with typed interfaces for input modules (browse / search / track resolution / favorites / playlists) and output devices. Plugins are ordinary Python packages discovered at runtime, each shipping as its own Debian package — and a cookiecutter template gets a new one compiling in minutes. Configuration is schema-driven and editable live from the app, with a curated "simple" tier plus an `about:config`-style search over everything else, and maintenance actions (rebuild library, restart server) are one tap away.
+The server core is small; sources and devices arrive through a plugin SDK with typed interfaces for input modules (browse / search / track resolution / favourites / playlists) and output devices. Plugins are ordinary Python packages discovered at runtime, each shipping as its own Debian package — and a cookiecutter template gets a new one compiling in minutes. Configuration is schema-driven and editable live from the app, with a curated "simple" tier plus an `about:config`-style search over everything else, and maintenance actions (rebuild library, restart server) are one tap away.
 
 ## Architecture
 
@@ -71,7 +71,7 @@ flowchart TD
     end
 
     subgraph SDK["Plugin SDK (kalinka-plugin-sdk)"]
-        IM["InputModule interface<br/>(browse · search · track URLs ·<br/>favorites · playlists)"]
+        IM["InputModule interface<br/>(browse · search · track URLs ·<br/>favourites · playlists)"]
         OD["Output-device interface"]
     end
 

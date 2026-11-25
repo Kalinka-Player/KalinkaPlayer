@@ -22,7 +22,6 @@ from kalinka_plugin_sdk.datamodel import (
     EmptyList,
     EntityId,
     EntityType,
-    FavoriteIds,
     Genre,
     Owner,
     Playlist,
@@ -1400,20 +1399,6 @@ class JamendoInputModule(InputModule):
                 )
             )
         return result
-
-    async def list_favorite(
-        self, type: SearchType, filter: str, offset: int = 0, limit: int = 50
-    ) -> BrowseItemList:
-        return EmptyList(offset, limit)
-
-    async def get_favorite_ids(self) -> FavoriteIds:
-        return FavoriteIds()
-
-    async def add_to_favorite(self, id: str):
-        logger.warning("Favorites are not supported in the Jamendo input module")
-
-    async def remove_from_favorite(self, id: str):
-        logger.warning("Favorites are not supported in the Jamendo input module")
 
     async def list_filter_values(
         self,

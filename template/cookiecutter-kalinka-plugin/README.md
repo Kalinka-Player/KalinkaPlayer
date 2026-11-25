@@ -148,10 +148,7 @@ Edit `src/your_plugin/your_plugin_input_module.py` and implement:
 - `browse()` - Browse music catalogs and collections
 - `get_track_info()` - Get detailed track information for playback
 - `get_track_source()` - Resolve where a track plays from, given its id
-- `list_favorite()` - List user favorites (tracks, albums, etc.)
-- `get_favorite_ids()` - Get all favorite IDs
-- `add_to_favorite()` - Add items to favorites
-- `remove_from_favorite()` - Remove items from favorites
+- Favourites are optional. A source that keeps them reports `ModuleCapability.FAVORITES` from `capabilities()` and overrides `add_to_favorite()`, `remove_from_favorite()`, `get_favorite_ids()` and `list_favorite()`; any other leaves all four alone
 - `list_filter_values()` - List the values of one catalog filter field
 - `get()` - Get specific entity by ID
 - `playlist_user_list()` - List user playlists
