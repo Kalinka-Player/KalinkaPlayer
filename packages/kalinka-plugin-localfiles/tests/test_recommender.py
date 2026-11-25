@@ -163,6 +163,56 @@ async def test_vectors_kept_only_in_the_knn_index_still_recommend(db_path):
     assert (await recommender.albums_for_you(1)) == ["more_jazz"]
 
 
+async def _remove_as_the_indexer_does(path, table, entry_id):
+    async with aiosqlite.connect(path) as conn:
+        await conn.execute(f"DELETE FROM {table} WHERE id = ?", (entry_id,))
+        await conn.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_removed_track_left_in_the_index_is_never_proposed(db_path):
+    rock = _direction(10)
+    tracks = {
+        "seed": ("al", rock),
+        "gone": ("al", _near(rock, 1, 0.1)),
+        "still_here": ("al", _near(rock, 2, 0.4)),
+    }
+    recommender = await _library(db_path, tracks, {"al": rock})
+    await _remove_as_the_indexer_does(db_path, "tracks", "gone")
+
+    assert await recommender.next_tracks(["seed"], [], ["seed"], 1) == ["still_here"]
+
+
+@pytest.mark.asyncio
+async def test_a_removed_album_left_in_the_index_is_never_recommended(db_path):
+    jazz = _direction(30)
+    tracks = {f"j{i}": ("heard_jazz", _near(jazz, i, 0.2)) for i in range(5)}
+    albums = {"heard_jazz": jazz, "gone": _near(jazz, 50, 0.1), "more_jazz": _near(jazz, 51, 0.4)}
+    plays = [(f"j{i}", True, False) for i in range(5)]
+    recommender = await _library(db_path, tracks, albums, plays=plays)
+    await _remove_as_the_indexer_does(db_path, "albums", "gone")
+
+    assert await recommender.albums_for_you(1) == ["more_jazz"]
+
+
+@pytest.mark.asyncio
+async def test_the_embedder_prunes_index_rows_of_removed_entries(db_path):
+    rock = _direction(10)
+    tracks = {"kept": ("al", rock), "gone": ("al", _near(rock, 1, 0.3))}
+    await _library(db_path, tracks, {"al": rock, "gone_album": _direction(20)})
+    await _remove_as_the_indexer_does(db_path, "tracks", "gone")
+    await _remove_as_the_indexer_does(db_path, "albums", "gone_album")
+    embedder_db = AsyncEmbedderDb(LocalFilesConfig(db_path=db_path))
+    await embedder_db._check_vec_available()
+
+    assert await embedder_db.prune_orphan_vec_rows() == 2
+    assert await embedder_db.prune_orphan_vec_rows() == 0
+    vectors = AsyncSearcherDb(LocalFilesConfig(db_path=db_path))
+    await vectors._check_vec_available()
+    assert set(await vectors.get_track_vectors(["kept", "gone"])) == {"kept"}
+    assert set(await vectors.get_album_vectors(["al", "gone_album"])) == {"al"}
+
+
 @pytest.mark.asyncio
 async def test_next_tracks_without_a_known_seed_propose_nothing(db_path):
     recommender = await _library(db_path, {"t": ("al", _direction(1))}, {"al": _direction(1)})

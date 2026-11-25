@@ -668,6 +668,7 @@ class EmbeddingWorker:
             # before scheduling, so those tracks never enter the audio queue.
             if await self.db.restore_snapshot(CLAP_MODEL_VERSION):
                 await self.db.backfill_missing_vec_rows()
+            await self.db.prune_orphan_vec_rows()
 
             await self.db.schedule_new_jobs(CLAP_MODEL_VERSION)
             await self.db.resume_deferred_jobs()
