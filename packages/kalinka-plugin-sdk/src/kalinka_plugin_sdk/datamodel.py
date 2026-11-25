@@ -1010,16 +1010,10 @@ class TrackList(BaseModel):
 
 class LastUpdate(BaseModel):
     """
-    Timestamp tracking for user's favorite content changes.
+    When each kind of favourite last changed, in Unix seconds.
 
-    Used to efficiently synchronize favorites between client and server
-    by tracking when each category was last modified.
-
-    Attributes:
-        favorite_tracks_ts (int): Unix timestamp of last favorite tracks update
-        favorite_albums_ts (int): Unix timestamp of last favorite albums update
-        favorite_artists_ts (int): Unix timestamp of last favorite artists update
-        favorite_playlists_ts (int): Unix timestamp of last favorite playlists update
+    Nothing in the SDK or the server reads it. It stays so that a plugin
+    importing it still loads.
     """
 
     favorite_tracks_ts: int = 0

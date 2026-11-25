@@ -215,11 +215,14 @@ class ModuleCapability(str, Enum):
         CONTINUATION: SDK 3.24. :meth:`InputModule.continue_queue` proposes
             tracks that carry on from the module's queued ones, for the
             server's Keep playing and for a listener's "more like this".
-        FAVORITES: SDK 3.24. :meth:`InputModule.add_to_favorite`,
-            :meth:`InputModule.remove_from_favorite` and
-            :meth:`InputModule.get_favorite_ids` keep the listener's favourites,
-            so a client may offer to mark the module's tracks. Every module
-            answers those calls; one without it keeps nothing they are given.
+        FAVORITES: SDK 3.24. The module keeps the listener's favourite tracks,
+            albums, artists and playlists: :meth:`InputModule.add_to_favorite`
+            and :meth:`InputModule.remove_from_favorite` change them, and
+            :meth:`InputModule.get_favorite_ids` and
+            :meth:`InputModule.list_favorite` read them back. Report it only
+            while marking sticks, as while an account is signed in: a client
+            offers to mark an item only of a source that does, and the server
+            asks no other.
     """
 
     AI_SEARCH = "ai_search"
@@ -263,7 +266,7 @@ class InputModule(Protocol):
 
     Each input module is responsible for:
     - Browsing and searching audio content
-    - Managing user favorites
+    - Keeping the listener's favourites, where it reports that it does
     - Handling playlists
     - Providing track metadata and playback sources
     - Declaring what its catalogs can be filtered by, and honouring it
@@ -512,45 +515,95 @@ class InputModule(Protocol):
         self, type: SearchType, filter: str, offset: int = 0, limit: int = 50
     ) -> BrowseItemList:
         """
-        List user's favorite items of a specific type.
+        List the listener's favourites of one kind, most recently marked first.
+
+        Asked only of a module that reports
+        :attr:`ModuleCapability.FAVORITES`. Default lists nothing.
 
         Args:
-            type (SearchType): The type of favorites to list (album, track, playlist, artist)
-            filter (str): Additional filter criteria for the favorites
+            type (SearchType): The kind to list: track, album, artist or playlist
+            filter (str): Text an item's name must contain, whatever its case.
+                Empty lists everything.
             offset (int, optional): Number of results to skip for pagination. Defaults to 0.
             limit (int, optional): Maximum number of results to return. Defaults to 50.
 
         Returns:
-            BrowseItemList: A list of the user's favorite items of the specified type
+            BrowseItemList: One page; ``total`` counts the whole filtered
+            list. Each item's ``timestamp`` is when it was marked, in Unix
+            seconds, or 0 where the source does not say: the server merges
+            several sources' favourites by it.
+
+        Raises:
+            UnsupportedFilter: ``filter`` is not empty and the source cannot
+                search its favourites. Never list unfiltered instead.
+            SourceUnavailableError: The source cannot answer now. Never answer
+                an empty or part-filled page in its place.
+
+        Must complete within the server's per-call timeout (see the
+        class docstring's latency contract).
         """
-        ...
+        return EmptyList(offset, limit)
 
     async def get_favorite_ids(self) -> FavoriteIds:
         """
-        Retrieve all favorite item IDs for the current user.
+        Every favourite the listener has, by id, in one answer.
+
+        A client fills its hearts from it, so it is whole or it fails, and a
+        change made through :meth:`add_to_favorite` or
+        :meth:`remove_from_favorite` shows in the next answer. Asked only of
+        a module that reports :attr:`ModuleCapability.FAVORITES`. Default has
+        none.
 
         Returns:
-            FavoriteIds: Object containing collections of favorite IDs grouped by type
+            FavoriteIds: The id of every favourite, grouped by kind
+
+        Raises:
+            SourceUnavailableError: The source cannot answer now, or not all
+                of it in time.
+
+        Must complete within the server's per-call timeout (see the
+        class docstring's latency contract).
         """
-        ...
+        return FavoriteIds()
 
     async def add_to_favorite(self, id: str):
         """
-        Add an item to the user's favorites.
+        Mark one of this module's items a favourite. Marking one that already
+        is succeeds.
+
+        Asked only of a module that reports
+        :attr:`ModuleCapability.FAVORITES`, which must override it.
 
         Args:
-            id (str): The ID of the item to add to favorites
+            id (str): The item's full entity id, ``kalinka:{source}:{type}:{id}``,
+                of type track, album, artist or playlist
+
+        Raises:
+            ValueError: The item can never be a favourite here: a kind the
+                source keeps none of, or a playlist it will not mark, such as
+                one the listener owns. The message is shown to users.
+            LookupError: The source has no such item.
+            SourceUnavailableError: The source could not be reached or
+                refused, and nothing is known to have changed. The message is
+                shown to users.
+
+        Must complete within the server's per-call timeout (see the
+        class docstring's latency contract).
         """
-        ...
+        raise NotImplementedError(f"{self.module_name()} keeps no favourites")
 
     async def remove_from_favorite(self, id: str):
         """
-        Remove an item from the user's favorites.
+        Make one of this module's items no longer a favourite. Removing one
+        that is not a favourite succeeds.
 
-        Args:
-            id (str): The ID of the item to remove from favorites
+        Takes and raises what :meth:`add_to_favorite` does, and is asked of
+        the same modules.
+
+        Must complete within the server's per-call timeout (see the
+        class docstring's latency contract).
         """
-        ...
+        raise NotImplementedError(f"{self.module_name()} keeps no favourites")
 
     async def list_filter_values(
         self,
