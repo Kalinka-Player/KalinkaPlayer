@@ -8,6 +8,11 @@ A read is whole or it fails, naming the source that failed. A client fills
 its hearts from it, and an answer that leaves one source out is not one it
 can tell from that source having no favourites; asking a source at a time,
 it loses only the hearts of the source that is down.
+
+A change that was made is announced on the queue bus, so another client
+showing the item need not ask again. A collection change is not, as nothing
+shows a collection that is not open; a heart is on the screen wherever the
+playing track is.
 """
 
 import asyncio
@@ -23,6 +28,7 @@ from kalinka_plugin_sdk.datamodel import (
     EntityType,
     FavoriteIds,
 )
+from kalinka_plugin_sdk.events import FavoriteChangedEvent
 from kalinka_plugin_sdk.filters import UnsupportedFilter
 from kalinka_plugin_sdk.inputmodule import (
     InputModule,
@@ -47,13 +53,15 @@ def register_favorite_routes(
     resolve_modules: Callable[[Optional[str]], List[InputModule]],
     resolve_module: Callable[[EntityId], InputModule],
     parse_entity_id: Callable[[str], EntityId],
+    publish: Callable[[FavoriteChangedEvent], None],
 ) -> None:
     """Mount the favourites endpoints on ``app``.
 
     ``resolve_modules`` turns a ``sources`` parameter into input modules,
     every enabled one when it is absent, and ``resolve_module`` finds the
     module an entity belongs to; both raise for what they cannot reach.
-    ``parse_entity_id`` refuses an id that is not one.
+    ``parse_entity_id`` refuses an id that is not one. ``publish`` sends a
+    change that was made to the queue bus.
     """
 
     @app.get("/favorite/list/{type}")
@@ -113,17 +121,15 @@ def register_favorite_routes(
 
     @app.put("/favorite/add/{id}")
     async def add_favorite(id: str):
-        await _change(id, lambda module: module.add_to_favorite(id))
+        await _change(id, True)
         return {"message": "Ok"}
 
     @app.delete("/favorite/remove/{id}")
     async def remove_favorite(id: str):
-        await _change(id, lambda module: module.remove_from_favorite(id))
+        await _change(id, False)
         return {"message": "Ok"}
 
-    async def _change(
-        id: str, change: Callable[[InputModule], Awaitable[None]]
-    ) -> None:
+    async def _change(id: str, favorite: bool) -> None:
         entity_id = parse_entity_id(id)
         if entity_id.type not in FAVOURITE_KINDS:
             raise HTTPException(
@@ -143,8 +149,9 @@ def register_favorite_routes(
                     "reason": "This source keeps no favourites",
                 },
             )
+        change = module.add_to_favorite if favorite else module.remove_from_favorite
         try:
-            await change(module)
+            await change(id)
         except ValueError as e:
             raise HTTPException(
                 status_code=422, detail={"field": "id", "reason": str(e)}
@@ -153,6 +160,7 @@ def register_favorite_routes(
             raise HTTPException(status_code=404, detail="No such item")
         except Exception as e:
             raise _unavailable(SourceFailed(entity_id.source, e))
+        publish(FavoriteChangedEvent(id=entity_id, favorite=favorite))
 
 
 def _keeps(module: InputModule) -> bool:

@@ -360,6 +360,9 @@ def get_version() -> str:
 # a favourite, 404 for one the source does not have, and 503 or 504 as a read
 # does, a 504 leaving it unknown whether the change was made. /favorite/ids
 # takes `sources` as /favorite/list does; its earlier `source` still works.
+# A change that was made is sent on the queue socket as favorite_changed
+# {id, favorite}, for other clients showing the item; one made in the
+# source's own app sends nothing.
 REST_API_VERSION = "0.27"
 
 

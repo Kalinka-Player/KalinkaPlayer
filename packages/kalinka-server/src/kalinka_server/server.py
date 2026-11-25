@@ -1212,7 +1212,11 @@ async def create_app(
         return {"message": "Ok"}
 
     register_favorite_routes(
-        app, extract_modules, input_module_from_id, parse_entity_id
+        app,
+        extract_modules,
+        input_module_from_id,
+        parse_entity_id,
+        player_context.playqueue_eventbus.dispatch,
     )
 
     @app.get("/get/{entity_id}")
