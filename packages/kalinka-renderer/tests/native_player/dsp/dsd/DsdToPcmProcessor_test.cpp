@@ -243,8 +243,7 @@ TEST(DsdToPcmProcessor, ASeekThroughTheStageSoundsAsARunUnderWayDoes) {
   auto bank = std::make_shared<FirFilterBank>();
   std::vector<double> taps(2049);
   taps.back() = .5;
-  bank->filters.emplace(176400,
-                        std::make_shared<FirRoomCorrection>(176400, taps, taps));
+  bank->add({176400, {taps, {}}});
   fir->select(bank);
   for (const auto &selected : {std::shared_ptr<LiveFir>{}, fir}) {
     SCOPED_TRACE(bool(selected));

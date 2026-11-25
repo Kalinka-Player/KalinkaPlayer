@@ -3,26 +3,23 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <format>
 
 void LiveFir::select(std::shared_ptr<const FirFilterBank> bank) {
-  if (bank && std::ranges::find(retained, bank) == retained.end())
-    retained.push_back(bank);
+  std::lock_guard lock(setupMutex);
+  const auto rate = runRate.load();
+  auto next = bank && rate ? bank->at(rate) : nullptr;
   requested.store(std::move(bank));
-  std::erase_if(retained, [](const auto &old) {
-    return old.use_count() == 1 &&
-           std::ranges::none_of(old->filters, [](const auto &entry) {
-             return entry.second.use_count() > 1;
-           });
-  });
+  if (auto old = desired.exchange(next);
+      old && old != next && std::ranges::find(retired, old) == retired.end())
+    retired.push_back(std::move(old));
+  std::erase_if(retired, [](const auto &old) { return old.use_count() == 1; });
 }
 
-std::shared_ptr<FirRoomCorrection>
-LiveFir::filterFor(const StreamAudioFormat &f) const {
+std::shared_ptr<const FirVariant>
+LiveFir::variantFor(const StreamAudioFormat &f) const {
   const auto bank = requested.load();
-  if (!bank || !handles(f))
-    return {};
-  const auto it = bank->filters.find(f.sampleRate);
-  return it == bank->filters.end() ? nullptr : it->second;
+  return bank && handles(f) ? bank->at(f.sampleRate) : nullptr;
 }
 
 bool LiveFir::handles(const StreamAudioFormat &f) const {
@@ -37,15 +34,35 @@ DspProcessor::Output LiveFir::output(const StreamAudioFormat &f) const {
 }
 
 SignalPath LiveFir::describe(const StreamAudioFormat &f) const {
-  const auto plan = filterFor(f);
-  return plan ? plan->describe(f) : SignalPath{};
+  const auto bank = requested.load();
+  if (!bank || !handles(f))
+    return {};
+  const auto plan = bank->at(f.sampleRate);
+  if (!plan) {
+    return {
+        {{signal_step::kFir, "FIR unavailable",
+          std::format("Supply an impulse at {:g} kHz", f.sampleRate / 1000.)}},
+        0.0};
+  }
+  auto path = plan->filter->describe(f);
+  if (plan->sourceRate != f.sampleRate) {
+    path.steps.front().summary +=
+        std::format(", resampled from {:g} kHz", plan->sourceRate / 1000.);
+    path.latencyMs = 1000. * lag / f.sampleRate;
+  }
+  return path;
 }
 
 size_t LiveFir::start(const StreamAudioFormat &f) {
   input = f;
-  active = filterFor(f);
+  {
+    std::lock_guard lock(setupMutex);
+    runRate.store(f.sampleRate);
+    active = variantFor(f);
+    desired.store(active);
+  }
   if (active)
-    active->start(input);
+    active->filter->start(input);
   wet.settle(active ? 1.0 : 0.0);
   dry.fill({});
   cursor = warmup = settledFrames = 0;
@@ -56,31 +73,31 @@ bool LiveFir::changeInputFormat(const StreamAudioFormat &f) {
   if (f.sampleRate != input.sampleRate || !handles(f))
     return false;
   input = f;
-  return !active || active->changeInputFormat(f);
+  return !active || active->filter->changeInputFormat(f);
 }
 
 size_t LiveFir::historyFor(const StreamAudioFormat &format) const {
-  const auto plan = filterFor(format);
-  return plan ? plan->preparedHistory() : 0;
+  const auto plan = variantFor(format);
+  return plan ? plan->filter->preparedHistory() : 0;
 }
 
 size_t LiveFir::settledOutputFrames() const {
-  if (filterFor(input) != active)
+  if (desired.load() != active)
     return 0;
   return std::min<uint64_t>(settledFrames, std::numeric_limits<size_t>::max());
 }
 
 size_t LiveFir::process(const uint8_t *in, uint8_t *out, size_t frames) {
-  auto next = filterFor(input);
+  auto next = desired.load();
   auto planes = scratch.planes();
   for (size_t at = 0; at < frames;) {
     if (active != next && wet.holding(0)) {
       active = next;
       if (active) {
-        active->start(input);
+        active->filter->start(input);
         // Let an arriving filter see its entire history before it becomes
         // audible.
-        warmup = lag + active->preparedHistory();
+        warmup = lag + active->filter->preparedHistory();
       } else {
         warmup = 0;
       }
@@ -96,7 +113,8 @@ size_t LiveFir::process(const uint8_t *in, uint8_t *out, size_t frames) {
     if (source)
       readPlanar(source, input.sampleFormat, 2, n, planes);
     if (active)
-      active->process(source, reinterpret_cast<uint8_t *>(filtered.data()), n);
+      active->filter->process(source,
+                              reinterpret_cast<uint8_t *>(filtered.data()), n);
     for (size_t i = 0; i < n; ++i) {
       auto sample = dry[cursor];
       dry[cursor] = source ? std::array{planes[0][i], planes[1][i]}

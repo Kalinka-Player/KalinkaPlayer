@@ -180,28 +180,31 @@ TEST_F(DsdPcmPlaybackTest,
   for (const unsigned rate : {48000u, kPcmRate}) {
     SCOPED_TRACE(rate);
     auto bank = std::make_shared<FirFilterBank>();
-    bank->filters.emplace(
-        rate, std::make_shared<FirRoomCorrection>(rate, taps, taps));
+    bank->add({rate, {taps, {}}});
     fir->select(bank);
     const auto result = play({file}, {}, fir);
     ASSERT_EQ(result.size(), dry.size());
     ASSERT_TRUE(path);
     double worst = 0;
-    const auto delay = rate == kPcmRate ? taps.size() - 1 : 0;
-    const double gain = rate == kPcmRate ? .25 : 1.;
-    for (size_t i = delay; i < dry.size(); ++i)
-      worst = std::max(worst, std::abs(result[i] - gain * dry[i - delay]));
-    EXPECT_LT(worst, 1e-10);
-    if (rate == kPcmRate) {
-      ASSERT_EQ(path->steps.size(), 3u);
-      EXPECT_EQ(path->steps[0].kind, signal_step::kDsdToPcm);
-      EXPECT_EQ(path->steps[1].kind, signal_step::kFir);
-      EXPECT_EQ(path->steps[2].kind, signal_step::kDsdGain);
-      EXPECT_NEAR(path->latencyMs - dryPath.latencyMs,
-                  1000.0 * FirRoomCorrection::kPartitions.head / kPcmRate, 1e-8);
-    } else {
-      EXPECT_EQ(*path, dryPath);
+    const double delay = double(taps.size() - 1) * kPcmRate / rate;
+    // Integer-exact native delay; fractional SRC delay compared by
+    // interpolation in the steady part of the decoded 1 kHz tone.
+    const size_t whole = size_t(delay);
+    const size_t start = rate == kPcmRate ? whole : whole + 1024;
+    const size_t end = rate == kPcmRate ? dry.size() : dry.size() - 1024;
+    for (size_t i = start; i < end; ++i) {
+      double expected = dry[i - whole];
+      if (delay != whole)
+        expected = std::lerp(expected, dry[i - whole - 1], delay - whole);
+      worst = std::max(worst, std::abs(result[i] - .25 * expected));
     }
+    EXPECT_LT(worst, rate == kPcmRate ? 1e-10 : 1e-4);
+    ASSERT_EQ(path->steps.size(), 3u);
+    EXPECT_EQ(path->steps[0].kind, signal_step::kDsdToPcm);
+    EXPECT_EQ(path->steps[1].kind, signal_step::kFir);
+    EXPECT_EQ(path->steps[2].kind, signal_step::kDsdGain);
+    EXPECT_NEAR(path->latencyMs - dryPath.latencyMs,
+                1000.0 * FirRoomCorrection::kPartitions.head / kPcmRate, 1e-8);
   }
 }
 

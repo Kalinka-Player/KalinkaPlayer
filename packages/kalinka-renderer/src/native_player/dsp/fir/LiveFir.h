@@ -1,24 +1,18 @@
 #pragma once
 
-#include "dsp/fir/FirRoomCorrection.h"
+#include "dsp/fir/FirFilterBank.h"
 #include "dsp/output/GainRamp.h"
 #include "dsp/output/PlanarPcm.h"
 
 #include <atomic>
-#include <map>
-#include <string>
 #include <vector>
-
-struct FirFilterBank {
-  std::string name;
-  std::map<unsigned, std::shared_ptr<FirRoomCorrection>> filters;
-};
 
 // A fixed frame contract for the duration of playback. Dry PCM goes through
 // the same delay as the convolver so a crossfade never mixes different times.
 class LiveFir final : public DspProcessor {
 public:
   void select(std::shared_ptr<const FirFilterBank> bank);
+  unsigned lastRate() const { return runRate.load(); }
   bool handles(const StreamAudioFormat &format) const override;
   Output output(const StreamAudioFormat &format) const override;
   SignalPath describe(const StreamAudioFormat &format) const override;
@@ -35,11 +29,14 @@ public:
 private:
   static constexpr size_t lag = FirRoomCorrection::kPartitions.head;
   std::atomic<std::shared_ptr<const FirFilterBank>> requested;
-  std::shared_ptr<FirRoomCorrection>
-  filterFor(const StreamAudioFormat &format) const;
-  // Retain old plans on the control thread until the audio thread is done.
-  std::vector<std::shared_ptr<const FirFilterBank>> retained;
-  std::shared_ptr<FirRoomCorrection> active;
+  std::shared_ptr<const FirVariant>
+  variantFor(const StreamAudioFormat &format) const;
+  std::mutex setupMutex;
+  std::atomic<unsigned> runRate{0};
+  std::atomic<std::shared_ptr<const FirVariant>> desired;
+  // Keep outgoing plans alive through the fade. Reclaim on the control thread.
+  std::vector<std::shared_ptr<const FirVariant>> retired;
+  std::shared_ptr<const FirVariant> active;
   StreamAudioFormat input{};
   GainRamp wet{std::chrono::milliseconds(25)};
   std::array<std::array<double, 2>, lag> dry{};

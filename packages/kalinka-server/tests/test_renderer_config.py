@@ -24,6 +24,29 @@ def test_detailed_help_survives_the_renderer_protocol(details):
     assert exposed["help_details"] == details
 
 
+def test_fir_response_is_optional_and_preserves_both_channels():
+    snapshot = pb.ConfigSnapshot()
+    field = snapshot.sections.add().fields.add(path="output.rew_fir_profile")
+    legacy = snapshot_to_dict(snapshot)["sections"][0]["fields"][0]
+    assert "matches_fir_rates" not in legacy
+    assert "fir_response" not in legacy
+    field.matches_fir_rates = True
+    field.fir_response.CopyFrom(
+        pb.FirResponse(
+            sample_rate=96000, source_rate=48000, left_db=[0, -9], right_db=[-3, -4]
+        )
+    )
+    received = pb.ConfigSnapshot.FromString(snapshot.SerializeToString())
+    exposed = snapshot_to_dict(received)["sections"][0]["fields"][0]
+    assert exposed["matches_fir_rates"] is True
+    assert exposed["fir_response"] == {
+        "sample_rate": 96000,
+        "source_rate": 48000,
+        "left_db": [0, -9],
+        "right_db": [-3, -4],
+    }
+
+
 class FakeWs:
     """Renderer end of the config plane, answering in line like the real one."""
 

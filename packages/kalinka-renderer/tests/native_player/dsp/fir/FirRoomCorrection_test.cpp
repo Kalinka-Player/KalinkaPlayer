@@ -30,7 +30,6 @@ TEST(LiveFirTest,
   // would briefly mute a steady signal when enabled during playback.
   std::vector<double> taps(10001, 0);
   taps.back() = 0.25;
-  auto filter = std::make_shared<FirRoomCorrection>(48000, taps, taps);
   const auto pull = [&](size_t frames) {
     std::vector<Stereo> in(frames, {1, -1}), out(frames);
     live.process(reinterpret_cast<const uint8_t *>(in.data()),
@@ -39,10 +38,8 @@ TEST(LiveFirTest,
   };
   pull(lag);
   auto bank = std::make_shared<FirFilterBank>();
-  bank->filters.emplace(48000, filter);
-  bank->filters.emplace(
-      192000, std::make_shared<FirRoomCorrection>(192000, std::vector{0.5},
-                                                  std::vector{0.5}));
+  bank->add({48000, {taps, {}}});
+  bank->add({192000, {std::vector{0.5}, {}}});
   live.select(bank);
   EXPECT_EQ(live.settledOutputFrames(), 0u);
   const auto expected = [&](size_t frames, double from, double to) {
@@ -69,13 +66,113 @@ TEST(LiveFirTest,
     stream.sampleRate = rate;
     live.start(stream);
     const auto out = pull(lag + taps.size() + 1);
-    EXPECT_NEAR(out.back()[0],
-                rate == 192000  ? 0.5
-                : rate == 48000 ? 0.25
-                                : 1.0,
-                1e-10);
-    EXPECT_EQ(live.describe(stream).steps.empty(), rate == 96000);
+    EXPECT_NEAR(out.back()[0], rate == 48000 ? 0.25 : 0.5, 1e-5);
+    EXPECT_FALSE(live.describe(stream).steps.empty());
   }
+}
+
+TEST(FirFilterBankTest, PrefersExactOriginalAndCachesTheClosestInOctaves) {
+  FirFilterBank bank;
+  bank.add({48000, {std::vector{.5}, std::vector{.25}}});
+  bank.add({192000, {std::vector{1.0}, {}}});
+  EXPECT_THROW(bank.add({48000, {std::vector{1.0}, {}}}),
+               std::invalid_argument);
+  for (const auto &[rate, original] :
+       std::array<std::pair<unsigned, unsigned>, 5>{{{44100, 48000},
+                                                     {48000, 48000},
+                                                     {88200, 48000},
+                                                     {96000, 192000},
+                                                     {384000, 192000}}}) {
+    SCOPED_TRACE(rate);
+    const auto variant = bank.at(rate);
+    ASSERT_TRUE(variant);
+    EXPECT_EQ(variant->sourceRate, original);
+    EXPECT_EQ(bank.at(rate), variant);
+    const auto &db = variant->responseDb;
+    ASSERT_EQ(db[0].size(), 257u);
+    EXPECT_NEAR(db[0][128], original == 48000 ? -6.0206 : 0., .01);
+    if (original == 48000) {
+      ASSERT_EQ(db[1].size(), db[0].size());
+      EXPECT_NEAR(db[1][128], -12.0412, .01);
+    } else {
+      EXPECT_TRUE(db[1].empty());
+    }
+  }
+}
+
+TEST(FirFilterBankTest, HeadroomUsesTheTapsPreparedForThePlaybackRate) {
+  auto bank = std::make_shared<FirFilterBank>();
+  bank->add({48000, {std::vector{1.0}, {}}});
+  EXPECT_EQ(bank->at(48000)->automaticPreampDb, 0.);
+  LiveFir live;
+  live.select(bank);
+  const StreamAudioFormat converted{44100, 2, 64, PCM_FLOAT64_LE};
+  live.start(converted);
+  std::vector<Stereo> delta(4096), output(delta.size());
+  delta[0] = {1., 1.};
+  live.process(reinterpret_cast<uint8_t *>(delta.data()),
+               reinterpret_cast<uint8_t *>(output.data()), delta.size());
+  double sum = 0.;
+  for (const auto &frame : output)
+    sum += std::abs(frame[0]);
+  ASSERT_GT(sum, 1.);
+  EXPECT_NEAR(bank->at(44100)->automaticPreampDb, -20 * std::log10(sum), 1e-10);
+}
+
+TEST(FirFilterBankTest, ConvertedStereoPreservesTheGainAndPhaseOfBothFilters) {
+  constexpr unsigned source = 44100;
+  const auto bank = std::make_shared<FirFilterBank>();
+  std::vector<double> left(42), right(74);
+  left.front() = .5;
+  left.back() = -.15;
+  right.back() = .25;
+  bank->add({source, {left, right}});
+  LiveFir live;
+  live.select(bank);
+  for (unsigned rate : {32000u, 96000u, 176400u, 192000u}) {
+    SCOPED_TRACE(rate);
+    const double omega = 2 * std::numbers::pi * 1000 / rate;
+    const StreamAudioFormat stream{rate, 2, 64, PCM_FLOAT64_LE};
+    const size_t lag = live.start(stream);
+    EXPECT_EQ(lag, FirRoomCorrection::kPartitions.head);
+    std::vector<Stereo> in(8192), out(in.size());
+    for (size_t n = 0; n < in.size(); ++n)
+      in[n] = {std::sin(omega * n), std::sin(omega * n)};
+    live.process(reinterpret_cast<const uint8_t *>(in.data()),
+                 reinterpret_cast<uint8_t *>(out.data()), in.size());
+    for (size_t n = 2048; n < out.size(); ++n) {
+      const double t = (n - lag) * omega;
+      const double sourceOmega = 2 * std::numbers::pi * 1000 / source;
+      ASSERT_NEAR(out[n][0],
+                  .5 * std::sin(t) - .15 * std::sin(t - 41 * sourceOmega),
+                  1e-4);
+      ASSERT_NEAR(out[n][1], .25 * std::sin(t - 73 * sourceOmega), 1e-4);
+    }
+    const auto &response = bank->at(rate)->responseDb;
+    const double top = std::min(20000., rate / 2.);
+    for (size_t i = 0; i < response[0].size(); ++i) {
+      const double hz =
+          20 * std::pow(top / 20, double(i) / (response[0].size() - 1));
+      if (hz > 10000)
+        break;
+      const double phase = 2 * std::numbers::pi * hz * 41 / source;
+      const double expected =
+          10 * std::log10(.25 + .0225 - .15 * std::cos(phase));
+      EXPECT_NEAR(response[0][i], expected, .04) << hz;
+      EXPECT_NEAR(response[1][i], 20 * std::log10(.25), .01) << hz;
+    }
+  }
+}
+
+TEST(FirFilterBankTest, ExpandsALongResponsePastTheWavImportLimit) {
+  FirFilterBank bank;
+  std::vector<double> taps(131073);
+  taps.back() = 0.25;
+  bank.add({48000, {taps, {}}});
+  const auto converted = bank.at(96000);
+  ASSERT_TRUE(converted);
+  EXPECT_GT(converted->filter->preparedHistory(), FirRoomCorrection::kMaxTaps);
+  EXPECT_NEAR(converted->responseDb[0][128], -12.0412, .01);
 }
 
 TEST(FirRoomCorrectionTest,

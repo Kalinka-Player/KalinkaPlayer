@@ -1,8 +1,13 @@
 #pragma once
 
+#include <optional>
 #include <string>
+#include <string_view>
 
 #include "kalinka/renderer/v1/renderer.pb.h"
+
+/// Parse a finite decimal setting, optionally prefixed with a sign.
+std::optional<double> parseConfigDecimal(std::string_view value);
 
 /**
  * @brief Whether @p field takes @p value: the field is writable, and the value

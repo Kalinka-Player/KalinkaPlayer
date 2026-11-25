@@ -61,6 +61,22 @@ findField(const renderer_pb::ConfigSnapshot &snapshot, const std::string &path,
 
 }  // namespace
 
+std::optional<double> parseConfigDecimal(std::string_view value) {
+  if (value.starts_with('+')) {
+    value.remove_prefix(1);
+    if (value.starts_with('-'))
+      return std::nullopt;
+  }
+  if (value.empty())
+    return std::nullopt;
+  double parsed;
+  const char *end = value.data() + value.size();
+  auto [stop, ec] = std::from_chars(value.data(), end, parsed);
+  if (ec != std::errc{} || stop != end || !std::isfinite(parsed))
+    return std::nullopt;
+  return parsed;
+}
+
 bool fieldAccepts(const renderer_pb::ConfigField &field,
                   const std::string &value, std::string &error) {
   if (field.read_only()) {
@@ -79,12 +95,10 @@ bool fieldAccepts(const renderer_pb::ConfigField &field,
     return false;
   }
   case renderer_pb::CONFIG_FIELD_TYPE_DECIMAL: {
-    double parsed;
-    const char *end = value.data() + value.size();
-    auto [stop, ec] = std::from_chars(value.data(), end, parsed);
-    if (ec != std::errc{} || stop != end || !std::isfinite(parsed) ||
-        (field.has_decimal_range() && (parsed < field.decimal_range().min() ||
-                                       parsed > field.decimal_range().max()))) {
+    const auto parsed = parseConfigDecimal(value);
+    if (!parsed ||
+        (field.has_decimal_range() && (*parsed < field.decimal_range().min() ||
+                                       *parsed > field.decimal_range().max()))) {
       error = "Expected a finite decimal within the declared range";
       return false;
     }

@@ -198,24 +198,16 @@ std::shared_ptr<FirFilterBank> loadFirProfile(const std::string &name) {
   if (name == kFirOff)
     return {};
   auto bank = std::make_shared<FirFilterBank>();
-  auto add = [&](const FirImpulse &impulse) {
-    if (bank->filters.contains(impulse.rate))
-      throw std::runtime_error("FIR profile contains duplicate sample rates");
-    const auto &left = impulse.channels[0], &right = impulse.channels[1];
-    bank->filters.emplace(
-        impulse.rate, std::make_shared<FirRoomCorrection>(
-                          impulse.rate, left, right.empty() ? left : right));
-  };
   if (dsp_profiles::validId(name)) {
     const auto profile = dsp_profiles::loadFir(name);
     bank->name = profile.name();
     for (const auto &wav : profile.impulse_wav())
-      add(FirImpulse::decode(wav));
+      bank->add(FirImpulse::decode(wav));
   } else {
     if (!std::ranges::binary_search(firProfiles(), name))
       throw std::runtime_error("Unknown filter impulse WAV");
     bank->name = name;
-    add(FirImpulse::load(dsp_profiles::directory() / "fir" / name));
+    bank->add(FirImpulse::load(dsp_profiles::directory() / "fir" / name));
   }
   return bank;
 }
@@ -224,7 +216,7 @@ std::vector<unsigned>
 installedFirRates(const std::shared_ptr<FirFilterBank> &selected) {
   std::vector<unsigned> rates;
   if (selected)
-    for (const auto &[rate, filter] : selected->filters) rates.push_back(rate);
+    rates = selected->suppliedRates();
   for (const auto &file : firProfiles()) {
     try {
       const auto rate =
@@ -725,9 +717,37 @@ void NativePlayer::RoomCorrectionSection::fillConfig(
   fir->set_path(kFirProfile);
   fir->set_title("FIR Convolution");
   fir->set_supports_fir_import(true);
+  fir->set_matches_fir_rates(true);
+  if (player_->firFilter_) {
+    const unsigned lastRate =
+        player_->liveFir_ ? player_->liveFir_->lastRate() : 0;
+    unsigned rate = lastRate ? lastRate : 48000;
+    if (player_->player_) {
+      const auto info = player_->player_->getState().streamInfo;
+      if (info && info->format.channels == 2 &&
+          !isDsd(info->format.sampleFormat) && info->format.sampleRate &&
+          (!info->decodedFormat || info->decodedFormat->channels == 2))
+        rate = info->format.sampleRate;
+    }
+    const auto plan = player_->firFilter_->at(rate);
+    if (plan && !plan->responseDb[0].empty()) {
+      auto &response = *fir->mutable_fir_response();
+      response.set_sample_rate(rate);
+      response.set_source_rate(plan->sourceRate);
+      response.mutable_left_db()->Assign(plan->responseDb[0].begin(),
+                                         plan->responseDb[0].end());
+      response.mutable_right_db()->Assign(plan->responseDb[1].begin(),
+                                          plan->responseDb[1].end());
+    } else if (!plan) {
+      fir->set_help_details(
+          std::format("The renderer could not prepare this filter for {:g} "
+                      "kHz. Supply a WAV at that rate.",
+                      rate / 1000.));
+    }
+  }
   fir->set_description(
-      "Applies the impulse matching the stereo PCM playback rate, including PCM "
-      "converted from DSD. "
+      "Uses the WAV supplied for the stereo PCM rate, including converted DSD. "
+      "For other rates, converts the closest supplied impulse and reuses it. "
       "Switch between this filter and Off during playback.");
   fir->set_type(renderer_pb::CONFIG_FIELD_TYPE_ENUM);
   fir->set_importance(renderer_pb::CONFIG_IMPORTANCE_SIMPLE);
@@ -743,7 +763,7 @@ void NativePlayer::RoomCorrectionSection::fillConfig(
     option->set_value(player_->settings_.at(kFirProfile));
     option->set_label(player_->firFilter_->name);
     std::string rates;
-    for (const auto &[rate, filter] : player_->firFilter_->filters) {
+    for (const unsigned rate : player_->firFilter_->suppliedRates()) {
       if (!rates.empty())
         rates += ", ";
       rates += std::format("{:g}", rate / 1000.0);
@@ -816,8 +836,9 @@ NativePlayer::~NativePlayer() { stopPumps(); }
 void NativePlayer::setStateSink(StateSink sink) { sink_ = std::move(sink); }
 
 void NativePlayer::updateRoomCorrection() {
-  liveFir_->select(dsp_->bypassed() ? nullptr : firFilter_);
-  player_->setRoomEq(dsp_->current());
+  const auto fir = dsp_->bypassed() ? nullptr : firFilter_;
+  liveFir_->select(fir);
+  player_->setRoomEq(dsp_->current(), fir);
 }
 
 bool NativePlayer::ensurePlayer() {

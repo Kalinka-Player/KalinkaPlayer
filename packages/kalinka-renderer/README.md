@@ -303,19 +303,26 @@ to preserve the gain designed in REW. A mono export applies the same filter to
 both speakers. A stereo export holds the left and right filters in that order.
 
 In **Room EQ → FIR Convolution**, choose **Import impulse WAV**. Select one
-or more filter WAVs and name the preset. Supply one WAV per playback sample
-rate. Kalinka selects the matching impulse automatically. For stereo DSD
-converted to PCM, it uses the conversion output rate and applies FIR before
-PEQ and preamp. With no matching impulse, playback skips FIR. Native DSD and
-DoP pass through unchanged. The Core stores presets and the renderer caches
+or more filter WAVs and name the preset. A single WAV covers multiple playback rates. To use a
+particular design at a given rate, include that WAV in the same import. An exact
+match always wins. For a missing rate the renderer converts the nearest original
+by octave distance, preferring the higher rate in a tie. It caches the last
+three prepared rates in memory for the selected profile. For stereo DSD
+converted to PCM, it matches the conversion output rate and applies FIR before
+PEQ and headroom adjustment. Native DSD and DoP pass through unchanged. The Core stores presets and the renderer caches
 the selected preset for offline playback. In the released app’s schema-based
 settings, the same selector appears under **Room correction → FIR Convolution**.
 Existing WAVs in `/var/lib/kalinka-renderer/dsp/fir/` remain selectable by filename.
 
 The renderer accepts up to 262,144 taps per channel. A preset can hold up to
-eight rates and 32 MiB. Stereo PCM crossfades when the selected filter changes.
+eight rates and 32 MiB. Converted filters can contain up to 4,194,944 taps
+per channel. If conversion exceeds that limit, the signal path asks for a WAV
+at the playback rate. Stereo PCM crossfades when the selected filter changes.
 The live path buffers 640 frames to align filtered and dry audio. The signal
-path shows **FIR room correction** while a matching filter is selected.
+path shows **FIR room correction** and identifies the source rate of a converted filter.
+Room EQ shows the configured FIR magnitude as a dashed line, with separate
+left and right traces for different stereo responses. The graph labels its
+preview rate. Before first PCM playback it uses 48 kHz.
 
 The [176.4 kHz test impulse](../../examples/fir/1kHz-cut-176.4kHz.wav) and
 [192 kHz test impulse](../../examples/fir/1kHz-cut-192kHz.wav) reduce a 1 kHz
@@ -366,13 +373,22 @@ settings and enable **Parametric EQ**. The import returns the profile's SHA-256 
 `dsp.profile` in `PUT /renderer/{renderer_id}/config`. The renderer verifies and
 caches the selected profile and restores it on restart.
 
-Room EQ’s **Bypass DSP** switch bypasses FIR convolution, parametric EQ and preamp gain during playback. Switching it off restores the configured filters and gain. Output volume and the format required by the playback device still apply.
+Room EQ’s **Bypass DSP** switch bypasses FIR convolution, parametric EQ and
+headroom adjustment during playback. Switching it off restores the configured
+filters and gain. Output volume and the format required by the playback device still apply.
 
-Automatic preamp reserves the sum of the individual bands' maximum boosts on the
-channel that needs the most headroom. A pass band with a Q above 0.707 peaks at
-its corner, and that peak counts as a boost. Manual preamp accepts −30 to 0 dB and ramps
-over 25 ms. Room correction runs on PCM, including DSD converted to PCM. Native
-DSD and DoP pass through. If a band's frequency is at or above Nyquist, the
+**Headroom** has its own switch and keeps its selected mode and gain while off.
+Automatic mode reserves headroom for FIR peaks using the sum of the absolute
+impulse coefficients at the playback rate, taking the larger channel bound.
+This can lower the level even for a filter that only cuts frequencies. It also
+reserves the sum of the PEQ bands' maximum boosts on the channel that needs the
+most headroom. A pass band with a Q above 0.707 peaks at
+its corner, and that peak counts as a boost.
+
+In Manual mode, **Gain** accepts −30 to +30 dB in 0.1 dB steps and ramps over
+25 ms. Negative gain leaves more headroom. Positive gain makes the signal
+louder and can clip peaks at the output. Room correction runs on PCM, including
+DSD converted to PCM. Native DSD and DoP pass through. If a band's frequency is at or above Nyquist, the
 renderer skips the curve for that sample rate and logs the reason.
 
 ## Upgrading

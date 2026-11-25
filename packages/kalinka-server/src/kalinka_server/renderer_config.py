@@ -66,9 +66,22 @@ def _range(field) -> Optional[dict]:
 
 
 def _field_to_dict(field) -> dict:
+    fir = {}
+    if field.supports_fir_import:
+        fir["supports_fir_import"] = True
+    if field.matches_fir_rates:
+        fir["matches_fir_rates"] = True
+    if field.HasField("fir_response"):
+        curve = field.fir_response
+        fir["fir_response"] = {
+            "sample_rate": curve.sample_rate,
+            "source_rate": curve.source_rate,
+            "left_db": list(curve.left_db),
+            "right_db": list(curve.right_db),
+        }
     return {
         "path": field.path,
-        **({"supports_fir_import": True} if field.supports_fir_import else {}),
+        **fir,
         "title": field.title,
         "description": field.description,
         "help_details": field.help_details,

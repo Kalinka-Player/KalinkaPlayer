@@ -2,16 +2,14 @@
 #include "DspProfileCache.h"
 #include "SettingsPersistence.h"
 #include <algorithm>
-#include <charconv>
 #include <spdlog/spdlog.h>
 
 namespace renderer_pb = kalinka::renderer::v1;
 namespace {
-const std::map<std::string, std::string> defaults{{"dsp.enabled", "false"},
-                                                  {"dsp.profile", "none"},
-                                                  {"dsp.bypass", "false"},
-                                                  {"dsp.preamp", "auto"},
-                                                  {"dsp.preamp_db", "0"}};
+const std::map<std::string, std::string> defaults{
+    {"dsp.enabled", "false"}, {"dsp.profile", "none"},
+    {"dsp.bypass", "false"},  {"dsp.preamp_enabled", "true"},
+    {"dsp.preamp", "auto"},   {"dsp.preamp_db", "0"}};
 void option(renderer_pb::ConfigField &field, const std::string &id,
             const std::string &label) {
   auto &o = *field.add_options();
@@ -21,13 +19,19 @@ void option(renderer_pb::ConfigField &field, const std::string &id,
 } // namespace
 DspSettings::DspSettings(std::function<void()> changed)
     : values(defaults), changed(std::move(changed)) {
-  for (const auto &[path, value] : loadSettingsOverrides()) {
+  const auto saved = loadSettingsOverrides();
+  for (const auto &[path, value] : saved) {
     if (!values.contains(path))
       continue;
     std::string error;
     if (!set(path, value, error))
       spdlog::warn("Ignoring {}: {}", path, error);
   }
+  // Older renderers ignored the stored manual gain while PEQ was off.
+  if (!saved.contains("dsp.preamp_enabled") &&
+      values.at("dsp.enabled") == "false" &&
+      values.at("dsp.preamp") == "manual")
+    values.at("dsp.preamp_enabled") = "false";
 }
 
 void DspSettings::fillConfig(renderer_pb::ConfigSection &out) const {
@@ -50,7 +54,7 @@ void DspSettings::fillConfig(renderer_pb::ConfigSection &out) const {
     return f;
   };
   field("dsp.enabled", "Parametric EQ", renderer_pb::CONFIG_FIELD_TYPE_BOOL,
-        "Apply the parametric EQ and its preamp to PCM playback.");
+        "Apply the parametric EQ to PCM playback.");
   auto &selected =
       field("dsp.profile", "Room profile", renderer_pb::CONFIG_FIELD_TYPE_ENUM,
             "Select a room correction profile imported by the Core.");
@@ -58,20 +62,26 @@ void DspSettings::fillConfig(renderer_pb::ConfigSection &out) const {
   if (profile)
     option(selected, values.at("dsp.profile"), profile->name);
   field("dsp.bypass", "Bypass", renderer_pb::CONFIG_FIELD_TYPE_BOOL,
-        "Bypass the FIR filter, parametric EQ and preamp together.");
+        "Bypass the FIR filter, parametric EQ and headroom adjustment together.");
+  field("dsp.preamp_enabled", "Headroom",
+        renderer_pb::CONFIG_FIELD_TYPE_BOOL,
+        "Adjust PCM gain, independently of parametric EQ and FIR "
+        "convolution.");
   auto &mode =
-      field("dsp.preamp", "Preamp", renderer_pb::CONFIG_FIELD_TYPE_ENUM,
-            "Automatic reserves headroom for the filters on each channel.");
+      field("dsp.preamp", "Headroom mode", renderer_pb::CONFIG_FIELD_TYPE_ENUM,
+            "Automatic reserves headroom for FIR sample peaks and parametric "
+            "EQ boosts.");
   option(mode, "auto", "Automatic");
   option(mode, "manual", "Manual");
-  auto &db = field("dsp.preamp_db", "Manual preamp",
+  auto &db = field("dsp.preamp_db", "Gain",
                    renderer_pb::CONFIG_FIELD_TYPE_DECIMAL,
-                   "Attenuation applied in manual mode.");
+                   "Manual gain in dB. Negative values leave more headroom. "
+                   "Positive values boost the signal.");
   db.set_unit("dB");
   db.set_widget(renderer_pb::CONFIG_WIDGET_NUMBER);
   auto *range = db.mutable_decimal_range();
   range->set_min(-30);
-  range->set_max(0);
+  range->set_max(30);
   range->set_step(0.1);
 }
 
@@ -108,7 +118,11 @@ bool DspSettings::applyConfig(const std::string &path, const std::string &value,
     return true;
   if (!set(path, value, error))
     return false;
-  updateSettingsOverrides(values, defaults);
+  // Persist an explicit switch even at its default to distinguish it from
+  // a legacy manual gain on the next startup.
+  auto persistenceDefaults = defaults;
+  persistenceDefaults.erase("dsp.preamp_enabled");
+  updateSettingsOverrides(values, persistenceDefaults);
   changed();
   return true;
 }
@@ -116,14 +130,14 @@ bool DspSettings::applyConfig(const std::string &path, const std::string &value,
 bool DspSettings::bypassed() const { return values.at("dsp.bypass") == "true"; }
 
 peq::Settings DspSettings::current() const {
-  if (values.at("dsp.enabled") != "true" || bypassed())
-    return {};
-  peq::Settings settings{profile, std::nullopt};
-  if (values.at("dsp.preamp") == "manual") {
-    const auto &value = values.at("dsp.preamp_db");
-    double db = 0;
-    std::from_chars(value.data(), value.data() + value.size(), db);
-    settings.preampDb = db;
+  peq::Settings settings;
+  if (!bypassed() && values.at("dsp.enabled") == "true")
+    settings.profile = profile;
+  if (bypassed() || values.at("dsp.preamp_enabled") != "true") {
+    settings.preampDb = 0.;
+    return settings;
   }
+  if (values.at("dsp.preamp") == "manual")
+    settings.preampDb = parseConfigDecimal(values.at("dsp.preamp_db"));
   return settings;
 }

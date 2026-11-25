@@ -605,8 +605,9 @@ SignalPath AudioPlayer::signalPath(const StreamInfo &heard) const {
   return path;
 }
 
-void AudioPlayer::setRoomEq(peq::Settings settings) {
-  outputStage->setRoomEq(std::move(settings));
+void AudioPlayer::setRoomEq(peq::Settings settings,
+                            std::shared_ptr<const FirFilterBank> fir) {
+  outputStage->setRoomEq(std::move(settings), std::move(fir));
 }
 
 void AudioPlayer::setDsdGain(const std::string &setting) {
