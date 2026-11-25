@@ -23,14 +23,13 @@ from starlette.staticfiles import StaticFiles
 
 from kalinka_plugin_sdk.datamodel import (
     EntityId,
-    FavoriteIds,
     PlaybackControl,
     PlaybackState,
     PlayerStateEnum,
 )
 from kalinka_plugin_sdk.ext_device import DeviceVolume
 from kalinka_plugin_sdk.ext_device_events import ExtDeviceEventType
-from kalinka_plugin_sdk.inputmodule import InputModule, SearchType
+from kalinka_plugin_sdk.inputmodule import InputModule
 from kalinka_plugin_sdk.events import (
     CurrentRendererChangedEvent,
     ModuleDescriptor,
@@ -89,7 +88,8 @@ from .queue_limit import QUEUE
 from .search_route import register_search_routes
 from .upgrade_route import register_upgrade_routes
 from .suggestions import SuggestionEngine, SuggestionList
-from .merge_utils import get_favorite_ids_merged, k_way_merge_browse_items
+from .favorite_route import register_favorite_routes
+from .merge_utils import k_way_merge_browse_items
 from .dynamic_field_registry import build_dynamic_field_registry
 from .plugin_lifecycle import PluginLifecycle
 from .options_registry import OptionsRegistry, register_plugin_options
@@ -1211,39 +1211,9 @@ async def create_app(
         await device.set_volume(volume)
         return {"message": "Ok"}
 
-    @app.get("/favorite/list/{type}")
-    async def list_favorite(
-        type: SearchType,
-        filter: str = "",
-        sources: Optional[str] = None,
-        offset: int = 0,
-        limit: int = 10,
-    ):
-        """List favorites of a specific type."""
-        input_modules: list[InputModule] = extract_modules(sources)
-
-        return await k_way_merge_browse_items(
-            [partial(module.list_favorite, type, filter) for module in input_modules],
-            compared_value=lambda item: item.timestamp,
-            offset=offset,
-            limit=limit,
-        )
-
-    @app.put("/favorite/add/{id}")
-    async def add_favorite(id: str):
-        await input_module_from_id(id).add_to_favorite(id)
-        return {"message": "Ok"}
-
-    @app.delete("/favorite/remove/{id}")
-    async def remove_favorite(id: str):
-        await input_module_from_id(id).remove_from_favorite(id)
-        return {"message": "Ok"}
-
-    @app.get("/favorite/ids")
-    async def get_favorite_ids(source: Optional[str] = None) -> FavoriteIds:
-        input_modules: list[InputModule] = extract_modules(source)
-
-        return await get_favorite_ids_merged(modules=input_modules)
+    register_favorite_routes(
+        app, extract_modules, input_module_from_id, parse_entity_id
+    )
 
     @app.get("/get/{entity_id}")
     async def entity_get(entity_id: str):

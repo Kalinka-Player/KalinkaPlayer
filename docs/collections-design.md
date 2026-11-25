@@ -41,7 +41,7 @@ Which registry a route uses is now a statement about what the route needs:
 | `GET /search/matches` | `GET /content/*` |
 | `GET /playlist/list` | queue track resolution |
 
-Asking a suggestion or favourites endpoint for a browse-only source is an empty answer, not a 404: the source exists, that plane does not. A name nobody knows is still a 404.
+Asking a suggestion or favourites endpoint for a browse-only source is an empty answer, not a 404: the source exists, that plane does not. A name nobody knows is still a 404. An input module that keeps no favourites is read the same way: it lists no `favorites` capability, so a favourites read skips it, and a change to one of its items is refused with 409 rather than accepted and dropped.
 
 `GET /server/modules` lists built-ins alongside plugins with `"builtin": true`, no config and no packages, so a client can search and browse them and skip the planes they lack.
 

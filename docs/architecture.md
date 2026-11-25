@@ -38,7 +38,7 @@ The server exposes a REST API (FastAPI) plus WebSocket channels for live state. 
 | Queue     | `GET /queue/{list,state,control}`, `POST /queue/{add,replace}`, `PUT /queue/{play,pause,next,prev,stop}`, `PUT /queue/current_track/seek`, `PUT /queue/{mode,clear,move}`, `POST /queue/remove` |
 | Browse    | `GET /browse`, `GET /browse/{id}`, `GET /get/{entity_id}`, `GET /genre/list` |
 | Search    | `GET /search/{search_type}/{query}` (fuzzy), `GET /ai_search?query=...` (semantic) |
-| Library   | `GET /favorite/list/{type}`, `PUT /favorite/add/{id}`, playlists (`/playlist/{create,update,delete,list,add_tracks,remove_tracks}`) |
+| Library   | `GET /favorite/ids`, `GET /favorite/list/{type}`, `PUT /favorite/add/{id}`, `DELETE /favorite/remove/{id}` (favourites, asked only of a source that lists `favorites`), playlists (`/playlist/{create,update,delete,list,add_tracks,remove_tracks}`) |
 | Devices   | `GET /device/list`, `GET/PUT /device/{get,set}_volume` |
 | Server    | `GET /server/{config,config/schema,version,modules,optional_packages}`, `PUT /server/{config,restart}`, `GET /indexer/status`, `POST /indexer/rescan`, `GET /resource/{file}` |
 | Storage   | `GET /server/storage/volumes`, `POST /server/storage/volumes/{id}/{eject,mount}`, `GET /server/storage/folders?path=`, `GET /server/storage/location?entity_id=`, `POST /server/storage/{adopt,release}` (API 0.21); `GET /server/storage/devices`, `POST /server/storage/devices/{id}/{mount,unmount}`, `PUT`/`DELETE /server/storage/devices/{id}`, `POST /server/storage/shares/probe`, `POST /server/storage/shares` (API 0.22) |
