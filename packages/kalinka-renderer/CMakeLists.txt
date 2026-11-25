@@ -215,6 +215,22 @@ target_link_libraries(kalinka_native_player PRIVATE kalinka_pffft PUBLIC
   Threads::Threads
   hwy::hwy
 )
+# ARMv6 has no 64-bit exclusive load, so its 64-bit atomics are libatomic calls.
+include(CheckCXXSourceCompiles)
+check_cxx_source_compiles([=[
+#include <atomic>
+#include <cstdint>
+std::atomic<std::uint64_t> count;
+std::atomic<double> gain;
+int main() {
+  count.fetch_add(1);
+  gain.store(gain.load() * 2);
+  return static_cast<int>(count.load());
+}
+]=] KALINKA_ATOMICS_INLINE)
+if(NOT KALINKA_ATOMICS_INLINE)
+  target_link_libraries(kalinka_native_player PUBLIC atomic)
+endif()
 
 # --- kalinka_renderer_core: everything that decides --------------------------
 # The session, config, upgrade, capability and protocol planes — no live
@@ -440,6 +456,7 @@ if(GTest_FOUND)
     tests/native_player/WavContainer_test.cpp
     tests/native_player/integration_test.cpp
     tests/native_player/dsp/RoomEq_test.cpp
+    tests/native_player/dsp/FlushFilterTails_test.cpp
     tests/native_player/dsp/DspStage_test.cpp
     tests/native_player/dsp/DspStageConversion_test.cpp
     tests/native_player/dsp/dsd/ByteHistory_test.cpp

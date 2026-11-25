@@ -1,5 +1,5 @@
+// No MINIMP3_ONLY_SIMD: minimp3 sets it where SIMD is certain; a Pi 1 has none.
 #define MINIMP3_IMPLEMENTATION
-#define MINIMP3_ONLY_SIMD
 
 #include "Mp3StreamDecoder.h"
 
