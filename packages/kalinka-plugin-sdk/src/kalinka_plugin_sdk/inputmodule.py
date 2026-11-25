@@ -215,12 +215,18 @@ class ModuleCapability(str, Enum):
         CONTINUATION: SDK 3.24. :meth:`InputModule.continue_queue` proposes
             tracks that carry on from the module's queued ones, for the
             server's Keep playing and for a listener's "more like this".
+        FAVORITES: SDK 3.24. :meth:`InputModule.add_to_favorite`,
+            :meth:`InputModule.remove_from_favorite` and
+            :meth:`InputModule.get_favorite_ids` keep the listener's favourites,
+            so a client may offer to mark the module's tracks. Every module
+            answers those calls; one without it keeps nothing they are given.
     """
 
     AI_SEARCH = "ai_search"
     CATALOGS = "catalogs"
     RANKED_SEARCH = "ranked_search"
     CONTINUATION = "continuation"
+    FAVORITES = "favorites"
 
 
 class ContinuationRequest(BaseModel):

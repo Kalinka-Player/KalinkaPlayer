@@ -350,7 +350,8 @@ def get_version() -> str:
 # /queue/dislike turns the playing track down until the queue is cleared or
 # replaced — Keep playing and /queue/similar steer away from it — and skips
 # it; 409 when nothing plays. GET /server/version carries `queue`
-# {keep_playing, similar, dislike}.
+# {keep_playing, similar, dislike}. /server/modules lists `favorites` for a
+# source that keeps what /favorite/add and /favorite/remove are given.
 REST_API_VERSION = "0.27"
 
 
