@@ -12,7 +12,7 @@ from kalinka_plugin_sdk.filters import FilterQuery, UnsupportedFilter
 from kalinka_plugin_localfiles.config_model import LocalFilesConfig
 from kalinka_plugin_localfiles.db_schema import init_db
 from kalinka_plugin_localfiles.input_module_db import ListingFilter, LocalFilesInputModuleDb
-from kalinka_plugin_localfiles.searcher.query_terms import decades_in, year_spans
+from kalinka_plugin_localfiles.searcher.query_terms import decades_in
 
 
 @pytest.mark.parametrize(
@@ -36,10 +36,6 @@ from kalinka_plugin_localfiles.searcher.query_terms import decades_in, year_span
 )
 def test_a_query_names_its_decades(query, decades):
     assert decades_in(query) == decades
-
-
-def test_a_decade_spans_ten_years():
-    assert year_spans([1970, 2000]) == [(1970, 1979), (2000, 2009)]
 
 
 def _seed(path):

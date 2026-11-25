@@ -10,17 +10,19 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Optional, Sequence
 
 from ..config_model import LocalFilesConfig
 from ..db_connection import LibraryConnection, LibraryDb
-from ..utils.years import album_year_sql
 from ..worker_utils import retry_db_locked
+from .context_filter import TRACK_FACTS, TRACK_LANGUAGE, Facet, TrackContext
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
 #: Ids bound per statement, well inside SQLite's variable limit.
 _BATCH = 500
+#: The most nearest neighbours sqlite-vec answers in one query.
+KNN_MAX = 4096
 
 
 @dataclass(frozen=True)
@@ -275,35 +277,54 @@ class AsyncSearcherDb(LibraryDb):
             logger.warning("Listing recently added albums failed: %s", e)
             return []
 
-    async def knows_release_years(self) -> bool:
-        """Whether any album carries a plausible year, so a decade can be told."""
+    async def facets_known(self, facets: Sequence[Facet]) -> list[Facet]:
+        """Those of ``facets`` the library can tell: some track carries what each reads."""
+        known: list[Facet] = []
         try:
             async with self._open() as conn:
-                cursor = await conn.execute(
-                    f"SELECT 1 FROM albums a WHERE {album_year_sql('a')} IS NOT NULL LIMIT 1"
-                )
-                return await cursor.fetchone() is not None
+                for facet in facets:
+                    cursor = await conn.execute(
+                        f"SELECT 1 FROM {TRACK_FACTS} WHERE {facet.known()} LIMIT 1"
+                    )
+                    if await cursor.fetchone() is not None:
+                        known.append(facet)
         except Exception as e:
-            logger.warning("Checking for album years failed: %s", e)
-            return False
-
-    async def tracks_from_years(self, spans: Sequence[tuple[int, int]]) -> list[str]:
-        """Tracks whose album first came out within any of ``spans`` (first
-        and last year, both included)."""
-        if not spans:
+            logger.warning("Checking what the library can tell failed: %s", e)
             return []
-        year = album_year_sql("a")
-        clause = " OR ".join(f"{year} BETWEEN ? AND ?" for _ in spans)
-        params = [y for span in spans for y in span]
+        return known
+
+    async def tracks_matching(self, facets: Sequence[Facet]) -> Optional[list[str]]:
+        """Tracks every one of ``facets`` matches; None when the library could not be read."""
+        clauses, params = [], []
+        for facet in facets:
+            clause, values = facet.matches()
+            clauses.append(f"({clause})")
+            params.extend(values)
         try:
             async with self._open() as conn:
                 cursor = await conn.execute(
-                    "SELECT t.id FROM tracks t JOIN albums a ON a.id = t.album_id"
-                    f" WHERE {clause}",
-                    params,
+                    f"SELECT t.id FROM {TRACK_FACTS} WHERE {' AND '.join(clauses)}", params
                 )
                 rows = await cursor.fetchall()
             return [row[0] for row in rows]
         except Exception as e:
-            logger.warning("Listing tracks by year failed: %s", e)
-            return []
+            logger.warning("Listing tracks by facet failed: %s", e)
+            return None
+
+    async def track_contexts(self, track_ids: Sequence[str]) -> dict[str, TrackContext]:
+        """What a queue's rules read of each of ``track_ids`` the library holds."""
+        select = f"SELECT t.id, {TRACK_LANGUAGE}, a.genre, a.title, t.title FROM {TRACK_FACTS}"
+        rows: list = []
+        wanted = list(dict.fromkeys(track_ids))
+        try:
+            async with self._open() as conn:
+                for start in range(0, len(wanted), _BATCH):
+                    chunk = wanted[start : start + _BATCH]
+                    cursor = await conn.execute(
+                        f"{select} WHERE t.id IN ({','.join('?' * len(chunk))})", chunk
+                    )
+                    rows.extend(await cursor.fetchall())
+        except Exception as e:
+            logger.warning("Reading track contexts failed: %s", e)
+            return {}
+        return {row[0]: TrackContext.read(*row[1:]) for row in rows}

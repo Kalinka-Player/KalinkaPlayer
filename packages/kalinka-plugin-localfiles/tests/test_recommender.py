@@ -12,6 +12,7 @@ from kalinka_plugin_localfiles.config_model import LocalFilesConfig
 from kalinka_plugin_localfiles.db_schema import init_db
 from kalinka_plugin_localfiles.embedder.embedder_db import AsyncEmbedderDb
 from kalinka_plugin_localfiles.embedding_utils import encode_embedding, normalise
+from kalinka_plugin_localfiles.searcher import recommender as recommender_mod
 from kalinka_plugin_localfiles.searcher.recommender import Recommender, pick, taste
 from kalinka_plugin_localfiles.searcher.searcher_db import AsyncSearcherDb
 
@@ -282,3 +283,129 @@ async def test_without_enough_history_the_newest_albums_stand_in_for_a_taste(db_
     recommender = await _library(db_path, tracks, albums, arrivals=arrivals)
 
     assert await recommender.albums_for_you(2) == ["old_ambient", "punk"]
+
+
+def _describe(path, **albums):
+    """Set album columns: ``album_id={"language": "eng", "genre": ...}``."""
+    with sqlite3.connect(path) as conn:
+        for album_id, columns in albums.items():
+            for column, value in columns.items():
+                conn.execute(f"UPDATE albums SET {column} = ? WHERE id = ?", (value, album_id))
+
+
+@pytest.mark.asyncio
+async def test_a_queue_keeps_to_its_seeds_language_however_alike_another_sounds(db_path):
+    pop = _direction(80)
+    tracks = {
+        "seed": ("al-en", pop),
+        "russian_close": ("al-ru", _near(pop, 1, 0.1)),
+        "unknown_mid": ("al-x", _near(pop, 2, 0.3)),
+        "english_far": ("al-en", _near(pop, 3, 0.6)),
+    }
+    recommender = await _library(db_path, tracks, {"al-en": pop, "al-ru": pop, "al-x": pop})
+    _describe(db_path, **{"al-en": {"language": "eng"}, "al-ru": {"language": "rus"}})
+
+    assert await recommender.next_tracks(["seed"], [], [], 2) == ["unknown_mid", "english_far"]
+
+
+@pytest.mark.asyncio
+async def test_holiday_music_carries_on_only_from_holiday_music(db_path):
+    swing = _direction(90)
+    tracks = {
+        "seed": ("al-swing", swing),
+        "carol": ("al-xmas", _near(swing, 1, 0.1)),
+        "song": ("al-swing", _near(swing, 2, 0.5)),
+        "holiday_seed": ("al-xmas", _near(swing, 3, 0.1)),
+    }
+    recommender = await _library(db_path, tracks, {"al-swing": swing, "al-xmas": swing})
+    _describe(db_path, **{"al-xmas": {"genre": "Christmas"}})
+
+    assert await recommender.next_tracks(["seed"], [], ["holiday_seed"], 1) == ["song"]
+    assert await recommender.next_tracks(["holiday_seed"], [], ["seed"], 1) == ["carol"]
+
+
+@pytest.mark.asyncio
+async def test_a_queue_looks_further_out_for_a_track_that_fits(db_path, monkeypatch):
+    monkeypatch.setattr(recommender_mod, "TRACK_CANDIDATES", 1)
+    monkeypatch.setattr(recommender_mod, "MIN_FITTING", 1)
+    pop = _direction(100)
+    tracks = {
+        "seed": ("al-en", pop),
+        "russian_1": ("al-ru", _near(pop, 1, 0.1)),
+        "russian_2": ("al-ru", _near(pop, 2, 0.15)),
+        "english": ("al-en", _near(pop, 3, 0.7)),
+    }
+    recommender = await _library(db_path, tracks, {"al-en": pop, "al-ru": pop})
+    _describe(db_path, **{"al-en": {"language": "eng"}, "al-ru": {"language": "rus"}})
+    asked = []
+    knn = recommender.db.knn_search_audio
+
+    async def counting_knn(blob, limit):
+        asked.append(limit)
+        return await knn(blob, limit)
+
+    monkeypatch.setattr(recommender.db, "knn_search_audio", counting_knn)
+
+    assert await recommender.next_tracks(["seed"], [], [], 1) == ["english"]
+    assert asked == [2, 8]
+
+
+@pytest.mark.asyncio
+async def test_a_queue_with_nothing_that_fits_carries_on_with_the_nearest(db_path):
+    pop = _direction(110)
+    tracks = {
+        "seed": ("al-en", pop),
+        "russian_close": ("al-ru", _near(pop, 1, 0.1)),
+        "russian_far": ("al-ru", _near(pop, 2, 0.6)),
+    }
+    recommender = await _library(db_path, tracks, {"al-en": pop, "al-ru": pop})
+    _describe(db_path, **{"al-en": {"language": "eng"}, "al-ru": {"language": "rus"}})
+
+    assert await recommender.next_tracks(["seed"], [], [], 1) == ["russian_close"]
+
+
+@pytest.mark.asyncio
+async def test_a_long_queue_never_asks_the_index_for_more_than_it_answers(db_path, monkeypatch):
+    monkeypatch.setattr(recommender_mod, "KNN_MAX", 3)
+    pop = _direction(120)
+    tracks = {"seed": ("al", pop), "next": ("al", _near(pop, 1, 0.2))}
+    recommender = await _library(db_path, tracks, {"al": pop})
+    asked = []
+    knn = recommender.db.knn_search_audio
+
+    async def counting_knn(blob, limit):
+        asked.append(limit)
+        return await knn(blob, limit)
+
+    monkeypatch.setattr(recommender.db, "knn_search_audio", counting_knn)
+    queued = [f"queued-{n}" for n in range(5000)]
+
+    assert await recommender.next_tracks(["seed"], [], queued, 1) == ["next"]
+    assert asked == [3]
+
+
+@pytest.mark.asyncio
+async def test_a_wider_search_still_ranks_no_more_than_the_usual_candidates(db_path, monkeypatch):
+    monkeypatch.setattr(recommender_mod, "TRACK_CANDIDATES", 1)
+    monkeypatch.setattr(recommender_mod, "MIN_FITTING", 2)
+    pop = _direction(130)
+    tracks = {
+        "seed": ("al-en", pop),
+        "russian": ("al-ru", _near(pop, 1, 0.05)),
+        "english_1": ("al-en", _near(pop, 2, 0.2)),
+        "english_2": ("al-en", _near(pop, 3, 0.4)),
+        "english_3": ("al-en", _near(pop, 4, 0.6)),
+    }
+    recommender = await _library(db_path, tracks, {"al-en": pop, "al-ru": pop})
+    _describe(db_path, **{"al-en": {"language": "eng"}, "al-ru": {"language": "rus"}})
+    ranked = []
+    vectors = recommender.db.get_track_vectors
+
+    async def spying_vectors(ids):
+        ranked.append(list(ids))
+        return await vectors(ids)
+
+    monkeypatch.setattr(recommender.db, "get_track_vectors", spying_vectors)
+
+    assert await recommender.next_tracks(["seed"], [], [], 1) == ["english_1"]
+    assert ranked[-1] == ["english_1"]
