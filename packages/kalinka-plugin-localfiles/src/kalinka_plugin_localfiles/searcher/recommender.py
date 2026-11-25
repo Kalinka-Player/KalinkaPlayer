@@ -4,7 +4,8 @@ Both follow one recipe. A taste vector is the recency-weighted direction of
 what the listener chose (Rocchio's positive centroid); each candidate scores
 its likeness to it, minus its likeness to the nearest thing the listener
 turned down; picks are then spread out by maximal marginal relevance, so one
-album cannot fill every slot.
+album cannot fill every slot. What carries a queue on must also fit the seeds'
+context (see :func:`.context_filter.seed_rules`), however alike it sounds.
 
 numpy is imported on call: the searcher installs it on demand before asking.
 """
@@ -14,7 +15,8 @@ from __future__ import annotations
 from typing import Mapping, Sequence
 
 from ..embedding_utils import decode_embedding, encode_embedding
-from .searcher_db import AsyncSearcherDb
+from .context_filter import Constraint, TrackContext, admitted, seed_rules
+from .searcher_db import KNN_MAX, AsyncSearcherDb
 
 #: How much a candidate's likeness to its nearest turned-down track counts against it.
 AVOID_WEIGHT = 0.5
@@ -30,6 +32,9 @@ SEED_DECAY = 0.5
 HISTORY_DECAY = 0.98
 #: Nearest tracks considered before ranking.
 TRACK_CANDIDATES = 200
+#: Fewest tracks fitting the seeds' context worth ranking before looking
+#: further out than :data:`TRACK_CANDIDATES`.
+MIN_FITTING = 50
 #: Distinct heard-out tracks needed before albums come from the history.
 MIN_HEARD_OUT = 5
 #: Plays read from the history.
@@ -117,12 +122,32 @@ class Recommender:
             return []
         query = taste(heard, SEED_DECAY)
         turned_down = [decode_embedding(blobs[a]) for a in avoid if a in blobs]
-        skip = {*seeds, *avoid, *exclude}
-        hits = await self.db.knn_search_audio(encode_embedding(query), TRACK_CANDIDATES + len(skip))
-        wanted = [h["track_id"] for h in hits if h["track_id"] not in skip]
+        rules = seed_rules((await self.db.track_contexts(seeds)).values())
+        wanted = await self._fitting_neighbours(query, {*seeds, *avoid, *exclude}, rules)
         found = await self.db.get_track_vectors(wanted)
         candidates = {t: decode_embedding(found[t]) for t in wanted if t in found}
         return pick(query, candidates, turned_down, count)
+
+    async def _fitting_neighbours(
+        self, query, skip: set[str], rules: Sequence[Constraint]
+    ) -> list[str]:
+        """The tracks nearest ``query`` that ``rules`` admit, none of ``skip``.
+
+        Looks further out while fewer than :data:`MIN_FITTING` fit, and
+        answers at most :data:`TRACK_CANDIDATES`. When none fits at all, the
+        nearest tracks are offered as they are: a queue that carries on with
+        the wrong kind of track beats one that stops.
+        """
+        blob = encode_embedding(query)
+        limit = min(TRACK_CANDIDATES + len(skip), KNN_MAX)
+        while True:
+            hits = await self.db.knn_search_audio(blob, limit)
+            near = [h["track_id"] for h in hits if h["track_id"] not in skip]
+            known = await self.db.track_contexts(near)
+            fitting = admitted({t: known.get(t, TrackContext()) for t in near}, rules)
+            if len(fitting) >= MIN_FITTING or len(hits) < limit or limit >= KNN_MAX:
+                return (fitting or near)[:TRACK_CANDIDATES]
+            limit = min(limit * 4, KNN_MAX)
 
     async def albums_for_you(self, count: int) -> list[str]:
         """Albums near what the listener plays out and away from what they

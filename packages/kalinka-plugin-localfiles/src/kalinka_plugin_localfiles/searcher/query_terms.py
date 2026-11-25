@@ -1,13 +1,16 @@
 """Parts of a search query that name metadata rather than sound.
 
-CLAP hears what music sounds like, not when it was released, so a decade in
-the query ("70s prog rock") is read here and applied as a filter on the
-album's year, while the whole query still goes to CLAP.
+CLAP hears what music sounds like, not when it was released or where it comes
+from, so a decade ("70s prog rock") or an origin ("italian pop") in the query
+is read here and applied as a filter on the library's metadata, while the
+whole query still goes to CLAP.
 """
 
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from typing import Optional
 
 _WORDS = {
     "twenties": 1920,
@@ -51,6 +54,90 @@ def decades_in(query: str) -> list[int]:
     return list(dict.fromkeys(decade for _, decade in sorted(found)))
 
 
-def year_spans(decades: list[int]) -> list[tuple[int, int]]:
-    """Each decade as (first year, last year)."""
-    return [(decade, decade + 9) for decade in decades]
+@dataclass(frozen=True)
+class Origin:
+    """Where music comes from, as a query names it: the language it is sung
+    in, as an ISO 639-3 code, and the countries its artists come from, as
+    ISO 3166-1 alpha-2 codes. Either may be missing: "american" names no
+    language, "arabic" no country."""
+
+    language: Optional[str]
+    countries: frozenset[str]
+
+
+def _origin(language: Optional[str], *countries: str) -> Origin:
+    return Origin(language, frozenset(countries))
+
+
+_ORIGINS = {
+    "american": _origin(None, "US"),
+    "arabic": _origin("ara"),
+    "argentine": _origin(None, "AR"),
+    "argentinian": _origin(None, "AR"),
+    "australian": _origin(None, "AU"),
+    "austrian": _origin(None, "AT"),
+    "belgian": _origin(None, "BE"),
+    "brazilian": _origin(None, "BR"),
+    "british": _origin(None, "GB"),
+    "canadian": _origin(None, "CA"),
+    "chinese": _origin("zho", "CN"),
+    "cuban": _origin(None, "CU"),
+    "czech": _origin("ces", "CZ"),
+    "danish": _origin("dan", "DK"),
+    "dutch": _origin("nld", "NL"),
+    "english": _origin("eng", "GB"),
+    "finnish": _origin("fin", "FI"),
+    "french": _origin("fra", "FR"),
+    "german": _origin("deu", "DE"),
+    "greek": _origin("ell", "GR"),
+    "hebrew": _origin("heb"),
+    "hungarian": _origin("hun", "HU"),
+    "icelandic": _origin("isl", "IS"),
+    "indian": _origin(None, "IN"),
+    "irish": _origin("gle", "IE"),
+    "israeli": _origin(None, "IL"),
+    "italian": _origin("ita", "IT"),
+    "italo": _origin("ita", "IT"),
+    "jamaican": _origin(None, "JM"),
+    "japanese": _origin("jpn", "JP"),
+    "korean": _origin("kor", "KR"),
+    "mexican": _origin(None, "MX"),
+    "nigerian": _origin(None, "NG"),
+    "norwegian": _origin("nor", "NO"),
+    "polish": _origin("pol", "PL"),
+    "portuguese": _origin("por", "PT"),
+    "russian": _origin("rus", "RU"),
+    "soviet": _origin(None, "SU"),
+    "spanish": _origin("spa", "ES"),
+    "swedish": _origin("swe", "SE"),
+    "swiss": _origin(None, "CH"),
+    "turkish": _origin("tur", "TR"),
+    "ukrainian": _origin("ukr", "UA"),
+}
+
+_ORIGIN_RE = re.compile(r"\b(" + "|".join(_ORIGINS) + r")\b", re.IGNORECASE)
+# Names of a wider region or a people that contain an origin's word but not its country.
+_NOT_AN_ORIGIN = re.compile(
+    r"\b(?:(?:latin|south|central|north|african|afro|pan)[\s-]+american|west[\s-]+indian)\b",
+    re.IGNORECASE,
+)
+# "french horn" is an instrument and "italian concerto" a work, not where the music is from.
+_NOT_AN_ORIGIN_BEFORE = re.compile(
+    r"\s+(?:horns?|guitars?|suites?|concert(?:o|os|i)|dances?|march(?:es)?|rhapsod(?:y|ies)"
+    r"|requiem|symphon(?:y|ies)|overtures?|serenades?|sonatas?|capriccio|caprice)\b",
+    re.IGNORECASE,
+)
+
+
+def origins_in(query: str) -> list[Origin]:
+    """The origins ``query`` names, in the order named.
+
+    @return Empty when the query names none.
+    """
+    query = _NOT_AN_ORIGIN.sub(" ", query)
+    found = [
+        _ORIGINS[match.group(1).lower()]
+        for match in _ORIGIN_RE.finditer(query)
+        if not _NOT_AN_ORIGIN_BEFORE.match(query, match.end())
+    ]
+    return list(dict.fromkeys(found))

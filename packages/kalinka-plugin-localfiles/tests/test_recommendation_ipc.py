@@ -1,5 +1,6 @@
 """The library's recommendations as the server and the app reach them: queue
-continuation, albums you may like, and searches that name a decade."""
+continuation, albums you may like, and searches that name a decade or an
+origin."""
 
 import asyncio
 import os
@@ -15,6 +16,7 @@ from kalinka_plugin_sdk.inputmodule import ContinuationRequest
 
 from kalinka_plugin_localfiles.config_model import LocalFilesConfig
 from kalinka_plugin_localfiles.db_schema import init_db
+from kalinka_plugin_localfiles.embedder.embedder_db import AsyncEmbedderDb
 from kalinka_plugin_localfiles.embedding_utils import encode_embedding, normalise
 from kalinka_plugin_localfiles.input_module_db import LocalFilesInputModuleDb
 from kalinka_plugin_localfiles.searcher import searcher as searcher_mod
@@ -164,3 +166,122 @@ async def test_a_library_that_knows_no_years_does_not_filter_by_decade(config, m
 
     assert asked_within == [None]
     assert "al-90s-0" in found["tracks"]
+
+
+@pytest.mark.asyncio
+async def test_a_search_naming_an_origin_keeps_to_tracks_sung_there_or_by_its_artists(config, monkeypatch):
+    with sqlite3.connect(config.db_path) as conn:
+        conn.execute("UPDATE albums SET language = 'ita' WHERE id = 'al-70s'")
+        conn.execute("UPDATE albums SET language = 'English' WHERE id = 'al-90s'")
+    worker = _worker(config)
+
+    async def nineties_like(_query):
+        return encode_embedding(_direction(2))
+
+    monkeypatch.setattr(worker, "_encode_query_blob", nineties_like)
+
+    assert set((await worker._do_search("italian rock", 10))["tracks"]) == {"al-70s-0", "al-70s-1"}
+    assert await worker._do_search("japanese rock", 10) == {"tracks": []}
+
+    with sqlite3.connect(config.db_path) as conn:
+        conn.execute("UPDATE artists SET country = 'it' WHERE id = 'ar'")
+
+    assert len((await worker._do_search("italian rock", 10))["tracks"]) == 4
+    assert set((await worker._do_search("italian 90s", 10))["tracks"]) == {"al-90s-0", "al-90s-1"}
+
+
+@pytest.mark.asyncio
+async def test_a_library_that_knows_no_language_or_country_does_not_filter_by_origin(config, monkeypatch):
+    worker = _worker(config)
+
+    async def nineties_like(_query):
+        return encode_embedding(_direction(2))
+
+    asked_within = []
+
+    async def knn_leg(_query, _limit, _blob=None, within=None):
+        asked_within.append(within)
+        return [{"track_id": "al-90s-0", "distance": 0.1}]
+
+    monkeypatch.setattr(worker, "_encode_query_blob", nineties_like)
+    monkeypatch.setattr(worker, "_knn_leg", knn_leg)
+
+    await worker._do_search("italian rock", 10)
+    await worker._do_search("italian 70s rock", 10)
+
+    assert asked_within == [None, {"al-70s-0", "al-70s-1"}]
+
+
+async def _indexed_worker(config):
+    """A worker over the fixture library with its vectors in the KNN index."""
+    pytest.importorskip("sqlite_vec")
+    with sqlite3.connect(config.db_path) as conn:
+        vectors = conn.execute("SELECT id, embedding_clap_audio FROM tracks").fetchall()
+    embedder_db = AsyncEmbedderDb(config)
+    await embedder_db._check_vec_available()
+    for track_id, blob in vectors:
+        await embedder_db.complete_clap_job(0, track_id, blob, version=4)
+    config.ai_search.knn_candidate_limit = 2
+    worker = _worker(config)
+    await worker.db._check_vec_available()
+    return worker
+
+
+@pytest.mark.asyncio
+async def test_a_facet_matching_more_than_the_index_answers_takes_the_indexs_nearest(config, monkeypatch):
+    worker = await _indexed_worker(config)
+    monkeypatch.setattr(searcher_mod, "KNN_MAX", 3)
+    asked = []
+    knn = worker.db.knn_search_audio
+
+    async def counting_knn(blob, limit):
+        asked.append(limit)
+        return await knn(blob, limit)
+
+    async def nineties_like(_query):
+        return encode_embedding(_direction(2))
+
+    monkeypatch.setattr(worker.db, "knn_search_audio", counting_knn)
+    monkeypatch.setattr(worker, "_encode_query_blob", nineties_like)
+
+    found = (await worker._do_search("70s and 90s rock", 10))["tracks"]
+
+    assert asked == [3]
+    assert set(found) == {"al-90s-0", "al-90s-1"}
+
+
+@pytest.mark.asyncio
+async def test_a_facet_too_few_of_the_indexs_nearest_match_is_ranked_exactly(config, monkeypatch):
+    worker = await _indexed_worker(config)
+    monkeypatch.setattr(searcher_mod, "KNN_MAX", 1)
+
+    async def nineties_like(_query):
+        return encode_embedding(_direction(2))
+
+    monkeypatch.setattr(worker, "_encode_query_blob", nineties_like)
+
+    assert set((await worker._do_search("70s rock", 10))["tracks"]) == {"al-70s-0", "al-70s-1"}
+
+
+@pytest.mark.asyncio
+async def test_a_search_whose_facets_cannot_be_read_is_not_filtered(config, monkeypatch):
+    worker = _worker(config)
+
+    async def nineties_like(_query):
+        return encode_embedding(_direction(2))
+
+    async def unreadable(_facets):
+        return None
+
+    asked_within = []
+
+    async def knn_leg(_query, _limit, _blob=None, within=None):
+        asked_within.append(within)
+        return [{"track_id": "al-90s-0", "distance": 0.1}]
+
+    monkeypatch.setattr(worker, "_encode_query_blob", nineties_like)
+    monkeypatch.setattr(worker.db, "tracks_matching", unreadable)
+    monkeypatch.setattr(worker, "_knn_leg", knn_leg)
+
+    assert (await worker._do_search("70s rock", 10))["tracks"] == ["al-90s-0"]
+    assert asked_within == [None]

@@ -31,9 +31,9 @@ from ..embedding_utils import decode_embedding
 from ..ipc import RequestChannel, reply
 from ..pip_utils import ensure_package
 from ..worker_utils import configure_worker_logging, set_proc_title
-from .query_terms import decades_in, year_spans
+from .context_filter import facets_of
 from .recommender import Recommender
-from .searcher_db import AsyncSearcherDb
+from .searcher_db import KNN_MAX, AsyncSearcherDb
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
@@ -245,10 +245,10 @@ class SearchWorker:
         that hides these suggestions for a name query now live in the server,
         which assembles them across all sources from ``search()``.
 
-        A decade the query names ("70s rock") keeps both legs to tracks whose
-        album first came out then; a query naming a decade the library has
-        nothing from finds nothing. A library that knows no album's year
-        cannot tell a decade, so there the decade is not applied.
+        A decade or an origin the query names ("70s rock", "italian pop")
+        keeps both legs to tracks from then or from there; a query naming one
+        the library has nothing from finds nothing. See :meth:`_within` for a
+        library that cannot tell.
         """
         cfg = self.config.ai_search
 
@@ -256,13 +256,9 @@ class SearchWorker:
         # KNN leg and the mood NN fallback so we don't double the IPC round-trip.
         query_blob = await self._encode_query_blob(query)
 
-        decades = decades_in(query)
-        if decades and not await self.db.knows_release_years():
-            logger.info("_do_search: no album years to tell %s by", decades)
-            decades = []
-        within = set(await self.db.tracks_from_years(year_spans(decades))) if decades else None
+        within = await self._within(query)
         if within is not None and not within:
-            logger.info("_do_search: no tracks from %s", decades)
+            logger.info("_do_search: no track fits the facets of %r", query)
             return {"tracks": []}
 
         knn_hits = await self._knn_leg(query, cfg.knn_candidate_limit, query_blob, within)
@@ -322,6 +318,24 @@ class SearchWorker:
         scored.sort(key=lambda st: -st[0])
         return {"tracks": [tid for _, tid in scored[:limit]]}
 
+    async def _within(self, query: str) -> Optional[set[str]]:
+        """The tracks the decades and origins ``query`` names keep it to.
+
+        @return None when it names none, or none the library can tell: a
+            library that knows no album's year cannot tell a decade, nor one
+            that knows no track's language or artist's country an origin.
+        """
+        facets = facets_of(query)
+        if not facets:
+            return None
+        told = await self.db.facets_known(facets)
+        if len(told) < len(facets):
+            logger.info("_do_search: the library cannot tell %s", [f for f in facets if f not in told])
+        if not told:
+            return None
+        matching = await self.db.tracks_matching(told)
+        return None if matching is None else set(matching)
+
     async def _knn_leg(
         self,
         query: str,
@@ -334,13 +348,12 @@ class SearchWorker:
         KNN-searches the audio index with the precomputed query ``blob`` (CLAP's
         text→audio is the canonical retrieval direction). ``blob`` is encoded
         once by the caller and shared with the mood fallback; None → empty leg.
-        With ``within``, only those tracks are ranked, exactly rather than
-        through the index, so a narrow selection still fills the leg.
+        With ``within``, only those tracks are ranked (see :meth:`_nearest_within`).
         """
         if blob is None:
             return []
         if within is not None:
-            return await self._ranked_within(blob, candidate_limit, within)
+            return await self._nearest_within(blob, candidate_limit, within)
         if not self.db._vec_available:
             return []
         t0 = time.monotonic()
@@ -349,6 +362,20 @@ class SearchWorker:
             "KNN audio search: %d results in %.3fs", len(results), time.monotonic() - t0
         )
         return results
+
+    async def _nearest_within(self, blob: bytes, limit: int, within: set[str]) -> list[dict]:
+        """The ``limit`` tracks of ``within`` nearest ``blob``.
+
+        Ranked exactly, so a narrow selection still fills the leg; a selection
+        larger than the index answers at once is taken from the index's
+        nearest instead, unless too few of them are in it.
+        """
+        if len(within) > KNN_MAX and self.db._vec_available:
+            nearest = await self.db.knn_search_audio(blob, KNN_MAX)
+            hits = [h for h in nearest if h["track_id"] in within][:limit]
+            if len(hits) == limit:
+                return hits
+        return await self._ranked_within(blob, limit, within)
 
     async def _ranked_within(self, blob: bytes, limit: int, within: set[str]) -> list[dict]:
         if not _ensure_numpy():
