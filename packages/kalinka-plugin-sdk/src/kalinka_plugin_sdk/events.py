@@ -33,6 +33,7 @@ class PlayQueueEventType(Enum):
     ReceiversChanged = "receivers_changed"
     VolumesChanged = "volumes_changed"
     PlaybackEvent = "playback_event"
+    KeepPlayingChanged = "keep_playing_changed"
 
 
 class RendererDescriptor(BaseModel):
@@ -116,6 +117,9 @@ class PlayQueueState(BaseState[PlayQueueEvent]):
     receivers: Optional[ReceiversSnapshot] = None
     # SDK 3.20; None from a server without a storage manager.
     volumes: Optional[List[VolumeDescriptor]] = None
+    # SDK 3.24; whether the server's Keep playing is on, None from a server
+    # that has no such setting.
+    keep_playing: Optional[bool] = None
 
     def apply(self, event: PlayQueueEvent) -> "PlayQueueState":
         """Apply event and return a new state (immutable pattern)."""
@@ -168,6 +172,8 @@ class PlayQueueState(BaseState[PlayQueueEvent]):
             )
         elif isinstance(event, VolumesChangedEvent):
             updates["volumes"] = event.volumes
+        elif isinstance(event, KeepPlayingChangedEvent):
+            updates["keep_playing"] = event.enabled
         else:
             return self
 
@@ -183,8 +189,8 @@ class RequestMoreTracksEvent(PlayQueueEvent):
     """
     The queue started its last track and no repeat mode will carry it on.
 
-    From SDK 3.24 the server sends it only while its autoplay setting is on,
-    and answers it itself by asking every module that reports
+    From SDK 3.24 the server sends it only while its Keep playing setting is
+    on, and answers it itself by asking every module that reports
     ``ModuleCapability.CONTINUATION`` through ``InputModule.continue_queue``.
     A module reporting that capability must not also add tracks on this
     event, or the queue would grow twice.
@@ -280,6 +286,15 @@ class VolumesChangedEvent(PlayQueueEvent):
 
     event_type: PlayQueueEventType = PlayQueueEventType.VolumesChanged
     volumes: List[VolumeDescriptor]
+
+
+class KeepPlayingChangedEvent(PlayQueueEvent):
+    """SDK 3.24: the server's Keep playing setting was turned on or off.
+    While it is on, a queue reaching its last track is carried on with
+    tracks like the ones queued."""
+
+    event_type: PlayQueueEventType = PlayQueueEventType.KeepPlayingChanged
+    enabled: bool
 
 
 class PlaybackEventReport(PlayQueueEvent):

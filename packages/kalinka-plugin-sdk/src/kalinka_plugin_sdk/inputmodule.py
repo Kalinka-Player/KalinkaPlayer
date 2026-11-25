@@ -214,7 +214,7 @@ class ModuleCapability(str, Enum):
             answer the query, which suits a source listing them alphabetically.
         CONTINUATION: SDK 3.24. :meth:`InputModule.continue_queue` proposes
             tracks that carry on from the module's queued ones, for the
-            server's autoplay and for a listener's "more like this".
+            server's Keep playing and for a listener's "more like this".
     """
 
     AI_SEARCH = "ai_search"
@@ -320,7 +320,7 @@ class InputModule(Protocol):
         SDK 3.24. Propose tracks that carry playback on from ``request.seeds``.
 
         The server asks when the queue reaches its last track while its
-        autoplay setting is on, and when a listener asks for more like the
+        Keep playing setting is on, and when a listener asks for more like the
         current track. It resolves the ids, drops any already queued, and
         appends the rest itself: the module never adds to the queue. Asked
         only of a module that reports :attr:`ModuleCapability.CONTINUATION`.

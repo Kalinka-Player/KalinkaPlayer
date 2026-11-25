@@ -338,15 +338,19 @@ def get_version() -> str:
 # 0.26: PUT /renderer/{renderer_id}/eq edits the active parametric EQ.
 # POST /dsp/profiles/fir imports multi-rate filter impulse WAVs for renderers
 # advertising supports_fir_import on the FIR profile selector.
-# 0.27: the queue carries itself on. While the `queue.autoplay` setting is on
-# (the default), reaching the last track asks every source in the queue that
-# lists the `continuation` capability for tracks like its own, and appends
-# them; request_more_tracks is sent only while the setting is on. POST
-# /queue/similar[?count=] queues tracks like the playing one right after it,
-# from its source, answering {count}. POST /queue/dislike turns the playing
-# track down until the queue is cleared or replaced — autoplay and
-# /queue/similar steer away from it — and skips it; 409 when nothing plays.
-# GET /server/version carries `queue` {autoplay, similar, dislike}.
+# 0.27: the queue carries itself on. While the `queue.keep_playing` setting is
+# on (the default), reaching the last track asks every source in the queue
+# that lists the `continuation` capability for tracks like its own, and
+# appends them; request_more_tracks is sent only while the setting is on. PUT
+# /queue/keep_playing {enabled} saves the setting and, turned on at the queue's
+# end, carries it on at once and plays on, answering {enabled, count}; the
+# queue socket sends keep_playing_changed on every change, and its state
+# carries `keep_playing`. POST /queue/similar[?count=] queues tracks like the
+# playing one right after it, from its source, answering {count}. POST
+# /queue/dislike turns the playing track down until the queue is cleared or
+# replaced — Keep playing and /queue/similar steer away from it — and skips
+# it; 409 when nothing plays. GET /server/version carries `queue`
+# {keep_playing, similar, dislike}.
 REST_API_VERSION = "0.27"
 
 
