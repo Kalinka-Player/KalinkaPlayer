@@ -60,7 +60,7 @@ class SettledLibrary:
 def _settings(instance: KalinkaInstance, *, enricher: bool, ai_search: bool) -> dict:
     return {
         f"{_LOCALFILES}.music_folders": [str(instance.music_dir)],
-        f"{_LOCALFILES}.scan_interval_minutes": 60,
+        f"{_LOCALFILES}.daily_rescan": False,
         f"{_LOCALFILES}.enricher.enabled": enricher,
         f"{_LOCALFILES}.ai_search.enabled": ai_search,
     }

@@ -35,6 +35,7 @@ from kalinka_plugin_localfiles.config_model import (
 from kalinka_plugin_localfiles.input_module_db import LocalFilesInputModuleDb
 from kalinka_plugin_localfiles.localfiles import LocalFilesInputModule
 from kalinka_plugin_localfiles.module_setup import (
+    FOLDER_CHECK_LIFETIME_S,
     KalinkaPluginLocalFiles,
     _quiet_share_protocol_logs,
 )
@@ -302,7 +303,7 @@ class TestHealthReadsTheLastCheck:
         assert "Music folder access" in second.message
 
     @pytest.mark.asyncio
-    async def test_polls_within_the_rescan_interval_check_once(
+    async def test_polls_within_a_check_s_lifetime_check_once(
         self, plugin, monkeypatch
     ):
         made, _ = plugin
@@ -323,15 +324,13 @@ class TestHealthReadsTheLastCheck:
         assert checks == 1
 
     @pytest.mark.asyncio
-    async def test_a_check_older_than_the_rescan_interval_is_renewed(
-        self, plugin, clock
-    ):
+    async def test_a_check_past_its_lifetime_is_renewed(self, plugin, clock):
         made, _ = plugin
         await made.get_state()
         first = made._folder_probe
         await first
 
-        clock.now += made._context.config.scan_interval_minutes * 60
+        clock.now += FOLDER_CHECK_LIFETIME_S
         await made.get_state()
 
         assert made._folder_probe is not first
@@ -340,10 +339,10 @@ class TestHealthReadsTheLastCheck:
     async def test_with_rescans_manual_only_polls_still_check_once(
         self, plugin, clock
     ):
-        """An interval of 0 once made every check stale on arrival, so each
-        health poll contacted every share."""
+        """A scan interval of 0 once made every check stale on arrival, so
+        each health poll contacted every share."""
         made, _ = plugin
-        _write(made._context.config, scan_interval_minutes=0)
+        _write(made._context.config, daily_rescan=False)
         await made.get_state()
         first = made._folder_probe
         await first

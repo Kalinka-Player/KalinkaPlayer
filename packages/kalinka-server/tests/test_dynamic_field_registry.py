@@ -342,7 +342,7 @@ def test_module_top_level_scalars_render_flat_not_under_general():
     # Flat scalars hoisted onto the module spec
     field_paths = {f.path for f in module_spec.fields}
     assert "input_modules.localfiles.music_folders" in field_paths
-    assert "input_modules.localfiles.scan_interval_minutes" in field_paths
+    assert "input_modules.localfiles.daily_rescan" in field_paths
     assert "input_modules.localfiles.enabled" in field_paths
 
     # No leftover "General" sub-section at the module top level

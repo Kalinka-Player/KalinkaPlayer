@@ -67,6 +67,20 @@ async def test_no_change_check_is_persisted_and_survives_a_failed_check(
 
 
 @pytest.mark.asyncio
+async def test_a_scan_says_whether_it_completed(library, monkeypatch):
+    """The nightly schedule counts only one that did."""
+    config, db, _ = library
+    fi = FileIndexer(config, db)
+    assert await fi.start() is True
+
+    async def broken_walk(*_):
+        raise OSError("Storage unavailable")
+
+    monkeypatch.setattr(fi, "_audio_files_by_folder", broken_walk)
+    assert await fi.start() is False
+
+
+@pytest.mark.asyncio
 async def test_scan_stays_active_through_cleanup(library, monkeypatch):
     config, db, _ = library
     fi = FileIndexer(config, db)
@@ -226,6 +240,7 @@ async def test_deferred_files_are_retried_without_another_watcher_event(
 
         async def start(self):
             scans.append(1)
+            return True
 
         def deferred_retry_in(self):
             return 0.01
@@ -263,6 +278,7 @@ async def test_repeated_requests_queue_one_pass_behind_current_scan(
             scans.append(len(scans))
             await gate.wait()
             active -= 1
+            return True
 
     monkeypatch.setattr(indexer_mod, "FileIndexer", Indexer)
     monkeypatch.setattr(indexer_mod, "_indexer_queue", asyncio.Queue())
@@ -285,9 +301,10 @@ async def test_repeated_requests_queue_one_pass_behind_current_scan(
 
 
 @pytest.mark.asyncio
-async def test_watcher_events_do_not_postpone_periodic_checks(library, monkeypatch):
+async def test_watcher_events_do_not_postpone_the_nightly_check(library, monkeypatch):
     config, db, _ = library
     control = ScanControl()
+    hours = 60 * 60
     clock = 0.0
     scans = []
     increments = []
@@ -298,24 +315,31 @@ async def test_watcher_events_do_not_postpone_periodic_checks(library, monkeypat
 
         async def start(self):
             scans.append(clock)
+            return True
 
         async def handle_incremental_changes(self, changes):
             nonlocal clock
-            clock += 300
+            clock += 8 * hours
             increments.append(changes)
 
     monkeypatch.setattr(indexer_mod, "FileIndexer", Indexer)
-    monkeypatch.setattr(indexer_mod, "time", SimpleNamespace(monotonic=lambda: clock))
+    monkeypatch.setattr(
+        indexer_mod,
+        "time",
+        SimpleNamespace(
+            monotonic=lambda: clock,
+            localtime=lambda: SimpleNamespace(tm_hour=4),
+        ),
+    )
     monkeypatch.setattr(indexer_mod, "_indexer_queue", asyncio.Queue())
     monkeypatch.setattr(indexer_mod, "_shutdown_event", asyncio.Event())
-    config.scan_interval_minutes = 15
     worker = asyncio.create_task(indexer_mod._indexer_worker(config, db, control))
     try:
         await _until(lambda: len(scans) == 1)
         for i in range(3):
             await indexer_mod._indexer_queue.put({"incremental_changes": i})
         await _until(lambda: len(scans) == 2)
-        assert scans == [0, 900]
+        assert scans == [0, 24 * hours]
         assert increments == [0, 1, 2]
         await indexer_mod._indexer_queue.put("stop")
         await worker
@@ -366,3 +390,46 @@ async def test_request_reaches_the_existing_librarian_process(library):
             process.kill()
             await asyncio.to_thread(process.join, 5)
         process.close()
+
+
+@pytest.mark.asyncio
+async def test_a_nightly_scan_that_fails_is_tried_again_later_that_night(
+    library, monkeypatch
+):
+    config, db, _ = library
+    minute = 60
+    clock = 0.0
+    scans = []
+    # Each watcher batch moves the clock on: to the next night, then 20 minutes at a time.
+    steps = [24 * 60 * minute, 20 * minute, 20 * minute, 20 * minute]
+
+    class Indexer(_IdleRetries):
+        def __init__(self, *_):
+            pass
+
+        async def start(self):
+            scans.append(clock)
+            return len(scans) != 2
+
+        async def handle_incremental_changes(self, step):
+            nonlocal clock
+            clock += steps[step]
+
+    monkeypatch.setattr(indexer_mod, "FileIndexer", Indexer)
+    monkeypatch.setattr(
+        indexer_mod,
+        "time",
+        SimpleNamespace(
+            monotonic=lambda: clock,
+            localtime=lambda: SimpleNamespace(tm_hour=4),
+        ),
+    )
+    monkeypatch.setattr(indexer_mod, "_indexer_queue", asyncio.Queue())
+    monkeypatch.setattr(indexer_mod, "_shutdown_event", asyncio.Event())
+    for step in range(len(steps)):
+        indexer_mod._indexer_queue.put_nowait({"incremental_changes": step})
+    indexer_mod._indexer_queue.put_nowait("stop")
+    async with asyncio.timeout(3):
+        await indexer_mod._indexer_worker(config, db, ScanControl())
+
+    assert scans == [0, 24 * 60 * minute, (24 * 60 + 40) * minute]

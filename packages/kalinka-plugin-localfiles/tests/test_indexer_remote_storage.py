@@ -877,7 +877,7 @@ class TestIncrementalRemoteChanges:
         self, library, tmp_path, monkeypatch, detection
     ):
         indexer, vault, config = library
-        config.scan_interval_minutes = 0
+        config.daily_rescan = False
         now = [0.0]
         indexer._source_retries = SourceRetries(clock=lambda: now[0])
         data = _flac(tmp_path, {"title": "A"})
@@ -915,7 +915,7 @@ class TestIncrementalRemoteChanges:
         self, library, tmp_path, caplog, manual_scan
     ):
         indexer, vault, config = library
-        config.scan_interval_minutes = 0
+        config.daily_rescan = False
         now = [0.0]
         indexer._source_retries = SourceRetries(clock=lambda: now[0])
         old = _flac(tmp_path, {"title": "Old"})

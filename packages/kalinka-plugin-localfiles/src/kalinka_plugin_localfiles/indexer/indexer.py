@@ -2,7 +2,6 @@
 import os
 import sys
 import json
-import math
 import time
 import logging
 import asyncio
@@ -42,6 +41,7 @@ from kalinka_plugin_sdk.media.unplayable import READERS_VERSION, UnplayableFile
 from ..config_model import LocalFilesConfig
 from ..db_connection import in_one_transaction, shared_connection
 from ..scan_control import ScanControl
+from .rescan_schedule import DailyRescan
 from ..filename_model import get_parser, names_a_vinyl_side, parse_music_path
 from ..filename_model.assembler import ASSEMBLER_VERSION
 from kalinka_plugin_sdk.files import in_housekeeping, is_housekeeping_dir
@@ -320,19 +320,22 @@ class FileIndexer:
         self._last_scan_at: Optional[float] = None
         self._scan_progress_written_at = 0.0
 
-    async def start(self):
-        """Start the indexer process"""
+    async def start(self) -> bool:
+        """Run a full scan; whether it completed, which one that failed or
+        found another already running did not."""
         async with self.lock:
             if self.running:
                 logger.warning("Indexer already running, skipping")
-                return
+                return False
             self.running = True
 
         try:
             await self.run_scan()
             logger.debug("Indexer scan completed")
+            return True
         except Exception as e:
             logger.exception(f"Error running indexer scan: {str(e)}")
+            return False
         finally:
             async with self.lock:
                 self.running = False
@@ -2429,15 +2432,20 @@ async def _indexer_worker(
     db_manager: AsyncIndexerDb,
     scan_control: Optional[ScanControl] = None,
 ):
-    """Serialize periodic checks, manual requests and watcher changes."""
+    """Serialize nightly checks, manual requests and watcher changes."""
     indexer_instance = None
+    nightly = DailyRescan(
+        config.daily_rescan,
+        monotonic=time.monotonic,
+        local_hour=lambda: time.localtime().tm_hour,
+    )
 
     async def scan():
         if scan_control:
             scan_control.scanning.set()
             scan_control.pending.clear()
         try:
-            await indexer_instance.start()
+            await nightly.run(indexer_instance.start)
         finally:
             if scan_control:
                 scan_control.scanning.clear()
@@ -2447,24 +2455,17 @@ async def _indexer_worker(
         if scan_control:
             scan_control.available.set()
         await scan()
-        last_run = time.monotonic()
-        interval = config.scan_interval_minutes * 60 or math.inf
 
         while not _shutdown_event.is_set():
             try:
-                if (
-                    scan_control and scan_control.pending.is_set()
-                ) or time.monotonic() - last_run >= interval:
+                if (scan_control and scan_control.pending.is_set()) or nightly.due():
                     await scan()
-                    last_run = time.monotonic()
                     continue
                 try:
                     command = await asyncio.wait_for(
                         _indexer_queue.get(),
                         timeout=min(
-                            1.0,
-                            max(0.01, interval - (time.monotonic() - last_run)),
-                            max(0.01, indexer_instance.deferred_retry_in()),
+                            1.0, max(0.01, indexer_instance.deferred_retry_in())
                         ),
                     )
                 except asyncio.TimeoutError:
@@ -2473,7 +2474,6 @@ async def _indexer_worker(
                     try:
                         if command == "scan":
                             await scan()
-                            last_run = time.monotonic()
                         elif command == "stop":
                             _shutdown_event.set()
                             break

@@ -53,12 +53,13 @@ Chunk writes share one pending upload check, without resetting its timer or
 logging every notification. If a source becomes unavailable during indexing,
 file retries pause while availability checks back off from 30 seconds to a
 maximum of 5 minutes. Recovery triggers a full scan of that source even when
-periodic scans are disabled, covering changes missed during the outage.
+the daily rescan is off, covering changes missed during the outage.
 
-Keep the periodic scan enabled as a fallback. Some servers do not support
-notifications, and a recursive Samba watch may miss changes made directly
-on the NAS in subfolders (for example by a download or sync job). With the
-scan interval set to 0, unreported changes wait for a manual rescan or restart.
+Keep the daily rescan on as a fallback. It runs once a night, between 3 and 6
+in the morning. Some servers do not support notifications, and a recursive
+Samba watch may miss changes made directly on the NAS in subfolders (for
+example by a download or sync job). With the daily rescan off, unreported
+changes wait for a manual rescan or restart.
 Shares mounted as local filesystem paths still use local filesystem watching.
 
 An album's cover comes from its own folder when an image there is named `cover`, `folder`, `front` or `album` (JPEG, PNG, GIF or WebP, in any case), preferred in that order. It may sit beside the audio, in an artwork folder under it, or in a disc folder. Otherwise the cover is the embedded front cover most of the album's tracks carry, ties going to the earliest track. Failing that it is the most common embedded picture with no type, then a sleeve scan chosen by how it looks.

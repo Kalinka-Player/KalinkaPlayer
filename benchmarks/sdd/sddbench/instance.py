@@ -70,7 +70,7 @@ def overrides(
         "base_config.server.oobe_complete": True,
         "base_config.search.ai_suggestions_limit": top_k,
         "input_modules.localfiles.music_folders": [str(layout.audio)],
-        "input_modules.localfiles.scan_interval_minutes": 1440,
+        "input_modules.localfiles.daily_rescan": False,
         "input_modules.localfiles.file_watch_enabled": False,
         "input_modules.localfiles.enricher.enabled": False,
         "input_modules.localfiles.ai_search.enabled": True,

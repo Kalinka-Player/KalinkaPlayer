@@ -127,7 +127,7 @@ def test_simple_view_includes_simple_fields_and_excludes_expert():
     assert "base_config.device_automation.auto_power_on" in paths
     assert "input_modules.localfiles.enabled" in paths
     assert "input_modules.localfiles.music_folders" in paths
-    assert "input_modules.localfiles.scan_interval_minutes" in paths
+    assert "input_modules.localfiles.daily_rescan" in paths
 
     # Audit-defaulted EXPERT tuning must NOT leak in:
     assert "base_config.search.candidate_limit" not in paths
@@ -182,6 +182,19 @@ def test_every_base_config_leaf_reaches_the_expert_list():
     paths = {f.path for f in schema.expert_fields}
     for path in _leaf_paths(KalinkaConfig(), "base_config"):
         assert path in paths
+
+
+def test_a_field_kept_only_to_carry_an_old_setting_over_is_settable_nowhere():
+    """My Library still reads a scan interval an older server saved, but
+    offering it would bring the interval back."""
+    schema = build_presentation(
+        base_config=KalinkaConfig(),
+        input_modules={"localfiles": LocalFilesConfig()},
+        devices={},
+    )
+    path = "input_modules.localfiles.scan_interval_minutes"
+    assert path not in _all_field_paths_in_pages(schema.pages)
+    assert path not in {f.path for f in schema.expert_fields}
 
 
 def test_plugin_catalog_preview_is_on_by_default_and_expert_only():

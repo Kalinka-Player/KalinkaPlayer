@@ -430,7 +430,7 @@ def worker(monkeypatch):
     """
     from kalinka_plugin_localfiles.indexer import indexer as module
 
-    run = SimpleNamespace(now=0, scans=[], changes=[], retries=0)
+    run = SimpleNamespace(now=0, hour=4, scans=[], changes=[], retries=0)
     queue = asyncio.Queue()
     shutdown = asyncio.Event()
 
@@ -442,6 +442,7 @@ def worker(monkeypatch):
             # Back-to-back scans never yield, so end the run instead of hanging.
             if len(run.scans) > 3:
                 shutdown.set()
+            return True
 
         async def handle_incremental_changes(self, changes):
             run.changes.append(changes)
@@ -453,38 +454,50 @@ def worker(monkeypatch):
         async def retry_deferred_files(self):
             run.retries += 1
 
-    async def until_stopped(*commands, minutes):
+    async def until_stopped(*commands, daily):
         for command in (*commands, "stop"):
             queue.put_nowait(command)
-        await module._indexer_worker(
-            LocalFilesConfig(scan_interval_minutes=minutes), None
-        )
+        await module._indexer_worker(LocalFilesConfig(daily_rescan=daily), None)
 
     monkeypatch.setattr(module, "FileIndexer", lambda *args: Indexer())
     monkeypatch.setattr(module, "_indexer_queue", queue)
     monkeypatch.setattr(module, "_shutdown_event", shutdown)
-    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: run.now))
+    monkeypatch.setattr(
+        module,
+        "time",
+        SimpleNamespace(
+            monotonic=lambda: run.now,
+            localtime=lambda: SimpleNamespace(tm_hour=run.hour),
+        ),
+    )
     monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
     run.until_stopped = until_stopped
     return run
 
 
 @pytest.mark.asyncio
-async def test_incremental_events_do_not_postpone_periodic_scan(worker):
-    await worker.until_stopped(NEW_FILE, minutes=1)
+async def test_incremental_events_do_not_postpone_the_nightly_scan(worker):
+    await worker.until_stopped(NEW_FILE, daily=True)
     assert worker.scans == [0, DAY]
 
 
 @pytest.mark.asyncio
-async def test_an_interval_of_0_scans_only_when_asked(worker):
-    await worker.until_stopped(NEW_FILE, "scan", minutes=0)
+async def test_the_nightly_scan_waits_for_the_small_hours(worker):
+    worker.hour = 14
+    await worker.until_stopped(NEW_FILE, daily=True)
+    assert worker.scans == [0]
+
+
+@pytest.mark.asyncio
+async def test_without_the_daily_rescan_it_scans_only_when_asked(worker):
+    await worker.until_stopped(NEW_FILE, "scan", daily=False)
     assert worker.scans == [0, DAY]
 
 
 @pytest.mark.asyncio
-async def test_an_interval_of_0_still_applies_changes_and_retries(worker):
+async def test_without_the_daily_rescan_changes_and_retries_still_apply(worker):
     """Scanning back to back once kept the worker from reading its queue."""
-    await worker.until_stopped(NEW_FILE, minutes=0)
+    await worker.until_stopped(NEW_FILE, daily=False)
     assert worker.changes == [NEW_FILE["incremental_changes"]]
     assert worker.retries == 1
 
