@@ -290,17 +290,16 @@ class QueueConfig(BaseModel):
             **_SIMPLE,
         },
     )
-    tracks_added: int = Field(
+    tracks_per_source: int = Field(
         default=1,
         ge=1,
         le=10,
-        title="Tracks added at a time",
+        title="Tracks added per source",
         json_schema_extra={
             "help": (
-                "How many tracks are added when the queue runs out or more "
-                "like the current track is asked for. Every source that can "
-                "suggest tracks is asked, the playing track's own first, so "
-                "one with nothing to offer is covered by another"
+                "How many tracks each source in the queue adds, from its own "
+                "tracks there, when the queue runs out, and how many "
+                "\"Add similar tracks\" adds"
             ),
         },
     )
