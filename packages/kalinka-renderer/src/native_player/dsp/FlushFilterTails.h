@@ -23,6 +23,16 @@ public:
     asm volatile("msr fpcr, %0" ::"r"(saved | (1ull << 24)) : "memory");
   }
   ~FlushFilterTails() { asm volatile("msr fpcr, %0" ::"r"(saved) : "memory"); }
+#elif defined(__arm__) && defined(__ARM_FP)
+  // A VFP core such as the Pi 1's traps every subnormal to kernel support code.
+  uint32_t saved;
+
+public:
+  FlushFilterTails() {
+    asm volatile("vmrs %0, fpscr" : "=r"(saved));
+    asm volatile("vmsr fpscr, %0" ::"r"(saved | (1u << 24)) : "memory");
+  }
+  ~FlushFilterTails() { asm volatile("vmsr fpscr, %0" ::"r"(saved) : "memory"); }
 #endif
 };
 } // namespace dsp
