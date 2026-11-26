@@ -141,7 +141,7 @@ On a Debian system without `sudo`, log in as `root` and run the same commands wi
 
 This installs the server, its plugins, the browser player and an output for this computer's own sound card. Everything starts straight away and again after every restart. The first start downloads more components, so it needs the internet and takes a few minutes. Then go on to [Open Kalinka](#open-kalinka).
 
-It does not install the [supervisor](#the-supervisor). [Add it](#add-the-supervisor-to-a-streamer) if you want the control page, Wi-Fi setup without a cable, or to set up a DAC HAT from the app.
+On a Raspberry Pi it also installs the [supervisor](#the-supervisor), as the images have it: the control page, Wi-Fi setup without a cable, and setting up a DAC HAT from the app. To leave it out, run the script with `sudo env KALINKA_SUPERVISOR=0 bash` instead of `sudo bash`. On any other computer it is left out; [add it](#add-the-supervisor-to-a-streamer) if you want it, or run the script with `KALINKA_SUPERVISOR=1`.
 
 If the computer runs a firewall, let your home network reach TCP port 8000 (and 8001 for the supervisor) and mDNS on UDP port 5353.
 
@@ -318,7 +318,7 @@ The supervisor is a small service that looks after the streamer. It runs separat
 - Wi-Fi setup over the temporary network or Bluetooth when the streamer is [not connected](#connect-your-streamer-to-the-network);
 - from the app: restarting or switching off the streamer, setting its time zone, choosing a Raspberry Pi's DAC HAT, and restarting Kalinka when it stops answering.
 
-The images include it. On a streamer you installed with a command, add it as below.
+The images include it, and the one-command install adds it on a Raspberry Pi. On any other streamer you installed with a command, add it as below.
 
 <a id="add-the-supervisor-to-a-box"></a>
 

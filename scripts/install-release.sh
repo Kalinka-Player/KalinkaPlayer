@@ -23,7 +23,10 @@
 #     what makes a plain install play sound through this machine's sound card;
 #     rendering boxes elsewhere on the network run that script themselves. It
 #     goes in before the bundle so this machine is never left running a new
-#     server against a renderer too old to talk to it.
+#     server against a renderer too old to talk to it;
+#   * on a Raspberry Pi, the supervisor (kalinka-supervisor), picked by
+#     install-supervisor.sh: the control page, Wi-Fi setup without a cable and
+#     sound card setup, as on the images. Elsewhere it is added on request.
 #
 # Re-running the script upgrades whatever is already installed, which is how
 # the server's own auto-upgrade reaches all of them.
@@ -42,6 +45,9 @@
 #                    on this machine, and on a Raspberry Pi the KMS driver it
 #                    draws through; 0 to leave an installed one un-upgraded
 #   KALINKA_RENDERER set to 0 to skip installing the local renderer
+#   KALINKA_SUPERVISOR set to 1 to install the supervisor, 0 to leave it out
+#                    and an installed one un-upgraded. Unset, a Raspberry Pi
+#                    gets it, and an installed one is upgraded.
 #   KALINKA_RENDERER_INSTALLER  URL of the renderer installer to use instead of
 #                    the published one at kalinkaplayer.com/install-renderer.sh
 #                    (only needed to test an unmerged change)
@@ -79,6 +85,11 @@ have python3 || die "python3 is required (it is also a runtime dependency of the
 PRETTY_NAME=""
 [ -r /etc/os-release ] && . /etc/os-release
 ARCH="$(dpkg --print-architecture 2>/dev/null || true)"
+installed() { [ "$(dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true)" = installed ]; }
+# Auto-upgrade reruns this script, and by then the first install has made each choice.
+FIRST_INSTALL=1
+! installed kalinka-server || FIRST_INSTALL=0
+DEVICE_MODEL=/proc/device-tree/model
 
 # apt refuses the server on an older system python3, whatever comes first on PATH.
 SYSTEM_PYTHON=/usr/bin/python3
@@ -259,12 +270,32 @@ for url in "${URLS[@]}"; do
   download "$url" "$TMPDIR_DL/$name"
 done
 
-# Existing supervisor installations join this upgrade; ordinary servers stay unchanged.
-if [ "${SKIP_SUPERVISOR:-0}" != 1 ] && \
-   [ "$(dpkg-query -W -f='${db:Status-Status}' kalinka-supervisor 2>/dev/null || true)" = installed ]; then
+# The supervisor: a Raspberry Pi gets it at its first install, as the images carry it; an installed one joins every upgrade.
+SUPERVISOR_INSTALLED=0
+! installed kalinka-supervisor || SUPERVISOR_INSTALLED=1
+WANT_SUPERVISOR="${KALINKA_SUPERVISOR:-}"
+[ "${SKIP_SUPERVISOR:-0}" = 1 ] && WANT_SUPERVISOR=0
+if [ -z "$WANT_SUPERVISOR" ]; then
+  WANT_SUPERVISOR="$SUPERVISOR_INSTALLED"
+  if [ "$FIRST_INSTALL" = 1 ] && [ -r "$DEVICE_MODEL" ]; then
+    case "$(tr -d '\0' < "$DEVICE_MODEL")" in "Raspberry Pi"*) WANT_SUPERVISOR=1 ;; esac
+  fi
+fi
+
+if [ "$WANT_SUPERVISOR" = 1 ]; then
   supervisor_script="$(installer_script install-supervisor.sh \
     "${KALINKA_SUPERVISOR_INSTALLER:-https://raw.githubusercontent.com/$REPO/main/scripts/install-supervisor.sh}")"
-  ALLOW_MISSING_RELEASE=1 bash "$supervisor_script"
+  if [ "$SUPERVISOR_INSTALLED" = 1 ]; then
+    ALLOW_MISSING_RELEASE=1 bash "$supervisor_script"
+  else
+    echo ">> Installing the supervisor ..."
+    # Best-effort, as the server runs without it: a box it has no package for still gets Kalinka.
+    ALLOW_MISSING_RELEASE=1 bash "$supervisor_script" || {
+      echo ">> note: the supervisor could not be installed — the install below still" >&2
+      echo "   goes ahead, without its control page. Add it later with" >&2
+      echo "   scripts/install-supervisor.sh, or set KALINKA_SUPERVISOR=0 to skip this step." >&2
+    }
+  fi
 fi
 
 # --- renderer -----------------------------------------------------------------
@@ -278,7 +309,8 @@ fi
 install_renderer() {
   local script
   script="$(installer_script install-renderer.sh "$RENDERER_INSTALLER")" || return
-  KALINKA_REPO="$REPO" bash "$script"
+  # This script has already brought the supervisor or left it out.
+  KALINKA_REPO="$REPO" KALINKA_SUPERVISOR=0 bash "$script"
 }
 
 if [ "${KALINKA_RENDERER:-1}" != "0" ]; then
