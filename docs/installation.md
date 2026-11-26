@@ -279,7 +279,7 @@ The server's own machine already has an output. You can add:
 
 1. Give it 64-bit Debian 13, Raspberry Pi OS (64-bit, Trixie), Ubuntu 26.04 or Fedora 44. For a Pi, follow steps 1–4 of *Starting from a blank Raspberry Pi* under [option D](#d-install-with-one-command). Choose a host name that says where it is, such as `livingroom`: the output is named after it.
 
-   On a Pi 2 or original Pi Zero, choose **Raspberry Pi OS Lite (32-bit)** in step 1 of those instructions instead. The supervisor below is not available there, so set a DAC HAT up in `config.txt` as for a Pi 1. For a Pi 1, use its own image, below.
+   On a Pi 2 or original Pi Zero, choose **Raspberry Pi OS Lite (32-bit)** in step 1 of those instructions instead. For a Pi 1, use its own image, below.
 2. On that machine, run:
 
    ```bash

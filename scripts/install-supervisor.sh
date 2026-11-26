@@ -4,7 +4,7 @@ set -euo pipefail
 repo="${KALINKA_REPO:-Kalinka-Player/KalinkaPlayer}"
 request="${1:-}"
 arch="$(dpkg --print-architecture)"
-case "$arch" in amd64|arm64) ;; *) echo "Unsupported supervisor architecture: $arch" >&2; exit 1;; esac
+case "$arch" in amd64|arm64|armhf) ;; *) echo "Unsupported supervisor architecture: $arch" >&2; exit 1;; esac
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 chmod 755 "$stage"

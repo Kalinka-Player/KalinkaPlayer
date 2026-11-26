@@ -35,7 +35,8 @@ jobs:
           and a LAN control page on port 8001: the box's state and versions, and restart,
           reboot, power off and reinstall.
 
-          Download the matching amd64/arm64 Debian package and verify it against SHA256SUMS.
+          Download the matching amd64, arm64 or armhf (32-bit Raspberry Pi OS) Debian package
+          and verify it against SHA256SUMS.
           Install with `sudo apt install ./kalinka-supervisor_*.deb`.
           Existing supervisor installations update through the normal Kalinka server upgrade flow.
           EOF

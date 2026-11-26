@@ -80,8 +80,11 @@ def unavailable_reason() -> str | None:
         )
     except (OSError, subprocess.SubprocessError):
         return "Could not determine this streamer's architecture."
-    if arch.returncode or arch.stdout.strip() not in {"amd64", "arm64"}:
-        return "Streamer management packages are available for amd64 and arm64 only."
+    if arch.returncode or arch.stdout.strip() not in {"amd64", "arm64", "armhf"}:
+        return (
+            "Streamer management packages are available for amd64, arm64 and "
+            "armhf only."
+        )
     return None
 
 

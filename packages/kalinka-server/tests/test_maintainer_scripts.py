@@ -274,7 +274,7 @@ def test_a_renderer_box_gets_a_supervisor_only_on_request(tmp_path, wanted):
     ("fmt", "arch", "refusal"),
     [
         ("rpm", "x86_64", "Debian-based systems only"),
-        ("deb", "armhf", "no package for 32-bit ARM"),
+        ("deb", "armhf", None),
         ("deb", "arm64", None),
     ],
 )
@@ -283,7 +283,7 @@ def test_a_supervisor_is_refused_before_anything_installs_where_it_has_no_packag
 ):
     result = _renderer_block(
         tmp_path,
-        'if [ "${KALINKA_SUPERVISOR:-0}" = 1 ]; then\n  [ "$FORMAT" = deb ]',
+        'if [ "${KALINKA_SUPERVISOR:-0}" = 1 ] && [ "$FORMAT" != deb ]',
         "have python3 || die",
         {"KALINKA_SUPERVISOR": "1"},
         prelude=f"FORMAT={fmt}\nARCH={arch}\n",

@@ -15,8 +15,10 @@ type Node struct {
 // ErrBlob reports a blob that is not a well-formed flattened device tree.
 var ErrBlob = errors.New("not a flattened device tree")
 
+// The magic is wider than a 32-bit int, so it is compared unsigned.
+const blobMagic uint32 = 0xd00dfeed
+
 const (
-	blobMagic  = 0xd00dfeed
 	headerSize = 40
 	beginNode  = 1
 	endNode    = 2
@@ -29,11 +31,16 @@ const (
 // as the entries of a map the firmware ships beside its overlays. Deeper
 // nodes are skipped.
 func Children(blob []byte) ([]Node, error) {
+	// Every offset and size lies within the blob, and one past it would wrap a 32-bit int negative.
 	u32 := func(at int) (int, bool) {
 		if at < 0 || at+4 > len(blob) {
 			return 0, false
 		}
-		return int(binary.BigEndian.Uint32(blob[at:])), true
+		v := binary.BigEndian.Uint32(blob[at:])
+		if uint64(v) > uint64(len(blob)) {
+			return 0, false
+		}
+		return int(v), true
 	}
 	cstring := func(at int) (string, int, bool) {
 		if at < 0 || at > len(blob) {
@@ -47,7 +54,7 @@ func Children(blob []byte) ([]Node, error) {
 	}
 	align := func(at int) int { return (at + 3) &^ 3 }
 
-	if magic, ok := u32(0); !ok || magic != blobMagic || len(blob) < headerSize {
+	if len(blob) < headerSize || binary.BigEndian.Uint32(blob) != blobMagic {
 		return nil, ErrBlob
 	}
 	at, _ := u32(8)

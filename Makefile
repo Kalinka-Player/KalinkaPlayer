@@ -273,8 +273,9 @@ GO ?= go
 supervisor-build:
 	@GO="$(GO)" packages/kalinka-supervisor/build.sh
 
+## The vet for 32-bit ARM compiles every package for the armhf supervisor, where int is 32 bits wide.
 supervisor-test:
-	@cd packages/kalinka-supervisor && "$(GO)" test -race ./... && "$(GO)" vet ./... && bash tests/test_soundcard.sh && bash tests/test_dietpi_conf.sh
+	@cd packages/kalinka-supervisor && "$(GO)" test -race ./... && "$(GO)" vet ./... && GOARCH=arm GOARM=6 "$(GO)" vet ./... && bash tests/test_soundcard.sh && bash tests/test_dietpi_conf.sh
 
 supervisor-deb:
 	@GO="$(GO)" packages/kalinka-supervisor/build-deb.sh
