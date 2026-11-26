@@ -18,6 +18,7 @@
 #   KALINKA_REPO   owner/repo to pull the release from (default: Kalinka-Player/KalinkaPlayer)
 #   GITHUB_TOKEN   optional, only to avoid the 60-req/hr anonymous API limit
 #   KALINKA_REINSTALL  set to 1 to install the deb again when that version is already there
+#   NO_APT_UPDATE  set to 1 never to run `apt-get update`, not even to retry a failed install
 #   KALINKA_SUPERVISOR set to 1 to install the supervisor too, so the app can set
 #                      up this box's sound card (64-bit Debian-based systems only)
 #
@@ -172,7 +173,16 @@ if [ "$FORMAT" = deb ]; then
   APT_OPTS=(-o DPkg::Lock::Timeout=300)
   [ "${KALINKA_REINSTALL:-0}" != 1 ] || APT_OPTS+=(--reinstall)
   echo ">> Installing with apt ..."
-  if ! $SUDO apt-get "${APT_OPTS[@]}" install -y --no-install-recommends "$TMPDIR_DL/$NAME"; then
+  apt_install() {
+    $SUDO apt-get "${APT_OPTS[@]}" install -y --no-install-recommends "$TMPDIR_DL/$NAME"
+  }
+  # The package lists can be stale or, as on the renderer image, absent, and a new dependency needs them.
+  refresh_and_retry() {
+    [ "${NO_APT_UPDATE:-0}" != 1 ] || return 1
+    echo ">> Refreshing the package lists and trying again ..."
+    $SUDO apt-get -o DPkg::Lock::Timeout=300 update && apt_install
+  }
+  if ! apt_install && ! refresh_and_retry; then
     # apt finishes configuring whatever else the box left half-installed, and
     # that failure lands on this exit status too. Ask dpkg what actually
     # happened before blaming the package we came to install.

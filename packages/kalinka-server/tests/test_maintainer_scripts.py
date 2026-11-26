@@ -128,14 +128,14 @@ def _stub_bin(tmp_path, *, installed_version, apt_fails=True):
     return binv
 
 
-def _renderer_install_block(tmp_path, binv):
+def _renderer_install_block(tmp_path, binv, env=None):
     """Run just the apt branch of install-renderer.sh, with its inputs bound.
 
     The script reaches that branch only after a release lookup over the
     network, so the branch is extracted rather than driven end to end.
     """
     text = INSTALL_RENDERER.read_text()
-    start = text.index('  if ! $SUDO apt-get "${APT_OPTS[@]}" install -y')
+    start = text.index("  apt_install() {")
     end = text.index("else\n  echo \">> Installing with dnf ...\"")
     block = text[start:end]
     harness = tmp_path / "block.sh"
@@ -151,7 +151,7 @@ def _renderer_install_block(tmp_path, binv):
         ["bash", str(harness)],
         capture_output=True,
         text=True,
-        env={**os.environ, "PATH": f"{binv}:{os.environ['PATH']}"},
+        env={**os.environ, **(env or {}), "PATH": f"{binv}:{os.environ['PATH']}"},
     )
 
 
@@ -175,6 +175,46 @@ def test_a_renderer_that_really_failed_still_reports_it(tmp_path):
 
     assert result.returncode == 1
     assert "apt could not install" in result.stderr
+
+
+def test_a_dependency_apt_cannot_fetch_yet_is_fetched_after_a_refresh(tmp_path):
+    """The renderer image has no package lists, so a release that needs a
+    library the box lacks installs only once they are refreshed."""
+    binv = _stub_bin(tmp_path, installed_version="0.4.0")
+    refreshed = tmp_path / "refreshed"
+    log = tmp_path / "apt-get.log"
+    (binv / "apt-get").write_text(
+        "#!/usr/bin/env bash\n"
+        f'echo "$*" >> "{log}"\n'
+        f'case "$*" in *" update") touch "{refreshed}"; exit 0 ;; esac\n'
+        f'[ -e "{refreshed}" ]\n'
+    )
+
+    result = _renderer_install_block(tmp_path, binv)
+
+    assert result.returncode == 0, result.stderr
+    calls = log.read_text().splitlines()
+    assert [call.split()[-1] for call in calls] == [
+        "/tmp/kalinka-renderer-0.4.0.debian-13.arm64.deb",
+        "update",
+        "/tmp/kalinka-renderer-0.4.0.debian-13.arm64.deb",
+    ]
+    assert "another package's" not in result.stderr
+
+
+def test_a_caller_that_forbids_apt_update_gets_the_failure_instead(tmp_path):
+    """The full image builds install from the package lists they started with."""
+    binv = _stub_bin(tmp_path, installed_version="0.3.0")
+    log = tmp_path / "apt-get.log"
+    (binv / "apt-get").write_text(f'#!/usr/bin/env bash\necho "$*" >> "{log}"\nexit 1\n')
+
+    result = _renderer_install_block(tmp_path, binv, {"NO_APT_UPDATE": "1"})
+
+    assert result.returncode == 1
+    assert "apt could not install" in result.stderr
+    assert [call.split()[-1] for call in log.read_text().splitlines()] == [
+        "/tmp/kalinka-renderer-0.4.0.debian-13.arm64.deb"
+    ]
 
 
 def test_the_renderer_takes_no_recommends(tmp_path):
