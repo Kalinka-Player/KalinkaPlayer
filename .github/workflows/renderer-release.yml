@@ -11,8 +11,8 @@ name: Renderer release
 #             arm64 and amd64; a deb links one distro's sonames, so the two
 #             are not interchangeable. Ubuntu 24.04's Highway is older than
 #             the DSP needs, so 24.04 gets no deb. Also 32-bit Raspberry Pi OS
-#             (Raspbian 13, ARMv6), built in an emulated Raspbian chroot
-#             (best-effort, never blocks the release).
+#             (Raspbian 13, ARMv6), built in an emulated Raspbian chroot and
+#             required: the server upgrades only once its renderers have.
 #   * .rpm  — Fedora 44, amd64 + arm64
 #   * .flatpak — freedesktop 24.08 bundle, x86_64 + aarch64 (best-effort,
 #             never blocks the release)
@@ -97,7 +97,6 @@ jobs:
   # No container image carries Raspbian, so it is bootstrapped and run through qemu-arm.
   deb-raspbian:
     name: Deb (raspbian-13 armhf)
-    continue-on-error: true
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     steps:
