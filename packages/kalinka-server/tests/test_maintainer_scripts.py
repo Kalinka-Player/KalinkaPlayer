@@ -1063,7 +1063,7 @@ def _recorder(name, then=""):
     return f'#!/usr/bin/env bash\necho "{name} $*" >> "$STUB_STATE/calls.log"\n{then}'
 
 
-def _sandboxed_configure(tmp_path, server_id=None, postinst=POSTINST, systemd_running=True):
+def _sandboxed_configure(tmp_path, server_id=None, postinst=POSTINST, systemd="running"):
     """A postinst's configure, the server's unless another is given, run
     against a root under tmp_path.
 
@@ -1072,9 +1072,10 @@ def _sandboxed_configure(tmp_path, server_id=None, postinst=POSTINST, systemd_ru
     package its id helper; what reaches past the files — users, systemd,
     udev — is a recorder. Only root can give a file away, so install
     drops the owner it is asked for and chown only records it. ``server_id``
-    is what the box already holds there, if anything, and ``systemd_running``
-    whether systemd runs the box, as it does not in a chroot or a container.
-    Returns the result, the recorded calls, the id path and what it held when
+    is what the box already holds there, if anything. ``systemd`` is
+    "running", "installed" but not running, as in a chroot or a container, or
+    "absent", as in a bare container, where no systemctl is on PATH. Returns
+    the result, the recorded calls, the id path and what it held when
     kalinka.service was started.
     """
     root = tmp_path / "root"
@@ -1098,7 +1099,7 @@ def _sandboxed_configure(tmp_path, server_id=None, postinst=POSTINST, systemd_ru
         units.mkdir(parents=True)
         for name in shipped:
             (units / name).touch()
-    if systemd_running:
+    if systemd == "running":
         (root / "run" / "systemd" / "system").mkdir(parents=True)
     helper = root / "usr" / "lib" / "kalinka" / "server-id"
     helper.parent.mkdir(parents=True)
@@ -1140,18 +1141,36 @@ def _sandboxed_configure(tmp_path, server_id=None, postinst=POSTINST, systemd_ru
             )
         },
     }
+    if systemd == "absent":
+        del stubs["systemctl"]
     for name, text in stubs.items():
         (binv / name).write_text(text)
         (binv / name).chmod(0o755)
 
+    path_dirs = [binv]
+    if systemd == "absent":
+        path_dirs.append(_path_without(tmp_path / "system-bin", "systemctl"))
+    else:
+        path_dirs.append(os.environ["PATH"])
     result = _run(
         script,
         "configure",
-        env={"PATH": f"{binv}:{os.environ['PATH']}", "STUB_STATE": str(state)},
+        env={"PATH": ":".join(map(str, path_dirs)), "STUB_STATE": str(state)},
     )
     calls = (state / "calls.log").read_text().splitlines()
     at_start = state / "id-at-start"
     return result, calls, path, at_start.read_text() if at_start.exists() else None
+
+
+def _path_without(directory, missing):
+    """One directory holding every command on PATH but ``missing``."""
+    directory.mkdir()
+    for entry in os.environ["PATH"].split(os.pathsep):
+        for command in Path(entry).glob("*") if Path(entry).is_dir() else ():
+            link = directory / command.name
+            if command.name != missing and not link.exists():
+                link.symlink_to(command)
+    return directory
 
 
 KEPT_ID = "0b0c5a3e-8c1b-4a51-9a0d-6c9b1c7f1e2a\n"
@@ -1227,13 +1246,25 @@ def test_without_a_running_systemd_the_units_are_enabled_and_nothing_starts(
     """As in a chroot or a container, whose systemctl can enable a unit but not
     reload or start one: a postinst that tried left the install unconfigured."""
     result, calls, _, _ = _sandboxed_configure(
-        tmp_path, postinst=postinst, systemd_running=False
+        tmp_path, postinst=postinst, systemd="installed"
     )
 
     assert result.returncode == 0, result.stderr
     verbs = list(_systemctl_calls(calls))
     assert verbs
     assert all(verb == "enable" and not now for verb, now, _ in verbs), verbs
+
+
+@BOTH_POSTINSTS
+def test_without_systemd_installed_the_package_still_configures(postinst, tmp_path):
+    """A bare container has no systemctl to call; the package must not fail on it."""
+    result, calls, _, _ = _sandboxed_configure(
+        tmp_path, postinst=postinst, systemd="absent"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "systemctl" not in result.stderr
+    assert list(_systemctl_calls(calls)) == []
 
 
 @BOTH_POSTINSTS

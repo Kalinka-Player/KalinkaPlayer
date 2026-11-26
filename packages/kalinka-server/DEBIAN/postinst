@@ -26,6 +26,9 @@ JOURNAL_READER_SOCKET_PATH="/etc/systemd/system/${JOURNAL_READER_SOCKET}"
 MOUNTS_PATH_UNIT="kalinka-mounts.path"
 MOUNTS_PATH_UNIT_PATH="/etc/systemd/system/${MOUNTS_PATH_UNIT}"
 
+# A bare container may have no systemd at all, and then nothing to enable the units with.
+command -v systemctl >/dev/null 2>&1 || systemctl() { :; }
+
 case "$1" in
   configure)
     echo "[1/5] Ensure system user exists (nologin)"

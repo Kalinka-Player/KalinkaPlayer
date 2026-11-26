@@ -10,6 +10,9 @@ STATE_DIR="/var/lib/kalinka-renderer"
 UNIT_NAME="kalinka-renderer.service"
 UPGRADE_PATH_UNIT="kalinka-renderer-upgrade.path"
 
+# A bare container may have no systemd at all, and then nothing to enable the units with.
+command -v systemctl >/dev/null 2>&1 || systemctl() { :; }
+
 case "$1" in
   configure)
     if ! id -u "$USER" >/dev/null 2>&1; then
