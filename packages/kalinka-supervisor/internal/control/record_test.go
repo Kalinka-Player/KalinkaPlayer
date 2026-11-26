@@ -15,9 +15,8 @@ func TestReinstallUnitWritesWhatTheRecordReads(t *testing.T) {
 	unit := string(b)
 	record := NewReinstallRecord("/var/lib/kalinka-supervisor")
 	for _, line := range []string{
-		"StandardOutput=truncate:" + record.LogFile,
+		loggedExecStart("/usr/lib/kalinka-supervisor/reinstall.sh", record.LogFile),
 		`ExecStopPost=/bin/sh -c 'echo "$SERVICE_RESULT" > ` + record.ResultFile + `'`,
-		"ExecStart=/usr/lib/kalinka-supervisor/reinstall.sh",
 		"TimeoutStartSec=infinity",
 		"Type=oneshot",
 	} {
@@ -39,9 +38,8 @@ func TestPluginRemovalUnitWritesWhatTheRecordReads(t *testing.T) {
 	unit := string(b)
 	removals := NewPluginRemovals("/var/lib/kalinka-supervisor")
 	for _, line := range []string{
-		"StandardOutput=truncate:" + removals.LogFile,
+		loggedExecStart("/usr/lib/kalinka-supervisor/remove-plugin.sh "+removals.RequestFile, removals.LogFile),
 		`ExecStopPost=/bin/sh -c 'echo "$SERVICE_RESULT" > ` + removals.ResultFile + `'`,
-		"ExecStart=/usr/lib/kalinka-supervisor/remove-plugin.sh " + removals.RequestFile,
 		"TimeoutStartSec=infinity",
 		"Type=oneshot",
 	} {
@@ -52,6 +50,47 @@ func TestPluginRemovalUnitWritesWhatTheRecordReads(t *testing.T) {
 	deb, err := os.ReadFile("../../build-deb.sh")
 	if err != nil || !strings.Contains(string(deb), `"$pkg_dir/remove-plugin.sh"`) {
 		t.Fatal("the package does not ship remove-plugin.sh")
+	}
+}
+
+func loggedExecStart(command, log string) string {
+	return "ExecStart=/bin/sh -c 'exec " + command + " >" + log + " 2>&1'"
+}
+
+// systemd opens output files before LogsDirectory= exists: the unit and its ExecStopPost= die at 209/STDOUT.
+func TestNoUnitSendsOutputIntoItsOwnLogsDirectory(t *testing.T) {
+	units, err := filepath.Glob("../../systemd/*.service")
+	if err != nil || len(units) == 0 {
+		t.Fatalf("no units found: %v", err)
+	}
+	for _, path := range units {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var dirs, outputs []string
+		for _, line := range strings.Split(string(b), "\n") {
+			key, value, _ := strings.Cut(strings.TrimSpace(line), "=")
+			switch key {
+			case "LogsDirectory":
+				for _, name := range strings.Fields(value) {
+					dirs = append(dirs, "/var/log/"+name+"/")
+				}
+			case "StandardOutput", "StandardError":
+				outputs = append(outputs, value)
+			}
+		}
+		for _, output := range outputs {
+			kind, file, ok := strings.Cut(output, ":")
+			if !ok || (kind != "file" && kind != "append" && kind != "truncate") {
+				continue
+			}
+			for _, dir := range dirs {
+				if strings.HasPrefix(file, dir) {
+					t.Errorf("%s sends output to %s, inside its LogsDirectory=", filepath.Base(path), file)
+				}
+			}
+		}
 	}
 }
 
