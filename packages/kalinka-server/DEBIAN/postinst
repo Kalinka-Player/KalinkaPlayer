@@ -80,29 +80,37 @@ case "$1" in
 
     echo "[5/5] systemd: reload; enable/start if units exist"
     systemd-tmpfiles --create /usr/lib/tmpfiles.d/kalinka.conf || true
-    systemctl daemon-reload
+    # Without a running systemd, as in a chroot or a container, the units are
+    # enabled for the next boot and nothing is reloaded or started.
+    SYSTEMD_RUNNING=0
+    NOW=()
+    if [ -d /run/systemd/system ]; then
+      SYSTEMD_RUNNING=1
+      NOW=(--now)
+      systemctl daemon-reload
+    fi
     if [ -f "$RESTART_PATH_UNIT_PATH" ]; then
-      systemctl enable --now "$RESTART_PATH_UNIT"
+      systemctl enable "${NOW[@]}" "$RESTART_PATH_UNIT"
     else
       echo "Note: $RESTART_PATH_UNIT not found at $RESTART_PATH_UNIT_PATH. Skipping."
     fi
     if [ -f "$PLUGINS_PATH_UNIT_PATH" ]; then
-      systemctl enable --now "$PLUGINS_PATH_UNIT"
+      systemctl enable "${NOW[@]}" "$PLUGINS_PATH_UNIT"
     else
       echo "Note: $PLUGINS_PATH_UNIT not found at $PLUGINS_PATH_UNIT_PATH. Skipping."
     fi
     if [ -f "$UPGRADE_PATH_UNIT_PATH" ]; then
-      systemctl enable --now "$UPGRADE_PATH_UNIT"
+      systemctl enable "${NOW[@]}" "$UPGRADE_PATH_UNIT"
     else
       echo "Note: $UPGRADE_PATH_UNIT not found at $UPGRADE_PATH_UNIT_PATH. Skipping."
     fi
     if [ -f "$JOURNAL_READER_SOCKET_PATH" ]; then
-      systemctl enable --now "$JOURNAL_READER_SOCKET"
+      systemctl enable "${NOW[@]}" "$JOURNAL_READER_SOCKET"
     else
       echo "Note: $JOURNAL_READER_SOCKET not found at $JOURNAL_READER_SOCKET_PATH. Skipping."
     fi
     if [ -f "$MOUNTS_PATH_UNIT_PATH" ]; then
-      systemctl enable --now "$MOUNTS_PATH_UNIT"
+      systemctl enable "${NOW[@]}" "$MOUNTS_PATH_UNIT"
     fi
     # No --now: [4/5] has made the id, and the unit is for an image's first boot.
     if [ -f "$SERVER_ID_UNIT_PATH" ]; then
@@ -120,8 +128,10 @@ case "$1" in
     fi
     if [ -f "$UNIT_PATH" ]; then
       systemctl enable "$UNIT_NAME"
-      systemctl restart "$UNIT_NAME"
-      systemctl --no-pager --full status "$UNIT_NAME" || true
+      if [ "$SYSTEMD_RUNNING" = 1 ]; then
+        systemctl restart "$UNIT_NAME"
+        systemctl --no-pager --full status "$UNIT_NAME" || true
+      fi
     else
       echo "Note: $UNIT_NAME not found at $UNIT_PATH. Skipping enable/start."
     fi

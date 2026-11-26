@@ -1047,7 +1047,7 @@ def test_the_live_plugin_units_are_packaged_and_enabled():
     assert "ExecStartPost=-/bin/rm -f /run/kalinka/plugin-live-request" in service
     build = BUILD_DEB.read_text()
     assert "kalinka-plugins.path" in build and "kalinka-plugins.service" in build
-    assert 'systemctl enable --now "$PLUGINS_PATH_UNIT"' in POSTINST.read_text()
+    assert 'systemctl enable "${NOW[@]}" "$PLUGINS_PATH_UNIT"' in POSTINST.read_text()
 
 
 def test_restart_service_runs_the_plugin_helper_before_core():
@@ -1063,7 +1063,7 @@ def _recorder(name, then=""):
     return f'#!/usr/bin/env bash\necho "{name} $*" >> "$STUB_STATE/calls.log"\n{then}'
 
 
-def _sandboxed_configure(tmp_path, server_id=None, postinst=POSTINST):
+def _sandboxed_configure(tmp_path, server_id=None, postinst=POSTINST, systemd_running=True):
     """A postinst's configure, the server's unless another is given, run
     against a root under tmp_path.
 
@@ -1072,15 +1072,16 @@ def _sandboxed_configure(tmp_path, server_id=None, postinst=POSTINST):
     package its id helper; what reaches past the files — users, systemd,
     udev — is a recorder. Only root can give a file away, so install
     drops the owner it is asked for and chown only records it. ``server_id``
-    is what the box already holds there, if anything. Returns the result, the
-    recorded calls, the id path and what it held when kalinka.service was
-    started.
+    is what the box already holds there, if anything, and ``systemd_running``
+    whether systemd runs the box, as it does not in a chroot or a container.
+    Returns the result, the recorded calls, the id path and what it held when
+    kalinka.service was started.
     """
     root = tmp_path / "root"
     script = tmp_path / "postinst"
     script.write_text(
         re.sub(
-            r'(?<=[\s"=])/(?=(?:etc|opt|srv|sys|usr|var)/)',
+            r'(?<=[\s"=])/(?=(?:etc|opt|run|srv|sys|usr|var)/)',
             lambda _: f"{root}/",
             postinst.read_text(),
         )
@@ -1097,6 +1098,8 @@ def _sandboxed_configure(tmp_path, server_id=None, postinst=POSTINST):
         units.mkdir(parents=True)
         for name in shipped:
             (units / name).touch()
+    if systemd_running:
+        (root / "run" / "systemd" / "system").mkdir(parents=True)
     helper = root / "usr" / "lib" / "kalinka" / "server-id"
     helper.parent.mkdir(parents=True)
     shutil.copy(SERVER_ID_HELPER, helper)
@@ -1210,6 +1213,37 @@ def _systemctl_calls(calls):
         if tool == "systemctl":
             verb, *units = [arg for arg in args if not arg.startswith("-")]
             yield verb, "--now" in args, set(units)
+
+
+BOTH_POSTINSTS = pytest.mark.parametrize(
+    "postinst", [POSTINST, RENDERER_DEBIAN / "postinst"], ids=["server", "renderer"]
+)
+
+
+@BOTH_POSTINSTS
+def test_without_a_running_systemd_the_units_are_enabled_and_nothing_starts(
+    postinst, tmp_path
+):
+    """As in a chroot or a container, whose systemctl can enable a unit but not
+    reload or start one: a postinst that tried left the install unconfigured."""
+    result, calls, _, _ = _sandboxed_configure(
+        tmp_path, postinst=postinst, systemd_running=False
+    )
+
+    assert result.returncode == 0, result.stderr
+    verbs = list(_systemctl_calls(calls))
+    assert verbs
+    assert all(verb == "enable" and not now for verb, now, _ in verbs), verbs
+
+
+@BOTH_POSTINSTS
+def test_where_systemd_runs_the_units_are_reloaded_and_started(postinst, tmp_path):
+    result, calls, _, _ = _sandboxed_configure(tmp_path, postinst=postinst)
+
+    assert result.returncode == 0, result.stderr
+    verbs = list(_systemctl_calls(calls))
+    assert any(verb == "daemon-reload" for verb, _, _ in verbs)
+    assert any(verb in {"start", "restart"} or now for verb, now, _ in verbs)
 
 
 @pytest.mark.parametrize(
