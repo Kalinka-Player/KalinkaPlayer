@@ -44,6 +44,8 @@ Open the [Kalinka image releases](https://github.com/Kalinka-Player/KalinkaPlaye
 - **`-rpi5-arm64.img.xz`** for a Raspberry Pi 5, 500 or CM5;
 - **`-rpi234-arm64.img.xz`** for any other Pi.
 
+A Raspberry Pi 1 is too slow for the server. It can be an output instead, with an image of its own: see [Add more outputs](#add-more-outputs).
+
 With a screen on the Pi, take **`-rpi5-display-arm64.img.xz`** or **`-rpi234-display-arm64.img.xz`** instead. It is the same player, with a now-playing screen (cover, track, touch controls) switched on from the first start. You can turn it off in the app later.
 
 The file is about 450 MB. Do not unpack it.
@@ -123,6 +125,8 @@ Use this on a computer that already runs one of these 64-bit systems:
 - **Raspberry Pi OS (64-bit)** based on Debian 13 (trixie). The older Bookworm release gets the server but no sound output.
 - **DietPi** on Debian 13
 - **Ubuntu 26.04 LTS**. Ubuntu 24.04 has no renderer package: its libraries are older than the renderer needs.
+
+A Raspberry Pi 1, Pi 2 or original Pi Zero is not among them, but it can be an output for a server on another computer, such as your desktop: see [Add more outputs](#add-more-outputs).
 
 The server needs Python 3.11 or newer, which all of these have: on an older system, such as Ubuntu 22.04, the script stops before it downloads anything.
 
@@ -268,12 +272,14 @@ The library then fills in by itself: Kalinka finds your files, tidies their deta
 
 The server's own machine already has an output. You can add:
 
-- **a Kalinka renderer on another machine**, for the best sound: bit-perfect and gapless. Any 64-bit Linux machine near an amplifier or DAC will do: a Raspberry Pi from the Zero 2 W up, an old laptop or a mini-PC;
+- **a Kalinka renderer on another machine**, for the best sound: bit-perfect and gapless. Any Linux machine near an amplifier or DAC will do: any Raspberry Pi, even a Pi 1, an old laptop or a mini-PC;
 - **a browser tab**, for quick listening with nothing to install. Open `http://<address>:8000` and pick the browser as the output. It is not gapless or bit-perfect.
 
 **To set up a renderer on another machine:**
 
 1. Give it 64-bit Debian 13, Raspberry Pi OS (64-bit, Trixie), Ubuntu 26.04 or Fedora 44. For a Pi, follow steps 1–4 of *Starting from a blank Raspberry Pi* under [option D](#d-install-with-one-command). Choose a host name that says where it is, such as `livingroom`: the output is named after it.
+
+   On a Pi 2 or original Pi Zero, choose **Raspberry Pi OS Lite (32-bit)** in step 1 of those instructions instead. The supervisor below is not available there, so set a DAC HAT up in `config.txt` as for a Pi 1. For a Pi 1, use its own image, below.
 2. On that machine, run:
 
    ```bash
@@ -288,10 +294,20 @@ The server's own machine already has an output. You can add:
 
 3. Within a few seconds the output appears in the app. Choose it, pick the sound device in its settings, and play a test sound.
 
+**To make a Raspberry Pi 1 an output:**
+
+A Pi 1 plays bit-perfect and gapless, but FIR room correction and DSD-to-PCM conversion are likely too heavy for it. Its image carries the renderer and nothing else: no server, no Wi-Fi, no login and no supervisor.
+
+1. In the newest [Kalinka image release](https://github.com/Kalinka-Player/KalinkaPlayer/releases?q=kalinka-image-v&expanded=true), download the file that ends in **`-rpi1-renderer-armhf.img.xz`**. Write it to a card of 2 GB or more as in [step 2 of option A](#2-write-it-to-the-card). Imager's settings do not apply to this image, so you can skip them.
+2. For a DAC HAT without an ID chip, open the card's boot partition on your computer and add the HAT's line, such as `dtoverlay=hifiberry-dac`, at the end of `config.txt`. The Pi's own headphone socket and HDMI work without it.
+3. Connect the Pi to your network with a cable and switch it on. Within a few minutes the output appears in the app as *Kalinka Renderer on kalinka-renderer*. Choose it, pick the sound device in its settings, and play a test sound.
+
+The server keeps the renderer up to date, as it does every output. To rename it, change its name in the output's settings, then switch the Pi off and on again: the name takes effect at its next start.
+
 Good to know:
 
 - The renderer must be on the **same network** as the server. Guest Wi-Fi, Wi-Fi with "client isolation" and separate VLANs block it.
-- Do not use a second Kalinka image as an output: an image always brings a server too, and a second server would appear in the app.
+- Do not use a second Kalinka server image as an output: it always brings a server too, and a second server would appear in the app. The Pi 1 renderer image is the one that does not.
 - There is no renderer for Windows or macOS. Use a browser tab there.
 
 ## The supervisor
@@ -396,7 +412,7 @@ Kalinka used to install a C compiler and Python's development files for Smart Se
 
 **The browser cannot connect.** Wait a few minutes after switching the streamer on. Type `http://`, not `https://`, and `:8000` at the end.
 
-**The Pi does not start.** Check that you wrote the right image: `rpi5` for a Pi 5, `rpi234` for the others. Write the card again, try another card, and use the official power supply.
+**The Pi does not start.** Check that you wrote the right image: `rpi5` for a Pi 5, `rpi1-renderer` for a Pi 1, `rpi234` for the others. Write the card again, try another card, and use the official power supply.
 
 **The setup Wi-Fi does not appear.** The streamer only opens it when it has no network. If a cable is plugged in, unplug it, or open Kalinka over the cable instead. Give it a few minutes after switching on.
 

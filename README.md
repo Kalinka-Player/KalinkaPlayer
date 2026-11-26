@@ -87,10 +87,13 @@ The server checks for new releases every hour. With auto-upgrade on, it installs
 
 ## Requirements
 
-Kalinka needs a 64-bit operating system: packages are built for arm64 and amd64 only. On a Raspberry Pi that means the Kalinka image, Raspberry Pi OS (64-bit) or DietPi (64-bit). The Pi 1, Pi 2 and original Pi Zero are not supported.
+The server needs a 64-bit operating system: it is packaged for arm64 and amd64. On a Raspberry Pi that means the Kalinka image, Raspberry Pi OS (64-bit) or DietPi (64-bit).
+
+A renderer also runs on 32-bit ARM, so a Pi 1, Pi 2 or original Pi Zero can be an output for a server on another computer, such as your desktop. A Pi 1 on Ethernet has an image of its own that carries the renderer alone; the others take Raspberry Pi OS Lite (32-bit). These boards are new to Kalinka and not yet tested on the hardware itself: say how it went in the [testing thread](https://github.com/Kalinka-Player/KalinkaPlayer/discussions/133).
 
 | Configuration | Minimum hardware | Notes |
 |---|---|---|
+| Output only | Raspberry Pi 1 with the renderer image, or a Pi 2 or original Pi Zero on Raspberry Pi OS Lite (32-bit) | The server runs on another computer. Bit-perfect, gapless playback; FIR room correction and DSD-to-PCM conversion are likely too heavy for these boards. |
 | Playback and library | Raspberry Pi 3 or Zero 2 W, or any arm64 or amd64 computer with 512 MB of RAM | At 512 MB, use a headless OS and enable swap for the first install and for large scans. 1 GB is comfortable. |
 | With Smart Search | Raspberry Pi 4B with 2 GB of RAM, or any arm64 or amd64 computer with 2 GB or more | Measured on a 4 GB Pi 4B: about 1.15 GB in use with the library indexed and idle, and about 1.5 GB at the peak, during the CPU-heavy embedding pass. 2 GB should therefore be enough, but only 4 GB has been tested end to end. Allow about 1 GB of extra disk space. |
 
