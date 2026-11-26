@@ -171,24 +171,37 @@ def librarian_cpu() -> float:
     return process_cpu().get("kal-librarian", 0.0)
 
 
-def cmd_memory(args, results: Results) -> None:
-    for process in kalinka_processes():
-        base = PROC / str(process.pid)
+def memory_rows(proc: Path = PROC) -> list[dict]:
+    """RSS for each Kalinka process, and PSS and swap where the kernel lets
+    them be read: smaps_rollup needs ptrace access, which some kernels and
+    containers deny even to root."""
+    rows = []
+    for process in kalinka_processes(proc):
+        base = proc / str(process.pid)
         try:
             status = (base / "status").read_text()
-            rollup = (base / "smaps_rollup").read_text()
         except OSError:
             continue
-        row = {
+        try:
+            rollup = (base / "smaps_rollup").read_text()
+        except OSError:
+            rollup = ""
+        rows.append({
             "process": process.name,
             "pid": process.pid,
             "rss_kb": field_kb(status, "VmRSS"),
             "pss_kb": field_kb(rollup, "Pss"),
             "swap_kb": field_kb(rollup, "Swap"),
-        }
+        })
+    return rows
+
+
+def cmd_memory(args, results: Results) -> None:
+    for row in memory_rows():
         results.record("memory", **row)
-        print(f"{process.name:16} {process.pid:>7}  RSS {row['rss_kb']:>7} kB"
-              f"  PSS {row['pss_kb']:>7} kB  swap {row['swap_kb']:>6} kB")
+        shown = {k: "-" if v is None else v for k, v in row.items()}
+        print(f"{row['process']:16} {row['pid']:>7}  RSS {shown['rss_kb']:>7} kB"
+              f"  PSS {shown['pss_kb']:>7} kB  swap {shown['swap_kb']:>6} kB")
     meminfo = (PROC / "meminfo").read_text()
     system = {
         key: field_kb(meminfo, key)

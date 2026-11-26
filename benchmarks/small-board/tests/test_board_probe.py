@@ -51,6 +51,25 @@ def test_cpu_is_summed_per_process_name(tmp_path, monkeypatch):
     assert probe.process_cpu(tmp_path) == {"kal-librarian": 1.5}
 
 
+def test_memory_without_smaps_still_reports_rss(tmp_path):
+    _process(tmp_path, 3, "kalinka-server")
+    (tmp_path / "3" / "status").write_text("VmRSS:\t   90000 kB\n")
+
+    assert probe.memory_rows(tmp_path) == [
+        {"process": "kalinka-server", "pid": 3, "rss_kb": 90000,
+         "pss_kb": None, "swap_kb": None}
+    ]
+
+
+def test_memory_reads_pss_and_swap_where_it_can(tmp_path):
+    _process(tmp_path, 3, "kal-librarian")
+    (tmp_path / "3" / "status").write_text("VmRSS:\t   70000 kB\n")
+    (tmp_path / "3" / "smaps_rollup").write_text("Pss:  50000 kB\nSwap:   12 kB\n")
+
+    [row] = probe.memory_rows(tmp_path)
+    assert (row["pss_kb"], row["swap_kb"]) == (50000, 12)
+
+
 def test_percentiles_take_the_nearest_rank():
     values = [5, 1, 4, 2, 3]
 
