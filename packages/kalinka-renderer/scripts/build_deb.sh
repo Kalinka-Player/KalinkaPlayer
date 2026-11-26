@@ -21,7 +21,7 @@ if [ -z "$VERSION" ]; then
 fi
 echo "Building version: $VERSION"
 
-BUILD_DIR=build-release
+BUILD_DIR="${BUILD_DIR:-build-release}"
 cmake -S . -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release \
     -DKALINKA_VERSION="$VERSION"
 cmake --build "$BUILD_DIR" -j "$(nproc)" --target kalinka-renderer

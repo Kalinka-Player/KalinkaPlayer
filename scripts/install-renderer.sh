@@ -19,7 +19,7 @@
 #   GITHUB_TOKEN   optional, only to avoid the 60-req/hr anonymous API limit
 #   KALINKA_REINSTALL  set to 1 to install the deb again when that version is already there
 #   KALINKA_SUPERVISOR set to 1 to install the supervisor too, so the app can set
-#                      up this box's sound card (Debian-based systems only)
+#                      up this box's sound card (64-bit Debian-based systems only)
 #
 # The download runs as your user; only the install step uses sudo. Running the
 # whole script under sudo is fine too.
@@ -48,8 +48,10 @@ PLATFORM="${ID:-unknown}-${VERSION_ID:-unknown}"
 if have dpkg; then
   FORMAT=deb
   ARCH="$(dpkg --print-architecture)"
-  [ "$ARCH" = arm64 ] || [ "$ARCH" = amd64 ] \
-    || die "unsupported architecture: $ARCH (need arm64 or amd64)"
+  case "$ARCH" in
+    arm64|amd64|armhf) ;;
+    *) die "unsupported architecture: $ARCH (need arm64, amd64 or armhf)" ;;
+  esac
 elif have rpm; then
   FORMAT=rpm
   case "$(uname -m)" in
@@ -66,8 +68,11 @@ if [ "$ID" = ubuntu ] && dpkg --compare-versions "${VERSION_ID:-0}" lt 26.04; th
   die "no renderer package for Ubuntu $VERSION_ID (need 26.04 or newer)"
 fi
 
-if [ "${KALINKA_SUPERVISOR:-0}" = 1 ] && [ "$FORMAT" != deb ]; then
-  die "the supervisor is packaged for Debian-based systems only; leave KALINKA_SUPERVISOR unset"
+if [ "${KALINKA_SUPERVISOR:-0}" = 1 ]; then
+  [ "$FORMAT" = deb ] \
+    || die "the supervisor is packaged for Debian-based systems only; leave KALINKA_SUPERVISOR unset"
+  [ "$ARCH" != armhf ] \
+    || die "the supervisor has no package for 32-bit ARM; leave KALINKA_SUPERVISOR unset"
 fi
 
 have python3 || die "python3 is required to parse the release metadata"

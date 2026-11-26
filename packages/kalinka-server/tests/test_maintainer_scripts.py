@@ -230,21 +230,30 @@ def test_a_renderer_box_gets_a_supervisor_only_on_request(tmp_path, wanted):
         assert not log.exists()
 
 
+@pytest.mark.parametrize(
+    ("fmt", "arch", "refusal"),
+    [
+        ("rpm", "x86_64", "Debian-based systems only"),
+        ("deb", "armhf", "no package for 32-bit ARM"),
+        ("deb", "arm64", None),
+    ],
+)
 def test_a_supervisor_is_refused_before_anything_installs_where_it_has_no_package(
-    tmp_path,
+    tmp_path, fmt, arch, refusal
 ):
-    start = 'if [ "${KALINKA_SUPERVISOR:-0}" = 1 ] && [ "$FORMAT" != deb ]'
-    for fmt, code in (("rpm", 1), ("deb", 0)):
-        result = _renderer_block(
-            tmp_path,
-            start,
-            "have python3 || die",
-            {"KALINKA_SUPERVISOR": "1"},
-            prelude=f"FORMAT={fmt}\n",
-        )
-        assert result.returncode == code, result.stderr
-        if code:
-            assert "Debian-based systems only" in result.stderr
+    result = _renderer_block(
+        tmp_path,
+        'if [ "${KALINKA_SUPERVISOR:-0}" = 1 ]; then\n  [ "$FORMAT" = deb ]',
+        "have python3 || die",
+        {"KALINKA_SUPERVISOR": "1"},
+        prelude=f"FORMAT={fmt}\nARCH={arch}\n",
+    )
+
+    if refusal is None:
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode == 1
+        assert refusal in result.stderr
 
 
 EXTRAS = {"libchromaprint-tools", "nfs-common"}

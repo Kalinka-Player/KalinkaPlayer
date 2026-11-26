@@ -10,7 +10,9 @@ name: Renderer release
 #   * .deb  — Debian 13 (Raspberry Pi OS trixie) and Ubuntu 26.04, each on
 #             arm64 and amd64; a deb links one distro's sonames, so the two
 #             are not interchangeable. Ubuntu 24.04's Highway is older than
-#             the DSP needs, so 24.04 gets no deb.
+#             the DSP needs, so 24.04 gets no deb. Also 32-bit Raspberry Pi OS
+#             (Raspbian 13, ARMv6), built in an emulated Raspbian chroot
+#             (best-effort, never blocks the release).
 #   * .rpm  — Fedora 44, amd64 + arm64
 #   * .flatpak — freedesktop 24.08 bundle, x86_64 + aarch64 (best-effort,
 #             never blocks the release)
@@ -89,6 +91,33 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: renderer-debs-${{ matrix.distro }}-${{ matrix.arch }}
+          path: packages/kalinka-renderer/*.deb
+          if-no-files-found: error
+
+  # No container image carries Raspbian, so it is bootstrapped and run through qemu-arm.
+  deb-raspbian:
+    name: Deb (raspbian-13 armhf)
+    continue-on-error: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - name: Install the chroot tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends debootstrap gpgv qemu-user-static binfmt-support
+
+      - name: Checkout (tag)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Build deb
+        run: sudo RENDERER_VERSION="${TAG#kalinka-renderer-v}" packages/kalinka-renderer/scripts/build_deb_raspbian.sh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: renderer-debs-raspbian-13-armhf
           path: packages/kalinka-renderer/*.deb
           if-no-files-found: error
 
@@ -178,7 +207,7 @@ jobs:
 
   release:
     name: Publish release
-    needs: [deb, rpm, flatpak]
+    needs: [deb, deb-raspbian, rpm, flatpak]
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout (tag)
@@ -221,7 +250,8 @@ jobs:
           on Fedora — and installs it (drop the \`-s -- $VERSION\` to always get
           the latest renderer release instead).
 
-          **Manual install — Debian 13 / Raspberry Pi OS or Ubuntu 26.04, arm64 or amd64:**
+          **Manual install — Debian 13 / Raspberry Pi OS or Ubuntu 26.04, arm64 or amd64,
+          or 32-bit Raspberry Pi OS (armhf):**
           download the \`.deb\` whose name carries your distro and architecture
           (e.g. \`kalinka-renderer-$VERSION.debian-13.arm64.deb\`) and
           \`sudo apt install ./kalinka-renderer-*.deb\`. The debs are not
