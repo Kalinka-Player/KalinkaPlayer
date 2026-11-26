@@ -1,7 +1,8 @@
 #!/bin/bash
 # Build the kalinka-server .deb. The server is pure Python, so the package is
 # Architecture: all — one artifact installs on any distro and arch, exactly
-# like the plugin/SDK _all debs.
+# like the plugin/SDK _all debs. Beside it, kalinka-server-libs (armhf) names
+# the system libraries its Python packages need on 32-bit ARM.
 
 set -e
 
@@ -95,3 +96,15 @@ mv "$TARGET_DIR.deb" "$TARGET_FILE"
 rm -rf "$TARGET_DIR"
 
 echo "Successfully built: $TARGET_FILE"
+
+# An Architecture: all package cannot depend on anything for one architecture
+# only, so what 32-bit ARM alone needs ships beside it.
+LIBS_DIR="kalinka-server-libs-$DEB_VERSION"
+LIBS_FILE="kalinka-server-libs_${DEB_VERSION}_armhf.deb"
+rm -rf "$LIBS_DIR"
+mkdir -p "$LIBS_DIR/DEBIAN"
+sed "s/@VERSION@/$DEB_VERSION/" libs-armhf/control.in > "$LIBS_DIR/DEBIAN/control"
+dpkg-deb --root-owner-group --build "$LIBS_DIR" "$LIBS_FILE"
+rm -rf "$LIBS_DIR"
+
+echo "Successfully built: $LIBS_FILE"

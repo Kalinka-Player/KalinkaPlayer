@@ -5,7 +5,9 @@
 # Downloads the .deb assets for a `kalinka-v*` GitHub release and installs them
 # with apt so system dependencies are pulled in automatically. Every package
 # in the bundle — server, plugins, SDK — is pure Python and arch-independent
-# (_all), so the same artifacts install on any machine.
+# (_all), so the same artifacts install on any machine. On 32-bit ARM the
+# bundle's kalinka-server-libs (armhf) adds the system libraries that the
+# server's Python packages, built by piwheels, link against.
 #
 # Some pieces ship on their own release trains and are installed alongside,
 # each best-effort so a lookup failure only warns:
@@ -76,6 +78,7 @@ have python3 || die "python3 is required (it is also a runtime dependency of the
 
 PRETTY_NAME=""
 [ -r /etc/os-release ] && . /etc/os-release
+ARCH="$(dpkg --print-architecture 2>/dev/null || true)"
 
 # apt refuses the server on an older system python3, whatever comes first on PATH.
 SYSTEM_PYTHON=/usr/bin/python3
@@ -155,6 +158,9 @@ for r in (data if isinstance(data, list) else [data]):
 PY
 cat > "$PARSER" <<'PY'
 import sys, json
+arch = sys.argv[1]
+# The bundle's one per-architecture package: the kiosk and the renderer are looked up on their own.
+per_arch = ("kalinka-server-libs_",)
 data = json.load(sys.stdin)
 rel = None
 if isinstance(data, list):
@@ -172,9 +178,10 @@ if not rel:
 assets = {a["name"]: a["browser_download_url"] for a in rel.get("assets", [])}
 urls = []
 for name, url in assets.items():
-    if not name.endswith("_all.deb"):
-        continue
-    urls.append(url)
+    if name.endswith("_all.deb") or (
+        arch and name.startswith(per_arch) and name.endswith(f"_{arch}.deb")
+    ):
+        urls.append(url)
 if not any(n.startswith("kalinka-server_") and n.endswith("_all.deb")
            for n in assets):
     sys.stderr.write(
@@ -186,7 +193,7 @@ print(rel["tag_name"])
 for u in urls:
     print(u)
 PY
-parsed="$(printf '%s' "$json" | python3 "$PARSER")" \
+parsed="$(printf '%s' "$json" | python3 "$PARSER" "$ARCH")" \
   || die "failed to parse release metadata"
 
 TAG="$(printf '%s\n' "$parsed" | sed -n '1p')"
@@ -227,13 +234,12 @@ fi
 
 kiosk_url=""
 if [ "$WANT_DISPLAY" = "1" ]; then
-  arch="$(dpkg --print-architecture 2>/dev/null || true)"
-  if [ -n "$arch" ] \
-     && kiosk_url="$(app_asset kalinka-kiosk_ "_${arch}.deb")" && [ -n "$kiosk_url" ]; then
+  if [ -n "$ARCH" ] \
+     && kiosk_url="$(app_asset kalinka-kiosk_ "_${ARCH}.deb")" && [ -n "$kiosk_url" ]; then
     URLS+=("$kiosk_url")
     echo "   found ${kiosk_url##*/}"
   else
-    echo ">> note: no kalinka-kiosk package for ${arch:-this machine} found in $WEB_REPO —" >&2
+    echo ">> note: no kalinka-kiosk package for ${ARCH:-this machine} found in $WEB_REPO —" >&2
     echo "   installing without the now-playing display." >&2
   fi
 fi

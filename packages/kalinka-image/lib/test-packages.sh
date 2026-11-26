@@ -23,6 +23,8 @@ stage_test_packages() {
     fi
     version="$(dpkg-deb -f "$file" Version)"
     arch="$(dpkg-deb -f "$file" Architecture)"
+    # Every server build writes this 32-bit ARM companion beside its own deb.
+    [ "$package" != kalinka-server-libs ] || [ "$arch" = "$architecture" ] || continue
     case "$package" in kalinka-*) ;; *) die "not a Kalinka test package: $package" ;; esac
     [ "$arch" = all ] || [ "$arch" = "$architecture" ] || die "wrong architecture for $package: $arch"
     [ -z "${seen[$package]:-}" ] || die "more than one test package for $package"

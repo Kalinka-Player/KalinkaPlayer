@@ -29,6 +29,7 @@ class ReleaseInstallerTests(unittest.TestCase):
             KALINKA_RENDERER="0",
             KALINKA_REINSTALL="0",
             SKIP_SUPERVISOR="1",
+            FAKE_ARCH="amd64",
             NO_APT_UPDATE="1",
             GITHUB_TOKEN="",
             FAIL_BUNDLE="0",
@@ -115,6 +116,9 @@ status.write_text(json.dumps(states))
             "dpkg",
             """#!/usr/bin/env python3
 import json, os, pathlib, sys
+if sys.argv[1:] == ["--print-architecture"]:
+    print(os.environ["FAKE_ARCH"])
+    sys.exit(0)
 root = pathlib.Path(os.environ["FIXTURE"])
 with (root / "dpkg.jsonl").open("a") as log:
     log.write(json.dumps(sys.argv[1:]) + "\\n")
@@ -438,6 +442,34 @@ else:
         self.assertIn("no arch-independent server package", result.stderr)
         self.assertEqual(self.calls("apt"), [])
         self.assertEqual(self.calls("dpkg"), [])
+
+    def test_on_32_bit_arm_the_bundle_brings_the_libraries_its_wheels_need(self):
+        self.env["FAKE_ARCH"] = "armhf"
+        libs = "kalinka-server-libs_5.17.0_armhf.deb"
+        self.release = self.asset_release(
+            "kalinka-v5.17.0",
+            self.base_names
+            + [
+                self.bluetooth,
+                libs,
+                "kalinka-kiosk_0.25.0_armhf.deb",
+                "kalinka-other_5.17.0_arm64.deb",
+            ],
+        )
+        self.feed()
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_packages(self.base_names + [self.bluetooth, libs, self.web])
+
+    def test_other_machines_leave_the_32_bit_libraries_out(self):
+        self.release = self.asset_release(
+            "kalinka-v5.17.0",
+            self.base_names + [self.bluetooth, "kalinka-server-libs_5.17.0_armhf.deb"],
+        )
+        self.feed()
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_packages(self.base_names + [self.bluetooth, self.web])
 
 
 if __name__ == "__main__":

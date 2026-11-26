@@ -76,6 +76,12 @@ message="$(stage_test_packages "$WORK/input" "$WORK/wrong-override-stage" arm64 
   && fail "accepted a Core package as the supervisor override"
 assert_contains "an invalid supervisor override is explained" "$message" 'wrong supervisor package'
 
+mkdir -p "$WORK/with-libs" && cp "$WORK"/input/*.deb "$WORK/with-libs/"
+make_package "$WORK/with-libs" kalinka-server-libs armhf
+stage_test_packages "$WORK/with-libs" "$WORK/with-libs-stage" arm64
+assert_eq "the server build's 32-bit libraries stay out of a 64-bit image" \
+  "$(cut -f1 "$WORK/with-libs-stage/packages.tsv" | grep -c kalinka-server-libs)" 0
+
 make_package "$WORK/wrong" kalinka-renderer amd64
 message="$(stage_test_packages "$WORK/wrong" "$WORK/wrong-stage" arm64 2>&1)" \
   && fail "accepted an x86 renderer for a Pi"
