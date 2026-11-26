@@ -8,8 +8,7 @@ TimeoutStartSec=infinity
 StateDirectory=kalinka-supervisor
 StateDirectoryMode=0700
 LogsDirectory=kalinka-supervisor
-StandardOutput=truncate:/var/log/kalinka-supervisor/plugin-removal.log
-StandardError=inherit
-ExecStart=/usr/lib/kalinka-supervisor/remove-plugin.sh /var/lib/kalinka-supervisor/plugin-removal-request
+# systemd opens a StandardOutput= file before it creates LogsDirectory=, so the command opens its own log.
+ExecStart=/bin/sh -c 'exec /usr/lib/kalinka-supervisor/remove-plugin.sh /var/lib/kalinka-supervisor/plugin-removal-request >/var/log/kalinka-supervisor/plugin-removal.log 2>&1'
 # The unit's own result is gone once systemd unloads it; the supervisor reads this instead.
 ExecStopPost=/bin/sh -c 'echo "$SERVICE_RESULT" > /var/lib/kalinka-supervisor/plugin-removal-result'

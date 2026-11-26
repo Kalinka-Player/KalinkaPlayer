@@ -87,7 +87,7 @@ grep -q '^  systemctl --no-block restart kalinka-supervisor.service || true$' "$
 grep -q '^    systemctl reload NetworkManager.service || true$' "$deb"
 grep -q 'set power_save off || true$' "$deb"
 grep -q '^ReadWritePaths=-/etc/NetworkManager/conf.d$' "$unit"
-grep -q '^ExecStart=/usr/lib/kalinka-supervisor/reinstall.sh$' "$pkg_dir/../kalinka-supervisor/systemd/kalinka-reinstall.service"
+grep -q "^ExecStart=/bin/sh -c 'exec /usr/lib/kalinka-supervisor/reinstall.sh >/var/log/kalinka-supervisor/reinstall.log 2>&1'\$" "$pkg_dir/../kalinka-supervisor/systemd/kalinka-reinstall.service"
 
 # Compilation is tested separately; exercise the actual package assembly here.
 cat > "$root/go" <<'GO'
