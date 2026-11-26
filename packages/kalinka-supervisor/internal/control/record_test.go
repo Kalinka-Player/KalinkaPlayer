@@ -54,11 +54,19 @@ func TestPluginRemovalUnitWritesWhatTheRecordReads(t *testing.T) {
 }
 
 func loggedExecStart(command, log string) string {
-	return "ExecStart=/bin/sh -c 'exec " + command + " >" + log + " 2>&1'"
+	return "ExecStart=/bin/sh -c ': >" + log + "; exec " + command + " >>" + log + " 2>&1'"
 }
 
-// systemd opens output files before LogsDirectory= exists: the unit and its ExecStopPost= die at 209/STDOUT.
-func TestNoUnitSendsOutputIntoItsOwnLogsDirectory(t *testing.T) {
+var execDirectoryRoots = map[string]string{
+	"RuntimeDirectory":       "/run/",
+	"StateDirectory":         "/var/lib/",
+	"CacheDirectory":         "/var/cache/",
+	"LogsDirectory":          "/var/log/",
+	"ConfigurationDirectory": "/etc/",
+}
+
+// systemd opens output files before it creates a unit's exec directories: the unit and its ExecStopPost= die at 209/STDOUT.
+func TestNoUnitSendsOutputIntoItsOwnExecDirectories(t *testing.T) {
 	units, err := filepath.Glob("../../systemd/*.service")
 	if err != nil || len(units) == 0 {
 		t.Fatalf("no units found: %v", err)
@@ -70,13 +78,15 @@ func TestNoUnitSendsOutputIntoItsOwnLogsDirectory(t *testing.T) {
 		}
 		var dirs, outputs []string
 		for _, line := range strings.Split(string(b), "\n") {
-			key, value, _ := strings.Cut(strings.TrimSpace(line), "=")
-			switch key {
-			case "LogsDirectory":
-				for _, name := range strings.Fields(value) {
-					dirs = append(dirs, "/var/log/"+name+"/")
+			key, value, _ := strings.Cut(line, "=")
+			key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+			if root, ok := execDirectoryRoots[key]; ok {
+				for _, field := range strings.Fields(value) {
+					name, _, _ := strings.Cut(field, ":")
+					dirs = append(dirs, root+name+"/")
 				}
-			case "StandardOutput", "StandardError":
+			}
+			if key == "StandardOutput" || key == "StandardError" {
 				outputs = append(outputs, value)
 			}
 		}
@@ -87,7 +97,7 @@ func TestNoUnitSendsOutputIntoItsOwnLogsDirectory(t *testing.T) {
 			}
 			for _, dir := range dirs {
 				if strings.HasPrefix(file, dir) {
-					t.Errorf("%s sends output to %s, inside its LogsDirectory=", filepath.Base(path), file)
+					t.Errorf("%s sends output to %s, in a directory systemd creates only after opening it", filepath.Base(path), file)
 				}
 			}
 		}
