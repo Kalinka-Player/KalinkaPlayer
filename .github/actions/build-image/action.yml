@@ -46,6 +46,11 @@ runs:
         [ -e /usr/share/debootstrap/scripts/trixie ] \
           || sudo ln -s sid /usr/share/debootstrap/scripts/trixie
 
+    - name: Install qemu for 32-bit ARM
+      if: inputs.target == 'rpi1-renderer'
+      shell: bash
+      run: sudo apt-get install -y --no-install-recommends qemu-user-static binfmt-support
+
     # In a container, so the tests that edit /etc get a throwaway system rather than this runner.
     - name: Test the image scripts
       shell: bash

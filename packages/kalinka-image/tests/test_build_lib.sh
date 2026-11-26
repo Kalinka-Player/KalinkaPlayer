@@ -26,6 +26,8 @@ assert_eq "a board by its target and architecture" \
   "$(image_name 5.1.0 rpi234 arm64)" "kalinka-5.1.0-rpi234-arm64.img"
 assert_eq "a display variant by its whole target name" \
   "$(image_name 5.1.0 rpi5-display arm64)" "kalinka-5.1.0-rpi5-display-arm64.img"
+assert_eq "the renderer image by the renderer's version" \
+  "$(image_name 0.12.0 rpi1-renderer armhf)" "kalinka-0.12.0-rpi1-renderer-armhf.img"
 
 echo "  -- the manifest"
 write_manifest "$WORK/m.json" rpi5-display arm64 1 5.1.0 0.6.1 0.11.1 base=rpi-image-gen base_version=v2.9.0

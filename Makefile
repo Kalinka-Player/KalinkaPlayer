@@ -1,6 +1,6 @@
 ## KalinkaPlayer Development Makefile
 
-.PHONY: supervisor-build supervisor-test supervisor-deb clean test test-playqueue test-plugin-template system-test system-test-large install-test bench-sdd lint help venv-env require-venv kalinka-server-deb kalinka-server-rpm kalinka-plugins-deb build-all-deb copy-debs build-env dev-setup dev-run renderer-build renderer-clean renderer-deb renderer-rpm proto image-rpi234 image-rpi5 image-rpi234-display image-rpi5-display image-amd64 image-test
+.PHONY: supervisor-build supervisor-test supervisor-deb clean test test-playqueue test-plugin-template system-test system-test-large install-test bench-sdd lint help venv-env require-venv kalinka-server-deb kalinka-server-rpm kalinka-plugins-deb build-all-deb copy-debs build-env dev-setup dev-run renderer-build renderer-clean renderer-deb renderer-rpm proto image-rpi234 image-rpi5 image-rpi234-display image-rpi5-display image-rpi1-renderer image-amd64 image-test
 
 ## --- Local-from-source dev environment (no root, no systemd) ------------------
 ## Everything lands in a per-user fakeroot under $(KALINKA_PREFIX) instead of the
@@ -303,6 +303,10 @@ image-rpi234-display:
 image-rpi5-display:
 	@KALINKA_VERSION=$(KALINKA_VERSION) $(IMAGE_DIR)/rpi-image-gen/build.sh config/kalinka-rpi5-display.yaml
 
+## The renderer alone, for a Pi 1 on Ethernet; RENDERER_DEB= installs a local armhf package.
+image-rpi1-renderer:
+	@RENDERER_DEB="$(RENDERER_DEB)" $(IMAGE_DIR)/rpi-image-gen/build.sh config/kalinka-rpi1-renderer.yaml
+
 image-amd64:
 	@$(IMAGE_DIR)/build-image.sh amd64 $(KALINKA_VERSION)
 
@@ -355,6 +359,7 @@ help:
 	@echo "  image-rpi5        Build the Raspberry Pi 5 image (needs podman)"
 	@echo "  image-rpi234-display  The rpi234 image with the now-playing display (needs podman)"
 	@echo "  image-rpi5-display    The rpi5 image with the now-playing display (needs podman)"
+	@echo "  image-rpi1-renderer   The renderer alone, for a Raspberry Pi 1 on Ethernet (needs podman)"
 	@echo "  image-amd64       Build the x86-64 appliance image (needs root)"
 	@echo "  image-test        Run the appliance image tests"
 	@echo "  copy-debs         Move built deb packages to debs/ directory"

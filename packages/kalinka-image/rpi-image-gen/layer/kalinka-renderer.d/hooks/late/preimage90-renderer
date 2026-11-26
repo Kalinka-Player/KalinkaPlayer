@@ -1,0 +1,18 @@
+#!/bin/bash
+# The root and config.txt are final only in this phase, after the renderer went in.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)"
+ROOTFS="$1"
+
+# shellcheck source=../../../../../lib/common.sh
+. "$SCRIPT_DIR/lib/common.sh"
+# shellcheck source=../../../../../lib/kalinka.sh
+. "$SCRIPT_DIR/lib/kalinka.sh"
+# shellcheck source=../../../../../lib/card-settings.sh
+. "$SCRIPT_DIR/lib/card-settings.sh"
+# shellcheck source=../../../../../lib/renderer-image.sh
+. "$SCRIPT_DIR/lib/renderer-image.sh"
+
+verify_renderer_image
+verify_pi1_boot "$ROOTFS"

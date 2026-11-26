@@ -24,6 +24,16 @@ stop_build_aids() {
   rm -f "$ROOTFS/etc/apt/apt.conf.d/99kalinka-image-build"
 }
 
+# mmdebstrap holds a policy-rc.d of its own until it finishes, and removes it then.
+hold_mmdebstrap_policy() {
+  mv "$ROOTFS/usr/sbin/policy-rc.d" "$WORK/policy-rc.d.mmdebstrap"
+}
+
+restore_mmdebstrap_policy() {
+  [ ! -e "$WORK/policy-rc.d.mmdebstrap" ] \
+    || mv -f "$WORK/policy-rc.d.mmdebstrap" "$ROOTFS/usr/sbin/policy-rc.d"
+}
+
 # The image's own resolv.conf, file or symlink, comes back exactly as it was.
 use_build_dns() {
   local conf="$ROOTFS/etc/resolv.conf" saved="$WORK/resolv.conf.image"

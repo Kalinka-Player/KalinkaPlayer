@@ -3,7 +3,8 @@ name: Image release
 # Builds and publishes the ready-to-flash appliance images for a
 # `kalinka-image-vX.Y.Z` tag, with the server, every first-party plugin, the
 # browser player and the renderer already installed: four for the Raspberry Pi
-# (headless and -display) and one for x86-64 PCs.
+# (headless and -display) and one for x86-64 PCs. A sixth, for a Pi 1, carries
+# the renderer alone, as an output of a server elsewhere.
 #
 # The images have their own release train because they change for reasons the
 # app bundle does not — an operating system update, a first-boot fix —
@@ -13,8 +14,9 @@ name: Image release
 # or the latest published one when that is left empty.
 #
 # Each image is built on a runner of its own architecture, so nothing is
-# emulated. Neither job runs in a container: the build needs loop devices and
-# mounts on the host.
+# emulated, except the Pi 1's: no runner runs 32-bit ARM code, so it is built
+# on x86 under qemu. Neither job runs in a container: the build needs loop
+# devices and mounts on the host.
 
 on:
   push:

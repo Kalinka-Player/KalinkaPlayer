@@ -1,0 +1,17 @@
+# METABEGIN
+# X-Env-Layer-Name: kalinka-rpi-linux-v6
+# X-Env-Layer-Category: kernel
+# X-Env-Layer-Desc: Raspberry Pi v6 kernel, for the BCM2835 of the Pi 1 and
+#  the original Pi Zero, which rpi-image-gen has no layer for.
+# X-Env-Layer-Version: 1.0.0
+# X-Env-Layer-Requires: rpi-linux-base
+# X-Env-Layer-AfterProvider: debian-base
+# METAEND
+---
+env:
+  INITRD: "No"
+mmdebstrap:
+  architectures:
+    - armhf
+  packages:
+    - linux-image-rpi-v6
