@@ -23,6 +23,10 @@ The Kalinka logo, icon and related artwork under `docs/images/` are **not** unde
 
 minimp3 is vendored verbatim, with its upstream notice retained in the headers.
 
+## Kalinka Supervisor
+
+The supervisor binary includes the Go runtime and standard library, `golang.org/x/sys` (BSD-3-Clause), and `github.com/godbus/dbus/v5` (BSD-2-Clause). Its Debian package installs the [copyright and license notices](packages/kalinka-supervisor/debian/copyright) in `/usr/share/doc/kalinka-supervisor/copyright`.
+
 ## PFFFT
 
 The native renderer builds the partitioned FIR filter with PFFFT v1.3.0. The renderer packages include its FFTPACK licence. [PFFFT](https://github.com/marton78/pffft), [licence text](packages/kalinka-renderer/third_party/PFFFT-LICENSE.txt).

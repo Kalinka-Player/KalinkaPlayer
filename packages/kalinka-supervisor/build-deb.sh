@@ -12,6 +12,7 @@ trap 'rm -rf "$stage"' EXIT
 chmod 755 "$stage"
 mkdir -p "$stage/DEBIAN" "$stage/usr/lib/kalinka-supervisor" "$stage/usr/lib/systemd/system" "$stage/usr/lib/NetworkManager/conf.d" "$out_dir"
 GOARCH="$arch" VERSION="$version" "$pkg_dir/build.sh" "$stage/usr/lib/kalinka-supervisor/kalinka-supervisor"
+install -Dm 644 "$pkg_dir/debian/copyright" "$stage/usr/share/doc/kalinka-supervisor/copyright"
 install -m 755 "$pkg_dir/reinstall.sh" "$pkg_dir/ssh-setup.sh" "$pkg_dir/soundcard.sh" "$pkg_dir/remove-plugin.sh" "$stage/usr/lib/kalinka-supervisor/"
 install -m 644 "$pkg_dir/dietpi-conf.sh" "$pkg_dir/boot-config.sh" "$stage/usr/lib/kalinka-supervisor/"
 install -m 644 "$pkg_dir/systemd/"* "$stage/usr/lib/systemd/system/"
