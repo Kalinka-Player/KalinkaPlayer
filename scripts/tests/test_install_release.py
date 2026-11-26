@@ -2,6 +2,7 @@
 
 import json
 import os
+import pty
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,7 @@ class InstallerHarness(unittest.TestCase):
             KALINKA_REINSTALL="0",
             SKIP_SUPERVISOR="1",
             FAKE_ARCH="amd64",
+            FAKE_MACHINE="x86_64",
             SUPERVISOR_FAILS="0",
             NO_APT_UPDATE="1",
             GITHUB_TOKEN="",
@@ -52,6 +54,11 @@ class InstallerHarness(unittest.TestCase):
         )
         self.platform("debian", "13")
         self.command("id", "#!/bin/sh\necho 0\n")
+        self.command(
+            "uname",
+            '#!/bin/sh\n[ "$1" = -m ] && exec echo "$FAKE_MACHINE"\n'
+            'exec /usr/bin/uname "$@"\n',
+        )
         self.command(
             "dpkg-query",
             """#!/usr/bin/env python3
@@ -466,6 +473,36 @@ class ReleaseInstallerTests(InstallerHarness):
         result = self.run_installer()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_packages(self.base_names + [self.bluetooth, libs, self.web])
+
+    def test_a_pi_1_is_pointed_to_the_renderer_installer_and_still_installed(self):
+        self.env["FAKE_MACHINE"] = "armv6l"
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("install-renderer.sh", result.stderr)
+        self.assert_packages(self.base_names + [self.bluetooth, self.web])
+
+    def test_at_a_terminal_a_pi_1_has_time_to_stop_before_the_server_installs(self):
+        self.env["FAKE_MACHINE"] = "armv6l"
+        self.command("sleep", '#!/bin/sh\necho "$@" >> "$FIXTURE/sleep.log"\n')
+        (self.root / "status.json").write_text(json.dumps(self.installed))
+        terminal, stderr = pty.openpty()
+        try:
+            result = subprocess.run(
+                ["bash", str(self.installer)], env=self.env, stdout=subprocess.DEVNULL,
+                stderr=stderr, timeout=15, check=False,
+            )
+        finally:
+            os.close(stderr)
+            os.close(terminal)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual((self.root / "sleep.log").read_text().split(), ["15"])
+
+    def test_a_pi_1_already_running_the_server_upgrades_without_the_note(self):
+        self.env["FAKE_MACHINE"] = "armv6l"
+        self.installed["kalinka-server"] = "installed 5.16.0"
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("install-renderer.sh", result.stderr)
 
     def test_other_machines_leave_the_32_bit_libraries_out(self):
         self.release = self.asset_release(

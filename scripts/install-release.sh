@@ -91,6 +91,18 @@ FIRST_INSTALL=1
 ! installed kalinka-server || FIRST_INSTALL=0
 DEVICE_MODEL=/proc/device-tree/model
 
+if [ "$(uname -m)" = armv6l ] && [ "$FIRST_INSTALL" = 1 ]; then
+  echo ">> note: this is a Raspberry Pi 1 or original Pi Zero, which runs the server very" >&2
+  echo "   slowly. To make it an output for a server on another computer, stop here" >&2
+  echo "   (Ctrl-C) and run this instead:" >&2
+  echo "     curl -fsSL https://kalinkaplayer.com/install-renderer.sh | sudo bash" >&2
+  # Someone reading it needs the time to stop.
+  if [ -t 2 ]; then
+    echo "   The server install goes ahead in 15 seconds." >&2
+    sleep 15
+  fi
+fi
+
 # apt refuses the server on an older system python3, whatever comes first on PATH.
 SYSTEM_PYTHON=/usr/bin/python3
 [ -x "$SYSTEM_PYTHON" ] || SYSTEM_PYTHON=python3
