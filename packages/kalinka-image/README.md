@@ -1,8 +1,8 @@
 # Kalinka Player appliance images
 
-Bootable images with the whole player already installed and enabled: the server, all four first-party plugins, the plugin SDK, the browser player and the renderer that drives the sound card. Power one on and it plays — there is no install step and no login needed to use it.
+Bootable images with the whole player already installed and enabled: the server, all four first-party plugins, the plugin SDK, the browser player and the renderer that drives the sound card. Power one on and it plays — there is no install step and no login needed to use it. One more image carries the renderer alone, for a Raspberry Pi 1 that plays for a server elsewhere.
 
-Five targets, all Debian 13. The four Raspberry Pi targets are built with Raspberry Pi's [rpi-image-gen](https://github.com/raspberrypi/rpi-image-gen) from Raspberry Pi's own packages, the PC image with debootstrap from Debian's:
+Six targets, all Debian 13 (for the Pi 1, Raspbian's ARMv6 rebuild of it). The five Raspberry Pi targets are built with Raspberry Pi's [rpi-image-gen](https://github.com/raspberrypi/rpi-image-gen) from Raspberry Pi's own packages, the PC image with debootstrap from Debian's:
 
 | Target | Hardware | Base | Boots via |
 |---|---|---|---|
@@ -11,6 +11,7 @@ Five targets, all Debian 13. The four Raspberry Pi targets are built with Raspbe
 | `rpi234-display` | as `rpi234`, with the now-playing display on an attached screen | Debian 13, rpi-image-gen | as `rpi234` |
 | `rpi5-display` | as `rpi5`, with the now-playing display on an attached screen | Debian 13, rpi-image-gen | as `rpi5` |
 | `amd64` | x86-64 PC or virtual machine | Debian 13, debootstrap | GRUB, through UEFI (Secure Boot on or off) or a legacy BIOS |
+| `rpi1-renderer` | Raspberry Pi 1 on Ethernet, the renderer alone | Raspbian 13 (armhf, ARMv6), rpi-image-gen | the Pi's own firmware and the Raspberry Pi v6 kernel |
 
 A `-display` target sets `kalinka.display: y` in its rpi-image-gen configuration, which the hook reads as `TARGET_DISPLAY=1`, and is otherwise the same image. The installer then runs with `KALINKA_DISPLAY=1`: it installs `kalinka-kiosk` (the app drawn through flutter-pi, straight to KMS with no X or Wayland). [`lib/display.sh`](lib/display.sh) writes `base_config.display.enabled: true` into `/etc/kalinka/kalinka_conf.cfg`. That file is written before the server is installed, so the server's postinst hands it to `kalusr`; a file the server cannot read is one its next settings save replaces. The build fails unless the kiosk package is installed, its units are enabled, the driver is on and the setting is readable by the server, and a headless build fails if the kiosk package got in.
 
@@ -32,6 +33,7 @@ The PC image's build needs root, for loop devices and mounts, and `debootstrap`.
 make image-rpi234                             # the latest published release
 make image-rpi5
 make image-rpi5-display                       # with the now-playing display
+make image-rpi1-renderer RENDERER_DEB=/absolute/path/to/renderer.armhf.deb   # or the latest release's
 sudo make image-amd64 KALINKA_VERSION=4.3.2   # a specific one
 ```
 
@@ -83,13 +85,38 @@ The server's package makes the server's id as it installs, so the one made in th
 
 ### The rpi-image-gen base
 
-[`rpi-image-gen/build.sh`](rpi-image-gen/build.sh) builds the four Pi targets with rpi-image-gen, at the release it pins, inside a Debian container, so any Linux host with podman and arm64 binfmt support can run it. rpi-image-gen assembles Debian trixie from Raspberry Pi's kernel, firmware and packages, with NetworkManager for wired and Wi-Fi and BlueZ for nearby setup ([`layer/kalinka-base.yaml`](rpi-image-gen/layer/kalinka-base.yaml)). [`kalinka-hook.sh`](rpi-image-gen/kalinka-hook.sh) then runs the same steps as the PC build: Kalinka, the supervisor and, for `-display`, the kiosk, each checked as there. rpi-image-gen writes `config.txt` and `cmdline.txt` from the layers' fragments only after that, so the I2C bus and the absent serial console go in as fragments, and late hooks check the display image's KMS driver, that no overlay switches off the setup radios, that the I2C bus is on, and that the command line has no serial console. On every boot `kalinka-growroot.service` grows the root filesystem to fill the card. The kernel and `/etc/fstab` find the root and boot partitions by PARTUUID, from the disk id, as Raspberry Pi OS does, so a streamer starts from an SD card, a USB drive or an NVMe drive alike: rpi-image-gen's own default finds them only on a card or an NVMe drive, and a streamer started from USB waits for its root until the initramfs gives up. A last hook, through `verify_partuuid` in [`lib/partuuid.sh`](lib/partuuid.sh), reads the finished image and fails the build unless its command line and fstab name both partitions that way.
+[`rpi-image-gen/build.sh`](rpi-image-gen/build.sh) builds the five Pi targets with rpi-image-gen, at the release it pins, inside a Debian container, so any Linux host with podman and binfmt support for the target's architecture (arm64, or armhf for [the renderer image](#the-renderer-image)) can run it. The rest of this section is about the four full images. rpi-image-gen assembles Debian trixie from Raspberry Pi's kernel, firmware and packages, with NetworkManager for wired and Wi-Fi and BlueZ for nearby setup ([`layer/kalinka-base.yaml`](rpi-image-gen/layer/kalinka-base.yaml)). [`kalinka-hook.sh`](rpi-image-gen/kalinka-hook.sh) then runs the same steps as the PC build: Kalinka, the supervisor and, for `-display`, the kiosk, each checked as there. rpi-image-gen writes `config.txt` and `cmdline.txt` from the layers' fragments only after that, so the I2C bus and the absent serial console go in as fragments, and late hooks check the display image's KMS driver, that no overlay switches off the setup radios, that the I2C bus is on, and that the command line has no serial console. On every boot `kalinka-growroot.service` grows the root filesystem to fill the card. The kernel and `/etc/fstab` find the root and boot partitions by PARTUUID, from the disk id, as Raspberry Pi OS does, so a streamer starts from an SD card, a USB drive or an NVMe drive alike: rpi-image-gen's own default finds them only on a card or an NVMe drive, and a streamer started from USB waits for its root until the initramfs gives up. A last hook, through `verify_partuuid` in [`lib/partuuid.sh`](lib/partuuid.sh), reads the finished image and fails the build unless its command line and fstab name both partitions that way.
 
 The targets share [`config/common.yaml`](rpi-image-gen/config/common.yaml) and differ in the board layer. `rpi5` takes rpi-image-gen's Pi 5 layer. `rpi234` takes its Pi 4 layer, which is rpi-image-gen's generic 64-bit one: Raspberry Pi's v8 kernel, with the boot firmware and wireless firmware for every board, so one image starts every Pi from the 3 on except the 5.
 
 These images apply the settings Raspberry Pi Imager writes onto the card, as [below](#raspberry-pi-imagers-settings); without them, Wi-Fi, a login and the sound card are set up after the first start. The supervisor runs its `nm` backend and applies the country setup chooses. Each streamer makes its own SSH host keys on its first start, through rpi-image-gen's `openssh-server` layer, and the build fails if the image carries any. `KALINKA_VERSION`, `SUPERVISOR_DEB`, `SUPERVISOR_VERSION`, `OUT_DIR` and `XZ_LEVEL` work as for the PC build. rpi-image-gen prints every setting it is given, so `GITHUB_TOKEN` reaches the install as a file. The image is named and its manifest written as the PC build's, with `rpi_image_gen` in place of `debian_version`. `SPIKE_SSH_PUBKEY` adds a `kalinka-dev` login with that key, for checking an image on a board, and names the image `-spike`.
 
 From early in the boot, a screen shows the Kalinka logo. The image is [`splash/kalinka.tga`](rpi-image-gen/splash/kalinka.tga), which rpi-image-gen's `rpi-splash-screen` layer puts in the initramfs for the Raspberry Pi kernel's `fullscreen_logo`. [`splash/make-splash.sh`](rpi-image-gen/splash/make-splash.sh) draws it again from `docs/images/kalinka_logo.svg`. The kernel takes a 1920×1080, uncompressed 24-bit TGA of at most 224 colours, which `tests/test_splash.sh` checks. It crops a larger image to the screen instead of scaling it, and fills the rest of a larger screen with the image's top-left pixel. So the logo is drawn 680 px wide, narrower than the smallest official Pi screen, on the app's background colour. The kernel keeps the logo on all but the screen's bottom text line, and whatever the console prints scrolls there. Raspberry Pi OS sends that output to the serial console. Our images have none, so they add back the `quiet` that the splash layer removes. A late hook, through `verify_splash` in [`lib/splash.sh`](lib/splash.sh), fails the build if the logo, its kernel arguments or `quiet` are missing, or if an initramfs lacks the logo.
+
+### The renderer image
+
+`rpi1-renderer` is a Raspberry Pi 1 that is only an output of a server on another computer. A Pi 1's ARM1176 runs no Debian but Raspbian, its ARMv6 rebuild, and is too slow for the server, so the image carries what the renderer needs to play and to upgrade itself, and nothing else.
+
+What it has:
+
+- Raspbian trixie with Raspberry Pi's v6 kernel and boot firmware ([`layer/kalinka-rpi1.yaml`](rpi-image-gen/layer/kalinka-rpi1.yaml), [`layer/kalinka-rpi-linux-v6.yaml`](rpi-image-gen/layer/kalinka-rpi-linux-v6.yaml)). rpi-image-gen has no layer for that kernel, and its image description knows only the Pi 3 on, so the device layer is not tagged as one of its boards and the config turns the description off.
+- systemd-networkd for the Ethernet port, and timesyncd. A Pi 1 has no clock, and TLS to GitHub needs the time ([`layer/kalinka-renderer-base.yaml`](rpi-image-gen/layer/kalinka-renderer-base.yaml)).
+- The renderer, installed by `install-renderer.sh` as on any other machine. `RENDERER_DEB` installs a local package instead.
+- curl, CA certificates and python3, with which `upgrade-renderer.sh` and `install-renderer.sh` take a new release when the server asks.
+
+What it leaves out: the server, the supervisor, NetworkManager, Wi-Fi and Bluetooth setup, Imager's settings, SSH and any login (its one user is locked and has no sudo), the splash screen and `growroot`. A card Imager customised still starts normally: the image masks `systemd.run=` and carries Imager's `kernel-command-line.target`, as the full images do.
+
+[`kalinka-renderer-hook.sh`](rpi-image-gen/kalinka-renderer-hook.sh) installs the renderer. A late hook then runs `verify_renderer_image` and `verify_pi1_boot` from [`lib/renderer-image.sh`](lib/renderer-image.sh) on the finished root. The build fails if:
+
+- the renderer, its upgrade watcher, networkd or timesyncd is not enabled;
+- a tool the upgrade needs is missing;
+- the server, the supervisor, NetworkManager, SSH or a compiler came in;
+- the root carries a renderer id, a machine-id or SSH host keys;
+- the boot partition lacks what a Pi 1's firmware reads.
+
+The partition check is the full images' own.
+
+GitHub has no runner that runs 32-bit ARM code, so CI builds this image on x86 under qemu-user-static. It is named by the renderer's version, as `kalinka-<renderer version>-rpi1-renderer-armhf.img`.
 
 ### Raspberry Pi Imager's settings
 
@@ -177,7 +204,7 @@ a separate Debian package, service hardening and future recovery capabilities.
 
 - `supervisor-packages.yml` tests Go and the installer, then cross-compiles `amd64` and `arm64` Debian packages and checksums.
 - `supervisor-release.yml` publishes those packages for a `kalinka-supervisor-vX.Y.Z` tag. It does not change the app bundle's Latest badge.
-- `image-build.yml` is the manual **Appliance images** workflow. It builds packages first, then the five images on native runners. Download the `image-amd64`, `image-rpi234`, `image-rpi5`, `image-rpi234-display` and `image-rpi5-display` artifacts. Each contains the compressed disk, checksum and version manifest; artifacts are retained for 14 days.
+- `image-build.yml` is the manual **Appliance images** workflow. It builds packages first, then the six images on native runners, but for the Pi 1's, which is built on x86 under qemu. Download the `image-amd64`, `image-rpi234`, `image-rpi5`, `image-rpi234-display`, `image-rpi5-display` and `image-rpi1-renderer` artifacts. Each contains the compressed disk, checksum and version manifest; artifacts are retained for 14 days.
 - `image-release.yml` reuses the same build before publishing an image release. `image-pr.yml` builds and boots x86 on relevant pull requests.
 
 Core and renderer come from published releases; supervisor comes from the selected checkout. An empty supervisor version is counted from the last `kalinka-supervisor-v*` tag, as `0.2.1~dev3+g1a2b3c4` three commits past `0.2.0`: above that release and below the next one. A checkout without that tag, such as a shallow clone, needs `SUPERVISOR_VERSION` set. Nothing in the E2E workflow publishes a release.

@@ -1,0 +1,23 @@
+# METABEGIN
+# X-Env-Layer-Name: kalinka-rpi1
+# X-Env-Layer-Category: device
+# X-Env-Layer-Desc: Raspberry Pi 1, on its v6 kernel. Not tagged as an
+#  rpi-image-gen board: its image description, which only knows the Pi 3 on,
+#  would refuse it.
+# X-Env-Layer-Version: 1.0.0
+# X-Env-Layer-Requires: rpi-device-base,kalinka-rpi-linux-v6
+# X-Env-Layer-Provides: rpi-device
+#
+# X-Env-VarPrefix: device
+#
+# X-Env-Var-class: pi1
+# X-Env-Var-class-Desc: Device class
+#
+# X-Env-Var-storage_type: sd
+# X-Env-Var-storage_type-Desc: Storage media the image is intended for, as seen
+#  by the OS.
+#
+# X-Env-Var-assetdir: ${DIRECTORY}
+# X-Env-Var-assetdir-Desc: Device specific asset directory
+# METAEND
+---

@@ -32,13 +32,8 @@ TARGET_DISPLAY=0
 [ -z "${IGconf_kalinka_github_token_file:-}" ] || GITHUB_TOKEN="$(cat "$IGconf_kalinka_github_token_file")"
 
 WORK="$(mktemp -d)"
-# mmdebstrap holds a policy-rc.d of its own until it finishes, and removes it then.
-mmdebstrap_policy="$WORK/policy-rc.d.mmdebstrap"
-restore_mmdebstrap_policy() {
-  [ ! -e "$mmdebstrap_policy" ] || mv -f "$mmdebstrap_policy" "$ROOTFS/usr/sbin/policy-rc.d"
-}
 trap 'restore_mmdebstrap_policy; rm -rf "$WORK"' EXIT
-mv "$ROOTFS/usr/sbin/policy-rc.d" "$mmdebstrap_policy"
+hold_mmdebstrap_policy
 
 configure_journal
 start_build_aids

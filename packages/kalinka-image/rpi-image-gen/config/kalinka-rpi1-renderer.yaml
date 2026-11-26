@@ -1,0 +1,26 @@
+# The renderer alone, for a Raspberry Pi 1 on Ethernet that plays for a server
+# on another computer. It carries none of common.yaml's server, supervisor or
+# radio setup.
+device:
+  layer: kalinka-rpi1
+  hostname: kalinka-renderer
+  # Locked, and without sudo: nothing on this image logs in.
+  user1: kalinka
+  user1sudo: none
+
+image:
+  layer: image-rpios
+  name: kalinka-rpi1-renderer
+  boot_part_size: 256M
+  root_part_size: 1G
+  # The default, by-slot, finds the partitions only on an SD card or NVMe drive, never on USB.
+  devid_scheme: partuuid
+  # rpi-image-gen's image description knows the Pi 3 on, not a Pi 1.
+  idp_enable: n
+
+layer:
+  base: kalinka-renderer-base
+  app: kalinka-renderer
+
+kalinka:
+  hook: ${@SRCROOT}/kalinka-renderer-hook.sh

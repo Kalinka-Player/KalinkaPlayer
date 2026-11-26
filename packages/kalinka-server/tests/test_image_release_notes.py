@@ -42,6 +42,7 @@ def test_the_notes_link_the_guide_as_it_stands_at_the_tag():
         "/docs/installation.md"
     }
     assert [anchor for _, anchor in links] == [
+        "add-more-outputs",
         "install-the-server",
         "settings-on-the-card",
     ]
@@ -68,6 +69,7 @@ def test_the_notes_keep_what_only_the_release_page_can_say():
         "-rpi234-display-arm64.img.xz",
         "-rpi5-display-arm64.img.xz",
         "-amd64.img.xz",
+        "-rpi1-renderer-armhf.img.xz",
     ):
         assert image in notes
     assert "sha256sum -c SHA256SUMS --ignore-missing" in notes

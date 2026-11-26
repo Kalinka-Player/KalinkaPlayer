@@ -1,0 +1,15 @@
+# METABEGIN
+# X-Env-Layer-Name: kalinka-renderer-base
+# X-Env-Layer-Category: suite
+# X-Env-Layer-Desc: Raspbian trixie, the ARMv6 rebuild of Debian, with
+#  Raspberry Pi's kernel and firmware, systemd-networkd for the Ethernet port,
+#  and nothing else. timesyncd starts the clock no earlier than its last save
+#  and sets it from the network, which TLS needs for the renderer to upgrade.
+# X-Env-Layer-Version: 1.0.0
+# X-Env-Layer-Requires: raspbian-trixie-armhf,
+#  rpi-debian-trixie,
+#  rpi-misc-skel,
+#  systemd-min,
+#  systemd-net-min,
+#  systemd-timesyncd
+# METAEND

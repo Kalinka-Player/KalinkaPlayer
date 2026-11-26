@@ -32,12 +32,15 @@ Ready-to-flash images of Kalinka Player with the server, every first-party plugi
 | `…-rpi234-display-arm64.img.xz` | The same boards as `rpi234`, showing what's playing on an attached screen |
 | `…-rpi5-display-arm64.img.xz` | The same boards as `rpi5`, showing what's playing on an attached screen |
 | `…-amd64.img.xz` | x86-64 PC or virtual machine, UEFI (Secure Boot on or off) or legacy BIOS |
+| `…-rpi1-renderer-armhf.img.xz` | Raspberry Pi 1 on Ethernet, as an output of a Kalinka server on another computer: the renderer alone, named by its version |
 
 The Raspberry Pi images play through DAC HATs as well as USB DACs. A HAT with an ID chip is set up by itself.
 
+The `rpi1-renderer` image carries no server, no Wi-Fi and no login, and does not read Raspberry Pi Imager's settings: plug in its Ethernet cable, and it appears in the app as an output of the server on your network, which also keeps it up to date. See [Add more outputs](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#add-more-outputs).
+
 A `-display` image is the same player with the now-playing display already installed and switched on: plug in an HDMI or DSI screen and it shows the cover, the track and touch controls from the first start. Without a screen, pick the image without `-display`; it is smaller.
 
-To flash an image and start it, follow [Install the server](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#install-the-server). On a Raspberry Pi, the Wi-Fi, host name, login and time zone you give Raspberry Pi Imager are applied at the first start, and its files are removed from the card. Everything else, and all of it on a PC, is set up after the first start, as [Settings on the card](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#settings-on-the-card) describes.
+To flash an image and start it, follow [Install the server](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#install-the-server). On the Raspberry Pi images other than `rpi1-renderer`, the Wi-Fi, host name, login and time zone you give Raspberry Pi Imager are applied at the first start, and its files are removed from the card. Everything else, and all of it on a PC, is set up after the first start, as [Settings on the card](https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#settings-on-the-card) describes.
 
 Images from `kalinka-image-v4.2.0` and older read none of Imager's settings, and a card Imager customised may not finish their first start: write those without Imager's settings.
 

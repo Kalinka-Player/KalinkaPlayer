@@ -45,6 +45,11 @@ jobs:
           - target: rpi5-display
             arch: arm64
             runner: ubuntu-24.04-arm
+          # GitHub's arm64 runners cannot run 32-bit ARM code, so this one builds on x86 under qemu.
+          - target: rpi1-renderer
+            arch: armhf
+            runner: ubuntu-24.04
+            renderer_only: true
           - target: amd64
             arch: amd64
             runner: ubuntu-24.04
@@ -53,10 +58,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
+        if: ${{ !matrix.renderer_only }}
         with:
           name: supervisor-packages
           path: supervisor-packages
       - name: Select the verified package
+        if: ${{ !matrix.renderer_only }}
         id: supervisor
         env:
           ARCH: ${{ matrix.arch }}
