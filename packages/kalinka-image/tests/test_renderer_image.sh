@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# The renderer image's checks: a root with the renderer and what it upgrades
-# with passes, and one missing a piece, carrying what a renderer-only box has
-# no use for, or holding what would make every card the same box fails,
-# naming why. Then what a Pi 1 boots from, and that the image's own layers
-# and hooks are in place.
+# The renderer image's checks: a root with the renderer, what it upgrades
+# with and what brings its Ethernet up passes, and one missing a piece,
+# carrying what a renderer-only box has no use for, or holding what would
+# make every card the same box fails, naming why. Then what a Pi 1 boots
+# from, and that the image's own layers and hooks are in place.
 set -uo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -41,6 +41,16 @@ refuses() {
 
 TOOLS=(curl python3 apt-get dpkg-deb)
 MULTI_USER_UNITS=(kalinka-renderer.service kalinka-renderer-upgrade.path systemd-networkd.service)
+SYSINIT_UNITS=(systemd-timesyncd.service systemd-resolved.service)
+NETWORK="$ROOTFS/etc/systemd/network"
+LINK_MASKS=(99-default.link 73-usb-net-by-mac.link)
+
+# What rpi-image-gen's device layer writes.
+network_files() {
+  mkdir -p "$NETWORK"
+  printf '[Match]\nName=%s\n\n[Network]\nDHCP=%s\n' eth0 "${1:-yes}" > "$NETWORK/01-eth0.network"
+  printf '[Match]\nName=wlan0\n\n[Network]\nDHCP=yes\n' > "$NETWORK/02-wlan0.network"
+}
 
 echo "  -- a renderer's root"
 SCRIPT_DIR="$PKG_DIR"
@@ -53,12 +63,20 @@ done
 printf '#!/bin/sh\n' > "$ROOTFS/opt/kalinka/upgrade-renderer.sh"
 chmod 755 "$ROOTFS/opt/kalinka/upgrade-renderer.sh"
 enable multi-user.target "${MULTI_USER_UNITS[@]}"
-enable sysinit.target systemd-timesyncd.service
+enable sysinit.target "${SYSINIT_UNITS[@]}"
+network_files
+for link in "${LINK_MASKS[@]}"; do
+  ln -s /dev/null "$NETWORK/$link"
+done
+ln -s ../run/systemd/resolve/stub-resolv.conf "$ROOTFS/etc/resolv.conf"
 : > "$ROOTFS/etc/machine-id"
 ignore_imager_first_run
 message="$(verify_renderer_image 2>&1)" || fail "refused a renderer's root: $message"
 printf 'uninitialized\n' > "$ROOTFS/etc/machine-id"
 message="$(verify_renderer_image 2>&1)" || fail "refused a machine-id left for the first boot: $message"
+network_files ipv4
+message="$(verify_renderer_image 2>&1)" || fail "refused DHCP for IPv4 alone: $message"
+network_files
 
 echo "  -- a root missing a piece"
 rm "$ROOTFS/var/lib/dpkg/info/kalinka-renderer.list"
@@ -69,9 +87,11 @@ for unit in "${MULTI_USER_UNITS[@]}"; do
   refuses "where $unit is not enabled" "$unit is not enabled in multi-user.target"
   enable multi-user.target "$unit"
 done
-rm "$ROOTFS/etc/systemd/system/sysinit.target.wants/systemd-timesyncd.service"
-refuses "that never sets its clock" "systemd-timesyncd.service is not enabled in sysinit.target"
-enable sysinit.target systemd-timesyncd.service
+for unit in "${SYSINIT_UNITS[@]}"; do
+  rm "$ROOTFS/etc/systemd/system/sysinit.target.wants/$unit"
+  refuses "where $unit is not enabled" "$unit is not enabled in sysinit.target"
+  enable sysinit.target "$unit"
+done
 mv "$ROOTFS/opt/kalinka/upgrade-renderer.sh" "$WORK/upgrade"
 refuses "without the upgrade script" "the renderer's upgrade script is missing"
 mv "$WORK/upgrade" "$ROOTFS/opt/kalinka/upgrade-renderer.sh"
@@ -81,6 +101,29 @@ for tool in "${TOOLS[@]}"; do
   mv "$WORK/tool" "$ROOTFS/usr/bin/$tool"
 done
 
+echo "  -- a root whose Ethernet would bring no address up"
+for link in "${LINK_MASKS[@]}"; do
+  rm "$NETWORK/$link"
+  refuses "where $link names the Ethernet by its MAC" "$link is not masked"
+  printf '[Link]\nNamePolicy=mac\n' > "$NETWORK/$link"
+  refuses "where $link is a file of its own" "$link is not masked"
+  rm "$NETWORK/$link"
+  ln -s /dev/null "$NETWORK/$link"
+done
+rm "$NETWORK/01-eth0.network"
+refuses "with a network file for wlan0 alone" "no network file asks for an address on eth0 by DHCP"
+network_files no
+refuses "that gives eth0 no DHCP" "no network file asks for an address on eth0 by DHCP"
+network_files
+rm "$ROOTFS/etc/resolv.conf"
+printf 'nameserver 192.0.2.1\n' > "$ROOTFS/etc/resolv.conf"
+refuses "whose resolv.conf is the build host's" "does not point at systemd-resolved"
+rm "$ROOTFS/etc/resolv.conf"
+refuses "without a resolv.conf" "does not point at systemd-resolved"
+ln -s ../run/systemd/resolve/stub-resolv.conf "$ROOTFS/etc/resolv.conf"
+message="$(verify_renderer_image 2>&1)" || fail "refused the network once mended: $message"
+
+echo "  -- a root that would run Imager's settings"
 rm "$ROOTFS$SYSTEMD_RUN_GENERATOR"
 refuses "that would run Imager's first-run script" "would still run Imager's script"
 ignore_imager_first_run

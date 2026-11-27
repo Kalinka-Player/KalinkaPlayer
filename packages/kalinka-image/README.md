@@ -100,7 +100,7 @@ From early in the boot, a screen shows the Kalinka logo. The image is [`splash/k
 What it has:
 
 - Raspbian trixie with Raspberry Pi's v6 kernel and boot firmware ([`layer/kalinka-rpi1.yaml`](rpi-image-gen/layer/kalinka-rpi1.yaml), [`layer/kalinka-rpi-linux-v6.yaml`](rpi-image-gen/layer/kalinka-rpi-linux-v6.yaml)). rpi-image-gen has no layer for that kernel, and its image description knows only the Pi 3 on, so the device layer is not tagged as one of its boards and the config turns the description off.
-- systemd-networkd for the Ethernet port, and timesyncd. A Pi 1 has no clock, and TLS to GitHub needs the time ([`layer/kalinka-renderer-base.yaml`](rpi-image-gen/layer/kalinka-renderer-base.yaml)).
+- systemd-networkd, which asks for an address on `eth0` by DHCP, resolved for DNS, and timesyncd. A Pi 1 has no clock, and TLS to GitHub needs the time ([`layer/kalinka-renderer-base.yaml`](rpi-image-gen/layer/kalinka-renderer-base.yaml)). The Pi 1's Ethernet sits on USB, and udev names a USB network device by its MAC address; rpi-image-gen's networkd layer masks that naming, so the port stays `eth0`.
 - The renderer, installed by `install-renderer.sh` as on any other machine. `RENDERER_DEB` installs a local package instead.
 - curl, CA certificates and python3, with which `upgrade-renderer.sh` and `install-renderer.sh` take a new release when the server asks.
 
@@ -108,7 +108,8 @@ What it leaves out: the server, the supervisor, NetworkManager, Wi-Fi and Blueto
 
 [`kalinka-renderer-hook.sh`](rpi-image-gen/kalinka-renderer-hook.sh) installs the renderer. A late hook then runs `verify_renderer_image` and `verify_pi1_boot` from [`lib/renderer-image.sh`](lib/renderer-image.sh) on the finished root. The build fails if:
 
-- the renderer, its upgrade watcher, networkd or timesyncd is not enabled;
+- the renderer, its upgrade watcher, networkd, resolved or timesyncd is not enabled;
+- the Ethernet would not be named `eth0`, no network file asks for an address on it by DHCP, or `/etc/resolv.conf` does not point at resolved;
 - a tool the upgrade needs is missing;
 - the server, the supervisor, NetworkManager, SSH or a compiler came in;
 - the root carries a renderer id, a machine-id or SSH host keys;
