@@ -28,14 +28,37 @@ installed_in_root() {
     || compgen -G "$ROOTFS/var/lib/dpkg/info/$1:*.list" > /dev/null
 }
 
+eth0_takes_dhcp() {
+  local file
+  for file in "$ROOTFS"/etc/systemd/network/*.network; do
+    grep -qsx 'Name=eth0' "$file" && grep -qsxE 'DHCP=(yes|ipv4)' "$file" && return 0
+  done
+  return 1
+}
+
+# The image has no login, so a cable that brings no address up is a box nobody can look into.
+verify_renderer_network() {
+  local link
+  require_enabled multi-user.target systemd-networkd.service
+  require_enabled sysinit.target systemd-resolved.service
+  # A Pi 1's Ethernet sits on USB, and udev names a USB network device by its MAC.
+  for link in 99-default.link 73-usb-net-by-mac.link; do
+    [ "$(readlink "$ROOTFS/etc/systemd/network/$link")" = /dev/null ] \
+      || die "$link is not masked, so the Ethernet would not be named eth0"
+  done
+  eth0_takes_dhcp || die "no network file asks for an address on eth0 by DHCP"
+  [[ "$(readlink "$ROOTFS/etc/resolv.conf")" == */run/systemd/resolve/* ]] \
+    || die "/etc/resolv.conf does not point at systemd-resolved, so the DNS servers DHCP hands out go unused"
+}
+
 # Run on the finished root: the server asks the renderer to upgrade, and the
 # renderer can only do that through its watcher and install-renderer.sh.
 verify_renderer_image() {
   local tool package
   installed_in_root kalinka-renderer || die "the renderer is not installed"
-  require_enabled multi-user.target kalinka-renderer.service kalinka-renderer-upgrade.path \
-    systemd-networkd.service
+  require_enabled multi-user.target kalinka-renderer.service kalinka-renderer-upgrade.path
   require_enabled sysinit.target systemd-timesyncd.service
+  verify_renderer_network
   [ -x "$ROOTFS/opt/kalinka/upgrade-renderer.sh" ] || die "the renderer's upgrade script is missing"
   for tool in curl python3 apt-get dpkg-deb; do
     [ -x "$ROOTFS/usr/bin/$tool" ] || die "$tool is missing, and the renderer cannot upgrade without it"
