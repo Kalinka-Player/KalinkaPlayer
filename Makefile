@@ -168,6 +168,7 @@ test: require-venv
 		(cd $$dir && $(PY) -m pytest tests/ -v $(ARGS)) || exit 1; \
 	done
 	@$(PY) -m pytest benchmarks/sdd/tests -v $(ARGS)
+	@$(PY) -m pytest benchmarks/small-board/tests -v $(ARGS)
 	@$(PY) -m pytest template/cookiecutter-kalinka-plugin/tests -v $(ARGS)
 
 ## The server's play queue suite. Extra pytest args via ARGS, e.g.
@@ -272,8 +273,9 @@ GO ?= go
 supervisor-build:
 	@GO="$(GO)" packages/kalinka-supervisor/build.sh
 
+## The vet for 32-bit ARM compiles every package for the armhf supervisor, where int is 32 bits wide.
 supervisor-test:
-	@cd packages/kalinka-supervisor && "$(GO)" test -race ./... && "$(GO)" vet ./... && bash tests/test_soundcard.sh && bash tests/test_dietpi_conf.sh
+	@cd packages/kalinka-supervisor && "$(GO)" test -race ./... && "$(GO)" vet ./... && GOARCH=arm GOARM=6 "$(GO)" vet ./... && bash tests/test_soundcard.sh && bash tests/test_dietpi_conf.sh
 
 supervisor-deb:
 	@GO="$(GO)" packages/kalinka-supervisor/build-deb.sh

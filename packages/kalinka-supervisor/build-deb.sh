@@ -2,7 +2,13 @@
 set -euo pipefail
 pkg_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 arch="${GOARCH:-$(dpkg --print-architecture)}"
-case "$arch" in amd64|arm64) ;; *) echo 'Supported package architectures: amd64, arm64' >&2; exit 1;; esac
+# armhf is Go's arm at the ARMv6 baseline Raspberry Pi OS (32-bit) is built for.
+goarch="$arch" goarm=""
+case "$arch" in
+  amd64|arm64) ;;
+  armhf|arm) arch=armhf goarch=arm goarm=6 ;;
+  *) echo 'Supported package architectures: amd64, arm64, armhf' >&2; exit 1 ;;
+esac
 . "$pkg_dir/../../scripts/tag_version.sh"
 version="${VERSION:-$(tag_version kalinka-supervisor-v)}"
 out_dir="${OUT_DIR:-$pkg_dir/build}"
@@ -11,7 +17,7 @@ stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 chmod 755 "$stage"
 mkdir -p "$stage/DEBIAN" "$stage/usr/lib/kalinka-supervisor" "$stage/usr/lib/systemd/system" "$stage/usr/lib/NetworkManager/conf.d" "$out_dir"
-GOARCH="$arch" VERSION="$version" "$pkg_dir/build.sh" "$stage/usr/lib/kalinka-supervisor/kalinka-supervisor"
+GOARCH="$goarch" GOARM="$goarm" VERSION="$version" "$pkg_dir/build.sh" "$stage/usr/lib/kalinka-supervisor/kalinka-supervisor"
 install -m 755 "$pkg_dir/reinstall.sh" "$pkg_dir/ssh-setup.sh" "$pkg_dir/soundcard.sh" "$pkg_dir/remove-plugin.sh" "$stage/usr/lib/kalinka-supervisor/"
 install -m 644 "$pkg_dir/dietpi-conf.sh" "$pkg_dir/boot-config.sh" "$stage/usr/lib/kalinka-supervisor/"
 install -m 644 "$pkg_dir/systemd/"* "$stage/usr/lib/systemd/system/"

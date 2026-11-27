@@ -330,7 +330,7 @@ class TestWhenToBother:
     def test_a_change_touching_neither_list_is_not_probed(
         self, plugin, folders, shares
     ):
-        assert _judge(plugin, changed={"scan_interval_minutes"}) == []
+        assert _judge(plugin, changed={"daily_rescan"}) == []
         assert folders == [] and shares == []
 
     def test_editing_the_folders_asks_nothing_of_the_shares(self, plugin, shares):

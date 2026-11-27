@@ -140,7 +140,7 @@ class JamendoMoodIndex:
             import sqlite_vec  # noqa: F401
         except Exception as e:
             logger.warning("sqlite-vec unavailable (%s); ai_search off", e)
-            return "`sqlite-vec` does not load. Reinstall the Jamendo plugin."
+            return "`sqlite-vec` is installed but does not load."
         if not os.path.exists(self._index_path) and not self._index_url:
             logger.warning("Jamendo index missing (%s); ai_search off",
                            self._index_path)

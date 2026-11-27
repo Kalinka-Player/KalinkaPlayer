@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Annotated, Any, ClassVar, Hashable, Literal, Union
+from typing import Annotated, Any, ClassVar, Hashable, Literal, Optional, Union
 from pydantic import AfterValidator, BaseModel, Field
 from kalinka_plugin_sdk import ConfigRecord, ModuleIconFiles, Records, paths
 from kalinka_plugin_sdk.module_config import ModuleConfig
@@ -22,7 +22,8 @@ _PRIVATE: dict[str, Any] = {"private": True}
 # search heading, a track's attribution.
 DISPLAY_NAME = "My Library"
 
-DEFAULT_SCAN_INTERVAL_MINUTES = 15
+# The scan interval that stands for the daily rescan on a server before it.
+LEGACY_DAILY_INTERVAL_MINUTES = 24 * 60
 
 
 class MoodConfig(BaseModel):
@@ -451,10 +452,7 @@ class LocalFilesConfig(ModuleConfig):
         standard=Path(__file__).with_name("icons") / "standard.svg",
         monochrome=True,
     )
-    __preview_fields__: ClassVar[list[str]] = [
-        "music_folders",
-        "scan_interval_minutes",
-    ]
+    __preview_fields__: ClassVar[list[str]] = ["music_folders"]
 
     name: str = Field(
         default="localfiles",
@@ -502,30 +500,30 @@ class LocalFilesConfig(ModuleConfig):
     enricher: EnricherConfig = Field(
         default_factory=EnricherConfig, title="Metadata and artwork"
     )
-    scan_interval_minutes: int = Field(
-        default=DEFAULT_SCAN_INTERVAL_MINUTES,
-        ge=0,
-        title="Scan interval",
+    daily_rescan: bool = Field(
+        default=True,
+        title="Daily rescan",
         json_schema_extra={
             "help_details": (
-                "Setting this to 0 stops scheduled scans, but startup scans, "
-                "manual rescans and file watching remain available."
+                "The rescan runs between 3 and 6 in the morning, and is skipped "
+                "on a night that follows another full scan. When this is off, "
+                "the library is still scanned at startup, when you rescan it "
+                "and when files change."
             ),
-            "help": (
-                "Minutes between library scans, or 0 to disable scheduled scans."
-            ),
-            "constraints": {"unit": "min"},
+            "help": "Rescan the library once a day, at night.",
             "heading": "Library",
             **_SIMPLE,
         },
     )
+    # The daily rescan as older servers keep it; reconcile keeps the two agreeing.
+    scan_interval_minutes: Optional[int] = Field(default=None, ge=0, exclude=True)
     file_watch_enabled: bool = Field(
         default=True,
         title="Enable file watching",
         json_schema_extra={
             "help_details": (
-                "Network shares may not report every change, but scheduled or "
-                "manual scans pick up missed changes."
+                "Network shares may not report every change, but the nightly "
+                "rescan or a manual one picks up missed changes."
             ),
             "help": "Scan when files change.",
         },
@@ -598,8 +596,21 @@ class LocalFilesConfig(ModuleConfig):
 
     def reconcile(self, written: frozenset[str]) -> None:
         """Keep the music folders the local sources' folders. An app that
-        writes the folders makes the local sources follow them instead."""
-        if "music_folders" in {path.split(".")[0] for path in written}:
+        writes the folders makes the local sources follow them instead.
+
+        A scan interval saved before the daily rescan existed decides it until
+        the switch itself is saved: an interval of 0 meant manual scans only.
+        Saving the switch writes the interval that means the same to an older
+        server.
+        """
+        top = {path.split(".")[0] for path in written}
+        if "daily_rescan" in top:
+            self.scan_interval_minutes = (
+                LEGACY_DAILY_INTERVAL_MINUTES if self.daily_rescan else 0
+            )
+        elif "scan_interval_minutes" in top and self.scan_interval_minutes is not None:
+            self.daily_rescan = self.scan_interval_minutes > 0
+        if "music_folders" in top:
             self.music_sources = _following(self.music_sources, self.music_folders)
         self.music_folders = [
             source.location.path

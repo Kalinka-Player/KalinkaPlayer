@@ -85,7 +85,7 @@ Source: [Local Files config_model.py](../packages/kalinka-plugin-localfiles/src/
 | SMB folder | Share name, then any folder inside it, such as Music/Jazz. |
 | Guest sign-in | Requires guest access on the share. |
 | Require encryption | Encrypt the connection. Requires an account sign-in and SMB3 encryption on the server. |
-| Scan interval | Minutes between library scans, or 0 to disable scheduled scans. |
+| Daily rescan | Rescan the library once a day, at night. |
 | Enable file watching | Scan when files change. |
 | Folder-first album grouping | Group albums mainly by folder, starting with the next scan. |
 | Repair garbled tags | Enter the original tag encoding, such as cp1251, or leave empty to skip. |
@@ -131,8 +131,8 @@ Show an `(i)` button for these settings. The popup text is separate from the sho
 | ReplayGain | The volume adjusts for each track and returns to its previous level when playback stops. Fixed output does not support ReplayGain unless a connected device controls the volume. A card mixer must report its volume in dB. |
 | Pause / reopen after format changes | Some DACs need extra time or must be reopened after a format change. Adjust these settings if tracks fail to start correctly. |
 | Network buffer | A larger buffer can help with an unreliable connection, but uses more memory. |
-| Scan interval | Setting this to 0 stops scheduled scans, but startup scans, manual rescans and file watching remain available. |
-| File watching | Network shares may not report every change, but scheduled or manual scans pick up missed changes. |
+| Daily rescan | The rescan runs between 3 and 6 in the morning, and is skipped on a night that follows another full scan. When this is off, the library is still scanned at startup, when you rescan it and when files change. |
+| File watching | Network shares may not report every change, but the nightly rescan or a manual one picks up missed changes. |
 | Folder-first album grouping | Uses folders and tags to keep an album together when its tags differ between tracks. |
 | Repair garbled tags | This setting repairs tags written with an older character encoding, while UTF-8 repair runs automatically even when the field is empty. |
 | AI search | The first analysis of a large library can take hours and uses more memory while it runs. Searches run on this streamer. |

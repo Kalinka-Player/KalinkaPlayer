@@ -1,8 +1,9 @@
 """Mood search's runtime is offered as optional packages.
 
-The server does not install onnxruntime or tokenizers, so the plugin offers
-them, reports what the shared embedder says it lacks, and ships the
-allow-list the install helper checks requests against.
+The server does not install onnxruntime or tokenizers, and nothing installs
+sqlite-vec, the index's extension, so the plugin offers them, reports what
+the shared embedder says it lacks and whether the extension is there, and
+ships the allow-list the install helper checks requests against.
 """
 
 import json
@@ -90,8 +91,8 @@ async def set_up(monkeypatch):
         await plugin.shutdown()
 
 
-def test_the_plugin_offers_mood_searchs_runtime():
-    assert set(KalinkaPluginJamendo.OPTIONAL_PACKAGES) == set(RUNTIME)
+def test_the_plugin_offers_mood_searchs_runtime_and_its_index_extension():
+    assert set(KalinkaPluginJamendo.OPTIONAL_PACKAGES) == {*RUNTIME, "sqlite_vec"}
 
 
 def test_the_package_build_prints_the_plugins_allow_list():
@@ -124,6 +125,34 @@ async def test_mood_search_without_onnxruntime_reports_it_missing():
         "Mood search unavailable. Missing package(s): `onnxruntime`."
     )
     assert await plugin.required_packages() == ["onnxruntime"]
+
+
+async def test_mood_search_without_sqlite_vec_reports_it_missing(monkeypatch):
+    monkeypatch.setitem(sys.modules, "sqlite_vec", None)
+    plugin = _plugin(FakeEmbedder(), client_id="x", ai_search_enabled=True)
+
+    state = await plugin.get_state()
+
+    assert state.state == ModuleHealthState.WARNING
+    assert state.missing_packages == ["sqlite_vec"]
+    assert await plugin.required_packages() == ["sqlite_vec"]
+
+
+async def test_on_a_pi_1_mood_search_is_unavailable_without_its_extension(
+    monkeypatch,
+):
+    """sqlite-vec has no armv6l wheel either, so the plugin still loads there
+    and only its mood search is off."""
+    _on(monkeypatch, "armv6l")
+    monkeypatch.setitem(sys.modules, "sqlite_vec", None)
+    plugin = _plugin(FakeEmbedder(RUNTIME), client_id="x", ai_search_enabled=True)
+
+    state = await plugin.get_state()
+
+    assert state.missing_packages == []
+    assert "not available on this device" in state.message
+    assert "`sqlite_vec`" in state.message and "armv6l" in state.message
+    assert await plugin.required_packages() == []
 
 
 async def test_mood_search_without_its_runtime_reports_both():
@@ -284,6 +313,17 @@ async def test_an_older_servers_embedder_lacks_nothing():
 
     assert state.state == ModuleHealthState.READY
     assert await plugin.required_packages() == []
+
+
+async def test_an_older_server_is_still_offered_the_index_extension(monkeypatch):
+    """The extension is the plugin's own, whatever the server installed."""
+    monkeypatch.setitem(sys.modules, "sqlite_vec", None)
+    plugin = _plugin(OlderEmbedder(), client_id="x", ai_search_enabled=True)
+
+    state = await plugin.get_state()
+
+    assert state.missing_packages == ["sqlite_vec"]
+    assert await plugin.required_packages() == ["sqlite_vec"]
 
 
 async def test_a_plugin_never_set_up_needs_nothing():

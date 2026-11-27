@@ -117,8 +117,13 @@ def _another_model(tmp_path, monkeypatch):
     return embedder, INDEX_URL
 
 
-def _no_sqlite_vec(tmp_path, monkeypatch):
-    monkeypatch.setitem(sys.modules, "sqlite_vec", None)
+def _broken_sqlite_vec(tmp_path, monkeypatch):
+    """Installed, so it is not offered again, but it will not import."""
+    package = tmp_path / "shadow" / "sqlite_vec"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("raise ImportError('wrong CPU')\n")
+    monkeypatch.syspath_prepend(str(tmp_path / "shadow"))
+    monkeypatch.delitem(sys.modules, "sqlite_vec", raising=False)
     return FakeEmbedder(), INDEX_URL
 
 
@@ -143,7 +148,7 @@ def _no_text_model(tmp_path, monkeypatch):
     "failing, reason",
     [
         (_another_model, "text model is all-MiniLM-L6-v2 v2"),
-        (_no_sqlite_vec, "`sqlite-vec` does not load"),
+        (_broken_sqlite_vec, "`sqlite-vec` is installed but does not load"),
         (_no_index_and_no_url, "**Mood index download URL** is empty"),
         (_download_fails, "could not be downloaded"),
         (_unreadable_index, "cannot be read"),
@@ -151,7 +156,7 @@ def _no_text_model(tmp_path, monkeypatch):
     ],
     ids=[
         "another-model",
-        "no-sqlite-vec",
+        "broken-sqlite-vec",
         "no-index-no-url",
         "download-fails",
         "unreadable-index",

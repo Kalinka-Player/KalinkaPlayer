@@ -314,7 +314,7 @@ class ModuleSpec(BaseModel):
     plugin hiccup.
 
     Top-level scalar fields of the module's CONFIG_MODEL (e.g. localfiles'
-    `music_folders`, `db_path`, `scan_interval_minutes`) appear in `fields`
+    `music_folders`, `db_path`, `daily_rescan`) appear in `fields`
     so the client can render them flat under the module header, not buried
     inside a redundant "General" foldable. Nested BaseModels still become
     entries in `sections`.

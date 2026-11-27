@@ -10,6 +10,9 @@ STATE_DIR="/var/lib/kalinka-renderer"
 UNIT_NAME="kalinka-renderer.service"
 UPGRADE_PATH_UNIT="kalinka-renderer-upgrade.path"
 
+# A bare container may have no systemd at all, and then nothing to enable the units with.
+command -v systemctl >/dev/null 2>&1 || systemctl() { :; }
+
 case "$1" in
   configure)
     if ! id -u "$USER" >/dev/null 2>&1; then
@@ -25,13 +28,21 @@ case "$1" in
       chown -R "$USER:$USER" "$STATE_DIR"
     fi
 
-    systemctl daemon-reload
+    # Without a running systemd, as in a chroot or a container, the units are
+    # enabled for the next boot and nothing is reloaded or started.
+    SYSTEMD_RUNNING=0
+    if [ -d /run/systemd/system ]; then
+      SYSTEMD_RUNNING=1
+      systemctl daemon-reload
+    fi
     systemctl enable "$UNIT_NAME"
     # Enabling arms the watcher at boot; starting arms it for this one, so an
     # upgrade requested before the next reboot is still acted on.
     systemctl enable "$UPGRADE_PATH_UNIT"
-    systemctl start "$UPGRADE_PATH_UNIT"
-    systemctl restart "$UNIT_NAME"
+    if [ "$SYSTEMD_RUNNING" = 1 ]; then
+      systemctl start "$UPGRADE_PATH_UNIT"
+      systemctl restart "$UNIT_NAME"
+    fi
     ;;
 esac
 

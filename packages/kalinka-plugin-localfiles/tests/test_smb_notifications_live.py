@@ -162,7 +162,7 @@ async def test_notifications_update_the_real_indexer_and_recover_after_disconnec
         ],
         db_path=str(tmp_path / "library.db"),
         artwork_path=str(tmp_path / "art"),
-        scan_interval_minutes=0,
+        daily_rescan=False,
         quiescence_seconds=0,
     )
     await init_db(config.db_path)

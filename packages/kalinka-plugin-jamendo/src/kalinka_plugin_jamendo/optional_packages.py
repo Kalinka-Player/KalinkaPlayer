@@ -1,7 +1,8 @@
 """Optional pip packages this plugin can install on demand.
 
 The runtime of the server's shared text embedder, which mood search needs
-and the server does not install. Importing this module must not pull the
+and the server does not install, and the extension the mood index is
+searched with. Importing this module must not pull the
 packages it lists: the deb and RPM builds run it as a script to emit
 /opt/kalinka/allowed_packages/jamendo.json, and the running server reads the
 allow-list from it.
@@ -36,6 +37,15 @@ OPTIONAL_PACKAGES: dict[str, OptionalPackageSpec] = {
             "HuggingFace tokenizers used by the text embedder behind mood "
             "search."
         ),
+    ),
+    "sqlite_vec": OptionalPackageSpec(
+        pip_spec="sqlite-vec>=0.1.6,<0.2",
+        description=(
+            "SQLite extension for the nearest-neighbour search over the "
+            "Jamendo mood index."
+        ),
+        # Neither PyPI nor piwheels has a 32-bit ARM build.
+        architectures=("x86_64", "aarch64"),
     ),
 }
 

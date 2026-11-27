@@ -122,9 +122,9 @@ A VM usually cannot reach your DAC. Let the VM be the server, and [add an output
 Use this on a computer that already runs one of these 64-bit systems:
 
 - **Debian 13** (trixie)
-- **Raspberry Pi OS (64-bit)** based on Debian 13 (trixie). The older Bookworm release gets the server but no sound output.
+- **Raspberry Pi OS (64-bit)** based on Debian 13 (trixie)
 - **DietPi** on Debian 13
-- **Ubuntu 26.04 LTS**. Ubuntu 24.04 has no renderer package: its libraries are older than the renderer needs.
+- **Ubuntu 26.04 LTS**
 
 A Raspberry Pi 1, Pi 2 or original Pi Zero is not among them, but it can be an output for a server on another computer, such as your desktop: see [Add more outputs](#add-more-outputs).
 
@@ -141,7 +141,7 @@ On a Debian system without `sudo`, log in as `root` and run the same commands wi
 
 This installs the server, its plugins, the browser player and an output for this computer's own sound card. Everything starts straight away and again after every restart. The first start downloads more components, so it needs the internet and takes a few minutes. Then go on to [Open Kalinka](#open-kalinka).
 
-It does not install the [supervisor](#the-supervisor). [Add it](#add-the-supervisor-to-a-streamer) if you want the control page, Wi-Fi setup without a cable, or to set up a DAC HAT from the app.
+On a Raspberry Pi it also installs the [supervisor](#the-supervisor), as the images have it: the control page, Wi-Fi setup without a cable, and setting up a DAC HAT from the app. To leave it out, run the script with `sudo env KALINKA_SUPERVISOR=0 bash` instead of `sudo bash`. On any other computer it is left out; [add it](#add-the-supervisor-to-a-streamer) if you want it, or run the script with `KALINKA_SUPERVISOR=1`.
 
 If the computer runs a firewall, let your home network reach TCP port 8000 (and 8001 for the supervisor) and mDNS on UDP port 5353.
 
@@ -238,7 +238,7 @@ Kalinka can read music from several places at once. Choose them during setup, an
 **On a NAS or another computer.** Nothing to copy. Add a **Network share**: the address of the NAS, the name of the share followed by any folder inside it (for example `music/Albums`), and the user name and password of an account on the NAS, or **Guest** for an open share.
 
 - The NAS must offer SMB2 or later. A very old NAS, or a router sharing a USB disk, may offer only SMB1: turn on SMB2 or SMB3 in its settings.
-- Kalinka looks for new and changed music on a share every 15 minutes. Set **Scan interval** to 0 in the **My Library** settings to have it look only when Kalinka starts and when you choose **Rescan library**.
+- Kalinka looks for new and changed music on a share once a night, between 3 and 6 in the morning. Turn **Daily rescan** off in the **My Library** settings to have it look only when Kalinka starts and when you choose **Rescan library**.
 - Recycle bins, snapshots, thumbnail folders and hidden folders are skipped.
 
 **Copied onto the streamer.** Every installation has a music folder, `/srv/kalinka/music`, that Kalinka reads from the start. Copy into it with a program that speaks **SFTP**. On an image you need a login first: the one you gave Raspberry Pi Imager, with SSH on, or one you create with **SSH access** on [the control page](#the-control-page).
@@ -279,7 +279,7 @@ The server's own machine already has an output. You can add:
 
 1. Give it 64-bit Debian 13, Raspberry Pi OS (64-bit, Trixie), Ubuntu 26.04 or Fedora 44. For a Pi, follow steps 1–4 of *Starting from a blank Raspberry Pi* under [option D](#d-install-with-one-command). Choose a host name that says where it is, such as `livingroom`: the output is named after it.
 
-   On a Pi 2 or original Pi Zero, choose **Raspberry Pi OS Lite (32-bit)** in step 1 of those instructions instead. The supervisor below is not available there, so set a DAC HAT up in `config.txt` as for a Pi 1. For a Pi 1, use its own image, below.
+   On a Pi 2 or original Pi Zero, choose **Raspberry Pi OS Lite (32-bit)** in step 1 of those instructions instead. For a Pi 1, use its own image, below.
 2. On that machine, run:
 
    ```bash
@@ -318,7 +318,7 @@ The supervisor is a small service that looks after the streamer. It runs separat
 - Wi-Fi setup over the temporary network or Bluetooth when the streamer is [not connected](#connect-your-streamer-to-the-network);
 - from the app: restarting or switching off the streamer, setting its time zone, choosing a Raspberry Pi's DAC HAT, and restarting Kalinka when it stops answering.
 
-The images include it. On a streamer you installed with a command, add it as below.
+The images include it, and the one-command install adds it on a Raspberry Pi. On any other streamer you installed with a command, add it as below.
 
 <a id="add-the-supervisor-to-a-box"></a>
 

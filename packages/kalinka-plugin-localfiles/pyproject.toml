@@ -48,7 +48,6 @@ dependencies = [
     # Listens for the shares that announce themselves, so a NAS can be
     # picked from a list rather than typed from memory.
     "zeroconf>=0.47.0",
-    "sqlite-vec>=0.1.6,<0.2",
     "ftfy>=6.0",
     # CRF runtime for the bundled filename parser; imports as "pycrfsuite".
     # Pinned exactly, not ranged: filename_model/weights/model.crfsuite was

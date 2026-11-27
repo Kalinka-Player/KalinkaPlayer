@@ -11,6 +11,9 @@ constexpr unsigned CHANNELS = 2;
 [[noreturn]] void unsupported() {
   throw std::runtime_error("Unsupported AAC configuration");
 }
+
+/// Whether a faad2 status failed: it is a plain char, unsigned on ARM.
+bool failed(char status) { return static_cast<signed char>(status) < 0; }
 } // namespace
 
 void AacDecoder::Close::operator()(void *handle) const {
@@ -21,8 +24,8 @@ AacDecoder::AacDecoder(std::span<const uint8_t> config)
     : config(config.begin(), config.end()) {
   mp4AudioSpecificConfig parsed{};
   if (this->config.empty() ||
-      NeAACDecAudioSpecificConfig(this->config.data(), this->config.size(),
-                                  &parsed) < 0 ||
+      failed(NeAACDecAudioSpecificConfig(this->config.data(),
+                                         this->config.size(), &parsed)) ||
       !parsed.samplingFrequency)
     unsupported();
   open();
@@ -46,8 +49,8 @@ void AacDecoder::open() {
     throw std::runtime_error("Could not initialize the AAC decoder");
   unsigned long opened = 0;
   unsigned char channels = 0;
-  if (NeAACDecInit2(handle.get(), config.data(), config.size(), &opened,
-                    &channels) < 0 ||
+  if (failed(NeAACDecInit2(handle.get(), config.data(), config.size(), &opened,
+                           &channels)) ||
       !opened || opened > 192000 || (rate && opened != rate))
     unsupported();
   rate = opened;

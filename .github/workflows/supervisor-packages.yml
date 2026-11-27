@@ -29,12 +29,12 @@ jobs:
         run: |
           make supervisor-test
           python3 -m unittest discover -s scripts/tests -v
-      - name: Build both architectures
+      - name: Build every architecture
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
         run: |
           export VERSION="$REQUESTED_VERSION"
-          for arch in amd64 arm64; do
+          for arch in amd64 arm64 armhf; do
             GOARCH="$arch" make supervisor-deb
           done
           cd packages/kalinka-supervisor/build

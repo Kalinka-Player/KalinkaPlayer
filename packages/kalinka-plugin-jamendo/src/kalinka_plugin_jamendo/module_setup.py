@@ -1,4 +1,5 @@
 import asyncio
+import importlib.util
 import logging
 from typing import ClassVar, Optional
 
@@ -21,6 +22,9 @@ logger = logging.getLogger(__name__.split(".")[-1])
 _KEY_BY_IMPORT_NAME = {
     spec.import_name or key: key for key, spec in OPTIONAL_PACKAGES.items()
 }
+
+# The embedder names the rest of mood search's runtime; the index's extension is ours.
+_INDEX_EXTENSION = "sqlite_vec"
 
 
 # Nothing on Jamendo works without a client_id, so nothing is fetched for it.
@@ -150,9 +154,10 @@ class KalinkaPluginJamendo(InputModulePlugin):
 
     def _mood_search_lacks(self) -> tuple[list[str], list[str], list[str]]:
         """What mood search runs on and this box lacks under the current
-        config, as the shared embedder names its runtime: the keys of the
-        packages this box can install, the names of those with no wheel for
-        it, and the names of those this plugin does not offer.
+        config, as the shared embedder names its runtime, with the index's
+        extension: the keys of the packages this box can install, the names
+        of those with no wheel for it, and the names of those this plugin
+        does not offer.
 
         Nothing without a client_id: nothing on Jamendo works then, so a box
         that never set Jamendo up never installs its runtime.
@@ -161,15 +166,16 @@ class KalinkaPluginJamendo(InputModulePlugin):
             return [], [], []
         if not _wants_mood_search(self._context.config):
             return [], [], []
-        # A server before SDK 3.12 installed the runtime with itself.
+        # A server before SDK 3.12 installed the embedder's runtime with itself.
         missing_runtime = getattr(self._context.embedder, "missing_runtime", None)
-        if missing_runtime is None:
-            return [], [], []
+        missing = [] if missing_runtime is None else list(missing_runtime())
+        if importlib.util.find_spec(_INDEX_EXTENSION) is None:
+            missing.append(_INDEX_EXTENSION)
         architecture = wheel_architecture()
         to_install: list[str] = []
         no_wheel: list[str] = []
         not_offered: list[str] = []
-        for name in missing_runtime():
+        for name in missing:
             key = _KEY_BY_IMPORT_NAME.get(name)
             if key is None:
                 not_offered.append(name)

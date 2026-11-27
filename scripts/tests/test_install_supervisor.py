@@ -28,11 +28,15 @@ shutil.copyfile(pathlib.Path(os.environ['FIXTURE']) / name, args[args.index('-o'
         self.command('id', '#!/bin/sh\necho 0\n')
         self.command('apt-get', '#!/bin/sh\nprintf "%s\\n" "$@" > "$FIXTURE/installed"\n')
         self.command('dpkg-query', '#!/bin/sh\nexit 1\n')
-        self.arch = subprocess.check_output(['dpkg', '--print-architecture'], text=True).strip()
-        self.name = f'kalinka-supervisor_0.2.0_{self.arch}.deb'
-        package = self.root / 'package' / 'DEBIAN'
+        self.release_for(subprocess.check_output(['dpkg', '--print-architecture'], text=True).strip())
+
+    def release_for(self, arch):
+        """A stable release holding a verified package for ``arch``."""
+        self.arch = arch
+        self.name = f'kalinka-supervisor_0.2.0_{arch}.deb'
+        package = self.root / f'package-{arch}' / 'DEBIAN'
         package.mkdir(parents=True)
-        (package / 'control').write_text(f'Package: kalinka-supervisor\nVersion: 0.2.0\nArchitecture: {self.arch}\nMaintainer: Test <test@example.com>\nDescription: fixture\n')
+        (package / 'control').write_text(f'Package: kalinka-supervisor\nVersion: 0.2.0\nArchitecture: {arch}\nMaintainer: Test <test@example.com>\nDescription: fixture\n')
         subprocess.run(['dpkg-deb', '--build', str(package.parent), str(self.root / self.name)], check=True, capture_output=True)
         digest = hashlib.sha256((self.root / self.name).read_bytes()).hexdigest()
         (self.root / 'SHA256SUMS').write_text(f'{digest}  ./{self.name}\n')
@@ -91,6 +95,13 @@ shutil.copyfile(pathlib.Path(os.environ['FIXTURE']) / name, args[args.index('-o'
         self.command('dpkg-deb', f'#!/bin/sh\ncase "$3" in Package) echo kalinka-supervisor;; Architecture) echo {self.arch};; Version) echo 9.0.0;; esac\n')
         self.assertNotEqual(self.run_installer().returncode, 0)
         self.assertFalse((self.root / 'installed').exists())
+
+    def test_installs_on_32_bit_raspberry_pi_os(self):
+        self.command('dpkg', '#!/bin/sh\n[ "$1" = --print-architecture ] && echo armhf && exit 0\nexit 1\n')
+        self.release_for('armhf')
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('kalinka-supervisor_0.2.0_armhf.deb', (self.root / 'installed').read_text())
 
 
 if __name__ == '__main__':

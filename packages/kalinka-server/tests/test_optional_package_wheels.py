@@ -8,9 +8,9 @@ architecture a box runs it on, and skip when PyPI cannot be reached. An
 architecture a spec leaves out must really have no wheel, or the plugin
 calls a feature unavailable that one install would bring.
 
-bootstrap.sh installs the server the same way, from piwheels and PyPI, so
-the server's own dependencies are also resolved for 32-bit Raspberry Pi OS,
-the one box that takes piwheels' wheels.
+bootstrap.sh installs the server and its plugins the same way, from piwheels
+and PyPI, so their own dependencies are also resolved for 32-bit Raspberry Pi
+OS, the one box that takes piwheels' wheels.
 """
 
 from __future__ import annotations
@@ -34,15 +34,22 @@ SERVER_PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
 SDK_PYPROJECT = (
     Path(__file__).resolve().parents[2] / "kalinka-plugin-sdk" / "pyproject.toml"
 )
+PLUGIN_PYPROJECTS = tuple(
+    path
+    for path in sorted(SDK_PYPROJECT.parents[1].glob("kalinka-plugin-*/pyproject.toml"))
+    if path != SDK_PYPROJECT
+)
 PYPI = "https://pypi.org/simple"
 PIWHEELS = "https://www.piwheels.org/simple"
-# Each Python with the glibc of the system that ships it: Debian 12, Ubuntu
-# 24.04, Debian 13 under Raspberry Pi OS, DietPi and the images, and Fedora 43
-# for the RPM.
+# Every Python the packages accept, each with the glibc of the oldest system
+# that ships it: Debian 12's for 3.11, Ubuntu 24.04's for 3.12, Debian 13's
+# (Raspberry Pi OS, DietPi, the images) for 3.13 and Fedora 43's for 3.14.
 GLIBC_MINOR = {"3.11": 36, "3.12": 39, "3.13": 41, "3.14": 42}
 ARCHITECTURES = ("aarch64", "x86_64")
-# Raspberry Pi OS ships 32-bit images of Debian 12 and Debian 13.
-ARMV7L_PYTHONS = ("3.11", "3.13")
+# 32-bit Raspberry Pi OS on Debian 13, built for ARMv6 so it also runs on a
+# Pi 1 or the first Zero.
+ARM32_PYTHONS = ("3.13",)
+ARM32_ARCHITECTURES = ("armv7l", "armv6l")
 
 
 def optional_packages() -> list[tuple[str, OptionalPackageSpec]]:
@@ -62,17 +69,23 @@ def optional_package_specs(arch: str | None = None) -> list[str]:
     ]
 
 
-def server_requirements() -> list[str]:
-    """What installing the server's wheel pulls from an index: its own
-    requirements and the SDK's, but not the SDK, which ships beside it."""
-    requirements: list[str] = []
-    for pyproject in (SERVER_PYPROJECT, SDK_PYPROJECT):
+def index_requirements(*pyprojects: Path) -> list[str]:
+    """What installing these packages' wheels pulls from an index: their
+    requirements and the SDK's with its media extra, which the server asks
+    for, but no Kalinka package, since those ship beside them."""
+    sdk = tomllib.loads(SDK_PYPROJECT.read_text())["project"]
+    requirements = sdk["dependencies"] + sdk["optional-dependencies"]["media"]
+    for pyproject in pyprojects:
         requirements += tomllib.loads(pyproject.read_text())["project"]["dependencies"]
     return [
         requirement
         for requirement in requirements
-        if canonicalize_name(Requirement(requirement).name) != "kalinka-plugin-sdk"
+        if not canonicalize_name(Requirement(requirement).name).startswith("kalinka-")
     ]
+
+
+def server_requirements() -> list[str]:
+    return index_requirements(SERVER_PYPROJECT)
 
 
 def wheel_platforms(arch: str, glibc_minor: int) -> list[str]:
@@ -192,10 +205,11 @@ def test_every_optional_package_installs_from_wheels(pypi, python, arch):
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("python", ARMV7L_PYTHONS)
-def test_every_package_offered_on_32_bit_arm_installs_there(piwheels, python):
+@pytest.mark.parametrize("arch", ARM32_ARCHITECTURES)
+@pytest.mark.parametrize("python", ARM32_PYTHONS)
+def test_every_package_offered_on_32_bit_arm_installs_there(piwheels, python, arch):
     result = resolve(
-        optional_package_specs("armv7l"), python, "armv7l", indexes=(PIWHEELS, PYPI)
+        optional_package_specs(arch), python, arch, indexes=(PIWHEELS, PYPI)
     )
 
     assert result.returncode == 0, result.stderr
@@ -207,7 +221,7 @@ def test_an_architecture_a_package_leaves_out_has_no_wheel_for_it(piwheels):
     installable_anyway = [
         (key, arch)
         for key, spec in dict(optional_packages()).items()
-        for arch in (*ARCHITECTURES, "armv7l")
+        for arch in (*ARCHITECTURES, *ARM32_ARCHITECTURES)
         if not spec.has_wheels_for(arch)
         and resolve(
             [spec.pip_spec], "3.13", arch, indexes=(PIWHEELS, PYPI)
@@ -227,12 +241,28 @@ def test_a_pin_without_a_wheel_fails_the_check(pypi):
     assert "No matching distribution found for numpy==1.26.4" in result.stderr
 
 
-@pytest.mark.parametrize("python", ARMV7L_PYTHONS)
-def test_the_server_installs_from_wheels_on_32_bit_arm(piwheels, python):
-    """A dependency with no armv7l wheel fails bootstrap's joint install, and
-    its one-at-a-time retry then skips the server's own wheel: the Pi is left
-    with no server."""
-    result = resolve(server_requirements(), python, "armv7l", indexes=(PIWHEELS, PYPI))
+@pytest.mark.parametrize("arch", ARM32_ARCHITECTURES)
+@pytest.mark.parametrize("python", ARM32_PYTHONS)
+def test_the_server_installs_from_wheels_on_32_bit_arm(piwheels, python, arch):
+    """A dependency with no 32-bit ARM wheel fails bootstrap's joint install,
+    and its one-at-a-time retry then skips the server's own wheel: the Pi is
+    left with no server."""
+    result = resolve(server_requirements(), python, arch, indexes=(PIWHEELS, PYPI))
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("arch", ARM32_ARCHITECTURES)
+@pytest.mark.parametrize("python", ARM32_PYTHONS)
+def test_every_plugin_installs_from_wheels_on_32_bit_arm(piwheels, python, arch):
+    """One resolution, as bootstrap installs the bundle: a plugin dependency
+    with no wheel there once left 32-bit boxes without My Library."""
+    result = resolve(
+        index_requirements(SERVER_PYPROJECT, *PLUGIN_PYPROJECTS),
+        python,
+        arch,
+        indexes=(PIWHEELS, PYPI),
+    )
 
     assert result.returncode == 0, result.stderr
 

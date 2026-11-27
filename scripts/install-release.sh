@@ -5,8 +5,9 @@
 # Downloads the .deb assets for a `kalinka-v*` GitHub release and installs them
 # with apt so system dependencies are pulled in automatically. Every package
 # in the bundle — server, plugins, SDK — is pure Python and arch-independent
-# (_all), so the same artifacts install on any machine.
-# Ubuntu 24.04 skips the Bluetooth plugin: its BlueALSA package is too old.
+# (_all), so the same artifacts install on any machine. On 32-bit ARM the
+# bundle's kalinka-server-libs (armhf) adds the system libraries that the
+# server's Python packages, built by piwheels, link against.
 #
 # Some pieces ship on their own release trains and are installed alongside,
 # each best-effort so a lookup failure only warns:
@@ -22,7 +23,10 @@
 #     what makes a plain install play sound through this machine's sound card;
 #     rendering boxes elsewhere on the network run that script themselves. It
 #     goes in before the bundle so this machine is never left running a new
-#     server against a renderer too old to talk to it.
+#     server against a renderer too old to talk to it;
+#   * on a Raspberry Pi, the supervisor (kalinka-supervisor), picked by
+#     install-supervisor.sh: the control page, Wi-Fi setup without a cable and
+#     sound card setup, as on the images. Elsewhere it is added on request.
 #
 # Re-running the script upgrades whatever is already installed, which is how
 # the server's own auto-upgrade reaches all of them.
@@ -41,6 +45,9 @@
 #                    on this machine, and on a Raspberry Pi the KMS driver it
 #                    draws through; 0 to leave an installed one un-upgraded
 #   KALINKA_RENDERER set to 0 to skip installing the local renderer
+#   KALINKA_SUPERVISOR set to 1 to install the supervisor, 0 to leave it out
+#                    and an installed one un-upgraded. Unset, a Raspberry Pi
+#                    gets it, and an installed one is upgraded.
 #   KALINKA_RENDERER_INSTALLER  URL of the renderer installer to use instead of
 #                    the published one at kalinkaplayer.com/install-renderer.sh
 #                    (only needed to test an unmerged change)
@@ -75,11 +82,26 @@ fi
 
 have python3 || die "python3 is required (it is also a runtime dependency of the server)"
 
-# Keep platform exclusions independent of the requested Kalinka version: this
-# script is served from main, including when installing older release bundles.
-ID="" VERSION_ID="" PRETTY_NAME=""
+PRETTY_NAME=""
 [ -r /etc/os-release ] && . /etc/os-release
-PLATFORM="${ID:-unknown}-${VERSION_ID:-unknown}"
+ARCH="$(dpkg --print-architecture 2>/dev/null || true)"
+installed() { [ "$(dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true)" = installed ]; }
+# Auto-upgrade reruns this script, and by then the first install has made each choice.
+FIRST_INSTALL=1
+! installed kalinka-server || FIRST_INSTALL=0
+DEVICE_MODEL=/proc/device-tree/model
+
+if [ "$(uname -m)" = armv6l ] && [ "$FIRST_INSTALL" = 1 ]; then
+  echo ">> note: this is a Raspberry Pi 1 or original Pi Zero, which runs the server very" >&2
+  echo "   slowly. To make it an output for a server on another computer, stop here" >&2
+  echo "   (Ctrl-C) and run this instead:" >&2
+  echo "     curl -fsSL https://kalinkaplayer.com/install-renderer.sh | sudo bash" >&2
+  # Someone reading it needs the time to stop.
+  if [ -t 2 ]; then
+    echo "   The server install goes ahead in 15 seconds." >&2
+    sleep 15
+  fi
+fi
 
 # apt refuses the server on an older system python3, whatever comes first on PATH.
 SYSTEM_PYTHON=/usr/bin/python3
@@ -89,7 +111,7 @@ print("%d.%d.%d" % sys.version_info[:3])
 sys.exit(sys.version_info < (3, 11))')"; then
   [ -n "$python_version" ] || die "$SYSTEM_PYTHON does not run, and the server needs it"
   die "Kalinka needs Python 3.11 or newer, and ${PRETTY_NAME:-this system} has Python ${python_version}.
-  It installs on Debian 13, Raspberry Pi OS (64-bit) or DietPi on Debian 13, or Ubuntu 24.04:
+  It installs on Debian 13, Raspberry Pi OS (64-bit) or DietPi on Debian 13, or Ubuntu 26.04:
   https://github.com/Kalinka-Player/KalinkaPlayer/blob/main/docs/installation.md#d-install-with-one-command"
 fi
 
@@ -159,7 +181,9 @@ for r in (data if isinstance(data, list) else [data]):
 PY
 cat > "$PARSER" <<'PY'
 import sys, json
-platform = sys.argv[1]
+arch = sys.argv[1]
+# The bundle's one per-architecture package: the kiosk and the renderer are looked up on their own.
+per_arch = ("kalinka-server-libs_",)
 data = json.load(sys.stdin)
 rel = None
 if isinstance(data, list):
@@ -177,14 +201,10 @@ if not rel:
 assets = {a["name"]: a["browser_download_url"] for a in rel.get("assets", [])}
 urls = []
 for name, url in assets.items():
-    if not name.endswith("_all.deb"):
-        continue
-    if platform == "ubuntu-24.04" and name.startswith("kalinka-plugin-bluetooth_"):
-        sys.stderr.write(
-            "note: skipping the Bluetooth plugin on Ubuntu 24.04; "
-            "its BlueALSA package is older than the plugin requires.\n")
-        continue
-    urls.append(url)
+    if name.endswith("_all.deb") or (
+        arch and name.startswith(per_arch) and name.endswith(f"_{arch}.deb")
+    ):
+        urls.append(url)
 if not any(n.startswith("kalinka-server_") and n.endswith("_all.deb")
            for n in assets):
     sys.stderr.write(
@@ -196,7 +216,7 @@ print(rel["tag_name"])
 for u in urls:
     print(u)
 PY
-parsed="$(printf '%s' "$json" | python3 "$PARSER" "$PLATFORM")" \
+parsed="$(printf '%s' "$json" | python3 "$PARSER" "$ARCH")" \
   || die "failed to parse release metadata"
 
 TAG="$(printf '%s\n' "$parsed" | sed -n '1p')"
@@ -237,13 +257,12 @@ fi
 
 kiosk_url=""
 if [ "$WANT_DISPLAY" = "1" ]; then
-  arch="$(dpkg --print-architecture 2>/dev/null || true)"
-  if [ -n "$arch" ] \
-     && kiosk_url="$(app_asset kalinka-kiosk_ "_${arch}.deb")" && [ -n "$kiosk_url" ]; then
+  if [ -n "$ARCH" ] \
+     && kiosk_url="$(app_asset kalinka-kiosk_ "_${ARCH}.deb")" && [ -n "$kiosk_url" ]; then
     URLS+=("$kiosk_url")
     echo "   found ${kiosk_url##*/}"
   else
-    echo ">> note: no kalinka-kiosk package for ${arch:-this machine} found in $WEB_REPO —" >&2
+    echo ">> note: no kalinka-kiosk package for ${ARCH:-this machine} found in $WEB_REPO —" >&2
     echo "   installing without the now-playing display." >&2
   fi
 fi
@@ -263,12 +282,32 @@ for url in "${URLS[@]}"; do
   download "$url" "$TMPDIR_DL/$name"
 done
 
-# Existing supervisor installations join this upgrade; ordinary servers stay unchanged.
-if [ "${SKIP_SUPERVISOR:-0}" != 1 ] && \
-   [ "$(dpkg-query -W -f='${db:Status-Status}' kalinka-supervisor 2>/dev/null || true)" = installed ]; then
+# The supervisor: a Raspberry Pi gets it at its first install, as the images carry it; an installed one joins every upgrade.
+SUPERVISOR_INSTALLED=0
+! installed kalinka-supervisor || SUPERVISOR_INSTALLED=1
+WANT_SUPERVISOR="${KALINKA_SUPERVISOR:-}"
+[ "${SKIP_SUPERVISOR:-0}" = 1 ] && WANT_SUPERVISOR=0
+if [ -z "$WANT_SUPERVISOR" ]; then
+  WANT_SUPERVISOR="$SUPERVISOR_INSTALLED"
+  if [ "$FIRST_INSTALL" = 1 ] && [ -r "$DEVICE_MODEL" ]; then
+    case "$(tr -d '\0' < "$DEVICE_MODEL")" in "Raspberry Pi"*) WANT_SUPERVISOR=1 ;; esac
+  fi
+fi
+
+if [ "$WANT_SUPERVISOR" = 1 ]; then
   supervisor_script="$(installer_script install-supervisor.sh \
     "${KALINKA_SUPERVISOR_INSTALLER:-https://raw.githubusercontent.com/$REPO/main/scripts/install-supervisor.sh}")"
-  ALLOW_MISSING_RELEASE=1 bash "$supervisor_script"
+  if [ "$SUPERVISOR_INSTALLED" = 1 ]; then
+    ALLOW_MISSING_RELEASE=1 bash "$supervisor_script"
+  else
+    echo ">> Installing the supervisor ..."
+    # Best-effort, as the server runs without it: a box it has no package for still gets Kalinka.
+    ALLOW_MISSING_RELEASE=1 bash "$supervisor_script" || {
+      echo ">> note: the supervisor could not be installed — the install below still" >&2
+      echo "   goes ahead, without its control page. Add it later with" >&2
+      echo "   scripts/install-supervisor.sh, or set KALINKA_SUPERVISOR=0 to skip this step." >&2
+    }
+  fi
 fi
 
 # --- renderer -----------------------------------------------------------------
@@ -282,7 +321,8 @@ fi
 install_renderer() {
   local script
   script="$(installer_script install-renderer.sh "$RENDERER_INSTALLER")" || return
-  KALINKA_REPO="$REPO" bash "$script"
+  # This script has already brought the supervisor or left it out.
+  KALINKA_REPO="$REPO" KALINKA_SUPERVISOR=0 bash "$script"
 }
 
 if [ "${KALINKA_RENDERER:-1}" != "0" ]; then
@@ -351,7 +391,7 @@ dpkg_state() {  # dpkg_state <package> -> "<status> <version>", or nothing when 
   printf '%s' "${state% }"
 }
 
-# Only a note: Bookworm's repair, for one, removes the Bluetooth plugin it has no BlueZ for.
+# Only a note: a repair on a system without the BlueZ it needs removes the Bluetooth plugin.
 report_missing_debs() {
   local deb package wanted state missing=0
   for deb in "$TMPDIR_DL"/*.deb; do

@@ -27,7 +27,6 @@ from kalinka_plugin_sdk.inputmodule import InputModule
 from kalinka_plugin_sdk.storage import LocationStatus, SourcesChange, StorageLocation
 
 from .config_model import (
-    DEFAULT_SCAN_INTERVAL_MINUTES,
     AccountSignIn,
     LocalFilesConfig,
     LocalLocation,
@@ -107,11 +106,8 @@ class _FolderCheck:
     statuses: list[tuple[RootStatus, Optional[str]]]
 
 
-def _folder_check_lifetime_s(config: LocalFilesConfig) -> int:
-    """How long a check of the music folders stands before health renews it:
-    the library's rescan interval, or the default one when rescans are manual
-    only."""
-    return (config.scan_interval_minutes or DEFAULT_SCAN_INTERVAL_MINUTES) * 60
+# Health is polled every few seconds, and each check contacts every share.
+FOLDER_CHECK_LIFETIME_S = 15 * 60
 
 
 def _report_check_failure(check: "asyncio.Task") -> None:
@@ -131,7 +127,14 @@ def _is_importable(import_name: str) -> bool:
 
 
 # CLAP needs these; each key is also its import name.
-_AI_SEARCH_PACKAGES = ("numpy", "onnxruntime", "soundfile", "soxr", "tokenizers")
+_AI_SEARCH_PACKAGES = (
+    "numpy",
+    "onnxruntime",
+    "soundfile",
+    "soxr",
+    "tokenizers",
+    "sqlite_vec",
+)
 
 
 def _without_wheels(keys) -> list[str]:
@@ -181,7 +184,7 @@ def _mount_mismatch(status: RootStatus, stored_signature: Optional[str]) -> bool
 def _format_root_status(
     status: RootStatus,
     stored_signature: Optional[str],
-    scan_interval_minutes: int,
+    daily_rescan: bool,
     file_watch_enabled: bool = True,
 ) -> str:
     """Render one music folder's mount status as the markdown the UI displays."""
@@ -208,9 +211,7 @@ def _format_root_status(
         )
     if status.is_network:
         when = (
-            f"by the periodic rescan (every {scan_interval_minutes} min)"
-            if scan_interval_minutes
-            else "when you rescan the library"
+            "by the nightly rescan" if daily_rescan else "when you rescan the library"
         )
         if status.fs_type == "smb" and file_watch_enabled:
             notes.append(
@@ -888,10 +889,7 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
         current = check is not None and check.locations == tuple(
             library_locations(config)
         )
-        fresh = (
-            current
-            and time.monotonic() - check.at < _folder_check_lifetime_s(config)
-        )
+        fresh = current and time.monotonic() - check.at < FOLDER_CHECK_LIFETIME_S
         if not fresh and (self._folder_probe is None or self._folder_probe.done()):
             self._folder_probe = asyncio.create_task(self._music_folder_statuses())
             self._folder_probe.add_done_callback(_report_check_failure)
@@ -977,7 +975,7 @@ class KalinkaPluginLocalFiles(InputModulePlugin):
             config = LocalFilesConfig(**self._context.config.model_dump())
             return "\n\n".join(
                 _format_root_status(
-                    status, stored, config.scan_interval_minutes, config.file_watch_enabled
+                    status, stored, config.daily_rescan, config.file_watch_enabled
                 )
                 for status, stored in statuses
             )

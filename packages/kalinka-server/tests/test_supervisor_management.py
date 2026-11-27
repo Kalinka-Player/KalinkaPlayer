@@ -132,8 +132,9 @@ def test_status_names_the_streamer_where_management_cannot_run(tmp_path, monkeyp
     assert management.unavailable_reason().startswith("Streamer management")
 
 
-@pytest.mark.parametrize("arch", [OSError("no dpkg"), "armhf"])
-def test_architecture_reasons_name_the_streamer(tmp_path, monkeypatch, arch):
+def _on(tmp_path, monkeypatch, arch):
+    """A Debian streamer with the helper and installer, whose dpkg reports
+    ``arch``, or raises it."""
     for name in ("HELPER", "INSTALLER"):
         (tmp_path / name).touch()
         monkeypatch.setattr(management, name, tmp_path / name)
@@ -146,8 +147,21 @@ def test_architecture_reasons_name_the_streamer(tmp_path, monkeypatch, arch):
         return SimpleNamespace(returncode=0, stdout=arch)
 
     monkeypatch.setattr(management.subprocess, "run", run)
+
+
+@pytest.mark.parametrize("arch", [OSError("no dpkg"), "riscv64"])
+def test_architecture_reasons_name_the_streamer(tmp_path, monkeypatch, arch):
+    _on(tmp_path, monkeypatch, arch)
     reason = management.unavailable_reason()
     assert "streamer" in reason.lower() and not _BOX.search(reason)
+
+
+@pytest.mark.parametrize("arch", ["amd64", "arm64", "armhf"])
+def test_a_streamer_the_supervisor_is_packaged_for_can_be_managed(
+    tmp_path, monkeypatch, arch
+):
+    _on(tmp_path, monkeypatch, arch)
+    assert management.unavailable_reason() is None
 
 
 def test_readonly_status_cannot_be_faked_by_a_client(box):

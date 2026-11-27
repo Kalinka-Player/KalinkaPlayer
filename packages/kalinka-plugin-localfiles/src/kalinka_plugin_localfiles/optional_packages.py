@@ -60,6 +60,15 @@ OPTIONAL_PACKAGES: dict[str, OptionalPackageSpec] = {
         pip_spec="tokenizers>=0.15",
         description="HuggingFace tokenizers used by the CLAP text encoder.",
     ),
+    "sqlite_vec": OptionalPackageSpec(
+        pip_spec="sqlite-vec>=0.1.6,<0.2",
+        description=(
+            "SQLite extension for the nearest-neighbour search over the "
+            "embeddings behind AI search and recommendations."
+        ),
+        # Neither PyPI nor piwheels has a 32-bit ARM build.
+        architectures=("x86_64", "aarch64"),
+    ),
 }
 
 

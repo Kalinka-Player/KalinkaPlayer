@@ -54,7 +54,8 @@ func Blob(nodes ...devicetree.Node) []byte {
 	var blob bytes.Buffer
 	structAt := header + reserved
 	stringsAt := structAt + structure.Len()
-	for _, v := range []int{0xd00dfeed, stringsAt + strs.Len(), structAt, stringsAt, header, 17, 16, 0, strs.Len(), structure.Len()} {
+	_ = binary.Write(&blob, binary.BigEndian, uint32(0xd00dfeed))
+	for _, v := range []int{stringsAt + strs.Len(), structAt, stringsAt, header, 17, 16, 0, strs.Len(), structure.Len()} {
 		u32(&blob, v)
 	}
 	blob.Write(make([]byte, reserved))

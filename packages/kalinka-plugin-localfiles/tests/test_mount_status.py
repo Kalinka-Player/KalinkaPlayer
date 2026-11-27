@@ -150,14 +150,14 @@ def test_format_root_status_recommends_for_autofs_share():
         is_network=True,
         is_autofs=True,
     )
-    text = _format_root_status(status, None, 15)
+    text = _format_root_status(status, None, True)
     assert "**Available**" in text
     assert "nfs4 network share" in text
     assert "autofs" in text
-    assert "every 15 min" in text
+    assert "by the nightly rescan" in text
 
 
-def test_format_root_status_leaves_a_share_s_changes_to_a_rescan_at_interval_0():
+def test_format_root_status_leaves_a_share_s_changes_to_a_rescan_without_daily_rescans():
     from kalinka_plugin_localfiles.module_setup import _format_root_status
 
     status = RootStatus(
@@ -168,8 +168,8 @@ def test_format_root_status_leaves_a_share_s_changes_to_a_rescan_at_interval_0()
         is_network=True,
         is_autofs=False,
     )
-    text = _format_root_status(status, None, 0)
-    assert "every 0 min" not in text
+    text = _format_root_status(status, None, False)
+    assert "nightly" not in text
     assert "when you rescan the library" in text
 
 
@@ -184,7 +184,7 @@ def test_format_root_status_names_the_reason_when_unavailable():
         is_network=False,
         is_autofs=True,
     )
-    text = _format_root_status(status, None, 15)
+    text = _format_root_status(status, None, True)
     assert "**Not available**" in text
     assert "automounter" in text
 
@@ -203,7 +203,7 @@ def test_format_root_status_flags_a_mount_identity_mismatch():
         is_autofs=False,
         identity="ext4 /dev/sda1",
     )
-    text = _format_root_status(status, "nfs4 192.168.1.5:/export", 15)
+    text = _format_root_status(status, "nfs4 192.168.1.5:/export", True)
     assert "**Not available**" in text
     assert "nfs4 192.168.1.5:/export" in text
 
@@ -247,8 +247,8 @@ def test_smb_status_describes_notifications_and_the_scan_fallback():
         root="smb://nas/music", available=True, reason="", fs_type="smb",
         is_network=True, is_autofs=False, identity="smb nas 1",
     )
-    text = _format_root_status(status, None, 15)
+    text = _format_root_status(status, None, True)
     assert "notifications" in text
-    assert "every 15 min" in text
-    assert "notifications" not in _format_root_status(status, None, 15, False)
-    assert "when you rescan" in _format_root_status(status, None, 0)
+    assert "by the nightly rescan" in text
+    assert "notifications" not in _format_root_status(status, None, True, False)
+    assert "when you rescan" in _format_root_status(status, None, False)

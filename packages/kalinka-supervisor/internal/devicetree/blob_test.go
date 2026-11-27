@@ -70,3 +70,15 @@ func TestChildrenRefusesWhatIsNoBlob(t *testing.T) {
 		t.Fatal("text read as a blob")
 	}
 }
+
+func TestChildrenRefusesAPropertyLongerThanTheBlob(t *testing.T) {
+	for _, size := range []uint32{0x80000000, 0xfffffff4} {
+		blob := devicetreetest.Blob(devicetree.Node{Name: "a", Props: map[string][]byte{"p": devicetreetest.Cells(1)}})
+		// The root's and the node's begin tokens and names, then the property's token.
+		sizeAt := binary.BigEndian.Uint32(blob[8:]) + 20
+		binary.BigEndian.PutUint32(blob[sizeAt:], size)
+		if _, err := devicetree.Children(blob); !errors.Is(err, devicetree.ErrBlob) {
+			t.Fatalf("a property of %#x bytes read as %v", size, err)
+		}
+	}
+}

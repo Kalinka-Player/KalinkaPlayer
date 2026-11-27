@@ -180,8 +180,8 @@ def test_my_library_reads_sources_then_ai_search_then_metadata_then_library():
     short = lambda path: path.removeprefix(prefix)  # noqa: E731
 
     assert [(short(s.id), short(s.before)) for s in module.sections] == [
-        ("ai_search", "scan_interval_minutes"),
-        ("enricher", "scan_interval_minutes"),
+        ("ai_search", "daily_rescan"),
+        ("enricher", "daily_rescan"),
     ]
     assert short(module.collections[0].status) == "storage.status_view"
     enricher = module.sections[1]

@@ -1,0 +1,13 @@
+Package: kalinka-server-libs
+Version: @VERSION@
+Architecture: armhf
+Maintainer: Dmitry Savin <envelsavinds@gmail.com>
+Section: misc
+Priority: optional
+Homepage: https://github.com/Kalinka-Player/KalinkaPlayer
+Depends: libopenblas0, libjpeg62-turbo, libopenjp2-7, libtiff6, libxcb1, libwebp7, libwebpmux3, libwebpdemux2
+Description: system libraries the Kalinka server's Python packages need on 32-bit ARM
+ On 32-bit ARM the server's Python packages come from piwheels, whose wheels
+ link against system libraries where PyPI's bundle their own: numpy against
+ OpenBLAS, and Pillow against the JPEG, JPEG 2000, TIFF, XCB and WebP ones.
+ The server cannot start without them. This package has no files of its own.

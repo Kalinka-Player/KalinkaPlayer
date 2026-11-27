@@ -164,7 +164,7 @@ def kalinka(new_instance, cache_dir: Path, samba: SambaShare) -> KalinkaInstance
                     },
                 }
             ],
-            "input_modules.localfiles.scan_interval_minutes": 60,
+            "input_modules.localfiles.daily_rescan": False,
             "input_modules.localfiles.ai_search.enabled": True,
         },
         cache_dir / "models",

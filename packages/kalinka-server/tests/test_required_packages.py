@@ -79,11 +79,26 @@ def test_returns_empty_when_ai_search_on_and_deps_present(monkeypatch):
     cfg.ai_search.enabled = True
     _set_importable(
         monkeypatch,
-        {"numpy", "onnxruntime", "soundfile", "soxr", "tokenizers"},
+        {"numpy", "onnxruntime", "soundfile", "soxr", "tokenizers", "sqlite_vec"},
     )
 
     plugin = _plugin_with(cfg)
     assert asyncio.run(plugin.required_packages()) == []
+
+
+def test_a_venv_without_the_vector_extension_gets_it_back(monkeypatch):
+    """sqlite-vec was a hard dependency of My Library: a box that upgraded
+    keeps the copy it has, and one whose venv was rebuilt installs it again
+    at the next restart, as it does the rest of AI search's runtime."""
+    cfg = LocalFilesConfig()
+    cfg.ai_search.enabled = True
+    _set_importable(
+        monkeypatch,
+        {"numpy", "onnxruntime", "soundfile", "soxr", "tokenizers"},
+    )
+
+    plugin = _plugin_with(cfg)
+    assert asyncio.run(plugin.required_packages()) == ["sqlite_vec"]
 
 
 def test_ai_search_pulls_full_clap_stack(monkeypatch):
@@ -98,7 +113,7 @@ def test_ai_search_pulls_full_clap_stack(monkeypatch):
     result = asyncio.run(plugin.required_packages())
     assert result.count("numpy") == 1
     assert set(result) == {
-        "numpy", "onnxruntime", "soundfile", "soxr", "tokenizers"
+        "numpy", "onnxruntime", "soundfile", "soxr", "tokenizers", "sqlite_vec"
     }
 
 
@@ -107,8 +122,8 @@ def test_partial_install_only_lists_missing(monkeypatch):
     ones come back."""
     cfg = LocalFilesConfig()
     cfg.ai_search.enabled = True
-    # numpy + tokenizers installed; onnxruntime + soundfile + soxr are not.
-    _set_importable(monkeypatch, {"numpy", "tokenizers"})
+    # numpy + tokenizers + sqlite_vec installed; the rest are not.
+    _set_importable(monkeypatch, {"numpy", "tokenizers", "sqlite_vec"})
 
     plugin = _plugin_with(cfg)
     result = asyncio.run(plugin.required_packages())

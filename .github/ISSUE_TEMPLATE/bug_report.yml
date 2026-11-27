@@ -37,7 +37,7 @@ body:
   - type: input
     attributes:
       label: Hardware & OS
-      placeholder: e.g. Raspberry Pi 4, Raspberry Pi OS 12 (bookworm), Topping E30 DAC over USB
+      placeholder: e.g. Raspberry Pi 4, Raspberry Pi OS 13 (trixie), Topping E30 DAC over USB
     validations:
       required: true
   - type: textarea
