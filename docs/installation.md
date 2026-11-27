@@ -20,7 +20,7 @@ The steps:
 |---|---|
 | A Raspberry Pi 3, 4, 400, 5 or Zero 2 W | [A. Flash the Raspberry Pi image](#a-raspberry-pi-image) |
 | A spare 64-bit PC, mini-PC or thin client | [B. Flash the PC image](#b-pc-image) |
-| A home server that runs virtual machines | [C. Run the PC image as a virtual machine](#c-virtual-machine) |
+| A home server or computer that runs virtual machines: VirtualBox, QEMU, Proxmox, Hyper-V | [C. Run the PC image as a virtual machine](#c-virtual-machine) |
 | A computer already running Debian 13, Raspberry Pi OS (64-bit, Trixie), DietPi or Ubuntu 26.04 | [D. Install with one command](#d-install-with-one-command) |
 
 If you are not sure, use an image. It is a complete system with Kalinka and the [supervisor](#the-supervisor) already installed, and needs no typing.
@@ -93,27 +93,85 @@ Remove the live stick and restart. Kalinka grows to fill the disk on its first s
 
 ### C. Virtual machine
 
-The PC image also runs as a virtual machine, which suits a home server that is on all the time anyway. Four things matter:
+The PC image also runs as a virtual machine (VM): on a home server that is on all the time anyway, or on your own computer to try Kalinka out. The computer needs an Intel or AMD processor: a Mac with Apple silicon cannot run this image. Four things matter, whatever the VM software:
 
 - **Bridged network, not NAT.** Your phone has to reach the VM directly. Use a **Bridged Adapter** in VirtualBox, a **bridge** in virt-manager, **vmbr0** in Proxmox, or an **External** switch in Hyper-V.
 - **UEFI or BIOS firmware.** The image starts with either, and with Secure Boot on.
-- **A bigger disk.** The image is 8 GiB. Make the virtual disk 16 GB or more before the first start, more if the music will live inside the VM.
+- **A bigger disk.** The image is 8 GiB. Make the virtual disk 16 GB or more, more if the music will live inside the VM. Kalinka grows into a bigger disk at every start, so you can also enlarge it later.
 - **2 CPU cores and 2 GB of memory**, or 4 GB for smart search.
 
 A VM usually cannot reach your DAC. Let the VM be the server, and [add an output](#add-more-outputs) on a small streamer next to your amplifier. You can also pass a USB DAC through to the VM.
 
-**1. Download and unpack** the file that ends in **`-amd64.img.xz`** from the [image releases](https://github.com/Kalinka-Player/KalinkaPlayer/releases?q=kalinka-image-v&expanded=true). On Linux or macOS run `xz -d kalinka-*-amd64.img.xz`; on Windows, use [7-Zip](https://www.7-zip.org/). You get a `.img` file.
+#### 1. Download and unpack the image
 
-**2. Import it.** Replace `kalinka.img` with the name of your file:
+Download the file that ends in **`-amd64.img.xz`** from the [image releases](https://github.com/Kalinka-Player/KalinkaPlayer/releases?q=kalinka-image-v&expanded=true). On Linux or macOS, unpack it with `xz -d kalinka-*-amd64.img.xz`; on Windows, use [7-Zip](https://www.7-zip.org/).
+
+You get an 8 GiB file ending in `.img`, a raw copy of a whole disk. Rename it to `kalinka.img`: the commands below use that name.
+
+#### 2. Convert it and create the VM
+
+VM software keeps its disks in a format of its own, so the image is converted first, and made bigger on the way. Follow the part for your software.
+
+##### VirtualBox
+
+VirtualBox cannot start from a raw image, so convert it to VirtualBox's VDI format with `VBoxManage`, which comes with VirtualBox. Open a terminal in the folder with `kalinka.img` and run:
+
+```bash
+VBoxManage convertfromraw kalinka.img kalinka.vdi --format VDI
+VBoxManage modifymedium disk kalinka.vdi --resize 32768
+```
+
+The first command writes `kalinka.vdi`, and the second makes it 32 GB: the size is in MB. On Windows, run them in PowerShell, typing `& "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"` in place of `VBoxManage`. Keep `kalinka.vdi` where it can stay, because it becomes the VM's disk. You can delete `kalinka.img` now.
+
+Then, in VirtualBox:
+
+1. Choose **New**. Name the VM `Kalinka`, leave the ISO image empty, and choose **Linux** and **Debian (64-bit)** as the operating system.
+2. Give it 2048 MB of memory, or 4096 MB for smart search, and 2 processors. Leave **Enable EFI** as it is: the image starts either way.
+3. For the hard disk, choose **Use an Existing Virtual Hard Disk File**. Click the folder icon, **Add** `kalinka.vdi`, and choose it.
+4. Choose **Finish**. Before you start the VM, open **Settings → Network**. Set **Adapter 1** to **Attached to: Bridged Adapter**, and under **Name** pick the network adapter your computer uses: its wired one, if it has both.
+5. Choose **Start**.
+
+To pass a USB DAC through, open **Settings → USB**, choose **USB 3.0 (xHCI) Controller**, click the **+** icon and pick the DAC. While the VM runs, the DAC belongs to it rather than to your computer. On a Linux computer, your user must be in the `vboxusers` group, or VirtualBox lists no USB devices.
+
+##### QEMU and virt-manager
+
+Convert the image to QEMU's qcow2 format with `qemu-img`, which comes with QEMU, and make it 32 GB:
+
+```bash
+qemu-img convert -f raw -O qcow2 kalinka.img kalinka.qcow2
+qemu-img resize kalinka.qcow2 32G
+```
+
+You can delete `kalinka.img` now.
+
+**With virt-manager**, first move the disk to where libvirt may read it: `sudo mv kalinka.qcow2 /var/lib/libvirt/images/`. Then:
+
+1. Choose **File → New Virtual Machine**, then **Import existing disk image**.
+2. **Browse** to `kalinka.qcow2`. For the operating system, type `debian` and choose **Debian 13**, or the newest Debian on offer.
+3. Give it 2048 MB of memory, or 4096 MB for smart search, and 2 CPUs.
+4. Name it `kalinka`. Under **Network selection**, choose **Bridge device** and enter your bridge's name, such as `br0`. Without a bridge, choose **Macvtap device** and enter the name of your computer's wired adapter, which `ip link` lists. The rest of your network then reaches the VM, but this computer itself cannot.
+5. Choose **Finish**. The VM starts.
+
+**With QEMU alone**, on Linux, start the VM with:
+
+```bash
+qemu-system-x86_64 -enable-kvm -cpu host -smp 2 -m 2G \
+  -drive file=kalinka.qcow2,if=virtio \
+  -nic bridge,br=br0,model=virtio-net-pci
+```
+
+`br0` is a bridge on your computer, and QEMU needs a line `allow br0` in `/etc/qemu/bridge.conf` to use it. To try Kalinka on this computer alone, with no bridge, replace the `-nic` line with `-nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:8000-:8000` and open `http://localhost:8000`. The app on your phone cannot reach it that way.
+
+##### Proxmox VE and Hyper-V
 
 | Software | How |
 |---|---|
-| **virt-manager / QEMU** | `qemu-img convert -f raw -O qcow2 kalinka.img kalinka.qcow2`, then `qemu-img resize kalinka.qcow2 32G`. Create a VM with **Import existing disk image** and choose **Debian 13**. |
 | **Proxmox VE** | Create a VM with no disk, then on the host run `qm disk import <vm-id> kalinka.img local-lvm`. Attach the imported disk, make it the boot disk, and resize it under **Hardware**. |
-| **VirtualBox** | `VBoxManage convertfromraw kalinka.img kalinka.vdi --format VDI`, then `VBoxManage modifymedium disk kalinka.vdi --resize 32768`. Create a **Linux / Debian (64-bit)** VM with this disk and set the network to **Bridged Adapter**. |
 | **Hyper-V** | `qemu-img convert -f raw -O vhdx kalinka.img kalinka.vhdx`. Create a **Generation 2** VM with this disk, and under **Security** set the Secure Boot template to **Microsoft UEFI Certificate Authority**. |
 
-**3. Start the VM**, give it a few minutes, and go on to [Open Kalinka](#open-kalinka).
+#### 3. Start the VM
+
+The first start takes a minute or two. The VM's window then shows a login prompt, with the address to open above it, as in `Kalinka Player: open http://192.168.1.50:8000 in a browser.` You need no login: go on to [Open Kalinka](#open-kalinka).
 
 ### D. Install with one command
 
@@ -222,7 +280,7 @@ Both ways need Wi-Fi in the streamer, and Bluetooth needs Bluetooth in it too. E
 
 - the Kalinka app shows it under the server's name;
 - your router's list of connected devices shows the streamer as **kalinka**, or by the host name you gave Imager;
-- a screen plugged into a Raspberry Pi streamer shows it above the login prompt, unless it runs the now-playing display;
+- a screen plugged into a Raspberry Pi or PC streamer, or the window of a virtual machine, shows it above the login prompt, unless it runs the now-playing display;
 - on a computer where you ran the install command, `hostname -I` prints it.
 
 The first time, Kalinka walks you through setup. Follow the steps it shows. On a Raspberry Pi, choosing a DAC HAT there restarts the Pi once.
