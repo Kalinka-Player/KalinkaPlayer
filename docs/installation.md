@@ -300,7 +300,7 @@ A Pi 1 plays bit-perfect and gapless, but FIR room correction and DSD-to-PCM con
 
 1. In the newest [Kalinka image release](https://github.com/Kalinka-Player/KalinkaPlayer/releases?q=kalinka-image-v&expanded=true), download the file that ends in **`-rpi1-renderer-armhf.img.xz`**. Write it to a card of 2 GB or more as in [step 2 of option A](#2-write-it-to-the-card). Imager's settings do not apply to this image, so you can skip them.
 2. For a DAC HAT without an ID chip, open the card's boot partition on your computer and add the HAT's line, such as `dtoverlay=hifiberry-dac`, at the end of `config.txt`. The Pi's own headphone socket and HDMI work without it.
-3. Connect the Pi to your network with a cable and switch it on. Within a few minutes the output appears in the app as *Kalinka Renderer on kalinka-renderer*. Choose it, pick the sound device in its settings, and play a test sound.
+3. Plug in your USB DAC, connect the Pi to your network with a cable and switch it on. Within a few minutes the output appears in the app as *Kalinka Renderer on kalinka-renderer*. Choose it, and in its settings set **Output device** to your DAC's entry that ends in **(direct)**, which plays without conversion: *System default* is usually the Pi's own headphone socket or HDMI. Then play a test sound.
 
 The server keeps the renderer up to date, as it does every output. To rename it, change its name in the output's settings, then switch the Pi off and on again: the name takes effect at its next start.
 
