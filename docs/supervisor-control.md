@@ -11,6 +11,8 @@
 - on a Raspberry Pi, set the streamer up for its sound card, such as a DAC HAT;
 - set the streamer's time zone;
 - set up an SSH administrator login through the dashboard form;
+- download the last day's journal of Core, the renderer, the supervisor, the
+  network and the kernel;
 - tell which supervisor and protocol version it is talking to.
 
 The page and API run in the supervisor process, not in Core, so they keep
@@ -55,6 +57,8 @@ Core's files are damaged. It follows the app's dark style.
 - **Time zone.** The streamer's zone and the browser's, a list of every zone
   the streamer offers, starting on its own, and **Apply**. See
   [the time zone](#the-time-zone).
+- **Logs.** **Download logs** saves the last 24 hours of the journal as a
+  ZIP, with what it may contain beside the button. See [logs](#logs).
 - **Resources.** Memory and CPU for Kalinka as a whole, then per service:
   - **Services:** the server, the renderer and the supervisor, plus any other
     Kalinka unit while it runs, such as an upgrade or the Wi-Fi helper.
@@ -142,7 +146,11 @@ reach it and what they can make it do:
   package other than the SDK, and the removal unit checks it again and
   refuses to take any other package along. `set_timezone` accepts one zone
   name, with no leading `/` and no `.`, that the streamer's tzdata has, and
-  timedated checks it again.
+  timedated checks it again. The log download runs journalctl with fixed
+  units and options; the one value it takes, `since`, reaches journalctl
+  only as Unix seconds parsed from a time. Anyone who can open the page can
+  download the logs, as anyone on the network can already ask Core for its
+  export.
 - **Local peers only.** The peer address must be loopback, link-local,
   private (RFC 1918) or in 100.64.0.0/10, where VPN overlays such as Tailscale
   put LAN peers. A forwarded port does not expose the API to the internet.
@@ -199,7 +207,8 @@ is busy, including after a supervisor restart.
  "renderer_id": "5c0ffee0-1d2e-4a3b-8c4d-5e6f7a8b9c0d",
  "actions": ["restart_core", "reboot", "poweroff", "reinstall", "set_soundcard", "remove_plugin", "set_timezone"],
  "poweroff_timer": true,
- "poweroff_schedule": true}
+ "poweroff_schedule": true,
+ "logs": true}
 ```
 
 - `version` is the package version.
@@ -217,6 +226,8 @@ is busy, including after a supervisor restart.
   `set_soundcard`, and only a streamer with tzdata and an unmasked
   systemd-timedated offers `set_timezone`. An older supervisor lists no
   `set_timezone`.
+- `logs` is true where `GET /v1/logs` serves the journal download. Older
+  supervisors omit it, and their page has no **Download logs**.
 
 **Negotiation** works like the renderer's Hello range. A client that speaks
 protocols `a` to `b` uses `v = min(b, protocol)`. It is compatible when
@@ -266,6 +277,7 @@ invokes systemd.
 | GET, HEAD | `/v1/dashboard` | The dashboard object below |
 | GET, HEAD | `/v1/reinstall/log` | The last 64 KiB of the last reinstall's output, as text; empty if none has run |
 | GET, HEAD | `/v1/plugin-removal/log` | The same for the last plugin removal |
+| GET, HEAD | `/v1/logs` | A ZIP of the journal since `?since=`, else of the last 24 hours, as `kalinka-streamer-logs-<time>.zip`; see [logs](#logs) |
 | GET, HEAD | `/v1/soundcard` | The sound card object below |
 | GET, HEAD | `/v1/timezones` | `{"timezones": ["Africa/Abidjan", …, "UTC"]}`, the zones to choose from for `set_timezone`, on a streamer that offers it |
 | POST | `/v1/actions/restart_core` | 202 `{"action": "restart_core"}` once systemd has queued the restart |
@@ -523,6 +535,51 @@ timedated reads it, so a zone set with `dietpi-config` shows there too.
 `GET /v1/timezones` lists UTC and every zone in tzdata's `zone.tab` that the
 streamer has, sorted: one per country and region, the list people choose from.
 
+## Logs
+
+Core's own log export runs inside Core and is asked for from the app, so it
+is out of reach when Core or the network is what went wrong.
+**`GET /v1/logs`** reads the journal from the supervisor instead, which runs
+as root, and answers with a ZIP of plain-text extracts, one file per source:
+
+| File | What it holds |
+|---|---|
+| `core.log` | `kalinka.service`, `kalinka-server-id.service`, `kalinka-upgrade.service`, `kalinka-restart.service`, `kalinka-plugins.service`, and the units that mount network shares and USB drives: `kalinka-mounts.service` and `kalinka-media-mount@*.service` |
+| `renderer.log` | `kalinka-renderer.service` and `kalinka-renderer-upgrade.service` |
+| `supervisor.log` | `kalinka-supervisor.service`, `kalinka-soundcard.service`, and the units it starts: `kalinka-soundcard-apply.service`, `kalinka-ssh-setup.service`, `kalinka-reinstall.service` and `kalinka-plugin-removal.service` |
+| `network.log` | `NetworkManager.service`, `wpa_supplicant.service`, `wpa_supplicant@*.service`, `dhcpcd.service`, `systemd-networkd.service`, `networking.service`, `ifup@*.service`, `kalinka-wifi@*.service`, and the image's `kalinka-card-settings.service` and `kalinka-card-network-wait.service`, which apply the settings Raspberry Pi Imager left on the card, Wi-Fi among them |
+| `kernel.log` | the kernel's messages (`_TRANSPORT=kernel`), across reboots, among them a driver losing the Wi-Fi link or the out-of-memory killer |
+
+The network file names the units of every network stack the streamer may
+run: NetworkManager on the PC image and Raspberry Pi OS, ifupdown with
+`wpa_supplicant` and a DHCP client on DietPi. On DietPi those processes log
+under `ifup@wlan0.service`, `networking.service` or, after a Wi-Fi join
+through the supervisor, `kalinka-wifi@wlan0.service`. A unit the journal has
+no entries for adds nothing.
+
+- **The window.** The last 24 hours, or from `?since=<time>`, an RFC 3339
+  time such as `2026-11-23T08:00:00Z`. Anything else is `invalid_since`.
+  Where journald keeps the journal only in memory, the download reaches back
+  to the last boot at most; Kalinka's images keep it on disk.
+- **The format.** Each file starts with a line naming its units and the
+  window, then has the entries oldest first, as `journalctl -o short-iso`
+  prints them, each message with its continuation lines.
+- **The bounds.** Each source is read newest first and capped at 4 MiB and
+  20 seconds. What is cut is the oldest end, and the file says so on its
+  second line: "Older entries left out", "journalctl was stopped after 20s",
+  "journalctl failed: …" with journalctl's own reason, or "No entries".
+  A failed source does not stop the others.
+- **Memory.** The response starts at once, before journalctl runs, and the
+  files are compressed straight onto it. One 4 MiB buffer holds the source
+  being read; a second download waits for the first to finish before it
+  reads the journal.
+
+The extracts carry what the units logged. Core keeps credentials out of its
+logs and the supervisor never logs a secret, but file and track names,
+listening times, device names, Wi-Fi network names and network addresses
+remain, and the page says so beside its button. `/info` reports `logs: true`
+where the download is served.
+
 ## Refusals
 
 Every error has Core's shape, `{"detail": {"code": "...", "message": "..."}}`:
@@ -531,6 +588,7 @@ Every error has Core's shape, `{"detail": {"code": "...", "message": "..."}}`:
 |---|---|---|
 | 400 | `invalid_request` | The body is not a JSON object with only the streamer's identity and, for `set_soundcard`, a `soundcard` name, for `remove_plugin`, a `package`, or, for `set_timezone`, a `timezone` name, or is over 1 KiB |
 | 400 | `unknown_timezone` | A time zone the streamer's tzdata has neither as a zone nor as a link to one |
+| 400 | `invalid_since` | `GET /v1/logs` with a `since` that is not an RFC 3339 time |
 | 403 | `not_local` | The peer is not on a local network |
 | 403 | `host_not_allowed` | The `Host` name could be a DNS-rebinding page's |
 | 403 | `origin_not_allowed` | A page this streamer did not serve |
@@ -692,6 +750,13 @@ belongs in that change's threat model.
     the zone list and the current zone against a staged tzdata, and the
     timedated call and the display's restart against fake buses;
   - the dashboard against a staged streamer;
+  - the log download against a fake journalctl: each file oldest first with
+    its continuation lines, a unit with no entries, a failed source, the cap
+    and the timeout cutting the oldest end, the response starting before
+    journalctl answers, two downloads taking turns, and a download outliving
+    the server's write timeout; the real runner against a scripted
+    journalctl, stopped at the cap and by its deadline but not by its
+    warnings;
   - the binding, and the composed process serving and stopping.
 
   The installer's reinstall mode is covered in
@@ -706,12 +771,14 @@ belongs in that change's threat model.
   `run-live.sh` turns the page and API off, since as root they would act on the
   laptop.
 - **VM.** The PC image's VM boot test:
-  1. loads the page and reads `/info`;
+  1. downloads `GET /v1/logs` and finds entries in `core.log`,
+     `supervisor.log`, `network.log` and `kernel.log`;
   2. sets the guest's time zone through `POST /v1/actions/set_timezone` and
      reads it back from `/v1/status`;
-  3. powers the guest off through `POST /v1/actions/poweroff`.
+  3. loads the page and reads `/info`;
+  4. powers the guest off through `POST /v1/actions/poweroff`.
 
-  This proves the supervisor can read Core's identity, drive systemd and
-  have timedated write `/etc/localtime` on a real image. The inspection step
-  then finds both audit lines in the guest's journal, and the zone in
-  `/etc/localtime` on its disk.
+  This proves the supervisor can read the journal, read Core's identity,
+  drive systemd and have timedated write `/etc/localtime` on a real image.
+  The inspection step then finds both audit lines in the guest's journal,
+  and the zone in `/etc/localtime` on its disk.

@@ -154,6 +154,15 @@
     </form>
   </section>
 
+  {{if .Logs}}
+  <section class="card" id="logs">
+    <h2 class="label">Logs</h2>
+    <p class="muted">The last 24 hours of the streamer's journal as a ZIP, with a file each for the server, the renderer, the supervisor, the network and the kernel. It works while the server is stopped.</p>
+    <a class="button neutral" href="/v1/logs" download>Download logs</a>
+    <p class="footnote">The archive may contain file and track names, listening times, device names, Wi-Fi network names and network addresses. Look through it before you share it.</p>
+  </section>
+  {{end}}
+
   <div class="grid">
     <section class="card">
       <h2 class="label">Resources</h2>
