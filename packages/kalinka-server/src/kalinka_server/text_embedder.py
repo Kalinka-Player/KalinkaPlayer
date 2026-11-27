@@ -27,8 +27,10 @@ import logging
 import os
 import subprocess
 import sys
-import urllib.request
+import time
 from typing import List, Optional, Sequence
+
+from kalinka_plugin_sdk.downloads import download_file
 
 logger = logging.getLogger(__name__.split(".")[-1])
 
@@ -42,8 +44,12 @@ MODEL_VERSION = 1
 DIM = 384
 MAX_TOKENS = 256
 _FILES = ("model.onnx", "tokenizer.json")
+# About three times the ~90 MB model, so a body without end cannot fill the card.
+_MODEL_MAX_BYTES = 256 << 20
 _RUNTIME_PACKAGES = ("onnxruntime", "tokenizers")
 _LOAD_TIMEOUT = 120.0
+# An outage costs one stalled download per period, not one per caller.
+_RETRY_AFTER_S = 300.0
 
 
 def _importable(name: str) -> bool:
@@ -73,22 +79,6 @@ def _loads(name: str) -> bool:
                        lines[-1] if lines else f"exit {result.returncode}")
         return False
     return True
-
-
-def download_file(url: str, dest: str) -> bool:
-    """Download url -> dest atomically (via a .part temp). True on success."""
-    tmp = dest + ".part"
-    try:
-        os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
-        logger.info("downloading %s", url)
-        urllib.request.urlretrieve(url, tmp)
-        os.replace(tmp, dest)
-        return True
-    except Exception as e:
-        logger.warning("download failed (%s): %s", url, e)
-        if os.path.exists(tmp):
-            os.remove(tmp)
-        return False
 
 
 def _migrate_legacy_files(model_dir: str, legacy_dirs: Sequence[str]) -> None:
@@ -121,7 +111,10 @@ def ensure_model(model_dir: str, base_url: Optional[str]) -> bool:
         dest = os.path.join(model_dir, name)
         if os.path.exists(dest) and os.path.getsize(dest) > 0:
             continue
-        if not base_url or not download_file(f"{base_url.rstrip('/')}/{name}", dest):
+        if not base_url:
+            return False
+        url = f"{base_url.rstrip('/')}/{name}"
+        if not download_file(url, dest, max_bytes=_MODEL_MAX_BYTES):
             return False
     return True
 
@@ -208,6 +201,8 @@ class SharedTextEmbedder:
         self._available: Optional[bool] = None
         # Probed once: installing the runtime always restarts the server.
         self._missing_runtime: Optional[List[str]] = None
+        self._runtime_loads = False
+        self._retry_at: Optional[float] = None
 
     @property
     def model_id(self) -> str:
@@ -229,28 +224,42 @@ class SharedTextEmbedder:
         return list(self._missing_runtime)
 
     async def available(self) -> bool:
-        if self._available is None:
+        if not self._answered():
             async with self._lock:  # one provisioning; others await it
-                if self._available is None:
+                if not self._answered():
                     loop = asyncio.get_running_loop()
                     self._available = await loop.run_in_executor(
                         None, self._provision)
+                    if self._available:
+                        # Cleared only now, so no caller reads the old False.
+                        self._retry_at = None
         return self._available
 
-    def _provision(self) -> bool:
-        missing = self.missing_runtime()
-        if not missing:
-            # A missing shared library shows only on import.
-            missing = [name for name in _RUNTIME_PACKAGES if not _loads(name)]
-            self._missing_runtime = missing
-        if missing:
-            logger.warning("%s cannot be imported; text embedding off",
-                           ", ".join(missing))
+    def _answered(self) -> bool:
+        """Whether the last provisioning's answer stands: a missing runtime's
+        until restart, a failed download's until it is due again."""
+        if self._available is None:
             return False
+        return self._retry_at is None or time.monotonic() < self._retry_at
+
+    def _provision(self) -> bool:
+        if not self._runtime_loads:
+            missing = self.missing_runtime()
+            if not missing:
+                # A missing shared library shows only on import.
+                missing = [name for name in _RUNTIME_PACKAGES if not _loads(name)]
+                self._missing_runtime = missing
+            if missing:
+                logger.warning("%s cannot be imported; text embedding off",
+                               ", ".join(missing))
+                return False
+            self._runtime_loads = True
         _migrate_legacy_files(self._model_dir, self._legacy_dirs)
         if not ensure_model(self._model_dir, self._model_url):
-            logger.warning("MiniLM model missing (%s); text embedding off",
-                           self._model_dir)
+            self._retry_at = time.monotonic() + _RETRY_AFTER_S
+            logger.warning("MiniLM model missing (%s); text embedding off, "
+                           "tried again in %.0f s", self._model_dir,
+                           _RETRY_AFTER_S)
             return False
         return True
 

@@ -1,12 +1,14 @@
 """The mood index is fetched only once the shared embedder can run.
 
 A box without the embedder's runtime could never query the ~140 MB index,
-so it must not download it.
+so it must not download it. Once fetched, a download that stops coming or
+announces more than an index could hold is given up.
 """
 
 import asyncio
 import sqlite3
 import threading
+import time
 
 import pytest
 from kalinka_server.config_overrides import apply_overrides_with_prefix
@@ -14,8 +16,11 @@ from kalinka_server.config_overrides import apply_overrides_with_prefix
 from kalinka_plugin_jamendo import mood_search
 from kalinka_plugin_jamendo.config_model import JamendoConfig
 from kalinka_plugin_jamendo.mood_search import JamendoMoodIndex
+from kalinka_plugin_sdk import downloads as sdk_downloads
 
 INDEX_URL = "https://index.test/jamendo_index.sqlite"
+# Well under the conftest server's hold on a stalled connection.
+WITHIN_S = 10
 
 
 class FakeEmbedder:
@@ -110,14 +115,14 @@ async def test_an_index_set_up_again_mid_download_waits_for_that_download(
     fetches: list[str] = []
     release = threading.Event()
 
-    def urlretrieve(url, filename):
+    def fetch_whole(url, dest, **kwargs):
         fetches.append(url)
         release.wait(5)
-        con = sqlite3.connect(filename)
+        con = sqlite3.connect(dest)
         con.execute("CREATE TABLE meta (key TEXT, value TEXT)")
         con.commit()
         con.close()
-        return filename, None
+        return True
 
     fetch = mood_search.download_file
     first_in, second_in = threading.Event(), threading.Event()
@@ -126,7 +131,7 @@ async def test_an_index_set_up_again_mid_download_waits_for_that_download(
         (second_in if first_in.is_set() else first_in).set()
         return fetch(url, dest)
 
-    monkeypatch.setattr(mood_search.urllib.request, "urlretrieve", urlretrieve)
+    monkeypatch.setattr(sdk_downloads, "download_file", fetch_whole)
     monkeypatch.setattr(mood_search, "download_file", download_file)
     path = str(tmp_path / "jamendo_index_v2.sqlite")
 
@@ -143,6 +148,42 @@ async def test_an_index_set_up_again_mid_download_waits_for_that_download(
 
     assert await set_up_again is True
     assert fetches == [INDEX_URL]
+
+
+def test_an_index_download_that_stops_coming_is_given_up_leaving_nothing(
+    tmp_path, index_server, stall_timeout
+):
+    """A connection that stalls without a reset, as on a Wi-Fi drop, would
+    otherwise hold every later setup waiting on this download."""
+    index_server.body = b"x" * 4096
+    index_server.stall = True
+
+    started = time.monotonic()
+    fetched = mood_search.download_file(
+        index_server.url, str(tmp_path / "jamendo_index_v2.sqlite")
+    )
+
+    assert fetched is False
+    assert time.monotonic() - started < WITHIN_S
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_an_index_announced_over_its_ceiling_is_refused_before_its_body(
+    tmp_path, index_server
+):
+    """Nothing is sent after the headers, so a download that read on would
+    wait out its whole timeout."""
+    index_server.length = mood_search._INDEX_MAX_BYTES + 1
+    index_server.stall = True
+
+    started = time.monotonic()
+    fetched = mood_search.download_file(
+        index_server.url, str(tmp_path / "jamendo_index_v2.sqlite")
+    )
+
+    assert fetched is False
+    assert time.monotonic() - started < WITHIN_S
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_the_index_downloads_from_the_project_organisation():

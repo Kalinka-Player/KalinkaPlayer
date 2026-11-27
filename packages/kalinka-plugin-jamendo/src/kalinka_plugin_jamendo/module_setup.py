@@ -37,7 +37,7 @@ async def _provision(mood_index: JamendoMoodIndex, context: InputPluginContext) 
 
 
 class KalinkaPluginJamendo(InputModulePlugin):
-    REQUIRES_SDK = ">=3.23,<4"
+    REQUIRES_SDK = ">=3.24,<4"
     PLUGIN_ID = "jamendo"
     CONFIG_MODEL = JamendoConfig
     OPTIONAL_PACKAGES: ClassVar[dict[str, OptionalPackageSpec]] = OPTIONAL_PACKAGES

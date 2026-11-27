@@ -20,6 +20,10 @@ from kalinka_plugin_sdk.inputmodule import ModuleCapability
 # A download address may carry a key, which no message may repeat.
 INDEX_URL = "https://index.test/jamendo_index_v2.sqlite?key=s3cret"
 INDEX_NAME = "jamendo_index_v2.sqlite"
+# The real download, which the downloads fixture fakes for every test.
+FETCH_INDEX = mood_search.download_file
+# Well under the conftest server's hold on a stalled connection.
+WITHIN_S = 10
 
 
 class FakeEmbedder:
@@ -214,6 +218,35 @@ async def test_an_index_ready_at_the_next_setup_offers_mood_search_again(
 
     assert _offers_mood_search(plugin)
     assert (await plugin.get_state()).state == ModuleHealthState.READY
+
+
+async def test_a_stalled_index_download_is_reported_and_fetched_at_the_next_setup(
+    set_up, tmp_path, monkeypatch, index_server, stall_timeout
+):
+    """A connection that stops sending, as on a Wi-Fi drop, would otherwise
+    keep mood search being set up, and the next setup waiting on it."""
+    monkeypatch.setattr(mood_search, "download_file", FETCH_INDEX)
+    _write_index(tmp_path / "published.sqlite")
+    index_server.body = (tmp_path / "published.sqlite").read_bytes()
+    index_server.stall = True
+
+    stalled, reported = await set_up(FakeEmbedder(), index_url=index_server.url)
+    await asyncio.wait_for(stalled._provision_task, WITHIN_S)
+    state = await stalled.get_state()
+
+    assert state.state == ModuleHealthState.WARNING
+    assert "could not be downloaded" in state.message
+    assert not _offers_mood_search(stalled)
+    assert len(reported) == 1
+    assert not (tmp_path / INDEX_NAME).exists()
+
+    index_server.stall = False
+    plugin, _ = await set_up(FakeEmbedder(), index_url=index_server.url)
+    await asyncio.wait_for(plugin._provision_task, WITHIN_S)
+
+    assert _offers_mood_search(plugin)
+    assert await plugin.get_state() == ModuleState(state=ModuleHealthState.READY)
+    assert len(index_server.asked) == 2
 
 
 async def test_mood_search_turned_off_since_setup_says_nothing_of_its_index(set_up):
