@@ -70,14 +70,41 @@ class SignalStep:
     kind: str = ""
     name: str = ""
     summary: str = ""
+    # Every sample leaves it with the value it came in with, at most
+    # zero-padded; False for a renderer that predates the mark.
+    bit_perfect: bool = False
 
 
 @dataclass
 class SignalPath:
-    """What the renderer does between the decoder and the device, in order."""
+    """Everything the renderer does between the decoder and the device, in
+    order: format changes, processing and the software volume."""
 
     steps: list[SignalStep] = field(default_factory=list)
     latency_ms: float = 0.0
+
+
+_INTEGER_PCM = {"PCM16_LE", "PCM24_LE", "PCM24_3LE", "PCM32_LE"}
+
+_DSD_CARRIER_BITS = {
+    "DSD_U8": 8,
+    "DSD_U16_LE": 16,
+    "DSD_U16_BE": 16,
+    "DSD_U32_LE": 32,
+    "DSD_U32_BE": 32,
+    "DoP_S24_LE": 16,
+    "DoP_S24_3LE": 16,
+    "DoP_S32_LE": 16,
+}
+
+
+def _carries_dsd(decoded: AudioFormatInfo, device: AudioFormatInfo) -> bool:
+    bits = _DSD_CARRIER_BITS.get(device.sample_format, 0)
+    return (
+        bits > 0
+        and decoded.sample_rate == device.sample_rate * bits
+        and decoded.channels == device.channels
+    )
 
 
 @dataclass
@@ -88,50 +115,48 @@ class StreamInfo:
     device: Optional[DeviceInfo] = None
     # None, never 0, when the renderer cannot tell: 0 reads as "already ended".
     duration_ms: Optional[int] = None
-    # None when the samples reach `device` as decoded.
+    # None when the renderer did nothing at all to the samples.
     signal_path: Optional[SignalPath] = None
 
     @property
     def lossless_path(self) -> bool:
-        """Whether the decoded samples reach the device unaltered.
+        """Whether the decoded samples reach the device bit for bit.
 
         Exclusivity carries this: a shared device reports the format its plugin
         was opened at, which says nothing about what the card ends up running,
-        so no comparison can rescue it. Comparing the formats then catches a
-        renderer whose device took something other than what was decoded.
-
-        The volume is deliberately not part of it — it is reported with the
-        device that applies it, where it is current. A signal path with steps
-        is: the renderer said it changed the samples, whatever the formats.
+        so no comparison can rescue it. Every step the renderer reports must
+        keep the bits. The formats must then agree: the same format at the same
+        bits, or integer samples in a wider integer container, which a renderer
+        that reports the step says it padded. A float device never takes the
+        source's bits, and the rate and the channels never change.
         """
         if self.device is None or self.device.access is not DeviceAccess.EXCLUSIVE:
             return False
-        if self.signal_path is not None and self.signal_path.steps:
+        steps = self.signal_path.steps if self.signal_path is not None else []
+        if not all(step.bit_perfect for step in steps):
             return False
         decoded, device = self.format, self.device.format
         # Zero is "not reported", and two silences are not an agreement.
         if min(decoded.sample_rate, decoded.bits_per_sample, decoded.channels) <= 0:
             return False
         if decoded.sample_format == "DSD":
-            bits = {
-                "DSD_U8": 8,
-                "DSD_U16_LE": 16,
-                "DSD_U16_BE": 16,
-                "DSD_U32_LE": 32,
-                "DSD_U32_BE": 32,
-                "DoP_S24_LE": 16,
-                "DoP_S24_3LE": 16,
-                "DoP_S32_LE": 16,
-            }.get(device.sample_format, 0)
-            return (
-                bits > 0
-                and decoded.sample_rate == device.sample_rate * bits
-                and decoded.channels == device.channels
-            )
-        return (
-            device.sample_rate == decoded.sample_rate
+            return _carries_dsd(decoded, device)
+        if (
+            device.sample_rate != decoded.sample_rate
+            or device.channels != decoded.channels
+        ):
+            return False
+        if (
+            device.sample_format == decoded.sample_format
             and device.bits_per_sample == decoded.bits_per_sample
-            and device.channels == decoded.channels
+        ):
+            return True
+        # An unexplained difference is no proof the samples were only padded.
+        return (
+            bool(steps)
+            and decoded.sample_format in _INTEGER_PCM
+            and device.sample_format in _INTEGER_PCM
+            and device.bits_per_sample >= decoded.bits_per_sample
         )
 
 
@@ -213,6 +238,7 @@ def to_signal_path(path: Optional[dict]) -> Optional[SignalPath]:
                 kind=step.get("kind", ""),
                 name=step.get("name", ""),
                 summary=step.get("summary", ""),
+                bit_perfect=bool(step.get("bit_perfect", False)),
             )
             for step in path.get("steps", [])
         ],

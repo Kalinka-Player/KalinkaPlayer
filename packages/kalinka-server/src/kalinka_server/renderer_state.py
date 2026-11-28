@@ -104,7 +104,12 @@ def device_info_to_dict(info) -> dict:
 def signal_path_to_dict(path) -> dict:
     return {
         "steps": [
-            {"kind": step.kind, "name": step.name, "summary": step.summary}
+            {
+                "kind": step.kind,
+                "name": step.name,
+                "summary": step.summary,
+                "bit_perfect": step.bit_perfect,
+            }
             for step in path.steps
         ],
         "latency_ms": path.latency_ms,

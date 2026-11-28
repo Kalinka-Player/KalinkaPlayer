@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "../capabilities/CapabilityService.h"
@@ -151,7 +152,17 @@ private:
   /// The settings the graph is built with, under the keys it reads them by.
   Config graphConfig() const;
   /// What the graph should run: fixed for a downstream session, else configured.
-  const std::string &effectiveVolumeMode() const;
+  /// The volume mode in force: a session's fixed output, else the configured
+  /// one as direct output allows it.
+  std::string effectiveVolumeMode() const;
+  /// What @p configured means here: Automatic never falls back to software
+  /// volume under direct output, but to Fixed output.
+  std::string volumeModeFor(const std::string &configured) const;
+  /// Whether nothing in the renderer may alter the samples.
+  bool direct() const;
+  /// Takes out of @p out what direct output forbids: software volume,
+  /// conversion to PCM, and the DSD settings that only shape a conversion.
+  static void restrictToDirect(kalinka::renderer::v1::ConfigSection &out);
 
   boost::asio::io_context &ioc_;
   StateSink sink_;
@@ -177,6 +188,9 @@ private:
   uint64_t graphGeneration_ = 0;
   // Carried across rebuilds until a STOPPED reports it.
   bool interruptPending_ = false;
+  /// Whether the volume is software, and below full, as the last restated
+  /// signal path showed it.
+  std::optional<std::pair<bool, bool>> tracedVolume_;
 
   StreamId nextStreamId_ = 1;
   // Every stream the graph still knows about, in append (= switch) order.

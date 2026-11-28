@@ -106,7 +106,11 @@ protected:
           opened = state.deviceInfo->format;
         if (state.state == AudioGraphNodeState::STREAMING && state.streamInfo) {
           decoded = state.streamInfo->decodedFormat;
-          path = player.signalPath(*state.streamInfo);
+          path = player.signalPath(
+              *state.streamInfo,
+              state.deviceInfo ? std::optional(state.deviceInfo->format)
+                               : std::nullopt,
+              state.streamId);
         }
         if ((state.state == AudioGraphNodeState::FINISHED &&
              state.streamId == id) ||

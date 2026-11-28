@@ -98,6 +98,7 @@ void fillSignalPath(const SignalPath &path, renderer_pb::SignalPath &out) {
     added->set_kind(step.kind);
     added->set_name(step.name);
     added->set_summary(step.summary);
+    added->set_bit_perfect(step.bitPerfect);
   }
   out.set_latency_ms(path.latencyMs);
 }
@@ -108,13 +109,16 @@ namespace {
 struct EventKind {
   renderer_pb::PlaybackEvent &out;
 
-  void operator()(const Clipping &clipping) const {
+  bool operator()(const Clipping &clipping) const {
     out.mutable_clipping()->set_clipped_samples(clipping.samples);
+    return true;
   }
+  // The signal path reports it, restated with the step marked.
+  bool operator()(const Unrestored &) const { return false; }
 };
 }  // namespace
 
-void fillPlaybackEvent(const PlaybackEvent &event,
+bool fillPlaybackEvent(const PlaybackEvent &event,
                        const std::optional<std::string> &sourceToken,
                        int64_t atUnixMs, renderer_pb::PlaybackEvent &out) {
   out.Clear();
@@ -122,7 +126,7 @@ void fillPlaybackEvent(const PlaybackEvent &event,
     out.set_source_token(*sourceToken);
   }
   out.set_at_unix_ms(atUnixMs);
-  std::visit(EventKind{out}, event.kind);
+  return std::visit(EventKind{out}, event.kind);
 }
 
 void fillPlaybackStateChanged(const StreamState &state,

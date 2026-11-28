@@ -15,6 +15,10 @@ struct OutputCapabilities {
 /// Why a DSD source is refused while `output.dsd_mode` is "disabled".
 inline constexpr char DSD_DISABLED_ERROR[] =
     "DSD playback is disabled in renderer settings";
+/// Why a DSD track that does not play natively is refused under direct output,
+/// which converts nothing.
+inline constexpr char DSD_DIRECT_ERROR[] =
+    "Direct output plays DSD only as native DSD or DoP";
 /// Why DSD is refused on an output that is not the card itself.
 inline constexpr char DSD_SHARED_OUTPUT_ERROR[] =
     "DSD needs an output device marked (direct)";

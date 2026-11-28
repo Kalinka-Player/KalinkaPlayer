@@ -14,6 +14,12 @@ public:
   void select(std::shared_ptr<const FirFilterBank> bank);
   unsigned lastRate() const { return runRate.load(); }
   bool handles(const StreamAudioFormat &format) const override;
+  /// Whether a selected filter applies at @p format's rate; without one the
+  /// samples it handles leave as they came, in float.
+  bool filtering(const StreamAudioFormat &format) const;
+  /// Whether what it puts out now is its input as it came, no filter applied
+  /// or fading. From the thread that pulls audio.
+  bool passesThrough() const { return !active && wet.holding(0.0); }
   Output output(const StreamAudioFormat &format) const override;
   SignalPath describe(const StreamAudioFormat &format) const override;
   size_t start(const StreamAudioFormat &format) override;

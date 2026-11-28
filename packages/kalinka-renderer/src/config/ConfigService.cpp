@@ -177,31 +177,30 @@ void ConfigService::apply(const renderer_pb::ConfigUpdate &update,
   renderer_pb::ConfigSnapshot before;
   fillSnapshot(before);
 
-  for (const renderer_pb::ConfigUpdate::Setting &setting : update.settings()) {
-    renderer_pb::ConfigResult::Outcome *outcome = out.add_outcomes();
-    outcome->set_path(setting.path());
-
+  const auto attempt = [&](const renderer_pb::ConfigUpdate::Setting &setting,
+                           renderer_pb::ConfigResult::Outcome &outcome) {
+    outcome.clear_error();
     int declaredBy = 0;
     const renderer_pb::ConfigField *field =
         findField(before, setting.path(), &declaredBy);
     if (field == nullptr) {
-      outcome->set_error("no such setting");
+      outcome.set_error("no such setting");
       spdlog::warn("Refusing config write to unknown setting '{}'",
                    setting.path());
-      continue;
+      return false;
     }
-    outcome->set_value(field->value());
+    outcome.set_value(field->value());
 
     std::string error;
     const bool fir = setting.path() == "output.rew_fir_profile";
     if (fir && !firError.empty()) {
-      outcome->set_error(firError);
-      continue;
+      outcome.set_error(firError);
+      return false;
     }
     const bool selected = setting.path() == "dsp.profile";
     if (selected && !profileError.empty()) {
-      outcome->set_error(profileError);
-      continue;
+      outcome.set_error(profileError);
+      return false;
     }
     const bool prepared =
         (selected && !profileId.empty() && setting.value() == profileId) ||
@@ -209,15 +208,35 @@ void ConfigService::apply(const renderer_pb::ConfigUpdate &update,
     if ((!prepared && !fieldAccepts(*field, setting.value(), error)) ||
         !contributors_[declaredBy]->applyConfig(setting.path(), setting.value(),
                                                 error)) {
-      outcome->set_error(error);
+      outcome.set_error(error);
       spdlog::warn("Refusing config write {} = '{}': {}", setting.path(),
                    setting.value(), error);
-      continue;
+      return false;
     }
-    outcome->set_applied(true);
+    outcome.set_applied(true);
     if (field->apply() > out.effect()) {
       out.set_effect(field->apply());
     }
+    return true;
+  };
+
+  std::vector<int> refused;
+  bool anyApplied = false;
+  for (int i = 0; i < update.settings_size(); ++i) {
+    renderer_pb::ConfigResult::Outcome *outcome = out.add_outcomes();
+    outcome->set_path(update.settings(i).path());
+    if (attempt(update.settings(i), *outcome))
+      anyApplied = true;
+    else
+      refused.push_back(i);
+  }
+  // A setting applied above may have changed what the others may be set to,
+  // as direct output does for the volume, whichever order they came in.
+  if (anyApplied && !refused.empty()) {
+    before.Clear();
+    fillSnapshot(before);
+    for (const int i : refused)
+      attempt(update.settings(i), *out.mutable_outcomes(i));
   }
 
   // Re-read: a player may normalise what it was given, and the options may

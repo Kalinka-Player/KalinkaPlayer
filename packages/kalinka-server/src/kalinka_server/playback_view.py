@@ -48,7 +48,12 @@ def to_signal_path(path: Optional[StreamSignalPath]) -> Optional[SignalPath]:
         return None
     return SignalPath(
         steps=[
-            SignalStep(kind=step.kind, name=step.name, summary=step.summary)
+            SignalStep(
+                kind=step.kind,
+                name=step.name,
+                summary=step.summary,
+                bit_perfect=step.bit_perfect,
+            )
             for step in path.steps
         ],
         latency_ms=path.latency_ms,

@@ -20,10 +20,16 @@ struct Clipping {
   bool operator==(const Clipping &) const = default;
 };
 
+/// @brief Integer samples the DSP carried in float with nothing to compute did
+/// not all come back exactly, and were dithered; the signal path says so.
+struct Unrestored {
+  bool operator==(const Unrestored &) const = default;
+};
+
 /// @brief Something that happened in playback, as opposed to a state it is in.
 /// @note Trivially copyable, so the audio threads post it without allocating.
 struct PlaybackEvent {
-  using Kind = std::variant<Clipping>;
+  using Kind = std::variant<Clipping, Unrestored>;
 
   /// The stream it happened to, when it concerns one.
   std::optional<StreamId> stream;

@@ -488,12 +488,18 @@ ways:
   the most output channels. The most FIR taps waits for the convolver.
 
 The Core passes the path on with the output a playback state describes,
-where a path with steps rules out a lossless one, and playback events as
+where a step that alters the samples rules out a lossless one, and playback events as
 `playback_event` on the queue channels, a `kind` with its `details`, for the
 playing source on the current renderer alone. It relays every kind the same
 way. The app shows the steps between the decoded stream and the output, and
 beside them the latency and, once the track has clipped, its clipped
 samples.
+
+**The bit-perfect trace.** The path names every place a sample changes form, not only where it is processed, and each `SignalStep` carries `bit_perfect`: the samples leave the step with the values they came in with, at most zero-padded into a wider integer container. The steps that keep the bits are `zero_padding` (16-bit into 32-bit), `repack` (24-bit from 3 bytes into 4), `float` (integers into 64-bit float, which holds them exactly) and `integer` (that float back to the decoded integers). The live FIR stage carries every stereo PCM stream in float, filter or not, so a stream it does not filter shows `float` then `integer`. The quantiser writes such a block back without dither only when every sample lands on a whole number at the output's bits; the first block of a source where one does not is dithered, posts `Unrestored`, and the restated path marks `integer` as altering. After processing, `dither` is followed by `integer` naming the rounding to the output's bits and any zero-padding into its container, both altering. `channels` (mono copied to both channels), a `float` output step for a DAC that takes float, and a `volume` step for a software volume below full are marked altering too. The volume step is restated whenever the volume crosses full scale.
+
+The Core calls an output lossless only when it is held exclusively, every step is bit-perfect, and the device runs at the decoded rate and channels in either the decoded format at its bits, or, when the path explains the difference, a wider integer container. A float device qualifies only for float decoded in its own format, and no device does for a widening a renderer older than the trace reports no step for.
+
+**Direct output** (`output.direct_mode`) builds the graph without the live FIR stage and without DSD to PCM, turns room EQ off, and resolves Automatic volume to the card's mixer or Fixed output, never software. DSD plays only as native DSD or DoP. Switching it rebuilds the graph, and the Core resumes the track where it was.
 
 ## 9. SIMD: Highway
 

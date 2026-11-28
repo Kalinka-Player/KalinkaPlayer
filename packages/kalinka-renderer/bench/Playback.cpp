@@ -1,6 +1,7 @@
 #include "Measure.h"
 
 #include "AudioPlayer.h"
+#include "dsp/fir/LiveFir.h"
 #include "StateMonitor.h"
 
 #include <atomic>
@@ -64,12 +65,14 @@ double processSeconds() {
 }
 } // namespace
 
-void runPlayback(const std::vector<std::string> &files, int delayMs) {
-  std::printf("Played to the end into the ALSA null device, volume fixed%s.\n\n",
+void runPlayback(const std::vector<std::string> &files, int delayMs,
+                 bool liveFir) {
+  std::printf("Played to the end into the ALSA null device, volume fixed%s%s.\n\n",
               delayMs ? (", through a " + std::to_string(delayMs) +
                          " ms DelayLine")
                             .c_str()
-                      : "");
+                      : "",
+              liveFir ? ", through the live FIR stage with no filter" : "");
   std::printf("| File | Format | Audio | Wall | CPU | Of one core in real "
               "time | CPU by thread |\n|---|---|---|---|---|---|---|\n");
   for (const auto &file : files) {
@@ -77,7 +80,7 @@ void runPlayback(const std::vector<std::string> &files, int delayMs) {
     if (delayMs) {
       config["dsp.delay_ms"] = std::to_string(delayMs);
     }
-    AudioPlayer player(config);
+    AudioPlayer player(config, liveFir ? std::make_shared<LiveFir>() : nullptr);
     auto monitor = player.monitor();
     std::map<int, ThreadTime> seen;
     std::atomic<bool> done = false;

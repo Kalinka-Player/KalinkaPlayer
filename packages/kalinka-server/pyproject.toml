@@ -63,7 +63,8 @@ dependencies = [
     # >=3.23: Catalog.play_individually for radio station listings;
     # OutputInfo.signal_path and PlaybackEventReport.
     # >=3.24: ContinuationRequest, InputModule.continue_queue and KeepPlayingChangedEvent for Keep playing.
-    "kalinka-plugin-sdk[media]>=3.24,<4",
+    # >=3.25: SignalStep.bit_perfect for the signal path trace.
+    "kalinka-plugin-sdk[media]>=3.25,<4",
 ]
 dynamic = ["version"]
 

@@ -363,7 +363,12 @@ def get_version() -> str:
 # A change that was made is sent on the queue socket as favorite_changed
 # {id, favorite}, for other clients showing the item; one made in the
 # source's own app sends nothing.
-REST_API_VERSION = "0.27"
+# 0.28: every step of an output's signal_path carries `bit_perfect`, and the
+# path names each format change too (zero_padding, float, integer, repack,
+# channels) and a software volume (volume). lossless_path holds only when
+# every step is bit-perfect and the device takes the decoded format, or its
+# integers in a wider integer container.
+REST_API_VERSION = "0.28"
 
 
 def get_rest_api_version() -> str:

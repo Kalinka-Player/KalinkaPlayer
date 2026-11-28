@@ -11,6 +11,7 @@
 #include "dsp/output/Quantiser.h"
 #include "dsp/peq/RoomEq.h"
 
+#include <array>
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -37,7 +38,9 @@ class FirFilterBank;
  * the volume does. A fade multiplies the volume and goes through the
  * Quantiser the same way. DSD and DoP pass untouched, and refuse any gain but
  * unity. Whenever it clamps samples it posts Clipping, with the count since
- * the source began or room correction last changed.
+ * the source began or room correction last changed. Integer samples that
+ * reach it as float with nothing to compute are restored exactly; the first
+ * time in a source that a sample is not, it posts Unrestored.
  *
  * @note read(), the waits, the seeks and the fades belong to the one thread
  * that pulls audio. setGain(), setDsdGain() and describe() may come from any
@@ -88,22 +91,35 @@ public:
   bool silent() const override;
   /// Samples clamped to the output's range so far.
   uint64_t clippedSamples() const { return clipped.load(); }
-  /// Where Clipping is posted; set before anything is read.
+  /// Where Clipping and Unrestored are posted; set before anything is read.
+  /// @param unsettledFrames Frames of the last upstream read made during a
+  /// filter change.
+  /// @param carriesDecoded Whether upstream's float is the decoded integers
+  /// as they came, so a sample that does not restore exactly is news. Asked
+  /// on the thread that pulls audio; absent, it always is.
   void reportTo(std::shared_ptr<PlaybackEvents> events,
-                std::function<size_t()> unsettledFrames = {}) {
+                std::function<size_t()> unsettledFrames = {},
+                std::function<bool()> carriesDecoded = {}) {
     this->unsettledFrames = std::move(unsettledFrames);
+    this->carriesDecoded = std::move(carriesDecoded);
     this->events = std::move(events);
   }
   /**
-   * @brief The steps it takes a source through that was decoded as
-   * @p decoded, reaches it as @p source and leaves as @p output: the DSD gain
-   * on DSD converted to PCM, and the dither of float onto integer samples.
-   * The volume is not one. From any thread.
+   * @brief Every step it takes a source through that was decoded as
+   * @p decoded, reaches it as @p source and leaves as @p output, each format
+   * change included, marked bit-perfect where no sample changes value.
+   * @param firDry @p source is the decoded integers, carried in float by a
+   * room correction stage with no filter for them.
+   * @param softwareVolume Whether the volume is set here.
+   * @param stream The stream described, whose exact restores it vouches for.
+   * @note From any thread.
    */
   std::vector<SignalStep> describe(const StreamAudioFormat &decoded,
                                    const StreamAudioFormat &source,
                                    const StreamAudioFormat &output,
-                                   bool firDry = false) const;
+                                   bool firDry = false,
+                                   bool softwareVolume = false,
+                                   std::optional<StreamId> stream = {}) const;
 
 private:
   /// What upstream sends, and what is presented for it.
@@ -125,6 +141,16 @@ private:
   std::atomic<double> dsdGain{1.0};
   std::atomic<bool> settlePending{true};
   std::atomic<uint64_t> clipped{0};
+  /// Blocks of a stream dithered for want of an exact restore since room
+  /// correction last changed.
+  struct RestoreFailures {
+    std::optional<StreamId> stream;
+    uint64_t blocks = 0;
+  };
+  /// The stream being read, then the one before it, which may still be
+  /// heard; under presentedMutex.
+  std::array<RestoreFailures, 2> restoreFailures;
+  std::function<bool()> carriesDecoded;
   std::shared_ptr<PlaybackEvents> events;
   std::function<size_t()> unsettledFrames;
   /// Under presentedMutex. A read using an older revision cannot relatch the
@@ -132,6 +158,8 @@ private:
   uint64_t clippingRevision = 0;
   uint64_t windowClips = 0;
   void resetClipping();
+  /// Under presentedMutex.
+  void forgetRestoreFailures();
   /// The stream being read, as upstream last stated it; under presentedMutex.
   std::optional<StreamId> reading;
   // Plan writers serialize with one another while the pulling thread uses the
@@ -164,7 +192,12 @@ private:
   /// Moves both ramps toward their targets for @p now, settling either first
   /// when asked.
   void follow(const Presented &now);
-  uint64_t produce(const Presented &now, const uint8_t *in, size_t frames,
+  /// What one produce() call counted outside filter transitions.
+  struct Produced {
+    uint64_t clips = 0;
+    uint64_t unrestored = 0;
+  };
+  Produced produce(const Presented &now, const uint8_t *in, size_t frames,
                    uint8_t *out, size_t unsettled);
   size_t toSource(const Presented &now, size_t bytes) const;
   size_t toOutput(const Presented &now, size_t bytes) const;
