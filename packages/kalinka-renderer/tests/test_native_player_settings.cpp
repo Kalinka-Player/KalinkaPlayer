@@ -6,6 +6,7 @@
 #include <alsa/asoundlib.h>
 #include <boost/asio.hpp>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -18,6 +19,7 @@
 #include <vector>
 
 #include "AacTestData.h"
+#include "DsdFormat.h"
 #include "DashTestData.h"
 #include "LocalHttpServer.h"
 #include "ScopedAlsaConfig.h"
@@ -545,8 +547,10 @@ TEST_F(NativePlayerSettingsTest, TheDspSaysWhatItIsBuiltToDo) {
   ASSERT_TRUE(capabilities.has_dsp());
   EXPECT_TRUE(capabilities.dsp().dsd_to_pcm());
   EXPECT_THAT(capabilities.dsp().steps(),
-              ::testing::ElementsAre("dsd_to_pcm", "fir", "peq", "preamp",
-                                     "dsd_gain", "dither"));
+              ::testing::ElementsAre("channels", "float", "dsd_to_pcm", "fir",
+                                     "peq", "preamp", "dsd_gain", "volume",
+                                     "dither", "integer", "zero_padding",
+                                     "repack"));
   EXPECT_EQ(capabilities.dsp().max_output_channels(), 2u);
 }
 
@@ -1113,12 +1117,146 @@ TEST_F(NativePlayerStreamTest,
   player_->setStateSink({});
 }
 
-TEST_F(NativePlayerStreamTest, PcmPlayedAsDecodedHasNoSignalPath) {
+// The room correction stage carries stereo PCM in float with no filter
+// selected; the card has no mixer, so the volume is software, at full.
+TEST_F(NativePlayerStreamTest, PcmPlayedAsDecodedIsTracedAsBitPerfect) {
   const auto states = playToTheEnd(sourceAt("/whole"));
-  ASSERT_FALSE(states.empty());
-  for (const auto &state : states)
+  size_t playing = 0;
+  for (const auto &state : states) {
+    if (state.state() != renderer_pb::PLAYBACK_STATE_PLAYING)
+      continue;
+    ++playing;
+    ASSERT_TRUE(state.has_signal_path());
+    std::vector<std::string> kinds;
+    for (const auto &step : state.signal_path().steps()) {
+      kinds.push_back(step.kind());
+      EXPECT_TRUE(step.bit_perfect()) << step.kind() << ": " << step.summary();
+    }
+    EXPECT_THAT(kinds, ::testing::ElementsAre("float", "volume", "integer"));
+  }
+  EXPECT_GT(playing, 0u);
+}
+
+TEST_F(NativePlayerSettingsTest, DirectOutputIsOffAndComesBeforeTheVolume) {
+  const auto section = output();
+  const auto at = [&section](const std::string &path) {
+    return std::ranges::find(section.fields(), path,
+                             &renderer_pb::ConfigField::path) -
+           section.fields().begin();
+  };
+  const auto *direct = field(section, "output.direct_mode");
+  ASSERT_NE(direct, nullptr);
+  EXPECT_EQ(direct->value(), "false");
+  EXPECT_EQ(direct->type(), renderer_pb::CONFIG_FIELD_TYPE_BOOL);
+  EXPECT_EQ(direct->apply(), renderer_pb::APPLY_COST_INTERRUPTS_PLAYBACK);
+  EXPECT_EQ(at("output.direct_mode") + 1, at("output.volume_mode"));
+}
+
+TEST_F(NativePlayerSettingsTest, DirectOutputLeavesNothingThatAltersSamples) {
+  const auto values = [](const renderer_pb::ConfigField &field) {
+    std::vector<std::string> values;
+    for (const auto &option : field.options())
+      values.push_back(option.value());
+    return values;
+  };
+  ASSERT_TRUE(player_->applyConfig("output.volume_mode", "software", error_))
+      << error_;
+  ASSERT_TRUE(player_->applyConfig("output.dsd_mode", "pcm", error_)) << error_;
+  ASSERT_TRUE(player_->applyConfig("output.direct_mode", "true", error_))
+      << error_;
+
+  EXPECT_EQ(field(output(), "output.volume_mode")->value(), "auto");
+  EXPECT_THAT(values(*field(output(), "output.volume_mode")),
+              ::testing::ElementsAre("auto", "hardware", "fixed"));
+  EXPECT_FALSE(player_->applyConfig("output.volume_mode", "software", error_));
+  renderer_pb::StateSnapshot snapshot;
+  player_->fillSnapshot(snapshot);
+  EXPECT_EQ(snapshot.volume().backend(), renderer_pb::VOLUME_BACKEND_NONE)
+      << "a card without a mixer plays at fixed output, not software volume";
+
+  EXPECT_EQ(field(dsd(), "output.dsd_mode")->value(), "auto");
+  EXPECT_THAT(values(*field(dsd(), "output.dsd_mode")),
+              ::testing::Not(::testing::Contains("pcm")));
+  EXPECT_FALSE(player_->applyConfig("output.dsd_mode", "pcm", error_));
+  for (const char *path :
+       {"output.dsd_pcm_rate", "output.dsd_filter", "output.dsd_gain_db"})
+    EXPECT_TRUE(field(dsd(), path)->read_only()) << path;
+
+  const auto room = roomCorrection();
+  for (const auto &field : room.fields())
+    EXPECT_TRUE(field.read_only()) << field.path();
+  EXPECT_FALSE(
+      player_->dspSettings()->applyConfig("dsp.bypass", "false", error_));
+
+  renderer_pb::Capabilities capabilities;
+  player_->fillCapabilities(capabilities);
+  EXPECT_FALSE(capabilities.dsp().dsd_to_pcm());
+
+  ASSERT_TRUE(player_->applyConfig("output.direct_mode", "false", error_))
+      << error_;
+  EXPECT_TRUE(player_->applyConfig("output.volume_mode", "software", error_))
+      << error_;
+  EXPECT_FALSE(field(roomCorrection(), "dsp.bypass")->read_only());
+}
+
+TEST_F(NativePlayerSettingsTest, OneSaveCanLeaveDirectOutputAndPickSoftwareVolume) {
+  ConfigService service({player_});
+  for (const bool directFirst : {true, false}) {
+    SCOPED_TRACE(directFirst ? "direct first" : "volume first");
+    ASSERT_TRUE(player_->applyConfig("output.volume_mode", "auto", error_))
+        << error_;
+    ASSERT_TRUE(player_->applyConfig("output.direct_mode", "true", error_))
+        << error_;
+    renderer_pb::ConfigUpdate update;
+    const std::pair<const char *, const char *> direct{"output.direct_mode",
+                                                       "false"};
+    const std::pair<const char *, const char *> volume{"output.volume_mode",
+                                                       "software"};
+    for (const auto &[path, value] : directFirst ? std::array{direct, volume}
+                                                 : std::array{volume, direct}) {
+      auto *setting = update.add_settings();
+      setting->set_path(path);
+      setting->set_value(value);
+    }
+    renderer_pb::ConfigResult result;
+    service.apply(update, result);
+    ASSERT_EQ(result.outcomes_size(), 2);
+    for (const auto &outcome : result.outcomes())
+      EXPECT_TRUE(outcome.applied()) << outcome.path() << ": " << outcome.error();
+    EXPECT_EQ(field(output(), "output.volume_mode")->value(), "software");
+  }
+}
+
+TEST_F(NativePlayerStreamTest, DirectOutputPlaysPcmWithNothingInTheWay) {
+  ASSERT_TRUE(player_->applyConfig("output.direct_mode", "true", error_))
+      << error_;
+  size_t playing = 0;
+  for (const auto &state : playToTheEnd(sourceAt("/whole"))) {
+    if (state.state() != renderer_pb::PLAYBACK_STATE_PLAYING)
+      continue;
+    ++playing;
     EXPECT_FALSE(state.has_signal_path())
-        << renderer_pb::PlaybackState_Name(state.state());
+        << state.signal_path().ShortDebugString();
+  }
+  EXPECT_GT(playing, 0u);
+}
+
+TEST_F(NativePlayerDsdTest, DirectOutputNeverConvertsDsd) {
+  ASSERT_TRUE(player_->applyConfig("output.direct_mode", "true", error_))
+      << error_;
+  std::optional<std::string> refusal;
+  for (const auto &state : playToTheEnd(dsf())) {
+    if (state.state() == renderer_pb::PLAYBACK_STATE_ERROR)
+      refusal = state.error().message();
+    EXPECT_FALSE(state.has_device_info())
+        << "opened at " << state.device_info().format().sample_rate_hz();
+  }
+  // The null device is probed as taking native DSD, so it is the emitter that
+  // refuses a device it does not hold alone; the converter never runs.
+  ASSERT_TRUE(refusal);
+  EXPECT_THAT(*refusal, ::testing::AnyOf(
+                            ::testing::HasSubstr(DSD_DIRECT_ERROR),
+                            ::testing::HasSubstr(DSD_SHARED_OUTPUT_ERROR)));
 }
 
 TEST_F(NativePlayerDsdTest, ThePcmRateReachesTheConverter) {

@@ -31,6 +31,9 @@ public:
    * @brief Packs @p frames frames of @p in, one array per channel, into
    * @p out, with the gain moving across them as @p gain says.
    * @param bits The significant bits to dither at; at most the container's.
+   * @param preserveExact At unity gain, write a channel block whose samples
+   * all land on whole numbers at @p bits without dither; any other block is
+   * dithered and counted in unrestored().
    */
   void pack(const double *const *in, unsigned channels, size_t frames,
             GainRamp::Span gain, AudioSampleFormat format, unsigned bits,
@@ -38,6 +41,9 @@ public:
 
   /// Samples clamped to the output's range so far.
   uint64_t clipped() const { return clipped_; }
+  /// Channel blocks that pack() was asked to keep exact and had to dither,
+  /// because a sample did not land on a whole number at the output's bits.
+  uint64_t unrestored() const { return unrestored_; }
 
 private:
   size_t capacity;
@@ -45,4 +51,5 @@ private:
   std::vector<double> noise;
   std::vector<std::vector<int32_t>> rounded;
   uint64_t clipped_ = 0;
+  uint64_t unrestored_ = 0;
 };

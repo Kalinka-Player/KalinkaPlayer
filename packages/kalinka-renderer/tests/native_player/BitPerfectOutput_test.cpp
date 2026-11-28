@@ -3,6 +3,7 @@
 #include "FlacStreamDecoder.h"
 #include "ReferenceFilters.h"
 #include "StateMonitor.h"
+#include "dsp/fir/LiveFir.h"
 #include "dsp/peq/Profile.h"
 
 #include <gtest/gtest.h>
@@ -69,13 +70,19 @@ protected:
     std::filesystem::remove_all(directory, error);
   }
 
+  /// The signal path reported while the last file played.
+  std::optional<SignalPath> path;
+
   /// @param softwareVolume A percentage, or fixed volume when absent.
+  /// @param fir The room correction stage a renderer runs, if any.
   std::vector<uint8_t> play(const std::vector<std::string> &files,
                             std::optional<int> softwareVolume = std::nullopt,
-                            peq::Settings correction = {}) {
+                            peq::Settings correction = {},
+                            std::shared_ptr<LiveFir> fir = nullptr) {
     {
       AudioPlayer player({{"output.alsa.device", "capture"},
-                          {"dsp.delay_ms", std::to_string(GetParam())}});
+                          {"dsp.delay_ms", std::to_string(GetParam())}},
+                         fir);
       player.setRoomEq(correction);
       if (softwareVolume) {
         player.configureVolume("software", "");
@@ -90,6 +97,12 @@ protected:
           std::chrono::steady_clock::now() + std::chrono::seconds(20);
       while (std::chrono::steady_clock::now() < deadline) {
         const auto state = monitor->waitState();
+        if (state.state == AudioGraphNodeState::STREAMING && state.streamInfo)
+          path = player.signalPath(
+              *state.streamInfo, state.deviceInfo
+                                     ? std::optional(state.deviceInfo->format)
+                                     : std::nullopt,
+              state.streamId);
         if ((state.state == AudioGraphNodeState::FINISHED &&
              state.streamId == id) ||
             state.state == AudioGraphNodeState::ERROR) {
@@ -117,13 +130,53 @@ TEST_P(BitPerfectOutputTest, AGaplessJoinReachesAlsaUnchanged) {
   EXPECT_TRUE(written == expected);
 }
 
+/// The kinds of @p path, each marked 1:1 or ~ (altered).
+std::vector<std::string> marked(const SignalPath &path) {
+  std::vector<std::string> steps;
+  for (const auto &step : path.steps)
+    steps.push_back(std::string(step.bitPerfect ? "1:1 " : "~ ") + step.kind);
+  return steps;
+}
+
+TEST_P(BitPerfectOutputTest, TheIdleRoomCorrectionStageHandsBackEveryBit) {
+  const auto expected = decoded(ladder());
+  EXPECT_TRUE(play({ladder()}, std::nullopt, {}, std::make_shared<LiveFir>()) ==
+              expected);
+  ASSERT_TRUE(path);
+  EXPECT_EQ(marked(*path),
+            (std::vector<std::string>{"1:1 float", "1:1 integer"}));
+  EXPECT_EQ(path->steps.front().summary,
+            "From 16-bit integer, ready for room correction");
+  EXPECT_EQ(path->steps.back().summary,
+            "16-bit, every sample restored exactly");
+}
+
+TEST_P(BitPerfectOutputTest, AGaplessJoinThroughTheIdleStageIsUnchanged) {
+  auto expected = decoded(ladder());
+  expected.insert(expected.end(), expected.begin(), expected.end());
+  const auto written = play({ladder(), ladder()}, std::nullopt, {},
+                            std::make_shared<LiveFir>());
+  ASSERT_EQ(written.size(), expected.size());
+  EXPECT_TRUE(written == expected);
+}
+
+TEST_P(BitPerfectOutputTest, WithNothingInTheWayThereIsNoStep) {
+  play({ladder()});
+  EXPECT_FALSE(path && !path->steps.empty());
+}
+
 TEST_P(BitPerfectOutputTest, SoftwareVolumeAtFullReachesAlsaUnchanged) {
   EXPECT_TRUE(play({ladder()}, 100) == decoded(ladder()));
+  ASSERT_TRUE(path);
+  EXPECT_EQ(marked(*path), std::vector<std::string>{"1:1 volume"});
 }
 
 TEST_P(BitPerfectOutputTest, SoftwareVolumeBelowFullIsScaledAndDithered) {
   const auto source = samples(decoded(ladder()));
   const auto written = samples(play({ladder()}, 50));
+  ASSERT_TRUE(path);
+  EXPECT_EQ(marked(*path), (std::vector<std::string>{"1:1 float", "~ volume",
+                                                     "~ dither", "~ integer"}));
   ASSERT_EQ(written.size(), source.size());
   size_t offPlainRounding = 0;
   for (size_t i = 0; i < source.size(); ++i) {

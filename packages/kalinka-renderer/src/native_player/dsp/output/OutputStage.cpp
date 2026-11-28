@@ -109,6 +109,8 @@ void OutputStage::onUpstreamState(const StreamState &state) {
   // A source change names the stream to come, not the one still being read.
   if (state.streamId && state.state != AudioGraphNodeState::SOURCE_CHANGED) {
     std::lock_guard lock(presentedMutex);
+    if (reading != state.streamId)
+      restoreFailures = {RestoreFailures{state.streamId}, restoreFailures[0]};
     if (reading != state.streamId && discardAtBoundary) {
       resetEq = true;
       discardAtBoundary = false;
@@ -211,6 +213,11 @@ OutputStage::present(const StreamAudioFormat &source, bool fromDsd,
   return next;
 }
 
+void OutputStage::forgetRestoreFailures() {
+  for (auto &counted : restoreFailures)
+    counted.blocks = 0;
+}
+
 void OutputStage::resetClipping() {
   ++clippingRevision;
   if (std::exchange(windowClips, 0) && events)
@@ -226,6 +233,7 @@ void OutputStage::setRoomEq(peq::Settings settings,
     std::lock_guard lock(presentedMutex);
     // The same effective PEQ plan can accompany a FIR or bypass change.
     resetClipping();
+    forgetRestoreFailures();
     if (settings.preampDb != eqSettings.preampDb) {
       eqSettings.preampDb = settings.preampDb;
       ++eqRevision;
@@ -236,6 +244,7 @@ void OutputStage::setRoomEq(peq::Settings settings,
   const auto plan = now ? prepareEq(settings, now->source, fir) : peq::Plan{};
   std::lock_guard lock(presentedMutex);
   resetClipping();
+  forgetRestoreFailures();
   eqSettings = std::move(settings);
   automaticFir = std::move(fir);
   eqPlan = plan;
@@ -245,7 +254,10 @@ void OutputStage::setRoomEq(peq::Settings settings,
 std::vector<SignalStep> OutputStage::describe(const StreamAudioFormat &decoded,
                                               const StreamAudioFormat &source,
                                               const StreamAudioFormat &output,
-                                              bool firDry) const {
+                                              bool firDry,
+                                              bool softwareVolume,
+                                              std::optional<StreamId> stream)
+    const {
   std::vector<SignalStep> steps;
   if (isDsd(source.sampleFormat))
     return steps;
@@ -254,8 +266,14 @@ std::vector<SignalStep> OutputStage::describe(const StreamAudioFormat &decoded,
   bool active;
   double preampDb;
   bool prepared;
+  uint64_t failures = 0;
   {
     std::lock_guard lock(presentedMutex);
+    // The newest first: before streams have ids, both slots share none.
+    const auto counted = std::ranges::find(restoreFailures, stream,
+                                           &RestoreFailures::stream);
+    if (counted != restoreFailures.end())
+      failures = counted->blocks;
     settings = eqSettings;
     fir = automaticFir;
     prepared = presented && presented->source.sampleRate == source.sampleRate &&
@@ -269,27 +287,86 @@ std::vector<SignalStep> OutputStage::describe(const StreamAudioFormat &decoded,
     active = plan.active;
     preampDb = settings.preampDb.value_or(plan.automaticPreampDb);
   }
+  const bool attenuated = target.load() != 1.0;
+  const double gain = dsdGain.load();
+  const bool dsdRaised = convertedFromDsd(decoded, source) && gain != 1.0;
+  // Anything here that computes takes the samples through 64-bit float.
+  const bool computes = active || preampDb != 0 || dsdRaised || attenuated;
+  const bool integerIn = !isFloat(source.sampleFormat);
+  const bool floatOut = isFloat(output.sampleFormat);
+
+  if (outputChannels(source) != source.channels)
+    steps.push_back({signal_step::kChannels, "Mono on both channels",
+                     "Each sample copied to left and right"});
+  if (integerIn && (computes || floatOut))
+    steps.push_back(signal_step::toFloat(source));
   if (active)
     steps.push_back(
         {signal_step::kPeq, "Parametric EQ", settings.profile->name});
   if (preampDb != 0)
     steps.push_back(
         {signal_step::kPreamp, "Headroom", std::format("{:+.2f} dB", preampDb)});
-  const double gain = dsdGain.load();
-  if (convertedFromDsd(decoded, source) && gain != 1.0)
+  if (dsdRaised)
     steps.push_back({signal_step::kDsdGain, "DSD gain",
                      std::format("{:+.1f} dB", 20 * std::log10(gain))});
-  if (((isFloat(source.sampleFormat) &&
-        !(firDry && !isFloat(decoded.sampleFormat) &&
-          output.bitsPerSample >= decoded.bitsPerSample)) ||
-       active || preampDb != 0) &&
-      !isFloat(output.sampleFormat)) {
-    const auto choice = chooseOutput(source, device, kPcmDeviceChannels);
-    const auto bits = choice.format == output.sampleFormat
-                          ? choice.bits
-                          : output.bitsPerSample;
-    steps.push_back(
-        {signal_step::kDither, "Dither", std::format("TPDF at {} bits", bits)});
+  if (softwareVolume)
+    steps.push_back({signal_step::kVolume, "Software volume",
+                     attenuated ? "Below full: samples scaled"
+                                : "At full: samples untouched",
+                     !attenuated});
+
+  if (floatOut) {
+    const bool decodedInteger =
+        !isFloat(decoded.sampleFormat) && !isDsd(decoded.sampleFormat);
+    // Float widened to 64 bits and narrowed back with nothing between is
+    // the decoded float again.
+    if (firDry && !computes && decoded.sampleFormat == output.sampleFormat &&
+        source.sampleFormat != output.sampleFormat)
+      steps.push_back({signal_step::kFloat,
+                       std::format("Back to {}-bit float",
+                                   sampleBits(output.sampleFormat)),
+                       "Every sample restored exactly", true});
+    else if (decodedInteger || source.sampleFormat != output.sampleFormat)
+      steps.push_back(
+          {signal_step::kFloat,
+           std::format("{}-bit float output", sampleBits(output.sampleFormat)),
+           decodedInteger
+               ? std::format("The DAC takes float, not {}-bit integers",
+                             decoded.bitsPerSample)
+               : std::format("From {}-bit float",
+                             sampleBits(source.sampleFormat))});
+  } else if (!integerIn || computes) {
+    const bool restored = !computes && firDry && !isFloat(decoded.sampleFormat) &&
+                          output.bitsPerSample >= decoded.bitsPerSample;
+    if (restored) {
+      const bool exact = failures == 0;
+      const auto room = unsigned(sampleBits(output.sampleFormat));
+      steps.push_back(
+          {signal_step::kInteger, "Back to integer",
+           std::format("{}-bit{}, {}", decoded.bitsPerSample,
+                       room > decoded.bitsPerSample
+                           ? std::format(" into {}-bit", room)
+                           : "",
+                       exact ? "every sample restored exactly"
+                             : "dithered where a sample was not restored "
+                               "exactly"),
+           exact});
+    } else {
+      const auto choice = chooseOutput(source, device, kPcmDeviceChannels);
+      const auto bits = choice.format == output.sampleFormat
+                            ? choice.bits
+                            : output.bitsPerSample;
+      const auto room = unsigned(sampleBits(output.sampleFormat));
+      steps.push_back({signal_step::kDither, "Dither",
+                       std::format("TPDF at {} bits", bits)});
+      steps.push_back(
+          {signal_step::kInteger, "Back to integer",
+           std::format("64-bit float rounded to {}-bit{}", bits,
+                       room > bits ? std::format(", zero-padded to {}-bit", room)
+                                   : "")});
+    }
+  } else if (const auto moved = signal_step::container(source, output)) {
+    steps.push_back(*moved);
   }
   return steps;
 }
@@ -366,7 +443,7 @@ size_t OutputStage::read(void *data, size_t size) {
   auto *out = static_cast<uint8_t *>(data);
   const size_t wanted = size / outFrame;
   size_t done = 0;
-  uint64_t newClips = 0;
+  Produced made;
   while (done < wanted) {
     const size_t ask = std::min(wanted - done, kPlanarFrames);
     const size_t got = upstream->read(input.data(), ask * inFrame) / inFrame;
@@ -376,26 +453,36 @@ size_t OutputStage::read(void *data, size_t size) {
       expandMono(input.data(), got, now->channels,
                  sampleSize(source.sampleFormat));
     const size_t unsettled = unsettledFrames ? unsettledFrames() : 0;
-    newClips +=
+    const auto block =
         produce(*now, input.data(), got, out + done * outFrame, unsettled);
+    made.clips += block.clips;
+    made.unrestored += block.unrestored;
     done += got;
     if (got < ask)
       break;
   }
   clipped = quantiser.clipped();
-  if (newClips && events) {
+  if (made.unrestored && (!carriesDecoded || carriesDecoded())) {
+    std::lock_guard lock(presentedMutex);
+    auto &counted = restoreFailures[0];
+    if (std::exchange(counted.blocks, counted.blocks + made.unrestored) == 0 &&
+        events)
+      events->post({reading, Unrestored{}});
+  }
+  if (made.clips && events) {
     std::lock_guard lock(presentedMutex);
     if (meteringRevision == clippingRevision) {
-      windowClips += newClips;
+      windowClips += made.clips;
       events->post({reading, Clipping{windowClips}});
     }
   }
   return done * outFrame;
 }
 
-uint64_t OutputStage::produce(const Presented &now, const uint8_t *in,
-                              size_t frames, uint8_t *out, size_t unsettled) {
-  uint64_t newClips = 0;
+OutputStage::Produced OutputStage::produce(const Presented &now,
+                                           const uint8_t *in, size_t frames,
+                                           uint8_t *out, size_t unsettled) {
+  Produced made;
   const AudioSampleFormat from = now.source.sampleFormat;
   const AudioSampleFormat to = now.output.format;
   const unsigned channels = now.channels;
@@ -412,7 +499,8 @@ uint64_t OutputStage::produce(const Presented &now, const uint8_t *in,
         n = std::min(n, r->left());
     const auto volume = ramp.take(n), faded = fade.take(n),
                preamp = eq.takePreamp(n);
-    const bool countClips =
+    // A filter fading in or out is no steady state to report on.
+    const bool settled =
         at >= unsettled && !eq.transitioning() && preamp.from == preamp.to;
     const int movingRamps = (volume.from != volume.to) +
                             (faded.from != faded.to) +
@@ -445,16 +533,19 @@ uint64_t OutputStage::produce(const Presented &now, const uint8_t *in,
         }
         span = volume;
       }
-      const uint64_t before = quantiser.clipped();
+      const uint64_t clippedBefore = quantiser.clipped();
+      const uint64_t unrestoredBefore = quantiser.unrestored();
       quantiser.pack(planar.planes(), channels, span.frames, span, to,
                      now.output.bits, dest,
                      now.fromInteger && !eq.filtering() && !overlapping);
-      if (countClips)
-        newClips += quantiser.clipped() - before;
+      if (settled) {
+        made.clips += quantiser.clipped() - clippedBefore;
+        made.unrestored += quantiser.unrestored() - unrestoredBefore;
+      }
     }
     at += span.frames;
   }
-  return newClips;
+  return made;
 }
 
 size_t OutputStage::toSource(const Presented &now, size_t bytes) const {

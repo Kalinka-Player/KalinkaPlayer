@@ -26,6 +26,10 @@ bool LiveFir::handles(const StreamAudioFormat &f) const {
   return f.channels == 2 && !isDsd(f.sampleFormat);
 }
 
+bool LiveFir::filtering(const StreamAudioFormat &f) const {
+  return variantFor(f) != nullptr;
+}
+
 DspProcessor::Output LiveFir::output(const StreamAudioFormat &f) const {
   auto result = f;
   result.bitsPerSample = 64;
@@ -41,7 +45,8 @@ SignalPath LiveFir::describe(const StreamAudioFormat &f) const {
   if (!plan) {
     return {
         {{signal_step::kFir, "FIR unavailable",
-          std::format("Supply an impulse at {:g} kHz", f.sampleRate / 1000.)}},
+          std::format("Supply an impulse at {:g} kHz", f.sampleRate / 1000.),
+          true}},
         0.0};
   }
   auto path = plan->filter->describe(f);

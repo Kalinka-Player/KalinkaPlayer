@@ -13,6 +13,7 @@
 #include <random>
 #include <string>
 #include <thread>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -269,45 +270,197 @@ TEST(OutputStage, TheDsdGainMultipliesTheVolume) {
     ASSERT_LE(std::abs(double(v / 256) - double(1 << 22)), 1.5);
 }
 
-TEST(OutputStage, ItDescribesTheAppliedFiltersGainsAndDither) {
+namespace {
+/// What @p stage says it does, each step marked 1:1 or ~ (altered).
+std::vector<std::string> trace(const OutputStage &stage,
+                               const StreamAudioFormat &decoded,
+                               const StreamAudioFormat &source,
+                               const StreamAudioFormat &output,
+                               bool firDry = false,
+                               bool softwareVolume = false,
+                               std::optional<StreamId> stream = {}) {
+  std::vector<std::string> steps;
+  for (const auto &step : stage.describe(decoded, source, output, firDry,
+                                         softwareVolume, stream))
+    steps.push_back(std::string(step.bitPerfect ? "1:1 " : "~ ") + step.kind +
+                    ": " + step.summary);
+  return steps;
+}
+
+using Steps = std::vector<std::string>;
+} // namespace
+
+TEST(OutputStage, ItTracesEveryConversionAndMarksWhatKeepsTheBits) {
   OutputStage stage(k24In32, 1);
   const StreamAudioFormat converted{176400, 2, 64, PCM_FLOAT64_LE, 0};
   const StreamAudioFormat s32{176400, 2, 24, PCM32_LE, 0};
-  const auto kinds = [&stage](const StreamAudioFormat &decoded,
-                              const StreamAudioFormat &source,
-                              const StreamAudioFormat &output) {
-    std::vector<std::string> kinds;
-    for (const auto &step : stage.describe(decoded, source, output))
-      kinds.push_back(step.kind + ": " + step.summary);
-    return kinds;
-  };
   stage.setDsdGain(std::pow(10.0, 2.8 / 20));
-  EXPECT_EQ(kinds(kRawDsd, converted, s32),
-            (std::vector<std::string>{"dsd_gain: +2.8 dB",
-                                      "dither: TPDF at 24 bits"}));
-  EXPECT_EQ(kinds(kRawDsd, converted, converted),
-            std::vector<std::string>{"dsd_gain: +2.8 dB"})
-      << "a device that takes float";
-  EXPECT_EQ(kinds(converted, converted, s32),
-            std::vector<std::string>{"dither: TPDF at 24 bits"})
+  EXPECT_EQ(trace(stage, kRawDsd, converted, s32),
+            (Steps{"~ dsd_gain: +2.8 dB", "~ dither: TPDF at 24 bits",
+                   "~ integer: 64-bit float rounded to 24-bit, zero-padded to "
+                   "32-bit"}));
+  EXPECT_EQ(trace(stage, kRawDsd, converted, converted),
+            Steps{"~ dsd_gain: +2.8 dB"})
+      << "a device that takes the float as it is";
+  EXPECT_EQ(trace(stage, converted, converted, s32),
+            (Steps{"~ dither: TPDF at 24 bits",
+                   "~ integer: 64-bit float rounded to 24-bit, zero-padded to "
+                   "32-bit"}))
       << "float PCM, raised by no DSD gain";
-  EXPECT_TRUE(kinds(pcm(PCM16_LE), pcm(PCM16_LE), pcm(PCM32_LE)).empty())
-      << "a wider container changes no sample";
+  EXPECT_TRUE(trace(stage, pcm(PCM16_LE), pcm(PCM16_LE), pcm(PCM16_LE)).empty())
+      << "upstream's very bytes";
+  EXPECT_EQ(trace(stage, pcm(PCM16_LE), pcm(PCM16_LE), pcm(PCM32_LE)),
+            Steps{"1:1 zero_padding: 16-bit into 32-bit"});
+  EXPECT_EQ(trace(stage, pcm(PCM24_3LE), pcm(PCM24_3LE), pcm(PCM24_LE)),
+            Steps{"1:1 repack: 24-bit, 3 bytes to 4"});
+  EXPECT_EQ(trace(stage, pcm(PCM16_LE), pcm(PCM16_LE), pcm(PCM_FLOAT32_LE)),
+            (Steps{"1:1 float: From 16-bit integer",
+                   "~ float: The DAC takes float, not 16-bit integers"}));
+  EXPECT_EQ(trace(stage, converted, converted, pcm(PCM_FLOAT32_LE)),
+            Steps{"~ float: From 64-bit float"});
   stage.setDsdGain(1.0);
-  EXPECT_EQ(kinds(kRawDsd, converted, s32),
-            std::vector<std::string>{"dither: TPDF at 24 bits"})
+  EXPECT_EQ(trace(stage, kRawDsd, converted, s32),
+            (Steps{"~ dither: TPDF at 24 bits",
+                   "~ integer: 64-bit float rounded to 24-bit, zero-padded to "
+                   "32-bit"}))
       << "no gain at 0 dB";
   auto profile = std::make_shared<peq::Profile>();
   profile->name = "Room";
   profile->right.push_back({peq::Type::Peak, 500, 3.5, 1});
   stage.setRoomEq({profile, std::nullopt});
   const auto mono = pcm(PCM16_LE, 1);
-  EXPECT_EQ(kinds(mono, mono, pcm(PCM32_LE)),
-            (std::vector<std::string>{"peq: Room", "preamp: -3.50 dB",
-                                      "dither: TPDF at 24 bits"}));
-  EXPECT_TRUE(kinds(kRawDsd, kRawDsd, kRawDsd).empty());
+  EXPECT_EQ(trace(stage, mono, mono, pcm(PCM32_LE)),
+            (Steps{"~ channels: Each sample copied to left and right",
+                   "1:1 float: From 16-bit integer", "~ peq: Room",
+                   "~ preamp: -3.50 dB", "~ dither: TPDF at 24 bits",
+                   "~ integer: 64-bit float rounded to 24-bit, zero-padded to "
+                   "32-bit"}));
+  EXPECT_TRUE(trace(stage, kRawDsd, kRawDsd, kRawDsd).empty());
   stage.setRoomEq({});
-  EXPECT_TRUE(kinds(mono, mono, pcm(PCM32_LE)).empty());
+  EXPECT_EQ(trace(stage, mono, mono, pcm(PCM32_LE)),
+            (Steps{"~ channels: Each sample copied to left and right",
+                   "1:1 zero_padding: 16-bit into 32-bit"}));
+}
+
+TEST(OutputStage, FloatThatNoFilterTouchedGoesBackToTheDecodedIntegers) {
+  OutputStage stage(k24In32, 1);
+  const auto dry = pcm(PCM_FLOAT64_LE);
+  auto padded = pcm(PCM32_LE);
+  padded.bitsPerSample = 24;
+  EXPECT_EQ(trace(stage, pcm(PCM16_LE), dry, padded, true),
+            Steps{"1:1 integer: 16-bit into 32-bit, every sample restored "
+                  "exactly"});
+  EXPECT_EQ(trace(stage, pcm(PCM24_LE), dry, pcm(PCM16_LE), true),
+            (Steps{"~ dither: TPDF at 16 bits",
+                   "~ integer: 64-bit float rounded to 16-bit"}))
+      << "fewer bits than were decoded";
+  EXPECT_EQ(trace(stage, pcm(PCM16_LE), dry, padded),
+            (Steps{"~ dither: TPDF at 24 bits",
+                   "~ integer: 64-bit float rounded to 24-bit, zero-padded to "
+                   "32-bit"}))
+      << "a filter's float";
+}
+
+TEST(OutputStage, TheSoftwareVolumeIsAStepThatKeepsTheBitsOnlyAtFull) {
+  OutputStage stage(k24In32, 1);
+  const auto cd = pcm(PCM16_LE);
+  EXPECT_EQ(trace(stage, cd, cd, pcm(PCM32_LE), false, true),
+            (Steps{"1:1 volume: At full: samples untouched",
+                   "1:1 zero_padding: 16-bit into 32-bit"}));
+  stage.setGain(0.5);
+  EXPECT_EQ(trace(stage, cd, cd, pcm(PCM32_LE), false, true),
+            (Steps{"1:1 float: From 16-bit integer",
+                   "~ volume: Below full: samples scaled",
+                   "~ dither: TPDF at 24 bits",
+                   "~ integer: 64-bit float rounded to 24-bit, zero-padded to "
+                   "32-bit"}));
+  EXPECT_EQ(trace(stage, cd, cd, pcm(PCM32_LE)),
+            (Steps{"1:1 float: From 16-bit integer",
+                   "~ dither: TPDF at 24 bits",
+                   "~ integer: 64-bit float rounded to 24-bit, zero-padded to "
+                   "32-bit"}))
+      << "a gain set elsewhere still computes";
+}
+
+TEST(OutputStage, IntegersThatDoNotComeBackExactlyAreReportedOncePerSource) {
+  const auto dry = pcm(PCM_FLOAT64_LE);
+  const auto cd = pcm(PCM16_LE);
+  Stage exact(dry, asBytes(std::vector<double>{.25, -.5, 1. / 32768, -1.}), {},
+              cd);
+  EXPECT_EQ(readSamples<int16_t>(*exact.stage, 4),
+            (std::vector<int16_t>{8192, -16384, 1, -32768}));
+  EXPECT_EQ(trace(*exact.stage, cd, dry, cd, true, false, 1),
+            Steps{"1:1 integer: 16-bit, every sample restored exactly"});
+
+  Stage inexact(dry, asBytes(std::vector<double>{.25, 1. / 65536}), {}, cd);
+  auto events = std::make_shared<PlaybackEvents>();
+  inexact.stage->reportTo(events);
+  readAll(*inexact.stage, 4);
+  const auto posted = events->take(std::stop_token());
+  ASSERT_EQ(posted.size(), 1u);
+  EXPECT_TRUE(std::holds_alternative<Unrestored>(posted[0].kind));
+  EXPECT_EQ(trace(*inexact.stage, cd, dry, cd, true, false, 1),
+            Steps{"~ integer: 16-bit, dithered where a sample was not restored "
+                  "exactly"});
+  inexact.source->restart();
+  EXPECT_EQ(trace(*inexact.stage, cd, dry, cd, true, false, 1).front().substr(0, 1), "~")
+      << "the same source, read again";
+}
+
+TEST(OutputStage, FloatNoFilterTouchedGoesBackToTheDecodedFloat) {
+  OutputStage stage({}, 1);
+  const auto single = pcm(PCM_FLOAT32_LE);
+  EXPECT_EQ(trace(stage, single, pcm(PCM_FLOAT64_LE), single, true),
+            Steps{"1:1 float: Every sample restored exactly"});
+  EXPECT_EQ(trace(stage, single, pcm(PCM_FLOAT64_LE), single),
+            Steps{"~ float: From 64-bit float"})
+      << "a filter's float";
+}
+
+TEST(OutputStage, ARoomCorrectionChangeForgetsSamplesThatDidNotRestore) {
+  const auto dry = pcm(PCM_FLOAT64_LE);
+  const auto cd = pcm(PCM16_LE);
+  Stage s(dry, asBytes(std::vector<double>{.25, 1. / 65536}), {}, cd);
+  readAll(*s.stage, 4);
+  ASSERT_EQ(trace(*s.stage, cd, dry, cd, true, false, 1).front().substr(0, 1), "~");
+  s.stage->setRoomEq({});
+  EXPECT_EQ(trace(*s.stage, cd, dry, cd, true, false, 1),
+            Steps{"1:1 integer: 16-bit, every sample restored exactly"})
+      << "what failed was a filter's";
+}
+
+TEST(OutputStage, AFilteredUpstreamIsNotCountedAgainstTheRestore) {
+  const auto dry = pcm(PCM_FLOAT64_LE);
+  const auto cd = pcm(PCM16_LE);
+  Stage s(dry, asBytes(std::vector<double>{.25, 1. / 65536}), {}, cd);
+  s.stage->reportTo(std::make_shared<PlaybackEvents>(), {}, [] { return false; });
+  readAll(*s.stage, 4);
+  EXPECT_EQ(trace(*s.stage, cd, dry, cd, true),
+            Steps{"1:1 integer: 16-bit, every sample restored exactly"});
+}
+
+TEST(OutputStage, EachStreamAnswersForItsOwnRestores) {
+  const auto dry = pcm(PCM_FLOAT64_LE);
+  const auto cd = pcm(PCM16_LE);
+  auto switcher = std::make_shared<AudioStreamSwitcher>();
+  OutputStage stage({}, 1);
+  stage.connectTo(switcher);
+  auto inexact = std::make_shared<PcmSource>(
+      dry, asBytes(std::vector<double>{.25, 1. / 65536}), cd, 1);
+  auto exact =
+      std::make_shared<PcmSource>(dry, asBytes(std::vector<double>{.25, .5}),
+                                  cd, 2);
+  switcher->connectTo(inexact);
+  switcher->connectTo(exact);
+  stage.acceptSourceChange();
+  readAll(stage, 4);
+  inexact->finish();
+  stage.acceptSourceChange();
+  readAll(stage, 4);
+  EXPECT_EQ(trace(stage, cd, dry, cd, true, false, 1).front().substr(0, 1), "~")
+      << "still heard while the next is read";
+  EXPECT_EQ(trace(stage, cd, dry, cd, true, false, 2).front().substr(0, 1),
+            "1");
 }
 
 TEST(OutputStage, ClippingIsPostedWithTheCountSinceTheSourceBegan) {

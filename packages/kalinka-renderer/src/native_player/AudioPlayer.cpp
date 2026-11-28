@@ -61,15 +61,20 @@ double dsdGain(const std::string &setting) {
   return std::pow(10.0, dsdGainDb(setting) / 20.0);
 }
 
+// Nothing in the graph may alter the samples: no conversion of DSD either.
+bool directOutput(const Config &config) {
+  return value_or(config, "output.direct", std::string("false")) == "true";
+}
+
 // DSD in `pcm` mode, and in `auto` where it does not play natively, is
-// converted in the stage. `dsp.delay_ms` stands in for a filter's latency in
-// tests.
+// converted in the stage, unless direct output forbids any conversion.
+// `dsp.delay_ms` stands in for a filter's latency in tests.
 std::unique_ptr<DspProcessor>
 dspProcessorFor(const Config &config,
                 const std::vector<StreamAudioFormat> &device,
                 const std::shared_ptr<LiveFir> &fir) {
   const auto mode = value_or(config, "output.dsd_mode", std::string("disabled"));
-  if (mode == "pcm" || mode == "auto") {
+  if (!directOutput(config) && (mode == "pcm" || mode == "auto")) {
     return std::make_unique<DsdToPcmProcessor>(
         device,
         dsdPcmMultiple(value_or(config, "dsd.pcm_rate", std::string("auto"))),
@@ -270,9 +275,20 @@ struct StreamNodes {
           startOffsetMs,
           [device = value_or(config, "output.alsa.device",
                              std::string("default")),
-           mode, nativeDsdAllowed,
+           mode, nativeDsdAllowed, direct = directOutput(config),
            converted = std::vector(deviceFormats.begin(), deviceFormats.end())](
               unsigned rate, unsigned channels) {
+            if (direct && mode != "native" && mode != "dop") {
+              if (!nativeDsdAllowed())
+                throw std::runtime_error(DSD_DIRECT_ERROR);
+              try {
+                return chooseDsdOutput(probeOutput(device), "native", rate,
+                                       channels);
+              } catch (const std::runtime_error &e) {
+                throw std::runtime_error(std::string(DSD_DIRECT_ERROR) + ": " +
+                                         e.what());
+              }
+            }
             if (mode == "pcm")
               return chooseDsdOutput({.formats = converted}, mode, rate,
                                      channels);
@@ -376,9 +392,11 @@ AudioPlayer::AudioPlayer(const Config &config, std::shared_ptr<LiveFir> fir,
           deviceFormats, std::random_device{}(), std::move(firRates))) {
   dspStage->connectTo(streamSwitcher);
   outputStage->connectTo(dspStage);
-  outputStage->reportTo(events, [stage = dspStage]() {
-    return stage->unsettledFramesInLastRead();
-  });
+  outputStage->reportTo(
+      events,
+      [stage = dspStage]() { return stage->unsettledFramesInLastRead(); },
+      liveFir ? std::function<bool()>([fir = liveFir] { return fir->passesThrough(); })
+              : std::function<bool()>());
   setDsdGain(value_or(config, "dsd.gain_db", std::string("safe")));
   audioEmitter->fadeWith(outputStage);
   std::erase_if(streamConfig,
@@ -595,13 +613,33 @@ std::unique_ptr<VolumeMonitor> AudioPlayer::volumeMonitor() {
   return std::make_unique<VolumeMonitor>(volumeEvents);
 }
 
-SignalPath AudioPlayer::signalPath(const StreamInfo &heard) const {
+SignalPath AudioPlayer::signalPath(
+    const StreamInfo &heard, const std::optional<StreamAudioFormat> &device,
+    std::optional<StreamId> stream) const {
   const auto decoded = heard.decodedFormat.value_or(heard.format);
-  SignalPath path = dspStage->describe(decoded);
-  const auto added = outputStage->describe(
-      decoded, dspStage->handsOn(decoded), heard.format,
-      liveFir && liveFir->handles(decoded) && path.steps.empty());
+  const auto source = dspStage->handsOn(decoded);
+  const bool firDry = liveFir && liveFir->handles(decoded) &&
+                      !liveFir->filtering(decoded);
+  SignalPath path;
+  if (!isDsd(decoded.sampleFormat) && isFloat(source.sampleFormat) &&
+      source.sampleFormat != decoded.sampleFormat)
+    path.steps.push_back(signal_step::toFloat(
+        decoded, firDry ? "ready for room correction" : ""));
+  const auto processed = dspStage->describe(decoded);
+  path.steps.insert(path.steps.end(), processed.steps.begin(),
+                    processed.steps.end());
+  path.latencyMs = processed.latencyMs;
+  bool softwareVolume;
+  {
+    std::lock_guard lock(volumeMutex_);
+    softwareVolume = activeBackend() == VolumeBackend::Software;
+  }
+  const auto added = outputStage->describe(decoded, source, heard.format,
+                                           firDry, softwareVolume, stream);
   path.steps.insert(path.steps.end(), added.begin(), added.end());
+  if (device)
+    if (const auto moved = signal_step::container(heard.format, *device))
+      path.steps.push_back(*moved);
   return path;
 }
 

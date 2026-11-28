@@ -153,6 +153,7 @@ add_library(kalinka_native_player STATIC
   src/native_player/PerfMon.cpp
   src/native_player/PlaybackPcm.cpp
   src/native_player/SampleDecoder.cpp
+  src/native_player/SignalPath.cpp
   src/native_player/SourceStreamDecoder.cpp
   src/native_player/StateMonitor.cpp
   src/native_player/StreamState.cpp

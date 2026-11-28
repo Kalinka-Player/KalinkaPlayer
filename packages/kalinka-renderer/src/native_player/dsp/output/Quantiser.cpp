@@ -93,6 +93,7 @@ void Quantiser::pack(const double *const *in, unsigned channels, size_t frames,
       }
       if (i == frames)
         continue;
+      ++unrestored_;
     }
     clipped_ += dither.quantise(in[c], frames, gain.from, step, scale, low,
                                 high, noise.data(), rounded[c].data());

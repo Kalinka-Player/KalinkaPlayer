@@ -43,7 +43,8 @@ void fillSignalPath(const SignalPath &path,
                     kalinka::renderer::v1::SignalPath &out);
 
 /// @param sourceToken The source @p event concerns, when it concerns one.
-void fillPlaybackEvent(const PlaybackEvent &event,
+/// @return false for a kind the protocol has no event for.
+bool fillPlaybackEvent(const PlaybackEvent &event,
                        const std::optional<std::string> &sourceToken,
                        int64_t atUnixMs,
                        kalinka::renderer::v1::PlaybackEvent &out);

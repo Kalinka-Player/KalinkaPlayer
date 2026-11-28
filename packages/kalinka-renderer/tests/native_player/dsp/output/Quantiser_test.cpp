@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <string>
 #include <vector>
 
 namespace {
@@ -24,11 +25,11 @@ struct Planar {
 
 std::vector<int32_t> packed(Quantiser &quantiser, const Planar &in,
                             GainRamp::Span gain, AudioSampleFormat format,
-                            unsigned bits) {
+                            unsigned bits, bool preserveExact = false) {
   const unsigned channels = unsigned(in.data.size());
   std::vector<uint8_t> bytes(gain.frames * channels * sampleSize(format));
   quantiser.pack(in.planes.data(), channels, gain.frames, gain, format, bits,
-                 bytes.data());
+                 bytes.data(), preserveExact);
   std::vector<int32_t> samples;
   for (size_t at = 0; at < bytes.size(); at += sampleSize(format)) {
     int32_t value = 0;
@@ -170,4 +171,56 @@ TEST(Quantiser, ASeedGivesTheSameOutputEveryTime) {
   const Planar in(2, kFrames, 0.3);
   EXPECT_EQ(packed(a, in, hold(0.5), PCM16_LE, 16),
             packed(b, in, hold(0.5), PCM16_LE, 16));
+}
+
+// Integer samples the DSP carried through float64 untouched: every 16- and
+// 24-bit value comes back as it was, padded with zeros, and nothing is
+// dithered.
+TEST(Quantiser, EverySixteenAndTwentyFourBitSampleIsRestoredExactly) {
+  struct Case {
+    unsigned sourceBits;
+    AudioSampleFormat format;
+    unsigned bits;
+  };
+  constexpr size_t kChunk = 8192;
+  for (const auto &[sourceBits, format, bits] :
+       {Case{16, PCM16_LE, 16}, Case{16, PCM24_3LE, 24},
+        Case{16, PCM24_LE, 24}, Case{16, PCM32_LE, 24},
+        Case{16, PCM32_LE, 32}, Case{24, PCM24_3LE, 24},
+        Case{24, PCM24_LE, 24}, Case{24, PCM32_LE, 24},
+        Case{24, PCM32_LE, 32}}) {
+    SCOPED_TRACE(std::to_string(sourceBits) + "-bit into " +
+                 sampleFormatToString(format) + " at " + std::to_string(bits));
+    Quantiser quantiser(kChunk, 1, 3);
+    const int64_t half = int64_t(1) << (sourceBits - 1);
+    const unsigned padding = unsigned(sampleBits(format)) - sourceBits;
+    Planar in(1, kChunk, 0.0);
+    size_t wrong = 0;
+    for (int64_t first = -half; first < half; first += kChunk) {
+      for (size_t i = 0; i < kChunk; ++i)
+        in.data[0][i] = double(first + int64_t(i)) / double(half);
+      const auto out = packed(quantiser, in, hold(1.0, kChunk), format, bits,
+                              true);
+      for (size_t i = 0; i < kChunk; ++i)
+        wrong += out[i] != int32_t((first + int64_t(i)) * (int64_t(1) << padding));
+    }
+    EXPECT_EQ(wrong, 0u);
+    EXPECT_EQ(quantiser.unrestored(), 0u);
+  }
+}
+
+TEST(Quantiser, ASampleFinerThanTheOutputIsDitheredAndCounted) {
+  Quantiser quantiser(kFrames, 2, 4);
+  // An odd 24-bit value has no 16-bit equal.
+  packed(quantiser, Planar(2, kFrames, 3.0 / 8388608), hold(1.0), PCM16_LE, 16,
+         true);
+  EXPECT_EQ(quantiser.unrestored(), 2u) << "one block per channel";
+}
+
+TEST(Quantiser, OnlyUnityGainIsRestored) {
+  Quantiser quantiser(kFrames, 2, 5);
+  packed(quantiser, Planar(2, kFrames, 0.5), hold(0.5), PCM16_LE, 16, true);
+  packed(quantiser, Planar(2, kFrames, 3.0 / 8388608), hold(1.0), PCM16_LE, 16);
+  EXPECT_EQ(quantiser.unrestored(), 0u)
+      << "a gain or no request to restore is dither, as asked";
 }

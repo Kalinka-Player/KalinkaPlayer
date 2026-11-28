@@ -764,22 +764,31 @@ class SignalStep(BaseModel):
     way to the device.
 
     Attributes:
-        kind (str): Stable, for a client to key on: ``dsd_to_pcm``,
-            ``dsd_gain``, ``dither``
+        kind (str): Stable, for a client to key on. Since 3.25 a renderer
+            sends ``channels``, ``float``, ``dsd_to_pcm``, ``fir``, ``peq``,
+            ``preamp``, ``dsd_gain``, ``volume``, ``dither``, ``integer``,
+            ``zero_padding`` and ``repack``, and lists those it can send in its
+            capabilities; a client shows a kind it does not know by its name
         name (str): For a listener: "DSD to PCM"
         summary (str): How it is set, for a listener: "DSD64 to 176.4 kHz,
             30 kHz filter"
+        bit_perfect (bool): SDK 3.25. Every sample leaves the step with the
+            value it came in with, at most zero-padded into a wider integer
+            container; False for a step that alters them, and for every step
+            of a renderer that predates the mark
     """
 
     kind: str = ""
     name: str = ""
     summary: str = ""
+    bit_perfect: bool = False
 
 
 class SignalPath(BaseModel):
     """
     SDK 3.23: what the renderer does to the samples between the decoder and the
-    device, in order. The volume is not a step of it.
+    device, in order. Since SDK 3.25 every format change is a step, and so is a
+    software volume; a volume the device applies is not.
 
     Attributes:
         steps (List[SignalStep]): The steps, first applied first
@@ -804,12 +813,14 @@ class OutputInfo(BaseModel):
             width of the container they are shifted into
         channels (int): Device channel count
         access (DeviceAccess): How the device is held
-        lossless_path (bool): Whether the decoded samples reach the device
-            unaltered. Says nothing about the volume: that is reported with the
-            device it is applied by, because only there is it current.
+        lossless_path (bool): Whether the decoded samples reach the device bit
+            for bit: every step of the signal path keeps the bits, and the
+            device takes the decoded format, or integers in a wider integer
+            container. A volume the device applies is not part of it: that is
+            reported with the device, where it is current.
         signal_path (Optional[SignalPath]): SDK 3.23. What the renderer did to
-            the decoded samples on the way to this device; None when it
-            reported nothing done, as one that predates signal paths never does
+            the decoded samples on the way to this device; None when it did
+            nothing at all, or predates signal paths
     """
 
     sample_format: str = ""

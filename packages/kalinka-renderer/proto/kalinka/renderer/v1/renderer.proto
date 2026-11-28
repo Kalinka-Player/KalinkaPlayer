@@ -157,10 +157,16 @@ message SignalStep {
   string name = 2;
   // How it is set, for a listener: "DSD64 to 176.4 kHz, 30 kHz filter".
   string summary = 3;
+  // Every sample leaves the step with the value it came in with, at most
+  // zero-padded into a wider integer container. Unset means it alters them,
+  // as every step from a renderer older than the field does.
+  bool bit_perfect = 4;
 }
 
 // What the renderer does to the samples between the decoder and the device, in
-// order. The volume is not a step of it: VolumeState reports that.
+// order: every format change and every computation, the software volume
+// included. A path whose steps are all bit_perfect reaches the device as
+// decoded.
 message SignalPath {
   repeated SignalStep steps = 1;
   // Audio the processing holds back ahead of what is heard, in milliseconds.

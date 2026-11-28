@@ -226,9 +226,20 @@ CONVERTING_DSD = {
             "kind": "dsd_to_pcm",
             "name": "DSD to PCM",
             "summary": "DSD64 to 176.4 kHz, 30 kHz filter",
+            "bit_perfect": False,
         },
-        {"kind": "dsd_gain", "name": "DSD gain", "summary": "+2.8 dB"},
-        {"kind": "dither", "name": "Dither", "summary": "TPDF at 24 bits"},
+        {
+            "kind": "dsd_gain",
+            "name": "DSD gain",
+            "summary": "+2.8 dB",
+            "bit_perfect": False,
+        },
+        {
+            "kind": "dither",
+            "name": "Dither",
+            "summary": "TPDF at 24 bits",
+            "bit_perfect": False,
+        },
     ],
     "latency_ms": 0.3,
 }

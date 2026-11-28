@@ -140,14 +140,17 @@ def test_a_timestamp_from_the_future_never_rewinds_playback():
     assert _at(AudioGraphNodeState.STREAMING, 4200, age_ms=-500) == 4200
 
 
-def _path(decoded: dict, device: dict | None):
-    """The lossless verdict for a stream decoded one way and played another."""
+def _path(decoded: dict, device: dict | None, steps: list[dict] | None = None):
+    """The lossless verdict for a stream decoded one way and played another,
+    through @p steps when the renderer reported any."""
     snapshot = renderer_state.empty_state() | {
         "playback_state": "playing",
         "format": decoded,
     }
     if device is not None:
         snapshot["device_info"] = device
+    if steps is not None:
+        snapshot["signal_path"] = {"steps": steps, "latency_ms": 0.0}
     state = from_snapshot(snapshot)
     assert state is not None and state.stream_info is not None
     return state.stream_info.lossless_path
@@ -182,6 +185,47 @@ def test_a_resampling_device_is_not_lossless():
 def test_a_device_carrying_fewer_bits_is_not_lossless():
     truncated = _CD | {"bits_per_sample": 8}
     assert not _path(_CD, {"format": truncated, "access": "exclusive"})
+
+
+_CD16 = _CD | {"sample_format": "PCM16_LE"}
+_S32 = _CD | {"sample_format": "PCM32_LE", "bits_per_sample": 32}
+
+
+def _step(kind: str, bit_perfect: bool) -> dict:
+    return {"kind": kind, "name": kind, "summary": "", "bit_perfect": bit_perfect}
+
+
+def test_zero_padding_the_renderer_reports_is_lossless():
+    padded = [_step("zero_padding", True)]
+    assert _path(_CD16, {"format": _S32, "access": "exclusive"}, padded)
+
+
+def test_a_float_round_trip_that_keeps_every_bit_is_lossless():
+    """The idle room correction stage carries the integers in float and hands
+    them back exactly."""
+    steps = [_step("float", True), _step("volume", True), _step("integer", True)]
+    assert _path(_CD16, {"format": _S32, "access": "exclusive"}, steps)
+
+
+def test_a_wider_device_no_step_explains_is_not_lossless():
+    """A renderer that predates the trace says nothing of how it widened."""
+    assert not _path(_CD16, {"format": _S32, "access": "exclusive"})
+
+
+def test_one_step_that_alters_the_samples_is_enough_to_lose_it():
+    steps = [_step("float", True), _step("volume", False), _step("dither", False)]
+    assert not _path(_CD16, {"format": _S32, "access": "exclusive"}, steps)
+
+
+def test_a_step_from_a_renderer_without_the_mark_alters_the_samples():
+    steps = [{"kind": "zero_padding", "name": "", "summary": ""}]
+    assert not _path(_CD16, {"format": _S32, "access": "exclusive"}, steps)
+
+
+def test_a_float_device_never_takes_the_sources_bits():
+    float32 = _CD | {"sample_format": "PCM_FLOAT32_LE", "bits_per_sample": 32}
+    steps = [_step("float", True)]
+    assert not _path(_CD16, {"format": float32, "access": "exclusive"}, steps)
 
 
 def test_a_device_opened_for_other_channels_is_not_lossless():

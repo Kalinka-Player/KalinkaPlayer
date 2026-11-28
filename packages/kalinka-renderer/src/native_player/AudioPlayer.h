@@ -109,9 +109,12 @@ public:
   // the mixer behind it. Mirrors monitor() for stream state.
   std::unique_ptr<VolumeMonitor> volumeMonitor();
 
-  /// What is done to the samples of a stream @p heard describes, from its
-  /// decoded format to what the device was handed; the volume aside.
-  SignalPath signalPath(const StreamInfo &heard) const;
+  /// Every step the samples of @p stream, which @p heard describes, are taken
+  /// through, from its decoded format to @p device, the format the card was
+  /// opened at: format changes, processing and the software volume.
+  SignalPath signalPath(const StreamInfo &heard,
+                        const std::optional<StreamAudioFormat> &device,
+                        std::optional<StreamId> stream) const;
 
   /// What happens in playback, for one listener to take and report; shared,
   /// so it outlives the player for a listener still waiting on it.
@@ -182,7 +185,7 @@ private:
   // serial executor (so it stays responsive) and may be reconfigured at
   // runtime, so volumeMode/softwarePercent/volumeControl can be touched
   // concurrently — without this lock that is a data race / use-after-free.
-  std::mutex volumeMutex_;
+  mutable std::mutex volumeMutex_;
   std::unique_ptr<AlsaVolumeControl> volumeControl;
   // Fixed until configureVolume() runs (i.e. until the local output device is
   // set up) — so by default the player does no volume processing.

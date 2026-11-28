@@ -174,6 +174,9 @@ constexpr const char *kFormatChangeHelp =
 
 const char *const kFirProfile = "output.rew_fir_profile";
 const char *const kFirOff = "off";
+const char *const kDirect = "output.direct_mode";
+constexpr const char *kDirectRefusal =
+    "Direct output plays the samples as decoded; turn it off first";
 
 std::vector<std::string> firProfiles() {
   const auto dir = dsp_profiles::directory() / "fir";
@@ -231,6 +234,19 @@ installedFirRates(const std::shared_ptr<FirFilterBank> &selected) {
 }
 
 const Knob kOutputKnobs[] = {
+    {kDirect,
+     "Direct output",
+     "Plays every track as decoded: no room EQ, no software volume, and DSD "
+     "only as native DSD or DoP.",
+     renderer_pb::CONFIG_FIELD_TYPE_BOOL,
+     "",
+     {},
+     "Nothing in the renderer touches the samples. Room EQ is off, volume is "
+     "the card's own control or Fixed output, and DSD tracks the DAC cannot "
+     "take as native DSD or DoP do not play. Switching it restarts the track "
+     "where it was.",
+     {},
+     renderer_pb::CONFIG_IMPORTANCE_SIMPLE},
     {"output.latency_ms",
      "Output latency",
      "Audio buffered ahead of playback. Increase if playback stutters.",
@@ -510,6 +526,7 @@ const std::map<std::string, std::string> &graphKeys() {
   static const std::map<std::string, std::string> keys{
       {"output.device", "output.alsa.device"},
       {"output.dsd_mode", "output.dsd_mode"},
+      {kDirect, "output.direct"},
       {"output.dsd_pcm_rate", "dsd.pcm_rate"},
       {"output.dsd_filter", "dsd.filter"},
       {"output.dsd_gain_db", "dsd.gain_db"},
@@ -548,6 +565,11 @@ bool appliesLive(const std::string &path) {
 // every session is refused for want of its start ceiling.
 bool cardHasVolume(const std::string &device) {
   return AlsaVolumeControl(device, "").available();
+}
+
+// The DSD settings that only shape a conversion to PCM.
+bool convertsDsd(const std::string &path) {
+  return path.starts_with("output.dsd_") && path != "output.dsd_mode";
 }
 
 bool holds(std::span<const Knob> knobs, const std::string &path) {
@@ -622,6 +644,7 @@ const std::map<std::string, std::string> &NativePlayer::defaultSettings() {
       {"output.device", "default"},
       {"output.volume_mode", "auto"},
       {"output.dsd_mode", "auto"},
+      {kDirect, "false"},
       {"output.dsd_pcm_rate", "auto"},
       {"output.dsd_filter", "auto"},
       {"output.dsd_gain_db", "safe"},
@@ -662,6 +685,8 @@ public:
     for (const Knob &knob : section_.knobs) {
       declare(out, knob, player_->settings_, defaultSettings());
     }
+    if (player_->direct())
+      restrictToDirect(out);
   }
 
   bool applyConfig(const std::string &path, const std::string &value,
@@ -701,6 +726,10 @@ public:
 
   bool applyConfig(const std::string &path, const std::string &value,
                    std::string &error) override {
+    if (player_->direct()) {
+      error = kDirectRefusal;
+      return false;
+    }
     if (path == kFirProfile)
       return player_->applySetting(path, value, error);
     return player_->dsp_->applyConfig(path, value, error);
@@ -775,6 +804,11 @@ void NativePlayer::RoomCorrectionSection::fillConfig(
     option->set_value(name);
     option->set_label(name);
   }
+  if (player_->direct())
+    for (auto &field : *out.mutable_fields()) {
+      field.set_read_only(true);
+      field.set_help_details("Off while Direct output is on.");
+    }
 }
 
 std::shared_ptr<ConfigContributor> NativePlayer::dspSettings() {
@@ -836,9 +870,9 @@ NativePlayer::~NativePlayer() { stopPumps(); }
 void NativePlayer::setStateSink(StateSink sink) { sink_ = std::move(sink); }
 
 void NativePlayer::updateRoomCorrection() {
-  const auto fir = dsp_->bypassed() ? nullptr : firFilter_;
+  const auto fir = dsp_->bypassed() || direct() ? nullptr : firFilter_;
   liveFir_->select(fir);
-  player_->setRoomEq(dsp_->current(), fir);
+  player_->setRoomEq(direct() ? peq::Settings{} : dsp_->current(), fir);
 }
 
 bool NativePlayer::ensurePlayer() {
@@ -848,8 +882,10 @@ bool NativePlayer::ensurePlayer() {
   try {
     auto rates = installedFirRates(firFilter_);
     liveFir_ = std::make_shared<LiveFir>();
-    player_ = std::make_unique<AudioPlayer>(graphConfig(), liveFir_,
-                                            std::move(rates));
+    // Direct output keeps the samples out of float: no room correction stage.
+    player_ = direct() ? std::make_unique<AudioPlayer>(graphConfig())
+                       : std::make_unique<AudioPlayer>(graphConfig(), liveFir_,
+                                                       std::move(rates));
     updateRoomCorrection();
     std::string volumeError;
     if (!player_->configureVolume(effectiveVolumeMode(), "", &volumeError)) {
@@ -1173,7 +1209,10 @@ NativePlayer::signalPathOf(const StreamState &state) const {
   if (!player_ || !state.streamInfo) {
     return std::nullopt;
   }
-  SignalPath path = player_->signalPath(*state.streamInfo);
+  SignalPath path = player_->signalPath(
+      *state.streamInfo,
+      state.deviceInfo ? std::optional(state.deviceInfo->format) : std::nullopt,
+      state.streamId);
   if (path.steps.empty()) {
     return std::nullopt;
   }
@@ -1206,10 +1245,15 @@ void NativePlayer::emitEvent(const PlaybackEvent &event) {
   if (event.stream && !token) {
     return;  // about a source already let go of
   }
+  if (std::holds_alternative<Unrestored>(event.kind)) {
+    restatePlayback();
+    return;
+  }
   renderer_pb::Envelope env;
-  state_translator::fillPlaybackEvent(event, token, nowUnixMs(),
-                                      *env.mutable_playback_event());
-  emit(env);
+  if (state_translator::fillPlaybackEvent(event, token, nowUnixMs(),
+                                          *env.mutable_playback_event())) {
+    emit(env);
+  }
 }
 
 void NativePlayer::emitVolume(const VolumeState &volume, bool external) {
@@ -1218,6 +1262,13 @@ void NativePlayer::emitVolume(const VolumeState &volume, bool external) {
   state_translator::fillVolume(volume, *changed->mutable_volume());
   changed->set_external(external);
   emit(env);
+  // The signal path holds the software volume, but only whether it is at full.
+  const bool software =
+      volume.backend == static_cast<int>(VolumeBackend::Software);
+  const std::pair traced{software, software && volume.current < volume.max};
+  if (std::exchange(tracedVolume_, traced) != traced) {
+    restatePlayback();
+  }
 }
 
 void NativePlayer::emit(renderer_pb::Envelope &env) {
@@ -1322,6 +1373,8 @@ void NativePlayer::fillConfig(renderer_pb::ConfigSection &out) const {
   addCapability("output.sample_rate", "Sample rate",
                 maxRate ? sampleRate.str() : "Unavailable");
 
+  declare(out, *findKnob(kDirect), settings_, defaultSettings());
+
   renderer_pb::ConfigField *mode = out.add_fields();
   mode->set_path("output.volume_mode");
   mode->set_title("Volume control");
@@ -1361,8 +1414,11 @@ void NativePlayer::fillConfig(renderer_pb::ConfigSection &out) const {
   startCeiling->set_widget(renderer_pb::CONFIG_WIDGET_SLIDER);
 
   for (const Knob &knob : kOutputKnobs) {
-    declare(out, knob, settings_, defaultSettings());
+    if (std::string_view(knob.path) != kDirect)
+      declare(out, knob, settings_, defaultSettings());
   }
+  if (direct())
+    restrictToDirect(out);
 }
 
 bool NativePlayer::applyConfig(const std::string &path,
@@ -1381,6 +1437,12 @@ bool NativePlayer::applySetting(const std::string &path,
   }
   if (path == "output.dsd_mode" && !isDsdMode(value)) {
     error = "unknown DSD output mode";
+    return false;
+  }
+  if (direct() && ((path == "output.volume_mode" && value == "software") ||
+                   (path == "output.dsd_mode" && value == "pcm") ||
+                   convertsDsd(path))) {
+    error = kDirectRefusal;
     return false;
   }
   // Sizes and durations, which the graph reads as unsigned: a negative one
@@ -1411,7 +1473,7 @@ bool NativePlayer::applySetting(const std::string &path,
     // A plain stop, even after a rebuild: replayed, the track would jump too.
     interruptPending_ = false;
     std::string configureError;
-    if (!player_->configureVolume(value, "", &configureError)) {
+    if (!player_->configureVolume(volumeModeFor(value), "", &configureError)) {
       error = configureError;
       return false;
     }
@@ -1426,6 +1488,17 @@ bool NativePlayer::applySetting(const std::string &path,
     }
   }
   setting->second = value;
+  if (path == kDirect && value == "true") {
+    for (const auto &[key, altering] :
+         {std::pair{"output.volume_mode", "software"},
+          std::pair{"output.dsd_mode", "pcm"}}) {
+      std::string &mode = settings_.at(key);
+      if (mode == altering) {
+        mode = "auto";
+        spdlog::info("Direct output: {} is back to 'auto'", key);
+      }
+    }
+  }
   if (path == "output.device") {
     // Native DSD and DoP were chosen for the old card; Automatic probes each.
     std::string &dsdMode = settings_.at("output.dsd_mode");
@@ -1466,9 +1539,49 @@ bool NativePlayer::applySetting(const std::string &path,
   return true;
 }
 
-const std::string &NativePlayer::effectiveVolumeMode() const {
-  static const std::string fixed = "fixed";
-  return sessionForcedFixed_ ? fixed : settings_.at("output.volume_mode");
+std::string NativePlayer::effectiveVolumeMode() const {
+  return sessionForcedFixed_ ? "fixed"
+                             : volumeModeFor(settings_.at("output.volume_mode"));
+}
+
+std::string NativePlayer::volumeModeFor(const std::string &configured) const {
+  if (direct() && configured == "auto")
+    return cardHasVolume(settings_.at("output.device")) ? "hardware" : "fixed";
+  return configured;
+}
+
+bool NativePlayer::direct() const { return settings_.at(kDirect) == "true"; }
+
+void NativePlayer::restrictToDirect(renderer_pb::ConfigSection &out) {
+  // What each choice that stays means once nothing may alter the samples.
+  const std::map<std::string, std::pair<std::string, const char *>> narrowed{
+      {"output.volume_mode",
+       {"software", "Use the sound card’s volume control when available, "
+                    "otherwise Fixed output."}},
+      {"output.dsd_mode",
+       {"pcm", "Send native DSD when the DAC supports the track’s rate and the "
+               "volume is Fixed output. Direct output converts nothing, so "
+               "other DSD tracks do not play. Never DoP."}},
+  };
+  for (auto &field : *out.mutable_fields()) {
+    if (const auto choice = narrowed.find(field.path());
+        choice != narrowed.end()) {
+      const auto &[altering, automatic] = choice->second;
+      auto &options = *field.mutable_options();
+      for (auto option = options.begin(); option != options.end();) {
+        if (option->value() == altering) {
+          option = options.erase(option);
+          continue;
+        }
+        if (option->value() == "auto")
+          option->set_description(automatic);
+        ++option;
+      }
+    } else if (convertsDsd(field.path())) {
+      field.set_read_only(true);
+      field.set_help_details("Not used: Direct output never converts DSD.");
+    }
+  }
 }
 
 bool NativePlayer::beginSessionVolume(const SessionVolumePolicy &policy,
@@ -1498,12 +1611,13 @@ bool NativePlayer::beginSessionVolume(const SessionVolumePolicy &policy,
     return true;
   }
 
-  if (!player_->configureVolume(configuredMode, "", &error)) {
+  const std::string mode = volumeModeFor(configuredMode);
+  if (!player_->configureVolume(mode, "", &error)) {
     return false;
   }
 
   // Persistent fixed mode is the explicit manual-amplifier configuration.
-  if (configuredMode == "fixed") {
+  if (mode == "fixed") {
     return true;
   }
 
@@ -1519,11 +1633,14 @@ bool NativePlayer::beginSessionVolume(const SessionVolumePolicy &policy,
   }
   VolumeState state = player_->getVolume();
   if (!state.supported) {
-    error = configuredMode == "hardware"
-                ? "this output's sound card has no volume control of its "
-                  "own; set its volume control to Automatic or Software"
-                : "volume control is unavailable; session-start volume "
-                  "ceiling cannot be enforced";
+    error = mode != "hardware"
+                ? "volume control is unavailable; session-start volume "
+                  "ceiling cannot be enforced"
+            : direct()
+                ? "this output's sound card has no usable volume control; "
+                  "with Direct output on, choose Fixed output"
+                : "this output's sound card has no volume control of its "
+                  "own; set its volume control to Automatic or Software";
     return false;
   }
   if (state.current > static_cast<int>(ceiling)) {
@@ -1549,11 +1666,12 @@ void NativePlayer::endSessionVolume() {
   spdlog::info("Session fixed output ended; back to '{}'", configuredMode);
   if (player_) {
     std::string error;
-    if (!player_->configureVolume(configuredMode, "", &error)) {
-      spdlog::error("Cannot restore configured volume mode '{}': {}",
-                    configuredMode, error);
+    const std::string mode = volumeModeFor(configuredMode);
+    if (!player_->configureVolume(mode, "", &error)) {
+      spdlog::error("Cannot restore configured volume mode '{}': {}", mode,
+                    error);
     } else if (sessionRestoreMode_ == configuredMode &&
-               sessionRestoreVolume_ && configuredMode != "fixed") {
+               sessionRestoreVolume_ && mode != "fixed") {
       player_->setVolume(*sessionRestoreVolume_);
     }
   }
@@ -1616,7 +1734,7 @@ void NativePlayer::fillCapabilities(renderer_pb::Capabilities &out) const {
   out.set_dsd(settings_.at("output.dsd_mode") != "disabled");
   out.set_live_pcm(1);
   renderer_pb::DspCapabilities *dsp = out.mutable_dsp();
-  dsp->set_dsd_to_pcm(true);
+  dsp->set_dsd_to_pcm(!direct());
   for (const char *kind : signal_step::kAll) {
     dsp->add_steps(kind);
   }
