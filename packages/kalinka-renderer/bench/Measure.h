@@ -64,7 +64,8 @@ void runFixtures();
 /// What per-stream processing leaves at a gapless join, against continuous.
 void runJoin();
 /// Plays each file through AudioPlayer into ALSA null and reports its CPU.
-void runPlayback(const std::vector<std::string> &files, int delayMs);
+void runPlayback(const std::vector<std::string> &files, int delayMs,
+                 bool liveFir);
 /// Writes @p seconds of dense stereo test audio as a WAV file.
 void writeWav(const std::string &path, unsigned rate, unsigned bits,
               unsigned seconds);

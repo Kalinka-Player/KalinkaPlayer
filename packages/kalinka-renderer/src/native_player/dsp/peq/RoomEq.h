@@ -58,10 +58,14 @@ public:
 
 private:
   using History = std::array<std::array<State, kBands>, kPlanarChannels / 2>;
-  Plan current, previous;
+  // On cache lines of their own: the filter's speed must not depend on what
+  // its owner declares before it.
+  alignas(64) Plan current;
+  alignas(64) Plan previous;
   GainRamp preamp{std::chrono::milliseconds(25)};
   double oldGain = 1, newGain = 1;
-  History history{}, oldHistory{};
+  alignas(64) History history{};
+  alignas(64) History oldHistory{};
   PlanarScratch scratch;
   size_t remaining = 0, length = 0;
 };

@@ -10,6 +10,7 @@
 #include "dsp/DelayLine.h"
 #include "dsp/DspStage.h"
 #include "dsp/output/OutputStage.h"
+#include "dsp/fir/LiveFir.h"
 
 #include <soxr.h>
 
@@ -273,6 +274,19 @@ std::vector<Kernel> kernels() {
          };
        }},
       {"OutputStage at unity, S32 stereo", outputStage(1.0)},
+      {"Idle LiveFir then OutputStage at unity, S32 stereo",
+       [](unsigned rate) {
+         auto source = std::make_shared<EndlessSource>(rate);
+         auto dsp = std::make_shared<DspStage>(std::make_shared<LiveFir>());
+         dsp->connectTo(source);
+         auto stage = std::make_shared<OutputStage>(
+             std::vector<StreamAudioFormat>{{rate, 2, 32, PCM32_LE, 0}}, 1);
+         stage->connectTo(dsp);
+         auto out = std::make_shared<std::vector<uint8_t>>(kBlock * 8);
+         return [dsp, stage, out](size_t frames) {
+           stage->read(out->data(), frames * 8);
+         };
+       }},
       {"OutputStage at -6 dB, S32 stereo, dithered at 24 bits",
        outputStage(0.5)},
       {"5 PEQ bands, planar float64 stereo", peqCascade(peakBands(5))},

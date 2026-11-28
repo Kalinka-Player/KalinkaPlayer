@@ -42,7 +42,7 @@ std::string cpuModel() {
 int usage() {
   std::fputs("usage: kalinka-dsp-bench kernels [NAME [RATE]] | peq-settings | "
              "simd | dsd | fixtures | fir | join\n"
-             "       kalinka-dsp-bench playback [--delay-ms N] FILE...\n"
+             "       kalinka-dsp-bench playback [--delay-ms N] [--live-fir] FILE...\n"
              "       kalinka-dsp-bench make-wav FILE RATE BITS SECONDS\n",
              stderr);
   return 2;
@@ -125,10 +125,13 @@ int main(int argc, char **argv) {
     bench::runJoin();
   } else if (command == "playback") {
     int delayMs = 0;
+    bool liveFir = false;
     std::vector<std::string> files;
     for (int i = 2; i < argc; ++i) {
       if (std::strcmp(argv[i], "--delay-ms") == 0 && i + 1 < argc) {
         delayMs = std::atoi(argv[++i]);
+      } else if (std::strcmp(argv[i], "--live-fir") == 0) {
+        liveFir = true;
       } else {
         files.emplace_back(argv[i]);
       }
@@ -136,7 +139,7 @@ int main(int argc, char **argv) {
     if (files.empty()) {
       return bench::usage();
     }
-    bench::runPlayback(files, delayMs);
+    bench::runPlayback(files, delayMs, liveFir);
   } else {
     return bench::usage();
   }
